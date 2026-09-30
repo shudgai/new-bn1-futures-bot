@@ -28,6 +28,7 @@ def cached_tick_indicators(frame, price, stamp):
         'kc_middle': float(last.get('ema_20', last.get('kc_middle', 0.)) or 0.),
         'ma3': float(last.get('ma3') or 0.),
         'ma5': float(last.get('ma5', last.get('ma3', 0)) or 0.),
+        'ma15': float(last.get('ma15') or 0.),
         'close': float(last.get('close') or 0.),
         'open': float(last.get('open') or 0.),
         'high': float(last.get('high') or 0.),

@@ -139,6 +139,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             c_high = float(snapshot.get('high', 0.)) if isinstance(snapshot, dict) else 0.
             c_low = float(snapshot.get('low', 0.)) if isinstance(snapshot, dict) else 0.
             c_ma5 = float(snapshot.get('ma5', 0.)) if isinstance(snapshot, dict) else 0.
+            c_ma15 = float(snapshot.get('ma15', 0.)) if isinstance(snapshot, dict) else 0.
             c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
             c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
             c_middle = float(snapshot.get('kc_middle', 0.)) if isinstance(snapshot, dict) else 0.
@@ -155,9 +156,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 atr_tolerance = 1.2 * scale if scale > 0 else 0
                 retrace_from_peak = sign*(state['peak_price'] - c_close)
                 
+                # 前 3 根 K 棒保護期：僅以中軌與硬止損防守，停用短線與回吐敏感平倉
+                is_early_phase = time_held_ms <= 180000
+                
+                # 均線多頭/空頭支撐防禦 (價格在 MA15 與中軌優勢側，禁止提早退出)
+                if is_long:
+                    support_active = (c_close > c_ma15 and c_close > c_middle)
+                else:
+                    support_active = (c_close < c_ma15 and c_close < c_middle)
+                
                 # 高浮盈極速鎖利 ( >= 2.5 ATR )
                 tight_lock_triggered = False
-                if scale > 0 and gain >= 2.5 * scale:
+                if not is_early_phase and scale > 0 and gain >= 2.5 * scale:
                     # 1. 回彈超過 0.8 ATR
                     if retrace_from_peak >= 0.8 * scale:
                         tight_lock_triggered = True
@@ -178,29 +188,33 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 
                 if not reason:
                     if is_long:
-                    # 判斷吞噬結構：大陰線吞噬前兩根陽線，且收回通道內
-                    is_bearish_engulfing = (c_close < c_open and prev_close > prev_open and prev2_close > prev2_open and 
-                                            c_open >= max(prev_close, prev_open) and c_close <= min(prev2_open, prev_open) and 
-                                            c_close < c_upper)
-
-                    if c_close < c_middle:
-                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
-                    elif is_bearish_engulfing:
-                        reason, trigger = PEAK_REASON, 'BEARISH_ENGULFING_INSIDE_KC'
-                    elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
-                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_TWICE_AND_RETRACE'
-                else:
-                    # 判斷吞噬結構：大陽線吞噬前兩根陰線，且收回通道內
-                    is_bullish_engulfing = (c_close > c_open and prev_close < prev_open and prev2_close < prev2_open and 
-                                            c_open <= min(prev_close, prev_open) and c_close >= max(prev2_open, prev_open) and 
-                                            c_close > c_lower)
-
-                    if c_close > c_middle:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
-                    elif is_bullish_engulfing:
-                        reason, trigger = PEAK_REASON, 'BULLISH_ENGULFING_INSIDE_KC'
-                    elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_TWICE_AND_RETRACE'
+                        # 判斷吞噬結構：大陰線吞噬前兩根陽線，且收回通道內
+                        is_bearish_engulfing = (c_close < c_open and prev_close > prev_open and prev2_close > prev2_open and 
+                                                c_open >= max(prev_close, prev_open) and c_close <= min(prev2_open, prev_open) and 
+                                                c_close < c_upper)
+    
+                        if c_close < c_middle:
+                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
+                        elif not is_early_phase:
+                            if is_bearish_engulfing:
+                                reason, trigger = PEAK_REASON, 'BEARISH_ENGULFING_INSIDE_KC'
+                            elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
+                                if not support_active:
+                                    reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_TWICE_AND_RETRACE'
+                    else:
+                        # 判斷吞噬結構：大陽線吞噬前兩根陰線，且收回通道內
+                        is_bullish_engulfing = (c_close > c_open and prev_close < prev_open and prev2_close < prev2_open and 
+                                                c_open <= min(prev_close, prev_open) and c_close >= max(prev2_open, prev_open) and 
+                                                c_close > c_lower)
+    
+                        if c_close > c_middle:
+                            reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
+                        elif not is_early_phase:
+                            if is_bullish_engulfing:
+                                reason, trigger = PEAK_REASON, 'BULLISH_ENGULFING_INSIDE_KC'
+                            elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
+                                if not support_active:
+                                    reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_TWICE_AND_RETRACE'
 
         if reason:
             state.update(pending=reason,trigger=trigger)
