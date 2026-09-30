@@ -33,6 +33,10 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if await enforce_hard_stop(engine.account, symbol, quote):
             return [], []
 
+        from core.services.exits.doji_reversal_exit import enforce_doji_reversal
+        if await enforce_doji_reversal(engine, symbol, quote, now_time * 1000):
+            return [], []
+
         # =========================================================
         # 唯一三大鐵律物理鎖 (一票否決制)
         # =========================================================

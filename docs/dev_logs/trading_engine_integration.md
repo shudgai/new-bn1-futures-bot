@@ -19,3 +19,10 @@
 - **Modification Description**: Allow adjacent directional outside closes to continue after missed initial entry, bypass consolidation and second-bar-only restriction for continuation. Preserve live rail, extreme break and all other gates.
 - **Trigger Reason & Requirement**: Explicit user request for later continuation entries.
 - **Verification & Test Status**: 89 targeted tests passed; isolated in-memory accounts, no reseed or external orders; diff check passed.
+
+### [2026-09-30 16:46:38 UTC+8] - Modification Phase: First adverse body after doji
+- **Author**: shudgai999 / Codex
+- **Target Files & Lines**: doji_reversal_exit.py; engine._instant_quote_exit; symbol_runner; dual_track_exit_service; test_doji_reversal_exit.py
+- **Modification Description**: Confirmed doji <=25% followed by live adverse body >=0.5 prior closed ATR triggers durable full close. Fast cached-frame path, no REST or scan lock.
+- **Trigger Reason & Requirement**: User explicitly approved thresholds and requested first-candle exit.
+- **Verification & Test Status**: 117 targeted tests passed; compile and diff checks passed; isolated mocked account, no DB reseed.

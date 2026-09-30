@@ -1217,8 +1217,9 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """No candle fetch or scan lock before instant exit submission. Bypassed for strict 3 rules."""
-        return False
+        """First adverse long body after doji, without REST or scan-lock waiting."""
+        from core.services.exits.doji_reversal_exit import enforce_doji_reversal
+        return await enforce_doji_reversal(self, symbol, price, quote_ms)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Evaluate held exits on a received quote without waiting for the scan."""
