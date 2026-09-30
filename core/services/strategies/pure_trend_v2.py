@@ -275,9 +275,6 @@ class PureTrendStrategyV2:
 
         if final_long_signal:
             res = {"action": "ENTRY_LONG"}
-            # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
-            if dist_from_ma15_atr >= 1.2:
-                res["initial_sl"] = prev_open if prev_open < prev_close else prev_close # 簡單防守點
             return res
 
         # -------------------------------------------------------------
@@ -323,9 +320,6 @@ class PureTrendStrategyV2:
 
         if final_short_signal:
             res = {"action": "ENTRY_SHORT"}
-            # 高乖離進場安全保護
-            if dist_from_ma15_atr >= 1.2:
-                res["initial_sl"] = prev_open if prev_open > prev_close else prev_close
             return res
 
         # Report the first failed condition for the actual outside direction.
@@ -564,7 +558,6 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     if is_reentry:
         reason_str = "順勢延續開倉(Re-entry)"
         # 延續單縮緊硬停損：前一根 K 棒收盤價或軌道邊緣
-        decision['initial_sl'] = float(previous['close'])
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
         return None

@@ -162,12 +162,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 # 均線多頭/空頭支撐防禦 (價格在 MA15 與中軌優勢側，禁止提早退出)
                 if is_long:
                     support_active = (c_close > c_ma15 and c_close > c_middle)
+                    # 同向強動能 K 棒 (實體陽線且創近期新高)
+                    strong_momentum = (c_close > c_open) and (c_high >= state['peak_price'])
                 else:
                     support_active = (c_close < c_ma15 and c_close < c_middle)
+                    # 同向強動能 K 棒 (實體陰線且創近期新低)
+                    strong_momentum = (c_close < c_open) and (c_low <= state['peak_price'])
                 
                 # 高浮盈極速鎖利 ( >= 2.5 ATR )
                 tight_lock_triggered = False
-                if not is_early_phase and scale > 0 and gain >= 2.5 * scale:
+                if not is_early_phase and not strong_momentum and scale > 0 and gain >= 2.5 * scale:
                     # 1. 回彈超過 0.8 ATR
                     if retrace_from_peak >= 0.8 * scale:
                         tight_lock_triggered = True
