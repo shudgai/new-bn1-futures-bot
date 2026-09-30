@@ -130,7 +130,41 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
         elif state.get('pending') in (PEAK_REASON,HARD_REASON):
             reason, trigger = state['pending'], state.get('trigger','RETRY')
-        elif not is_same_bar:
+            
+        # ==============================================================
+        # 盤中即時異常 K 棒緊急熔斷 (Intraday Flash Exit)
+        # ==============================================================
+        if not reason and isinstance(snapshot, dict):
+            c_middle = float(snapshot.get('kc_middle', 0.))
+            c_ma15 = float(snapshot.get('ma15', 0.))
+            live_open = float(snapshot.get('live_open', price))
+            live_high = float(snapshot.get('live_high', price))
+            live_low = float(snapshot.get('live_low', price))
+            peak_gain = sign*(state['peak_price'] - entry)
+            
+            if c_middle > 0 and c_ma15 > 0 and scale > 0:
+                if sign == 1:
+                    cond_a = (live_open - price >= 1.0 * scale) or (live_high - price >= 1.0 * scale)
+                    cond_b = (price <= c_middle) or (price <= c_ma15)
+                    cond_c = (peak_gain >= 1.5 * scale) and (gain <= peak_gain * 0.5)
+                    if cond_a:
+                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1ATR'
+                    elif cond_b:
+                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                    elif cond_c:
+                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_RETRACE_50'
+                else:
+                    cond_a = (price - live_open >= 1.0 * scale) or (price - live_low >= 1.0 * scale)
+                    cond_b = (price >= c_middle) or (price >= c_ma15)
+                    cond_c = (peak_gain >= 1.5 * scale) and (gain <= peak_gain * 0.5)
+                    if cond_a:
+                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1ATR'
+                    elif cond_b:
+                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                    elif cond_c:
+                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_RETRACE_50'
+
+        if not reason and not is_same_bar:
             # 波段尾部確認平倉機制
             is_long = (sign == 1)
             

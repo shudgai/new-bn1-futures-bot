@@ -21,6 +21,8 @@ def cached_tick_indicators(frame, price, stamp):
     if closed.empty or float(closed.iloc[-1]['timestamp']) != bar - 60000:
         return snapshot, 0.
     last = closed.iloc[-1]
+    live = frame.iloc[-1] if not frame.empty else None
+    
     snapshot.update({
         'atr': float(last.get('atr') or 0.),
         'kc_upper': float(last.get('kc_upper') or 0.),
@@ -32,7 +34,10 @@ def cached_tick_indicators(frame, price, stamp):
         'close': float(last.get('close') or 0.),
         'open': float(last.get('open') or 0.),
         'high': float(last.get('high') or 0.),
-        'low': float(last.get('low') or 0.)
+        'low': float(last.get('low') or 0.),
+        'live_open': float(live.get('open', price)) if live is not None else price,
+        'live_high': float(live.get('high', price)) if live is not None else price,
+        'live_low': float(live.get('low', price)) if live is not None else price
     })
     
     if len(closed) >= 3:
