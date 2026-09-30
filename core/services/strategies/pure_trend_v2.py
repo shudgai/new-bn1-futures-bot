@@ -479,10 +479,7 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     bar_index = int(float(row['timestamp']) // 60000)
     if ticket:
         strategy.record_exit(symbol, ticket['side'], ticket['exit_bar_index'])
-        if bar_index - ticket['exit_bar_index'] < 5:
-            if diagnostics is not None:
-                diagnostics['reason'] = 'WAIT_POST_EXIT_5_BAR_COOLDOWN'
-            return None
+        # Cooldown check deferred to later so we can allow continuations
     if code is not None and code not in V2_ENTRY_CODES:
         return None
     # New ticks extend the live extremes without mutating the source frame.
@@ -502,31 +499,40 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
             diagnostics["reason"] = strategy.entry_rejection
         return None
     continuation = strategy.outside_continuation_side(closed) == decision['side']
-    if not ticket and not continuation:
+    # Handle continuation states and cooldowns
+    is_reentry = False
+    if ticket or continuation:
+        is_reentry = True
+    else:
+        # Prevent opening a brand new initial breakout if we are already outside
         before = closed.iloc[-2]
         edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
         before_close, before_edge = float(before['close']), float(before[edge])
-        if not all(math.isfinite(value) and value > 0 for value in (before_close, before_edge)):
-            return None
-        if float(previous['timestamp']) - float(before['timestamp']) != 60000:
-            return None
-        if before_close > before_edge if decision['side'] == 'LONG' else before_close < before_edge:
-            if diagnostics is not None:
-                diagnostics['reason'] = '前段已在軌外，但尚未形成同向延續'
-            return None
-    if continuation:
-        # A historical outside close cannot authorize an entry back inside the live rail.
-        edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
-        rail = float(row[edge])
-        if not math.isfinite(rail) or rail <= 0 or (quote <= rail if decision['side'] == 'LONG' else quote >= rail):
-            if diagnostics is not None:
-                diagnostics['reason'] = '延續最新價未嚴格站在當根外軌外'
-            return None
+        if all(math.isfinite(value) and value > 0 for value in (before_close, before_edge)):
+            if float(previous['timestamp']) - float(before['timestamp']) == 60000:
+                if before_close > before_edge if decision['side'] == 'LONG' else before_close < before_edge:
+                    if diagnostics is not None:
+                        diagnostics['reason'] = '前段已在軌外，但尚未形成同向延續'
+                    return None
+
+    if ticket and not is_reentry and bar_index - ticket['exit_bar_index'] < 5:
+        if diagnostics is not None:
+            diagnostics['reason'] = 'WAIT_POST_EXIT_5_BAR_COOLDOWN'
+        return None
+
+    reason_str = "符合標準開倉範例"
+    if is_reentry:
+        reason_str = "順勢延續開倉(Re-entry)"
+        # 延續單縮緊硬停損：前一根 K 棒收盤價或軌道邊緣
+        decision['initial_sl'] = float(previous['close'])
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
         return None
     if diagnostics is not None:
-        diagnostics["reason"] = "符合標準開倉範例"
+        diagnostics["reason"] = reason_str
+    
+    # Overwrite the reason in the decision dictionary
+    decision['reason'] = reason_str
     return dict(decision, type=code or decision['type'], price=quote, entry_atr=atr,
                 confirmation_bar_id=stamp, breakout_bar_id=float(previous['timestamp']),
                 close_price=float(previous['close']), intrabar=True,
