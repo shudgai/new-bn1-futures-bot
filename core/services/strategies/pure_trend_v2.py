@@ -159,12 +159,12 @@ class PureTrendStrategyV2:
         swing_low = None
         if closed is not None and len(closed) >= 5:
             highs = closed['high'].tolist()
-            for i in range(len(highs)-4, 1, -1):
+            for i in range(len(highs)-3, 1, -1):
                 if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
                     swing_high = highs[i]
                     break
             lows = closed['low'].tolist()
-            for i in range(len(lows)-4, 1, -1):
+            for i in range(len(lows)-3, 1, -1):
                 if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
                     swing_low = lows[i]
                     break
@@ -364,7 +364,7 @@ class PureTrendStrategyV2:
             key = 'low' if position['side'] == 'LONG' else 'high'
             values = rows[key].tolist()
             # 至少要 5 根 K 棒來形成一個顯著的 Swing (左右各 2 根不低於/不高於它)
-            for i in range(len(values)-4, 1, -1):
+            for i in range(len(values)-3, 1, -1):
                 pivot = values[i]
                 if key == 'low':
                     found = (pivot < values[i-1] and pivot < values[i-2] and pivot < values[i+1] and pivot < values[i+2])
