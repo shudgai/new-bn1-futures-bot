@@ -171,7 +171,10 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 
                 # 高浮盈極速鎖利 ( >= 2.5 ATR )
                 tight_lock_triggered = False
-                if not is_early_phase and not strong_momentum and scale > 0 and gain >= 2.5 * scale:
+                is_half_closed = position.get("is_half_closed", False) if isinstance(position, dict) else False
+                
+                # 剩餘 50% 倉位不設固定止盈，交由趨勢終結邏輯接管
+                if not is_half_closed and not is_early_phase and not strong_momentum and scale > 0 and gain >= 2.5 * scale:
                     # 1. 回彈超過 0.8 ATR
                     if retrace_from_peak >= 0.8 * scale:
                         tight_lock_triggered = True

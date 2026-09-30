@@ -709,7 +709,7 @@ class PaperAccount:
                 **entry_context,
             }
             # 自動掛出 50% Limit TP1
-            tp1_distance = pos["atr"] * 1.0 if pos["atr"] > 0 else execution_price * 0.025
+            tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
             limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
             meta = self.position_meta[symbol]
             meta["limit_tp1_price"] = limit_tp1_price
@@ -1289,6 +1289,7 @@ class PaperAccount:
             if tp1_target > 0 and not meta.get("limit_tp1_filled", False):
                 if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
                     meta["limit_tp1_filled"] = True
+                    pos["is_half_closed"] = True
                     half_qty = float(pos["qty"]) / 2.0
                     pos["qty"] -= half_qty
                     
