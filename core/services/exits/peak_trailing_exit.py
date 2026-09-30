@@ -90,6 +90,11 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
+        
+        # Explicitly initialize peak_price to entry_price if not set
+        if 'peak_price' not in state:
+            state['peak_price'] = entry
+
         if not positive(state.get('atr')) and positive(atr):
             state['atr'] = float(atr)
         scale = float(state.get('atr') or 0.)
@@ -101,8 +106,8 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
         net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
-        state['armed'] = bool(state.get('armed') or (scale > 0 and reached(gain,1.5*scale))
-                              or reached(state['peak_net_pnl']/state['entry_margin'],.05))
+        state['armed'] = bool(state.get('armed') or (scale > 0 and reached(gain,1.0*scale))
+                              or reached(state['peak_net_pnl']/state['entry_margin'],.03))
         position.update(peak_price=state['peak_price'], peak_pnl=gain*qty, peak_pnl_usd=gain*qty,
                         peak_net_pnl_usd=state['peak_net_pnl'], peak_gain_atr=gain/scale if scale>0 else 0.,
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
@@ -114,16 +119,24 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = None, None
+        
+        # Determine time held for Same-bar Exit Protection
+        open_ts = ident[1]
+        if open_ts < 1e11:
+            open_ts *= 1000  # Convert to ms if it's in seconds
+        time_held_ms = stamp - open_ts
+        is_same_bar = time_held_ms < 60000
+        
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
         elif state.get('pending') in (PEAK_REASON,HARD_REASON):
             reason, trigger = state['pending'], state.get('trigger','RETRY')
-        elif state['armed']:
+        elif state['armed'] and not is_same_bar:
             retrace = sign*(state['peak_price']-price)
             if scale > 0 and retrace > .4*scale and not math.isclose(retrace,.4*scale,rel_tol=1e-12):
                 reason, trigger = PEAK_REASON, 'PRICE_RETRACE_GT_04ATR'
-            elif state['peak_net_pnl'] > 0 and reached(state['peak_net_pnl']-net,.2*state['peak_net_pnl']):
-                reason, trigger = PEAK_REASON, 'NET_PEAK_DRAWDOWN_20PCT'
+            elif state['peak_net_pnl'] > 0 and reached(state['peak_net_pnl']-net,.25*state['peak_net_pnl']):
+                reason, trigger = PEAK_REASON, 'NET_PEAK_DRAWDOWN_25PCT'
         if reason:
             state.update(pending=reason,trigger=trigger)
             return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)

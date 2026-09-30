@@ -237,9 +237,6 @@ class PureTrendStrategyV2:
 
         two_bar_long = bar1_long_valid and bar2_breaks_prev_high and long_momentum_valid and long_wick_valid
         
-        # 單根暴力破軌：不管前一根，當前這根大實體直接突破
-        single_bar_long = (current_price > kc_upper_curr) and (current_price > curr_open) and long_momentum_valid and long_wick_valid
-
         # 【趨勢過濾】做多必須 CK 向上
         long_trend_valid = ck_is_up
             
@@ -247,7 +244,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             long_trend_valid = False
 
-        if (two_bar_long or single_bar_long) and long_trend_valid:
+        if two_bar_long and long_trend_valid:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -268,9 +265,6 @@ class PureTrendStrategyV2:
 
         two_bar_short = bar1_short_valid and bar2_breaks_prev_low and short_momentum_valid and short_wick_valid
         
-        # 單根暴力破軌：不管前一根，當前這根大實體直接突破
-        single_bar_short = (current_price < kc_lower_curr) and (current_price < curr_open) and short_momentum_valid and short_wick_valid
-
         # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
         short_trend_valid = ck_is_down
             
@@ -278,7 +272,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
-        if (two_bar_short or single_bar_short) and short_trend_valid:
+        if two_bar_short and short_trend_valid:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
@@ -289,13 +283,13 @@ class PureTrendStrategyV2:
         if (current_price > kc_upper_curr and current_price > curr_open) or (prev_close > kc_upper_prev and prev_close > prev_open):
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (two_bar_long or single_bar_long, "不符合雙棒推進或單根暴力破軌"),
+                      (two_bar_long, "不符合雙棒推進"),
                       (long_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (long_wick_valid, "長上影線拋壓過大")]
         elif (current_price < kc_lower_curr and current_price < curr_open) or (prev_close < kc_lower_prev and prev_close < prev_open):
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (two_bar_short or single_bar_short, "不符合雙棒推進或單根暴力破軌"),
+                      (two_bar_short, "不符合雙棒推進"),
                       (short_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (short_wick_valid, "長下影線買盤抵抗過大")]
         else:
