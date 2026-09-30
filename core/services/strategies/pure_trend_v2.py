@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 logger = logging.getLogger("PureTrendV2_Meme")
 
@@ -115,8 +115,9 @@ class PureTrendStrategyV2:
         bar_curr: Dict[str, Any],     # 第 2 根（當前盤中推進 K）
         current_price: float,
         indicators: Dict[str, Any],
-        closed: Any = None
-    ) -> Optional[str]:
+        closed: Any = None,
+        symbol: str = ""
+    ) -> Optional[Union[str, Dict[str, Any]]]:
         """
         100% 依據使用者給定範例開倉：
         必須【全部條件同時為 True】，任一條件不符直接回傳 None（嚴禁開倉）！
@@ -157,6 +158,14 @@ class PureTrendStrategyV2:
             ck_is_up = True
             
         atr = float(bar_prev.get('atr', 0.0001))
+        # 解決 ATR 過度壓縮失真問題：使用 max(atr, atr_50)
+        if closed is not None and len(closed) >= 50:
+            tr = closed['high'].astype(float) - closed['low'].astype(float)
+            atr_50 = float(tr.rolling(50).mean().iloc[-1])
+            atr = max(atr, atr_50)
+
+        # 針對妖幣/迷因幣放寬乖離上限
+        ma15_dist_limit = 1.8 if any(meme in symbol for meme in ["PEPE", "DOGE", "WIF", "FLOKI"]) else 1.6
         dist_from_ma15_atr = abs(current_price - ma15) / atr if atr > 0 else 0.0
 
         # -------------------------------------------------------------
@@ -211,12 +220,16 @@ class PureTrendStrategyV2:
         if not ck_is_up:
             bar1_long_valid = False
             
-        # 【乖離過濾】做多進場價與 MA15 的距離不得大於 1.2 ATR，且超出上軌不得大於 0.8 ATR
-        if dist_from_ma15_atr > 1.2 or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
+        # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit，且超出上軌不得大於 0.8 ATR
+        if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
             bar1_long_valid = False
 
         if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick and not ceiling_blocked:
-            return "ENTRY_LONG"
+            res = {"action": "ENTRY_LONG"}
+            # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
+            if dist_from_ma15_atr >= 1.2:
+                res["initial_sl"] = prev_open if prev_open < prev_close else prev_close # 簡單防守點
+            return res
 
         # -------------------------------------------------------------
         # 空單做空開倉標準範例：
@@ -240,12 +253,16 @@ class PureTrendStrategyV2:
         if not ck_is_down:
             bar1_short_valid = False
             
-        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 1.2 ATR，且跌破下軌不得大於 0.8 ATR
-        if dist_from_ma15_atr > 1.2 or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
+        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 ma15_dist_limit，且跌破下軌不得大於 0.8 ATR
+        if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
             bar1_short_valid = False
 
         if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick and not floor_blocked:
-            return "ENTRY_SHORT"
+            res = {"action": "ENTRY_SHORT"}
+            # 高乖離進場安全保護
+            if dist_from_ma15_atr >= 1.2:
+                res["initial_sl"] = prev_open if prev_open > prev_close else prev_close
+            return res
 
         return None
 
@@ -273,12 +290,16 @@ class PureTrendStrategyV2:
             
             # Delegate entirely to the standard example breakout entry
             result = self.check_standard_example_breakout_entry(
-                bar_prev, bar_curr, current_price, bar_curr, closed
+                bar_prev, bar_curr, current_price, bar_curr, closed, symbol
             )
             if result:
-                side = result.replace('ENTRY_', '')
-                return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=current_price,
+                action = result if isinstance(result, str) else result.get("action")
+                side = action.replace('ENTRY_', '')
+                signal_dict = dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=current_price,
                             reason='符合標準開倉範例')
+                if isinstance(result, dict) and 'initial_sl' in result:
+                    signal_dict['initial_sl'] = result['initial_sl']
+                return signal_dict
             return None
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
