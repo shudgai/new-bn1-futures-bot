@@ -215,17 +215,8 @@ class PureTrendStrategyV2:
         continuation_side = self.outside_continuation_side(closed)
 
         # -------------------------------------------------------------
-        # 門禁 2：地板空 / 天花板多過濾 (滾動 15 根絕對極值)
+        # 門禁 2：(已移除) 地板空 / 天花板多過濾 (滾動 15 根絕對極值)
         # -------------------------------------------------------------
-        highest_15 = None
-        lowest_15 = None
-        if closed is not None and len(closed) >= 15:
-            last_15 = closed.iloc[-15:]
-            highest_15 = float(last_15['high'].max())
-            lowest_15 = float(last_15['low'].min())
-        elif closed is not None and len(closed) > 0:
-            highest_15 = float(closed['high'].max())
-            lowest_15 = float(closed['low'].min())
 
         atr = float(bar_prev.get('atr', 0))
 
@@ -238,11 +229,7 @@ class PureTrendStrategyV2:
         # 2. 第 2 根現價 (Live Close) 依然穩在 KC 上軌外，且非大反轉長陰線 (回跌實體 < 0.5 ATR)
         bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr) and (curr_open - current_price < 0.5 * atr)
 
-        # 【天花板多過濾】開多位置離前高必須至少 2.0 ATR 空間，否則視為撞天花板
-        ceiling_blocked = False
-        if highest_15 is not None and atr > 0:
-            if highest_15 > current_price and (highest_15 - current_price) < 2.0 * atr:
-                ceiling_blocked = True
+        # 【天花板多過濾】已移除，不再阻擋創新高主升浪
 
         # 【趨勢過濾】做多必須 CK 向上
         if not ck_is_up:
@@ -252,7 +239,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
             bar1_long_valid = False
 
-        if bar1_long_valid and bar2_breaks_prev_high and not ceiling_blocked:
+        if bar1_long_valid and bar2_breaks_prev_high:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -268,11 +255,7 @@ class PureTrendStrategyV2:
         # 2. 第 2 根現價 (Live Close) 依然穩在 KC 下軌外，且非大反彈長陽線 (反彈實體 < 0.5 ATR)
         bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr) and (current_price - curr_open < 0.5 * atr)
 
-        # 【地板空過濾】開空位置離前低必須至少 2.0 ATR 空間，否則視為死在地板上
-        floor_blocked = False
-        if lowest_15 is not None and atr > 0:
-            if current_price > lowest_15 and (current_price - lowest_15) < 2.0 * atr:
-                floor_blocked = True
+        # 【地板空過濾】已移除，不再阻擋創新低主跌浪
 
         # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
         if not ck_is_down:
@@ -282,7 +265,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
             bar1_short_valid = False
 
-        if bar1_short_valid and bar2_breaks_prev_low and not floor_blocked:
+        if bar1_short_valid and bar2_breaks_prev_low:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
@@ -294,14 +277,12 @@ class PureTrendStrategyV2:
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
-                      (bar2_breaks_prev_high, "第二根現價尚未穩在上軌外或反轉過大"),
-                      (not ceiling_blocked, "距前15根高點不足2 ATR")]
+                      (bar2_breaks_prev_high, "第二根現價尚未穩在上軌外或反轉過大")]
         elif prev_close < kc_lower_prev and prev_close < prev_open:
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
-                      (bar2_breaks_prev_low, "第二根現價尚未穩在下軌外或反彈過大"),
-                      (not floor_blocked, "距前15根低點不足2 ATR")]
+                      (bar2_breaks_prev_low, "第二根現價尚未穩在下軌外或反彈過大")]
         else:
             checks = [(False, "前根未形成同向實體收在外軌外")]
         self.entry_rejection = next(reason for passed, reason in checks if not passed)
