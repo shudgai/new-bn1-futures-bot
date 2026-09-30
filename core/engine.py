@@ -1888,18 +1888,42 @@ class TradingEngine:
             return False
 
         # ------- STRICT ENTRY PREFLIGHT CHECK -------
-        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
         from core.services.strategies.unified_entry_strategy import confirmed
         frame = snapshot['frame']
         closed_bars = confirmed(frame)
         if len(closed_bars) >= 1:
             bar_curr = frame.iloc[-1].to_dict()
             bar_prev = closed_bars.iloc[-1].to_dict()
-            passed, reason = PureTrendStrategyV2().strict_entry_preflight_check(
-                side, bar_prev, bar_curr, live_price, bar_curr
-            )
+            
+            def verify_breakout_and_bar2_color(bar_prev, bar_curr, side, current_price):
+                if side == "LONG":
+                    if float(bar_prev['close']) <= float(bar_prev['kc_upper']):
+                        return False, f"門禁一未過：前根收盤 {bar_prev['close']} <= 上軌 {bar_prev['kc_upper']}，根本未破軌！"
+                elif side == "SHORT":
+                    if float(bar_prev['close']) >= float(bar_prev['kc_lower']):
+                        return False, f"門禁一未過：前根收盤 {bar_prev['close']} >= 下軌 {bar_prev['kc_lower']}，根本未破軌！"
+
+                c_open = float(bar_curr['open'])
+                c_high = float(bar_curr['high'])
+                c_low = float(bar_curr['low'])
+                bar_range = c_high - c_low
+                body = abs(current_price - c_open)
+
+                if side == "LONG":
+                    if current_price <= c_open:
+                        return False, f"門禁二未過：做多當根為紅陰線/平盤 (現價 {current_price} <= 開盤 {c_open})！"
+                    if bar_range > 0 and (body / bar_range) < 0.25:
+                        return False, "門禁二未過：做多當根為無動能十字星！"
+                elif side == "SHORT":
+                    if current_price >= c_open:
+                        return False, f"門禁二未過：做空當根為綠陽線/平盤 (現價 {current_price} >= 開盤 {c_open})，拒絕反向接盤！"
+                    if bar_range > 0 and (body / bar_range) < 0.25:
+                        return False, "門禁二未過：做空當根為無動能十字星！"
+                return True, "驗證通過"
+                
+            passed, reason = verify_breakout_and_bar2_color(bar_prev, bar_curr, side, live_price)
             if not passed:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} 門禁攔截: {reason}', signal.get('candidate_bar_id'))
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [REJECT_ENTRY] {reason}', signal.get('candidate_bar_id'))
                 return False
         # --------------------------------------------
 
