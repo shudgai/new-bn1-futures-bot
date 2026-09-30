@@ -1896,12 +1896,28 @@ class TradingEngine:
             bar_prev = closed_bars.iloc[-1].to_dict()
             
             def verify_breakout_and_bar2_color(bar_prev, bar_curr, side, current_price):
+                prev_close = float(bar_prev['close'])
+                prev_open = float(bar_prev['open'])
+                prev_atr = float(bar_prev.get('atr', 0.0))
+                prev_body = abs(prev_close - prev_open)
+                
+                # 門禁一：第 1 根必須實質起爆破軌 (穿透 >= 0.15 ATR, 實體 >= 0.5 ATR)
+                if prev_atr > 0:
+                    if prev_body < 0.5 * prev_atr:
+                        return False, f"門禁一未過：前根實體 {prev_body:.6f} < 0.5 ATR ({0.5*prev_atr:.6f})，無動能起爆！"
+
                 if side == "LONG":
-                    if float(bar_prev['close']) <= float(bar_prev['kc_upper']):
-                        return False, f"門禁一未過：前根收盤 {bar_prev['close']} <= 上軌 {bar_prev['kc_upper']}，根本未破軌！"
+                    kc_upper = float(bar_prev['kc_upper'])
+                    if prev_close <= kc_upper:
+                        return False, f"門禁一未過：前根收盤 {prev_close} <= 上軌 {kc_upper}，根本未破軌！"
+                    if prev_atr > 0 and (prev_close - kc_upper) < 0.15 * prev_atr:
+                        return False, f"門禁一未過：前根破上軌深度不足 0.15 ATR ({(prev_close-kc_upper):.6f})，假突破拒絕！"
                 elif side == "SHORT":
-                    if float(bar_prev['close']) >= float(bar_prev['kc_lower']):
-                        return False, f"門禁一未過：前根收盤 {bar_prev['close']} >= 下軌 {bar_prev['kc_lower']}，根本未破軌！"
+                    kc_lower = float(bar_prev['kc_lower'])
+                    if prev_close >= kc_lower:
+                        return False, f"門禁一未過：前根收盤 {prev_close} >= 下軌 {kc_lower}，根本未破軌！"
+                    if prev_atr > 0 and (kc_lower - prev_close) < 0.15 * prev_atr:
+                        return False, f"門禁一未過：前根破下軌深度不足 0.15 ATR ({(kc_lower-prev_close):.6f})，假突破拒絕！"
 
                 c_open = float(bar_curr['open'])
                 c_high = float(bar_curr['high'])
