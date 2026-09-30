@@ -33,86 +33,18 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if await enforce_hard_stop(engine.account, symbol, quote):
             return [], []
 
+        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
         from core.services.exits.doji_reversal_exit import enforce_doji_reversal
         if await enforce_doji_reversal(engine, symbol, quote, now_time * 1000):
             return [], []
-
-        # =========================================================
-        # 唯一三大鐵律物理鎖 (一票否決制)
-        # =========================================================
-        def verify_exit_three_rules_strict(position, quote, closed, frame):
-            position_side = position['side']
-            indicators = closed.iloc[-1].to_dict()
-            kc_middle = float(indicators['kc_middle'])
-            atr = float(indicators.get('atr', 0.0001))
-            
-            # -------------------------------------------------------------
-            # 鐵律 1：盤中即時貫穿中軌（Tick 級極速逃命）
-            # -------------------------------------------------------------
-            if position_side == "LONG" and quote <= kc_middle:
-                return f"鐵律1觸發：多單盤中跌穿 KC 中軌 ({quote} <= {kc_middle})，逃命平倉！"
-            
-            if position_side == "SHORT" and quote >= kc_middle:
-                return f"鐵律1觸發：空單盤中突破 KC 中軌 ({quote} >= {kc_middle})，逃命平倉！"
-
-            # -------------------------------------------------------------
-            # 鐵律 2：階梯式追蹤止盈 (Tiered Trailing Stop)
-            # -------------------------------------------------------------
-            entry = float(position['entry_price'])
-            qty = float(position['quantity'])
-            sign = 1 if position_side == "LONG" else -1
-            current_pnl_u = sign * (quote - entry) * qty
-            
-            max_pnl_u = max(float(position.get('peak_pnl_usd', 0.0)), current_pnl_u)
-            position['peak_pnl_usd'] = max_pnl_u # Update peak tracking
-            
-            # 使用當前的 1M ATR 計算動態波動 (避免短期雜訊)
-            max_pnl_atr = max_pnl_u / (atr * qty) if (atr * qty) > 0 else 0.0
-            
-            if max_pnl_u > 0:
-                drawdown_pct = (max_pnl_u - current_pnl_u) / max_pnl_u
-                
-                # 第二階段（強鎖利）：獲利達 2.5 ATR 或 10U
-                if (max_pnl_atr >= 2.5) or (max_pnl_u >= 10.0):
-                    if drawdown_pct >= 0.25:
-                        return f"鐵律2觸發(二階強鎖利)：大肉浮盈 (峰值 {max_pnl_u:.2f}U / {max_pnl_atr:.1f}ATR) 回吐達 {drawdown_pct*100:.1f}% >= 25%，鎖定波段利潤秒平！"
-                        
-                # 第一階段（弱鎖利/保本）：獲利達 1.5 ATR 或 5U
-                elif (max_pnl_atr >= 1.5) or (max_pnl_u >= 5.0):
-                    if drawdown_pct >= 0.40:
-                        return f"鐵律2觸發(一階弱鎖利)：初段浮盈 (峰值 {max_pnl_u:.2f}U / {max_pnl_atr:.1f}ATR) 回吐達 {drawdown_pct*100:.1f}% >= 40%，提早鎖利平倉！"
-                    # 保本底線：既然達標一階，絕不允許帳面轉虧
-                    if current_pnl_u <= min(0.5, max_pnl_u * 0.1): 
-                        return f"鐵律2觸發(一階保本防線)：初段浮盈即將歸零，強制保本平倉！"
-
-            # -------------------------------------------------------------
-            # 鐵律 3：1M 收盤實質突破真峰頂/谷底（波段結構確認死亡，嚴格等收盤）
-            # -------------------------------------------------------------
-            prev_close = float(indicators['close']) # indicators are from closed bars
-            
-            # 尋找最近的 Swing High/Low (滾動 15 根極值做為真峰頂/谷底)
-            # 或者使用已確認的 swing (如果指標有提供，這裡自己算最保險)
-            if len(closed) >= 15:
-                last_15 = closed.iloc[-15:]
-                swing_high = float(last_15['high'].max())
-                swing_low = float(last_15['low'].min())
-            else:
-                swing_high = float(closed['high'].max())
-                swing_low = float(closed['low'].min())
-
-            if position_side == "LONG" and prev_close < swing_low:
-                return f"鐵律3觸發：多單 1M 收盤價 ({prev_close}) 實質跌破真谷底 ({swing_low})，結構宣告死亡平多！"
-                
-            if position_side == "SHORT" and prev_close > swing_high:
-                return f"鐵律3觸發：空單 1M 收盤價 ({prev_close}) 實質突破真峰頂 ({swing_high})，結構宣告死亡平空！"
-
-            # 未觸發三大鐵律，拒絕平倉
-            return None
-
-        exit_reason = verify_exit_three_rules_strict(position, quote, closed, frame)
+        if await enforce_realtime_profit_exit(engine, symbol, quote, now_time * 1000):
+            return [], []
+        # Only structural swing breaks require a confirmed close.
+        from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, POLICY
+        exit_reason = DualTrackExitStrategy().evaluate_exit(position, frame, quote)
 
         if exit_reason:
-            position['closed_exit_state'] = dict(policy='THREE_STRICT_RULES', pending=True, reason=exit_reason)
+            position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=exit_reason)
         state = position.get('closed_exit_state')
         if state is not None and engine.account.position_meta.setdefault(symbol, {}).get('closed_exit_state') != state:
             engine.account.position_meta[symbol]['closed_exit_state'] = copy.deepcopy(state)

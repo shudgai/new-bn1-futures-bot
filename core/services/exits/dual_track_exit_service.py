@@ -6,7 +6,7 @@ from core.services.strategies.unified_entry_strategy import confirmed
 POLICY = 'closed_1m_confirmed_swing_v2'
 SL_INIT_MULT = 1.5
 DUAL_TRACK_STATE_KEYS = [
-    'doji_reversal_state', 'instant_exit_state', 'peak_pnl_usd', 'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
+    'doji_reversal_state', 'instant_exit_state', 'peak_price', 'peak_pnl_usd', 'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
     'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
     'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
@@ -46,7 +46,7 @@ class DualTrackExitStrategy(IExitStrategy):
             if not valid_pending:
                 position['closed_exit_state'] = dict(policy=POLICY,pending=False)
                 state = position['closed_exit_state']
-        valid_reasons = {'EXIT_DOJI_FIRST_ADVERSE_BODY', 'EXIT_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
+        valid_reasons = {'EXIT_PEAK_RETRACE_08ATR', 'EXIT_OUTER_MA3_REVERSAL', 'EXIT_DOJI_FIRST_ADVERSE_BODY', 'EXIT_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
                          'EXIT_INTRADAY_KC_MID_BREACH',
                          'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
                          'EXIT_SWING_HIGH_BREAK_CLOSED'}

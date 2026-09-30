@@ -1217,9 +1217,12 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """First adverse long body after doji, without REST or scan-lock waiting."""
+        """Tick exits before REST and the symbol scan lock."""
+        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
         from core.services.exits.doji_reversal_exit import enforce_doji_reversal
-        return await enforce_doji_reversal(self, symbol, price, quote_ms)
+        if await enforce_doji_reversal(self, symbol, price, quote_ms):
+            return True
+        return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Evaluate held exits on a received quote without waiting for the scan."""

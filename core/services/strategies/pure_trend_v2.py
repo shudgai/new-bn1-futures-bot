@@ -9,7 +9,7 @@ class PureTrendStrategyV2:
     妖幣純淨趨勢追蹤引擎：
     1. 開倉：前根已收線同向實體站外，下一根盤中突破前根高低點；共用趨勢、整理與距離限制。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
-    3. 盤中策略出口：嚴格穿越KC中軌，或曾達10U/3ATR後回吐超過25%；不等收線。
+    3. 盤中策略出口：嚴格穿越KC中軌，或正浮盈峰值回吐達25%／0.8ATR／軌外MA3反轉；不等收線。
     4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
     5. 未觸發平倉前，嚴格抱牢波段，一股都不賣！
     """
@@ -411,8 +411,15 @@ class PureTrendStrategyV2:
                 return None
             identity = [side, opened, entry, qty]
             state = position.get('instant_exit_state') or {}
-            if state.get('identity') != identity:
+            if not state:
+                peak = float(position.get('peak_pnl_usd') or 0.)
+                state = dict(identity=identity, peak=max(0., peak) if math.isfinite(peak) else 0.)
+            elif state.get('identity') != identity:
                 state = dict(identity=identity, peak=0.)
+            else:
+                legacy_peak = float(position.get('peak_pnl_usd') or 0.)
+                if math.isfinite(legacy_peak):
+                    state['peak'] = max(float(state.get('peak', 0.)), legacy_peak)
             if stamp < state.get('last_ms', 0):
                 return None
             # Removed exits cannot survive a restart as pending closes.
@@ -421,7 +428,8 @@ class PureTrendStrategyV2:
                        'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
                        'EMERGENCY_GIANT_REVERSE_CANDLE', 'EMERGENCY_BTC_CRASH'}
             if state.get('pending') not in {None, 'EXIT_KC_MID_BREACH',
-                                            'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT'}:
+                                            'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
+                                            'EXIT_PEAK_RETRACE_08ATR', 'EXIT_OUTER_MA3_REVERSAL'}:
                 state.pop('pending', None)
             if (position.get('closed_exit_state') or {}).get('reason') in retired:
                 position['closed_exit_state'] = {}
@@ -433,7 +441,7 @@ class PureTrendStrategyV2:
             sign = 1 if side == 'LONG' else -1
             pnl = sign*(price-entry)*qty
             state.update(last_ms=stamp, peak=max(float(state.get('peak', 0.)), pnl),
-                         version=3)
+                         version=4)
             scale = float(atr or 0.)
             peak_gain = float(state.get('peak_gain_atr', 0.))
             if math.isfinite(scale) and scale > 0:
@@ -449,10 +457,32 @@ class PureTrendStrategyV2:
             mid = float(bar_curr.get('kc_middle') or 0.)
             if math.isfinite(mid) and mid > 0 and sign*(price-mid) < 0:
                 reason = 'EXIT_KC_MID_BREACH'
-            threshold = state['peak']*.75
-            if reason is None and (reached(state['peak'], 10.) or reached(peak_gain, 3.)) and (
-                    pnl < threshold and not math.isclose(pnl, threshold, rel_tol=1e-12)):
+            # The peak is made from observed quotes, never a candle high/low.
+            state['peak_price'] = entry + sign * state['peak'] / qty
+            position['peak_price'] = state['peak_price']
+            if math.isfinite(scale) and scale > 0 and not state.get('trail_atr'):
+                state['trail_atr'] = scale
+            threshold = state['peak'] * .25
+            if reason is None and state['peak'] > 0 and reached(state['peak'] - pnl, threshold):
                 reason = 'EXIT_PEAK_DRAWDOWN_25PCT'
+            trail_atr = float(state.get('trail_atr') or 0.)
+            retrace = sign * (state['peak_price'] - price)
+            if reason is None and state['peak'] > 0 and trail_atr > 0 and reached(retrace, .8 * trail_atr):
+                reason = 'EXIT_PEAK_RETRACE_08ATR'
+            rail = float(bar_curr.get('kc_upper' if sign == 1 else 'kc_lower') or 0.)
+            ma3 = float(bar_curr.get('live_ma3') or 0.)
+            if math.isfinite(rail) and rail > 0 and pnl > 0 and sign * (price-rail) > 0:
+                state['outer_seen'] = True
+            if math.isfinite(ma3) and ma3 > 0:
+                distance = sign * (price-ma3)
+                if (reason is None and state.get('outer_seen') and pnl > 0
+                        and state.get('ma3_distance', -1.) >= 0 and distance < 0
+                        and sign * (price-state.get('last_price', price)) < 0):
+                    reason = 'EXIT_OUTER_MA3_REVERSAL'
+                state['ma3_distance'] = distance
+            else:
+                state.pop('ma3_distance', None)
+            state['last_price'] = price
             if reason:
                 from core.services.exits.dual_track_exit_service import POLICY
                 state['pending'] = reason
@@ -463,7 +493,7 @@ class PureTrendStrategyV2:
             return None
 
     def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):
-        """Compatibility adapter; only midpoint and large-profit drawdown remain."""
+        """Shared tick protection, independent of candle finality."""
         decision = self.evaluate_anti_whipsaw_profit_lock(position, current_tick_price, bar_curr, atr)
         return decision['type'] if decision else None
 

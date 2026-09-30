@@ -33,3 +33,9 @@
 - **Modification Description**: Enforce ignition body 50%, prior closed ATR 0.5, adverse wick 1.5x and LONG wick 40%; original episode anchor; precise rejection logs.
 - **Trigger Reason & Requirement**: Explicit user entry filter request with restart authorization.
 - **Verification & Test Status**: 132 targeted tests passed; compile and diff checks passed. Isolated accounts; no DB reseed required.
+
+### [2026-09-30] - Modification Phase: Restore tick profit protection
+- **Author**: shudgai999 / Codex
+- **Problem**: The runner read quantity instead of qty; the dedicated trade callback only checked doji exits. PEPE paper fill records show 16:47:05 entry and 16:59:49 midpoint close (UTC+8).
+- **Change**: Route profit protection and initial ATR stops through the cached-data tick service; positive-peak 25% drawdown, fixed 0.8 ATR retracement and observed outer-band live-MA3 reversal. Persist position-bound peaks and retries, reuse account close locking, and remove duplicate runner rules. Update the UI status.
+- **Validation**: 163 relevant tests passed, including 21 new cases and isolated paper/fake-testnet reload and concurrent reduce-only market closing. Twenty additional legacy failures reproduced on untouched HEAD; required legacy suites and AIDAN specification files are absent. Syntax and diff checks passed.

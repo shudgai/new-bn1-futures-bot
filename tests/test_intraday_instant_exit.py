@@ -24,13 +24,13 @@ def observe(p, price, stamp=61000, mid=0., atr=0.):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_ten_dollar_arming_and_strict_twenty_five_percent(side):
+def test_positive_peak_and_twenty_five_percent_boundary(side):
     p=pos(side); sign=1 if side=='LONG' else -1
     assert observe(p,100+sign*7.9) is None
     assert observe(p,100+sign*6.,62000) is None
     assert observe(p,100+sign*14.,63000) is None
     assert observe(p,100+sign*11.21,64000) is None
-    assert observe(p,100+sign*10.5,65000) is None
+    assert observe(p,100+sign*10.5,65000)=='EXIT_PEAK_DRAWDOWN_25PCT'
     assert observe(p,100+sign*10.49,66000)=='EXIT_PEAK_DRAWDOWN_25PCT'
     assert DualTrackExitStrategy().evaluate_exit(p,current_price=100)=='EXIT_PEAK_DRAWDOWN_25PCT'
 
@@ -38,7 +38,6 @@ def test_ten_dollar_arming_and_strict_twenty_five_percent(side):
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_mid_touch_without_closed_candle(side):
     p=pos(side)
-    assert observe(p,99. if side=='SHORT' else 101.,mid=100.) is None
     assert observe(p,100.,62000,mid=100.) is None
     assert observe(p,100.01 if side=='SHORT' else 99.99,63000,mid=100.)=='EXIT_KC_MID_BREACH'
 

@@ -1,0 +1,87 @@
+{
+  "timezone": "UTC+8",
+  "trades": [
+    {
+      "id": 1790758789789,
+      "time": "09/30 16:59:49",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "price": 0.00431007,
+      "qty": 80358.80988484,
+      "pnl": -0.3513,
+      "reason": "Closed1M 鐵律1觸發：多單盤中跌穿 KC 中軌 (0.0043105 <= 0.004310871942762732)，逃命平倉！"
+    },
+    {
+      "id": 1790758025110,
+      "time": "09/30 16:47:05",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "price": 0.00431013,
+      "qty": 80358.80988484,
+      "pnl": 0.0,
+      "reason": "Live1M SECOND_BAR_OUTSIDE_LONG"
+    },
+    {
+      "id": 1790757002823,
+      "time": "09/30 16:30:02",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "price": 0.00430147,
+      "qty": 81250.10707374,
+      "pnl": -1.8584,
+      "reason": "Closed1M 鐵律1觸發：多單盤中跌穿 KC 中軌 (0.0043019 <= 0.004305223434570178)，逃命平倉！"
+    },
+    {
+      "id": 1790756908565,
+      "time": "09/30 16:28:28",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "price": 0.00432003,
+      "qty": 81250.10707374,
+      "pnl": 0.0,
+      "reason": "Live1M SECOND_BAR_OUTSIDE_LONG"
+    },
+    {
+      "id": 1790756165417,
+      "time": "09/30 16:16:05",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_SHORT",
+      "price": 0.00428953,
+      "qty": 81809.41591204,
+      "pnl": -0.0777,
+      "reason": "Closed1M 鐵律1觸發：空單盤中突破 KC 中軌 (0.0042891 >= 0.004288909905039975)，逃命平倉！"
+    }
+  ],
+  "quantity_errors": [
+    {
+      "time": "17:04:39",
+      "timestamp": 1790759079.7603743,
+      "text": "⚠️ [龙虾/USDT] 即時出口行情無效: 'quantity'",
+      "level": "WARNING"
+    },
+    {
+      "time": "17:04:40",
+      "timestamp": 1790759080.7713408,
+      "text": "⚠️ [龙虾/USDT] 即時出口行情無效: 'quantity'",
+      "level": "WARNING"
+    },
+    {
+      "time": "17:04:40",
+      "timestamp": 1790759080.924414,
+      "text": "⚠️ 幣種掃描例外: 'quantity'",
+      "level": "WARNING"
+    },
+    {
+      "time": "17:04:41",
+      "timestamp": 1790759081.7759042,
+      "text": "⚠️ [龙虾/USDT] 即時出口行情無效: 'quantity'",
+      "level": "WARNING"
+    },
+    {
+      "time": "17:04:42",
+      "timestamp": 1790759082.671006,
+      "text": "⚠️ 幣種掃描例外: 'quantity'",
+      "level": "WARNING"
+    }
+  ]
+}
