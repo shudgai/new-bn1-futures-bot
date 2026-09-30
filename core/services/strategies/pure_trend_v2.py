@@ -201,19 +201,9 @@ class PureTrendStrategyV2:
         # 門禁 1：起爆新鮮度過濾（必須經過通道內「充分整理」）
         # -------------------------------------------------------------
         # Fresh breakouts retain consolidation; adjacent outside bodies may continue.
+        # -------------------------------------------------------------
+        # Fresh breakouts retain consolidation; adjacent outside bodies may continue.
         continuation_side = self.outside_continuation_side(closed)
-        if closed is not None and len(closed) >= 6:
-            prev_4_bars = closed.iloc[-5:-1]
-            inside_count = 0
-            for _, row in prev_4_bars.iterrows():
-                if row['kc_lower'] <= row['close'] <= row['kc_upper']:
-                    inside_count += 1
-            if inside_count < 3 and continuation_side is None:
-                self.entry_rejection = f"整理不足：前四根僅{inside_count}根收在通道內，至少需3根"
-                return None  # 整理不充分，視為過期趨勢或連續單邊
-        else:
-            self.entry_rejection = "已收線資料不足，無法驗證整理"
-            return None # 資料不足
 
         # -------------------------------------------------------------
         # 門禁 2：地板空 / 天花板多過濾 (滾動 15 根絕對極值)
