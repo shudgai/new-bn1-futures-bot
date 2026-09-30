@@ -19,6 +19,76 @@ class PureTrendStrategyV2:
     def record_exit(self, symbol: str, side: str, current_bar_index: int):
         self.cooldown_tracker[symbol] = dict(exit_bar_index=int(current_bar_index), side=side)
 
+    def strict_entry_preflight_check(
+        self,
+        side: str,
+        bar_prev: Dict[str, Any],       # 第 1 根（已收盤 1M K 棒）
+        bar_curr: Dict[str, Any],       # 當前盤中 1M K 棒
+        current_price: float,
+        indicators: Dict[str, Any]
+    ) -> tuple[bool, str]:
+        """
+        開倉前最終硬性審查（一票否決制）：
+        必須 100% 同時滿足所有規則，任一項不符立即拒絕！
+        """
+        kc_upper = float(indicators['kc_upper'])
+        kc_lower = float(indicators['kc_lower'])
+        ma3 = float(indicators['ma3'])
+        ma15 = float(indicators['ma15'])
+        c_open = float(bar_curr['open'])
+        c_high = float(bar_curr['high'])
+        c_low = float(bar_curr['low'])
+        body = abs(current_price - c_open)
+        bar_range = c_high - c_low
+
+        # ---------------------------------------------------------
+        # 門禁 1：第 1 根（上一根已收盤）必須實質以收盤價破軌 (嚴禁影線摸軌)
+        # ---------------------------------------------------------
+        prev_close = float(bar_prev['close'])
+        prev_kc_upper = float(bar_prev['kc_upper'])
+        prev_kc_lower = float(bar_prev['kc_lower'])
+
+        if side == 'LONG':
+            if prev_close <= prev_kc_upper:
+                return False, f"前根收盤 ({prev_close}) 未實質站上 KC 上軌 ({prev_kc_upper})，拒絕開多！"
+        elif side == 'SHORT':
+            if prev_close >= prev_kc_lower:
+                return False, f"前根收盤 ({prev_close}) 未實質跌破 KC 下軌 ({prev_kc_lower})，拒絕開空！"
+
+        # ---------------------------------------------------------
+        # 門禁 2：當前盤中必須為同向推進，嚴禁反向 K 或十字星接盤
+        # ---------------------------------------------------------
+        if side == 'LONG':
+            # 嚴禁紅陰線開多
+            if current_price <= c_open:
+                return False, f"當前為紅陰線 (現價 {current_price} <= 開盤 {c_open})，拒絕開多！"
+            # 嚴禁十字星 (實體小於全波幅 25%)
+            if bar_range > 0 and body < 0.25 * bar_range:
+                return False, "當前為無動能十字星，拒絕開多！"
+            # 嚴禁長上影線 (上影線大於實體 1.0 倍)
+            if (c_high - current_price) > body * 1.0:
+                return False, "當前帶顯著長上影線拋壓，拒絕開多！"
+
+        elif side == 'SHORT':
+            # 嚴禁綠陽線開空
+            if current_price >= c_open:
+                return False, f"當前為綠陽線 (現價 {current_price} >= 開盤 {c_open})，拒絕開空！"
+            # 嚴禁十字星
+            if bar_range > 0 and body < 0.25 * bar_range:
+                return False, "當前為無動能十字星，拒絕開空！"
+            # 嚴禁長下影線 (下影線大於實體 1.0 倍)
+            if (current_price - c_low) > body * 1.0:
+                return False, "當前帶顯著長下影線抵抗，拒絕開空！"
+
+        # ---------------------------------------------------------
+        # 門禁 3：均線張角防橫盤死魚 (MA3 與 MA15 差值必須張開)
+        # ---------------------------------------------------------
+        spread_pct = abs(ma3 - ma15) / current_price * 100
+        if spread_pct < 0.04:
+            return False, f"MA3 與 MA15 黏合 (張角僅 {spread_pct:.4f}% < 0.04%)，橫盤死魚拒絕開單！"
+
+        return True, "驗證通過"
+
     def is_valid_directional_entry_bar(self, bar_curr, side):
         """Strict live color, >=25% body, and adverse-side wick <= body."""
         try:

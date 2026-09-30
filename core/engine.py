@@ -1886,6 +1886,23 @@ class TradingEngine:
                 and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
+
+        # ------- STRICT ENTRY PREFLIGHT CHECK -------
+        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
+        from core.services.strategies.unified_entry_strategy import confirmed
+        frame = snapshot['frame']
+        closed_bars = confirmed(frame)
+        if len(closed_bars) >= 1:
+            bar_curr = frame.iloc[-1].to_dict()
+            bar_prev = closed_bars.iloc[-1].to_dict()
+            passed, reason = PureTrendStrategyV2().strict_entry_preflight_check(
+                side, bar_prev, bar_curr, live_price, bar_curr
+            )
+            if not passed:
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} 門禁攔截: {reason}', signal.get('candidate_bar_id'))
+                return False
+        # --------------------------------------------
+
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
