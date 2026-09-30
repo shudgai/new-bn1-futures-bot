@@ -26,3 +26,10 @@
 - **Modification Description**: Confirmed doji <=25% followed by live adverse body >=0.5 prior closed ATR triggers durable full close. Fast cached-frame path, no REST or scan lock.
 - **Trigger Reason & Requirement**: User explicitly approved thresholds and requested first-candle exit.
 - **Verification & Test Status**: 117 targeted tests passed; compile and diff checks passed; isolated mocked account, no DB reseed.
+
+### [2026-09-30 16:51:42 UTC+8] - Modification Phase: Advancing momentum exhaustion entry filter
+- **Author**: shudgai999 / Codex
+- **Target Files & Lines**: pure_trend_v2.advancing_body_rejection; engine fresh snapshot and submit revalidation; entry momentum tests
+- **Modification Description**: Enforce ignition body 50%, prior closed ATR 0.5, adverse wick 1.5x and LONG wick 40%; original episode anchor; precise rejection logs.
+- **Trigger Reason & Requirement**: Explicit user entry filter request with restart authorization.
+- **Verification & Test Status**: 132 targeted tests passed; compile and diff checks passed. Isolated accounts; no DB reseed required.

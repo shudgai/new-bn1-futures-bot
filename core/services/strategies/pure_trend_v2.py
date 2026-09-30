@@ -312,6 +312,48 @@ class PureTrendStrategyV2:
         self.entry_rejection = next(reason for passed, reason in checks if not passed)
         return None
 
+    @staticmethod
+    def advancing_body_rejection(closed, current, side):
+        """Compare the live body with the first outside candle of this episode."""
+        prefix = 'REJECT_ENTRY: 推進棒動能衰竭'
+        try:
+            if closed is None or closed.empty or side not in ('LONG','SHORT'):
+                return prefix + '(缺少起爆棒資料)'
+            sign = 1 if side == 'LONG' else -1
+            edge = 'kc_upper' if side == 'LONG' else 'kc_lower'
+            ignition = None
+            expected = float(current['timestamp']) - 60000
+            for _, bar in closed.iloc[::-1].iterrows():
+                stamp, close, rail = (float(bar[k]) for k in ('timestamp','close',edge))
+                if not all(math.isfinite(v) and v > 0 for v in (stamp,close,rail)) or stamp != expected:
+                    return prefix + '(起爆段資料無效或不相鄰)'
+                if sign*(close-rail) <= 0:
+                    break
+                ignition = bar
+                expected -= 60000
+            else:
+                return prefix + '(無法確認起爆棒起點)'
+            if ignition is None:
+                return prefix + '(缺少起爆棒)'
+            base = abs(float(ignition['close'])-float(ignition['open']))
+            opening,close,high,low = (float(current[k]) for k in ('open','close','high','low'))
+            atr = float(closed.iloc[-1]['atr'])
+            if not all(math.isfinite(v) and v > 0 for v in (opening,close,high,low,atr,base)) or not low <= min(opening,close) <= max(opening,close) <= high:
+                return prefix + '(實體或ATR資料無效)'
+            body = abs(close-opening)
+            below = lambda a,b: a < b and not math.isclose(a,b,rel_tol=1e-12)
+            above = lambda a,b: a > b and not math.isclose(a,b,rel_tol=1e-12)
+            if below(body,.5*base):
+                return prefix + '(實體萎縮：小於起爆棒50%)'
+            if below(body,.5*atr):
+                return prefix + '(弱實體：小於0.5 ATR)'
+            wick = high-max(opening,close) if side=='LONG' else min(opening,close)-low
+            if above(wick,1.5*body) or (side=='LONG' and above(wick,.4*(high-low))):
+                return prefix + '(長上影線)' if side=='LONG' else prefix + '(長下影線)'
+            return None
+        except (KeyError,TypeError,ValueError,OverflowError,IndexError):
+            return prefix + '(資料無效)'
+
     def evaluate_second_bar_outside_entry(
         self, symbol: str, bar_curr: Dict[str, Any], bar_prev: Dict[str, Any], closed: Any = None
     ) -> Optional[Dict[str, Any]]:
@@ -341,6 +383,10 @@ class PureTrendStrategyV2:
             if result:
                 action = result if isinstance(result, str) else result.get("action")
                 side = action.replace('ENTRY_', '')
+                rejection = self.advancing_body_rejection(closed, bar_curr, side)
+                if rejection:
+                    self.entry_rejection = rejection
+                    return None
                 signal_dict = dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=current_price,
                             reason='符合標準開倉範例')
                 if isinstance(result, dict) and 'initial_sl' in result:

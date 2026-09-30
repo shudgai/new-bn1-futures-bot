@@ -1706,11 +1706,15 @@ class TradingEngine:
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
         from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+        getattr(self, '_entry_gate_diagnostics', {}).pop((symbol, side, 'ENTRY_REVALIDATION'), None)
         frame = await self._entry_boundary_frame(symbol)
         if frame is None or frame.empty:
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
-        decision = evaluate_v2_frame(frame, price, kwargs.get('code'), account=self.account, symbol=symbol)
+        diagnostics = {}
+        decision = evaluate_v2_frame(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
+        if not decision:
+            log_entry_gate(self, symbol, side, 'ENTRY_REVALIDATION', diagnostics['reason'], candidate_bar_id)
         if not decision or decision['side'] != side:
             return None
         if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
@@ -1822,7 +1826,10 @@ class TradingEngine:
             return False
         snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'), code=signal.get('signal_code'))
         if snapshot is None:
-            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', signal.get('candidate_bar_id'))
+            failure = getattr(self, '_entry_gate_diagnostics', {}).get((symbol, side, 'ENTRY_REVALIDATION'))
+            reason = (failure[1] if failure and failure[0] == signal.get('candidate_bar_id')
+                      else f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)')
+            log_entry_gate(self, symbol, side, 'EXECUTION', reason, signal.get('candidate_bar_id'))
             return False
         decision = snapshot['decision']
         if decision['type'] != signal['signal_code']:
@@ -1896,8 +1903,9 @@ class TradingEngine:
             
             from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
             # Revalidate the live entry contract, without expected-profit or reward/risk vetoes.
-            if evaluate_v2_frame(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol) is None:
-                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_V2_QUOTE_CHANGED', bar)
+            diagnostics = {}
+            if evaluate_v2_frame(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
+                log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
                 return False
 
             context['entry_snapshot']['quote_price'] = price

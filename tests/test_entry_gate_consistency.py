@@ -19,8 +19,8 @@ def frame(side='LONG'):
                  kc_upper=101., kc_middle=100., kc_lower=99., is_closed=True)
             for i in range(21)]
     rows[-2].update(open=100.8, close=101.1, high=101.15, low=100.7, kc_middle=100.1)
-    # Opposite live color, tiny body, shallow first breakout: formerly vetoed at execution.
-    rows[-1].update(open=101.25, close=101.2, high=101.5, low=100.9, is_closed=False)
+    # Healthy advancing body; shallow first breakout remains permitted.
+    rows[-1].update(open=100.65, close=101.2, high=101.5, low=100.6, is_closed=False)
     f = pd.DataFrame(rows)
     if side == 'SHORT':
         original = f.copy()
