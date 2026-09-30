@@ -226,9 +226,16 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 多單做多開倉標準範例：
         # -------------------------------------------------------------
-        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外
-        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
-        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr)
+        # 新增 Doji 過濾 (實體小於總長度 20% 或是小於 0.5 ATR 視為十字星/變盤線)
+        prev_range = float(bar_prev['high']) - float(bar_prev['low'])
+        prev_body = abs(prev_close - prev_open)
+        is_prev_doji = (prev_body < 0.20 * prev_range) or (prev_body < 0.5 * atr) if prev_range > 0 else True
+        is_curr_doji = (body_curr < 0.20 * curr_range) or (body_curr < 0.5 * atr) if curr_range > 0 else True
+        
+        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外，且必須是實體陽線，且不能是十字星
+        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open) and not is_prev_doji
+        # 確保當下也是實體陽線 (current_price > curr_open) 並過濾十字星
+        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr) and (current_price > curr_open) and not is_curr_doji
         
         # 3. 動能檢驗：實體需達標且當前棒不能是極長上影十字星
         upper_wick_curr = float(bar_curr['high']) - max(curr_open, current_price)
@@ -254,7 +261,8 @@ class PureTrendStrategyV2:
             (prev_close > kc_upper_prev) and
             is_ma_bullish and
             (body_curr >= 0.3 * atr) and
-            (current_price > curr_open)
+            (current_price > curr_open) and
+            not is_curr_doji
         )
         # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
         massive_breakout_long = (
@@ -275,9 +283,10 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 空單做空開倉標準範例：
         # -------------------------------------------------------------
-        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外
-        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
-        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr)
+        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外，且必須是實體陰線，且不能是十字星
+        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open) and not is_prev_doji
+        # 確保當下也是實體陰線 (current_price < curr_open) 並過濾十字星
+        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr) and (current_price < curr_open) and not is_curr_doji
         
         # 3. 動能檢驗：實體需達標且當前棒不能是極長下影十字星
         lower_wick_curr = min(curr_open, current_price) - float(bar_curr['low'])
@@ -300,7 +309,8 @@ class PureTrendStrategyV2:
             (prev_close < kc_lower_prev) and
             is_ma_bearish and
             (body_curr >= 0.3 * atr) and
-            (current_price < curr_open)
+            (current_price < curr_open) and
+            not is_curr_doji
         )
         # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
         massive_breakout_short = (

@@ -138,6 +138,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             c_ma5 = float(snapshot.get('ma5', 0.)) if isinstance(snapshot, dict) else 0.
             c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
             c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
+            c_middle = float(snapshot.get('kc_middle', 0.)) if isinstance(snapshot, dict) else 0.
             prev_close = float(snapshot.get('prev_close', 0.)) if isinstance(snapshot, dict) else 0.
             prev_ma5 = float(snapshot.get('prev_ma5', 0.)) if isinstance(snapshot, dict) else 0.
             
@@ -148,14 +149,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     reason, trigger = PEAK_REASON, 'PEAK_RETRACE_40PCT_AFTER_2.5ATR'
                     
             # 尾部信號 A 與 B: 實質跌回軌內 或 短線動能竭盡 (收盤判定)
-            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma5 > 0:
+            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma5 > 0 and c_middle > 0:
                 if is_long:
-                    if c_close < c_upper:
+                    if c_close < c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
+                    elif c_close < c_upper:
                         reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_UPPER'
                     elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0:
                         reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_TWICE'
                 else:
-                    if c_close > c_lower:
+                    if c_close > c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
+                    elif c_close > c_lower:
                         reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_LOWER'
                     elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0:
                         reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_TWICE'
