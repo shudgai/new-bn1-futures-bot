@@ -153,14 +153,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             continue
             
         from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
-        decision = evaluate_v2_frame(frame, quote, account=engine.account, symbol=symbol)
+        diagnostics = {}
+        decision = evaluate_v2_frame(frame, quote, account=engine.account, symbol=symbol, diagnostics=diagnostics)
 
         if decision and decision['side'] == side:
             decision['rule'] = decision['type']
             log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],decision['confirmation_bar_id'], snapshot=entry_frame_evidence(frame))
             candidates.append(decision)
         else:
-            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL','WAIT_PURE_TREND_V2',float(frame.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',('訊號方向為' + decision['side'] if decision else diagnostics['reason']),float(frame.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
 
     if candidates:
         decision = min(candidates,key=lambda d:d['rule'])

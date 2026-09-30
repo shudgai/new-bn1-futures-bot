@@ -1839,62 +1839,7 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
 
-        # ------- STRICT ENTRY PREFLIGHT CHECK -------
-        from core.services.strategies.unified_entry_strategy import confirmed
-        frame = snapshot['frame']
-        closed_bars = confirmed(frame)
-        if len(closed_bars) >= 1:
-            bar_curr = frame.iloc[-1].to_dict()
-            bar_prev = closed_bars.iloc[-1].to_dict()
-            
-            def verify_breakout_and_bar2_color(bar_prev, bar_curr, side, current_price):
-                prev_close = float(bar_prev['close'])
-                prev_open = float(bar_prev['open'])
-                prev_atr = float(bar_prev.get('atr', 0.0))
-                prev_body = abs(prev_close - prev_open)
-                
-                # 門禁一：第 1 根必須實質起爆破軌 (穿透 >= 0.15 ATR)
-                # 實體起爆門檻已拔除，全交由止盈止損防線控制
-                if prev_atr > 0:
-                    pass
-
-                if side == "LONG":
-                    kc_upper = float(bar_prev['kc_upper'])
-                    if prev_close <= kc_upper:
-                        return False, f"門禁一未過：前根收盤 {prev_close} <= 上軌 {kc_upper}，根本未破軌！"
-                    if prev_atr > 0 and (prev_close - kc_upper) < 0.15 * prev_atr:
-                        return False, f"門禁一未過：前根破上軌深度不足 0.15 ATR ({(prev_close-kc_upper):.6f})，假突破拒絕！"
-                elif side == "SHORT":
-                    kc_lower = float(bar_prev['kc_lower'])
-                    if prev_close >= kc_lower:
-                        return False, f"門禁一未過：前根收盤 {prev_close} >= 下軌 {kc_lower}，根本未破軌！"
-                    if prev_atr > 0 and (kc_lower - prev_close) < 0.15 * prev_atr:
-                        return False, f"門禁一未過：前根破下軌深度不足 0.15 ATR ({(kc_lower-prev_close):.6f})，假突破拒絕！"
-
-                c_open = float(bar_curr['open'])
-                c_high = float(bar_curr['high'])
-                c_low = float(bar_curr['low'])
-                bar_range = c_high - c_low
-                body = abs(current_price - c_open)
-
-                if side == "LONG":
-                    if current_price <= c_open:
-                        return False, f"門禁二未過：做多當根為紅陰線/平盤 (現價 {current_price} <= 開盤 {c_open})！"
-                    if bar_range > 0 and (body / bar_range) < 0.25:
-                        return False, "門禁二未過：做多當根為無動能十字星！"
-                elif side == "SHORT":
-                    if current_price >= c_open:
-                        return False, f"門禁二未過：做空當根為綠陽線/平盤 (現價 {current_price} >= 開盤 {c_open})，拒絕反向接盤！"
-                    if bar_range > 0 and (body / bar_range) < 0.25:
-                        return False, "門禁二未過：做空當根為無動能十字星！"
-                return True, "驗證通過"
-                
-            passed, reason = verify_breakout_and_bar2_color(bar_prev, bar_curr, side, live_price)
-            if not passed:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [REJECT_ENTRY] {reason}', signal.get('candidate_bar_id'))
-                return False
-        # --------------------------------------------
-
+        # The fresh shared V2 decision above owns all candle entry conditions.
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())

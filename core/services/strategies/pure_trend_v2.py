@@ -7,7 +7,7 @@ logger = logging.getLogger("PureTrendV2_Meme")
 class PureTrendStrategyV2:
     """
     妖幣純淨趨勢追蹤引擎：
-    1. 開倉：前根已收線同向實體站外，下一根盤中站外且 MA3／MA15 同向；當根同向實體至少全長25%，末端影線不超過實體。
+    1. 開倉：前根已收線同向實體站外，下一根盤中突破前根高低點；共用趨勢、整理與距離限制。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
     3. 盤中策略出口：嚴格穿越KC中軌，或曾達10U/3ATR後回吐超過25%；不等收線。
     4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
@@ -15,6 +15,7 @@ class PureTrendStrategyV2:
     """
     def __init__(self):
         self.cooldown_tracker = {}
+        self.entry_rejection = "WAIT_PURE_TREND_V2"
 
     def record_exit(self, symbol: str, side: str, current_bar_index: int):
         self.cooldown_tracker[symbol] = dict(exit_bar_index=int(current_bar_index), side=side)
@@ -122,6 +123,7 @@ class PureTrendStrategyV2:
         100% 依據使用者給定範例開倉：
         必須【全部條件同時為 True】，任一條件不符直接回傳 None（嚴禁開倉）！
         """
+        self.entry_rejection = "WAIT_PURE_TREND_V2"
         kc_upper_prev = float(bar_prev['kc_upper'])
         kc_lower_prev = float(bar_prev['kc_lower'])
         prev_close = float(bar_prev['close'])
@@ -139,11 +141,13 @@ class PureTrendStrategyV2:
         # 均線張角與通道寬度過濾（防死魚震盪）
         spread_pct = abs(ma3 - ma15) / current_price * 100.0
         if spread_pct < 0.08:
+            self.entry_rejection = "均線間距不足0.08%"
             return None  # 均線走平黏合，直接一票否決！
 
         kc_middle_prev = float(bar_prev.get('kc_middle', current_price))
         channel_width_pct = (kc_upper_prev - kc_lower_prev) / kc_middle_prev * 100.0
         if channel_width_pct < 0.20:
+            self.entry_rejection = "通道寬度不足0.20%"
             return None  # 通道極度壓縮，波動率過低，拒絕開倉
 
         # -------------------------------------------------------------
@@ -180,8 +184,10 @@ class PureTrendStrategyV2:
                 if row['kc_lower'] <= row['close'] <= row['kc_upper']:
                     inside_count += 1
             if inside_count < 3:
+                self.entry_rejection = f"整理不足：前四根僅{inside_count}根收在通道內，至少需3根"
                 return None  # 整理不充分，視為過期趨勢或連續單邊
         else:
+            self.entry_rejection = "已收線資料不足，無法驗證整理"
             return None # 資料不足
 
         # -------------------------------------------------------------
@@ -262,6 +268,22 @@ class PureTrendStrategyV2:
                 res["initial_sl"] = prev_open if prev_open > prev_close else prev_close
             return res
 
+        # Report the first failed condition for the actual outside direction.
+        if prev_close > kc_upper_prev and prev_close > prev_open:
+            checks = [(ck_is_up, "CK方向未向上"),
+                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
+                      (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
+                      (bar2_breaks_prev_high, "第二根尚未突破前根最高價"),
+                      (not ceiling_blocked, "距前15根高點不足2 ATR")]
+        elif prev_close < kc_lower_prev and prev_close < prev_open:
+            checks = [(ck_is_down, "CK方向未向下"),
+                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
+                      (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
+                      (bar2_breaks_prev_low, "第二根尚未跌破前根最低價"),
+                      (not floor_blocked, "距前15根低點不足2 ATR")]
+        else:
+            checks = [(False, "前根未形成同向實體收在外軌外")]
+        self.entry_rejection = next(reason for passed, reason in checks if not passed)
         return None
 
     def evaluate_second_bar_outside_entry(
@@ -457,8 +479,11 @@ def successful_exit_ticket(account, symbol):
     return dict(exit_bar_index=int(stamp // 60000), side=latest['action'][6:])
 
 
-def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
+def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', diagnostics=None):
     """Recompute V2 at every boundary; return a complete execution contract."""
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics["reason"] = "入口資料、棒次或訊號不符"
     from core.services.strategies.unified_entry_strategy import confirmed
     closed = confirmed(frame)
     if closed is None:
@@ -487,6 +512,8 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
     if ticket:
         strategy.record_exit(symbol, ticket['side'], ticket['exit_bar_index'])
         if bar_index - ticket['exit_bar_index'] < 5:
+            if diagnostics is not None:
+                diagnostics['reason'] = 'WAIT_POST_EXIT_5_BAR_COOLDOWN'
             return None
     if code is not None and code not in V2_ENTRY_CODES:
         return None
@@ -503,6 +530,8 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
         return None
     decision = strategy.evaluate_second_bar_outside_entry(symbol, row, previous, closed)
     if not decision or (code is not None and decision['type'] != code):
+        if diagnostics is not None:
+            diagnostics["reason"] = strategy.entry_rejection
         return None
     if not ticket:
         # The prior closed candle must be the first outside close of this episode.
@@ -517,12 +546,16 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
                 return None
             if (before_close > before_edge if decision['side'] == 'LONG'
                     else before_close < before_edge):
+                if diagnostics is not None:
+                    diagnostics['reason'] = '已超過初始破軌第二根'
                 return None
         except (IndexError, KeyError, TypeError, ValueError, OverflowError):
             return None
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
         return None
+    if diagnostics is not None:
+        diagnostics["reason"] = "符合標準開倉範例"
     return dict(decision, type=code or decision['type'], price=quote, entry_atr=atr,
                 confirmation_bar_id=stamp, breakout_bar_id=float(previous['timestamp']),
                 close_price=float(previous['close']), intrabar=True,

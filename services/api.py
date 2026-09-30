@@ -326,12 +326,6 @@ def map_block_reason(reason, close=None, last=None):
     if "WAIT_POST_EXIT_5_BAR" in reason:
         return "冷卻中 (WAIT_POST_EXIT_5_BAR)"
     
-    if reason == "WAIT_PURE_TREND_V2" and close is not None and last is not None:
-        ma15 = float(last.get('ma15', close))
-        atr = float(last.get('atr', 0))
-        dist_from_ma15_atr = abs(close - ma15) / atr if atr > 0 else 0
-        if dist_from_ma15_atr > 1.2:
-            return "遠離均線拒絕追高 (> 1.2 ATR)"
     if reason == "BLOCKED_OPPOSITE_CLOSED_BODY":
         return "上一根已收線 K 棒方向不符；即時破軌尚未收線確認"
     if reason == "FILLED":

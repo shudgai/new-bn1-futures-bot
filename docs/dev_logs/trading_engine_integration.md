@@ -5,3 +5,10 @@
 - **Trigger Reason & Requirement**: User authorized corrections to four reproduced review findings. Entry/exit formulas and risk parameters are unchanged. Concurrent strategy-interface edits were reverted by the other editor; integration follows the current explicit-side interface. Concurrent diagnostic additions and untracked scripts are preserved.
 - **Verification & Test Status**: Isolated copies omit `.env` and account data; fake exchanges perform no network orders. Focused suite: 24 passed (before corrections: 12 failed, 12 passed). Required trading suites plus testnet/account lifecycle: 223 passed, 80 failed, 2 skipped. All 75 required-suite failures match the original review; the additional five account failures also reproduce on the unchanged pre-fix copy. Four existing FastAPI deprecation warnings remain in the focused suite. No service restart, deployment, commit or push performed.
 
+
+### [2026-09-30 15:00:59 UTC+8] - Modification Phase: Entry gate consistency
+- **Author**: shudgai999 / Codex
+- **Target Files & Lines**: core/engine.py structured entry; pure_trend_v2.py evaluation diagnostics; symbol_runner.py; services/api.py; tests/test_entry_gate_consistency.py
+- **Modification Description**: Remove duplicate obsolete preflight; expose actual shared evaluation rejection, remove guessed MA15 diagnosis.
+- **Trigger Reason & Requirement**: User requested correction after missed-entry audit. Preserve current strategy filters and exits.
+- **Verification & Test Status**: 59 targeted tests passed; compile and diff checks passed. Legacy boundary fixture also fails unmodified HEAD; no database reseed for isolated in-memory tests.
