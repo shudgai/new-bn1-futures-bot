@@ -260,9 +260,13 @@ class PureTrendStrategyV2:
             # The pivot and its right-hand confirmation precede the break bar.
             key = 'low' if position['side'] == 'LONG' else 'high'
             values = rows[key].tolist()
-            for i in range(len(values)-3, 0, -1):
+            # 至少要 5 根 K 棒來形成一個顯著的 Swing (左右各 2 根不低於/不高於它)
+            for i in range(len(values)-4, 1, -1):
                 pivot = values[i]
-                found = (pivot < values[i-1] and pivot < values[i+1]) if key == 'low' else (pivot > values[i-1] and pivot > values[i+1])
+                if key == 'low':
+                    found = (pivot < values[i-1] and pivot < values[i-2] and pivot < values[i+1] and pivot < values[i+2])
+                else:
+                    found = (pivot > values[i-1] and pivot > values[i-2] and pivot > values[i+1] and pivot > values[i+2])
                 if found:
                     broken = current.close < pivot if key == 'low' else current.close > pivot
                     return ('EXIT_SWING_LOW_BREAK_CLOSED' if key == 'low' else 'EXIT_SWING_HIGH_BREAK_CLOSED') if broken else None
