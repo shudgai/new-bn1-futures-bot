@@ -280,17 +280,11 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 空單做空開倉標準範例：
         # -------------------------------------------------------------
-        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外，且必須是實體陰線，且不能是十字星
-        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open) and not is_prev_doji
-        # 確保當下也是實體陰線 (current_price < curr_open) 並過濾十字星
-        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr) and (current_price < curr_open) and not is_curr_doji
+        # 放寬雙棒推進：第 1 根實體跌破 KC 下軌，第 2 根維持收陰且破軌
+        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
+        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (current_price < curr_open)
         
-        # 3. 動能檢驗：實體需達標且當前棒不能是極長下影十字星
-        lower_wick_curr = min(curr_open, current_price) - float(bar_curr['low'])
-        short_momentum_valid = (body_curr >= min_body_threshold)
-        short_wick_valid = (body_curr == 0) or (lower_wick_curr <= body_curr * 1.5)
-
-        two_bar_short = bar1_short_valid and bar2_breaks_prev_low and short_momentum_valid and short_wick_valid
+        two_bar_short = bar1_short_valid and bar2_breaks_prev_low
         
         # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
         short_trend_valid = ck_is_down
@@ -299,15 +293,11 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
-        # 空單延續條件：價格持續在軌外 + 均線空頭排列
-        is_ma_bearish = (ma3 < ma15)
+        # 優化強勢延續開倉：價格持續在下軌外與 MA5/MA3 下方，無須嚴格實體門檻
         continuation_short = (
             (current_price < kc_lower_curr) and
             (prev_close < kc_lower_prev) and
-            is_ma_bearish and
-            (body_curr >= 0.3 * atr) and
-            (current_price < curr_open) and
-            not is_curr_doji
+            (current_price < ma3)
         )
         # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
         massive_breakout_short = (
