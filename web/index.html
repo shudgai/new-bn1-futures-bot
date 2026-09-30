@@ -568,7 +568,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·峰頂即時鎖利（0.4 ATR／淨利回吐20%）</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA3破位+中軌底線)</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>

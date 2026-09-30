@@ -220,14 +220,22 @@ class PureTrendStrategyV2:
 
         atr = float(bar_prev.get('atr', 0))
 
+        body_curr = abs(current_price - curr_open)
+        min_body_threshold = 0.5 * atr
+
         # -------------------------------------------------------------
         # 多單做多開倉標準範例：
         # -------------------------------------------------------------
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
         
-        # 2. 第 2 根現價 (Live Close) 依然穩在 KC 上軌外，且非大反轉長陰線 (回跌實體 < 0.5 ATR)
-        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr) and (curr_open - current_price < 0.5 * atr)
+        # 2. 第 2 根現價 (Live Close) 與開盤價依然穩在 KC 上軌外
+        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr)
+        
+        # 3. 動能檢驗：實體需達標且當前棒不能是極長上影十字星
+        upper_wick_curr = float(bar_curr['high']) - max(curr_open, current_price)
+        long_momentum_valid = (body_curr >= min_body_threshold)
+        long_wick_valid = (body_curr == 0) or (upper_wick_curr <= body_curr * 1.5)
 
         # 【天花板多過濾】已移除，不再阻擋創新高主升浪
 
@@ -239,7 +247,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
             bar1_long_valid = False
 
-        if bar1_long_valid and bar2_breaks_prev_high:
+        if bar1_long_valid and bar2_breaks_prev_high and long_momentum_valid and long_wick_valid:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -252,8 +260,13 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
         
-        # 2. 第 2 根現價 (Live Close) 依然穩在 KC 下軌外，且非大反彈長陽線 (反彈實體 < 0.5 ATR)
-        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr) and (current_price - curr_open < 0.5 * atr)
+        # 2. 第 2 根現價 (Live Close) 與開盤價依然穩在 KC 下軌外
+        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr)
+        
+        # 3. 動能檢驗：實體需達標且當前棒不能是極長下影十字星
+        lower_wick_curr = min(curr_open, current_price) - float(bar_curr['low'])
+        short_momentum_valid = (body_curr >= min_body_threshold)
+        short_wick_valid = (body_curr == 0) or (lower_wick_curr <= body_curr * 1.5)
 
         # 【地板空過濾】已移除，不再阻擋創新低主跌浪
 
@@ -265,7 +278,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
             bar1_short_valid = False
 
-        if bar1_short_valid and bar2_breaks_prev_low:
+        if bar1_short_valid and bar2_breaks_prev_low and short_momentum_valid and short_wick_valid:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
@@ -277,12 +290,16 @@ class PureTrendStrategyV2:
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
-                      (bar2_breaks_prev_high, "第二根現價尚未穩在上軌外或反轉過大")]
+                      (bar2_breaks_prev_high, "第二根現價與開盤尚未穩在上軌外"),
+                      (long_momentum_valid, "推進棒實體不足 0.5 ATR"),
+                      (long_wick_valid, "長上影線拋壓過大")]
         elif prev_close < kc_lower_prev and prev_close < prev_open:
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
-                      (bar2_breaks_prev_low, "第二根現價尚未穩在下軌外或反彈過大")]
+                      (bar2_breaks_prev_low, "第二根現價與開盤尚未穩在下軌外"),
+                      (short_momentum_valid, "推進棒實體不足 0.5 ATR"),
+                      (short_wick_valid, "長下影線買盤抵抗過大")]
         else:
             checks = [(False, "前根未形成同向實體收在外軌外")]
         self.entry_rejection = next(reason for passed, reason in checks if not passed)
