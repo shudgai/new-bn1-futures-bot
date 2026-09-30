@@ -137,30 +137,47 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         if not reason and isinstance(snapshot, dict):
             c_middle = float(snapshot.get('kc_middle', 0.))
             c_ma15 = float(snapshot.get('ma15', 0.))
+            c_upper = float(snapshot.get('kc_upper', 0.))
+            c_lower = float(snapshot.get('kc_lower', 0.))
             live_open = float(snapshot.get('live_open', price))
             live_high = float(snapshot.get('live_high', price))
             live_low = float(snapshot.get('live_low', price))
+            prev_close = float(snapshot.get('close', 0.))  # Note: snapshot['close'] is prev bar close
+            prev_open = float(snapshot.get('open', 0.))
+            prev_high = float(snapshot.get('high', 0.))
+            prev_low = float(snapshot.get('low', 0.))
             peak_gain = sign*(state['peak_price'] - entry)
             
             if c_middle > 0 and c_ma15 > 0 and scale > 0:
+                prev_range = prev_high - prev_low
+                is_doji = (abs(prev_close - prev_open) / prev_range < 0.25) if prev_range > 0 else False
+                
                 if sign == 1:
                     cond_a = (live_open - price >= 1.0 * scale) or (live_high - price >= 1.0 * scale)
                     cond_b = (price <= c_middle) or (price <= c_ma15)
                     cond_c = (peak_gain >= 1.5 * scale) and (gain <= peak_gain * 0.5)
+                    cond_d = is_doji and (prev_high >= c_upper) and (price < live_open) and (price < prev_low)
+                    
                     if cond_a:
                         reason, trigger = PEAK_REASON, 'FLASH_CRASH_1ATR'
                     elif cond_b:
                         reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                    elif cond_d:
+                        reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_DOWN'
                     elif cond_c:
                         reason, trigger = PEAK_REASON, 'FLASH_PROFIT_RETRACE_50'
                 else:
                     cond_a = (price - live_open >= 1.0 * scale) or (price - live_low >= 1.0 * scale)
                     cond_b = (price >= c_middle) or (price >= c_ma15)
                     cond_c = (peak_gain >= 1.5 * scale) and (gain <= peak_gain * 0.5)
+                    cond_d = is_doji and (prev_low <= c_lower) and (price > live_open) and (price > prev_high)
+                    
                     if cond_a:
                         reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1ATR'
                     elif cond_b:
                         reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                    elif cond_d:
+                        reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_UP'
                     elif cond_c:
                         reason, trigger = PEAK_REASON, 'FLASH_PROFIT_RETRACE_50'
 
