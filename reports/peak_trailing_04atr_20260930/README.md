@@ -21,3 +21,8 @@ pure_trend_v2、DualTrackExitStrategy與帳戶更新共用同一判定；收線�
 11份相關測試219項通過，包含23項新政策回歸、紙上／FakeTestnetExchange磁碟重載與並發市價平倉去重。新規格取代的收線、十字、MA3與舊小峰值出口測試已改驗「沒有出口權限」，未放寬入口測試。測試使用隔離帳戶，未發送交易所測試訂單。詳見tests.txt。
 
 Python語法與git diff --check通過。AIDAN指定規範與三份舊Channel Swing測試檔仍缺失；不宣稱全庫通過。先前版本發現的其他舊帳戶測試問題未藉本輪修改入口解決。即時觸發不保證恰好成交在峰頂或保證毫秒成交，成交仍受行情、排程及交易所回應影响。
+
+## 部署驗證
+程式提交0bcdf47已推送bugfix/peak-trailing-04atr。8006於2026-09-30 09:33:32 UTC（17:33:32 UTC+8）重啟，MainPID=270243，active/running。09:33:57核對/api/status HTTP200、is_running=true、paper_trading=true。啟動日誌已確認：PEAK_EXIT_POLICY_READY arm=1.5ATR_OR_NET5PCT retrace=GT0.4ATR_OR_NET20PCT mode=FULL_CLOSE tick=aggTrade+ticker。
+
+查核當下無持倉，未宣稱觀察到部署後自然行情平倉；實際觸發日誌格式及執行以隔離回歸驗證。部署查核未見Traceback／即時串流錯誤。詳見deployment.json。

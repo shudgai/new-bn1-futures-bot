@@ -1,0 +1,17 @@
+{
+  "commit": "0bcdf4727e18e8f13bd1827555a3f572c9f4883d",
+  "verified_at": "2026-09-30T09:33:57.464334+00:00",
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "policy_logs": [
+    {
+      "time": "17:33:34",
+      "timestamp": 1790760814.4757915,
+      "text": "PEAK_EXIT_POLICY_READY arm=1.5ATR_OR_NET5PCT retrace=GT0.4ATR_OR_NET20PCT mode=FULL_CLOSE tick=aggTrade+ticker",
+      "level": "INFO"
+    }
+  ],
+  "service": "MainPID=270243\nExecMainStartTimestamp=Wed 2026-09-30 09:33:32 UTC\nActiveState=active\nSubState=running\n",
+  "positions": []
+}
