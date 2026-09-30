@@ -707,7 +707,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
             
         # 計算 MA
-        df['MA3'] = df['close'].rolling(window=3).mean()
+        df['MA5'] = df['close'].rolling(window=5).mean()
         df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         indicators = engine.strategy.compute_indicators(df)
@@ -775,7 +775,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "high": row['high'],
                 "low": row['low'],
                 "close": row['close'],
-                "ma3": None if pd.isna(row['MA3']) else row['MA3'],
+                "ma5": None if pd.isna(row['MA5']) else row['MA5'],
                 "ma15": None if pd.isna(row['MA15']) else row['MA15'],
                 "ma99": None if pd.isna(row['MA99']) else row['MA99'],
                 "kc_upper": None if pd.isna(indicators.loc[index, 'kc_upper']) else indicators.loc[index, 'kc_upper'],

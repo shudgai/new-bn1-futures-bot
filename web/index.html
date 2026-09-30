@@ -568,7 +568,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA3破位+中軌底線)</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA5破位+中軌底線)</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -951,7 +951,15 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
                     lastValueVisible: false, priceLineVisible: false
                 });
-                ctx.ma3Series = chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
+                ctx.ma5Series = chart.addLineSeries({ color: '#8A2BE2', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
+                ctx.ma5Series.applyOptions({
+                    lastValueVisible: true,
+                    priceFormat: {
+                        type: 'price',
+                        precision: 8,
+                        minMove: 0.00000001
+                    }
+                });
                 ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
 
                 ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
@@ -993,7 +1001,7 @@
                     state.entryBlock = (json.cache || {}).source === 'stale' ? null : (json.entry_block || null);
                     state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
                     const candles = [];
-                    const ma3 = [];
+                    const ma5 = [];
                     const ma15 = [];
 
                     const kcUpper = [];
@@ -1003,7 +1011,7 @@
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
-                        if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
+                        if (d.ma5 !== null && d.ma5 !== undefined) ma5.push({ time: d.time, value: d.ma5 });
                         if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
 
                         if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
@@ -1029,7 +1037,7 @@
                     const referencePrice = Number((candles[candles.length - 1] || {}).close || 0);
                     const precision = referencePrice < 0.01 ? 8 : referencePrice < 1 ? 6 : referencePrice < 100 ? 4 : 2;
                     const priceFormat = { type: 'price', precision, minMove: 10 ** -precision };
-                    [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series,
+                    [ctx.candlestickSeries, ctx.ma5Series, ctx.ma15Series,
                      ctx.kcUpperSeries, ctx.kcMiddleSeries, ctx.kcLowerSeries]
                         .forEach(series => series.applyOptions({ priceFormat }));
 
@@ -1040,7 +1048,7 @@
                     const fullRefresh = ctx.historySignature !== historySignature;
                     if (fullRefresh) {
                         ctx.candlestickSeries.setData(candles);
-                        ctx.ma3Series.setData(ma3);
+                        ctx.ma5Series.setData(ma5);
                         ctx.ma15Series.setData(ma15);
 
                         ctx.kcUpperSeries.setData(kcUpper);
@@ -1050,7 +1058,7 @@
                     } else {
                         ctx.candlestickSeries.update(candles[candles.length - 1]);
                         [
-                            [ctx.ma3Series, ma3], [ctx.ma15Series, ma15],
+                            [ctx.ma5Series, ma5], [ctx.ma15Series, ma15],
                             [ctx.kcUpperSeries, kcUpper],
                             [ctx.kcMiddleSeries, kcMiddle], [ctx.kcLowerSeries, kcLower],
                         ].forEach(([series, values]) => {

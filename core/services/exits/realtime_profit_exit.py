@@ -26,8 +26,22 @@ def cached_tick_indicators(frame, price, stamp):
         'kc_upper': float(last.get('kc_upper') or 0.),
         'kc_lower': float(last.get('kc_lower') or 0.),
         'ma3': float(last.get('ma3') or 0.),
+        'ma5': float(last.get('ma5', last.get('ma3', 0)) or 0.),
         'close': float(last.get('close') or 0.)
     })
+    
+    if len(closed) >= 2:
+        prev = closed.iloc[-2]
+        snapshot.update({
+            'prev_close': float(prev.get('close') or 0.),
+            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.)
+        })
+    else:
+        snapshot.update({
+            'prev_close': 0.,
+            'prev_ma5': 0.
+        })
+        
     return snapshot, snapshot['atr']
 
 

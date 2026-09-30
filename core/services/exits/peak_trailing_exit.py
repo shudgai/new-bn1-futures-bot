@@ -135,9 +135,11 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             is_long = (sign == 1)
             
             c_close = float(snapshot.get('close', 0.)) if isinstance(snapshot, dict) else 0.
-            c_ma3 = float(snapshot.get('ma3', 0.)) if isinstance(snapshot, dict) else 0.
+            c_ma5 = float(snapshot.get('ma5', 0.)) if isinstance(snapshot, dict) else 0.
             c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
             c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
+            prev_close = float(snapshot.get('prev_close', 0.)) if isinstance(snapshot, dict) else 0.
+            prev_ma5 = float(snapshot.get('prev_ma5', 0.)) if isinstance(snapshot, dict) else 0.
             
             # 尾部信號 C: 當浮盈曾達到 2.5 ATR 以上，回落 40% (即時判斷)
             if scale > 0 and gain >= 2.5 * scale:
@@ -146,17 +148,17 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     reason, trigger = PEAK_REASON, 'PEAK_RETRACE_40PCT_AFTER_2.5ATR'
                     
             # 尾部信號 A 與 B: 實質跌回軌內 或 短線動能竭盡 (收盤判定)
-            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma3 > 0:
+            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma5 > 0:
                 if is_long:
                     if c_close < c_upper:
                         reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_UPPER'
-                    elif c_close < c_ma3:
-                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA3'
+                    elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_TWICE'
                 else:
                     if c_close > c_lower:
                         reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_LOWER'
-                    elif c_close > c_ma3:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA3'
+                    elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_TWICE'
 
         if reason:
             state.update(pending=reason,trigger=trigger)
