@@ -146,6 +146,20 @@ class PureTrendStrategyV2:
             return None  # 通道極度壓縮，波動率過低，拒絕開倉
 
         # -------------------------------------------------------------
+        # 門禁 0：趨勢一致性與超買/超賣過濾 (乖離上限)
+        # -------------------------------------------------------------
+        if closed is not None and len(closed) >= 4:
+            kc_middle_3_ago = float(closed.iloc[-4]['kc_middle'])
+            ck_is_down = kc_middle_prev < kc_middle_3_ago
+            ck_is_up = kc_middle_prev > kc_middle_3_ago
+        else:
+            ck_is_down = True
+            ck_is_up = True
+            
+        atr = float(bar_prev.get('atr', 0.0001))
+        dist_from_ma15_atr = abs(current_price - ma15) / atr if atr > 0 else 0.0
+
+        # -------------------------------------------------------------
         # 門禁 1：起爆新鮮度過濾（必須經過通道內「充分整理」）
         # -------------------------------------------------------------
         # 破軌前 2 到前 5 根 (共 4 根)，至少有 3 根收在 KC 軌道之內
@@ -193,6 +207,14 @@ class PureTrendStrategyV2:
             if highest_15 > current_price and (highest_15 - current_price) < 2.0 * atr:
                 ceiling_blocked = True
 
+        # 【趨勢過濾】做多必須 CK 向上
+        if not ck_is_up:
+            bar1_long_valid = False
+            
+        # 【乖離過濾】做多進場價與 MA15 的距離不得大於 1.2 ATR，且超出上軌不得大於 0.8 ATR
+        if dist_from_ma15_atr > 1.2 or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
+            bar1_long_valid = False
+
         if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick and not ceiling_blocked:
             return "ENTRY_LONG"
 
@@ -213,6 +235,14 @@ class PureTrendStrategyV2:
         if lowest_15 is not None and atr > 0:
             if current_price > lowest_15 and (current_price - lowest_15) < 2.0 * atr:
                 floor_blocked = True
+
+        # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
+        if not ck_is_down:
+            bar1_short_valid = False
+            
+        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 1.2 ATR，且跌破下軌不得大於 0.8 ATR
+        if dist_from_ma15_atr > 1.2 or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
+            bar1_short_valid = False
 
         if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick and not floor_blocked:
             return "ENTRY_SHORT"
