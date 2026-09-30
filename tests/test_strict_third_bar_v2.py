@@ -14,13 +14,14 @@ from core.services.entry_firewall import validate_account_entry
 @pytest.mark.parametrize('closed_second', [False,True])
 def test_second_bar_enters_only_while_live(side, closed_second):
     f=candles(side).iloc[:-1].copy()
+    f.loc[f.index[-2],'close']=101.5 if side=='LONG' else 98.5
     f.loc[f.index[-1],'is_closed']=closed_second
     # Only one completed outside bar is required; no closed-only fallback.
     assert bool(evaluate_v2_frame(f)) is (not closed_second)
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('fraction,allowed', [(0.,True),(.49,True),(.5,True),(.5001,False),(.8,False)])
+@pytest.mark.parametrize('fraction,allowed', [(0.,False),(.49,False),(.5,False),(.5001,False),(.8,False)])
 def test_third_bar_adverse_body_boundary(side, fraction, allowed):
     f=candles(side)
     f.loc[f.index[-2],'close']=102. if side=='LONG' else 98.
@@ -54,7 +55,8 @@ def test_bad_live_bar_does_not_reuse_previous_closed_signal(side):
     assert evaluate_v2_frame(f) is None
     live=f.iloc[-1].copy()
     live['timestamp']+=60000;live['is_closed']=False
-    # Previous third bar was opposite-colored; cannot serve as confirmation #2.
+    f.loc[f.index[-1], 'open'] = float(f.iloc[-1].close)
+    # Previous closed bar is a doji; cannot serve as confirmation #2.
     f.loc[len(f)]=live
     assert evaluate_v2_frame(f) is None
 

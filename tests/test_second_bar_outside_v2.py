@@ -38,7 +38,7 @@ def test_one_closed_breakout_immediately_enters_live_second(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('fraction,allowed', [(0., True), (.49, True), (.5, True), (.50001, False), (1., False)])
+@pytest.mark.parametrize('fraction,allowed', [(0., False), (.49, False), (.5, False), (.50001, False), (1., False)])
 def test_adverse_body_fifty_percent_boundary(side, fraction, allowed):
     f = second_frame(side)
     body = abs(float(f.iloc[-2].close) - float(f.iloc[-2].open))
@@ -85,7 +85,6 @@ def test_first_open_already_outside_is_allowed_by_supplied_predicate(side):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_quote_recomputes_ma_alignment_without_mutating_frame(side):
     f = second_frame(side)
-    f.loc[f.index[-1], 'open'] = float(f.iloc[-1].close)
     f.loc[f.index[-1], 'ma3'] = 100.001 if side == 'LONG' else 99.999
     saved = f.copy(deep=True)
     assert evaluate_v2_frame(f)

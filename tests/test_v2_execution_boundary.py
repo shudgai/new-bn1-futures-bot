@@ -17,9 +17,9 @@ def candles(side='LONG', live=True):
                  high=100.4, low=99.8, ma3=100.2, ma15=100., atr=1.,
                  kc_upper=101.4, kc_middle=100., kc_lower=98.6, is_closed=True)
             for i in range(6)]
-    rows[-3].update(open=100.8, close=101.5, high=101.6, low=100.7)
+    rows[-3].update(open=100.8, close=101.3, high=101.6, low=100.7)
     rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4)
-    rows[-1].update(open=101.9, close=101.8, high=102.1, low=101.7, is_closed=not live)
+    rows[-1].update(open=101.5, close=101.8, high=101.9, low=101.4, is_closed=not live)
     if not live:
         for row in rows: row['timestamp'] -= 60000
     f = pd.DataFrame(rows)

@@ -596,6 +596,7 @@ class TradingEngine:
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
         # 行情任務獨立於交易開關；停止交易後仍供網頁與持倉估值使用。
         self.start_market_data()
+        self.instant_exit_task = asyncio.create_task(self._instant_exit_trade_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -610,7 +611,7 @@ class TradingEngine:
         task_names = [
             "task", "rotation_task", "analysis_task", "trend_cache_task",
             "trigger_task", "fixed_stop_task", "trend_follow_task",
-            "trailing_sl_task",
+            "trailing_sl_task", "instant_exit_task",
         ]
         if close_exchanges:
             task_names.append("ticker_task")
@@ -1179,6 +1180,90 @@ class TradingEngine:
             self.account.log(f'⚠️ [{symbol}] 即時入口行情無效: {exc}', 'WARNING')
 
 
+    async def _instant_exit_trade_loop(self):
+        """Dedicated trade stream: entry REST/scan work cannot stall exit observation."""
+        seen = {}
+        announced = set()
+        while self.is_running:
+            try:
+                symbols = list(self.account.positions)
+                if not symbols:
+                    await asyncio.sleep(.1)
+                    continue
+                try:
+                    trades = await asyncio.wait_for(
+                        self.ws_exchange.watch_trades_for_symbols(symbols, params={'name': 'aggTrade'}), timeout=1.)
+                except asyncio.TimeoutError:
+                    continue
+                for trade in sorted(trades, key=lambda t: t.get('timestamp') or 0):
+                    symbol = trade['symbol'].replace(':USDT', '')
+                    stamp = trade.get('timestamp')
+                    if symbol not in announced and symbol in self.account.positions:
+                        announced.add(symbol)
+                        message = f'INSTANT_EXIT_STREAM symbol={symbol} feed=aggTrade'
+                        self.account.log(message, 'INFO')
+                        print(message, flush=True)
+                    key = (symbol, stamp, str(trade.get('id') or ''))
+                    if key in seen:
+                        continue
+                    seen[key] = True
+                    if len(seen) > 8192:
+                        seen.pop(next(iter(seen)))
+                    await self._instant_quote_exit(symbol, float(trade['price']), stamp)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.account.log(f'即時成交出口串流錯誤: {exc}', 'WARNING')
+                await asyncio.sleep(.1)
+
+    async def _instant_quote_exit(self, symbol, price, quote_ms=None):
+        """No candle fetch or scan lock before instant exit submission."""
+        import copy
+        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
+        from core.services.candle_data import closed_entry_candles
+        from core.services.exits.entry_atr_protection import enforce_atr_protection
+        if not self.is_running:
+            return False
+        position = self.account.positions.get(symbol)
+        if not position:
+            return False
+        now = time.time()
+        stamp = float(quote_ms) if quote_ms is not None else now*1000
+        if not math.isfinite(stamp) or not 0 <= now-stamp/1000 <= 5:
+            return False
+        if not math.isfinite(price) or price <= 0:
+            return False
+        meta = self.account.position_meta.setdefault(symbol, {})
+        if 'instant_exit_state' not in position and 'instant_exit_state' in meta:
+            position['instant_exit_state'] = copy.deepcopy(meta['instant_exit_state'])
+        frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
+        bar = dict(quote_ms=stamp)
+        atr = 0.
+        if frame is not None and not frame.empty:
+            closed = closed_entry_candles(frame)
+            expected = math.floor(stamp/60000)*60000-60000
+            if not closed.empty and float(closed.iloc[-1]['timestamp']) == expected:
+                # KC middle is EMA20; derive current live EMA from last closed EMA.
+                bar['kc_middle'] = float(closed.iloc[-1]['kc_middle'])*19/21 + price*2/21
+                atr = float(closed.iloc[-1]['atr'])
+        reason = PureTrendStrategyV2().check_intraday_instant_exit(position, price, bar, atr)
+        state = position.get('instant_exit_state')
+        if reason and not (meta.get('instant_exit_state') or {}).get('pending'):
+            message = (f'INSTANT_EXIT_TRIGGER symbol={symbol} reason={reason} '
+                       f'price={price} quote_ms={stamp} peak={state.get("peak")} '
+                       f'pnl={position.get("current_unrealized_pnl_usd")}')
+            self.account.log(message, 'INFO')
+            print(message, flush=True)
+        if state is not None and state != meta.get('instant_exit_state'):
+            meta['instant_exit_state'] = copy.deepcopy(state)
+            if reason:
+                meta['closed_exit_state'] = copy.deepcopy(position['closed_exit_state'])
+            self.account.save_state()
+        if await enforce_hard_stop(self.account, symbol, price):
+            return True
+        # Includes durable instant pending, initial stop and failed-close retry.
+        return await enforce_atr_protection(self.account, symbol, price)
+
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Evaluate held exits on a received quote without waiting for the scan."""
         if not getattr(self, "is_running", False):
@@ -1190,6 +1275,8 @@ class TradingEngine:
         try:
             quoted_at = float(quote_ms) / 1000 if quote_ms is not None else time.time()
             if not math.isfinite(quoted_at) or not 0 <= time.time() - quoted_at <= 5:
+                return
+            if await self._instant_quote_exit(symbol, price, quote_ms):
                 return
             # Hard stops do not wait for candle fetches or the symbol scan lock.
             if await enforce_hard_stop(self.account, symbol, price):
@@ -1784,6 +1871,8 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', signal.get('candidate_bar_id'))
             return False
         bar = decision['confirmation_bar_id']
+        log_entry_gate(self, symbol, side, 'ENTRY_SEQUENCE', decision['entry_phase'], bar,
+                       first_bar=decision['breakout_bar_id'], exit_bar=decision['exit_bar_id'])
         used = getattr(self,'_closed_entry_fills',None)
         if used is None:
             used = self._closed_entry_fills = set()

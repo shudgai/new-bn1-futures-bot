@@ -11,6 +11,7 @@ from test_second_bar_outside_v2 import second_frame
 
 def super_frame(side):
     f=candles(side).iloc[:-1].copy()
+    f.loc[f.index[-2],'close']=101.5 if side=='LONG' else 98.5
     f.loc[f.index[-2],'atr']=.3
     return f
 
