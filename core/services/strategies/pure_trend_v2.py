@@ -205,11 +205,11 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
         
-        # 2. 第 2 根盤中當下必須為同向綠陽線 (現價 > 開盤價)
-        bar2_is_green = (current_price > curr_open)
-        # 3. 嚴禁十字星與高位墓碑 (實體必須佔波幅 30% 以上，且上影線不大於實體)
-        bar2_not_doji = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
-        bar2_no_long_upper_wick = (curr_high - current_price) <= (curr_body * 1.0)
+        prev_high = float(bar_prev['high'])
+        prev_low = float(bar_prev['low'])
+        
+        # 2. 第 2 根只要突破第 1 根長紅的最高價，即代表動能延續，直接開多 (不再要求同色或實體)
+        bar2_breaks_prev_high = (current_price > prev_high)
 
         # 【天花板多過濾】開多位置離前高必須至少 2.0 ATR 空間，否則視為撞天花板
         ceiling_blocked = False
@@ -225,7 +225,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
             bar1_long_valid = False
 
-        if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick and not ceiling_blocked:
+        if bar1_long_valid and bar2_breaks_prev_high and not ceiling_blocked:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -238,11 +238,8 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
         
-        # 2. 第 2 根盤中當下必須為同向紅陰線 (現價 < 開盤價)
-        bar2_is_red = (current_price < curr_open)
-        # 3. 嚴禁十字星與低位蜻蜓 (實體必須佔波幅 30% 以上，且下影線不大於實體)
-        bar2_not_doji_short = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
-        bar2_no_long_lower_wick = (current_price - curr_low) <= (curr_body * 1.0)
+        # 2. 第 2 根只要跌破第 1 根大長黑的最低價，即代表動能延續，直接開空 (不再要求同色或實體)
+        bar2_breaks_prev_low = (current_price < prev_low)
 
         # 【地板空過濾】開空位置離前低必須至少 2.0 ATR 空間，否則視為死在地板上
         floor_blocked = False
@@ -258,7 +255,7 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
             bar1_short_valid = False
 
-        if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick and not floor_blocked:
+        if bar1_short_valid and bar2_breaks_prev_low and not floor_blocked:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
