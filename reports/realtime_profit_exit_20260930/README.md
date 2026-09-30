@@ -18,3 +18,6 @@
 額外既有test_confirmed_swing_exit_v2.py有6項失敗，test_close_deduplication.py有14項失敗；原HEAD隔離重現同20個失敗測試，原因為舊Swing樣本／政策及開倉測試缺少現行入口白名單。baseline_tests.log保存原版證據；沒有為通過舊測試放寬入口或修改Swing公式。
 
 AIDAN前置、Python及測試規範檔缺失；指定三份test_channel_swing／position_path／execution亦不存在。不宣稱全庫通過。Python語法及git diff --check通過。即時觸發不等於保證毫秒成交；行情傳輸、程序排程、帳戶撤單與交易所回應仍有延遲，REALTIME_EXIT日誌記錄報價到判定延遲。
+
+## 部署
+程式提交ce8038f已推送bugfix/realtime-profit-exit。8006於2026-09-30 09:14:40 UTC（17:14:40 UTC+8）重啟，MainPID=260157，active/running；09:15:00核對/api/status HTTP200、is_running=true、paper_trading=true。查核當下無持倉，因此不宣稱部署後已觀察到自然行情鎖利成交；盤中觸發與送單由隔離回歸驗證。deployment.json保存狀態。

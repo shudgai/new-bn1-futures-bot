@@ -1,0 +1,9 @@
+{
+  "commit": "ce8038fe4b21d9baa08b0816f911df5477e142df",
+  "verified_at": "2026-09-30T09:15:00.323968+00:00",
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "errors": null,
+  "service": "MainPID=260157\nExecMainStartTimestamp=Wed 2026-09-30 09:14:40 UTC\nActiveState=active\nSubState=running\n"
+}
