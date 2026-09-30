@@ -244,7 +244,28 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             long_trend_valid = False
 
-        if two_bar_long and long_trend_valid:
+        # -------------------------------------------------------------
+        # 4. 強勢突破與趨勢延續例外規則 (Trend Continuation & Override)
+        # -------------------------------------------------------------
+        # 多單延續條件：價格持續在軌外 + 均線多頭排列
+        is_ma_bullish = (ma3 > ma15)
+        continuation_long = (
+            (current_price > kc_upper_curr) and
+            (prev_close > kc_upper_prev) and
+            is_ma_bullish and
+            (body_curr >= 0.3 * atr) and
+            (current_price > curr_open)
+        )
+        # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
+        massive_breakout_long = (
+            (current_price > kc_upper_curr) and
+            (current_price > curr_open) and
+            (body_curr >= 1.2 * atr)
+        )
+        
+        final_long_signal = (two_bar_long or continuation_long or massive_breakout_long) and long_trend_valid
+
+        if final_long_signal:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -272,7 +293,25 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
-        if two_bar_short and short_trend_valid:
+        # 空單延續條件：價格持續在軌外 + 均線空頭排列
+        is_ma_bearish = (ma3 < ma15)
+        continuation_short = (
+            (current_price < kc_lower_curr) and
+            (prev_close < kc_lower_prev) and
+            is_ma_bearish and
+            (body_curr >= 0.3 * atr) and
+            (current_price < curr_open)
+        )
+        # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
+        massive_breakout_short = (
+            (current_price < kc_lower_curr) and
+            (current_price < curr_open) and
+            (body_curr >= 1.2 * atr)
+        )
+
+        final_short_signal = (two_bar_short or continuation_short or massive_breakout_short) and short_trend_valid
+
+        if final_short_signal:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
@@ -282,16 +321,12 @@ class PureTrendStrategyV2:
         # Report the first failed condition for the actual outside direction.
         if (current_price > kc_upper_curr and current_price > curr_open) or (prev_close > kc_upper_prev and prev_close > prev_open):
             checks = [(ck_is_up, "CK方向未向上"),
-                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (two_bar_long, "不符合雙棒推進"),
-                      (long_momentum_valid, "推進棒實體不足 0.5 ATR"),
-                      (long_wick_valid, "長上影線拋壓過大")]
+                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過乖離上限"),
+                      (two_bar_long or continuation_long or massive_breakout_long, "不符合雙棒推進或強勢延續")]
         elif (current_price < kc_lower_curr and current_price < curr_open) or (prev_close < kc_lower_prev and prev_close < prev_open):
             checks = [(ck_is_down, "CK方向未向下"),
-                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (two_bar_short, "不符合雙棒推進"),
-                      (short_momentum_valid, "推進棒實體不足 0.5 ATR"),
-                      (short_wick_valid, "長下影線買盤抵抗過大")]
+                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過乖離上限"),
+                      (two_bar_short or continuation_short or massive_breakout_short, "不符合雙棒推進或強勢延續")]
         else:
             checks = [(False, "未形成任何多空破軌動能")]
         self.entry_rejection = next(reason for passed, reason in checks if not passed)
