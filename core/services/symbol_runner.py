@@ -52,7 +52,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 return f"鐵律1觸發：空單盤中突破 KC 中軌 ({quote} >= {kc_middle})，逃命平倉！"
 
             # -------------------------------------------------------------
-            # 鐵律 2：巨額浮盈回吐超過 25%（大肉頂部鎖利，防天地針）
+            # 鐵律 2：階梯式追蹤止盈 (Tiered Trailing Stop)
             # -------------------------------------------------------------
             entry = float(position['entry_price'])
             qty = float(position['quantity'])
@@ -62,14 +62,24 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             max_pnl_u = max(float(position.get('peak_pnl_usd', 0.0)), current_pnl_u)
             position['peak_pnl_usd'] = max_pnl_u # Update peak tracking
             
+            # 使用當前的 1M ATR 計算動態波動 (避免短期雜訊)
             max_pnl_atr = max_pnl_u / (atr * qty) if (atr * qty) > 0 else 0.0
             
-            # 必須曾達大肉門檻（>= 10U 或 >= 3.0 ATR）
-            has_reached_big_profit = (max_pnl_u >= 10.0) or (max_pnl_atr >= 3.0)
-            if has_reached_big_profit and max_pnl_u > 0:
+            if max_pnl_u > 0:
                 drawdown_pct = (max_pnl_u - current_pnl_u) / max_pnl_u
-                if drawdown_pct >= 0.25:
-                    return f"鐵律2觸發：大肉浮盈 (峰值 {max_pnl_u:.2f}U) 回吐達 {drawdown_pct*100:.1f}% >= 25%，鎖利秒平！"
+                
+                # 第二階段（強鎖利）：獲利達 2.5 ATR 或 10U
+                if (max_pnl_atr >= 2.5) or (max_pnl_u >= 10.0):
+                    if drawdown_pct >= 0.25:
+                        return f"鐵律2觸發(二階強鎖利)：大肉浮盈 (峰值 {max_pnl_u:.2f}U / {max_pnl_atr:.1f}ATR) 回吐達 {drawdown_pct*100:.1f}% >= 25%，鎖定波段利潤秒平！"
+                        
+                # 第一階段（弱鎖利/保本）：獲利達 1.5 ATR 或 5U
+                elif (max_pnl_atr >= 1.5) or (max_pnl_u >= 5.0):
+                    if drawdown_pct >= 0.40:
+                        return f"鐵律2觸發(一階弱鎖利)：初段浮盈 (峰值 {max_pnl_u:.2f}U / {max_pnl_atr:.1f}ATR) 回吐達 {drawdown_pct*100:.1f}% >= 40%，提早鎖利平倉！"
+                    # 保本底線：既然達標一階，絕不允許帳面轉虧
+                    if current_pnl_u <= min(0.5, max_pnl_u * 0.1): 
+                        return f"鐵律2觸發(一階保本防線)：初段浮盈即將歸零，強制保本平倉！"
 
             # -------------------------------------------------------------
             # 鐵律 3：1M 收盤實質突破真峰頂/谷底（波段結構確認死亡，嚴格等收盤）
