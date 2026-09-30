@@ -226,11 +226,10 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
         
-        prev_high = float(bar_prev['high'])
-        prev_low = float(bar_prev['low'])
+        kc_upper_curr = float(bar_curr['kc_upper'])
         
-        # 2. 第 2 根只要突破第 1 根長紅的最高價，即代表動能延續，直接開多 (不再要求同色或實體)
-        bar2_breaks_prev_high = (current_price > prev_high)
+        # 2. 第 2 根現價 (Live Close) 依然穩在 KC 上軌外，且非大反轉長陰線 (回跌實體 < 0.5 ATR)
+        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open - current_price < 0.5 * atr)
 
         # 【天花板多過濾】開多位置離前高必須至少 2.0 ATR 空間，否則視為撞天花板
         ceiling_blocked = False
@@ -259,8 +258,10 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
         
-        # 2. 第 2 根只要跌破第 1 根大長黑的最低價，即代表動能延續，直接開空 (不再要求同色或實體)
-        bar2_breaks_prev_low = (current_price < prev_low)
+        kc_lower_curr = float(bar_curr['kc_lower'])
+        
+        # 2. 第 2 根現價 (Live Close) 依然穩在 KC 下軌外，且非大反彈長陽線 (反彈實體 < 0.5 ATR)
+        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (current_price - curr_open < 0.5 * atr)
 
         # 【地板空過濾】開空位置離前低必須至少 2.0 ATR 空間，否則視為死在地板上
         floor_blocked = False
@@ -288,13 +289,13 @@ class PureTrendStrategyV2:
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
-                      (bar2_breaks_prev_high, "第二根尚未突破前根最高價"),
+                      (bar2_breaks_prev_high, "第二根現價尚未穩在上軌外或反轉過大"),
                       (not ceiling_blocked, "距前15根高點不足2 ATR")]
         elif prev_close < kc_lower_prev and prev_close < prev_open:
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
-                      (bar2_breaks_prev_low, "第二根尚未跌破前根最低價"),
+                      (bar2_breaks_prev_low, "第二根現價尚未穩在下軌外或反彈過大"),
                       (not floor_blocked, "距前15根低點不足2 ATR")]
         else:
             checks = [(False, "前根未形成同向實體收在外軌外")]
