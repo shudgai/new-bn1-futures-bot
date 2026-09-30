@@ -114,7 +114,8 @@ class PureTrendStrategyV2:
         bar_prev: Dict[str, Any],     # 第 1 根（剛收盤的破軌確認 K）
         bar_curr: Dict[str, Any],     # 第 2 根（當前盤中推進 K）
         current_price: float,
-        indicators: Dict[str, Any]
+        indicators: Dict[str, Any],
+        closed: Any = None
     ) -> Optional[str]:
         """
         100% 依據使用者給定範例開倉：
@@ -140,10 +141,44 @@ class PureTrendStrategyV2:
             return None  # 均線走平黏合，直接一票否決！
 
         # -------------------------------------------------------------
+        # 門禁 1：起爆新鮮度過濾（嚴禁第 3 根以後追單）
+        # -------------------------------------------------------------
+        if closed is not None and len(closed) >= 2:
+            prev2 = closed.iloc[-2]
+            prev2_close = float(prev2['close'])
+            prev2_kc_upper = float(prev2['kc_upper'])
+            prev2_kc_lower = float(prev2['kc_lower'])
+        else:
+            # 缺乏歷史資料不開
+            return None
+
+        # -------------------------------------------------------------
+        # 門禁 2：地板空 / 天花板多過濾 (找最近的 Swing High/Low)
+        # -------------------------------------------------------------
+        swing_high = None
+        swing_low = None
+        if closed is not None and len(closed) >= 5:
+            highs = closed['high'].tolist()
+            for i in range(len(highs)-4, 1, -1):
+                if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+                    swing_high = highs[i]
+                    break
+            lows = closed['low'].tolist()
+            for i in range(len(lows)-4, 1, -1):
+                if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+                    swing_low = lows[i]
+                    break
+
+        atr = float(bar_prev.get('atr', 0))
+
+        # -------------------------------------------------------------
         # 多單做多開倉標準範例：
         # -------------------------------------------------------------
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
+        # 【新鮮度限制】更前一根必須收在軌內，不允許連續 2 根以上收軌外
+        if prev2_close > prev2_kc_upper:
+            bar1_long_valid = False
         
         # 2. 第 2 根盤中當下必須為同向綠陽線 (現價 > 開盤價)
         bar2_is_green = (current_price > curr_open)
@@ -151,7 +186,13 @@ class PureTrendStrategyV2:
         bar2_not_doji = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
         bar2_no_long_upper_wick = (curr_high - current_price) <= (curr_body * 1.0)
 
-        if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick:
+        # 【天花板多過濾】開多位置離前高必須至少 1.5 ATR 空間，否則視為撞天花板
+        ceiling_blocked = False
+        if swing_high is not None and atr > 0:
+            if swing_high > current_price and (swing_high - current_price) < 1.5 * atr:
+                ceiling_blocked = True
+
+        if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick and not ceiling_blocked:
             return "ENTRY_LONG"
 
         # -------------------------------------------------------------
@@ -159,6 +200,9 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
+        # 【新鮮度限制】更前一根必須收在軌內，不允許連續 2 根以上收軌外
+        if prev2_close < prev2_kc_lower:
+            bar1_short_valid = False
         
         # 2. 第 2 根盤中當下必須為同向紅陰線 (現價 < 開盤價)
         bar2_is_red = (current_price < curr_open)
@@ -166,13 +210,19 @@ class PureTrendStrategyV2:
         bar2_not_doji_short = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
         bar2_no_long_lower_wick = (current_price - curr_low) <= (curr_body * 1.0)
 
-        if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick:
+        # 【地板空過濾】開空位置離前低必須至少 1.5 ATR 空間，否則視為死在地板上
+        floor_blocked = False
+        if swing_low is not None and atr > 0:
+            if current_price > swing_low and (current_price - swing_low) < 1.5 * atr:
+                floor_blocked = True
+
+        if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick and not floor_blocked:
             return "ENTRY_SHORT"
 
         return None
 
     def evaluate_second_bar_outside_entry(
-        self, symbol: str, bar_curr: Dict[str, Any], bar_prev: Dict[str, Any]
+        self, symbol: str, bar_curr: Dict[str, Any], bar_prev: Dict[str, Any], closed: Any = None
     ) -> Optional[Dict[str, Any]]:
         """One closed directional outside body followed by its live next bar.
 
@@ -195,7 +245,7 @@ class PureTrendStrategyV2:
             
             # Delegate entirely to the standard example breakout entry
             result = self.check_standard_example_breakout_entry(
-                bar_prev, bar_curr, current_price, bar_curr
+                bar_prev, bar_curr, current_price, bar_curr, closed
             )
             if result:
                 side = result.replace('ENTRY_', '')
@@ -404,7 +454,7 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
     # The first bar of a re-entry pair must start after the successful close bar.
     if ticket and float(previous['timestamp']) // 60000 <= ticket['exit_bar_index']:
         return None
-    decision = strategy.evaluate_second_bar_outside_entry(symbol, row, previous)
+    decision = strategy.evaluate_second_bar_outside_entry(symbol, row, previous, closed)
     if not decision or (code is not None and decision['type'] != code):
         return None
     if not ticket:
