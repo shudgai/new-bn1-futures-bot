@@ -40,6 +40,8 @@ def cached_tick_indicators(frame, price, stamp):
         snapshot.update({
             'prev_close': float(prev.get('close') or 0.),
             'prev_open': float(prev.get('open') or 0.),
+            'prev_high': float(prev.get('high') or 0.),
+            'prev_low': float(prev.get('low') or 0.),
             'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
             'prev2_close': float(prev2.get('close') or 0.),
             'prev2_open': float(prev2.get('open') or 0.)
@@ -49,6 +51,8 @@ def cached_tick_indicators(frame, price, stamp):
         snapshot.update({
             'prev_close': float(prev.get('close') or 0.),
             'prev_open': float(prev.get('open') or 0.),
+            'prev_high': float(prev.get('high') or 0.),
+            'prev_low': float(prev.get('low') or 0.),
             'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
             'prev2_close': 0.,
             'prev2_open': 0.
@@ -57,6 +61,8 @@ def cached_tick_indicators(frame, price, stamp):
         snapshot.update({
             'prev_close': 0.,
             'prev_open': 0.,
+            'prev_high': 0.,
+            'prev_low': 0.,
             'prev_ma5': 0.,
             'prev2_close': 0.,
             'prev2_open': 0.

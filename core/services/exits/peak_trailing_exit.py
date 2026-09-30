@@ -136,12 +136,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             
             c_close = float(snapshot.get('close', 0.)) if isinstance(snapshot, dict) else 0.
             c_open = float(snapshot.get('open', 0.)) if isinstance(snapshot, dict) else 0.
+            c_high = float(snapshot.get('high', 0.)) if isinstance(snapshot, dict) else 0.
+            c_low = float(snapshot.get('low', 0.)) if isinstance(snapshot, dict) else 0.
             c_ma5 = float(snapshot.get('ma5', 0.)) if isinstance(snapshot, dict) else 0.
             c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
             c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
             c_middle = float(snapshot.get('kc_middle', 0.)) if isinstance(snapshot, dict) else 0.
             prev_close = float(snapshot.get('prev_close', 0.)) if isinstance(snapshot, dict) else 0.
             prev_open = float(snapshot.get('prev_open', 0.)) if isinstance(snapshot, dict) else 0.
+            prev_high = float(snapshot.get('prev_high', 0.)) if isinstance(snapshot, dict) else 0.
+            prev_low = float(snapshot.get('prev_low', 0.)) if isinstance(snapshot, dict) else 0.
             prev_ma5 = float(snapshot.get('prev_ma5', 0.)) if isinstance(snapshot, dict) else 0.
             prev2_close = float(snapshot.get('prev2_close', 0.)) if isinstance(snapshot, dict) else 0.
             prev2_open = float(snapshot.get('prev2_open', 0.)) if isinstance(snapshot, dict) else 0.
@@ -151,7 +155,29 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 atr_tolerance = 1.2 * scale if scale > 0 else 0
                 retrace_from_peak = sign*(state['peak_price'] - c_close)
                 
-                if is_long:
+                # 高浮盈極速鎖利 ( >= 2.5 ATR )
+                tight_lock_triggered = False
+                if scale > 0 and gain >= 2.5 * scale:
+                    # 1. 回彈超過 0.8 ATR
+                    if retrace_from_peak >= 0.8 * scale:
+                        tight_lock_triggered = True
+                        trigger_reason = 'TIGHT_RETRACE_0.8ATR'
+                    else:
+                        # 2. 連續兩根反向收盤且不創低/高
+                        if is_long:
+                            if c_close < c_open and prev_close < prev_open and c_high <= prev_high:
+                                tight_lock_triggered = True
+                                trigger_reason = 'NO_NEW_HIGH_AND_2_RED'
+                        else:
+                            if c_close > c_open and prev_close > prev_open and c_low >= prev_low:
+                                tight_lock_triggered = True
+                                trigger_reason = 'NO_NEW_LOW_AND_2_GREEN'
+                                
+                if tight_lock_triggered:
+                    reason, trigger = PEAK_REASON, trigger_reason
+                
+                if not reason:
+                    if is_long:
                     # 判斷吞噬結構：大陰線吞噬前兩根陽線，且收回通道內
                     is_bearish_engulfing = (c_close < c_open and prev_close > prev_open and prev2_close > prev2_open and 
                                             c_open >= max(prev_close, prev_open) and c_close <= min(prev2_open, prev_open) and 
