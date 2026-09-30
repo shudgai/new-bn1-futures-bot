@@ -124,9 +124,9 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         return [], []
     from core.services.strategies.pure_trend_v2 import successful_exit_ticket
     ticket = successful_exit_ticket(engine.account, symbol)
-    if ticket and int(float(frame.iloc[-1]['timestamp']) // 60000) - ticket['exit_bar_index'] < 2:
+    if ticket and int(float(frame.iloc[-1]['timestamp']) // 60000) - ticket['exit_bar_index'] < 5:
         for side in ('LONG', 'SHORT'):
-            log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', 'WAIT_POST_EXIT_2_BAR_COOLDOWN', float(frame.iloc[-1]['timestamp']))
+            log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', 'WAIT_POST_EXIT_5_BAR_COOLDOWN', float(frame.iloc[-1]['timestamp']))
         return [], []
     # New entries are independently evaluated against the whitelist.
     sides = ('LONG', 'SHORT')

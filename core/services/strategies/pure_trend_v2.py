@@ -135,10 +135,15 @@ class PureTrendStrategyV2:
         ma3 = float(indicators['ma3'])
         ma15 = float(indicators['ma15'])
 
-        # 均線張角過濾（防死魚震盪）
+        # 均線張角與通道寬度過濾（防死魚震盪）
         spread_pct = abs(ma3 - ma15) / current_price * 100.0
-        if spread_pct < 0.04:
+        if spread_pct < 0.08:
             return None  # 均線走平黏合，直接一票否決！
+
+        kc_middle_prev = float(bar_prev.get('kc_middle', current_price))
+        channel_width_pct = (kc_upper_prev - kc_lower_prev) / kc_middle_prev * 100.0
+        if channel_width_pct < 0.20:
+            return None  # 通道極度壓縮，波動率過低，拒絕開倉
 
         # -------------------------------------------------------------
         # 門禁 1：起爆新鮮度過濾（必須經過通道內「充分整理」）
@@ -432,7 +437,7 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
     bar_index = int(float(row['timestamp']) // 60000)
     if ticket:
         strategy.record_exit(symbol, ticket['side'], ticket['exit_bar_index'])
-        if bar_index - ticket['exit_bar_index'] < 2:
+        if bar_index - ticket['exit_bar_index'] < 5:
             return None
     if code is not None and code not in V2_ENTRY_CODES:
         return None
