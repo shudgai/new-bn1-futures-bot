@@ -15,10 +15,9 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import ck_direction
 
-# 合法入場信號：只保留外軌起爆 (IGNITION) 與兩根破軌確認 (TREND_BREAKOUT)
+# 合法入場信號：只保留兩根破軌確認 (TREND_BREAKOUT)
 RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
     [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
 )
 # TREND_CRAWLING 已永久停用，嚴禁恢復。
@@ -298,75 +297,65 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     
     if side == "LONG":
         ma_aligned = float(c.ma3) > float(c.ma15)
-        body = float(c.close) - float(c.open)
-        upper_wick = float(c.high) - float(c.close)
-        is_full_body = at_least(body, 0.55 * atr) and upper_wick < body * 0.8
-        is_outside = float(c.close) > float(c.kc_upper)
+        c1_green = float(c1.close) > float(c1.open)
+        c_green = float(c.close) > float(c.open)
+        c1_breakout = float(c1.close) > float(c1.kc_upper)
+        c_breakout = float(c.close) > float(c.kc_upper)
         
-        if ma_aligned and is_full_body and is_outside:
-            rule = 'IGNITION'
-        elif (ma_aligned and is_outside and len(closed) >= 6
-              and c_close > float(closed['high'].iloc[-6:-1].max())):
+        is_outside = c_breakout
+        
+        if ma_aligned and c1_green and c_green and c1_breakout and c_breakout:
             rule = 'TREND_BREAKOUT'
-        # TREND_CRAWLING 已永久停用
-
                 
     else:
         ma_aligned = float(c.ma3) < float(c.ma15)
-        body = float(c.open) - float(c.close)
-        lower_wick = float(c.close) - float(c.low)
-        is_full_body = at_least(body, 0.55 * atr) and lower_wick < body * 0.8
-        is_outside = float(c.close) < float(c.kc_lower)
+        c1_red = float(c1.close) < float(c1.open)
+        c_red = float(c.close) < float(c.open)
+        c1_breakout = float(c1.close) < float(c1.kc_lower)
+        c_breakout = float(c.close) < float(c.kc_lower)
         
-        if ma_aligned and is_full_body and is_outside:
-            rule = 'IGNITION'
-        elif (ma_aligned and is_outside and len(closed) >= 6
-              and c_close < float(closed['low'].iloc[-6:-1].min())):
+        is_outside = c_breakout
+        
+        if ma_aligned and c1_red and c_red and c1_breakout and c_breakout:
             rule = 'TREND_BREAKOUT'
-        # TREND_CRAWLING 已永久停用
 
             
     if sign * (c_close - c_open) <= 0:
         return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
 
     if rule is None:
-        return wait('WAIT_NEW_IGNITION_OR_BREAKOUT_TRIGGER')
+        return wait('WAIT_NEW_BREAKOUT_TRIGGER')
 
     # ══════════════════════════════════════════════════════════
     # 終極守門員：嚴禁 TREND_CRAWLING 或任何未授權策略出門
-    # 唯一合法入口：IGNITION（外軌起爆）與 TREND_BREAKOUT（兩根破軌確認）
+    # 唯一合法入口：TREND_BREAKOUT（兩根破軌確認）
     # ══════════════════════════════════════════════════════════
-    if rule not in ('IGNITION', 'TREND_BREAKOUT'):
-        return wait(f'BLOCKED_ILLEGAL_RULE_{rule}_ONLY_IGNITION_BREAKOUT_ALLOWED')
+    if rule != 'TREND_BREAKOUT':
+        return wait(f'BLOCKED_ILLEGAL_RULE_{rule}_ONLY_TREND_BREAKOUT_ALLOWED')
 
-    # IGNITION 起爆豁免「必須連續兩根同色」
-    if rule != 'IGNITION':
-        c1 = closed.iloc[-2]
-        def get_body_info(row):
-            r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
-            r_range = r_high - r_low
-            r_body = r_close - r_open
-            r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
-            return r_body, r_ratio
-            
-        c1_body, c1_ratio = get_body_info(c1)
-        c_body_val, c_ratio = get_body_info(c)
+    def get_body_info(row):
+        r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
+        r_range = r_high - r_low
+        r_body = r_close - r_open
+        r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
+        return r_body, r_ratio
         
-        if side == "LONG":
-            if c1_body <= 0 or c_body_val <= 0:
-                return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
-        else:
-            if c1_body >= 0 or c_body_val >= 0:
-                return wait("BLOCKED_NOT_TWO_RED_CANDLES")
-                
-        if c1_ratio < 0.20 or c_ratio < 0.20:
-            return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
+    c1_body, c1_ratio = get_body_info(c1)
+    c_body_val, c_ratio = get_body_info(c)
+    
+    if side == "LONG":
+        if c1_body <= 0 or c_body_val <= 0:
+            return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
+    else:
+        if c1_body >= 0 or c_body_val >= 0:
+            return wait("BLOCKED_NOT_TWO_RED_CANDLES")
+            
+    if c1_ratio < 0.20 or c_ratio < 0.20:
+        return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
 
-    # IGNITION / TREND_BREAKOUT 信號保證動能，豁免滯後 MA3 斜率
-    if rule not in ('IGNITION', 'TREND_BREAKOUT'):
-        problem = ma3_entry_problem(closed, side)
-        if problem:
-            return wait(problem)
+    problem = ma3_entry_problem(closed, side)
+    if problem:
+        return wait(problem)
 
     bypass_low_vol = is_outside and (body_ratio >= 0.4 or fast_crawling)
 
