@@ -385,7 +385,7 @@ class PureTrendStrategyV2:
         """Compatibility adapter for the sole real-time peak exit policy."""
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
         from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
-        return evaluate_peak_trailing(position, current_price, bar_curr.get('quote_ms'), atr,
+        return evaluate_peak_trailing(position, current_price, bar_curr, atr,
                                       fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
 
     def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):

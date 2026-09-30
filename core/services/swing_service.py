@@ -26,32 +26,34 @@ def significant_ma3_turn(position, frame, price):
             position.pop(key, None)
             return False
 
-        # 計算即時 MA3（用最後兩根已收線 + 最新報價）
-        ma3_live = (sum(closes[-2:]) + price) / 3.
-
-        # 計算 MA15（取最近 15 根已收線 close 的均值）
-        if len(frame) < 16:
-            return False
-        ma15_closes = [float(v) for v in frame['close'].iloc[-16:-1]]
-        if len(ma15_closes) != 15 or not all(math.isfinite(v) and v > 0 for v in ma15_closes):
-            return False
-        ma15_live = sum(ma15_closes) / 15.
-
         if not state:
             position[key] = dict(identity=identity, pending=False)
             return False
 
         symbol = position.get('symbol', 'UNKNOWN')
-        # 多單：MA3 跌破 MA15 → 平倉
-        if side == 'LONG' and ma3_live < ma15_live:
+        
+        # 嚴禁盤中即時插針價！只使用「已收盤」的 K 棒資料來判定動能破位
+        # 取得最後一根已收盤的 K 棒
+        closed_bars = frame[frame['is_closed'] == True] if 'is_closed' in frame.columns else frame.iloc[:-1]
+        if len(closed_bars) == 0:
+            return False
+            
+        last_closed = closed_bars.iloc[-1]
+        c_close = float(last_closed['close'])
+        c_ma3 = float(last_closed['ma3'])
+        
+        # 多單：收盤價實質跌破 MA3 (close < ma3) → 平倉
+        if side == 'LONG' and c_close < c_ma3:
             state['pending'] = True
-            print(f"[{symbol}] EXIT_REASON: MA3_CROSSED_BELOW_MA15 (MA3={ma3_live:.6f} < MA15={ma15_live:.6f})", flush=True)
+            print(f"[{symbol}] EXIT_REASON: CLOSE_BELOW_MA3 (Close={c_close:.6f} < MA3={c_ma3:.6f})", flush=True)
             return True
-        # 空單：MA3 突破 MA15 → 平倉
-        if side == 'SHORT' and ma3_live > ma15_live:
+            
+        # 空單：收盤價實質突破 MA3 (close > ma3) → 平倉
+        if side == 'SHORT' and c_close > c_ma3:
             state['pending'] = True
-            print(f"[{symbol}] EXIT_REASON: MA3_CROSSED_ABOVE_MA15 (MA3={ma3_live:.6f} > MA15={ma15_live:.6f})", flush=True)
+            print(f"[{symbol}] EXIT_REASON: CLOSE_ABOVE_MA3 (Close={c_close:.6f} > MA3={c_ma3:.6f})", flush=True)
             return True
+            
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         position.pop(key, None)
     return False

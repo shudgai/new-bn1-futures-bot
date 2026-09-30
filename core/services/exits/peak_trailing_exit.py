@@ -77,9 +77,10 @@ def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
     return sign*(execution-entry)*qty - (entry+execution)*qty*fee
 
 
-def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippage=0.0001):
+def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
     try:
         ident = position_identity(position)
+        stamp = float(snapshot) if isinstance(snapshot, (int, float)) else float(snapshot.get('quote_ms', 0))
         price, stamp, fee, slippage = map(float, (price, stamp, fee, slippage))
         if (not positive(price) or not positive(stamp) or stamp < ident[1]*1000
                 or not all(math.isfinite(v) and 0 <= v < 1 for v in (fee, slippage))):
@@ -91,7 +92,6 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
         
-        # Explicitly initialize peak_price to entry_price if not set
         if 'peak_price' not in state:
             state['peak_price'] = entry
 
@@ -106,12 +106,12 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
         net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
-        state['armed'] = bool(state.get('armed') or (scale > 0 and reached(gain,1.0*scale))
-                              or reached(state['peak_net_pnl']/state['entry_margin'],.03))
+        
         position.update(peak_price=state['peak_price'], peak_pnl=gain*qty, peak_pnl_usd=gain*qty,
                         peak_net_pnl_usd=state['peak_net_pnl'], peak_gain_atr=gain/scale if scale>0 else 0.,
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
+                        
         stop = entry-sign*1.5*scale if scale>0 else 0.
         initial = position.get('initial_sl')
         if positive(initial):
@@ -120,10 +120,9 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = None, None
         
-        # Determine time held for Same-bar Exit Protection
         open_ts = ident[1]
         if open_ts < 1e11:
-            open_ts *= 1000  # Convert to ms if it's in seconds
+            open_ts *= 1000
         time_held_ms = stamp - open_ts
         is_same_bar = time_held_ms < 60000
         
@@ -131,12 +130,34 @@ def evaluate_peak_trailing(position, price, stamp, atr=0., *, fee=0.0005, slippa
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
         elif state.get('pending') in (PEAK_REASON,HARD_REASON):
             reason, trigger = state['pending'], state.get('trigger','RETRY')
-        elif state['armed'] and not is_same_bar:
-            retrace = sign*(state['peak_price']-price)
-            if scale > 0 and retrace > .4*scale and not math.isclose(retrace,.4*scale,rel_tol=1e-12):
-                reason, trigger = PEAK_REASON, 'PRICE_RETRACE_GT_04ATR'
-            elif state['peak_net_pnl'] > 0 and reached(state['peak_net_pnl']-net,.25*state['peak_net_pnl']):
-                reason, trigger = PEAK_REASON, 'NET_PEAK_DRAWDOWN_25PCT'
+        elif not is_same_bar:
+            # 波段尾部確認平倉機制
+            is_long = (sign == 1)
+            
+            c_close = float(snapshot.get('close', 0.)) if isinstance(snapshot, dict) else 0.
+            c_ma3 = float(snapshot.get('ma3', 0.)) if isinstance(snapshot, dict) else 0.
+            c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
+            c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
+            
+            # 尾部信號 C: 當浮盈曾達到 2.5 ATR 以上，回落 40% (即時判斷)
+            if scale > 0 and gain >= 2.5 * scale:
+                retrace = sign*(state['peak_price']-price)
+                if retrace > 0.40 * gain:
+                    reason, trigger = PEAK_REASON, 'PEAK_RETRACE_40PCT_AFTER_2.5ATR'
+                    
+            # 尾部信號 A 與 B: 實質跌回軌內 或 短線動能竭盡 (收盤判定)
+            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma3 > 0:
+                if is_long:
+                    if c_close < c_upper:
+                        reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_UPPER'
+                    elif c_close < c_ma3:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA3'
+                else:
+                    if c_close > c_lower:
+                        reason, trigger = PEAK_REASON, 'CLOSED_INSIDE_KC_LOWER'
+                    elif c_close > c_ma3:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA3'
+
         if reason:
             state.update(pending=reason,trigger=trigger)
             return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)

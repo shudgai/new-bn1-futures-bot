@@ -20,7 +20,15 @@ def cached_tick_indicators(frame, price, stamp):
     bar = math.floor(stamp / 60000) * 60000
     if closed.empty or float(closed.iloc[-1]['timestamp']) != bar - 60000:
         return snapshot, 0.
-    return snapshot, float(closed.iloc[-1].get('atr') or 0.)
+    last = closed.iloc[-1]
+    snapshot.update({
+        'atr': float(last.get('atr') or 0.),
+        'kc_upper': float(last.get('kc_upper') or 0.),
+        'kc_lower': float(last.get('kc_lower') or 0.),
+        'ma3': float(last.get('ma3') or 0.),
+        'close': float(last.get('close') or 0.)
+    })
+    return snapshot, snapshot['atr']
 
 
 def migrate_account_peak_exits(account):
