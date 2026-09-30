@@ -28,19 +28,38 @@ def cached_tick_indicators(frame, price, stamp):
         'kc_middle': float(last.get('ema_20', last.get('kc_middle', 0.)) or 0.),
         'ma3': float(last.get('ma3') or 0.),
         'ma5': float(last.get('ma5', last.get('ma3', 0)) or 0.),
-        'close': float(last.get('close') or 0.)
+        'close': float(last.get('close') or 0.),
+        'open': float(last.get('open') or 0.),
+        'high': float(last.get('high') or 0.),
+        'low': float(last.get('low') or 0.)
     })
     
-    if len(closed) >= 2:
+    if len(closed) >= 3:
+        prev = closed.iloc[-2]
+        prev2 = closed.iloc[-3]
+        snapshot.update({
+            'prev_close': float(prev.get('close') or 0.),
+            'prev_open': float(prev.get('open') or 0.),
+            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
+            'prev2_close': float(prev2.get('close') or 0.),
+            'prev2_open': float(prev2.get('open') or 0.)
+        })
+    elif len(closed) >= 2:
         prev = closed.iloc[-2]
         snapshot.update({
             'prev_close': float(prev.get('close') or 0.),
-            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.)
+            'prev_open': float(prev.get('open') or 0.),
+            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
+            'prev2_close': 0.,
+            'prev2_open': 0.
         })
     else:
         snapshot.update({
             'prev_close': 0.,
-            'prev_ma5': 0.
+            'prev_open': 0.,
+            'prev_ma5': 0.,
+            'prev2_close': 0.,
+            'prev2_open': 0.
         })
         
     return snapshot, snapshot['atr']
