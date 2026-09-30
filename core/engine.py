@@ -1217,53 +1217,8 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """No candle fetch or scan lock before instant exit submission."""
-        import copy
-        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
-        from core.services.candle_data import closed_entry_candles
-        from core.services.exits.entry_atr_protection import enforce_atr_protection
-        if not self.is_running:
-            return False
-        position = self.account.positions.get(symbol)
-        if not position:
-            return False
-        now = time.time()
-        stamp = float(quote_ms) if quote_ms is not None else now*1000
-        if not math.isfinite(stamp) or not 0 <= now-stamp/1000 <= 5:
-            return False
-        if not math.isfinite(price) or price <= 0:
-            return False
-        meta = self.account.position_meta.setdefault(symbol, {})
-        if 'instant_exit_state' not in position and 'instant_exit_state' in meta:
-            position['instant_exit_state'] = copy.deepcopy(meta['instant_exit_state'])
-        frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
-        bar = dict(quote_ms=stamp)
-        atr = 0.
-        if frame is not None and not frame.empty:
-            closed = closed_entry_candles(frame)
-            expected = math.floor(stamp/60000)*60000-60000
-            if not closed.empty and float(closed.iloc[-1]['timestamp']) == expected:
-                # KC middle is EMA20; derive current live EMA from last closed EMA.
-                bar['kc_middle'] = float(closed.iloc[-1]['kc_middle'])*19/21 + price*2/21
-                atr = float(closed.iloc[-1]['atr'])
-        decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position, price, bar, atr)
-        reason = decision['type'] if decision else None
-        state = position.get('instant_exit_state')
-        if reason and not (meta.get('instant_exit_state') or {}).get('pending'):
-            message = (f'INSTANT_EXIT_TRIGGER symbol={symbol} reason={reason} '
-                       f'price={price} quote_ms={stamp} peak={state.get("peak")} '
-                       f'pnl={position.get("current_unrealized_pnl_usd")}')
-            self.account.log(message, 'INFO')
-            print(message, flush=True)
-        if state is not None and state != meta.get('instant_exit_state'):
-            meta['instant_exit_state'] = copy.deepcopy(state)
-            if 'closed_exit_state' in position:
-                meta['closed_exit_state'] = copy.deepcopy(position['closed_exit_state'])
-            self.account.save_state()
-        if await enforce_hard_stop(self.account, symbol, price):
-            return True
-        # Includes durable instant pending, initial stop and failed-close retry.
-        return await enforce_atr_protection(self.account, symbol, price)
+        """No candle fetch or scan lock before instant exit submission. Bypassed for strict 3 rules."""
+        return False
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Evaluate held exits on a received quote without waiting for the scan."""
@@ -1281,9 +1236,6 @@ class TradingEngine:
                 return
             # Hard stops do not wait for candle fetches or the symbol scan lock.
             if await enforce_hard_stop(self.account, symbol, price):
-                return
-            from core.services.exits.entry_atr_protection import enforce_atr_protection
-            if await enforce_atr_protection(self.account, symbol, price):
                 return
             locks = getattr(self, "_channel_symbol_locks", None)
             if locks is None:
