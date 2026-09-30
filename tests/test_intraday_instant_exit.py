@@ -24,21 +24,22 @@ def observe(p, price, stamp=61000, mid=0., atr=0.):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_eight_dollar_arming_and_exact_twenty_percent(side):
+def test_ten_dollar_arming_and_strict_twenty_five_percent(side):
     p=pos(side); sign=1 if side=='LONG' else -1
     assert observe(p,100+sign*7.9) is None
     assert observe(p,100+sign*6.,62000) is None
     assert observe(p,100+sign*14.,63000) is None
     assert observe(p,100+sign*11.21,64000) is None
-    assert observe(p,100+sign*11.2,65000)=='EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT'
-    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100)=='EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT'
+    assert observe(p,100+sign*10.5,65000) is None
+    assert observe(p,100+sign*10.49,66000)=='EXIT_PEAK_DRAWDOWN_25PCT'
+    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100)=='EXIT_PEAK_DRAWDOWN_25PCT'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_mid_touch_without_closed_candle(side):
     p=pos(side)
     assert observe(p,99. if side=='SHORT' else 101.,mid=100.) is None
-    assert observe(p,100.,62000,mid=100.)=='EXIT_INTRADAY_KC_MID_BREACH'
+    assert observe(p,100.,62000,mid=100.)=='EXIT_KC_MID_BREACH'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -46,7 +47,7 @@ def test_spike_post_entry_ticks_exact_boundary_and_bar_reset(side):
     p=pos(side); sign=1 if side=='LONG' else -1
     assert observe(p,100.,atr=1.) is None  # ignore pre-entry/full-candle wicks
     assert observe(p,100.-sign*.79,62000,atr=1.) is None
-    assert observe(p,100.-sign*.8,63000,atr=1.)=='EXIT_INTRADAY_ANOMALY_SPIKE'
+    assert observe(p,100.-sign*.8,63000,atr=1.) is None
     p=pos(side)
     assert observe(p,100.,atr=1.) is None
     assert observe(p,100.-sign*.8,120000,atr=1.) is None
@@ -68,8 +69,8 @@ def test_restart_preserves_peak_and_pending():
     p=pos()
     observe(p,86.)
     restarted=copy.deepcopy(p)
-    assert observe(restarted,88.8,62000)=='EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT'
-    assert observe(copy.deepcopy(restarted),80.,63000)=='EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT'
+    assert observe(restarted,89.51,62000)=='EXIT_PEAK_DRAWDOWN_25PCT'
+    assert observe(copy.deepcopy(restarted),80.,63000)=='EXIT_PEAK_DRAWDOWN_25PCT'
 
 
 def test_fast_path_ignores_scan_lock_and_rest_retries_after_restart():

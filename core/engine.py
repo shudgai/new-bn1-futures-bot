@@ -1246,7 +1246,8 @@ class TradingEngine:
                 # KC middle is EMA20; derive current live EMA from last closed EMA.
                 bar['kc_middle'] = float(closed.iloc[-1]['kc_middle'])*19/21 + price*2/21
                 atr = float(closed.iloc[-1]['atr'])
-        reason = PureTrendStrategyV2().check_intraday_instant_exit(position, price, bar, atr)
+        decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position, price, bar, atr)
+        reason = decision['type'] if decision else None
         state = position.get('instant_exit_state')
         if reason and not (meta.get('instant_exit_state') or {}).get('pending'):
             message = (f'INSTANT_EXIT_TRIGGER symbol={symbol} reason={reason} '

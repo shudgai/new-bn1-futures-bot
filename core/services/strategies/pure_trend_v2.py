@@ -82,18 +82,18 @@ class PureTrendStrategyV2:
         return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=price,
                     reason='第1根已收線同向實體站外，第2根盤中站外且均線同向即開倉')
 
-    def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):
-        """Observe post-entry ticks only; never reconstruct peaks from candle wicks."""
+    def evaluate_anti_whipsaw_profit_lock(self, position, current_price, bar_curr, atr):
+        """Tick-only wide-buffer tiers; durable peaks and irreversible pending exits."""
         try:
-            price = float(current_tick_price)
-            entry, qty = float(position['entry_price']), abs(float(position['qty']))
-            stamp = float(bar_curr['quote_ms'])
-            opened = float(position['open_timestamp'])
+            price = float(current_price)
+            entry = float(position['entry_price'])
+            qty = abs(float(position.get('qty', position.get('quantity', 0.))))
+            stamp, opened = float(bar_curr['quote_ms']), float(position['open_timestamp'])
             side = position['side']
             if side not in ('LONG', 'SHORT') or not all(
                     math.isfinite(v) and v > 0 for v in (price, entry, qty, stamp, opened)):
                 return None
-            if stamp < opened * 1000:
+            if stamp < opened*1000:
                 return None
             identity = [side, opened, entry, qty]
             state = position.get('instant_exit_state') or {}
@@ -101,39 +101,58 @@ class PureTrendStrategyV2:
                 state = dict(identity=identity, peak=0.)
             if stamp < state.get('last_ms', 0):
                 return None
+            # Preserve already-triggered closes, including the previous policy.
             if state.get('pending'):
-                return state['pending']
-            bar = int(stamp // 60000)
-            if state.get('bar') != bar:
-                state.update(bar=bar, low=price, high=price)
-            state.update(low=min(state['low'], price), high=max(state['high'], price),
-                         last_ms=stamp)
-            pnl = (price-entry)*qty*(1 if side == 'LONG' else -1)
-            state['peak'] = max(state['peak'], pnl)
+                return dict(action='CLOSE_POSITION', type=state['pending'], price=price,
+                            reason=state['pending'])
+            sign = 1 if side == 'LONG' else -1
+            pnl = sign*(price-entry)*qty
+            state.update(last_ms=stamp, peak=max(float(state.get('peak', 0.)), pnl),
+                         version=2)
+            scale = float(atr or 0.)
+            peak_gain = float(state.get('peak_gain_atr', 0.))
+            if math.isfinite(scale) and scale > 0:
+                peak_gain = max(peak_gain, sign*(price-entry)/scale)
+            state['peak_gain_atr'] = peak_gain
+            # Persist armed lines; ATR changes or missing data cannot loosen protection.
+            reached = lambda value, limit: value >= limit or math.isclose(value, limit, rel_tol=1e-12)
+            if reached(peak_gain, 1.8):
+                state['breakeven_line'] = entry*(1.001 if side == 'LONG' else .999)
+            if reached(peak_gain, 2.5) and math.isfinite(scale) and scale > 0:
+                line = entry+sign*scale
+                prior = state.get('tier2_line')
+                state['tier2_line'] = line if prior is None else (
+                    max(prior, line) if side == 'LONG' else min(prior, line))
             position['instant_exit_state'] = state
-            # Gross mark-to-market USDT, recomputed from this tick, never stale account PnL.
+            position['peak_pnl_usd'] = state['peak']
+            position['peak_gain_atr'] = peak_gain
             position['peak_unrealized_profit_usd'] = state['peak']
             position['current_unrealized_pnl_usd'] = pnl
             reason = None
             mid = float(bar_curr.get('kc_middle') or 0.)
-            scale = float(atr or 0.)
-            if math.isfinite(mid) and mid > 0 and (
-                    price >= mid if side == 'SHORT' else price <= mid):
-                reason = 'EXIT_INTRADAY_KC_MID_BREACH'
-            rebound = price-state['low'] if side == 'SHORT' else state['high']-price
-            if reason is None and math.isfinite(scale) and scale > 0 and (
-                    rebound >= .8*scale or math.isclose(rebound, .8*scale, rel_tol=1e-12)):
-                reason = 'EXIT_INTRADAY_ANOMALY_SPIKE'
-            if reason is None and state['peak'] >= 8. and (
-                    pnl <= state['peak']*.8 or math.isclose(pnl, state['peak']*.8, rel_tol=1e-12)):
-                reason = 'EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT'
+            if math.isfinite(mid) and mid > 0 and sign*(price-mid) <= 0:
+                reason = 'EXIT_KC_MID_BREACH'
+            threshold = state['peak']*.75
+            if reason is None and (reached(state['peak'], 10.) or reached(peak_gain, 3.)) and (
+                    pnl < threshold and not math.isclose(pnl, threshold, rel_tol=1e-12)):
+                reason = 'EXIT_PEAK_DRAWDOWN_25PCT'
+            if reason is None and 'tier2_line' in state and sign*(price-state['tier2_line']) <= 0:
+                reason = 'EXIT_PROFIT_TIER2_LOCK'
+            if reason is None and 'breakeven_line' in state and sign*(price-state['breakeven_line']) <= 0:
+                reason = 'EXIT_BREAKEVEN_LOCK'
             if reason:
                 from core.services.exits.dual_track_exit_service import POLICY
                 state['pending'] = reason
                 position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
-            return reason
+                return dict(action='CLOSE_POSITION', type=reason, price=price, reason=reason)
+            return None
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
+
+    def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):
+        """Compatibility adapter; the former 0.8 ATR / 8U policy is retired."""
+        decision = self.evaluate_anti_whipsaw_profit_lock(position, current_tick_price, bar_curr, atr)
+        return decision['type'] if decision else None
 
     def evaluate_entry(self, symbol, bar_curr, bar_prev1, bar_prev2=None):
         """Compatibility entry point; all callers use the second-bar rule."""

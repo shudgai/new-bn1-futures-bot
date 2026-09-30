@@ -6,7 +6,7 @@ from core.services.strategies.unified_entry_strategy import confirmed
 POLICY = 'closed_1m_confirmed_swing_v2'
 SL_INIT_MULT = 1.5
 DUAL_TRACK_STATE_KEYS = [
-    'instant_exit_state', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
+    'instant_exit_state', 'peak_pnl_usd', 'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
     'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
     'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
@@ -34,7 +34,9 @@ class DualTrackExitStrategy(IExitStrategy):
         if position.get('side') not in ('LONG', 'SHORT'):
             return None
         state = position.get('closed_exit_state') or {}
-        valid_reasons = {'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_INTRADAY_ANOMALY_SPIKE',
+        valid_reasons = {'EXIT_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
+                         'EXIT_PROFIT_TIER2_LOCK', 'EXIT_BREAKEVEN_LOCK',
+                         'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_INTRADAY_ANOMALY_SPIKE',
                          'EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT', 'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
                          'EXIT_SWING_HIGH_BREAK_CLOSED', 'EMERGENCY_BTC_CRASH',
                          'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
