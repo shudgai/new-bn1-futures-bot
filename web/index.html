@@ -1017,6 +1017,7 @@
                         if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
                         if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
                         if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
+                        const positionGroups = {};
                         [...(d.trade_markers || [])]
                             .sort((a, b) => Number(b.action.startsWith('CLOSE_')) - Number(a.action.startsWith('CLOSE_')))
                             .forEach(trade => {
@@ -1027,11 +1028,25 @@
                                     CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
-                                tradeMarkers.push({
-                                    time: d.time, ...markerStyle,
-                                    size: 1,
-                                });
+                                
+                                const key = markerStyle.position;
+                                if (positionGroups[key]) {
+                                    positionGroups[key].text += ` + ${markerStyle.text}`;
+                                    // 若包含開倉，讓開倉顏色優先 (例如平空+開多時顯示藍色箭頭)
+                                    if (trade.action.startsWith('OPEN_')) {
+                                        positionGroups[key].color = markerStyle.color;
+                                    }
+                                } else {
+                                    positionGroups[key] = { ...markerStyle };
+                                }
                             });
+                        
+                        Object.values(positionGroups).forEach(m => {
+                            tradeMarkers.push({
+                                time: d.time, ...m,
+                                size: 1,
+                            });
+                        });
                     });
                     
                     const referencePrice = Number((candles[candles.length - 1] || {}).close || 0);
