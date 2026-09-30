@@ -178,10 +178,6 @@ class PureTrendStrategyV2:
             return None  # 均線走平黏合，直接一票否決！
 
         kc_middle_prev = float(bar_prev.get('kc_middle', current_price))
-        channel_width_pct = (kc_upper_prev - kc_lower_prev) / kc_middle_prev * 100.0
-        if channel_width_pct < 0.20:
-            self.entry_rejection = "通道寬度不足0.20%"
-            return None  # 通道極度壓縮，波動率過低，拒絕開倉
 
         # -------------------------------------------------------------
         # 門禁 0：趨勢一致性與超買/超賣過濾 (乖離上限)
