@@ -223,97 +223,87 @@ class PureTrendStrategyV2:
         body_curr = abs(current_price - curr_open)
         min_body_threshold = 0.5 * atr
 
+        kc_middle_curr = float(bar_curr['kc_middle'])
+        
         # -------------------------------------------------------------
-        # 多單做多開倉標準範例：
+        # 多單做多開倉 (Pullback Long Entry)：回踩均線確認支撐
         # -------------------------------------------------------------
-        # 新增 Doji 過濾 (實體小於總長度 20% 或是小於 0.5 ATR 視為十字星/變盤線)
-        prev_range = float(bar_prev['high']) - float(bar_prev['low'])
-        prev_body = abs(prev_close - prev_open)
-        is_prev_doji = (prev_body < 0.20 * prev_range) or (prev_body < 0.5 * atr) if prev_range > 0 else True
-        is_curr_doji = (body_curr < 0.20 * curr_range) or (body_curr < 0.5 * atr) if curr_range > 0 else True
-        
-        # 放寬雙棒推進：第 1 根實體突破 KC 上軌，第 2 根維持收陽且破軌
-        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
-        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (current_price > curr_open)
-        
-        two_bar_long = bar1_long_valid and bar2_breaks_prev_high
-        
-        # 【趨勢過濾】做多必須 CK 向上
-        long_trend_valid = ck_is_up
+        # 【趨勢過濾】做多必須 CK 向上 且 MA3 > MA15 (多頭排列)
+        is_ma_bullish = (ma3 > ma15)
+        long_trend_valid = ck_is_up and is_ma_bullish
             
         # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit
         if dist_from_ma15_atr > ma15_dist_limit:
             long_trend_valid = False
 
-        # -------------------------------------------------------------
-        # 4. 強勢突破與趨勢延續例外規則 (Trend Continuation & Override)
-        # -------------------------------------------------------------
-        # 優化強勢延續開倉：價格持續在上軌外與 MA5/MA3 上方，無須嚴格實體門檻
-        continuation_long = (
-            (current_price > kc_upper_curr) and
-            (prev_close > kc_upper_prev) and
-            (current_price > ma3)
-        )
-        # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
-        massive_breakout_long = (
-            (current_price > kc_upper_curr) and
-            (current_price > curr_open) and
-            (body_curr >= 1.2 * atr)
-        )
+        # 回踩準備與觸發：
+        # 1. 價格回踩至 MA5(ma3) 或 KC 中軌附近 (低點觸及或低於)
+        touched_support_long = (curr_low <= ma3) or (curr_low <= kc_middle_curr)
+        # 2. 收盤未實質跌破中軌 (現價 >= 中軌)
+        held_support_long = (current_price >= kc_middle_curr)
+        # 3. 止跌信號：當根 K 棒收出帶下影線的實體陽線 (Close > Open)
+        is_green_candle = (current_price > curr_open)
         
-        final_long_signal = (two_bar_long or continuation_long or massive_breakout_long) and long_trend_valid
+        pullback_long = touched_support_long and held_support_long and is_green_candle
+        
+        final_long_signal = pullback_long and long_trend_valid
 
         if final_long_signal:
             res = {"action": "ENTRY_LONG"}
+            sl_price = min(curr_low, kc_middle_curr)
+            if current_price - sl_price < 0.5 * atr:
+                sl_price = current_price - 0.5 * atr
+            res["initial_sl"] = sl_price
             return res
 
         # -------------------------------------------------------------
-        # 空單做空開倉標準範例：
+        # 空單做空開倉 (Pullback Short Entry)：回抽均線確認阻力
         # -------------------------------------------------------------
-        # 放寬雙棒推進：第 1 根實體跌破 KC 下軌，第 2 根維持收陰且破軌
-        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
-        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (current_price < curr_open)
-        
-        two_bar_short = bar1_short_valid and bar2_breaks_prev_low
-        
-        # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
-        short_trend_valid = ck_is_down
+        # 【趨勢過濾】做空必須 CK 向下 且 MA3 < MA15 (空頭排列)
+        is_ma_bearish = (ma3 < ma15)
+        short_trend_valid = ck_is_down and is_ma_bearish
             
-        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 ma15_dist_limit
+        # 【乖離過濾】嚴禁極度超賣追空
         if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
-        # 優化強勢延續開倉：價格持續在下軌外與 MA5/MA3 下方，無須嚴格實體門檻
-        continuation_short = (
-            (current_price < kc_lower_curr) and
-            (prev_close < kc_lower_prev) and
-            (current_price < ma3)
-        )
-        # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
-        massive_breakout_short = (
-            (current_price < kc_lower_curr) and
-            (current_price < curr_open) and
-            (body_curr >= 1.2 * atr)
-        )
-
-        final_short_signal = (two_bar_short or continuation_short or massive_breakout_short) and short_trend_valid
+        # 回抽準備與觸發：
+        # 1. 價格反彈至 MA5(ma3) 或 KC 中軌附近 (高點觸及或高於)
+        touched_resistance_short = (curr_high >= ma3) or (curr_high >= kc_middle_curr)
+        # 2. 收盤未實質站穩中軌 (現價 <= 中軌)
+        held_resistance_short = (current_price <= kc_middle_curr)
+        # 3. 受阻信號：當根 K 棒收出帶上影線的實體陰線 (Close < Open)
+        is_red_candle = (current_price < curr_open)
+        
+        pullback_short = touched_resistance_short and held_resistance_short and is_red_candle
+        
+        final_short_signal = pullback_short and short_trend_valid
 
         if final_short_signal:
             res = {"action": "ENTRY_SHORT"}
+            sl_price = max(curr_high, kc_middle_curr)
+            if sl_price - current_price < 0.5 * atr:
+                sl_price = current_price + 0.5 * atr
+            res["initial_sl"] = sl_price
             return res
 
-        # Report the first failed condition for the actual outside direction.
-        if (current_price > kc_upper_curr and current_price > curr_open) or (prev_close > kc_upper_prev and prev_close > prev_open):
+        # Report the first failed condition
+        if current_price > kc_middle_curr:
             checks = [(ck_is_up, "CK方向未向上"),
+                      (is_ma_bullish, "均線未呈多頭排列"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過乖離上限"),
-                      (two_bar_long or continuation_long or massive_breakout_long, "不符合雙棒推進或強勢延續")]
-        elif (current_price < kc_lower_curr and current_price < curr_open) or (prev_close < kc_lower_prev and prev_close < prev_open):
-            checks = [(ck_is_down, "CK方向未向下"),
-                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過乖離上限"),
-                      (two_bar_short or continuation_short or massive_breakout_short, "不符合雙棒推進或強勢延續")]
+                      (touched_support_long, "未回踩均線或中軌"),
+                      (held_support_long, "收盤未能守住中軌"),
+                      (is_green_candle, "回踩後未收出陽線")]
         else:
-            checks = [(False, "未形成任何多空破軌動能")]
-        self.entry_rejection = next(reason for passed, reason in checks if not passed)
+            checks = [(ck_is_down, "CK方向未向下"),
+                      (is_ma_bearish, "均線未呈空頭排列"),
+                      (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過乖離上限"),
+                      (touched_resistance_short, "未反彈至均線或中軌"),
+                      (held_resistance_short, "收盤未能壓制在中軌之下"),
+                      (is_red_candle, "反彈後未收出陰線")]
+        
+        self.entry_rejection = next((reason for passed, reason in checks if not passed), "條件未滿足")
         return None
 
     @staticmethod
