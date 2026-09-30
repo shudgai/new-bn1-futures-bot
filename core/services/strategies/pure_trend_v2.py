@@ -141,33 +141,32 @@ class PureTrendStrategyV2:
             return None  # 均線走平黏合，直接一票否決！
 
         # -------------------------------------------------------------
-        # 門禁 1：起爆新鮮度過濾（嚴禁第 3 根以後追單）
+        # 門禁 1：起爆新鮮度過濾（必須經過通道內「充分整理」）
         # -------------------------------------------------------------
-        if closed is not None and len(closed) >= 2:
-            prev2 = closed.iloc[-2]
-            prev2_close = float(prev2['close'])
-            prev2_kc_upper = float(prev2['kc_upper'])
-            prev2_kc_lower = float(prev2['kc_lower'])
+        # 破軌前 2 到前 5 根 (共 4 根)，至少有 3 根收在 KC 軌道之內
+        if closed is not None and len(closed) >= 6:
+            prev_4_bars = closed.iloc[-5:-1]
+            inside_count = 0
+            for _, row in prev_4_bars.iterrows():
+                if row['kc_lower'] <= row['close'] <= row['kc_upper']:
+                    inside_count += 1
+            if inside_count < 3:
+                return None  # 整理不充分，視為過期趨勢或連續單邊
         else:
-            # 缺乏歷史資料不開
-            return None
+            return None # 資料不足
 
         # -------------------------------------------------------------
-        # 門禁 2：地板空 / 天花板多過濾 (找最近的 Swing High/Low)
+        # 門禁 2：地板空 / 天花板多過濾 (滾動 15 根絕對極值)
         # -------------------------------------------------------------
-        swing_high = None
-        swing_low = None
-        if closed is not None and len(closed) >= 5:
-            highs = closed['high'].tolist()
-            for i in range(len(highs)-3, 1, -1):
-                if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
-                    swing_high = highs[i]
-                    break
-            lows = closed['low'].tolist()
-            for i in range(len(lows)-3, 1, -1):
-                if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
-                    swing_low = lows[i]
-                    break
+        highest_15 = None
+        lowest_15 = None
+        if closed is not None and len(closed) >= 15:
+            last_15 = closed.iloc[-15:]
+            highest_15 = float(last_15['high'].max())
+            lowest_15 = float(last_15['low'].min())
+        elif closed is not None and len(closed) > 0:
+            highest_15 = float(closed['high'].max())
+            lowest_15 = float(closed['low'].min())
 
         atr = float(bar_prev.get('atr', 0))
 
@@ -176,9 +175,6 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
-        # 【新鮮度限制】更前一根必須收在軌內，不允許連續 2 根以上收軌外
-        if prev2_close > prev2_kc_upper:
-            bar1_long_valid = False
         
         # 2. 第 2 根盤中當下必須為同向綠陽線 (現價 > 開盤價)
         bar2_is_green = (current_price > curr_open)
@@ -186,10 +182,10 @@ class PureTrendStrategyV2:
         bar2_not_doji = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
         bar2_no_long_upper_wick = (curr_high - current_price) <= (curr_body * 1.0)
 
-        # 【天花板多過濾】開多位置離前高必須至少 1.5 ATR 空間，否則視為撞天花板
+        # 【天花板多過濾】開多位置離前高必須至少 2.0 ATR 空間，否則視為撞天花板
         ceiling_blocked = False
-        if swing_high is not None and atr > 0:
-            if swing_high > current_price and (swing_high - current_price) < 1.5 * atr:
+        if highest_15 is not None and atr > 0:
+            if highest_15 > current_price and (highest_15 - current_price) < 2.0 * atr:
                 ceiling_blocked = True
 
         if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick and not ceiling_blocked:
@@ -200,9 +196,6 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
-        # 【新鮮度限制】更前一根必須收在軌內，不允許連續 2 根以上收軌外
-        if prev2_close < prev2_kc_lower:
-            bar1_short_valid = False
         
         # 2. 第 2 根盤中當下必須為同向紅陰線 (現價 < 開盤價)
         bar2_is_red = (current_price < curr_open)
@@ -210,10 +203,10 @@ class PureTrendStrategyV2:
         bar2_not_doji_short = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
         bar2_no_long_lower_wick = (current_price - curr_low) <= (curr_body * 1.0)
 
-        # 【地板空過濾】開空位置離前低必須至少 1.5 ATR 空間，否則視為死在地板上
+        # 【地板空過濾】開空位置離前低必須至少 2.0 ATR 空間，否則視為死在地板上
         floor_blocked = False
-        if swing_low is not None and atr > 0:
-            if current_price > swing_low and (current_price - swing_low) < 1.5 * atr:
+        if lowest_15 is not None and atr > 0:
+            if current_price > lowest_15 and (current_price - lowest_15) < 2.0 * atr:
                 floor_blocked = True
 
         if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick and not floor_blocked:
