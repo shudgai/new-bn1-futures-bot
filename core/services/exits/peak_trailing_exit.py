@@ -146,15 +146,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             prev2_close = float(snapshot.get('prev2_close', 0.)) if isinstance(snapshot, dict) else 0.
             prev2_open = float(snapshot.get('prev2_open', 0.)) if isinstance(snapshot, dict) else 0.
             
-            # 尾部信號 C: 當浮盈曾達到 2.5 ATR 以上，回落 40% (即時判斷)
-            if scale > 0 and gain >= 2.5 * scale:
-                retrace = sign*(state['peak_price']-price)
-                if retrace > 0.40 * gain:
-                    reason, trigger = PEAK_REASON, 'PEAK_RETRACE_40PCT_AFTER_2.5ATR'
-                    
-            # 尾部信號 A 與 B: 實質跌回軌內 或 短線動能竭盡 (收盤判定)
+            # 所有的波段尾聲判定均嚴格基於 K 棒收盤價 (c_close)，不使用即時 Tick 價
             if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma5 > 0 and c_middle > 0:
-                atr_tolerance = 1.0 * scale if scale > 0 else 0
+                atr_tolerance = 1.2 * scale if scale > 0 else 0
                 retrace_from_peak = sign*(state['peak_price'] - c_close)
                 
                 if is_long:
