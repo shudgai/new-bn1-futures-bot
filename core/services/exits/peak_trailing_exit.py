@@ -193,6 +193,22 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 if tight_lock_triggered:
                     reason, trigger = PEAK_REASON, trigger_reason
                 
+                # 獨立防線：KC 中軌破位 或 KC 轉向 (最高優先級，無條件執行)
+                prev_middle = float(snapshot.get('prev_kc_middle', c_middle)) if isinstance(snapshot, dict) else c_middle
+                if is_long:
+                    kc_turned_down = c_middle < prev_middle
+                    if kc_turned_down:
+                        reason, trigger = PEAK_REASON, 'KC_TURNED_DOWN'
+                    elif c_close < c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
+                else:
+                    kc_turned_up = c_middle > prev_middle
+                    if kc_turned_up:
+                        reason, trigger = PEAK_REASON, 'KC_TURNED_UP'
+                    elif c_close > c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
+                
+                # 其他形態與均線平倉
                 if not reason:
                     if is_long:
                         # 判斷吞噬結構：大陰線吞噬前兩根陽線，且收回通道內
@@ -200,9 +216,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                                 c_open >= max(prev_close, prev_open) and c_close <= min(prev2_open, prev_open) and 
                                                 c_close < c_upper)
     
-                        if c_close < c_middle:
-                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
-                        elif not is_early_phase:
+                        if not is_early_phase:
                             if is_bearish_engulfing:
                                 reason, trigger = PEAK_REASON, 'BEARISH_ENGULFING_INSIDE_KC'
                             elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
@@ -214,9 +228,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                                 c_open <= min(prev_close, prev_open) and c_close >= max(prev2_open, prev_open) and 
                                                 c_close > c_lower)
     
-                        if c_close > c_middle:
-                            reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
-                        elif not is_early_phase:
+                        if not is_early_phase:
                             if is_bullish_engulfing:
                                 reason, trigger = PEAK_REASON, 'BULLISH_ENGULFING_INSIDE_KC'
                             elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
