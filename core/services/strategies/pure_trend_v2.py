@@ -109,6 +109,68 @@ class PureTrendStrategyV2:
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
 
+    def check_standard_example_breakout_entry(
+        self,
+        bar_prev: Dict[str, Any],     # 第 1 根（剛收盤的破軌確認 K）
+        bar_curr: Dict[str, Any],     # 第 2 根（當前盤中推進 K）
+        current_price: float,
+        indicators: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        100% 依據使用者給定範例開倉：
+        必須【全部條件同時為 True】，任一條件不符直接回傳 None（嚴禁開倉）！
+        """
+        kc_upper_prev = float(bar_prev['kc_upper'])
+        kc_lower_prev = float(bar_prev['kc_lower'])
+        prev_close = float(bar_prev['close'])
+        prev_open = float(bar_prev['open'])
+        
+        curr_open = float(bar_curr['open'])
+        curr_high = float(bar_curr['high'])
+        curr_low = float(bar_curr['low'])
+        curr_range = curr_high - curr_low
+        curr_body = abs(current_price - curr_open)
+
+        ma3 = float(indicators['ma3'])
+        ma15 = float(indicators['ma15'])
+
+        # 均線張角過濾（防死魚震盪）
+        spread_pct = abs(ma3 - ma15) / current_price * 100.0
+        if spread_pct < 0.04:
+            return None  # 均線走平黏合，直接一票否決！
+
+        # -------------------------------------------------------------
+        # 多單做多開倉標準範例：
+        # -------------------------------------------------------------
+        # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
+        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
+        
+        # 2. 第 2 根盤中當下必須為同向綠陽線 (現價 > 開盤價)
+        bar2_is_green = (current_price > curr_open)
+        # 3. 嚴禁十字星與高位墓碑 (實體必須佔波幅 30% 以上，且上影線不大於實體)
+        bar2_not_doji = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
+        bar2_no_long_upper_wick = (curr_high - current_price) <= (curr_body * 1.0)
+
+        if bar1_long_valid and bar2_is_green and bar2_not_doji and bar2_no_long_upper_wick:
+            return "ENTRY_LONG"
+
+        # -------------------------------------------------------------
+        # 空單做空開倉標準範例：
+        # -------------------------------------------------------------
+        # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
+        bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
+        
+        # 2. 第 2 根盤中當下必須為同向紅陰線 (現價 < 開盤價)
+        bar2_is_red = (current_price < curr_open)
+        # 3. 嚴禁十字星與低位蜻蜓 (實體必須佔波幅 30% 以上，且下影線不大於實體)
+        bar2_not_doji_short = (curr_range > 0) and (curr_body >= 0.3 * curr_range)
+        bar2_no_long_lower_wick = (current_price - curr_low) <= (curr_body * 1.0)
+
+        if bar1_short_valid and bar2_is_red and bar2_not_doji_short and bar2_no_long_lower_wick:
+            return "ENTRY_SHORT"
+
+        return None
+
     def evaluate_second_bar_outside_entry(
         self, symbol: str, bar_curr: Dict[str, Any], bar_prev: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
@@ -124,33 +186,24 @@ class PureTrendStrategyV2:
                 or not isinstance(current_closed, (bool, np.bool_)) or current_closed):
             return None
         try:
-            p_open, p_close, p_upper, p_lower = (
-                float(bar_prev[k]) for k in ('open', 'close', 'kc_upper', 'kc_lower'))
-            c_open, price, upper, lower, mid, ma3, ma15 = (
-                float(bar_curr[k]) for k in
-                ('open', 'close', 'kc_upper', 'kc_lower', 'kc_middle', 'ma3', 'ma15'))
-            stamps = [float(bar['timestamp']) for bar in (bar_prev, bar_curr)]
-            values = (p_open, p_close, p_upper, p_lower, c_open, price,
-                      upper, lower, mid, ma3, ma15, *stamps)
-            if not all(math.isfinite(v) and v > 0 for v in values):
+            # Check timestamps to ensure they are consecutive
+            p_stamp, c_stamp = float(bar_prev['timestamp']), float(bar_curr['timestamp'])
+            if c_stamp - p_stamp != 60000:
                 return None
-            if not p_lower < p_upper or not lower < mid < upper:
-                return None
-            if stamps[1] - stamps[0] != 60000:
-                return None
+                
+            current_price = float(bar_curr['close'])
+            
+            # Delegate entirely to the standard example breakout entry
+            result = self.check_standard_example_breakout_entry(
+                bar_prev, bar_curr, current_price, bar_curr
+            )
+            if result:
+                side = result.replace('ENTRY_', '')
+                return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=current_price,
+                            reason='符合標準開倉範例')
+            return None
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
-        side = None
-        if p_close > p_open and p_close > p_upper and price > upper and ma3 > ma15:
-            side = 'LONG'
-        elif p_close < p_open and p_close < p_lower and price < lower and ma3 < ma15:
-            side = 'SHORT'
-        if side is None:
-            return None
-        if not self.is_valid_directional_entry_bar(bar_curr, side):
-            return None
-        return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=price,
-                    reason='第1根已收線同向實體站外，第2根盤中站外且均線同向即開倉')
 
     def evaluate_anti_whipsaw_profit_lock(self, position, current_price, bar_curr, atr):
         """Tick protection; no breakeven or fixed-profit tier exits."""
