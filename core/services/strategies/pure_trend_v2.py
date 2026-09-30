@@ -243,8 +243,8 @@ class PureTrendStrategyV2:
         # 【趨勢過濾】做多必須 CK 向上
         long_trend_valid = ck_is_up
             
-        # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit，且超出上軌不得大於 0.8 ATR
-        if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
+        # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit
+        if dist_from_ma15_atr > ma15_dist_limit:
             long_trend_valid = False
 
         if (two_bar_long or single_bar_long) and long_trend_valid:
@@ -274,8 +274,8 @@ class PureTrendStrategyV2:
         # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
         short_trend_valid = ck_is_down
             
-        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 ma15_dist_limit，且跌破下軌不得大於 0.8 ATR
-        if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
+        # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 ma15_dist_limit
+        if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
         if (two_bar_short or single_bar_short) and short_trend_valid:
@@ -289,14 +289,12 @@ class PureTrendStrategyV2:
         if (current_price > kc_upper_curr and current_price > curr_open) or (prev_close > kc_upper_prev and prev_close > prev_open):
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
                       (two_bar_long or single_bar_long, "不符合雙棒推進或單根暴力破軌"),
                       (long_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (long_wick_valid, "長上影線拋壓過大")]
         elif (current_price < kc_lower_curr and current_price < curr_open) or (prev_close < kc_lower_prev and prev_close < prev_open):
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
-                      (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
                       (two_bar_short or single_bar_short, "不符合雙棒推進或單根暴力破軌"),
                       (short_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (short_wick_valid, "長下影線買盤抵抗過大")]
