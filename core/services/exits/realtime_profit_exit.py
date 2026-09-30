@@ -4,7 +4,9 @@ import math
 import time
 
 from core.services.candle_data import closed_entry_candles
-from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS, POLICY
+from core.services.exits.peak_trailing_exit import (
+    STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity,
+)
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
@@ -18,12 +20,26 @@ def cached_tick_indicators(frame, price, stamp):
     bar = math.floor(stamp / 60000) * 60000
     if closed.empty or float(closed.iloc[-1]['timestamp']) != bar - 60000:
         return snapshot, 0.
-    previous = closed.iloc[-1]
-    for key in ('kc_middle', 'kc_upper', 'kc_lower'):
-        snapshot[key] = previous.get(key, 0.)
-    if len(closed) >= 2 and float(closed.iloc[-2]['timestamp']) == bar - 120000:
-        snapshot['live_ma3'] = (float(closed.iloc[-2]['close']) + float(previous['close']) + price) / 3
-    return snapshot, float(previous.get('atr') or 0.)
+    return snapshot, float(closed.iloc[-1].get('atr') or 0.)
+
+
+def migrate_account_peak_exits(account):
+    """Run before trading tasks, and clean both persisted copies of held state."""
+    changed = False
+    for symbol, position in account.positions.items():
+        meta = account.position_meta.setdefault(symbol, {})
+        if (position.get('entry_mode') or meta.get('entry_mode')) != 'CHANNEL_SWING':
+            continue
+        try:
+            migrate_peak_state(position, meta)
+            for key in STATE_KEYS:
+                if key in position:
+                    meta[key] = copy.deepcopy(position[key])
+            changed = True
+        except (KeyError, TypeError, ValueError, OverflowError):
+            account.log(f'PEAK_EXIT_MIGRATION_INVALID symbol={symbol}', 'WARNING')
+    if changed:
+        account.save_state()
 
 
 async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
@@ -35,57 +51,43 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         return False
     try:
         price = float(price)
-        stamp = float(quote_ms) if quote_ms is not None else time.time() * 1000
+        stamp = float(quote_ms) if quote_ms is not None else time.time()*1000
         if (not math.isfinite(price) or price <= 0 or not math.isfinite(stamp)
-                or not 0 <= time.time() - stamp / 1000 <= 5):
+                or not 0 <= time.time()-stamp/1000 <= 5):
             return False
-        identity = [position['side'], float(position['open_timestamp']),
-                    float(position['entry_price']), abs(float(position.get('qty', position.get('quantity', 0))))]
+        ident = position_identity(position)
         meta = account.position_meta.setdefault(symbol, {})
-        saved = meta.get('instant_exit_state') or {}
-        if 'instant_exit_state' not in position and saved.get('identity') == identity:
-            position['instant_exit_state'] = copy.deepcopy(saved)
-            if 'closed_exit_state' not in position and 'closed_exit_state' in meta:
-                position['closed_exit_state'] = copy.deepcopy(meta['closed_exit_state'])
-        state = position.get('instant_exit_state') or {}
-        if stamp < identity[1] * 1000 or (state.get('identity') == identity and stamp < state.get('last_ms', 0)):
+        saved = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
+        if stamp < ident[1]*1000 or (saved.get('identity') == ident and stamp < saved.get('last_ms',0)):
             return False
+        old = copy.deepcopy(meta.get(STATE_KEY) or {})
+        retired = any(key in source for source in (position,meta) for key in RETIRED_KEYS)
+        migrate_peak_state(position, meta)
         try:
-            snapshot, atr = cached_tick_indicators(getattr(engine, '_channel_exit_frames', {}).get(symbol), price, stamp)
-        except (KeyError, TypeError, ValueError, OverflowError, IndexError):
-            snapshot, atr = {'quote_ms': stamp}, 0.
-        decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position, price, snapshot, atr)
-        reason = decision['type'] if decision else None
-        # Initial ATR stop also runs on aggTrade, even while the scan is blocked.
-        stop = float(position.get('stop_loss') or position.get('sl') or 0.)
-        if not stop and float(position.get('entry_atr') or 0.) > 0:
-            stop = identity[2] - (1 if identity[0] == 'LONG' else -1) * 1.5 * float(position['entry_atr'])
-        if math.isfinite(stop) and stop > 0 and (price-stop)*(1 if identity[0]=='LONG' else -1) <= 0:
-            reason = 'EXIT_INITIAL_ATR_HARD_STOP'
-        pending = position.get('closed_exit_state') or {}
-        if pending.get('pending') and pending.get('reason') == 'EXIT_INITIAL_ATR_HARD_STOP':
-            reason = pending['reason']
-        if reason:
-            position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
-        # Save only changed observations, not every timestamp in the feed.
-        old = meta.get('instant_exit_state') or {}
-        current = position.get('instant_exit_state') or {}
-        changed = any(old.get(k) != current.get(k) for k in
-                      ('identity', 'peak', 'trail_atr', 'outer_seen', 'pending'))
-        for key in DUAL_TRACK_STATE_KEYS:
+            if position[STATE_KEY].get('atr', 0.) > 0:
+                snapshot, atr = {'quote_ms':stamp}, 0.
+            else:
+                snapshot, atr = cached_tick_indicators(getattr(engine,'_channel_exit_frames',{}).get(symbol),price,stamp)
+        except (KeyError,TypeError,ValueError,OverflowError,IndexError):
+            snapshot, atr = {'quote_ms':stamp}, 0.
+        decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
+        current = position[STATE_KEY]
+        changed = retired or any(old.get(k) != current.get(k) for k in
+                  ('identity','peak_price','peak_net_pnl','atr','armed','pending'))
+        for key in STATE_KEYS:
             if key in position:
                 meta[key] = copy.deepcopy(position[key])
-        if changed or reason:
+        if changed:
             account.save_state()
-        if await enforce_hard_stop(account, symbol, price):
+        if await enforce_hard_stop(account,symbol,price):
             return True
-        if not reason or account.positions.get(symbol) is not position:
+        if not decision or account.positions.get(symbol) is not position:
             return False
-        # Account-level closing_lock serializes competing ticker/trade/scan closes.
-        account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} quote_ms={stamp} '
-                    f'price={price} peak_price={current.get("peak_price")} '
-                    f'peak_pnl_usd={current.get("peak")} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
-        await account.close_position(symbol, price, reason, is_manual=True)
+        reason = decision['type']
+        account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={decision["trigger"]} '
+                    f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
+                    f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
+        await account.close_position(symbol,price,reason,is_manual=True)
         return True
-    except (KeyError, TypeError, ValueError, OverflowError):
+    except (KeyError,TypeError,ValueError,OverflowError):
         return False

@@ -1,14 +1,7 @@
-"""Monotone chandelier stops with chronological, closed one-minute decisions."""
+"""Initial stop compatibility; strategy exits belong to real-time peak trailing."""
 import math
-import time
-
-from core.services.candle_data import closed_entry_candles
-
-POLICY = "chandelier_1m_v2"
-STOP_REASON = "EXIT_TRAILING_ATR_1M_CLOSED"
-MIDDLE_REASON = "EXIT_KC_MIDDLE_BODY_CLOSED"
-STATE_KEYS = ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
-              "chandelier_state", "sl", "tp", "channel_profit_protection")
+from core.services.exits.peak_trailing_exit import POLICY, STATE_KEYS, RETIRED_KEYS
+STOP_REASON = "EXIT_INITIAL_ATR_HARD_STOP"
 
 
 def valid(value):
@@ -28,23 +21,8 @@ def initialize_chandelier(position, entry_price, side, atr, initial_stop=None):
         raise ValueError("Invalid chandelier stop")
     position.update(entry_atr=atr, atr_sl=stop, atr_tp=0., atr_protection_version=2,
                     sl=stop, tp=0., initial_sl=stop, initial_risk=abs(entry_price-stop))
-    position["chandelier_state"] = dict(
-        policy=POLICY, stop=stop, confirmed_stop=stop, highest_price=entry_price,
-        lowest_price=entry_price, confirmed_high=entry_price, confirmed_low=entry_price,
-        atr=atr, last_closed_bar=-1, quote_bars={}, pending=False,
-    )
-    position["channel_profit_protection"] = dict(policy=POLICY, pending=False)
-
-
-def _tighten(side, *values):
-    return (max if side == "LONG" else min)(values)
-
-
-def _publish(position, state):
-    position.update(atr_sl=state['stop'], sl=state['stop'], atr_tp=0., tp=0.,
-                    atr_protection_version=2)
-    position['channel_profit_protection'] = dict(
-        policy=POLICY, pending=state['pending'], reason=state.get('reason'))
+    for key in RETIRED_KEYS:
+        position.pop(key, None)
 
 
 def chandelier_exit_reason(position, price, frame=None, *, now_ms=None):

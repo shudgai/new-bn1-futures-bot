@@ -9,9 +9,8 @@ class PureTrendStrategyV2:
     妖幣純淨趨勢追蹤引擎：
     1. 開倉：前根已收線同向實體站外，下一根盤中突破前根高低點；共用趨勢、整理與距離限制。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
-    3. 盤中策略出口：嚴格穿越KC中軌，或正浮盈峰值回吐達25%／0.8ATR／軌外MA3反轉；不等收線。
-    4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
-    5. 未觸發平倉前，嚴格抱牢波段，一股都不賣！
+    3. 唯一策略出口：1.5ATR或5%淨利啟動，峰值回退超過0.4ATR或淨利回吐達20%即時全平。
+    4. 帳戶與初始硬止損獨立保留，無收線、中軌、MA3或分批策略出口。
     """
     def __init__(self):
         self.cooldown_tracker = {}
@@ -397,100 +396,11 @@ class PureTrendStrategyV2:
             return None
 
     def evaluate_anti_whipsaw_profit_lock(self, position, current_price, bar_curr, atr):
-        """Tick protection; no breakeven or fixed-profit tier exits."""
-        try:
-            price = float(current_price)
-            entry = float(position['entry_price'])
-            qty = abs(float(position.get('qty', position.get('quantity', 0.))))
-            stamp, opened = float(bar_curr['quote_ms']), float(position['open_timestamp'])
-            side = position['side']
-            if side not in ('LONG', 'SHORT') or not all(
-                    math.isfinite(v) and v > 0 for v in (price, entry, qty, stamp, opened)):
-                return None
-            if stamp < opened*1000:
-                return None
-            identity = [side, opened, entry, qty]
-            state = position.get('instant_exit_state') or {}
-            if not state:
-                peak = float(position.get('peak_pnl_usd') or 0.)
-                state = dict(identity=identity, peak=max(0., peak) if math.isfinite(peak) else 0.)
-            elif state.get('identity') != identity:
-                state = dict(identity=identity, peak=0.)
-            else:
-                legacy_peak = float(position.get('peak_pnl_usd') or 0.)
-                if math.isfinite(legacy_peak):
-                    state['peak'] = max(float(state.get('peak', 0.)), legacy_peak)
-            if stamp < state.get('last_ms', 0):
-                return None
-            # Removed exits cannot survive a restart as pending closes.
-            retired = {'EXIT_PROFIT_TIER2_LOCK', 'EXIT_BREAKEVEN_LOCK',
-                       'EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT', 'EXIT_INTRADAY_ANOMALY_SPIKE',
-                       'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
-                       'EMERGENCY_GIANT_REVERSE_CANDLE', 'EMERGENCY_BTC_CRASH'}
-            if state.get('pending') not in {None, 'EXIT_KC_MID_BREACH',
-                                            'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
-                                            'EXIT_PEAK_RETRACE_08ATR', 'EXIT_OUTER_MA3_REVERSAL'}:
-                state.pop('pending', None)
-            if (position.get('closed_exit_state') or {}).get('reason') in retired:
-                position['closed_exit_state'] = {}
-            state.pop('breakeven_line', None)
-            state.pop('tier2_line', None)
-            if state.get('pending'):
-                return dict(action='CLOSE_POSITION', type=state['pending'], price=price,
-                            reason=state['pending'])
-            sign = 1 if side == 'LONG' else -1
-            pnl = sign*(price-entry)*qty
-            state.update(last_ms=stamp, peak=max(float(state.get('peak', 0.)), pnl),
-                         version=4)
-            scale = float(atr or 0.)
-            peak_gain = float(state.get('peak_gain_atr', 0.))
-            if math.isfinite(scale) and scale > 0:
-                peak_gain = max(peak_gain, sign*(price-entry)/scale)
-            state['peak_gain_atr'] = peak_gain
-            reached = lambda value, limit: value >= limit or math.isclose(value, limit, rel_tol=1e-12)
-            position['instant_exit_state'] = state
-            position['peak_pnl_usd'] = state['peak']
-            position['peak_gain_atr'] = peak_gain
-            position['peak_unrealized_profit_usd'] = state['peak']
-            position['current_unrealized_pnl_usd'] = pnl
-            reason = None
-            mid = float(bar_curr.get('kc_middle') or 0.)
-            if math.isfinite(mid) and mid > 0 and sign*(price-mid) < 0:
-                reason = 'EXIT_KC_MID_BREACH'
-            # The peak is made from observed quotes, never a candle high/low.
-            state['peak_price'] = entry + sign * state['peak'] / qty
-            position['peak_price'] = state['peak_price']
-            if math.isfinite(scale) and scale > 0 and not state.get('trail_atr'):
-                state['trail_atr'] = scale
-            threshold = state['peak'] * .25
-            if reason is None and state['peak'] > 0 and reached(state['peak'] - pnl, threshold):
-                reason = 'EXIT_PEAK_DRAWDOWN_25PCT'
-            trail_atr = float(state.get('trail_atr') or 0.)
-            retrace = sign * (state['peak_price'] - price)
-            if reason is None and state['peak'] > 0 and trail_atr > 0 and reached(retrace, .8 * trail_atr):
-                reason = 'EXIT_PEAK_RETRACE_08ATR'
-            rail = float(bar_curr.get('kc_upper' if sign == 1 else 'kc_lower') or 0.)
-            ma3 = float(bar_curr.get('live_ma3') or 0.)
-            if math.isfinite(rail) and rail > 0 and pnl > 0 and sign * (price-rail) > 0:
-                state['outer_seen'] = True
-            if math.isfinite(ma3) and ma3 > 0:
-                distance = sign * (price-ma3)
-                if (reason is None and state.get('outer_seen') and pnl > 0
-                        and state.get('ma3_distance', -1.) >= 0 and distance < 0
-                        and sign * (price-state.get('last_price', price)) < 0):
-                    reason = 'EXIT_OUTER_MA3_REVERSAL'
-                state['ma3_distance'] = distance
-            else:
-                state.pop('ma3_distance', None)
-            state['last_price'] = price
-            if reason:
-                from core.services.exits.dual_track_exit_service import POLICY
-                state['pending'] = reason
-                position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
-                return dict(action='CLOSE_POSITION', type=reason, price=price, reason=reason)
-            return None
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return None
+        """Compatibility adapter for the sole real-time peak exit policy."""
+        from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+        from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+        return evaluate_peak_trailing(position, current_price, bar_curr.get('quote_ms'), atr,
+                                      fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
 
     def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):
         """Shared tick protection, independent of candle finality."""
@@ -509,43 +419,8 @@ class PureTrendStrategyV2:
         # observed ticks in evaluate_anti_whipsaw_profit_lock instead.
         return None
 
-    # =================================================================
-    # 三、 收盤平倉三部曲（若盤中無極端熔斷，抱到收線；滿足任一標準也必須平倉！）
-    # =================================================================
     def evaluate_bar_closed_exit(self, position: Dict[str, Any], closed: Any) -> Optional[str]:
-        from core.services.candle_data import closed_entry_candles
-        if closed is None or 'is_closed' not in closed:
-            return None
-        closed = closed_entry_candles(closed)
-        if len(closed) < 4 or position.get('side') not in ('LONG', 'SHORT'):
-            return None
-        try:
-            rows = closed[['timestamp','high','low','close']].astype(float)
-            if not all(math.isfinite(v) and v > 0 for v in rows.to_numpy().flat):
-                return None
-            if not (rows.timestamp.diff().dropna() == 60000).all():
-                return None
-            if not ((rows.low <= rows.close) & (rows.close <= rows.high)).all():
-                return None
-            current = rows.iloc[-1]
-            opened = float(position.get('open_timestamp') or 0) * 1000
-            if not math.isfinite(opened) or current.timestamp < opened:
-                return None
-            # The pivot and its right-hand confirmation precede the break bar.
-            key = 'low' if position['side'] == 'LONG' else 'high'
-            values = rows[key].tolist()
-            # 至少要 5 根 K 棒來形成一個顯著的 Swing (左右各 2 根不低於/不高於它)
-            for i in range(len(values)-3, 1, -1):
-                pivot = values[i]
-                if key == 'low':
-                    found = (pivot < values[i-1] and pivot < values[i-2] and pivot < values[i+1] and pivot < values[i+2])
-                else:
-                    found = (pivot > values[i-1] and pivot > values[i-2] and pivot > values[i+1] and pivot > values[i+2])
-                if found:
-                    broken = current.close < pivot if key == 'low' else current.close > pivot
-                    return ('EXIT_SWING_LOW_BREAK_CLOSED' if key == 'low' else 'EXIT_SWING_HIGH_BREAK_CLOSED') if broken else None
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return None
+        """Retired compatibility API: candle closure never authorizes an exit."""
         return None
 
     def evaluate_third_bar_open_entry(self, symbol: str, current_bar: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:

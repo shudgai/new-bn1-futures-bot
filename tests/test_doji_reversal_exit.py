@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import pandas as pd
 import pytest
 from core.services.exits.doji_reversal_exit import observe_doji_reversal, REASON
-from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, POLICY
 from core.engine import TradingEngine
 
 
@@ -24,13 +24,11 @@ def sample(side='SHORT', bar=120000):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_first_live_body_boundary_and_retry(side):
+def test_retired_doji_has_no_state_or_exit(side):
     p,f=sample(side); sign=1 if side=='SHORT' else -1
-    assert observe_doji_reversal(p,f,100+sign*.499,121000) is None
-    assert observe_doji_reversal(p,f,100+sign*.5,122000)==REASON
-    assert p['doji_reversal_state']['atr']==1.
-    assert observe_doji_reversal(copy.deepcopy(p),None,100.,123000)==REASON
-    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100.)==REASON
+    assert observe_doji_reversal(p,f,100+sign*.5,122000) is None
+    assert 'doji_reversal_state' not in p
+    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100.) is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -54,10 +52,13 @@ def test_no_false_exit(side,fault):
 
 
 def test_old_position_pending_does_not_transfer():
-    p,f=sample();assert observe_doji_reversal(p,f,100.5,122000)==REASON
+    p,f=sample()
+    p['doji_reversal_state'] = dict(identity=['SHORT',1.,100.,1.],pending=True)
+    p['closed_exit_state'] = dict(policy=POLICY,pending=True,reason=REASON)
     p['open_timestamp']=121.
     assert observe_doji_reversal(p,None,100.,123000) is None
     assert DualTrackExitStrategy().evaluate_exit(p,current_price=100.) is None
+    assert 'doji_reversal_state' not in p
 
 
 def test_fast_path_uses_no_rest_and_retries_persisted_close():
@@ -69,12 +70,8 @@ def test_fast_path_uses_no_rest_and_retries_persisted_close():
         engine._channel_exit_frames={'X':f}
         engine.fetch_klines=AsyncMock(side_effect=AssertionError('No REST'))
         lock=asyncio.Lock();await lock.acquire();engine._channel_symbol_locks={'X':lock}
-        assert await engine._instant_quote_exit('X',100.5,now*1000)
-        assert account.close_position.await_count==1
-        assert account.position_meta['X']['doji_reversal_state']['pending']
-        account.positions['X']=sample(bar=bar)[0];engine._channel_exit_frames={}
-        assert await engine._instant_quote_exit('X',100.,now*1000)
-        assert account.close_position.await_count==2
-        assert account.close_position.await_args.args[2]==REASON
+        assert not await engine._instant_quote_exit('X',100.5,now*1000)
+        account.close_position.assert_not_awaited()
+        assert 'doji_reversal_state' not in account.position_meta['X']
         engine.fetch_klines.assert_not_called();lock.release()
     asyncio.run(run())

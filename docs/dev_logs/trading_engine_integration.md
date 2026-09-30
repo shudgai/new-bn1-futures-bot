@@ -39,3 +39,9 @@
 - **Problem**: The runner read quantity instead of qty; the dedicated trade callback only checked doji exits. PEPE paper fill records show 16:47:05 entry and 16:59:49 midpoint close (UTC+8).
 - **Change**: Route profit protection and initial ATR stops through the cached-data tick service; positive-peak 25% drawdown, fixed 0.8 ATR retracement and observed outer-band live-MA3 reversal. Persist position-bound peaks and retries, reuse account close locking, and remove duplicate runner rules. Update the UI status.
 - **Validation**: 163 relevant tests passed, including 21 new cases and isolated paper/fake-testnet reload and concurrent reduce-only market closing. Twenty additional legacy failures reproduced on untouched HEAD; required legacy suites and AIDAN specification files are absent. Syntax and diff checks passed.
+
+### [2026-09-30] - Modification Phase: Replace legacy exits with peak trailing
+- **Author**: shudgai999 / Codex
+- **Latest Scope**: Final user instruction supersedes the unshipped three-stage/TP1 proposal. Full-close peak trailing arms at 1.5 entry ATR or 5% estimated net return on opening margin, then closes beyond 0.4 ATR or at 20% peak net drawdown.
+- **Change**: Shared tick/account evaluator; remove midpoint, MA3, doji and closed-swing authorities and legacy state initialization. Migrate position/metadata, preserve verified peaks and independent hard risks; ticker no longer waits for REST or scan locks. Update dashboard and reason logs.
+- **Validation**: 219 relevant tests pass, including 23 new policy cases and real account classes with isolated paper/fake-testnet persistence/concurrency. Retired-rule tests now assert no exit authority. Missing AIDAN/legacy suite limitations remain; no exchange test orders.

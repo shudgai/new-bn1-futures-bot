@@ -1986,7 +1986,7 @@ class BinanceTestnetAccount:
                 sl_price, tp_price = meta["sl"], meta["tp"]
                 entry_context.update({key: meta[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
-                                       "initial_sl", "initial_risk", "chandelier_state")})
+                                       "initial_sl", "initial_risk")})
             self.position_meta[symbol] = meta
             # 「金額」用實際成交的 qty×成交價÷槓桿算，不要直接沿用呼叫端
             # 傳入的 amount_usdt（原本打算下的預算）——限價單部分成交時

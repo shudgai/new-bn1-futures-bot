@@ -695,7 +695,7 @@ class PaperAccount:
                 initialize_atr_protection(pos, execution_price, side, atr, initial_stop=structural_stop)
                 entry_context.update({key: pos[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
-                                       "initial_sl", "initial_risk", "chandelier_state")})
+                                       "initial_sl", "initial_risk")})
                 sl, tp = pos["sl"], pos["tp"]
             self.positions[symbol] = pos
             self.position_meta[symbol] = {

@@ -559,6 +559,9 @@ class TradingEngine:
         if self.is_running:
             return
         await self.account.initialize()
+        from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
+        migrate_account_peak_exits(self.account)
+        self.account.log('PEAK_EXIT_POLICY_READY arm=1.5ATR_OR_NET5PCT retrace=GT0.4ATR_OR_NET20PCT mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
         # 策略切換後撤掉尚未成交的舊 MA5/舊回踩進場單，避免重啟後偷渡成交。
         for symbol, pending in list(self.account.pending_limit_orders.items()):
             mode = (pending.get("entry_context") or {}).get("entry_mode")
@@ -1217,52 +1220,13 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Tick exits before REST and the symbol scan lock."""
+        """Only peak trailing and hard stops; no REST or candle-close dependency."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-        from core.services.exits.doji_reversal_exit import enforce_doji_reversal
-        if await enforce_doji_reversal(self, symbol, price, quote_ms):
-            return True
         return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
-        """Evaluate held exits on a received quote without waiting for the scan."""
-        if not getattr(self, "is_running", False):
-            return
-        position = self.account.positions.get(symbol)
-        if not position:
-            return
-        identity = (position.get("side"), position.get("open_timestamp"))
-        try:
-            quoted_at = float(quote_ms) / 1000 if quote_ms is not None else time.time()
-            if not math.isfinite(quoted_at) or not 0 <= time.time() - quoted_at <= 5:
-                return
-            if await self._instant_quote_exit(symbol, price, quote_ms):
-                return
-            # Hard stops do not wait for candle fetches or the symbol scan lock.
-            if await enforce_hard_stop(self.account, symbol, price):
-                return
-            locks = getattr(self, "_channel_symbol_locks", None)
-            if locks is None:
-                locks = self._channel_symbol_locks = {}
-            async with locks.setdefault(symbol, asyncio.Lock()):
-                current = self.account.positions.get(symbol)
-                if not current or (current.get("side"), current.get("open_timestamp")) != identity:
-                    return
-                frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
-                bar = math.floor(quoted_at / 60) * 60000
-                if frame is None or frame.empty or float(frame.iloc[-1]["timestamp"]) != bar:
-                    frame = await self.fetch_klines(symbol, timeframe="1m", limit=200, keep_live=True)
-                    if frame is None or frame.empty or float(frame.iloc[-1]["timestamp"]) != bar:
-                        return
-                    frame = self.strategy.compute_indicators(frame.copy())
-                current = self.account.positions.get(symbol)
-                if not current or (current.get("side"), current.get("open_timestamp")) != identity:
-                    return
-                await self._process_single_symbol_locked(
-                    symbol, quoted_at, None, False, exit_frame=frame,
-                    exit_quote=price, exit_only=True)
-        except (TypeError, ValueError, KeyError, IndexError) as exc:
-            self.account.log(f"⚠️ [{symbol}] 即時出口行情無效: {exc}", "WARNING")
+        """Ticker shares the same lock-free decision path as aggTrade."""
+        return await self._instant_quote_exit(symbol, price, quote_ms)
 
     async def _ticker_loop(self):
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""

@@ -27,10 +27,9 @@ def position(side):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('close,exit_expected',[(97.9,True),(98.,False),(98.1,False),(101.,False)])
-def test_strict_closed_break_only(side,close,exit_expected):
+def test_retired_closed_break_has_no_exit_authority(side,close,exit_expected):
     reason=PureTrendStrategyV2().evaluate_bar_closed_exit(position(side),frame(side,close))
-    assert bool(reason)==exit_expected
-    if reason:assert reason==('EXIT_SWING_LOW_BREAK_CLOSED' if side=='LONG' else 'EXIT_SWING_HIGH_BREAK_CLOSED')
+    assert reason is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -54,10 +53,10 @@ def test_old_drawdown_pending_cleared_and_new_pending_retried(side):
              closed_exit_state=dict(policy='closed_1m_ma15_structure_v1',pending=True,reason='INTRA_BAR_PEAK_DRAWDOWN_LOCK'))
     strategy=DualTrackExitStrategy()
     assert strategy.evaluate_exit(p,frame(side,101.),current_price=101.) is None
-    assert not p['closed_exit_state']['pending']
+    assert 'closed_exit_state' not in p
     reason=strategy.evaluate_exit(p,frame(side),current_price=101.)
-    assert reason and p['closed_exit_state']['pending']
-    assert strategy.evaluate_exit(p,current_price=101.)==reason
+    assert reason is None
+    assert strategy.evaluate_exit(p,current_price=101.) is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -79,7 +78,7 @@ def test_btc_emergency():
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_runner_persists_failed_close_and_retries(side):
+def test_runner_closed_candles_do_not_authorize_exit(side):
     from core.services.symbol_runner import process_single_symbol_runner
     f=frame(side);p=position(side)
     # Prevent account loss-limit exit; close is evaluated on frame, quote is unchanged.
@@ -87,8 +86,6 @@ def test_runner_persists_failed_close_and_retries(side):
                             close_position=AsyncMock(return_value=False))
     engine=SimpleNamespace(account=account,tickers={'TEST':101.},_take_over_manual_position=Mock())
     asyncio.run(process_single_symbol_runner(engine,'TEST',300.,None,False,exit_frame=f,exit_quote=101.))
-    assert account.close_position.await_count==1
-    assert account.position_meta['TEST']['closed_exit_state']['policy']==POLICY
-    assert account.position_meta['TEST']['closed_exit_state']['pending']
+    account.close_position.assert_not_awaited()
     asyncio.run(process_single_symbol_runner(engine,'TEST',301.,None,False,exit_frame=frame(side,101.),exit_quote=101.))
-    assert account.close_position.await_count==2
+    account.close_position.assert_not_awaited()

@@ -1,4 +1,4 @@
-"""Compatibility adapters for closed-candle chandelier protection."""
+"""Account update adapters for live peak trailing and initial hard stops."""
 import math
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
@@ -31,6 +31,8 @@ async def enforce_atr_protection(account, symbol, price):
     for key in STATE_KEYS:
         if key not in position and key in meta:
             position[key] = copy.deepcopy(meta[key])
+    from core.services.exits.peak_trailing_exit import migrate_peak_state
+    migrate_peak_state(position, meta)
     reason = atr_exit_reason(position, price)
     observed = {key: copy.deepcopy(position[key]) for key in STATE_KEYS if key in position}
     if any(meta.get(key) != value for key, value in observed.items()):

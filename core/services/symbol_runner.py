@@ -1,70 +1,45 @@
-"""Live second-bar entry and confirmed exits, serialized by the symbol lock."""
-import copy
+"""Live entries and indicator refresh; held exits use the shared tick policy."""
 import math
 from core.services.strategies.unified_entry_strategy import confirmed
-from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.candle_data import log_entry_gate, entry_frame_evidence
 
 
 async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, daily_halt,
                                       exit_frame=None, exit_quote=None, exit_only=False):
+    # Try the current held quote before REST or any entry candle validation.
+    position = engine.account.positions.get(symbol)
+    if position:
+        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+        engine._take_over_manual_position(symbol, position)
+        if exit_frame is not None and not exit_frame.empty:
+            if not hasattr(engine, '_channel_exit_frames'):
+                engine._channel_exit_frames = {}
+            engine._channel_exit_frames[symbol] = exit_frame.copy()
+        held_quote = exit_quote if exit_quote is not None else getattr(engine,'tickers',{}).get(symbol)
+        if held_quote is not None and await enforce_realtime_profit_exit(engine,symbol,held_quote,now_time*1000):
+            return [], []
+        if exit_only:
+            return [], []
     frame = exit_frame
     if frame is None:
         frame = await engine.fetch_klines(symbol,timeframe='1m',limit=200,keep_live=True)
         if frame is not None and not frame.empty:
             frame = engine.strategy.compute_indicators(frame.copy())
+    if frame is not None and not frame.empty:
+        if not hasattr(engine,'_channel_exit_frames'):
+            engine._channel_exit_frames = {}
+        engine._channel_exit_frames[symbol] = frame.copy()
+    if position or symbol in engine.account.positions:
+        # This scan refreshes indicator data only; it cannot authorize another exit.
+        return [], []
+    if exit_only:
+        return [], []
     closed = confirmed(frame)
     if closed is None:
         return [], []
-    cache = getattr(engine,'_channel_exit_frames',None)
-    if cache is None:
-        cache = engine._channel_exit_frames = {}
-    cache[symbol] = frame.copy()
     quote = float(exit_quote if exit_quote is not None else
                   (getattr(engine,'tickers',{}).get(symbol) or frame.iloc[-1]['close']))
     if not math.isfinite(quote) or quote <= 0:
-        return [], []
-    position = engine.account.positions.get(symbol)
-    preferred = None
-    if position:
-        engine._take_over_manual_position(symbol,position)
-        
-        from core.services.exits.hard_stop_service import enforce_hard_stop
-        if await enforce_hard_stop(engine.account, symbol, quote):
-            return [], []
-
-        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-        from core.services.exits.doji_reversal_exit import enforce_doji_reversal
-        if await enforce_doji_reversal(engine, symbol, quote, now_time * 1000):
-            return [], []
-        if await enforce_realtime_profit_exit(engine, symbol, quote, now_time * 1000):
-            return [], []
-        # Only structural swing breaks require a confirmed close.
-        from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, POLICY
-        exit_reason = DualTrackExitStrategy().evaluate_exit(position, frame, quote)
-
-        if exit_reason:
-            position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=exit_reason)
-        state = position.get('closed_exit_state')
-        if state is not None and engine.account.position_meta.setdefault(symbol, {}).get('closed_exit_state') != state:
-            engine.account.position_meta[symbol]['closed_exit_state'] = copy.deepcopy(state)
-            engine.account.save_state()
-
-        if not exit_reason:
-            return [], []
-            
-        old_side = position['side']
-        # ── 全倉平倉 ─────────────────        # ── 全倉平倉（第三階段各種出場訊號）─────────────────
-        filled = await engine.account.close_position(symbol, quote, 'Closed1M ' + exit_reason, is_manual=True)
-        if not filled or symbol in engine.account.positions:
-            return [], []  # pending state is persisted and retried
-        engine.account.position_meta.pop(symbol, None)
-        for name in ('_channel_outer_reentry_after_exit', '_channel_pending_reverse_bar', '_closed_bear_reverse_tickets'):
-            getattr(engine, name, {}).pop(symbol, None)
-        getattr(engine.account, 'channel_profit_reentries', {}).pop(symbol, None)
-        engine.account.save_state()
-        return [], []  # Closing never initiates an entry in the same lifecycle pass.
-    elif exit_only:
         return [], []
     if daily_halt:
         return [], []

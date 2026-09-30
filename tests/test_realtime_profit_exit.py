@@ -15,40 +15,44 @@ from test_intraday_instant_exit import pos, observe
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_small_peak_is_protected_in_same_bar(side):
+def test_unarmed_small_peak_does_not_exit(side):
     p = pos(side)
+    p['entry_atr'] = 1.
     sign = 1 if side == 'LONG' else -1
     assert observe(p, 100 + sign * .4, 61000) is None
     assert observe(p, 100 + sign * .301, 61001) is None
-    assert observe(p, 100 + sign * .299, 61002) == 'EXIT_PEAK_DRAWDOWN_25PCT'
+    assert observe(p, 100 + sign * .299, 61002) is None
     assert p['peak_price'] == pytest.approx(100 + sign * .4)
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_atr_retrace_fixed_scale_and_boundary(side):
     p = pos(side)
+    p['entry_atr'] = 1.
     sign = 1 if side == 'LONG' else -1
     assert observe(p, 100 + sign * 10, atr=1.) is None
-    assert observe(p, 100 + sign * 9.201, 62000, atr=100.) is None
-    assert observe(p, 100 + sign * 9.2, 62001, atr=100.) == 'EXIT_PEAK_RETRACE_08ATR'
-    assert p['instant_exit_state']['trail_atr'] == 1.
+    assert observe(p, 100 + sign * 9.601, 62000, atr=100.) is None
+    assert observe(p, 100 + sign * 9.599, 62001, atr=100.) == 'EXIT_REALTIME_PEAK_TRAILING'
+    assert p['peak_trailing_state']['atr'] == 1.
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_outer_band_then_live_ma3_cross_without_large_drawdown(side):
+def test_retired_outer_ma3_cross_has_no_exit_authority(side):
     p = pos(side)
+    p['entry_atr'] = 1.
     sign = 1 if side == 'LONG' else -1
     strategy = PureTrendStrategyV2()
     snap = dict(quote_ms=61000, live_ma3=100+sign*9.5,
                 kc_upper=105., kc_lower=95.)
     assert strategy.check_intraday_instant_exit(p, 100+sign*10, snap, 10.) is None
     snap.update(quote_ms=61001, live_ma3=100+sign*9.9)
-    assert strategy.check_intraday_instant_exit(p, 100+sign*9.8, snap, 10.) == 'EXIT_OUTER_MA3_REVERSAL'
+    assert strategy.check_intraday_instant_exit(p, 100+sign*9.8, snap, 10.) is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_no_outer_cross_without_observed_outer_tick(side):
     p = pos(side)
+    p['entry_atr'] = 1.
     sign = 1 if side == 'LONG' else -1
     strategy = PureTrendStrategyV2()
     for price, stamp in [(100+sign*10, 61000), (100+sign*9.8, 61001)]:
@@ -59,7 +63,7 @@ def test_no_outer_cross_without_observed_outer_tick(side):
 def engine_for(side):
     now = time.time()
     p = pos(side)
-    p.update(open_timestamp=now-120, entry_atr=10.)
+    p.update(open_timestamp=now-120, entry_atr=.5)
     account = SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(),
                               close_position=AsyncMock(return_value=False), log=Mock())
     engine = object.__new__(TradingEngine)
@@ -99,7 +103,7 @@ def test_stale_quotes_and_replacement_position_do_not_inherit_peak(side):
         e, p, now = engine_for(side)
         sign = 1 if side == 'LONG' else -1
         assert not await e._instant_quote_exit('X', 100+sign, (now-10)*1000)
-        assert 'instant_exit_state' not in p
+        assert 'peak_trailing_state' not in p
         assert not await e._instant_quote_exit('X', 100+sign, now*1000)
         e.account.positions['X'] = dict(pos(side), open_timestamp=now-1)
         assert not await e._instant_quote_exit('X', 100., now*1000)
@@ -108,12 +112,12 @@ def test_stale_quotes_and_replacement_position_do_not_inherit_peak(side):
     asyncio.run(run())
 
 
-def test_ma3_uses_two_confirmed_closes_and_quote_not_cached_live_close():
+def test_only_atr_fallback_uses_confirmed_history_not_live_candle():
     f = pd.DataFrame([dict(timestamp=60000,is_closed=True,close=101.),
                       dict(timestamp=120000,is_closed=True,close=102.,atr=2.),
                       dict(timestamp=180000,is_closed=False,close=999.,atr=999.)])
     snapshot, atr = cached_tick_indicators(f, 103., 181000)
-    assert snapshot['live_ma3'] == 102.
+    assert snapshot == {'quote_ms':181000}
     assert atr == 2.
     assert cached_tick_indicators(f, 103., 241000) == ({'quote_ms':241000}, 0.)
 
@@ -135,7 +139,7 @@ def test_runner_qty_only_position_uses_same_tick_exit(side):
         assert p['peak_pnl_usd'] == 1.
         await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*.74)
         assert e.account.close_position.await_count == 1
-        assert e.account.close_position.await_args.args[2] == 'EXIT_PEAK_DRAWDOWN_25PCT'
+        assert e.account.close_position.await_args.args[2] == 'EXIT_REALTIME_PEAK_TRAILING'
     asyncio.run(run())
 
 
@@ -163,7 +167,7 @@ def test_real_account_reload_and_concurrent_tick_close(side, mode, tmp_path, mon
             monkeypatch.setattr(tm.BinanceTestnetAccount, 'credentials_configured', staticmethod(lambda: True))
             account = tm.BinanceTestnetAccount(exchange)
             await account.initialize()
-        assert await account.open_position(symbol, side, 100., 25., 0., 0., 'MANUAL', leverage=1, atr=10.,
+        assert await account.open_position(symbol, side, 100., 25., 0., 0., 'MANUAL', leverage=1, atr=.5,
                    entry_context={'entry_mode':'CHANNEL_SWING', 'manual_entry':True, 'entry_atr':10.}), account.logs[-3:]
         e = object.__new__(TradingEngine)
         e.is_running = True
@@ -194,7 +198,7 @@ def test_initial_atr_stop_retries_after_metadata_reload(side):
     async def run():
         e, p, now = engine_for(side)
         sign = 1 if side == 'LONG' else -1
-        p['sl'] = 100-sign*.5
+        p['initial_sl'] = p['sl'] = 100-sign*.5
         assert await e._instant_quote_exit('X',100-sign*.5,now*1000)
         assert e.account.close_position.await_args.args[2] == 'EXIT_INITIAL_ATR_HARD_STOP'
         restored = dict(pos(side),open_timestamp=p['open_timestamp'],sl=p['sl'])

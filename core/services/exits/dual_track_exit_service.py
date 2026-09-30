@@ -1,25 +1,16 @@
-"""Confirmed-swing strategy exits, permitted tick retries and initial hard stop."""
-import math
+"""Account compatibility adapter for tick peak trailing and initial hard stops."""
 from core.interfaces.exit_interface import IExitStrategy
-from core.services.strategies.unified_entry_strategy import confirmed
 
-POLICY = 'closed_1m_confirmed_swing_v2'
+from core.services.exits.peak_trailing_exit import (
+    POLICY, STATE_KEY, STATE_KEYS, evaluate_peak_trailing,
+)
+DUAL_TRACK_STATE_KEYS = list(STATE_KEYS)
 SL_INIT_MULT = 1.5
-DUAL_TRACK_STATE_KEYS = [
-    'doji_reversal_state', 'instant_exit_state', 'peak_price', 'peak_pnl_usd', 'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
-    'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
-    'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
-    'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
-    'has_broken_outer_band', 'peak_pnl_usdt', 'peak_profit_diff',
-]
 
 
 def evaluate_trend_exit_and_take_profit(position, closed, atr):
-    """Compatibility entry point for the single confirmed-swing policy."""
-    from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
-    reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, closed)
-    return dict(should_exit=bool(reason), action='FULL_CLOSE' if reason else 'HOLD',
-                reason=reason or 'TREND_RUNNING')
+    """Retired candle-only adapter; no live quote means no exit authority."""
+    return dict(should_exit=False, action='HOLD', reason='WAIT_LIVE_QUOTE')
 
 
 
@@ -30,54 +21,15 @@ class DualTrackExitStrategy(IExitStrategy):
                         stop_loss=entry_price-sign*SL_INIT_MULT*atr, tp=0.)
 
     def evaluate_exit(self, position, frame=None, current_price=None, **kwargs):
-        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
-        if position.get('side') not in ('LONG', 'SHORT'):
+        import time
+        from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+        if current_price is None:
             return None
-        state = position.get('closed_exit_state') or {}
-        if state.get('reason') == 'EXIT_DOJI_FIRST_ADVERSE_BODY':
-            try:
-                identity = [position['side'],float(position['open_timestamp']),
-                            float(position['entry_price']),
-                            abs(float(position.get('qty',position.get('quantity',0))))]
-                observed = position.get('doji_reversal_state') or {}
-                valid_pending = observed.get('identity') == identity and observed.get('pending')
-            except (KeyError,TypeError,ValueError,OverflowError):
-                valid_pending = False
-            if not valid_pending:
-                position['closed_exit_state'] = dict(policy=POLICY,pending=False)
-                state = position['closed_exit_state']
-        valid_reasons = {'EXIT_PEAK_RETRACE_08ATR', 'EXIT_OUTER_MA3_REVERSAL', 'EXIT_DOJI_FIRST_ADVERSE_BODY', 'EXIT_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
-                         'EXIT_INTRADAY_KC_MID_BREACH',
-                         'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
-                         'EXIT_SWING_HIGH_BREAK_CLOSED'}
-        if state.get('pending') and state.get('reason') not in valid_reasons:
-            position['closed_exit_state'] = dict(policy=POLICY, pending=False)
-            state = position['closed_exit_state']
-        if state.get('pending') and state.get('reason') in valid_reasons and (
-                state.get('policy') == POLICY or state.get('reason') == 'EXIT_INITIAL_ATR_HARD_STOP'):
-            return state['reason']
-        if state and state.get('policy') != POLICY:
-            position['closed_exit_state'] = dict(policy=POLICY, pending=False)
-        reason = None
-        try:
-            sign = 1 if position['side'] == 'LONG' else -1
-            entry = float(position['entry_price'])
-            atr = float(position.get('entry_atr') or 0.)
-            stored_stop = position.get('stop_loss') or position.get('sl')
-            stop = float(stored_stop or (entry-sign*SL_INIT_MULT*atr if math.isfinite(atr) and atr > 0 else float('nan')))
-            if current_price is not None:
-                quote = float(current_price)
-                if all(math.isfinite(v) and v > 0 for v in (quote, stop)) and sign*(quote-stop) <= 0:
-                    reason = 'EXIT_INITIAL_ATR_HARD_STOP'
-            if reason is None and frame is not None:
-                reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, frame)
-            if reason:
-                position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
-            return reason
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return None
+        result = evaluate_peak_trailing(position, current_price, kwargs.get('quote_ms', time.time()*1000),
+                                        fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
+        return result['type'] if result else None
 
     def handle_post_exit_cleanup(self, position, exit_reason):
-        position.pop('closed_exit_state', None)
+        position.pop(STATE_KEY, None)
         position.pop('has_broken_outer_band', None)
         position['cooldown_mode'] = 'NONE'
