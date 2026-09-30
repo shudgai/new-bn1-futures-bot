@@ -164,8 +164,9 @@ class PureTrendStrategyV2:
             atr_50 = float(tr.rolling(50).mean().iloc[-1])
             atr = max(atr, atr_50)
 
-        # 針對妖幣/迷因幣放寬乖離上限
-        ma15_dist_limit = 1.8 if any(meme in symbol for meme in ["PEPE", "DOGE", "WIF", "FLOKI"]) else 1.6
+        # 針對妖幣/迷因幣放寬乖離上限 (直接豁免乖離限制)
+        is_meme = any(meme in symbol for meme in ["PEPE", "DOGE", "WIF", "FLOKI", "NEIRO", "龙虾", "龍蝦", "LOBSTER", "LOKA", "TURBO", "1000", "MEME"])
+        ma15_dist_limit = float('inf') if is_meme else 1.6
         dist_from_ma15_atr = abs(current_price - ma15) / atr if atr > 0 else 0.0
 
         # -------------------------------------------------------------

@@ -1853,10 +1853,10 @@ class TradingEngine:
                 prev_atr = float(bar_prev.get('atr', 0.0))
                 prev_body = abs(prev_close - prev_open)
                 
-                # 門禁一：第 1 根必須實質起爆破軌 (穿透 >= 0.15 ATR, 實體 >= 0.5 ATR)
+                # 門禁一：第 1 根必須實質起爆破軌 (穿透 >= 0.15 ATR)
+                # 實體起爆門檻已拔除，全交由止盈止損防線控制
                 if prev_atr > 0:
-                    if prev_body < 0.5 * prev_atr:
-                        return False, f"門禁一未過：前根實體 {prev_body:.6f} < 0.5 ATR ({0.5*prev_atr:.6f})，無動能起爆！"
+                    pass
 
                 if side == "LONG":
                     kc_upper = float(bar_prev['kc_upper'])
