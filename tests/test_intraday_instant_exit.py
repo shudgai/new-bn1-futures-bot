@@ -39,7 +39,8 @@ def test_ten_dollar_arming_and_strict_twenty_five_percent(side):
 def test_mid_touch_without_closed_candle(side):
     p=pos(side)
     assert observe(p,99. if side=='SHORT' else 101.,mid=100.) is None
-    assert observe(p,100.,62000,mid=100.)=='EXIT_KC_MID_BREACH'
+    assert observe(p,100.,62000,mid=100.) is None
+    assert observe(p,100.01 if side=='SHORT' else 99.99,63000,mid=100.)=='EXIT_KC_MID_BREACH'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -86,7 +87,7 @@ def test_fast_path_ignores_scan_lock_and_rest_retries_after_restart():
         engine._channel_symbol_locks={'X':lock}
         engine._channel_exit_frames={'X':pd.DataFrame([dict(
             timestamp=bar-60000,is_closed=True,kc_middle=100.,atr=1.)])}
-        assert await engine._instant_quote_exit('X',100.,now*1000)
+        assert await engine._instant_quote_exit('X',100.01,now*1000)
         assert account.close_position.await_count==1
         assert account.position_meta['X']['closed_exit_state']['pending']
         # Restore persisted state into a reloaded position; no frame required for retry.

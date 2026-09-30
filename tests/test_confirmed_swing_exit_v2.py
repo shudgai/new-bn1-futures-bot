@@ -71,12 +71,11 @@ def test_hard_stop_without_candles(side):
 def test_emergency_thresholds(side,body,reason):
     price=100.-body*10 if side=='LONG' else 100.+body*10
     result=PureTrendStrategyV2().check_intra_bar_emergency_exit(position(side),price,dict(open=100.,atr=10.),{})
-    if reason=='WATERFALL':assert result==('EMERGENCY_FLASH_CRASH_LONG' if side=='LONG' else 'EMERGENCY_FLASH_SURGE_SHORT')
-    else:assert result==reason
+    assert result is None  # Single candle-body exits retired by explicit authorization.
 
 
 def test_btc_emergency():
-    assert PureTrendStrategyV2().check_intra_bar_emergency_exit(position('LONG'),100.,dict(open=100.,atr=10.),{'is_crashing':True})=='EMERGENCY_BTC_CRASH'
+    assert PureTrendStrategyV2().check_intra_bar_emergency_exit(position('LONG'),100.,dict(open=100.,atr=10.),{'is_crashing':True}) is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

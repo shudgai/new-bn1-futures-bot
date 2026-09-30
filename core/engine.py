@@ -1257,7 +1257,7 @@ class TradingEngine:
             print(message, flush=True)
         if state is not None and state != meta.get('instant_exit_state'):
             meta['instant_exit_state'] = copy.deepcopy(state)
-            if reason:
+            if 'closed_exit_state' in position:
                 meta['closed_exit_state'] = copy.deepcopy(position['closed_exit_state'])
             self.account.save_state()
         if await enforce_hard_stop(self.account, symbol, price):
@@ -1393,6 +1393,10 @@ class TradingEngine:
                                         sym, "全市場熔斷，取消等待開倉掛單",
                                     ))
                                 for sym in positions_to_close:
+                                    held = self.account.positions.get(sym, {})
+                                    meta = self.account.position_meta.get(sym, {})
+                                    if str(held.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+                                        continue  # Only its own midpoint/drawdown/swing rules may exit.
                                     close_price = float(
                                         self.tickers.get(sym)
                                         or self.tickers.get(f"{sym}:USDT")

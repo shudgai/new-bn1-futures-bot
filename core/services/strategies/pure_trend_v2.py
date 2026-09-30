@@ -9,7 +9,7 @@ class PureTrendStrategyV2:
     妖幣純淨趨勢追蹤引擎：
     1. 開倉：前根已收線同向實體站外，下一根盤中站外且 MA3／MA15 同向；當根同向實體至少全長25%，末端影線不超過實體。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
-    3. 盤中熔斷：一股都不賣，但遭遇大瀑布、反向巨型異常K、BTC熔斷時，盤中0.1秒秒平！
+    3. 盤中策略出口：嚴格穿越KC中軌，或曾達10U/3ATR後回吐超過25%；不等收線。
     4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
     5. 未觸發平倉前，嚴格抱牢波段，一股都不賣！
     """
@@ -83,7 +83,7 @@ class PureTrendStrategyV2:
                     reason='第1根已收線同向實體站外，第2根盤中站外且均線同向即開倉')
 
     def evaluate_anti_whipsaw_profit_lock(self, position, current_price, bar_curr, atr):
-        """Tick-only wide-buffer tiers; durable peaks and irreversible pending exits."""
+        """Tick protection; no breakeven or fixed-profit tier exits."""
         try:
             price = float(current_price)
             entry = float(position['entry_price'])
@@ -101,28 +101,31 @@ class PureTrendStrategyV2:
                 state = dict(identity=identity, peak=0.)
             if stamp < state.get('last_ms', 0):
                 return None
-            # Preserve already-triggered closes, including the previous policy.
+            # Removed exits cannot survive a restart as pending closes.
+            retired = {'EXIT_PROFIT_TIER2_LOCK', 'EXIT_BREAKEVEN_LOCK',
+                       'EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT', 'EXIT_INTRADAY_ANOMALY_SPIKE',
+                       'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
+                       'EMERGENCY_GIANT_REVERSE_CANDLE', 'EMERGENCY_BTC_CRASH'}
+            if state.get('pending') not in {None, 'EXIT_KC_MID_BREACH',
+                                            'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT'}:
+                state.pop('pending', None)
+            if (position.get('closed_exit_state') or {}).get('reason') in retired:
+                position['closed_exit_state'] = {}
+            state.pop('breakeven_line', None)
+            state.pop('tier2_line', None)
             if state.get('pending'):
                 return dict(action='CLOSE_POSITION', type=state['pending'], price=price,
                             reason=state['pending'])
             sign = 1 if side == 'LONG' else -1
             pnl = sign*(price-entry)*qty
             state.update(last_ms=stamp, peak=max(float(state.get('peak', 0.)), pnl),
-                         version=2)
+                         version=3)
             scale = float(atr or 0.)
             peak_gain = float(state.get('peak_gain_atr', 0.))
             if math.isfinite(scale) and scale > 0:
                 peak_gain = max(peak_gain, sign*(price-entry)/scale)
             state['peak_gain_atr'] = peak_gain
-            # Persist armed lines; ATR changes or missing data cannot loosen protection.
             reached = lambda value, limit: value >= limit or math.isclose(value, limit, rel_tol=1e-12)
-            if reached(peak_gain, 1.8):
-                state['breakeven_line'] = entry*(1.001 if side == 'LONG' else .999)
-            if reached(peak_gain, 2.5) and math.isfinite(scale) and scale > 0:
-                line = entry+sign*scale
-                prior = state.get('tier2_line')
-                state['tier2_line'] = line if prior is None else (
-                    max(prior, line) if side == 'LONG' else min(prior, line))
             position['instant_exit_state'] = state
             position['peak_pnl_usd'] = state['peak']
             position['peak_gain_atr'] = peak_gain
@@ -130,16 +133,12 @@ class PureTrendStrategyV2:
             position['current_unrealized_pnl_usd'] = pnl
             reason = None
             mid = float(bar_curr.get('kc_middle') or 0.)
-            if math.isfinite(mid) and mid > 0 and sign*(price-mid) <= 0:
+            if math.isfinite(mid) and mid > 0 and sign*(price-mid) < 0:
                 reason = 'EXIT_KC_MID_BREACH'
             threshold = state['peak']*.75
             if reason is None and (reached(state['peak'], 10.) or reached(peak_gain, 3.)) and (
                     pnl < threshold and not math.isclose(pnl, threshold, rel_tol=1e-12)):
                 reason = 'EXIT_PEAK_DRAWDOWN_25PCT'
-            if reason is None and 'tier2_line' in state and sign*(price-state['tier2_line']) <= 0:
-                reason = 'EXIT_PROFIT_TIER2_LOCK'
-            if reason is None and 'breakeven_line' in state and sign*(price-state['breakeven_line']) <= 0:
-                reason = 'EXIT_BREAKEVEN_LOCK'
             if reason:
                 from core.services.exits.dual_track_exit_service import POLICY
                 state['pending'] = reason
@@ -150,7 +149,7 @@ class PureTrendStrategyV2:
             return None
 
     def check_intraday_instant_exit(self, position, current_tick_price, bar_curr, atr):
-        """Compatibility adapter; the former 0.8 ATR / 8U policy is retired."""
+        """Compatibility adapter; only midpoint and large-profit drawdown remain."""
         decision = self.evaluate_anti_whipsaw_profit_lock(position, current_tick_price, bar_curr, atr)
         return decision['type'] if decision else None
 
@@ -162,27 +161,8 @@ class PureTrendStrategyV2:
     # 二、 盤中即時極端熔斷（每一秒檢查，不看收盤，立刻秒平逃命）
     # =================================================================
     def check_intra_bar_emergency_exit(self, position: Dict[str, Any], current_price: float, bar_snapshot: Dict[str, Any], btc_status: Dict[str, Any]) -> Optional[str]:
-        side = position['side']
-        bar_open = float(bar_snapshot['open'])
-        atr = float(bar_snapshot.get('atr', 0.0001))
-
-        # 1. BTC 突發急跌大跳水熔斷
-        if side == 'LONG' and btc_status.get('is_crashing', False):
-            return 'EMERGENCY_BTC_CRASH'
-
-        # 2. 盤中向下/向上突發大瀑布 (超過 1.5 ATR)
-        if side == 'LONG' and (bar_open - current_price) >= 1.5 * atr:
-            return 'EMERGENCY_FLASH_CRASH_LONG'
-        if side == 'SHORT' and (current_price - bar_open) >= 1.5 * atr:
-            return 'EMERGENCY_FLASH_SURGE_SHORT'
-
-        # 3. 盤中反向巨型異常 K 棒 (實體超過 1.2 ATR)
-        if side == 'LONG' and current_price < bar_open and (bar_open - current_price) >= 1.2 * atr:
-            return 'EMERGENCY_GIANT_REVERSE_CANDLE'
-        if side == 'SHORT' and current_price > bar_open and (current_price - bar_open) >= 1.2 * atr:
-            return 'EMERGENCY_GIANT_REVERSE_CANDLE'
-
-        # 未觸發極端情況：【一股都不賣，繼續持倉】
+        # Legacy candle-body/BTC strategy exits are retired. Live exits use
+        # observed ticks in evaluate_anti_whipsaw_profit_lock instead.
         return None
 
     # =================================================================

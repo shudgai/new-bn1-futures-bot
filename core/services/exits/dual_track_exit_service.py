@@ -1,4 +1,4 @@
-"""Completed-candle MA15 defense and entry breakeven."""
+"""Confirmed-swing strategy exits, permitted tick retries and initial hard stop."""
 import math
 from core.interfaces.exit_interface import IExitStrategy
 from core.services.strategies.unified_entry_strategy import confirmed
@@ -35,12 +35,12 @@ class DualTrackExitStrategy(IExitStrategy):
             return None
         state = position.get('closed_exit_state') or {}
         valid_reasons = {'EXIT_KC_MID_BREACH', 'EXIT_PEAK_DRAWDOWN_25PCT',
-                         'EXIT_PROFIT_TIER2_LOCK', 'EXIT_BREAKEVEN_LOCK',
-                         'EXIT_INTRADAY_KC_MID_BREACH', 'EXIT_INTRADAY_ANOMALY_SPIKE',
-                         'EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT', 'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
-                         'EXIT_SWING_HIGH_BREAK_CLOSED', 'EMERGENCY_BTC_CRASH',
-                         'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
-                         'EMERGENCY_GIANT_REVERSE_CANDLE'}
+                         'EXIT_INTRADAY_KC_MID_BREACH',
+                         'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
+                         'EXIT_SWING_HIGH_BREAK_CLOSED'}
+        if state.get('pending') and state.get('reason') not in valid_reasons:
+            position['closed_exit_state'] = dict(policy=POLICY, pending=False)
+            state = position['closed_exit_state']
         if state.get('pending') and state.get('reason') in valid_reasons and (
                 state.get('policy') == POLICY or state.get('reason') == 'EXIT_INITIAL_ATR_HARD_STOP'):
             return state['reason']
