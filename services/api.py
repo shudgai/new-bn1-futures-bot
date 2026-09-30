@@ -318,8 +318,20 @@ def visible_system_logs():
         or index == latest_progress_index
     ][-50:]
 
-def map_block_reason(reason):
+def map_block_reason(reason, close=None, last=None):
     if not reason or reason == "NONE": return "NONE"
+    
+    if "REJECT_ENTRY" in reason and "門禁一未過" in reason and "< 0.5 ATR" in reason:
+        return "實體未達起爆要求 (< 0.5 ATR)"
+    if "WAIT_POST_EXIT_5_BAR" in reason:
+        return "冷卻中 (WAIT_POST_EXIT_5_BAR)"
+    
+    if reason == "WAIT_PURE_TREND_V2" and close is not None and last is not None:
+        ma15 = float(last.get('ma15', close))
+        atr = float(last.get('atr', 0))
+        dist_from_ma15_atr = abs(close - ma15) / atr if atr > 0 else 0
+        if dist_from_ma15_atr > 1.2:
+            return "遠離均線拒絕追高 (> 1.2 ATR)"
     if reason == "BLOCKED_OPPOSITE_CLOSED_BODY":
         return "上一根已收線 K 棒方向不符；即時破軌尚未收線確認"
     if reason == "FILLED":
@@ -341,8 +353,11 @@ def map_block_reason(reason):
 def latest_entry_diagnostic(cache, symbol, side):
     signal = cache.get((symbol, side, 'CLOSED_SIGNAL'))
     execution = cache.get((symbol, side, 'EXECUTION'))
-    if execution and signal and execution[0] == signal[0] and str(signal[1]).startswith('CLOSED_'):
-        return execution
+    if execution and signal and execution[0] == signal[0]:
+        if "REJECT" in str(execution[1]) or "BLOCKED" in str(execution[1]):
+            return execution
+        if str(signal[1]).startswith('CLOSED_') or "符合標準開倉範例" in str(signal[1]):
+            return execution
     return signal
 
 
@@ -373,12 +388,12 @@ def get_chart_metrics():
                     breakout_status = "LONG_BROKEN"
                     reason_data = latest_entry_diagnostic(gate_cache, symbol, "LONG")
                     if reason_data:
-                        block_reason = map_block_reason(reason_data[1])
+                        block_reason = map_block_reason(reason_data[1], close, last)
                 elif close < kc_lower:
                     breakout_status = "SHORT_BROKEN"
                     reason_data = latest_entry_diagnostic(gate_cache, symbol, "SHORT")
                     if reason_data:
-                        block_reason = map_block_reason(reason_data[1])
+                        block_reason = map_block_reason(reason_data[1], close, last)
                 
                 metrics[symbol] = {
                     "dist_to_upper": dist_to_upper,
