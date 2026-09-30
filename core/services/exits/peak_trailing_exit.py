@@ -156,85 +156,54 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 atr_tolerance = 1.2 * scale if scale > 0 else 0
                 retrace_from_peak = sign*(state['peak_price'] - c_close)
                 
-                # 前 3 根 K 棒保護期：僅以中軌與硬止損防守，停用短線與回吐敏感平倉
-                is_early_phase = time_held_ms <= 180000
+                # ==============================================================
+                # 機械化三級平倉狀態機 (3-Tier Exit State Machine)
+                # ==============================================================
+                exit_phase = state.get('exit_phase', 'STATE_HOLD')
+                prev_exit_phase = exit_phase
                 
-                # 均線多頭/空頭支撐防禦 (價格在 MA15 與中軌優勢側，禁止提早退出)
-                if is_long:
-                    support_active = (c_close > c_ma15 and c_close > c_middle)
-                    # 同向強動能 K 棒 (實體陽線且創近期新高)
-                    strong_momentum = (c_close > c_open) and (c_high >= state['peak_price'])
-                else:
-                    support_active = (c_close < c_ma15 and c_close < c_middle)
-                    # 同向強動能 K 棒 (實體陰線且創近期新低)
-                    strong_momentum = (c_close < c_open) and (c_low <= state['peak_price'])
-                
-                # 高浮盈極速鎖利 ( >= 2.5 ATR )
-                tight_lock_triggered = False
-                is_half_closed = position.get("is_half_closed", False) if isinstance(position, dict) else False
-                
-                # 剩餘 50% 倉位不設固定止盈，交由趨勢終結邏輯接管
-                if not is_half_closed and not is_early_phase and not strong_momentum and scale > 0 and gain >= 2.5 * scale:
-                    # 1. 回彈超過 0.8 ATR
-                    if retrace_from_peak >= 0.8 * scale:
-                        tight_lock_triggered = True
-                        trigger_reason = 'TIGHT_RETRACE_0.8ATR'
-                    else:
-                        # 2. 連續兩根反向收盤且不創低/高
-                        if is_long:
-                            if c_close < c_open and prev_close < prev_open and c_high <= prev_high:
-                                tight_lock_triggered = True
-                                trigger_reason = 'NO_NEW_HIGH_AND_2_RED'
-                        else:
-                            if c_close > c_open and prev_close > prev_open and c_low >= prev_low:
-                                tight_lock_triggered = True
-                                trigger_reason = 'NO_NEW_LOW_AND_2_GREEN'
-                                
-                if tight_lock_triggered:
-                    reason, trigger = PEAK_REASON, trigger_reason
-                
-                # 獨立防線：KC 中軌破位 或 KC 轉向 (最高優先級，無條件執行)
                 prev_middle = float(snapshot.get('prev_kc_middle', c_middle)) if isinstance(snapshot, dict) else c_middle
-                if is_long:
-                    kc_turned_down = c_middle < prev_middle
-                    if kc_turned_down:
-                        reason, trigger = PEAK_REASON, 'KC_TURNED_DOWN'
-                    elif c_close < c_middle:
-                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
-                else:
-                    kc_turned_up = c_middle > prev_middle
-                    if kc_turned_up:
-                        reason, trigger = PEAK_REASON, 'KC_TURNED_UP'
-                    elif c_close > c_middle:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
+                prev_ma5 = float(snapshot.get('prev_ma5', c_ma5)) if isinstance(snapshot, dict) else c_ma5
                 
-                # 其他形態與均線平倉
-                if not reason:
-                    if is_long:
-                        # 判斷吞噬結構：大陰線吞噬前兩根陽線，且收回通道內
-                        is_bearish_engulfing = (c_close < c_open and prev_close > prev_open and prev2_close > prev2_open and 
-                                                c_open >= max(prev_close, prev_open) and c_close <= min(prev2_open, prev_open) and 
-                                                c_close < c_upper)
-    
-                        if not is_early_phase:
-                            if is_bearish_engulfing:
-                                reason, trigger = PEAK_REASON, 'BEARISH_ENGULFING_INSIDE_KC'
-                            elif c_close < c_ma5 and prev_close < prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
-                                if not support_active:
-                                    reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_TWICE_AND_RETRACE'
-                    else:
-                        # 判斷吞噬結構：大陽線吞噬前兩根陰線，且收回通道內
-                        is_bullish_engulfing = (c_close > c_open and prev_close < prev_open and prev2_close < prev2_open and 
-                                                c_open <= min(prev_close, prev_open) and c_close >= max(prev2_open, prev_open) and 
-                                                c_close > c_lower)
-    
-                        if not is_early_phase:
-                            if is_bullish_engulfing:
-                                reason, trigger = PEAK_REASON, 'BULLISH_ENGULFING_INSIDE_KC'
-                            elif c_close > c_ma5 and prev_close > prev_ma5 and prev_close > 0 and retrace_from_peak > atr_tolerance:
-                                if not support_active:
-                                    reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_TWICE_AND_RETRACE'
-
+                if is_long:
+                    # 狀態 ③：🔴 平多 (Exit Signal - 嚴格收盤確認)
+                    ma5_turned_down = c_ma5 < prev_ma5
+                    
+                    if c_close < c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
+                    elif ma5_turned_down:
+                        reason, trigger = PEAK_REASON, 'MA5_TURNED_DOWN'
+                    elif c_close < c_ma5:
+                        if prev_exit_phase == 'STATE_ALERT' or (prev_close < prev_ma5):
+                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_CONFIRMED'
+                            
+                    # 狀態轉換 (若未觸發平倉)
+                    if not reason:
+                        if c_close < c_upper:
+                            exit_phase = 'STATE_ALERT'
+                        else:
+                            exit_phase = 'STATE_HOLD'
+                            
+                else:
+                    # 狀態 ③：🔴 平空 (Exit Signal - 嚴格收盤確認)
+                    ma5_turned_up = c_ma5 > prev_ma5
+                    
+                    if c_close > c_middle:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
+                    elif ma5_turned_up:
+                        reason, trigger = PEAK_REASON, 'MA5_TURNED_UP'
+                    elif c_close > c_ma5:
+                        if prev_exit_phase == 'STATE_ALERT' or (prev_close > prev_ma5):
+                            reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_CONFIRMED'
+                            
+                    # 狀態轉換 (若未觸發平倉)
+                    if not reason:
+                        if c_close > c_lower:
+                            exit_phase = 'STATE_ALERT'
+                        else:
+                            exit_phase = 'STATE_HOLD'
+                            
+                state['exit_phase'] = exit_phase
         if reason:
             state.update(pending=reason,trigger=trigger)
             return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)
