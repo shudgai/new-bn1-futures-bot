@@ -110,6 +110,31 @@ class PureTrendStrategyV2:
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
 
+    @staticmethod
+    def outside_continuation_side(closed: Any) -> Optional[str]:
+        """Two adjacent closed directional outside candles establish continuation."""
+        if closed is None or len(closed) < 2:
+            return None
+        try:
+            before, previous = closed.iloc[-2], closed.iloc[-1]
+            if float(previous['timestamp']) - float(before['timestamp']) != 60000:
+                return None
+            for side, edge, sign in (('LONG', 'kc_upper', 1), ('SHORT', 'kc_lower', -1)):
+                valid = True
+                for bar in (before, previous):
+                    opening, close, rail = (float(bar[key]) for key in ('open', 'close', edge))
+                    if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail)):
+                        valid = False
+                        break
+                    if sign * (close - opening) <= 0 or sign * (close - rail) <= 0:
+                        valid = False
+                        break
+                if valid:
+                    return side
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return None
+
     def check_standard_example_breakout_entry(
         self,
         bar_prev: Dict[str, Any],     # 第 1 根（剛收盤的破軌確認 K）
@@ -176,14 +201,15 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 門禁 1：起爆新鮮度過濾（必須經過通道內「充分整理」）
         # -------------------------------------------------------------
-        # 破軌前 2 到前 5 根 (共 4 根)，至少有 3 根收在 KC 軌道之內
+        # Fresh breakouts retain consolidation; adjacent outside bodies may continue.
+        continuation_side = self.outside_continuation_side(closed)
         if closed is not None and len(closed) >= 6:
             prev_4_bars = closed.iloc[-5:-1]
             inside_count = 0
             for _, row in prev_4_bars.iterrows():
                 if row['kc_lower'] <= row['close'] <= row['kc_upper']:
                     inside_count += 1
-            if inside_count < 3:
+            if inside_count < 3 and continuation_side is None:
                 self.entry_rejection = f"整理不足：前四根僅{inside_count}根收在通道內，至少需3根"
                 return None  # 整理不充分，視為過期趨勢或連續單邊
         else:
@@ -533,23 +559,26 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
         if diagnostics is not None:
             diagnostics["reason"] = strategy.entry_rejection
         return None
-    if not ticket:
-        # The prior closed candle must be the first outside close of this episode.
-        # Already-outside third/fourth bars cannot relabel themselves as bar two.
-        try:
-            before = closed.iloc[-2]
-            edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
-            before_close, before_edge = float(before['close']), float(before[edge])
-            if not all(math.isfinite(v) and v > 0 for v in (before_close, before_edge)):
-                return None
-            if float(previous['timestamp']) - float(before['timestamp']) != 60000:
-                return None
-            if (before_close > before_edge if decision['side'] == 'LONG'
-                    else before_close < before_edge):
-                if diagnostics is not None:
-                    diagnostics['reason'] = '已超過初始破軌第二根'
-                return None
-        except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+    continuation = strategy.outside_continuation_side(closed) == decision['side']
+    if not ticket and not continuation:
+        before = closed.iloc[-2]
+        edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
+        before_close, before_edge = float(before['close']), float(before[edge])
+        if not all(math.isfinite(value) and value > 0 for value in (before_close, before_edge)):
+            return None
+        if float(previous['timestamp']) - float(before['timestamp']) != 60000:
+            return None
+        if before_close > before_edge if decision['side'] == 'LONG' else before_close < before_edge:
+            if diagnostics is not None:
+                diagnostics['reason'] = '前段已在軌外，但尚未形成同向延續'
+            return None
+    if continuation:
+        # A historical outside close cannot authorize an entry back inside the live rail.
+        edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
+        rail = float(row[edge])
+        if not math.isfinite(rail) or rail <= 0 or (quote <= rail if decision['side'] == 'LONG' else quote >= rail):
+            if diagnostics is not None:
+                diagnostics['reason'] = '延續最新價未嚴格站在當根外軌外'
             return None
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
@@ -559,5 +588,6 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     return dict(decision, type=code or decision['type'], price=quote, entry_atr=atr,
                 confirmation_bar_id=stamp, breakout_bar_id=float(previous['timestamp']),
                 close_price=float(previous['close']), intrabar=True,
-                entry_phase='CONTINUATION_REENTRY' if ticket else 'INITIAL_BREAKOUT',
+                entry_phase=('CONTINUATION_REENTRY' if ticket else
+                             'OUTSIDE_CONTINUATION' if continuation else 'INITIAL_BREAKOUT'),
                 exit_bar_id=ticket['exit_bar_index']*60000 if ticket else None)

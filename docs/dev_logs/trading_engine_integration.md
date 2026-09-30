@@ -12,3 +12,10 @@
 - **Modification Description**: Remove duplicate obsolete preflight; expose actual shared evaluation rejection, remove guessed MA15 diagnosis.
 - **Trigger Reason & Requirement**: User requested correction after missed-entry audit. Preserve current strategy filters and exits.
 - **Verification & Test Status**: 59 targeted tests passed; compile and diff checks passed. Legacy boundary fixture also fails unmodified HEAD; no database reseed for isolated in-memory tests.
+
+### [2026-09-30 16:24:02 UTC+8] - Modification Phase: Missed breakout continuation
+- **Author**: shudgai999 / Codex
+- **Target Files & Lines**: pure_trend_v2.py outside_continuation_side/evaluate_v2_frame; tests/test_missed_breakout_continuation.py; tests/test_entry_gate_consistency.py
+- **Modification Description**: Allow adjacent directional outside closes to continue after missed initial entry, bypass consolidation and second-bar-only restriction for continuation. Preserve live rail, extreme break and all other gates.
+- **Trigger Reason & Requirement**: Explicit user request for later continuation entries.
+- **Verification & Test Status**: 89 targeted tests passed; isolated in-memory accounts, no reseed or external orders; diff check passed.

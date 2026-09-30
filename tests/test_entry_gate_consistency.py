@@ -58,8 +58,8 @@ def test_shared_signal_reaches_real_paper_account(monkeypatch, side):
 def test_actual_rejection_and_diagnostics_reset(side, fault, reason):
     f = frame(side); account = None
     if fault == 'freshness':
-        f.loc[f.index[-5:-2], 'close'] = 102. if side == 'LONG' else 98.
-        f.loc[f.index[-5:-2], 'high' if side == 'LONG' else 'low'] = 102.1 if side == 'LONG' else 97.9
+        f.loc[f.index[-5:-3], 'close'] = 102. if side == 'LONG' else 98.
+        f.loc[f.index[-5:-3], 'high' if side == 'LONG' else 'low'] = 102.1 if side == 'LONG' else 97.9
     if fault == 'extreme': f.loc[f.index[-1], 'close'] = 101.14 if side == 'LONG' else 98.86
     if fault == 'spread': f.loc[f.index[-1], 'ma3'] = f.iloc[-1].ma15
     if fault == 'distance':
