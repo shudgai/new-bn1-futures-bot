@@ -226,10 +226,8 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 多單做多開倉標準範例：
         # -------------------------------------------------------------
-        # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
+        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
-        
-        # 2. 第 2 根現價 (Live Close) 與開盤價依然穩在 KC 上軌外
         bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr)
         
         # 3. 動能檢驗：實體需達標且當前棒不能是極長上影十字星
@@ -237,17 +235,19 @@ class PureTrendStrategyV2:
         long_momentum_valid = (body_curr >= min_body_threshold)
         long_wick_valid = (body_curr == 0) or (upper_wick_curr <= body_curr * 1.5)
 
-        # 【天花板多過濾】已移除，不再阻擋創新高主升浪
+        two_bar_long = bar1_long_valid and bar2_breaks_prev_high and long_momentum_valid and long_wick_valid
+        
+        # 單根暴力破軌：不管前一根，當前這根大實體直接突破
+        single_bar_long = (current_price > kc_upper_curr) and (current_price > curr_open) and long_momentum_valid and long_wick_valid
 
         # 【趨勢過濾】做多必須 CK 向上
-        if not ck_is_up:
-            bar1_long_valid = False
+        long_trend_valid = ck_is_up
             
         # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit，且超出上軌不得大於 0.8 ATR
         if dist_from_ma15_atr > ma15_dist_limit or (current_price > kc_upper_prev and (current_price - kc_upper_prev) > 0.8 * atr):
-            bar1_long_valid = False
+            long_trend_valid = False
 
-        if bar1_long_valid and bar2_breaks_prev_high and long_momentum_valid and long_wick_valid:
+        if (two_bar_long or single_bar_long) and long_trend_valid:
             res = {"action": "ENTRY_LONG"}
             # 高乖離進場安全保護 (1.2 ~ 1.6/1.8 ATR 之間)，強制止損設為突破K最低點
             if dist_from_ma15_atr >= 1.2:
@@ -257,10 +257,8 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 空單做空開倉標準範例：
         # -------------------------------------------------------------
-        # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
+        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
-        
-        # 2. 第 2 根現價 (Live Close) 與開盤價依然穩在 KC 下軌外
         bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr)
         
         # 3. 動能檢驗：實體需達標且當前棒不能是極長下影十字星
@@ -268,17 +266,19 @@ class PureTrendStrategyV2:
         short_momentum_valid = (body_curr >= min_body_threshold)
         short_wick_valid = (body_curr == 0) or (lower_wick_curr <= body_curr * 1.5)
 
-        # 【地板空過濾】已移除，不再阻擋創新低主跌浪
+        two_bar_short = bar1_short_valid and bar2_breaks_prev_low and short_momentum_valid and short_wick_valid
+        
+        # 單根暴力破軌：不管前一根，當前這根大實體直接突破
+        single_bar_short = (current_price < kc_lower_curr) and (current_price < curr_open) and short_momentum_valid and short_wick_valid
 
         # 【趨勢過濾】做空必須 CK 向下 (嚴禁逆勢)
-        if not ck_is_down:
-            bar1_short_valid = False
+        short_trend_valid = ck_is_down
             
         # 【乖離過濾】嚴禁極度超賣追空：做空進場價與 MA15 的距離不得大於 ma15_dist_limit，且跌破下軌不得大於 0.8 ATR
         if dist_from_ma15_atr > ma15_dist_limit or (current_price < kc_lower_prev and (kc_lower_prev - current_price) > 0.8 * atr):
-            bar1_short_valid = False
+            short_trend_valid = False
 
-        if bar1_short_valid and bar2_breaks_prev_low and short_momentum_valid and short_wick_valid:
+        if (two_bar_short or single_bar_short) and short_trend_valid:
             res = {"action": "ENTRY_SHORT"}
             # 高乖離進場安全保護
             if dist_from_ma15_atr >= 1.2:
@@ -286,22 +286,22 @@ class PureTrendStrategyV2:
             return res
 
         # Report the first failed condition for the actual outside direction.
-        if prev_close > kc_upper_prev and prev_close > prev_open:
+        if (current_price > kc_upper_curr and current_price > curr_open) or (prev_close > kc_upper_prev and prev_close > prev_open):
             checks = [(ck_is_up, "CK方向未向上"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (current_price - kc_upper_prev <= .8 * atr, "超出上軌超過0.8 ATR"),
-                      (bar2_breaks_prev_high, "第二根現價與開盤尚未穩在上軌外"),
+                      (two_bar_long or single_bar_long, "不符合雙棒推進或單根暴力破軌"),
                       (long_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (long_wick_valid, "長上影線拋壓過大")]
-        elif prev_close < kc_lower_prev and prev_close < prev_open:
+        elif (current_price < kc_lower_curr and current_price < curr_open) or (prev_close < kc_lower_prev and prev_close < prev_open):
             checks = [(ck_is_down, "CK方向未向下"),
                       (dist_from_ma15_atr <= ma15_dist_limit, "距MA15超過1.6 ATR"),
                       (kc_lower_prev - current_price <= .8 * atr, "超出下軌超過0.8 ATR"),
-                      (bar2_breaks_prev_low, "第二根現價與開盤尚未穩在下軌外"),
+                      (two_bar_short or single_bar_short, "不符合雙棒推進或單根暴力破軌"),
                       (short_momentum_valid, "推進棒實體不足 0.5 ATR"),
                       (short_wick_valid, "長下影線買盤抵抗過大")]
         else:
-            checks = [(False, "前根未形成同向實體收在外軌外")]
+            checks = [(False, "未形成任何多空破軌動能")]
         self.entry_rejection = next(reason for passed, reason in checks if not passed)
         return None
 
