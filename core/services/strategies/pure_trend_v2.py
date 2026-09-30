@@ -161,6 +161,15 @@ class PureTrendStrategyV2:
 
         ma3 = float(indicators['ma3'])
         ma15 = float(indicators['ma15'])
+        kc_upper_curr = float(bar_curr['kc_upper'])
+        kc_lower_curr = float(bar_curr['kc_lower'])
+
+        # -------------------------------------------------------------
+        # 嚴格鎖死 KC 外軌條件：只要現價介於 [KC 下軌, KC 上軌] 之間，絕對禁止開倉
+        # -------------------------------------------------------------
+        if kc_lower_curr <= current_price <= kc_upper_curr:
+            self.entry_rejection = "現價在通道內部，拒絕開倉"
+            return None
 
         # 均線張角與通道寬度過濾（防死魚震盪）
         spread_pct = abs(ma3 - ma15) / current_price * 100.0
@@ -226,10 +235,8 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 上軌外側，且為同向陽線
         bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
         
-        kc_upper_curr = float(bar_curr['kc_upper'])
-        
         # 2. 第 2 根現價 (Live Close) 依然穩在 KC 上軌外，且非大反轉長陰線 (回跌實體 < 0.5 ATR)
-        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open - current_price < 0.5 * atr)
+        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr) and (curr_open - current_price < 0.5 * atr)
 
         # 【天花板多過濾】開多位置離前高必須至少 2.0 ATR 空間，否則視為撞天花板
         ceiling_blocked = False
@@ -258,10 +265,8 @@ class PureTrendStrategyV2:
         # 1. 第 1 根必須以收盤價實質收在 KC 下軌外側，且為同向陰線
         bar1_short_valid = (prev_close < kc_lower_prev) and (prev_close < prev_open)
         
-        kc_lower_curr = float(bar_curr['kc_lower'])
-        
         # 2. 第 2 根現價 (Live Close) 依然穩在 KC 下軌外，且非大反彈長陽線 (反彈實體 < 0.5 ATR)
-        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (current_price - curr_open < 0.5 * atr)
+        bar2_breaks_prev_low = (current_price < kc_lower_curr) and (curr_open < kc_lower_curr) and (current_price - curr_open < 0.5 * atr)
 
         # 【地板空過濾】開空位置離前低必須至少 2.0 ATR 空間，否則視為死在地板上
         floor_blocked = False
