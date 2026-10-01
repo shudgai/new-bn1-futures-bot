@@ -1978,21 +1978,15 @@ class TradingEngine:
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None):
-        from core.services.strategies.unified_entry_strategy import confirmed
         if daily_halt or symbol in self.account.positions:
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
             
-        closed = confirmed(frame)
-        if closed is None or closed.empty:
+        if frame is None or frame.empty:
             return False
             
-        from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
-        decision = evaluate_v2_frame(frame, price, v8_reason, account=self.account, symbol=symbol)
-        if not decision or decision['side'] != side:
-            return False
-        candidate_bar_id = candidate_bar_id if candidate_bar_id is not None else decision['confirmation_bar_id']
-        reason = decision['type']
+        candidate_bar_id = candidate_bar_id if candidate_bar_id is not None else float(frame.iloc[-1].timestamp)
+        reason = v8_reason or "STATE_MACHINE_ENTRY"
         
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=candidate_bar_id,
