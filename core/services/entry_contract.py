@@ -16,10 +16,9 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
 
 
 def prohibited_entry_candle(row, side=None, quote=None):
-    """
-    Enforce strict right-side confirmation and forbid catching knives/fading tops.
-    Evaluated exclusively on the closed candle ([1]).
-    """
+    return False  # Deprecated, handled by new pending logic
+
+def is_valid_push_bar(row, side):
     try:
         opening = float(row.open)
         closing = float(row.close)
@@ -27,37 +26,18 @@ def prohibited_entry_candle(row, side=None, quote=None):
         low = min(float(row.low), closing)
         body = abs(closing-opening)
         span = high-low
-        if span <= 0 or body <= 0:
-            return True
-            
-        body_ratio = body / span
-        lower_wick = min(opening, closing) - low
-        upper_wick = high - max(opening, closing)
-        lower_wick_ratio = lower_wick / span
-        upper_wick_ratio = upper_wick / span
+        if span <= 0 or body <= 0: return False
         
-        ma5 = float(row.get('ma5', row.get('ma3', 0)))
-        ma15 = float(row.get('ma15', 0))
+        body_ratio = body / span
+        lower_wick_ratio = (min(opening, closing) - low) / span
+        upper_wick_ratio = (high - max(opening, closing)) / span
         
         if side == 'LONG':
-            confirmed = (closing > opening and body_ratio >= 0.30 and closing >= ma5) or \
-                        (lower_wick_ratio >= 0.40 and closing >= ma15)
-            forbid = (closing < opening) and (lower_wick_ratio < 0.40)
-            if forbid or not confirmed:
-                return True
-                
-        elif side == 'SHORT':
-            confirmed = (closing < opening and body_ratio >= 0.30 and closing <= ma5) or \
-                        (upper_wick_ratio >= 0.40 and closing <= ma15)
-            forbid = (closing > opening) and (upper_wick_ratio < 0.40)
-            if forbid or not confirmed:
-                return True
+            return (closing > opening) and (body_ratio >= 0.35) and (upper_wick_ratio <= 0.40)
         else:
-            return False
-            
+            return (closing < opening) and (body_ratio >= 0.35) and (lower_wick_ratio <= 0.40)
+    except:
         return False
-    except (KeyError, TypeError, ValueError):
-        return True
 
 
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
@@ -135,35 +115,56 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             except (IndexError, KeyError, ValueError):
                 prev2_kc_middle = prev_kc_middle
             
-            # Require strict right-side confirmation on the CLOSED candle
-            if prohibited_entry_candle(latest, side):
-                reject('BLOCKED_CLOSED_NOT_CONFIRMED_RIGHT_SIDE')
-                continue
-                
+            # Pending signal evaluation up to max_wait_bars
+            max_wait_bars = 5
             is_valid_entry = False
             phase = 'INITIAL_BREAKOUT'
             
             latest_close = float(latest.close)
-            latest_kc_upper = float(latest.kc_upper)
-            latest_kc_lower = float(latest.kc_lower)
-            latest_kc_middle = float(latest.kc_middle)
-            latest_low = float(latest.low)
-            latest_high = float(latest.high)
             latest_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
             
-            if side == 'LONG':
-                # Base Signal: Breakout or Continuation
-                base_breakout = latest_close > latest_kc_upper
-                base_continuation = latest_kc_middle > prev2_kc_middle and latest_low <= latest_ma5 and latest_close > latest_ma5
-                if base_breakout or base_continuation:
-                    is_valid_entry = True
-                    phase = 'PULLBACK_BOUNCE_CONTINUATION' if base_continuation and not base_breakout else 'INITIAL_BREAKOUT'
-            else:
-                base_breakout = latest_close < latest_kc_lower
-                base_continuation = latest_kc_middle < prev2_kc_middle and latest_high >= latest_ma5 and latest_close < latest_ma5
-                if base_breakout or base_continuation:
-                    is_valid_entry = True
-                    phase = 'PULLBACK_BOUNCE_CONTINUATION' if base_continuation and not base_breakout else 'INITIAL_BREAKOUT'
+            # 1. Is the latest closed bar a valid push bar?
+            if is_valid_push_bar(latest, side):
+                if (side == 'LONG' and latest_close >= latest_ma5) or (side == 'SHORT' and latest_close <= latest_ma5):
+                    # 2. Look back up to max_wait_bars for a setup trigger
+                    for i in range(max_wait_bars):
+                        if len(closed) < i + 3:
+                            break
+                        bar_i = closed.iloc[-1 - i]
+                        prev_i = closed.iloc[-2 - i]
+                        
+                        bar_i_close = float(bar_i.close)
+                        prev_i_close = float(prev_i.close)
+                        bar_i_ma5 = float(bar_i.get('ma5', bar_i.get('ma3', 0)))
+                        prev_i_ma5 = float(prev_i.get('ma5', prev_i.get('ma3', 0)))
+                        bar_i_ma15 = float(bar_i.get('ma15', 0))
+                        prev_i_ma15 = float(prev_i.get('ma15', 0))
+                        
+                        if side == 'LONG':
+                            crossover_kc = bar_i_close > float(bar_i.kc_upper) and prev_i_close <= float(prev_i.kc_upper)
+                            crossover_ma = float(bar_i.kc_middle) > float(prev_i.kc_middle) and bar_i_ma5 > bar_i_ma15 and prev_i_ma5 <= prev_i_ma15
+                            setup_triggered = crossover_kc or crossover_ma
+                        else:
+                            crossover_kc = bar_i_close < float(bar_i.kc_lower) and prev_i_close >= float(prev_i.kc_lower)
+                            crossover_ma = float(bar_i.kc_middle) < float(prev_i.kc_middle) and bar_i_ma5 < bar_i_ma15 and prev_i_ma5 >= prev_i_ma15
+                            setup_triggered = crossover_kc or crossover_ma
+                            
+                        if setup_triggered:
+                            # Ensure it didn't cross the KC middle line during the wait period
+                            invalidated = False
+                            for j in range(i):
+                                wait_bar = closed.iloc[-1 - j]
+                                if side == 'LONG' and float(wait_bar.close) < float(wait_bar.kc_middle):
+                                    invalidated = True
+                                    break
+                                elif side == 'SHORT' and float(wait_bar.close) > float(wait_bar.kc_middle):
+                                    invalidated = True
+                                    break
+                                    
+                            if not invalidated:
+                                is_valid_entry = True
+                                phase = 'PULLBACK_BOUNCE_CONTINUATION' if crossover_ma and not crossover_kc else 'INITIAL_BREAKOUT'
+                                break
 
             if is_valid_entry:
                 # Use live open to measure chase, but the decision is purely based on closed bar
