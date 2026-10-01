@@ -130,6 +130,15 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         peak_net = estimated_net_pnl(entry, state['peak_price'], qty, sign, fee, slippage)
         net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
+        
+        # 2U Fixed Ladder Profit Lock (4U locks 2U, 6U locks 4U, etc.)
+        if state['peak_net_pnl'] >= 4.0:
+            locked_net = math.floor((state['peak_net_pnl'] - 4.0) / 2.0) * 2.0 + 2.0
+            if net <= locked_net:
+                reason, trigger = PEAK_REASON, 'TRAILING_2U_LADDER'
+                state.update(pending=reason, trigger=trigger)
+                return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
+                
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
         
         position.update(peak_price=state['peak_price'], peak_pnl=gain*qty, peak_pnl_usd=gain*qty,
@@ -172,10 +181,19 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                             reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
                             state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                          trigger_atr=float(prior_atr), trigger_price=price)
-                else:
-                    # Phase 1: Only rely on INITIAL_SL (handled above) 
-                    # Optionally, keep a fallback adverse body exit if needed, but user specified INITIAL_SL.
-                    pass
+                
+                # Extreme selling pressure (Waterfall) protection overrides defense lines
+                if not reason:
+                    body = sign*(float(opening)-price)
+                    try:
+                        threshold = ABNORMAL_BODY_ATR * float(prior_atr)
+                    except NameError:
+                        threshold = 1.5 * float(prior_atr)
+                        
+                    if body > 0 and body >= threshold:
+                        reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
+                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                     trigger_atr=float(prior_atr), trigger_price=price)
                     
         if reason:
             state.update(pending=reason,trigger=trigger)
