@@ -561,7 +561,7 @@ class TradingEngine:
         await self.account.initialize()
         from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
         migrate_account_peak_exits(self.account)
-        self.account.log('PEAK_EXIT_POLICY_READY arm=1.5ATR_OR_NET5PCT retrace=GT0.4ATR_OR_NET20PCT mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
+        self.account.log('ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
         # 策略切換後撤掉尚未成交的舊 MA5/舊回踩進場單，避免重啟後偷渡成交。
         for symbol, pending in list(self.account.pending_limit_orders.items()):
             mode = (pending.get("entry_context") or {}).get("entry_mode")
@@ -1220,7 +1220,7 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Only peak trailing and hard stops; no REST or candle-close dependency."""
+        """Abnormal live bodies and hard stops; no REST or candle-close wait."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
         return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
 
@@ -1672,14 +1672,14 @@ class TradingEngine:
 
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
-        from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+        from core.services.entry_contract import evaluate_entry_contract
         getattr(self, '_entry_gate_diagnostics', {}).pop((symbol, side, 'ENTRY_REVALIDATION'), None)
         frame = await self._entry_boundary_frame(symbol)
         if frame is None or frame.empty:
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
         diagnostics = {}
-        decision = evaluate_v2_frame(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
+        decision = evaluate_entry_contract(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
         if not decision:
             log_entry_gate(self, symbol, side, 'ENTRY_REVALIDATION', diagnostics['reason'], candidate_bar_id)
         if not decision or decision['side'] != side:
@@ -1730,7 +1730,8 @@ class TradingEngine:
         return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
 
     async def _entry_boundary_frame(self, symbol):
-        frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
+        from core.services.entry_finality import fetch_settled_entry_frame
+        frame = await fetch_settled_entry_frame(self, symbol)
         if frame is None or frame.empty:
             return None
         frame = frame.copy()
@@ -1768,8 +1769,8 @@ class TradingEngine:
 
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
-        from core.services.strategies.pure_trend_v2 import V2_ENTRY_CODES
-        if signal.get('signal_code') not in V2_ENTRY_CODES:
+        from core.services.entry_contract import ENTRY_CODES, CHASE_EVIDENCE_KEYS
+        if signal.get('signal_code') not in ENTRY_CODES:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'BLOCKED_OBSOLETE_ENTRY_SIGNAL', signal.get('candidate_bar_id'))
             return False
         side = signal.get('side')
@@ -1814,7 +1815,7 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
 
-        # The fresh shared V2 decision above owns all candle entry conditions.
+        # The fresh shared decision above owns all candle entry conditions.
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
@@ -1844,7 +1845,11 @@ class TradingEngine:
                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
                        wave_regime='TREND',entry_snapshot=dict(signal_code=decision['type'],
                        closed_bar=bar,closed_price=decision['close_price'],quote_price=price,
+                       entry_phase=decision['entry_phase'],
+                       breakout_bar_id=decision['breakout_bar_id'],
+                       pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
                        evidence=entry_frame_evidence(snapshot['frame'])))
+        context['entry_snapshot'].update({key: decision[key] for key in CHASE_EVIDENCE_KEYS})
         submit_lock = getattr(self, '_account_entry_submit_lock', None)
         if submit_lock is None:
             submit_lock = self._account_entry_submit_lock = asyncio.Lock()
@@ -1868,10 +1873,10 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
             
-            from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+            from core.services.entry_contract import evaluate_entry_contract
             # Revalidate the live entry contract, without expected-profit or reward/risk vetoes.
             diagnostics = {}
-            if evaluate_v2_frame(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
+            if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
                 log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
                 return False
 

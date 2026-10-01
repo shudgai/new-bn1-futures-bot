@@ -1105,16 +1105,11 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     # 多單被強紅K擊中：實體>=0.5ATR 且穿破MA3 就平仓
     # 不需等到红K回到中軌，早發現早止損
     strong_opposite_body = candle_body >= atr_val * 0.50
-    pre_peak_exit = bool(
-        side == "LONG" and strong_opposite_body
-        and candle_close < candle_open and candle_close < ma3_curr
-    )
+    # 根據用戶要求，移除「見紅/見綠就平倉」的過敏邏輯
+    pre_peak_exit = False
     
-    # 空單被強綠K擊中：實體>=0.5ATR 且穿破MA3 就平仓
-    pre_trough_exit = bool(
-        side == "SHORT" and strong_opposite_body
-        and candle_close > candle_open and candle_close > ma3_curr
-    )
+    # 根據用戶要求，移除「見綠/見紅就平倉」的過敏邏輯
+    pre_trough_exit = False
 
     reasons = []
     strong = False

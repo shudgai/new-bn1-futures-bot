@@ -708,18 +708,19 @@ class PaperAccount:
                 "is_half_closed": False,
                 **entry_context,
             }
-            # 自動掛出 50% Limit TP1
-            tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
-            limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
+            if entry_mode != 'CHANNEL_SWING':
+                # 自動掛出 50% Limit TP1
+                tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
+                limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
             
-            be_distance = pos["atr"] * 0.8 if pos["atr"] > 0 else execution_price * 0.015
-            breakeven_trigger_price = execution_price + be_distance if side == "LONG" else execution_price - be_distance
+                be_distance = pos["atr"] * 0.8 if pos["atr"] > 0 else execution_price * 0.015
+                breakeven_trigger_price = execution_price + be_distance if side == "LONG" else execution_price - be_distance
             
-            meta = self.position_meta[symbol]
-            meta["limit_tp1_price"] = limit_tp1_price
-            meta["limit_tp1_filled"] = False
-            meta["breakeven_trigger_price"] = breakeven_trigger_price
-            self.log(f"📝 [Limit TP1 已掛單] {symbol} {side} 預設掛出 50% 限價止盈於 {limit_tp1_price:.8g} (距離 {tp1_distance:.8g})", "INFO")
+                meta = self.position_meta[symbol]
+                meta["limit_tp1_price"] = limit_tp1_price
+                meta["limit_tp1_filled"] = False
+                meta["breakeven_trigger_price"] = breakeven_trigger_price
+                self.log(f"📝 [Limit TP1 已掛單] {symbol} {side} 預設掛出 50% 限價止盈於 {limit_tp1_price:.8g} (距離 {tp1_distance:.8g})", "INFO")
 
         self.trades.insert(0, {
             "id": int(now * 1000),
@@ -1254,6 +1255,10 @@ class PaperAccount:
             meta = self.position_meta.get(symbol,{})
             entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
             if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+                if await enforce_hard_stop(self, symbol, curr_p):
+                    continue
+                if await enforce_atr_protection(self, symbol, curr_p):
+                    continue
                 unrealized = (curr_p-float(pos['entry_price']))*float(pos['qty'])*(1 if side == 'LONG' else -1)
                 pos.update(mark_price=curr_p,unrealized_pnl=unrealized)
                 total_unrealized += unrealized

@@ -19,7 +19,7 @@ from core.services.strategies.outer_strategy import ck_direction
 RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
     [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
-)
+) 
 # TREND_CRAWLING 已永久停用，嚴禁恢復。
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
@@ -400,14 +400,30 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
 def check_streamlined_entry_signal(df, side, live_price, position_status, **kwargs):
     if position_status != 'NO_POSITION':
         return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+        
+    # 【第一道硬門檻：通道內部一律封鎖開倉 (Live Price Check)】
+    if df is not None and not df.empty:
+        try:
+            curr = df.iloc[-1]
+            kc_upper = float(curr.kc_upper)
+            kc_lower = float(curr.kc_lower)
+            
+            if live_price <= kc_upper and live_price >= kc_lower:
+                return False, f"REJECT_LIVE_PRICE_INSIDE_CHANNEL (Price={live_price})", {'action': 'WAIT'}
+                
+            if side == 'LONG' and live_price <= kc_upper:
+                return False, f"REJECT_LONG_PRICE_NOT_ABOVE_UPPER (Price={live_price} <= {kc_upper})", {'action': 'WAIT'}
+                
+            if side == 'SHORT' and live_price >= kc_lower:
+                return False, f"REJECT_SHORT_PRICE_NOT_BELOW_LOWER (Price={live_price} >= {kc_lower})", {'action': 'WAIT'}
+        except Exception:
+            pass
+            
     return evaluate_closed_entry(df, side, after_close=kwargs.get('after_close', False))
 
 
-def check_ma_cross_entry(df):
-    for side in ('LONG', 'SHORT'):
-        ok, _, decision = evaluate_closed_entry(df, side)
-        if ok and decision['rule'] == 'C':
-            return decision
+def check_ma_cross_entry(df, live_price=None):
+    # 徹底移除「金叉/死叉」內部偷跑開單邏輯
     return None
 
 
@@ -415,6 +431,27 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+            
+        # 【第一道硬門檻：通道內部一律封鎖開倉 (Live Price Check)】
+        if frame is not None and not frame.empty:
+            try:
+                curr = frame.iloc[-1]
+                kc_upper = float(curr.kc_upper)
+                kc_lower = float(curr.kc_lower)
+                
+                # 嚴禁在通道內部開倉 (Price <= KC_Upper and Price >= KC_Lower)
+                if price <= kc_upper and price >= kc_lower:
+                    return False, f"REJECT_LIVE_PRICE_INSIDE_CHANNEL (Price={price})", {'action': 'WAIT'}
+                    
+                # 延續開多的邊界要求: 必須運行在 KC 上軌外側
+                if side == 'LONG' and price <= kc_upper:
+                    return False, f"REJECT_LONG_PRICE_NOT_ABOVE_UPPER (Price={price} <= {kc_upper})", {'action': 'WAIT'}
+                    
+                if side == 'SHORT' and price >= kc_lower:
+                    return False, f"REJECT_SHORT_PRICE_NOT_BELOW_LOWER (Price={price} >= {kc_lower})", {'action': 'WAIT'}
+            except Exception:
+                pass
+                
         engine = kwargs.get('engine')
         after_close = (had_close(engine.account, kwargs.get('symbol', ''))
                        if engine is not None else kwargs.get('after_close', False))
