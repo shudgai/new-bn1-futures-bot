@@ -17,48 +17,43 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
 
 def prohibited_entry_candle(row, side=None, quote=None):
     """
-    Reject doji or long adverse wicks.
-    Body ratio must be >= 50%.
-    Adverse wick ratio must be <= 35%.
+    Enforce strict right-side confirmation and forbid catching knives/fading tops.
+    Evaluated exclusively on the closed candle ([1]).
     """
     try:
         opening = float(row.open)
-        closing = float(row.close if quote is None else quote)
+        closing = float(row.close)
         high = max(float(row.high), closing)
         low = min(float(row.low), closing)
         body = abs(closing-opening)
         span = high-low
         if span <= 0 or body <= 0:
             return True
-        if body < 0.15 * float(row.get('atr', 0)):
-            return True
             
         body_ratio = body / span
-        if body_ratio < 0.40 and not math.isclose(body_ratio, 0.40, rel_tol=1e-12):
-            return True
-            
+        lower_wick = min(opening, closing) - low
+        upper_wick = high - max(opening, closing)
+        lower_wick_ratio = lower_wick / span
+        upper_wick_ratio = upper_wick / span
+        
         ma5 = float(row.get('ma5', row.get('ma3', 0)))
+        ma15 = float(row.get('ma15', 0))
         
         if side == 'LONG':
-            # 嚴格做多過濾 (下殺未止不接多)：若是紅K，除非有止跌信號(長下影線或站穩短均線)，否則嚴禁開倉
-            if closing < opening:
-                lower_wick = closing - low
-                if (lower_wick / span) <= 0.40 and closing < ma5:
-                    return True
-            adverse_wick = high - max(opening, closing)
+            confirmed = (closing > opening and body_ratio >= 0.30 and closing >= ma5) or \
+                        (lower_wick_ratio >= 0.40 and closing >= ma15)
+            forbid = (closing < opening) and (lower_wick_ratio < 0.40)
+            if forbid or not confirmed:
+                return True
+                
         elif side == 'SHORT':
-            # 嚴格做空過濾 (反彈未歇不開空)：若是綠K，除非有滯漲信號(長上影線或跌破短均線)，否則嚴禁開倉
-            if closing > opening:
-                upper_wick = high - closing
-                if (upper_wick / span) <= 0.40 and closing > ma5:
-                    return True
-            adverse_wick = min(opening, closing) - low
+            confirmed = (closing < opening and body_ratio >= 0.30 and closing <= ma5) or \
+                        (upper_wick_ratio >= 0.40 and closing <= ma15)
+            forbid = (closing > opening) and (upper_wick_ratio < 0.40)
+            if forbid or not confirmed:
+                return True
         else:
             return False
-            
-        adverse_wick_ratio = adverse_wick / span
-        if adverse_wick_ratio > 0.40 and not math.isclose(adverse_wick_ratio, 0.40, rel_tol=1e-12):
-            return True
             
         return False
     except (KeyError, TypeError, ValueError):
@@ -140,124 +135,61 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             except (IndexError, KeyError, ValueError):
                 prev2_kc_middle = prev_kc_middle
             
-            is_continuation_entry = False
-            # Continuation requires the current live candle to be a valid directional bar
-            if not prohibited_entry_candle(live, side, quote):
-                if side == 'LONG':
-                    kc_trending_up = kc_middle > prev_kc_middle and quote > kc_middle
-                    ma_bullish = ma5 > ma15
-                    low_val = float(live.low)
-                    open_val = float(live.open)
-                    try:
-                        prev_close = float(latest.close)
-                        prev_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
-                    except:
-                        prev_close = prev_ma5 = 0
-                    
-                    re_entry_trigger = ((low_val <= ma5 and quote >= ma5 and quote > open_val) or 
-                                        (quote > ma5 and quote > kc_middle and prev_close <= prev_ma5))
-                    
-                    if kc_trending_up and ma_bullish and re_entry_trigger:
-                        is_continuation_entry = True
-                else:
-                    kc_trending_down = kc_middle < prev_kc_middle and quote < kc_middle
-                    ma_bearish = ma5 < ma15
-                    high_val = float(live.high)
-                    open_val = float(live.open)
-                    try:
-                        prev_close = float(latest.close)
-                        prev_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
-                    except:
-                        prev_close = prev_ma5 = float('inf')
-                        
-                    re_entry_trigger = ((high_val >= ma5 and quote <= ma5 and quote < open_val) or 
-                                        (quote < ma5 and quote < kc_middle and prev_close >= prev_ma5))
-                    
-                    if kc_trending_down and ma_bearish and re_entry_trigger:
-                        is_continuation_entry = True
-            if is_continuation_entry:
-                phase = 'POST_EXIT_CONTINUATION' if exit_bar is not None else 'PULLBACK_BOUNCE_CONTINUATION'
-                if diagnostics is not None:
-                    diagnostics['reason'] = 'PULLBACK_BOUNCE_CONTINUATION'
-                # Provide mock evidence since this skips the original pair matching
+            # Require strict right-side confirmation on the CLOSED candle
+            if prohibited_entry_candle(latest, side):
+                reject('BLOCKED_CLOSED_NOT_CONFIRMED_RIGHT_SIDE')
+                continue
+                
+            is_valid_entry = False
+            phase = 'INITIAL_BREAKOUT'
+            
+            latest_close = float(latest.close)
+            latest_kc_upper = float(latest.kc_upper)
+            latest_kc_lower = float(latest.kc_lower)
+            latest_kc_middle = float(latest.kc_middle)
+            latest_low = float(latest.low)
+            latest_high = float(latest.high)
+            latest_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
+            
+            if side == 'LONG':
+                # Base Signal: Breakout or Continuation
+                base_breakout = latest_close > latest_kc_upper
+                base_continuation = latest_kc_middle > prev2_kc_middle and latest_low <= latest_ma5 and latest_close > latest_ma5
+                if base_breakout or base_continuation:
+                    is_valid_entry = True
+                    phase = 'PULLBACK_BOUNCE_CONTINUATION' if base_continuation and not base_breakout else 'INITIAL_BREAKOUT'
+            else:
+                base_breakout = latest_close < latest_kc_lower
+                base_continuation = latest_kc_middle < prev2_kc_middle and latest_high >= latest_ma5 and latest_close < latest_ma5
+                if base_breakout or base_continuation:
+                    is_valid_entry = True
+                    phase = 'PULLBACK_BOUNCE_CONTINUATION' if base_continuation and not base_breakout else 'INITIAL_BREAKOUT'
+
+            if is_valid_entry:
+                # Use live open to measure chase, but the decision is purely based on closed bar
                 atr = float(latest.atr)
+                chase = sign*(quote - float(live.open))
+                limit = MAX_THIRD_OPEN_CHASE_ATR * atr
+                
+                if chase > limit and not math.isclose(chase, limit, rel_tol=1e-12):
+                    reject('BLOCKED_OPEN_CHASE')
+                    continue
+                    
+                if phase == 'PULLBACK_BOUNCE_CONTINUATION' and exit_bar is not None:
+                    phase = 'POST_EXIT_CONTINUATION'
+                    
                 evidence = dict(third_bar_id=float(live.timestamp), third_open=float(live.open),
                                 third_reference_atr=atr, chase_bar_id=float(live.timestamp),
                                 chase_open=float(live.open), chase_reference_atr=atr,
-                                max_chase_atr=MAX_THIRD_OPEN_CHASE_ATR, chase_atr=0.0)
+                                max_chase_atr=MAX_THIRD_OPEN_CHASE_ATR, chase_atr=chase/atr if atr else 0.0)
+                
+                if diagnostics is not None:
+                    diagnostics['reason'] = phase
+                    
                 return dict(action='ENTER', side=side, type=signal, reason=signal,
                             price=quote, entry_atr=atr, confirmation_bar_id=float(latest.timestamp),
                             breakout_bar_id=float(latest.timestamp), pair_confirmation_bar_id=float(latest.timestamp),
-                            close_price=float(latest.close), intrabar=True,
-                            entry_phase=phase, exit_bar_id=exit_bar, **evidence)
-            # -----------------------------------------------------------------
-
-            if prohibited_entry_candle(live, side, quote):
-                reject('BLOCKED_LIVE_LONG_WICK_OR_DOJI')
-                continue
-            if prohibited_entry_candle(latest, side):
-                reject('BLOCKED_CLOSED_LONG_WICK_OR_DOJI')
-                continue
-            sign = 1 if side == 'LONG' else -1
-            edge = 'kc_upper' if side == 'LONG' else 'kc_lower'
-            
-            if sign*(quote-float(live[edge])) <= 0:
-                continue
-            if sign*(float(latest.close)-float(latest.open)) <= 0:
-                continue
-            # Locate a real closed breakout pair; continuation expires on a
-            # closed return to the rail/interior. Never infer a pair from wicks.
-            for i in range(len(closed)-2, 0, -1):
-                first, second = closed.iloc[i], closed.iloc[i+1]
-                if prohibited_entry_candle(first, side) or prohibited_entry_candle(second, side):
-                    continue
-                tail = closed.iloc[i+1:]
-                if not (sign*(tail.close-tail[edge])).gt(0).all():
-                    continue
-                body = sign*(float(first.close)-float(first.open))
-                threshold = .3*float(closed.iloc[i-1].atr)
-                if body < threshold and not math.isclose(body, threshold, rel_tol=1e-12):
-                    continue
-                if sign*(float(first.open)-float(first[edge])) > 0 or sign*(float(first.close)-float(first[edge])) <= 0:
-                    continue
-                if sign*(float(second.close)-float(second.open)) <= 0:
-                    continue
-                # Initial entry uses the third open; later outside continuation
-                # gets a fresh opportunity near its own live candle's open.
-                if i+2 >= len(frame):
-                    return reject('WAIT_THIRD_CANDLE_OPEN')
-                third = frame.iloc[i+2]
-                if float(third.timestamp) != float(second.timestamp)+60000:
-                    return reject('WAIT_THIRD_CANDLE_OPEN')
-                third_open = float(third.open)
-                is_continuation = i+1 < len(closed)-1
-                anchor = live if is_continuation else third
-                reference_atr = float(latest.atr if is_continuation else second.atr)
-                chase = sign*(quote-float(anchor.open))
-                limit = MAX_THIRD_OPEN_CHASE_ATR*reference_atr
-                evidence = dict(third_bar_id=float(third.timestamp), third_open=third_open,
-                                third_reference_atr=float(second.atr),
-                                chase_bar_id=float(anchor.timestamp),
-                                chase_open=float(anchor.open), chase_reference_atr=reference_atr,
-                                max_chase_atr=MAX_THIRD_OPEN_CHASE_ATR,
-                                chase_atr=chase/reference_atr)
-                if chase > limit and not math.isclose(chase,limit,rel_tol=1e-12):
-                    reject('BLOCKED_CONTINUATION_OPEN_CHASE' if is_continuation
-                           else 'BLOCKED_THIRD_OPEN_CHASE')
-                    if diagnostics is not None:
-                        diagnostics.update(evidence)
-                    return None
-                phase = 'INITIAL_BREAKOUT' if i+1 == len(closed)-1 else 'OUTSIDE_CONTINUATION'
-                if phase == 'OUTSIDE_CONTINUATION' and exit_bar is not None:
-                    phase = 'POST_EXIT_CONTINUATION'
-                if diagnostics is not None:
-                    diagnostics['reason'] = phase
-                return dict(action='ENTER', side=side, type=signal, reason=signal,
-                            price=quote, entry_atr=float(latest.atr),
-                            confirmation_bar_id=float(latest.timestamp),
-                            breakout_bar_id=float(first.timestamp),
-                            pair_confirmation_bar_id=float(second.timestamp),
-                            close_price=float(latest.close), intrabar=False,
+                            close_price=latest_close, intrabar=False,
                             entry_phase=phase, exit_bar_id=exit_bar, **evidence)
         return reject('WAIT_CLOSED_BREAKOUT_OR_CONTINUATION')
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
