@@ -1252,7 +1252,8 @@ class PaperAccount:
             curr_p = float(curr_p)
             side = pos["side"]
             meta = self.position_meta.get(symbol,{})
-            if str(pos.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+            entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+            if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
                 unrealized = (curr_p-float(pos['entry_price']))*float(pos['qty'])*(1 if side == 'LONG' else -1)
                 pos.update(mark_price=curr_p,unrealized_pnl=unrealized)
                 total_unrealized += unrealized

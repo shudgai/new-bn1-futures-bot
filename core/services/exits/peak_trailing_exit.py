@@ -159,7 +159,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             
             if c_middle > 0 and c_ma15 > 0 and scale > 0:
                 prev_range = prev_high - prev_low
-                is_doji = (abs(prev_close - prev_open) / prev_range < 0.25) if prev_range > 0 else False
+                is_doji = (abs(prev_close - prev_open) / prev_range < 0.40) if prev_range > 0 else False
                 c_ma5 = float(snapshot.get('ma5', 0.))
                 margin = float(position.get('margin') or position.get('initialMargin') or 0.0)
                 if margin <= 0 and float(position.get('leverage', 0)) > 0:
@@ -170,7 +170,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     cond_a = (live_open - price >= 1.2 * scale) and (price < prev_low)
                     cond_b = (price <= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
-                    cond_d = is_doji and (prev_high >= c_upper) and (price < live_open) and (price < prev_low)
+                    cond_d = is_doji and (prev_high >= c_upper * 0.999) and (price < live_open) and (price < prev_low)
                     cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price <= c_ma5)
                     
                     if cond_a:
@@ -187,7 +187,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     cond_a = (price - live_open >= 1.2 * scale) and (price > prev_high)
                     cond_b = (price >= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((price - state['peak_price']) >= 0.7 * scale)
-                    cond_d = is_doji and (prev_low <= c_lower) and (price > live_open) and (price > prev_high)
+                    cond_d = is_doji and (prev_low <= c_lower * 1.001) and (price > live_open) and (price > prev_high)
                     cond_e = (roe >= 0.15) and (price > live_open) and (c_ma5 > 0) and (price >= c_ma5)
                     
                     if cond_a:

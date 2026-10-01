@@ -939,7 +939,8 @@ class BinanceTestnetAccount:
             # =========================================================================
             # 🚀 階梯式 ATR 動態鎖利 (Live/Testnet Account)
             # =========================================================================
-            is_channel_swing = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+            entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+            is_channel_swing = entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
             
             if is_channel_swing:
                 # 📌 0.8 ATR 移保本 觸發檢測
