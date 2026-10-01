@@ -1,6 +1,8 @@
 from enum import Enum
 import math
 
+from core.services.entry_contract import LONG_ENTRY_CODE, SHORT_ENTRY_CODE, ENTRY_CODES as STRICT_ENTRY_CODES
+
 class PositionState(Enum):
     IDLE = "IDLE"
     LONG = "LONG"
@@ -12,6 +14,8 @@ class StrictStateMachineStrategy:
         self.states = {}
         # 記錄持倉資訊（如進場價、最高浮盈）
         self.positions = {}
+        # 記錄最後平倉的 timestamp，用於冷卻機制
+        self.last_exits = {}
 
     def get_state(self, symbol: str) -> PositionState:
         return self.states.get(symbol, PositionState.IDLE)
@@ -23,67 +27,43 @@ class StrictStateMachineStrategy:
         else:
             self.positions[symbol] = position_data or {}
 
-    def evaluate_tick(self, symbol: str, frame, live_price: float, unrealized_pnl: float = 0.0):
-        """
-        全域唯一評估入口：每次 K 線更新或逐筆報價 (Tick) 時呼叫。
-        完全杜絕狀態重疊，IDLE 絕不平倉，LONG/SHORT 絕不開倉。
-        """
+    def _evaluate_tick_internal(self, symbol: str, frame, live_price: float, unrealized_pnl: float = 0.0):
         if frame is None or len(frame) < 2:
             return {"action": "WAIT", "reason": "DATA_INSUFFICIENT"}
-
         state = self.get_state(symbol)
-        
-        # 取得當前（未完全收盤或剛收盤）與上一根 K 棒
         curr_bar = frame.iloc[-1]
         prev_bar = frame.iloc[-2]
-        
         close_price = float(curr_bar.close)
         open_price = float(curr_bar.open)
         kc_upper = float(curr_bar.kc_upper)
         kc_lower = float(curr_bar.kc_lower)
         kc_middle = float(curr_bar.kc_middle)
-        
-        # 相容不同 MA 命名，以 MA5 為主
         ma5 = float(curr_bar.ma5) if 'ma5' in curr_bar else float(curr_bar.ma3)
         atr = float(curr_bar.atr)
-
-        # 趨勢與實體判定
         ck_direction = "UP" if float(curr_bar.kc_middle) > float(prev_bar.kc_middle) else "DOWN"
         is_green_candle = close_price > open_price
         is_red_candle = close_price < open_price
         candle_body = abs(close_price - open_price)
 
-        # ==========================================
-        # 狀態 1：空手 (IDLE) - 監控首發突破 與 順勢延續開倉
-        # ==========================================
         if state == PositionState.IDLE:
-            # 1. 通道內部絕對靜默 (以絕對數值比對)
-            if (kc_lower <= close_price <= kc_upper) and (kc_lower <= live_price <= kc_upper):
-                return {"action": "WAIT", "reason": "SILENCE_INSIDE_CHANNEL"}
+            def is_doji_candle(bar, atr_val: float) -> bool:
+                body = abs(float(bar.close) - float(bar.open))
+                candle_range = float(bar.high) - float(bar.low)
+                if candle_range == 0:
+                    return True
+                # 實體佔全棒不到 25%，或實體小於 0.3 ATR
+                return (body / candle_range < 0.25) or (body < 0.3 * atr_val)
 
-            # 2. 多單【首發突破】或【順勢延續補單】
-            if ck_direction == "UP" and is_green_candle:
-                is_above_upper = (close_price > kc_upper) or (live_price > kc_upper)
-                if is_above_upper:
-                    # A. 首發破軌（前一根還在軌內，這根突破）
-                    if float(prev_bar.close) <= float(prev_bar.kc_upper):
-                        return {"action": "ENTER_LONG", "reason": "LONG_BREAKOUT_FIRST"}
-                    # B. 順勢延續補多（前段已在軌外，當前價 > MA5 且突破前高）
-                    elif live_price > ma5 and live_price > float(prev_bar.high):
-                        return {"action": "ENTER_LONG", "reason": "LONG_CONTINUATION"}
+            # 放在開倉條件判斷的最前方：十字星一票否決
+            if is_doji_candle(curr_bar, atr):
+                return {"action": "WAIT", "reason": "REJECT_DOJI_CANDLE"}
 
-            # 3. 空單【首發突破】或【順勢延續補單】
-            if ck_direction == "DOWN" and is_red_candle:
-                is_below_lower = (close_price < kc_lower) or (live_price < kc_lower)
-                if is_below_lower:
-                    # A. 首發破軌（前一根還在軌內，這根跌破）
-                    if float(prev_bar.close) >= float(prev_bar.kc_lower):
-                        return {"action": "ENTER_SHORT", "reason": "SHORT_BREAKOUT_FIRST"}
-                    # B. 順勢延續補空（前段已在軌外，當前價 < MA5 且跌破前低）
-                    elif live_price < ma5 and live_price < float(prev_bar.low):
-                        return {"action": "ENTER_SHORT", "reason": "SHORT_CONTINUATION"}
-
-            return {"action": "WAIT", "reason": "NO_VALID_ENTRY"}
+            from core.services.entry_contract import evaluate_entry_contract
+            diagnostics = {}
+            entry = evaluate_entry_contract(frame, live_price, symbol=symbol, diagnostics=diagnostics)
+            if entry:
+                return {"action": "ENTER_" + entry['side'], "reason": entry['type']}
+            return {"action": "WAIT", "reason": diagnostics.get('reason', 'UNKNOWN_WAIT')}
 
         # ==========================================
         # 狀態 2：多單持倉 (LONG) - 只監控出場，嚴禁開倉
@@ -95,20 +75,29 @@ class StrictStateMachineStrategy:
             max_pnl = max(pos.get("max_pnl", 0.0), unrealized_pnl)
             self.positions[symbol]["max_pnl"] = max_pnl
 
-            # 【強制續抱 (白名單)】：優先級最高，封鎖平倉
-            if live_price >= ma5:
-                if is_green_candle or (is_red_candle and candle_body < 0.8 * atr):
-                    return {"action": "WAIT", "reason": "MANDATORY_HOLD_LONG"}
+            # 【強制續抱 (白名單)】：優先級最高，封鎖平倉 (只要滿足任一條件)
+            if live_price >= kc_upper:
+                return {"action": "WAIT", "reason": "HOLD_ABOVE_UPPER"}
+            if is_red_candle and candle_body < 0.8 * atr:
+                return {"action": "WAIT", "reason": "HOLD_SMALL_RED_BODY"}
+            if live_price > kc_middle:
+                # 若未觸發頂部反轉且還在安全空間，則續抱
+                pass 
 
             # 【平多觸發 (黑名單)】：觸發即刻市價全平
-            # 1. 頂部反轉
+            # 1. 頂部反轉 (前棒為長上影十字星 且 當前盤中實質跌破前棒最低點)
             prev_upper_shadow = float(prev_bar.high) - max(float(prev_bar.open), float(prev_bar.close))
             prev_body = abs(float(prev_bar.close) - float(prev_bar.open))
             if prev_upper_shadow > (2 * prev_body) and live_price < float(prev_bar.low):
                 return {"action": "EXIT_LONG", "reason": "TOP_REVERSAL_BROKEN_LOW"}
             
-            # 2. 結構走壞
-            if close_price < ma5:
+            # 若在 kc_middle 之上但未觸發頂部反轉，依用戶指示安全續抱
+            if live_price > kc_middle:
+                return {"action": "WAIT", "reason": "HOLD_SAFE_ABOVE_MIDDLE"}
+            
+            # 2. 結構走壞 (只看 1m 收盤價，嚴禁盤中毛刺即時平倉)
+            # 若已經跌到中軌以下，且為實體陰線
+            if is_red_candle and close_price < ma5:
                 return {"action": "EXIT_LONG", "reason": "STRUCTURE_BROKEN_BELOW_MA5"}
                 
             # 3. 生命線破位 (無條件底線)
@@ -164,3 +153,16 @@ class StrictStateMachineStrategy:
                     return {"action": "EXIT_SHORT", "reason": "PROFIT_PROTECT_25PCT_DRAWDOWN"}
 
             return {"action": "WAIT", "reason": "HOLDING_SHORT"}
+
+        return {"action": "WAIT", "reason": "UNKNOWN_STATE"}
+
+    def evaluate_tick(self, symbol: str, frame, live_price: float, unrealized_pnl: float = 0.0):
+        decision = self._evaluate_tick_internal(symbol, frame, live_price, unrealized_pnl)
+        
+        # 紀錄平倉時間
+        if decision["action"] in ("EXIT_LONG", "EXIT_SHORT"):
+            curr_bar = frame.iloc[-1]
+            curr_time = float(curr_bar.name if getattr(curr_bar, 'name', None) else curr_bar.get('timestamp', 0))
+            self.last_exits[symbol] = curr_time
+            
+        return decision
