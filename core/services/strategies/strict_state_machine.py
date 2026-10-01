@@ -28,11 +28,12 @@ class StrictStateMachineStrategy:
             self.positions[symbol] = position_data or {}
 
     def _evaluate_tick_internal(self, symbol: str, frame, live_price: float, unrealized_pnl: float = 0.0):
-        if frame is None or len(frame) < 2:
+        if frame is None or len(frame) < 3:
             return {"action": "WAIT", "reason": "DATA_INSUFFICIENT"}
         state = self.get_state(symbol)
         curr_bar = frame.iloc[-1]
         prev_bar = frame.iloc[-2]
+        prev_bar2 = frame.iloc[-3]
         close_price = float(curr_bar.close)
         open_price = float(curr_bar.open)
         kc_upper = float(curr_bar.kc_upper)
@@ -46,24 +47,51 @@ class StrictStateMachineStrategy:
         candle_body = abs(close_price - open_price)
 
         if state == PositionState.IDLE:
-            def is_doji_candle(bar, atr_val: float) -> bool:
+            def is_doji(bar, atr_val: float) -> bool:
                 body = abs(float(bar.close) - float(bar.open))
-                candle_range = float(bar.high) - float(bar.low)
-                if candle_range == 0:
+                full_range = float(bar.high) - float(bar.low)
+                if full_range == 0:
                     return True
-                # 實體佔全棒不到 25%，或實體小於 0.3 ATR
-                return (body / candle_range < 0.25) or (body < 0.3 * atr_val)
+                # 實體佔全棒長度小於 25%，或實體小於 0.3 * ATR
+                return (body / full_range < 0.25) or (body < 0.3 * atr_val)
 
-            # 放在開倉條件判斷的最前方：十字星一票否決
-            if is_doji_candle(curr_bar, atr):
-                return {"action": "WAIT", "reason": "REJECT_DOJI_CANDLE"}
+            # 多單破軌開倉規則（LONG ENTRY）
+            if ck_direction == "UP" and close_price > kc_upper:
+                # 狀況 A（標準破軌開多）
+                is_first_break = (float(prev_bar.close) > kc_upper) and (float(prev_bar2.close) <= kc_upper)
+                is_curr_solid_green = (not is_doji(curr_bar, atr)) and (close_price > open_price)
+                if is_first_break and is_curr_solid_green:
+                    return {"action": "ENTER_LONG", "reason": "VALID_OUTSIDE_KC_LONG_A"}
 
-            from core.services.entry_contract import evaluate_entry_contract
-            diagnostics = {}
-            entry = evaluate_entry_contract(frame, live_price, symbol=symbol, diagnostics=diagnostics)
-            if entry:
-                return {"action": "ENTER_" + entry['side'], "reason": entry['type']}
-            return {"action": "WAIT", "reason": diagnostics.get('reason', 'UNKNOWN_WAIT')}
+                # 狀況 B（第二根為十字星，第三根延續開多）
+                is_prev_doji = is_doji(prev_bar, atr) and (float(prev_bar.close) > kc_upper)
+                is_curr_green = close_price > open_price
+                is_break_high = close_price > float(prev_bar.high)
+                if is_prev_doji and is_curr_green and is_break_high:
+                    return {"action": "ENTER_LONG", "reason": "VALID_OUTSIDE_KC_LONG_B"}
+
+                # 其餘情況（當根為十字星、或未過前高）一律 RETURN WAIT，禁止開倉！
+                return {"action": "WAIT", "reason": "WAIT_DOJI_CONFIRMATION_LONG"}
+
+            # 空單破軌開倉規則（SHORT ENTRY）
+            if ck_direction == "DOWN" and close_price < kc_lower:
+                # 狀況 A（標準破軌開空）
+                is_first_break = (float(prev_bar.close) < kc_lower) and (float(prev_bar2.close) >= kc_lower)
+                is_curr_solid_red = (not is_doji(curr_bar, atr)) and (close_price < open_price)
+                if is_first_break and is_curr_solid_red:
+                    return {"action": "ENTER_SHORT", "reason": "VALID_OUTSIDE_KC_SHORT_A"}
+
+                # 狀況 B（第二根為十字星，第三根延續開空）
+                is_prev_doji = is_doji(prev_bar, atr) and (float(prev_bar.close) < kc_lower)
+                is_curr_red = close_price < open_price
+                is_break_low = close_price < float(prev_bar.low)
+                if is_prev_doji and is_curr_red and is_break_low:
+                    return {"action": "ENTER_SHORT", "reason": "VALID_OUTSIDE_KC_SHORT_B"}
+
+                # 其餘情況（當根為十字星、或未破前低）一律 RETURN WAIT，禁止開倉！
+                return {"action": "WAIT", "reason": "WAIT_DOJI_CONFIRMATION_SHORT"}
+
+            return {"action": "WAIT", "reason": "NO_VALID_ENTRY"}
 
         # ==========================================
         # 狀態 2：多單持倉 (LONG) - 只監控出場，嚴禁開倉
