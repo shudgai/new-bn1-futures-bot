@@ -34,7 +34,7 @@ def prohibited_entry_candle(row, side=None, quote=None):
             return True
             
         body_ratio = body / span
-        if body_ratio < 0.50 and not math.isclose(body_ratio, 0.50, rel_tol=1e-12):
+        if body_ratio < 0.40 and not math.isclose(body_ratio, 0.40, rel_tol=1e-12):
             return True
             
         if side == 'LONG':
@@ -45,7 +45,7 @@ def prohibited_entry_candle(row, side=None, quote=None):
             return False
             
         adverse_wick_ratio = adverse_wick / span
-        if adverse_wick_ratio > 0.35 and not math.isclose(adverse_wick_ratio, 0.35, rel_tol=1e-12):
+        if adverse_wick_ratio > 0.40 and not math.isclose(adverse_wick_ratio, 0.40, rel_tol=1e-12):
             return True
             
         return False
@@ -123,20 +123,26 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             ma15 = float(live.get('ma15', 0))
             kc_middle = float(live.kc_middle)
             prev_kc_middle = float(latest.kc_middle)
+            try:
+                prev2_kc_middle = float(closed.iloc[-2].kc_middle)
+            except (IndexError, KeyError, ValueError):
+                prev2_kc_middle = prev_kc_middle
             
             is_continuation_entry = False
-            if side == 'LONG':
-                kc_trending_up = kc_middle > prev_kc_middle and quote > kc_middle
-                low_val = float(live.low)
-                pullback_bounce = (low_val <= ma5 or low_val <= ma15) and (quote > float(live.open)) and (quote > ma5)
-                if kc_trending_up and pullback_bounce:
-                    is_continuation_entry = True
-            else:
-                kc_trending_down = kc_middle < prev_kc_middle and quote < kc_middle
-                high_val = float(live.high)
-                pullback_bounce = (high_val >= ma5 or high_val >= ma15) and (quote < float(live.open)) and (quote < ma5)
-                if kc_trending_down and pullback_bounce:
-                    is_continuation_entry = True
+            # Continuation requires the current live candle to be a valid directional bar
+            if not prohibited_entry_candle(live, side, quote):
+                if side == 'LONG':
+                    kc_trending_up = kc_middle > prev_kc_middle and prev_kc_middle > prev2_kc_middle
+                    low_val = float(live.low)
+                    pullback_bounce = (low_val <= ma5 or low_val <= ma15) and (quote >= ma5) and (quote > kc_middle)
+                    if kc_trending_up and pullback_bounce:
+                        is_continuation_entry = True
+                else:
+                    kc_trending_down = kc_middle < prev_kc_middle and prev_kc_middle < prev2_kc_middle
+                    high_val = float(live.high)
+                    pullback_bounce = (high_val >= ma5 or high_val >= ma15) and (quote <= ma5) and (quote < kc_middle)
+                    if kc_trending_down and pullback_bounce:
+                        is_continuation_entry = True
                     
             if is_continuation_entry:
                 phase = 'POST_EXIT_CONTINUATION' if exit_bar is not None else 'PULLBACK_BOUNCE_CONTINUATION'
