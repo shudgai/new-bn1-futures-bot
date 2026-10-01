@@ -153,29 +153,29 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 is_doji = (abs(prev_close - prev_open) / prev_range < 0.25) if prev_range > 0 else False
                 
                 if sign == 1:
-                    cond_a = (live_open - price >= 1.0 * scale) or (live_high - price >= 1.0 * scale)
-                    cond_b = (price <= c_middle) or (price <= c_ma15)
+                    cond_a = (live_open - price >= 1.2 * scale) and (price < prev_low)
+                    cond_b = (price <= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
                     cond_d = is_doji and (prev_high >= c_upper) and (price < live_open) and (price < prev_low)
                     
                     if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1ATR'
+                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.2ATR'
                     elif cond_b:
-                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
                     elif cond_d:
                         reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_DOWN'
                     elif cond_c:
                         reason, trigger = PEAK_REASON, 'FLASH_TRAILING_0.7ATR'
                 else:
-                    cond_a = (price - live_open >= 1.0 * scale) or (price - live_low >= 1.0 * scale)
-                    cond_b = (price >= c_middle) or (price >= c_ma15)
+                    cond_a = (price - live_open >= 1.2 * scale) and (price > prev_high)
+                    cond_b = (price >= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((price - state['peak_price']) >= 0.7 * scale)
                     cond_d = is_doji and (prev_low <= c_lower) and (price > live_open) and (price > prev_high)
                     
                     if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1ATR'
+                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1.2ATR'
                     elif cond_b:
-                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_STRUCTURE'
+                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
                     elif cond_d:
                         reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_UP'
                     elif cond_c:
