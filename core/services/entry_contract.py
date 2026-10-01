@@ -144,18 +144,37 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             # Continuation requires the current live candle to be a valid directional bar
             if not prohibited_entry_candle(live, side, quote):
                 if side == 'LONG':
-                    kc_trending_up = kc_middle > prev_kc_middle and prev_kc_middle > prev2_kc_middle
+                    kc_trending_up = kc_middle > prev_kc_middle and quote > kc_middle
+                    ma_bullish = ma5 > ma15
                     low_val = float(live.low)
-                    pullback_bounce = (low_val <= ma5 or low_val <= ma15) and (quote >= ma5) and (quote > kc_middle)
-                    if kc_trending_up and pullback_bounce:
+                    open_val = float(live.open)
+                    try:
+                        prev_close = float(latest.close)
+                        prev_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
+                    except:
+                        prev_close = prev_ma5 = 0
+                    
+                    re_entry_trigger = ((low_val <= ma5 and quote >= ma5 and quote > open_val) or 
+                                        (quote > ma5 and quote > kc_middle and prev_close <= prev_ma5))
+                    
+                    if kc_trending_up and ma_bullish and re_entry_trigger:
                         is_continuation_entry = True
                 else:
-                    kc_trending_down = kc_middle < prev_kc_middle and prev_kc_middle < prev2_kc_middle
+                    kc_trending_down = kc_middle < prev_kc_middle and quote < kc_middle
+                    ma_bearish = ma5 < ma15
                     high_val = float(live.high)
-                    pullback_bounce = (high_val >= ma5 or high_val >= ma15) and (quote <= ma5) and (quote < kc_middle)
-                    if kc_trending_down and pullback_bounce:
-                        is_continuation_entry = True
+                    open_val = float(live.open)
+                    try:
+                        prev_close = float(latest.close)
+                        prev_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
+                    except:
+                        prev_close = prev_ma5 = float('inf')
+                        
+                    re_entry_trigger = ((high_val >= ma5 and quote <= ma5 and quote < open_val) or 
+                                        (quote < ma5 and quote < kc_middle and prev_close >= prev_ma5))
                     
+                    if kc_trending_down and ma_bearish and re_entry_trigger:
+                        is_continuation_entry = True
             if is_continuation_entry:
                 phase = 'POST_EXIT_CONTINUATION' if exit_bar is not None else 'PULLBACK_BOUNCE_CONTINUATION'
                 if diagnostics is not None:
