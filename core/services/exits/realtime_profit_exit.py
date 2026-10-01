@@ -85,7 +85,8 @@ def migrate_account_peak_exits(account):
     changed = False
     for symbol, position in account.positions.items():
         meta = account.position_meta.setdefault(symbol, {})
-        if (position.get('entry_mode') or meta.get('entry_mode')) != 'CHANNEL_SWING':
+        entry_m = str(position.get('entry_mode') or meta.get('entry_mode') or '').upper()
+        if entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
             continue
         try:
             migrate_peak_state(position, meta)
@@ -104,7 +105,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         return False
     account = engine.account
     position = account.positions.get(symbol)
-    if not position or position.get('entry_mode') != 'CHANNEL_SWING':
+    entry_m = str(position.get('entry_mode', '')).upper()
+    if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
     try:
         price = float(price)

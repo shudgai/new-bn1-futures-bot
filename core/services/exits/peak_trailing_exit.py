@@ -167,14 +167,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 roe = net / margin if margin > 0 else 0.
                 
                 if sign == 1:
-                    cond_a = (live_open - price >= 1.2 * scale) and (price < prev_low)
+                    cond_a = (live_open - price >= 1.0 * scale) or (live_high - price >= 1.0 * scale)
                     cond_b = (price <= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
                     cond_d = is_doji and (prev_high >= c_upper * 0.999) and (price < live_open) and (price < prev_low)
                     cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price <= c_ma5)
                     
                     if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.2ATR'
+                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.0ATR'
                     elif cond_b:
                         reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
                     elif cond_d:
@@ -184,14 +184,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     elif cond_e:
                         reason, trigger = PEAK_REASON, 'FLASH_PROFIT_MA5_PROTECT'
                 else:
-                    cond_a = (price - live_open >= 1.2 * scale) and (price > prev_high)
+                    cond_a = (price - live_open >= 1.0 * scale) or (price - live_low >= 1.0 * scale)
                     cond_b = (price >= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((price - state['peak_price']) >= 0.7 * scale)
                     cond_d = is_doji and (prev_low <= c_lower * 1.001) and (price > live_open) and (price > prev_high)
                     cond_e = (roe >= 0.15) and (price > live_open) and (c_ma5 > 0) and (price >= c_ma5)
                     
                     if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1.2ATR'
+                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1.0ATR'
                     elif cond_b:
                         reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
                     elif cond_d:
