@@ -1083,11 +1083,14 @@ class BinanceTestnetAccount:
                     if protection_installed:
                         meta["sl"] = new_sl
                         pos["sl"] = new_sl
+                        meta["profit_lock_display_sl"] = new_sl
+                        pos["profit_lock_display_sl"] = new_sl
                         meta["is_breakeven_moved"] = True
                         pos["is_breakeven_moved"] = True
                         old_sl = new_sl
+                        peak_pct = defense_state.highest_pnl_pct
                         self.log(
-                            f"🛡️ [{defense_result['reason']}] {symbol} 峰值 {highest_pnl:.4%}，"
+                            f"🛡️ [{defense_result.get('reason')}] {symbol} 峰值 {peak_pct:.2%}，"
                             f"防禦線棘輪上移至 {new_sl:.6g}",
                             "SUCCESS",
                         )
