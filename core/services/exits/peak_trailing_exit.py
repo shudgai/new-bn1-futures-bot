@@ -181,6 +181,30 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                             reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
                             state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                          trigger_atr=float(prior_atr), trigger_price=price)
+                                         
+                # 2-Bar Doji Reversal Protection
+                if not reason:
+                    last_open = snapshot.get('last_open')
+                    last_high = snapshot.get('last_high')
+                    last_low = snapshot.get('last_low')
+                    last_close = snapshot.get('last_close')
+                    if all(v is not None for v in (last_open, last_high, last_low, last_close)):
+                        last_span = last_high - last_low
+                        last_body = abs(last_close - last_open)
+                        if last_span > 0 and (last_body / last_span) <= 0.15:
+                            ma5 = snapshot.get('ma5')
+                            if sign == 1 and last_close > entry:
+                                # Previous was high-profit doji
+                                if price < opening and (price < last_low or (ma5 and price < ma5)):
+                                    reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
+                                    state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                                 trigger_atr=float(prior_atr), trigger_price=price)
+                            elif sign == -1 and last_close < entry:
+                                # Previous was high-profit doji
+                                if price > opening and (price > last_high or (ma5 and price > ma5)):
+                                    reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
+                                    state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                                 trigger_atr=float(prior_atr), trigger_price=price)
                 
                 # Extreme selling pressure (Waterfall) protection overrides defense lines
                 if not reason:
