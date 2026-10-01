@@ -588,7 +588,7 @@
                             <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]" class="chart-symbol-metrics" style="margin-left: 10px; display: inline-flex; gap: 6px; flex-wrap: wrap;">
                                 <span class="badge" style="background:#dcfce7; color:#166534; font-size: 14px; padding: 4px 8px; font-weight: 600;">🟢 破上軌還差: {{ bot.chart_metrics[symbol].dist_to_upper > 0 ? '+' : '' }}{{ bot.chart_metrics[symbol].dist_to_upper_pct.toFixed(2) }}%</span>
                                 <span class="badge" style="background:#fee2e2; color:#991b1b; font-size: 14px; padding: 4px 8px; font-weight: 600;">🔴 破下軌還差: {{ bot.chart_metrics[symbol].dist_to_lower > 0 ? '-' : '' }}{{ (-bot.chart_metrics[symbol].dist_to_lower_pct).toFixed(2) }}%</span>
-                                <span class="badge" style="background:#fef3c7; color:#92400e; font-size: 14px; padding: 4px 8px; font-weight: 600;">⚡ 起爆實體要求: &ge; {{ formatPrice(bot.chart_metrics[symbol].min_body_atr) }}</span>
+                                <!-- ⚡ 起爆實體要求已移除：破軌即開倉，不再限制 min_body_atr -->
                                 <span v-if="bot.chart_metrics[symbol].breakout_status !== 'INSIDE_CHANNEL' && bot.chart_metrics[symbol].block_reason !== 'NONE' && (!bot.positions || !bot.positions.find(p => p.symbol === symbol))" 
                                       class="badge" style="background:#ffedd5; color:#c2410c; border: 1px solid #fdba74; font-size: 14px; padding: 4px 8px; font-weight: 700;">
                                     ⚠️ [已破軌未開單] 原因：{{ bot.chart_metrics[symbol].block_reason }}

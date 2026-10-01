@@ -404,10 +404,7 @@ class PureTrendStrategyV2:
             if result:
                 action = result if isinstance(result, str) else result.get("action")
                 side = action.replace('ENTRY_', '')
-                rejection = self.advancing_body_rejection(closed, bar_curr, side)
-                if rejection:
-                    self.entry_rejection = rejection
-                    return None
+                # advancing_body_rejection 已移除：破軌後不再因實體萎縮阻擋開倉
                 signal_dict = dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=current_price,
                             reason='符合標準開倉範例')
                 if isinstance(result, dict) and 'initial_sl' in result:
