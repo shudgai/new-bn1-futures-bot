@@ -1,0 +1,845 @@
+{
+  "logs": [
+    {
+      "time": "06:53:00",
+      "timestamp": 1790895180.4264224,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895120000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:02",
+      "timestamp": 1790895182.318773,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:02",
+      "timestamp": 1790895182.469913,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895180000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:04",
+      "timestamp": 1790895184.23923,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:06",
+      "timestamp": 1790895186.4353852,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:21",
+      "timestamp": 1790895201.7442827,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:29",
+      "timestamp": 1790895209.3023207,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:42",
+      "timestamp": 1790895222.42536,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895180000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:42",
+      "timestamp": 1790895222.7925463,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895180000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:00",
+      "timestamp": 1790895240.3489769,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:00",
+      "timestamp": 1790895240.532907,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895180000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790895246.4734643,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790895246.6709216,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790895246.764196,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895180000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:09",
+      "timestamp": 1790895249.4684374,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:21",
+      "timestamp": 1790895261.743591,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:27",
+      "timestamp": 1790895267.3245368,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:35",
+      "timestamp": 1790895275.3230054,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:39",
+      "timestamp": 1790895279.3289084,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:53",
+      "timestamp": 1790895293.2883384,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:55",
+      "timestamp": 1790895295.3059108,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:57",
+      "timestamp": 1790895297.317743,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:01",
+      "timestamp": 1790895301.2239268,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895240000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:01",
+      "timestamp": 1790895301.523704,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:05",
+      "timestamp": 1790895305.3542812,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:05",
+      "timestamp": 1790895305.570714,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895240000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:07",
+      "timestamp": 1790895307.3782449,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:07",
+      "timestamp": 1790895307.4778569,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895300000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:19",
+      "timestamp": 1790895319.3307269,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:25",
+      "timestamp": 1790895325.5162141,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:34",
+      "timestamp": 1790895334.4392152,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:55:40",
+      "timestamp": 1790895340.4213579,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:02",
+      "timestamp": 1790895362.281702,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895300000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:02",
+      "timestamp": 1790895362.448533,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895300000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:04",
+      "timestamp": 1790895364.2386138,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:06",
+      "timestamp": 1790895366.6596978,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_OPEN_CHASE",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:19",
+      "timestamp": 1790895379.336569,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:21",
+      "timestamp": 1790895381.3312962,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:33",
+      "timestamp": 1790895393.3872707,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:35",
+      "timestamp": 1790895395.4445188,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:43",
+      "timestamp": 1790895403.5060518,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:56:47",
+      "timestamp": 1790895407.380843,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:01",
+      "timestamp": 1790895421.000938,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895360000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:01",
+      "timestamp": 1790895421.462616,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895360000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:03",
+      "timestamp": 1790895423.4925663,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:05",
+      "timestamp": 1790895425.0366058,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1800 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=🛑 [ENTRY_GATE_FAIL] 1000PEPE/USDT snapshot is None (二次快照校驗失敗)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:07",
+      "timestamp": 1790895427.328989,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:07",
+      "timestamp": 1790895427.4277868,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_OPEN_CHASE",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:07",
+      "timestamp": 1790895427.715939,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:11",
+      "timestamp": 1790895431.419956,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:11",
+      "timestamp": 1790895431.5232322,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:13",
+      "timestamp": 1790895433.2977211,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1807 stage=ENTRY_SEQUENCE symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=INITIAL_BREAKOUT first_bar=1790895300000.0 exit_bar=1790895120000",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:13",
+      "timestamp": 1790895433.3220377,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1884 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=ACCOUNT_SUBMIT code=CLOSED_BODY_BREAKOUT_LONG margin=87.86252408104986 leverage=5",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:15",
+      "timestamp": 1790895435.1152658,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1757 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=ValueError: [FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:15",
+      "timestamp": 1790895435.3499928,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:17",
+      "timestamp": 1790895437.0594106,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1684 stage=ENTRY_REVALIDATION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:17",
+      "timestamp": 1790895437.0710819,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1800 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:17",
+      "timestamp": 1790895437.391459,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:19",
+      "timestamp": 1790895439.3608124,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:21",
+      "timestamp": 1790895441.1459908,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1884 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=ACCOUNT_SUBMIT code=CLOSED_BODY_BREAKOUT_LONG margin=87.86252408104986 leverage=5",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:22",
+      "timestamp": 1790895442.8409107,
+      "text": "🧮 [資金換算] 1000PEPE/USDT | 本金保證金=87.8625U, 槓桿=5x, 名義價值=439.3126U, 價格=0.00441694, 下單數量(qty)=99460.8159",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:22",
+      "timestamp": 1790895442.852632,
+      "text": "🚀 [紙上交易] 開倉成功 [LONG] 1000PEPE/USDT @ 0.00441694 (5x，含滑點，SL=0.00441021, TP=0)",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "06:57:22",
+      "timestamp": 1790895442.8773782,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1761 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790895360000.0 reason=FILLED",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:46",
+      "timestamp": 1790895466.631938,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_LIVE_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "06:57:46",
+      "timestamp": 1790895466.8690872,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790895420000.0 reason=BLOCKED_CLOSED_DOJI",
+      "level": "INFO"
+    }
+  ],
+  "trades": [
+    {
+      "id": 1790895728714,
+      "time": "10/02 07:02:08",
+      "symbol": "龙虾/USDT",
+      "action": "OPEN_LONG",
+      "side": "LONG",
+      "price": 0.1129913,
+      "qty": 3875.03923185,
+      "amount": 87.56914252160556,
+      "fee": 0.2189,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "Live1M CLOSED_BODY_BREAKOUT_LONG",
+      "sl": 0.11137579799999998,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1790895660000.0,
+      "entry_atr": 0.0010770000000000003,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "CLOSED_BODY_BREAKOUT_LONG",
+        "closed_bar": 1790895660000.0,
+        "closed_price": 0.11321,
+        "quote_price": 0.11298,
+        "entry_phase": "INITIAL_BREAKOUT",
+        "breakout_bar_id": 1790895600000.0,
+        "pair_confirmation_bar_id": 1790895660000.0,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1790895360000.0,
+              "open": 0.11037,
+              "high": 0.1114,
+              "low": 0.11024,
+              "close": 0.11048,
+              "ma3": 0.11017333333333333,
+              "ma15": 0.10930200000000001,
+              "atr": 0.0008510000000000017,
+              "kc_upper": 0.109840595389737,
+              "kc_middle": 0.108989595389737,
+              "kc_lower": 0.108138595389737
+            },
+            {
+              "timestamp": 1790895420000.0,
+              "open": 0.11049,
+              "high": 0.11106,
+              "low": 0.1101,
+              "close": 0.11093,
+              "ma3": 0.11060333333333333,
+              "ma15": 0.10945,
+              "atr": 0.0008850000000000024,
+              "kc_upper": 0.11005939582880966,
+              "kc_middle": 0.10917439582880967,
+              "kc_lower": 0.10828939582880967
+            },
+            {
+              "timestamp": 1790895480000.0,
+              "open": 0.11088,
+              "high": 0.11092,
+              "low": 0.1104,
+              "close": 0.11072,
+              "ma3": 0.11070999999999999,
+              "ma15": 0.109608,
+              "atr": 0.0008480000000000029,
+              "kc_upper": 0.1101695962260659,
+              "kc_middle": 0.1093215962260659,
+              "kc_lower": 0.1084735962260659
+            },
+            {
+              "timestamp": 1790895540000.0,
+              "open": 0.11069,
+              "high": 0.11132,
+              "low": 0.11038,
+              "close": 0.11071,
+              "ma3": 0.11078666666666666,
+              "ma15": 0.10976266666666668,
+              "atr": 0.0008910000000000015,
+              "kc_upper": 0.11034482515691676,
+              "kc_middle": 0.10945382515691676,
+              "kc_lower": 0.10856282515691676
+            },
+            {
+              "timestamp": 1790895600000.0,
+              "open": 0.11071,
+              "high": 0.11098,
+              "low": 0.11025,
+              "close": 0.11086,
+              "ma3": 0.11076333333333332,
+              "ma15": 0.10984600000000001,
+              "atr": 0.000853000000000001,
+              "kc_upper": 0.11044074657054374,
+              "kc_middle": 0.10958774657054374,
+              "kc_lower": 0.10873474657054373
+            },
+            {
+              "timestamp": 1790895660000.0,
+              "open": 0.11083,
+              "high": 0.11396,
+              "low": 0.11074,
+              "close": 0.11321,
+              "ma3": 0.11159333333333334,
+              "ma15": 0.11012000000000001,
+              "atr": 0.0010770000000000003,
+              "kc_upper": 0.11100972308763479,
+              "kc_middle": 0.1099327230876348,
+              "kc_lower": 0.1088557230876348
+            }
+          ],
+          "previous5_low": 0.1101,
+          "previous5_high": 0.1114
+        },
+        "third_bar_id": 1790895720000.0,
+        "third_open": 0.11322,
+        "third_reference_atr": 0.0010770000000000003,
+        "max_chase_atr": 0.1,
+        "chase_atr": -0.2228412256267447,
+        "chase_bar_id": 1790895720000.0,
+        "chase_open": 0.11322,
+        "chase_reference_atr": 0.0010770000000000003,
+        "finality_server_ms": 1790895728560.0
+      },
+      "atr_sl": 0.11137579799999998,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.11137579799999998,
+      "initial_risk": 0.0016155000000000058
+    },
+    {
+      "id": 1790895611667,
+      "time": "10/02 07:00:11",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "side": "LONG",
+      "price": 0.00441546,
+      "qty": 99460.81592571,
+      "amount": 87.86252408104986,
+      "fee": 0.4392,
+      "pnl": -0.5868,
+      "peak_pnl_pct": 0.0,
+      "realized_price_move_pct": -0.00033581,
+      "profit_capture_ratio": null,
+      "status": "CLOSED",
+      "reason": "Channel Swing EXIT_ADVERSE_ABNORMAL_BODY",
+      "channel_fading_ma3_turn": null,
+      "channel_reverse_wait_ck": null,
+      "channel_pivot_entry": null,
+      "channel_pivot_middle_reached": null,
+      "channel_pivot_middle_exit_pending": null,
+      "entry_kc_middle": null,
+      "channel_confirmation_bar_id": 1790895360000.0,
+      "manual_entry": null,
+      "managed_by_bot": null,
+      "bot_last_managed_at": null,
+      "channel_favorable_rail_reached": null,
+      "btc_regime_at_entry": null,
+      "btc_direction_1h_at_entry": null,
+      "btc_score_penalty": null,
+      "btc_allocation_factor": null,
+      "btc_pre_penalty_score": null,
+      "raw_signal_score": null,
+      "btc_adjusted_score": null,
+      "history_adjusted_score": null,
+      "history_score_multiplier": null,
+      "pullback_confirmation_score": null,
+      "entry_mode": "CHANNEL_SWING",
+      "is_contrarian_bottom_buy": null,
+      "initial_sl": 0.004410206650000001,
+      "initial_risk": 6.734999999999901e-06,
+      "entry_atr": 4.489999999999963e-06,
+      "entry_snapshot": {
+        "signal_code": "CLOSED_BODY_BREAKOUT_LONG",
+        "closed_bar": 1790895360000.0,
+        "closed_price": 0.0044192,
+        "quote_price": 0.0044165,
+        "entry_phase": "INITIAL_BREAKOUT",
+        "breakout_bar_id": 1790895300000.0,
+        "pair_confirmation_bar_id": 1790895360000.0,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1790895060000.0,
+              "open": 0.0043996,
+              "high": 0.0043996,
+              "low": 0.0043963,
+              "close": 0.0043984,
+              "ma3": 0.0043995,
+              "ma15": 0.00440582,
+              "atr": 3.040000000000074e-06,
+              "kc_upper": 0.00440943586913993,
+              "kc_middle": 0.00440639586913993,
+              "kc_lower": 0.00440335586913993
+            },
+            {
+              "timestamp": 1790895120000.0,
+              "open": 0.0043985,
+              "high": 0.004409,
+              "low": 0.0043985,
+              "close": 0.0044077,
+              "ma3": 0.0044019,
+              "ma15": 0.004405453333333333,
+              "atr": 3.680000000000003e-06,
+              "kc_upper": 0.004410200072078984,
+              "kc_middle": 0.004406520072078984,
+              "kc_lower": 0.004402840072078984
+            },
+            {
+              "timestamp": 1790895180000.0,
+              "open": 0.0044079,
+              "high": 0.0044103,
+              "low": 0.0044061,
+              "close": 0.0044097,
+              "ma3": 0.004405266666666667,
+              "ma15": 0.004405093333333333,
+              "atr": 3.6699999999999754e-06,
+              "kc_upper": 0.004410492922357175,
+              "kc_middle": 0.004406822922357175,
+              "kc_lower": 0.0044031529223571755
+            },
+            {
+              "timestamp": 1790895240000.0,
+              "open": 0.0044098,
+              "high": 0.0044164,
+              "low": 0.0044098,
+              "close": 0.0044151,
+              "ma3": 0.0044108333333333334,
+              "ma15": 0.004405233333333333,
+              "atr": 3.919999999999965e-06,
+              "kc_upper": 0.0044115312154660155,
+              "kc_middle": 0.004407611215466015,
+              "kc_lower": 0.004403691215466015
+            },
+            {
+              "timestamp": 1790895300000.0,
+              "open": 0.0044151,
+              "high": 0.0044218,
+              "low": 0.0044139,
+              "close": 0.0044174,
+              "ma3": 0.004414066666666667,
+              "ma15": 0.004405693333333334,
+              "atr": 4.3299999999999585e-06,
+              "kc_upper": 0.0044128734806597285,
+              "kc_middle": 0.004408543480659728,
+              "kc_lower": 0.004404213480659728
+            },
+            {
+              "timestamp": 1790895360000.0,
+              "open": 0.0044176,
+              "high": 0.0044224,
+              "low": 0.0044176,
+              "close": 0.0044192,
+              "ma3": 0.004417233333333334,
+              "ma15": 0.004406026666666666,
+              "atr": 4.489999999999963e-06,
+              "kc_upper": 0.0044140483872635635,
+              "kc_middle": 0.004409558387263563,
+              "kc_lower": 0.004405068387263563
+            }
+          ],
+          "previous5_low": 0.0043963,
+          "previous5_high": 0.0044218
+        },
+        "third_bar_id": 1790895420000.0,
+        "third_open": 0.0044191,
+        "third_reference_atr": 4.489999999999963e-06,
+        "max_chase_atr": 0.1,
+        "chase_atr": -0.5790645879731238,
+        "chase_bar_id": 1790895420000.0,
+        "chase_open": 0.0044191,
+        "chase_reference_atr": 4.489999999999963e-06,
+        "finality_server_ms": 1790895442716.0
+      },
+      "atr_sl": 0.004410206650000001,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "chandelier_state": null,
+      "ratchet_floor": null,
+      "channel_peak_abnormal": null,
+      "signal_candle_low": null,
+      "signal_candle_high": null,
+      "channel_turn_low": null,
+      "channel_turn_high": null,
+      "touch_price": null,
+      "reclaim_confirmed": null,
+      "reclaim_wait_sec": null,
+      "profit_profile": "TREND_EXTENSION",
+      "profit_room_pct": null,
+      "bounce_capture_ratio": null,
+      "bounce_target_pct": null,
+      "structured_net_rr": null,
+      "high_readiness_low_room": null,
+      "low_room_allocation_factor": null,
+      "dca_stage": null,
+      "dca_base_price": null,
+      "dca_original_amount": null,
+      "eligibility_note": null,
+      "wave_regime": "TREND",
+      "market_mode": null,
+      "entry_market_mode": null,
+      "channel_entry_profile": null,
+      "channel_entry_profile_basis": null,
+      "profit_lock_usdt_v2": null,
+      "channel_live_ma3_exit_pending": null,
+      "channel_live_ma3_favorable_bar": null,
+      "channel_live_ma3_turn_exit_pending": null,
+      "channel_ma3_turn_observed_bar": null
+    },
+    {
+      "id": 1790895442852,
+      "time": "10/02 06:57:22",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "side": "LONG",
+      "price": 0.00441694,
+      "qty": 99460.81592571,
+      "amount": 87.86252408104986,
+      "fee": 0.2197,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "Live1M CLOSED_BODY_BREAKOUT_LONG",
+      "sl": 0.004410206650000001,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1790895360000.0,
+      "entry_atr": 4.489999999999963e-06,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "CLOSED_BODY_BREAKOUT_LONG",
+        "closed_bar": 1790895360000.0,
+        "closed_price": 0.0044192,
+        "quote_price": 0.0044165,
+        "entry_phase": "INITIAL_BREAKOUT",
+        "breakout_bar_id": 1790895300000.0,
+        "pair_confirmation_bar_id": 1790895360000.0,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1790895060000.0,
+              "open": 0.0043996,
+              "high": 0.0043996,
+              "low": 0.0043963,
+              "close": 0.0043984,
+              "ma3": 0.0043995,
+              "ma15": 0.00440582,
+              "atr": 3.040000000000074e-06,
+              "kc_upper": 0.00440943586913993,
+              "kc_middle": 0.00440639586913993,
+              "kc_lower": 0.00440335586913993
+            },
+            {
+              "timestamp": 1790895120000.0,
+              "open": 0.0043985,
+              "high": 0.004409,
+              "low": 0.0043985,
+              "close": 0.0044077,
+              "ma3": 0.0044019,
+              "ma15": 0.004405453333333333,
+              "atr": 3.680000000000003e-06,
+              "kc_upper": 0.004410200072078984,
+              "kc_middle": 0.004406520072078984,
+              "kc_lower": 0.004402840072078984
+            },
+            {
+              "timestamp": 1790895180000.0,
+              "open": 0.0044079,
+              "high": 0.0044103,
+              "low": 0.0044061,
+              "close": 0.0044097,
+              "ma3": 0.004405266666666667,
+              "ma15": 0.004405093333333333,
+              "atr": 3.6699999999999754e-06,
+              "kc_upper": 0.004410492922357175,
+              "kc_middle": 0.004406822922357175,
+              "kc_lower": 0.0044031529223571755
+            },
+            {
+              "timestamp": 1790895240000.0,
+              "open": 0.0044098,
+              "high": 0.0044164,
+              "low": 0.0044098,
+              "close": 0.0044151,
+              "ma3": 0.0044108333333333334,
+              "ma15": 0.004405233333333333,
+              "atr": 3.919999999999965e-06,
+              "kc_upper": 0.0044115312154660155,
+              "kc_middle": 0.004407611215466015,
+              "kc_lower": 0.004403691215466015
+            },
+            {
+              "timestamp": 1790895300000.0,
+              "open": 0.0044151,
+              "high": 0.0044218,
+              "low": 0.0044139,
+              "close": 0.0044174,
+              "ma3": 0.004414066666666667,
+              "ma15": 0.004405693333333334,
+              "atr": 4.3299999999999585e-06,
+              "kc_upper": 0.0044128734806597285,
+              "kc_middle": 0.004408543480659728,
+              "kc_lower": 0.004404213480659728
+            },
+            {
+              "timestamp": 1790895360000.0,
+              "open": 0.0044176,
+              "high": 0.0044224,
+              "low": 0.0044176,
+              "close": 0.0044192,
+              "ma3": 0.004417233333333334,
+              "ma15": 0.004406026666666666,
+              "atr": 4.489999999999963e-06,
+              "kc_upper": 0.0044140483872635635,
+              "kc_middle": 0.004409558387263563,
+              "kc_lower": 0.004405068387263563
+            }
+          ],
+          "previous5_low": 0.0043963,
+          "previous5_high": 0.0044218
+        },
+        "third_bar_id": 1790895420000.0,
+        "third_open": 0.0044191,
+        "third_reference_atr": 4.489999999999963e-06,
+        "max_chase_atr": 0.1,
+        "chase_atr": -0.5790645879731238,
+        "chase_bar_id": 1790895420000.0,
+        "chase_open": 0.0044191,
+        "chase_reference_atr": 4.489999999999963e-06,
+        "finality_server_ms": 1790895442716.0
+      },
+      "atr_sl": 0.004410206650000001,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.004410206650000001,
+      "initial_risk": 6.734999999999901e-06
+    }
+  ]
+}

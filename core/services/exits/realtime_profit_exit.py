@@ -34,7 +34,10 @@ def cached_tick_indicators(frame, price, stamp):
                     last_open=float(last.get('open') or 0.),
                     last_high=float(last.get('high') or 0.),
                     last_low=float(last.get('low') or 0.),
-                    last_close=float(last.get('close') or 0.))
+                    last_close=float(last.get('close') or 0.),
+                    last_ma5=float(last.get('ma5', last.get('ma3', 0.))),
+                    last_ma15=float(last.get('ma15', 0.)),
+                    last_kc_middle=float(last.get('kc_middle', 0.)))
     return snapshot, snapshot['atr']
 
 

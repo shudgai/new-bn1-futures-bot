@@ -1,0 +1,6 @@
+{
+  "service": "MainPID=970428\nExecMainStartTimestamp=Thu 2026-10-01 23:13:39 UTC\nActiveState=active\n",
+  "http_status": 200,
+  "tests_passed": 98,
+  "margin_loss_ratio_unchanged": 0.05
+}

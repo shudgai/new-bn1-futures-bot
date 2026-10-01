@@ -55,7 +55,7 @@ def test_non_wick_guards_preserved(side,fault):
     account=SimpleNamespace(positions={},trades=[])
     if fault=='zero_body': f.loc[2,'close']=f.loc[2,'open']
     if fault=='opposite': f.loc[2,'open']=f.loc[2,'close']+sign*.1
-    if fault=='no_break': f.loc[1,['open','close','high','low']]=[100.,100.1,100.2,99.9]
+    if fault=='no_break': f.loc[2,['open','close','high','low']]=[100.,100.1,100.2,99.9]
     if fault=='chase':
         price=float(f.iloc[-1].open)+sign*.2
         f.loc[4,'close']=price;f.loc[4,'high']=max(f.loc[4,'high'],price);f.loc[4,'low']=min(f.loc[4,'low'],price)

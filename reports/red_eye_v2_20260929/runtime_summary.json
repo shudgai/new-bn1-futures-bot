@@ -1,0 +1,16 @@
+{
+  "service_started": "Tue 2026-09-29 23:03:32 UTC",
+  "is_running": true,
+  "paper_trading": true,
+  "positions": [],
+  "error_count": 0,
+  "errors": [],
+  "recent_gates": [
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790723040000.0 reason=WAIT_PURE_TREND_V2",
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790723040000.0 reason=WAIT_PURE_TREND_V2",
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790723100000.0 reason=WAIT_PURE_TREND_V2",
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790723100000.0 reason=WAIT_PURE_TREND_V2",
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790723100000.0 reason=WAIT_PURE_TREND_V2",
+    "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:99 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790723100000.0 reason=WAIT_PURE_TREND_V2"
+  ]
+}

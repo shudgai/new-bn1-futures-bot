@@ -1,0 +1,16 @@
+# Closed breakout and continuation
+
+User authorization: first directional candle body >= 0.5 ATR, second same-color body must close before entry. Missed entries and post-close entries may continue the valid breakout. Applies symmetrically to 1000PEPE and 龙虾.
+
+The first candle opens inside or on its own outer rail and closes strictly outside. Its threshold uses the preceding closed candle ATR. The second is closed, has a nonzero same-direction body and closes strictly outside its own rail. No extra body-ratio threshold is introduced for the second candle. Latest quote must remain strictly outside the current same-side rail. Entry ATR uses the latest closed candle.
+
+Continuation requires a verifiable pair within the available contiguous candle snapshot, all subsequent closed prices remaining outside the same rail, and the latest closed candle having a same-direction body. A closed return to or inside the rail invalidates the old pair. The original breakout need not occur after a close. Successful-close history and persisted last_closed_at prevent same-candle reopening; subsequent candles may continue. Per-confirmation-candle dedupe and account risk checks remain. Missing history does not fabricate a breakout.
+
+Scanner, engine revalidation, account firewall and idle state-machine compatibility share entry_contract. Legacy SECOND_BAR_OUTSIDE and VALID_OUTSIDE_KC codes are rejected at the order boundary. New codes are CLOSED_BODY_BREAKOUT_LONG/SHORT. Manual entry and bot takeover remain supported. Held-position exit behavior, leverage and sizing are unchanged. The prior idle CK/squeeze/wick checks are replaced by the explicitly authorized closed breakout contract, rather than becoming extra prerequisites.
+
+Validation: tests/test_strict_entry_contract.py — 52 passed, including engine to isolated paper-account fills, both symbols and sides after a close, exact 0.5 ATR, no early second-candle entry, invalid/expired quotes, old-code rejection, deduplication, margin/slots/daily risk and mocked exchange calls. Python compilation passed. Historical unrelated test failures and missing AIDAN files remain documented in ../entry_contract_20261001/README.md; no full-suite pass is claimed.
+
+Deployment: restarted 8006 at 2026-10-01 05:25:39 UTC (13:25:39 UTC+8), MainPID 511017, active/running, NRestarts 0. API HTTP200 after startup retry, is_running=true, paper_trading=true. A PEPE SHORT position was present in the first snapshot; this is not asserted to be a new fill under this policy.
+
+## Warmup validation repair
+At 15:03 UTC+8 both symbols were persistently rejected as WAIT_VALID_ENTRY_DATA. Whole-frame finite-value validation incorrectly included the leading rolling ATR/KC warmup rows. The contract now trims only the leading indicator-unavailable prefix; interior missing data and invalid recent history still fail closed. 62 entry regression tests passed. Real PEPE 200-candle OHLC recomputed through SuperTrendKeltnerStrategy contained 9 ATR warmup rows; after repair it reached WAIT_CLOSED_BREAKOUT_OR_CONTINUATION instead of data rejection. No entry-rule threshold was relaxed. Restarted at 2026-10-01 07:05:11 UTC (15:05:11 UTC+8), active/running, NRestarts=0, status API reachable.

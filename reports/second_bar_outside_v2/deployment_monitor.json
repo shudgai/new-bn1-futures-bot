@@ -1,0 +1,330 @@
+{
+  "commit": "7d750dd",
+  "service_started": "Tue 2026-09-29 23:33:48 UTC",
+  "records": [
+    {
+      "observed_at": "2026-09-29 23:34:48 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724887.61816,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042664,
+        "龙虾/USDT": 0.07129
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 2,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:34:57 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724897.5966706,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042617,
+        "龙虾/USDT": 0.07132
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 2,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:07 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724907.705449,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042614,
+        "龙虾/USDT": 0.0712
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:18 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724917.5937893,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042656,
+        "龙虾/USDT": 0.07117
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:27 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724927.5909116,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042632,
+        "龙虾/USDT": 0.07117
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:37 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724937.5851398,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042621,
+        "龙虾/USDT": 0.07118
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:48 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724947.601278,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042615,
+        "龙虾/USDT": 0.07116
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:35:58 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724957.7160635,
+      "tickers": {
+        "1000PEPE/USDT": 0.004262,
+        "龙虾/USDT": 0.07113
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 3,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:08 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724967.605773,
+      "tickers": {
+        "1000PEPE/USDT": 0.00426,
+        "龙虾/USDT": 0.07104
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 4,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:18 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724977.5951798,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042618,
+        "龙虾/USDT": 0.07109
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 4,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:27 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724987.6032543,
+      "tickers": {
+        "1000PEPE/USDT": 0.004265,
+        "龙虾/USDT": 0.07118
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 5,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:37 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790724997.6080515,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042623,
+        "龙虾/USDT": 0.07113
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 6,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:47 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725007.5977137,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042625,
+        "龙虾/USDT": 0.07097
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 6,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:36:58 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725017.6077895,
+      "tickers": {
+        "1000PEPE/USDT": 0.00426,
+        "龙虾/USDT": 0.07094
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 6,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:37:08 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725027.6274579,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042622,
+        "龙虾/USDT": 0.07094
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 8,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:37:17 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725037.6146297,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042623,
+        "龙虾/USDT": 0.07097
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 9,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:37:28 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725047.6310737,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042623,
+        "龙虾/USDT": 0.07089
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 9,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:37:37 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725057.6813772,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042644,
+        "龙虾/USDT": 0.07086
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 9,
+      "error_count": 0
+    },
+    {
+      "observed_at": "2026-09-29 23:37:48 UTC",
+      "is_running": true,
+      "paper_trading": true,
+      "ticker_updated_at": 1790725067.6169457,
+      "tickers": {
+        "1000PEPE/USDT": 0.0042639,
+        "龙虾/USDT": 0.07099
+      },
+      "position_count": 0,
+      "total_trades": 6,
+      "signal_events": 0,
+      "submit_events": 0,
+      "fill_events": 0,
+      "pnl_blocks": 9,
+      "error_count": 0
+    }
+  ],
+  "errors": []
+}

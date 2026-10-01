@@ -1,0 +1,11 @@
+{
+  "service": "MainPID=946351\nExecMainStartTimestamp=Thu 2026-10-01 22:19:01 UTC\nActiveState=active\nSubState=running\n",
+  "http_status": 200,
+  "paper_trading": true,
+  "is_running": true,
+  "tests_passed": 86,
+  "source_sha256": {
+    "core/services/entry_contract.py": "3845f092ffb3dddefdfafb60001ddf75136965d97fd5685e4f6fb00868f38af9",
+    "core/services/strategies/strict_state_machine.py": "3925c42b5acba66f3ef3a4a5eb0fddc0e82822462f69a5361e9fa14c4ecf4d7f"
+  }
+}

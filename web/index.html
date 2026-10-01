@@ -578,32 +578,12 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
-                            <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]"
-                                  :style="{ color: bot.chart_metrics[symbol].kc_width_atr < 3 ? '#5c4033' : ((chartModal.states[symbol] || {}).ckTrend === 'bull' ? '#006400' : ((chartModal.states[symbol] || {}).ckTrend === 'bear' ? '#8b0000' : '#5c4033')) }">
-                                通道寬度 {{ bot.chart_metrics[symbol].kc_width_atr.toFixed(2) }} ATR
-                            </span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
-                                {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
-                            </span>
-                            <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]" class="chart-symbol-metrics" style="margin-left: 10px; display: inline-flex; gap: 6px; flex-wrap: wrap;">
-                                <span class="badge" style="background:#dcfce7; color:#166534; font-size: 14px; padding: 4px 8px; font-weight: 600;">🟢 破上軌還差: {{ bot.chart_metrics[symbol].dist_to_upper > 0 ? '+' : '' }}{{ bot.chart_metrics[symbol].dist_to_upper_pct.toFixed(2) }}%</span>
-                                <span class="badge" style="background:#fee2e2; color:#991b1b; font-size: 14px; padding: 4px 8px; font-weight: 600;">🔴 破下軌還差: {{ bot.chart_metrics[symbol].dist_to_lower > 0 ? '-' : '' }}{{ (-bot.chart_metrics[symbol].dist_to_lower_pct).toFixed(2) }}%</span>
-                                <!-- ⚡ 起爆實體要求已移除：破軌即開倉，不再限制 min_body_atr -->
-                                <span v-if="bot.chart_metrics[symbol].breakout_status !== 'INSIDE_CHANNEL' && bot.chart_metrics[symbol].block_reason !== 'NONE' && (!bot.positions || !bot.positions.find(p => p.symbol === symbol))" 
-                                      class="badge" style="background:#ffedd5; color:#c2410c; border: 1px solid #fdba74; font-size: 14px; padding: 4px 8px; font-weight: 700;">
-                                    ⚠️ [已破軌未開單] 原因：{{ bot.chart_metrics[symbol].block_reason }}
-                                </span>
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌：連續上升為牛市、連續下降為熊市，其餘為猴市；資料不足顯示待更新">
+                                {{ { bull: '↑ 牛市', bear: '↓ 熊市', range: '↔ 猴市', wait: '待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
                         <div v-if="bot.positions && bot.positions.find(p => p.symbol === symbol)" class="chart-pos-info-bar">
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">開倉方式:</span>
-                                <span class="chart-pos-info-value" style="font-weight: 600; color: #8b5cf6;">
-                                    {{ (getPos(symbol) || {}).entry_reason || (getPos(symbol) || {}).reason || '未紀錄' }}
-                                </span>
-                            </span>
-                            <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">開倉價:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">
@@ -612,42 +592,9 @@
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">本金:</span>
-                                <span class="chart-pos-info-value" style="font-family:monospace; font-weight: 600;">
-                                    {{ ((getPos(symbol) || {}).margin || 0).toFixed(2) }} U
-                                </span>
-                            </span>
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">淨利%:</span>
                                 <span :class="['chart-pos-info-value', getPosRoePct(bot.positions.find(p => p.symbol === symbol)) >= 0 ? 'text-green' : 'text-red']" style="font-family:monospace; font-weight: 600;">
                                     {{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)).toFixed(2) }}%
-                                </span>
-                            </span>
-
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">1.5 ATR 止損:</span>
-                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).atr_sl ? 'color:#ef4444;font-weight:600;font-family:monospace;' : 'color:inherit'">
-                                    {{ (getPos(symbol) || {}).atr_sl ? formatPrice(getPos(symbol).atr_sl) : '計算中...' }}
-                                </span>
-                            </span>
-
-                            <span class="chart-pos-info-item" v-if="(getPos(symbol) || {}).atr_tp">
-                                <span class="chart-pos-info-label">2.0 ATR 止盈:</span>
-                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).atr_tp ? 'color:#22c55e;font-weight:600;font-family:monospace;' : 'color:inherit'">{{ formatPrice(getPos(symbol).atr_tp) }}</span>
-                            </span>
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">鎖利狀態:</span>
-                                <span v-if="(getPos(symbol) || {}).entry_mode !== 'EXHAUSTION_SNIPER'" class="badge" style="background:#dcfce7; color:#166534; font-weight:700;">
-                                    {{ ((getPos(symbol) || {}).peak_trailing_state || {}).pending ? '⏳ 已觸發，平倉重試中' : ((getPos(symbol) || {}).is_half_closed ? '🔒 已半平倉：2.0 ATR 極值追蹤中' : ((getPos(symbol) || {}).is_breakeven_moved ? '🛡️ 0.8 ATR 保本：等待 1.5 ATR 減倉' : '即時追蹤：等待 0.8 ATR 移保本')) }}
-                                </span>
-                                <span v-else-if="(getPos(symbol) || {}).profit_lock_atr_armed || (getPos(symbol) || {}).profit_lock_usdt_armed || (getPos(symbol) || {}).fixed_profit_lock_pct_armed" class="badge" style="background:#dcfce7; color:#166534; font-weight:700;">
-                                    🔒 已啟動 ({{ (getPos(symbol) || {}).profit_lock_mode || '保護中' }})
-                                </span>
-                                <span v-else class="badge" style="background:#f1f5f9; color:#64748b;">
-                                    ⏳ 等待脫離成本區...
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
@@ -951,7 +898,7 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
                     lastValueVisible: false, priceLineVisible: false
                 });
-                ctx.ma5Series = chart.addLineSeries({ color: '#8A2BE2', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
+                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
                 ctx.ma5Series.applyOptions({
                     lastValueVisible: true,
                     priceFormat: {
@@ -1059,7 +1006,10 @@
                     // 只有歷史 K 棒真的前進時才整批重畫；同一根即時 K 棒只做
                     // update，避免每次輪詢造成整張圖閃爍與視窗位置跳動。
                     const previousBarTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
-                    const historySignature = `${symbol}:${candles.length}:${previousBarTime}`;
+                    const historySignature = JSON.stringify([
+                        symbol, candles.slice(0, -1), ma5.slice(0, -1), ma15.slice(0, -1),
+                        kcUpper.slice(0, -1), kcMiddle.slice(0, -1), kcLower.slice(0, -1)
+                    ]);
                     const fullRefresh = ctx.historySignature !== historySignature;
                     if (fullRefresh) {
                         ctx.candlestickSeries.setData(candles);
@@ -1122,10 +1072,10 @@
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dotted,
                                     axisLabelVisible: true,
-                                    title: '鎖利防線',
+                                    title: pos.entry_mode === 'CHANNEL_SWING' ? '初始止損防線' : '鎖利防線',
                                 });
                             } else {
-                                ctx.stopPriceLine.applyOptions({ price: stopPrice });
+                                ctx.stopPriceLine.applyOptions({ price: stopPrice, title: pos.entry_mode === 'CHANNEL_SWING' ? '初始止損防線' : '鎖利防線' });
                             }
                         } else if (ctx.stopPriceLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
@@ -1134,7 +1084,6 @@
 
                         // ★ 新增：ATR 固定止盈線 (綠色) / 止損線 (紅色)
                         const atrTp = parseFloat(pos.atr_tp || 0);
-                        const atrSl = parseFloat(pos.atr_sl || 0);
 
                         if (atrTp > 0) {
                             if (!ctx.atrTpLine) {
@@ -1154,24 +1103,12 @@
                             ctx.atrTpLine = null;
                         }
 
-                        if (atrSl > 0) {
-                            if (!ctx.atrSlLine) {
-                                ctx.atrSlLine = ctx.candlestickSeries.createPriceLine({
-                                    price: atrSl,
-                                    color: '#ef4444',
-                                    lineWidth: 2,
-                                    lineStyle: LightweightCharts.LineStyle.Dashed,
-                                    axisLabelVisible: true,
-                                    title: '🛑 ATR止損(×1.5)',
-                                });
-                            } else {
-                                ctx.atrSlLine.applyOptions({ price: atrSl });
-                            }
-                        } else if (ctx.atrSlLine) {
+                        // ATR stop remains enforced by the backend; hide its chart overlay.
+                        if (ctx.atrSlLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.atrSlLine);
                             ctx.atrSlLine = null;
                         }
-                        
+
                         const swingExt = parseFloat(pos.swing_extreme || 0);
                         if (swingExt > 0) {
                             const currentPrice = currentData.length > 0 ? currentData[currentData.length - 1].close : swingExt;

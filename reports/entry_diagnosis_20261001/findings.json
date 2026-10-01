@@ -1,0 +1,76 @@
+{
+  "pepe": {
+    "live_price": 0.0044342,
+    "live_upper": 0.004423649157945751,
+    "live_lower": 0.004410269157945751,
+    "closed": [
+      {
+        "time": 1790892000,
+        "open": 0.0044087,
+        "close": 0.0044256,
+        "body_ratio": 0.8894736842105432,
+        "long_push": true,
+        "short_push": false,
+        "above_upper": true,
+        "below_lower": false
+      },
+      {
+        "time": 1790892060,
+        "open": 0.0044255,
+        "close": 0.0044351,
+        "body_ratio": 0.9504950495049862,
+        "long_push": true,
+        "short_push": false,
+        "above_upper": true,
+        "below_lower": false
+      },
+      {
+        "time": 1790892120,
+        "open": 0.0044352,
+        "close": 0.0044349,
+        "body_ratio": 0.05454545454545168,
+        "long_push": false,
+        "short_push": false,
+        "above_upper": true,
+        "below_lower": false
+      }
+    ]
+  },
+  "lobster": {
+    "live_price": 0.1047,
+    "live_upper": 0.10712912256275428,
+    "live_lower": 0.10356312256275427,
+    "closed": [
+      {
+        "time": 1790892000,
+        "open": 0.1061,
+        "close": 0.10681,
+        "body_ratio": 0.430303030303032,
+        "long_push": true,
+        "short_push": false,
+        "above_upper": false,
+        "below_lower": false
+      },
+      {
+        "time": 1790892060,
+        "open": 0.10684,
+        "close": 0.10486,
+        "body_ratio": 0.5577464788732404,
+        "long_push": false,
+        "short_push": true,
+        "above_upper": false,
+        "below_lower": false
+      },
+      {
+        "time": 1790892120,
+        "open": 0.10484,
+        "close": 0.10465,
+        "body_ratio": 0.06209150326797232,
+        "long_push": false,
+        "short_push": false,
+        "above_upper": false,
+        "below_lower": false
+      }
+    ]
+  }
+}

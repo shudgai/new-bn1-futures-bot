@@ -1,0 +1,456 @@
+FFFFFF..FFFFFF..FFFFFF..............FFFF                                 [100%]
+=================================== FAILURES ===================================
+_____________ test_all_signal_and_live_wicks_allowed[upper-1-LONG] _____________
+
+side = 'LONG', index = 1, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[upper-1-SHORT] _____________
+
+side = 'SHORT', index = 1, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[upper-2-LONG] _____________
+
+side = 'LONG', index = 2, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[upper-2-SHORT] _____________
+
+side = 'SHORT', index = 2, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[upper-3-LONG] _____________
+
+side = 'LONG', index = 3, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[upper-3-SHORT] _____________
+
+side = 'SHORT', index = 3, shape = 'upper'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[lower-1-LONG] _____________
+
+side = 'LONG', index = 1, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[lower-1-SHORT] _____________
+
+side = 'SHORT', index = 1, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[lower-2-LONG] _____________
+
+side = 'LONG', index = 2, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[lower-2-SHORT] _____________
+
+side = 'SHORT', index = 2, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[lower-3-LONG] _____________
+
+side = 'LONG', index = 3, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+____________ test_all_signal_and_live_wicks_allowed[lower-3-SHORT] _____________
+
+side = 'SHORT', index = 3, shape = 'lower'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-1-LONG] ______________
+
+side = 'LONG', index = 1, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-1-SHORT] _____________
+
+side = 'SHORT', index = 1, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-2-LONG] ______________
+
+side = 'LONG', index = 2, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-2-SHORT] _____________
+
+side = 'SHORT', index = 2, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-3-LONG] ______________
+
+side = 'LONG', index = 3, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____________ test_all_signal_and_live_wicks_allowed[both-3-SHORT] _____________
+
+side = 'SHORT', index = 3, shape = 'both'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('index',[1,2,3,4])
+    @pytest.mark.parametrize('shape',['upper','lower','both'])
+    def test_all_signal_and_live_wicks_allowed(side,index,shape):
+        f=frame_for(side);before=evaluate_entry_contract(f)
+        result=evaluate_entry_contract(add_wicks(f,index,shape))
+>       assert result is not None
+E       assert None is not None
+
+tests/test_entry_without_wick_filter.py:44: AssertionError
+_____ test_account_and_exchange_revalidation_accept_lengthened_wicks[LONG] _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ec52175dd60>
+side = 'LONG'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_account_and_exchange_revalidation_accept_lengthened_wicks(monkeypatch,side):
+        from core.testnet_account import BinanceTestnetAccount
+        f=frame_for(side);decision=evaluate_entry_contract(f)
+        ctx=dict(entry_mode='CHANNEL_SWING',entry_signal_code=decision['type'],
+                 channel_confirmation_bar_id=decision['confirmation_bar_id'])
+        for index in (1,2,3,4): add_wicks(f,index,'both')
+        account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f))
+>       assert asyncio.run(validate_account_entry(account,'TEST',side,ctx))['side']==side
+
+tests/test_entry_without_wick_filter.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = namespace(entry_frame_provider=<AsyncMock id='139384197886080'>)
+symbol = 'TEST', side = 'LONG'
+context = {'channel_confirmation_bar_id': 1790892480000.0, 'entry_mode': 'CHANNEL_SWING', 'entry_signal_code': 'CLOSED_BODY_BREAKOUT_LONG'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+            raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+        provider = getattr(account, 'entry_frame_provider', None)
+        if not callable(provider):
+            raise ValueError('[FORBIDDEN_ENTRY] 缺少可重驗的行情來源')
+        try:
+            frame = await provider(symbol)
+        except Exception as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
+    
+        if frame is None or not frame.attrs.get('entry_finality_verified'):
+            raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+        diagnostics = {}
+        decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
+        if decision is None or decision['side'] != side:
+>           raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+E           ValueError: [FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: WAIT_CLOSED_BREAKOUT_OR_CONTINUATION
+
+core/services/entry_firewall.py:46: ValueError
+____ test_account_and_exchange_revalidation_accept_lengthened_wicks[SHORT] _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ec4e98cd8e0>
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_account_and_exchange_revalidation_accept_lengthened_wicks(monkeypatch,side):
+        from core.testnet_account import BinanceTestnetAccount
+        f=frame_for(side);decision=evaluate_entry_contract(f)
+        ctx=dict(entry_mode='CHANNEL_SWING',entry_signal_code=decision['type'],
+                 channel_confirmation_bar_id=decision['confirmation_bar_id'])
+        for index in (1,2,3,4): add_wicks(f,index,'both')
+        account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f))
+>       assert asyncio.run(validate_account_entry(account,'TEST',side,ctx))['side']==side
+
+tests/test_entry_without_wick_filter.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = namespace(entry_frame_provider=<AsyncMock id='139384187197520'>)
+symbol = 'TEST', side = 'SHORT'
+context = {'channel_confirmation_bar_id': 1790892480000.0, 'entry_mode': 'CHANNEL_SWING', 'entry_signal_code': 'CLOSED_BODY_BREAKOUT_SHORT'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+            raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+        provider = getattr(account, 'entry_frame_provider', None)
+        if not callable(provider):
+            raise ValueError('[FORBIDDEN_ENTRY] 缺少可重驗的行情來源')
+        try:
+            frame = await provider(symbol)
+        except Exception as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
+    
+        if frame is None or not frame.attrs.get('entry_finality_verified'):
+            raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+        diagnostics = {}
+        decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
+        if decision is None or decision['side'] != side:
+>           raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+E           ValueError: [FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: WAIT_CLOSED_BREAKOUT_OR_CONTINUATION
+
+core/services/entry_firewall.py:46: ValueError
+_______ test_scanner_still_reaches_order_boundary_with_long_wicks[LONG] ________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_scanner_still_reaches_order_boundary_with_long_wicks(side):
+        from core.services.symbol_runner import process_single_symbol_runner
+        f=frame_for(side)
+        for index in (1,2,3,4): add_wicks(f,index,'both')
+        engine=SimpleNamespace(account=SimpleNamespace(positions={},log=lambda *args:None),
+                               tickers={'TEST':float(f.iloc[-1].close)},
+                               _execute_confirmed_channel_break=AsyncMock())
+        asyncio.run(process_single_symbol_runner(engine,'TEST',time.time(),None,False,exit_frame=f))
+>       engine._execute_confirmed_channel_break.assert_awaited_once()
+
+tests/test_entry_without_wick_filter.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock id='139384187694272'>
+
+    def assert_awaited_once(self):
+        """
+        Assert that the mock was awaited exactly once.
+        """
+        if not self.await_count == 1:
+            msg = (f"Expected {self._mock_name or 'mock'} to have been awaited once."
+                   f" Awaited {self.await_count} times.")
+>           raise AssertionError(msg)
+E           AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+
+/usr/lib/python3.12/unittest/mock.py:2305: AssertionError
+----------------------------- Captured stdout call -----------------------------
+ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=TEST side=NONE bar=1790892540000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION
+_______ test_scanner_still_reaches_order_boundary_with_long_wicks[SHORT] _______
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_scanner_still_reaches_order_boundary_with_long_wicks(side):
+        from core.services.symbol_runner import process_single_symbol_runner
+        f=frame_for(side)
+        for index in (1,2,3,4): add_wicks(f,index,'both')
+        engine=SimpleNamespace(account=SimpleNamespace(positions={},log=lambda *args:None),
+                               tickers={'TEST':float(f.iloc[-1].close)},
+                               _execute_confirmed_channel_break=AsyncMock())
+        asyncio.run(process_single_symbol_runner(engine,'TEST',time.time(),None,False,exit_frame=f))
+>       engine._execute_confirmed_channel_break.assert_awaited_once()
+
+tests/test_entry_without_wick_filter.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock id='139384187687696'>
+
+    def assert_awaited_once(self):
+        """
+        Assert that the mock was awaited exactly once.
+        """
+        if not self.await_count == 1:
+            msg = (f"Expected {self._mock_name or 'mock'} to have been awaited once."
+                   f" Awaited {self.await_count} times.")
+>           raise AssertionError(msg)
+E           AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+
+/usr/lib/python3.12/unittest/mock.py:2305: AssertionError
+----------------------------- Captured stdout call -----------------------------
+ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=TEST side=NONE bar=1790892540000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION
+=========================== short test summary info ============================
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-1-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-1-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-2-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-2-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-3-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[upper-3-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-1-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-1-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-2-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-2-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-3-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[lower-3-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-1-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-1-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-2-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-2-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-3-LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_all_signal_and_live_wicks_allowed[both-3-SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_account_and_exchange_revalidation_accept_lengthened_wicks[LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_account_and_exchange_revalidation_accept_lengthened_wicks[SHORT]
+FAILED tests/test_entry_without_wick_filter.py::test_scanner_still_reaches_order_boundary_with_long_wicks[LONG]
+FAILED tests/test_entry_without_wick_filter.py::test_scanner_still_reaches_order_boundary_with_long_wicks[SHORT]
+22 failed, 18 passed in 2.02s

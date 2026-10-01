@@ -1,0 +1,29 @@
+{
+  "checked_at_utc": "2026-10-01T09:13:49.897754+00:00",
+  "service": {
+    "MainPID": "603144",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Thu 2026-10-01 09:13:28 UTC",
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "errors": [],
+  "entry_gate_observations": [
+    "Oct 01 09:13:30 htlocalserver bash[603154]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790845980000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+    "Oct 01 09:13:30 htlocalserver bash[603154]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790845980000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI",
+    "Oct 01 09:13:32 htlocalserver bash[603154]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790845980000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI",
+    "Oct 01 09:13:37 htlocalserver bash[603154]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790845980000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+    "Oct 01 09:13:45 htlocalserver bash[603154]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790845980000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI"
+  ],
+  "source_sha256": {
+    "core/services/entry_contract.py": "b9bbc22811fb496981c9062455a1c19ca38be27b1e4d46cd21bfd7122f67ef28",
+    "core/services/entry_firewall.py": "019aca3b7ee1dfd4c47aaf69c77b1afa0158cd63fa68751cf6423a83cfd8fddc",
+    "core/engine.py": "037ae9c7d4a87db9b2a0cc1d1fff6ed0b0979004d4280a7dacd46589642dd789"
+  },
+  "tests_passed": 290,
+  "commit_created": false,
+  "pushed": false
+}

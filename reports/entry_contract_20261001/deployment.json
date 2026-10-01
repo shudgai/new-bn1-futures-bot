@@ -1,0 +1,483 @@
+{
+  "is_running": true,
+  "paper_trading": true,
+  "ticker_updated_at": 1790826971.6625855,
+  "positions": [
+    {
+      "symbol": "龙虾/USDT",
+      "side": "SHORT",
+      "entry_price": 0.038506149,
+      "qty": 9738.704330053883,
+      "margin": 75.0,
+      "leverage": 5,
+      "sl": 0.038834649000000006,
+      "tp": 0.0,
+      "atr": 0.00021900000000000115,
+      "open_timestamp": 1790826957.5648932,
+      "open_time": "2026-10-01 11:55:57",
+      "reason": "Live1M SHORT_CONTINUATION",
+      "signal_score": 100,
+      "mark_price": 0.03852,
+      "unrealized_pnl": -0.1348907936755304,
+      "peak_pnl_pct": 0.0,
+      "profit_alert": false,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1790826900000.0,
+      "entry_atr": 0.00021900000000000115,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "SHORT_CONTINUATION",
+        "closed_bar": 1790826900000.0,
+        "closed_price": 0.03858,
+        "quote_price": 0.03851,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1790826540000.0,
+              "open": 0.03905,
+              "high": 0.0391,
+              "low": 0.03888,
+              "close": 0.03907,
+              "ma3": 0.03907333333333333,
+              "ma15": 0.03912066666666667,
+              "atr": 0.0001920000000000019,
+              "kc_upper": 0.039312221619837516,
+              "kc_middle": 0.03912022161983751,
+              "kc_lower": 0.03892822161983751
+            },
+            {
+              "timestamp": 1790826600000.0,
+              "open": 0.03908,
+              "high": 0.03915,
+              "low": 0.0388,
+              "close": 0.03891,
+              "ma3": 0.039009999999999996,
+              "ma15": 0.03911066666666667,
+              "atr": 0.00020500000000000103,
+              "kc_upper": 0.039305200513186325,
+              "kc_middle": 0.03910020051318632,
+              "kc_lower": 0.03889520051318632
+            },
+            {
+              "timestamp": 1790826660000.0,
+              "open": 0.03891,
+              "high": 0.03894,
+              "low": 0.03873,
+              "close": 0.03877,
+              "ma3": 0.03891666666666666,
+              "ma15": 0.03909733333333333,
+              "atr": 0.0001940000000000011,
+              "kc_upper": 0.039262752845263815,
+              "kc_middle": 0.039068752845263816,
+              "kc_lower": 0.038874752845263816
+            },
+            {
+              "timestamp": 1790826720000.0,
+              "open": 0.03876,
+              "high": 0.03887,
+              "low": 0.0387,
+              "close": 0.03874,
+              "ma3": 0.03880666666666666,
+              "ma15": 0.039080000000000004,
+              "atr": 0.00019700000000000135,
+              "kc_upper": 0.03923444305047679,
+              "kc_middle": 0.03903744305047679,
+              "kc_lower": 0.038840443050476785
+            },
+            {
+              "timestamp": 1790826780000.0,
+              "open": 0.03873,
+              "high": 0.03889,
+              "low": 0.03871,
+              "close": 0.03876,
+              "ma3": 0.03875666666666667,
+              "ma15": 0.03905866666666667,
+              "atr": 0.0002020000000000015,
+              "kc_upper": 0.039213019902812334,
+              "kc_middle": 0.03901101990281233,
+              "kc_lower": 0.03880901990281233
+            },
+            {
+              "timestamp": 1790826840000.0,
+              "open": 0.03876,
+              "high": 0.03877,
+              "low": 0.03852,
+              "close": 0.03858,
+              "ma3": 0.038693333333333337,
+              "ma15": 0.039017333333333334,
+              "atr": 0.00021900000000000115,
+              "kc_upper": 0.03918897038825878,
+              "kc_middle": 0.03896997038825878,
+              "kc_lower": 0.038750970388258775
+            }
+          ],
+          "previous5_low": 0.0387,
+          "previous5_high": 0.03915
+        }
+      },
+      "atr_sl": 0.038834649000000006,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.038834649000000006,
+      "initial_risk": 0.0003285000000000024,
+      "peak_trailing_state": {
+        "policy": "realtime_peak_trailing_v1",
+        "identity": [
+          "SHORT",
+          1790826957.5648932,
+          0.038506149,
+          9738.704330053883
+        ],
+        "peak_price": 0.0385,
+        "entry_margin": 75.0,
+        "armed": false,
+        "atr": 0.00021900000000000115,
+        "last_ms": 1790826972329.0,
+        "peak_net_pnl": -0.35259952410453765
+      },
+      "peak_price": 0.0385,
+      "peak_pnl": 0.059883292925539316,
+      "peak_pnl_usd": 0.059883292925539316,
+      "peak_net_pnl_usd": -0.35259952410453765,
+      "peak_gain_atr": 0.028077625570793924,
+      "peak_unrealized_profit_usd": 0.059883292925539316,
+      "current_unrealized_pnl_usd": -0.1348907936755304,
+      "current_net_pnl_usd": -0.5474904848962621,
+      "stop_loss": 0.038834649000000006,
+      "trigger": {
+        "active": false,
+        "ma_ok": true,
+        "reasons": [],
+        "strong": false,
+        "ma5_reversed": false,
+        "is_panic_reversal": false,
+        "ema_breach_confirmed": false,
+        "structure_broken": false,
+        "pre_peak_exit": false,
+        "pre_trough_exit": false,
+        "opposite_candle_body_atr": 0.017302534821356626,
+        "ma3_curr": 0.03854666666666667,
+        "kc_middle": 0.03890121119477491,
+        "kc_upper": 0.03947916119477491,
+        "kc_lower": 0.03832326119477491,
+        "adx": 0.0,
+        "atr": 0.00057795,
+        "prev_1_high": 0.03874,
+        "prev_1_low": 0.0385,
+        "updated_at": 1790826970.955487,
+        "volume_divergence_alert": false
+      },
+      "estimated_net_unrealized_pnl": -0.5474717281517357,
+      "entry_reason": "Live1M SHORT_CONTINUATION",
+      "ratchet_floor": null,
+      "phase_info": null,
+      "locked_profit_usdt": 0.0,
+      "locked_phase": 0
+    }
+  ],
+  "logs": [
+    {
+      "time": "11:54:55",
+      "timestamp": 1790826895.8585038,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:56",
+      "timestamp": 1790826896.9280536,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:56",
+      "timestamp": 1790826896.93119,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:57",
+      "timestamp": 1790826897.8298876,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:57",
+      "timestamp": 1790826897.832952,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:58",
+      "timestamp": 1790826898.3204722,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:58",
+      "timestamp": 1790826898.3236535,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:58",
+      "timestamp": 1790826898.8214655,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:58",
+      "timestamp": 1790826898.8237839,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:59",
+      "timestamp": 1790826899.703052,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:59",
+      "timestamp": 1790826899.705305,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:59",
+      "timestamp": 1790826899.901906,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:54:59",
+      "timestamp": 1790826899.9041464,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:01",
+      "timestamp": 1790826901.1078699,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:01",
+      "timestamp": 1790826901.11063,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:04",
+      "timestamp": 1790826904.3184905,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:04",
+      "timestamp": 1790826904.3217008,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:05",
+      "timestamp": 1790826905.0062814,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826900000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:05",
+      "timestamp": 1790826905.0090969,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826900000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:05",
+      "timestamp": 1790826905.5958924,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826840000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:05",
+      "timestamp": 1790826905.5989385,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826840000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:07",
+      "timestamp": 1790826907.0866952,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826900000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:07",
+      "timestamp": 1790826907.0895743,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1773 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790826900000.0 reason=BLOCKED_OBSOLETE_ENTRY_SIGNAL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:09",
+      "timestamp": 1790826909.8723161,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:25",
+      "timestamp": 1790826925.262155,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:40",
+      "timestamp": 1790826940.76233,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:51",
+      "timestamp": 1790826951.5646265,
+      "text": "⏹️ 量化交易機器人已停止",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:54",
+      "timestamp": 1790826954.7389963,
+      "text": "⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動",
+      "level": "WARNING"
+    },
+    {
+      "time": "11:55:54",
+      "timestamp": 1790826954.741119,
+      "text": "▶️ 紙上交易帳戶已啟動（純本地模擬，不連接真實交易所）",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:54",
+      "timestamp": 1790826954.744048,
+      "text": "PEAK_EXIT_POLICY_READY arm=1.5ATR_OR_NET5PCT retrace=GT0.4ATR_OR_NET20PCT mode=FULL_CLOSE tick=aggTrade+ticker",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.089075,
+      "text": "✅ [幣種名單核對] MAINSTREAM_SYMBOLS 共 15 個幣種皆為真實有效的幣安永續合約",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.0911465,
+      "text": "▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（2幣雙向交易）",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.0931702,
+      "text": "⏸️ [自動幣種輪替] 已停用，鎖定預設 2 個幣種交易",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.0950844,
+      "text": "✅ [自動恢復] 機器人已重新啟動",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.446875,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790826900000.0 reason=NO_VALID_ENTRY",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.5713713,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790826900000.0 reason=NO_VALID_ENTRY",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:55",
+      "timestamp": 1790826955.5736132,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:56",
+      "timestamp": 1790826956.8384526,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790826900000.0 reason=SILENCE_INSIDE_CHANNEL",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:56",
+      "timestamp": 1790826956.977652,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1752 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826900000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.2809477,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1806 stage=ENTRY_SEQUENCE symbol=龙虾/USDT side=SHORT bar=1790826900000.0 reason=SHORT_CONTINUATION first_bar=1790826840000.0 exit_bar=None",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.2976065,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1879 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826900000.0 reason=ACCOUNT_SUBMIT code=SHORT_CONTINUATION margin=75.0 leverage=5",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.5619752,
+      "text": "🧮 [資金換算] 龙虾/USDT | 本金保證金=75.0000U, 槓桿=5x, 名義價值=375.0000U, 價格=0.0385061, 下單數量(qty)=9738.7043",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.5649621,
+      "text": "📝 [Limit TP1 已掛單] 龙虾/USDT SHORT 預設掛出 50% 限價止盈於 0.038177649 (距離 0.0003285)",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.568181,
+      "text": "🚀 [紙上交易] 開倉成功 [SHORT] 龙虾/USDT @ 0.0385061 (5x，含滑點，SL=0.0388346, TP=0)",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.575264,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1760 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790826900000.0 reason=FILLED",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.9134483,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790826900000.0 reason=NO_VALID_ENTRY",
+      "level": "INFO"
+    },
+    {
+      "time": "11:55:57",
+      "timestamp": 1790826957.9917655,
+      "text": "INSTANT_EXIT_STREAM symbol=龙虾/USDT feed=aggTrade",
+      "level": "INFO"
+    },
+    {
+      "time": "11:56:01",
+      "timestamp": 1790826961.7335114,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790826900000.0 reason=WAIT_VALID_ENTRY_DATA",
+      "level": "INFO"
+    },
+    {
+      "time": "11:56:04",
+      "timestamp": 1790826964.5303147,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=1000PEPE/USDT side=NONE bar=1790826960000.0 reason=NO_VALID_ENTRY",
+      "level": "INFO"
+    },
+    {
+      "time": "11:56:11",
+      "timestamp": 1790826971.3827028,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    }
+  ]
+}

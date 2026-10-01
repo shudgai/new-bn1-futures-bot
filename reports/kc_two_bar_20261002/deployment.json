@@ -1,0 +1,10 @@
+{
+  "http_status": 200,
+  "service": "MainPID=980531\nExecMainStartTimestamp=Thu 2026-10-01 23:33:17 UTC\nActiveState=active\n",
+  "tests_passed": 138,
+  "legacy_before_after": {
+    "passed": 125,
+    "failed": 133,
+    "changed": 0
+  }
+}

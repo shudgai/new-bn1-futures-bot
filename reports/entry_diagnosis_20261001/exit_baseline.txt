@@ -1,0 +1,192 @@
+......FF............FFFF..FF.........F.                                  [100%]
+=================================== FAILURES ===================================
+______ test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold[LONG] _______
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold(side):
+        p = position(side); snap = snapshot(side)
+        sign = 1 if side == 'LONG' else -1
+        for gain in (12., 10., 7., 4., 1.):
+            price = 100+sign*gain
+            snap.update(live_open=price+sign*.2, quote_ms=snap['quote_ms']+1,
+                        live_high=150., live_low=50.)
+>           assert evaluate_peak_trailing(p, price, snap) is None
+E           AssertionError: assert {'action': 'FULL_CLOSE', 'price': 107.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...} is None
+E            +  where {'action': 'FULL_CLOSE', 'price': 107.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...} = evaluate_peak_trailing({'atr_sl': 85.0, 'atr_tp': 0.0, 'current_net_pnl_usd': 9.884005500000004, 'current_unrealized_pnl_usd': 10.0, ...}, 107.0, {'atr': 1.0, 'close': 100.0, 'closed_bar_ms': 120000, 'high': 101.0, ...})
+
+tests/test_abnormal_only_hold.py:55: AssertionError
+______ test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold[SHORT] ______
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold(side):
+        p = position(side); snap = snapshot(side)
+        sign = 1 if side == 'LONG' else -1
+        for gain in (12., 10., 7., 4., 1.):
+            price = 100+sign*gain
+            snap.update(live_open=price+sign*.2, quote_ms=snap['quote_ms']+1,
+                        live_high=150., live_low=50.)
+>           assert evaluate_peak_trailing(p, price, snap) is None
+E           AssertionError: assert {'action': 'FULL_CLOSE', 'price': 93.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...} is None
+E            +  where {'action': 'FULL_CLOSE', 'price': 93.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...} = evaluate_peak_trailing({'atr_sl': 115.0, 'atr_tp': 0.0, 'current_net_pnl_usd': 9.8959955, 'current_unrealized_pnl_usd': 10.0, ...}, 93.0, {'atr': 1.0, 'close': 100.0, 'closed_bar_ms': 120000, 'high': 101.0, ...})
+
+tests/test_abnormal_only_hold.py:55: AssertionError
+______ test_original_open_same_entry_bar_and_no_favorable_body_exit[LONG] ______
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_original_open_same_entry_bar_and_no_favorable_body_exit(side):
+        p = position(side, opened=180.5); snap = snapshot(side)
+        sign = 1 if side == 'LONG' else -1
+        assert evaluate_peak_trailing(p, snap['live_open']+sign*3., snap) is None
+        result = evaluate_peak_trailing(p, snap['live_open']-sign*1.2, snap)
+>       assert result['type'] == ABNORMAL_REASON
+E       AssertionError: assert 'EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_ADVERSE_ABNORMAL_BODY'
+E         
+E         - EXIT_ADVERSE_ABNORMAL_BODY
+E         + EXIT_REALTIME_PEAK_TRAILING
+
+tests/test_abnormal_only_hold.py:78: AssertionError
+_____ test_original_open_same_entry_bar_and_no_favorable_body_exit[SHORT] ______
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_original_open_same_entry_bar_and_no_favorable_body_exit(side):
+        p = position(side, opened=180.5); snap = snapshot(side)
+        sign = 1 if side == 'LONG' else -1
+        assert evaluate_peak_trailing(p, snap['live_open']+sign*3., snap) is None
+        result = evaluate_peak_trailing(p, snap['live_open']-sign*1.2, snap)
+>       assert result['type'] == ABNORMAL_REASON
+E       AssertionError: assert 'EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_ADVERSE_ABNORMAL_BODY'
+E         
+E         - EXIT_ADVERSE_ABNORMAL_BODY
+E         + EXIT_REALTIME_PEAK_TRAILING
+
+tests/test_abnormal_only_hold.py:78: AssertionError
+_ test_migrate_preserves_verified_peak_and_only_hard_pending[EXIT_REALTIME_PEAK_TRAILING-LONG] _
+
+side = 'LONG', pending = 'EXIT_REALTIME_PEAK_TRAILING'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('pending', ['EXIT_REALTIME_PEAK_TRAILING', HARD_REASON])
+    def test_migrate_preserves_verified_peak_and_only_hard_pending(side, pending):
+        p = position(side); sign = 1 if side == 'LONG' else -1
+        p[STATE_KEY] = dict(policy='realtime_peak_trailing_v1',
+                           identity=[side,60.,100.,1.], peak_price=100+sign*10.,
+                           peak_net_pnl=9., atr=10., pending=pending, trigger='CLOSED_BELOW_MA5')
+        p['sl'] = 100+sign*5.
+        meta = copy.deepcopy(p)
+        meta.update(limit_tp1_price=110., breakeven_trigger_price=108.)
+        state = migrate_peak_state(p, meta)
+        assert state['policy'] == POLICY
+        assert state['peak_price'] == 100+sign*10.
+        assert state.get('pending') == (HARD_REASON if pending == HARD_REASON else None)
+        assert p['sl'] == p['initial_sl']
+        assert 'limit_tp1_price' not in meta and 'breakeven_trigger_price' not in meta
+        result = evaluate_peak_trailing(p, 100., 181000)
+>       assert bool(result) == (pending == HARD_REASON)
+E       AssertionError: assert True == ('EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_INITIAL_ATR_HARD_STOP'
+E        +  where True = bool({'action': 'FULL_CLOSE', 'price': 100.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...})
+E         
+E         - EXIT_INITIAL_ATR_HARD_STOP
+E         + EXIT_REALTIME_PEAK_TRAILING)
+
+tests/test_abnormal_only_hold.py:98: AssertionError
+_ test_migrate_preserves_verified_peak_and_only_hard_pending[EXIT_REALTIME_PEAK_TRAILING-SHORT] _
+
+side = 'SHORT', pending = 'EXIT_REALTIME_PEAK_TRAILING'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('pending', ['EXIT_REALTIME_PEAK_TRAILING', HARD_REASON])
+    def test_migrate_preserves_verified_peak_and_only_hard_pending(side, pending):
+        p = position(side); sign = 1 if side == 'LONG' else -1
+        p[STATE_KEY] = dict(policy='realtime_peak_trailing_v1',
+                           identity=[side,60.,100.,1.], peak_price=100+sign*10.,
+                           peak_net_pnl=9., atr=10., pending=pending, trigger='CLOSED_BELOW_MA5')
+        p['sl'] = 100+sign*5.
+        meta = copy.deepcopy(p)
+        meta.update(limit_tp1_price=110., breakeven_trigger_price=108.)
+        state = migrate_peak_state(p, meta)
+        assert state['policy'] == POLICY
+        assert state['peak_price'] == 100+sign*10.
+        assert state.get('pending') == (HARD_REASON if pending == HARD_REASON else None)
+        assert p['sl'] == p['initial_sl']
+        assert 'limit_tp1_price' not in meta and 'breakeven_trigger_price' not in meta
+        result = evaluate_peak_trailing(p, 100., 181000)
+>       assert bool(result) == (pending == HARD_REASON)
+E       AssertionError: assert True == ('EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_INITIAL_ATR_HARD_STOP'
+E        +  where True = bool({'action': 'FULL_CLOSE', 'price': 100.0, 'reason': 'EXIT_REALTIME_PEAK_TRAILING', 'trigger': 'TRAILING_2U_LADDER', ...})
+E         
+E         - EXIT_INITIAL_ATR_HARD_STOP
+E         + EXIT_REALTIME_PEAK_TRAILING)
+
+tests/test_abnormal_only_hold.py:98: AssertionError
+____________ test_pending_retry_new_identity_and_initial_stop[LONG] ____________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_pending_retry_new_identity_and_initial_stop(side):
+        p = position(side); snap = snapshot(side)
+        price = 108. if side == 'LONG' else 92.
+        assert evaluate_peak_trailing(p, price, snap)['type'] == ABNORMAL_REASON
+        restored = copy.deepcopy(p)
+>       assert evaluate_peak_trailing(restored, 100., 241000)['type'] == ABNORMAL_REASON
+E       AssertionError: assert 'EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_ADVERSE_ABNORMAL_BODY'
+E         
+E         - EXIT_ADVERSE_ABNORMAL_BODY
+E         + EXIT_REALTIME_PEAK_TRAILING
+
+tests/test_abnormal_only_hold.py:107: AssertionError
+___________ test_pending_retry_new_identity_and_initial_stop[SHORT] ____________
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_pending_retry_new_identity_and_initial_stop(side):
+        p = position(side); snap = snapshot(side)
+        price = 108. if side == 'LONG' else 92.
+        assert evaluate_peak_trailing(p, price, snap)['type'] == ABNORMAL_REASON
+        restored = copy.deepcopy(p)
+>       assert evaluate_peak_trailing(restored, 100., 241000)['type'] == ABNORMAL_REASON
+E       AssertionError: assert 'EXIT_REALTIME_PEAK_TRAILING' == 'EXIT_ADVERSE_ABNORMAL_BODY'
+E         
+E         - EXIT_ADVERSE_ABNORMAL_BODY
+E         + EXIT_REALTIME_PEAK_TRAILING
+
+tests/test_abnormal_only_hold.py:107: AssertionError
+________ test_old_state_machine_cannot_exit_on_ma_middle_or_doji[LONG] _________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_old_state_machine_cannot_exit_on_ma_middle_or_doji(side):
+        from core.services.strategies.strict_state_machine import StrictStateMachineStrategy, PositionState
+        strategy=StrictStateMachineStrategy()
+        strategy.set_state('X', PositionState[side], {'entry_price':100., 'max_pnl':100.})
+        frame=pd.DataFrame([dict(timestamp=60000*i,open=100.,close=99.,high=110.,low=90.,
+                                kc_middle=100.,kc_upper=105.,kc_lower=95.,ma3=101.,ma15=102.,atr=1.)
+                            for i in (1,2,3)])
+>       assert strategy.evaluate_tick('X',frame,99. if side=='LONG' else 101.,0.)['action']=='WAIT'
+E       AssertionError: assert 'EXIT_LONG' == 'WAIT'
+E         
+E         - WAIT
+E         + EXIT_LONG
+
+tests/test_abnormal_only_hold.py:219: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_abnormal_only_hold.py::test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold[LONG]
+FAILED tests/test_abnormal_only_hold.py::test_normal_pullback_middle_ma5_doji_and_peak_giveback_hold[SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_original_open_same_entry_bar_and_no_favorable_body_exit[LONG]
+FAILED tests/test_abnormal_only_hold.py::test_original_open_same_entry_bar_and_no_favorable_body_exit[SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_migrate_preserves_verified_peak_and_only_hard_pending[EXIT_REALTIME_PEAK_TRAILING-LONG]
+FAILED tests/test_abnormal_only_hold.py::test_migrate_preserves_verified_peak_and_only_hard_pending[EXIT_REALTIME_PEAK_TRAILING-SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_pending_retry_new_identity_and_initial_stop[LONG]
+FAILED tests/test_abnormal_only_hold.py::test_pending_retry_new_identity_and_initial_stop[SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_old_state_machine_cannot_exit_on_ma_middle_or_doji[LONG]
+9 failed, 30 passed in 1.11s

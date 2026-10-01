@@ -1,0 +1,188 @@
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+......................................FFFFF
+=================================== FAILURES ===================================
+_______________ test_concurrent_testnet_closes_submit_once[LONG] _______________
+
+side = 'LONG'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-0/test_concurrent_testnet_closes0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa045e0e1e0>
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    async def test_concurrent_testnet_closes_submit_once(side, tmp_path, monkeypatch):
+>       a, ex = await account_for(side, tmp_path, monkeypatch)
+
+tests/test_close_deduplication.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_close_deduplication.py:23: in account_for
+    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
+core/testnet_account.py:1840: in open_position
+    entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = <core.testnet_account.BinanceTestnetAccount object at 0x7f9fcebb4290>
+symbol = 'DOGE/USDT', side = 'LONG', context = {'entry_mode': 'CHANNEL_SWING'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+>           raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+E           ValueError: [FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單
+
+core/services/entry_firewall.py:32: ValueError
+______________ test_concurrent_testnet_closes_submit_once[SHORT] _______________
+
+side = 'SHORT'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-0/test_concurrent_testnet_closes1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9fcec2bd40>
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    async def test_concurrent_testnet_closes_submit_once(side, tmp_path, monkeypatch):
+>       a, ex = await account_for(side, tmp_path, monkeypatch)
+
+tests/test_close_deduplication.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_close_deduplication.py:23: in account_for
+    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
+core/testnet_account.py:1840: in open_position
+    entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = <core.testnet_account.BinanceTestnetAccount object at 0x7f9fcebb6780>
+symbol = 'DOGE/USDT', side = 'SHORT', context = {'entry_mode': 'CHANNEL_SWING'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+>           raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+E           ValueError: [FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單
+
+core/services/entry_firewall.py:32: ValueError
+_____________ test_successful_close_is_not_failed_by_refresh[LONG] _____________
+
+side = 'LONG'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-0/test_successful_close_is_not_f0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa045a83440>
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    async def test_successful_close_is_not_failed_by_refresh(side, tmp_path, monkeypatch):
+>       a, ex = await account_for(side, tmp_path, monkeypatch)
+
+tests/test_close_deduplication.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_close_deduplication.py:23: in account_for
+    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
+core/testnet_account.py:1840: in open_position
+    entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = <core.testnet_account.BinanceTestnetAccount object at 0x7fa045a819a0>
+symbol = 'DOGE/USDT', side = 'LONG', context = {'entry_mode': 'CHANNEL_SWING'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+>           raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+E           ValueError: [FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單
+
+core/services/entry_firewall.py:32: ValueError
+____________ test_successful_close_is_not_failed_by_refresh[SHORT] _____________
+
+side = 'SHORT'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-0/test_successful_close_is_not_f1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa045a83050>
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    async def test_successful_close_is_not_failed_by_refresh(side, tmp_path, monkeypatch):
+>       a, ex = await account_for(side, tmp_path, monkeypatch)
+
+tests/test_close_deduplication.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_close_deduplication.py:23: in account_for
+    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
+core/testnet_account.py:1840: in open_position
+    entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = <core.testnet_account.BinanceTestnetAccount object at 0x7fa045a81e50>
+symbol = 'DOGE/USDT', side = 'SHORT', context = {'entry_mode': 'CHANNEL_SWING'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+>           raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+E           ValueError: [FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單
+
+core/services/entry_firewall.py:32: ValueError
+________ test_stale_refresh_cannot_resurrect_just_closed_position[LONG] ________
+
+side = 'LONG'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-0/test_stale_refresh_cannot_resu0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9fcebb4680>
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    async def test_stale_refresh_cannot_resurrect_just_closed_position(side, tmp_path, monkeypatch):
+>       a, ex = await account_for(side, tmp_path, monkeypatch)
+
+tests/test_close_deduplication.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_close_deduplication.py:23: in account_for
+    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
+core/testnet_account.py:1840: in open_position
+    entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+account = <core.testnet_account.BinanceTestnetAccount object at 0x7f9fcebb61b0>
+symbol = 'DOGE/USDT', side = 'LONG', context = {'entry_mode': 'CHANNEL_SWING'}
+
+    async def validate_account_entry(account, symbol, side, context):
+        context = context if isinstance(context, dict) else {}
+    
+        is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+        if is_manual:
+            return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+    
+        code = context.get('entry_signal_code')
+        if code not in ENTRY_CODES:
+>           raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+E           ValueError: [FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單
+
+core/services/entry_firewall.py:32: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_close_deduplication.py::test_concurrent_testnet_closes_submit_once[LONG]
+FAILED tests/test_close_deduplication.py::test_concurrent_testnet_closes_submit_once[SHORT]
+FAILED tests/test_close_deduplication.py::test_successful_close_is_not_failed_by_refresh[LONG]
+FAILED tests/test_close_deduplication.py::test_successful_close_is_not_failed_by_refresh[SHORT]
+FAILED tests/test_close_deduplication.py::test_stale_refresh_cannot_resurrect_just_closed_position[LONG]
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 5 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+5 failed, 254 passed in 5.39s

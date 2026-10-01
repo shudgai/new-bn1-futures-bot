@@ -18,12 +18,12 @@ def set_body_ratio(f,index,ratio):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('index',[1,2,3,4])
+@pytest.mark.parametrize('index',[2,3,4])
 @pytest.mark.parametrize('ratio',[.099,.10,.101,.25])
 def test_doji_boundary_all_confirmation_and_live_candles(side,index,ratio):
     f=set_body_ratio(frame_for(side),index,ratio)
     result=evaluate_entry_contract(f)
-    assert bool(result)==(ratio>=.10)
+    assert bool(result)==(index != 4 or ratio>=.10)
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

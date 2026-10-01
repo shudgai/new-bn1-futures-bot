@@ -1191,7 +1191,8 @@ class BinanceTestnetAccount:
                         # 更有利方向收緊，避免同一輪建立後又立即取消替換。
                         continue
                 if meta.get("early_profit_guard_armed") and pnl_pct <= early_guard_exit:
-                    if _strategy_exit_ok:
+                    trend_hold = pos.get('trend_hold_status') == 'HOLD'
+                    if _strategy_exit_ok and not trend_hold:
                         await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
                         continue
 

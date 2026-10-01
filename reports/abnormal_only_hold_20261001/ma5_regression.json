@@ -1,0 +1,11 @@
+{
+  "fixture": "synthetic MA5-only pullback; not a historical tick replay",
+  "before": {
+    "action": "FULL_CLOSE",
+    "type": "EXIT_REALTIME_PEAK_TRAILING",
+    "reason": "EXIT_REALTIME_PEAK_TRAILING",
+    "trigger": "CLOSED_BELOW_MA5",
+    "price": 109.9
+  },
+  "after": null
+}

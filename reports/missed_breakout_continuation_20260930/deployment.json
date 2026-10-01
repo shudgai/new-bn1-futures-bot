@@ -1,0 +1,31 @@
+{
+  "commit": "4d49577",
+  "start_utc": "2026-09-30 08:24:20",
+  "status": {
+    "is_running": true,
+    "paper_trading": true,
+    "chart_metrics": {
+      "1000PEPE/USDT": {
+        "dist_to_upper": 5.751780031780507e-06,
+        "dist_to_upper_pct": 0.13361628061840564,
+        "dist_to_lower": 1.6228219968219063e-05,
+        "dist_to_lower_pct": 0.37698840728085725,
+        "min_body_atr": 6.044500000000073e-06,
+        "breakout_status": "INSIDE_CHANNEL",
+        "block_reason": "NONE",
+        "kc_width_atr": 1.9999999999999367
+      },
+      "龙虾/USDT": {
+        "dist_to_upper": 0.0002613862950350612,
+        "dist_to_upper_pct": 0.45577383615529427,
+        "dist_to_lower": 0.0008386137049649425,
+        "dist_to_lower_pct": 1.4622732431821142,
+        "min_body_atr": 0.0003025000000000007,
+        "breakout_status": "INSIDE_CHANNEL",
+        "block_reason": "NONE",
+        "kc_width_atr": 2.000000000000002
+      }
+    }
+  },
+  "startup_errors": []
+}

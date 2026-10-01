@@ -2,7 +2,7 @@
 import math
 import time
 
-from core.services.entry_contract import ENTRY_CODES, CHASE_EVIDENCE_KEYS, evaluate_entry_contract
+from core.services.entry_contract import ENTRY_CODES, ENTRY_EVIDENCE_KEYS, evaluate_entry_contract
 
 
 class EntryFirewall:
@@ -44,6 +44,9 @@ async def validate_account_entry(account, symbol, side, context):
     decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
     if decision is None or decision['side'] != side:
         raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+    expected_id = (context.get('entry_snapshot') or {}).get('pending_signal_id')
+    if expected_id is not None and expected_id != decision.get('pending_signal_id'):
+        raise ValueError('[FORBIDDEN_ENTRY] 原始突破訊號已改變')
     stamp = float(decision['confirmation_bar_id'])
     age = time.time() * 1000 - (stamp if decision.get('intrabar') else stamp + 60000)
     if not math.isfinite(age) or not 0 <= age <= (60000 if decision.get('intrabar') else 90000):
@@ -59,5 +62,5 @@ async def validate_account_entry(account, symbol, side, context):
                     pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
                     finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
                     evidence=entry_frame_evidence(frame))
-    snapshot.update({key: decision[key] for key in CHASE_EVIDENCE_KEYS})
+    snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
     return decision

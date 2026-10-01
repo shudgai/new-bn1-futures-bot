@@ -1,0 +1,24 @@
+{
+  "checked_at_utc": "2026-10-01T08:48:50.014809+00:00",
+  "service": {
+    "MainPID": "591277",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Thu 2026-10-01 08:48:17 UTC",
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "entry_contract_sha256": "e0398f6c3f8f2c7e13f531b6a04fa081542c3a59cacb343452ee7d5cbbc8ffb8",
+  "startup_errors": [],
+  "entry_gate_observations": [
+    "Oct 01 08:48:20 htlocalserver bash[591285]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790844480000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+    "Oct 01 08:48:38 htlocalserver bash[591285]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790844480000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI",
+    "Oct 01 08:48:42 htlocalserver bash[591285]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790844480000.0 reason=WAIT_CLOSED_BREAKOUT_OR_CONTINUATION",
+    "Oct 01 08:48:44 htlocalserver bash[591285]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1790844480000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI"
+  ],
+  "tests_passed": 219,
+  "commit_created": false,
+  "pushed": false
+}

@@ -1,0 +1,41 @@
+{
+  "scope": "Recent persisted order timings; screenshot identity not independently established",
+  "logs": [
+    {
+      "time": "17:03:02",
+      "timestamp": 1790845382.7871127,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "17:03:04",
+      "timestamp": 1790845384.5179024,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1684 stage=ENTRY_REVALIDATION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "17:03:04",
+      "timestamp": 1790845384.530931,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1800 stage=EXECUTION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=BLOCKED_LIVE_LONG_WICK_OR_DOJI",
+      "level": "INFO"
+    },
+    {
+      "time": "17:03:11",
+      "timestamp": 1790845391.1524806,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1753 stage=EXECUTION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "17:03:13",
+      "timestamp": 1790845393.0003715,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1883 stage=EXECUTION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=ACCOUNT_SUBMIT code=CLOSED_BODY_BREAKOUT_LONG margin=66.72939503714477 leverage=5",
+      "level": "INFO"
+    },
+    {
+      "time": "17:03:14",
+      "timestamp": 1790845394.6904566,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1761 stage=EXECUTION symbol=龙虾/USDT side=LONG bar=1790845320000.0 reason=FILLED",
+      "level": "INFO"
+    }
+  ]
+}

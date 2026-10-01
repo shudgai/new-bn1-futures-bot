@@ -1,0 +1,32 @@
+{
+  "checked_at_utc": "2026-10-01T09:07:19.430129+00:00",
+  "service": {
+    "MainPID": "599605",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Thu 2026-10-01 09:06:50 UTC",
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "positions": [],
+  "policy_ready": [
+    {
+      "time": "17:06:52",
+      "timestamp": 1790845612.3901062,
+      "text": "ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker",
+      "level": "INFO"
+    }
+  ],
+  "errors": [],
+  "source_sha256": {
+    "core/services/exits/peak_trailing_exit.py": "11bf5cf4e2b3b48c7805e388ef5a843e9420c974251b3bb1eaf8b0e09d901f50",
+    "core/services/exits/realtime_profit_exit.py": "9eca2212a256f69e7f2a2b0a3aa5f1977d717ca77c0d69c6784b9f12a4e02580",
+    "core/services/symbol_runner.py": "e4b3f4ce0603d526e0818ede6ef58d9aa2983272a6801c088170660a3ef6eca9",
+    "core/paper_account.py": "0b722b4c5b546397021975b6faab2a5fe751bb5633eb2c9e4084c7653b083d45"
+  },
+  "tests_passed": 258,
+  "commit_created": false,
+  "pushed": false
+}

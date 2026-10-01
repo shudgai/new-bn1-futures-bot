@@ -1,0 +1,45 @@
+{
+  "commit": "2054ad6",
+  "service_started": "Tue 2026-09-29 23:42:17 UTC",
+  "is_running": true,
+  "paper_trading": true,
+  "position_count": 2,
+  "errors": [],
+  "old_pnl_veto_events": 0,
+  "execution_evidence": [
+    "Sep 29 23:42:20 htlocalserver bash[14365]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1855 stage=EXECUTION symbol=1000PEPE/USDT side=SHORT bar=1790725320000.0 reason=ACCOUNT_SUBMIT code=SECOND_BAR_OUTSIDE_SHORT margin=75.4091365400141 leverage=5",
+    "Sep 29 23:42:20 htlocalserver bash[14365]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1744 stage=EXECUTION symbol=1000PEPE/USDT side=SHORT bar=1790725320000.0 reason=FILLED",
+    "Sep 29 23:42:20 htlocalserver bash[14365]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1855 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790725320000.0 reason=ACCOUNT_SUBMIT code=SECOND_BAR_OUTSIDE_SHORT margin=75.03303112086192 leverage=5",
+    "Sep 29 23:42:21 htlocalserver bash[14365]: ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1744 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790725320000.0 reason=FILLED"
+  ],
+  "recent_trade_summary": [
+    {
+      "id": 1790725341214,
+      "symbol": "龙虾/USDT",
+      "action": "OPEN_SHORT",
+      "price": 0.07022298,
+      "channel_confirmation_bar_id": 1790725320000.0
+    },
+    {
+      "id": 1790725340747,
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_SHORT",
+      "price": 0.00424778,
+      "channel_confirmation_bar_id": 1790725320000.0
+    },
+    {
+      "id": 1790721543398,
+      "symbol": "龙虾/USDT",
+      "action": "CLOSE_LONG",
+      "price": 0.0709529,
+      "channel_confirmation_bar_id": 1790721360000.0
+    },
+    {
+      "id": 1790721480577,
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_SHORT",
+      "price": 0.00426313,
+      "channel_confirmation_bar_id": 1790720880000.0
+    }
+  ]
+}

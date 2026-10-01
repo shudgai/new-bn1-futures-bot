@@ -1,0 +1,15 @@
+{
+  "checked_at_utc": "2026-10-01T22:06:56.875893+00:00",
+  "service": {
+    "MainPID": "939700",
+    "ExecMainStartTimestamp": "Thu 2026-10-01 22:06:32 UTC",
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "errors": [],
+  "new_tests_passed": 2,
+  "preexisting_exit_failures": 9
+}

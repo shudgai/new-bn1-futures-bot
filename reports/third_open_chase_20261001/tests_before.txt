@@ -1,0 +1,340 @@
+....FFFF....FFFFFF..FFFFFFFF                                             [100%]
+=================================== FAILURES ===================================
+________________ test_third_open_chase_boundary[1.0-0.101-LONG] ________________
+
+side = 'LONG', distance = 0.101, scale = 1.0
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.101 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+_______________ test_third_open_chase_boundary[1.0-0.101-SHORT] ________________
+
+side = 'SHORT', distance = 0.101, scale = 1.0
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.101 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+_________________ test_third_open_chase_boundary[1.0-0.5-LONG] _________________
+
+side = 'LONG', distance = 0.5, scale = 1.0
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.5 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+________________ test_third_open_chase_boundary[1.0-0.5-SHORT] _________________
+
+side = 'SHORT', distance = 0.5, scale = 1.0
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.5 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+_______________ test_third_open_chase_boundary[1e-05-0.101-LONG] _______________
+
+side = 'LONG', distance = 0.101, scale = 1e-05
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.101 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 0.001018, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+______________ test_third_open_chase_boundary[1e-05-0.101-SHORT] _______________
+
+side = 'SHORT', distance = 0.101, scale = 1e-05
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.101 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 0.000982, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+________________ test_third_open_chase_boundary[1e-05-0.5-LONG] ________________
+
+side = 'LONG', distance = 0.5, scale = 1e-05
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.5 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 0.001018, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+_______________ test_third_open_chase_boundary[1e-05-0.5-SHORT] ________________
+
+side = 'SHORT', distance = 0.5, scale = 1e-05
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('distance',[.099,.1,.101,.5])
+    @pytest.mark.parametrize('scale',[1.,.00001])
+    def test_third_open_chase_boundary(side,distance,scale):
+        f=near_open(side,distance)
+        keys=['open','high','low','close','ma3','ma15','atr','kc_upper','kc_middle','kc_lower']
+        f[keys]*=scale
+        diag={};result=evaluate_entry_contract(f,diagnostics=diag)
+>       assert bool(result)==(distance<=.1)
+E       AssertionError: assert True == (0.5 <= 0.1)
+E        +  where True = bool({'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 0.000982, 'confirmation_bar_id': 1790845740000.0, ...})
+
+tests/test_third_open_chase.py:30: AssertionError
+________ test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit[LONG] _________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit(side):
+        f=near_open(side,.11)
+        f.loc[f.index[-1],'atr']=100.
+        f.attrs['entry_finality_server_ms']=float(f.iloc[-1].timestamp)+59000
+>       assert evaluate_entry_contract(f) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...} = evaluate_entry_contract(       timestamp    open   close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00  100.20  ...      100.0...100.0      98.6       True\n5  1790845800000  101.75  101.86  ...      100.1      98.6      False\n\n[6 rows x 12 columns])
+
+tests/test_third_open_chase.py:40: AssertionError
+________ test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit[SHORT] ________
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit(side):
+        f=near_open(side,.11)
+        f.loc[f.index[-1],'atr']=100.
+        f.attrs['entry_finality_server_ms']=float(f.iloc[-1].timestamp)+59000
+>       assert evaluate_entry_contract(f) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00  99.80  ...      100.0  ... 100.0      98.6       True\n5  1790845800000   98.25  98.14  ...       99.9      98.6      False\n\n[6 rows x 12 columns])
+
+tests/test_third_open_chase.py:40: AssertionError
+__________ test_requote_outside_limit_then_recovery_has_no_lock[LONG] __________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_requote_outside_limit_then_recovery_has_no_lock(side):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        assert evaluate_entry_contract(f)
+>       assert evaluate_entry_contract(f,float(f.iloc[-1].open)+sign*.11) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845740000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00  100.2  ...      100.0  ... 100.0      98.6       True\n5  1790845800000  101.75  101.8  ...      100.1      98.6      False\n\n[6 rows x 12 columns], (101.75 + (1 * 0.11)))
+E        +    where 101.75 = float(101.75)
+E        +      where 101.75 = timestamp    1790845800000\nopen                101.75\nclose                101.8\nhigh               101.805\nlow       ...          101.4\nkc_middle            100.1\nkc_lower              98.6\nis_closed            False\nName: 5, dtype: object.open
+
+tests/test_third_open_chase.py:56: AssertionError
+_________ test_requote_outside_limit_then_recovery_has_no_lock[SHORT] __________
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_requote_outside_limit_then_recovery_has_no_lock(side):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        assert evaluate_entry_contract(f)
+>       assert evaluate_entry_contract(f,float(f.iloc[-1].open)+sign*.11) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845740000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00   99.8  ...      100.0  ... 100.0      98.6       True\n5  1790845800000   98.25   98.2  ...       99.9      98.6      False\n\n[6 rows x 12 columns], (98.25 + (-1 * 0.11)))
+E        +    where 98.25 = float(98.25)
+E        +      where 98.25 = timestamp    1790845800000\nopen                 98.25\nclose                 98.2\nhigh                98.255\nlow       ...          101.4\nkc_middle             99.9\nkc_lower              98.6\nis_closed            False\nName: 5, dtype: object.open
+
+tests/test_third_open_chase.py:56: AssertionError
+____ test_continuation_keeps_original_third_open_and_second_atr[False-LONG] ____
+
+side = 'LONG', post_exit = False
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('post_exit',[False,True])
+    def test_continuation_keeps_original_third_open_and_second_atr(side,post_exit):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        original_open=float(f.iloc[-1].open)
+        f.loc[f.index[-1],'is_closed']=True
+        extra=f.iloc[-1].copy();extra['timestamp']+=60000;extra['is_closed']=False
+        extra['open']=original_open+sign*.2;extra['close']=original_open+sign*.25
+        extra['high']=max(extra['open'],extra['close'])+.005
+        extra['low']=min(extra['open'],extra['close'])-.005
+        f.loc[len(f)]=extra
+        f.loc[f.index[-2],'atr']=100.  # Later ATR cannot increase the original cap.
+        account=SimpleNamespace(positions={},trades=[])
+        if post_exit:
+            account.trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)]
+        diag={}
+>       assert evaluate_entry_contract(f,account=account,symbol='TEST',diagnostics=diag) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845800000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845800000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00  100.2  ...      100.0  ... 100.1      98.6       True\n6  1790845860000  101.95  102.0  ...      100.1      98.6      False\n\n[7 rows x 12 columns], account=namespace(positions={}, trades=[]), symbol='TEST', diagnostics={'reason': 'OUTSIDE_CONTINUATION'})
+
+tests/test_third_open_chase.py:76: AssertionError
+___ test_continuation_keeps_original_third_open_and_second_atr[False-SHORT] ____
+
+side = 'SHORT', post_exit = False
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('post_exit',[False,True])
+    def test_continuation_keeps_original_third_open_and_second_atr(side,post_exit):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        original_open=float(f.iloc[-1].open)
+        f.loc[f.index[-1],'is_closed']=True
+        extra=f.iloc[-1].copy();extra['timestamp']+=60000;extra['is_closed']=False
+        extra['open']=original_open+sign*.2;extra['close']=original_open+sign*.25
+        extra['high']=max(extra['open'],extra['close'])+.005
+        extra['low']=min(extra['open'],extra['close'])-.005
+        f.loc[len(f)]=extra
+        f.loc[f.index[-2],'atr']=100.  # Later ATR cannot increase the original cap.
+        account=SimpleNamespace(positions={},trades=[])
+        if post_exit:
+            account.trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)]
+        diag={}
+>       assert evaluate_entry_contract(f,account=account,symbol='TEST',diagnostics=diag) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845800000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845800000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00   99.8  ...      100.0  ...  99.9      98.6       True\n6  1790845860000   98.05   98.0  ...       99.9      98.6      False\n\n[7 rows x 12 columns], account=namespace(positions={}, trades=[]), symbol='TEST', diagnostics={'reason': 'OUTSIDE_CONTINUATION'})
+
+tests/test_third_open_chase.py:76: AssertionError
+____ test_continuation_keeps_original_third_open_and_second_atr[True-LONG] _____
+
+side = 'LONG', post_exit = True
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('post_exit',[False,True])
+    def test_continuation_keeps_original_third_open_and_second_atr(side,post_exit):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        original_open=float(f.iloc[-1].open)
+        f.loc[f.index[-1],'is_closed']=True
+        extra=f.iloc[-1].copy();extra['timestamp']+=60000;extra['is_closed']=False
+        extra['open']=original_open+sign*.2;extra['close']=original_open+sign*.25
+        extra['high']=max(extra['open'],extra['close'])+.005
+        extra['low']=min(extra['open'],extra['close'])-.005
+        f.loc[len(f)]=extra
+        f.loc[f.index[-2],'atr']=100.  # Later ATR cannot increase the original cap.
+        account=SimpleNamespace(positions={},trades=[])
+        if post_exit:
+            account.trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)]
+        diag={}
+>       assert evaluate_entry_contract(f,account=account,symbol='TEST',diagnostics=diag) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845800000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 101.8, 'confirmation_bar_id': 1790845800000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00  100.2  ...      100.0  ... 100.1      98.6       True\n6  1790845860000  101.95  102.0  ...      100.1      98.6      False\n\n[7 rows x 12 columns], account=namespace(positions={}, trades=[{'symbol': 'TEST', 'action': 'CLOSE_LONG', 'id': 1790845801000.0}]), symbol='TEST', diagnostics={'reason': 'POST_EXIT_CONTINUATION'})
+
+tests/test_third_open_chase.py:76: AssertionError
+____ test_continuation_keeps_original_third_open_and_second_atr[True-SHORT] ____
+
+side = 'SHORT', post_exit = True
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    @pytest.mark.parametrize('post_exit',[False,True])
+    def test_continuation_keeps_original_third_open_and_second_atr(side,post_exit):
+        f=near_open(side,.05);sign=1 if side=='LONG' else -1
+        original_open=float(f.iloc[-1].open)
+        f.loc[f.index[-1],'is_closed']=True
+        extra=f.iloc[-1].copy();extra['timestamp']+=60000;extra['is_closed']=False
+        extra['open']=original_open+sign*.2;extra['close']=original_open+sign*.25
+        extra['high']=max(extra['open'],extra['close'])+.005
+        extra['low']=min(extra['open'],extra['close'])-.005
+        f.loc[len(f)]=extra
+        f.loc[f.index[-2],'atr']=100.  # Later ATR cannot increase the original cap.
+        account=SimpleNamespace(positions={},trades=[])
+        if post_exit:
+            account.trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)]
+        diag={}
+>       assert evaluate_entry_contract(f,account=account,symbol='TEST',diagnostics=diag) is None
+E       AssertionError: assert {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845800000.0, ...} is None
+E        +  where {'action': 'ENTER', 'breakout_bar_id': 1790845680000.0, 'close_price': 98.2, 'confirmation_bar_id': 1790845800000.0, ...} = evaluate_entry_contract(       timestamp    open  close  ...  kc_middle  kc_lower  is_closed\n0  1790845500000  100.00   99.8  ...      100.0  ...  99.9      98.6       True\n6  1790845860000   98.05   98.0  ...       99.9      98.6      False\n\n[7 rows x 12 columns], account=namespace(positions={}, trades=[{'symbol': 'TEST', 'action': 'CLOSE_SHORT', 'id': 1790845801000.0}]), symbol='TEST', diagnostics={'reason': 'POST_EXIT_CONTINUATION'})
+
+tests/test_third_open_chase.py:76: AssertionError
+_________ test_account_rejects_price_chase_after_initial_signal[LONG] __________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_account_rejects_price_chase_after_initial_signal(side):
+        f=near_open(side,.05);ctx=context(f,side)
+        account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=near_open(side,.2)))
+>       with pytest.raises(ValueError):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/test_third_open_chase.py:84: Failed
+_________ test_account_rejects_price_chase_after_initial_signal[SHORT] _________
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side',['LONG','SHORT'])
+    def test_account_rejects_price_chase_after_initial_signal(side):
+        f=near_open(side,.05);ctx=context(f,side)
+        account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=near_open(side,.2)))
+>       with pytest.raises(ValueError):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/test_third_open_chase.py:84: Failed
+=========================== short test summary info ============================
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1.0-0.101-LONG]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1.0-0.101-SHORT]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1.0-0.5-LONG]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1.0-0.5-SHORT]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1e-05-0.101-LONG]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1e-05-0.101-SHORT]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1e-05-0.5-LONG]
+FAILED tests/test_third_open_chase.py::test_third_open_chase_boundary[1e-05-0.5-SHORT]
+FAILED tests/test_third_open_chase.py::test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit[LONG]
+FAILED tests/test_third_open_chase.py::test_no_seconds_cutoff_and_live_atr_cannot_loosen_limit[SHORT]
+FAILED tests/test_third_open_chase.py::test_requote_outside_limit_then_recovery_has_no_lock[LONG]
+FAILED tests/test_third_open_chase.py::test_requote_outside_limit_then_recovery_has_no_lock[SHORT]
+FAILED tests/test_third_open_chase.py::test_continuation_keeps_original_third_open_and_second_atr[False-LONG]
+FAILED tests/test_third_open_chase.py::test_continuation_keeps_original_third_open_and_second_atr[False-SHORT]
+FAILED tests/test_third_open_chase.py::test_continuation_keeps_original_third_open_and_second_atr[True-LONG]
+FAILED tests/test_third_open_chase.py::test_continuation_keeps_original_third_open_and_second_atr[True-SHORT]
+FAILED tests/test_third_open_chase.py::test_account_rejects_price_chase_after_initial_signal[LONG]
+FAILED tests/test_third_open_chase.py::test_account_rejects_price_chase_after_initial_signal[SHORT]
+18 failed, 10 passed in 1.15s

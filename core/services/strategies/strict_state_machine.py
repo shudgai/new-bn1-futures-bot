@@ -104,6 +104,11 @@ class StrictStateMachineStrategy:
         return {"action": "WAIT", "reason": "UNKNOWN_STATE"}
 
     def evaluate_tick(self, symbol: str, frame, live_price: float, unrealized_pnl: float = 0.0):
+        \"\"\"
+        DEPRECATED / UNUSED: 
+        This method is historically disconnected from the main loop and does not act as an exit authority.
+        Exits are exclusively managed by evaluate_peak_trailing() and update_trailing_stops().
+        \"\"\"
         decision = self._evaluate_tick_internal(symbol, frame, live_price, unrealized_pnl)
         
         # 紀錄平倉時間

@@ -1,0 +1,8 @@
+{
+  "http_status": 200,
+  "paper_trading": true,
+  "is_running": true,
+  "tests_passed": 84,
+  "live_third_color_required": false,
+  "service": "MainPID=959841\nExecMainStartTimestamp=Thu 2026-10-01 22:51:20 UTC\nActiveState=active\n"
+}

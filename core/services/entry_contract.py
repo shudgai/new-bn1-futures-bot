@@ -4,15 +4,18 @@ import math
 import numpy as np
 
 from core.services.candle_data import closed_entry_candles
+from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
+                                            evaluate_kc_pending_entry)
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
-ENTRY_CODES = frozenset((LONG_ENTRY_CODE, SHORT_ENTRY_CODE))
+ENTRY_CODES = KC_PENDING_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
                        'chase_open', 'chase_reference_atr')
 
+ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
 
 DOJI_BODY_RATIO = 0.10
 
@@ -38,8 +41,18 @@ def is_entry_doji(row, quote=None):
 def entry_doji_problem(closed, live, quote):
     if is_entry_doji(live, quote):
         return 'BLOCKED_LIVE_DOJI'
-    if any(is_entry_doji(row) for _, row in closed.tail(3).iterrows()):
-        return 'BLOCKED_CLOSED_DOJI'
+    bars = [row for _, row in closed.tail(2).iterrows()]
+    current = live.copy()
+    current['close'] = quote
+    for row, following in zip(bars, bars[1:] + [current]):
+        if not is_entry_doji(row):
+            continue
+        # Only an immediate same-color non-doji successor confirms a doji.
+        # A zero body has no color; live confirmation uses the fresh quote.
+        body = float(row.close) - float(row.open)
+        next_body = float(following.close) - float(following.open)
+        if is_entry_doji(following) or body * next_body <= 0:
+            return 'BLOCKED_CLOSED_DOJI'
     return None
 
 
@@ -84,7 +97,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         frame = frame.iloc[int(valid_indices[0]):].copy()
         closed = closed_entry_candles(frame)
-        if len(closed) < 3 or len(frame)-len(closed) not in (0, 1):
+        if len(closed) < 2 or len(frame)-len(closed) not in (0, 1):
             return None
         keys = ['timestamp','open','high','low','close','kc_upper','kc_middle','kc_lower','atr']
         values = frame[keys].astype(float)
@@ -101,9 +114,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         live = frame.iloc[-1]
         latest = closed.iloc[-1]
-        doji_problem = entry_doji_problem(closed, live, quote)
-        if doji_problem:
-            return reject(doji_problem)
         # Do not reopen in the candle of a successful close, even after restart.
         exit_bar = None
         for trade in getattr(account, 'trades', []):
@@ -123,43 +133,21 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         execution_bar = float(latest.timestamp)+60000
         if exit_bar is not None and execution_bar <= exit_bar:
             return reject('WAIT_POST_EXIT_NEXT_BAR')
-        for side, signal in (('LONG', LONG_ENTRY_CODE), ('SHORT', SHORT_ENTRY_CODE)):
-            if code is not None and signal != code:
-                continue
-            # One symmetric three-closed-body rule; no unused MA prerequisites.
-            sign = 1 if side == 'LONG' else -1
-            edge = 'kc_upper' if side == 'LONG' else 'kc_lower'
-            bars = closed.iloc[-3:]
-            first = bars.iloc[0]
-            is_valid_entry = (
-                sign*(float(first.close)-float(first[edge])) > 0
-                and all(is_solid_push(row, side) for _, row in bars.iterrows())
-            )
-            phase = 'INITIAL_BREAKOUT'
-
-            if is_valid_entry:
-                # Use live open to measure chase, but the decision is purely based on closed bar
-                atr = float(latest.atr)
-                chase = sign*(quote - float(live.open))
-                limit = MAX_THIRD_OPEN_CHASE_ATR * atr
-
-                if chase > limit and not math.isclose(chase, limit, rel_tol=1e-12):
-                    return reject('BLOCKED_OPEN_CHASE')
-
-
-                evidence = dict(third_bar_id=float(live.timestamp), third_open=float(live.open),
-                                third_reference_atr=atr, chase_bar_id=float(live.timestamp),
-                                chase_open=float(live.open), chase_reference_atr=atr,
-                                max_chase_atr=MAX_THIRD_OPEN_CHASE_ATR, chase_atr=chase/atr if atr else 0.0)
-
-                if diagnostics is not None:
-                    diagnostics['reason'] = phase
-
-                return dict(action='ENTER', side=side, type=signal, reason=signal,
-                            price=quote, entry_atr=atr, confirmation_bar_id=float(latest.timestamp),
-                            breakout_bar_id=float(latest.timestamp), pair_confirmation_bar_id=float(latest.timestamp),
-                            close_price=float(latest.close), intrabar=False,
-                            entry_phase=phase, exit_bar_id=exit_bar, **evidence)
-        return reject('WAIT_CLOSED_BREAKOUT_OR_CONTINUATION')
+        decision = evaluate_kc_pending_entry(closed, quote, code)
+        if decision['action'] != 'ENTER':
+            if diagnostics is not None:
+                diagnostics.clear()
+                diagnostics.update(decision)
+            return None
+        # Persisted successful fills own deduplication, including after restart.
+        for trade in getattr(account, 'trades', []):
+            if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                    and (trade.get('entry_snapshot') or {}).get('pending_signal_id') == decision['pending_signal_id']):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+        decision['exit_bar_id'] = exit_bar
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics['reason'] = decision['type']
+        return decision
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return reject('WAIT_VALID_ENTRY_DATA')
