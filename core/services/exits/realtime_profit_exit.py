@@ -123,10 +123,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         retired = any(key in source for source in (position,meta) for key in RETIRED_KEYS)
         migrate_peak_state(position, meta)
         try:
-            if position[STATE_KEY].get('atr', 0.) > 0:
-                snapshot, atr = {'quote_ms':stamp}, 0.
-            else:
-                snapshot, atr = cached_tick_indicators(getattr(engine,'_channel_exit_frames',{}).get(symbol),price,stamp)
+            snapshot, atr = cached_tick_indicators(getattr(engine,'_channel_exit_frames',{}).get(symbol),price,stamp)
         except (KeyError,TypeError,ValueError,OverflowError,IndexError):
             snapshot, atr = {'quote_ms':stamp}, 0.
         decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
