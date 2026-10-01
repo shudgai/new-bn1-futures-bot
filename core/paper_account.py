@@ -711,9 +711,14 @@ class PaperAccount:
             # 自動掛出 50% Limit TP1
             tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
             limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
+            
+            be_distance = pos["atr"] * 0.8 if pos["atr"] > 0 else execution_price * 0.015
+            breakeven_trigger_price = execution_price + be_distance if side == "LONG" else execution_price - be_distance
+            
             meta = self.position_meta[symbol]
             meta["limit_tp1_price"] = limit_tp1_price
             meta["limit_tp1_filled"] = False
+            meta["breakeven_trigger_price"] = breakeven_trigger_price
             self.log(f"📝 [Limit TP1 已掛單] {symbol} {side} 預設掛出 50% 限價止盈於 {limit_tp1_price:.8g} (距離 {tp1_distance:.8g})", "INFO")
 
         self.trades.insert(0, {
@@ -1283,8 +1288,24 @@ class PaperAccount:
             ).upper() == "PIVOT_TURN"
 
             # ----------------------------------------------------------------
-            # 📌 50% Limit TP1 + 移保本 觸發檢測
+            # 📌 0.8 ATR 移保本 觸發檢測
             # ----------------------------------------------------------------
+            be_target = float(meta.get("breakeven_trigger_price", 0.0))
+            if be_target > 0 and not meta.get("is_breakeven_moved", False):
+                if (side == "LONG" and curr_p >= be_target) or (side == "SHORT" and curr_p <= be_target):
+                    # 計算開倉成本價 + 交易手續費作為新的保本 SL
+                    fee_buffer = entry_p * TAKER_FEE_RATE * 2.5 # 粗略抓手續費+滑點
+                    new_sl = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
+                    
+                    pos["sl"] = new_sl
+                    meta["sl"] = new_sl
+                    pos["is_breakeven_moved"] = True
+                    meta["is_breakeven_moved"] = True
+                    self.log(f"🛡️ [0.8 ATR 移保本] {symbol} {side} 浮盈達標，止損已上調至保本位 {new_sl:.8g}", "INFO")
+                    self.save_state()
+
+            # ----------------------------------------------------------------
+            # 📌 50% Limit TP1 觸發檢測
             tp1_target = float(meta.get("limit_tp1_price", 0.0))
             if tp1_target > 0 and not meta.get("limit_tp1_filled", False):
                 if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
