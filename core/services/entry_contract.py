@@ -37,9 +37,21 @@ def prohibited_entry_candle(row, side=None, quote=None):
         if body_ratio < 0.40 and not math.isclose(body_ratio, 0.40, rel_tol=1e-12):
             return True
             
+        ma5 = float(row.get('ma5', row.get('ma3', 0)))
+        
         if side == 'LONG':
+            # 嚴格做多過濾 (下殺未止不接多)：若是紅K，除非有止跌信號(長下影線或站穩短均線)，否則嚴禁開倉
+            if closing < opening:
+                lower_wick = closing - low
+                if (lower_wick / span) <= 0.40 and closing < ma5:
+                    return True
             adverse_wick = high - max(opening, closing)
         elif side == 'SHORT':
+            # 嚴格做空過濾 (反彈未歇不開空)：若是綠K，除非有滯漲信號(長上影線或跌破短均線)，否則嚴禁開倉
+            if closing > opening:
+                upper_wick = high - closing
+                if (upper_wick / span) <= 0.40 and closing > ma5:
+                    return True
             adverse_wick = min(opening, closing) - low
         else:
             return False
