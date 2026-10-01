@@ -1,4 +1,4 @@
-"""Observed-tick profit protection; no candle fetch or scan-lock dependency."""
+"""Cached-candle abnormal-body protection without REST or scan-lock waits."""
 import copy
 import math
 import time
@@ -12,7 +12,7 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 
 def cached_tick_indicators(frame, price, stamp):
-    """Only fresh confirmed inputs; missing candles never stop peak protection."""
+    """Require the quote minute and its preceding closed ATR for body exits."""
     snapshot = {'quote_ms': stamp}
     if frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000:
         return snapshot, 0.
@@ -21,62 +21,16 @@ def cached_tick_indicators(frame, price, stamp):
     if closed.empty or float(closed.iloc[-1]['timestamp']) != bar - 60000:
         return snapshot, 0.
     last = closed.iloc[-1]
-    live = frame.iloc[-1] if not frame.empty else None
+    live = frame.iloc[-1]
+    if float(live['timestamp']) != bar or bool(live.get('is_closed', True)):
+        return snapshot, 0.
+    snapshot.update(live_bar_ms=bar, closed_bar_ms=bar-60000)
     
-    snapshot.update({
-        'atr': float(last.get('atr') or 0.),
-        'kc_upper': float(last.get('kc_upper') or 0.),
-        'kc_lower': float(last.get('kc_lower') or 0.),
-        'kc_middle': float(last.get('ema_20', last.get('kc_middle', 0.)) or 0.),
-        'ma3': float(last.get('ma3') or 0.),
-        'ma5': float(last.get('ma5', last.get('ma3', 0)) or 0.),
-        'ma15': float(last.get('ma15') or 0.),
-        'close': float(last.get('close') or 0.),
-        'open': float(last.get('open') or 0.),
-        'high': float(last.get('high') or 0.),
-        'low': float(last.get('low') or 0.),
-        'live_open': float(live.get('open', price)) if live is not None else price,
-        'live_high': float(live.get('high', price)) if live is not None else price,
-        'live_low': float(live.get('low', price)) if live is not None else price
-    })
-    
-    if len(closed) >= 3:
-        prev = closed.iloc[-2]
-        prev2 = closed.iloc[-3]
-        snapshot.update({
-            'prev_close': float(prev.get('close') or 0.),
-            'prev_open': float(prev.get('open') or 0.),
-            'prev_high': float(prev.get('high') or 0.),
-            'prev_low': float(prev.get('low') or 0.),
-            'prev_kc_middle': float(prev.get('kc_middle', 0.)),
-            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
-            'prev2_close': float(prev2.get('close') or 0.),
-            'prev2_open': float(prev2.get('open') or 0.)
-        })
-    elif len(closed) >= 2:
-        prev = closed.iloc[-2]
-        snapshot.update({
-            'prev_close': float(prev.get('close') or 0.),
-            'prev_open': float(prev.get('open') or 0.),
-            'prev_high': float(prev.get('high') or 0.),
-            'prev_low': float(prev.get('low') or 0.),
-            'prev_kc_middle': float(prev.get('kc_middle', 0.)),
-            'prev_ma5': float(prev.get('ma5', prev.get('ma3', 0)) or 0.),
-            'prev2_close': 0.,
-            'prev2_open': 0.
-        })
-    else:
-        snapshot.update({
-            'prev_close': 0.,
-            'prev_open': 0.,
-            'prev_high': 0.,
-            'prev_low': 0.,
-            'prev_kc_middle': float(prev.get('kc_middle', 0.)),
-            'prev_ma5': 0.,
-            'prev2_close': 0.,
-            'prev2_open': 0.
-        })
-        
+    snapshot.update(atr=float(last.get('atr') or 0.),
+                    live_open=float(live.get('open') or 0.),
+                    ma5=float(live.get('ma5', live.get('ma3', 0.))),
+                    ma15=float(live.get('ma15', 0.)),
+                    kc_middle=float(live.get('kc_middle', 0.)))
     return snapshot, snapshot['atr']
 
 
@@ -105,7 +59,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         return False
     account = engine.account
     position = account.positions.get(symbol)
-    entry_m = str(position.get('entry_mode', '')).upper()
+    entry_m = str((position or {}).get('entry_mode', '')).upper()
     if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
     try:
@@ -143,7 +97,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={decision["trigger"]} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
-        await account.close_position(symbol,price,reason,is_manual=True)
+        await account.close_position(symbol,price,'Channel Swing ' + reason,is_manual=True)
         return True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False

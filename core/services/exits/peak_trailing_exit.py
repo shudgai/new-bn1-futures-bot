@@ -1,8 +1,10 @@
-"""Position-bound real-time peak trailing; candles are never exit gates."""
+"""Position-bound abnormal-body exits and independent initial hard stops."""
 import copy
 import math
 
-POLICY = 'realtime_peak_trailing_v1'
+POLICY = 'abnormal_body_only_v2'
+ABNORMAL_BODY_ATR = 1.2
+ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 STATE_KEY = 'peak_trailing_state'
 PEAK_REASON = 'EXIT_REALTIME_PEAK_TRAILING'
 HARD_REASON = 'EXIT_INITIAL_ATR_HARD_STOP'
@@ -18,6 +20,7 @@ RETIRED_KEYS = (
     'outer_run_active', 'channel_cross_lock', 'channel_pre_lock_sl',
     'is_breakeven_moved', 'profit_lock_atr_armed', 'profit_lock_usdt_armed',
     'fixed_profit_lock_pct_armed', 'profit_lock_mode',
+    'limit_tp1_price', 'limit_tp1_filled', 'breakeven_trigger_price',
 )
 STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl_usd',
               'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
@@ -65,6 +68,18 @@ def migrate_peak_state(position, meta=None):
         pending = position.get('closed_exit_state') or meta.get('closed_exit_state') or {}
         if old.get('identity') == ident and pending.get('pending') and pending.get('reason') == HARD_REASON:
             state.update(pending=HARD_REASON, trigger='INITIAL_ATR')
+    # Migrate matching observations, but revoke retired strategy close authority.
+    if state.get('identity') == ident and state.get('policy') == POLICY:
+        prior = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
+        if prior.get('identity') == ident and prior.get('policy') != POLICY:
+            for key in ('peak_price', 'peak_net_pnl', 'atr', 'last_ms'):
+                if positive(prior.get(key)):
+                    state[key] = prior[key]
+            if prior.get('pending') == HARD_REASON:
+                state.update(pending=HARD_REASON, trigger='INITIAL_ATR')
+            initial = position.get('initial_sl') or meta.get('initial_sl')
+            if positive(initial):
+                position.update(sl=float(initial), stop_loss=float(initial), atr_sl=float(initial))
     for source in (position, meta):
         for key in RETIRED_KEYS:
             source.pop(key, None)
@@ -95,6 +110,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         if 'peak_price' not in state:
             state['peak_price'] = entry
 
+        if 'crossed_kc_middle' not in state:
+            state['crossed_kc_middle'] = False
+            
+        kc_middle = snapshot.get('kc_middle') if isinstance(snapshot, dict) else None
+        if not state['crossed_kc_middle'] and kc_middle is not None and positive(kc_middle):
+            if sign == 1 and price > kc_middle:
+                state['crossed_kc_middle'] = True
+            elif sign == -1 and price < kc_middle:
+                state['crossed_kc_middle'] = True
+
         if not positive(state.get('atr')) and positive(atr):
             state['atr'] = float(atr)
         scale = float(state.get('atr') or 0.)
@@ -112,186 +137,46 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
                         
-        current_sl = float(position.get('sl', 0.0))
         stop = entry-sign*1.5*scale if scale>0 else 0.
         initial = position.get('initial_sl')
         if positive(initial):
             stop = ((max if sign==1 else min)(stop,float(initial)) if positive(stop) else float(initial))
             
-        # 關鍵修復：尊重外部已經推升的 SL（如移保本）
-        if positive(current_sl):
-            if sign == 1:
-                stop = max(stop, current_sl)
-            else:
-                stop = min(stop, current_sl) if stop > 0 else current_sl
-                
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = None, None
         
-        open_ts = ident[1]
-        if open_ts < 1e11:
-            open_ts *= 1000
-        time_held_ms = stamp - open_ts
-        is_same_bar = time_held_ms < 60000
-        
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
-        elif state.get('pending') in (PEAK_REASON,HARD_REASON):
-            reason, trigger = state['pending'], state.get('trigger','RETRY')
-            
-        # ==============================================================
-        # 盤中即時異常 K 棒緊急熔斷 (Intraday Flash Exit)
-        # ==============================================================
-        if not reason and isinstance(snapshot, dict):
-            c_middle = float(snapshot.get('kc_middle', 0.))
-            c_ma15 = float(snapshot.get('ma15', 0.))
-            c_upper = float(snapshot.get('kc_upper', 0.))
-            c_lower = float(snapshot.get('kc_lower', 0.))
-            live_open = float(snapshot.get('live_open', price))
-            live_high = float(snapshot.get('live_high', price))
-            live_low = float(snapshot.get('live_low', price))
-            prev_close = float(snapshot.get('close', 0.))  # Note: snapshot['close'] is prev bar close
-            prev_open = float(snapshot.get('open', 0.))
-            prev_high = float(snapshot.get('high', 0.))
-            prev_low = float(snapshot.get('low', 0.))
-            peak_gain = sign*(state['peak_price'] - entry)
-            
-            if c_middle > 0 and c_ma15 > 0 and scale > 0:
-                prev_range = prev_high - prev_low
-                is_doji = (abs(prev_close - prev_open) / prev_range < 0.40) if prev_range > 0 else False
-                c_ma5 = float(snapshot.get('ma5', 0.))
-                margin = float(position.get('margin') or position.get('initialMargin') or 0.0)
-                if margin <= 0 and float(position.get('leverage', 0)) > 0:
-                    margin = (entry * qty) / float(position.get('leverage'))
-                roe = net / margin if margin > 0 else 0.
+        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON):
+            reason, trigger = state['pending'], state.get('trigger', 'RETRY')
+        elif isinstance(snapshot, dict):
+            # The live body's original open and immediately prior closed ATR
+            # must belong to this quote's minute; never infer them from wicks.
+            bar = math.floor(stamp / 60000) * 60000
+            opening = snapshot.get('live_open')
+            prior_atr = snapshot.get('atr')
+            if (snapshot.get('live_bar_ms') == bar
+                    and snapshot.get('closed_bar_ms') == bar - 60000
+                    and positive(opening) and positive(prior_atr)):
                 
-                if sign == 1:
-                    # cond_a: 實體暴跌門檻提升到 1.2 ATR，量命條件不輕易觸發
-                    cond_a = (live_open - price >= 1.2 * scale)
-                    cond_b = (price <= c_middle)
-                    cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
-                    # cond_d: 嚴格十字星（實體 < 25%）且上影線 > 實體 2 倍
-                    prev_body_ratio = (abs(prev_close - prev_open) / prev_range) if prev_range > 0 else 1.
-                    prev_up_wick = prev_high - max(prev_close, prev_open)
-                    prev_body_abs = abs(prev_close - prev_open)
-                    is_strict_doji = (prev_body_ratio < 0.25) and (prev_up_wick > 2 * prev_body_abs) if prev_body_abs > 0 else False
-                    cond_d = is_strict_doji and (prev_high >= c_upper * 0.999) and (price < live_open) and (price < prev_low)
-                    # cond_e: 須 roe >= 15% 且即時價已在 MA5 之下
-                    cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price < c_ma5)
-
-                    # 【白名單 1】價格在 KC 上軌之上：除中軌底線外禁用一切 Flash 出場
-                    above_upper = c_upper > 0 and price > c_upper
-                    if above_upper:
-                        cond_a = cond_c = cond_d = cond_e = False
-                    # 【白名單 2】價格在 MA5 之上且小陰線（< 1.0 ATR）：禁用非底線出場
-                    elif c_ma5 > 0 and price > c_ma5 and (live_open - price < 1.0 * scale):
-                        cond_a = cond_c = cond_d = cond_e = False
-
-                    if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.2ATR'
-                    elif cond_b:
-                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
-                    elif cond_d:
-                        reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_DOWN'
-                    elif cond_c:
-                        reason, trigger = PEAK_REASON, 'FLASH_TRAILING_0.7ATR'
-                    elif cond_e:
-                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_MA5_PROTECT'
+                ma15 = snapshot.get('ma15')
+                if state.get('crossed_kc_middle'):
+                    # Phase 2: MA15 Tracking Defense
+                    if ma15 is not None and positive(ma15):
+                        if sign == 1 and price < ma15 and price < opening:
+                            reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
+                            state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                         trigger_atr=float(prior_atr), trigger_price=price)
+                        elif sign == -1 and price > ma15 and price > opening:
+                            reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
+                            state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                         trigger_atr=float(prior_atr), trigger_price=price)
                 else:
-                    cond_a = (price - live_open >= 1.0 * scale) or (price - live_low >= 1.0 * scale)
-                    cond_b = (price >= c_middle)
-                    cond_c = (peak_gain >= 2.0 * scale) and ((price - state['peak_price']) >= 0.7 * scale)
-                    cond_d = is_doji and (prev_low <= c_lower * 1.001) and (price > live_open) and (price > prev_high)
-                    cond_e = (roe >= 0.15) and (price > live_open) and (c_ma5 > 0) and (price >= c_ma5)
+                    # Phase 1: Only rely on INITIAL_SL (handled above) 
+                    # Optionally, keep a fallback adverse body exit if needed, but user specified INITIAL_SL.
+                    pass
                     
-                    if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1.0ATR'
-                    elif cond_b:
-                        reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
-                    elif cond_d:
-                        reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_UP'
-                    elif cond_c:
-                        reason, trigger = PEAK_REASON, 'FLASH_TRAILING_0.7ATR'
-                    elif cond_e:
-                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_MA5_PROTECT'
-
-        if not reason and not is_same_bar:
-            # 波段尾部確認平倉機制
-            is_long = (sign == 1)
-            
-            c_close = float(snapshot.get('close', 0.)) if isinstance(snapshot, dict) else 0.
-            c_open = float(snapshot.get('open', 0.)) if isinstance(snapshot, dict) else 0.
-            c_high = float(snapshot.get('high', 0.)) if isinstance(snapshot, dict) else 0.
-            c_low = float(snapshot.get('low', 0.)) if isinstance(snapshot, dict) else 0.
-            c_ma5 = float(snapshot.get('ma5', 0.)) if isinstance(snapshot, dict) else 0.
-            c_ma15 = float(snapshot.get('ma15', 0.)) if isinstance(snapshot, dict) else 0.
-            c_upper = float(snapshot.get('kc_upper', 0.)) if isinstance(snapshot, dict) else 0.
-            c_lower = float(snapshot.get('kc_lower', 0.)) if isinstance(snapshot, dict) else 0.
-            c_middle = float(snapshot.get('kc_middle', 0.)) if isinstance(snapshot, dict) else 0.
-            prev_close = float(snapshot.get('prev_close', 0.)) if isinstance(snapshot, dict) else 0.
-            prev_open = float(snapshot.get('prev_open', 0.)) if isinstance(snapshot, dict) else 0.
-            prev_high = float(snapshot.get('prev_high', 0.)) if isinstance(snapshot, dict) else 0.
-            prev_low = float(snapshot.get('prev_low', 0.)) if isinstance(snapshot, dict) else 0.
-            prev_ma5 = float(snapshot.get('prev_ma5', 0.)) if isinstance(snapshot, dict) else 0.
-            prev2_close = float(snapshot.get('prev2_close', 0.)) if isinstance(snapshot, dict) else 0.
-            prev2_open = float(snapshot.get('prev2_open', 0.)) if isinstance(snapshot, dict) else 0.
-            
-            # 所有的波段尾聲判定均嚴格基於 K 棒收盤價 (c_close)，不使用即時 Tick 價
-            if not reason and c_close > 0 and c_upper > 0 and c_lower > 0 and c_ma5 > 0 and c_middle > 0:
-                atr_tolerance = 1.2 * scale if scale > 0 else 0
-                retrace_from_peak = sign*(state['peak_price'] - c_close)
-                
-                # ==============================================================
-                # 機械化三級平倉狀態機 (3-Tier Exit State Machine)
-                # ==============================================================
-                exit_phase = state.get('exit_phase', 'STATE_HOLD')
-                prev_exit_phase = exit_phase
-                
-                prev_middle = float(snapshot.get('prev_kc_middle', c_middle)) if isinstance(snapshot, dict) else c_middle
-                prev_ma5 = float(snapshot.get('prev_ma5', c_ma5)) if isinstance(snapshot, dict) else c_ma5
-                
-                if is_long:
-                    bar_body = abs(c_close - c_open)
-                    # 【白名單 A】收盤仍在 KC 上軌之上：禁用 MA5 系列出場，僅保留中軌底線
-                    above_upper_close = c_upper > 0 and c_close > c_upper
-                    # 【白名單 B】收盤在 MA5 之上且為健康小陰（實體 < 0.8 ATR）：禁用出場
-                    healthy_pullback = (c_ma5 > 0 and c_close > c_ma5) and (bar_body < 0.8 * scale)
-
-                    if above_upper_close or healthy_pullback:
-                        # 只保留最底線：跌破中軌
-                        if c_close < c_middle:
-                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
-                    else:
-                        # MA5 轉向必須同時收盤也跌破 MA5
-                        ma5_turned_down = (c_ma5 < prev_ma5) and (c_close < c_ma5)
-                        if c_close < c_middle:
-                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
-                        elif ma5_turned_down:
-                            reason, trigger = PEAK_REASON, 'MA5_TURNED_DOWN'
-                        elif c_close < c_upper and c_close < c_ma5:
-                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_AND_UPPER'
-
-                    # 狀態更新
-                    if not reason:
-                        exit_phase = 'STATE_TRACKING'
-                        
-                else:
-                    # 狀態 ③：🔴 平空 (Exit Signal - 嚴格收盤確認)
-                    ma5_turned_up = c_ma5 > prev_ma5
-                    
-                    if c_close > c_middle:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
-                    elif ma5_turned_up:
-                        reason, trigger = PEAK_REASON, 'MA5_TURNED_UP'
-                    elif c_close > c_lower and c_close > c_ma5:
-                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_AND_LOWER'
-                            
-                    # 狀態更新
-                    if not reason:
-                        exit_phase = 'STATE_TRACKING'
-                        
-                state['exit_phase'] = exit_phase
         if reason:
             state.update(pending=reason,trigger=trigger)
             return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)

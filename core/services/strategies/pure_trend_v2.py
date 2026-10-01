@@ -62,22 +62,22 @@ class PureTrendStrategyV2:
             # 嚴禁紅陰線開多
             if current_price <= c_open:
                 return False, f"當前為紅陰線 (現價 {current_price} <= 開盤 {c_open})，拒絕開多！"
-            # 嚴禁十字星 (實體小於全波幅 25%)
-            if bar_range > 0 and body < 0.25 * bar_range:
-                return False, "當前為無動能十字星，拒絕開多！"
-            # 嚴禁長上影線 (上影線大於實體 1.0 倍)
-            if (c_high - current_price) > body * 1.0:
+            # 嚴禁十字星或微弱實體 (實體小於全波幅 50%)
+            if bar_range > 0 and body / bar_range < 0.50:
+                return False, "當前實體小於 50%，動能不足，拒絕開多！"
+            # 嚴禁反向承接影線 (上影線佔比 > 35%)
+            if bar_range > 0 and (c_high - max(c_open, current_price)) / bar_range > 0.35:
                 return False, "當前帶顯著長上影線拋壓，拒絕開多！"
 
         elif side == 'SHORT':
             # 嚴禁綠陽線開空
             if current_price >= c_open:
                 return False, f"當前為綠陽線 (現價 {current_price} >= 開盤 {c_open})，拒絕開空！"
-            # 嚴禁十字星
-            if bar_range > 0 and body < 0.25 * bar_range:
-                return False, "當前為無動能十字星，拒絕開空！"
-            # 嚴禁長下影線 (下影線大於實體 1.0 倍)
-            if (current_price - c_low) > body * 1.0:
+            # 嚴禁十字星或微弱實體
+            if bar_range > 0 and body / bar_range < 0.50:
+                return False, "當前實體小於 50%，動能不足，拒絕開空！"
+            # 嚴禁反向承接影線 (下影線佔比 > 35%)
+            if bar_range > 0 and (min(c_open, current_price) - c_low) / bar_range > 0.35:
                 return False, "當前帶顯著長下影線抵抗，拒絕開空！"
 
         # ---------------------------------------------------------
@@ -101,11 +101,12 @@ class PureTrendStrategyV2:
             signed_body = (close-opened) * (1 if side == 'LONG' else -1)
             if signed_body <= 0:
                 return False
-            minimum = .25*(high-low)
+            minimum = .50*(high-low)
             if signed_body < minimum and not math.isclose(signed_body, minimum, rel_tol=1e-12):
                 return False
-            wick = high-close if side == 'LONG' else close-low
-            return wick <= signed_body or math.isclose(wick, signed_body, rel_tol=1e-12)
+            adverse_wick = high - max(opened, close) if side == 'LONG' else min(opened, close) - low
+            adverse_limit = .35*(high-low)
+            return adverse_wick <= adverse_limit or math.isclose(adverse_wick, adverse_limit, rel_tol=1e-12)
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
 
@@ -285,31 +286,32 @@ class PureTrendStrategyV2:
         if dist_from_ma15_atr > ma15_dist_limit:
             short_trend_valid = False
 
+        # 【硬門檻】當根 K 棒必須且只能是實體陰線 (Close < Open)！嚴禁綠 K 開空！
+        is_red_candle = (current_price < curr_open)
+
         # 回抽準備與觸發：
         # 1. 價格反彈至 MA5(ma3) 或 KC 中軌附近 (高點觸及或高於)
         touched_resistance_short = (curr_high >= ma3) or (curr_high >= kc_middle_curr)
-        # 2. 【硬門檻】收盤必須實質跌破 KC 下軌（通道外側），禁止在通道內開空
-        broke_lower_rail = (current_price < float(bar_curr.get('kc_lower', 0)))
-        held_resistance_short = broke_lower_rail
-        # 3. 受阻信號：當根 K 棒收出帶上影線的實體陰線 (Close < Open)
-        is_red_candle = (current_price < curr_open)
         
-        pullback_short = touched_resistance_short and held_resistance_short and is_red_candle
+        pullback_short = touched_resistance_short and is_red_candle
         
         # 【弱勢貼軌續跌旁路】：行情持續壓制在 MA5 下方沿軌陰跌
-        # 【同樣要求收盤破軌】：curr_close < kc_lower（不以影線低點計算）
-        if not pullback_short and short_trend_valid:
+        if not pullback_short and short_trend_valid and is_red_candle:
             prev_close = float(bar_prev.get('close', 0))
             prev_ma3 = float(bar_prev.get('ma3', 0))
-            kc_lower_curr = float(bar_curr.get('kc_lower', 0))
             below_ma5_x2 = (prev_close < prev_ma3) and (current_price < ma3)
-            # 收盤必須破軌，不允許僅影線觸軌
-            close_below_lower = (current_price < kc_lower_curr)
             no_reversal = (curr_high <= max(float(bar_prev.get('high', curr_high)), ma3 * 1.002))
-            if below_ma5_x2 and close_below_lower and no_reversal:
+            if below_ma5_x2 and no_reversal:
                 pullback_short = True
 
-        final_short_signal = pullback_short and short_trend_valid
+        final_short_signal = pullback_short and short_trend_valid and is_red_candle
+
+        # 【空單硬門檻】收盤必須實質跌破 KC 下軌，禁止在通道內開空！
+        if final_short_signal:
+            kc_lower_curr = float(bar_curr.get('kc_lower', 0))
+            if kc_lower_curr > 0 and current_price >= kc_lower_curr:
+                final_short_signal = False
+                self.entry_rejection = '收盤在 KC 下軌內側，未實質破軌'
 
         if final_short_signal:
             res = {"action": "ENTRY_SHORT"}
@@ -373,8 +375,11 @@ class PureTrendStrategyV2:
                 return prefix + '(實體萎縮：小於起爆棒50%)'
             if below(body,.5*atr):
                 return prefix + '(弱實體：小於0.5 ATR)'
+            span = high-low
+            if span > 0 and (body/span < 0.50):
+                return prefix + '(實體萎縮：小於50%)'
             wick = high-max(opening,close) if side=='LONG' else min(opening,close)-low
-            if above(wick,1.5*body) or (side=='LONG' and above(wick,.4*(high-low))):
+            if span > 0 and (wick/span > 0.35):
                 return prefix + '(長上影線)' if side=='LONG' else prefix + '(長下影線)'
             return None
         except (KeyError,TypeError,ValueError,OverflowError,IndexError):
