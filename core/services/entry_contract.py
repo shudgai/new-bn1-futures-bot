@@ -157,6 +157,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             if is_valid_entry:
                 # Use live open to measure chase, but the decision is purely based on closed bar
                 atr = float(latest.atr)
+                sign = 1 if side == 'LONG' else -1
                 chase = sign*(quote - float(live.open))
                 limit = MAX_THIRD_OPEN_CHASE_ATR * atr
                 
