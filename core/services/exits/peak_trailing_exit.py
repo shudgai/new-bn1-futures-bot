@@ -167,23 +167,29 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 roe = net / margin if margin > 0 else 0.
                 
                 if sign == 1:
-                    # cond_a: 只看實體暴跌，不以上影線（live_high）計算，避免正常長上影誤平
-                    cond_a = (live_open - price >= 1.0 * scale)
+                    # cond_a: 實體暴跌門檻提升到 1.2 ATR，量命條件不輕易觸發
+                    cond_a = (live_open - price >= 1.2 * scale)
                     cond_b = (price <= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
-                    # cond_d: 十字星前提必須是前一根真的是長上影十字星（實體 < 25%），不放寬到 40%
+                    # cond_d: 嚴格十字星（實體 < 25%）且上影線 > 實體 2 倍
                     prev_body_ratio = (abs(prev_close - prev_open) / prev_range) if prev_range > 0 else 1.
-                    is_strict_doji = prev_body_ratio < 0.25
+                    prev_up_wick = prev_high - max(prev_close, prev_open)
+                    prev_body_abs = abs(prev_close - prev_open)
+                    is_strict_doji = (prev_body_ratio < 0.25) and (prev_up_wick > 2 * prev_body_abs) if prev_body_abs > 0 else False
                     cond_d = is_strict_doji and (prev_high >= c_upper * 0.999) and (price < live_open) and (price < prev_low)
-                    cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price <= c_ma5)
-                    # 白名單：MA5 上方的小陰線（實體 < 0.8 ATR）強制豁免，不得平倉
-                    above_ma5 = c_ma5 > 0 and price > c_ma5
-                    small_body = (live_open - price < 0.8 * scale)
-                    if above_ma5 and small_body:
-                        cond_a = cond_b = cond_c = cond_d = cond_e = False
-                    
+                    # cond_e: 須 roe >= 15% 且即時價已在 MA5 之下
+                    cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price < c_ma5)
+
+                    # 【白名單 1】價格在 KC 上軌之上：除中軌底線外禁用一切 Flash 出場
+                    above_upper = c_upper > 0 and price > c_upper
+                    if above_upper:
+                        cond_a = cond_c = cond_d = cond_e = False
+                    # 【白名單 2】價格在 MA5 之上且小陰線（< 1.0 ATR）：禁用非底線出場
+                    elif c_ma5 > 0 and price > c_ma5 and (live_open - price < 1.0 * scale):
+                        cond_a = cond_c = cond_d = cond_e = False
+
                     if cond_a:
-                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.0ATR'
+                        reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.2ATR'
                     elif cond_b:
                         reason, trigger = PEAK_REASON, 'FLASH_BREACH_KC_MIDDLE'
                     elif cond_d:
@@ -246,21 +252,26 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 prev_ma5 = float(snapshot.get('prev_ma5', c_ma5)) if isinstance(snapshot, dict) else c_ma5
                 
                 if is_long:
-                    # 狀態 ③：🔴 平多 (Exit Signal - 嚴格收盤確認)
-                    # MA5 轉向必須同時要求收盤也在 MA5 之下，防止主升段初期 MA5 微幅震盪誤平
-                    ma5_turned_down = (c_ma5 < prev_ma5) and (c_close < c_ma5)
-                    # 白名單：收盤在 MA5 之上的小陰線（實體 < 0.8 ATR）不平倉
                     bar_body = abs(c_close - c_open)
-                    healthy_pullback = (c_close > c_ma5) and (bar_body < 0.8 * scale)
-                    
-                    if not healthy_pullback:
+                    # 【白名單 A】收盤仍在 KC 上軌之上：禁用 MA5 系列出場，僅保留中軌底線
+                    above_upper_close = c_upper > 0 and c_close > c_upper
+                    # 【白名單 B】收盤在 MA5 之上且為健康小陰（實體 < 0.8 ATR）：禁用出場
+                    healthy_pullback = (c_ma5 > 0 and c_close > c_ma5) and (bar_body < 0.8 * scale)
+
+                    if above_upper_close or healthy_pullback:
+                        # 只保留最底線：跌破中軌
+                        if c_close < c_middle:
+                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
+                    else:
+                        # MA5 轉向必須同時收盤也跌破 MA5
+                        ma5_turned_down = (c_ma5 < prev_ma5) and (c_close < c_ma5)
                         if c_close < c_middle:
                             reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
                         elif ma5_turned_down:
                             reason, trigger = PEAK_REASON, 'MA5_TURNED_DOWN'
                         elif c_close < c_upper and c_close < c_ma5:
                             reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_AND_UPPER'
-                            
+
                     # 狀態更新
                     if not reason:
                         exit_phase = 'STATE_TRACKING'
