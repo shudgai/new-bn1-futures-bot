@@ -937,6 +937,60 @@ class BinanceTestnetAccount:
                     meta["bounce_target_pct"] = bounce_target_pct
 
             # =========================================================================
+            # 🚀 階梯式 ATR 動態鎖利 (Live/Testnet Account)
+            # =========================================================================
+            is_channel_swing = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+            
+            if is_channel_swing:
+                # 📌 0.8 ATR 移保本 觸發檢測
+                be_target = float(meta.get("breakeven_trigger_price", 0.0))
+                if be_target == 0.0:
+                    be_distance = atr_val * 0.8 if atr_val > 0 else entry_p * 0.015
+                    be_target = entry_p + be_distance if side == "LONG" else entry_p - be_distance
+                    meta["breakeven_trigger_price"] = be_target
+
+                if not meta.get("is_breakeven_moved", False):
+                    if (side == "LONG" and curr_p >= be_target) or (side == "SHORT" and curr_p <= be_target):
+                        fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
+                        new_sl = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
+                        # Update SL locally, and send API command to Exchange
+                        meta["sl"] = new_sl
+                        pos["sl"] = new_sl
+                        meta["is_breakeven_moved"] = True
+                        pos["is_breakeven_moved"] = True
+                        self.log(f"🛡️ [0.8 ATR 移保本] {symbol} {side} 浮盈達標，止損已上調至保本位 {new_sl:.8g}", "INFO")
+                        
+                        if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                            close_side_bank = "sell" if side == "LONG" else "buy"
+                            try:
+                                await self._cancel_all_orders(symbol)
+                                await self._create_protection_order(symbol, close_side_bank, "STOP_MARKET", pos["qty"], new_sl)
+                            except Exception as e:
+                                self.log(f"⚠️ [移保本] API 更新失敗: {e}", "WARNING")
+
+                # 📌 50% Limit TP1 觸發檢測 (1.5 ATR)
+                tp1_target = float(meta.get("limit_tp1_price", 0.0))
+                if tp1_target == 0.0:
+                    tp1_distance = atr_val * 1.5 if atr_val > 0 else entry_p * 0.025
+                    tp1_target = entry_p + tp1_distance if side == "LONG" else entry_p - tp1_distance
+                    meta["limit_tp1_price"] = tp1_target
+
+                if not meta.get("limit_tp1_filled", False):
+                    if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
+                        meta["limit_tp1_filled"] = True
+                        pos["is_half_closed"] = True
+                        half_qty = float(self.exchange.amount_to_precision(symbol, float(pos["qty"]) / 2.0))
+                        if half_qty > 0:
+                            self.log(f"🎯 [Limit TP1 達標] {symbol} {side} 觸及 {tp1_target:.8g}！市價平倉 50% 數量 {half_qty}", "SUCCESS")
+                            # Send MARKET order to close 50%
+                            close_side = "sell" if side == "LONG" else "buy"
+                            try:
+                                await self._send_order(symbol, "MARKET", close_side, half_qty, reason="TAKE_PROFIT_50PCT")
+                            except Exception as e:
+                                self.log(f"⚠️ [TP1 平倉失敗] API Error: {e}", "WARNING")
+                                meta["limit_tp1_filled"] = False # Retry later
+                        
+            # =========================================================================
             # 終極防禦體系：分階段動態防禦系統 (TieredExitManager)
             # =========================================================================
             if "defense_state" not in meta:
