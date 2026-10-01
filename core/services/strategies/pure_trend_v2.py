@@ -259,6 +259,13 @@ class PureTrendStrategyV2:
 
         final_long_signal = pullback_long and long_trend_valid
 
+        # 【多單硬門檻】收盤必須實質突破 KC 上軌，禁止在通道內開多
+        if final_long_signal:
+            kc_upper_curr = float(bar_curr.get('kc_upper', 0))
+            if kc_upper_curr > 0 and current_price <= kc_upper_curr:
+                final_long_signal = False
+                self.entry_rejection = '收盤在 KC 上軌內側，未實質破軌'
+
         if final_long_signal:
             res = {"action": "ENTRY_LONG"}
             sl_price = min(curr_low, kc_middle_curr)
@@ -281,27 +288,25 @@ class PureTrendStrategyV2:
         # 回抽準備與觸發：
         # 1. 價格反彈至 MA5(ma3) 或 KC 中軌附近 (高點觸及或高於)
         touched_resistance_short = (curr_high >= ma3) or (curr_high >= kc_middle_curr)
-        # 2. 收盤未實質站穩中軌 (現價 <= 中軌)
-        held_resistance_short = (current_price <= kc_middle_curr)
+        # 2. 【硬門檻】收盤必須實質跌破 KC 下軌（通道外側），禁止在通道內開空
+        broke_lower_rail = (current_price < float(bar_curr.get('kc_lower', 0)))
+        held_resistance_short = broke_lower_rail
         # 3. 受阻信號：當根 K 棒收出帶上影線的實體陰線 (Close < Open)
         is_red_candle = (current_price < curr_open)
         
         pullback_short = touched_resistance_short and held_resistance_short and is_red_candle
         
-        # 【弱勢貼軌續跌旁路】：當行情持續壓制在 MA5 下方沿軌陰跌時
-        # 無明顯反彈觸軌，但符合：
-        #   a) 已跌破 KC 下軌（curr_low < kc_lower）
-        #   b) 前兩根收盤均壓在 MA5 以下（持續空頭壓制）
-        #   c) 當根未創新高（非反轉）：curr_high <= prev_high
+        # 【弱勢貼軌續跌旁路】：行情持續壓制在 MA5 下方沿軌陰跌
+        # 【同樣要求收盤破軌】：curr_close < kc_lower（不以影線低點計算）
         if not pullback_short and short_trend_valid:
             prev_close = float(bar_prev.get('close', 0))
             prev_ma3 = float(bar_prev.get('ma3', 0))
-            prev_low_prev = float(bar_prev.get('low', 0))
             kc_lower_curr = float(bar_curr.get('kc_lower', 0))
             below_ma5_x2 = (prev_close < prev_ma3) and (current_price < ma3)
-            price_below_lower = (curr_low < kc_lower_curr)
+            # 收盤必須破軌，不允許僅影線觸軌
+            close_below_lower = (current_price < kc_lower_curr)
             no_reversal = (curr_high <= max(float(bar_prev.get('high', curr_high)), ma3 * 1.002))
-            if below_ma5_x2 and price_below_lower and no_reversal:
+            if below_ma5_x2 and close_below_lower and no_reversal:
                 pullback_short = True
 
         final_short_signal = pullback_short and short_trend_valid
