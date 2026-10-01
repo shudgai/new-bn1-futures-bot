@@ -241,7 +241,22 @@ class PureTrendStrategyV2:
         is_green_candle = (current_price > curr_open)
         
         pullback_long = touched_support_long and held_support_long and is_green_candle
-        
+
+        # 【弱勢貼軌續漲旁路】：當行情持續在 MA5 上方沿軌走強時
+        # 無明顯回踩但符合：
+        #   a) 已突破 KC 上軌（curr_high > kc_upper）
+        #   b) 前兩根收盤均在 MA5 以上
+        #   c) 當根未創新低（非反轉）
+        if not pullback_long and long_trend_valid:
+            prev_close_l = float(bar_prev.get('close', 0))
+            prev_ma3_l = float(bar_prev.get('ma3', 0))
+            kc_upper_curr = float(bar_curr.get('kc_upper', 0))
+            above_ma5_x2 = (prev_close_l > prev_ma3_l) and (current_price > ma3)
+            price_above_upper = (curr_high > kc_upper_curr)
+            no_reversal_l = (curr_low >= min(float(bar_prev.get('low', curr_low)), ma3 * 0.998))
+            if above_ma5_x2 and price_above_upper and no_reversal_l:
+                pullback_long = True
+
         final_long_signal = pullback_long and long_trend_valid
 
         if final_long_signal:
@@ -273,6 +288,22 @@ class PureTrendStrategyV2:
         
         pullback_short = touched_resistance_short and held_resistance_short and is_red_candle
         
+        # 【弱勢貼軌續跌旁路】：當行情持續壓制在 MA5 下方沿軌陰跌時
+        # 無明顯反彈觸軌，但符合：
+        #   a) 已跌破 KC 下軌（curr_low < kc_lower）
+        #   b) 前兩根收盤均壓在 MA5 以下（持續空頭壓制）
+        #   c) 當根未創新高（非反轉）：curr_high <= prev_high
+        if not pullback_short and short_trend_valid:
+            prev_close = float(bar_prev.get('close', 0))
+            prev_ma3 = float(bar_prev.get('ma3', 0))
+            prev_low_prev = float(bar_prev.get('low', 0))
+            kc_lower_curr = float(bar_curr.get('kc_lower', 0))
+            below_ma5_x2 = (prev_close < prev_ma3) and (current_price < ma3)
+            price_below_lower = (curr_low < kc_lower_curr)
+            no_reversal = (curr_high <= max(float(bar_prev.get('high', curr_high)), ma3 * 1.002))
+            if below_ma5_x2 and price_below_lower and no_reversal:
+                pullback_short = True
+
         final_short_signal = pullback_short and short_trend_valid
 
         if final_short_signal:
