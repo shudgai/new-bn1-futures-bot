@@ -1448,6 +1448,37 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
+            # =========================================================================
+            # 🔥 獨立極值利潤回撤保護 (Extreme Profit Giveback Protection) 🔥
+            # =========================================================================
+            max_unrealized = max(float(meta.get("max_unrealized_pnl", unrealized)), unrealized)
+            meta["max_unrealized_pnl"] = max_unrealized
+            
+            # 條件 1：高額利潤回吐 25% 即刻市價全平
+            if max_unrealized >= 15.0 or highest_pnl >= 0.20:
+                if unrealized <= max_unrealized * 0.75:
+                    self.log(
+                        f"⚡ [極值回撤保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
+                        f"目前縮水至 {unrealized:.2f}U (回吐>=25%)，立即市價平倉保利！",
+                        "SUCCESS"
+                    )
+                    await self._execute_market_close(symbol, pos, curr_p, "極值利潤回撤25%強制保利")
+                    continue
+                    
+            # 條件 2：低浮盈保本門檻
+            elif max_unrealized >= 5.0 or highest_pnl >= 0.03:
+                fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
+                breakeven_p = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
+                hit_breakeven = (side == "LONG" and curr_p <= breakeven_p) or (side == "SHORT" and curr_p >= breakeven_p)
+                if hit_breakeven:
+                    self.log(
+                        f"🛡️ [極值保本保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
+                        f"目前跌回成本價 {curr_p:.6g}，立即市價保本平倉！",
+                        "WARNING"
+                    )
+                    await self._execute_market_close(symbol, pos, curr_p, "極值浮盈跌回保本線")
+                    continue
+
             if await enforce_hard_stop(self, symbol, curr_p):
                 continue
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):

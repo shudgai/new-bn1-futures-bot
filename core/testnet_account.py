@@ -807,6 +807,38 @@ class BinanceTestnetAccount:
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
                 
+            # =========================================================================
+            # 🔥 獨立極值利潤回撤保護 (Extreme Profit Giveback Protection) 🔥
+            # =========================================================================
+            curr_unrealized = pos.get("unrealized_pnl", 0.0)
+            max_unrealized = max(float(meta.get("max_unrealized_pnl", curr_unrealized)), curr_unrealized)
+            meta["max_unrealized_pnl"] = max_unrealized
+            
+            # 條件 1：高額利潤回吐 25% 即刻市價全平
+            if max_unrealized >= 15.0 or highest_pnl >= 0.20:
+                if curr_unrealized <= max_unrealized * 0.75:
+                    self.log(
+                        f"⚡ [極值回撤保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
+                        f"目前縮水至 {curr_unrealized:.2f}U (回吐>=25%)，立即市價平倉保利！",
+                        "SUCCESS"
+                    )
+                    await self.close_position(symbol, mark_p, "極值利潤回撤25%強制保利")
+                    continue
+                    
+            # 條件 2：低浮盈保本門檻
+            elif max_unrealized >= 5.0 or highest_pnl >= 0.03:
+                fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
+                breakeven_p = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
+                hit_breakeven = (side == "LONG" and mark_p <= breakeven_p) or (side == "SHORT" and mark_p >= breakeven_p)
+                if hit_breakeven:
+                    self.log(
+                        f"🛡️ [極值保本保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
+                        f"目前跌回成本價 {mark_p:.6g}，立即市價保本平倉！",
+                        "WARNING"
+                    )
+                    await self.close_position(symbol, mark_p, "極值浮盈跌回保本線")
+                    continue
+                
             # --- 動態 ATR 防禦錨點計算 (0.75 ATR 邏輯對齊) ---
             atr_val = float(meta.get("atr") or entry_p * 0.015)
             atr_pct = atr_val / entry_p if entry_p > 0 else 0.015
