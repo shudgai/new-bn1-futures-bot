@@ -15,27 +15,43 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
 
 
 
-def prohibited_entry_candle(row, side=None, quote=None):
-    return False  # Deprecated, handled by new pending logic
-
-def is_valid_push_bar(row, side):
+def is_solid_push(row, side):
     try:
         opening = float(row.open)
         closing = float(row.close)
         high = max(float(row.high), closing)
         low = min(float(row.low), closing)
-        body = abs(closing-opening)
-        span = high-low
-        if span <= 0 or body <= 0: return False
-        
-        body_ratio = body / span
-        lower_wick_ratio = (min(opening, closing) - low) / span
-        upper_wick_ratio = (high - max(opening, closing)) / span
+        span = high - low if high - low > 0 else 1e-9
+        body = closing - opening
+        body_ratio = abs(body) / span
         
         if side == 'LONG':
-            return (closing > opening) and (body_ratio >= 0.35) and (upper_wick_ratio <= 0.40)
+            return body > 0 and body_ratio >= 0.35
         else:
-            return (closing < opening) and (body_ratio >= 0.35) and (lower_wick_ratio <= 0.40)
+            return body < 0 and body_ratio >= 0.35
+    except:
+        return False
+
+def is_bad_reverse(row, side):
+    try:
+        opening = float(row.open)
+        closing = float(row.close)
+        if side == 'LONG':
+            return closing < opening
+        else:
+            return closing > opening
+    except:
+        return False
+        
+def is_doji(row):
+    try:
+        opening = float(row.open)
+        closing = float(row.close)
+        high = max(float(row.high), closing)
+        low = min(float(row.low), closing)
+        span = high - low if high - low > 0 else 1e-9
+        body = abs(closing - opening)
+        return (body / span) < 0.25
     except:
         return False
 
@@ -115,56 +131,28 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             except (IndexError, KeyError, ValueError):
                 prev2_kc_middle = prev_kc_middle
             
-            # Pending signal evaluation up to max_wait_bars
-            max_wait_bars = 5
             is_valid_entry = False
             phase = 'INITIAL_BREAKOUT'
             
-            latest_close = float(latest.close)
-            latest_ma5 = float(latest.get('ma5', latest.get('ma3', 0)))
-            
-            # 1. Is the latest closed bar a valid push bar?
-            if is_valid_push_bar(latest, side):
-                if (side == 'LONG' and latest_close >= latest_ma5) or (side == 'SHORT' and latest_close <= latest_ma5):
-                    # 2. Look back up to max_wait_bars for a setup trigger
-                    for i in range(max_wait_bars):
-                        if len(closed) < i + 3:
-                            break
-                        bar_i = closed.iloc[-1 - i]
-                        prev_i = closed.iloc[-2 - i]
-                        
-                        bar_i_close = float(bar_i.close)
-                        prev_i_close = float(prev_i.close)
-                        bar_i_ma5 = float(bar_i.get('ma5', bar_i.get('ma3', 0)))
-                        prev_i_ma5 = float(prev_i.get('ma5', prev_i.get('ma3', 0)))
-                        bar_i_ma15 = float(bar_i.get('ma15', 0))
-                        prev_i_ma15 = float(prev_i.get('ma15', 0))
-                        
-                        if side == 'LONG':
-                            crossover_kc = bar_i_close > float(bar_i.kc_upper) and prev_i_close <= float(prev_i.kc_upper)
-                            crossover_ma = float(bar_i.kc_middle) > float(prev_i.kc_middle) and bar_i_ma5 > bar_i_ma15 and prev_i_ma5 <= prev_i_ma15
-                            setup_triggered = crossover_kc or crossover_ma
-                        else:
-                            crossover_kc = bar_i_close < float(bar_i.kc_lower) and prev_i_close >= float(prev_i.kc_lower)
-                            crossover_ma = float(bar_i.kc_middle) < float(prev_i.kc_middle) and bar_i_ma5 < bar_i_ma15 and prev_i_ma5 >= prev_i_ma15
-                            setup_triggered = crossover_kc or crossover_ma
-                            
-                        if setup_triggered:
-                            # Ensure it didn't cross the KC middle line during the wait period
-                            invalidated = False
-                            for j in range(i):
-                                wait_bar = closed.iloc[-1 - j]
-                                if side == 'LONG' and float(wait_bar.close) < float(wait_bar.kc_middle):
-                                    invalidated = True
-                                    break
-                                elif side == 'SHORT' and float(wait_bar.close) > float(wait_bar.kc_middle):
-                                    invalidated = True
-                                    break
-                                    
-                            if not invalidated:
-                                is_valid_entry = True
-                                phase = 'PULLBACK_BOUNCE_CONTINUATION' if crossover_ma and not crossover_kc else 'INITIAL_BREAKOUT'
-                                break
+            if len(closed) >= 3:
+                bar1 = closed.iloc[-3]
+                bar2 = closed.iloc[-2]
+                bar3 = closed.iloc[-1]
+                
+                if side == 'LONG':
+                    bar1_valid = float(bar1.close) > float(bar1.kc_upper) and is_solid_push(bar1, 'LONG')
+                    bar2_valid = is_solid_push(bar2, 'LONG') and not is_doji(bar2)
+                    bar3_valid = not is_bad_reverse(bar3, 'LONG') and is_solid_push(bar3, 'LONG')
+                    
+                    if bar1_valid and bar2_valid and bar3_valid:
+                        is_valid_entry = True
+                else:
+                    bar1_valid = float(bar1.close) < float(bar1.kc_lower) and is_solid_push(bar1, 'SHORT')
+                    bar2_valid = is_solid_push(bar2, 'SHORT') and not is_doji(bar2)
+                    bar3_valid = not is_bad_reverse(bar3, 'SHORT') and is_solid_push(bar3, 'SHORT')
+                    
+                    if bar1_valid and bar2_valid and bar3_valid:
+                        is_valid_entry = True
 
             if is_valid_entry:
                 # Use live open to measure chase, but the decision is purely based on closed bar
