@@ -14,45 +14,47 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'chase_open', 'chase_reference_atr')
 
 
+DOJI_BODY_RATIO = 0.10
+
+
+def is_entry_doji(row, quote=None):
+    """Strictly below 10% doji boundary; no standalone long-wick veto."""
+    try:
+        opening = float(row.open)
+        closing = float(row.close if quote is None else quote)
+        high, low = float(row.high), float(row.low)
+        if not all(math.isfinite(v) and v > 0 for v in (opening, closing, high, low)):
+            return True
+        high, low = max(high, closing), min(low, closing)
+        body, span = abs(closing-opening), high-low
+        if span <= 0:
+            return True
+        threshold = DOJI_BODY_RATIO*span
+        return body < threshold and not math.isclose(body, threshold, rel_tol=1e-12)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return True
+
+
+def entry_doji_problem(closed, live, quote):
+    if is_entry_doji(live, quote):
+        return 'BLOCKED_LIVE_DOJI'
+    if any(is_entry_doji(row) for _, row in closed.tail(3).iterrows()):
+        return 'BLOCKED_CLOSED_DOJI'
+    return None
+
 
 def is_solid_push(row, side):
+    """Require a finite directional body, independent of wick length."""
     try:
-        opening = float(row.open)
-        closing = float(row.close)
-        high = max(float(row.high), closing)
-        low = min(float(row.low), closing)
-        span = high - low if high - low > 0 else 1e-9
-        body = closing - opening
-        body_ratio = abs(body) / span
-        
+        opening, closing = float(row.open), float(row.close)
+        if not all(math.isfinite(v) and v > 0 for v in (opening, closing)):
+            return False
         if side == 'LONG':
-            return body > 0 and body_ratio >= 0.35
-        else:
-            return body < 0 and body_ratio >= 0.35
-    except:
-        return False
-
-def is_bad_reverse(row, side):
-    try:
-        opening = float(row.open)
-        closing = float(row.close)
-        if side == 'LONG':
-            return closing < opening
-        else:
             return closing > opening
-    except:
+        if side == 'SHORT':
+            return closing < opening
         return False
-        
-def is_doji(row):
-    try:
-        opening = float(row.open)
-        closing = float(row.close)
-        high = max(float(row.high), closing)
-        low = min(float(row.low), closing)
-        span = high - low if high - low > 0 else 1e-9
-        body = abs(closing - opening)
-        return (body / span) < 0.25
-    except:
+    except (AttributeError, TypeError, ValueError, OverflowError):
         return False
 
 
@@ -99,6 +101,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         live = frame.iloc[-1]
         latest = closed.iloc[-1]
+        doji_problem = entry_doji_problem(closed, live, quote)
+        if doji_problem:
+            return reject(doji_problem)
         # Do not reopen in the candle of a successful close, even after restart.
         exit_bar = None
         for trade in getattr(account, 'trades', []):
@@ -121,65 +126,39 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         for side, signal in (('LONG', LONG_ENTRY_CODE), ('SHORT', SHORT_ENTRY_CODE)):
             if code is not None and signal != code:
                 continue
-            # --- 使用者新增：趨勢延續二次進場（回踩 MA5/MA15 獲得支撐） ---
-            ma5 = float(live.get('ma5', live.get('ma3', 0)))
-            ma15 = float(live.get('ma15', 0))
-            kc_middle = float(live.kc_middle)
-            prev_kc_middle = float(latest.kc_middle)
-            try:
-                prev2_kc_middle = float(closed.iloc[-2].kc_middle)
-            except (IndexError, KeyError, ValueError):
-                prev2_kc_middle = prev_kc_middle
-            
-            is_valid_entry = False
+            # One symmetric three-closed-body rule; no unused MA prerequisites.
+            sign = 1 if side == 'LONG' else -1
+            edge = 'kc_upper' if side == 'LONG' else 'kc_lower'
+            bars = closed.iloc[-3:]
+            first = bars.iloc[0]
+            is_valid_entry = (
+                sign*(float(first.close)-float(first[edge])) > 0
+                and all(is_solid_push(row, side) for _, row in bars.iterrows())
+            )
             phase = 'INITIAL_BREAKOUT'
-            
-            if len(closed) >= 3:
-                bar1 = closed.iloc[-3]
-                bar2 = closed.iloc[-2]
-                bar3 = closed.iloc[-1]
-                
-                if side == 'LONG':
-                    bar1_valid = float(bar1.close) > float(bar1.kc_upper) and is_solid_push(bar1, 'LONG')
-                    bar2_valid = is_solid_push(bar2, 'LONG') and not is_doji(bar2)
-                    bar3_valid = not is_bad_reverse(bar3, 'LONG') and is_solid_push(bar3, 'LONG')
-                    
-                    if bar1_valid and bar2_valid and bar3_valid:
-                        is_valid_entry = True
-                else:
-                    bar1_valid = float(bar1.close) < float(bar1.kc_lower) and is_solid_push(bar1, 'SHORT')
-                    bar2_valid = is_solid_push(bar2, 'SHORT') and not is_doji(bar2)
-                    bar3_valid = not is_bad_reverse(bar3, 'SHORT') and is_solid_push(bar3, 'SHORT')
-                    
-                    if bar1_valid and bar2_valid and bar3_valid:
-                        is_valid_entry = True
 
             if is_valid_entry:
                 # Use live open to measure chase, but the decision is purely based on closed bar
                 atr = float(latest.atr)
-                sign = 1 if side == 'LONG' else -1
                 chase = sign*(quote - float(live.open))
                 limit = MAX_THIRD_OPEN_CHASE_ATR * atr
-                
+
                 if chase > limit and not math.isclose(chase, limit, rel_tol=1e-12):
-                    reject('BLOCKED_OPEN_CHASE')
-                    continue
-                    
-                if phase == 'PULLBACK_BOUNCE_CONTINUATION' and exit_bar is not None:
-                    phase = 'POST_EXIT_CONTINUATION'
-                    
+                    return reject('BLOCKED_OPEN_CHASE')
+
+
                 evidence = dict(third_bar_id=float(live.timestamp), third_open=float(live.open),
                                 third_reference_atr=atr, chase_bar_id=float(live.timestamp),
                                 chase_open=float(live.open), chase_reference_atr=atr,
                                 max_chase_atr=MAX_THIRD_OPEN_CHASE_ATR, chase_atr=chase/atr if atr else 0.0)
-                
+
                 if diagnostics is not None:
                     diagnostics['reason'] = phase
-                    
+
                 return dict(action='ENTER', side=side, type=signal, reason=signal,
                             price=quote, entry_atr=atr, confirmation_bar_id=float(latest.timestamp),
                             breakout_bar_id=float(latest.timestamp), pair_confirmation_bar_id=float(latest.timestamp),
-                            close_price=latest_close, intrabar=False,
+                            close_price=float(latest.close), intrabar=False,
                             entry_phase=phase, exit_bar_id=exit_bar, **evidence)
         return reject('WAIT_CLOSED_BREAKOUT_OR_CONTINUATION')
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

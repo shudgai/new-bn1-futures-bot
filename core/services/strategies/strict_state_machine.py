@@ -46,15 +46,17 @@ class StrictStateMachineStrategy:
         is_red_candle = close_price < open_price
         candle_body = abs(close_price - open_price)
 
-        def is_doji(bar, atr_val: float) -> bool:
+        def has_insufficient_body(bar, atr_val: float) -> bool:
             body = abs(float(bar.close) - float(bar.open))
-            full_range = float(bar.high) - float(bar.low)
-            if full_range == 0:
-                return True
-            # 實體佔全棒長度小於 25%，或實體小於 0.3 * ATR
-            return (body / full_range < 0.25) or (body < 0.30 * atr_val)
+            # Retain the existing absolute body threshold, not a wick ratio.
+            return body == 0 or (body < 0.30 * atr_val)
 
         if state == PositionState.IDLE:
+            from core.services.candle_data import closed_entry_candles
+            from core.services.entry_contract import entry_doji_problem
+            doji_problem = entry_doji_problem(closed_entry_candles(frame), curr_bar, live_price)
+            if doji_problem:
+                return {"action": "WAIT", "reason": doji_problem}
             # 順勢延續開多（Re-entry）
             if ck_direction == "UP" and close_price > kc_upper:
                 # 條件 1：均線強勢貼軌（Close > MA5 且 MA5 > KC_Upper），當根收實體陽棒
@@ -62,7 +64,7 @@ class StrictStateMachineStrategy:
                 # 條件 2：突破前一根高點（突破新高推進行情）
                 break_prev_high = (close_price > float(prev_bar.high)) and is_green_candle
                 # 排除十字星：當根非十字星（動能充足）
-                if (trend_strong_long or break_prev_high) and not is_doji(curr_bar, atr):
+                if (trend_strong_long or break_prev_high) and not has_insufficient_body(curr_bar, atr):
                     return {"action": "ENTER_LONG", "reason": "STRONG_TREND_RE_ENTRY"}
 
             # 順勢延續開空（Re-entry）
@@ -71,7 +73,7 @@ class StrictStateMachineStrategy:
                 trend_strong_short = (close_price < ma5) and (ma5 < kc_lower) and is_red_candle
                 # 條件 2：突破前一根低點
                 break_prev_low = (close_price < float(prev_bar.low)) and is_red_candle
-                if (trend_strong_short or break_prev_low) and not is_doji(curr_bar, atr):
+                if (trend_strong_short or break_prev_low) and not has_insufficient_body(curr_bar, atr):
                     return {"action": "ENTER_SHORT", "reason": "STRONG_TREND_RE_ENTRY"}
 
             from core.services.entry_contract import evaluate_entry_contract

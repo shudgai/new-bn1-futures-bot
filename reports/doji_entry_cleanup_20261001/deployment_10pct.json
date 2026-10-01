@@ -1,0 +1,8 @@
+{
+  "http_status": 200,
+  "paper_trading": true,
+  "is_running": true,
+  "tests_passed": 86,
+  "doji_entry_rule": "body/range < 0.10",
+  "service": "MainPID=949308\nExecMainStartTimestamp=Thu 2026-10-01 22:25:42 UTC\nActiveState=active\n"
+}
