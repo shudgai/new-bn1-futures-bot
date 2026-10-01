@@ -112,10 +112,19 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
                         
+        current_sl = float(position.get('sl', 0.0))
         stop = entry-sign*1.5*scale if scale>0 else 0.
         initial = position.get('initial_sl')
         if positive(initial):
             stop = ((max if sign==1 else min)(stop,float(initial)) if positive(stop) else float(initial))
+            
+        # 關鍵修復：尊重外部已經推升的 SL（如移保本）
+        if positive(current_sl):
+            if sign == 1:
+                stop = max(stop, current_sl)
+            else:
+                stop = min(stop, current_sl) if stop > 0 else current_sl
+                
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = None, None
@@ -151,12 +160,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if c_middle > 0 and c_ma15 > 0 and scale > 0:
                 prev_range = prev_high - prev_low
                 is_doji = (abs(prev_close - prev_open) / prev_range < 0.25) if prev_range > 0 else False
+                c_ma5 = float(snapshot.get('ma5', 0.))
+                margin = float(position.get('margin') or position.get('initialMargin') or 0.0)
+                if margin <= 0 and float(position.get('leverage', 0)) > 0:
+                    margin = (entry * qty) / float(position.get('leverage'))
+                roe = net / margin if margin > 0 else 0.
                 
                 if sign == 1:
                     cond_a = (live_open - price >= 1.2 * scale) and (price < prev_low)
                     cond_b = (price <= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((state['peak_price'] - price) >= 0.7 * scale)
                     cond_d = is_doji and (prev_high >= c_upper) and (price < live_open) and (price < prev_low)
+                    cond_e = (roe >= 0.15) and (price < live_open) and (c_ma5 > 0) and (price <= c_ma5)
                     
                     if cond_a:
                         reason, trigger = PEAK_REASON, 'FLASH_CRASH_1.2ATR'
@@ -166,11 +181,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_DOWN'
                     elif cond_c:
                         reason, trigger = PEAK_REASON, 'FLASH_TRAILING_0.7ATR'
+                    elif cond_e:
+                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_MA5_PROTECT'
                 else:
                     cond_a = (price - live_open >= 1.2 * scale) and (price > prev_high)
                     cond_b = (price >= c_middle)
                     cond_c = (peak_gain >= 2.0 * scale) and ((price - state['peak_price']) >= 0.7 * scale)
                     cond_d = is_doji and (prev_low <= c_lower) and (price > live_open) and (price > prev_high)
+                    cond_e = (roe >= 0.15) and (price > live_open) and (c_ma5 > 0) and (price >= c_ma5)
                     
                     if cond_a:
                         reason, trigger = PEAK_REASON, 'FLASH_SPIKE_1.2ATR'
@@ -180,6 +198,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = PEAK_REASON, 'FLASH_DOJI_REVERSAL_UP'
                     elif cond_c:
                         reason, trigger = PEAK_REASON, 'FLASH_TRAILING_0.7ATR'
+                    elif cond_e:
+                        reason, trigger = PEAK_REASON, 'FLASH_PROFIT_MA5_PROTECT'
 
         if not reason and not is_same_bar:
             # 波段尾部確認平倉機制
