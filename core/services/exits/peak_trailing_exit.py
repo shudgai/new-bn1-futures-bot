@@ -244,17 +244,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = PEAK_REASON, 'CLOSED_BELOW_KC_MIDDLE'
                     elif ma5_turned_down:
                         reason, trigger = PEAK_REASON, 'MA5_TURNED_DOWN'
-                    elif c_close < c_ma5:
-                        if prev_exit_phase == 'STATE_ALERT' or (prev_close < prev_ma5):
-                            reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_CONFIRMED'
+                    elif c_close < c_upper and c_close < c_ma5:
+                        reason, trigger = PEAK_REASON, 'CLOSED_BELOW_MA5_AND_UPPER'
                             
-                    # 狀態轉換 (若未觸發平倉)
+                    # 狀態更新
                     if not reason:
-                        if c_close < c_upper:
-                            exit_phase = 'STATE_ALERT'
-                        else:
-                            exit_phase = 'STATE_HOLD'
-                            
+                        exit_phase = 'STATE_TRACKING'
+                        
                 else:
                     # 狀態 ③：🔴 平空 (Exit Signal - 嚴格收盤確認)
                     ma5_turned_up = c_ma5 > prev_ma5
@@ -263,17 +259,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_KC_MIDDLE'
                     elif ma5_turned_up:
                         reason, trigger = PEAK_REASON, 'MA5_TURNED_UP'
-                    elif c_close > c_ma5:
-                        if prev_exit_phase == 'STATE_ALERT' or (prev_close > prev_ma5):
-                            reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_CONFIRMED'
+                    elif c_close > c_lower and c_close > c_ma5:
+                        reason, trigger = PEAK_REASON, 'CLOSED_ABOVE_MA5_AND_LOWER'
                             
-                    # 狀態轉換 (若未觸發平倉)
+                    # 狀態更新
                     if not reason:
-                        if c_close > c_lower:
-                            exit_phase = 'STATE_ALERT'
-                        else:
-                            exit_phase = 'STATE_HOLD'
-                            
+                        exit_phase = 'STATE_TRACKING'
+                        
                 state['exit_phase'] = exit_phase
         if reason:
             state.update(pending=reason,trigger=trigger)
