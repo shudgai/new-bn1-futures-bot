@@ -2,6 +2,7 @@
 import math
 from core.services.exits.peak_trailing_exit import POLICY, STATE_KEYS, RETIRED_KEYS
 STOP_REASON = "EXIT_INITIAL_ATR_HARD_STOP"
+MIDDLE_REASON = "EXIT_MIDDLE"
 
 
 def valid(value):

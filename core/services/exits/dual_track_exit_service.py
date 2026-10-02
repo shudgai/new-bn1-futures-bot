@@ -13,6 +13,22 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     return dict(should_exit=False, action='HOLD', reason='WAIT_LIVE_QUOTE')
 
 
+def observe_breakeven(position: dict, price: float) -> dict:
+    """Legacy helper to detect breakeven.
+
+    The current implementation delegates to ``DualTrackExitStrategy`` which
+    encapsulates the peak‑trailing logic.  If the strategy reports a result type
+    of ``"BREAKEVEN"`` we consider the breakeven condition met.
+    """
+    # Use the existing strategy to evaluate the exit type.
+    strategy = DualTrackExitStrategy()
+    result_type = strategy.evaluate_exit(position, current_price=price)
+    if result_type == "BREAKEVEN":
+        return {"should_exit": True, "action": "BREAKEVEN", "reason": "BREAKEVEN_REACHED"}
+    # No breakeven reached – keep holding.
+    return {"should_exit": False, "action": "HOLD", "reason": "NO_BREAKEVEN"}
+
+
 
 class DualTrackExitStrategy(IExitStrategy):
     def initialize_position(self, position, entry_price, atr):
