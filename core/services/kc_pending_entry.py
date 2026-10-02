@@ -13,6 +13,7 @@ KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_d
                             'pending_max_wait_bars')
 MAX_WAIT_BARS = 2
 MAX_DISTANCE_ATR = 0.5
+STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
 
 # Bounded LRU cache for invalidated signals.
@@ -118,24 +119,34 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = ''):
             elif body > 0:
                 if sign * (float(row.ma5) - float(prior.ma5)) <= 0:
                     reason = 'KC_PENDING_CANCELLED_MA_SLOPE'
-                elif above_limit(distance, MAX_DISTANCE_ATR):
-                    reason = 'KC_PENDING_CANCELLED_CHASE'
                 else:
-                    signal = 'KC_3BAR_CONFIRM_' + side
-                    # Consumed structurally once confirmed: a later bar cannot revive it.
-                    pending = None
-                    result = dict(action='WAIT', reason='KC_PENDING_CONFIRMATION_PASSED', **evidence)
-                    if index == last_index and (code is None or code == signal):
-                        return dict(action='ENTER', side=side, type=signal, reason=signal,
-                                    price=quote, entry_atr=float(row.atr),
-                                    confirmation_bar_id=float(row.timestamp),
-                                    close_price=float(row.close), intrabar=False,
-                                    entry_phase='KC_3BAR_CONFIRM',
-                                    kc_confirmation_edge=edge, kc_distance_atr=distance,
-                                    kc_max_distance_atr=MAX_DISTANCE_ATR,
-                                    confirmation_ma5=float(row.ma5), previous_ma5=float(prior.ma5),
-                                    confirmation_ma15=float(row.ma15), **evidence)
-                    continue
+                    is_strong_override = (waited == 1)
+                    effective_limit = STRONG_BREAKOUT_MAX_ATR if is_strong_override else MAX_DISTANCE_ATR
+
+                    if above_limit(distance, effective_limit):
+                        reason = 'KC_PENDING_CANCELLED_CHASE'
+                    else:
+                        entry_mode = 'STRONG_BREAKOUT_CONFIRM' if above_limit(distance, MAX_DISTANCE_ATR) else 'NORMAL_CONFIRM'
+                        evidence.update({
+                            'entry_mode': entry_mode,
+                            'normal_limit': MAX_DISTANCE_ATR,
+                            'strong_limit': STRONG_BREAKOUT_MAX_ATR
+                        })
+                        signal = 'KC_3BAR_CONFIRM_' + side
+                        # Consumed structurally once confirmed: a later bar cannot revive it.
+                        pending = None
+                        result = dict(action='WAIT', reason='KC_PENDING_CONFIRMATION_PASSED', **evidence)
+                        if index == last_index and (code is None or code == signal):
+                            return dict(action='ENTER', side=side, type=signal, reason=signal,
+                                        price=quote, entry_atr=float(row.atr),
+                                        confirmation_bar_id=float(row.timestamp),
+                                        close_price=float(row.close), intrabar=False,
+                                        entry_phase='KC_3BAR_CONFIRM',
+                                        kc_confirmation_edge=edge, kc_distance_atr=distance,
+                                        kc_max_distance_atr=effective_limit,
+                                        confirmation_ma5=float(row.ma5), previous_ma5=float(prior.ma5),
+                                        confirmation_ma15=float(row.ma15), **evidence)
+                        continue
             elif waited == 1:
                 # Bar 3 is opposite direction: TERMINAL invalidation.
                 # Composite key prevents cross-symbol/side collision.
