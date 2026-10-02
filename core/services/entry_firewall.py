@@ -30,6 +30,28 @@ async def validate_account_entry(account, symbol, side, context):
     code = context.get('entry_signal_code')
     if code not in ENTRY_CODES:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
+        
+    # V5.0 Immutability: If a validated snapshot exists from the engine, trust it!
+    # Do not re-fetch from the REST API to avoid modifying the historical Bar 3.
+    snapshot = context.get('entry_snapshot')
+    if snapshot:
+        # Check snapshot identity
+        if snapshot.get('symbol') != symbol:
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong symbol')
+        if snapshot.get('side') != side:
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong side')
+        if snapshot.get('signal_code') != code:
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong signal_code')
+        if snapshot.get('signal_id') != context.get('signal_id'):
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong signal_id')
+        if snapshot.get('candidate_bar_id') != context.get('candidate_bar_id'):
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong candidate_bar_id')
+        if snapshot.get('closed_bar') != context.get('channel_confirmation_bar_id'):
+            raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong closed_bar_id')
+            
+        # Ensure execution-level safety without overriding the color/shape.
+        return snapshot
+        
     provider = getattr(account, 'entry_frame_provider', None)
     if not callable(provider):
         raise ValueError('[FORBIDDEN_ENTRY] 缺少可重驗的行情來源')
@@ -44,7 +66,7 @@ async def validate_account_entry(account, symbol, side, context):
     decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
     if decision is None or decision['side'] != side:
         raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
-    expected_id = (context.get('entry_snapshot') or {}).get('pending_signal_id')
+    expected_id = snapshot.get('pending_signal_id') if snapshot else None
     if expected_id is not None and expected_id != decision.get('pending_signal_id'):
         raise ValueError('[FORBIDDEN_ENTRY] 原始突破訊號已改變')
     stamp = float(decision['confirmation_bar_id'])
@@ -54,13 +76,13 @@ async def validate_account_entry(account, symbol, side, context):
     if context.get('channel_confirmation_bar_id') != stamp:
         raise ValueError('[FORBIDDEN_ENTRY] 下單確認 K 已改變')
     from core.services.candle_data import entry_frame_evidence
-    snapshot = context.setdefault('entry_snapshot', {})
-    snapshot.update(signal_code=decision['type'], closed_bar=stamp,
-                    closed_price=decision['close_price'],
-                    entry_phase=decision['entry_phase'],
-                    breakout_bar_id=decision['breakout_bar_id'],
-                    pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
-                    finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
-                    evidence=entry_frame_evidence(frame))
-    snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
+    if snapshot:
+        snapshot.update(signal_code=decision['type'], closed_bar=stamp,
+                        closed_price=decision['close_price'],
+                        entry_phase=decision['entry_phase'],
+                        breakout_bar_id=decision['breakout_bar_id'],
+                        pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
+                        finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
+                        evidence=entry_frame_evidence(frame))
+        snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
     return decision

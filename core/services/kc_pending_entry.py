@@ -4,6 +4,7 @@ Replay is read-only: repeated diagnostics never age or consume a pending signal.
 The original breakout timestamp survives pullbacks and identifies successful fills.
 """
 import math
+from collections import OrderedDict
 
 KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT'))
 KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
@@ -14,13 +15,59 @@ MAX_WAIT_BARS = 2
 MAX_DISTANCE_ATR = 0.5
 MAX_PULLBACK_BODY_ATR = 0.5
 
+# Bounded LRU cache for invalidated signals.
+# Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
+# Value: True (sentinel; only key matters).
+# Size: fixed upper bound. Oldest entry evicted first (FIFO via OrderedDict).
+MAX_INVALIDATED_SIGNALS = 4096
+
+
+class _BoundedSet:
+    """FIFO-evicting bounded set backed by an OrderedDict."""
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._data: OrderedDict = OrderedDict()
+
+    def add(self, key) -> None:
+        if key in self._data:
+            return  # already present, no duplicate
+        self._data[key] = True
+        while len(self._data) > self._maxsize:
+            self._data.popitem(last=False)  # evict oldest
+
+    def __contains__(self, key) -> bool:
+        return key in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+
+_INVALIDATED_SIGNALS: _BoundedSet = _BoundedSet(MAX_INVALIDATED_SIGNALS)
+
+
+def _make_signal_identity(symbol: str, side: str, signal_id: str, candidate_bar_id) -> tuple:
+    """Composite identity tuple. Globally unique across symbol/side/time."""
+    return (symbol, side, signal_id, int(candidate_bar_id))
+
 
 def above_limit(value, limit):
     return value > limit and not math.isclose(value, limit, rel_tol=1e-12)
 
 
-def evaluate_kc_pending_entry(closed, quote, code=None):
-    """Return ENTER only for the latest closed confirmation, otherwise a WAIT state."""
+def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = ''):
+    """Return ENTER only for the latest closed confirmation, otherwise a WAIT state.
+
+    Args:
+        closed: DataFrame of closed candles with KC / MA indicators.
+        quote:  Live price used only when returning ENTER on the last bar.
+        code:   If given, restrict to a specific signal code.
+        symbol: Symbol string (e.g. 'BTC/USDT') used to form the composite
+                invalidation identity so that cross-symbol collisions are impossible.
+    """
     result = dict(action='WAIT', reason='WAIT_NEW_KC_BREAKOUT')
     seed = pending = previous = None
     last_index = len(closed) - 1
@@ -46,12 +93,21 @@ def evaluate_kc_pending_entry(closed, quote, code=None):
             body = sign * (float(row.close) - float(row.open))
             distance = sign * (float(row.close) - edge) / float(row.atr)
             waited = index - second_index
-            identity = f'{side}:{int(first.timestamp)}:{int(second.timestamp)}'
-            evidence = dict(pending_signal_id=identity,
+            signal_id_str = f'{side}:{int(first.timestamp)}:{int(second.timestamp)}'
+            candidate_bar = int(row.timestamp)
+            composite_key = _make_signal_identity(symbol, side, signal_id_str, candidate_bar)
+            evidence = dict(pending_signal_id=signal_id_str,
                             breakout_bar_id=float(first.timestamp),
                             pair_confirmation_bar_id=float(second.timestamp),
                             pending_second_bar_id=float(second.timestamp),
                             pending_wait_bars=waited, pending_max_wait_bars=MAX_WAIT_BARS)
+
+            # Terminal state: once this composite identity is invalidated, never revive.
+            if composite_key in _INVALIDATED_SIGNALS:
+                pending = None
+                result = dict(action='WAIT', reason='KC_PENDING_INVALIDATED')
+                continue
+
             reason = None
             if waited > MAX_WAIT_BARS:
                 reason = 'KC_PENDING_EXPIRED'
@@ -80,6 +136,11 @@ def evaluate_kc_pending_entry(closed, quote, code=None):
                                     confirmation_ma5=float(row.ma5), previous_ma5=float(prior.ma5),
                                     confirmation_ma15=float(row.ma15), **evidence)
                     continue
+            elif waited == 1:
+                # Bar 3 is opposite direction: TERMINAL invalidation.
+                # Composite key prevents cross-symbol/side collision.
+                reason = 'KC_PENDING_INVALIDATED'
+                _INVALIDATED_SIGNALS.add(composite_key)
             elif above_limit(abs(body) / float(row.atr), MAX_PULLBACK_BODY_ATR):
                 reason = 'KC_PENDING_CANCELLED_LARGE_PULLBACK'
             elif waited >= MAX_WAIT_BARS:

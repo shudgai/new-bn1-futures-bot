@@ -1843,11 +1843,17 @@ class TradingEngine:
         from core.services.candle_data import entry_frame_evidence
         context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=decision['type'],
                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
-                       wave_regime='TREND',entry_snapshot=dict(signal_code=decision['type'],
+                       wave_regime='TREND',
+                       signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
+                       candidate_bar_id=signal.get('candidate_bar_id'),
+                       entry_snapshot=dict(signal_code=decision['type'],
                        closed_bar=bar,closed_price=decision['close_price'],quote_price=price,
                        entry_phase=decision['entry_phase'],
                        breakout_bar_id=decision['breakout_bar_id'],
                        pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
+                       symbol=symbol, side=side,
+                       signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
+                       candidate_bar_id=signal.get('candidate_bar_id'),
                        evidence=entry_frame_evidence(snapshot['frame'])))
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
         submit_lock = getattr(self, '_account_entry_submit_lock', None)

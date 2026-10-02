@@ -143,11 +143,11 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 2U Fixed Ladder Profit Lock (4U locks 2U, 6U locks 4U, etc.)
         if state['peak_net_pnl'] >= 4.0:
             locked_net = math.floor((state['peak_net_pnl'] - 4.0) / 2.0) * 2.0 + 2.0
-            if trend_status == 'HOLD':
-                locked_net = 2.0 # Relax to floor if strong trend
+            if trend_status in ('HOLD', 'WARNING'):
+                locked_net = max(2.0, math.floor(locked_net / 2.0)) # Dynamic relaxed floor
             if net <= locked_net:
                 reason, trigger = PEAK_REASON, 'TRAILING_2U_LADDER'
-                if trend_status == 'HOLD':
+                if trend_status in ('HOLD', 'WARNING'):
                     soft_exit_blocked = True
                 else:
                     state.update(pending=reason, trigger=trigger)
@@ -234,7 +234,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
             if reason and reason != HARD_REASON and trigger != 'WATERFALL_DROP':
-                if trend_status == 'HOLD':
+                if trend_status in ('HOLD', 'WARNING'):
                     import logging
                     logger = logging.getLogger('TrendHold')
                     logger.info(f"TREND_HOLD={trend_status} direction={'LONG' if sign==1 else 'SHORT'} MA5={snapshot.get('ma5')} MA15={snapshot.get('ma15')} KC_MID={snapshot.get('kc_middle')} price={price} soft_exit_requested={trigger} soft_exit_blocked=true final_exit_reason=NONE")

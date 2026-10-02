@@ -815,7 +815,10 @@ class BinanceTestnetAccount:
             meta["max_unrealized_pnl"] = max_unrealized
             
             # 條件 1：高額利潤回吐 25% 即刻市價全平
-            if max_unrealized >= 15.0 or highest_pnl >= 0.20:
+            trend_hold = pos.get("trend_hold_status", "RELEASED")
+            is_shielded = trend_hold in ("HOLD", "WARNING")
+            
+            if (max_unrealized >= 15.0 or highest_pnl >= 0.20) and not is_shielded:
                 if curr_unrealized <= max_unrealized * 0.75:
                     self.log(
                         f"⚡ [極值回撤保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
@@ -826,7 +829,7 @@ class BinanceTestnetAccount:
                     continue
                     
             # 條件 2：低浮盈保本門檻
-            elif max_unrealized >= 5.0 or highest_pnl >= 0.03:
+            elif (max_unrealized >= 5.0 or highest_pnl >= 0.03) and not is_shielded:
                 fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
                 breakeven_p = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
                 hit_breakeven = (side == "LONG" and mark_p <= breakeven_p) or (side == "SHORT" and mark_p >= breakeven_p)
@@ -1191,7 +1194,7 @@ class BinanceTestnetAccount:
                         # 更有利方向收緊，避免同一輪建立後又立即取消替換。
                         continue
                 if meta.get("early_profit_guard_armed") and pnl_pct <= early_guard_exit:
-                    trend_hold = pos.get('trend_hold_status') == 'HOLD'
+                    trend_hold = pos.get('trend_hold_status') in ('HOLD', 'WARNING')
                     if _strategy_exit_ok and not trend_hold:
                         await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
                         continue

@@ -133,7 +133,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         execution_bar = float(latest.timestamp)+60000
         if exit_bar is not None and execution_bar <= exit_bar:
             return reject('WAIT_POST_EXIT_NEXT_BAR')
-        decision = evaluate_kc_pending_entry(closed, quote, code)
+        decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol)
         if decision['action'] != 'ENTER':
             if diagnostics is not None:
                 diagnostics.clear()
