@@ -1,7 +1,7 @@
-"""Bounded, closed-candle KC breakout replay shared by scan and order checks.
+"""Third-candle live KC breakout confirmation shared by scan and order checks.
 
-Replay is read-only: repeated diagnostics never age or consume a pending signal.
-The original breakout timestamp survives pullbacks and identifies successful fills.
+Evaluation is read-only. The original breakout pair identifies successful fills.
+Only the immediately following forming candle can authorize entry.
 """
 import math
 from collections import OrderedDict
@@ -10,8 +10,9 @@ KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT'))
 KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
                             'confirmation_ma5', 'previous_ma5', 'confirmation_ma15',
                             'pending_signal_id', 'pending_second_bar_id', 'pending_wait_bars',
-                            'pending_max_wait_bars')
-MAX_WAIT_BARS = 2
+                            'pending_max_wait_bars', 'third_body_ratio', 'third_weak_body_max_ratio')
+MAX_WAIT_BARS = 1
+WEAK_BODY_MAX_RATIO = 0.25
 MAX_DISTANCE_ATR = 0.5
 STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
@@ -59,134 +60,74 @@ def above_limit(value, limit):
     return value > limit and not math.isclose(value, limit, rel_tol=1e-12)
 
 
-def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = ''):
-    """Return ENTER only for the latest closed confirmation, otherwise a WAIT state.
+def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, live=None):
+    """Confirm only the forming third candle using its open and the latest quote.
 
-    Args:
-        closed: DataFrame of closed candles with KC / MA indicators.
-        quote:  Live price used only when returning ENTER on the last bar.
-        code:   If given, restrict to a specific signal code.
-        symbol: Symbol string (e.g. 'BTC/USDT') used to form the composite
-                invalidation identity so that cross-symbol collisions are impossible.
+    The two completed candles establish structure. Counter-color bodies require
+    a body/range ratio at most 25%; observations never poison later live checks.
+    No fourth-bar recovery or retrospective closed-third entry is permitted.
     """
-    result = dict(action='WAIT', reason='WAIT_NEW_KC_BREAKOUT')
-    seed = pending = previous = None
-    last_index = len(closed) - 1
-    for index, row in enumerate(closed.itertuples(index=False)):
-        try:
-            numbers = [float(getattr(row, key)) for key in
-                       ('timestamp', 'open', 'high', 'low', 'close', 'atr',
-                        'kc_upper', 'kc_middle', 'kc_lower', 'ma5', 'ma15')]
-            if not all(math.isfinite(v) and v > 0 for v in numbers):
-                raise ValueError('invalid closed indicators')
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            seed = pending = previous = None
-            result = dict(action='WAIT', reason='WAIT_VALID_KC_PENDING_DATA')
-            continue
-        if previous is not None and float(row.timestamp) - float(previous.timestamp) != 60000:
-            seed = pending = None
-        prior = previous
-        previous = row
-        if pending is not None:
-            first, second, side, second_index = pending
-            sign = 1 if side == 'LONG' else -1
-            edge = float(row.kc_upper if side == 'LONG' else row.kc_lower)
-            body = sign * (float(row.close) - float(row.open))
-            distance = sign * (float(row.close) - edge) / float(row.atr)
-            waited = index - second_index
-            signal_id_str = f'{side}:{int(first.timestamp)}:{int(second.timestamp)}'
-            candidate_bar = int(row.timestamp)
-            composite_key = _make_signal_identity(symbol, side, signal_id_str, candidate_bar)
-            evidence = dict(pending_signal_id=signal_id_str,
-                            breakout_bar_id=float(first.timestamp),
-                            pair_confirmation_bar_id=float(second.timestamp),
-                            pending_second_bar_id=float(second.timestamp),
-                            pending_wait_bars=waited, pending_max_wait_bars=MAX_WAIT_BARS)
-
-            # Terminal state: once this composite identity is invalidated, never revive.
-            if composite_key in _INVALIDATED_SIGNALS:
-                pending = None
-                result = dict(action='WAIT', reason='KC_PENDING_INVALIDATED')
+    wait = lambda reason: dict(action='WAIT', reason=reason)
+    if len(closed) < 2:
+        return wait('WAIT_NEW_KC_BREAKOUT')
+    first, second = closed.iloc[-2], closed.iloc[-1]
+    try:
+        for row in (first, second):
+            values = [float(row[key]) for key in
+                      ('timestamp', 'open', 'close', 'atr', 'kc_upper', 'kc_lower', 'ma5', 'ma15')]
+            if not all(math.isfinite(v) and v > 0 for v in values):
+                return wait('WAIT_VALID_KC_PENDING_DATA')
+        if float(second.timestamp) - float(first.timestamp) != 60000:
+            return wait('WAIT_VALID_KC_PENDING_DATA')
+        for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
+            if not (sign * (float(first.close) - float(first.open)) > 0
+                    and sign * (float(first.open) - float(first[key])) <= 0
+                    and sign * (float(first.close) - float(first[key])) > 0
+                    and sign * (float(second.close) - float(second.open)) > 0
+                    and sign * (float(second.close) - float(second[key])) > 0
+                    and sign * (float(second.ma5) - float(second.ma15)) > 0
+                    and sign * (float(second.ma5) - float(first.ma5)) > 0):
                 continue
-
-            reason = None
-            if waited > MAX_WAIT_BARS:
-                reason = 'KC_PENDING_EXPIRED'
-            elif distance <= 0:
-                reason = 'KC_PENDING_CANCELLED_INSIDE_RAIL'
-            elif sign * (float(row.ma5) - float(row.ma15)) <= 0:
-                reason = 'KC_PENDING_CANCELLED_MA_STRUCTURE'
-            elif body > 0:
-                if sign * (float(row.ma5) - float(prior.ma5)) <= 0:
-                    reason = 'KC_PENDING_CANCELLED_MA_SLOPE'
-                else:
-                    is_strong_override = (waited == 1)
-                    effective_limit = STRONG_BREAKOUT_MAX_ATR if is_strong_override else MAX_DISTANCE_ATR
-
-                    if above_limit(distance, effective_limit):
-                        reason = 'KC_PENDING_CANCELLED_CHASE'
-                    else:
-                        entry_mode = 'STRONG_BREAKOUT_CONFIRM' if above_limit(distance, MAX_DISTANCE_ATR) else 'NORMAL_CONFIRM'
-                        evidence.update({
-                            'entry_mode': entry_mode,
-                            'normal_limit': MAX_DISTANCE_ATR,
-                            'strong_limit': STRONG_BREAKOUT_MAX_ATR
-                        })
-                        signal = 'KC_3BAR_CONFIRM_' + side
-                        # Consumed structurally once confirmed: a later bar cannot revive it.
-                        pending = None
-                        result = dict(action='WAIT', reason='KC_PENDING_CONFIRMATION_PASSED', **evidence)
-                        if index == last_index and (code is None or code == signal):
-                            return dict(action='ENTER', side=side, type=signal, reason=signal,
-                                        price=quote, entry_atr=float(row.atr),
-                                        confirmation_bar_id=float(row.timestamp),
-                                        close_price=float(row.close), intrabar=False,
-                                        entry_phase='KC_3BAR_CONFIRM',
-                                        kc_confirmation_edge=edge, kc_distance_atr=distance,
-                                        kc_max_distance_atr=effective_limit,
-                                        confirmation_ma5=float(row.ma5), previous_ma5=float(prior.ma5),
-                                        confirmation_ma15=float(row.ma15), **evidence)
-                        continue
-            elif waited == 1:
-                # Bar 3 is opposite direction: TERMINAL invalidation.
-                # Composite key prevents cross-symbol/side collision.
-                reason = 'KC_PENDING_INVALIDATED'
-                _INVALIDATED_SIGNALS.add(composite_key)
-            elif above_limit(abs(body) / float(row.atr), MAX_PULLBACK_BODY_ATR):
-                reason = 'KC_PENDING_CANCELLED_LARGE_PULLBACK'
-            elif waited >= MAX_WAIT_BARS:
-                reason = 'KC_PENDING_EXPIRED'
-            if reason:
-                pending = None
-                result = dict(action='WAIT', reason=reason, **evidence)
-            else:
-                result = dict(action='WAIT', reason=f'KC_BREAKOUT_{side}_PENDING', **evidence)
-            # No overlapping pair can reset the original timeout on this candle.
-            continue
-        if seed is not None:
-            first, side = seed
-            seed = None
-            sign = 1 if side == 'LONG' else -1
-            edge = float(row.kc_upper if side == 'LONG' else row.kc_lower)
-            if (sign * (float(row.close) - float(row.open)) > 0
-                    and sign * (float(row.close) - edge) > 0
-                    and sign * (float(row.ma5) - float(row.ma15)) > 0
-                    and sign * (float(row.ma5) - float(first.ma5)) > 0):
-                pending = (first, row, side, index)
-                result = dict(action='WAIT', reason=f'KC_BREAKOUT_{side}_PENDING',
-                              pending_signal_id=f'{side}:{int(first.timestamp)}:{int(row.timestamp)}',
-                              breakout_bar_id=float(first.timestamp),
-                              pair_confirmation_bar_id=float(row.timestamp),
-                              pending_second_bar_id=float(row.timestamp),
-                              pending_wait_bars=0, pending_max_wait_bars=MAX_WAIT_BARS)
-                continue
-            result = dict(action='WAIT', reason='WAIT_NEW_KC_BREAKOUT')
-        for side, sign, edge in (('LONG', 1, float(row.kc_upper)),
-                                 ('SHORT', -1, float(row.kc_lower))):
-            if (sign * (float(row.close) - float(row.open)) > 0
-                    and sign * (float(row.open) - edge) <= 0
-                    and sign * (float(row.close) - edge) > 0):
-                seed = (row, side)
-                result = dict(action='WAIT', reason=f'WAIT_KC_SECOND_{side}')
-                break
-    return result
+            signal = 'KC_3BAR_CONFIRM_' + side
+            if code is not None and code != signal:
+                return wait('WAIT_NEW_KC_BREAKOUT')
+            if live is None:
+                return wait('WAIT_LIVE_THIRD_BAR')
+            stamp, opening, edge, price = map(float, (live.timestamp, live.open, live[key], quote))
+            if (not all(math.isfinite(v) and v > 0 for v in (stamp, opening, edge, price))
+                    or stamp != float(second.timestamp) + 60000 or bool(live.is_closed)):
+                return wait('WAIT_VALID_LIVE_THIRD_BAR')
+            body = sign * (price - opening)
+            high, low = float(live.high), float(live.low)
+            if not all(math.isfinite(v) and v > 0 for v in (high, low)) or high < low:
+                return wait('WAIT_VALID_LIVE_THIRD_BAR')
+            span = max(high, price, opening) - min(low, price, opening)
+            ratio = abs(price - opening) / span if span > 0 else 0.
+            if body <= 0 and (span <= 0 or above_limit(ratio, WEAK_BODY_MAX_RATIO)):
+                return wait('WAIT_THIRD_SAME_COLOR' if body == 0 else 'BLOCKED_THIRD_OPPOSITE_BODY')
+            atr = float(second.atr)
+            distance = sign * (price - edge) / atr
+            if distance <= 0:
+                return wait('KC_PENDING_CANCELLED_INSIDE_RAIL')
+            if above_limit(distance, STRONG_BREAKOUT_MAX_ATR):
+                return wait('KC_PENDING_CANCELLED_CHASE')
+            return dict(action='ENTER', side=side, type=signal, reason=signal,
+                        price=price, entry_atr=atr, confirmation_bar_id=stamp,
+                        close_price=float(second.close), intrabar=True,
+                        entry_phase='KC_3BAR_LIVE_CONFIRM',
+                        breakout_bar_id=float(first.timestamp),
+                        pair_confirmation_bar_id=float(second.timestamp),
+                        pending_signal_id=f'{side}:{int(first.timestamp)}:{int(second.timestamp)}',
+                        pending_second_bar_id=float(second.timestamp),
+                        pending_wait_bars=1, pending_max_wait_bars=1,
+                        third_bar_id=stamp, third_open=opening, third_reference_atr=atr,
+                        third_body_ratio=ratio, third_weak_body_max_ratio=WEAK_BODY_MAX_RATIO,
+                        kc_confirmation_edge=edge, kc_distance_atr=distance,
+                        kc_max_distance_atr=STRONG_BREAKOUT_MAX_ATR,
+                        confirmation_ma5=float(second.ma5), previous_ma5=float(first.ma5),
+                        confirmation_ma15=float(second.ma15),
+                        entry_mode=('STRONG_BREAKOUT_CONFIRM' if above_limit(distance, MAX_DISTANCE_ATR)
+                                    else 'NORMAL_CONFIRM'))
+        return wait('WAIT_NEW_KC_BREAKOUT')
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return wait('WAIT_VALID_KC_PENDING_DATA')

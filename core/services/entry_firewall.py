@@ -31,8 +31,7 @@ async def validate_account_entry(account, symbol, side, context):
     if code not in ENTRY_CODES:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
         
-    # V5.0 Immutability: If a validated snapshot exists from the engine, trust it!
-    # Do not re-fetch from the REST API to avoid modifying the historical Bar 3.
+    # Retain identity checks, but a forming candle must be revalidated.
     snapshot = context.get('entry_snapshot')
     if snapshot:
         # Check snapshot identity
@@ -49,8 +48,7 @@ async def validate_account_entry(account, symbol, side, context):
         if snapshot.get('closed_bar') != context.get('channel_confirmation_bar_id'):
             raise ValueError('[FORBIDDEN_ENTRY] ENTRY_FIREWALL_REJECT: wrong closed_bar_id')
             
-        # Ensure execution-level safety without overriding the color/shape.
-        return snapshot
+        # Continue through fresh market validation; cached color is not permission.
         
     provider = getattr(account, 'entry_frame_provider', None)
     if not callable(provider):

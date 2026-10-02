@@ -175,7 +175,7 @@ def had_close(account, symbol):
                for t in getattr(account, 'trades', []))
 
 
-def evaluate_closed_entry(frame, side, *, after_close=False):
+def evaluate_closed_entry(frame, side, price=None, *, after_close=False):
     wait = lambda reason: (False, reason, dict(action='WAIT', side=side, reason=reason))
     
 
@@ -390,10 +390,38 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         return wait(f"PIN_BAR_DETECTED (實體佔比過小, ratio={body_ratio:.2f})")
 
     code = f'CLOSED_{rule}_{side}'
+    
+    # ─── INTRABAR ENTRY LOGIC (Bar3) ───
+    try:
+        live_bar = frame.iloc[-1]
+        if bool(live_bar.get('is_closed', False)):
+            return wait("WAIT_LIVE_BAR3_INCOMPLETE")
+            
+        bar3_open = float(live_bar.open)
+        bar3_ms = float(live_bar.timestamp)
+        bar2_ms = float(c.timestamp)
+        
+        if bar3_ms != bar2_ms + 60000:
+            return wait("WAIT_EXPECTED_BAR3_IDENTITY")
+            
+        live_price = float(price) if price is not None else float(live_bar.close)
+        
+        if side == 'LONG' and live_price <= bar3_open:
+            return wait(f"WAIT_LONG_INTRABAR_COLOR (price {live_price} <= open {bar3_open})")
+        if side == 'SHORT' and live_price >= bar3_open:
+            return wait(f"WAIT_SHORT_INTRABAR_COLOR (price {live_price} >= open {bar3_open})")
+            
+        pending_signal_id = f"{side}:{int(bar2_ms)}:{int(bar3_ms)}"
+        candidate_bar_id = float(bar3_ms)
+    except Exception as e:
+        return wait("WAIT_VALID_LIVE_BAR3")
+
     return True, code, dict(
         action='ENTER', side=side, reason=code, rule=rule,
         entry_type=rule, entry_atr=atr, is_breakout=True,
-        confirmation_bar_id=float(c.timestamp), close_price=float(c.close)
+        confirmation_bar_id=float(c.timestamp), close_price=float(c.close),
+        pending_signal_id=pending_signal_id, candidate_bar_id=candidate_bar_id,
+        intrabar=True
     )
 
 
@@ -419,7 +447,7 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
         except Exception:
             pass
             
-    return evaluate_closed_entry(df, side, after_close=kwargs.get('after_close', False))
+    return evaluate_closed_entry(df, side, price=live_price, after_close=kwargs.get('after_close', False))
 
 
 def check_ma_cross_entry(df, live_price=None):
@@ -477,4 +505,4 @@ class UnifiedEntryStrategy(IEntryStrategy):
         engine = kwargs.get('engine')
         after_close = (had_close(engine.account, kwargs.get('symbol', ''))
                        if engine is not None else kwargs.get('after_close', False))
-        return evaluate_closed_entry(frame, side, after_close=after_close)
+        return evaluate_closed_entry(frame, side, price=price, after_close=after_close)

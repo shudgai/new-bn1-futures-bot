@@ -33,7 +33,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if not hasattr(engine, '_channel_exit_frames'):
         engine._channel_exit_frames = {}
     engine._channel_exit_frames[symbol] = frame.copy()
-        
+
+    # ── Reversal shadow (read-only, 100% fail-open) ──────────────────────────
+    try:
+        from core.services.reversal_shadow_logger import record_reversal_shadow_candidates
+        record_reversal_shadow_candidates(engine, symbol, frame)
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────────────
+
     quote = float(exit_quote if exit_quote is not None else
                   (getattr(engine, 'tickers', {}).get(symbol) or frame.iloc[-1]['close']))
                   
