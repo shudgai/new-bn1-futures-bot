@@ -145,13 +145,25 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
 
         ladder_reason, ladder_trigger = None, None
-        # 2U Fixed Ladder Profit Lock (4U locks 2U, 6U locks 4U, etc.)
-        if state['peak_net_pnl'] >= 4.0:
-            locked_net = math.floor((state['peak_net_pnl'] - 4.0) / 2.0) * 2.0 + 2.0
-            if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
-                locked_net = max(2.0, math.floor(locked_net / 2.0)) # Dynamic relaxed floor
-            if net <= locked_net:
-                ladder_reason, ladder_trigger = PEAK_REASON, 'TRAILING_2U_LADDER'
+        # 2U Fixed Ladder Profit Lock is DISABLED per user request: "只有遇到真峰頂谷底才要平倉"
+        
+        # 暴漲逃頂機制 (Parabolic Reversal Exit): 無視 CK 是否衰退
+        parabolic_reason, parabolic_trigger = None, None
+        peak_gain_atr = gain / scale if scale > 0 else 0.
+        if peak_gain_atr >= 3.0:
+            # 1. 價格從最高點直接回踩 1.0 ATR (即時觸發)
+            drawdown_atr = (state['peak_price'] - price) / scale if sign == 1 else (price - state['peak_price']) / scale
+            if drawdown_atr >= 1.0:
+                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'
+            # 2. 已收線 MA3 (snapshot 中的 ma5) 明確反向拐頭
+            elif isinstance(snapshot, dict):
+                ma5 = snapshot.get('ma5')
+                last_ma5 = snapshot.get('last_ma5')
+                if ma5 and last_ma5:
+                    if sign == 1 and ma5 < last_ma5:
+                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
+                    elif sign == -1 and ma5 > last_ma5:
+                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
 
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
 
@@ -167,7 +179,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
-        reason, trigger = ladder_reason, ladder_trigger
+        reason, trigger = parabolic_reason or ladder_reason, parabolic_trigger or ladder_trigger
 
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
@@ -185,40 +197,29 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         and positive(opening) and positive(prior_atr)):
 
                     ma15 = snapshot.get('ma15')
-                    if state.get('crossed_kc_middle'):
-                        # Phase 2: MA15 Tracking Defense
-                        if ma15 is not None and positive(ma15):
-                            if sign == 1 and price < ma15 and price < opening:
-                                reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
-                                state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                             trigger_atr=float(prior_atr), trigger_price=price)
-                            elif sign == -1 and price > ma15 and price > opening:
-                                reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
-                                state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                             trigger_atr=float(prior_atr), trigger_price=price)
-
-                    # 2-Bar Doji Reversal Protection
-                    last_open = snapshot.get('last_open')
-                    last_high = snapshot.get('last_high')
-                    last_low = snapshot.get('last_low')
-                    last_close = snapshot.get('last_close')
-                    if all(v is not None for v in (last_open, last_high, last_low, last_close)):
-                        last_span = last_high - last_low
-                        last_body = abs(last_close - last_open)
-                        if last_span > 0 and (last_body / last_span) <= 0.15:
-                            ma5 = snapshot.get('ma5')
-                            if sign == 1 and last_close > entry:
-                                # Previous was high-profit doji
-                                if price < opening and (price < last_low or (ma5 and price < ma5)):
-                                    reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
-                                    state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                                 trigger_atr=float(prior_atr), trigger_price=price)
-                            elif sign == -1 and last_close < entry:
-                                # Previous was high-profit doji
-                                if price > opening and (price > last_high or (ma5 and price > ma5)):
-                                    reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
-                                    state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                                 trigger_atr=float(prior_atr), trigger_price=price)
+                    # MA15 Tracking Defense is DISABLED per user request
+                    
+                    # 2-Bar Doji Reversal Protection (Only active when high profit >= 2.0 ATR)
+                    if peak_gain_atr >= 2.0:
+                        last_open = snapshot.get('last_open')
+                        last_high = snapshot.get('last_high')
+                        last_low = snapshot.get('last_low')
+                        last_close = snapshot.get('last_close')
+                        if all(v is not None for v in (last_open, last_high, last_low, last_close)):
+                            last_span = last_high - last_low
+                            last_body = abs(last_close - last_open)
+                            if last_span > 0 and (last_body / last_span) <= 0.15:
+                                ma5 = snapshot.get('ma5')
+                                if sign == 1 and last_close > entry:
+                                    if price < opening and (price < last_low or (ma5 and price < ma5)):
+                                        reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
+                                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                                     trigger_atr=float(prior_atr), trigger_price=price)
+                                elif sign == -1 and last_close < entry:
+                                    if price > opening and (price > last_high or (ma5 and price > ma5)):
+                                        reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
+                                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                                     trigger_atr=float(prior_atr), trigger_price=price)
 
             # Catastrophic Profit Floor Evaluation
             floor_reason, floor_trigger = None, None
