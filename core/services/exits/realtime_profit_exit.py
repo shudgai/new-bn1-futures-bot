@@ -5,7 +5,7 @@ import time
 
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
-    STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity,
+    STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
@@ -61,6 +61,8 @@ def cached_tick_indicators(frame, price, stamp):
             closed_bar_ms=last_ms,
             atr=float(last.get('atr') or 0.),
             live_open=float(live.get('open') or 0.),
+            live_high=max(float(live.get('high') or 0.), float(price)),
+            live_low=min(float(live.get('low') or 0.), float(price)),
             last_open=float(last.get('open') or 0.),
             last_high=float(last.get('high') or 0.),
             last_low=float(last.get('low') or 0.)
@@ -131,7 +133,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         reason = decision['type']
         trigger = decision.get('trigger', '')
         
-        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR'):
+        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)
@@ -144,7 +146,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={trigger} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
-        await account.close_position(symbol,price,'Channel Swing ' + reason,is_manual=True)
+        await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
         return True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False

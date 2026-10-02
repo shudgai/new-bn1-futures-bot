@@ -6,6 +6,10 @@ import sys
 POLICY = 'abnormal_body_only_v2'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
+DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
+DOJI_RULE_VERSION = 2
+DOJI_BODY_RATIO = 0.25
+DOJI_ADVERSE_BODY_ATR = 0.5
 STATE_KEY = 'peak_trailing_state'
 PEAK_REASON = 'EXIT_REALTIME_PEAK_TRAILING'
 HARD_REASON = 'EXIT_INITIAL_ATR_HARD_STOP'
@@ -84,6 +88,11 @@ def migrate_peak_state(position, meta=None):
             initial = position.get('initial_sl') or meta.get('initial_sl')
             if positive(initial):
                 position.update(sl=float(initial), stop_loss=float(initial), atr_sl=float(initial))
+    # Old MA-touch doji tickets can retry without ever satisfying the body rule.
+    # Revoke only that obsolete authority; preserve peaks and other exit retries.
+    if state.get('trigger') == DOJI_TRIGGER and state.get('doji_rule_version') != DOJI_RULE_VERSION:
+        for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
+            state.pop(key, None)
     for source in (position, meta):
         for key in RETIRED_KEYS:
             source.pop(key, None)
@@ -94,6 +103,48 @@ def migrate_peak_state(position, meta=None):
 def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
     execution = price*(1-sign*slippage)
     return sign*(execution-entry)*qty - (entry+execution)*qty*fee
+
+
+def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
+    """A completed doji followed immediately by a substantial adverse live body."""
+    try:
+        if peak_gain_atr < 2.0:
+            return None
+        stamp = float(snapshot['quote_ms'])
+        bar = math.floor(stamp / 60000) * 60000
+        if (snapshot['live_bar_ms'] != bar or snapshot['closed_bar_ms'] != bar - 60000
+                or float(snapshot['closed_bar_ms']) < opened_ms):
+            return None
+        keys = ('last_open', 'last_high', 'last_low', 'last_close',
+                'live_open', 'live_high', 'live_low', 'atr')
+        values = [float(snapshot[key]) for key in keys]
+        if not all(positive(v) for v in values):
+            return None
+        last_open, last_high, last_low, last_close, opening, high, low, atr = values
+        if not (last_low <= min(last_open, last_close) <= max(last_open, last_close) <= last_high
+                and low <= opening <= high):
+            return None
+        span = last_high - last_low
+        if span <= 0 or sign * (last_close - entry) <= 0:
+            return None
+        ratio = abs(last_close - last_open) / span
+        if ratio > DOJI_BODY_RATIO and not math.isclose(ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
+            return None
+        body = sign * (opening - price)
+        threshold = DOJI_ADVERSE_BODY_ATR * atr
+        if body <= 0 or (body < threshold and not math.isclose(body, threshold, rel_tol=1e-12)):
+            return None
+        live_span = max(high, price) - min(low, price)
+        live_ratio = abs(price - opening) / live_span if live_span > 0 else 0.
+        # Another weak/doji candle is not confirmed reversal pressure.
+        if live_ratio <= DOJI_BODY_RATIO or math.isclose(live_ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
+            return None
+        return dict(trigger_bar_ms=bar, trigger_open=opening, trigger_atr=atr,
+                    trigger_price=price, doji_bar_ms=bar-60000,
+                    doji_body_ratio=ratio, reversal_body_ratio=live_ratio,
+                    reversal_body_atr=body/atr, doji_rule_version=DOJI_RULE_VERSION)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
@@ -199,27 +250,11 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     ma15 = snapshot.get('ma15')
                     # MA15 Tracking Defense is DISABLED per user request
                     
-                    # 2-Bar Doji Reversal Protection (Only active when high profit >= 2.0 ATR)
-                    if peak_gain_atr >= 2.0:
-                        last_open = snapshot.get('last_open')
-                        last_high = snapshot.get('last_high')
-                        last_low = snapshot.get('last_low')
-                        last_close = snapshot.get('last_close')
-                        if all(v is not None for v in (last_open, last_high, last_low, last_close)):
-                            last_span = last_high - last_low
-                            last_body = abs(last_close - last_open)
-                            if last_span > 0 and (last_body / last_span) <= 0.15:
-                                ma5 = snapshot.get('ma5')
-                                if sign == 1 and last_close > entry:
-                                    if price < opening and (price < last_low or (ma5 and price < ma5)):
-                                        reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
-                                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                                     trigger_atr=float(prior_atr), trigger_price=price)
-                                elif sign == -1 and last_close < entry:
-                                    if price > opening and (price > last_high or (ma5 and price > ma5)):
-                                        reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
-                                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                                     trigger_atr=float(prior_atr), trigger_price=price)
+                    evidence = doji_reversal_evidence(
+                        snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr)
+                    if evidence is not None:
+                        reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
+                        state.update(evidence)
 
             # Catastrophic Profit Floor Evaluation
             floor_reason, floor_trigger = None, None
@@ -285,7 +320,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             if reason:
                 soft_exit_blocked = False
-                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR'):
+                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER):
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
                         soft_exit_blocked = True
 
