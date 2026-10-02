@@ -1993,6 +1993,23 @@ class TradingEngine:
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
             
+        import time
+        if getattr(self, '_market_crash_entries_paused', lambda x: False)(time.time()):
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} BTC_FLASH_CRASH_COOLDOWN ACTIVE', 'WARNING')
+            return False
+
+        cooldown_until = getattr(self, '_market_crash_entry_cooldown_until', 0.0)
+        if cooldown_until > 0 and frame is not None and not frame.empty:
+            try:
+                closed = frame[frame['is_closed'] == True] if 'is_closed' in frame.columns else frame.iloc[:-1]
+                if not closed.empty:
+                    conf_ts = float(closed.iloc[-1].get('timestamp', 0))
+                    if conf_ts > 0 and conf_ts <= cooldown_until * 1000:
+                        self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} STALE_CRASH_SIGNAL_REJECTED (conf_ts={conf_ts} <= {cooldown_until*1000})', 'WARNING')
+                        return False
+            except Exception:
+                pass
+
         if frame is None or frame.empty:
             return False
             

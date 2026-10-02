@@ -1,79 +1,112 @@
-import time
+import pytest
 import pandas as pd
-from unittest.mock import MagicMock, patch
+import time
+import asyncio
+from unittest.mock import Mock, MagicMock
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import the strategy
-from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
-import core.services.strategies.unified_entry_strategy as ues
+from core.engine import TradingEngine
+
+class MockAccount:
+    def __init__(self):
+        self.positions = {}
+        self.position_meta = {}
+    def log(self, *args, **kwargs):
+        pass
 
 class MockEngine:
     def __init__(self):
+        self.account = MockAccount()
         self._market_crash_entry_cooldown_until = 0.0
-        self.account = MagicMock()
-        self.account.has_closed.return_value = False
-        
+
     def _market_crash_entries_paused(self, now=None):
-        return time.time() < self._market_crash_entry_cooldown_until
+        if now is None:
+            now = time.time()
+        return self._market_crash_entry_cooldown_until > now
 
-def build_test_frame(bar_timestamps):
-    records = []
-    for ts in bar_timestamps:
-        records.append({
-            'timestamp': ts,
-            'open': 100.0,
-            'close': 110.0,
-            'high': 111.0,
-            'low': 99.0,
-            'kc_upper': 105.0,
-            'kc_lower': 95.0,
-            'ma3': 106.0,
-            'ma15': 102.0,
-            'atr': 2.0,
-        })
-    return pd.DataFrame(records)
+    _execute_confirmed_channel_break = TradingEngine._execute_confirmed_channel_break
 
-@patch('core.services.strategies.unified_entry_strategy.evaluate_closed_entry', return_value=(True, "MOCK_SUCCESS", {}))
-def run_tests(mock_eval):
-    strategy = UnifiedEntryStrategy()
-    engine = MockEngine()
-    
-    now_ms = int(time.time() * 1000)
-    now_sec = now_ms / 1000.0
-    
-    # Case 1: no crash
-    engine._market_crash_entry_cooldown_until = 0.0
-    df_no_crash = build_test_frame([now_ms - 120000, now_ms - 60000, now_ms])
-    allowed, code, dec = strategy.evaluate_entry(df_no_crash, 115.0, 'LONG', engine=engine)
-    assert allowed, f"Case 1 failed: Expected True, got {code}"
-    
-    # Case 2: active crash, LONG blocked
-    engine._market_crash_entry_cooldown_until = now_sec + 180
-    allowed, code, dec = strategy.evaluate_entry(df_no_crash, 115.0, 'LONG', engine=engine)
-    assert not allowed and code == "BTC_FLASH_CRASH_COOLDOWN", f"Case 2 failed: {code}"
-    
-    # Case 3: active crash, SHORT blocked
-    df_short = build_test_frame([now_ms - 120000, now_ms - 60000, now_ms])
-    df_short['open'] = 100.0; df_short['close'] = 90.0
-    df_short['kc_lower'] = 95.0; df_short['ma3'] = 94.0; df_short['ma15'] = 98.0
-    allowed, code, dec = strategy.evaluate_entry(df_short, 85.0, 'SHORT', engine=engine)
-    assert not allowed and code == "BTC_FLASH_CRASH_COOLDOWN", f"Case 3 failed: {code}"
-    
-    # Case 4 & 5: Existing position check
-    allowed, code, dec = strategy.evaluate_entry(df_no_crash, 115.0, 'LONG', engine=engine, existing_pos=True)
-    assert not allowed and code == 'WAIT_EXISTING_POSITION', "Case 4 failed"
-    
-    # Case 8: cooldown expiry -> NEW signal can enter normally
-    engine._market_crash_entry_cooldown_until = now_sec - 10
-    df_new = build_test_frame([now_ms - 5000, now_ms, now_ms + 5000])
-    allowed, code, dec = strategy.evaluate_entry(df_new, 115.0, 'LONG', engine=engine)
-    assert allowed, f"Case 8 failed: {code}"
-    
-    # Case 9: signal generated DURING cooldown cannot be reused
-    df_stale = build_test_frame([now_ms - 75000, now_ms - 15000, now_ms])
-    allowed, code, dec = strategy.evaluate_entry(df_stale, 115.0, 'LONG', engine=engine)
-    assert not allowed and code == "STALE_CRASH_SIGNAL_REJECTED", f"Case 9 failed: {code}"
-    
-    print("ALL TESTS PASSED")
+class AsyncMock(MagicMock):
+    async def __call__(self, *args, **kwargs):
+        return super(AsyncMock, self).__call__(*args, **kwargs)
 
-if __name__ == "__main__":
-    run_tests()
+def create_mock_frame(timestamps):
+    df = pd.DataFrame({
+        'timestamp': timestamps,
+        'open': [10]*len(timestamps),
+        'high': [10]*len(timestamps),
+        'low': [10]*len(timestamps),
+        'close': [10]*len(timestamps),
+        'is_closed': [True]*len(timestamps)
+    })
+    return df
+
+@pytest.fixture
+def engine_mocked():
+    e = MockEngine()
+    e._place_structured_entry = AsyncMock(return_value=True)
+    return e
+
+def test_1_normal_entry_allowed(engine_mocked):
+    frame = create_mock_frame([1000, 2000, 3000])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is True
+
+def test_2_active_crash_blocked(engine_mocked):
+    engine_mocked._market_crash_entry_cooldown_until = time.time() + 1000
+    frame = create_mock_frame([1000, 2000, 3000])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is False
+
+def test_3_stale_setup_blocked(engine_mocked):
+    now = time.time()
+    engine_mocked._market_crash_entry_cooldown_until = now - 5
+    conf_ts = (now - 10) * 1000
+    frame = create_mock_frame([conf_ts - 120000, conf_ts - 60000, conf_ts])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is False
+
+def test_4_new_setup_allowed(engine_mocked):
+    now = time.time()
+    engine_mocked._market_crash_entry_cooldown_until = now - 5
+    conf_ts = (now - 2) * 1000
+    frame = create_mock_frame([conf_ts - 120000, conf_ts - 60000, conf_ts])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is True
+
+def test_5_daily_halt_blocks(engine_mocked):
+    frame = create_mock_frame([1000])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG", daily_halt=True))
+    assert res is False
+
+def test_6_existing_pos_blocks(engine_mocked):
+    engine_mocked.account.positions["TEST"] = {}
+    frame = create_mock_frame([1000])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is False
+
+def test_7_empty_frame_blocks(engine_mocked):
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", pd.DataFrame(), 10, "LONG"))
+    assert res is False
+
+def test_8_none_frame_blocks(engine_mocked):
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", None, 10, "LONG"))
+    assert res is False
+
+def test_9_stale_setup_exact_boundary(engine_mocked):
+    now = time.time()
+    engine_mocked._market_crash_entry_cooldown_until = now - 5
+    conf_ts = (now - 5) * 1000
+    frame = create_mock_frame([conf_ts - 120000, conf_ts - 60000, conf_ts])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is False
+
+def test_10_stale_setup_post_boundary(engine_mocked):
+    now = time.time()
+    engine_mocked._market_crash_entry_cooldown_until = now - 5
+    conf_ts = (now - 4.9) * 1000
+    frame = create_mock_frame([conf_ts - 120000, conf_ts - 60000, conf_ts])
+    res = asyncio.run(engine_mocked._execute_confirmed_channel_break("TEST", frame, 10, "LONG"))
+    assert res is True
