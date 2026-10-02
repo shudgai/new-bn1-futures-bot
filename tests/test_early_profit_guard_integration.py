@@ -1,3 +1,4 @@
+from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
@@ -39,9 +40,9 @@ async def test_long_warning_blocks_early_profit_guard():
     pos = create_mock_position('LONG', curr_unrealized=10.0, max_unrealized=20.0, entry_price=0.10, trend_status='WARNING')
     account.positions = {"龙虾/USDT": pos}
     account.position_meta = {"龙虾/USDT": create_mock_meta(20.0)}
-    
+
     await account.update_positions({"龙虾/USDT": 0.10})
-    
+
     account.close_position.assert_not_called()
 
 @pytest.mark.anyio
@@ -50,9 +51,9 @@ async def test_short_warning_blocks_early_profit_guard():
     pos = create_mock_position('SHORT', curr_unrealized=10.0, max_unrealized=20.0, entry_price=0.10, trend_status='WARNING')
     account.positions = {"龙虾/USDT": pos}
     account.position_meta = {"龙虾/USDT": create_mock_meta(20.0)}
-    
+
     await account.update_positions({"龙虾/USDT": 0.10})
-    
+
     account.close_position.assert_not_called()
 
 @pytest.mark.anyio
@@ -61,9 +62,9 @@ async def test_released_allows_early_profit_guard():
     pos = create_mock_position('LONG', curr_unrealized=10.0, max_unrealized=20.0, entry_price=0.10, trend_status='RELEASED')
     account.positions = {"龙虾/USDT": pos}
     account.position_meta = {"龙虾/USDT": create_mock_meta(20.0)}
-    
+
     await account.update_positions({"龙虾/USDT": 0.10})
-    
+
     account.close_position.assert_called_once()
     args, kwargs = account.close_position.call_args
     reason = args[2] if len(args) > 2 else kwargs.get('reason', '')
@@ -73,17 +74,17 @@ async def test_released_allows_early_profit_guard():
 async def test_hard_exit_ignores_trend_hold():
     account = setup_mock_account()
     # Trigger margin level hard stop logic if any, but since we are testing Early Profit Guard shielding,
-    # hard exit usually happens earlier or from other conditions. We can just test that 
+    # hard exit usually happens earlier or from other conditions. We can just test that
     # abnormal or hard exits are independent. But for update_positions it evaluates extreme profit.
     # Let's say we just test RELEASED.
     pos = create_mock_position('LONG', curr_unrealized=-100.0, max_unrealized=0.0, entry_price=0.10, trend_status='HOLD')
     # If the user has a hard stop, it will be executed. The Early Profit Guard wouldn't be reached.
     account.positions = {"龙虾/USDT": pos}
     account.position_meta = {"龙虾/USDT": create_mock_meta(0.0)}
-    
+
     # We will just assert that Early Profit Guard does not trigger for a huge loss (since max_unrealized is 0).
     await account.update_positions({"龙虾/USDT": 0.05})
-    
+
     account.close_position.assert_not_called()
 
 @pytest.mark.anyio
@@ -94,13 +95,13 @@ async def test_concurrent_peak_trailing_and_early_profit_guard():
 
     # Setup mocks
     account = setup_mock_account()
-    
-    # close_position should only be called once successfully. 
+
+    # close_position should only be called once successfully.
     # If called again, it should know the position is already closing or closed.
     # However, since they are evaluated concurrently or sequentially, we assert the actual call count.
     account.get_market_price = MagicMock(return_value=12000)
     account.fetch_account = AsyncMock()
-    
+
     position = {
         'symbol': 'BTC/USDT',
         'side': 'LONG',
@@ -121,13 +122,37 @@ async def test_concurrent_peak_trailing_and_early_profit_guard():
     real_account._create_orphan_protection = AsyncMock()
     real_account.save_state = MagicMock()
     real_account.positions = {'BTC/USDT': position}
-    
+
     # Simulate first trigger (e.g. from evaluate_peak_trailing)
     await real_account.close_position('BTC/USDT', 12000, 'Peak Trailing')
-    
+
     # Simulate second concurrent trigger (e.g. from update_positions)
     await real_account.close_position('BTC/USDT', 12000, 'Early Profit Guard')
-    
+
     # The actual close is protected by pos['status'] = 'CLOSING'
     # Even if it crashed or failed, we just need to ensure it didn't call create_market_sell_order twice
     assert real_account.exchange.create_market_sell_order.call_count <= 1
+
+def test_short_unknown_blocks_early_profit_guard():
+    pos = {
+        'symbol': '1000LUNCUSDT', 'side': 'SHORT',
+        'entry_price': 100.0, 'qty': 1.0,
+        'peak_trailing_state': {'peak_net_pnl': 3.5}
+    }
+
+    # Simulate missing data (UNKNOWN) -> STALE_SNAPSHOT
+    snapshot = {'reason': 'STALE_SNAPSHOT'}
+    decision = evaluate_peak_trailing(pos, 98.0, snapshot, 0.0) # Using 0 atr since stale
+    assert decision is None
+
+def test_long_unknown_blocks_early_profit_guard():
+    pos = {
+        'symbol': '1000LUNCUSDT', 'side': 'LONG',
+        'entry_price': 100.0, 'qty': 1.0,
+        'peak_trailing_state': {'peak_net_pnl': 3.5}
+    }
+
+    # Simulate missing data (UNKNOWN)
+    snapshot = {'reason': 'NO_DATA'}
+    decision = evaluate_peak_trailing(pos, 102.0, snapshot, 0.0)
+    assert decision is None

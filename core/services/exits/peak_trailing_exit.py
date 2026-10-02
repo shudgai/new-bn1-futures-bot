@@ -106,7 +106,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
-        
+
         if 'peak_price' not in state:
             state['peak_price'] = entry
 
@@ -115,13 +115,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             trend_status, trend_reason = evaluate_trend_hold(position, snapshot if isinstance(snapshot, dict) else {}, price)
         except Exception:
             trend_status, trend_reason = 'RELEASED', 'EVAL_ERROR'
-        
+
         position['trend_hold_status'] = trend_status
         position['trend_hold_reason'] = trend_reason
-        
+
         if 'crossed_kc_middle' not in state:
             state['crossed_kc_middle'] = False
-            
+
         kc_middle = snapshot.get('kc_middle') if isinstance(snapshot, dict) else None
         if not state['crossed_kc_middle'] and kc_middle is not None and positive(kc_middle):
             if sign == 1 and price > kc_middle:
@@ -139,36 +139,32 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         peak_net = estimated_net_pnl(entry, state['peak_price'], qty, sign, fee, slippage)
         net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
-        
+
+        ladder_reason, ladder_trigger = None, None
         # 2U Fixed Ladder Profit Lock (4U locks 2U, 6U locks 4U, etc.)
         if state['peak_net_pnl'] >= 4.0:
             locked_net = math.floor((state['peak_net_pnl'] - 4.0) / 2.0) * 2.0 + 2.0
-            if trend_status in ('HOLD', 'WARNING'):
+            if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
                 locked_net = max(2.0, math.floor(locked_net / 2.0)) # Dynamic relaxed floor
             if net <= locked_net:
-                reason, trigger = PEAK_REASON, 'TRAILING_2U_LADDER'
-                if trend_status in ('HOLD', 'WARNING'):
-                    soft_exit_blocked = True
-                else:
-                    state.update(pending=reason, trigger=trigger)
-                    return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
-                
+                ladder_reason, ladder_trigger = PEAK_REASON, 'TRAILING_2U_LADDER'
+
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
-        
+
         position.update(peak_price=state['peak_price'], peak_pnl=gain*qty, peak_pnl_usd=gain*qty,
                         peak_net_pnl_usd=state['peak_net_pnl'], peak_gain_atr=gain/scale if scale>0 else 0.,
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
-                        
+
         stop = entry-sign*1.5*scale if scale>0 else 0.
         initial = position.get('initial_sl')
         if positive(initial):
             stop = ((max if sign==1 else min)(stop,float(initial)) if positive(stop) else float(initial))
-            
+
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
-        reason, trigger = None, None
-        
+        reason, trigger = ladder_reason, ladder_trigger
+
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
         elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON):
@@ -182,7 +178,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if (snapshot.get('live_bar_ms') == bar
                     and snapshot.get('closed_bar_ms') == bar - 60000
                     and positive(opening) and positive(prior_atr)):
-                
+
                 ma15 = snapshot.get('ma15')
                 if state.get('crossed_kc_middle'):
                     # Phase 2: MA15 Tracking Defense
@@ -195,7 +191,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                             reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
                             state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                          trigger_atr=float(prior_atr), trigger_price=price)
-                                         
+
                 # 2-Bar Doji Reversal Protection
                 if not reason:
                     last_open = snapshot.get('last_open')
@@ -219,7 +215,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                     reason, trigger = ABNORMAL_REASON, 'DOJI_REVERSAL_EXIT'
                                     state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                                  trigger_atr=float(prior_atr), trigger_price=price)
-                
+
                 # Extreme selling pressure (Waterfall) protection overrides defense lines
                 if not reason:
                     body = sign*(float(opening)-price)
@@ -227,28 +223,43 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         threshold = ABNORMAL_BODY_ATR * float(prior_atr)
                     except NameError:
                         threshold = 1.5 * float(prior_atr)
-                        
+
                     if body > 0 and body >= threshold:
                         reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
-            if reason and reason != HARD_REASON and trigger != 'WATERFALL_DROP':
-                if trend_status in ('HOLD', 'WARNING'):
-                    import logging
-                    logger = logging.getLogger('TrendHold')
-                    logger.info(f"TREND_HOLD={trend_status} direction={'LONG' if sign==1 else 'SHORT'} MA5={snapshot.get('ma5')} MA15={snapshot.get('ma15')} KC_MID={snapshot.get('kc_middle')} price={price} soft_exit_requested={trigger} soft_exit_blocked=true final_exit_reason=NONE")
-                    reason, trigger = None, None
-            
             if reason:
+                soft_exit_blocked = False
+                if reason != HARD_REASON and trigger != 'WATERFALL_DROP':
+                    if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
+                        soft_exit_blocked = True
+
                 import logging
                 logger = logging.getLogger('TrendHold')
-                logger.info(f"TREND_HOLD={trend_status} direction={'LONG' if sign==1 else 'SHORT'} MA5={snapshot.get('ma5')} MA15={snapshot.get('ma15')} KC_MID={snapshot.get('kc_middle')} price={price} soft_exit_requested={trigger} soft_exit_blocked=false final_exit_reason={trigger}")
+                sym = position.get('symbol', 'UNKNOWN')
+                side_str = 'LONG' if sign == 1 else 'SHORT'
+                logger.info(
+                    f"TREND_HOLD={trend_status} symbol={sym} side={side_str} "
+                    f"exit_owner=PeakTrailing exit_reason={trigger} "
+                    f"trend_hold_reason={trend_reason} "
+                    f"snapshot_bar_id={snapshot.get('snapshot_bar_id')} "
+                    f"live_bar_id={snapshot.get('live_bar_id')} "
+                    f"snapshot_age={snapshot.get('snapshot_age')} "
+                    f"snapshot_source={snapshot.get('snapshot_source', 'UNKNOWN')} "
+                    f"fallback_used={str(snapshot.get('fallback_used', False)).lower()} "
+                    f"soft_exit_blocked={str(soft_exit_blocked).lower()} "
+                    f"price={price} MA5={snapshot.get('ma5')} MA15={snapshot.get('ma15')} KC_MID={snapshot.get('kc_middle')}"
+                )
 
-                    
+                if soft_exit_blocked:
+                    reason, trigger = None, None
+
         if reason:
             state.update(pending=reason,trigger=trigger)
-            return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)
+            return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
         return None
-    except (KeyError,TypeError,ValueError,OverflowError):
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return None

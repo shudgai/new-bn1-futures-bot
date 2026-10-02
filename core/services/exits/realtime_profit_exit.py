@@ -13,32 +13,59 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 def cached_tick_indicators(frame, price, stamp):
     """Require the quote minute and its preceding closed ATR for body exits."""
-    snapshot = {'quote_ms': stamp}
+    snapshot = {'quote_ms': stamp, 'reason': 'UNKNOWN'}
     if frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000:
+        snapshot['reason'] = 'NO_DATA'
         return snapshot, 0.
     closed = closed_entry_candles(frame)
-    bar = math.floor(stamp / 60000) * 60000
-    if closed.empty or float(closed.iloc[-1]['timestamp']) != bar - 60000:
+    if len(closed) < 2:
+        snapshot['reason'] = 'NO_DATA'
         return snapshot, 0.
+
     last = closed.iloc[-1]
-    live = frame.iloc[-1]
-    if float(live['timestamp']) != bar or bool(live.get('is_closed', True)):
+    prev = closed.iloc[-2]
+    last_ms = float(last.get('timestamp', 0))
+    bar = math.floor(stamp / 60000) * 60000
+
+    snapshot['snapshot_age'] = stamp - last_ms
+
+    if stamp - last_ms > 300000:  # 5 minutes freshness
+        snapshot['reason'] = 'STALE_SNAPSHOT'
         return snapshot, 0.
-    snapshot.update(live_bar_ms=bar, closed_bar_ms=bar-60000)
-    
-    snapshot.update(atr=float(last.get('atr') or 0.),
-                    live_open=float(live.get('open') or 0.),
-                    ma5=float(live.get('ma5', live.get('ma3', 0.))),
-                    ma15=float(live.get('ma15', 0.)),
-                    kc_middle=float(live.get('kc_middle', 0.)),
-                    last_open=float(last.get('open') or 0.),
-                    last_high=float(last.get('high') or 0.),
-                    last_low=float(last.get('low') or 0.),
-                    last_close=float(last.get('close') or 0.),
-                    last_ma5=float(last.get('ma5', last.get('ma3', 0.))),
-                    last_ma15=float(last.get('ma15', 0.)),
-                    last_kc_middle=float(last.get('kc_middle', 0.)))
-    return snapshot, snapshot['atr']
+
+    snapshot.update(
+        snapshot_bar_id=last_ms,
+        live_bar_id=bar,
+        ma5=float(last.get('ma5', last.get('ma3', 0.))),
+        ma15=float(last.get('ma15', 0.)),
+        kc_middle=float(last.get('kc_middle', 0.)),
+        last_ma5=float(prev.get('ma5', prev.get('ma3', 0.))),
+        last_ma15=float(prev.get('ma15', 0.)),
+        last_close=float(last.get('close', 0.))
+    )
+    snapshot['reason'] = None
+
+    if last_ms < bar - 60000:
+        snapshot['snapshot_source'] = 'CLOSED_BAR_FALLBACK'
+        snapshot['fallback_used'] = True
+    else:
+        snapshot['snapshot_source'] = 'CLOSED_BAR_SYNCED'
+        snapshot['fallback_used'] = False
+
+    live = frame.iloc[-1]
+    live_ms = float(live.get('timestamp', 0))
+
+    if live_ms == bar and not bool(live.get('is_closed', True)) and last_ms == bar - 60000:
+        snapshot.update(
+            live_bar_ms=bar,
+            closed_bar_ms=last_ms,
+            atr=float(last.get('atr') or 0.),
+            live_open=float(live.get('open') or 0.),
+            last_open=float(last.get('open') or 0.),
+            last_high=float(last.get('high') or 0.),
+            last_low=float(last.get('low') or 0.)
+        )
+    return snapshot, float(last.get('atr') or 0.)
 
 
 def migrate_account_peak_exits(account):
