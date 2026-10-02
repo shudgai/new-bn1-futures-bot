@@ -579,7 +579,7 @@
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌：連續上升為牛市、連續下降為熊市，其餘為猴市；資料不足顯示待更新">
-                                {{ { bull: '↑ 牛市', bear: '↓ 熊市', range: '↔ 猴市', wait: '待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+                                {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
@@ -896,7 +896,7 @@
                 ctx.candlestickSeries = chart.addCandlestickSeries({
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
-                    lastValueVisible: false, priceLineVisible: false
+                    lastValueVisible: true, priceLineVisible: true
                 });
                 ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
                 ctx.ma5Series.applyOptions({

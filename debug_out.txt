@@ -1,0 +1,116 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.1.1, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/shudgai999/project/new bn
+configfile: pytest.ini
+plugins: anyio-4.13.0
+collecting ... collected 4 items
+
+tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[paper-LONG] DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+FAILED
+tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[paper-SHORT] DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+FAILED
+tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[testnet-LONG] DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+FAILED
+tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[testnet-SHORT] DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+DEBUG: decision is None
+FAILED
+
+=================================== FAILURES ===================================
+________ test_real_account_reload_and_concurrent_tick_close[paper-LONG] ________
+tests/test_realtime_profit_exit.py:163: in test_real_account_reload_and_concurrent_tick_close
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_realtime_profit_exit.py:157: in run
+    assert symbol not in account.positions
+E   AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 99.26, 'atr_tp': 0.0, ...}}
+E    +  where {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 99.26, 'atr_tp': 0.0, ...}} = <core.paper_account.PaperAccount object at 0x783d2d77ddf0>.positions
+_______ test_real_account_reload_and_concurrent_tick_close[paper-SHORT] ________
+tests/test_realtime_profit_exit.py:163: in test_real_account_reload_and_concurrent_tick_close
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_realtime_profit_exit.py:157: in run
+    assert symbol not in account.positions
+E   AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 100.74, 'atr_tp': 0.0, ...}}
+E    +  where {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 100.74, 'atr_tp': 0.0, ...}} = <core.paper_account.PaperAccount object at 0x783d2d77dd90>.positions
+_______ test_real_account_reload_and_concurrent_tick_close[testnet-LONG] _______
+tests/test_realtime_profit_exit.py:163: in test_real_account_reload_and_concurrent_tick_close
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_realtime_profit_exit.py:157: in run
+    assert symbol not in account.positions
+E   AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 99.25, 'atr_tp': 0.0, ...}}
+E    +  where {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 99.25, 'atr_tp': 0.0, ...}} = <core.testnet_account.BinanceTestnetAccount object at 0x783d2d796660>.positions
+______ test_real_account_reload_and_concurrent_tick_close[testnet-SHORT] _______
+tests/test_realtime_profit_exit.py:163: in test_real_account_reload_and_concurrent_tick_close
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_realtime_profit_exit.py:157: in run
+    assert symbol not in account.positions
+E   AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 100.75, 'atr_tp': 0.0, ...}}
+E    +  where {'DOGE/USDT': {'atr': 0.5, 'atr_protection_version': 2, 'atr_sl': 100.75, 'atr_tp': 0.0, ...}} = <core.testnet_account.BinanceTestnetAccount object at 0x783d2d7f2120>.positions
+=========================== short test summary info ============================
+FAILED tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[paper-LONG]
+FAILED tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[paper-SHORT]
+FAILED tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[testnet-LONG]
+FAILED tests/test_realtime_profit_exit.py::test_real_account_reload_and_concurrent_tick_close[testnet-SHORT]
+============================== 4 failed in 1.82s ===============================

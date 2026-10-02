@@ -1,7 +1,7 @@
 import sys, os, time, pandas as pd, requests
 from datetime import datetime, timezone
 sys.path.append(os.getcwd())
-from core.indicators import calculate_keltner_channels, calculate_ma, calculate_atr
+from core.strategy import SuperTrendKeltnerStrategy
 from core.services.kc_pending_entry import evaluate_kc_pending_entry
 
 symbol = "1000PEPEUSDT"
@@ -17,14 +17,8 @@ df['high'] = pd.to_numeric(df['high'])
 df['low'] = pd.to_numeric(df['low'])
 df['close'] = pd.to_numeric(df['close'])
 
-df['ma5'] = calculate_ma(df, 5)
-df['ma15'] = calculate_ma(df, 15)
-df['atr'] = calculate_atr(df, 14)
-kc = calculate_keltner_channels(df, 20, 2.0)
-df['kc_upper'] = kc['upper']
-df['kc_mid'] = kc['mid']
-df['kc_lower'] = kc['lower']
-df['ma5_slope'] = df['ma5'].diff()
+strat = SuperTrendKeltnerStrategy()
+df = strat.compute_indicators(df)
 
 bar3_ts = 1790905980000.0  # 01:53
 bar3 = df[df['timestamp'] == bar3_ts].iloc[0]
@@ -42,7 +36,7 @@ print("EXACT_DISTANCE_ATR = {:.6f}".format(distance_atr))
 
 state = {
     'kc_pending_entry': {
-        symbol: {
+        '1000PEPE/USDT': {
             'side': 'LONG',
             'candidate_bar_id': 1790905860000.0,
             'waited_bars': 1
@@ -50,8 +44,14 @@ state = {
     }
 }
 
-# We need to simulate the state right before Bar3 closes, so at Bar3.
-# Wait, the function might expect df to end AT bar3.
+# The replay needs the pending state correctly formed.
+# The entry uses `pending = (first, row, side, index)`
+# Wait, evaluate_kc_pending_entry expects we just feed it the series of bars.
+# It doesn't take 'state' dictionary in its signature!
+# Signature: def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = ''):
+# It reconstructs the state internally by scanning from the past!
+# Let's just pass `df_until_bar3` to it.
+
 df_until_bar3 = df[df['timestamp'] <= bar3_ts].copy()
-res = evaluate_kc_pending_entry(state, df_until_bar3, bar3['close'], symbol)
+res = evaluate_kc_pending_entry(df_until_bar3, bar3['close'], symbol='1000PEPE/USDT')
 print(res)

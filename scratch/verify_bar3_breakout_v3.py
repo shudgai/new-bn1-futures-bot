@@ -1,7 +1,7 @@
 import sys, os, time, pandas as pd, requests
 from datetime import datetime, timezone
 sys.path.append(os.getcwd())
-from core.indicators import calculate_keltner_channels, calculate_ma, calculate_atr
+from core.strategy import SuperTrendKeltnerStrategy
 from core.services.kc_pending_entry import evaluate_kc_pending_entry
 
 symbol = "1000PEPEUSDT"
@@ -17,21 +17,16 @@ df['high'] = pd.to_numeric(df['high'])
 df['low'] = pd.to_numeric(df['low'])
 df['close'] = pd.to_numeric(df['close'])
 
-df['ma5'] = calculate_ma(df, 5)
-df['ma15'] = calculate_ma(df, 15)
-df['atr'] = calculate_atr(df, 14)
-kc = calculate_keltner_channels(df, 20, 2.0)
-df['kc_upper'] = kc['upper']
-df['kc_mid'] = kc['mid']
-df['kc_lower'] = kc['lower']
-df['ma5_slope'] = df['ma5'].diff()
+strat = SuperTrendKeltnerStrategy()
+df = strat.compute_indicators(df)
 
-bar3_ts = 1790905980000.0  # 01:53
+bar3_ts = 1790905980000.0  # 09:53
 bar3 = df[df['timestamp'] == bar3_ts].iloc[0]
 
 distance = bar3['close'] - bar3['kc_upper']
 distance_atr = distance / bar3['atr']
 
+print("=== AT 09:53 ===")
 print(f"Bar3.open = {bar3['open']}")
 print(f"Bar3.close = {bar3['close']}")
 print(f"KC_upper = {bar3['kc_upper']}")
@@ -40,18 +35,8 @@ print(f"distance = {distance}")
 print(f"distance_atr = {distance_atr:.6f}")
 print("EXACT_DISTANCE_ATR = {:.6f}".format(distance_atr))
 
-state = {
-    'kc_pending_entry': {
-        symbol: {
-            'side': 'LONG',
-            'candidate_bar_id': 1790905860000.0,
-            'waited_bars': 1
-        }
-    }
-}
-
-# We need to simulate the state right before Bar3 closes, so at Bar3.
-# Wait, the function might expect df to end AT bar3.
 df_until_bar3 = df[df['timestamp'] <= bar3_ts].copy()
-res = evaluate_kc_pending_entry(state, df_until_bar3, bar3['close'], symbol)
-print(res)
+res = evaluate_kc_pending_entry(df_until_bar3, bar3['close'], symbol='1000PEPE/USDT')
+print("\n67272cf_REPLAY_RESULT = ", res.get('reason'))
+print("FULL_RES = ", res)
+

@@ -1,17 +1,25 @@
-import sys
-import os
-sys.path.append(os.getcwd())
 import pytest
+from core.services.exits.peak_trailing_exit import evaluate_peak_trailing, STATE_KEY
 
-from core.services.strategies.outer_strategy import aligned_entry
-from tests.test_channel_aligned_entry import aligned_frame
+def get_position(side='LONG', entry_price=100.0, qty=1.0, entry_atr=2.0, leverage=1.0):
+    pos = {
+        'side': side,
+        'open_timestamp': 60000,
+        'entry_price': entry_price,
+        'qty': qty,
+        'leverage': leverage,
+        'margin': entry_price * qty / leverage,
+        'entry_atr': entry_atr,
+        STATE_KEY: {}
+    }
+    return pos
 
-import core.config
-print("Before:", core.config.ENV_MIN_KC_BANDWIDTH)
-core.config.ENV_MIN_KC_BANDWIDTH = 0.0
-print("After:", core.config.ENV_MIN_KC_BANDWIDTH)
+import sys
+import core.services.exits.peak_trailing_exit
+core.services.exits.peak_trailing_exit.PROFIT_FLOOR_ENABLED = True
+core.services.exits.peak_trailing_exit.PROFIT_FLOOR_ARM_ATR = 2.0
+core.services.exits.peak_trailing_exit.PROFIT_FLOOR_LOCK_ATR = 1.0
 
-f = aligned_frame("LONG", "breakout")
-price = float(f.iloc[-1]["close"])
-res = aligned_entry(f, price)
-print("Result:", res)
+p = get_position('LONG', 100, 1, 2.0)
+print(evaluate_peak_trailing(p, 104, 61000, 1.0, fee=0.0, slippage=0.0))
+print(p[STATE_KEY])

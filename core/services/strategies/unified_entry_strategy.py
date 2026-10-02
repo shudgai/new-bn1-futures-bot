@@ -432,6 +432,28 @@ class UnifiedEntryStrategy(IEntryStrategy):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
             
+        engine = kwargs.get('engine')
+        if engine is not None:
+            # 1. Block new entries during ACTIVE BTC flash crash cooldown
+            if getattr(engine, '_market_crash_entries_paused', lambda x: False)(None):
+                return False, "BTC_FLASH_CRASH_COOLDOWN", {'action': 'WAIT'}
+                
+            # 2. Block STALE candidates formed during or before the cooldown
+            cooldown_until = getattr(engine, '_market_crash_entry_cooldown_until', 0.0)
+            if cooldown_until > 0 and frame is not None and not frame.empty:
+                try:
+                    after_close = (had_close(engine.account, kwargs.get('symbol', ''))
+                                   if 'had_close' in globals() else kwargs.get('after_close', False))
+                    closed = frame[:-1] if not after_close else frame
+                    if not closed.empty:
+                        conf_ts = float(closed.iloc[-1].get('timestamp', 0))
+                        # If the confirmation bar's timestamp (open time) is before the cooldown expired, it's stale.
+                        # cooldown_until is in seconds, timestamp in milliseconds.
+                        if conf_ts > 0 and conf_ts <= cooldown_until * 1000:
+                            return False, "STALE_CRASH_SIGNAL_REJECTED", {'action': 'WAIT'}
+                except Exception:
+                    pass
+            
         # 【第一道硬門檻：通道內部一律封鎖開倉 (Live Price Check)】
         if frame is not None and not frame.empty:
             try:

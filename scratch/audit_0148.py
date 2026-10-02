@@ -1,15 +1,19 @@
-import sys, os, time, pandas as pd, requests
+import sys, os, time
 from datetime import datetime, timezone
 sys.path.append(os.getcwd())
 from core.indicators import calculate_keltner_channels, calculate_ma, calculate_atr
-from core.services.kc_pending_entry import evaluate_kc_pending_entry
+import requests
 
 symbol = "1000PEPEUSDT"
+# We need data up to 01:54 UTC + historical data for indicators
+# 100 bars before 01:54
 end_time = int(datetime(2026, 10, 2, 1, 55, tzinfo=timezone.utc).timestamp() * 1000)
 url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&endTime={end_time}&limit=200"
 r = requests.get(url)
 klines = r.json()
 
+# Reconstruct pandas dataframe as system does
+import pandas as pd
 df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
 df['timestamp'] = pd.to_numeric(df['timestamp'])
 df['open'] = pd.to_numeric(df['open'])
@@ -26,32 +30,7 @@ df['kc_mid'] = kc['mid']
 df['kc_lower'] = kc['lower']
 df['ma5_slope'] = df['ma5'].diff()
 
-bar3_ts = 1790905980000.0  # 01:53
-bar3 = df[df['timestamp'] == bar3_ts].iloc[0]
-
-distance = bar3['close'] - bar3['kc_upper']
-distance_atr = distance / bar3['atr']
-
-print(f"Bar3.open = {bar3['open']}")
-print(f"Bar3.close = {bar3['close']}")
-print(f"KC_upper = {bar3['kc_upper']}")
-print(f"ATR = {bar3['atr']}")
-print(f"distance = {distance}")
-print(f"distance_atr = {distance_atr:.6f}")
-print("EXACT_DISTANCE_ATR = {:.6f}".format(distance_atr))
-
-state = {
-    'kc_pending_entry': {
-        symbol: {
-            'side': 'LONG',
-            'candidate_bar_id': 1790905860000.0,
-            'waited_bars': 1
-        }
-    }
-}
-
-# We need to simulate the state right before Bar3 closes, so at Bar3.
-# Wait, the function might expect df to end AT bar3.
-df_until_bar3 = df[df['timestamp'] <= bar3_ts].copy()
-res = evaluate_kc_pending_entry(state, df_until_bar3, bar3['close'], symbol)
-print(res)
+for idx, row in df.tail(10).iterrows():
+    dt = datetime.fromtimestamp(row['timestamp']/1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    dist = (row['close'] - row['kc_upper']) / row['atr'] if pd.notnull(row['atr']) and row['atr'] > 0 else 0
+    print(f"Time: {dt} BarID: {row['timestamp']} Open: {row['open']:.8f} Close: {row['close']:.8f} KC_upper: {row['kc_upper']:.8f} MA5: {row['ma5']:.8f} MA15: {row['ma15']:.8f} MA5_slope: {row['ma5_slope']:.8f} ATR: {row['atr']:.8f} dist_atr: {dist:.4f}")

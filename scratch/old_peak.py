@@ -1,7 +1,6 @@
 """Position-bound abnormal-body exits and independent initial hard stops."""
 import copy
 import math
-import sys
 
 POLICY = 'abnormal_body_only_v2'
 ABNORMAL_BODY_ATR = 1.2
@@ -28,9 +27,6 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 
-PROFIT_FLOOR_ENABLED = False
-PROFIT_FLOOR_ARM_ATR = None
-PROFIT_FLOOR_LOCK_ATR = None
 
 def positive(value):
     try:
@@ -173,31 +169,31 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
         elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON):
             reason, trigger = state['pending'], state.get('trigger', 'RETRY')
-        else:
-            if isinstance(snapshot, dict):
-                # The live body's original open and immediately prior closed ATR
-                # must belong to this quote's minute; never infer them from wicks.
-                bar = math.floor(stamp / 60000) * 60000
-                opening = snapshot.get('live_open')
-                prior_atr = snapshot.get('atr')
-                if (snapshot.get('live_bar_ms') == bar
-                        and snapshot.get('closed_bar_ms') == bar - 60000
-                        and positive(opening) and positive(prior_atr)):
+        elif isinstance(snapshot, dict):
+            # The live body's original open and immediately prior closed ATR
+            # must belong to this quote's minute; never infer them from wicks.
+            bar = math.floor(stamp / 60000) * 60000
+            opening = snapshot.get('live_open')
+            prior_atr = snapshot.get('atr')
+            if (snapshot.get('live_bar_ms') == bar
+                    and snapshot.get('closed_bar_ms') == bar - 60000
+                    and positive(opening) and positive(prior_atr)):
 
-                    ma15 = snapshot.get('ma15')
-                    if state.get('crossed_kc_middle'):
-                        # Phase 2: MA15 Tracking Defense
-                        if ma15 is not None and positive(ma15):
-                            if sign == 1 and price < ma15 and price < opening:
-                                reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
-                                state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                             trigger_atr=float(prior_atr), trigger_price=price)
-                            elif sign == -1 and price > ma15 and price > opening:
-                                reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
-                                state.update(trigger_bar_ms=bar, trigger_open=float(opening),
-                                             trigger_atr=float(prior_atr), trigger_price=price)
+                ma15 = snapshot.get('ma15')
+                if state.get('crossed_kc_middle'):
+                    # Phase 2: MA15 Tracking Defense
+                    if ma15 is not None and positive(ma15):
+                        if sign == 1 and price < ma15 and price < opening:
+                            reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
+                            state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                         trigger_atr=float(prior_atr), trigger_price=price)
+                        elif sign == -1 and price > ma15 and price > opening:
+                            reason, trigger = ABNORMAL_REASON, 'BROKE_MA15_DEFENSE'
+                            state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                                         trigger_atr=float(prior_atr), trigger_price=price)
 
-                    # 2-Bar Doji Reversal Protection
+                # 2-Bar Doji Reversal Protection
+                if not reason:
                     last_open = snapshot.get('last_open')
                     last_high = snapshot.get('last_high')
                     last_low = snapshot.get('last_low')
@@ -220,63 +216,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                     state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                                  trigger_atr=float(prior_atr), trigger_price=price)
 
-            # Catastrophic Profit Floor Evaluation
-            floor_reason, floor_trigger = None, None
-            entry_atr = float(state.get('atr', position.get('entry_atr', 0.0)))
-            
-            pf_enabled = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ENABLED', False)
-            pf_arm = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ARM_ATR', None)
-            pf_lock = getattr(sys.modules[__name__], 'PROFIT_FLOOR_LOCK_ATR', None)
-            
-            if pf_enabled and pf_arm is not None and pf_lock is not None and pf_arm > 0 and 0 <= pf_lock <= pf_arm and entry_atr > 0:
-                mfe_price = state.get('mfe_price', entry)
-                if sign == 1:
-                    mfe_price = max(mfe_price, price)
-                    mfe_atr = (mfe_price - entry) / entry_atr
-                else:
-                    mfe_price = min(mfe_price, price)
-                    mfe_atr = (entry - mfe_price) / entry_atr
-                state['mfe_price'] = mfe_price
-                
-                is_armed = state.get('profit_floor_armed', False)
-                if not is_armed and mfe_atr >= pf_arm:
-                    is_armed = True
-                    state['profit_floor_armed'] = True
-                    state['profit_floor_arm_atr'] = float(pf_arm)
-                    state['profit_floor_lock_atr'] = float(pf_lock)
-                    
-                if is_armed:
-                    latr = state.get('profit_floor_lock_atr', pf_lock)
-                    if sign == 1:
-                        candidate_floor = entry + latr * entry_atr
-                        existing_floor = state.get('profit_floor_price', -float('inf'))
-                        floor = max(existing_floor, candidate_floor)
-                        state['profit_floor_price'] = floor
-                        if price <= floor:
-                            floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_CATASTROPHIC_PROFIT_FLOOR'
-                    else:
-                        candidate_floor = entry - latr * entry_atr
-                        existing_floor = state.get('profit_floor_price', float('inf'))
-                        floor = min(existing_floor, candidate_floor)
-                        state['profit_floor_price'] = floor
-                        if price >= floor:
-                            floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_CATASTROPHIC_PROFIT_FLOOR'
-
-            # Floor overrides soft exits (Doji / MA15 / Ladder)
-            if floor_reason:
-                reason, trigger = floor_reason, floor_trigger
-
-            # Extreme selling pressure (Waterfall) protection overrides everything including Floor
-            if isinstance(snapshot, dict):
-                if (snapshot.get('live_bar_ms') == bar
-                        and snapshot.get('closed_bar_ms') == bar - 60000
-                        and positive(opening) and positive(prior_atr)):
+                # Extreme selling pressure (Waterfall) protection overrides defense lines
+                if not reason:
                     body = sign*(float(opening)-price)
                     try:
                         threshold = ABNORMAL_BODY_ATR * float(prior_atr)
                     except NameError:
                         threshold = 1.5 * float(prior_atr)
-    
+
                     if body > 0 and body >= threshold:
                         reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
@@ -284,7 +231,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             if reason:
                 soft_exit_blocked = False
-                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR'):
+                if reason != HARD_REASON and trigger != 'WATERFALL_DROP':
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
                         soft_exit_blocked = True
 
@@ -292,18 +239,17 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 logger = logging.getLogger('TrendHold')
                 sym = position.get('symbol', 'UNKNOWN')
                 side_str = 'LONG' if sign == 1 else 'SHORT'
-                snap_dict = snapshot if isinstance(snapshot, dict) else {}
                 logger.info(
                     f"TREND_HOLD={trend_status} symbol={sym} side={side_str} "
                     f"exit_owner=PeakTrailing exit_reason={trigger} "
                     f"trend_hold_reason={trend_reason} "
-                    f"snapshot_bar_id={snap_dict.get('snapshot_bar_id')} "
-                    f"live_bar_id={snap_dict.get('live_bar_id')} "
-                    f"snapshot_age={snap_dict.get('snapshot_age')} "
-                    f"snapshot_source={snap_dict.get('snapshot_source', 'UNKNOWN')} "
-                    f"fallback_used={str(snap_dict.get('fallback_used', False)).lower()} "
+                    f"snapshot_bar_id={snapshot.get('snapshot_bar_id')} "
+                    f"live_bar_id={snapshot.get('live_bar_id')} "
+                    f"snapshot_age={snapshot.get('snapshot_age')} "
+                    f"snapshot_source={snapshot.get('snapshot_source', 'UNKNOWN')} "
+                    f"fallback_used={str(snapshot.get('fallback_used', False)).lower()} "
                     f"soft_exit_blocked={str(soft_exit_blocked).lower()} "
-                    f"price={price} MA5={snap_dict.get('ma5')} MA15={snap_dict.get('ma15')} KC_MID={snap_dict.get('kc_middle')}"
+                    f"price={price} MA5={snapshot.get('ma5')} MA15={snapshot.get('ma15')} KC_MID={snapshot.get('kc_middle')}"
                 )
 
                 if soft_exit_blocked:
