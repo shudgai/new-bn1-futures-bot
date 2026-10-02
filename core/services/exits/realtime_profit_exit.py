@@ -127,8 +127,21 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             return True
         if not decision or account.positions.get(symbol) is not position:
             return False
+        
         reason = decision['type']
-        account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={decision["trigger"]} '
+        trigger = decision.get('trigger', '')
+        
+        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR'):
+            try:
+                from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
+                trend_status, _ = evaluate_trend_hold(position, snapshot, price)
+            except Exception:
+                trend_status = 'UNKNOWN'
+                
+            if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
+                return False
+
+        account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={trigger} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
         await account.close_position(symbol,price,'Channel Swing ' + reason,is_manual=True)
