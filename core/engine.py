@@ -1888,6 +1888,25 @@ class TradingEngine:
 
             context['entry_snapshot']['quote_price'] = price
             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=decision['type'], margin=amount, leverage=leverage)
+            
+            try:
+                from core.services.pre_entry_space_shadow import record_pre_entry_space_shadow
+                record_pre_entry_space_shadow(
+                    symbol=symbol,
+                    side=side,
+                    timestamp_ms=bar,
+                    expected_entry=price,
+                    entry_atr=atr,
+                    initial_stop=decision.get('initial_sl', price-sign*1.5*atr),
+                    frame=snapshot['frame'],
+                    signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
+                    candidate_bar_id=signal.get('candidate_bar_id'),
+                    entry_mode=context.get('entry_mode'),
+                    entry_phase=decision.get('entry_phase')
+                )
+            except Exception:
+                pass
+
             log_count = len(getattr(self.account, 'logs', []))
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
                 amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Live1M '+decision['type'],
