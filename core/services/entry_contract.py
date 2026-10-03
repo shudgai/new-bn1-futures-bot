@@ -130,9 +130,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        execution_bar = float(latest.timestamp)+60000
-        if exit_bar is not None and execution_bar <= exit_bar:
-            return reject('WAIT_POST_EXIT_NEXT_BAR')
         decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                              live=live if len(frame) > len(closed) else None)
         if decision['action'] != 'ENTER':
@@ -140,6 +137,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
+            
+        # Post-exit formation verification: actual canonical K1 must strictly follow exit bar.
+        if exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar:
+            return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
             if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')

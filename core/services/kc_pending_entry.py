@@ -93,7 +93,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 return wait('WAIT_NEW_KC_BREAKOUT')
             if live is None:
                 return wait('WAIT_LIVE_THIRD_BAR')
-            stamp, opening, edge, price = map(float, (live.timestamp, live.open, live[key], quote))
+            edge_val = getattr(live, key, None)
+            if edge_val is None:
+                edge_val = live[key] if hasattr(live, '__getitem__') else 0
+            stamp, opening, edge, price = map(float, (live.timestamp, live.open, edge_val, quote))
             if (not all(math.isfinite(v) and v > 0 for v in (stamp, opening, edge, price))
                     or stamp != float(second.timestamp) + 60000 or bool(live.is_closed)):
                 return wait('WAIT_VALID_LIVE_THIRD_BAR')
@@ -103,8 +106,18 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 return wait('WAIT_VALID_LIVE_THIRD_BAR')
             span = max(high, price, opening) - min(low, price, opening)
             ratio = abs(price - opening) / span if span > 0 else 0.
-            if body <= 0 and (span <= 0 or above_limit(ratio, WEAK_BODY_MAX_RATIO)):
-                return wait('WAIT_THIRD_SAME_COLOR' if body == 0 else 'BLOCKED_THIRD_OPPOSITE_BODY')
+            if side == 'LONG':
+                direction_valid = price > opening
+            elif side == 'SHORT':
+                direction_valid = price < opening
+            else:
+                direction_valid = False
+
+            if not direction_valid:
+                return wait('BLOCKED_THIRD_OPPOSITE_BODY' if price != opening else 'WAIT_THIRD_SAME_COLOR')
+
+            if ratio <= 0.10:
+                return wait('WAIT_THIRD_STRONG_BODY')
             atr = float(second.atr)
             distance = sign * (price - edge) / atr
             if distance <= 0:

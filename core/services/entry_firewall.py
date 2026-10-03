@@ -21,6 +21,9 @@ def validate_entry_frame(frame, side, code):
     return EntryFirewall.verify_can_open(frame, side, code)
 
 async def validate_account_entry(account, symbol, side, context):
+    from core.config import is_entry_disabled
+    if is_entry_disabled(symbol):
+        raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
     
     is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']

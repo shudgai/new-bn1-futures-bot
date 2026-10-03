@@ -1176,6 +1176,17 @@ ENTRY_DISABLED_SYMBOLS = {
     if symbol.strip()
 }
 
+# Owner decision: no new PEPE exposure; held positions remain managed.
+ENTRY_DISABLED_SYMBOLS.add("1000PEPE/USDT")
+
+
+def is_entry_disabled(symbol: str) -> bool:
+    """Apply the entry-only denylist to CCXT, settled and exchange symbol forms."""
+    key = str(symbol).strip().upper().split(":", 1)[0].replace("/", "")
+    return any(key == item.strip().upper().split(":", 1)[0].replace("/", "")
+               for item in ENTRY_DISABLED_SYMBOLS)
+
+
 # 停用幣不可再占候選池名額；環境變數新增的停用幣也同步生效。
 SYMBOL_CANDIDATE_POOL[:] = [
     symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS

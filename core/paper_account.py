@@ -892,7 +892,11 @@ class PaperAccount:
 
     async def check_pending_limit_orders(self) -> None:
         """模擬掛單；支撐反轉單觸價後須先確認回收，避免接住持續下跌。"""
+        from core.config import is_entry_disabled
         for symbol, info in list(self.pending_limit_orders.items()):
+            if is_entry_disabled(symbol):
+                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
+                continue
             current_price = self.latest_prices.get(symbol)
             if current_price is None:
                 continue

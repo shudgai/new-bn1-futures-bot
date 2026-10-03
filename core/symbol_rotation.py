@@ -72,7 +72,7 @@ MEME_MIN_VOLUME_FACTOR = min(1.0, max(0.05, float(
 )))
 TREND_SCAN_RESERVE = max(0, int(os.getenv("TREND_SCAN_RESERVE", "16")))
 MEME_BASES = frozenset({
-    "DOGE", "1000SHIB", "SHIB", "1000PEPE", "PEPE", "WIF",
+    "DOGE", "1000SHIB", "SHIB", "WIF",
     "1000BONK", "BONK", "1000FLOKI", "FLOKI", "MEME", "DOGS",
     "BRETT", "POPCAT", "PNUT", "PENGU", "TRUMP", "FARTCOIN",
     "PUMP", "NEIRO", "1000SATS", "SATS",
@@ -387,7 +387,7 @@ class SymbolRotation:
         excluded_bases = {
             "BTC", "ETH", "BNB", "APT", "FET", "TAO",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
-            "USD1", "BUSD", "USTC",
+            "USD1", "BUSD", "USTC", "1000PEPE", "PEPE",
         }
         normal_ranked = []
         meme_ranked = []

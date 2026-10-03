@@ -2157,6 +2157,10 @@ class BinanceTestnetAccount:
         """
         # ✅ 修正：配合突破確認後限價回踩優化，90 分以上也完全恢復使用限價單，移除先前強制轉市價的設定。
         
+        from core.config import is_entry_disabled
+        if is_entry_disabled(symbol):
+            return False
+
         is_manual = entry_context is not None and entry_context.get("manual_entry") is True
 
         # DCA 分批掛單處理
@@ -2333,7 +2337,11 @@ class BinanceTestnetAccount:
         交易；被交易所取消/拒絕的直接清掉追蹤。超時/條件變差的主動撤單
         判斷交給 engine.py（需要策略/K線資料才能重新驗證條件），這裡只
         處理「有沒有成交」。"""
+        from core.config import is_entry_disabled
         for symbol, info in list(self.pending_limit_orders.items()):
+            if is_entry_disabled(symbol):
+                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
+                continue
             try:
                 order_status = await self.exchange.fetch_order(info["order_id"], symbol)
             except Exception as exc:

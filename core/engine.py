@@ -1724,10 +1724,10 @@ class TradingEngine:
         return 0.0
         
     @staticmethod
-    def _half_wallet_entry_margin(wallet, available, leverage):
+    def _full_wallet_entry_margin(wallet, available, leverage):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
-        return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
+        return min(wallet * 1.0, available / (1.0 + leverage * TAKER_FEE_RATE))
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
@@ -1764,6 +1764,9 @@ class TradingEngine:
             return opened
 
     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
+        from core.config import is_entry_disabled
+        if is_entry_disabled(symbol):
+            return False
         
         if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'):
 
@@ -1869,7 +1872,7 @@ class TradingEngine:
             if daily and daily()[0]:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
                 return False
-            amount = self._half_wallet_entry_margin(float(self.account.get_wallet_balance()),
+            amount = self._full_wallet_entry_margin(float(self.account.get_wallet_balance()),
                 float(self.account.get_available_balance()), leverage)
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
