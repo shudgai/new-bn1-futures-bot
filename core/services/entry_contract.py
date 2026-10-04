@@ -56,13 +56,18 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
 
         live = frame.iloc[-1]
         stamp = float(live['timestamp'])
+        prev_stamp = float(frame.iloc[-2]['timestamp'])
 
         return dict(action='ENTER', side=side, type=signal, reason=signal,
                     price=quote, entry_atr=atr, confirmation_bar_id=stamp,
                     close_price=float(frame.iloc[-2]['close']), intrabar=True,
                     entry_phase='KC_CONTINUATION_ENTRY',
                     breakout_bar_id=stamp,
+                    pair_confirmation_bar_id=prev_stamp,
+                    third_bar_id=stamp,
                     pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
+                    pending_second_bar_id=prev_stamp,
+                    pending_wait_bars=1, pending_max_wait_bars=1,
                     kc_confirmation_edge=edge, kc_distance_atr=distance,
                     kc_max_distance_atr=2.0)
     except Exception:
@@ -183,12 +188,27 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             exit_bar = max(exit_bar or saved_bar, saved_bar)
         fast_side = live_body_breakout_side(frame, quote) if len(frame) > len(closed) else None
         if fast_side:
+            atr_val = float(frame.iloc[-2]['atr'])
+            stamp_val = float(live.timestamp)
+            prev_stamp_val = float(frame.iloc[-2]['timestamp'])
             decision = {
                 'action': 'ENTER',
                 'side': fast_side,
                 'type': 'KC_LIVE_BODY_BREAKOUT_' + fast_side,
-                'pending_signal_id': f"{symbol}_LIVE_BREAKOUT_{int(float(live.timestamp))}_{fast_side}",
-                'breakout_bar_id': float(live.timestamp)
+                'reason': 'KC_LIVE_BODY_BREAKOUT_' + fast_side,
+                'price': quote,
+                'entry_atr': atr_val,
+                'confirmation_bar_id': stamp_val,
+                'close_price': float(frame.iloc[-2]['close']),
+                'intrabar': True,
+                'entry_phase': 'KC_LIVE_BODY_BREAKOUT',
+                'pending_signal_id': f"{symbol}_LIVE_BREAKOUT_{int(stamp_val)}_{fast_side}",
+                'breakout_bar_id': stamp_val,
+                'pair_confirmation_bar_id': prev_stamp_val,
+                'third_bar_id': stamp_val,
+                'pending_second_bar_id': prev_stamp_val,
+                'pending_wait_bars': 1,
+                'pending_max_wait_bars': 1
             }
         else:
             decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
