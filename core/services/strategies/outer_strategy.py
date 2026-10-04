@@ -203,12 +203,16 @@ def live_body_breakout_side(frame, price):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
 
+        # [EMERGENCY GUARD: 盤整就是不能開倉]
+        # 必須確認通道有明確方向 (KC方向不明 / ck_direction == None 時嚴格阻斷)
+        direction = ck_direction(frame)
+
         # LONG: 當根原始開盤價在當根上軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格破上軌 (price > upper)、順向實體至少 0.5 ATR
-        if price > upper and (price - opened) >= threshold and lower <= opened <= upper:
+        if direction == 'LONG' and price > upper and (price - opened) >= threshold and lower <= opened <= upper:
             return 'LONG'
 
         # SHORT: 當根原始開盤價在當根下軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格跌破下軌 (price < lower)、順向實體至少 0.5 ATR
-        if price < lower and (opened - price) >= threshold and lower <= opened <= upper:
+        if direction == 'SHORT' and price < lower and (opened - price) >= threshold and lower <= opened <= upper:
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass

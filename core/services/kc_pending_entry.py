@@ -72,6 +72,9 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     wait = lambda reason: dict(action='WAIT', reason=reason)
     if len(closed) < 2:
         return wait('WAIT_NEW_KC_BREAKOUT')
+        
+    from core.services.strategies.outer_strategy import ck_direction
+    direction = ck_direction(closed)
     if len(closed) < 3:
         # Check if first two closed bars are forming a valid breakout pair
         first, second = closed.iloc[-2], closed.iloc[-1]
@@ -84,6 +87,8 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if float(second.timestamp) - float(first.timestamp) != 60000:
                 return wait('WAIT_VALID_KC_PENDING_DATA')
             for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
+                if direction != side:
+                    continue
                 if (sign * (float(first.close) - float(first.open)) > 0
                         and sign * (float(first.open) - float(first[key])) <= 0
                         and sign * (float(first.close) - float(first[key])) > 0
@@ -106,6 +111,8 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         if float(second.timestamp) - float(first.timestamp) != 60000 or float(third.timestamp) - float(second.timestamp) != 60000:
             return wait('WAIT_VALID_KC_PENDING_DATA')
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
+            if direction != side:
+                continue
             k2_ma5_delta = sign * (float(second.ma5) - float(first.ma5))
             if not (sign * (float(first.close) - float(first.open)) > 0
                     and sign * (float(first.open) - float(first[key])) <= 0
