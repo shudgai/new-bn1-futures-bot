@@ -7,9 +7,9 @@ POLICY = 'abnormal_body_only_v2'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
-DOJI_RULE_VERSION = 2
+DOJI_RULE_VERSION = 3
 DOJI_BODY_RATIO = 0.25
-DOJI_ADVERSE_BODY_ATR = 0.5
+DOJI_ADVERSE_BODY_ATR = 0.20
 STATE_KEY = 'peak_trailing_state'
 PEAK_REASON = 'EXIT_REALTIME_PEAK_TRAILING'
 HARD_REASON = 'EXIT_INITIAL_ATR_HARD_STOP'
@@ -106,14 +106,12 @@ def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
 
 
 def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
-    """A completed doji followed immediately by a substantial adverse live body."""
+    """A completed doji (or stall) followed immediately by an adverse live body."""
     try:
-        if peak_gain_atr < 2.0:
-            return None
         stamp = float(snapshot['quote_ms'])
         bar = math.floor(stamp / 60000) * 60000
         if (snapshot['live_bar_ms'] != bar or snapshot['closed_bar_ms'] != bar - 60000
-                or float(snapshot['closed_bar_ms']) < opened_ms):
+                or float(snapshot['live_bar_ms']) < opened_ms - 60000):
             return None
         keys = ('last_open', 'last_high', 'last_low', 'last_close',
                 'live_open', 'live_high', 'live_low', 'atr')
@@ -125,7 +123,7 @@ def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_at
                 and low <= opening <= high):
             return None
         span = last_high - last_low
-        if span <= 0 or sign * (last_close - entry) <= 0:
+        if span <= 0:
             return None
         ratio = abs(last_close - last_open) / span
         if ratio > DOJI_BODY_RATIO and not math.isclose(ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
