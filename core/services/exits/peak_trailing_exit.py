@@ -347,12 +347,33 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         except Exception:
             pass
 
-        if peak_gain_atr >= 3.0:
-            # 1. 價格從最高點直接回踩 1.0 ATR (即時觸發)
-            drawdown_atr = (state['peak_price'] - price) / scale if sign == 1 else (price - state['peak_price']) / scale
+        # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
+        drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
+
+        if net > 0 and peak_gain_atr >= 0.5:
+            # 1. 價格從最高點回踩達 0.5 ATR
+            if drawdown_atr >= 0.5:
+                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
+            # 2. MA 轉向反轉賣壓 (ma5 或 ma3 反向拐頭)
+            elif isinstance(snapshot, dict):
+                ma5 = snapshot.get('ma5')
+                last_ma5 = snapshot.get('last_ma5')
+                ma3 = snapshot.get('ma3')
+                last_ma3 = snapshot.get('last_ma3')
+
+                ma_turned = False
+                if sign == 1:
+                    if (ma5 and last_ma5 and ma5 < last_ma5) or (ma3 and last_ma3 and ma3 < last_ma3):
+                        ma_turned = True
+                else:
+                    if (ma5 and last_ma5 and ma5 > last_ma5) or (ma3 and last_ma3 and ma3 > last_ma3):
+                        ma_turned = True
+
+                if ma_turned:
+                    parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_MA_TURN_PRESSURE'
+        elif peak_gain_atr >= 3.0:
             if drawdown_atr >= 1.0:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'
-            # 2. 已收線 MA3 (snapshot 中的 ma5) 明確反向拐頭
             elif isinstance(snapshot, dict):
                 ma5 = snapshot.get('ma5')
                 last_ma5 = snapshot.get('last_ma5')
@@ -499,7 +520,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             if reason:
                 soft_exit_blocked = False
-                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, 'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI'):
+                peak_exemptions = (
+                    'WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER,
+                    'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
+                    'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_PEAK_MA_TURN_PRESSURE',
+                    'EXIT_PARABOLIC_PULLBACK_1_ATR', 'EXIT_PARABOLIC_MA3_TURN'
+                )
+                if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
                         soft_exit_blocked = True
 
