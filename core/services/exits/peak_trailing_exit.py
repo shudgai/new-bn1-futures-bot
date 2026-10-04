@@ -492,6 +492,11 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
+            # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
+            if reason and reason != HARD_REASON and trigger != 'WATERFALL_DROP':
+                if net <= 0:
+                    reason, trigger = None, None
+
             if reason:
                 soft_exit_blocked = False
                 if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, 'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI'):

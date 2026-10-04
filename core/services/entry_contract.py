@@ -56,12 +56,19 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             return None
         if not live_adverse_entry_safe(frame, quote, side):
             return None
-        if not ma3_outer_continuation_ready(frame, quote, side):
+
+        mid = float(frame.iloc[-1].get('kc_middle', frame.iloc[-1].get('ema_20', 0)))
+        edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        
+        # Valid if outside outer rail OR on the correct side of KC middle during active trend:
+        is_outside_rail = sign * (quote - edge) > 0 and ma3_outer_continuation_ready(frame, quote, side)
+        is_trend_side_of_middle = sign * (quote - mid) > 0 and sign * (live_ma5 - mid) > 0
+        
+        if not (is_outside_rail or is_trend_side_of_middle):
             return None
 
-        edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
-        distance = sign * (quote - edge) / atr if atr > 0 else 0.
-        if distance <= 0 or distance > 2.0:
+        distance = sign * (quote - edge) / atr if is_outside_rail else sign * (quote - mid) / atr
+        if distance <= 0 or distance > 3.0:
             return None
 
         live = frame.iloc[-1]
@@ -78,8 +85,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
                     pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
                     pending_second_bar_id=prev_stamp,
                     pending_wait_bars=1, pending_max_wait_bars=1,
-                    kc_confirmation_edge=edge, kc_distance_atr=distance,
-                    kc_max_distance_atr=2.0)
+                    kc_confirmation_edge=edge if is_outside_rail else mid,
+                    kc_distance_atr=distance,
+                    kc_max_distance_atr=3.0)
     except Exception:
         return None
 
