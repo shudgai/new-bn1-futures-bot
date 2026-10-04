@@ -29,6 +29,10 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
     provided that the KC direction, live MA3 direction, live candle color, and outer band position
     remain consistently in favor of the trend.
     """
+    # [EMERGENCY FAIL-CLOSED]
+    # Temporarily disabled until Owner-approved
+    # PRIOR_VALID_BREAKOUT qualification is implemented.
+    return None
     try:
         side = ck_direction(frame)
         if not side:

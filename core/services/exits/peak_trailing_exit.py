@@ -349,8 +349,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
         if net > 0 and peak_gain_atr >= 0.5:
-            # 1. 價格從最高點回踩達 0.5 ATR
-            if drawdown_atr >= 0.5:
+            # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
+            if peak_gain_atr >= 3.0:
+                pullback_limit_atr = 0.35
+            elif peak_gain_atr >= 2.0:
+                pullback_limit_atr = 0.40
+            elif peak_gain_atr >= 1.0:
+                pullback_limit_atr = 0.50
+            else:
+                pullback_limit_atr = 0.60
+
+            # 1. 價格從最高點回踩達動態階梯門檻
+            if drawdown_atr >= pullback_limit_atr:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
             # 2. MA 轉向反轉賣壓 (ma5 或 ma3 反向拐頭)
             elif isinstance(snapshot, dict):
@@ -368,7 +378,10 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         ma_turned = True
 
                 if ma_turned:
-                    parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_MA_TURN_PRESSURE'
+                    # [EMERGENCY FAIL-CLOSED]
+                    # Single live MA3/MA5 adverse turn has no direct CLOSE authority.
+                    # parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_MA_TURN_PRESSURE'
+                    pass
         elif peak_gain_atr >= 3.0:
             if drawdown_atr >= 1.0:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'

@@ -40,6 +40,27 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
+## 嚴格開倉 Gate 規範（2026-10-04 最新授權）
+- **破軌開倉 Gate 嚴格條件**：
+  1. 當根原始開盤價必須在軌道內側或碰軌（多單與空單皆須滿足 `lower <= opened <= upper`）。
+  2. 當前最新價必須嚴格破軌（多單 `price > upper`，空單 `price < lower`）。
+  3. 當根順向實體長度必須至少達到前一根已收線 ATR 的 0.5 倍（`abs(price - opened) >= 0.5 * atr`）。
+  4. **跳空開盤已在外軌外（`opened > upper` 或 `opened < lower`）或沿軌道外連開者，一律嚴格 Fail-Closed 阻斷**，不得繞過 Gate 違規開倉。
+- **延續開倉與獲利重開防護**：
+  - 延續開倉（`evaluate_continuation_entry`）及獲利重開（`_profit_reentry_ready`）在未完成嚴格先行破軌資格與整合前，一律維持 **Fail-Closed 阻斷**。
+
+## 動態階梯鎖利與 MA 抖動防護（2026-10-04 最新授權）
+- **方案 2 動態 ATR 鎖利階梯（利潤越高，允許回吐 ATR 越小）**：
+  - `0.5 <= peak_gain_atr < 1.0`：允許回踩門檻為 **0.60 ATR**（防 1M 雜訊與正常回調甩轎）。
+  - `1.0 <= peak_gain_atr < 2.0`：允許回踩門檻為 **0.50 ATR**（鎖定 50% ~ 75% 獲利）。
+  - `2.0 <= peak_gain_atr < 3.0`：允許回踩門檻為 **0.40 ATR**（鎖定 80% ~ 87% 獲利）。
+  - `peak_gain_atr >= 3.0`：允許回踩門檻為 **0.35 ATR**（大波段噴出鎖定 ≥ 88% ~ 90%+ 獲利）。
+  - 價格自峰值回踩達到動態階梯門檻時，由 `EXIT_PEAK_PULLBACK_PRESSURE` 執行平倉。
+- **MA 抖動直接平倉權限停用**：
+  - 停用 `EXIT_PEAK_MA_TURN_PRESSURE`（即時 MA3/MA5 單點拐頭不具備直接平倉授權），避免盤中毛刺與雜訊誤平。
+- **基礎風控與出口維持**：
+  - 初始 ATR 硬止損（`EXIT_INITIAL_ATR_HARD_STOP`）、瀑布暴跌防護（Waterfall）、成熟反轉（Mature Reversal Pinbar）與帳戶硬止損均 100% 保持生效。
+
 
 ## 多空第一根長K即時破軌（2026-09-11最新授權）
 - 新增入口優先於一般CK中軌趨勢：當根原始開盤價在當根上軌內側或碰軌、最新價嚴格破上軌、順向實體至少上一根已收線ATR的0.5倍即評估多單；空單對稱以長紅實體跌破下軌。0.5為本輪實作預設，獨立於出口ATR参数。

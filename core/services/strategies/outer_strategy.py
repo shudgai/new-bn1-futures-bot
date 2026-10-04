@@ -203,12 +203,12 @@ def live_body_breakout_side(frame, price):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
 
-        # LONG: 價格在上軌外且順向實體至少 0.5 ATR (無論在軌內開盤穿出，或沿上軌外再次爆發長陽K)
-        if price > upper and (price - opened) >= threshold and opened >= lower:
+        # LONG: 當根原始開盤價在當根上軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格破上軌 (price > upper)、順向實體至少 0.5 ATR
+        if price > upper and (price - opened) >= threshold and lower <= opened <= upper:
             return 'LONG'
 
-        # SHORT: 價格在下軌外且順向實體至少 0.5 ATR (無論在軌內開盤跌破，或沿下軌外再次爆發長陰K)
-        if price < lower and (opened - price) >= threshold and opened <= upper:
+        # SHORT: 當根原始開盤價在當根下軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格跌破下軌 (price < lower)、順向實體至少 0.5 ATR
+        if price < lower and (opened - price) >= threshold and lower <= opened <= upper:
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass
