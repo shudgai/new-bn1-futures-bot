@@ -166,5 +166,15 @@ def test_continuation_entry_after_missed_breakout():
     assert res['side'] == 'LONG'
     assert res['entry_phase'] == 'KC_CONTINUATION_ENTRY'
 
+def test_flat_ma5_blocked():
+    # K3 has identical ma5 to K2 (flat MA5 slope)
+    k3 = build_k3_row(0.04997, 0.05015, 0.04997, 0.05010)
+    k3['ma5'] = 0.0498 # same as K2 ma5 (0.0498) -> delta = 0
+    df = build_test_frame_long(third_bar=k3)
+    decision = evaluate_kc_pending_entry(df, quote=0.05010, code='KC_3BAR_CONFIRM_LONG')
+    assert decision['action'] == 'WAIT'
+    assert decision['reason'] == 'BLOCKED_FLAT_MA5'
+
+
 
 

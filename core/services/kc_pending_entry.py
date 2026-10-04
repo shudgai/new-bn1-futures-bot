@@ -18,6 +18,7 @@ STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
 MIN_ENTRY_BODY_ATR = 0.25
 MAX_ADVERSE_ATR = 0.50
+MIN_MA5_SLOPE_ATR = 0.01
 
 # Bounded LRU cache for invalidated signals.
 # Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
@@ -105,14 +106,23 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         if float(second.timestamp) - float(first.timestamp) != 60000 or float(third.timestamp) - float(second.timestamp) != 60000:
             return wait('WAIT_VALID_KC_PENDING_DATA')
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
+            k2_ma5_delta = sign * (float(second.ma5) - float(first.ma5))
             if not (sign * (float(first.close) - float(first.open)) > 0
                     and sign * (float(first.open) - float(first[key])) <= 0
                     and sign * (float(first.close) - float(first[key])) > 0
                     and sign * (float(second.close) - float(second.open)) > 0
                     and sign * (float(second.close) - float(second[key])) > 0
                     and sign * (float(second.ma5) - float(second.ma15)) > 0
-                    and sign * (float(second.ma5) - float(first.ma5)) > 0):
+                    and k2_ma5_delta > 0):
                 continue
+
+            t_atr = float(third.atr)
+            if t_atr > 0 and k2_ma5_delta / t_atr < MIN_MA5_SLOPE_ATR:
+                return wait('BLOCKED_FLAT_MA5')
+
+            k3_ma5_delta = sign * (float(third.ma5) - float(second.ma5))
+            if k3_ma5_delta <= 0 or (t_atr > 0 and k3_ma5_delta / t_atr < MIN_MA5_SLOPE_ATR):
+                return wait('BLOCKED_FLAT_MA5')
 
             signal = 'KC_3BAR_CONFIRM_' + side
             if code is not None and code != signal:

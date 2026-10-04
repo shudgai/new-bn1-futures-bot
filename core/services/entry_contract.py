@@ -38,6 +38,18 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             return None
 
         quote = float(quote)
+        atr = float(frame.iloc[-2]['atr'])
+        sign = 1 if side == 'LONG' else -1
+
+        # Check MA5 direction & non-flat slope
+        closes = [float(v) for v in frame['close'].iloc[-5:-1]]
+        if len(closes) >= 4:
+            live_ma5 = (sum(closes[-4:]) + quote) / 5.0
+            last_ma5 = float(frame.iloc[-2]['ma5'])
+            ma5_slope = sign * (live_ma5 - last_ma5)
+            if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < 0.01):
+                return None
+
         if not live_ma3_direction_ready(frame, quote, side):
             return None
         if not live_candle_color_ready(frame, quote, side):
@@ -47,9 +59,7 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         if not ma3_outer_continuation_ready(frame, quote, side):
             return None
 
-        atr = float(frame.iloc[-2]['atr'])
         edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
-        sign = 1 if side == 'LONG' else -1
         distance = sign * (quote - edge) / atr if atr > 0 else 0.
         if distance <= 0 or distance > 2.0:
             return None
@@ -213,7 +223,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         else:
             decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                                  live=live if len(frame) > len(closed) else None)
-            if decision['action'] != 'ENTER':
+            # If 3-bar entry is not ready, or is an old breakout from before exit:
+            if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
                 cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
                 if cont_decision and cont_decision['action'] == 'ENTER':
                     decision = cont_decision
