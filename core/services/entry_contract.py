@@ -109,19 +109,12 @@ def is_entry_doji(row, quote=None):
 
 
 def entry_doji_problem(closed, live, quote):
+    # 無論漲勢或跌勢，只要出現十字線（走到後面時）就不要再開倉
     if is_entry_doji(live, quote):
         return 'BLOCKED_LIVE_DOJI'
     bars = [row for _, row in closed.tail(2).iterrows()]
-    current = live.copy()
-    current['close'] = quote
-    for row, following in zip(bars, bars[1:] + [current]):
-        if not is_entry_doji(row):
-            continue
-        # Only an immediate same-color non-doji successor confirms a doji.
-        # A zero body has no color; live confirmation uses the fresh quote.
-        body = float(row.close) - float(row.open)
-        next_body = float(following.close) - float(following.open)
-        if is_entry_doji(following) or body * next_body <= 0:
+    for row in bars:
+        if is_entry_doji(row):
             return 'BLOCKED_CLOSED_DOJI'
     return None
 
@@ -237,6 +230,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
+
+        # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
+        doji_reject = entry_doji_problem(closed, live, quote)
+        if doji_reject:
+            return reject(doji_reject)
 
         # Strict live candle color guard: Never open Long on a red live candle, never open Short on a green live candle
         live_open = float(live['open'])
