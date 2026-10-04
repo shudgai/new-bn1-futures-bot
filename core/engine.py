@@ -1822,7 +1822,7 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = self._half_wallet_entry_margin(wallet, available, leverage)
+        amount = self._full_wallet_entry_margin(wallet, available, leverage)
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)

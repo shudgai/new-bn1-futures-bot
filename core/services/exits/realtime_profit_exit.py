@@ -22,6 +22,20 @@ def cached_tick_indicators(frame, price, stamp):
         snapshot['reason'] = 'NO_DATA'
         return snapshot, 0.
 
+    # Extract up to 5 last closed bars for mature reversal rehydration
+    history_bars = []
+    for _, b in closed.iloc[-5:].iterrows():
+        history_bars.append({
+            'ms': float(b.get('timestamp', 0)),
+            'o': float(b.get('open', 0)),
+            'h': float(b.get('high', 0)),
+            'l': float(b.get('low', 0)),
+            'c': float(b.get('close', 0)),
+            'ma3': float(b.get('ma3', 0)),
+            'ma5': float(b.get('ma5', b.get('ma3', 0)))
+        })
+    snapshot['history_5'] = history_bars
+
     last = closed.iloc[-1]
     prev = closed.iloc[-2]
     last_ms = float(last.get('timestamp', 0))
@@ -36,9 +50,10 @@ def cached_tick_indicators(frame, price, stamp):
     snapshot.update(
         snapshot_bar_id=last_ms,
         live_bar_id=bar,
+        ma3=float(last.get('ma3', 0.)),
         ma5=float(last.get('ma5', last.get('ma3', 0.))),
         ma15=float(last.get('ma15', 0.)),
-        kc_middle=float(last.get('kc_middle', 0.)),
+        last_ma3=float(prev.get('ma3', 0.)),
         last_ma5=float(prev.get('ma5', prev.get('ma3', 0.))),
         last_ma15=float(prev.get('ma15', 0.)),
         last_close=float(last.get('close', 0.))

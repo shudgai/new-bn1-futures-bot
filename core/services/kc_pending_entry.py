@@ -16,6 +16,8 @@ WEAK_BODY_MAX_RATIO = 0.25
 MAX_DISTANCE_ATR = 0.5
 STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
+MIN_ENTRY_BODY_ATR = 0.25
+MAX_ADVERSE_ATR = 0.50
 
 # Bounded LRU cache for invalidated signals.
 # Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
@@ -106,19 +108,32 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 return wait('WAIT_VALID_LIVE_THIRD_BAR')
             span = max(high, price, opening) - min(low, price, opening)
             ratio = abs(price - opening) / span if span > 0 else 0.
+            atr = float(second.atr)
+            
             if side == 'LONG':
                 direction_valid = price > opening
+                body_atr = (price - opening) / atr if atr > 0 else 0.
+                adverse_atr = (opening - low) / atr if atr > 0 else 0.
             elif side == 'SHORT':
                 direction_valid = price < opening
+                body_atr = (opening - price) / atr if atr > 0 else 0.
+                adverse_atr = (high - opening) / atr if atr > 0 else 0.
             else:
                 direction_valid = False
+                body_atr = 0.
+                adverse_atr = 0.
 
             if not direction_valid:
                 return wait('BLOCKED_THIRD_OPPOSITE_BODY' if price != opening else 'WAIT_THIRD_SAME_COLOR')
 
             if ratio <= 0.10:
                 return wait('WAIT_THIRD_STRONG_BODY')
-            atr = float(second.atr)
+                
+            if body_atr < MIN_ENTRY_BODY_ATR:
+                return wait('WAIT_THIRD_MIN_BODY_ATR')
+                
+            if adverse_atr > MAX_ADVERSE_ATR:
+                return wait('BLOCKED_THIRD_ADVERSE_EXCURSION')
             distance = sign * (price - edge) / atr
             if distance <= 0:
                 return wait('KC_PENDING_CANCELLED_INSIDE_RAIL')

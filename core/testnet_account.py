@@ -10,6 +10,7 @@ import os
 import time
 import ccxt.async_support as ccxt
 import re
+from decimal import Decimal
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -139,7 +140,9 @@ class BinanceTestnetAccount:
     the engine.
     """
 
-    def __init__(self, exchange):
+    def __init__(self, exchange, state_file: Optional[str] = None):
+        # State path DI: None keeps the production default (module STATE_FILE).
+        self._state_file = state_file
         self.exchange = exchange
         
         # ==================================================
@@ -151,8 +154,15 @@ class BinanceTestnetAccount:
             from core.services.entry_firewall import validate_account_entry
             params = dict(params or {})
             context = params.pop('_entry_context', None)
-            is_reduce = (params.get('reduceOnly') in (True, 'true', 'TRUE')
-                         or params.get('closePosition') in (True, 'true', 'TRUE'))
+            is_live_mainnet = self._is_live_mainnet()
+
+            # Hard safety: on Live Mainnet only an exchange-position-verified
+            # reducing order may bypass the account circuit breaker gate.
+            is_reducing = self._is_verified_reducing_order(symbol, side, amount, params)
+            if is_live_mainnet and not is_reducing:
+                self._assert_live_entry_allowed()
+
+            is_reduce = is_reducing or (not is_live_mainnet and (params.get('reduceOnly') in (True, 'true', 'TRUE') or params.get('closePosition') in (True, 'true', 'TRUE')))
             if not is_reduce:
                 if side not in ('buy', 'sell'):
                     raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
@@ -223,7 +233,18 @@ class BinanceTestnetAccount:
         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
         self._rapid_drop_cooldown: Dict[str, float] = {}
         self.tickers: Dict[str, float] = {}
-        self.staged_state_directory = f"{STATE_FILE}.staged"
+        self.staged_state_directory = f"{self._state_path()}.staged"
+        # Account-level 15% circuit breaker (Live Mainnet only). Persisted;
+        # never reset by refresh, restart, close or equity recovery.
+        self.live_session_start_equity = None
+        self.circuit_breaker_latched = False
+        self.trigger_timestamp = None
+        self.trigger_equity = None
+        self.trigger_drawdown = None
+        self.circuit_breaker_position_flattened = None
+        self.circuit_breaker_status = None
+        self.live_session_equity_available = False
+        self._circuit_breaker_running = False
         self.staged_risk_runtimes = {}
         self._staged_stores = {}
         self._load_state()
@@ -243,11 +264,218 @@ class BinanceTestnetAccount:
 
 
 
+
+    # ==================================================
+    # [ACCOUNT CIRCUIT BREAKER] Live Mainnet 15% session drawdown latch
+    # ==================================================
+    CIRCUIT_BREAKER_EQUITY_RATIO = Decimal("0.85")
+
+    @staticmethod
+    def _is_live_mainnet() -> bool:
+        from core.config import PAPER_TRADING, USE_TESTNET
+        return (not PAPER_TRADING) and (not USE_TESTNET)
+
+    @staticmethod
+    def _parse_live_equity(value) -> Decimal:
+        """Strict Decimal parse; malformed / non-finite / non-positive raises."""
+        if value is None or isinstance(value, bool):
+            raise ValueError("equity missing")
+        parsed = Decimal(str(value).strip())
+        if not parsed.is_finite() or parsed <= 0:
+            raise ValueError(f"equity invalid: {value!r}")
+        return parsed
+
+    def _assert_live_entry_allowed(self) -> None:
+        """Fail-closed opening-order gate for Live Mainnet."""
+        if getattr(self, "circuit_breaker_latched", False):
+            raise ValueError("[FORBIDDEN_ENTRY] Circuit Breaker Latched")
+        try:
+            self._parse_live_equity(getattr(self, "live_session_start_equity", None))
+        except Exception:
+            raise ValueError("[FORBIDDEN_ENTRY] Baseline Missing")
+        if not getattr(self, "live_session_equity_available", False):
+            raise ValueError("[FORBIDDEN_ENTRY] Equity Unavailable")
+
+    def _is_verified_reducing_order(self, symbol, side, qty, params) -> bool:
+        """True only if the order provably cannot increase exposure.
+
+        reduceOnly/closePosition flag alone is NOT sufficient: the order side
+        must oppose the exchange-synced position and qty must be > 0 and
+        <= the current position qty. Anything unprovable fails closed."""
+        try:
+            params = params or {}
+            flagged = (params.get("reduceOnly") in (True, 'true', 'TRUE')
+                       or params.get("closePosition") in (True, 'true', 'TRUE'))
+            if not flagged:
+                return False
+            pos = self.positions.get(self._clean_symbol(symbol))
+            if not pos:
+                return False
+            pos_side = str(pos.get("side", "")).upper()
+            order_side = str(side or "").lower()
+            if not ((pos_side == "LONG" and order_side == "sell")
+                    or (pos_side == "SHORT" and order_side == "buy")):
+                return False
+            pos_qty = abs(Decimal(str(pos.get("qty"))))
+            if not pos_qty.is_finite() or pos_qty <= 0:
+                return False
+            if qty is None:
+                # closePosition without quantity closes at most the position.
+                return params.get("closePosition") in (True, 'true', 'TRUE')
+            order_qty = Decimal(str(qty))
+            return order_qty.is_finite() and Decimal("0") < order_qty <= pos_qty
+        except Exception:
+            return False
+
+    async def _check_live_circuit_breaker(self) -> None:
+        """Fetch exchange equity, evaluate the Decimal boundary, run flatten."""
+        if not self._is_live_mainnet():
+            return
+        current_equity = None
+        try:
+            account_data = await self.exchange.fapiPrivateV2GetAccount()
+            current_equity = self._parse_live_equity(
+                (account_data or {}).get("totalMarginBalance"))
+            self.live_session_equity_available = True
+        except Exception as exc:
+            self.live_session_equity_available = False
+            self.log(f"⚠️ [CIRCUIT_BREAKER] equity unavailable, live entry blocked: {exc}", "WARNING")
+        if current_equity is not None and not self.circuit_breaker_latched:
+            try:
+                baseline = self._parse_live_equity(self.live_session_start_equity)
+            except Exception:
+                baseline = None  # entry gate already blocks on missing baseline
+            if baseline is not None and current_equity <= baseline * self.CIRCUIT_BREAKER_EQUITY_RATIO:
+                self._latch_circuit_breaker(current_equity, baseline)
+        if self.circuit_breaker_latched and self.circuit_breaker_position_flattened is not True:
+            await self._run_circuit_breaker_flatten()
+
+    def _latch_circuit_breaker(self, current_equity: Decimal, baseline: Decimal) -> None:
+        """A. Persist LATCH first (before any exchange action)."""
+        self.circuit_breaker_latched = True
+        self.trigger_timestamp = time.time()
+        self.trigger_equity = str(current_equity)
+        self.trigger_drawdown = str((current_equity - baseline) / baseline)
+        self.circuit_breaker_position_flattened = False
+        self.circuit_breaker_status = "LATCHED"
+        self.save_state(strict=True)
+        self.log(
+            f"🛑 [CIRCUIT_BREAKER] LATCHED equity={current_equity} baseline={baseline} "
+            f"drawdown={self.trigger_drawdown}", "WARNING")
+
+    async def _run_circuit_breaker_flatten(self) -> dict:
+        """C..I. Exchange-authoritative flatten. Never cancels protective
+        SL/TP and never uses local JSON as exchange truth."""
+        report = {"positions_fetched": False, "entry_orders_cancelled": [],
+                  "pending_entry_status": None, "close_attempts": [],
+                  "position_flattened": False, "orphan_protection_candidates": []}
+        if self._circuit_breaker_running:
+            report["status"] = "ALREADY_RUNNING"
+            return report
+        self._circuit_breaker_running = True
+        try:
+            # C. Exchange-authoritative positions.
+            try:
+                raw_positions = await self.exchange.fapiPrivateV2GetPositionRisk()
+                report["positions_fetched"] = True
+            except Exception as exc:
+                self.circuit_breaker_status = "BLOCKED_BY_RECONCILIATION:POSITIONS_UNAVAILABLE"
+                self.log(f"🛑 [CIRCUIT_BREAKER] positionRisk unavailable: {exc}", "WARNING")
+                report["status"] = self.circuit_breaker_status
+                return report
+            open_positions = [p for p in (raw_positions or [])
+                              if abs(Decimal(str(p.get("positionAmt") or 0))) > 0]
+
+            # D/E. Exchange-authoritative pending ENTRY orders, exact-ID cancel.
+            try:
+                open_orders = await self.exchange.fetch_open_orders()
+            except Exception as exc:
+                open_orders = None
+                report["pending_entry_status"] = "BLOCKED_BY_RECONCILIATION"
+                self.log(f"🛑 [CIRCUIT_BREAKER] open orders unavailable: {exc}", "WARNING")
+            for order in open_orders or []:
+                info = order.get("info") if isinstance(order.get("info"), dict) else {}
+                protective = (order.get("reduceOnly") in (True, 'true', 'TRUE')
+                              or info.get("reduceOnly") in (True, 'true', 'TRUE')
+                              or info.get("closePosition") in (True, 'true', 'TRUE'))
+                if protective or str(order.get("type", "")).lower() != "limit" or not order.get("id"):
+                    continue  # F. Preserve protective / unknown orders.
+                try:
+                    await self.exchange.cancel_order(order["id"], order.get("symbol"))
+                    report["entry_orders_cancelled"].append(order["id"])
+                except Exception as exc:
+                    self.log(f"🛑 [CIRCUIT_BREAKER] entry cancel failed id={order['id']}: {exc}", "WARNING")
+            if open_orders is not None:
+                report["pending_entry_status"] = "PROCESSED"
+
+            # G. Verified reduce-only market close for every exchange position.
+            for row in open_positions:
+                signed = Decimal(str(row.get("positionAmt")))
+                symbol = self._clean_symbol(row.get("symbol", ""))
+                close_side = "sell" if signed > 0 else "buy"
+                attempt = {"symbol": symbol, "qty": str(abs(signed)), "ok": False}
+                try:
+                    await self._raw_create_order(
+                        symbol, "market", close_side, float(abs(signed)), None, {"reduceOnly": True})
+                    attempt["ok"] = True
+                except Exception as exc:
+                    attempt["error"] = f"{type(exc).__name__}: {exc}"
+                    self.log(f"🛑 [CIRCUIT_BREAKER] emergency close failed {symbol}: {exc}", "WARNING")
+                report["close_attempts"].append(attempt)
+
+            # H. Re-fetch PositionRisk; I. only flat symbols become orphan candidates.
+            try:
+                after = await self.exchange.fapiPrivateV2GetPositionRisk()
+                remaining = [p for p in (after or [])
+                             if abs(Decimal(str(p.get("positionAmt") or 0))) > 0]
+                flattened = not remaining
+            except Exception as exc:
+                remaining, flattened = None, False
+                self.log(f"🛑 [CIRCUIT_BREAKER] re-fetch positionRisk failed: {exc}", "WARNING")
+            report["position_flattened"] = flattened
+            if flattened:
+                # Report only; Patch A forbids automatic orphan deletion.
+                report["orphan_protection_candidates"] = [
+                    self._clean_symbol(p.get("symbol", "")) for p in open_positions]
+            self.circuit_breaker_position_flattened = flattened
+            self.circuit_breaker_status = (
+                "FLATTENED" if flattened else "POSITION_FLATTENED_FALSE")
+            if report["pending_entry_status"] == "BLOCKED_BY_RECONCILIATION":
+                self.circuit_breaker_status += "|PENDING_ENTRY_BLOCKED_BY_RECONCILIATION"
+            self.save_state(strict=True)
+            if not flattened:
+                self.log("🛑 [CIRCUIT_BREAKER] POSITION_FLATTENED = FALSE; latch kept, entry blocked", "WARNING")
+            report["status"] = self.circuit_breaker_status
+            return report
+        finally:
+            self._circuit_breaker_running = False
+
+    def _owner_reset_live_session_baseline(self, new_baseline, *, owner_authorized: bool = False) -> None:
+        """Internal OWNER-only hook (no HTTP exposure). Sets a new baseline and
+        clears the latch only with explicit authorization and a verified flat book."""
+        if owner_authorized is not True:
+            raise PermissionError("[CIRCUIT_BREAKER] owner authorization required")
+        baseline = self._parse_live_equity(new_baseline)
+        if self.circuit_breaker_latched and self.circuit_breaker_position_flattened is not True:
+            raise PermissionError("[CIRCUIT_BREAKER] cannot reset before exchange-verified flat")
+        self.live_session_start_equity = str(baseline)
+        self.circuit_breaker_latched = False
+        self.trigger_timestamp = self.trigger_equity = self.trigger_drawdown = None
+        self.circuit_breaker_position_flattened = None
+        self.circuit_breaker_status = "OWNER_RESET"
+        self.save_state(strict=True)
+
+
+    def _state_path(self) -> str:
+        """Injected state path, else the production default STATE_FILE."""
+        return getattr(self, "_state_file", None) or STATE_FILE
+
     def _load_state(self) -> None:
-        if not os.path.exists(STATE_FILE):
+        state_file = self._state_path()
+        if not os.path.exists(state_file):
             return
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as handle:
+            with open(state_file, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
             self.realized_pnl = float(data.get("realized_pnl", 0.0))
             self.trades = data.get("trades", [])
@@ -276,11 +504,19 @@ class BinanceTestnetAccount:
             loaded_shadow_last = data.get("shadow_parameter_last", {})
             if isinstance(loaded_shadow_last, dict):
                 self.shadow_parameter_last = loaded_shadow_last
+            self.live_session_start_equity = data.get('live_session_start_equity')
+            self.circuit_breaker_latched = bool(data.get('circuit_breaker_latched', False))
+            self.trigger_timestamp = data.get('trigger_timestamp')
+            self.trigger_equity = data.get('trigger_equity')
+            self.trigger_drawdown = data.get('trigger_drawdown')
+            self.circuit_breaker_position_flattened = data.get('circuit_breaker_position_flattened')
+            self.circuit_breaker_status = data.get('circuit_breaker_status')
         except Exception:
             pass
 
     def save_state(self, *, strict: bool = False) -> None:
-        os.makedirs(DATA_DIR, exist_ok=True)
+        state_file = self._state_path()
+        os.makedirs(os.path.dirname(state_file), exist_ok=True)
         now_ts = time.time()
         last_closed_at = {
             symbol: ts for symbol, ts in self.last_closed_at.items()
@@ -303,17 +539,24 @@ class BinanceTestnetAccount:
             "entry_filter_last": self.entry_filter_last,
             "shadow_parameter_stats": self.shadow_parameter_stats,
             "shadow_parameter_last": self.shadow_parameter_last,
+            'live_session_start_equity': self.live_session_start_equity,
+            'circuit_breaker_latched': self.circuit_breaker_latched,
+            'trigger_timestamp': self.trigger_timestamp,
+            'trigger_equity': self.trigger_equity,
+            'trigger_drawdown': self.trigger_drawdown,
+            'circuit_breaker_position_flattened': self.circuit_breaker_position_flattened,
+            'circuit_breaker_status': self.circuit_breaker_status,
         }
-        tmp_file = f"{STATE_FILE}.tmp"
+        tmp_file = f"{state_file}.tmp"
         try:
             with open(tmp_file, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
                 if strict:
                     handle.flush()
                     os.fsync(handle.fileno())
-            os.replace(tmp_file, STATE_FILE)
+            os.replace(tmp_file, state_file)
             if strict:
-                directory = os.open(os.path.dirname(STATE_FILE), os.O_RDONLY | os.O_DIRECTORY)
+                directory = os.open(os.path.dirname(state_file), os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     os.fsync(directory)
                 finally:
@@ -462,6 +705,13 @@ class BinanceTestnetAccount:
 
         previous = dict(self.positions)
         close_generation = dict(getattr(self, "_close_generation", {}))
+        # Account circuit breaker runs first (Live Mainnet only; no-op otherwise).
+        try:
+            await self._check_live_circuit_breaker()
+        except Exception as exc:
+            self.live_session_equity_available = False
+            self.log(f"⚠️ [CIRCUIT_BREAKER] check error, live entry blocked: {exc}", "WARNING")
+
         balance_rows = await self.exchange.fapiPrivateV2GetBalance()
         usdt = next((row for row in balance_rows if row.get("asset") == "USDT"), {})
         self.balance = float(usdt.get("balance") or 0.0)
@@ -555,7 +805,99 @@ class BinanceTestnetAccount:
                     and not staged_enabled({}, self.position_meta[symbol])):
                 self.position_meta.pop(symbol, None)
         self.save_state()
+        asyncio.create_task(self._fetch_exchange_order_snapshot())
         return self.unrealized_pnl
+
+    async def _fetch_exchange_order_snapshot(self) -> None:
+        """PATCH A: Read-only reconciliation of exchange state vs local state.
+        Never modifies local state, only compares and logs differences (SHADOW MODE)."""
+        try:
+            snapshot = {
+                "exchange_positions": {},
+                "exchange_pending_entries": {},
+                "exchange_normal_reduce_only_orders": {},
+                "exchange_algo_stop_orders": {},
+                "exchange_algo_take_profit_orders": {}
+            }
+            
+            symbols_to_check = set(self.positions.keys()) | set(self.pending_limit_orders.keys()) | set(self.position_meta.keys())
+            
+            for symbol in symbols_to_check:
+                try:
+                    normal_orders = await self.exchange.fetch_open_orders(symbol)
+                    algo_orders = await self.exchange.request("algoOpenOrders", "fapiPrivate", "GET", {"symbol": self._raw_symbol(symbol)})
+                except Exception as exc:
+                    self.log(f"⚠️ [Shadow Recon] API Error for {symbol}: {type(exc).__name__}: {exc}", "WARNING")
+                    self._reconciliation_status = "ERROR"
+                    return
+                
+                for order in normal_orders:
+                    order_id = order.get("id")
+                    info = order.get("info", {})
+                    is_reduce = info.get("reduceOnly") in (True, 'true', 'TRUE')
+                    if order.get("type") == "limit" and not is_reduce:
+                        snapshot["exchange_pending_entries"][order_id] = order
+                    elif is_reduce:
+                        snapshot["exchange_normal_reduce_only_orders"][order_id] = order
+                    else:
+                        self.log(f"⚠️ [Shadow Recon] UNKNOWN_ORDER_CLASSIFICATION: {symbol} ID={order_id} type={order.get('type')}", "WARNING")
+                
+                for algo in algo_orders:
+                    algo_id = algo.get("algoId") or algo.get("id")
+                    a_type = algo.get("type")
+                    if a_type == "STOP_MARKET":
+                        snapshot["exchange_algo_stop_orders"].setdefault(symbol, []).append(algo)
+                    elif a_type == "TAKE_PROFIT_MARKET":
+                        snapshot["exchange_algo_take_profit_orders"].setdefault(symbol, []).append(algo)
+                    else:
+                        self.log(f"⚠️ [Shadow Recon] UNKNOWN ALGO TYPE: {symbol} ID={algo_id} type={a_type}", "WARNING")
+
+            self._reconciliation_status = "SUCCESS"
+            
+            for symbol, pos in self.positions.items():
+                local_sl = float(self.position_meta.get(symbol, {}).get("sl", 0.0))
+                local_tp = float(self.position_meta.get(symbol, {}).get("tp", 0.0))
+                
+                # Check SLs
+                algo_sls = snapshot["exchange_algo_stop_orders"].get(symbol, [])
+                working_sls = [s for s in algo_sls if s.get("algoStatus") == "WORKING"]
+                if len(working_sls) == 1:
+                    exch_sl_price = float(working_sls[0].get("stopPrice") or working_sls[0].get("triggerPrice", 0.0))
+                    if abs(exch_sl_price - local_sl) > 1e-6:
+                        self.log(f"⚠️ [Shadow Recon] SL_PRICE_MISMATCH for {symbol}: Local={local_sl} Exchange={exch_sl_price}", "WARNING")
+                elif len(working_sls) > 1:
+                    self.log(f"⚠️ [Shadow Recon] MULTIPLE_EXCHANGE_SL for {symbol}: {len(working_sls)} active SLs", "WARNING")
+                elif len(working_sls) == 0:
+                    if local_sl > 0:
+                        self.log(f"⚠️ [Shadow Recon] SL_LOCAL_ONLY for {symbol}: Local={local_sl} Exchange=MISSING", "WARNING")
+                    else:
+                        self.log(f"⚠️ [Shadow Recon] POSITION_EXCHANGE_ONLY with NO SL for {symbol}", "WARNING")
+
+                # Check TPs
+                algo_tps = snapshot["exchange_algo_take_profit_orders"].get(symbol, [])
+                working_tps = [s for s in algo_tps if s.get("algoStatus") == "WORKING"]
+                if len(working_tps) == 0 and local_tp > 0:
+                    self.log(f"⚠️ [Shadow Recon] TP_LOCAL_ONLY for {symbol}: Local={local_tp} Exchange=MISSING", "WARNING")
+                elif len(working_tps) > 0 and local_tp <= 0:
+                    self.log(f"⚠️ [Shadow Recon] TP_EXCHANGE_ONLY for {symbol}: {len(working_tps)} active TPs", "WARNING")
+
+            for symbol, sls in snapshot["exchange_algo_stop_orders"].items():
+                working_sls = [s for s in sls if s.get("algoStatus") == "WORKING"]
+                if working_sls and symbol not in self.positions:
+                    self.log(f"⚠️ [Shadow Recon] ORPHAN_REDUCE_ONLY_ORDER (SL) for {symbol} but no active position", "WARNING")
+
+            exch_pending = [o for o in snapshot["exchange_pending_entries"].values()]
+            exch_pending_symbols = {o.get("symbol") for o in exch_pending}
+            for symbol in exch_pending_symbols:
+                if symbol not in self.pending_limit_orders:
+                    self.log(f"⚠️ [Shadow Recon] PENDING_ENTRY_EXCHANGE_ONLY for {symbol}", "WARNING")
+            for symbol in self.pending_limit_orders:
+                if not any(o.get("symbol") == self._raw_symbol(symbol) for o in exch_pending):
+                    self.log(f"⚠️ [Shadow Recon] PENDING_ENTRY_LOCAL_ONLY for {symbol}", "WARNING")
+
+        except Exception as exc:
+            self.log(f"⚠️ [Shadow Recon] Critical Error: {exc}", "WARNING")
+            self._reconciliation_status = "ERROR"
 
     @staticmethod
     def _protection_type_from_order(order: dict) -> Optional[str]:
@@ -2689,18 +3031,7 @@ class BinanceTestnetAccount:
         qty = position["qty"]
         try:
             new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl_price))
-            is_channel_swing = str(
-                position.get("entry_mode") or meta.get("entry_mode") or ""
-            ).upper() == "CHANNEL_SWING"
-            if is_channel_swing and mark_profit_locked:
-                meta["sl"] = new_sl_price
-                meta["is_breakeven_moved"] = True
-                position["sl"] = new_sl_price
-                position["is_breakeven_moved"] = True
-                self.position_meta[symbol] = meta
-                self.positions[symbol] = position
-                self.save_state()
-                return True
+
             # 取消所有現有保護單
             await self._cancel_all_orders(symbol)
             # 重新掛新止損單

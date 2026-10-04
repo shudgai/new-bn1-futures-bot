@@ -147,6 +147,116 @@ def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_at
         return None
 
 
+def evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr):
+    """Evaluates mature swing reversal exit using strictly CLOSED bars."""
+    try:
+        if not positive(entry_atr):
+            return None
+
+        closed_bar_ms = snapshot.get('closed_bar_ms')
+        if closed_bar_ms is None or not positive(closed_bar_ms):
+            return None
+        closed_bar_ms = float(closed_bar_ms)
+
+        try:
+            position_open_ms = float(position.get('open_timestamp', 0))
+            if position_open_ms < 1e11: # if seconds, convert to ms
+                position_open_ms *= 1000
+        except (TypeError, ValueError):
+            position_open_ms = float('inf')
+
+        closed_history = state.get('closed_history', [])
+
+        if 'history_5' in snapshot:
+            raw_history = snapshot['history_5']
+            closed_history = []
+            for b in raw_history:
+                is_mature = False
+                c, o, h, l = b['c'], b['o'], b['h'], b['l']
+                ma3, ma5 = b['ma3'], b['ma5']
+                if all(positive(v) for v in (c, o, h, l, ma3, ma5)):
+                    if sign == 1:
+                        is_mature = ((l > ma5) or (c > ma3)) and (b['ms'] >= position_open_ms)
+                    else:
+                        is_mature = ((h < ma5) or (c < ma3)) and (b['ms'] >= position_open_ms)
+                closed_history.append({
+                    'ms': b['ms'], 'o': o, 'h': h, 'l': l, 'c': c,
+                    'ma3': ma3, 'ma5': ma5, 'is_mature': is_mature
+                })
+            state['closed_history'] = closed_history
+        elif not closed_history or closed_history[-1]['ms'] < closed_bar_ms:
+            c = snapshot.get('last_close')
+            o = snapshot.get('last_open')
+            h = snapshot.get('last_high')
+            l = snapshot.get('last_low')
+            ma3 = snapshot.get('ma3')
+            ma5 = snapshot.get('ma5')
+
+            if not all(positive(v) for v in (c, o, h, l, ma3, ma5)):
+                return None
+
+            is_mature = False
+            if sign == 1:
+                is_mature = ((l > ma5) or (c > ma3)) and (closed_bar_ms >= position_open_ms)
+            else:
+                is_mature = ((h < ma5) or (c < ma3)) and (closed_bar_ms >= position_open_ms)
+
+            rec = {
+                'ms': closed_bar_ms,
+                'o': float(o), 'h': float(h), 'l': float(l), 'c': float(c),
+                'ma3': float(ma3), 'ma5': float(ma5),
+                'is_mature': is_mature
+            }
+            closed_history.append(rec)
+            closed_history = closed_history[-5:]
+            state['closed_history'] = closed_history
+
+        if len(closed_history) < 5:
+            return None
+
+        rev_bar = closed_history[-1]
+
+        maturity_bars = closed_history[-5:-1]
+        if not all(b['is_mature'] for b in maturity_bars):
+            return None
+
+        o, h, l, c = rev_bar['o'], rev_bar['h'], rev_bar['l'], rev_bar['c']
+        ma3 = rev_bar['ma3']
+        body = abs(c - o)
+        span = h - l
+
+        pinbar = False
+        doji = False
+
+        if sign == 1:
+            upper_wick = h - max(o, c)
+            close_pos = (c - l) / span if span > 0 else 0
+            body_ratio = body / span if span > 0 else 0
+            pinbar = (upper_wick > 0.5 * entry_atr) and (upper_wick > 2.0 * body) and (close_pos < 0.40)
+            doji = (body_ratio < 0.25) and (c < o) and (c < ma3)
+        else:
+            lower_wick = min(o, c) - l
+            close_pos = (c - l) / span if span > 0 else 0
+            body_ratio = body / span if span > 0 else 0
+            pinbar = (lower_wick > 0.5 * entry_atr) and (lower_wick > 2.0 * body) and (close_pos > 0.60)
+            doji = (body_ratio < 0.25) and (c > o) and (c > ma3)
+
+        trigger = None
+        if pinbar and doji:
+            trigger = 'MATURE_REVERSAL_PINBAR_DOJI'
+        elif pinbar:
+            trigger = 'MATURE_REVERSAL_PINBAR'
+        elif doji:
+            trigger = 'MATURE_REVERSAL_DOJI'
+
+        if trigger:
+            return dict(trigger=trigger, trigger_bar_ms=rev_bar['ms'], trigger_price=c)
+
+        return None
+    except Exception:
+        return None
+
+
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
     try:
         ident = position_identity(position)
@@ -197,10 +307,46 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         ladder_reason, ladder_trigger = None, None
         # 2U Fixed Ladder Profit Lock is DISABLED per user request: "只有遇到真峰頂谷底才要平倉"
-        
+
         # 暴漲逃頂機制 (Parabolic Reversal Exit): 無視 CK 是否衰退
         parabolic_reason, parabolic_trigger = None, None
         peak_gain_atr = gain / scale if scale > 0 else 0.
+        try:
+            from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
+            
+            telemetry_data = {
+                'symbol': position.get('symbol', 'UNKNOWN'),
+                'side': 'LONG' if sign == 1 else 'SHORT',
+                'entry_price': entry,
+                'frozen_entry_atr': scale,
+                'current_price': price,
+                'runtime_peak_price': state['peak_price'],
+                'runtime_peak_gain_atr': peak_gain_atr,
+                'trend_hold_status': trend_status,
+                'trend_hold_reason': trend_reason,
+            }
+            if isinstance(snapshot, dict):
+                telemetry_data.update({
+                    'ma3': snapshot.get('ma3'),
+                    'last_ma3': snapshot.get('last_ma3'),
+                    'ma5': snapshot.get('ma5'),
+                    'last_ma5': snapshot.get('last_ma5'),
+                })
+            
+            if peak_gain_atr >= 3.0 and not state.get('telemetry_arm_logged'):
+                state['telemetry_arm_logged'] = True
+                ProfitExitTelemetry.log_event(position.get('id', 'UNKNOWN'), 'PARABOLIC_ARM_REACHED', telemetry_data)
+                
+            new_peak = sign*(price-state.get('last_logged_peak_price', entry)) > 0
+            if new_peak and peak_gain_atr >= 3.0:
+                old_peak_atr = state.get('last_logged_peak_atr', 0)
+                if peak_gain_atr - old_peak_atr >= 0.1: # meaningful change
+                    state['last_logged_peak_price'] = price
+                    state['last_logged_peak_atr'] = peak_gain_atr
+                    ProfitExitTelemetry.log_event(position.get('id', 'UNKNOWN'), 'NEW_RUNTIME_PEAK', telemetry_data)
+        except Exception:
+            pass
+
         if peak_gain_atr >= 3.0:
             # 1. 價格從最高點直接回踩 1.0 ATR (即時觸發)
             drawdown_atr = (state['peak_price'] - price) / scale if sign == 1 else (price - state['peak_price']) / scale
@@ -231,6 +377,23 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = parabolic_reason or ladder_reason, parabolic_trigger or ladder_trigger
+        
+        pre_veto_reason = reason
+        pre_veto_trigger = trigger
+        
+        try:
+            if (parabolic_reason or ladder_reason) and 'telemetry_data' in locals():
+                telemetry_data['current_profit_atr'] = gain / scale if scale > 0 else 0.
+                if 'drawdown_atr' in locals():
+                    telemetry_data['drawdown_atr'] = drawdown_atr
+                if not state.get('telemetry_candidate_logged'):
+                    telemetry_data['pre_veto_action'] = 'FULL_CLOSE'
+                    telemetry_data['pre_veto_reason'] = reason
+                    telemetry_data['pre_veto_trigger'] = trigger
+                    ProfitExitTelemetry.log_event(position.get('id', 'UNKNOWN'), 'PARABOLIC_CANDIDATE_GENERATED', telemetry_data)
+                    state['telemetry_candidate_logged'] = True
+        except Exception:
+            pass
 
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
@@ -249,21 +412,32 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
                     ma15 = snapshot.get('ma15')
                     # MA15 Tracking Defense is DISABLED per user request
-                    
+
+                    # 1. Mature Swing Reversal check (strictly closed bars)
+                    e_atr = position.get('entry_atr')
+                    mature_evidence = None
+                    if e_atr is not None and float(e_atr) > 0:
+                        mature_evidence = evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr=float(e_atr))
+
+                    if mature_evidence is not None and reason != HARD_REASON:
+                        reason, trigger = ABNORMAL_REASON, mature_evidence['trigger']
+                        state.update(mature_evidence)
+
+                    # 2. Older Doji evidence check (this uses live candle for reversal)
                     evidence = doji_reversal_evidence(
                         snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr)
-                    if evidence is not None:
+                    if evidence is not None and not mature_evidence and reason != HARD_REASON:
                         reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
                         state.update(evidence)
 
             # Catastrophic Profit Floor Evaluation
             floor_reason, floor_trigger = None, None
             entry_atr = float(state.get('atr', position.get('entry_atr', 0.0)))
-            
+
             pf_enabled = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ENABLED', False)
             pf_arm = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ARM_ATR', None)
             pf_lock = getattr(sys.modules[__name__], 'PROFIT_FLOOR_LOCK_ATR', None)
-            
+
             if pf_enabled and pf_arm is not None and pf_lock is not None and pf_arm > 0 and 0 <= pf_lock <= pf_arm and entry_atr > 0:
                 mfe_price = state.get('mfe_price', entry)
                 if sign == 1:
@@ -273,14 +447,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     mfe_price = min(mfe_price, price)
                     mfe_atr = (entry - mfe_price) / entry_atr
                 state['mfe_price'] = mfe_price
-                
+
                 is_armed = state.get('profit_floor_armed', False)
                 if not is_armed and mfe_atr >= pf_arm:
                     is_armed = True
                     state['profit_floor_armed'] = True
                     state['profit_floor_arm_atr'] = float(pf_arm)
                     state['profit_floor_lock_atr'] = float(pf_lock)
-                    
+
                 if is_armed:
                     latr = state.get('profit_floor_lock_atr', pf_lock)
                     if sign == 1:
@@ -312,7 +486,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         threshold = ABNORMAL_BODY_ATR * float(prior_atr)
                     except NameError:
                         threshold = 1.5 * float(prior_atr)
-    
+
                     if body > 0 and body >= threshold:
                         reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
@@ -320,7 +494,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             if reason:
                 soft_exit_blocked = False
-                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER):
+                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, 'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI'):
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
                         soft_exit_blocked = True
 
@@ -343,9 +517,30 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 )
 
                 if soft_exit_blocked:
+                    try:
+                        if pre_veto_reason and 'telemetry_data' in locals():
+                            telemetry_data['trend_hold_veto_applied'] = True
+                            telemetry_data['post_veto_action'] = None
+                            telemetry_data['post_veto_reason'] = None
+                            telemetry_data['post_veto_trigger'] = None
+                            telemetry_data['final_exit_authorized'] = False
+                            ProfitExitTelemetry.log_event(position.get('id', 'UNKNOWN'), 'TREND_HOLD_VETOED', telemetry_data)
+                            state['telemetry_candidate_logged'] = False # reset so we log next candidate
+                    except Exception:
+                        pass
                     reason, trigger = None, None
 
         if reason:
+            try:
+                if 'telemetry_data' in locals():
+                    telemetry_data['trend_hold_veto_applied'] = False
+                    telemetry_data['post_veto_action'] = 'FULL_CLOSE'
+                    telemetry_data['post_veto_reason'] = reason
+                    telemetry_data['post_veto_trigger'] = trigger
+                    telemetry_data['final_exit_authorized'] = True
+                    ProfitExitTelemetry.log_event(position.get('id', 'UNKNOWN'), 'FINAL_EXIT_AUTHORIZED', telemetry_data)
+            except Exception:
+                pass
             state.update(pending=reason,trigger=trigger)
             return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
         return None

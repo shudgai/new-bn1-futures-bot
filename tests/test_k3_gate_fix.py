@@ -69,9 +69,28 @@ def test_long_green_k3_exact_10_percent():
     
 def test_long_green_k3_valid():
     df = build_test_frame_long()
+    # open 0.04997, quote 0.05010 -> body = 0.00013 / 0.000504 = 0.2579 ATR (>= 0.25 ATR)
+    # low 0.04997 -> adverse = 0.0 <= 0.50 ATR
+    live = build_live_row(0.04997, 0.05015, 0.04997, 0.05010)
+    decision = evaluate_kc_pending_entry(df, quote=0.05010, code='KC_3BAR_CONFIRM_LONG', live=live)
+    assert decision['action'] == 'ENTER'
+
+def test_long_green_k3_insufficient_body_atr():
+    df = build_test_frame_long()
+    # open 0.04997, quote 0.05000 -> body = 0.00003 / 0.000504 = 0.0595 ATR (< 0.25 ATR)
     live = build_live_row(0.04997, 0.05007, 0.04997, 0.05000)
     decision = evaluate_kc_pending_entry(df, quote=0.05000, code='KC_3BAR_CONFIRM_LONG', live=live)
-    assert decision['action'] == 'ENTER'
+    assert decision['action'] == 'WAIT'
+    assert decision['reason'] == 'WAIT_THIRD_MIN_BODY_ATR'
+
+def test_long_green_k3_excessive_adverse_atr():
+    df = build_test_frame_long()
+    # open 0.04997, low 0.04970 -> adverse = 0.00027 / 0.000504 = 0.5357 ATR (> 0.50 ATR)
+    # quote 0.05010 -> body = 0.2579 ATR
+    live = build_live_row(0.04997, 0.05015, 0.04970, 0.05010)
+    decision = evaluate_kc_pending_entry(df, quote=0.05010, code='KC_3BAR_CONFIRM_LONG', live=live)
+    assert decision['action'] == 'WAIT'
+    assert decision['reason'] == 'BLOCKED_THIRD_ADVERSE_EXCURSION'
 
 def test_short_green_k3():
     df = build_test_frame_short()
@@ -103,6 +122,25 @@ def test_short_red_k3_exact_10_percent():
 
 def test_short_red_k3_valid():
     df = build_test_frame_short()
+    # open 0.05003, quote 0.04990 -> body = 0.00013 / 0.000504 = 0.2579 ATR (>= 0.25 ATR)
+    # high 0.05003 -> adverse = 0.0 <= 0.50 ATR
+    live = build_live_row(0.05003, 0.05003, 0.04985, 0.04990, is_long=False)
+    decision = evaluate_kc_pending_entry(df, quote=0.04990, code='KC_3BAR_CONFIRM_SHORT', live=live)
+    assert decision['action'] == 'ENTER'
+
+def test_short_red_k3_insufficient_body_atr():
+    df = build_test_frame_short()
+    # open 0.05003, quote 0.05000 -> body = 0.00003 / 0.000504 = 0.0595 ATR (< 0.25 ATR)
     live = build_live_row(0.05003, 0.05003, 0.04993, 0.05000, is_long=False)
     decision = evaluate_kc_pending_entry(df, quote=0.05000, code='KC_3BAR_CONFIRM_SHORT', live=live)
-    assert decision['action'] == 'ENTER'
+    assert decision['action'] == 'WAIT'
+    assert decision['reason'] == 'WAIT_THIRD_MIN_BODY_ATR'
+
+def test_short_red_k3_excessive_adverse_atr():
+    df = build_test_frame_short()
+    # open 0.05003, high 0.05030 -> adverse = 0.00027 / 0.000504 = 0.5357 ATR (> 0.50 ATR)
+    # quote 0.04990 -> body = 0.2579 ATR
+    live = build_live_row(0.05003, 0.05030, 0.04985, 0.04990, is_long=False)
+    decision = evaluate_kc_pending_entry(df, quote=0.04990, code='KC_3BAR_CONFIRM_SHORT', live=live)
+    assert decision['action'] == 'WAIT'
+    assert decision['reason'] == 'BLOCKED_THIRD_ADVERSE_EXCURSION'
