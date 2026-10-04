@@ -198,11 +198,42 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         
         decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                              live=live if len(frame) > len(closed) else None)
-        # If 3-bar entry is not ready, or is an old breakout from before exit:
+                                             
+        # Check MA3 outer cross entry (Dual Entry Rule)
+        if decision['action'] != 'ENTER':
+            from core.services.strategies.outer_strategy import ck_direction, ma3_outer_cross_ready
+            direction = ck_direction(closed)
+            if direction and ma3_outer_cross_ready(frame, quote, direction):
+                atr_val = float(frame.iloc[-2]['atr'])
+                stamp_val = float(live.timestamp)
+                prev_stamp_val = float(frame.iloc[-2]['timestamp'])
+                signal = 'KC_MA3_CROSS_' + direction
+                decision = {
+                    'action': 'ENTER',
+                    'side': direction,
+                    'type': signal,
+                    'reason': signal,
+                    'price': quote,
+                    'entry_atr': atr_val,
+                    'confirmation_bar_id': stamp_val,
+                    'close_price': float(frame.iloc[-2]['close']),
+                    'intrabar': True,
+                    'entry_phase': 'KC_MA3_CROSS',
+                    'pending_signal_id': f"{symbol}_MA3_CROSS_{int(stamp_val)}_{direction}",
+                    'breakout_bar_id': stamp_val,
+                    'pair_confirmation_bar_id': prev_stamp_val,
+                    'third_bar_id': stamp_val,
+                    'pending_second_bar_id': prev_stamp_val,
+                    'pending_wait_bars': 1,
+                    'pending_max_wait_bars': 1
+                }
+
+        # If dual entries are not ready, or is an old breakout from before exit:
         if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
             cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
             if cont_decision and cont_decision['action'] == 'ENTER':
                 decision = cont_decision
+                
         if decision['action'] != 'ENTER':
             if diagnostics is not None:
                 diagnostics.clear()
