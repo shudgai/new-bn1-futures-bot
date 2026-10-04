@@ -6,17 +6,67 @@ import numpy as np
 from core.services.candle_data import closed_entry_candles
 from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
                                             evaluate_kc_pending_entry)
-from core.services.strategies.outer_strategy import live_body_breakout_side
+from core.services.strategies.outer_strategy import (live_body_breakout_side, ck_direction,
+                                                    live_ma3_direction_ready, live_candle_color_ready,
+                                                    live_adverse_entry_safe, ma3_outer_continuation_ready,
+                                                    OUTER_CODES)
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
-ENTRY_CODES = KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
+ENTRY_CODES = KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"} | OUTER_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
                        'chase_open', 'chase_reference_atr')
 
 ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
+
+
+def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+    """Continuation entry for sustained trend outside the outer rail.
+
+    Permits opening when a prior breakout was missed or after a position was closed,
+    provided that the KC direction, live MA3 direction, live candle color, and outer band position
+    remain consistently in favor of the trend.
+    """
+    try:
+        side = ck_direction(frame)
+        if not side:
+            return None
+        signal = 'KC_OUTSIDE_' + side
+        if code is not None and code != signal:
+            return None
+
+        quote = float(quote)
+        if not live_ma3_direction_ready(frame, quote, side):
+            return None
+        if not live_candle_color_ready(frame, quote, side):
+            return None
+        if not live_adverse_entry_safe(frame, quote, side):
+            return None
+        if not ma3_outer_continuation_ready(frame, quote, side):
+            return None
+
+        atr = float(frame.iloc[-2]['atr'])
+        edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        sign = 1 if side == 'LONG' else -1
+        distance = sign * (quote - edge) / atr if atr > 0 else 0.
+        if distance <= 0 or distance > 2.0:
+            return None
+
+        live = frame.iloc[-1]
+        stamp = float(live['timestamp'])
+
+        return dict(action='ENTER', side=side, type=signal, reason=signal,
+                    price=quote, entry_atr=atr, confirmation_bar_id=stamp,
+                    close_price=float(frame.iloc[-2]['close']), intrabar=True,
+                    entry_phase='KC_CONTINUATION_ENTRY',
+                    breakout_bar_id=stamp,
+                    pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
+                    kc_confirmation_edge=edge, kc_distance_atr=distance,
+                    kc_max_distance_atr=2.0)
+    except Exception:
+        return None
 
 DOJI_BODY_RATIO = 0.10
 
@@ -143,14 +193,20 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         else:
             decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                                  live=live if len(frame) > len(closed) else None)
+            if decision['action'] != 'ENTER':
+                cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
+                if cont_decision and cont_decision['action'] == 'ENTER':
+                    decision = cont_decision
         if decision['action'] != 'ENTER':
             if diagnostics is not None:
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
-            
-        # Post-exit formation verification: actual canonical K1 must strictly follow exit bar.
-        if exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar:
+
+        # Post-exit formation verification:
+        if exit_bar is not None and float(live.timestamp) <= exit_bar:
+            return reject('WAIT_POST_EXIT_NEW_FORMATION')
+        if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY',) and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):

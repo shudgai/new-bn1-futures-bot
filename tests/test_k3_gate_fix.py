@@ -141,3 +141,30 @@ def test_short_red_k3_excessive_adverse_atr():
     assert decision['action'] == 'WAIT'
     assert decision['reason'] == 'BLOCKED_THIRD_ADVERSE_EXCURSION'
 
+def test_continuation_entry_after_missed_breakout():
+    from core.services.entry_contract import evaluate_entry_contract
+    # 5 bars in frame: K0 broke out, K1, K2, K3 closed outside, K4 live forming.
+    # K1, K2, K3 cannot trigger 3-bar breakout because K1 opened already above kc_upper.
+    # Continuation entry triggers KC_OUTSIDE_LONG.
+    bars = [
+        {"timestamp": 1791030840000.0, "open": 0.0494, "high": 0.0499, "low": 0.0493, "close": 0.0498,
+         "ma3": 0.0496, "ma5": 0.0495, "ma15": 0.0492, "atr": 0.0005, "kc_upper": 0.0496, "kc_middle": 0.0491, "kc_lower": 0.0486, "is_closed": True},
+        {"timestamp": 1791030900000.0, "open": 0.0498, "high": 0.0502, "low": 0.0497, "close": 0.0500,
+         "ma3": 0.0498, "ma5": 0.0496, "ma15": 0.0493, "atr": 0.0005, "kc_upper": 0.04965, "kc_middle": 0.04915, "kc_lower": 0.04865, "is_closed": True},
+        {"timestamp": 1791030960000.0, "open": 0.0500, "high": 0.0503, "low": 0.0499, "close": 0.0502,
+         "ma3": 0.0500, "ma5": 0.0497, "ma15": 0.0494, "atr": 0.0005, "kc_upper": 0.0497, "kc_middle": 0.0492, "kc_lower": 0.0487, "is_closed": True},
+        {"timestamp": 1791031020000.0, "open": 0.0502, "high": 0.0505, "low": 0.0501, "close": 0.0504,
+         "ma3": 0.0502, "ma5": 0.0498, "ma15": 0.04945, "atr": 0.0005, "kc_upper": 0.04975, "kc_middle": 0.04925, "kc_lower": 0.04875, "is_closed": True},
+        {"timestamp": 1791031080000.0, "open": 0.0504, "high": 0.0507, "low": 0.0504, "close": 0.0506,
+         "ma3": 0.0504, "ma5": 0.0499, "ma15": 0.0495, "atr": 0.0005, "kc_upper": 0.0498, "kc_middle": 0.0493, "kc_lower": 0.0488, "is_closed": False},
+    ]
+    df = pd.DataFrame(bars)
+    df.attrs['timeframe_ms'] = 60000
+    res = evaluate_entry_contract(df, price=0.0506, symbol='BTC/USDT')
+    assert res is not None
+    assert res['action'] == 'ENTER'
+    assert res['side'] == 'LONG'
+    assert res['entry_phase'] == 'KC_CONTINUATION_ENTRY'
+
+
+
