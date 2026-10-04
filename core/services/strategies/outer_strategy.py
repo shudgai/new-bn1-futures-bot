@@ -190,7 +190,7 @@ def entry_trend_direction(frame):
 
 
 def live_body_breakout_side(frame, price):
-    """Current real body crosses an outer rail by quote, sized on closed ATR."""
+    """Current real body breaks out or thrusts along an outer rail by quote, sized on closed ATR."""
     try:
         if frame is None or len(frame) < 2:
             return None
@@ -202,9 +202,13 @@ def live_body_breakout_side(frame, price):
                 or lower >= upper):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
-        if opened <= upper < price and price - opened >= threshold:
+
+        # LONG: 價格在上軌外且順向實體至少 0.5 ATR (無論在軌內開盤穿出，或沿上軌外再次爆發長陽K)
+        if price > upper and (price - opened) >= threshold and opened >= lower:
             return 'LONG'
-        if price < lower <= opened and opened - price >= threshold:
+
+        # SHORT: 價格在下軌外且順向實體至少 0.5 ATR (無論在軌內開盤跌破，或沿下軌外再次爆發長陰K)
+        if price < lower and (opened - price) >= threshold and opened <= upper:
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass

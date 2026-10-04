@@ -245,7 +245,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY',) and decision.get('breakout_bar_id', 0) <= exit_bar:
+        if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
