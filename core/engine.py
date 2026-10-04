@@ -2455,14 +2455,9 @@ class TradingEngine:
             return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
-        # [EMERGENCY FAIL-CLOSED]
-        # Temporarily disabled until unified entry contract is integrated.
-        self.account.log(f"🛑 [EMERGENCY BLOCK] {symbol} {ticket['side']} 獲利重開已暫時 Fail-Closed 阻斷開倉", "WARNING")
-        return
-        from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
-        allowed, _, decision = UnifiedEntryStrategy().evaluate_entry(
-            frame, price, ticket['side'], engine=self, symbol=symbol)
-        if not allowed:
+        from core.services.entry_contract import evaluate_continuation_entry
+        decision = evaluate_continuation_entry(frame, price, symbol=symbol)
+        if not decision or decision['side'] != ticket['side']:
             return
         live_pivot = False
         signal = {"live_pivot": live_pivot, "live_outer": decision['reason'] in LIVE_OUTER_CODES, "side": ticket["side"], "score": 100, "entry_mode": "CHANNEL_SWING",

@@ -46,8 +46,11 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
   2. 當前最新價必須嚴格破軌（多單 `price > upper`，空單 `price < lower`）。
   3. 當根順向實體長度必須至少達到前一根已收線 ATR 的 0.5 倍（`abs(price - opened) >= 0.5 * atr`）。
   4. **跳空開盤已在外軌外（`opened > upper` 或 `opened < lower`）或沿軌道外連開者，一律嚴格 Fail-Closed 阻斷**，不得繞過 Gate 違規開倉。
-- **延續開倉與獲利重開防護**：
-  - 延續開倉（`evaluate_continuation_entry`）及獲利重開（`_profit_reentry_ready`）在未完成嚴格先行破軌資格與整合前，一律維持 **Fail-Closed 阻斷**。
+- **延續開倉與獲利重開防護（解封並升級嚴格限制）**：
+  - 當「破軌後平倉後」或「破軌沒開倉」時，適用此規則（`evaluate_continuation_entry` 及 `_profit_reentry_ready`）。
+  - **嚴格趨勢要求**：必須符合目前通道方向（多單漲勢、空單跌勢，CK方向與MA5斜率皆須符合）。
+  - **嚴格軌外要求**：K線最新價（quote）必須**同時嚴格在 KC 外軌與 MA5 之外**（多單 `price > kc_upper` 且 `price > ma5`；空單 `price < kc_lower` 且 `price < ma5`）。
+  - **退回防護**：若 K 線已退回 KC 通道內或退回 MA5 內，一律拒絕開倉。
 
 ## 動態階梯鎖利與 MA 抖動防護（2026-10-04 最新授權）
 - **方案 2 動態 ATR 鎖利階梯（利潤越高，允許回吐 ATR 越小）**：

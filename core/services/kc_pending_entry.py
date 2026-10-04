@@ -16,7 +16,7 @@ WEAK_BODY_MAX_RATIO = 0.25
 MAX_DISTANCE_ATR = 0.5
 STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
-MIN_ENTRY_BODY_ATR = 0.25
+MIN_ENTRY_BODY_ATR = 0.5
 MAX_ADVERSE_ATR = 0.50
 MIN_MA5_SLOPE_ATR = 0.01
 
@@ -89,8 +89,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
                 if direction != side:
                     continue
+                # [EMERGENCY GUARD: Rule 1 & 4 - 必須在軌道內側或碰軌]
+                if not (float(first.kc_lower) <= float(first.open) <= float(first.kc_upper)):
+                    continue
                 if (sign * (float(first.close) - float(first.open)) > 0
-                        and sign * (float(first.open) - float(first[key])) <= 0
                         and sign * (float(first.close) - float(first[key])) > 0
                         and sign * (float(second.close) - float(second.open)) > 0
                         and sign * (float(second.close) - float(second[key])) > 0
@@ -113,9 +115,11 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
             if direction != side:
                 continue
+            # [EMERGENCY GUARD: Rule 1 & 4 - 必須在軌道內側或碰軌]
+            if not (float(first.kc_lower) <= float(first.open) <= float(first.kc_upper)):
+                continue
             k2_ma5_delta = sign * (float(second.ma5) - float(first.ma5))
             if not (sign * (float(first.close) - float(first.open)) > 0
-                    and sign * (float(first.open) - float(first[key])) <= 0
                     and sign * (float(first.close) - float(first[key])) > 0
                     and sign * (float(second.close) - float(second.open)) > 0
                     and sign * (float(second.close) - float(second[key])) > 0

@@ -29,10 +29,6 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
     provided that the KC direction, live MA3 direction, live candle color, and outer band position
     remain consistently in favor of the trend.
     """
-    # [EMERGENCY FAIL-CLOSED]
-    # Temporarily disabled until Owner-approved
-    # PRIOR_VALID_BREAKOUT qualification is implemented.
-    return None
     try:
         side = ck_direction(frame)
         if not side:
@@ -45,7 +41,7 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         atr = float(frame.iloc[-2]['atr'])
         sign = 1 if side == 'LONG' else -1
 
-        # Check MA5 direction & non-flat slope
+        # Check MA5 direction & non-flat slope (漲勢/跌勢)
         closes = [float(v) for v in frame['close'].iloc[-5:-1]]
         if len(closes) >= 4:
             live_ma5 = (sum(closes[-4:]) + quote) / 5.0
@@ -54,24 +50,20 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < 0.01):
                 return None
 
-        if not live_ma3_direction_ready(frame, quote, side):
-            return None
         if not live_candle_color_ready(frame, quote, side):
             return None
         if not live_adverse_entry_safe(frame, quote, side):
             return None
 
-        mid = float(frame.iloc[-1].get('kc_middle', frame.iloc[-1].get('ema_20', 0)))
         edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
         
-        # Valid if outside outer rail OR on the correct side of KC middle during active trend:
-        is_outside_rail = sign * (quote - edge) > 0 and ma3_outer_continuation_ready(frame, quote, side)
-        is_trend_side_of_middle = sign * (quote - mid) > 0 and sign * (live_ma5 - mid) > 0
-        
-        if not (is_outside_rail or is_trend_side_of_middle):
+        # [NEW GATE RULE: 必須在 kc 線及 ma5 外，若在 kc 內或 ma5 內就不要開倉]
+        if sign * (quote - edge) <= 0:
+            return None
+        if sign * (quote - live_ma5) <= 0:
             return None
 
-        distance = sign * (quote - edge) / atr if is_outside_rail else sign * (quote - mid) / atr
+        distance = sign * (quote - edge) / atr
         if distance <= 0 or distance > 3.0:
             return None
 
