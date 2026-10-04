@@ -67,9 +67,14 @@ def ck_direction(frame):
             return None
         a, b = rows
         direction = None
-        if b[1] > a[1] and b[2] >= a[2]:
+        
+        # 嚴格盤整過濾：要求 kc_middle 的變化必須大於一個極小的有效閾值，否則視為無方向（盤整）
+        atr = float(frame.iloc[-2]['atr'])
+        min_slope = (atr * 0.001) if atr > 0 else 1e-9
+        
+        if (b[1] - a[1]) > min_slope and b[2] >= a[2]:
             direction = 'LONG'
-        elif b[1] < a[1] and b[0] <= a[0]:
+        elif (a[1] - b[1]) > min_slope and b[0] <= a[0]:
             direction = 'SHORT'
             
         import logging
