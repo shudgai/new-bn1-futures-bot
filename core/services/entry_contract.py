@@ -242,9 +242,25 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.update(decision)
             return None
 
+        # Strict live candle color guard: Never open Long on a red live candle, never open Short on a green live candle
+        live_open = float(live['open'])
+        if decision['side'] == 'LONG' and quote < live_open:
+            return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
+        if decision['side'] == 'SHORT' and quote > live_open:
+            return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
+
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
-            return reject('WAIT_POST_EXIT_NEW_FORMATION')
+            # Allow immediate reversal if opening the opposite direction of the just-closed position
+            last_trade = None
+            for trade in reversed(getattr(account, 'trades', [])):
+                if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
+                    last_trade = trade
+                    break
+            last_close_side = 'LONG' if last_trade and last_trade.get('action') == 'CLOSE_LONG' else ('SHORT' if last_trade and last_trade.get('action') == 'CLOSE_SHORT' else None)
+            is_opposite_reversal = (last_close_side is not None and decision['side'] != last_close_side)
+            if not is_opposite_reversal:
+                return reject('WAIT_POST_EXIT_NEW_FORMATION')
         if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.

@@ -320,7 +320,7 @@ def live_candle_color_ready(frame, price, side):
         price = float(price)
         if not all(math.isfinite(value) and value > 0 for value in (opened, price)):
             return False
-        return (1 if side == "LONG" else -1) * (price - opened) >= 0
+        return (1 if side == "LONG" else -1) * (price - opened) > 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
