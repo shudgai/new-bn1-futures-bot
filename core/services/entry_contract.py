@@ -193,38 +193,16 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        fast_side = live_body_breakout_side(frame, quote) if len(frame) > len(closed) else None
-        if fast_side:
-            atr_val = float(frame.iloc[-2]['atr'])
-            stamp_val = float(live.timestamp)
-            prev_stamp_val = float(frame.iloc[-2]['timestamp'])
-            decision = {
-                'action': 'ENTER',
-                'side': fast_side,
-                'type': 'KC_LIVE_BODY_BREAKOUT_' + fast_side,
-                'reason': 'KC_LIVE_BODY_BREAKOUT_' + fast_side,
-                'price': quote,
-                'entry_atr': atr_val,
-                'confirmation_bar_id': stamp_val,
-                'close_price': float(frame.iloc[-2]['close']),
-                'intrabar': True,
-                'entry_phase': 'KC_LIVE_BODY_BREAKOUT',
-                'pending_signal_id': f"{symbol}_LIVE_BREAKOUT_{int(stamp_val)}_{fast_side}",
-                'breakout_bar_id': stamp_val,
-                'pair_confirmation_bar_id': prev_stamp_val,
-                'third_bar_id': stamp_val,
-                'pending_second_bar_id': prev_stamp_val,
-                'pending_wait_bars': 1,
-                'pending_max_wait_bars': 1
-            }
-        else:
-            decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
-                                                 live=live if len(frame) > len(closed) else None)
-            # If 3-bar entry is not ready, or is an old breakout from before exit:
-            if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
-                cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
-                if cont_decision and cont_decision['action'] == 'ENTER':
-                    decision = cont_decision
+        # [EMERGENCY GUARD: 禁用一根長K即時破軌，嚴格要求多根 K 線確認 (3-bar rule)]
+        fast_side = None
+        
+        decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
+                                             live=live if len(frame) > len(closed) else None)
+        # If 3-bar entry is not ready, or is an old breakout from before exit:
+        if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
+            cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
+            if cont_decision and cont_decision['action'] == 'ENTER':
+                decision = cont_decision
         if decision['action'] != 'ENTER':
             if diagnostics is not None:
                 diagnostics.clear()
