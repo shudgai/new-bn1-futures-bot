@@ -131,7 +131,7 @@ def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry,reentry):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('entry',['breakout','continuation'])
-@pytest.mark.parametrize('fault',['none','retreat','invalid_atr','missing_finality','changed_signal'])
+@pytest.mark.parametrize('fault',['none','retreat','invalid_atr','missing_finality','changed_signal','flat_ma5'])
 def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
     import asyncio,time
     from unittest.mock import AsyncMock
@@ -146,6 +146,7 @@ def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
     ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
     if fault=='retreat':f.loc[5,'close']=100.
     if fault=='invalid_atr':f.loc[4,'atr']=math.nan
+    if fault=='flat_ma5':f.loc[4,'ma5']=(sum(float(v) for v in f.close.iloc[-5:-1])+float(f.iloc[-1].close))/5.
     if fault=='missing_finality':f.attrs.clear()
     if fault=='changed_signal':ctx['channel_confirmation_bar_id']-=60000
     a=SimpleNamespace(positions={},trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f))
@@ -329,3 +330,24 @@ def test_atr_protection_arms_at_one_atr(side,peak):
     d=evaluate_peak_trailing(p,100.+sign*(peak-.61),61001,1.,fee=0.,slippage=0.)
     if peak<1.:assert d is None
     else:assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['flat','near_flat','opposite','invalid'])
+def test_all_breakouts_require_directional_ma5(side,fault):
+    f=frame(side);q=float(f.iloc[-1].close)
+    live=(sum(float(v) for v in f.close.iloc[-5:-1])+q)/5.
+    sign=1 if side=='LONG' else -1
+    offsets={'flat':0.,'near_flat':-.005*sign,'opposite':.1*sign,'invalid':math.nan}
+    f.loc[4,'ma5']=live+offsets[fault]
+    diagnostics={}
+    assert live_body_breakout_side(f,q)==side
+    assert evaluate_entry_contract(f,q,symbol='CAP/USDT',diagnostics=diagnostics) is None
+    assert diagnostics['reason']=='BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID'
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_ma5_direction_boundary(side):
+    from core.services.entry_contract import ma5_entry_ready
+    f=frame(side);q=float(f.iloc[-1].close);sign=1 if side=='LONG' else -1
+    live=(sum(float(v) for v in f.close.iloc[-5:-1])+q)/5.
+    f.loc[4,'ma5']=live-sign*.01
+    assert ma5_entry_ready(f,q,side)

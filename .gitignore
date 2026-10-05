@@ -27,3 +27,6 @@ nohup.out
 
 # Runtime telemetry; preserve locally, exclude from source integrity.
 /logs/
+
+# Atomic paper account persistence temporary file.
+/data/paper_account.json.tmp

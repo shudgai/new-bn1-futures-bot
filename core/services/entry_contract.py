@@ -22,6 +22,33 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
 ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
 
 
+def ma5_entry_ready(frame, quote, side):
+    """Require MA5 movement in entry direction of at least 0.01 prior closed ATR."""
+    try:
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
+            return False
+        closed = closed_entry_candles(frame)
+        if len(frame) == len(closed) + 1:
+            atr = float(closed.iloc[-1]['atr'])
+            previous = float(closed.iloc[-1]['ma5'])
+            prices = [float(v) for v in closed['close'].iloc[-4:]] + [float(quote)]
+            if len(prices) != 5 or not all(math.isfinite(v) and v > 0 for v in prices):
+                return False
+            current = sum(prices) / 5.
+        elif len(frame) == len(closed) and len(closed) >= 2:
+            atr = float(closed.iloc[-1]['atr'])
+            previous = float(closed.iloc[-2]['ma5'])
+            current = float(closed.iloc[-1]['ma5'])
+        else:
+            return False
+        if not all(math.isfinite(v) and v > 0 for v in (atr, previous, current)):
+            return False
+        movement = (1 if side == 'LONG' else -1) * (current - previous)
+        return movement > 0 and (movement >= .01 * atr or math.isclose(movement, .01 * atr, rel_tol=1e-10))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
     """Continuation entry for sustained trend outside the outer rail.
 
@@ -162,6 +189,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         if 'is_closed' not in frame or not all(isinstance(v, (bool, np.bool_)) for v in frame.is_closed):
             return None
+        ma5_frame = frame
         # Rolling indicators legitimately have an unavailable leading prefix.
         # Trim only that prefix; never bridge missing data inside valid history.
         indicator_keys = ['atr', 'kc_upper', 'kc_middle', 'kc_lower']
@@ -249,6 +277,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
         if decision['side'] == 'SHORT' and quote > live_open:
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
+
+        if not ma5_entry_ready(ma5_frame, quote, decision['side']):
+            return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
 
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar and not same_bar_close:

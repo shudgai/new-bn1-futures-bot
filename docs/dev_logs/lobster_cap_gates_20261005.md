@@ -91,3 +91,8 @@ The owner retained immediate same-candle gate reentry. The outer realtime exit e
 ## One ATR protection activation
 
 Owner authorized raising peak-pullback activation from 0.5 to 1.0 ATR. Existing 0.50/0.40/0.35 ATR drawdown tiers and successful-close same-candle gate reentry remain. No new below-threshold profit exit was introduced. Six boundary cases and retained tier tests validate both directions; related regression: 350 passed.
+
+
+## Shared MA5 entry gate
+
+All shared entry decisions, including live breakout, closed confirmation, continuation and same-candle reentry, now require directional MA5 movement of at least 0.01 prior closed ATR. Live MA5 is recomputed from four actual closed prices plus the quote; closed decisions use the final two closed MA5 values. Invalid or insufficient values fail closed. Original warmup closing prices remain available. Account final revalidation rejects a candidate when MA5 becomes flat. No candle-color sequence alone grants entry; existing breakout and continuation gates remain. Related regression: 364 passed. Atomic account temporary files are ignored without deletion.
