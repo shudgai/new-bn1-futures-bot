@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-REQUIRED = ('runtime_source', 'candidate_integrity', 'phase_files', 'tests', 'account_exposure')
+REQUIRED = ('runtime_source', 'candidate_integrity', 'required_files', 'tests', 'account_exposure')
 
 def evaluate(evidence, head, clean):
     reasons = []

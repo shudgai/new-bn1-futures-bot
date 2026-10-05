@@ -37,7 +37,7 @@ def numpy_safe(obj):
     return obj
 from core.config import (
     CHANNEL_WATERFALL_BODY_ATR,
-    PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
+    PORT, PAPER_TRADING, USE_TESTNET, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
@@ -401,6 +401,15 @@ def get_chart_metrics():
                 }
     return metrics
 
+@app.get("/api/account-exposure")
+async def get_account_exposure():
+    from core.services.account_exposure_snapshot import account_exposure_snapshot
+    return JSONResponse(account_exposure_snapshot(
+        engine.account, paper_trading=PAPER_TRADING,
+        use_testnet=USE_TESTNET, is_running=engine.is_running),
+        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/status")
 async def get_status(response: Response):
     headers = {
@@ -411,7 +420,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "破軌入口：第一根已收線實體穿出 KC 外軌，第二根已收線同色實體確認在同側軌外，兩根實體各至少占全長 20%。確認後未成交或平倉，後續已收線 K 仍在同側軌外時，實際報價出現逆向回踩即可評估延續，不等再轉向或重新破軌；平倉當根不重開，異常平倉另須專用回踩。保留 CK／MA 方向與帳戶風控。另保留 KC 外軌回轉：已收線中軌上升且 MA3 > MA15，下軌外先跌再回升 0.10 ATR 才開多；中軌下降且 MA3 < MA15，上軌外先升再回落 0.10 ATR 才開空。ATR 固定取本輪觀察開始時最新已收線值。送單時仍須在指定軌外，保留報價、異常行情及帳戶風控。一般出口：中軌反向、階梯鎖利與緊急／帳戶硬止損；固定 ATR 止盈止損已移除。明確啟用的 staged 持倉沿用獨立引擎。",
+        "strategy": "即時破軌：原始開盤位於 KC 通道內或碰軌，最新價嚴格破軌且順向實體達前根已收線 ATR 的 0.5 倍。延續與獲利重開：CK 與 MA5 順向，最新價同時嚴格在持倉側 KC 外軌與 MA5 外側；平倉同根不重開，異常平倉須專用回踩與匹配成交。動態峰值回吐門檻為 0.60／0.50／0.40／0.35 ATR；保留初始硬止損、瀑布、成熟反轉及帳戶風控，MA 單點拐頭不直接平倉。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

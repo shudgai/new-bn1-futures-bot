@@ -24,3 +24,6 @@ nohup.out
 # IDE
 .idea/
 .vscode/
+
+# Runtime telemetry; preserve locally, exclude from source integrity.
+/logs/

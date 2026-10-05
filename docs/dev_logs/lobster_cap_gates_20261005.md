@@ -70,3 +70,9 @@ Removed only the unreachable private state-machine entry/MA-exit implementation 
 Retained pure_trend_v2 because realtime_profit_exit depends on its exit adapter; added a compatibility-only module notice and docs/legacy_policy_isolation.json. Repository source search confirms the only remaining production import is in realtime_profit_exit, not the live entry pipeline. This is dependency-based isolation, not a claim that all other historical tests are obsolete. No historical test files were removed or excluded.
 
 After cleanup, the same 316 cases passed without skips. Production and the old candidate are unchanged. No deployment, restart or live orders.
+
+## Start readiness preparation
+
+Added /api/account-exposure with no account refresh/update/order side effects. Cached testnet/live exposure is not marked verified; paper ledger memory is identified explicitly. Tests import the endpoint without running application lifespan. Updated the outdated API strategy explanation. Runtime telemetry remains preserved locally and is ignored as generated data for source integrity.
+
+321 related tests passed before the preflight field rename; required_files replaces phase_files to distinguish the new scoped branch inventory from the separate incomplete historical Phase candidate. Added paper-only environment fragment and startup readiness record. Current production environment is paper, one slot, Lobster only. Public mainnet symbol status verified for CAP and Lobster; demo symbol availability differs. Disk exposure snapshot is empty but current memory is not verified. Deploy/restart/live-order authority remains NO.

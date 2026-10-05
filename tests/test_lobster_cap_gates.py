@@ -60,9 +60,9 @@ def test_half_wallet_and_fee_cap():
 
 
 def test_preflight_requires_all_evidence_and_authorization():
-    e=dict(commit='abc',deploy_authorized=True,**{key:'VERIFIED' for key in ('runtime_source','candidate_integrity','phase_files','tests','account_exposure')})
+    e=dict(commit='abc',deploy_authorized=True,**{key:'VERIFIED' for key in ('runtime_source','candidate_integrity','required_files','tests','account_exposure')})
     assert evaluate(e,'abc',True)['DEPLOYMENT_PREFLIGHT_GATE']=='PASS'
-    for key in ('runtime_source','candidate_integrity','phase_files','tests','account_exposure','deploy_authorized','commit'):
+    for key in ('runtime_source','candidate_integrity','required_files','tests','account_exposure','deploy_authorized','commit'):
         bad=dict(e);bad.pop(key)
         assert evaluate(bad,'abc',True)['DEPLOYMENT_PREFLIGHT_GATE']=='BLOCK'
     assert evaluate(e,'abc',False)['DEPLOYMENT_PREFLIGHT_GATE']=='BLOCK'
