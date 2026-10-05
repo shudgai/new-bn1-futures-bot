@@ -86,3 +86,8 @@ The owner authorized fresh long or short entry after a successful close in the s
 ## CAP peak-pullback authority repair
 
 The owner retained immediate same-candle gate reentry. The outer realtime exit executor now honors EXIT_PEAK_PULLBACK_PRESSURE even when trend status is HOLD, WARNING, or UNKNOWN, matching the peak evaluator exemption and authorized ATR tiers. No entry thresholds or pullback tiers were changed. Six new long/short trend-veto regression cases pass; related suite total: 344 passed. Historical peak exits can realize losses under the authorized 0.5 ATR activation / 0.6 ATR drawdown tier and execution costs.
+
+
+## One ATR protection activation
+
+Owner authorized raising peak-pullback activation from 0.5 to 1.0 ATR. Existing 0.50/0.40/0.35 ATR drawdown tiers and successful-close same-candle gate reentry remain. No new below-threshold profit exit was introduced. Six boundary cases and retained tier tests validate both directions; related regression: 350 passed.

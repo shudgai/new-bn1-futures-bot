@@ -77,7 +77,10 @@ def test_dynamic_atr_pullback(side,peak,limit):
     evaluate_peak_trailing(p,100.+sign*peak,61000,fee=0.,slippage=0.)
     assert evaluate_peak_trailing(p,100.+sign*(peak-limit+.001),62000,fee=0.,slippage=0.) is None
     d=evaluate_peak_trailing(p,100.+sign*(peak-limit-.001),63000,fee=0.,slippage=0.)
-    assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
+    if peak < 1.:
+        assert d is None
+    else:
+        assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_initial_stop_is_independent(side):
@@ -315,3 +318,14 @@ def test_peak_pullback_cannot_be_vetoed_by_trend(monkeypatch,trend,side):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold',lambda *a:(trend,'TEST'))
     assert asyncio.run(enforce_realtime_profit_exit(e,'CAP/USDT',102.,now*1000))
     a.close_position.assert_awaited_once()
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('peak',[0.5,0.99,1.0])
+def test_atr_protection_arms_at_one_atr(side,peak):
+    from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+    sign=1 if side=='LONG' else -1
+    p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.,entry_mode='CHANNEL_SWING')
+    assert evaluate_peak_trailing(p,100.+sign*peak,61000,1.,fee=0.,slippage=0.) is None
+    d=evaluate_peak_trailing(p,100.+sign*(peak-.61),61001,1.,fee=0.,slippage=0.)
+    if peak<1.:assert d is None
+    else:assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
