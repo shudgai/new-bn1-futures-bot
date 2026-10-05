@@ -48,9 +48,10 @@ def test_continuation_quote_and_ma5(side):
     assert evaluate_continuation_entry(f,q,symbol='CAP/USDT') is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_same_bar_close_cannot_reverse(side):
+def test_same_bar_successful_close_can_reverse(side):
     f=frame(side);a=SimpleNamespace(trades=[dict(symbol='CAP/USDT',action='CLOSE_'+('SHORT' if side=='LONG' else 'LONG'),id=360001)],last_closed_at={})
-    assert evaluate_entry_contract(f,float(f.iloc[-1].close),account=a,symbol='CAP/USDT') is None
+    d=evaluate_entry_contract(f,float(f.iloc[-1].close),account=a,symbol='CAP/USDT')
+    assert d and d['side']==side and d['same_bar_close_id']==360001
 
 
 def test_half_wallet_and_fee_cap():
@@ -120,7 +121,7 @@ def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry,reentry):
     assert symbol in a.positions
     assert a.positions[symbol]['side']==side
     assert a.positions[symbol]['margin']<=50.
-    assert max(a.trades,key=lambda t:t['id'])['entry_snapshot']['signal_code']==('KC_LIVE_BODY_BREAKOUT_' if entry=='breakout' and not reentry else 'KC_OUTSIDE_')+side
+    assert max(a.trades,key=lambda t:t['id'])['entry_snapshot']['signal_code']==('KC_LIVE_BODY_BREAKOUT_' if entry=='breakout' else 'KC_OUTSIDE_')+side
     a.positions.clear()
     asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f))
     assert len(a.trades)==(2 if reentry else 1)
@@ -151,7 +152,7 @@ def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_profit_reentry_retreat_gate(side):
-    e=object.__new__(TradingEngine)
+    e=object.__new__(TradingEngine);e.account=SimpleNamespace(trades=[])
     assert e._profit_reentry_ready('CAP/USDT',dict(side=side),frame(side),100.) is False
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -229,3 +230,67 @@ def test_compatibility_state_machine_has_no_ma_exit_authority(side):
     strategy=StrictStateMachineStrategy()
     strategy.set_state('CAP/USDT',PositionState.LONG if side=='LONG' else PositionState.SHORT)
     assert strategy.evaluate_tick('CAP/USDT',frame(side),100.)['action']=='WAIT'
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['failed_close','missing_fill','already_reopened','retreat'])
+def test_same_bar_reopen_fail_closed(side,fault):
+    f=frame(side)
+    close=dict(symbol='CAP/USDT',action='CLOSE_'+side,id=360001,status='CLOSED')
+    a=SimpleNamespace(trades=[close],last_closed_at={'CAP/USDT':360.001})
+    if fault=='failed_close':close['status']='FAILED'
+    if fault=='missing_fill':a.trades=[]
+    if fault=='already_reopened':a.trades.append(dict(symbol='CAP/USDT',action='OPEN_'+side,id=360002))
+    q=100. if fault=='retreat' else float(f.iloc[-1].close)
+    assert evaluate_entry_contract(f,q,account=a,symbol='CAP/USDT') is None
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('old_side',['LONG','SHORT'])
+def test_same_bar_runner_real_fill_and_close_consumed(monkeypatch,side,old_side):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.paper_account import PaperAccount
+    from core.services.symbol_runner import process_single_symbol_runner
+    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'log',lambda *a,**k:None)
+    now=int(time.time()//60)*60000
+    monkeypatch.setattr(time,'time',lambda:(now+10000)/1000)
+    f=frame(side);f['timestamp']+=now-360000
+    f.attrs['entry_finality_verified']=True
+    a=PaperAccount();a.balance=100.
+    a.trades.append(dict(symbol='CAP/USDT',action='CLOSE_'+old_side,id=now+1000,status='CLOSED',reason='Channel Swing PROFIT_PROTECTION token'))
+    a.last_closed_at['CAP/USDT']=(now+1000)/1000
+    a.channel_profit_reentries['CAP/USDT']=dict(side=old_side,old_side=old_side,phase='closed',mode='outer_cycle',token='token',close_reason='Channel Swing PROFIT_PROTECTION token',close_requested_at_ms=now,exit_bar_id=now,requires_pullback=False)
+    e=object.__new__(TradingEngine);e.account=a
+    e.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=now+10000))
+    e.fetch_klines=AsyncMock(return_value=f);e.strategy=SimpleNamespace(compute_indicators=lambda x:x)
+    e.tickers={'CAP/USDT':float(f.iloc[-1].close)}
+    e.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *a:2)
+    e._execution_price_is_safe=AsyncMock(return_value=True)
+    asyncio.run(process_single_symbol_runner(e,'CAP/USDT',time.time(),None,False,exit_frame=f))
+    assert a.positions['CAP/USDT']['side']==side
+    assert 'AFTER_CLOSE' in a.trades[0]['entry_snapshot']['pending_signal_id']
+    a.positions.clear()
+    asyncio.run(process_single_symbol_runner(e,'CAP/USDT',time.time(),None,False,exit_frame=f))
+    assert len(a.trades)==2
+
+@pytest.mark.parametrize('closed',[False,True])
+def test_tick_close_reevaluates_only_after_success(monkeypatch,closed):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import core.services.exits.realtime_profit_exit as exits
+    e=object.__new__(TradingEngine);e.account=SimpleNamespace(positions={})
+    e._reevaluate_after_close=AsyncMock()
+    monkeypatch.setattr(exits,'enforce_realtime_profit_exit',AsyncMock(return_value=closed))
+    assert asyncio.run(e._instant_quote_exit('CAP/USDT',101.5))==closed
+    assert e._reevaluate_after_close.await_count==int(closed)
+
+def test_success_report_with_remaining_position_never_reopens(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import core.services.exits.realtime_profit_exit as exits
+    e=object.__new__(TradingEngine);e.account=SimpleNamespace(positions={'CAP/USDT':{}})
+    e._reevaluate_after_close=AsyncMock()
+    monkeypatch.setattr(exits,'enforce_realtime_profit_exit',AsyncMock(return_value=True))
+    asyncio.run(e._instant_quote_exit('CAP/USDT',101.5))
+    e._reevaluate_after_close.assert_not_awaited()

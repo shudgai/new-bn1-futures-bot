@@ -90,4 +90,5 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     await enforce_realtime_profit_exit(engine, symbol, quote)
     if symbol not in engine.account.positions:
         strict_strategy.set_state(symbol, PositionState.IDLE)
+        await engine._reevaluate_after_close(symbol)
     return [], []

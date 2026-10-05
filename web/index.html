@@ -895,9 +895,9 @@
                 ctx.candlestickSeries = chart.addCandlestickSeries({
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
-                    lastValueVisible: true, priceLineVisible: true
+                    lastValueVisible: true, priceLineVisible: false
                 });
-                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
+                ctx.ma5Series = chart.addLineSeries({ priceLineVisible: false, color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
                 ctx.ma5Series.applyOptions({
                     lastValueVisible: true,
                     priceFormat: {
@@ -906,11 +906,11 @@
                         minMove: 0.00000001
                     }
                 });
-                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
+                ctx.ma15Series = chart.addLineSeries({ priceLineVisible: false, color: '#8B6F47', lineWidth: 2, title: 'MA15' });
 
-                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
-                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
-                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                ctx.kcUpperSeries = chart.addLineSeries({ priceLineVisible: false, color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
+                ctx.kcMiddleSeries = chart.addLineSeries({ priceLineVisible: false, color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
+                ctx.kcLowerSeries = chart.addLineSeries({ priceLineVisible: false, color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
                 this._charts = this._charts || {};
                 this._charts[symbol] = ctx;
 
@@ -1069,7 +1069,8 @@
                                     price: stopPrice,
                                     color: '#f59e0b',
                                     lineWidth: 2,
-                                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                                    lineVisible: false,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
                                     axisLabelVisible: true,
                                     title: pos.entry_mode === 'CHANNEL_SWING' ? '初始止損防線' : '鎖利防線',
                                 });
@@ -1090,7 +1091,8 @@
                                     price: atrTp,
                                     color: '#10b981',
                                     lineWidth: 2,
-                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    lineVisible: false,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
                                     axisLabelVisible: true,
                                     title: '🎯 ATR止盈(×2)',
                                 });
@@ -1118,7 +1120,8 @@
                                 price: swingExt,
                                 color: isClose ? '#ef4444' : '#10b981', // 接近時變紅色警示
                                 lineWidth: isClose ? 3 : 2,
-                                lineStyle: isClose ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                                lineVisible: isClose,
+                                lineStyle: LightweightCharts.LineStyle.Solid,
                                 axisLabelVisible: true,
                                 title: isClose ? '⚠️ 接近谷峰' : '波段谷峰',
                             };

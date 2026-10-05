@@ -289,6 +289,7 @@ def matched_reentry_close(account, symbol, ticket):
         fills = [float(t.get('id') or 0) for t in getattr(account, 'trades', [])
                  if t.get('symbol') == symbol and t.get('action') == 'CLOSE_' + side
                  and t.get('reason') == reason
+                 and t.get('status') in (None, 'CLOSED')
                  and math.isfinite(float(t.get('id') or 0))
                  and float(t.get('id') or 0) >= max(requested, exit_bar)]
         return max(fills) if fills else None

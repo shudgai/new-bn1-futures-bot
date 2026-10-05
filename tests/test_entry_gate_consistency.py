@@ -68,7 +68,7 @@ def test_actual_rejection_and_diagnostics_reset(side, fault, reason):
     if fault=='doji':f.loc[f.index[-1],'open']=quote
     if fault=='quote':quote=float('nan')
     if fault=='rail':f.loc[f.index[-1],'kc_upper']=f.iloc[-1].kc_lower
-    if fault=='cooldown':account=SimpleNamespace(trades=[dict(symbol='CAP/USDT',action='CLOSE_'+side,id=float(f.iloc[-1].timestamp)+1000)])
+    if fault=='cooldown':account=SimpleNamespace(trades=[],last_closed_at={'CAP/USDT':(float(f.iloc[-1].timestamp)+1000)/1000})
     d={'reason':'stale'}
     assert evaluate_v2_frame(f,quote,account=account,symbol='CAP/USDT',diagnostics=d) is None
     assert d['reason']==reason

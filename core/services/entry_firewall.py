@@ -76,7 +76,7 @@ async def validate_account_entry(account, symbol, side, context):
         if (context.get('profit_reentry_token') != ticket.get('token')
                 or ticket.get('phase') != 'closed' or ticket.get('side') != side
                 or not filled_at
-                or float(frame.iloc[-1].timestamp) <= math.floor(filled_at/60000)*60000):
+                or float(frame.iloc[-1].timestamp) < math.floor(filled_at/60000)*60000):
             raise ValueError('[FORBIDDEN_ENTRY] 未匹配成功平倉及重開票據')
         abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE','ABNORMAL','WATERFALL'))
         if abnormal and not abnormal_pullback_ready(copy.deepcopy(ticket), frame, float(frame.iloc[-1].close)):

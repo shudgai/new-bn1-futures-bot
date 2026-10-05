@@ -188,13 +188,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         live = frame.iloc[-1]
         latest = closed.iloc[-1]
-        # Do not reopen in the candle of a successful close, even after restart.
+        # A persisted successful close can authorize one fresh entry in its candle.
         exit_bar = None
+        close_fill = None
         for trade in getattr(account, 'trades', []):
             if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG','CLOSE_SHORT'):
                 stamp = float(trade['id'])
                 if not math.isfinite(stamp) or stamp <= 0:
                     return reject('WAIT_VALID_CLOSE_HISTORY')
+                if trade.get('status') not in (None, 'CLOSED'):
+                    continue
+                if close_fill is None or stamp > float(close_fill['id']):
+                    close_fill = trade
                 bar = math.floor(stamp/60000)*60000
                 exit_bar = max(exit_bar or bar, bar)
         saved_close = getattr(account, 'last_closed_at', {}).get(symbol)
@@ -220,7 +225,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         else:
             decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                                  live=live if len(frame) > len(closed) else None)
-        if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
+        same_bar_close = (close_fill is not None and float(live.timestamp) == exit_bar
+                          and math.floor(float(close_fill['id'])/60000)*60000 == exit_bar)
+        if decision['action'] != 'ENTER' or (not same_bar_close and exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
             continuation = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
             if continuation:
                 decision = continuation
@@ -244,10 +251,17 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
 
         # Post-exit formation verification:
-        if exit_bar is not None and float(live.timestamp) <= exit_bar:
+        if exit_bar is not None and float(live.timestamp) <= exit_bar and not same_bar_close:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
+        if not same_bar_close and exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
+        if same_bar_close:
+            close_id = float(close_fill['id'])
+            if any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                   and float(t.get('id') or 0) >= close_id for t in getattr(account, 'trades', [])):
+                return reject('BLOCKED_CLOSE_ALREADY_REOPENED')
+            decision['same_bar_close_id'] = close_id
+            decision['pending_signal_id'] += f'_AFTER_CLOSE_{close_id}'
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
             if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')

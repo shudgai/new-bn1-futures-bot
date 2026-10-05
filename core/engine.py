@@ -1222,7 +1222,33 @@ class TradingEngine:
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
         """Abnormal live bodies and hard stops; no REST or candle-close wait."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-        return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
+        closed = await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
+        if closed and symbol not in self.account.positions:
+            await self._reevaluate_after_close(symbol)
+        return closed
+
+    async def _reevaluate_after_close(self, symbol):
+        """Entry-only evaluation after a successful close; never calls exit processing."""
+        if not getattr(self, 'is_running', False) or symbol in self.account.positions:
+            return
+        frame = await self._entry_boundary_frame(symbol)
+        if frame is None or frame.empty:
+            return
+        price = float(frame.iloc[-1]['close'])
+        daily = getattr(self.account, 'daily_loss_limit_hit', None)
+        halt = bool(daily and daily()[0])
+        if halt:
+            return
+        if symbol in getattr(self.account, 'channel_profit_reentries', {}):
+            await self._try_profit_reentry(symbol, frame, price, halt)
+            return
+        from core.services.entry_contract import evaluate_entry_contract
+        decision = evaluate_entry_contract(frame, price, account=self.account, symbol=symbol)
+        if decision:
+            await self._execute_confirmed_channel_break(
+                symbol, frame, price, decision['side'], halt,
+                v8_reason=decision['type'], candidate_bar_id=decision['confirmation_bar_id'])
+
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Ticker shares the same lock-free decision path as aggTrade."""
@@ -1813,8 +1839,9 @@ class TradingEngine:
         if used is None:
             used = self._closed_entry_fills = set()
         identity = (symbol,side,bar)
-        if any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
+        same_bar_reopen = decision.get('same_bar_close_id') is not None
+        if not same_bar_reopen and (any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades)):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
 
@@ -2346,7 +2373,17 @@ class TradingEngine:
         return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
-        from core.services.entry_contract import evaluate_continuation_entry
+        from core.services.closed_breakout_entry import matched_reentry_close
+        from core.services.entry_contract import evaluate_entry_contract, evaluate_continuation_entry
+        filled = matched_reentry_close(self.account, symbol, ticket)
+        abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE', 'ABNORMAL', 'WATERFALL'))
+        if filled and ticket.get('phase') == 'closed' and not abnormal:
+            decision = evaluate_entry_contract(frame, price, account=self.account, symbol=symbol)
+            if decision:
+                ticket.setdefault('old_side', ticket['side'])
+                ticket['side'] = decision['side']
+                return True
+            return False
         continuation = evaluate_continuation_entry(frame, price, symbol=symbol)
         if not continuation or continuation['side'] != ticket.get('side'):
             # Inside-channel quotes observe the abnormal pullback without granting entry.
@@ -2457,8 +2494,8 @@ class TradingEngine:
             return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
-        from core.services.entry_contract import evaluate_continuation_entry
-        decision = evaluate_continuation_entry(frame, price, symbol=symbol)
+        from core.services.entry_contract import evaluate_entry_contract
+        decision = evaluate_entry_contract(frame, price, account=self.account, symbol=symbol)
         if not decision or decision['side'] != ticket['side']:
             return
         live_pivot = False

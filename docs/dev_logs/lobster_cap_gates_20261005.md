@@ -76,3 +76,8 @@ After cleanup, the same 316 cases passed without skips. Production and the old c
 Added /api/account-exposure with no account refresh/update/order side effects. Cached testnet/live exposure is not marked verified; paper ledger memory is identified explicitly. Tests import the endpoint without running application lifespan. Updated the outdated API strategy explanation. Runtime telemetry remains preserved locally and is ignored as generated data for source integrity.
 
 321 related tests passed before the preflight field rename; required_files replaces phase_files to distinguish the new scoped branch inventory from the separate incomplete historical Phase candidate. Added paper-only environment fragment and startup readiness record. Current production environment is paper, one slot, Lobster only. Public mainnet symbol status verified for CAP and Lobster; demo symbol availability differs. Disk exposure snapshot is empty but current memory is not verified. Deploy/restart/live-order authority remains NO.
+
+
+## Same-candle reentry authorization
+
+The owner authorized fresh long or short entry after a successful close in the same candle. Entry direction comes from the shared gate, not the old position. Each close fill authorizes at most one reentry, including after restart. Failed closes, remaining positions, invalid quotes, daily risk limits, abnormal-close pullback protection, and final account revalidation remain blocking. The tick and scan exit paths use an entry-only callback without exit recursion. Related regression: 338 passed. Price horizontal dashed guides are hidden; KC middle and crosshair remain visible.

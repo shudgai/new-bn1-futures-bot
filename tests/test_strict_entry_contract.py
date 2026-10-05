@@ -185,7 +185,8 @@ def test_continuation_after_missed_entry_and_close(side):
     account=SimpleNamespace(positions={},trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)])
     assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_CONTINUATION_ENTRY'
     account.trades[0]['id']=float(f.iloc[-1].timestamp)+1000
-    assert evaluate_v2_frame(f,account=account,symbol='TEST') is None
+    reopened=evaluate_v2_frame(f,account=account,symbol='TEST')
+    assert reopened and reopened['same_bar_close_id']==account.trades[0]['id']
     # A closed return inside invalidates the original pair, even if price exits again.
     f.loc[f.index[-2], 'close']=100+sign*1.3
     f.loc[f.index[-2], 'low' if side=='LONG' else 'high']=100+sign*1.2
