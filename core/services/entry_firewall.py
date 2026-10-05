@@ -67,6 +67,20 @@ async def validate_account_entry(account, symbol, side, context):
     decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
     if decision is None or decision['side'] != side:
         raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+    ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol)
+    if ticket:
+        from core.services.closed_breakout_entry import matched_reentry_close
+        from core.services.strategies.outer_strategy import abnormal_pullback_ready
+        import copy
+        filled_at = matched_reentry_close(account, symbol, ticket)
+        if (context.get('profit_reentry_token') != ticket.get('token')
+                or ticket.get('phase') != 'closed' or ticket.get('side') != side
+                or not filled_at
+                or float(frame.iloc[-1].timestamp) <= math.floor(filled_at/60000)*60000):
+            raise ValueError('[FORBIDDEN_ENTRY] 未匹配成功平倉及重開票據')
+        abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE','ABNORMAL','WATERFALL'))
+        if abnormal and not abnormal_pullback_ready(copy.deepcopy(ticket), frame, float(frame.iloc[-1].close)):
+            raise ValueError('[FORBIDDEN_ENTRY] 異常平倉回踩尚未完成')
     expected_id = snapshot.get('pending_signal_id') if snapshot else None
     if expected_id is not None and expected_id != decision.get('pending_signal_id'):
         raise ValueError('[FORBIDDEN_ENTRY] 原始突破訊號已改變')

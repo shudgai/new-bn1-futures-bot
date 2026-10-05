@@ -30,6 +30,8 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
     remain consistently in favor of the trend.
     """
     try:
+        if frame is None or len(closed_entry_candles(frame)) != len(frame)-1:
+            return None
         side = ck_direction(frame)
         if not side:
             return None
@@ -60,6 +62,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             return None
 
         edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        lower, upper = float(frame.iloc[-1]['kc_lower']), float(frame.iloc[-1]['kc_upper'])
+        if not all(math.isfinite(v) and v > 0 for v in (quote, lower, upper)) or lower >= upper:
+            return None
         
         # [NEW GATE RULE: 必須在 kc 線及 ma5 外，若在 kc 內或 ma5 內就不要開倉]
         if sign * (quote - edge) <= 0:
@@ -74,6 +79,8 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         live = frame.iloc[-1]
         stamp = float(live['timestamp'])
         prev_stamp = float(frame.iloc[-2]['timestamp'])
+        if not all(math.isfinite(v) and v > 0 for v in (stamp, prev_stamp)) or stamp-prev_stamp != 60000:
+            return None
 
         return dict(action='ENTER', side=side, type=signal, reason=signal,
                     price=quote, entry_atr=atr, confirmation_bar_id=stamp,

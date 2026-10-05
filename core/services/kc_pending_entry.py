@@ -6,7 +6,8 @@ Only the immediately following forming candle can authorize entry.
 import math
 from collections import OrderedDict
 
-KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT'))
+KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT',
+                              'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
 KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
                             'confirmation_ma5', 'previous_ma5', 'confirmation_ma15',
                             'pending_signal_id', 'pending_second_bar_id', 'pending_wait_bars',
@@ -136,7 +137,9 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 return wait('WAIT_VALID_QUOTE')
 
             # Live price must be strictly outside
-            s_edge = float(second[key])
+            s_edge = float(second[key] if live is None else live[key])
+            if not math.isfinite(s_edge) or s_edge <= 0:
+                return wait('WAIT_VALID_KC_PENDING_DATA')
             distance = sign * (price - s_edge) / s_atr if s_atr > 0 else 0.
             if distance <= 0:
                 return wait('KC_PENDING_CANCELLED_INSIDE_RAIL')

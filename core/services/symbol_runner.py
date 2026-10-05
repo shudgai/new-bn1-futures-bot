@@ -68,6 +68,9 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if not position:
         if exit_only:
             return [], []
+        if symbol in getattr(engine.account, 'channel_profit_reentries', {}):
+            await engine._try_profit_reentry(symbol, frame, quote, daily_halt)
+            return [], []
         from core.services.entry_contract import evaluate_entry_contract
         from core.services.candle_data import log_entry_gate
         diagnostics = {}

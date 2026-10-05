@@ -1858,6 +1858,9 @@ class TradingEngine:
                        signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
                        candidate_bar_id=signal.get('candidate_bar_id'),
                        evidence=entry_frame_evidence(snapshot['frame'])))
+        if signal.get('profit_reentry_token'):
+            context['profit_reentry_token'] = signal['profit_reentry_token']
+            context['entry_snapshot']['profit_reentry_token'] = signal['profit_reentry_token']
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
         submit_lock = getattr(self, '_account_entry_submit_lock', None)
         if submit_lock is None:
@@ -2346,9 +2349,16 @@ class TradingEngine:
         from core.services.entry_contract import evaluate_continuation_entry
         continuation = evaluate_continuation_entry(frame, price, symbol=symbol)
         if not continuation or continuation['side'] != ticket.get('side'):
+            # Inside-channel quotes observe the abnormal pullback without granting entry.
+            from core.services.closed_breakout_entry import matched_reentry_close
+            abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE', 'ABNORMAL', 'WATERFALL'))
+            if abnormal and ticket.get('phase') == 'closed' and matched_reentry_close(self.account, symbol, ticket):
+                before = ticket.get('pullback_bar')
+                abnormal_pullback_ready(ticket, frame, price)
+                if before != ticket.get('pullback_bar'):
+                    self.account.save_state()
             return False
         from core.services.closed_breakout_entry import matched_reentry_close
-        from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
         filled_at = matched_reentry_close(self.account, symbol, ticket)
         if not filled_at:
             return False
@@ -2364,18 +2374,7 @@ class TradingEngine:
         close_reason = str(ticket.get("close_reason") or "")
         abnormal_close = any(code in close_reason for code in ("ADVERSE", "ABNORMAL", "WATERFALL"))
         if ticket.get("mode") in ("next_breakout", "outer_cycle") and not abnormal_close:
-            return UnifiedEntryStrategy().evaluate_entry(
-                frame, price, ticket['side'], engine=self, symbol=symbol)[0]
-        if ticket.get("mode") == "next_breakout":
-            try:
-                current_bar = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
-                exit_bar = float(ticket["exit_bar_id"])
-                if not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar):
-                    return False
-            except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-                return False
-            return UnifiedEntryStrategy().evaluate_entry(
-                frame, price, ticket['side'], engine=self, symbol=symbol)[0]
+            return True
         if ticket.get('mode') == 'direct_reverse':
             return False
         if ticket.get('mode') == 'ck_reverse':
@@ -2398,7 +2397,7 @@ class TradingEngine:
             self.account.save_state()
             return False
         before = ticket.get("pullback_bar")
-        if ticket.get("requires_pullback", True):
+        if abnormal_close or ticket.get("requires_pullback", True):
             ready = abnormal_pullback_ready(ticket, frame, price)
             if ready:
                 rail = float(frame.iloc[-1]["kc_upper" if ticket["side"] == "LONG" else "kc_lower"])
@@ -2414,8 +2413,7 @@ class TradingEngine:
             self.account.save_state()
         if not ready:
             return False
-        return UnifiedEntryStrategy().evaluate_entry(
-            frame, price, ticket['side'], engine=self, symbol=symbol)[0]
+        return True
 
     async def _try_profit_reentry(self, symbol, frame, price, daily_halt):
         lock = getattr(self, "_channel_profit_reentry_lock", None)
@@ -2450,9 +2448,9 @@ class TradingEngine:
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
             return
-        candidate = "profit:" + ticket["token"]
+        candidate = float(frame.iloc[-1]["timestamp"])
         if any(t.get("symbol") == symbol and t.get("action") == "OPEN_" + ticket["side"]
-               and t.get("channel_confirmation_bar_id") == candidate
+               and (t.get("entry_snapshot") or {}).get("profit_reentry_token") == ticket["token"]
                for t in getattr(self.account, "trades", [])):
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()

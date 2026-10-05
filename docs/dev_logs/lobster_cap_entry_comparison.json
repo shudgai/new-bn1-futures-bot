@@ -1,7 +1,7 @@
 {
   "baseline_commit": "05103c3c74897c788e01daccc8e3a4e5b5ccf1da",
   "branch_commit_tested": "de1335d50c7f99f759d66f98ee2e6a3c9fe8971f",
-  "focused_passed": 56,
+  "focused_passed": 75,
   "historical_total": 239,
   "historical_passed": 97,
   "historical_failed": 142,
@@ -150,5 +150,9 @@
     "tests.test_kc_entry_immutability::test_restart_deterministic_rebuild",
     "tests.test_kc_entry_immutability::test_snapshot_identity_rejection[asyncio]"
   ],
-  "deployment_gate": "BLOCK"
+  "deployment_gate": "BLOCK",
+  "existing_exit_passed": 4,
+  "followup_historical_passed": 97,
+  "followup_historical_failed": 142,
+  "followup_new_regressions": []
 }

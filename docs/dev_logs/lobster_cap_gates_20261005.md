@@ -34,3 +34,15 @@ The old candidate and its 124/124 last accepted report are separate. Missing Pha
 Three historical integration suites: 239 cases, 97 passed and 142 failed. An untouched 05103c3 baseline under the same isolated environment produced the exact same per-case pass/fail outcomes: zero added failures and zero fixed failures. These suites include historical PEPE, wick and entry policies. Identical baseline outcomes do not prove that every failure is obsolete; do not rewrite these tests or declare the entire suite passing without individual review. Full deployment remains blocked.
 
 Remaining continuation vetoes retained from baseline: live candle color, live/closed doji filter, adverse candle protection, MA5 slope at least 0.01 ATR, and maximum 3 ATR outer distance. They are explicit existing constraints rather than runtime environment failures. No new permission to remove them was inferred.
+
+## Follow-up corrections
+
+Fixed emitted KC_2BAR_CONFIRM codes missing from the order whitelist. Pending confirmation now compares against the live KC rail instead of only the prior closed rail. Continuation rejects closed-only tails, non-finite/inverted live rails and non-contiguous live timestamps.
+
+Fixed profit-reentry candidate identity: use the actual candle timestamp for order revalidation, keep the one-time ticket token separately in persisted entry_snapshot, and deduplicate against that token. Normal matching profit closes use the current continuation gate instead of an additional obsolete UnifiedEntryStrategy gate.
+
+The runner delegates outstanding reentry tickets to their protected path. The final account firewall independently requires a matching successful close, closed ticket, correct token, side and later candle; abnormal close additionally requires its dedicated pullback. Inside-channel quotes can persist the abnormal pullback observation without granting entry. No unmatched ticket grants exposure.
+
+Final validation: 75 focused tests plus four existing waterfall/hard-stop tests passed (79 total). Tests cover both symbols and directions, normal matched-close reentry, abnormal pullback/reclaim through the real paper account, unmatched-ticket rejection, two-bar code whitelist/live-rail checks, and invalid continuation data. Three historical suites still produce 97 passed/142 failed, with zero added regressions relative to untouched baseline. Those historical failures remain unresolved; full suite is not PASS. Test clocks are controlled to preserve, rather than bypass, the existing 3-second candle finality requirement.
+
+No deployment, restart, live orders or production file changes. Actual exchange and WebSocket transport remain unverified.

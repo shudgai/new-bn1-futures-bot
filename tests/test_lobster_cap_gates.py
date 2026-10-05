@@ -89,7 +89,8 @@ def test_initial_stop_is_independent(side):
 @pytest.mark.parametrize('symbol',['CAP/USDT','龙虾/USDT'])
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('entry',['breakout','continuation'])
-def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry):
+@pytest.mark.parametrize('reentry',[False,True])
+def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry,reentry):
     import asyncio,time
     from unittest.mock import AsyncMock
     from core.paper_account import PaperAccount
@@ -99,9 +100,15 @@ def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry):
     monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
     f=frame(side);now=int(time.time()//60)*60000
     f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    monkeypatch.setattr(time,'time',lambda:now/1000+10.)
     if entry=='continuation':
         f.loc[5,'open']=float(f.iloc[-1].close)-(0.3 if side=='LONG' else -0.3)
     a=PaperAccount();a.balance=100.
+    if reentry:
+        exit_bar=now-60000
+        reason='Channel Swing PROFIT_PROTECTION test-token'
+        a.trades.append(dict(symbol=symbol,action='CLOSE_'+side,id=exit_bar+10000,reason=reason))
+        a.channel_profit_reentries[symbol]=dict(side=side,old_side=side,phase='closed',mode='outer_cycle',token='test-token',close_reason=reason,exit_bar_id=exit_bar,close_requested_at_ms=exit_bar+1000,requires_pullback=False)
     e=object.__new__(TradingEngine);e.account=a
     e.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=time.time()*1000))
     e.tickers={symbol:float(f.iloc[-1].close)}
@@ -113,10 +120,10 @@ def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry):
     assert symbol in a.positions
     assert a.positions[symbol]['side']==side
     assert a.positions[symbol]['margin']<=50.
-    assert a.trades[-1]['entry_snapshot']['signal_code']==('KC_LIVE_BODY_BREAKOUT_' if entry=='breakout' else 'KC_OUTSIDE_')+side
+    assert max(a.trades,key=lambda t:t['id'])['entry_snapshot']['signal_code']==('KC_LIVE_BODY_BREAKOUT_' if entry=='breakout' and not reentry else 'KC_OUTSIDE_')+side
     a.positions.clear()
     asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f))
-    assert len(a.trades)==1
+    assert len(a.trades)==(2 if reentry else 1)
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('entry',['breakout','continuation'])
@@ -127,6 +134,7 @@ def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
     from core.services.entry_firewall import validate_account_entry
     f=frame(side);now=int(time.time()//60)*60000
     f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    monkeypatch.setattr(time,'time',lambda:now/1000+10.)
     if entry=='continuation':f.loc[5,'open']=float(f.iloc[-1].close)-(0.3 if side=='LONG' else -0.3)
     f.attrs['entry_finality_verified']=True
     d=evaluate_entry_contract(f,float(f.iloc[-1].close),symbol='CAP/USDT')
@@ -145,3 +153,72 @@ def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
 def test_profit_reentry_retreat_gate(side):
     e=object.__new__(TradingEngine)
     assert e._profit_reentry_ready('CAP/USDT',dict(side=side),frame(side),100.) is False
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_two_bar_code_and_live_rail_revalidation(monkeypatch,side):
+    from core.services.entry_firewall import validate_entry_frame
+    f=frame('LONG')
+    f.loc[3,['open','close','high','low','ma5','ma15']]=[100.8,101.2,101.3,100.7,100.,99.9]
+    f.loc[4,['open','close','high','low','ma5','ma15']]=[101.1,101.5,101.6,101.,100.1,99.9]
+    f.loc[5,['open','close','high','low']]=[101.7,101.8,101.9,101.6]
+    if side=='SHORT':
+        for key in ('open','close','high','low','ma3','ma5','ma15','kc_upper','kc_lower','kc_middle'):f[key]=200.-f[key]
+        f[['high','low']]=f[['low','high']].to_numpy()
+        f[['kc_upper','kc_lower']]=f[['kc_lower','kc_upper']].to_numpy()
+    code='KC_2BAR_CONFIRM_'+side
+    assert validate_entry_frame(f,side,code)['type']==code
+    f.loc[5,'kc_upper' if side=='LONG' else 'kc_lower']=102. if side=='LONG' else 98.
+    assert evaluate_entry_contract(f,float(f.iloc[-1].close),code) is None
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_abnormal_reentry_observes_pullback_before_real_fill(monkeypatch,side):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.paper_account import PaperAccount
+    from core.services.symbol_runner import process_single_symbol_runner
+    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
+    now=int(time.time()//60)*60000;monkeypatch.setattr(time,'time',lambda:now/1000+10.)
+    f=frame(side);f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    symbol='CAP/USDT';a=PaperAccount();a.balance=100.
+    ticket=dict(side=side,old_side=side,phase='closed',mode='outer_cycle',token='abnormal',close_reason='WATERFALL_DROP',exit_bar_id=now-60000,close_requested_at_ms=now-59000,requires_pullback=True)
+    a.trades=[dict(symbol=symbol,action='CLOSE_'+side,id=now-50000,reason='WATERFALL_DROP')]
+    a.channel_profit_reentries[symbol]=ticket
+    e=object.__new__(TradingEngine);e.account=a
+    e.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=now+10000))
+    e.tickers={symbol:float(f.iloc[-1].close)};e.fetch_klines=AsyncMock(return_value=f)
+    e.strategy=SimpleNamespace(compute_indicators=lambda x:x)
+    e.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
+    e._execution_price_is_safe=AsyncMock(return_value=True)
+    asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f))
+    assert not a.positions and 'pullback_bar' not in ticket
+    q=float(f.iloc[-1].close)
+    asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f,exit_quote=100.))
+    assert not a.positions and ticket['pullback_bar']==now
+    asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f,exit_quote=q))
+    assert a.positions[symbol]['side']==side
+    assert symbol not in a.channel_profit_reentries
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_account_cannot_bypass_unmatched_ticket(monkeypatch,side):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.services.entry_firewall import validate_account_entry
+    f=frame(side);now=int(time.time()//60)*60000
+    monkeypatch.setattr(time,'time',lambda:now/1000+10.)
+    f['timestamp']=[now-(5-i)*60000 for i in range(6)];f.attrs['entry_finality_verified']=True
+    d=evaluate_entry_contract(f,float(f.iloc[-1].close),symbol='CAP/USDT')
+    a=SimpleNamespace(positions={},trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f),channel_profit_reentries={'CAP/USDT':dict(side=side,phase='closed',token='missing-fill',exit_bar_id=now-60000)})
+    with pytest.raises(ValueError,match='重開票據'):
+        asyncio.run(validate_account_entry(a,'CAP/USDT',side,dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])))
+
+@pytest.mark.parametrize('fault',['nan_rail','inverted_rails','nan_stamp','stale_bar','closed_tail'])
+def test_continuation_invalid_live_data(fault):
+    f=frame()
+    if fault=='nan_rail':f.loc[5,'kc_upper']=math.nan
+    if fault=='inverted_rails':f.loc[5,'kc_upper']=98.
+    if fault=='nan_stamp':f.loc[5,'timestamp']=math.nan
+    if fault=='stale_bar':f.loc[5,'timestamp']+=60000
+    if fault=='closed_tail':f.loc[5,'is_closed']=True
+    assert evaluate_continuation_entry(f,float(f.iloc[-1].close)) is None
