@@ -733,6 +733,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 continue
             marker_index = matching_bars[-1]
             trade_markers.setdefault(marker_index, []).append({
+                "id": trade_timestamp,
                 "action": action,
                 "reason": trade.get("reason") or "",
                 "price": trade.get("price"),

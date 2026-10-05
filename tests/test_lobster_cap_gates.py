@@ -390,3 +390,23 @@ def test_final_account_blocks_ma5_outer_violation(monkeypatch,side,fault):
     ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
     a=SimpleNamespace(positions={},trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f))
     with pytest.raises(ValueError):asyncio.run(validate_account_entry(a,'CAP/USDT',side,ctx))
+
+def test_account_open_lock_serializes_and_blocks_unclosed_position(monkeypatch):
+    import asyncio
+    from core.paper_account import PaperAccount
+    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
+    a=PaperAccount();calls=[]
+    async def fill(self,symbol,*args):
+        calls.append(symbol)
+        await asyncio.sleep(0)
+        self.positions[symbol]={'side':'LONG'}
+        return True
+    monkeypatch.setattr(PaperAccount,'_open_position_locked',fill)
+    async def run():
+        args=('CAP/USDT','LONG',100.,50.,90.,0.,'TEST')
+        results=await asyncio.gather(a.open_position(*args),a.open_position(*args))
+        assert sorted(results)==[False,True] and len(calls)==1
+        assert not await a.open_position('CAP/USDT','SHORT',100.,50.,110.,0.,'TEST')
+        a.positions.clear()
+        assert await a.open_position(*args)
+    asyncio.run(run())

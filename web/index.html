@@ -963,9 +963,8 @@
                         if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
                         if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
                         if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
-                        const positionGroups = {};
                         [...(d.trade_markers || [])]
-                            .sort((a, b) => Number(b.action.startsWith('CLOSE_')) - Number(a.action.startsWith('CLOSE_')))
+                            .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
                             .forEach(trade => {
                                 const markerStyle = {
                                     OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買入開多' },
@@ -975,24 +974,17 @@
                                 }[trade.action];
                                 if (!markerStyle) return;
                                 
-                                const key = markerStyle.position;
-                                if (positionGroups[key]) {
-                                    positionGroups[key].text += ` + ${markerStyle.text}`;
-                                    // 若包含開倉，讓開倉顏色優先 (例如平空+開多時顯示藍色箭頭)
-                                    if (trade.action.startsWith('OPEN_')) {
-                                        positionGroups[key].color = markerStyle.color;
-                                    }
-                                } else {
-                                    positionGroups[key] = { ...markerStyle };
-                                }
+                                const stamp = Number(trade.id || 0);
+                                const clock = stamp > 0 ? new Intl.DateTimeFormat('zh-TW', {
+                                    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit',
+                                    second: '2-digit', hourCycle: 'h23'
+                                }).format(new Date(stamp)) : '';
+                                tradeMarkers.push({
+                                    time: d.time, ...markerStyle,
+                                    text: clock ? `${markerStyle.text} ${clock}` : markerStyle.text,
+                                    size: 1,
+                                });
                             });
-                        
-                        Object.values(positionGroups).forEach(m => {
-                            tradeMarkers.push({
-                                time: d.time, ...m,
-                                size: 1,
-                            });
-                        });
                     });
                     
                     const referencePrice = Number((candles[candles.length - 1] || {}).close || 0);

@@ -1,3 +1,4 @@
+import asyncio
 from core.services.exits.entry_atr_protection import initialize_atr_protection, valid_entry_atr, enforce_atr_protection
 from core.services.exits.staged_risk_service import staged_enabled
 from core.services.exits.hard_stop_service import enforce_hard_stop
@@ -473,6 +474,31 @@ class PaperAccount:
         return self.balance + sum(float(p.get("margin", 0.0)) for p in self.positions.values())
 
     async def open_position(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        amount_usdt: float,
+        sl: float,
+        tp: float,
+        reason: str,
+        atr: float = 0.0,
+        leverage: int = None,
+        signal_score: int = None,
+        entry_context: dict = None,
+        apply_slippage: bool = True,
+    ) -> bool:
+        locks = getattr(self, '_position_open_locks', None)
+        if locks is None:
+            locks = self._position_open_locks = {}
+        async with locks.setdefault(symbol, asyncio.Lock()):
+            if symbol in self.positions or symbol in self.closing_lock:
+                return False
+            return await self._open_position_locked(
+                symbol, side, price, amount_usdt, sl, tp, reason, atr,
+                leverage, signal_score, entry_context, apply_slippage)
+
+    async def _open_position_locked(
         self,
         symbol: str,
         side: str,

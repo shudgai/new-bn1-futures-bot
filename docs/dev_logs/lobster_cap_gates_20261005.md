@@ -106,3 +106,8 @@ Owner reiterated that flat or rising MA5 must never authorize SHORT. The 23:20:3
 ## Symmetric MA5 outer-rail trend gate
 
 Owner explicitly selected KC outer rails, not the middle. LONG requires quote-recomputed MA5 to rise by at least 0.05 prior closed ATR, remain above the live KC upper rail, and not reduce its signed outer gap relative to the last closed snapshot. SHORT mirrors this below the lower rail with falling MA5. Rail and MA5 advancing together with constant gap are allowed; flat MA5 itself is not. All entry modes, same-candle reentry and final account validation share this gate. Even the first live breakout now waits if MA5 remains inside the channel. Valid test fixtures were updated to satisfy the authorized outer-rail condition without dropping safety cases. Related regression: 377 passed.
+
+
+## Trade pairing and chart markers
+
+Full persisted ledger audit found no OPEN-without-CLOSE or CLOSE-without-matching-OPEN violations. CAP 23:27:27 CLOSE, 23:27:53 OPEN, 23:27:56 CLOSE explains two closes on one minute candle. Chart markers now show individual actions with Taipei execution seconds in chronological order instead of concatenating by above/below position. API markers include fill IDs. Paper account entry is serialized per symbol and rejects any remaining position or active close lock before validation, including same-side additions. Related regression: 378 passed; JavaScript syntax validated.
