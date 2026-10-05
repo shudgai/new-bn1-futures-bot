@@ -415,7 +415,7 @@ def test_account_open_lock_serializes_and_blocks_unclosed_position(monkeypatch):
 
 def channel_turn_frame(side='SHORT'):
     f=frame('LONG')
-    f['kc_upper']=102.;f['kc_middle']=100.5;f['kc_lower']=99.
+    f['kc_upper']=102.;f['kc_middle']=100.5;f['kc_lower']=99.;f['ma15']=100.5
     f.loc[4,['open','close','high','low','ma5']]=[101.,101.2,102.2,100.9,101.2]
     f.loc[5,['open','close','high','low']]=[101.2,100.2,101.2,100.2]
     if side=='LONG':
@@ -522,3 +522,55 @@ def test_opposite_small_candle_then_second_outside_body_can_continue(side):
     d=evaluate_entry_contract(f,symbol='CAP/USDT')
     assert d and d['type']=='KC_OUTSIDE_'+side
     assert d['confirmation_bar_id']==float(f.iloc[-1].timestamp)
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['wrong_side','touch','invalid'])
+def test_channel_turn_needs_ma15_price_confirmation(side,fault):
+    from core.services.entry_contract import evaluate_channel_turn
+    f=channel_turn_frame(side);q=float(f.iloc[-1].close);sign=1 if side=='LONG' else -1
+    f.loc[5,'ma15']={'wrong_side':q+sign*.1,'touch':q,'invalid':math.nan}[fault]
+    assert evaluate_channel_turn(f,q,symbol='CAP/USDT') is None
+
+@pytest.mark.parametrize('case,expected',[('lobster',True),('cap',False)])
+def test_reported_turns_ma15_confirmation(case,expected):
+    from core.services.entry_contract import evaluate_channel_turn
+    closes=([.04523,.04538,.04576,.04556,.04545] if case=='lobster' else [.06952,.06947,.06926,.0697,.06958])
+    q=.04514 if case=='lobster' else .06941
+    atr=.00036 if case=='lobster' else .000284
+    f=channel_turn_frame('SHORT')
+    for i,c in enumerate(closes):
+        f.loc[i,['open','close','high','low']]=[c-.00001,c,c+.00001,c-.00002]
+    f.loc[4,'ma5']=sum(closes)/5.
+    f['kc_upper']=max(closes)+.0001;f['kc_lower']=q-.0002;f['kc_middle']=(max(closes)+q)/2.
+    f.loc[2 if case=='lobster' else 3,'high']=float(f.iloc[2 if case=='lobster' else 3].kc_upper)
+    for i in ([3,4] if case=='lobster' else [4]):f.loc[i,'open']=float(f.iloc[i].close)+.00001
+    f.loc[4,'atr']=atr
+    f.loc[5,['open','close','high','low']]=[q+.0003,q,q+.0003,q]
+    f.loc[5,'ma15']=.04518933333333333 if case=='lobster' else .06922066666666667
+    assert bool(evaluate_channel_turn(f,q,symbol='CAP/USDT')) is expected
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('peak,base',[(1.,.5),(2.,.4),(3.,.35)])
+def test_strong_trend_pullback_is_one_and_half_times(side,peak,base):
+    from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+    sign=1 if side=='LONG' else -1
+    p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.)
+    snap=dict(quote_ms=61000,reason=None,ma5=100.+sign*.3,last_ma5=100.,ma15=100.+sign*.1,last_ma15=100.,kc_middle=100.,last_close=100.+sign*.1)
+    assert evaluate_peak_trailing(p,100.+sign*peak,snap,fee=0.,slippage=0.) is None
+    snap['quote_ms']=61001
+    assert evaluate_peak_trailing(p,100.+sign*(peak-base-.01),snap,fee=0.,slippage=0.) is None
+    assert p['strong_trend_pullback'] and p['atr_pullback_limit']==pytest.approx(base*1.5)
+    snap['quote_ms']=61002
+    d=evaluate_peak_trailing(p,100.+sign*(peak-base*1.5-.01),snap,fee=0.,slippage=0.)
+    assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_weakening_trend_restores_original_pullback(side):
+    from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+    sign=1 if side=='LONG' else -1
+    p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.)
+    strong=dict(quote_ms=61000,reason=None,ma5=100.+sign*.3,last_ma5=100.,ma15=100.+sign*.1,last_ma15=100.,kc_middle=100.,last_close=100.+sign*.1)
+    assert evaluate_peak_trailing(p,100.+sign*2,strong,fee=0.,slippage=0.) is None
+    weak=dict(strong,quote_ms=61001,ma5=100.)
+    d=evaluate_peak_trailing(p,100.+sign*1.59,weak,fee=0.,slippage=0.)
+    assert d and not p['strong_trend_pullback'] and p['atr_pullback_limit']==.4

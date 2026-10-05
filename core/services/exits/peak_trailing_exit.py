@@ -359,6 +359,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             else:
                 pullback_limit_atr = 0.60
 
+            strong_trend = False
+            if trend_status == 'HOLD' and isinstance(snapshot, dict) and not snapshot.get('fallback_used', False):
+                ma5, previous_ma5 = snapshot.get('ma5'), snapshot.get('last_ma5')
+                if positive(ma5) and positive(previous_ma5) and scale > 0:
+                    strong_trend = sign * (float(ma5)-float(previous_ma5)) >= .05 * scale
+            if strong_trend:
+                pullback_limit_atr *= 1.5
+            position['atr_pullback_limit'] = pullback_limit_atr
+            position['strong_trend_pullback'] = strong_trend
+
             # 1. 價格從最高點回踩達動態階梯門檻
             if drawdown_atr >= pullback_limit_atr:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'

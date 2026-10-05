@@ -93,6 +93,9 @@ def evaluate_channel_turn(frame, quote, code=None, symbol=''):
         side='LONG' if quote-opened>=.5*atr else 'SHORT' if opened-quote>=.5*atr else None
         if side is None or not ma5_entry_ready(frame,quote,side):
             return None
+        ma15 = float(live['ma15'])
+        if not math.isfinite(ma15) or ma15 <= 0 or (1 if side == 'LONG' else -1) * (quote-ma15) <= 0:
+            return None
         signal='KC_CHANNEL_TURN_'+side
         if code not in (None,signal):
             return None

@@ -56,7 +56,8 @@ def cached_tick_indicators(frame, price, stamp):
         last_ma3=float(prev.get('ma3', 0.)),
         last_ma5=float(prev.get('ma5', prev.get('ma3', 0.))),
         last_ma15=float(prev.get('ma15', 0.)),
-        last_close=float(last.get('close', 0.))
+        last_close=float(last.get('close', 0.)),
+        kc_middle=float(last.get('kc_middle', 0.))
     )
     snapshot['reason'] = None
 
@@ -71,6 +72,14 @@ def cached_tick_indicators(frame, price, stamp):
     live_ms = float(live.get('timestamp', 0))
 
     if live_ms == bar and not bool(live.get('is_closed', True)) and last_ms == bar - 60000:
+        # Reprice live moving averages; closed snapshots alone can mislabel a rebound.
+        if len(closed) >= 5:
+            snapshot['ma5'] = (sum(float(v) for v in closed.close.iloc[-4:]) + float(price)) / 5.
+            snapshot['last_ma5'] = float(last.get('ma5', 0.))
+        if len(closed) >= 15:
+            snapshot['ma15'] = (sum(float(v) for v in closed.close.iloc[-14:]) + float(price)) / 15.
+            snapshot['last_ma15'] = float(last.get('ma15', 0.))
+        snapshot['kc_middle'] = float(live.get('kc_middle', last.get('kc_middle', 0.)))
         snapshot.update(
             live_bar_ms=bar,
             closed_bar_ms=last_ms,
