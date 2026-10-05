@@ -348,7 +348,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if net > 0 and peak_gain_atr >= 0.5:
+        if peak_gain_atr >= 0.5:
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
@@ -382,18 +382,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     # Single live MA3/MA5 adverse turn has no direct CLOSE authority.
                     # parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_MA_TURN_PRESSURE'
                     pass
-        elif peak_gain_atr >= 3.0:
-            if drawdown_atr >= 1.0:
-                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'
-            elif isinstance(snapshot, dict):
-                ma5 = snapshot.get('ma5')
-                last_ma5 = snapshot.get('last_ma5')
-                if ma5 and last_ma5:
-                    if sign == 1 and ma5 < last_ma5:
-                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
-                    elif sign == -1 and ma5 > last_ma5:
-                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
-
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
 
         position.update(peak_price=state['peak_price'], peak_pnl=gain*qty, peak_pnl_usd=gain*qty,
@@ -525,7 +513,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
-            if reason and reason != HARD_REASON and trigger != 'WATERFALL_DROP':
+            if reason and reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_PEAK_PULLBACK_PRESSURE'):
                 if net <= 0:
                     reason, trigger = None, None
 

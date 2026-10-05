@@ -213,11 +213,11 @@ def live_body_breakout_side(frame, price):
         direction = ck_direction(frame)
 
         # LONG: 當根原始開盤價在當根上軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格破上軌 (price > upper)、順向實體至少 0.5 ATR
-        if direction == 'LONG' and price > upper and (price - opened) >= threshold and lower <= opened <= upper:
+        if price > upper and (price - opened) >= threshold and lower <= opened <= upper:
             return 'LONG'
 
         # SHORT: 當根原始開盤價在當根下軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格跌破下軌 (price < lower)、順向實體至少 0.5 ATR
-        if direction == 'SHORT' and price < lower and (opened - price) >= threshold and lower <= opened <= upper:
+        if price < lower and (opened - price) >= threshold and lower <= opened <= upper:
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass

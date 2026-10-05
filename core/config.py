@@ -59,7 +59,7 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
     1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
 )
@@ -1066,8 +1066,8 @@ def get_position_multiplier(score: int) -> float:
 # 單槽模式只監控當輪最強的一多一空，避免大名單中的次級訊號搶先進場。
 # 全市場掃描範圍不變，只縮小最終監控牌面。
 SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "15"))
-SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
-ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
+SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "false").lower() == "true"
+ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "false").lower() == "true"
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "300"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
 # 等 SYMBOL_ROTATION_INTERVAL_SEC（預設5分鐘）才會換牌，尚未持倉的候選觀察
@@ -1197,7 +1197,7 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
 # SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（24）覆寫，這裡先湊到
 # 24 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
-_env_symbols = os.getenv("DEFAULT_SYMBOLS", os.getenv("SYMBOLS", "")).strip()
+_env_symbols = os.getenv("DEFAULT_SYMBOLS", os.getenv("SYMBOLS", "龙虾/USDT,CAP/USDT")).strip()
 if _env_symbols:
     DEFAULT_SYMBOLS = [s.strip() for s in _env_symbols.split(",") if s.strip()]
 else:

@@ -41,11 +41,15 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         atr = float(frame.iloc[-2]['atr'])
         sign = 1 if side == 'LONG' else -1
 
+        if len(frame) < 5 or not math.isfinite(atr) or atr <= 0:
+            return None
         # Check MA5 direction & non-flat slope (漲勢/跌勢)
         closes = [float(v) for v in frame['close'].iloc[-5:-1]]
         if len(closes) >= 4:
             live_ma5 = (sum(closes[-4:]) + quote) / 5.0
             last_ma5 = float(frame.iloc[-2]['ma5'])
+            if not all(math.isfinite(v) and v > 0 for v in (live_ma5, last_ma5)):
+                return None
             ma5_slope = sign * (live_ma5 - last_ma5)
             if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < 0.01):
                 return None
@@ -81,7 +85,7 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
                     pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
                     pending_second_bar_id=prev_stamp,
                     pending_wait_bars=1, pending_max_wait_bars=1,
-                    kc_confirmation_edge=edge if is_outside_rail else mid,
+                    kc_confirmation_edge=edge,
                     kc_distance_atr=distance,
                     kc_max_distance_atr=3.0)
     except Exception:
@@ -193,47 +197,27 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        # [EMERGENCY GUARD: 禁用一根長K即時破軌，嚴格要求多根 K 線確認 (3-bar rule)]
-        fast_side = None
-        
-        decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
-                                             live=live if len(frame) > len(closed) else None)
-                                             
-        # Check MA3 outer cross entry (Dual Entry Rule)
-        if decision['action'] != 'ENTER':
-            from core.services.strategies.outer_strategy import ck_direction, ma3_outer_cross_ready
-            direction = ck_direction(closed)
-            if direction and ma3_outer_cross_ready(frame, quote, direction):
-                atr_val = float(frame.iloc[-2]['atr'])
-                stamp_val = float(live.timestamp)
-                prev_stamp_val = float(frame.iloc[-2]['timestamp'])
-                signal = 'KC_MA3_CROSS_' + direction
-                decision = {
-                    'action': 'ENTER',
-                    'side': direction,
-                    'type': signal,
-                    'reason': signal,
-                    'price': quote,
-                    'entry_atr': atr_val,
-                    'confirmation_bar_id': stamp_val,
-                    'close_price': float(frame.iloc[-2]['close']),
-                    'intrabar': True,
-                    'entry_phase': 'KC_MA3_CROSS',
-                    'pending_signal_id': f"{symbol}_MA3_CROSS_{int(stamp_val)}_{direction}",
-                    'breakout_bar_id': stamp_val,
-                    'pair_confirmation_bar_id': prev_stamp_val,
-                    'third_bar_id': stamp_val,
-                    'pending_second_bar_id': prev_stamp_val,
-                    'pending_wait_bars': 1,
-                    'pending_max_wait_bars': 1
-                }
-
-        # If dual entries are not ready, or is an old breakout from before exit:
+        fast_side = live_body_breakout_side(frame, quote) if len(frame) > len(closed) else None
+        fast_code = 'KC_LIVE_BODY_BREAKOUT_' + fast_side if fast_side else None
+        if fast_side and code in (None, fast_code):
+            stamp = float(live.timestamp)
+            prev_stamp = float(closed.iloc[-1].timestamp)
+            decision = dict(action='ENTER', side=fast_side, type=fast_code,
+                            reason=fast_code, price=quote, entry_atr=float(closed.iloc[-1].atr),
+                            confirmation_bar_id=stamp, close_price=float(closed.iloc[-1].close),
+                            intrabar=True, entry_phase='KC_LIVE_BODY_BREAKOUT',
+                            pending_signal_id=f'{symbol}_LIVE_BODY_{int(stamp)}_{fast_side}',
+                            breakout_bar_id=stamp, pair_confirmation_bar_id=prev_stamp,
+                            third_bar_id=stamp, pending_second_bar_id=prev_stamp,
+                            pending_wait_bars=1, pending_max_wait_bars=1)
+        else:
+            decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
+                                                 live=live if len(frame) > len(closed) else None)
         if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
-            cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
-            if cont_decision and cont_decision['action'] == 'ENTER':
-                decision = cont_decision
-                
+            continuation = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
+            if continuation:
+                decision = continuation
+
         if decision['action'] != 'ENTER':
             if diagnostics is not None:
                 diagnostics.clear()
@@ -254,16 +238,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
-            # Allow immediate reversal if opening the opposite direction of the just-closed position
-            last_trade = None
-            for trade in reversed(getattr(account, 'trades', [])):
-                if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
-                    last_trade = trade
-                    break
-            last_close_side = 'LONG' if last_trade and last_trade.get('action') == 'CLOSE_LONG' else ('SHORT' if last_trade and last_trade.get('action') == 'CLOSE_SHORT' else None)
-            is_opposite_reversal = (last_close_side is not None and decision['side'] != last_close_side)
-            if not is_opposite_reversal:
-                return reject('WAIT_POST_EXIT_NEW_FORMATION')
+            return reject('WAIT_POST_EXIT_NEW_FORMATION')
         if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.

@@ -1724,10 +1724,10 @@ class TradingEngine:
         return 0.0
         
     @staticmethod
-    def _full_wallet_entry_margin(wallet, available, leverage):
+    def _half_wallet_entry_margin(wallet, available, leverage):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
-        return min(wallet * 1.0, available / (1.0 + leverage * TAKER_FEE_RATE))
+        return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
@@ -1822,7 +1822,7 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = self._full_wallet_entry_margin(wallet, available, leverage)
+        amount = self._half_wallet_entry_margin(wallet, available, leverage)
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
@@ -1872,7 +1872,7 @@ class TradingEngine:
             if daily and daily()[0]:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
                 return False
-            amount = self._full_wallet_entry_margin(float(self.account.get_wallet_balance()),
+            amount = self._half_wallet_entry_margin(float(self.account.get_wallet_balance()),
                 float(self.account.get_available_balance()), leverage)
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
@@ -2343,6 +2343,10 @@ class TradingEngine:
         return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
+        from core.services.entry_contract import evaluate_continuation_entry
+        continuation = evaluate_continuation_entry(frame, price, symbol=symbol)
+        if not continuation or continuation['side'] != ticket.get('side'):
+            return False
         from core.services.closed_breakout_entry import matched_reentry_close
         from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
         filled_at = matched_reentry_close(self.account, symbol, ticket)

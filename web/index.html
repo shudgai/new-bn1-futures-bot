@@ -653,7 +653,7 @@
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
-                        symbols: ['龙虾/USDT'],
+                        symbols: ['龙虾/USDT', 'CAP/USDT'],
                         symbol_directions: {},
                         market_modes: {},
                         volatility_stats: {},
@@ -762,11 +762,10 @@
 
             openChartModal(symbol) {
                 this.destroyCharts();
-                const desktop = window.matchMedia('(min-width: 861px)').matches;
                 const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
                 const symbols = [symbol, ...available.filter(item => item !== symbol)]
                     .filter(Boolean)
-                    .slice(0, desktop ? 2 : 1);
+                    .slice(0, 2);
                 this.chartModal.symbol = symbol;
                 this.chartModal.symbols = symbols;
                 this.chartModal.states = Object.fromEntries(
