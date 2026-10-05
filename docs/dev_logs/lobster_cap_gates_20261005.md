@@ -125,3 +125,7 @@ Owner identified CAP 00:00:19 turn as premature and Lobster 00:00:51 as valid. T
 
 ## Confirmed swing holding protection
 User selected confirmed swing lows/highs as structural boundaries. Use the most recent strict one-bar-sided pivot in the last 60 closed candles. A strict quote or subsequent closed excursion past that pivot breaks structure; touching does not. Missing evidence cannot authorize pattern reversal exits. Channel-turn close and mature/doji reversal exits require broken structure and no strong directional hold. Strong HOLD/WARNING MA5 >=0.05 entry ATR keeps the 1.5x pullback allowance. Existing pending exits, waterfall, profit pullback, initial and account hard stops remain independent. Shared MA5 directional entry validation remains enforced. Related suite: 427 passed; /tmp/structure-held-tests.xml. Paper only.
+
+
+## Isolated exit authority correction
+Owner requested intact swing structure to block ATR pullback closes. Pullback authorization now requires current non-fallback structure evidence explicitly broken and estimated net PnL > 0, in addition to existing activation and tier threshold. No fresh structure evidence means no pullback authorization. Initial/account hard stops, waterfall and other emergency exits remain independent. Entry semantics untouched. Worktree /tmp/structure-net-profit-exit; no deployment/restart/orders authorized. Estimated positive net PnL is not a guarantee of realized profit.

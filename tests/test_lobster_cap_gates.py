@@ -73,10 +73,11 @@ def test_preflight_requires_all_evidence_and_authorization():
 def test_dynamic_atr_pullback(side,peak,limit):
     from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
     sign=1 if side=='LONG' else -1
+    snapshot = lambda stamp: {'quote_ms':stamp,'reason':None,'swing_structure_'+side.lower():{'intact':False}}
     p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.,margin=100.,entry_mode='CHANNEL_SWING',leverage=1.)
-    evaluate_peak_trailing(p,100.+sign*peak,61000,fee=0.,slippage=0.)
-    assert evaluate_peak_trailing(p,100.+sign*(peak-limit+.001),62000,fee=0.,slippage=0.) is None
-    d=evaluate_peak_trailing(p,100.+sign*(peak-limit-.001),63000,fee=0.,slippage=0.)
+    evaluate_peak_trailing(p,100.+sign*peak,snapshot(61000),fee=0.,slippage=0.)
+    assert evaluate_peak_trailing(p,100.+sign*(peak-limit+.001),snapshot(62000),fee=0.,slippage=0.) is None
+    d=evaluate_peak_trailing(p,100.+sign*(peak-limit-.001),snapshot(63000),fee=0.,slippage=0.)
     if peak < 1.:
         assert d is None
     else:
@@ -325,9 +326,10 @@ def test_peak_pullback_cannot_be_vetoed_by_trend(monkeypatch,trend,side):
 def test_atr_protection_arms_at_one_atr(side,peak):
     from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
     sign=1 if side=='LONG' else -1
+    snapshot = lambda stamp: {'quote_ms':stamp,'reason':None,'swing_structure_'+side.lower():{'intact':False}}
     p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.,entry_mode='CHANNEL_SWING')
-    assert evaluate_peak_trailing(p,100.+sign*peak,61000,1.,fee=0.,slippage=0.) is None
-    d=evaluate_peak_trailing(p,100.+sign*(peak-.61),61001,1.,fee=0.,slippage=0.)
+    assert evaluate_peak_trailing(p,100.+sign*peak,snapshot(61000),1.,fee=0.,slippage=0.) is None
+    d=evaluate_peak_trailing(p,100.+sign*(peak-.61),snapshot(61001),1.,fee=0.,slippage=0.)
     if peak<1.:assert d is None
     else:assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
 
@@ -565,6 +567,7 @@ def test_strong_trend_pullback_is_one_and_half_times(side,peak,base):
     assert evaluate_peak_trailing(p,100.+sign*(peak-base-.01),snap,fee=0.,slippage=0.) is None
     assert p['strong_trend_pullback'] and p['atr_pullback_limit']==pytest.approx(base*1.5)
     snap['quote_ms']=61002
+    snap['swing_structure_'+side.lower()]={'intact':False}
     d=evaluate_peak_trailing(p,100.+sign*(peak-base*1.5-.01),snap,fee=0.,slippage=0.)
     assert d and d['trigger']=='EXIT_PEAK_PULLBACK_PRESSURE'
 
@@ -576,6 +579,7 @@ def test_weakening_trend_restores_original_pullback(side):
     strong=dict(quote_ms=61000,reason=None,ma5=100.+sign*.3,last_ma5=100.,ma15=100.+sign*.1,last_ma15=100.,kc_middle=100.,last_close=100.+sign*.1)
     assert evaluate_peak_trailing(p,100.+sign*2,strong,fee=0.,slippage=0.) is None
     weak=dict(strong,quote_ms=61001,ma5=100.)
+    weak['swing_structure_'+side.lower()]={'intact':False}
     d=evaluate_peak_trailing(p,100.+sign*1.59,weak,fee=0.,slippage=0.)
     assert d and not p['strong_trend_pullback'] and p['atr_pullback_limit']==.4
 
@@ -639,3 +643,32 @@ def test_channel_turn_cannot_close_intact_or_unknown_structure(monkeypatch, side
     e._entry_boundary_frame=AsyncMock(return_value=f)
     assert not asyncio.run(e._try_channel_turn_reverse('CAP/USDT', f, float(f.iloc[-1].close)))
     a.close_position.assert_not_called()
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('structure', [None, {'intact': True}, {'intact': False}])
+def test_pullback_needs_broken_structure_and_positive_net(side, structure):
+    from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+    sign = 1 if side == 'LONG' else -1
+    p = dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.)
+    snap = dict(quote_ms=61000,reason=None)
+    snap['swing_structure_'+side.lower()] = structure
+    assert evaluate_peak_trailing(p,100.+sign*2,snap,fee=0.,slippage=0.) is None
+    snap['quote_ms']=61001
+    d = evaluate_peak_trailing(p,100.+sign*1.5,snap,fee=0.,slippage=0.)
+    assert bool(d) is (structure is not None and structure['intact'] is False)
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_nonpositive_net_blocks_trailing_but_not_initial_stop(side):
+    from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+    sign = 1 if side == 'LONG' else -1
+    p = dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.)
+    snap = dict(quote_ms=61000,reason=None)
+    snap['swing_structure_'+side.lower()]={'intact':False}
+    assert evaluate_peak_trailing(p,100.+sign*2,snap,fee=.001,slippage=0.) is None
+    snap['quote_ms']=61001
+    assert evaluate_peak_trailing(p,100.+sign*.1,snap,fee=.001,slippage=0.) is None
+    assert p['atr_pullback_block_reason']=='WAIT_POSITIVE_NET_PROFIT'
+    snap['quote_ms']=61002
+    d=evaluate_peak_trailing(p,100.-sign*1.6,snap,fee=.001,slippage=0.)
+    assert d and d['trigger']=='INITIAL_ATR'

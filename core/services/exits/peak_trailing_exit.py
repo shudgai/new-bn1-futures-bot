@@ -367,7 +367,12 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             position['strong_trend_pullback'] = strong_trend
 
             # 1. 價格從最高點回踩達動態階梯門檻
-            if drawdown_atr >= pullback_limit_atr:
+            structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short')) if isinstance(snapshot, dict) else None
+            structure_broken = (isinstance(structure, dict) and structure.get('intact') is False
+                                and not snapshot.get('reason') and not snapshot.get('fallback_used', False))
+            position['atr_pullback_block_reason'] = ('WAIT_CONFIRMED_STRUCTURE_BREAK' if not structure_broken
+                                                     else 'WAIT_POSITIVE_NET_PROFIT' if net <= 0 else None)
+            if drawdown_atr >= pullback_limit_atr and structure_broken and net > 0:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
             # 2. MA 轉向反轉賣壓 (ma5 或 ma3 反向拐頭)
             elif isinstance(snapshot, dict):
