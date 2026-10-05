@@ -101,3 +101,8 @@ All shared entry decisions, including live breakout, closed confirmation, contin
 ## Near-flat MA5 rejection
 
 Owner reiterated that flat or rising MA5 must never authorize SHORT. The 23:20:36 Lobster continuation fill had a quote-recomputed MA5 decline of approximately 0.01002 prior closed ATR, barely passing the former 0.01 threshold. The shared and continuation minimum is now 0.05 ATR in entry direction, symmetrically for LONG. An actual-price regression verifies this near-flat short is rejected. Existing upward/flat/invalid tests and final account revalidation remain.
+
+
+## Symmetric MA5 outer-rail trend gate
+
+Owner explicitly selected KC outer rails, not the middle. LONG requires quote-recomputed MA5 to rise by at least 0.05 prior closed ATR, remain above the live KC upper rail, and not reduce its signed outer gap relative to the last closed snapshot. SHORT mirrors this below the lower rail with falling MA5. Rail and MA5 advancing together with constant gap are allowed; flat MA5 itself is not. All entry modes, same-candle reentry and final account validation share this gate. Even the first live breakout now waits if MA5 remains inside the channel. Valid test fixtures were updated to satisfy the authorized outer-rail condition without dropping safety cases. Related regression: 377 passed.

@@ -20,8 +20,8 @@ def isolated_clock(monkeypatch):
 
 def frame(side='LONG'):
     stamp = int(time.time() // 60) * 60000
-    rows = [dict(timestamp=stamp-(20-i)*60000, open=100., close=100.1,
-                 high=100.2, low=99.8, ma3=100.3, ma5=100., ma15=100., atr=1.,
+    rows = [dict(timestamp=stamp-(20-i)*60000, open=101.1, close=101.2,
+                 high=101.3, low=101.0, ma3=100.3, ma5=101.05, ma15=100., atr=1.,
                  kc_upper=101., kc_middle=100., kc_lower=99., is_closed=True)
             for i in range(21)]
     rows[-2].update(open=100.8, close=101.1, high=101.15, low=100.7, kc_middle=100.1)

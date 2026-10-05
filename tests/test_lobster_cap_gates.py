@@ -9,11 +9,11 @@ from tools.deployment_preflight import evaluate
 
 
 def frame(side='LONG'):
-    rows = [dict(timestamp=(i+1)*60000, open=100., close=100.2,
-                 high=100.4, low=99.8, atr=1., ma5=100., ma3=100.2,
+    rows = [dict(timestamp=(i+1)*60000, open=101.1, close=101.3,
+                 high=101.5, low=100.9, atr=1., ma5=101.1, ma3=100.2,
                  ma15=100., kc_upper=101., kc_middle=100.+i*.01,
                  kc_lower=99., is_closed=True) for i in range(6)]
-    rows[-1].update(open=100.8, close=101.5, high=101.5, is_closed=False)
+    rows[-1].update(open=100.8, close=101.5, high=101.5, low=100.6, is_closed=False)
     f=pd.DataFrame(rows)
     if side=='SHORT':
         for key in ('open','close','high','low','ma3','ma5','ma15','kc_upper','kc_lower','kc_middle'):
@@ -359,3 +359,34 @@ def test_lobster_nearly_flat_short_from_actual_fill_is_blocked():
     f.loc[4,'ma5']=(.0433+.04373+.04336+.04361+.04355)/5.
     f.loc[4,'atr']=.000599
     assert not ma5_entry_ready(f,.04327,'SHORT')
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['approaching','parallel','wrong_side','invalid'])
+def test_ma5_cannot_return_toward_kc(side,fault):
+    from core.services.entry_contract import ma5_kc_trend_ready,ma5_entry_ready
+    f=frame(side);q=float(f.iloc[-1].close);sign=1 if side=='LONG' else -1
+    current=(sum(float(v) for v in f.close.iloc[-5:-1])+q)/5.
+    previous=float(f.iloc[-2].ma5);prior_middle=float(f.iloc[-2]['kc_upper' if side=='LONG' else 'kc_lower'])
+    old_gap=sign*(previous-prior_middle)
+    gaps={'approaching':old_gap-.1,'parallel':old_gap,'wrong_side':-.1,'invalid':math.nan}
+    f.loc[5,'kc_upper' if side=='LONG' else 'kc_lower']=current-sign*gaps[fault]
+    assert ma5_entry_ready(f,q,side)
+    assert ma5_kc_trend_ready(f,q,side) is (fault=='parallel')
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['inside','approaching'])
+def test_final_account_blocks_ma5_outer_violation(monkeypatch,side,fault):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.services.entry_firewall import validate_account_entry
+    f=frame(side);now=int(time.time()//60)*60000;f['timestamp']+=now-360000
+    monkeypatch.setattr(time,'time',lambda:now/1000+10.)
+    f.attrs['entry_finality_verified']=True
+    d=evaluate_entry_contract(f,symbol='CAP/USDT');assert d
+    sign=1 if side=='LONG' else -1;key='kc_upper' if side=='LONG' else 'kc_lower'
+    current=(sum(float(v) for v in f.close.iloc[-5:-1])+float(f.iloc[-1].close))/5.
+    if fault=='inside':f.loc[5,key]=current+sign*.05
+    else:f.loc[4,key]=float(f.iloc[-2].ma5)-sign*.5
+    ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
+    a=SimpleNamespace(positions={},trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f))
+    with pytest.raises(ValueError):asyncio.run(validate_account_entry(a,'CAP/USDT',side,ctx))

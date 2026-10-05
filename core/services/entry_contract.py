@@ -51,6 +51,33 @@ def ma5_entry_ready(frame, quote, side):
         return False
 
 
+def ma5_kc_trend_ready(frame, quote, side):
+    """MA5 must stay outside without approaching the same-side KC outer rail."""
+    try:
+        if not ma5_entry_ready(frame, quote, side):
+            return False
+        closed = closed_entry_candles(frame)
+        if len(frame) == len(closed) + 1:
+            previous = float(closed.iloc[-1]['ma5'])
+            current = (sum(float(v) for v in closed.close.iloc[-4:]) + float(quote)) / 5.
+            previous_middle = float(closed.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+            current_middle = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        else:
+            previous = float(closed.iloc[-2]['ma5'])
+            current = float(closed.iloc[-1]['ma5'])
+            previous_middle = float(closed.iloc[-2]['kc_upper' if side == 'LONG' else 'kc_lower'])
+            current_middle = float(closed.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        if not all(math.isfinite(v) and v > 0 for v in (previous,current,previous_middle,current_middle)):
+            return False
+        sign = 1 if side == 'LONG' else -1
+        prior_gap = sign * (previous - previous_middle)
+        gap = sign * (current - current_middle)
+        tolerance = max(current, current_middle) * 1e-12
+        return gap > tolerance and gap - prior_gap >= -tolerance
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
     """Continuation entry for sustained trend outside the outer rail.
 
@@ -84,6 +111,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             ma5_slope = sign * (live_ma5 - last_ma5)
             if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < MA5_MIN_ENTRY_SLOPE_ATR):
                 return None
+
+        if not ma5_kc_trend_ready(frame, quote, side):
+            return None
 
         if not live_candle_color_ready(frame, quote, side):
             return None
@@ -282,6 +312,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         if not ma5_entry_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
+
+        if not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
+            return reject('BLOCKED_MA5_RETURNING_TO_KC')
 
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar and not same_bar_close:
