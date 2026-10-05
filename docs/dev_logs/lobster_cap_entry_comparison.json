@@ -154,5 +154,18 @@
   "existing_exit_passed": 4,
   "followup_historical_passed": 97,
   "followup_historical_failed": 142,
-  "followup_new_regressions": []
+  "followup_new_regressions": [],
+  "latest_original_suites_passed": 239,
+  "latest_original_suites_failed": 0,
+  "latest_original_suites_skipped": 0,
+  "latest_focused_passed": 77,
+  "latest_combined_passed": 316,
+  "latest_exit_passed": 4,
+  "latest_counts": {
+    "tests.test_entry_gate_consistency": 13,
+    "tests.test_strict_entry_contract": 219,
+    "tests.test_kc_entry_immutability": 7,
+    "tests.test_lobster_cap_gates": 77
+  },
+  "test_policy_migration": true
 }

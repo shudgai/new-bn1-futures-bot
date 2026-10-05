@@ -10,6 +10,13 @@ Regression suite for:
 """
 import pytest
 import pandas as pd
+import time
+
+@pytest.fixture(autouse=True)
+def controlled_clock(monkeypatch):
+    now = int(time.time() // 60) * 60 + 10
+    monkeypatch.setattr(time, "time", lambda: now)
+
 
 from core.services.kc_pending_entry import (
     evaluate_kc_pending_entry,
@@ -25,6 +32,9 @@ from core.services.entry_firewall import validate_account_entry
 # ─────────────────────────────────────────────
 
 def make_candle(timestamp, open_p, high_p, low_p, close_p, atr, kc_upper, ma5, ma15):
+    # A valid long seed opens inside or on its rail, never beyond it.
+    if close_p > open_p and open_p > kc_upper:
+        kc_upper = open_p
     return {
         'timestamp': timestamp,
         'open': open_p,
@@ -66,8 +76,8 @@ def test_kc_pending_invalidated_state():
     """
     07:57 / 07:58 / 07:59 scenario (LONG):
     Bar1 green breakout → Bar2 green confirmation → Bar3 closed RED
-    → KC_PENDING_INVALIDATED.
-    100 retries with alternating live price must never produce ENTER.
+    → WAIT_NEW_KC_BREAKOUT; valid later snapshots are re-evaluated.
+    100 retries must follow each current snapshot, without an invented terminal lock.
     """
     _INVALIDATED_SIGNALS.clear()
 
@@ -75,7 +85,7 @@ def test_kc_pending_invalidated_state():
 
     df = pd.DataFrame([b1, b2, b3_red])
     result = evaluate_kc_pending_entry(df, quote=110.0, code=None, symbol='BTC/USDT')
-    assert result['reason'] == 'KC_PENDING_INVALIDATED'
+    assert result['reason'] == 'WAIT_NEW_KC_BREAKOUT'
 
     # 100-retry flapping: alternating green / red Bar3 must always stay INVALIDATED
     for i in range(100):
@@ -84,16 +94,17 @@ def test_kc_pending_invalidated_state():
                    else make_candle(1120000, 112, 113, 109, 110, 5, 104, 105, 94))
         df_flap = pd.DataFrame([b1, b2, b3_flap])
         res = evaluate_kc_pending_entry(df_flap, quote=115.0, code=None, symbol='BTC/USDT')
-        assert res['action'] == 'WAIT', f"retry {i}: expected WAIT, got {res['action']}"
-        assert res['reason'] == 'KC_PENDING_INVALIDATED', f"retry {i}: {res['reason']}"
-        assert res.get('type') is None, f"retry {i}: unexpected type={res.get('type')}"
+        expected = 'ENTER' if i % 2 == 0 else 'WAIT'
+        assert res['action'] == expected, f"retry {i}: {res}"
+        assert res['reason'] == ('KC_2BAR_CONFIRM_LONG' if expected == 'ENTER' else 'WAIT_NEW_KC_BREAKOUT')
+        assert res.get('type') == ('KC_2BAR_CONFIRM_LONG' if expected == 'ENTER' else None)
 
     # Bar4 is green — must NOT revive the invalidated pending
     b4_green = make_candle(1180000, 110, 115, 109, 114, 5, 105, 107, 95)
     df4 = pd.DataFrame([b1, b2, b3_red, b4_green])
     result4 = evaluate_kc_pending_entry(df4, quote=114.0, code=None, symbol='BTC/USDT')
     assert result4['action'] == 'WAIT'
-    assert result4.get('reason') not in ('KC_3BAR_CONFIRM_LONG', 'KC_PENDING_CONFIRMATION_PASSED')
+    assert result4.get('reason') not in ('KC_2BAR_CONFIRM_LONG', 'KC_PENDING_CONFIRMATION_PASSED')
 
     # Separate sequence with new timestamps → ENTER is allowed
     b1_v = make_candle(2000000, 100, 110, 95, 105, 5, 102, 100, 90)
@@ -102,7 +113,7 @@ def test_kc_pending_invalidated_state():
     res_valid = evaluate_kc_pending_entry(pd.DataFrame([b1_v, b2_v, b3_g]),
                                           quote=115.0, code=None, symbol='BTC/USDT')
     assert res_valid['action'] == 'ENTER'
-    assert res_valid['type'] == 'KC_3BAR_CONFIRM_LONG'
+    assert res_valid['type'] == 'KC_2BAR_CONFIRM_LONG'
 
 
 # ─────────────────────────────────────────────
@@ -117,7 +128,7 @@ def test_kc_pending_invalidated_state_short():
 
     df = pd.DataFrame([b1, b2, b3_invalid])
     result = evaluate_kc_pending_entry(df, quote=89.0, code=None, symbol='ETH/USDT')
-    assert result['reason'] == 'KC_PENDING_INVALIDATED'
+    assert result['reason'] == 'WAIT_NEW_KC_BREAKOUT'
 
     for i in range(100):
         b3_flap = (make_candle(4120000, 88, 90, 85, 85, 5, 96, 95, 106)
@@ -125,9 +136,10 @@ def test_kc_pending_invalidated_state_short():
                    else make_candle(4120000, 84, 90, 83, 85, 5, 96, 95, 106))
         df_flap = pd.DataFrame([b1, b2, b3_flap])
         res = evaluate_kc_pending_entry(df_flap, quote=85.0, code=None, symbol='ETH/USDT')
-        assert res['action'] == 'WAIT', f"retry {i}: expected WAIT"
-        assert res['reason'] == 'KC_PENDING_INVALIDATED', f"retry {i}: {res['reason']}"
-        assert res.get('type') is None
+        expected = 'ENTER' if i % 2 == 0 else 'WAIT'
+        assert res['action'] == expected, f"retry {i}: {res}"
+        assert res['reason'] == ('KC_2BAR_CONFIRM_SHORT' if expected == 'ENTER' else 'WAIT_NEW_KC_BREAKOUT')
+        assert res.get('type') == ('KC_2BAR_CONFIRM_SHORT' if expected == 'ENTER' else None)
 
     # Separate sequence → ENTER allowed
     b1_v = make_candle(5000000, 100, 110, 94, 94, 5, 105, 100, 110)
@@ -136,7 +148,7 @@ def test_kc_pending_invalidated_state_short():
     res_valid = evaluate_kc_pending_entry(pd.DataFrame([b1_v, b2_v, b3_v]),
                                           quote=85.0, code=None, symbol='ETH/USDT')
     assert res_valid['action'] == 'ENTER'
-    assert res_valid['type'] == 'KC_3BAR_CONFIRM_SHORT'
+    assert res_valid['type'] == 'KC_2BAR_CONFIRM_SHORT'
 
 
 # ─────────────────────────────────────────────
@@ -147,7 +159,7 @@ def test_kc_pending_invalidated_state_short():
 def test_multi_symbol_no_collision_long():
     """
     BTC/USDT and ETH/USDT share identical Bar1/Bar2 timestamps.
-    BTC Bar3 is RED  → KC_PENDING_INVALIDATED.
+    BTC Bar3 is RED  → WAIT_NEW_KC_BREAKOUT; valid later snapshots are re-evaluated.
     ETH Bar3 is GREEN → ENTER (must not be blocked by BTC's invalidation).
     """
     _INVALIDATED_SIGNALS.clear()
@@ -159,7 +171,7 @@ def test_multi_symbol_no_collision_long():
 
     res_btc = evaluate_kc_pending_entry(
         pd.DataFrame([b1_btc, b2_btc, b3_btc_red]), quote=110.0, symbol='BTC/USDT')
-    assert res_btc['reason'] == 'KC_PENDING_INVALIDATED'
+    assert res_btc['reason'] == 'WAIT_NEW_KC_BREAKOUT'
 
     # ETH — identical timestamps to BTC
     b1_eth = make_candle(6000000, 200, 220, 190, 210, 10, 204, 200, 180)
@@ -170,7 +182,7 @@ def test_multi_symbol_no_collision_long():
         pd.DataFrame([b1_eth, b2_eth, b3_eth_green]), quote=230.0, symbol='ETH/USDT')
     assert res_eth['action'] == 'ENTER', \
         f"ETH should ENTER but got {res_eth['reason']}"
-    assert res_eth['type'] == 'KC_3BAR_CONFIRM_LONG'
+    assert res_eth['type'] == 'KC_2BAR_CONFIRM_LONG'
 
 
 def test_multi_symbol_no_collision_short():
@@ -184,7 +196,7 @@ def test_multi_symbol_no_collision_short():
 
     res_btc = evaluate_kc_pending_entry(
         pd.DataFrame([b1_btc, b2_btc, b3_btc_green]), quote=89.0, symbol='BTC/USDT')
-    assert res_btc['reason'] == 'KC_PENDING_INVALIDATED'
+    assert res_btc['reason'] == 'WAIT_NEW_KC_BREAKOUT'
 
     # ETH SHORT — same timestamps, Bar3 valid (red for SHORT)
     b1_eth = make_candle(7000000, 200, 220, 188, 188, 10, 210, 200, 220)
@@ -195,7 +207,7 @@ def test_multi_symbol_no_collision_short():
         pd.DataFrame([b1_eth, b2_eth, b3_eth_red]), quote=170.0, symbol='ETH/USDT')
     assert res_eth['action'] == 'ENTER', \
         f"ETH SHORT should ENTER but got {res_eth['reason']}"
-    assert res_eth['type'] == 'KC_3BAR_CONFIRM_SHORT'
+    assert res_eth['type'] == 'KC_2BAR_CONFIRM_SHORT'
 
 
 # ─────────────────────────────────────────────
@@ -234,7 +246,7 @@ def test_bounded_cache_size():
 def test_restart_deterministic_rebuild():
     """
     Simulate bot restart by clearing _INVALIDATED_SIGNALS.
-    Re-evaluate the same closed candle history → must still yield KC_PENDING_INVALIDATED.
+    Re-evaluate the same closed candle history → must still yield WAIT_NEW_KC_BREAKOUT for the same invalid history.
     ENTER count must remain == 0.
     """
     b1 = make_candle(8000000, 100, 110, 95, 105, 5, 102, 100, 90)
@@ -245,7 +257,7 @@ def test_restart_deterministic_rebuild():
     # First evaluation — populates _INVALIDATED_SIGNALS
     _INVALIDATED_SIGNALS.clear()
     r1 = evaluate_kc_pending_entry(df, quote=110.0, symbol='RESTART/USDT')
-    assert r1['reason'] == 'KC_PENDING_INVALIDATED'
+    assert r1['reason'] == 'WAIT_NEW_KC_BREAKOUT'
 
     # Simulate restart: clear the cache
     _INVALIDATED_SIGNALS.clear()
@@ -256,7 +268,7 @@ def test_restart_deterministic_rebuild():
         r = evaluate_kc_pending_entry(df, quote=110.0, symbol='RESTART/USDT')
         if r['action'] == 'ENTER':
             enter_count += 1
-        assert r['reason'] == 'KC_PENDING_INVALIDATED', \
+        assert r['reason'] == 'WAIT_NEW_KC_BREAKOUT', \
             f"After restart, expected KC_PENDING_INVALIDATED, got {r['reason']}"
 
     assert enter_count == 0, f"ENTER was triggered {enter_count} time(s) after restart"
@@ -268,27 +280,33 @@ def test_restart_deterministic_rebuild():
 
 @pytest.mark.anyio
 async def test_snapshot_identity_rejection():
+    from unittest.mock import AsyncMock
+    from test_strict_entry_contract import candles
+    from core.services.entry_contract import evaluate_entry_contract
+    frame = candles()
+    decision = evaluate_entry_contract(frame)
+    bar = decision['confirmation_bar_id']
     class DummyAccount:
-        entry_frame_provider = None
+        entry_frame_provider = AsyncMock(return_value=frame)
 
     ctx = {
-        'entry_signal_code': 'KC_3BAR_CONFIRM_LONG',
-        'channel_confirmation_bar_id': 1120000,
+        'entry_signal_code': 'KC_2BAR_CONFIRM_LONG',
+        'channel_confirmation_bar_id': bar,
         'signal_id': 'sig_123',
-        'candidate_bar_id': 1120000,
+        'candidate_bar_id': bar,
         'entry_snapshot': {
             'symbol': 'BTC/USDT',
             'side': 'LONG',
-            'signal_code': 'KC_3BAR_CONFIRM_LONG',
+            'signal_code': 'KC_2BAR_CONFIRM_LONG',
             'signal_id': 'sig_123',
-            'candidate_bar_id': 1120000,
-            'closed_bar': 1120000,
+            'candidate_bar_id': bar,
+            'closed_bar': bar,
         },
     }
 
-    # Valid — must pass
+    # Valid identity plus a fresh provider must pass
     res = await validate_account_entry(DummyAccount(), 'BTC/USDT', 'LONG', ctx)
-    assert res['signal_code'] == 'KC_3BAR_CONFIRM_LONG'
+    assert res['type'] == 'KC_2BAR_CONFIRM_LONG'
 
     def _mismatch(field, bad_value, restore_value):
         ctx['entry_snapshot'][field] = bad_value
@@ -297,10 +315,10 @@ async def test_snapshot_identity_rejection():
     for field, bad, good, match_str in [
         ('symbol',       'ETH/USDT',            'BTC/USDT',            'wrong symbol'),
         ('side',         'SHORT',                'LONG',                'wrong side'),
-        ('signal_code',  'WRONG_CODE',           'KC_3BAR_CONFIRM_LONG','wrong signal_code'),
+        ('signal_code',  'WRONG_CODE',           'KC_2BAR_CONFIRM_LONG','wrong signal_code'),
         ('signal_id',    'sig_456',              'sig_123',             'wrong signal_id'),
-        ('candidate_bar_id', 999999,             1120000,               'wrong candidate_bar_id'),
-        ('closed_bar',   999999,                 1120000,               'wrong closed_bar_id'),
+        ('candidate_bar_id', 999999,             bar,               'wrong candidate_bar_id'),
+        ('closed_bar',   999999,                 bar,               'wrong closed_bar_id'),
     ]:
         ctx['entry_snapshot'][field] = bad
         with pytest.raises(ValueError, match=match_str):

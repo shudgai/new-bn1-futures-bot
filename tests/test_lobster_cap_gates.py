@@ -222,3 +222,10 @@ def test_continuation_invalid_live_data(fault):
     if fault=='stale_bar':f.loc[5,'timestamp']+=60000
     if fault=='closed_tail':f.loc[5,'is_closed']=True
     assert evaluate_continuation_entry(f,float(f.iloc[-1].close)) is None
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_compatibility_state_machine_has_no_ma_exit_authority(side):
+    from core.services.strategies.strict_state_machine import StrictStateMachineStrategy,PositionState
+    strategy=StrictStateMachineStrategy()
+    strategy.set_state('CAP/USDT',PositionState.LONG if side=='LONG' else PositionState.SHORT)
+    assert strategy.evaluate_tick('CAP/USDT',frame(side),100.)['action']=='WAIT'

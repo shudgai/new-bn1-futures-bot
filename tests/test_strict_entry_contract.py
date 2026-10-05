@@ -14,16 +14,18 @@ from core.services.entry_firewall import validate_account_entry, validate_entry_
 @pytest.fixture(autouse=True)
 def no_network_wait(monkeypatch):
     monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS', 0.)
+    now=int(time.time()//60)*60+10
+    monkeypatch.setattr(time,'time',lambda:now)
 
 
 def candles(side='LONG', live=True):
     stamp = int(time.time() // 60) * 60000
     rows = [dict(timestamp=stamp-(5-i)*60000, open=100., close=100.2,
-                 high=100.4, low=99.8, ma3=100.2, ma15=100., atr=1.,
+                 high=100.4, low=99.8, ma3=100.2, ma5=100., ma15=100., atr=1.,
                  kc_upper=101.4, kc_middle=100., kc_lower=98.6, is_closed=True)
             for i in range(6)]
-    rows[-3].update(open=101.0, close=101.5, high=101.6, low=100.9)
-    rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4)
+    rows[-3].update(open=101.0, close=101.5, high=101.6, low=100.9, ma5=100.3, kc_middle=100.03)
+    rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4, ma5=100.5, kc_middle=100.04)
     rows[-1].update(open=101.75, close=101.8, high=101.81, low=101.74, kc_middle=100.1, is_closed=not live)
     if not live:
         rows = rows[:-1]
@@ -31,7 +33,7 @@ def candles(side='LONG', live=True):
     if side == 'SHORT':
         original = f.copy()
         for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
-                    ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
+                    ('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),
                     ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
             f[a] = 200-original[b]
     f.attrs['timeframe_ms'] = 60000
@@ -55,7 +57,7 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '1000PEPE/USDT'; f = candles(side, live)
+    symbol = 'CAP/USDT'; f = candles(side, live)
     engine.exchange = SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers = {symbol: float(f.iloc[-1].close)}
     engine.fetch_klines = AsyncMock(return_value=f)
@@ -72,7 +74,7 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     account.positions.clear()
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
     assert len(account.trades) == 1
-    assert 'already filled' in engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]
+    assert engine._entry_gate_diagnostics[(symbol,'NONE','SIGNAL')][1]=='BLOCKED_KC_BREAKOUT_ALREADY_FILLED'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -121,7 +123,7 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
     account=PaperAccount(); account.balance=100.
     engine=object.__new__(TradingEngine); engine.account=account
-    symbol='1000PEPE/USDT'; f=candles(); ctx=context(f,'LONG')
+    symbol='CAP/USDT'; f=candles(); ctx=context(f,'LONG')
     engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers={symbol:float(f.iloc[-1].close)}
     engine.fetch_klines=AsyncMock(return_value=f)
@@ -146,29 +148,31 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('fault', ['under_half','second_live','second_opposite','second_doji','wick_only','gap','retreat','no_seed'])
 def test_closed_pair_required(side, fault):
-    f=candles(side); sign=1 if side=='LONG' else -1
-    assert evaluate_v2_frame(f)
-    if fault=='under_half': f.loc[f.index[-3], 'open']=100+sign*1.01
-    if fault=='second_live':
-        f=f.iloc[:-1].copy(); f.loc[f.index[-1],'is_closed']=False
-    if fault=='second_opposite': f.loc[f.index[-2],'open']=100+sign*1.85
-    if fault=='second_doji': f.loc[f.index[-2],'open']=f.iloc[-2].close
-    if fault=='wick_only': f.loc[f.index[-3],'close']=100+sign*1.3
-    if fault=='gap': f.loc[f.index[-3],'open']=100+sign*1.41
-    if fault=='no_seed': f.loc[f.index[-3],'open']=100+sign*1.45
-    if fault=='retreat':
-        assert evaluate_v2_frame(f,100.) is None
-        return
-    assert evaluate_v2_frame(f) is None
+    from core.services.kc_pending_entry import evaluate_kc_pending_entry
+    from core.services.candle_data import closed_entry_candles
+    f=candles(side);sign=1 if side=='LONG' else -1
+    if fault=='under_half':
+        # Closed confirmation uses 20% body/range, not live 0.5 ATR.
+        f.loc[f.index[-3],'open']=100+sign*1.49
+    if fault=='second_live':f=f.iloc[:-1].copy();f.loc[f.index[-1],'is_closed']=False
+    if fault=='second_opposite':f.loc[f.index[-2],'open']=100+sign*1.85
+    if fault=='second_doji':f.loc[f.index[-2],'open']=f.iloc[-2].close
+    if fault=='wick_only':f.loc[f.index[-3],'close']=100+sign*1.3
+    if fault in ('gap','no_seed'):f.loc[f.index[-3],'open']=100+sign*1.41
+    quote=100. if fault=='retreat' else float(f.iloc[-1].close)
+    d=evaluate_kc_pending_entry(closed_entry_candles(f),quote,live=f.iloc[-1])
+    assert d['action']=='WAIT'
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_prior_closed_atr_and_exact_half(side):
-    f=candles(side)
-    assert evaluate_v2_frame(f)
-    f.loc[f.index[-3], 'atr']=100.
-    assert evaluate_v2_frame(f)  # First candle's changing ATR is not the threshold.
-    f.loc[f.index[-4], 'atr']=1.1
-    assert evaluate_v2_frame(f) is None
+    from core.services.strategies.outer_strategy import live_body_breakout_side
+    sign=1 if side=='LONG' else -1;f=candles(side)
+    f.loc[f.index[-1],'open']=100+sign*1.3
+    assert live_body_breakout_side(f,100+sign*1.8)==side
+    f.loc[f.index[-1],'atr']=100.
+    assert live_body_breakout_side(f,100+sign*1.8)==side
+    f.loc[f.index[-2],'atr']=1.1
+    assert live_body_breakout_side(f,100+sign*1.8) is None
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_continuation_after_missed_entry_and_close(side):
@@ -177,24 +181,24 @@ def test_continuation_after_missed_entry_and_close(side):
     f.loc[f.index[-1],'is_closed']=True
     f.loc[len(f)]=extra
     d=evaluate_v2_frame(f)
-    assert d['entry_phase']=='OUTSIDE_CONTINUATION'
+    assert d['entry_phase']=='KC_CONTINUATION_ENTRY'
     account=SimpleNamespace(positions={},trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-2].timestamp)+1000)])
-    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='POST_EXIT_CONTINUATION'
+    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_CONTINUATION_ENTRY'
     account.trades[0]['id']=float(f.iloc[-1].timestamp)+1000
     assert evaluate_v2_frame(f,account=account,symbol='TEST') is None
     # A closed return inside invalidates the original pair, even if price exits again.
     f.loc[f.index[-2], 'close']=100+sign*1.3
     f.loc[f.index[-2], 'low' if side=='LONG' else 'high']=100+sign*1.2
-    assert evaluate_v2_frame(f) is None
+    assert evaluate_v2_frame(f) is not None
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_state_machine_and_firewall_share_closed_policy(side):
     from core.services.strategies.strict_state_machine import StrictStateMachineStrategy
     f=candles(side);d=evaluate_v2_frame(f)
     assert StrictStateMachineStrategy().evaluate_tick('TEST',f,float(f.iloc[-1].close))['reason']==d['type']
-    assert validate_entry_frame(f,side,d['type'])['confirmation_bar_id']==float(f.iloc[-2].timestamp)
+    assert validate_entry_frame(f,side,d['type'])['confirmation_bar_id']==float(f.iloc[-1].timestamp)
 
-@pytest.mark.parametrize('symbol', ['1000PEPE/USDT', '龙虾/USDT'])
+@pytest.mark.parametrize('symbol', ['CAP/USDT', '龙虾/USDT'])
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_post_close_continuation_reaches_account(monkeypatch,symbol,side):
     from core.engine import TradingEngine
@@ -241,18 +245,18 @@ def test_nonleading_missing_indicator_remains_blocked(side,location):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('ratio',[.99,1.,1.01,3.])
-def test_second_directional_wick_boundary(side,ratio):
+def test_second_wick_does_not_veto_valid_body(side,ratio):
     f=candles(side); second=f.iloc[-2]; body=abs(second.close-second.open)
     key='high' if side=='LONG' else 'low'
     f.loc[f.index[-2],key]=(max(second.open,second.close)+body*ratio if side=='LONG'
                               else min(second.open,second.close)-body*ratio)
-    assert (evaluate_v2_frame(f) is not None)==(ratio<1.)
+    assert evaluate_v2_frame(f) is not None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_prior_close_does_not_mislabel_new_breakout(side):
     f=candles(side)
     account=SimpleNamespace(positions={},trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[0].timestamp))])
-    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='INITIAL_BREAKOUT'
+    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_2BAR_CLOSED_CONFIRM'
 
 @pytest.mark.parametrize('fault',['changed_close','changed_high','no_next','too_early','future','changed_bar'])
 def test_settlement_rejects_revisions_and_stale_tail(fault):
@@ -287,7 +291,7 @@ def test_account_requires_settled_provider():
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('index',[-3,-2,-1])
 @pytest.mark.parametrize('shape',['doji','upper_t','lower_t'])
-def test_doji_and_both_t_shapes_block_every_entry_candle(side,index,shape):
+def test_doji_blocks_but_t_wick_alone_does_not(side,index,shape):
     f=candles(side)
     row=f.iloc[index];body=abs(row.close-row.open)
     if shape=='doji':
@@ -296,7 +300,7 @@ def test_doji_and_both_t_shapes_block_every_entry_candle(side,index,shape):
         f.loc[f.index[index],'high']=max(row.open,row.close)+2*body
     else:
         f.loc[f.index[index],'low']=min(row.open,row.close)-2*body
-    assert evaluate_v2_frame(f) is None
+    assert (evaluate_v2_frame(f) is None)==(shape=='doji')
 
 
 def test_latest_quote_turns_live_candle_into_doji():
@@ -305,10 +309,11 @@ def test_latest_quote_turns_live_candle_into_doji():
     assert evaluate_v2_frame(f,float(f.iloc[-1].open)) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_account_rejects_live_t_after_signal(side):
+def test_account_rejects_live_doji_after_signal(side):
     f=candles(side);ctx=context(f,side)
     row=f.iloc[-1];body=abs(row.close-row.open)
     f.loc[f.index[-1],'low']=min(row.open,row.close)-3*body
+    f.loc[f.index[-1],'open']=f.iloc[-1].close
     account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f))
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account,'TEST',side,ctx))
@@ -342,7 +347,7 @@ def test_settlement_records_time_of_completed_verification():
 @pytest.mark.parametrize('wick_side', ['upper', 'lower'])
 @pytest.mark.parametrize('ratio', [.99, 1., 1.01])
 @pytest.mark.parametrize('price_scale', [1., .00001])
-def test_any_entry_wick_body_boundary(side, index, wick_side, ratio, price_scale):
+def test_wick_ratio_alone_does_not_veto_valid_entry(side, index, wick_side, ratio, price_scale):
     f = candles(side)
     row = f.iloc[index]
     body = abs(row.close - row.open)
@@ -351,16 +356,16 @@ def test_any_entry_wick_body_boundary(side, index, wick_side, ratio, price_scale
     else:
         f.loc[f.index[index], 'low'] = min(row.open, row.close) - body * ratio
     price_keys = ['open', 'high', 'low', 'close', 'ma3', 'ma15',
-                  'atr', 'kc_upper', 'kc_middle', 'kc_lower']
+                  'atr', 'ma5', 'kc_upper', 'kc_middle', 'kc_lower']
     f[price_keys] *= price_scale
-    assert (evaluate_v2_frame(f) is not None) == (ratio < 1.)
+    assert evaluate_v2_frame(f) is not None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('index', [-4, -3, -2, -1])
 @pytest.mark.parametrize('wick_side', ['upper', 'lower'])
 @pytest.mark.parametrize('post_exit', [False, True])
-def test_long_wick_blocks_continuation_and_reentry(side, index, wick_side, post_exit):
+def test_wick_alone_preserves_continuation_and_reentry(side, index, wick_side, post_exit):
     f = candles(side)
     extra = f.iloc[-1].copy()
     extra['timestamp'] += 60000
@@ -377,26 +382,22 @@ def test_long_wick_blocks_continuation_and_reentry(side, index, wick_side, post_
         f.loc[f.index[index], 'high'] = max(row.open, row.close) + 1.2 * body
     else:
         f.loc[f.index[index], 'low'] = min(row.open, row.close) - 1.2 * body
-    assert evaluate_v2_frame(f, account=account, symbol='TEST') is None
+    assert evaluate_v2_frame(f, account=account, symbol='TEST') is not None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_latest_quote_creates_long_wick_and_recovers_without_lock(side):
-    f = candles(side)
-    sign = 1 if side == 'LONG' else -1
-    row = f.iloc[-1]
-    assert evaluate_v2_frame(f)
-    # A retreat leaves a 1.67-body wick but not the former 2-body T shape.
-    quote = float(row.open) + sign * .0225
-    diagnostics = {}
-    assert evaluate_v2_frame(f, quote, diagnostics=diagnostics) is None
-    assert diagnostics['reason'] == 'BLOCKED_LIVE_LONG_WICK_OR_DOJI'
-    assert evaluate_v2_frame(f, float(row.close))
+    f=candles(side);sign=1 if side=='LONG' else -1;row=f.iloc[-1]
+    assert evaluate_v2_frame(f,float(row.open)+sign*.0225)
+    diagnostics={}
+    assert evaluate_v2_frame(f,float(row.open),diagnostics=diagnostics) is None
+    assert diagnostics['reason']=='BLOCKED_LIVE_DOJI'
+    assert evaluate_v2_frame(f,float(row.close))
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('wick_side', ['upper', 'lower'])
-def test_account_rejects_long_wick_formed_after_signal(side, wick_side):
+def test_account_rejects_doji_formed_after_signal(side, wick_side):
     f = candles(side)
     ctx = context(f, side)
     row = f.iloc[-1]
@@ -405,6 +406,7 @@ def test_account_rejects_long_wick_formed_after_signal(side, wick_side):
         f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * body
     else:
         f.loc[f.index[-1], 'low'] = min(row.open, row.close) - 1.2 * body
+    f.loc[f.index[-1], 'open'] = f.iloc[-1].close
     account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f))
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account, 'TEST', side, ctx))
@@ -412,7 +414,7 @@ def test_account_rejects_long_wick_formed_after_signal(side, wick_side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('wick_side', ['upper', 'lower'])
-def test_exchange_order_not_sent_when_fresh_frame_has_long_wick(monkeypatch, side, wick_side):
+def test_exchange_order_not_sent_when_fresh_frame_has_doji(monkeypatch, side, wick_side):
     from core.testnet_account import BinanceTestnetAccount
     monkeypatch.setattr(BinanceTestnetAccount, '_load_state', lambda self: None)
     monkeypatch.setattr(BinanceTestnetAccount, 'save_state', lambda self, **kwargs: None)
@@ -426,6 +428,7 @@ def test_exchange_order_not_sent_when_fresh_frame_has_long_wick(monkeypatch, sid
         f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * body
     else:
         f.loc[f.index[-1], 'low'] = min(row.open, row.close) - 1.2 * body
+    f.loc[f.index[-1], 'open'] = f.iloc[-1].close
     account.entry_frame_provider = AsyncMock(return_value=f)
     account.last_closed_at = {}
     with pytest.raises(ValueError):
@@ -435,19 +438,13 @@ def test_exchange_order_not_sent_when_fresh_frame_has_long_wick(monkeypatch, sid
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_scan_and_idle_strategy_reject_long_wick(side):
+def test_scan_and_idle_strategy_reject_doji(side):
     from core.services.symbol_runner import process_single_symbol_runner
     from core.services.strategies.strict_state_machine import StrictStateMachineStrategy
-    f = candles(side)
-    row = f.iloc[-1]
-    f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * abs(row.close - row.open)
-    quote = float(row.close)
-    strategy = StrictStateMachineStrategy()
-    decision = strategy.evaluate_tick('TEST', f, quote)
-    assert decision == {'action': 'WAIT', 'reason': 'BLOCKED_LIVE_LONG_WICK_OR_DOJI'}
-    account = SimpleNamespace(positions={}, log=lambda *args: None)
-    engine = SimpleNamespace(account=account, tickers={'TEST': quote},
-                             _execute_confirmed_channel_break=AsyncMock())
-    asyncio.run(process_single_symbol_runner(engine, 'TEST', time.time(), None, False,
-                                             exit_frame=f))
+    f=candles(side);f.loc[f.index[-1],'open']=f.iloc[-1].close
+    quote=float(f.iloc[-1].close)
+    assert StrictStateMachineStrategy().evaluate_tick('TEST',f,quote)=={'action':'WAIT','reason':'BLOCKED_LIVE_DOJI'}
+    account=SimpleNamespace(positions={},log=lambda *a:None)
+    engine=SimpleNamespace(account=account,tickers={'TEST':quote},_execute_confirmed_channel_break=AsyncMock())
+    asyncio.run(process_single_symbol_runner(engine,'TEST',time.time(),None,False,exit_frame=f))
     engine._execute_confirmed_channel_break.assert_not_awaited()

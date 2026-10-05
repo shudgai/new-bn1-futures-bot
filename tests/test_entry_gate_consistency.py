@@ -9,13 +9,19 @@ import time
 import pandas as pd
 import pytest
 
-from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+from core.services.entry_contract import evaluate_entry_contract as evaluate_v2_frame
 
+
+@pytest.fixture(autouse=True)
+def isolated_clock(monkeypatch):
+    now=int(time.time()//60)*60+10
+    monkeypatch.setattr(time,'time',lambda:now)
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
 
 def frame(side='LONG'):
     stamp = int(time.time() // 60) * 60000
     rows = [dict(timestamp=stamp-(20-i)*60000, open=100., close=100.1,
-                 high=100.2, low=99.8, ma3=100.3, ma15=100., atr=1.,
+                 high=100.2, low=99.8, ma3=100.3, ma5=100., ma15=100., atr=1.,
                  kc_upper=101., kc_middle=100., kc_lower=99., is_closed=True)
             for i in range(21)]
     rows[-2].update(open=100.8, close=101.1, high=101.15, low=100.7, kc_middle=100.1)
@@ -25,7 +31,7 @@ def frame(side='LONG'):
     if side == 'SHORT':
         original = f.copy()
         for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
-                    ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
+                    ('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),
                     ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
             f[a] = 200-original[b]
     return f
@@ -40,7 +46,8 @@ def test_shared_signal_reaches_real_paper_account(monkeypatch, side):
     monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '1000PEPE/USDT'; f = frame(side)
+    symbol = 'CAP/USDT'; f = frame(side)
+    engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers = {symbol: float(f.iloc[-1].close)}
     engine.fetch_klines = AsyncMock(return_value=f)
     engine.strategy = SimpleNamespace(compute_indicators=lambda data: data)
@@ -53,26 +60,20 @@ def test_shared_signal_reaches_real_paper_account(monkeypatch, side):
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('fault,reason', [('freshness','整理不足'), ('extreme','第二根尚未'),
-    ('spread','均線間距不足'), ('distance','0.8 ATR'), ('cooldown','5_BAR')])
+@pytest.mark.parametrize('fault,reason', [('atr','WAIT_VALID_ENTRY_DATA'), ('doji','WAIT_VALID_DIRECTION'),
+    ('quote','WAIT_VALID_ENTRY_DATA'), ('rail','WAIT_VALID_ENTRY_DATA'), ('cooldown','WAIT_POST_EXIT_NEW_FORMATION')])
 def test_actual_rejection_and_diagnostics_reset(side, fault, reason):
-    f = frame(side); account = None
-    if fault == 'freshness':
-        f.loc[f.index[-5:-3], 'close'] = 102. if side == 'LONG' else 98.
-        f.loc[f.index[-5:-3], 'high' if side == 'LONG' else 'low'] = 102.1 if side == 'LONG' else 97.9
-    if fault == 'extreme': f.loc[f.index[-1], 'close'] = 101.14 if side == 'LONG' else 98.86
-    if fault == 'spread': f.loc[f.index[-1], 'ma3'] = f.iloc[-1].ma15
-    if fault == 'distance':
-        f.loc[f.index[-1], 'close'] = 102. if side == 'LONG' else 98.
-        f.loc[f.index[-1], 'high' if side == 'LONG' else 'low'] = 102.1 if side == 'LONG' else 97.9
-    if fault == 'cooldown':
-        account = SimpleNamespace(trades=[dict(symbol='1000PEPE/USDT',action='CLOSE_'+side,
-            id=float(f.iloc[-1].timestamp)-60000+1000)])
-    d = {'reason':'stale'}
-    assert evaluate_v2_frame(f, account=account, symbol='1000PEPE/USDT', diagnostics=d) is None
-    assert reason in d['reason']
-    assert evaluate_v2_frame(frame(side), symbol='1000PEPE/USDT', diagnostics=d)
-    assert d['reason'] == '符合標準開倉範例'
+    f=frame(side);account=None;quote=float(f.iloc[-1].close)
+    if fault=='atr':f.loc[f.index[-2],'atr']=float('nan')
+    if fault=='doji':f.loc[f.index[-1],'open']=quote
+    if fault=='quote':quote=float('nan')
+    if fault=='rail':f.loc[f.index[-1],'kc_upper']=f.iloc[-1].kc_lower
+    if fault=='cooldown':account=SimpleNamespace(trades=[dict(symbol='CAP/USDT',action='CLOSE_'+side,id=float(f.iloc[-1].timestamp)+1000)])
+    d={'reason':'stale'}
+    assert evaluate_v2_frame(f,quote,account=account,symbol='CAP/USDT',diagnostics=d) is None
+    assert d['reason']==reason
+    restored=evaluate_v2_frame(frame(side),symbol='CAP/USDT',diagnostics=d)
+    assert restored and d['reason']==restored['type']
 
 
 def test_api_does_not_invent_distance_rejection():

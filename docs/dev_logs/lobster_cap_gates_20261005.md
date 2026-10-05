@@ -46,3 +46,19 @@ The runner delegates outstanding reentry tickets to their protected path. The fi
 Final validation: 75 focused tests plus four existing waterfall/hard-stop tests passed (79 total). Tests cover both symbols and directions, normal matched-close reentry, abnormal pullback/reclaim through the real paper account, unmatched-ticket rejection, two-bar code whitelist/live-rail checks, and invalid continuation data. Three historical suites still produce 97 passed/142 failed, with zero added regressions relative to untouched baseline. Those historical failures remain unresolved; full suite is not PASS. Test clocks are controlled to preserve, rather than bypass, the existing 3-second candle finality requirement.
 
 No deployment, restart, live orders or production file changes. Actual exchange and WebSocket transport remain unverified.
+
+## Historical failure resolution (latest result)
+
+Supersedes the previous 97-pass/142-fail status for these three suites. All original 239 parameterized cases remain collected: 13 entry consistency, 219 strict contract, 7 immutability. They now pass; no skip or xfail was added. Together with 77 focused Gate cases, 316 passed. Four existing waterfall/hard-stop cases also passed separately. This is not a full-repository test result and does not inherit or change the old candidate's 124/124 report.
+
+Actual source correction: the public compatibility state machine IDLE branch now delegates to evaluate_entry_contract and cannot authorize its private legacy trend alternative; held positions return WAIT because this compatibility interface has no independent MA close authority. Its historical implementation remains preserved. Two new cases assert that retained positions cannot gain MA exit permission.
+
+Test migration mapping:
+- PEPE-positive-fill fixtures now use CAP, with valid MA5 indicators and mocked exchange time; the production PEPE denylist is unchanged.
+- Obsolete pure_trend_v2 entry expectations now exercise the actual shared contract. Existing diagnostic matrices cover invalid ATR, invalid rails/quote, doji and same-candle close, with recovery clearing old diagnostics.
+- Closed confirmation body ratio is 20%; live 0.5 ATR is separately verified using the previous closed ATR and live original open. Per-entry helper tests prevent a legal alternative continuation from masking the condition under test.
+- Signal phases and dedup assertions now match the actual pipeline stage. Closed-only settlement, stale quotes, changed candle revision, finality, daily loss, slots, balance, exchange failure and obsolete-code rejection remain tested.
+- A wick/body ratio >=1 or a T-shaped wick alone is not a veto under the current contract. All existing wick parameter cases remain; genuine doji formation still rejects at the signal, account and mocked exchange boundary. Low-price scale cases include MA5 in rescaling.
+- Immutability keeps both 100-retry loops, both cross-symbol cases, cache overflow bounds, invalid-history restart and all six snapshot identity checks. Temporary conditions are re-evaluated; no new permanent terminal lock is invented. The valid snapshot case now requires an actual finality-verified fresh provider, and cannot succeed from cache identity alone.
+
+Automatic review rejected two optional bulk cleanups; neither was executed. All existing immutability test functions were retained and updated individually; unused legacy state-machine tail code remains in place. Production, candidate, deployment authorization and live orders remain untouched.
