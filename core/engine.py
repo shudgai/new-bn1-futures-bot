@@ -1260,6 +1260,15 @@ class TradingEngine:
                 return False
             if self.account.positions.get(symbol) is not position:
                 return False
+            from core.services.exits.realtime_profit_exit import cached_tick_indicators
+            from core.services.exits.trend_hold_evaluator import strong_direction_held
+            fresh_price = float(fresh.iloc[-1].close)
+            snapshot, _ = cached_tick_indicators(fresh, fresh_price, time.time() * 1000)
+            structure = snapshot.get('swing_structure_' + position.get('side', '').lower())
+            if structure is None or structure.get('intact', True):
+                return False
+            if strong_direction_held(position, snapshot, fresh_price):
+                return False
             closed = await self.account.close_position(symbol, float(fresh.iloc[-1].close),
                 'Channel Swing EXIT_CHANNEL_TURN_' + decision['side'], is_manual=True)
             if not closed or symbol in self.account.positions:

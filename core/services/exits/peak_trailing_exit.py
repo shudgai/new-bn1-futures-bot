@@ -359,11 +359,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             else:
                 pullback_limit_atr = 0.60
 
-            strong_trend = False
-            if trend_status == 'HOLD' and isinstance(snapshot, dict) and not snapshot.get('fallback_used', False):
-                ma5, previous_ma5 = snapshot.get('ma5'), snapshot.get('last_ma5')
-                if positive(ma5) and positive(previous_ma5) and scale > 0:
-                    strong_trend = sign * (float(ma5)-float(previous_ma5)) >= .05 * scale
+            from core.services.exits.trend_hold_evaluator import strong_direction_held
+            strong_trend = strong_direction_held(position, snapshot, price)
             if strong_trend:
                 pullback_limit_atr *= 1.5
             position['atr_pullback_limit'] = pullback_limit_atr
@@ -449,14 +446,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     if e_atr is not None and float(e_atr) > 0:
                         mature_evidence = evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr=float(e_atr))
 
-                    if mature_evidence is not None and reason != HARD_REASON:
+                    from core.services.exits.trend_hold_evaluator import strong_direction_held
+                    trend_held = strong_direction_held(position, snapshot, price)
+                    structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short'))
+                    structure_broken = isinstance(structure, dict) and structure.get('intact') is False
+                    if mature_evidence is not None and reason != HARD_REASON and not trend_held and structure_broken:
                         reason, trigger = ABNORMAL_REASON, mature_evidence['trigger']
                         state.update(mature_evidence)
 
                     # 2. Older Doji evidence check (this uses live candle for reversal)
                     evidence = doji_reversal_evidence(
                         snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr)
-                    if evidence is not None and not mature_evidence and reason != HARD_REASON:
+                    if evidence is not None and not mature_evidence and reason != HARD_REASON and not trend_held and structure_broken:
                         reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
                         state.update(evidence)
 

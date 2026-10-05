@@ -36,6 +36,10 @@ def cached_tick_indicators(frame, price, stamp):
         })
     snapshot['history_5'] = history_bars
 
+    from core.services.exits.trend_hold_evaluator import confirmed_swing_structure
+    snapshot['swing_structure_long'] = confirmed_swing_structure({'side': 'LONG'}, closed, price)
+    snapshot['swing_structure_short'] = confirmed_swing_structure({'side': 'SHORT'}, closed, price)
+
     last = closed.iloc[-1]
     prev = closed.iloc[-2]
     last_ms = float(last.get('timestamp', 0))

@@ -447,6 +447,8 @@ def test_channel_turn_rejects_invalid_confirmation(side,fault):
 def test_channel_turn_closes_before_reopening(monkeypatch,side,close_succeeds):
     import asyncio
     from unittest.mock import AsyncMock
+    import core.services.exits.realtime_profit_exit as realtime
+    monkeypatch.setattr(realtime, 'cached_tick_indicators', lambda *args: ({'swing_structure_long': {'intact': False}, 'swing_structure_short': {'intact': False}}, 1.))
     f=channel_turn_frame(side)
     p={'side':'SHORT' if side=='LONG' else 'LONG','entry_mode':'CHANNEL_SWING'}
     a=SimpleNamespace(positions={'CAP/USDT':p})
@@ -465,6 +467,8 @@ def test_channel_turn_closes_before_reopening(monkeypatch,side,close_succeeds):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_channel_turn_real_paper_close_then_reverse(monkeypatch,side):
+    import core.services.exits.trend_hold_evaluator as trend
+    monkeypatch.setattr(trend, 'confirmed_swing_structure', lambda *args: {'intact': False})
     import asyncio,time
     from unittest.mock import AsyncMock
     from core.paper_account import PaperAccount
@@ -574,3 +578,64 @@ def test_weakening_trend_restores_original_pullback(side):
     weak=dict(strong,quote_ms=61001,ma5=100.)
     d=evaluate_peak_trailing(p,100.+sign*1.59,weak,fee=0.,slippage=0.)
     assert d and not p['strong_trend_pullback'] and p['atr_pullback_limit']==.4
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_strong_direction_survives_price_crossing_ma5(side):
+    from core.services.exits.trend_hold_evaluator import strong_direction_held
+    sign = 1 if side == 'LONG' else -1
+    p = dict(side=side, entry_atr=1.)
+    snap = dict(reason=None, ma5=100.+sign*.3, last_ma5=100., ma15=100.+sign*.1,
+                last_ma15=100., kc_middle=100., last_close=100.+sign*.2)
+    assert strong_direction_held(p, snap, 100.+sign*.2)
+    assert not strong_direction_held(p, dict(snap, ma5=100.), 100.+sign*.2)
+    assert not strong_direction_held(p, dict(snap, fallback_used=True), 100.+sign*.2)
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_channel_turn_preserves_strong_existing_position(monkeypatch, side):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import core.services.exits.realtime_profit_exit as realtime
+    f = channel_turn_frame(side)
+    held = 'SHORT' if side == 'LONG' else 'LONG'
+    sign = 1 if held == 'LONG' else -1
+    price = float(f.iloc[-1].close)
+    snapshot = dict(reason=None, ma5=price+sign*.1, last_ma5=price-sign*.1,
+                    ma15=price-sign*.2, last_ma15=price-sign*.3,
+                    kc_middle=price-sign*.5, last_close=price)
+    monkeypatch.setattr(realtime, 'cached_tick_indicators', lambda *args: (snapshot, 1.))
+    p = dict(side=held, entry_mode='CHANNEL_SWING', entry_atr=1.)
+    a = SimpleNamespace(positions={'CAP/USDT':p}, close_position=AsyncMock())
+    e = object.__new__(TradingEngine); e.account=a; e.is_running=True
+    e._entry_boundary_frame=AsyncMock(return_value=f)
+    e._reevaluate_after_close=AsyncMock()
+    assert not asyncio.run(e._try_channel_turn_reverse('CAP/USDT',f,price))
+    a.close_position.assert_not_called()
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_confirmed_swing_structure_holds_until_strict_break(side):
+    from core.services.exits.trend_hold_evaluator import confirmed_swing_structure
+    sign = 1 if side == 'LONG' else -1
+    values = [100+sign*x for x in [2, 1, 2, 3]]
+    frame = pd.DataFrame({'low': values, 'high': values})
+    level = 100+sign
+    assert confirmed_swing_structure({'side':side},frame,level)['intact']
+    assert not confirmed_swing_structure({'side':side},frame,level-sign*.01)['intact']
+    assert confirmed_swing_structure({'side':side},frame.iloc[:2],level) is None
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('structure', [None, {'intact': True}])
+def test_channel_turn_cannot_close_intact_or_unknown_structure(monkeypatch, side, structure):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import core.services.exits.realtime_profit_exit as realtime
+    f = channel_turn_frame(side)
+    held = 'SHORT' if side == 'LONG' else 'LONG'
+    monkeypatch.setattr(realtime, 'cached_tick_indicators', lambda *args: ({'swing_structure_'+held.lower():structure},1.))
+    a = SimpleNamespace(positions={'CAP/USDT':dict(side=held,entry_mode='CHANNEL_SWING')}, close_position=AsyncMock())
+    e = object.__new__(TradingEngine); e.account=a; e.is_running=True
+    e._entry_boundary_frame=AsyncMock(return_value=f)
+    assert not asyncio.run(e._try_channel_turn_reverse('CAP/USDT', f, float(f.iloc[-1].close)))
+    a.close_position.assert_not_called()
