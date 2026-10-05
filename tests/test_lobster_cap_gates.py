@@ -294,3 +294,24 @@ def test_success_report_with_remaining_position_never_reopens(monkeypatch):
     monkeypatch.setattr(exits,'enforce_realtime_profit_exit',AsyncMock(return_value=True))
     asyncio.run(e._instant_quote_exit('CAP/USDT',101.5))
     e._reevaluate_after_close.assert_not_awaited()
+
+@pytest.mark.parametrize('trend',['HOLD','WARNING','UNKNOWN'])
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_peak_pullback_cannot_be_vetoed_by_trend(monkeypatch,trend,side):
+    import asyncio,time
+    from unittest.mock import AsyncMock,Mock
+    from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+    import core.services.exits.realtime_profit_exit as exits
+    from core.services.exits.peak_trailing_exit import STATE_KEY
+    now=time.time()
+    p=dict(side=side,entry_mode='CHANNEL_SWING',entry_price=100.,amount=1.,quantity=1.,open_timestamp=now-120,entry_atr=1.)
+    a=SimpleNamespace(positions={'CAP/USDT':p},position_meta={},save_state=Mock(),log=Mock(),close_position=AsyncMock())
+    e=object.__new__(TradingEngine);e.account=a;e.is_running=True;e._channel_exit_frames={}
+    def decide(self,position,*args):
+        position[STATE_KEY].update(peak_price=103.,peak_net_pnl=2.)
+        return dict(type='EXIT_REALTIME_PEAK_TRAILING',trigger='EXIT_PEAK_PULLBACK_PRESSURE')
+    monkeypatch.setattr(exits.PureTrendStrategyV2,'evaluate_anti_whipsaw_profit_lock',decide)
+    monkeypatch.setattr(exits,'enforce_hard_stop',AsyncMock(return_value=False))
+    monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold',lambda *a:(trend,'TEST'))
+    assert asyncio.run(enforce_realtime_profit_exit(e,'CAP/USDT',102.,now*1000))
+    a.close_position.assert_awaited_once()

@@ -148,7 +148,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         reason = decision['type']
         trigger = decision.get('trigger', '')
         
-        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER):
+        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE'):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)

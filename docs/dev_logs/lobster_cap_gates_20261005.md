@@ -81,3 +81,8 @@ Added /api/account-exposure with no account refresh/update/order side effects. C
 ## Same-candle reentry authorization
 
 The owner authorized fresh long or short entry after a successful close in the same candle. Entry direction comes from the shared gate, not the old position. Each close fill authorizes at most one reentry, including after restart. Failed closes, remaining positions, invalid quotes, daily risk limits, abnormal-close pullback protection, and final account revalidation remain blocking. The tick and scan exit paths use an entry-only callback without exit recursion. Related regression: 338 passed. Price horizontal dashed guides are hidden; KC middle and crosshair remain visible.
+
+
+## CAP peak-pullback authority repair
+
+The owner retained immediate same-candle gate reentry. The outer realtime exit executor now honors EXIT_PEAK_PULLBACK_PRESSURE even when trend status is HOLD, WARNING, or UNKNOWN, matching the peak evaluator exemption and authorized ATR tiers. No entry thresholds or pullback tiers were changed. Six new long/short trend-veto regression cases pass; related suite total: 344 passed. Historical peak exits can realize losses under the authorized 0.5 ATR activation / 0.6 ATR drawdown tier and execution costs.
