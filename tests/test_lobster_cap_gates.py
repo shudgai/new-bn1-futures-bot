@@ -85,3 +85,63 @@ def test_initial_stop_is_independent(side):
     p=dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.,margin=100.,entry_mode='CHANNEL_SWING',leverage=1.)
     d=evaluate_peak_trailing(p,100.-sign*1.6,61000,fee=0.,slippage=0.)
     assert d and d['type']==HARD_REASON
+
+@pytest.mark.parametrize('symbol',['CAP/USDT','龙虾/USDT'])
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('entry',['breakout','continuation'])
+def test_runner_real_paper_and_duplicate(monkeypatch,symbol,side,entry):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.paper_account import PaperAccount
+    from core.services.symbol_runner import process_single_symbol_runner
+    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
+    f=frame(side);now=int(time.time()//60)*60000
+    f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    if entry=='continuation':
+        f.loc[5,'open']=float(f.iloc[-1].close)-(0.3 if side=='LONG' else -0.3)
+    a=PaperAccount();a.balance=100.
+    e=object.__new__(TradingEngine);e.account=a
+    e.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=time.time()*1000))
+    e.tickers={symbol:float(f.iloc[-1].close)}
+    e.fetch_klines=AsyncMock(return_value=f)
+    e.strategy=SimpleNamespace(compute_indicators=lambda x:x)
+    e.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
+    e._execution_price_is_safe=AsyncMock(return_value=True)
+    asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f))
+    assert symbol in a.positions
+    assert a.positions[symbol]['side']==side
+    assert a.positions[symbol]['margin']<=50.
+    assert a.trades[-1]['entry_snapshot']['signal_code']==('KC_LIVE_BODY_BREAKOUT_' if entry=='breakout' else 'KC_OUTSIDE_')+side
+    a.positions.clear()
+    asyncio.run(process_single_symbol_runner(e,symbol,time.time(),None,False,exit_frame=f))
+    assert len(a.trades)==1
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('entry',['breakout','continuation'])
+@pytest.mark.parametrize('fault',['none','retreat','invalid_atr','missing_finality','changed_signal'])
+def test_account_fresh_revalidation(monkeypatch,side,entry,fault):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.services.entry_firewall import validate_account_entry
+    f=frame(side);now=int(time.time()//60)*60000
+    f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    if entry=='continuation':f.loc[5,'open']=float(f.iloc[-1].close)-(0.3 if side=='LONG' else -0.3)
+    f.attrs['entry_finality_verified']=True
+    d=evaluate_entry_contract(f,float(f.iloc[-1].close),symbol='CAP/USDT')
+    assert d
+    ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
+    if fault=='retreat':f.loc[5,'close']=100.
+    if fault=='invalid_atr':f.loc[4,'atr']=math.nan
+    if fault=='missing_finality':f.attrs.clear()
+    if fault=='changed_signal':ctx['channel_confirmation_bar_id']-=60000
+    a=SimpleNamespace(positions={},trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f))
+    if fault=='none':assert asyncio.run(validate_account_entry(a,'CAP/USDT',side,ctx))['type']==d['type']
+    else:
+        with pytest.raises(ValueError):asyncio.run(validate_account_entry(a,'CAP/USDT',side,ctx))
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_profit_reentry_retreat_gate(side):
+    e=object.__new__(TradingEngine)
+    assert e._profit_reentry_ready('CAP/USDT',dict(side=side),frame(side),100.) is False
