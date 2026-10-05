@@ -1225,7 +1225,47 @@ class TradingEngine:
         closed = await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
         if closed and symbol not in self.account.positions:
             await self._reevaluate_after_close(symbol)
+        if not closed:
+            cached = getattr(self, '_channel_exit_frames', {}).get(symbol)
+            try:
+                stamp = float(quote_ms if quote_ms is not None else time.time()*1000)
+                fresh_tick = math.isfinite(stamp) and 0 <= time.time()*1000-stamp <= 5000
+            except (TypeError, ValueError, OverflowError):
+                fresh_tick = False
+            if fresh_tick and cached is not None and not cached.empty and float(cached.iloc[-1].timestamp) == math.floor(stamp/60000)*60000:
+                closed = await self._try_channel_turn_reverse(symbol, cached, price)
         return closed
+
+    async def _try_channel_turn_reverse(self, symbol, frame, price):
+        from core.services.entry_contract import evaluate_entry_contract, TURN_CODES
+        if not getattr(self, 'is_running', False):
+            return False
+        position = self.account.positions.get(symbol)
+        if not position or position.get('entry_mode') != 'CHANNEL_SWING':
+            return False
+        decision = evaluate_entry_contract(frame, price, symbol=symbol)
+        if not decision or decision['type'] not in TURN_CODES or decision['side'] == position.get('side'):
+            return False
+        locks = getattr(self, '_channel_turn_locks', None)
+        if locks is None:
+            locks = self._channel_turn_locks = {}
+        async with locks.setdefault(symbol, asyncio.Lock()):
+            if self.account.positions.get(symbol) is not position:
+                return False
+            fresh = await self._entry_boundary_frame(symbol)
+            if fresh is None or fresh.empty or not fresh.attrs.get('entry_finality_verified') or not getattr(self, 'is_running', False):
+                return False
+            decision = evaluate_entry_contract(fresh, float(fresh.iloc[-1].close), symbol=symbol)
+            if not decision or decision['type'] not in TURN_CODES or decision['side'] == position.get('side'):
+                return False
+            if self.account.positions.get(symbol) is not position:
+                return False
+            closed = await self.account.close_position(symbol, float(fresh.iloc[-1].close),
+                'Channel Swing EXIT_CHANNEL_TURN_' + decision['side'], is_manual=True)
+            if not closed or symbol in self.account.positions:
+                return False
+            await self._reevaluate_after_close(symbol)
+            return True
 
     async def _reevaluate_after_close(self, symbol):
         """Entry-only evaluation after a successful close; never calls exit processing."""

@@ -85,6 +85,9 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                            float(frame.iloc[-1]['timestamp']))
         return [], []
 
+    if await engine._try_channel_turn_reverse(symbol, frame, quote):
+        return [], []
+
     # Scan and aggTrade/ticker share the same persistent exit authority.
     from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
     await enforce_realtime_profit_exit(engine, symbol, quote)

@@ -13,7 +13,8 @@ from core.services.strategies.outer_strategy import (live_body_breakout_side, ck
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
-ENTRY_CODES = KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"} | OUTER_CODES
+TURN_CODES = {'KC_CHANNEL_TURN_LONG', 'KC_CHANNEL_TURN_SHORT'}
+ENTRY_CODES = TURN_CODES | KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"} | OUTER_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
@@ -76,6 +77,45 @@ def ma5_kc_trend_ready(frame, quote, side):
         return gap > tolerance and gap - prior_gap >= -tolerance
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return False
+
+
+def evaluate_channel_turn(frame, quote, code=None, symbol=''):
+    """Observed closed swing plus a live reversal body; no future wick inference."""
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 4 or len(frame) != len(closed)+1:
+            return None
+        live = frame.iloc[-1];quote=float(quote);opened=float(live['open'])
+        atr=float(closed.iloc[-1]['atr'])
+        lower,upper=float(live.kc_lower),float(live.kc_upper)
+        if not all(math.isfinite(v) and v>0 for v in (quote,opened,atr,lower,upper)) or not lower < quote < upper:
+            return None
+        side='LONG' if quote-opened>=.5*atr else 'SHORT' if opened-quote>=.5*atr else None
+        if side is None or not ma5_entry_ready(frame,quote,side):
+            return None
+        signal='KC_CHANNEL_TURN_'+side
+        if code not in (None,signal):
+            return None
+        sign=1 if side=='LONG' else -1
+        anchor=None
+        # A peak/valley near the corresponding rail can be followed by up to two small reversal candles.
+        for offset in (1,2,3):
+            row=closed.iloc[-offset]
+            opposite_body=sign*(float(row.open)-float(row.close))>0
+            near_rail=(float(row.high)>=float(row.kc_upper) if side=='SHORT' else float(row.low)<=float(row.kc_lower))
+            following=closed.iloc[len(closed)-offset+1:]
+            if opposite_body and near_rail and all(sign*(float(r.close)-float(r.open))>=0 for _,r in following.iterrows()):
+                anchor=row;break
+        if anchor is None or sign*(quote-float(closed.iloc[-1].close))<=0:
+            return None
+        stamp=float(live.timestamp);prev=float(closed.iloc[-1].timestamp)
+        return dict(action='ENTER',side=side,type=signal,reason=signal,price=quote,entry_atr=atr,
+                    confirmation_bar_id=stamp,close_price=float(closed.iloc[-1].close),intrabar=True,
+                    entry_phase='KC_CHANNEL_TURN',breakout_bar_id=stamp,pair_confirmation_bar_id=prev,
+                    third_bar_id=stamp,pending_signal_id=f'{symbol}_TURN_{int(anchor.timestamp)}_{int(stamp)}_{side}',
+                    pending_second_bar_id=prev,pending_wait_bars=1,pending_max_wait_bars=1)
+    except (AttributeError,KeyError,TypeError,ValueError,IndexError,OverflowError):
+        return None
 
 
 def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
@@ -269,9 +309,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
+        turn = evaluate_channel_turn(ma5_frame, quote, code, symbol)
         fast_side = live_body_breakout_side(frame, quote) if len(frame) > len(closed) else None
         fast_code = 'KC_LIVE_BODY_BREAKOUT_' + fast_side if fast_side else None
-        if fast_side and code in (None, fast_code):
+        if turn:
+            decision = turn
+        elif fast_side and code in (None, fast_code):
             stamp = float(live.timestamp)
             prev_stamp = float(closed.iloc[-1].timestamp)
             decision = dict(action='ENTER', side=fast_side, type=fast_code,
@@ -299,7 +342,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
-        doji_reject = entry_doji_problem(closed, live, quote)
+        doji_reject = ('BLOCKED_LIVE_DOJI' if is_entry_doji(live, quote) else None) if decision['type'] in TURN_CODES else entry_doji_problem(closed, live, quote)
         if doji_reject:
             return reject(doji_reject)
 
@@ -313,13 +356,13 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if not ma5_entry_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
 
-        if not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
+        if decision['type'] not in TURN_CODES and decision.get('entry_phase') != 'KC_LIVE_BODY_BREAKOUT' and not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_RETURNING_TO_KC')
 
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar and not same_bar_close:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if not same_bar_close and exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
+        if not same_bar_close and exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT', 'KC_CHANNEL_TURN') and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         if same_bar_close:
             close_id = float(close_fill['id'])

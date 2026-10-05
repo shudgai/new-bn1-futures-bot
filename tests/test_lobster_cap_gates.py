@@ -244,7 +244,7 @@ def test_same_bar_reopen_fail_closed(side,fault):
     if fault=='failed_close':close['status']='FAILED'
     if fault=='missing_fill':a.trades=[]
     if fault=='already_reopened':a.trades.append(dict(symbol='CAP/USDT',action='OPEN_'+side,id=360002))
-    q=100. if fault=='retreat' else float(f.iloc[-1].close)
+    q=float(f.iloc[-1].open) if fault=='retreat' else float(f.iloc[-1].close)
     assert evaluate_entry_contract(f,q,account=a,symbol='CAP/USDT') is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -380,6 +380,8 @@ def test_final_account_blocks_ma5_outer_violation(monkeypatch,side,fault):
     from unittest.mock import AsyncMock
     from core.services.entry_firewall import validate_account_entry
     f=frame(side);now=int(time.time()//60)*60000;f['timestamp']+=now-360000
+    sign=1 if side=='LONG' else -1
+    f.loc[5,'open']=float(f.iloc[-1].close)-sign*.3
     monkeypatch.setattr(time,'time',lambda:now/1000+10.)
     f.attrs['entry_finality_verified']=True
     d=evaluate_entry_contract(f,symbol='CAP/USDT');assert d
@@ -410,3 +412,113 @@ def test_account_open_lock_serializes_and_blocks_unclosed_position(monkeypatch):
         a.positions.clear()
         assert await a.open_position(*args)
     asyncio.run(run())
+
+def channel_turn_frame(side='SHORT'):
+    f=frame('LONG')
+    f['kc_upper']=102.;f['kc_middle']=100.5;f['kc_lower']=99.
+    f.loc[4,['open','close','high','low','ma5']]=[101.,101.2,102.2,100.9,101.2]
+    f.loc[5,['open','close','high','low']]=[101.2,100.2,101.2,100.2]
+    if side=='LONG':
+        original=f.copy()
+        for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),('kc_lower','kc_upper'),('kc_middle','kc_middle')]:f[a]=200.-original[b]
+    f.attrs['entry_finality_verified']=True
+    return f
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_channel_turn_inside_channel_shared_gate(side):
+    f=channel_turn_frame(side);q=float(f.iloc[-1].close)
+    assert float(f.iloc[-1].kc_lower)<q<float(f.iloc[-1].kc_upper)
+    d=evaluate_entry_contract(f,q,symbol='CAP/USDT')
+    assert d and d['type']=='KC_CHANNEL_TURN_'+side
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('fault',['small_body','wrong_ma5','no_anchor','recovered_quote'])
+def test_channel_turn_rejects_invalid_confirmation(side,fault):
+    f=channel_turn_frame(side);sign=1 if side=='LONG' else -1
+    if fault=='small_body':f.loc[5,'close']=float(f.iloc[-1].open)+sign*.1
+    if fault=='recovered_quote':f.loc[5,'close']=float(f.iloc[-1].open)
+    if fault=='wrong_ma5':f.loc[4,'ma5']=float(f.iloc[-1].close)+sign*5
+    if fault=='no_anchor':
+        f['high']=f[['open','close']].max(axis=1)+.01;f['low']=f[['open','close']].min(axis=1)-.01
+    assert evaluate_entry_contract(f,float(f.iloc[-1].close),code='KC_CHANNEL_TURN_'+side,symbol='CAP/USDT') is None
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('close_succeeds',[True,False])
+def test_channel_turn_closes_before_reopening(monkeypatch,side,close_succeeds):
+    import asyncio
+    from unittest.mock import AsyncMock
+    f=channel_turn_frame(side)
+    p={'side':'SHORT' if side=='LONG' else 'LONG','entry_mode':'CHANNEL_SWING'}
+    a=SimpleNamespace(positions={'CAP/USDT':p})
+    events=[]
+    async def close(*args,**kwargs):
+        events.append('CLOSE')
+        if close_succeeds:a.positions.clear()
+        return close_succeeds
+    async def reopen(*args):
+        assert not a.positions;events.append('REOPEN')
+    a.close_position=AsyncMock(side_effect=close)
+    e=object.__new__(TradingEngine);e.account=a;e.is_running=True
+    e._entry_boundary_frame=AsyncMock(return_value=f);e._reevaluate_after_close=AsyncMock(side_effect=reopen)
+    assert asyncio.run(e._try_channel_turn_reverse('CAP/USDT',f,float(f.iloc[-1].close)))==close_succeeds
+    assert events==(['CLOSE','REOPEN'] if close_succeeds else ['CLOSE'])
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_channel_turn_real_paper_close_then_reverse(monkeypatch,side):
+    import asyncio,time
+    from unittest.mock import AsyncMock
+    from core.paper_account import PaperAccount
+    from core.services.symbol_runner import process_single_symbol_runner
+    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'log',lambda *a,**k:None)
+    now=int(time.time()//60)*60000;clock={'value':(now-120000)/1000}
+    monkeypatch.setattr(time,'time',lambda:clock['value'])
+    a=PaperAccount();a.balance=150.
+    old_side='SHORT' if side=='LONG' else 'LONG'
+    assert asyncio.run(a.open_position('CAP/USDT',old_side,100.,50.,0.,0.,'MANUAL',atr=1.,leverage=2,entry_context={'is_manual':True}))
+    clock['value']=(now+10000)/1000
+    f=channel_turn_frame(side);f['timestamp']+=now-360000;f.attrs['entry_finality_verified']=True
+    e=object.__new__(TradingEngine);e.account=a;e.is_running=True
+    e.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=now+10000))
+    e.fetch_klines=AsyncMock(return_value=f);e.strategy=SimpleNamespace(compute_indicators=lambda x:x)
+    e.tickers={'CAP/USDT':float(f.iloc[-1].close)}
+    e.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *a:2)
+    e._execution_price_is_safe=AsyncMock(return_value=True)
+    asyncio.run(process_single_symbol_runner(e,'CAP/USDT',clock['value'],None,False,exit_frame=f))
+    assert a.positions['CAP/USDT']['side']==side
+    assert [t['action'] for t in reversed(a.trades)]==['OPEN_'+old_side,'CLOSE_'+old_side,'OPEN_'+side]
+    assert a.trades[0]['entry_snapshot']['signal_code']=='KC_CHANNEL_TURN_'+side
+
+@pytest.mark.parametrize('fault',['missing_finality','signal_retreat','stopped'])
+def test_turn_reverse_latest_snapshot_rejects_before_close(fault):
+    import asyncio
+    from unittest.mock import AsyncMock
+    f=channel_turn_frame('SHORT');fresh=f.copy()
+    if fault=='missing_finality':fresh.attrs.clear()
+    if fault=='signal_retreat':fresh.loc[5,'close']=fresh.iloc[-1].open
+    a=SimpleNamespace(positions={'CAP/USDT':{'side':'LONG','entry_mode':'CHANNEL_SWING'}},close_position=AsyncMock())
+    e=object.__new__(TradingEngine);e.account=a;e.is_running=fault!='stopped'
+    e._entry_boundary_frame=AsyncMock(return_value=fresh);e._reevaluate_after_close=AsyncMock()
+    assert not asyncio.run(e._try_channel_turn_reverse('CAP/USDT',f,float(f.iloc[-1].close)))
+    a.close_position.assert_not_awaited();e._reevaluate_after_close.assert_not_awaited()
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_first_live_breakout_allows_ma5_inside_outer_rail(side):
+    f=frame(side);sign=1 if side=='LONG' else -1
+    f.loc[5,'kc_upper' if side=='LONG' else 'kc_lower']=100.+sign*1.4
+    q=float(f.iloc[-1].close)
+    d=evaluate_entry_contract(f,q,symbol='CAP/USDT')
+    assert d and d['type']=='KC_LIVE_BODY_BREAKOUT_'+side
+    # Without a fresh breakout body, continuation still requires MA5 outside.
+    f.loc[5,'open']=q-sign*.3
+    assert evaluate_continuation_entry(f,q,symbol='CAP/USDT') is None
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_opposite_small_candle_then_second_outside_body_can_continue(side):
+    f=frame(side);sign=1 if side=='LONG' else -1
+    f.loc[4,'open']=float(f.iloc[-2].close)+sign*.1
+    f.loc[5,'open']=float(f.iloc[-1].close)-sign*.3
+    d=evaluate_entry_contract(f,symbol='CAP/USDT')
+    assert d and d['type']=='KC_OUTSIDE_'+side
+    assert d['confirmation_bar_id']==float(f.iloc[-1].timestamp)
