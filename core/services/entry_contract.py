@@ -22,8 +22,10 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
 ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
 
 
+MA5_MIN_ENTRY_SLOPE_ATR = 0.05
+
 def ma5_entry_ready(frame, quote, side):
-    """Require MA5 movement in entry direction of at least 0.01 prior closed ATR."""
+    """Require MA5 movement in entry direction of at least 0.05 prior closed ATR."""
     try:
         if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
             return False
@@ -44,7 +46,7 @@ def ma5_entry_ready(frame, quote, side):
         if not all(math.isfinite(v) and v > 0 for v in (atr, previous, current)):
             return False
         movement = (1 if side == 'LONG' else -1) * (current - previous)
-        return movement > 0 and (movement >= .01 * atr or math.isclose(movement, .01 * atr, rel_tol=1e-10))
+        return movement > 0 and (movement >= MA5_MIN_ENTRY_SLOPE_ATR * atr or math.isclose(movement, MA5_MIN_ENTRY_SLOPE_ATR * atr, rel_tol=1e-10))
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return False
 
@@ -80,7 +82,7 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
             if not all(math.isfinite(v) and v > 0 for v in (live_ma5, last_ma5)):
                 return None
             ma5_slope = sign * (live_ma5 - last_ma5)
-            if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < 0.01):
+            if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < MA5_MIN_ENTRY_SLOPE_ATR):
                 return None
 
         if not live_candle_color_ready(frame, quote, side):

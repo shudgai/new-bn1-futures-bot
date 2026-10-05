@@ -96,3 +96,8 @@ Owner authorized raising peak-pullback activation from 0.5 to 1.0 ATR. Existing 
 ## Shared MA5 entry gate
 
 All shared entry decisions, including live breakout, closed confirmation, continuation and same-candle reentry, now require directional MA5 movement of at least 0.01 prior closed ATR. Live MA5 is recomputed from four actual closed prices plus the quote; closed decisions use the final two closed MA5 values. Invalid or insufficient values fail closed. Original warmup closing prices remain available. Account final revalidation rejects a candidate when MA5 becomes flat. No candle-color sequence alone grants entry; existing breakout and continuation gates remain. Related regression: 364 passed. Atomic account temporary files are ignored without deletion.
+
+
+## Near-flat MA5 rejection
+
+Owner reiterated that flat or rising MA5 must never authorize SHORT. The 23:20:36 Lobster continuation fill had a quote-recomputed MA5 decline of approximately 0.01002 prior closed ATR, barely passing the former 0.01 threshold. The shared and continuation minimum is now 0.05 ATR in entry direction, symmetrically for LONG. An actual-price regression verifies this near-flat short is rejected. Existing upward/flat/invalid tests and final account revalidation remain.

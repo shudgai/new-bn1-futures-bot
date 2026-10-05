@@ -349,5 +349,13 @@ def test_ma5_direction_boundary(side):
     from core.services.entry_contract import ma5_entry_ready
     f=frame(side);q=float(f.iloc[-1].close);sign=1 if side=='LONG' else -1
     live=(sum(float(v) for v in f.close.iloc[-5:-1])+q)/5.
-    f.loc[4,'ma5']=live-sign*.01
+    f.loc[4,'ma5']=live-sign*.05
     assert ma5_entry_ready(f,q,side)
+
+def test_lobster_nearly_flat_short_from_actual_fill_is_blocked():
+    from core.services.entry_contract import ma5_entry_ready
+    f=frame('SHORT')
+    f.loc[0:4,'close']=[.0433,.04373,.04336,.04361,.04355]
+    f.loc[4,'ma5']=(.0433+.04373+.04336+.04361+.04355)/5.
+    f.loc[4,'atr']=.000599
+    assert not ma5_entry_ready(f,.04327,'SHORT')
