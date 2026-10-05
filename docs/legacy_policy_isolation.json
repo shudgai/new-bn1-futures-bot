@@ -1,0 +1,25 @@
+{
+  "deleted": [
+    {
+      "symbol": "StrictStateMachineStrategy._evaluate_tick_internal",
+      "reason": "No reachable callers; contained independent legacy entry and MA exits."
+    },
+    {
+      "symbol": "StrictStateMachineStrategy.evaluate_tick unreachable tail",
+      "reason": "After unconditional return; only remaining private-method caller."
+    }
+  ],
+  "retained_isolated": [
+    {
+      "path": "core/services/strategies/pure_trend_v2.py",
+      "reason": "realtime_profit_exit requires evaluate_anti_whipsaw_profit_lock; historical interfaces retained.",
+      "live_entry_authority": false
+    },
+    {
+      "path": "core/services/kc_pending_entry.py:_INVALIDATED_SIGNALS",
+      "reason": "Compatibility and bounded-cache tests still import it; no new terminal invalidation is added."
+    }
+  ],
+  "tests_deleted": [],
+  "production_modified": false
+}

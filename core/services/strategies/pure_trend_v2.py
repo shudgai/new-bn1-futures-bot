@@ -1,3 +1,10 @@
+"""Legacy compatibility policy; not an automatic entry authority.
+
+Live scan, ticker, reentry and account submission use entry_contract instead.
+Keep this module because realtime_profit_exit still calls its shared exit adapter,
+and historical tests and compatibility callers depend on its interfaces.
+Do not reconnect its legacy entry methods to the execution pipeline.
+"""
 import logging
 import math
 from typing import Dict, Any, Optional, Union

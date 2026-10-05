@@ -62,3 +62,11 @@ Test migration mapping:
 - Immutability keeps both 100-retry loops, both cross-symbol cases, cache overflow bounds, invalid-history restart and all six snapshot identity checks. Temporary conditions are re-evaluated; no new permanent terminal lock is invented. The valid snapshot case now requires an actual finality-verified fresh provider, and cannot succeed from cache identity alone.
 
 Automatic review rejected two optional bulk cleanups; neither was executed. All existing immutability test functions were retained and updated individually; unused legacy state-machine tail code remains in place. Production, candidate, deployment authorization and live orders remain untouched.
+
+## Owner-authorized legacy cleanup
+
+Removed only the unreachable private state-machine entry/MA-exit implementation and the unreachable public-method tail that was its sole caller (86 lines). Preserved state fields, public interfaces and all tests.
+
+Retained pure_trend_v2 because realtime_profit_exit depends on its exit adapter; added a compatibility-only module notice and docs/legacy_policy_isolation.json. Repository source search confirms the only remaining production import is in realtime_profit_exit, not the live entry pipeline. This is dependency-based isolation, not a claim that all other historical tests are obsolete. No historical test files were removed or excluded.
+
+After cleanup, the same 316 cases passed without skips. Production and the old candidate are unchanged. No deployment, restart or live orders.
