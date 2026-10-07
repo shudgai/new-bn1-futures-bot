@@ -2,12 +2,13 @@
 import math
 from core.config import CHANNEL_WATERFALL_BODY_ATR
 from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
+from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON as PIVOT_EXIT
 
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
 HARD = 'EXIT_INITIAL_ATR_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
 POLICY = 'pre0600_structure_no_profit_lock_v1'
-ALLOWED = {REASON, HARD, WATERFALL, REVERSAL_EXIT}
+ALLOWED = {REASON, HARD, WATERFALL, REVERSAL_EXIT, PIVOT_EXIT}
 RETIRED_CLOSE_REASONS = {
     'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_MOVING_PROFIT_STOP',
     'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_CHANNEL_SAME_BAR_END',
@@ -67,6 +68,11 @@ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, si
     valid = valid_snapshot(snapshot)
     if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
         reason = WATERFALL
+    if reason is None and valid:
+        confirmation = confirmed_pivot_turn(position, state, snapshot, price, sign)
+        if confirmation:
+            reason = PIVOT_EXIT
+            state['confirmed_pivot_exit'] = confirmation
     if reason is None and valid:
         scale = float(position.get('entry_atr') or 0.)
         structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short')) or {}
