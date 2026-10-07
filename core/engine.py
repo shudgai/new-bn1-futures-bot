@@ -1215,14 +1215,11 @@ class TradingEngine:
 
     async def _instant_exit_trade_loop(self):
         """Dedicated trade stream: entry REST/scan work cannot stall exit observation."""
-        from core.services.exits.trade_pressure_exit import TradePressureFeed
-        feed = self._trade_pressure_feed = TradePressureFeed(self.account.log)
         seen = {}
         announced = set()
         while self.is_running:
             try:
                 symbols = list(self.account.positions)
-                feed.retain_positions(self.account.positions)
                 if not symbols:
                     await asyncio.sleep(.1)
                     continue
@@ -1245,15 +1242,10 @@ class TradingEngine:
                     seen[key] = True
                     if len(seen) > 8192:
                         seen.pop(next(iter(seen)))
-                    position = self.account.positions.get(symbol)
-                    if position:
-                        feed.observe(symbol, position, trade, time.time()*1000)
                     await self._instant_quote_exit(symbol, float(trade['price']), stamp)
             except asyncio.CancelledError:
-                feed.suspend_all('STREAM_STOPPED')
                 raise
             except Exception as exc:
-                feed.suspend_all('STREAM_ERROR')
                 self.account.log(f'即時成交出口串流錯誤: {exc}', 'WARNING')
                 await asyncio.sleep(.1)
 

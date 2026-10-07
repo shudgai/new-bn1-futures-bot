@@ -61,15 +61,13 @@ def test_four_paths_confirm_exact_price_boundary_without_ma_or_pivot(symbol, sid
     s = snapshot()
     state = observe(feed, p, s)
     price = 99.85 if side == 'LONG' else 100.15
-    result = evaluate_peak_trailing(p, price, s)
-    assert result['reason'] == REASON
-    assert result['price'] == price
-    evidence = p[STATE_KEY]['trade_pressure_exit']
+    evidence = confirmed_trade_pressure(p, state, s, price)
+    assert evidence
+    assert evaluate_peak_trailing(p, price, s) is None
     assert evidence['count'] == 11
     assert evidence['atr'] == 1.  # Not the entry ATR of 9.
     assert evidence['extreme'] == 100.
     assert evidence['reversal'] == '0.15'
-    assert p[STATE_KEY]['holding_exit_policy'] == POLICY
     assert not state.get('armed')
 
 
@@ -100,7 +98,7 @@ def test_reversal_boundaries(side, offset, passes):
     s = snapshot()
     observe(feed, p, s)
     price = 100-offset if side == 'LONG' else 100+offset
-    assert bool(evaluate_peak_trailing(p, price, s)) is passes
+    assert bool(confirmed_trade_pressure(p, p[STATE_KEY], s, price)) is passes
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
@@ -160,28 +158,31 @@ def test_bad_data_and_gaps_suspend_window(fault):
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_restart_pending_survives_but_window_does_not(symbol, side):
+def test_retired_pressure_pending_does_not_survive_and_window_does_not(symbol, side):
     p = position(side, symbol)
     feed = TradePressureFeed(Mock())
     populate(feed, p)
     s = snapshot()
     observe(feed, p, s)
-    assert evaluate_peak_trailing(p, 99.85 if side == 'LONG' else 100.15, s)
+    evidence = confirmed_trade_pressure(p, p[STATE_KEY], s, 99.85 if side == 'LONG' else 100.15)
+    p[STATE_KEY].update(pending=REASON, trigger=REASON,
+                        holding_exit_policy='aggressive_trade_pressure_v5', trade_pressure_exit=evidence)
     p = json.loads(json.dumps(p))
     state = migrate_peak_state(p)
     new_feed = TradePressureFeed(Mock())
     assert new_feed.evidence(symbol, p, state, snapshot(), 310000.) is None
-    assert evaluate_peak_trailing(p, 100., {'quote_ms': 311000., 'reason': 'NO_DATA'})['reason'] == REASON
+    assert evaluate_peak_trailing(p, 100., {'quote_ms': 311000., 'reason': 'NO_DATA'}) is None
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
                               log=Mock(), close_position=AsyncMock(return_value=False))
     assert not asyncio.run(enforce_atr_protection(account, symbol, 100.))
-    assert account.position_meta[symbol][STATE_KEY]['pending'] == REASON
+    assert not account.position_meta[symbol][STATE_KEY].get('pending')
     account.close_position.return_value = True
-    assert asyncio.run(enforce_atr_protection(account, symbol, 100.))
+    assert not asyncio.run(enforce_atr_protection(account, symbol, 100.))
+    account.close_position.assert_not_awaited()
 
 
 @pytest.mark.parametrize('side', SIDES)
-def test_frozen_atr_and_observed_extreme_persist_without_hindsight(side):
+def test_retired_pressure_observations_are_not_migrated_into_new_exit(side):
     p = position(side)
     feed = TradePressureFeed(Mock())
     populate(feed, p)
@@ -193,9 +194,10 @@ def test_frozen_atr_and_observed_extreme_persist_without_hindsight(side):
     s = snapshot(321000.)
     s['atr'] = 50.
     observe(feed, restarted, s)
-    assert s['trade_pressure']['atr'] == 1.
-    assert s['trade_pressure']['extreme'] == 100.
-    assert evaluate_peak_trailing(restarted, 99.85 if side == 'LONG' else 100.15, s)
+    assert s['trade_pressure']['atr'] == 50.
+    assert s['trade_pressure']['extreme'] == (99.9 if side == 'LONG' else 100.1)
+    assert not confirmed_trade_pressure(restarted, restarted[STATE_KEY], s, 99.85 if side == 'LONG' else 100.15)
+    assert evaluate_peak_trailing(restarted, 99.85 if side == 'LONG' else 100.15, s) is None
 
 
 @pytest.mark.parametrize('side', SIDES)
@@ -243,7 +245,7 @@ def test_risk_priority_is_unchanged(side, risk):
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_realtime_close_bypasses_entry_and_ma_hold_and_retries(symbol, side, monkeypatch):
+def test_retired_pressure_evidence_cannot_close_realtime(symbol, side, monkeypatch):
     p = position(side, symbol)
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
                               log=Mock(), close_position=AsyncMock(return_value=False))
@@ -258,11 +260,11 @@ def test_realtime_close_bypasses_entry_and_ma_hold_and_retries(symbol, side, mon
                         lambda *a, **k: ('HOLD', 'TEST'))
     price = 99.85 if side == 'LONG' else 100.15
     assert not asyncio.run(enforce_realtime_profit_exit(engine, symbol, price, 310000.))
-    account.close_position.assert_awaited_once()
-    assert account.position_meta[symbol]['exit_protection_snapshot']['trade_pressure_exit']['count'] == 11
+    account.close_position.assert_not_awaited()
+    assert 'exit_protection_snapshot' not in account.position_meta[symbol]
     feed.suspend_all('STREAM_ERROR')
     account.close_position.return_value = True
-    assert asyncio.run(enforce_realtime_profit_exit(engine, symbol, price, 310000.))
+    assert not asyncio.run(enforce_realtime_profit_exit(engine, symbol, price, 310000.))
 
 
 def test_stale_evidence_and_small_ma_bend_do_not_create_pressure_exit():
@@ -284,7 +286,7 @@ def test_stale_evidence_and_small_ma_bend_do_not_create_pressure_exit():
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_actual_account_concurrent_pressure_close_once(symbol, side, mode, tmp_path, monkeypatch):
+def test_actual_account_pressure_feed_alone_no_longer_closes(symbol, side, mode, tmp_path, monkeypatch):
     async def run():
         import core.paper_account as pm
         import core.testnet_account as tm
@@ -324,16 +326,14 @@ def test_actual_account_concurrent_pressure_close_once(symbol, side, mode, tmp_p
                                  _trade_pressure_feed=feed)
         price = 99.85 if side == 'LONG' else 100.15
         await asyncio.gather(*(enforce_realtime_profit_exit(engine, symbol, price, stamp) for _ in range(10)))
-        assert symbol not in account.positions
-        assert len(closes(account)) == 1
-        assert REASON in closes(account)[0]['reason']
+        assert symbol in account.positions
+        assert not closes(account)
         if mode == 'testnet':
-            assert len(close_orders(exchange)) == 1
-            assert close_orders(exchange)[0]['params']['reduceOnly']
+            assert not close_orders(exchange)
     asyncio.run(run())
 
 
-def test_engine_cached_trade_batches_are_not_counted_twice(monkeypatch):
+def test_engine_no_longer_accumulates_pressure_authority(monkeypatch):
     from core.engine import TradingEngine
 
     async def run():
@@ -358,9 +358,7 @@ def test_engine_cached_trade_batches_are_not_counted_twice(monkeypatch):
         engine._instant_quote_exit = exit_tick
         monkeypatch.setattr('time.time', lambda: 301.)
         await engine._instant_exit_trade_loop()
-        window = engine._trade_pressure_feed.windows['CAP/USDT']
-        assert window.last_id == 11
-        assert len(window.samples) == 11
+        assert not hasattr(engine, '_trade_pressure_feed')
         assert calls == 2
     asyncio.run(run())
 

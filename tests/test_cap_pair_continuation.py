@@ -35,6 +35,10 @@ def next_frame(f):
     f.loc[f.index[-1], 'is_closed'] = True
     row.update(timestamp=float(row['timestamp'])+60000, is_closed=False,
                kc_middle=float(row['kc_middle'])+.01 if row['close'] > 100 else float(row['kc_middle'])-.01)
+    step = .001 if row['close'] > 100 else -.001
+    row['close'] += step
+    row['high'] = max(row['high'], row['close'])
+    row['low'] = min(row['low'], row['close'])
     f.loc[index] = row
     return f
 
@@ -366,3 +370,50 @@ def test_real_paper_cap_entry_uses_shared_submit_lock(side, phase, concurrent, m
         ('KC_LIVE_BODY_BREAKOUT_' if phase == 'live' else
          'KC_2BAR_CONFIRM_' if phase == 'pair' else 'CAP_KC_CONTINUATION_')+side)
     assert a.positions['CAP/USDT']['margin'] > 99.
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('phase', ['pair', 'continuation'])
+@pytest.mark.parametrize('fault', ['flat_closed', 'opposite_closed', 'flat_quote', 'opposite_quote'])
+def test_cap_pair_and_continuation_require_actual_price_progress(side, phase, fault, monkeypatch):
+    from core.services.cap_breakout_entry import directional_price_progress
+    a = account()
+    f = eligible_frame('pair', side)
+    observe(a, f, monkeypatch)
+    if phase == 'continuation':
+        f = advance(a, f, monkeypatch)
+    sign = 1 if side == 'LONG' else -1
+    previous = float(f.iloc[-3].close)
+    latest = float(f.iloc[-2].close)
+    if fault.endswith('closed'):
+        index = f.index[-2]
+        value = previous if fault == 'flat_closed' else previous-sign*.01
+    else:
+        index = f.index[-1]
+        value = latest if fault == 'flat_quote' else latest-sign*.01
+    f.loc[index, 'close'] = value
+    f.loc[index, 'high'] = max(float(f.loc[index, 'high']), value)
+    f.loc[index, 'low'] = min(float(f.loc[index, 'low']), value)
+    assert directional_price_progress(f, float(f.iloc[-1].close), side) is None
+    code = ('KC_2BAR_CONFIRM_' if phase == 'pair' else 'CAP_KC_CONTINUATION_')+side
+    assert evaluate_entry_contract(f, code=code, account=a, symbol='CAP/USDT') is None
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('phase', ['pair', 'continuation'])
+def test_final_firewall_revokes_cap_when_quote_stops_advancing(side, phase, monkeypatch):
+    a = account()
+    f = eligible_frame('pair', side)
+    observe(a, f, monkeypatch)
+    if phase == 'continuation':
+        f = advance(a, f, monkeypatch)
+    now = float(f.iloc[-1].timestamp)+1000
+    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now)
+    a.entry_frame_provider = AsyncMock(return_value=f)
+    code = ('KC_2BAR_CONFIRM_' if phase == 'pair' else 'CAP_KC_CONTINUATION_')+side
+    context = dict(entry_signal_code=code, channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
+    asyncio.run(validate_account_entry(a, 'CAP/USDT', side, context))
+    assert context['entry_snapshot']['cap_progress_quote'] == float(f.iloc[-1].close)
+    f.loc[f.index[-1], 'close'] = float(f.iloc[-2].close)
+    with pytest.raises(ValueError, match='BLOCKED_CAP_PRICE_NOT_ADVANCING'):
+        asyncio.run(validate_account_entry(a, 'CAP/USDT', side, copy.deepcopy(context)))

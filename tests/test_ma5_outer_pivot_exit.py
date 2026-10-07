@@ -55,7 +55,7 @@ def test_ma5_small_bend_without_price_extreme_cannot_close(side, symbol):
     for row in s['ma5_pivot_history']:
         row['high'], row['low'] = 104., 96.
     assert evaluate_peak_trailing(p, 100., s) is None
-    assert p[STATE_KEY]['trade_pressure_status'] == 'WAIT_VALID_TRADE_WINDOW'
+    assert p[STATE_KEY]['live_ma5_v_status'] == 'BLOCKED_LIVE_MA5_V_DATA'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

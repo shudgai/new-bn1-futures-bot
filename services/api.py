@@ -47,6 +47,7 @@ from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+WEB_READ_ONLY = os.environ.get("BOT_WEB_READ_ONLY", "false").lower() == "true"
 
 def trade_date_str(trade: dict) -> str:
     """交易 id 是毫秒級 unix timestamp，trade['time'] 沒有年份無法拿來篩選日期，故用 id 換算台北時區日期"""
@@ -239,6 +240,8 @@ class ManualCloseRequest(BaseModel):
 
 async def recover_bot_if_needed() -> bool:
     """Keep trading running, including after a legacy manual pause."""
+    if WEB_READ_ONLY:
+        return False
     async with _bot_control_lock:
         if os.path.exists(BOT_PAUSED_FILE):
             os.remove(BOT_PAUSED_FILE)
@@ -280,6 +283,8 @@ async def bot_supervisor_loop():
 @app.on_event("startup")
 async def startup_event():
     global _bot_supervisor_task
+    if WEB_READ_ONLY:
+        return
     try:
         await recover_bot_if_needed()
     except Exception as exc:
@@ -304,6 +309,23 @@ async def get_index():
     if os.path.exists(index_file):
         return FileResponse(index_file, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return HTMLResponse("<h1>Binance Bot Web Dashboard Not Found</h1>")
+
+
+@app.middleware("http")
+async def read_only_guard(request: Request, call_next):
+    if WEB_READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS"):
+        return JSONResponse(status_code=403, content={
+            "detail": "唯讀模式：交易、重啟及帳戶修改均停用",
+            "code": "WEB_READ_ONLY",
+        })
+    return await call_next(request)
+
+
+async def displayed_unrealized_pnl():
+    if WEB_READ_ONLY:
+        return sum(float(position.get("unrealized_pnl", 0.0))
+                   for position in engine.account.positions.values())
+    return await engine.account.update_positions(engine.tickers)
 
 
 def visible_system_logs():
@@ -419,8 +441,10 @@ async def get_status(response: Response):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     }
-    unrealized = await engine.account.update_positions(engine.tickers)
+    unrealized = await displayed_unrealized_pnl()
     payload = numpy_safe({
+        "web_read_only": WEB_READ_ONLY,
+        "market_data_live": not WEB_READ_ONLY,
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
@@ -496,8 +520,10 @@ async def get_prices(response: Response):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     }
-    unrealized = await engine.account.update_positions(engine.tickers)
+    unrealized = await displayed_unrealized_pnl()
     payload = numpy_safe({
+        "web_read_only": WEB_READ_ONLY,
+        "market_data_live": not WEB_READ_ONLY,
         "symbols": visible_symbols(),
         "symbol_directions": {
             symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")

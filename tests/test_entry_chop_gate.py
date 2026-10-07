@@ -35,7 +35,9 @@ def eligible_frame(kind, side):
     f = pd.concat([pd.DataFrame([prefix], index=[-1]), f])
     closes = [101.+i*.1 for i in range(5)]
     if kind == 'pair':
-        closes[-2:] = [101.3, 101.5]
+        closes[-2:] = [101.3, 101.48]
+        f.loc[4, 'close'] = 101.48
+        f.loc[f.index[-1], 'close'] = 101.49
     for index, close in enumerate(closes):
         if kind == 'pair' and index >= 3:
             continue

@@ -289,6 +289,9 @@
 <body>
     <div id="app">
         <!-- TOPBAR -->
+        <div v-if="bot.web_read_only" style="padding:12px;background:#fef3c7;color:#92400e;font-weight:700;">
+            唯讀網頁：交易、手動下單與持倉監控已停用。價格及損益為保存快照，並非即時監控。
+        </div>
         <div class="topbar">
             <div class="logo">
                 <span>🚀</span> AIDAN Bot
@@ -301,8 +304,8 @@
                     策略說明 <span class="collapse-arrow" :class="{ open: strategyExpanded }" aria-hidden="true">▶</span>
                 </button>
                 <span id="strategy-description" class="strategy-description" :class="{ expanded: strategyExpanded }">Strategy: {{ bot.strategy }}</span>
-                <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
-                    {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
+                <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="!bot.web_read_only && toggleBot()">
+                    {{ bot.web_read_only ? '唯讀／交易停用' : (bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復') }}
                 </div>
             </div>
         </div>
@@ -530,7 +533,7 @@
             <div class="right-panel">
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
-                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot || bot.web_read_only" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
                         {{ isTogglingBot ? '處理中...' : (bot.is_running ? '🔄 重新啟動交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
                     <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">

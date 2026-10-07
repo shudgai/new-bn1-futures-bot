@@ -11,7 +11,27 @@ SYMBOL = 'CAP/USDT'
 STATE_KEY = '_cap_breakout_origins'
 CODES = frozenset('CAP_KC_CONTINUATION_'+side for side in ('LONG', 'SHORT'))
 EVIDENCE_KEYS = ('cap_origin_id', 'cap_origin_first_ms', 'cap_origin_second_ms',
-                 'cap_origin_candles', 'cap_quote_ma5')
+                 'cap_origin_candles', 'cap_quote_ma5', 'cap_progress_previous_close',
+                 'cap_progress_last_close', 'cap_progress_quote')
+
+
+def directional_price_progress(frame, quote, side):
+    """Both recent completed closes and the live quote must advance."""
+    try:
+        closed = closed_entry_candles(frame)
+        if side not in ('LONG', 'SHORT') or len(closed) < 2:
+            return None
+        previous, latest, quote = map(float, (closed.iloc[-2].close, closed.iloc[-1].close, quote))
+        if not all(math.isfinite(value) and value > 0 for value in (previous, latest, quote)):
+            return None
+        sign = 1 if side == 'LONG' else -1
+        tolerance = max(previous, latest, quote)*1e-12
+        if sign*(latest-previous) <= tolerance or sign*(quote-latest) <= tolerance:
+            return None
+        return dict(cap_progress_previous_close=previous,
+                    cap_progress_last_close=latest, cap_progress_quote=quote)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def confirmed_pair(frame, quote):

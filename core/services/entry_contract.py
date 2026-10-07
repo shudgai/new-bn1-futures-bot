@@ -905,6 +905,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if chop_evidence is None:
             return reject(chop_status)
         decision.update(chop_evidence)
+        if cap and decision['entry_phase'] in ('KC_2BAR_CLOSED_CONFIRM', 'KC_CONTINUATION_ENTRY'):
+            from core.services.cap_breakout_entry import directional_price_progress
+            progress = directional_price_progress(frame, quote, decision['side'])
+            if progress is None:
+                return reject('BLOCKED_CAP_PRICE_NOT_ADVANCING')
+            decision.update(progress)
         if not live_adverse_entry_safe(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_LIVE_ADVERSE_ABNORMAL')
         same_bar_close = (close_fill is not None and float(live.timestamp) == exit_bar

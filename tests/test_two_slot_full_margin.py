@@ -110,12 +110,17 @@ def test_simultaneous_lobster_cap_orders_use_half_inside_shared_lock(monkeypatch
 
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_real_paper_fill_preserves_full_half_not_structural_risk_shrink(symbol, side, monkeypatch, tmp_path):
+@pytest.mark.parametrize('wide_stop', [False, True])
+def test_real_paper_fill_preserves_full_half_not_structural_risk_shrink(symbol, side, wide_stop, monkeypatch, tmp_path):
     import core.paper_account as paper
     monkeypatch.setattr(paper, 'STATE_FILE', str(tmp_path/'paper.json'))
     account = paper.PaperAccount()
     account.balance = 200.
-    engine, signal = make_engine(account, monkeypatch, side, symbol)
+    from test_entry_chop_gate import eligible_frame
+    f = eligible_frame('pair' if symbol == 'CAP/USDT' else 'live', side)
+    if wide_stop:
+        f.loc[f.index[-5], 'low' if side == 'LONG' else 'high'] = 10. if side == 'LONG' else 190.
+    engine, signal = make_engine(account, monkeypatch, side, symbol, entry_frame=f)
     assert asyncio.run(engine._place_structured_entry_locked(symbol, signal, engine.tickers[symbol]))
     p = account.positions[symbol]
     target = TradingEngine._half_wallet_entry_margin(200., 200., 5.)
@@ -152,7 +157,8 @@ def test_fresh_funds_can_recover_from_stale_insufficient_cache(monkeypatch):
 
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_testnet_order_quantity_keeps_full_margin_through_account_boundary(symbol, side, monkeypatch, tmp_path):
+@pytest.mark.parametrize('wide_stop', [False, True])
+def test_testnet_order_quantity_keeps_full_margin_through_account_boundary(symbol, side, wide_stop, monkeypatch, tmp_path):
     from decimal import Decimal, ROUND_DOWN
     from core.testnet_account import BinanceTestnetAccount
     exchange = SimpleNamespace(
@@ -169,6 +175,8 @@ def test_testnet_order_quantity_keeps_full_margin_through_account_boundary(symbo
     from test_entry_chop_gate import eligible_frame
     kind = 'pair' if symbol == 'CAP/USDT' else 'live'
     f = eligible_frame(kind, side)
+    if wide_stop:
+        f.loc[f.index[-5], 'low' if side == 'LONG' else 'high'] = 10. if side == 'LONG' else 190.
     now = float(f.iloc[-1].timestamp)+1000
     monkeypatch.setattr('time.time', lambda: now/1000)
     f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now)
@@ -184,6 +192,17 @@ def test_testnet_order_quantity_keeps_full_margin_through_account_boundary(symbo
     assert 0 <= margin-qty*price/5. < .001*price/5.
     assert account._finalize_new_position.await_args.kwargs['entry_context']['structure_risk_policy'] == FULL_SLOT_POLICY
     assert account._finalize_new_position.await_args.args[13] == margin
+
+
+def test_recorded_cap_2104_wide_stop_never_reduces_105_margin_to_11():
+    from core.services.structure_risk_sizing import structure_risk_plan
+    args = (.070037003, 'LONG', .001839, .0636261, 105.22551755864251,
+            5., .05, .0005, .0001)
+    historical = structure_risk_plan(*args)
+    assert historical['amount'] == pytest.approx(11.365776461046021)
+    corrected = structure_risk_plan(*args, preserve_margin=True)
+    assert corrected['amount'] == 105.22551755864251
+    assert corrected['structure_risk_policy'] == FULL_SLOT_POLICY
 
 
 def test_exchange_zero_available_balance_is_not_treated_as_full_wallet(tmp_path):
