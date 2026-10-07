@@ -134,6 +134,8 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "entry_failure_level", "exit_protection_snapshot",
+    "structure_risk_policy", "structure_risk_budget_usdt", "structure_original_margin",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
@@ -553,7 +555,11 @@ class PaperAccount:
 
         from core.services.entry_firewall import validate_account_entry
         entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+        if entry_decision.get('price') is not None:
+            price = float(entry_decision['price'])
         structural_stop = entry_decision.get('initial_sl')
+        if entry_decision.get('entry_failure_level') is not None:
+            entry_context['entry_failure_level']=entry_decision['entry_failure_level']
         if entry_context is None:
             entry_context = {}
 
@@ -652,8 +658,19 @@ class PaperAccount:
             except Exception:
                 pass
             sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
+        if entry_mode == 'CHANNEL_SWING' and not is_manual:
+            from core.services.structure_risk_sizing import structure_risk_plan
+            plan=structure_risk_plan(execution_price,side,atr,entry_decision['structure_risk_stop'],
+                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT)
+            amount_usdt=plan.pop('amount');structural_stop=plan.pop('stop');sl=structural_stop
+            entry_context.update(plan)
         from core.services.order_sizing import raw_order_qty
         qty = float(raw_order_qty(amount_usdt, leverage, execution_price))
+        from core.services.auto_reverse import reverse_quantity
+        reverse_qty = reverse_quantity(self, symbol, side, entry_context, qty)
+        if reverse_qty is not None:
+            qty = reverse_qty
+            amount_usdt = qty * execution_price / leverage
         notional = amount_usdt * leverage
         self.log(
             f"🧮 [資金換算] {symbol} | 本金保證金={amount_usdt:.4f}U, 槓桿={leverage}x, "
@@ -669,6 +686,8 @@ class PaperAccount:
                 "WARNING",
             )
             return False
+        from core.services.entry_gate_integrity import assert_commit_proof
+        assert_commit_proof(self, symbol, side, entry_context)
         self.balance -= (amount_usdt + fee)
 
         entry_context = {
@@ -1044,8 +1063,21 @@ class PaperAccount:
             self.log(f"↩️ [紙上Maker撤單] {symbol}：{reason}", "INFO")
             self.save_state()
 
+    async def reverse_position(self, engine, symbol, price, decision, ticket):
+        from core.services.direct_reverse import execute
+        return await execute(self, engine, symbol, price, decision, ticket, paper=True)
+
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        from core.services.direct_reverse import pending_close
+        if await pending_close(self, symbol):
+            return False
+        from core.services.exits.swing_atr_profit_lock import prepare_close
+        from core.services.exits.structure_close_gate import prepare_structure_close
+        if not await prepare_structure_close(self, symbol, current_price, close_reason):
+            return False
+        if not prepare_close(self, symbol, current_price, close_reason):
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})

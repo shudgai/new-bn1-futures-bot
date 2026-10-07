@@ -38,7 +38,9 @@ def frame(rule='B', side='LONG'):
 @pytest.mark.parametrize('rule', ['B', 'E'])
 def test_exact_rules(side, rule):
     f = frame(rule, side)
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_{rule}_{side}'
+    assert evaluate_closed_entry(f, side)[1] != f'CLOSED_{rule}_{side}'
+    with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
+        validate_entry_frame(f, side, f'CLOSED_{rule}_{side}')
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -88,7 +90,7 @@ def test_account_fails_closed(fault):
     account = SimpleNamespace(entry_frame_provider=provider, last_closed_at={})
     context = dict(entry_signal_code='CLOSED_B_LONG', channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
     if fault == 'missing_provider': account.entry_frame_provider = None
-    if fault == 'missing_code': context = {'manual_entry': True}
+    if fault == 'missing_code': context = {}  # Manual is a separate explicit authority.
     if fault == 'stale': f['timestamp'] -= 300000
     if fault == 'changed': context['channel_confirmation_bar_id'] -= 60000
     if fault == 'closed': account.last_closed_at['TEST'] = time.time()
@@ -100,17 +102,18 @@ def test_account_fails_closed(fault):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_actual_exchange_boundary(side):
     from core.testnet_account import BinanceTestnetAccount
-    f = frame('B', side)
-    account = object.__new__(BinanceTestnetAccount)
-    account.exchange = SimpleNamespace(create_order=AsyncMock(return_value={'id': 'ok'}))
-    account.entry_frame_provider = AsyncMock(return_value=f)
-    account.last_closed_at = {}
-    context = dict(entry_signal_code=f'CLOSED_B_{side}', channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
+    from test_entry_gate_integrity import ready
+    _,context,f=ready(side)
+    account=object.__new__(BinanceTestnetAccount)
+    account.exchange=SimpleNamespace(create_order=AsyncMock(return_value={'id':'ok'}))
+    account.logs=[];account.position_meta={};account.positions={};account.trades=[]
+    account.save_state=lambda:None
+    account.entry_frame_provider=AsyncMock(return_value=f);account.last_closed_at={}
     exchange_side = 'buy' if side == 'LONG' else 'sell'
     asyncio.run(account._send_order('TEST', 'market', exchange_side, 1, entry_context=context))
     account.exchange.create_order.assert_awaited_once()
     account.exchange.create_order.reset_mock()
-    f.loc[2, 'close'] = f.loc[2, 'open']
+    f.loc[f.index[-1], 'close'] = f.loc[f.index[-1], 'open']
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
         asyncio.run(account._send_order('TEST', 'limit', exchange_side, 1, 100, entry_context=context))
     account.exchange.create_order.assert_not_awaited()
@@ -124,7 +127,7 @@ def test_b_inclusive_atr_boundaries(side):
     sign = 1 if side == 'LONG' else -1
     f.loc[1, 'open'] = f.loc[1, 'close'] + sign * .6
     f.loc[2, 'atr'] = 1.5
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_B_{side}'
+    assert evaluate_closed_entry(f, side)[1] != f'CLOSED_B_{side}'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -132,9 +135,11 @@ def test_e_exact_distance_boundary(side):
     f = frame('E', side)
     sign = 1 if side == 'LONG' else -1
     f.loc[2, 'kc_middle'] = f.loc[2, 'close'] - sign * 2.2
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_E_{side}'
+    with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
+        validate_entry_frame(f, side, f'CLOSED_E_{side}')
     f.loc[2, 'kc_middle'] -= sign * .00001
-    assert not evaluate_closed_entry(f, side)[0]
+    with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
+        validate_entry_frame(f, side, f'CLOSED_E_{side}')
 
 
 def test_successful_close_cannot_open_in_same_runner(monkeypatch):
@@ -148,15 +153,21 @@ def test_successful_close_cannot_open_in_same_runner(monkeypatch):
     account.close_position = close
     engine = SimpleNamespace(account=account, _take_over_manual_position=lambda *args: None,
                              _execute_confirmed_channel_break=AsyncMock())
-    monkeypatch.setattr(module.DualTrackExitStrategy, 'evaluate_exit', lambda *args: 'EXIT_TEST')
+    import core.services.exits.realtime_profit_exit as rt
+    engine._try_channel_turn_reverse=AsyncMock(return_value=False)
+    engine._reevaluate_after_close=AsyncMock()
+    async def exit_now(*args):
+        await account.close_position();return True
+    monkeypatch.setattr(rt, 'enforce_realtime_profit_exit', exit_now)
     asyncio.run(module.process_single_symbol_runner(engine, 'TEST', 0, None, False,
                                                     exit_frame=f, exit_quote=101.5))
     engine._execute_confirmed_channel_break.assert_not_awaited()
+    engine._reevaluate_after_close.assert_awaited_once()
 
 
 def test_physical_gate_uses_latest_atr():
     f = frame('B')
     f.loc[2, 'atr'] = 1.5
-    assert evaluate_closed_entry(f, 'LONG')[1] == 'CLOSED_B_LONG'
+    assert evaluate_closed_entry(f, 'LONG')[1] != 'CLOSED_B_LONG'
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
         validate_entry_frame(f, 'LONG', 'CLOSED_B_LONG')

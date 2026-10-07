@@ -40,5 +40,5 @@ async def enforce_atr_protection(account, symbol, price):
         account.save_state()
     if not reason:
         return False
-    await account.close_position(symbol, price, "Channel Swing " + reason, is_manual=True)
-    return True
+    closed = await account.close_position(symbol, price, "Channel Swing " + reason, is_manual=True)
+    return bool(closed) if reason == 'EXIT_CONFIRMED_SWING_STRUCTURE' else True

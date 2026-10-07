@@ -1,6 +1,9 @@
 import asyncio
 import os
 import json
+import math
+import time
+from core.services.candle_data import closed_entry_candles
 from typing import Dict, Any, Optional
 from core.engine import engine
 from core.config import get_leverage, TAKER_FEE_RATE
@@ -71,12 +74,24 @@ async def process_manual_order(
         if cost > available_balance:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance"}
 
-        # Get real ATR if available, else fallback
-        atr = exec_price * 0.015
-        if symbol in getattr(engine, "data_frames", {}):
-            df = engine.data_frames[symbol]
-            if not df.empty and "atr" in df.columns:
-                atr = float(df["atr"].iloc[-1])
+        # Manual positions use the same fresh, closed 1M ATR as bot positions.
+        # A fixed percentage substitute silently widens every ATR-based exit.
+        try:
+            df = await engine._entry_boundary_frame(symbol)
+            closed = closed_entry_candles(df)
+            expected_bar = math.floor(time.time()/60)*60000-60000
+            if (df is None or df.attrs.get('timeframe_ms', 60000) != 60000
+                    or closed.empty or float(closed.iloc[-1]['timestamp']) != expected_bar):
+                raise ValueError('Missing synchronized closed 1M ATR')
+            atr = float(closed.iloc[-1]['atr'])
+            if not math.isfinite(atr) or atr <= 0:
+                raise ValueError('Invalid closed ATR')
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError):
+            return {"success": False, "status_code": 400,
+                    "detail": "上一根已收線 1M ATR 尚未就緒，請稍後再試"}
+        if not hasattr(engine, '_channel_exit_frames'):
+            engine._channel_exit_frames = {}
+        engine._channel_exit_frames[symbol] = df
 
         sl_dist, tp_dist = compute_sl_tp_distance(exec_price, atr)
         sl, tp = build_sl_tp_for_side(exec_price, side, sl_dist, tp_dist)

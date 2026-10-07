@@ -31,6 +31,22 @@ def settled_pair(first, second, server_ms):
 async def fetch_settled_entry_frame(engine, symbol):
     first = await engine.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
     server_ms = float(await engine.exchange.fetch_time())
+    cache = getattr(engine, '_settled_closed_entry_evidence', None)
+    if cache is None:
+        cache = engine._settled_closed_entry_evidence = {}
+    prior = cache.get(symbol)
+    # Reuse only recently independently confirmed closed OHLC. The current
+    # response and server time are fresh; live price/proof is never cached.
+    if prior is not None:
+        verified_ms = float(prior.attrs.get('entry_finality_server_ms') or 0)
+        if (0 <= server_ms-verified_ms <= 5000 and settled_pair(prior,first,server_ms)
+                and float(prior.iloc[-1].open) == float(first.iloc[-1].open)):
+            first=first.copy()
+            first.attrs['entry_finality_verified']=True
+            first.attrs['entry_finality_server_ms']=server_ms
+            first.attrs['entry_finality_closed_reused']=True
+            # Keep the original confirmation time: reuse cannot extend its TTL.
+            return first
     await asyncio.sleep(READ_INTERVAL_SECONDS)
     second = await engine.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
     if not settled_pair(first, second, server_ms):
@@ -42,4 +58,5 @@ async def fetch_settled_entry_frame(engine, symbol):
     second = second.copy()
     second.attrs['entry_finality_verified'] = True
     second.attrs['entry_finality_server_ms'] = completed_ms
+    cache[symbol] = second.copy()
     return second

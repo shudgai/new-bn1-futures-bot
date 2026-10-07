@@ -10,7 +10,7 @@ from core.interfaces.exit_interface import IExitStrategy
 
 def hard_stop_reason(position, price):
     pending = position.get("channel_hard_stop_pending")
-    if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
+    if pending in ("MARGIN_LOSS", "PRICE_LOSS", "INITIAL_ATR"):
         return pending
     try:
         entry = float(position["entry_price"])
@@ -22,7 +22,19 @@ def hard_stop_reason(position, price):
         if side not in ("LONG", "SHORT") or not all(math.isfinite(v) and v > 0 for v in (entry, qty, leverage, margin, price)):
             return None
         loss = (entry - price) if side == "LONG" else (price - entry)
-        if config.MAX_POSITION_MARGIN_LOSS_RATIO > 0 and loss * qty >= margin * config.MAX_POSITION_MARGIN_LOSS_RATIO:
+        if str(position.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+            initial = float(position.get('initial_sl') or 0.)
+            sign = 1 if side == 'LONG' else -1
+            if (math.isfinite(initial) and initial > 0 and sign*(entry-initial)>0
+                    and sign*(price-initial)<=0):
+                return 'INITIAL_ATR'
+        from core.services.structure_risk_sizing import POLICY
+        budget=margin*config.MAX_POSITION_MARGIN_LOSS_RATIO
+        if position.get('structure_risk_policy')==POLICY:
+            budget=float(position.get('structure_risk_budget_usdt') or 0.)
+            if not math.isfinite(budget) or budget<=0:
+                return 'MARGIN_LOSS'
+        if budget > 0 and loss * qty >= budget:
             return "MARGIN_LOSS"
         if config.MAX_ACCEPTABLE_LOSS_PCT < 0 and loss / entry >= -config.MAX_ACCEPTABLE_LOSS_PCT:
             return "PRICE_LOSS"
@@ -53,8 +65,7 @@ async def enforce_hard_stop(account, symbol, price):
         position["channel_hard_stop_pending"] = reason
         account.position_meta.setdefault(symbol, {})["channel_hard_stop_pending"] = reason
         account.save_state()
-    await account.close_position(symbol, price, "Channel Swing HARD_STOP " + reason, is_manual=True)
-    return True
+    return bool(await account.close_position(symbol, price, "Channel Swing HARD_STOP " + reason, is_manual=True))
 
 
 class HardStopExitStrategy(IExitStrategy):

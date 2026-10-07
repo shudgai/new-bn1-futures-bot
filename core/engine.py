@@ -210,6 +210,7 @@ class TradingEngine:
         weakref.finalize(self, _close_exchanges, self.exchange, self.execution_exchange, self.ws_exchange)
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
+        self.account._structure_close_engine = self
         self.account.entry_frame_provider = self._entry_boundary_frame
         self.symbol_rotation = SymbolRotation(self.account)
         self.surveillance_service = MarketSurveillanceService()
@@ -619,6 +620,10 @@ class TradingEngine:
         if close_exchanges:
             task_names.append("ticker_task")
         tasks = []
+        for task in list(getattr(self, '_exit_followup_tasks', {}).values()):
+            task.cancel()
+            tasks.append(task)
+        getattr(self, '_exit_followup_tasks', {}).clear()
         for name in task_names:
             task = getattr(self, name, None)
             if task:
@@ -1138,6 +1143,27 @@ class TradingEngine:
                       profit_profile='TREND_EXTENSION', atr=float(frame.iloc[-2]['atr']))
         return await self._place_structured_entry(symbol, signal, price)
 
+    def _schedule_channel_quote_entry(self, symbol, price, quote_ms=None):
+        """Keep ticker reception live while one bounded entry task validates REST."""
+        if not getattr(self,'is_running',False) or symbol not in DEFAULT_SYMBOLS or symbol in self.account.positions:
+            return
+        tasks = getattr(self, '_channel_quote_entry_tasks', None)
+        if tasks is None:
+            tasks = self._channel_quote_entry_tasks = {}
+        active = tasks.get(symbol)
+        if active is not None and not active.done():
+            return
+        task = asyncio.create_task(self._channel_quote_pivot_entry(symbol, price, quote_ms))
+        tasks[symbol] = task
+        def completed(result):
+            if tasks.get(symbol) is result:
+                tasks.pop(symbol, None)
+            if not result.cancelled():
+                error = result.exception()
+                if error:
+                    self.account.log(f'QUOTE_ENTRY_TASK_FAILED symbol={symbol} error={error}', 'WARNING')
+        task.add_done_callback(completed)
+
     async def _channel_quote_pivot_entry(self, symbol, price, quote_ms=None):
         """Evaluate the shared second-bar rule on fresh WebSocket quotes."""
         if (not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS
@@ -1174,7 +1200,11 @@ class TradingEngine:
                         return
                     btc_turn = self._detect_btc_1m_pulse(
                         btc_frame, float(self.tickers.get('BTC/USDT') or btc_frame.iloc[-1]['close']))
-                if time.time() - quoted_at > 5:
+                # Ticker reception continues while REST settles. Validate its
+                # newest observed quote, not the task's original trigger tick.
+                latest_quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol, quoted_at)
+                if (not getattr(self,'is_running',False) or not math.isfinite(latest_quoted)
+                        or not 0 <= time.time()-latest_quoted <= 5):
                     return
                 await self._process_single_symbol_locked(
                     symbol, time.time(), btc_turn, self.account.daily_loss_limit_hit()[0],
@@ -1224,7 +1254,7 @@ class TradingEngine:
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
         closed = await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
         if closed and symbol not in self.account.positions:
-            await self._reevaluate_after_close(symbol)
+            self._schedule_exit_followup(symbol, lambda: self._reevaluate_after_close(symbol))
         if not closed:
             cached = getattr(self, '_channel_exit_frames', {}).get(symbol)
             try:
@@ -1233,48 +1263,36 @@ class TradingEngine:
             except (TypeError, ValueError, OverflowError):
                 fresh_tick = False
             if fresh_tick and cached is not None and not cached.empty and float(cached.iloc[-1].timestamp) == math.floor(stamp/60000)*60000:
-                closed = await self._try_channel_turn_reverse(symbol, cached, price)
+                self._schedule_exit_followup(symbol, lambda: self._try_channel_turn_reverse(symbol, cached, price))
         return closed
 
-    async def _try_channel_turn_reverse(self, symbol, frame, price):
-        from core.services.entry_contract import evaluate_entry_contract, TURN_CODES
+    def _schedule_exit_followup(self, symbol, factory):
+        """Bound REST follow-up work without blocking the exit trade-stream reader."""
         if not getattr(self, 'is_running', False):
             return False
-        position = self.account.positions.get(symbol)
-        if not position or position.get('entry_mode') != 'CHANNEL_SWING':
+        tasks = getattr(self, '_exit_followup_tasks', None)
+        if tasks is None:
+            tasks = self._exit_followup_tasks = {}
+        active = tasks.get(symbol)
+        if active is not None and not active.done():
             return False
-        decision = evaluate_entry_contract(frame, price, symbol=symbol)
-        if not decision or decision['type'] not in TURN_CODES or decision['side'] == position.get('side'):
+        task = asyncio.create_task(factory())
+        tasks[symbol] = task
+        def completed(result):
+            if tasks.get(symbol) is result:
+                tasks.pop(symbol, None)
+            if not result.cancelled() and result.exception():
+                self.account.log(f'EXIT_FOLLOWUP_FAILED symbol={symbol} error={result.exception()}', 'WARNING')
+        task.add_done_callback(completed)
+        return True
+
+    async def _try_channel_turn_reverse(self, symbol, frame, price):
+        from core.services.auto_reverse import try_auto_reverse
+        try:
+            return await try_auto_reverse(self, symbol, frame, price)
+        except Exception as exc:
+            self.account.log(f'AUTO_REVERSE_BLOCK symbol={symbol} reason={type(exc).__name__}: {exc}', 'WARNING')
             return False
-        locks = getattr(self, '_channel_turn_locks', None)
-        if locks is None:
-            locks = self._channel_turn_locks = {}
-        async with locks.setdefault(symbol, asyncio.Lock()):
-            if self.account.positions.get(symbol) is not position:
-                return False
-            fresh = await self._entry_boundary_frame(symbol)
-            if fresh is None or fresh.empty or not fresh.attrs.get('entry_finality_verified') or not getattr(self, 'is_running', False):
-                return False
-            decision = evaluate_entry_contract(fresh, float(fresh.iloc[-1].close), symbol=symbol)
-            if not decision or decision['type'] not in TURN_CODES or decision['side'] == position.get('side'):
-                return False
-            if self.account.positions.get(symbol) is not position:
-                return False
-            from core.services.exits.realtime_profit_exit import cached_tick_indicators
-            from core.services.exits.trend_hold_evaluator import strong_direction_held
-            fresh_price = float(fresh.iloc[-1].close)
-            snapshot, _ = cached_tick_indicators(fresh, fresh_price, time.time() * 1000)
-            structure = snapshot.get('swing_structure_' + position.get('side', '').lower())
-            if structure is None or structure.get('intact', True):
-                return False
-            if strong_direction_held(position, snapshot, fresh_price):
-                return False
-            closed = await self.account.close_position(symbol, float(fresh.iloc[-1].close),
-                'Channel Swing EXIT_CHANNEL_TURN_' + decision['side'], is_manual=True)
-            if not closed or symbol in self.account.positions:
-                return False
-            await self._reevaluate_after_close(symbol)
-            return True
 
     async def _reevaluate_after_close(self, symbol):
         """Entry-only evaluation after a successful close; never calls exit processing."""
@@ -1413,12 +1431,10 @@ class TradingEngine:
                     and (sym.replace(":USDT", "") if sym.endswith(":USDT") else sym) in self.account.positions
                 ))
 
-                await asyncio.gather(*(
-                    self._channel_quote_pivot_entry(
-                        sym.replace(":USDT", ""), float(ticker["last"]), ticker.get("timestamp"))
-                    for sym, ticker in tickers.items() if ticker.get("last") is not None
-                    and sym.replace(":USDT", "") not in self.account.positions
-                ))
+                for sym, ticker in tickers.items():
+                    if ticker.get("last") is not None:
+                        self._schedule_channel_quote_entry(
+                            sym.replace(":USDT", ""), float(ticker["last"]), ticker.get("timestamp"))
 
             except asyncio.CancelledError:
                 break
@@ -1811,7 +1827,13 @@ class TradingEngine:
             return None
         frame = frame.copy()
         if not bool(frame.iloc[-1].get('is_closed', False)):
-            quote = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+            # An undated ticker cache cannot override fresh REST evidence.
+            quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol)
+            now = time.time()
+            fresh_tick = quoted is not None and math.isfinite(float(quoted)) and 0 <= now-float(quoted) <= 5
+            quote = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close']) if fresh_tick else float(frame.iloc[-1]['close'])
+            frame.attrs['entry_quote_source'] = 'FRESH_TICK' if fresh_tick else 'SETTLED_REST'
+            frame.attrs['entry_quote_ms'] = float(quoted)*1000 if fresh_tick else frame.attrs.get('entry_finality_server_ms')
             frame.loc[frame.index[-1], 'close'] = quote
             frame.loc[frame.index[-1], 'high'] = max(float(frame.iloc[-1]['high']), quote)
             frame.loc[frame.index[-1], 'low'] = min(float(frame.iloc[-1]['low']), quote)
@@ -1839,6 +1861,15 @@ class TradingEngine:
             return opened
 
     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
+        reverse_lock = getattr(self, '_auto_reverse_locks', {}).get(symbol)
+        if reverse_lock and reverse_lock.locked() and not signal.get('auto_reverse_token'):
+            return False
+        reverse_ticket = None
+        if signal.get('auto_reverse_token'):
+            from core.services.auto_reverse import matched_ticket
+            reverse_ticket = matched_ticket(self.account, symbol, signal.get('side'))
+            if not reverse_ticket or reverse_ticket['token'] != signal['auto_reverse_token']:
+                return False
         from core.config import is_entry_disabled
         if is_entry_disabled(symbol):
             return False
@@ -1896,6 +1927,8 @@ class TradingEngine:
 
         # The fresh shared decision above owns all candle entry conditions.
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
+        if reverse_ticket:
+            leverage = reverse_ticket['leverage']
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
         amount = self._half_wallet_entry_margin(wallet, available, leverage)
@@ -1938,6 +1971,9 @@ class TradingEngine:
             context['profit_reentry_token'] = signal['profit_reentry_token']
             context['entry_snapshot']['profit_reentry_token'] = signal['profit_reentry_token']
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
+        if reverse_ticket:
+            context['auto_reverse_token'] = reverse_ticket['token']
+            context['entry_snapshot']['auto_reverse_token'] = reverse_ticket['token']
         submit_lock = getattr(self, '_account_entry_submit_lock', None)
         if submit_lock is None:
             submit_lock = self._account_entry_submit_lock = asyncio.Lock()
@@ -1991,7 +2027,7 @@ class TradingEngine:
 
             log_count = len(getattr(self.account, 'logs', []))
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Live1M '+decision['type'],
+                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason=('自動反向開倉 ' if reverse_ticket else 'Live1M ')+decision['type'],
                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]
@@ -2125,6 +2161,11 @@ class TradingEngine:
 
     def release_manual_close_state(self, symbol: str) -> None:
         """Let the strategy fully re-evaluate a symbol after a manual close."""
+        pending = self.account.position_meta.get('_auto_reverse_tickets', {}).get(symbol, {})
+        if pending.get('mode') == 'direct_netting_v1' and pending.get('phase') in ('submitting', 'unknown'):
+            return  # Keep the durable client ID until the submitted order is resolved.
+        if self.account.position_meta.get('_auto_reverse_tickets', {}).pop(symbol, None) is not None:
+            self.account.save_state()
         if getattr(self.account, "channel_profit_reentries", {}).pop(symbol, None) is not None:
             self.account.save_state()
         for state_name in (
@@ -2423,7 +2464,7 @@ class TradingEngine:
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
         from core.services.closed_breakout_entry import matched_reentry_close
-        from core.services.entry_contract import evaluate_entry_contract, evaluate_continuation_entry
+        from core.services.entry_contract import evaluate_entry_contract
         filled = matched_reentry_close(self.account, symbol, ticket)
         abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE', 'ABNORMAL', 'WATERFALL'))
         if filled and ticket.get('phase') == 'closed' and not abnormal:
@@ -2433,7 +2474,7 @@ class TradingEngine:
                 ticket['side'] = decision['side']
                 return True
             return False
-        continuation = evaluate_continuation_entry(frame, price, symbol=symbol)
+        continuation = evaluate_entry_contract(frame, price, account=self.account, symbol=symbol)
         if not continuation or continuation['side'] != ticket.get('side'):
             # Inside-channel quotes observe the abnormal pullback without granting entry.
             from core.services.closed_breakout_entry import matched_reentry_close

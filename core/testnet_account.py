@@ -101,6 +101,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "entry_failure_level", "exit_protection_snapshot",
+    "structure_risk_policy", "structure_risk_budget_usdt", "structure_original_margin",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
@@ -168,6 +170,16 @@ class BinanceTestnetAccount:
                     raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
                 await validate_account_entry(
                     self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
+            if not is_reduce:
+                from core.services.entry_gate_integrity import assert_commit_proof
+                assert_commit_proof(self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
+                if (context or {}).get('direct_reverse_token'):
+                    from core.services.direct_reverse import authority
+                    ticket = authority(self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
+                    if (order_type != 'market' or params.get('positionSide') != 'BOTH'
+                            or params.get('newClientOrderId') != ticket['client_order_id']
+                            or not math.isclose(float(amount), 2*float(ticket['qty']), rel_tol=1e-12)):
+                        raise ValueError('[FORBIDDEN_ENTRY] DIRECT_REVERSE_ORDER_MISMATCH')
             # Internal strategy metadata must never reach Binance parameters.
             self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
             try:
@@ -726,6 +738,8 @@ class BinanceTestnetAccount:
                 continue
             symbol = self._clean_symbol(row.get("symbol", ""))
             if close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0):
+                if symbol in self.positions:
+                    active[symbol] = self.positions[symbol]
                 continue  # Discard a response that started before this close completed.
             if symbol in self.closing_lock:
                 if symbol in self.positions:
@@ -801,6 +815,8 @@ class BinanceTestnetAccount:
 
         active_symbols = set(active)
         for symbol in list(self.position_meta):
+            if symbol in ('_auto_reverse_tickets', '_entry_gate_halts'):
+                continue  # Account-level reversal history survives authoritative FLAT.
             if (symbol not in active_symbols and symbol not in self.closing_lock
                     and not staged_enabled({}, self.position_meta[symbol])):
                 self.position_meta.pop(symbol, None)
@@ -2185,6 +2201,8 @@ class BinanceTestnetAccount:
         from core.services.entry_firewall import validate_account_entry
         entry_decision = await validate_account_entry(self, symbol, side, entry_context)
         structural_stop = entry_decision.get('initial_sl')
+        if entry_decision.get('entry_failure_level') is not None:
+            entry_context['entry_failure_level']=entry_decision['entry_failure_level']
 
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
@@ -2229,6 +2247,12 @@ class BinanceTestnetAccount:
         )
         order_side = "buy" if side == "LONG" else "sell"
         close_side = "sell" if side == "LONG" else "buy"
+        if entry_mode == 'CHANNEL_SWING' and entry_decision.get('structure_risk_stop') is not None:
+            from core.services.structure_risk_sizing import structure_risk_plan
+            plan=structure_risk_plan(price,side,atr,entry_decision['structure_risk_stop'],
+                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT)
+            amount_usdt=plan.pop('amount');structural_stop=plan.pop('stop')
+            entry_context.update(plan)
         from core.services.order_sizing import calculate_order_qty, raw_order_qty
         try:
             raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
@@ -2245,6 +2269,18 @@ class BinanceTestnetAccount:
         if qty <= 0:
             self.log(f"🛑 {symbol} 下單數量低於交易所最小精度", "WARNING")
             return False
+
+        from core.services.auto_reverse import reverse_quantity
+        reverse_qty = reverse_quantity(self, symbol, side, entry_context, float(qty))
+        if reverse_qty is not None:
+            from core.services.order_sizing import positive
+            reverse_margin = positive(reverse_qty) * positive(price) / positive(leverage)
+            rounded = calculate_order_qty(self.exchange, symbol,
+                                          reverse_margin, leverage, price)
+            if not math.isclose(rounded, reverse_qty, rel_tol=1e-10):
+                raise ValueError('AUTO_REVERSE_QUANTITY_PRECISION_CHANGED')
+            qty = float(rounded)
+            amount_usdt = qty * price / leverage
 
         try:
             await self._prepare_leverage(symbol, leverage)
@@ -2800,10 +2836,23 @@ class BinanceTestnetAccount:
             self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
         self._pending_retry_streak[symbol] = streak + 1
 
+    async def reverse_position(self, engine, symbol, price, decision, ticket):
+        from core.services.direct_reverse import execute
+        return await execute(self, engine, symbol, price, decision, ticket, paper=False)
+
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        from core.services.direct_reverse import pending_close
+        if await pending_close(self, symbol):
+            return False
+        from core.services.exits.swing_atr_profit_lock import prepare_close
+        from core.services.exits.structure_close_gate import prepare_structure_close
+        if not await prepare_structure_close(self, symbol, current_price, close_reason):
+            return False
+        if not prepare_close(self, symbol, current_price, close_reason):
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
@@ -2961,6 +3010,10 @@ class BinanceTestnetAccount:
             self.closing_lock.discard(symbol)
 
 
+
+    async def sync_moving_profit_stop(self, symbol, price):
+        from core.services.exits.exchange_profit_stop import sync_exchange_profit_stop
+        await sync_exchange_profit_stop(self, symbol, price)
 
     async def clear_channel_profit_lock(self, symbol: str) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:

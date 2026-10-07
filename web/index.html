@@ -257,10 +257,27 @@
             border: 1px solid rgba(37, 99, 235, 0.25);
         }
         @media (max-width: 860px) {
-            .chart-modal { width: calc(100% - 20px); max-height: calc(100vh - 20px); }
-            .chart-modal-header { padding: 12px 14px; }
+            .chart-modal { width: 100vw; height: 100vh; max-height: none; margin: 0; border-radius: 0; position: relative; }
+            .chart-modal-header { padding: 12px 14px; padding-right: 60px; }
             .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
-            .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+            .chart-header-actions .badge { display: none !important; }
+            .chart-modal-close {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                font-size: 24px !important;
+                background: rgba(255,255,255,0.95) !important;
+                border-radius: 50%;
+                width: 36px;
+                height: 36px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                z-index: 999;
+                color: #333 !important;
+            }
+            .chart-modal-body { flex: 1; height: auto; min-height: 80vh; padding: 4px; }
             .chart-grid { grid-template-columns: 1fr; }
         }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
@@ -445,7 +462,7 @@
                                     <td :style="{
                                         color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
                                                (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
-                                    }">{{ formatTradeAction(t.action) }}</td>
+                                    }">{{ formatTradeAction(t.action, t.execution_action) }}</td>
                                     <td :style="{
                                         color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
                                                t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
@@ -568,7 +585,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA5破位+中軌底線)</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·即時破軌＋兩根收線破軌｜結構／確認反轉平倉・鎖利停用</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -653,7 +670,7 @@
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
-                        symbols: ['龙虾/USDT', 'CAP/USDT'],
+                        symbols: ['龙虾/USDT'],
                         symbol_directions: {},
                         market_modes: {},
                         volatility_stats: {},
@@ -762,10 +779,11 @@
 
             openChartModal(symbol) {
                 this.destroyCharts();
+                const isMobile = window.innerWidth <= 860 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
                 const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
                 const symbols = [symbol, ...available.filter(item => item !== symbol)]
                     .filter(Boolean)
-                    .slice(0, 2);
+                    .slice(0, isMobile ? 1 : 2);
                 this.chartModal.symbol = symbol;
                 this.chartModal.symbols = symbols;
                 this.chartModal.states = Object.fromEntries(
@@ -895,22 +913,22 @@
                 ctx.candlestickSeries = chart.addCandlestickSeries({
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
-                    lastValueVisible: true, priceLineVisible: false
+                    lastValueVisible: true, priceLineVisible: true
                 });
-                ctx.ma5Series = chart.addLineSeries({ priceLineVisible: false, color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
+                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: '', priceScaleId: 'right', lastValueVisible: false });
                 ctx.ma5Series.applyOptions({
-                    lastValueVisible: true,
+                    lastValueVisible: false,
                     priceFormat: {
                         type: 'price',
                         precision: 8,
                         minMove: 0.00000001
                     }
                 });
-                ctx.ma15Series = chart.addLineSeries({ priceLineVisible: false, color: '#8B6F47', lineWidth: 2, title: 'MA15' });
+                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: '', lastValueVisible: false });
 
-                ctx.kcUpperSeries = chart.addLineSeries({ priceLineVisible: false, color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
-                ctx.kcMiddleSeries = chart.addLineSeries({ priceLineVisible: false, color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
-                ctx.kcLowerSeries = chart.addLineSeries({ priceLineVisible: false, color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
+                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: '', lastValueVisible: false });
+                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
                 this._charts = this._charts || {};
                 this._charts[symbol] = ctx;
 
@@ -963,28 +981,40 @@
                         if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
                         if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
                         if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
+                        const positionGroups = {};
                         [...(d.trade_markers || [])]
-                            .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+                            .sort((a, b) => Number(b.action.startsWith('CLOSE_')) - Number(a.action.startsWith('CLOSE_')))
                             .forEach(trade => {
+                                if (trade.reverse_completed && trade.action.startsWith('CLOSE_')) return;
                                 const markerStyle = {
-                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買入開多' },
-                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
-                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
-                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
+                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買多' },
+                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣空' },
+                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '平多' },
+                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
+                                if (trade.execution_action === 'REVERSE' && trade.action.startsWith('OPEN_')) {
+                                    markerStyle.text = trade.action === 'OPEN_LONG' ? '反向多' : '反向空';
+                                }
                                 
-                                const stamp = Number(trade.id || 0);
-                                const clock = stamp > 0 ? new Intl.DateTimeFormat('zh-TW', {
-                                    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit',
-                                    second: '2-digit', hourCycle: 'h23'
-                                }).format(new Date(stamp)) : '';
-                                tradeMarkers.push({
-                                    time: d.time, ...markerStyle,
-                                    text: clock ? `${markerStyle.text} ${clock}` : markerStyle.text,
-                                    size: 1,
-                                });
+                                const key = markerStyle.position;
+                                if (positionGroups[key]) {
+                                    positionGroups[key].text += ` + ${markerStyle.text}`;
+                                    // 若包含開倉，讓開倉顏色優先 (例如平空+開多時顯示藍色箭頭)
+                                    if (trade.action.startsWith('OPEN_')) {
+                                        positionGroups[key].color = markerStyle.color;
+                                    }
+                                } else {
+                                    positionGroups[key] = { ...markerStyle };
+                                }
                             });
+
+                        Object.values(positionGroups).forEach(m => {
+                            tradeMarkers.push({
+                                time: d.time, ...m,
+                                size: 1,
+                            });
+                        });
                     });
                     
                     const referencePrice = Number((candles[candles.length - 1] || {}).close || 0);
@@ -1061,8 +1091,7 @@
                                     price: stopPrice,
                                     color: '#f59e0b',
                                     lineWidth: 2,
-                                    lineVisible: false,
-                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    lineStyle: LightweightCharts.LineStyle.Dotted,
                                     axisLabelVisible: true,
                                     title: pos.entry_mode === 'CHANNEL_SWING' ? '初始止損防線' : '鎖利防線',
                                 });
@@ -1083,8 +1112,7 @@
                                     price: atrTp,
                                     color: '#10b981',
                                     lineWidth: 2,
-                                    lineVisible: false,
-                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
                                     axisLabelVisible: true,
                                     title: '🎯 ATR止盈(×2)',
                                 });
@@ -1112,8 +1140,7 @@
                                 price: swingExt,
                                 color: isClose ? '#ef4444' : '#10b981', // 接近時變紅色警示
                                 lineWidth: isClose ? 3 : 2,
-                                lineVisible: isClose,
-                                lineStyle: LightweightCharts.LineStyle.Solid,
+                                lineStyle: isClose ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
                                 axisLabelVisible: true,
                                 title: isClose ? '⚠️ 接近谷峰' : '波段谷峰',
                             };
@@ -1210,7 +1237,13 @@
                     const url = this.exportDate ? '/api/export_trades?date=' + this.exportDate : '/api/export_trades';
                     window.location.href = url;
                 },
-                formatTradeAction(action) {
+                formatTradeAction(action, executionAction) {
+                    if (executionAction === 'REVERSE') {
+                        return {
+                            OPEN_LONG: '反向開多', OPEN_SHORT: '反向開空',
+                            CLOSE_LONG: '反向結算多單', CLOSE_SHORT: '反向結算空單',
+                        }[action] || action;
+                    }
                     return {
                         OPEN_LONG: '買入開多',
                         OPEN_SHORT: '賣出開空',

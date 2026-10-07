@@ -20,16 +20,46 @@ class EntryFirewall:
 def validate_entry_frame(frame, side, code):
     return EntryFirewall.verify_can_open(frame, side, code)
 
-async def validate_account_entry(account, symbol, side, context):
+async def _validate_account_entry(account, symbol, side, context):
     from core.config import is_entry_disabled
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
+    direct_ticket = None
+    if context.get('direct_reverse_token'):
+        from core.services.direct_reverse import authority
+        direct_ticket = authority(account, symbol, side, context)
+        if any(context.get(k) for k in ('is_manual', 'manual_entry', 'auto_reverse_token')) or context.get('source') == 'MANUAL':
+            raise ValueError('[FORBIDDEN_ENTRY] 反向不得使用手動豁免')
+    from core.services.auto_reverse import matched_ticket
+    reverse_state = getattr(account, 'position_meta', {}).get('_auto_reverse_tickets', {}).get(symbol)
+    if reverse_state and reverse_state.get('mode') == 'direct_netting_v1' and reverse_state.get('phase') == 'partial':
+        raise ValueError('[FORBIDDEN_ENTRY] 反向部分成交，禁止自動補單')
+    if (reverse_state and reverse_state.get('mode') == 'direct_netting_v1'
+            and reverse_state.get('phase') in ('submitting', 'unknown')
+            and context.get('direct_reverse_token') != reverse_state.get('token')):
+        raise ValueError('[FORBIDDEN_ENTRY] 反向成交狀態未確認，禁止新增訂單')
+    if (reverse_state and reverse_state.get('phase') in ('closing', 'closed', 'prepared', 'submitting', 'unknown')
+            and reverse_state.get('bar') == math.floor(time.time()/60)*60000
+            and context.get('auto_reverse_token') != reverse_state.get('token')
+            and context.get('direct_reverse_token') != reverse_state.get('token')):
+        raise ValueError('[FORBIDDEN_ENTRY] 自動反向處理中，禁止其他入口搶單')
+    if context.get('auto_reverse_token'):
+        reverse_ticket = matched_ticket(account, symbol, side)
+        if not reverse_ticket or reverse_ticket['token'] != context['auto_reverse_token']:
+            raise ValueError('[FORBIDDEN_ENTRY] 未匹配成功自動反向平倉')
     
     is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
     if is_manual:
         return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
         
+    from core.services.entry_gate_integrity import VERSION
+    if getattr(account, 'position_meta', {}).get('_entry_gate_halts', {}).get(symbol):
+        raise ValueError('[FORBIDDEN_ENTRY] GATE_INTEGRITY_HALT: ' + symbol)
+    snapshot_version = (context.get('entry_snapshot') or {}).get('gate_version')
+    if snapshot_version is not None and snapshot_version != VERSION:
+        raise ValueError('[FORBIDDEN_ENTRY] 原始訊號規則版本已過期')
+
     code = context.get('entry_signal_code')
     if code not in ENTRY_CODES:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
@@ -63,10 +93,17 @@ async def validate_account_entry(account, symbol, side, context):
         
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+    now_ms=time.time()*1000
+    for key in ('entry_finality_server_ms','entry_quote_ms'):
+        if frame.attrs.get(key) is not None:
+            age=now_ms-float(frame.attrs[key])
+            if not math.isfinite(age) or not 0<=age<=5000:
+                raise ValueError('[FORBIDDEN_ENTRY] 最後行情取樣過期或來自未來: '+key)
     diagnostics = {}
-    decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
+    decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics,
+                                      evaluate_held=direct_ticket is not None)
     if decision is None or decision['side'] != side:
-        raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+        raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics.get('reason', 'INVALID_ENTRY_DATA'))
     ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol)
     if ticket:
         from core.services.closed_breakout_entry import matched_reentry_close
@@ -81,6 +118,9 @@ async def validate_account_entry(account, symbol, side, context):
         abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE','ABNORMAL','WATERFALL'))
         if abnormal and not abnormal_pullback_ready(copy.deepcopy(ticket), frame, float(frame.iloc[-1].close)):
             raise ValueError('[FORBIDDEN_ENTRY] 異常平倉回踩尚未完成')
+    deadline = decision.get('same_bar_exit_deadline_ms')
+    if deadline is not None and time.time()*1000 >= float(deadline):
+        raise ValueError('[FORBIDDEN_ENTRY] 當根入口已到期')
     expected_id = snapshot.get('pending_signal_id') if snapshot else None
     if expected_id is not None and expected_id != decision.get('pending_signal_id'):
         raise ValueError('[FORBIDDEN_ENTRY] 原始突破訊號已改變')
@@ -100,4 +140,30 @@ async def validate_account_entry(account, symbol, side, context):
                         finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
                         evidence=entry_frame_evidence(frame))
         snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
+    from core.services.entry_gate_integrity import issue_proof
+    issue_proof(context, symbol, side, decision, frame)
+    if direct_ticket is not None:
+        import copy
+        from core.services.direct_reverse import authority, risk_plan
+        from core.services.auto_reverse import entry_halted
+        authority(account, symbol, side, context)
+        engine = getattr(account, '_structure_close_engine', None)
+        if engine is None or entry_halted(engine, symbol):
+            raise ValueError('[FORBIDDEN_ENTRY] 反向引擎或風控失效')
+        plan = risk_plan(account, engine, account.positions[symbol], decision, float(decision['price']))
+        direct_ticket.update(decision=copy.deepcopy(decision), plan=plan, context=copy.deepcopy(context))
+    return decision
+
+
+async def validate_account_entry(account, symbol, side, context):
+    import json
+    try:
+        decision = await _validate_account_entry(account, symbol, side, context)
+    except Exception as exc:
+        if callable(getattr(account,'log',None)):
+            account.log('ENTRY_GATE_AUDIT '+json.dumps(dict(symbol=symbol,side=side,result='REJECT',reason=str(exc)),ensure_ascii=False),'WARNING')
+        raise
+    if callable(getattr(account,'log',None)):
+        proof=((context or {}).get('entry_snapshot') or {}).get('gate_proof')
+        account.log('ENTRY_GATE_AUDIT '+json.dumps(dict(symbol=symbol,side=side,result='PASS',proof=proof),ensure_ascii=False),'INFO')
     return decision

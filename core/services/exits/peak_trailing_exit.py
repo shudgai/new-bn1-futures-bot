@@ -3,10 +3,17 @@ import copy
 import math
 import sys
 
+from core.config import CHANNEL_WATERFALL_BODY_ATR
+
 POLICY = 'abnormal_body_only_v2'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
+TERMINAL_DOJI_REASON = 'EXIT_TERMINAL_DOJI_PRESSURE'
+TERMINAL_DOJI_TRIGGER = 'TERMINAL_DOJI_PRESSURE'
+EARLY_PROFIT_REASON = 'EXIT_EARLY_PROFIT_REVERSAL'
+TERMINAL_MIN_RUN_MS = 3 * 60000
+TERMINAL_MIN_GAIN_ATR = 1.0
 DOJI_RULE_VERSION = 3
 DOJI_BODY_RATIO = 0.25
 DOJI_ADVERSE_BODY_ATR = 0.20
@@ -54,6 +61,12 @@ def position_identity(position):
 def migrate_peak_state(position, meta=None):
     """Remove legacy authorities in both stores, preserving verified observations."""
     meta = {} if meta is None else meta
+    for source in (position, meta):
+        legacy = source.get(STATE_KEY) or {}
+        if legacy.get('pending') == 'EXIT_OPPOSITE_KC_BREAK':
+            legacy.pop('pending', None)
+            legacy.pop('trigger', None)
+        legacy.pop('opposite_rail_evidence', None)
     ident = position_identity(position)
     state = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
     if state.get('policy') == POLICY and state.get('identity') == ident:
@@ -88,6 +101,12 @@ def migrate_peak_state(position, meta=None):
             initial = position.get('initial_sl') or meta.get('initial_sl')
             if positive(initial):
                 position.update(sl=float(initial), stop_loss=float(initial), atr_sl=float(initial))
+    if state.get('pending') == EARLY_PROFIT_REASON and state.get('early_profit_rule_version') != 2:
+        state.pop('pending',None)
+        state.pop('trigger',None)
+    if state.get('pending') == 'EXIT_NO_PROFIT_ADVERSE_PRESSURE' and state.get('no_profit_rule_version') != 2:
+        state.pop('pending',None)
+        state.pop('trigger',None)
     # Old MA-touch doji tickets can retry without ever satisfying the body rule.
     # Revoke only that obsolete authority; preserve peaks and other exit retries.
     if state.get('trigger') == DOJI_TRIGGER and state.get('doji_rule_version') != DOJI_RULE_VERSION:
@@ -96,6 +115,8 @@ def migrate_peak_state(position, meta=None):
     for source in (position, meta):
         for key in RETIRED_KEYS:
             source.pop(key, None)
+    from core.services.exits.structural_holding_exit import retire_profit_state
+    retire_profit_state(position, state, meta)
     position[STATE_KEY] = state
     return state
 
@@ -255,6 +276,38 @@ def evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr):
         return None
 
 
+MA3_TURN_REASON = 'EXIT_MA3_CONFIRMED_TURN'
+MA3_TURN_ATR = 0.10
+
+
+def observe_ma3_turn(state, snapshot, sign, scale, stamp):
+    """Post-entry favorable progression then a material turn confirmed by MA5."""
+    if not isinstance(snapshot, dict) or snapshot.get('reason') or snapshot.get('fallback_used'):
+        return False
+    try:
+        ma3, closed_ma3, ma5, closed_ma5 = [float(snapshot[k]) for k in
+                                            ('ma3', 'last_ma3', 'ma5', 'last_ma5')]
+        if not all(positive(v) for v in (ma3, closed_ma3, ma5, closed_ma5, scale)):
+            return False
+        obs = state.get('ma3_turn_observation')
+        if obs is None or stamp - obs['stamp'] > 5000:
+            state['ma3_turn_observation'] = dict(first=ma3, peak=ma3, stamp=stamp, favorable=False)
+            return False
+        if stamp <= obs['stamp']:
+            return False
+        obs['stamp'] = stamp
+        if sign * (ma3 - obs['peak']) > 0:
+            obs['peak'] = ma3
+        if sign * (obs['peak'] - obs['first']) >= MA3_TURN_ATR * scale:
+            obs['favorable'] = True
+        return (obs['favorable'] and
+                sign * (obs['peak'] - ma3) >= MA3_TURN_ATR * scale and
+                sign * (closed_ma3 - ma3) >= MA3_TURN_ATR * scale and
+                sign * (closed_ma5 - ma5) >= 0.05 * scale)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
     try:
         ident = position_identity(position)
@@ -295,6 +348,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         if not positive(state.get('atr')) and positive(atr):
             state['atr'] = float(atr)
         scale = float(state.get('atr') or 0.)
+        ma3_turn = observe_ma3_turn(state, snapshot, sign, scale, stamp)
         state['last_ms'] = stamp
         if sign*(price-state['peak_price']) > 0:
             state['peak_price'] = price
@@ -302,6 +356,29 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         peak_net = estimated_net_pnl(entry, state['peak_price'], qty, sign, fee, slippage)
         net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
         state['peak_net_pnl'] = max(float(state.get('peak_net_pnl', peak_net)), peak_net)
+
+        if str(position.get('entry_mode','')).upper() == 'CHANNEL_SWING':
+            from core.services.exits.structural_holding_exit import evaluate_structural_holding
+            return evaluate_structural_holding(position,state,price,snapshot,entry,qty,sign,scale,fee,slippage)
+
+        from core.services.closed_ma_cross import EXIT_REASON as CROSS_EXIT_REASON, opposite_cross_exit_ready
+        if state.get('pending') == CROSS_EXIT_REASON or opposite_cross_exit_ready(position, snapshot):
+            hard_line = entry-sign*1.5*scale if scale>0 else 0.
+            if positive(position.get('initial_sl')):
+                hard_line = (max if sign==1 else min)(hard_line,float(position['initial_sl']))
+            hard_hit = positive(hard_line) and sign*(price-hard_line)<=0
+            reason = HARD_REASON if hard_hit or state.get('pending') == HARD_REASON else CROSS_EXIT_REASON
+            trigger = 'INITIAL_ATR' if reason == HARD_REASON else 'CLOSED_MA5_MA15_REVERSE_CROSS'
+            state.update(pending=reason,trigger=trigger)
+            return dict(action='FULL_CLOSE',type=reason,reason=reason,trigger=trigger,price=price)
+
+        from core.services.exits.moving_profit_stop import update_profit_stop
+        profit_stop = update_profit_stop(state, entry, qty, sign, price, fee, slippage, snapshot)
+        if profit_stop:
+            return profit_stop
+        profit_line = state.get('profit_stop_price')
+        profit_stop_active = (positive(profit_line) and
+                              estimated_net_pnl(entry,float(profit_line),qty,sign,fee,slippage)>0)
 
         ladder_reason, ladder_trigger = None, None
         # 2U Fixed Ladder Profit Lock is DISABLED per user request: "只有遇到真峰頂谷底才要平倉"
@@ -348,7 +425,10 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if peak_gain_atr >= 1.0:
+        if peak_gain_atr >= 0.5 and state['peak_net_pnl'] > 0:
+            state['armed'] = True
+        pullback_limit_atr = None
+        if state.get('armed'):
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
@@ -369,6 +449,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             # 1. 價格從最高點回踩達動態階梯門檻
             structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short')) if isinstance(snapshot, dict) else None
             structure_broken = (isinstance(structure, dict) and structure.get('intact') is False
+                                and structure.get('closed_break_confirmed') is True
                                 and not snapshot.get('reason') and not snapshot.get('fallback_used', False))
             position['atr_pullback_block_reason'] = ('WAIT_CONFIRMED_STRUCTURE_BREAK' if not structure_broken
                                                      else 'WAIT_POSITIVE_NET_PROFIT' if net <= 0 else None)
@@ -409,6 +490,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         if positive(stop):
             position.update(sl=stop,stop_loss=stop,atr_sl=stop,atr_tp=0.,tp=0.)
         reason, trigger = parabolic_reason or ladder_reason, parabolic_trigger or ladder_trigger
+        if ma3_turn and not profit_stop_active and state.get('profit_stop_policy') != 'confirmed_swing_pivots_v1':
+            reason, trigger = MA3_TURN_REASON, 'MA3_CONFIRMED_TURN'
         
         pre_veto_reason = reason
         pre_veto_trigger = trigger
@@ -427,9 +510,57 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         except Exception:
             pass
 
+        terminal_evidence = None
+        if (isinstance(snapshot, dict) and not snapshot.get('reason')
+                and not snapshot.get('fallback_used')
+                and stamp-ident[1]*1000 >= TERMINAL_MIN_RUN_MS
+                and peak_gain_atr >= TERMINAL_MIN_GAIN_ATR
+                and float(snapshot.get('closed_bar_ms') or 0) >= ident[1]*1000):
+            terminal_evidence = doji_reversal_evidence(
+                snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr)
+
+        from core.services.exits.trend_hold_evaluator import confirmed_early_reversal
+        from core.services.exits.no_profit_pressure import REASON as NO_PROFIT_REASON, no_profit_pressure_ready
+        early_profit_reversal = False
+        # Protect short-lived gains before a confirmed profitable swing line exists.
+        if (not profit_stop_active and state['peak_net_pnl'] >= .5
+                and scale > 0 and gain >= .5*scale and isinstance(snapshot,dict)
+                and not snapshot.get('reason') and not snapshot.get('fallback_used')):
+            try:
+                live_bar = math.floor(stamp/60000)*60000
+                live_open = float(snapshot['live_open'])
+                closed_atr = float(snapshot['atr'])
+                early_profit_reversal = (
+                    positive(live_open) and positive(closed_atr)
+                    and snapshot.get('closed_bar_ms') == live_bar-60000
+                    and snapshot.get('live_bar_ms') == live_bar
+                    and live_bar >= math.floor(ident[1]*1000/60000)*60000
+                    and sign*(live_open-price) >= .20*closed_atr
+                    and sign*(state['peak_price']-price) >= .20*closed_atr
+                    and confirmed_early_reversal(position,snapshot,price))
+            except (KeyError,TypeError,ValueError,OverflowError):
+                pass
+
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
-        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON):
+        elif (state.get('pending') != HARD_REASON
+              and (state.get('pending') == TERMINAL_DOJI_REASON or terminal_evidence is not None)):
+            if terminal_evidence is not None:
+                state.update(terminal_evidence)
+            state.update(pending=TERMINAL_DOJI_REASON, trigger=TERMINAL_DOJI_TRIGGER)
+            return dict(action='FULL_CLOSE', type=TERMINAL_DOJI_REASON,
+                        reason=TERMINAL_DOJI_REASON, trigger=TERMINAL_DOJI_TRIGGER, price=price)
+        elif (state.get('pending') != HARD_REASON and
+              (state.get('pending') == EARLY_PROFIT_REASON or early_profit_reversal)):
+            state.update(pending=EARLY_PROFIT_REASON,trigger=EARLY_PROFIT_REASON,early_profit_rule_version=2)
+            return dict(action='FULL_CLOSE',type=EARLY_PROFIT_REASON,
+                        reason=EARLY_PROFIT_REASON,trigger=EARLY_PROFIT_REASON,price=price)
+        elif (state.get('pending') != HARD_REASON and
+              (state.get('pending') == NO_PROFIT_REASON or
+               (not profit_stop_active and no_profit_pressure_ready(snapshot,price,sign,net)))):
+            state.update(pending=NO_PROFIT_REASON,trigger=NO_PROFIT_REASON,no_profit_rule_version=2)
+            return dict(action='FULL_CLOSE',type=NO_PROFIT_REASON,reason=NO_PROFIT_REASON,trigger=NO_PROFIT_REASON,price=price)
+        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON, MA3_TURN_REASON):
             reason, trigger = state['pending'], state.get('trigger', 'RETRY')
         else:
             if isinstance(snapshot, dict):
@@ -454,7 +585,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     from core.services.exits.trend_hold_evaluator import strong_direction_held
                     trend_held = strong_direction_held(position, snapshot, price)
                     structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short'))
-                    structure_broken = isinstance(structure, dict) and structure.get('intact') is False
+                    structure_broken = (isinstance(structure, dict) and structure.get('intact') is False
+                                        and structure.get('closed_break_confirmed') is True)
                     if mature_evidence is not None and reason != HARD_REASON and not trend_held and structure_broken:
                         reason, trigger = ABNORMAL_REASON, mature_evidence['trigger']
                         state.update(mature_evidence)
@@ -519,7 +651,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         and positive(opening) and positive(prior_atr)):
                     body = sign*(float(opening)-price)
                     try:
-                        threshold = ABNORMAL_BODY_ATR * float(prior_atr)
+                        threshold = CHANNEL_WATERFALL_BODY_ATR * float(prior_atr)
                     except NameError:
                         threshold = 1.5 * float(prior_atr)
 
@@ -529,7 +661,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
-            if reason and reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_PEAK_PULLBACK_PRESSURE'):
+            if reason and reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_PEAK_PULLBACK_PRESSURE', 'MA3_CONFIRMED_TURN'):
                 if net <= 0:
                     reason, trigger = None, None
 
@@ -538,7 +670,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 peak_exemptions = (
                     'WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
-                    'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_PEAK_MA_TURN_PRESSURE',
+                    'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_PEAK_MA_TURN_PRESSURE', 'MA3_CONFIRMED_TURN',
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'EXIT_PARABOLIC_MA3_TURN'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
@@ -576,6 +708,42 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     except Exception:
                         pass
                     reason, trigger = None, None
+
+        # Armed profit protection owns small pullbacks; emergency stops remain independent.
+        if (state.get('armed') and pullback_limit_atr is not None
+                and drawdown_atr < pullback_limit_atr
+                and not (trigger == 'MA3_CONFIRMED_TURN' and not profit_stop_active)
+                and reason != HARD_REASON and trigger not in ('WATERFALL_DROP', 'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_CATASTROPHIC_PROFIT_FLOOR')):
+            reason, trigger = None, None
+            if state.get('trigger') not in ('WATERFALL_DROP', 'EXIT_PEAK_PULLBACK_PRESSURE', 'INITIAL_ATR', 'EXIT_CATASTROPHIC_PROFIT_FLOOR'):
+                state.pop('pending', None)
+                state.pop('trigger', None)
+
+        from core.services.exits.trend_hold_evaluator import evaluate_closed_kc_hold
+        kc_hold = evaluate_closed_kc_hold(position, snapshot)
+        position['kc_hold_status'] = kc_hold
+        # Only verified continuation creates a new veto. Unknown data uses existing exit policy.
+        emergency_triggers = ('INITIAL_ATR', 'WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR')
+        if (kc_hold in ('HOLD', 'WAIT_CONFIRMATION') and reason != HARD_REASON
+                and trigger not in emergency_triggers
+                and not (trigger == 'MA3_CONFIRMED_TURN' and not profit_stop_active)):
+            reason, trigger = None, None
+            if state.get('pending') != HARD_REASON and state.get('trigger') not in emergency_triggers:
+                state.pop('pending', None)
+                state.pop('trigger', None)
+
+        # A net-positive moving stop owns ordinary pressure once established.
+        # Keep hard/emergency exits and their persisted retries independent.
+        profit_line = state.get('profit_stop_price')
+        profit_stop_active = (positive(profit_line) and
+                              estimated_net_pnl(entry,float(profit_line),qty,sign,fee,slippage)>0)
+        position['pressure_exit_suppressed'] = bool(profit_stop_active)
+        if profit_stop_active:
+            if reason != HARD_REASON and trigger not in emergency_triggers:
+                reason, trigger = None, None
+            if state.get('pending') != HARD_REASON and state.get('trigger') not in emergency_triggers:
+                state.pop('pending', None)
+                state.pop('trigger', None)
 
         if reason:
             try:

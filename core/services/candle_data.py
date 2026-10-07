@@ -82,14 +82,21 @@ def closed_entry_problem(frame):
 
 
 def entry_frame_evidence(frame):
-    """Serializable, closed-only evidence; never advances strategy state."""
+    """Serializable closed history plus explicitly labelled live breakout evidence."""
     closed = closed_entry_candles(frame)
     if closed.empty:
         return {'closed_count': 0}
     keys = ('timestamp', 'open', 'high', 'low', 'close', 'ma3', 'ma15',
-            'atr', 'kc_upper', 'kc_middle', 'kc_lower')
+            'atr', 'ma5', 'kc_upper', 'kc_middle', 'kc_lower')
     rows = [{key: float(row[key]) for key in keys if key in row}
             for _, row in closed.tail(6).iterrows()]
+    live = None
+    if len(frame) == len(closed)+1:
+        row = frame.iloc[-1]
+        live = {key: float(row[key]) for key in keys if key in row}
+        live['is_closed'] = False
+        live['reference_closed_atr'] = float(closed.iloc[-1]['atr'])
     return {'closed_count': len(closed), 'is_closed': True, 'candles': rows,
+            'live_candle': live,
             'previous5_low': float(closed['low'].iloc[-6:-1].min()) if len(closed) >= 6 else None,
             'previous5_high': float(closed['high'].iloc[-6:-1].max()) if len(closed) >= 6 else None}

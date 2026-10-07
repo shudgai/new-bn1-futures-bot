@@ -73,7 +73,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
     from core.services.strategies.outer_strategy import ck_direction
-    direction = ck_direction(closed)
+    direction_frame = closed.reset_index(drop=True).copy()
+    if live is not None:
+        direction_frame.loc[len(direction_frame)] = live
+    direction = ck_direction(direction_frame)
     if not direction:
         return wait('WAIT_VALID_DIRECTION')
 
@@ -92,9 +95,7 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if direction != side:
                 continue
                 
-            # Rule 1 & 4 - 必須在軌道內側或碰軌
-            if not (float(first.kc_lower) <= float(first.open) <= float(first.kc_upper)):
-                continue
+            # Two closed outside bodies also authorize continuation.
 
             # K1 & K2 Same color
             if sign * (float(first.close) - float(first.open)) <= 0:

@@ -664,7 +664,7 @@ def test_nonpositive_net_blocks_trailing_but_not_initial_stop(side):
     sign = 1 if side == 'LONG' else -1
     p = dict(side=side,entry_price=100.,qty=1.,open_timestamp=60.,entry_atr=1.)
     snap = dict(quote_ms=61000,reason=None)
-    snap['swing_structure_'+side.lower()]={'intact':False}
+    snap['swing_structure_'+side.lower()]={'intact':False,'closed_break_confirmed':True}
     assert evaluate_peak_trailing(p,100.+sign*2,snap,fee=.001,slippage=0.) is None
     snap['quote_ms']=61001
     assert evaluate_peak_trailing(p,100.+sign*.1,snap,fee=.001,slippage=0.) is None

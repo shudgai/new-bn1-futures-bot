@@ -123,6 +123,9 @@ def positions_with_triggers():
         raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
         merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
 
+        from core.services.exits.profit_lock_display import profit_lock_display
+        merged.update(profit_lock_display(merged, TAKER_FEE_RATE, SLIPPAGE_PCT))
+
         # --- 開倉原因 ---
         meta = getattr(engine.account, "position_meta", {}).get(symbol, {})
         merged["entry_reason"] = (
@@ -419,8 +422,9 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     payload = numpy_safe({
         "is_running": engine.is_running,
+        "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "即時破軌：原始開盤位於 KC 通道內或碰軌，最新價嚴格破軌且順向實體達前根已收線 ATR 的 0.5 倍。延續與獲利重開：CK 與 MA5 順向，最新價同時嚴格在持倉側 KC 外軌與 MA5 外側；平倉同根不重開，異常平倉須專用回踩與匹配成交。動態峰值回吐門檻為 0.60／0.50／0.40／0.35 ATR；保留初始硬止損、瀑布、成熟反轉及帳戶風控，MA 單點拐頭不直接平倉。",
+        "strategy": "浮盈價格位移達進場 ATR 的 2.0 倍才啟動 20% 淨利回吐保護。相反方向符合現行完整開倉條件時自動反向：確認平倉成功後，以原數量及原槓桿開相反倉，送單前重新驗證行情與帳戶風控；同根 K 不連續反向。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -737,6 +741,8 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "action": action,
                 "reason": trade.get("reason") or "",
                 "price": trade.get("price"),
+                "execution_action": trade.get("execution_action"),
+                "reverse_completed": trade.get("reverse_completed", False),
             })
         
         prealert = engine.pivot_prealerts.get(symbol, {})

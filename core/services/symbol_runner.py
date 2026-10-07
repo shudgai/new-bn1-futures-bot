@@ -68,6 +68,11 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if not position:
         if exit_only:
             return [], []
+        from core.services.auto_reverse import KEY, try_auto_reverse
+        reverse_ticket = getattr(engine.account, 'position_meta', {}).get(KEY, {}).get(symbol)
+        if reverse_ticket and reverse_ticket.get('phase') in ('closing', 'closed'):
+            if await try_auto_reverse(engine, symbol, frame, quote):
+                return [], []
         if symbol in getattr(engine.account, 'channel_profit_reentries', {}):
             await engine._try_profit_reentry(symbol, frame, quote, daily_halt)
             return [], []

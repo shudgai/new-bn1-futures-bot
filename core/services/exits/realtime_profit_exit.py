@@ -1,3 +1,4 @@
+from core.config import CHANNEL_WATERFALL_BODY_ATR
 """Cached-candle abnormal-body protection without REST or scan-lock waits."""
 import copy
 import math
@@ -5,7 +6,7 @@ import time
 
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
-    STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
+    STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER, TERMINAL_DOJI_TRIGGER,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
@@ -34,7 +35,18 @@ def cached_tick_indicators(frame, price, stamp):
             'ma3': float(b.get('ma3', 0)),
             'ma5': float(b.get('ma5', b.get('ma3', 0)))
         })
+    from core.services.exits.moving_profit_stop import confirmed_profit_pivots
+    snapshot['profit_pivot_candidates'] = confirmed_profit_pivots(frame)
+    from core.services.early_swing_reversal import evaluate_early_swing
+    snapshot['early_swing_reversal'] = evaluate_early_swing(frame,price)
     snapshot['history_5'] = history_bars
+    from core.services.closed_ma_cross import closed_cross_evidence
+    snapshot['closed_ma_cross'] = closed_cross_evidence(frame)
+    snapshot['kc_closed_history'] = [dict(timestamp=float(row['timestamp']), middle=float(row['kc_middle']))
+                                     for _, row in closed.iloc[-4:].iterrows()] if 'kc_middle' in closed else []
+    snapshot['closed_trend_history'] = [dict(timestamp=float(row['timestamp']),
+            ma5=float(row.get('ma5') or 0.), close=float(row['close']), atr=float(row.get('atr') or 0.))
+            for _, row in closed.iloc[-2:].iterrows()]
 
     from core.services.exits.trend_hold_evaluator import confirmed_swing_structure
     snapshot['swing_structure_long'] = confirmed_swing_structure({'side': 'LONG'}, closed, price)
@@ -77,6 +89,9 @@ def cached_tick_indicators(frame, price, stamp):
 
     if live_ms == bar and not bool(live.get('is_closed', True)) and last_ms == bar - 60000:
         # Reprice live moving averages; closed snapshots alone can mislabel a rebound.
+        if len(closed) >= 3:
+            snapshot['ma3'] = (sum(float(v) for v in closed.close.iloc[-2:]) + float(price)) / 3.
+            snapshot['last_ma3'] = float(last.get('ma3', 0.))
         if len(closed) >= 5:
             snapshot['ma5'] = (sum(float(v) for v in closed.close.iloc[-4:]) + float(price)) / 5.
             snapshot['last_ma5'] = float(last.get('ma5', 0.))
@@ -85,6 +100,8 @@ def cached_tick_indicators(frame, price, stamp):
             snapshot['last_ma15'] = float(last.get('ma15', 0.))
         snapshot['kc_middle'] = float(live.get('kc_middle', last.get('kc_middle', 0.)))
         snapshot.update(
+            kc_upper=float(live.get('kc_upper') or 0.),
+            kc_lower=float(live.get('kc_lower') or 0.),
             live_bar_ms=bar,
             closed_bar_ms=last_ms,
             atr=float(last.get('atr') or 0.),
@@ -137,6 +154,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         saved = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
         if stamp < ident[1]*1000 or (saved.get('identity') == ident and stamp < saved.get('last_ms',0)):
             return False
+        if await enforce_hard_stop(account,symbol,price):
+            return True
+        evaluation_started = time.perf_counter()
+        quote_age_at_start_ms = time.time()*1000-stamp
         old = copy.deepcopy(meta.get(STATE_KEY) or {})
         retired = any(key in source for source in (position,meta) for key in RETIRED_KEYS)
         migrate_peak_state(position, meta)
@@ -147,21 +168,27 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
         current = position[STATE_KEY]
         changed = retired or any(old.get(k) != current.get(k) for k in
-                  ('identity','peak_price','peak_net_pnl','atr','armed','pending'))
+                  ('identity','peak_price','peak_net_pnl','atr','armed','pending','ma3_turn_observation','profit_stop_price','profit_stop_triggered','profit_stop_policy',
+                   'profit_stop_source','profit_stop_pivot_ms','profit_stop_confirmed_ms','same_bar_profit_lock','structure_break_warning','structure_trend_aligned','swing_atr_profit_lock'))
         for key in STATE_KEYS:
             if key in position:
                 meta[key] = copy.deepcopy(position[key])
         if changed:
             account.save_state()
-        if await enforce_hard_stop(account,symbol,price):
-            return True
+        if hasattr(account, 'sync_moving_profit_stop'):
+            position['exchange_managed'] = True
+            if entry_m == 'CHANNEL_SWING' and (position.get('moving_profit_order') or meta.get('moving_profit_order')):
+                if hasattr(engine, '_schedule_exit_followup'):
+                    engine._schedule_exit_followup(symbol, lambda: account.sync_moving_profit_stop(symbol, price))
+        if not decision and str(position.get('entry_mode','')).upper() != 'CHANNEL_SWING' and hasattr(account, 'sync_moving_profit_stop'):
+            await account.sync_moving_profit_stop(symbol, price)
         if not decision or account.positions.get(symbol) is not position:
             return False
         
         reason = decision['type']
         trigger = decision.get('trigger', '')
         
-        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE'):
+        if entry_m == 'CHANNEL_SWING' and reason not in ('EXIT_INITIAL_ATR_HARD_STOP','EXIT_CONFIRMED_TREND_REVERSAL') and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, TERMINAL_DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE', 'MA3_CONFIRMED_TURN', 'EXIT_MOVING_PROFIT_STOP', 'CLOSED_MA5_MA15_REVERSE_CROSS', 'EXIT_EARLY_PROFIT_REVERSAL', 'EXIT_NO_PROFIT_ADVERSE_PRESSURE', 'EXIT_CONFIRMED_SWING_STRUCTURE', 'EXIT_FAILED_BREAKOUT_RECLAIM', 'EXIT_EARLY_SWING_REVERSAL', 'LIVE_STRUCTURE_BREAK', 'EXIT_CHANNEL_SAME_BAR_END', 'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL'):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)
@@ -173,8 +200,32 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
 
         account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={trigger} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
-                    f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
-        await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
-        return True
+                    f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f} '
+                    f'quote_age_at_start_ms={quote_age_at_start_ms:.1f} evaluation_ms={(time.perf_counter()-evaluation_started)*1000:.1f}', 'INFO')
+        audit=dict(confirmed_trend_exit=current.get('confirmed_trend_exit'),quote_age_at_start_ms=quote_age_at_start_ms,
+                   evaluation_ms=(time.perf_counter()-evaluation_started)*1000,swing_atr_profit_lock=current.get('swing_atr_profit_lock'),structure_break_warning=current.get('structure_break_warning'),
+                   structure_trend_aligned=current.get('structure_trend_aligned'),same_bar_profit_lock=current.get('same_bar_profit_lock'),entry_phase=(position.get('entry_snapshot') or {}).get('entry_phase'),
+                   same_bar_exit_deadline_ms=(position.get('entry_snapshot') or {}).get('same_bar_exit_deadline_ms'),
+                   reason=reason,quote_ms=stamp,price=price,peak_price=current.get('peak_price'),
+                   peak_net_pnl=current.get('peak_net_pnl'),profit_stop_price=current.get('profit_stop_price'),
+                   profit_stop_source=current.get('profit_stop_source'),entry_failure_level=position.get('entry_failure_level'),
+                   early_swing_reversal=snapshot.get('early_swing_reversal'),
+                   live_open=snapshot.get('live_open'), live_bar_ms=snapshot.get('live_bar_ms'),
+                   closed_bar_ms=snapshot.get('closed_bar_ms'), atr=snapshot.get('atr'),
+                   waterfall_body_atr=CHANNEL_WATERFALL_BODY_ATR,
+                   kc_closed_history=snapshot.get('kc_closed_history'),
+                   swing_structure=snapshot.get('swing_structure_'+position['side'].lower()),
+                   side=position['side'], entry_price=position.get('entry_price'),
+                   entry_atr=position.get('entry_atr'), initial_sl=position.get('initial_sl'),
+                   ma5=snapshot.get('ma5'), last_ma5=snapshot.get('last_ma5'),
+                   holding_exit_policy=position.get(STATE_KEY,{}).get('holding_exit_policy'),
+                   structure_break_confirmation=position.get(STATE_KEY,{}).get('structure_break_confirmation'),
+                   structure_break_threshold=position.get(STATE_KEY,{}).get('structure_break_threshold'),
+                   trend_exhaustion_warning=position.get(STATE_KEY,{}).get('trend_exhaustion_warning',False),
+                   single_body_exit_enabled=True if entry_m=='CHANNEL_SWING' else None)
+        position['exit_protection_snapshot']=audit
+        meta['exit_protection_snapshot']=audit
+        closed = await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
+        return bool(closed) if reason == 'EXIT_CONFIRMED_SWING_STRUCTURE' else True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False
