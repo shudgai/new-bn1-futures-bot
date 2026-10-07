@@ -43,6 +43,9 @@ def eligible_frame(kind, side):
             continue
         f.loc[index, ['open', 'close', 'high', 'low']] = [
             close-.03, close, close+.05, close-.05]
+    if kind == 'live':
+        f.loc[2, 'ma5'] = f.loc[4, 'ma5']
+        f.loc[3, 'ma5'] = f.loc[4, 'ma5']-.1*float(f.loc[4, 'atr'])
     if side == 'SHORT':
         old = f.copy()
         for key, source in [('open', 'open'), ('close', 'close'), ('high', 'low'),

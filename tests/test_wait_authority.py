@@ -207,16 +207,15 @@ def paper_submission_fixture(symbol, side, monkeypatch, tmp_path):
     a = paper.PaperAccount()
     a.balance = 200.
     w = WaitAuthority(a)
-    observe(w, symbol, frame(180000.), monkeypatch)
-    close = 99.8 if side == "LONG" else 100.2
-    f = frame(240000., completed_close=close)
+    observe(w, symbol, frame(540000.), monkeypatch)
+    f = qualified_submission_frame(side)
     observe(w, symbol, f, monkeypatch)
     price = 100+(1 if side == "LONG" else -1)*.5
     observe(w, symbol, f, monkeypatch, price=price, offset=2000)
     f.loc[f.index[-1], "close"] = price
     f.loc[f.index[-1], "high"] = max(100., price)
     f.loc[f.index[-1], "low"] = min(100., price)
-    f.attrs.update(entry_quote_ms=242000., entry_finality_server_ms=242000.,
+    f.attrs.update(entry_quote_ms=602000., entry_finality_server_ms=602000.,
                    entry_finality_verified=True)
     d = evaluate_entry_contract(f, account=a, symbol=symbol)
     assert d["type"] == "WAIT_LIVE_BIG_"+side
@@ -228,8 +227,25 @@ def paper_submission_fixture(symbol, side, monkeypatch, tmp_path):
     e._fresh_channel_entry_snapshot = AsyncMock(return_value=dict(frame=f, decision=d, price=price))
     e._entry_boundary_frame = AsyncMock(return_value=f)
     signal = dict(side=side, entry_mode="CHANNEL_SWING", signal_code=d["type"],
-                  candidate_bar_id=240000., score=100)
+                  candidate_bar_id=600000., score=100)
     return a, w, f, d, e, signal
+
+
+def qualified_submission_frame(side):
+    sign = 1 if side == "LONG" else -1
+    f = frame(600000., completed_close=100-sign*.2)
+    f.loc[f.index[0], ["open", "close", "high", "low"]] = [
+        100-sign*.31, 100-sign*.3, 100-sign*.3+.02, 100-sign*.3-.02]
+    prefix = []
+    for i in range(4):
+        c = 100-sign*(.7-i*.1)
+        prefix.append(dict(timestamp=240000.+i*60000., open=c-sign*.01,
+                           close=c, high=c+.02, low=c-.02, atr=1., is_closed=True))
+    f = pd.concat([pd.DataFrame(prefix), f], ignore_index=True)
+    f["kc_middle"] = 98. if side == "LONG" else 102.
+    f["ma5"] = 100.
+    f.loc[3:5, "ma5"] = [100., 100-sign*.1, 100-sign*.05]
+    return f
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
@@ -246,7 +262,7 @@ def test_paper_engine_firewall_shared_lock_claim_fill_and_persistence(symbol, si
     asyncio.run(run())
     assert len([t for t in a.trades if t["action"] == "OPEN_"+side]) == 1
     assert a.positions[symbol]["margin"] == pytest.approx(e._half_wallet_entry_margin(200., 200., 5.))
-    assert a.position_meta[STATE_KEY][symbol]["claims"]["240000"]["phase"] == "FILLED"
+    assert a.position_meta[STATE_KEY][symbol]["claims"]["600000"]["phase"] == "FILLED"
     restored = paper.PaperAccount()
     assert restored.positions[symbol]["entry_snapshot"]["wait_trigger_id"] == d["wait_trigger_id"]
     assert "setup" not in restored.position_meta[STATE_KEY][symbol]
@@ -315,11 +331,14 @@ def test_restart_reconciles_unknown_claim_only_with_matching_position(monkeypatc
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_same_side_authorities_produce_one_wait_decision(side, monkeypatch):
     import core.services.entry_contract as contract
-    a, w = armed("CAP/USDT", side, monkeypatch)
-    f = frame(240000.)
+    a = account()
+    w = WaitAuthority(a)
+    observe(w, "CAP/USDT", frame(540000.), monkeypatch)
+    f = qualified_submission_frame(side)
+    observe(w, "CAP/USDT", f, monkeypatch)
     price = 100+(1 if side == "LONG" else -1)*.5
     observe(w, "CAP/USDT", f, monkeypatch, price=price, offset=2000)
-    f.attrs["entry_quote_ms"] = 242000.
+    f.attrs["entry_quote_ms"] = 602000.
     monkeypatch.setattr(contract, "_evaluate_strategy_contract",
                         lambda *args, **kwargs: {"side": side})
     d = contract.evaluate_entry_contract(f, price, account=a, symbol="CAP/USDT")
@@ -366,7 +385,7 @@ def test_four_paper_paths_safety_faults_never_open(symbol, side, fault, monkeypa
         a.balance = 10.
         monkeypatch.setattr(a, "get_available_balance", lambda: 1.)
     elif fault == "stale":
-        monkeypatch.setattr("time.time", lambda: 249.)
+        monkeypatch.setattr("time.time", lambda: 609.)
     elif fault == "persistence":
         monkeypatch.setattr(paper.os, "fsync", Mock(side_effect=OSError("disk sync failed")))
     assert not asyncio.run(e._place_structured_entry(symbol, signal, d["price"]))
@@ -390,7 +409,7 @@ def test_engine_interrupted_submit_quarantines_all_new_entries(symbol, side, mon
 
     monkeypatch.setattr(a, "open_position", interrupted)
     assert not asyncio.run(e._place_structured_entry(symbol, signal, d["price"]))
-    assert a.position_meta[STATE_KEY][symbol]["claims"]["240000"]["phase"] == "UNKNOWN"
+    assert a.position_meta[STATE_KEY][symbol]["claims"]["600000"]["phase"] == "UNKNOWN"
     assert evaluate_entry_contract(f, account=a, symbol=symbol) is None
     assert not a.positions and not a.trades
 
@@ -418,10 +437,10 @@ def test_live_quote_crossing_schedules_entry_without_candle_close(symbol, side, 
     e._channel_exit_frames = {symbol: f}
     sign = 1 if side == "LONG" else -1
     assert observe(w, symbol, f, monkeypatch, price=100+sign*.49, offset=2500) is None
-    monkeypatch.setattr("time.time", lambda: 243.)
+    monkeypatch.setattr("time.time", lambda: 603.)
 
     async def run():
-        e._observe_channel_entry_quote(symbol, d["price"], 243000.)
+        e._observe_channel_entry_quote(symbol, d["price"], 603000.)
         tasks = list(e._exit_followup_tasks.values())
         assert len(tasks) == 1
         await asyncio.gather(*tasks)
@@ -528,16 +547,16 @@ def test_two_symbols_concurrent_wait_share_budget_without_state_contamination(
     a, w, cap_frame, cap_decision, e, cap_signal = paper_submission_fixture(
         "CAP/USDT", cap_side, monkeypatch, tmp_path)
     symbol = "龙虾/USDT"
-    observe(w, symbol, frame(180000.), monkeypatch)
+    observe(w, symbol, frame(540000.), monkeypatch)
     sign = 1 if lobster_side == "LONG" else -1
-    lobster_frame = frame(240000., completed_close=100-sign*.2)
+    lobster_frame = qualified_submission_frame(lobster_side)
     observe(w, symbol, lobster_frame, monkeypatch)
     quote = 100+sign*.5
     observe(w, symbol, lobster_frame, monkeypatch, price=quote, offset=2000)
     lobster_frame.loc[lobster_frame.index[-1], "close"] = quote
     lobster_frame.loc[lobster_frame.index[-1], "high"] = max(100., quote)
     lobster_frame.loc[lobster_frame.index[-1], "low"] = min(100., quote)
-    lobster_frame.attrs.update(entry_quote_ms=242000., entry_finality_server_ms=242000.,
+    lobster_frame.attrs.update(entry_quote_ms=602000., entry_finality_server_ms=602000.,
                                entry_finality_verified=True)
     lobster_decision = evaluate_entry_contract(lobster_frame, account=a, symbol=symbol)
     frames = {symbol: lobster_frame, "CAP/USDT": cap_frame}
@@ -551,7 +570,8 @@ def test_two_symbols_concurrent_wait_share_budget_without_state_contamination(
     e._fresh_channel_entry_snapshot = snapshot
     e._entry_boundary_frame = AsyncMock(side_effect=lambda symbol: frames[symbol])
     lobster_signal = dict(side=lobster_side, entry_mode="CHANNEL_SWING",
-                          signal_code=lobster_decision["type"], candidate_bar_id=240000., score=100)
+                          signal_code=lobster_decision["type"],
+                          candidate_bar_id=600000., score=100)
 
     async def run():
         results = await asyncio.gather(
@@ -566,5 +586,5 @@ def test_two_symbols_concurrent_wait_share_budget_without_state_contamination(
     assert a.positions[symbol]["position_uuid"] != a.positions["CAP/USDT"]["position_uuid"]
     assert lobster_decision["wait_trigger_id"] != cap_decision["wait_trigger_id"]
     assert a.get_available_balance() >= 0.
-    assert all(a.position_meta[STATE_KEY][s]["claims"]["240000"]["phase"] == "FILLED"
+    assert all(a.position_meta[STATE_KEY][s]["claims"]["600000"]["phase"] == "FILLED"
                for s in (symbol, "CAP/USDT"))

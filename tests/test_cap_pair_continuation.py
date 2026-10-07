@@ -40,6 +40,10 @@ def next_frame(f):
     row['high'] = max(row['high'], row['close'])
     row['low'] = min(row['low'], row['close'])
     f.loc[index] = row
+    sign = 1 if row['close'] > 100 else -1
+    latest = float(f.iloc[-2].ma5)
+    f.loc[f.index[-4], 'ma5'] = latest
+    f.loc[f.index[-3], 'ma5'] = latest-sign*.1*float(f.iloc[-2].atr)
     return f
 
 
@@ -135,6 +139,28 @@ def test_missed_or_closed_entry_continues_without_new_two_bar_pair(side, had_pos
     assert evaluate_continuation_entry(f, float(f.iloc[-1].close), symbol='CAP/USDT') is None
     # Last K2's open was already outside, so this is not a new true breakout.
     assert evaluate_entry_contract(f, symbol='CAP/USDT') is None
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_continuation_origin_cannot_replace_fresh_swing_event(side, monkeypatch):
+    from core.services.entry_contract import _evaluate_authority_contract
+    a = account()
+    f = eligible_frame('pair', side)
+    observe(a, f, monkeypatch)
+    f = advance(a, f, monkeypatch)
+    sign = 1 if side == 'LONG' else -1
+    latest = float(f.iloc[-2].ma5)
+    atr = float(f.iloc[-2].atr)
+    f.loc[f.index[-4], 'ma5'] = latest-sign*.2*atr
+    source = _evaluate_authority_contract(f, account=a, symbol='CAP/USDT')
+    assert source and source['type'] == 'CAP_KC_CONTINUATION_'+side
+    diagnostics = {}
+    assert evaluate_entry_contract(f, account=a, symbol='CAP/USDT',
+                                   diagnostics=diagnostics) is None
+    assert diagnostics['reason'] == 'WAIT_FRESH_MA5_PIVOT_OR_CROSS'
+    assert evaluate_continuation_entry(f, float(f.iloc[-1].close),
+                                       account=a, symbol='CAP/USDT') is None
+    assert a.position_meta[STATE_KEY]['CAP/USDT']['origin']
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

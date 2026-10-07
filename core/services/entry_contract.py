@@ -18,6 +18,7 @@ from core.services.closed_ma_cross import (CODES as CLOSED_MA_CROSS_CODES,
 from core.services.candle_data import closed_entry_candles
 from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
 from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_EVIDENCE_KEYS
+from core.services.swing_entry_gate import evaluate_swing_entry_gate, EVIDENCE_KEYS as SWING_EVIDENCE_KEYS
 from core.services.cap_breakout_entry import (
     SYMBOL as CAP_SYMBOL, CODES as CAP_CONTINUATION_CODES,
     EVIDENCE_KEYS as CAP_EVIDENCE_KEYS, continuation_decision,
@@ -60,6 +61,7 @@ ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
 ENTRY_EVIDENCE_KEYS += CHOP_EVIDENCE_KEYS
 ENTRY_EVIDENCE_KEYS += CAP_EVIDENCE_KEYS
 ENTRY_EVIDENCE_KEYS += ('wait_trigger_id', 'wait_setup', 'wait_live_open', 'wait_fixed_atr')
+ENTRY_EVIDENCE_KEYS += SWING_EVIDENCE_KEYS
 
 
 def _entry_close_series(closed):
@@ -970,7 +972,7 @@ def _evaluate_strategy_contract(frame, price=None, code=None, *, account=None,
         return reject('WAIT_VALID_ENTRY_DATA')
 
 
-def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+def _evaluate_authority_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None, evaluate_held=False):
     from core.services.wait_authority import STATE_KEY as WAIT_STATE_KEY
     wait_state = getattr(account, "position_meta", {}).get(WAIT_STATE_KEY, {}).get(symbol, {})
@@ -1010,7 +1012,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             or symbol in getattr(account, "pending_limit_orders", {})):
         return reject("WAIT_POSITION_OR_PENDING_ORDER_BLOCK")
     sign = 1 if wait["side"] == "LONG" else -1
-    # Defense sizing is retained; no KC/MA/pattern qualifies this authority.
+    # WAIT forms independently; the Owner-approved shared swing gate follows.
     closed = closed_entry_candles(frame)
     defensive = closed["low" if sign == 1 else "high"].tail(5).astype(float)
     if not np.isfinite(defensive).all() or not defensive.gt(0).all():
@@ -1024,3 +1026,20 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         diagnostics.clear()
         diagnostics["reason"] = wait["type"]
     return wait
+
+
+def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+                            symbol="", diagnostics=None, evaluate_held=False):
+    decision = _evaluate_authority_contract(
+        frame, price, code, account=account, symbol=symbol,
+        diagnostics=diagnostics, evaluate_held=evaluate_held)
+    if decision is None:
+        return None
+    status, evidence = evaluate_swing_entry_gate(frame, decision["side"])
+    if evidence is None:
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics["reason"] = status
+        return None
+    decision.update(evidence)
+    return decision

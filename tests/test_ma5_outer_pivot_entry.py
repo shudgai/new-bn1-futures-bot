@@ -199,6 +199,9 @@ def test_inside_return_authority_cannot_coexist_with_outside_breakout(side, requ
                             ('kc_lower', 'kc_upper'), ('kc_middle', 'kc_middle')]:
             f[key] = 200.-old[source]
     opposite = 'SHORT' if side == 'LONG' else 'LONG'
+    sign = 1 if opposite == 'LONG' else -1
+    f.loc[2, 'ma5'] = f.loc[4, 'ma5']
+    f.loc[3, 'ma5'] = f.loc[4, 'ma5']-sign*.1*float(f.loc[4, 'atr'])
     code = (PHASE+'_'+side if requested == 'pivot' else
             'KC_LIVE_BODY_BREAKOUT_'+opposite if requested == 'breakout' else
             'KC_2BAR_CONFIRM_'+opposite if requested == 'pair' else None)
