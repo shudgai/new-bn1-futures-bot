@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v50-shared-ten-bar-pivot-live-expiry'
+VERSION = 'entry-gate-20261007-v51-cap-true-live-breakout-ma5'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 

@@ -62,16 +62,12 @@ def test_cap_only_two_closed_bars_and_third_live(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('kind', ['live', 'pivot'])
-def test_cap_disables_live_but_both_symbols_retain_independent_pivot(side, kind):
+def test_both_symbols_share_true_live_breakout_and_independent_pivot(side, kind):
     f = eligible_frame(kind, side)
     diagnostics = {}
     result = evaluate_entry_contract(f, code=authority_code(kind, side), symbol='CAP/USDT',
                                     diagnostics=diagnostics)
-    if kind == 'live':
-        assert result is None
-        assert diagnostics['reason'] == 'BLOCKED_CAP_LIVE_BREAKOUT_DISABLED'
-    else:
-        assert result and result['type'] == authority_code(kind, side)
+    assert result and result['type'] == authority_code(kind, side)
     assert evaluate_entry_contract(f, code=authority_code(kind, side), symbol='龙虾/USDT')
 
 
@@ -209,11 +205,11 @@ def test_firewall_rechecks_ma5_and_origin_before_continuation(side, monkeypatch)
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('phase', ['pair', 'continuation'])
+@pytest.mark.parametrize('phase', ['live', 'pair', 'continuation'])
 @pytest.mark.parametrize('direction', ['flat', 'opposite'])
 def test_cap_ma5_direction_cannot_be_bypassed(side, phase, direction, monkeypatch):
     a = account()
-    f = eligible_frame('pair', side)
+    f = eligible_frame('live' if phase == 'live' else 'pair', side)
     observe(a, f, monkeypatch)
     if phase == 'continuation':
         f = advance(a, f, monkeypatch)
@@ -287,7 +283,7 @@ def test_ma5_retreat_blocks_but_does_not_cancel_outside_origin(side, monkeypatch
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('phase', ['pair', 'continuation'])
+@pytest.mark.parametrize('phase', ['live', 'pair', 'continuation'])
 def test_mock_testnet_cap_order_uses_current_authority(side, phase, monkeypatch, tmp_path):
     from decimal import Decimal, ROUND_DOWN
     from core.testnet_account import BinanceTestnetAccount
@@ -302,7 +298,7 @@ def test_mock_testnet_cap_order_uses_current_authority(side, phase, monkeypatch,
         amount_to_precision=lambda symbol, qty: str(Decimal(qty).quantize(
             Decimal('.001'), rounding=ROUND_DOWN)))
     a = BinanceTestnetAccount(exchange, state_file=str(tmp_path/'testnet.json'))
-    f = eligible_frame('pair', side)
+    f = eligible_frame('live' if phase == 'live' else 'pair', side)
     observe(a, f, monkeypatch)
     if phase == 'continuation':
         f = advance(a, f, monkeypatch)
@@ -314,7 +310,8 @@ def test_mock_testnet_cap_order_uses_current_authority(side, phase, monkeypatch,
     a._send_order = AsyncMock(return_value=dict(id='mock-cap-order', average=price))
     a._finalize_new_position = AsyncMock(return_value=True)
     a.entry_frame_provider = AsyncMock(return_value=f)
-    code = 'KC_2BAR_CONFIRM_'+side if phase == 'pair' else 'CAP_KC_CONTINUATION_'+side
+    code = ('KC_LIVE_BODY_BREAKOUT_' if phase == 'live' else
+            'KC_2BAR_CONFIRM_' if phase == 'pair' else 'CAP_KC_CONTINUATION_')+side
     context = dict(entry_mode='CHANNEL_SWING', entry_signal_code=code,
                    channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
     assert asyncio.run(a.open_position('CAP/USDT', side, price, 99., 0., 0.,
@@ -340,7 +337,7 @@ def test_fresh_pair_after_cancellation_can_rearm(side, monkeypatch):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('phase', ['pair', 'continuation'])
+@pytest.mark.parametrize('phase', ['live', 'pair', 'continuation'])
 @pytest.mark.parametrize('concurrent', [False, True])
 def test_real_paper_cap_entry_uses_shared_submit_lock(side, phase, concurrent, monkeypatch, tmp_path):
     import core.paper_account as paper
@@ -350,7 +347,7 @@ def test_real_paper_cap_entry_uses_shared_submit_lock(side, phase, concurrent, m
     monkeypatch.setattr(paper, 'STATE_FILE', str(tmp_path/'paper.json'))
     a = paper.PaperAccount()
     a.balance = 200.
-    f = eligible_frame('pair', side)
+    f = eligible_frame('live' if phase == 'live' else 'pair', side)
     observe(a, f, monkeypatch)
     if phase == 'continuation':
         f = advance(a, f, monkeypatch)
@@ -366,5 +363,6 @@ def test_real_paper_cap_entry_uses_shared_submit_lock(side, phase, concurrent, m
     assert len(a.trades) == 1
     assert a.positions['CAP/USDT']['side'] == side
     assert a.trades[0]['entry_snapshot']['signal_code'] == (
-        'KC_2BAR_CONFIRM_'+side if phase == 'pair' else 'CAP_KC_CONTINUATION_'+side)
+        ('KC_LIVE_BODY_BREAKOUT_' if phase == 'live' else
+         'KC_2BAR_CONFIRM_' if phase == 'pair' else 'CAP_KC_CONTINUATION_')+side)
     assert a.positions['CAP/USDT']['margin'] > 99.

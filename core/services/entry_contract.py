@@ -744,9 +744,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
     if code is not None and code not in ENTRY_CODES:
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
     cap = symbol == CAP_SYMBOL
-    if (cap and code is not None and code not in
-            ({'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'} | CAP_CONTINUATION_CODES | MA5_PIVOT_CODES)):
-        return reject('BLOCKED_CAP_LIVE_BREAKOUT_DISABLED')
     if not cap and code in CAP_CONTINUATION_CODES:
         return reject('BLOCKED_CAP_AUTHORITY_WRONG_SYMBOL')
     if not evaluate_held and account is not None and symbol in getattr(account, "positions", {}):
@@ -811,7 +808,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if account is not None and symbol in getattr(account, 'positions', {}):
             pivot_decision = None
         breakout_code = code if code not in MA5_PIVOT_CODES else None
-        fast_side = None if cap else live_body_breakout_side(frame, quote)
+        fast_side = live_body_breakout_side(frame, quote)
         fast_code = 'KC_LIVE_BODY_BREAKOUT_' + fast_side if fast_side else None
         if pivot_decision and fast_side and fast_side != pivot_decision['side']:
             fast_sign = 1 if fast_side == 'LONG' else -1
