@@ -517,3 +517,54 @@ def test_four_invalid_completed_candles_suspend_without_clearing_wait(symbol, si
     assert observe(w, symbol, f, monkeypatch, price=100+sign*.5) is None
     assert a.position_meta[STATE_KEY][symbol]["side"] == side
     assert a.position_meta[STATE_KEY][symbol]["status"] == "WAIT_DATA_SUSPENDED"
+
+
+@pytest.mark.parametrize("lobster_side,cap_side", [
+    ("LONG", "SHORT"), ("SHORT", "LONG"), ("LONG", "LONG"), ("SHORT", "SHORT"),
+])
+def test_two_symbols_concurrent_wait_share_budget_without_state_contamination(
+        lobster_side, cap_side, monkeypatch, tmp_path):
+    from core.services.entry_contract import evaluate_entry_contract
+    a, w, cap_frame, cap_decision, e, cap_signal = paper_submission_fixture(
+        "CAP/USDT", cap_side, monkeypatch, tmp_path)
+    symbol = "龙虾/USDT"
+    observe(w, symbol, frame(180000.), monkeypatch)
+    sign = 1 if lobster_side == "LONG" else -1
+    lobster_frame = frame(240000., completed_close=100-sign*.2)
+    observe(w, symbol, lobster_frame, monkeypatch)
+    quote = 100+sign*.5
+    observe(w, symbol, lobster_frame, monkeypatch, price=quote, offset=2000)
+    lobster_frame.loc[lobster_frame.index[-1], "close"] = quote
+    lobster_frame.loc[lobster_frame.index[-1], "high"] = max(100., quote)
+    lobster_frame.loc[lobster_frame.index[-1], "low"] = min(100., quote)
+    lobster_frame.attrs.update(entry_quote_ms=242000., entry_finality_server_ms=242000.,
+                               entry_finality_verified=True)
+    lobster_decision = evaluate_entry_contract(lobster_frame, account=a, symbol=symbol)
+    frames = {symbol: lobster_frame, "CAP/USDT": cap_frame}
+    e.tickers[symbol] = quote
+
+    async def snapshot(symbol, *args, **kwargs):
+        f = frames[symbol]
+        d = evaluate_entry_contract(f, account=a, symbol=symbol)
+        return dict(frame=f, decision=d, price=float(f.iloc[-1].close))
+
+    e._fresh_channel_entry_snapshot = snapshot
+    e._entry_boundary_frame = AsyncMock(side_effect=lambda symbol: frames[symbol])
+    lobster_signal = dict(side=lobster_side, entry_mode="CHANNEL_SWING",
+                          signal_code=lobster_decision["type"], candidate_bar_id=240000., score=100)
+
+    async def run():
+        results = await asyncio.gather(
+            e._place_structured_entry("CAP/USDT", cap_signal, cap_decision["price"]),
+            e._place_structured_entry(symbol, lobster_signal, quote))
+        assert results == [True, True]
+    asyncio.run(run())
+    assert set(a.positions) == {"CAP/USDT", symbol}
+    assert len(a.trades) == 2
+    assert a.positions[symbol]["side"] == lobster_side
+    assert a.positions["CAP/USDT"]["side"] == cap_side
+    assert a.positions[symbol]["position_uuid"] != a.positions["CAP/USDT"]["position_uuid"]
+    assert lobster_decision["wait_trigger_id"] != cap_decision["wait_trigger_id"]
+    assert a.get_available_balance() >= 0.
+    assert all(a.position_meta[STATE_KEY][s]["claims"]["240000"]["phase"] == "FILLED"
+               for s in (symbol, "CAP/USDT"))
