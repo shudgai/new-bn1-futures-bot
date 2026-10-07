@@ -459,7 +459,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。保留 KC／WAIT 候選，但所有入口都須通過六根已收線盤整檢查、最新已收線 MA5 順向位移至少 0.05 ATR，以及該根新確認的 MA5 峰谷或 MA5／MA15 同向交叉；僅緊接的當根即時 K 可評估，不沿用舊事件。持倉 MA5 進場後峰谷先到持倉側 KC 外軌，再真正反向且 MA5 回退至少 0.10 ATR、價格回退至少 0.15 ATR 才平倉；通道內小轉向及 KC 單獨反向不平。帳戶硬止損、瀑布與手動平倉保留，不自動反手。所有入口均須通過送單安全 Gate。",
+        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。保留 KC／WAIT 候選；有效即時破軌與兩根確認破軌略過六根盤整數值限制，WAIT、延續與其他入口仍須通過盤整檢查。所有入口均保留行情有效性、最新已收線 MA5 順向位移至少 0.05 ATR，以及該根新確認的 MA5 峰谷或 MA5／MA15 同向交叉；僅緊接的當根即時 K 可評估，不沿用舊事件。持倉 MA5 進場後峰谷先到持倉側 KC 外軌，再真正反向且 MA5 回退至少 0.10 ATR、價格回退至少 0.15 ATR 才平倉；通道內小轉向及 KC 單獨反向不平。帳戶硬止損、瀑布與手動平倉保留，不自動反手。所有入口均須通過送單安全 Gate。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

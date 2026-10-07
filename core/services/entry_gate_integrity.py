@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v55-shared-swing-entry'
+VERSION = 'entry-gate-20261007-v56-breakout-chop-exemption'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 

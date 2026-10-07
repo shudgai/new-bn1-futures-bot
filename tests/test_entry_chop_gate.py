@@ -87,13 +87,18 @@ def overlapping_history(f):
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('kind', ['live', 'pair', 'pivot'])
-def test_overlapping_history_blocks_every_authority(symbol, side, kind):
+def test_overlapping_history_exempts_only_valid_breakouts(symbol, side, kind):
     f = eligible_frame(kind, side)
     overlapping_history(f)
     diagnostics = {}
-    assert evaluate_entry_contract(f, symbol=symbol, code=authority_code(kind, side),
-                                   diagnostics=diagnostics) is None
-    assert diagnostics['reason'] == 'BLOCKED_CHOP_BODY_OVERLAP'
+    result = evaluate_entry_contract(f, symbol=symbol, code=authority_code(kind, side),
+                                    diagnostics=diagnostics)
+    if kind == 'pivot':
+        assert result is None
+        assert diagnostics['reason'] == 'BLOCKED_CHOP_BODY_OVERLAP'
+    else:
+        assert result and result['chop_limits_exempt'] is True
+        assert result['chop_mean_overlap'] > .50
 
 
 def metric_frame(closes):
@@ -200,5 +205,9 @@ def test_firewall_revokes_cached_entry_on_new_chop_history(side, symbol, kind, m
     asyncio.run(validate_account_entry(account, symbol, side, context))
     cached = copy.deepcopy(context)
     overlapping_history(f)
-    with pytest.raises(ValueError, match='BLOCKED_CHOP_BODY_OVERLAP'):
+    if kind == 'pivot':
+        with pytest.raises(ValueError, match='BLOCKED_CHOP_BODY_OVERLAP'):
+            asyncio.run(validate_account_entry(account, symbol, side, cached))
+    else:
         asyncio.run(validate_account_entry(account, symbol, side, cached))
+        assert cached['entry_snapshot']['chop_limits_exempt'] is True

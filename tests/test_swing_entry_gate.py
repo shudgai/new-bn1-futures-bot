@@ -70,7 +70,7 @@ def test_invalid_or_expired_swing_never_passes(fault):
     elif fault == "missing_ma5":
         f = f.drop(columns="ma5")
     elif fault == "gap":
-        f.loc[14, "timestamp"] -= 60000.
+        f.loc[14, "timestamp"] -= 30000.
     elif fault == "unclosed":
         f.loc[14, "is_closed"] = False
     else:
@@ -144,3 +144,53 @@ def test_four_wait_paths_final_firewall_revalidation_and_claim_consumption(
     else:
         assert state["claims"]["600000"]["phase"] == "FILLED"
         assert a.positions[symbol]["entry_snapshot"]["swing_event"] == "MA5_PIVOT"
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("prefix", ["KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_",
+                                  "WAIT_LIVE_BIG_", "CAP_KC_CONTINUATION_"])
+def test_chop_exemption_uses_actual_authority_not_requested_code(symbol, side, prefix, monkeypatch):
+    import core.services.entry_contract as contract
+    actual_code = prefix+side
+    monkeypatch.setattr(contract, "_evaluate_authority_contract",
+                        lambda *a, **k: dict(action="ENTER", side=side, type=actual_code))
+    f = swing_frame(side)
+    f.loc[:15, ["open", "close", "high", "low"]] = [100., 100., 101., 99.]
+    diagnostics = {}
+    result = evaluate_entry_contract(f, symbol=symbol, code="KC_LIVE_BODY_BREAKOUT_"+side,
+                                    diagnostics=diagnostics)
+    if prefix in ("KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_"):
+        assert result and result["chop_limits_exempt"] is True
+        assert result["chop_efficiency"] == 0.
+        assert result["chop_mean_overlap"] == 1.
+    else:
+        assert result is None and diagnostics["reason"] == "BLOCKED_CHOP_LOW_EFFICIENCY"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("prefix", ["KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_"])
+@pytest.mark.parametrize("fault", ["flat_ma5", "no_event", "gap", "invalid_ohlc", "history"])
+def test_breakout_exemption_preserves_fresh_swing_and_market_validation(side, prefix, fault):
+    f = swing_frame(side)
+    if fault == "flat_ma5":
+        f.loc[15, "ma5"] = f.loc[14, "ma5"]
+    elif fault == "no_event":
+        sign = 1 if side == "LONG" else -1
+        f.loc[13, "ma5"] = f.loc[14, "ma5"]-sign*.1
+        f.loc[15, ["open", "close", "high", "low"]] = [100., 100., 101., 99.]
+    elif fault == "gap":
+        f.loc[14, "timestamp"] -= 30000.
+    elif fault == "invalid_ohlc":
+        f.loc[14, "low"] = 200.
+    else:
+        f = f.iloc[-6:].copy()
+    status, evidence = evaluate_swing_entry_gate(f, side, authority_code=prefix+side)
+    assert evidence is None
+    assert status == {
+        "flat_ma5": "BLOCKED_SWING_FLAT_OR_OPPOSITE_MA5",
+        "no_event": "WAIT_FRESH_MA5_PIVOT_OR_CROSS",
+        "gap": "BLOCKED_CHOP_CANDLE_IDENTITY",
+        "invalid_ohlc": "BLOCKED_CHOP_MARKET_DATA",
+        "history": "BLOCKED_CHOP_HISTORY",
+    }[fault]
