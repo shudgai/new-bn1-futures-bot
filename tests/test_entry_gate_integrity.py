@@ -19,7 +19,7 @@ def stable_gate_test_clock(monkeypatch):
 def ready(side='LONG'):
     f=frame(side);now=int(time.time()//60)*60000
     sign=1 if side=='LONG' else -1
-    q=float(f.iloc[-1].open)+sign*1.2
+    q=float(f.iloc[-1]['kc_upper' if sign==1 else 'kc_lower'])+sign*.4*float(f.iloc[-2].atr)
     f.loc[5,'close']=q;f.loc[5,'high']=max(q,float(f.loc[5,'open']))+.01;f.loc[5,'low']=min(q,float(f.loc[5,'open']))-.01
     f['timestamp']+=now-f.iloc[-1].timestamp
     f.attrs.update(entry_finality_verified=True,entry_finality_server_ms=time.time()*1000)

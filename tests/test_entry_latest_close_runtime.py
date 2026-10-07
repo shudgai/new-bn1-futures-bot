@@ -1,27 +1,34 @@
-"""Current three-closed-bar policy must return a valid signal, not NameError."""
-import pandas as pd
+"""Legal live breakout signals retain the latest completed candle price."""
 import pytest
 from core.services.entry_contract import evaluate_entry_contract
+from test_lobster_cap_gates import frame
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_current_three_bar_signal_has_latest_closed_price(side):
-    rows=[]
-    for i,(opening,close,closed) in enumerate([(100.,100.2,True),(101.,101.5,True),
-                                             (101.5,101.8,True),(101.8,102.1,True),
-                                             (102.1,102.15,False)]):
-        rows.append(dict(timestamp=60000*(i+1),open=opening,close=close,
-                         high=max(opening,close)+.01,low=min(opening,close)-.01,
-                         atr=1.,kc_upper=101.4,kc_middle=100.,kc_lower=98.6,
-                         ma3=101.,ma5=101.,ma15=100.,is_closed=closed))
-    f=pd.DataFrame(rows)
-    if side=='SHORT':
-        original=f.copy()
-        for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
-                    ('kc_upper','kc_lower'),('kc_lower','kc_upper'),('kc_middle','kc_middle'),
-                    ('ma3','ma3'),('ma5','ma5'),('ma15','ma15')]:
-            f[a]=200-original[b]
-    result=evaluate_entry_contract(f)
-    assert result is not None
+@pytest.mark.parametrize('distance_atr', [.4, .5])
+def test_live_breakout_signal_has_latest_closed_price(side, distance_atr):
+    f=frame(side);sign=1 if side=='LONG' else -1
+    edge=float(f.iloc[-1]['kc_upper' if sign==1 else 'kc_lower'])
+    q=edge+sign*distance_atr*float(f.iloc[-2].atr)
+    f.loc[5,'close']=q;f.loc[5,'high']=max(q,float(f.loc[5,'open']))+.01;f.loc[5,'low']=min(q,float(f.loc[5,'open']))-.01
+    diagnostics={}
+    result=evaluate_entry_contract(f,diagnostics=diagnostics)
+    assert result is not None, diagnostics
     assert result['side']==side
+    assert result['type']=='KC_LIVE_BODY_BREAKOUT_'+side
+    assert result['price']==q
     assert result['close_price']==float(f.iloc[-2].close)
+    assert result['close_price']!=q
+    assert result['kc_distance_atr']==pytest.approx(distance_atr)
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('distance_atr', [.500001, 1.])
+def test_live_breakout_over_chase_limit_is_rejected(side, distance_atr):
+    f=frame(side);sign=1 if side=='LONG' else -1
+    edge=float(f.iloc[-1]['kc_upper' if sign==1 else 'kc_lower'])
+    q=edge+sign*distance_atr*float(f.iloc[-2].atr)
+    f.loc[5,'close']=q;f.loc[5,'high']=max(q,float(f.loc[5,'open']))+.01;f.loc[5,'low']=min(q,float(f.loc[5,'open']))-.01
+    diagnostics={}
+    assert evaluate_entry_contract(f,diagnostics=diagnostics) is None
+    assert diagnostics['reason']=='BLOCKED_OUTSIDE_RAIL_CHASE_OVER_0_5_ATR'

@@ -55,8 +55,9 @@ def test_same_bar_successful_close_can_reverse(side):
 
 
 def test_half_wallet_and_fee_cap():
-    assert TradingEngine._half_wallet_entry_margin(100.,100.,5.)==50.
-    assert TradingEngine._half_wallet_entry_margin(100.,20.,5.)<20.
+    from core.config import TAKER_FEE_RATE
+    assert TradingEngine._half_wallet_entry_margin(100.,100.,5.)==pytest.approx(50./(1+5*TAKER_FEE_RATE))
+    assert TradingEngine._half_wallet_entry_margin(100.,20.,5.)==0.
     assert TradingEngine._half_wallet_entry_margin(math.nan,100.,5.)==0.
 
 

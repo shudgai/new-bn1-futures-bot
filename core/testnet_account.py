@@ -727,7 +727,8 @@ class BinanceTestnetAccount:
         balance_rows = await self.exchange.fapiPrivateV2GetBalance()
         usdt = next((row for row in balance_rows if row.get("asset") == "USDT"), {})
         self.balance = float(usdt.get("balance") or 0.0)
-        self.available_balance = float(usdt.get("availableBalance") or self.balance)
+        self.available_balance = float(
+            usdt["availableBalance"] if usdt.get("availableBalance") is not None else self.balance)
         self._check_daily_reset()
 
         raw_positions = await self.exchange.fapiPrivateV2GetPositionRisk()
@@ -2250,7 +2251,8 @@ class BinanceTestnetAccount:
         if entry_mode == 'CHANNEL_SWING' and entry_decision.get('structure_risk_stop') is not None:
             from core.services.structure_risk_sizing import structure_risk_plan
             plan=structure_risk_plan(price,side,atr,entry_decision['structure_risk_stop'],
-                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT)
+                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT,
+                                     preserve_margin=True)
             amount_usdt=plan.pop('amount');structural_stop=plan.pop('stop')
             entry_context.update(plan)
         from core.services.order_sizing import calculate_order_qty, raw_order_qty
@@ -2468,6 +2470,11 @@ class BinanceTestnetAccount:
             # 時用真實 qty 反推的金額對不上（實測 SUI/USDT 07/29 03:20 這筆
             # 差了 6.12 USDT），讓人誤以為部位沒平乾淨。
             actual_margin = abs(execution_price * qty) / max(leverage, 1)
+            from core.services.structure_risk_sizing import FULL_SLOT_POLICY
+            if meta.get('structure_risk_policy') == FULL_SLOT_POLICY:
+                budget = actual_margin * MAX_POSITION_MARGIN_LOSS_RATIO
+                meta['structure_risk_budget_usdt'] = budget
+                entry_context['structure_risk_budget_usdt'] = budget
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),

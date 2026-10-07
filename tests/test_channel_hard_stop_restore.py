@@ -6,12 +6,32 @@ from core.services.exits.hard_stop_service import hard_stop_reason, enforce_hard
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_fixed_initial_stop_works_before_atr2_arming(side):
+@pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
+def test_old_atr_pending_is_persistently_revoked_without_close(side, symbol):
+    sign = 1 if side == 'LONG' else -1
+    p = dict(side=side, entry_price=100., qty=1., margin=100., leverage=1,
+             initial_sl=100-sign*.5, channel_hard_stop_pending='INITIAL_ATR')
+    meta = dict(entry_mode='CHANNEL_SWING', channel_hard_stop_pending='INITIAL_ATR',
+                peak_trailing_state=dict(pending='EXIT_INITIAL_ATR_HARD_STOP', trigger='INITIAL_ATR'))
+    a = SimpleNamespace(positions={symbol:p}, position_meta={symbol:meta},
+                        save_state=Mock(), close_position=AsyncMock())
+    assert not asyncio.run(enforce_hard_stop(a, symbol, 100-sign*.6))
+    assert 'channel_hard_stop_pending' not in p
+    assert 'channel_hard_stop_pending' not in meta
+    assert 'pending' not in meta['peak_trailing_state']
+    a.save_state.assert_called_once()
+    a.close_position.assert_not_awaited()
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_initial_atr_stop_is_not_close_authority(side):
     sign=1 if side=='LONG' else -1
     p=dict(side=side,entry_price=100.,qty=1.,margin=100.,leverage=1,
            entry_mode='CHANNEL_SWING',initial_sl=100-sign*1.5)
     assert hard_stop_reason(p,100-sign*1.49) is None
-    assert hard_stop_reason(p,100-sign*1.5)=='INITIAL_ATR'
+    assert hard_stop_reason(p,100-sign*1.5) is None
+    p['channel_hard_stop_pending'] = 'INITIAL_ATR'
+    assert hard_stop_reason(p,100-sign*1.6) is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -34,8 +54,8 @@ def test_cap_observed_stop_cross_and_failed_close_retry():
     a=SimpleNamespace(positions={'CAP/USDT':p},position_meta={},save_state=Mock(),
                       close_position=AsyncMock(return_value=False),channel_profit_reentries={})
     assert not asyncio.run(enforce_hard_stop(a,'CAP/USDT',.08714))
-    assert p['channel_hard_stop_pending']=='INITIAL_ATR'
+    assert p['channel_hard_stop_pending']=='MARGIN_LOSS'
     a.close_position.return_value=True
     assert asyncio.run(enforce_hard_stop(a,'CAP/USDT',.086))
     assert a.close_position.await_count==2
-    assert a.close_position.await_args.args[2]=='Channel Swing HARD_STOP INITIAL_ATR'
+    assert a.close_position.await_args.args[2]=='Channel Swing HARD_STOP MARGIN_LOSS'

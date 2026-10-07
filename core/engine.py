@@ -1818,7 +1818,10 @@ class TradingEngine:
     def _half_wallet_entry_margin(wallet, available, leverage):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
-        return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
+        budget = wallet * 0.5
+        if available < budget and not math.isclose(available, budget, rel_tol=1e-12):
+            return 0.
+        return budget / (1.0 + leverage * TAKER_FEE_RATE)
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
@@ -1861,6 +1864,11 @@ class TradingEngine:
             return opened
 
     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
+        from core.services.auto_reverse import AUTO_REVERSE_ENABLED
+        if not AUTO_REVERSE_ENABLED and any(signal.get(key) for key in ('auto_reverse_token', 'direct_reverse_token')):
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'AUTO_REVERSE_DISABLED',
+                           signal.get('candidate_bar_id'))
+            return False
         reverse_lock = getattr(self, '_auto_reverse_locks', {}).get(symbol)
         if reverse_lock and reverse_lock.locked() and not signal.get('auto_reverse_token'):
             return False
@@ -1929,13 +1937,6 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         if reverse_ticket:
             leverage = reverse_ticket['leverage']
-        wallet = float(self.account.get_wallet_balance())
-        available = float(self.account.get_available_balance())
-        amount = self._half_wallet_entry_margin(wallet, available, leverage)
-
-        if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
-            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
-            return False
         # Final physical gate: ensure we don't hold a position already.
         if symbol in self.account.positions:
             log_entry_gate(self,symbol,side,'EXECUTION','Already in position',bar)
@@ -1978,6 +1979,9 @@ class TradingEngine:
         if submit_lock is None:
             submit_lock = self._account_entry_submit_lock = asyncio.Lock()
         async with submit_lock:
+            refresh = getattr(self.account, 'refresh', None)
+            if refresh is not None:
+                await refresh(force=True)
             if MAX_SLOTS > 0 and len(self.account.positions) + len(self.account.pending_limit_orders) >= MAX_SLOTS:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_MAX_SLOTS_AT_SUBMIT', bar)
                 return False
@@ -2006,6 +2010,10 @@ class TradingEngine:
 
             context['entry_snapshot']['quote_price'] = price
             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=decision['type'], margin=amount, leverage=leverage)
+            log_entry_gate(self, symbol, side, 'SLOT_BUDGET', 'HALF_WALLET_WITH_ENTRY_FEE', bar,
+                           wallet=self.account.get_wallet_balance(),
+                           available=self.account.get_available_balance(), slots=2,
+                           margin=amount, entry_fee_reserve=amount*leverage*TAKER_FEE_RATE)
             
             try:
                 from core.services.pre_entry_space_shadow import record_pre_entry_space_shadow

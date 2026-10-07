@@ -25,6 +25,9 @@ async def _validate_account_entry(account, symbol, side, context):
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
+    from core.services.auto_reverse import AUTO_REVERSE_ENABLED
+    if not AUTO_REVERSE_ENABLED and any(context.get(key) for key in ('direct_reverse_token', 'auto_reverse_token')):
+        raise ValueError('[FORBIDDEN_ENTRY] AUTO_REVERSE_DISABLED')
     direct_ticket = None
     if context.get('direct_reverse_token'):
         from core.services.direct_reverse import authority
@@ -37,9 +40,10 @@ async def _validate_account_entry(account, symbol, side, context):
         raise ValueError('[FORBIDDEN_ENTRY] 反向部分成交，禁止自動補單')
     if (reverse_state and reverse_state.get('mode') == 'direct_netting_v1'
             and reverse_state.get('phase') in ('submitting', 'unknown')
-            and context.get('direct_reverse_token') != reverse_state.get('token')):
+            and (not context.get('direct_reverse_token')
+                 or context.get('direct_reverse_token') != reverse_state.get('token'))):
         raise ValueError('[FORBIDDEN_ENTRY] 反向成交狀態未確認，禁止新增訂單')
-    if (reverse_state and reverse_state.get('phase') in ('closing', 'closed', 'prepared', 'submitting', 'unknown')
+    if (AUTO_REVERSE_ENABLED and reverse_state and reverse_state.get('phase') in ('closing', 'closed', 'prepared', 'submitting', 'unknown')
             and reverse_state.get('bar') == math.floor(time.time()/60)*60000
             and context.get('auto_reverse_token') != reverse_state.get('token')
             and context.get('direct_reverse_token') != reverse_state.get('token')):

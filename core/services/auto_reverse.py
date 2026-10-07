@@ -6,6 +6,7 @@ import uuid
 
 KEY = '_auto_reverse_tickets'
 CLOSE_PREFIX = '自動反向平倉 '
+AUTO_REVERSE_ENABLED = False
 
 
 def tickets(account):
@@ -13,6 +14,8 @@ def tickets(account):
 
 
 def matched_ticket(account, symbol, side=None, bar=None):
+    if not AUTO_REVERSE_ENABLED:
+        return None
     ticket = getattr(account, 'position_meta', {}).get(KEY, {}).get(symbol)
     if not ticket or ticket.get('phase') not in ('closing', 'closed'):
         return None
@@ -88,6 +91,12 @@ async def try_auto_reverse(engine, symbol, frame, price):
             finally:
                 account.closing_lock.discard(symbol)
             return True
+        if not AUTO_REVERSE_ENABLED:
+            if ticket and ticket.get('phase') in ('prepared', 'closing', 'closed'):
+                ticket['phase'] = 'retired'
+                account.save_state()
+                account.log(f'AUTO_REVERSE_DISABLED symbol={symbol}', 'INFO')
+            return False
         if entry_halted(engine, symbol):
             return False
         original = account.positions.get(symbol)

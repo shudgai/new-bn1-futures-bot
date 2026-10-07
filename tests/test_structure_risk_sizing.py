@@ -17,9 +17,9 @@ def test_same_budget_allows_structural_pullback_by_reducing_size(side):
     # A one-percent counter move no longer closes from margin percentage alone.
     assert hard_stop_reason(p,100-sign*1.01) is None
     assert evaluate_peak_trailing(p,100-sign*1.6,dict(quote_ms=121000,reason='NO_DATA')) is None
-    # Initial risk is enforced before the profit evaluator, including no-data ticks.
-    assert hard_stop_reason(p,100-sign*3.01)=='INITIAL_ATR'
-    assert hard_stop_reason(p,100-sign*(4/qty+.01))=='INITIAL_ATR'
+    # Structural/ATR stop crossing is not authority; the account budget remains.
+    assert hard_stop_reason(p,100-sign*3.01) is None
+    assert hard_stop_reason(p,100-sign*(4/qty+.01))=='MARGIN_LOSS'
     assert hard_stop_reason({**p,'initial_sl':None},100-sign*(4/qty+.01))=='MARGIN_LOSS'
 
 

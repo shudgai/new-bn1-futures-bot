@@ -7,6 +7,13 @@ MIN_CONFIRM_BODY_ATR = .1
 MIN_BODY_RATIO = .2
 
 
+def closed_price_pivot(candles, sign):
+    """A strict local price extreme, confirmed by both adjacent candles."""
+    key = 1 if sign == 1 else 2
+    level = candles[1][key]
+    return level if all(sign*(level-row[key]) > 0 for row in (candles[0], candles[2])) else None
+
+
 def confirmed_pivot_turn(position, state, snapshot, price, sign):
     try:
         rows = snapshot['pivot_exit_history'][-3:]
@@ -27,9 +34,8 @@ def confirmed_pivot_turn(position, state, snapshot, price, sign):
             return None
         left, pivot, right = candles
         # Favorable extreme of the held side: high for a long, low for a short.
-        key = 1 if sign == 1 else 2
-        level = pivot[key]
-        if not all(sign*(level-r[key]) > 0 for r in (left,right)):
+        level = closed_price_pivot(candles, sign)
+        if level is None:
             return None
         if sign*(peak-entry) < MIN_RUN_ATR*atr:
             return None

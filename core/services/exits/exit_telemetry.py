@@ -93,7 +93,7 @@ def log_exit_telemetry(
         if not final_decision_is_exit:
             exit_level = "NONE"
         else:
-            if hard_stop_hit or final_reason == "HARD_STOP":
+            if hard_stop_hit or final_reason in ("HARD_STOP", "EXIT_ACCOUNT_HARD_STOP"):
                 exit_level = "LEVEL_1_HARD_RISK"
             elif final_reason == ABNORMAL_REASON or raw_trigger == 'WATERFALL_DROP':
                 exit_level = "LEVEL_2_ADVERSE_EMERGENCY"

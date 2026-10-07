@@ -15,7 +15,7 @@ def ordinary(side='LONG'):
     f=frame()
     f.loc[3,['open','close','high','low','ma5']]=[100.8,101.3,101.5,100.7,101.0]
     f.loc[4,['open','close','high','low','ma5']]=[101.1,101.5,101.6,101.0,101.2]
-    f.loc[5,['open','close','high','low']]=[101.4,101.55,101.6,101.35]
+    f.loc[5,['open','close','high','low']]=[101.4,101.45,101.6,101.35]
     if side=='SHORT':
         for k in ('open','close','high','low','ma3','ma5','ma15','kc_upper','kc_middle','kc_lower'):
             f[k]=200.-f[k]

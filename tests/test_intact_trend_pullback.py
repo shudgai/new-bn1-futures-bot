@@ -3,6 +3,7 @@ import pytest
 from test_confirmed_pivot_exit import sample
 from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
 from core.services.exits.structural_holding_exit import PIVOT_EXIT, REVERSAL_EXIT, WATERFALL, HARD
+from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
 
 
 def aligned(side):
@@ -11,6 +12,8 @@ def aligned(side):
         kc_closed_history=[dict(timestamp=180000.,middle=100+sign*.1),
                            dict(timestamp=240000.,middle=100+sign*.2)])
     s['swing_structure_'+side.lower()]=dict(side=side,intact=True,level=100.,closed_break_confirmed=False)
+    for i, row in enumerate(s['ma5_pivot_history']):
+        row['ma5'] = 100+sign*(1.1+i*.1)
     evaluate_peak_trailing(p,100+sign*2,dict(quote_ms=61000.,reason='NO_DATA'),fee=0,slippage=0)
     return p,s,q,sign
 
@@ -19,20 +22,20 @@ def aligned(side):
 def test_local_pivot_holds_when_structure_kc_and_live_ma5_align(side):
     p,s,q,sign=aligned(side)
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
-    assert p['peak_trailing_state']['intact_trend_pullback'] is True
+    assert p['peak_trailing_state']['ma5_pivot_status'] == 'WAIT_CLOSED_MA5_REVERSAL'
     assert 'profit_stop_price' not in p['peak_trailing_state']
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('release',['ma5_reverse','ma5_flat','kc_reverse','kc_flat','structure_broken'])
-def test_real_weakness_still_allows_early_pivot_exit(side,release):
+def test_live_or_structure_weakness_alone_cannot_replace_closed_ma5_exit(side,release):
     p,s,q,sign=aligned(side)
     if release=='ma5_reverse':s['ma5']=s['last_ma5']-sign*.1
     elif release=='ma5_flat':s['ma5']=s['last_ma5']
     elif release=='kc_reverse':s['kc_closed_history'][-1]['middle']=100.
     elif release=='kc_flat':s['kc_closed_history'][-1]['middle']=s['kc_closed_history'][0]['middle']
     else:s['swing_structure_'+side.lower()]['intact']=False
-    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==PIVOT_EXIT
+    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -47,19 +50,22 @@ def test_pre_guard_soft_ticket_cannot_override_intact_trend(side,old):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_verified_new_ticket_keeps_retry_after_later_rebound(side):
     p,s,q,sign=aligned(side)
-    weaker=copy.deepcopy(s);weaker['ma5']=s['last_ma5']-sign*.1
-    assert evaluate_peak_trailing(p,q,weaker,fee=0,slippage=0)['reason']==PIVOT_EXIT
+    weaker=copy.deepcopy(s)
+    for row, value in zip(weaker['ma5_pivot_history'], (1.1, 1.8, 1.4)):
+        row['ma5'] = 100+sign*value
+    assert evaluate_peak_trailing(p,q,weaker,fee=0,slippage=0)['reason']==MA5_EXIT
     s['quote_ms']+=1000.
-    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==PIVOT_EXIT
+    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==MA5_EXIT
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_pullback_guard_never_vetoes_waterfall_or_initial_stop(side):
+def test_pullback_guard_keeps_waterfall_but_initial_stop_is_retired(side):
     p,s,q,sign=aligned(side);s['live_open']=q+sign*1.6
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==WATERFALL
     p,s,q,sign=aligned(side);p['initial_sl']=100+sign*1.5
-    # Keep a valid adverse initial line relative to entry for the risk example.
     p['entry_price']=100+sign*2.;p['initial_sl']=100+sign*1.5
+    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
+    p['margin'] = 1.
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==HARD
 
 
@@ -75,4 +81,4 @@ def test_recorded_cap_1401_early_exit_now_holds():
         early_swing_reversal=dict(side='SHORT',reversal_pivot_ms=1791352740000.,
             reversal_confirmed_ms=1791352800000.,reversal_edge=.08646))
     assert evaluate_peak_trailing(p,.08636,s) is None
-    assert p['peak_trailing_state']['intact_trend_pullback']
+    assert p['peak_trailing_state']['ma5_pivot_status'] == 'BLOCKED_MA5_MARKET_DATA'

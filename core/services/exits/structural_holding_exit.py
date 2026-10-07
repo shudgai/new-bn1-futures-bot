@@ -1,20 +1,27 @@
-"""Pre-06:00 Taipei structure/reversal exits, with all profit locks retired."""
+"""Closed price pivots with MA5 reversal; profit locks remain retired."""
 import math
 from core.config import CHANNEL_WATERFALL_BODY_ATR
 from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
 from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON as PIVOT_EXIT
+from core.services.exits.ma5_outer_pivot_exit import (
+    REASON as MA5_EXIT, RULE_VERSION, confirmed_ma5_outer_pivot,
+)
 
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
-HARD = 'EXIT_INITIAL_ATR_HARD_STOP'
+HARD = 'EXIT_ACCOUNT_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
-POLICY = 'pre0600_structure_no_profit_lock_v1'
-ALLOWED = {REASON, HARD, WATERFALL, REVERSAL_EXIT, PIVOT_EXIT}
+POLICY = 'closed_price_pivot_ma5_reverse_v3'
+ALLOWED = {HARD, WATERFALL, MA5_EXIT}
 RETIRED_CLOSE_REASONS = {
+    'EXIT_INITIAL_ATR_HARD_STOP',
+    'EXIT_CLOSED_MA5_OUTER_PIVOT',
     'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_MOVING_PROFIT_STOP',
     'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_CHANNEL_SAME_BAR_END',
     'EXIT_CONFIRMED_TREND_REVERSAL', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL',
     'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_REALTIME_PEAK_TRAILING',
     'EXIT_OPPOSITE_KC_BREAK',
+    REASON, REVERSAL_EXIT, PIVOT_EXIT,
+    'EXIT_TERMINAL_DOJI_PRESSURE', 'EXIT_ADVERSE_ABNORMAL_BODY',
 }
 PROFIT_KEYS = ('swing_atr_profit_lock', 'same_bar_profit_lock',
     'profit_stop_price', 'profit_stop_net', 'profit_stop_source',
@@ -27,6 +34,8 @@ def retire_profit_state(position, state, meta=None):
     """Revoke old soft-close retries in both persisted copies; keep hard retries."""
     if str(position.get('entry_mode', '')).upper() != 'CHANNEL_SWING':
         return
+    from core.services.exits.hard_stop_service import retire_initial_atr_pending
+    retire_initial_atr_pending(position, meta)
     sources = [state, position, meta or {}]
     if meta and isinstance(meta.get('peak_trailing_state'), dict):
         sources.append(meta['peak_trailing_state'])
@@ -41,6 +50,13 @@ def retire_profit_state(position, state, meta=None):
         if pending in RETIRED_CLOSE_REASONS:
             source.pop('pending', None)
             source.pop('trigger', None)
+        if pending == MA5_EXIT and (source.get('ma5_outer_pivot') or {}).get('rule_version') != RULE_VERSION:
+            source.pop('pending', None)
+            source.pop('trigger', None)
+        for key in ('confirmed_pivot_exit', 'pivot_guard_version',
+                    'structure_break_confirmation', 'structure_break_level',
+                    'structure_break_atr', 'structure_break_threshold', 'intact_trend_pullback'):
+            source.pop(key, None)
     for source in (position, meta or {}):
         audit = source.get('exit_protection_snapshot')
         if isinstance(audit, dict) and audit.get('reason') in RETIRED_CLOSE_REASONS:
@@ -83,48 +99,24 @@ def intact_trend_pullback(snapshot, sign):
 
 def evaluate_structural_holding(position, state, price, snapshot, entry, qty, sign, atr, fee, slippage):
     retire_profit_state(position, state)
-    pullback = intact_trend_pullback(snapshot, sign)
-    state['intact_trend_pullback'] = pullback
-    # Old soft tickets were allowed to trigger before this trend guard existed.
-    if (state.get('pending') in (PIVOT_EXIT, REVERSAL_EXIT)
-            and state.get('pivot_guard_version') != 1 and pullback):
-        state.pop('pending', None)
-        state.pop('trigger', None)
-        state.pop('confirmed_pivot_exit', None)
     reason = state.get('pending') if state.get('pending') in ALLOWED else None
-    # Initial hard risk is independent of profit, pivot or a new opposite entry.
+    # Account loss limits are independent of profit, pivot or a new opposite entry.
     from core.services.exits.hard_stop_service import hard_stop_reason
-    if hard_stop_reason(position, price):
+    account_reason = hard_stop_reason(position, price)
+    if account_reason:
         reason = HARD
     valid = valid_snapshot(snapshot)
     if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
         reason = WATERFALL
-    if reason is None and valid and not pullback:
-        confirmation = confirmed_pivot_turn(position, state, snapshot, price, sign)
-        if confirmation:
-            reason = PIVOT_EXIT
-            state['confirmed_pivot_exit'] = confirmation
     if reason is None and valid:
-        scale = float(position.get('entry_atr') or 0.)
-        structure = snapshot.get('swing_structure_' + ('long' if sign == 1 else 'short')) or {}
-        level = float(structure.get('level') or 0.)
-        threshold = .1 * scale
-        if (structure.get('side') == ('LONG' if sign == 1 else 'SHORT')
-                and structure.get('closed_break_confirmed') is True
-                and math.isfinite(level) and level > 0
-                and math.isfinite(scale) and scale > 0
-                and sign * (level-price) > threshold):
-            reason = REASON
-            state.update(structure_break_confirmation='CLOSED', structure_break_level=level,
-                         structure_break_atr=scale, structure_break_threshold=threshold)
-        elif not pullback and early_reversal_ready(position, state, snapshot, price, sign):
-            reason = REVERSAL_EXIT
+        confirmation = confirmed_ma5_outer_pivot(position, state, snapshot, sign)
+        if confirmation:
+            reason = MA5_EXIT
+            state['ma5_outer_pivot'] = confirmation
     state['holding_exit_policy'] = POLICY
     if not reason:
         return None
-    if reason in (PIVOT_EXIT, REVERSAL_EXIT):
-        state['pivot_guard_version'] = 1
-    trigger = 'INITIAL_ATR' if reason == HARD else 'WATERFALL_DROP' if reason == WATERFALL else reason
+    trigger = (account_reason or state.get('trigger', 'ACCOUNT_LOSS')) if reason == HARD else 'WATERFALL_DROP' if reason == WATERFALL else reason
     state.update(pending=reason, trigger=trigger)
     return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
 

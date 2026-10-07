@@ -8,9 +8,35 @@ from core import config
 from core.interfaces.exit_interface import IExitStrategy
 
 
+def retire_initial_atr_pending(position, meta=None):
+    """Revoke obsolete ATR close retries, without changing account loss limits."""
+    meta = meta if meta is not None else {}
+    if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
+        return False
+    changed = False
+    for source in (position, meta):
+        if source.get("channel_hard_stop_pending") == "INITIAL_ATR":
+            source.pop("channel_hard_stop_pending")
+            changed = True
+        for key in ("peak_trailing_state", "closed_exit_state", "exit_protection_snapshot"):
+            state = source.get(key)
+            if not isinstance(state, dict):
+                continue
+            if (state.get("pending") == "EXIT_INITIAL_ATR_HARD_STOP"
+                    or state.get("reason") == "EXIT_INITIAL_ATR_HARD_STOP"
+                    or state.get("trigger") == "INITIAL_ATR"):
+                if key == "peak_trailing_state":
+                    state.pop("pending", None)
+                    state.pop("trigger", None)
+                else:
+                    source.pop(key)
+                changed = True
+    return changed
+
+
 def hard_stop_reason(position, price):
     pending = position.get("channel_hard_stop_pending")
-    if pending in ("MARGIN_LOSS", "PRICE_LOSS", "INITIAL_ATR"):
+    if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
         return pending
     try:
         entry = float(position["entry_price"])
@@ -22,15 +48,9 @@ def hard_stop_reason(position, price):
         if side not in ("LONG", "SHORT") or not all(math.isfinite(v) and v > 0 for v in (entry, qty, leverage, margin, price)):
             return None
         loss = (entry - price) if side == "LONG" else (price - entry)
-        if str(position.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
-            initial = float(position.get('initial_sl') or 0.)
-            sign = 1 if side == 'LONG' else -1
-            if (math.isfinite(initial) and initial > 0 and sign*(entry-initial)>0
-                    and sign*(price-initial)<=0):
-                return 'INITIAL_ATR'
-        from core.services.structure_risk_sizing import POLICY
+        from core.services.structure_risk_sizing import POLICY, FULL_SLOT_POLICY
         budget=margin*config.MAX_POSITION_MARGIN_LOSS_RATIO
-        if position.get('structure_risk_policy')==POLICY:
+        if position.get('structure_risk_policy') in (POLICY, FULL_SLOT_POLICY):
             budget=float(position.get('structure_risk_budget_usdt') or 0.)
             if not math.isfinite(budget) or budget<=0:
                 return 'MARGIN_LOSS'
@@ -50,6 +70,8 @@ async def enforce_hard_stop(account, symbol, price):
     meta = account.position_meta.get(symbol, {})
     if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
         return False
+    if retire_initial_atr_pending(position, meta):
+        account.save_state()
     try:
         price = float(price)
     except (TypeError, ValueError):

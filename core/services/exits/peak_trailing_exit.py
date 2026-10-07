@@ -61,6 +61,8 @@ def position_identity(position):
 def migrate_peak_state(position, meta=None):
     """Remove legacy authorities in both stores, preserving verified observations."""
     meta = {} if meta is None else meta
+    if not position.get('entry_mode') and meta.get('entry_mode'):
+        position['entry_mode'] = meta['entry_mode']
     for source in (position, meta):
         legacy = source.get(STATE_KEY) or {}
         if legacy.get('pending') == 'EXIT_OPPOSITE_KC_BREAK':

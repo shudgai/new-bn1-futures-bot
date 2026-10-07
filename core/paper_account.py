@@ -661,7 +661,8 @@ class PaperAccount:
         if entry_mode == 'CHANNEL_SWING' and not is_manual:
             from core.services.structure_risk_sizing import structure_risk_plan
             plan=structure_risk_plan(execution_price,side,atr,entry_decision['structure_risk_stop'],
-                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT)
+                                     amount_usdt,leverage,MAX_POSITION_MARGIN_LOSS_RATIO,TAKER_FEE_RATE,SLIPPAGE_PCT,
+                                     preserve_margin=True)
             amount_usdt=plan.pop('amount');structural_stop=plan.pop('stop');sl=structural_stop
             entry_context.update(plan)
         from core.services.order_sizing import raw_order_qty

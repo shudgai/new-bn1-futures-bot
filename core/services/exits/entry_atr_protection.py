@@ -28,6 +28,9 @@ async def enforce_atr_protection(account, symbol, price):
     if not position:
         return False
     meta = account.position_meta.setdefault(symbol, {})
+    previous_meta = copy.deepcopy(meta)
+    if not position.get('entry_mode') and meta.get('entry_mode'):
+        position['entry_mode'] = meta['entry_mode']
     for key in STATE_KEYS:
         if key not in position and key in meta:
             position[key] = copy.deepcopy(meta[key])
@@ -35,10 +38,11 @@ async def enforce_atr_protection(account, symbol, price):
     migrate_peak_state(position, meta)
     reason = atr_exit_reason(position, price)
     observed = {key: copy.deepcopy(position[key]) for key in STATE_KEYS if key in position}
-    if any(meta.get(key) != value for key, value in observed.items()):
-        meta.update(observed)
+    meta.update(observed)
+    if previous_meta != meta:
         account.save_state()
     if not reason:
         return False
     closed = await account.close_position(symbol, price, "Channel Swing " + reason, is_manual=True)
-    return bool(closed) if reason == 'EXIT_CONFIRMED_SWING_STRUCTURE' else True
+    from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
+    return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT) else True

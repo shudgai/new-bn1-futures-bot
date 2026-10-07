@@ -10,6 +10,9 @@ ACTIVE = {'prepared', 'submitting'}
 
 
 def authority(account, symbol, side, context):
+    from core.services.auto_reverse import AUTO_REVERSE_ENABLED
+    if not AUTO_REVERSE_ENABLED:
+        raise ValueError('AUTO_REVERSE_DISABLED')
     ticket = account.position_meta.get(KEY, {}).get(symbol)
     held = account.positions.get(symbol)
     if (not ticket or ticket.get('mode') != 'direct_netting_v1'
@@ -166,6 +169,10 @@ async def reconcile(account, symbol, ticket):
 
 
 async def execute(account, engine, symbol, price, decision, ticket, *, paper):
+    from core.services.auto_reverse import AUTO_REVERSE_ENABLED
+    if not AUTO_REVERSE_ENABLED:
+        account.log(f'AUTO_REVERSE_DISABLED symbol={symbol}', 'WARNING')
+        return False
     from core.services.entry_firewall import validate_account_entry
     from core.services.entry_gate_integrity import assert_commit_proof
     from core.config import SLIPPAGE_PCT

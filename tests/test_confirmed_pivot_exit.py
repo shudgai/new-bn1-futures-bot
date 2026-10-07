@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON
 from core.services.exits.peak_trailing_exit import evaluate_peak_trailing
+from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_REASON
 
 
 def sample(side):
@@ -21,6 +22,8 @@ def sample(side):
     q=100+sign*1.4
     s=dict(quote_ms=301000.,live_bar_ms=300000.,closed_bar_ms=240000.,
            live_open=q,atr=1.,pivot_exit_history=rows,kc_middle=100.,reason=None)
+    s['ma5_pivot_history'] = [dict(row, ma5=100+sign*ma5, kc_lower=99., kc_upper=101.)
+                             for row, ma5 in zip(rows, (1.2, 1.8, 1.4))]
     return p,s,q,sign
 
 
@@ -29,11 +32,11 @@ def test_pivot_exits_before_middle_without_entry_or_profit_lock(side):
     p,s,q,sign=sample(side)
     assert evaluate_peak_trailing(p,100+sign*2,dict(quote_ms=61000.,reason='NO_DATA'),fee=0,slippage=0) is None
     d=evaluate_peak_trailing(p,q,s,fee=0,slippage=0)
-    assert d['reason']==REASON
+    assert d['reason']==MA5_REASON
     assert sign*(q-s['kc_middle'])>0
-    assert p['peak_trailing_state']['confirmed_pivot_exit']['confirmation']=='CLOSED'
+    assert p['peak_trailing_state']['ma5_outer_pivot']['confirmation']=='CLOSED'
     assert 'profit_stop_price' not in p['peak_trailing_state']
-    assert evaluate_peak_trailing(p,100+sign*2,dict(quote_ms=302000.,reason='NO_DATA'),fee=0,slippage=0)['reason']==REASON
+    assert evaluate_peak_trailing(p,100+sign*2,dict(quote_ms=302000.,reason='NO_DATA'),fee=0,slippage=0)['reason']==MA5_REASON
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -72,8 +75,8 @@ def test_real_account_closes_without_remote_entry_checks(side,monkeypatch):
     monkeypatch.setattr(rt,'cached_tick_indicators',lambda *args:(s,1.))
     assert asyncio.run(rt.enforce_realtime_profit_exit(e,'CAP/USDT',q,301000.))
     assert 'CAP/USDT' not in a.positions
-    assert a.trades[0]['reason']=='Channel Swing '+REASON
-    assert a.trades[0]['exit_protection_snapshot']['confirmed_pivot_exit']['pivot_ms']==180000.
+    assert a.trades[0]['reason']=='Channel Swing '+MA5_REASON
+    assert a.trades[0]['exit_protection_snapshot']['ma5_outer_pivot']['pivot_ms']==180000.
     provider.assert_not_awaited()
 
 
@@ -92,6 +95,7 @@ def test_lobster_closed_1401_valley_can_exit_1403_below_middle():
            swing_structure_short=dict(side='SHORT',intact=True,closed_break_confirmed=False,level=.066))
     evaluate_peak_trailing(p,.06292,dict(quote_ms=1791352919999.,reason='NO_DATA'))
     assert .06482<s['kc_middle']
-    assert evaluate_peak_trailing(p,.06482,s)['reason']==REASON
+    # Price-only historical evidence cannot prove an outer MA5 turn.
+    assert evaluate_peak_trailing(p,.06482,s) is None
     # Earlier than confirmation, the same bars never authorize a close.
     assert confirmed_pivot_turn(p,{'peak_price':.06292},{**s,'quote_ms':1791352979999.},.06482,-1) is None
