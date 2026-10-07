@@ -195,7 +195,7 @@ def entry_trend_direction(frame):
 
 
 def live_body_breakout_side(frame, price):
-    """Current real body breaks out or thrusts along an outer rail by quote, sized on closed ATR."""
+    """Current body must start inside KC and truly break a rail on the live quote."""
     try:
         if frame is None or len(frame) < 2:
             return None

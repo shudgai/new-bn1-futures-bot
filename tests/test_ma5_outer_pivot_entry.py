@@ -15,7 +15,7 @@ from core.services.ma5_outer_pivot_entry import PHASE
 from test_lobster_cap_gates import frame
 from test_two_slot_full_margin import make_engine
 
-SYMBOLS = ['龙虾/USDT']
+SYMBOLS = ['龙虾/USDT', 'CAP/USDT']
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +127,8 @@ def test_position_close_bar_and_successful_fill_keep_gates_after_restart(side, s
     diagnostics = {}
     assert evaluate_entry_contract(f, symbol=symbol, account=a, diagnostics=diagnostics) is None
     assert diagnostics['reason'] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'
-    assert evaluate_entry_contract(f, symbol='CAP/USDT', account=a) is None
+    other = SYMBOLS[1] if symbol == SYMBOLS[0] else SYMBOLS[0]
+    assert evaluate_entry_contract(f, symbol=other, account=a)
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)

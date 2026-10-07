@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v48-cap-pair-and-proven-continuation'
+VERSION = 'entry-gate-20261007-v50-shared-ten-bar-pivot-live-expiry'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 
@@ -88,7 +88,10 @@ def assert_commit_proof(account,symbol,side,context):
             account.save_state()
         raise ValueError('[FORBIDDEN_ENTRY] GATE_INTEGRITY_HALT: '+symbol+' '+str(exc)) from exc
     from core.services.cap_breakout_entry import SYMBOL as CAP_SYMBOL, STATE_KEY, CODES
-    if symbol == CAP_SYMBOL:
+    if (proof['code'] in ('KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT')
+            and float(proof['bar']) != math.floor(time.time()/60)*60000):
+        raise ValueError('[FORBIDDEN_ENTRY] LIVE_BREAKOUT_CANDLE_EXPIRED')
+    if symbol == CAP_SYMBOL and proof['code'] in (CODES | {'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}):
         state = getattr(account, 'position_meta', {}).get(STATE_KEY, {}).get(symbol, {})
         second = snapshot.get('pair_confirmation_bar_id')
         if second is None or float(second) <= state.get('cancelled_second_ms', 0):

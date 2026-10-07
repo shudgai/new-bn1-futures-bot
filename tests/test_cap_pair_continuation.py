@@ -62,13 +62,40 @@ def test_cap_only_two_closed_bars_and_third_live(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('kind', ['live', 'pivot'])
-def test_cap_disables_live_and_pivot_but_lobster_retains_them(side, kind):
+def test_cap_disables_live_but_both_symbols_retain_independent_pivot(side, kind):
     f = eligible_frame(kind, side)
     diagnostics = {}
-    assert evaluate_entry_contract(f, code=authority_code(kind, side), symbol='CAP/USDT',
-                                   diagnostics=diagnostics) is None
-    assert diagnostics['reason'] == 'BLOCKED_CAP_TWO_BAR_ONLY'
+    result = evaluate_entry_contract(f, code=authority_code(kind, side), symbol='CAP/USDT',
+                                    diagnostics=diagnostics)
+    if kind == 'live':
+        assert result is None
+        assert diagnostics['reason'] == 'BLOCKED_CAP_LIVE_BREAKOUT_DISABLED'
+    else:
+        assert result and result['type'] == authority_code(kind, side)
     assert evaluate_entry_contract(f, code=authority_code(kind, side), symbol='龙虾/USDT')
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_cap_inside_pivot_is_independent_of_cancelled_outside_source(side, monkeypatch):
+    a = account()
+    f = eligible_frame('pivot', side)
+    now = float(f.iloc[-1].timestamp)+1000
+    monkeypatch.setattr('time.time', lambda: now/1000)
+    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now)
+    a.position_meta[STATE_KEY] = {'CAP/USDT': dict(
+        cancelled_second_ms=float(f.iloc[-2].timestamp), status='CAP_ORIGIN_CANCELLED_RAIL_RETURN')}
+    a.entry_frame_provider = AsyncMock(return_value=f)
+    context = dict(entry_signal_code=authority_code('pivot', side),
+                   channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
+    asyncio.run(validate_account_entry(a, 'CAP/USDT', side, context))
+    assert_commit_proof(a, 'CAP/USDT', side, context)
+    result = evaluate_entry_contract(f, account=a, symbol='CAP/USDT')
+    assert result['type'] == authority_code('pivot', side)
+    assert f.iloc[-1].kc_lower < result['price'] < f.iloc[-1].kc_upper
+    assert result['outer_run_bars'] == 10
+    assert 'cap_quote_ma5' not in result
+    assert 'origin' not in a.position_meta[STATE_KEY]['CAP/USDT']
+    assert evaluate_continuation_entry(f, result['price'], account=a, symbol='CAP/USDT') is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

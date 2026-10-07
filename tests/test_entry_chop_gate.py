@@ -64,7 +64,7 @@ def test_all_authorities_pass_nonchoppy_history(symbol, side, kind):
     status, evidence = evaluate_entry_chop(f)
     assert status == 'PASS'
     result = evaluate_entry_contract(f, symbol=symbol, code=authority_code(kind, side))
-    if symbol == 'CAP/USDT' and kind != 'pair':
+    if symbol == 'CAP/USDT' and kind == 'live':
         assert result is None
         return
     assert result
@@ -91,8 +91,8 @@ def test_overlapping_history_blocks_every_authority(symbol, side, kind):
     diagnostics = {}
     assert evaluate_entry_contract(f, symbol=symbol, code=authority_code(kind, side),
                                    diagnostics=diagnostics) is None
-    assert diagnostics['reason'] == ('BLOCKED_CAP_TWO_BAR_ONLY'
-                                      if symbol == 'CAP/USDT' and kind != 'pair'
+    assert diagnostics['reason'] == ('BLOCKED_CAP_LIVE_BREAKOUT_DISABLED'
+                                      if symbol == 'CAP/USDT' and kind == 'live'
                                       else 'BLOCKED_CHOP_BODY_OVERLAP')
 
 
@@ -197,8 +197,8 @@ def test_firewall_revokes_cached_entry_on_new_chop_history(side, symbol, kind, m
                               entry_frame_provider=AsyncMock(return_value=f))
     context = dict(entry_signal_code=authority_code(kind, side),
                    channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
-    if symbol == 'CAP/USDT' and kind != 'pair':
-        with pytest.raises(ValueError, match='BLOCKED_CAP_TWO_BAR_ONLY'):
+    if symbol == 'CAP/USDT' and kind == 'live':
+        with pytest.raises(ValueError, match='BLOCKED_CAP_LIVE_BREAKOUT_DISABLED'):
             asyncio.run(validate_account_entry(account, symbol, side, context))
         return
     asyncio.run(validate_account_entry(account, symbol, side, context))

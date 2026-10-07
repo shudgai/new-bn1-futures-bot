@@ -745,8 +745,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
     cap = symbol == CAP_SYMBOL
     if (cap and code is not None and code not in
-            ({'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'} | CAP_CONTINUATION_CODES)):
-        return reject('BLOCKED_CAP_TWO_BAR_ONLY')
+            ({'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'} | CAP_CONTINUATION_CODES | MA5_PIVOT_CODES)):
+        return reject('BLOCKED_CAP_LIVE_BREAKOUT_DISABLED')
     if not cap and code in CAP_CONTINUATION_CODES:
         return reject('BLOCKED_CAP_AUTHORITY_WRONG_SYMBOL')
     if not evaluate_held and account is not None and symbol in getattr(account, "positions", {}):
@@ -807,7 +807,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         # The independent pivot authority does not inherit breakout qualifiers.
         if len(frame) != len(closed) + 1:
             return reject('WAIT_FORMING_BREAKOUT_BAR')
-        pivot_decision = None if cap else evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
+        pivot_decision = evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
         if account is not None and symbol in getattr(account, 'positions', {}):
             pivot_decision = None
         breakout_code = code if code not in MA5_PIVOT_CODES else None
@@ -899,7 +899,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if alignment is None:
             return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
         decision.update(alignment)
-        if cap:
+        if cap and decision['type'] not in MA5_PIVOT_CODES:
             sign = 1 if decision['side'] == 'LONG' else -1
             if sign*(quote-alignment['entry_live_ma5']) <= max(quote, alignment['entry_live_ma5'])*1e-12:
                 return reject('BLOCKED_CAP_QUOTE_INSIDE_MA5')
