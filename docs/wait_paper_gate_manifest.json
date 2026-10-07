@@ -45,7 +45,7 @@
     "Positive actual position consumption including partial fill; no top-up",
     "Persisted claims, position UUID and event outbox; persistence failure blocks submission",
     "Real same-side KC2BAR coexistence and opposite-authority fail-closed arbitration",
-    "Preserve existing MA5 V exits, half-wallet sizing, CAP progress and account hard stops",
+    "Owner-disabled MA5 V exits and retries; preserve half-wallet sizing, CAP progress, account hard stops and waterfalls",
     "Read-only web never starts trading and cannot mutate positions by GET"
   ],
   "historical_missing_tests": [

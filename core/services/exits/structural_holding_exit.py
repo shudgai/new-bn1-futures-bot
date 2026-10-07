@@ -1,20 +1,18 @@
-"""Live MA5 V reversal exits; profit locks and local pivots are retired."""
+"""Account hard stops and waterfalls only; MA5 V and soft exits are retired."""
 import math
 from core.config import CHANNEL_WATERFALL_BODY_ATR
 from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
 from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON as PIVOT_EXIT
 from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
 from core.services.exits.trade_pressure_exit import REASON as PRESSURE_EXIT
-from core.services.exits.live_ma5_v_exit import (
-    REASON as V_EXIT, RULE_VERSION as V_VERSION, observe_live_ma5_v,
-)
+from core.services.exits.live_ma5_v_exit import REASON as V_EXIT
 
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
 HARD = 'EXIT_ACCOUNT_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
-POLICY = 'live_ma5_v_reversal_v6'
+POLICY = 'account_hard_stop_waterfall_only_v7'
 LEGACY_PRICE_PIVOT_EXIT = 'EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE'
-ALLOWED = {HARD, WATERFALL, V_EXIT}
+ALLOWED = {HARD, WATERFALL}
 RETIRED_CLOSE_REASONS = {
     'EXIT_INITIAL_ATR_HARD_STOP',
     'EXIT_CLOSED_MA5_OUTER_PIVOT',
@@ -24,7 +22,7 @@ RETIRED_CLOSE_REASONS = {
     'EXIT_CONFIRMED_TREND_REVERSAL', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL',
     'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_REALTIME_PEAK_TRAILING',
     'EXIT_OPPOSITE_KC_BREAK',
-    REASON, REVERSAL_EXIT, PIVOT_EXIT,
+    REASON, REVERSAL_EXIT, PIVOT_EXIT, V_EXIT,
     'EXIT_TERMINAL_DOJI_PRESSURE', 'EXIT_ADVERSE_ABNORMAL_BODY',
 }
 PROFIT_KEYS = ('swing_atr_profit_lock', 'same_bar_profit_lock',
@@ -54,13 +52,8 @@ def retire_profit_state(position, state, meta=None):
         if pending in RETIRED_CLOSE_REASONS:
             source.pop('pending', None)
             source.pop('trigger', None)
-        if pending == V_EXIT:
-            from core.services.exits.peak_trailing_exit import position_identity
-            evidence = source.get('live_ma5_v_exit') or {}
-            if (evidence.get('rule_version') != V_VERSION
-                    or evidence.get('identity') != position_identity(position)):
-                source.pop('pending', None)
-                source.pop('trigger', None)
+        for key in ('live_ma5_v_exit', 'live_ma5_v_observation', 'live_ma5_v_status'):
+            source.pop(key, None)
         source.pop('trade_pressure_observation', None)
         source.pop('trade_pressure_exit', None)
         for key in ('confirmed_pivot_exit', 'pivot_guard_version',
@@ -118,11 +111,6 @@ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, si
     valid = valid_snapshot(snapshot)
     if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
         reason = WATERFALL
-    if reason is None and valid:
-        confirmation = observe_live_ma5_v(position, state, snapshot, price)
-        if confirmation:
-            reason = V_EXIT
-            state['live_ma5_v_exit'] = confirmation
     state['holding_exit_policy'] = POLICY
     if not reason:
         return None

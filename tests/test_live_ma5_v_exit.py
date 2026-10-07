@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from core.services.exits.peak_trailing_exit import STATE_KEY, evaluate_peak_trailing, migrate_peak_state
-from core.services.exits.live_ma5_v_exit import REASON
+from core.services.exits.live_ma5_v_exit import REASON, observe_live_ma5_v
 from core.services.exits.realtime_profit_exit import cached_tick_indicators, enforce_realtime_profit_exit
 from core.services.exits.entry_atr_protection import enforce_atr_protection
 from core.services.exits.structural_holding_exit import HARD, WATERFALL, POLICY
@@ -31,23 +31,29 @@ def snapshot(ma5=100., stamp=301000., atr=1.):
 
 def progress(p):
     sign = 1 if p['side'] == 'LONG' else -1
-    assert evaluate_peak_trailing(p, 100., snapshot()) is None
-    assert evaluate_peak_trailing(p, 100+sign*.5, snapshot(100+sign*.2, 302000.)) is None
+    state = migrate_peak_state(p)
+    assert observe_live_ma5_v(p, state, snapshot(), 100.) is None
+    assert observe_live_ma5_v(p, state, snapshot(100+sign*.2, 302000.), 100+sign*.5) is None
     return sign
+
+
+def observe_retired_v(p, price, data):
+    state = p.get(STATE_KEY)
+    if state is None:
+        state = migrate_peak_state(p)
+    return observe_live_ma5_v(p, state, data, price)
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_four_paths_exact_boundary_no_pressure_no_rails_no_profit_required(symbol, side):
+def test_retired_observer_threshold_is_not_production_close_authority(symbol, side):
     p = position(side, symbol)
     sign = progress(p)
-    result = evaluate_peak_trailing(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
-    assert result['reason'] == REASON
-    assert result['price'] == 100+sign*.35
-    evidence = p[STATE_KEY]['live_ma5_v_exit']
+    evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
     assert evidence['atr'] == 1.
     assert evidence['ma5_reversal'] == '0.1'
     assert evidence['price_reversal'] == '0.15'
+    assert evaluate_peak_trailing(p, 100+sign*.35, snapshot(100+sign*.1, 303000.)) is None
     assert p[STATE_KEY]['holding_exit_policy'] == POLICY
     assert not p[STATE_KEY]['armed']
 
@@ -60,15 +66,15 @@ def test_independent_inclusive_amplitudes(side, ma_retreat, price_retreat, allow
     p = position(side)
     sign = progress(p)
     s = snapshot(100+sign*(.2-ma_retreat), 303000.)
-    assert bool(evaluate_peak_trailing(p, 100+sign*(.5-price_retreat), s)) is allowed
+    assert bool(observe_retired_v(p, 100+sign*(.5-price_retreat), s)) is allowed
 
 
 @pytest.mark.parametrize('side', SIDES)
 def test_no_preentry_turn_or_immediate_reverse_without_favorable_observation(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
-    assert evaluate_peak_trailing(p, 100., snapshot()) is None
-    assert evaluate_peak_trailing(p, 100-sign*.5, snapshot(100-sign*.2, 302000.)) is None
+    assert observe_retired_v(p, 100., snapshot()) is None
+    assert observe_retired_v(p, 100-sign*.5, snapshot(100-sign*.2, 302000.)) is None
     assert p[STATE_KEY]['live_ma5_v_status'] == 'WAIT_POST_ENTRY_MA5_PROGRESSION'
 
 
@@ -77,10 +83,10 @@ def test_flat_and_favorable_latest_slope_cannot_close_despite_old_retreat(side):
     p = position(side)
     sign = progress(p)
     # MA retreats but price has not yet confirmed.
-    assert evaluate_peak_trailing(p, 100+sign*.49, snapshot(100+sign*.05, 303000.)) is None
-    assert evaluate_peak_trailing(p, 100+sign*.3, snapshot(100+sign*.05, 304000.)) is None
+    assert observe_retired_v(p, 100+sign*.49, snapshot(100+sign*.05, 303000.)) is None
+    assert observe_retired_v(p, 100+sign*.3, snapshot(100+sign*.05, 304000.)) is None
     assert p[STATE_KEY]['live_ma5_v_status'] == 'WAIT_ACTUAL_MA5_REVERSE_SLOPE'
-    assert evaluate_peak_trailing(p, 100+sign*.3, snapshot(100+sign*.06, 305000.)) is None
+    assert observe_retired_v(p, 100+sign*.3, snapshot(100+sign*.06, 305000.)) is None
 
 
 @pytest.mark.parametrize('fault', ['no_data', 'fallback', 'closed_ma5', 'stale_bar', 'nan',
@@ -98,7 +104,7 @@ def test_invalid_or_unobserved_market_data_cannot_close(fault):
     elif fault == 'preentry': s['quote_ms'] = 289000.
     elif fault == 'same_stamp': s['quote_ms'] = 302000.
     else: s['quote_ms'] = 301999.
-    assert evaluate_peak_trailing(p, 100.35, s) is None
+    assert observe_retired_v(p, 100.35, s) is None
 
 
 @pytest.mark.parametrize('side', SIDES)
@@ -108,30 +114,33 @@ def test_gap_and_restart_keep_fixed_atr_but_require_fresh_progression(side, monk
     sign = progress(p)
     p = json.loads(json.dumps(p))
     monkeypatch.setattr(module, 'SESSION', 'new-process')
-    assert evaluate_peak_trailing(p, 100+sign*.35, snapshot(100+sign*.1, 303000., 10.)) is None
+    assert observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000., 10.)) is None
     assert p[STATE_KEY]['live_ma5_v_observation']['atr'] == 1.
     assert not p[STATE_KEY]['live_ma5_v_observation']['favorable']
-    assert evaluate_peak_trailing(p, 100+sign*.7, snapshot(100+sign*.3, 304000., 10.)) is None
-    assert evaluate_peak_trailing(p, 100+sign*.55, snapshot(100+sign*.2, 305000., 10.))
+    assert observe_retired_v(p, 100+sign*.7, snapshot(100+sign*.3, 304000., 10.)) is None
+    assert observe_retired_v(p, 100+sign*.55, snapshot(100+sign*.2, 305000., 10.))
     p = position(side)
     progress(p)
-    assert evaluate_peak_trailing(p, 100+sign*.35, snapshot(100+sign*.1, 308001.)) is None
+    assert observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 308001.)) is None
     assert not p[STATE_KEY]['live_ma5_v_observation']['favorable']
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_confirmed_retry_persists_and_account_adapter_reports_failed_close(symbol, side):
+def test_retired_confirmed_retry_never_closes_through_account_adapter(symbol, side):
     p = position(side, symbol)
     sign = progress(p)
-    assert evaluate_peak_trailing(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
+    evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
+    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence,
+                       holding_exit_policy='live_ma5_v_reversal_v6')
     p = json.loads(json.dumps(p))
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
                               log=Mock(), close_position=AsyncMock(return_value=False))
     assert not asyncio.run(enforce_atr_protection(account, symbol, 100.))
-    assert account.position_meta[symbol][STATE_KEY]['pending'] == REASON
+    assert not account.position_meta[symbol][STATE_KEY].get('pending')
     account.close_position.return_value = True
-    assert asyncio.run(enforce_atr_protection(account, symbol, 100.))
+    assert not asyncio.run(enforce_atr_protection(account, symbol, 100.))
+    account.close_position.assert_not_awaited()
 
 
 @pytest.mark.parametrize('side', SIDES)
@@ -142,7 +151,7 @@ def test_position_replacement_never_inherits_observation_or_pending(side):
     p['open_timestamp'] = 303.
     assert evaluate_peak_trailing(p, 100., snapshot(100., 304000.)) is None
     assert not p[STATE_KEY].get('pending')
-    assert not p[STATE_KEY]['live_ma5_v_observation']['favorable']
+    assert 'live_ma5_v_observation' not in p[STATE_KEY]
 
 
 @pytest.mark.parametrize('side', SIDES)
@@ -157,7 +166,7 @@ def test_risk_priority_preserved(side, risk):
     assert result['reason'] == (HARD if risk == 'hard' else WATERFALL)
 
 
-@pytest.mark.parametrize('legacy', ['EXIT_AGGRESSIVE_TRADE_PRESSURE', 'EXIT_CLOSED_PRICE_PIVOT'])
+@pytest.mark.parametrize('legacy', ['EXIT_AGGRESSIVE_TRADE_PRESSURE', 'EXIT_CLOSED_PRICE_PIVOT', REASON])
 def test_replaced_exit_authority_retired_in_both_stores(legacy):
     p = position()
     state = migrate_peak_state(p)
@@ -173,7 +182,7 @@ def test_replaced_exit_authority_retired_in_both_stores(legacy):
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_realtime_exit_bypasses_entry_and_hold_and_saves_retry(symbol, side, monkeypatch):
+def test_realtime_ma5_reverse_keeps_position_without_retry(symbol, side, monkeypatch):
     p = position(side, symbol)
     sign = progress(p)
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
@@ -185,10 +194,11 @@ def test_realtime_exit_bypasses_entry_and_hold_and_saves_retry(symbol, side, mon
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
                         lambda *a, **k: ('HOLD', 'TEST'))
     assert not asyncio.run(enforce_realtime_profit_exit(engine, symbol, 100+sign*.35, 303000.))
-    account.close_position.assert_awaited_once()
-    assert account.position_meta[symbol]['exit_protection_snapshot']['live_ma5_v_exit']['atr'] == 1.
+    account.close_position.assert_not_awaited()
+    assert 'exit_protection_snapshot' not in account.position_meta[symbol]
     account.close_position.return_value = True
-    assert asyncio.run(enforce_realtime_profit_exit(engine, symbol, 100+sign*.35, 303000.))
+    assert not asyncio.run(enforce_realtime_profit_exit(engine, symbol, 100+sign*.35, 303000.))
+    account.close_position.assert_not_awaited()
 
 
 def test_cached_ma5_uses_latest_quote_and_filtered_basis_not_live_indicator():
@@ -208,14 +218,14 @@ def test_invalid_persisted_observation_never_authorizes_close(key, value):
     p = position()
     progress(p)
     p[STATE_KEY]['live_ma5_v_observation'][key] = value
-    assert evaluate_peak_trailing(p, 100.35, snapshot(100.1, 303000.)) is None
+    assert observe_retired_v(p, 100.35, snapshot(100.1, 303000.)) is None
     assert p[STATE_KEY]['live_ma5_v_status'] == 'BLOCKED_LIVE_MA5_V_STATE'
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_actual_account_concurrent_v_close_once(symbol, side, mode, tmp_path, monkeypatch):
+def test_actual_account_concurrent_v_quotes_keep_position(symbol, side, mode, tmp_path, monkeypatch):
     async def run():
         import core.paper_account as pm
         import core.testnet_account as tm
@@ -255,10 +265,28 @@ def test_actual_account_concurrent_v_close_once(symbol, side, mode, tmp_path, mo
         engine = SimpleNamespace(account=account, is_running=True, _channel_exit_frames={})
         await asyncio.gather(*(enforce_realtime_profit_exit(engine, symbol, 100+sign*.35, stamp)
                                for _ in range(10)))
-        assert symbol not in account.positions
-        assert len(closes(account)) == 1
-        assert REASON in closes(account)[0]['reason']
+        assert symbol in account.positions
+        assert len(closes(account)) == 0
         if mode == 'testnet':
-            assert len(close_orders(exchange)) == 1
-            assert close_orders(exchange)[0]['params']['reduceOnly']
+            assert len(close_orders(exchange)) == 0
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+def test_ma5_v_disabled_on_entry_bar_and_later_bars_with_persisted_retry(symbol, side):
+    p = position(side, symbol)
+    sign = progress(p)
+    evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
+    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence,
+                       holding_exit_policy='live_ma5_v_reversal_v6')
+    meta = copy.deepcopy(p)
+    migrate_peak_state(p, meta)
+    for source in (p, meta):
+        assert not source[STATE_KEY].get('pending')
+        assert not any(key.startswith('live_ma5_v') for key in source[STATE_KEY])
+    for bar in (300000., 360000., 420000.):
+        s = dict(snapshot(100-sign*.5, bar+3000.), live_bar_ms=bar,
+                 closed_bar_ms=bar-60000)
+        assert evaluate_peak_trailing(p, 100-sign*.5, s) is None
+        assert p[STATE_KEY]['holding_exit_policy'] == POLICY

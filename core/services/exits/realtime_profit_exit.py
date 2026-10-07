@@ -10,7 +10,6 @@ from core.services.exits.peak_trailing_exit import (
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
-from core.services.exits.live_ma5_v_exit import REASON as V_EXIT
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 
@@ -196,7 +195,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         
         reason = decision['type']
         trigger = decision.get('trigger', '')
-        bypass_trend_hold = reason in (MA5_EXIT, V_EXIT, 'EXIT_ACCOUNT_HARD_STOP')
+        bypass_trend_hold = reason in (MA5_EXIT, 'EXIT_ACCOUNT_HARD_STOP')
         
         if entry_m == 'CHANNEL_SWING' and reason not in ('EXIT_INITIAL_ATR_HARD_STOP','EXIT_CONFIRMED_TREND_REVERSAL','EXIT_CONFIRMED_PIVOT_TURN') and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, TERMINAL_DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE', 'MA3_CONFIRMED_TURN', 'EXIT_MOVING_PROFIT_STOP', 'CLOSED_MA5_MA15_REVERSE_CROSS', 'EXIT_EARLY_PROFIT_REVERSAL', 'EXIT_NO_PROFIT_ADVERSE_PRESSURE', 'EXIT_CONFIRMED_SWING_STRUCTURE', 'EXIT_FAILED_BREAKOUT_RECLAIM', 'EXIT_EARLY_SWING_REVERSAL', 'LIVE_STRUCTURE_BREAK', 'EXIT_CHANNEL_SAME_BAR_END', 'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL'):
             try:
@@ -236,6 +235,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         position['exit_protection_snapshot']=audit
         meta['exit_protection_snapshot']=audit
         closed = await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
-        return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT, V_EXIT) else True
+        return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT) else True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False
