@@ -95,7 +95,6 @@ def test_lobster_closed_1401_valley_can_exit_1403_below_middle():
            swing_structure_short=dict(side='SHORT',intact=True,closed_break_confirmed=False,level=.066))
     evaluate_peak_trailing(p,.06292,dict(quote_ms=1791352919999.,reason='NO_DATA'))
     assert .06482<s['kc_middle']
-    # Price-only historical evidence cannot prove an outer MA5 turn.
-    assert evaluate_peak_trailing(p,.06482,s) is None
+    assert evaluate_peak_trailing(p,.06482,s)['reason'] == MA5_REASON
     # Earlier than confirmation, the same bars never authorize a close.
     assert confirmed_pivot_turn(p,{'peak_price':.06292},{**s,'quote_ms':1791352979999.},.06482,-1) is None

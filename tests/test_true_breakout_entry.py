@@ -11,6 +11,7 @@ from core.services.entry_firewall import validate_account_entry
 from test_lobster_cap_gates import frame
 from test_two_breakout_restore import ordinary
 from test_ma5_outer_pivot_entry import pivot_frame
+from core.services.ma5_outer_pivot_entry import PHASE
 
 
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
@@ -65,7 +66,7 @@ def test_live_authority_never_accepts_non_breakout(symbol, side, fault):
 def test_pivot_is_independent_and_cannot_be_mislabeled_as_breakout(side):
     f = pivot_frame(side)
     result = evaluate_entry_contract(f)
-    assert result and result['type'] == 'MA5_OUTER_PIVOT_BREAK_'+side
+    assert result and result['type'] == PHASE+'_'+side
     for prefix in ('KC_LIVE_BODY_BREAKOUT_', 'KC_2BAR_CONFIRM_'):
         assert evaluate_entry_contract(f, code=prefix+side) is None
 

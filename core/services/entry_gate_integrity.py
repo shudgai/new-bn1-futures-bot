@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v44-breakout-live-ma5'
+VERSION = 'entry-gate-20261007-v46-live-ma5-ma15-alignment'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 

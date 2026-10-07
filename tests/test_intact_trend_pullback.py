@@ -19,29 +19,32 @@ def aligned(side):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_local_pivot_holds_when_structure_kc_and_live_ma5_align(side):
+def test_local_price_pivot_closes_even_when_structure_kc_and_ma5_align(side):
     p,s,q,sign=aligned(side)
-    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
-    assert p['peak_trailing_state']['ma5_pivot_status'] == 'WAIT_CLOSED_MA5_REVERSAL'
+    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason'] == MA5_EXIT
+    assert p['peak_trailing_state']['ma5_pivot_status'] == 'CONFIRMED'
     assert 'profit_stop_price' not in p['peak_trailing_state']
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('release',['ma5_reverse','ma5_flat','kc_reverse','kc_flat','structure_broken'])
-def test_live_or_structure_weakness_alone_cannot_replace_closed_ma5_exit(side,release):
+def test_price_pivot_exit_is_independent_of_ma5_or_structure_direction(side,release):
     p,s,q,sign=aligned(side)
     if release=='ma5_reverse':s['ma5']=s['last_ma5']-sign*.1
     elif release=='ma5_flat':s['ma5']=s['last_ma5']
     elif release=='kc_reverse':s['kc_closed_history'][-1]['middle']=100.
     elif release=='kc_flat':s['kc_closed_history'][-1]['middle']=s['kc_closed_history'][0]['middle']
     else:s['swing_structure_'+side.lower()]['intact']=False
-    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
+    assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason'] == MA5_EXIT
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('old',[PIVOT_EXIT,REVERSAL_EXIT])
 def test_pre_guard_soft_ticket_cannot_override_intact_trend(side,old):
     p,s,q,sign=aligned(side)
+    for key in ('pivot_exit_history', 'ma5_pivot_history'):
+        for row in s[key]:
+            row['high'], row['low'] = 104., 96.
     p['peak_trailing_state'].update(pending=old,trigger=old)
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
     assert 'pending' not in p['peak_trailing_state']
@@ -63,6 +66,9 @@ def test_pullback_guard_keeps_waterfall_but_initial_stop_is_retired(side):
     p,s,q,sign=aligned(side);s['live_open']=q+sign*1.6
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0)['reason']==WATERFALL
     p,s,q,sign=aligned(side);p['initial_sl']=100+sign*1.5
+    for key in ('pivot_exit_history', 'ma5_pivot_history'):
+        for row in s[key]:
+            row['high'], row['low'] = 104., 96.
     p['entry_price']=100+sign*2.;p['initial_sl']=100+sign*1.5
     assert evaluate_peak_trailing(p,q,s,fee=0,slippage=0) is None
     p['margin'] = 1.
@@ -81,4 +87,4 @@ def test_recorded_cap_1401_early_exit_now_holds():
         early_swing_reversal=dict(side='SHORT',reversal_pivot_ms=1791352740000.,
             reversal_confirmed_ms=1791352800000.,reversal_edge=.08646))
     assert evaluate_peak_trailing(p,.08636,s) is None
-    assert p['peak_trailing_state']['ma5_pivot_status'] == 'BLOCKED_MA5_MARKET_DATA'
+    assert p['peak_trailing_state']['ma5_pivot_status'] == 'BLOCKED_MA5_HISTORY'

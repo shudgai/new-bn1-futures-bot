@@ -1,4 +1,4 @@
-"""Closed price pivots with MA5 reversal; profit locks remain retired."""
+"""Closed price pivots without MA qualification; profit locks remain retired."""
 import math
 from core.config import CHANNEL_WATERFALL_BODY_ATR
 from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
@@ -10,11 +10,13 @@ from core.services.exits.ma5_outer_pivot_exit import (
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
 HARD = 'EXIT_ACCOUNT_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
-POLICY = 'closed_price_pivot_ma5_reverse_v3'
+POLICY = 'closed_price_pivot_only_v4'
+LEGACY_PRICE_PIVOT_EXIT = 'EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE'
 ALLOWED = {HARD, WATERFALL, MA5_EXIT}
 RETIRED_CLOSE_REASONS = {
     'EXIT_INITIAL_ATR_HARD_STOP',
     'EXIT_CLOSED_MA5_OUTER_PIVOT',
+    LEGACY_PRICE_PIVOT_EXIT,
     'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_MOVING_PROFIT_STOP',
     'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_CHANNEL_SAME_BAR_END',
     'EXIT_CONFIRMED_TREND_REVERSAL', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL',
@@ -40,6 +42,12 @@ def retire_profit_state(position, state, meta=None):
     if meta and isinstance(meta.get('peak_trailing_state'), dict):
         sources.append(meta['peak_trailing_state'])
     for source in sources:
+        if (source.get('pending') == LEGACY_PRICE_PIVOT_EXIT
+                and (source.get('ma5_outer_pivot') or {}).get('rule_version') == 2):
+            source['pending'] = MA5_EXIT
+            source['trigger'] = MA5_EXIT
+            source['holding_exit_policy'] = POLICY
+            source['ma5_outer_pivot'] = dict(source['ma5_outer_pivot'], rule_version=RULE_VERSION)
         for key in PROFIT_KEYS:
             source.pop(key, None)
         source['armed'] = False

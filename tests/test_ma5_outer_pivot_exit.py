@@ -34,7 +34,7 @@ def sample(side='LONG', symbol='龙虾/USDT'):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
 @pytest.mark.parametrize('location', ['inside', 'touch', 'outside'])
-def test_price_pivot_and_closed_ma5_reverse_do_not_require_outer_location(side, symbol, location):
+def test_price_pivot_does_not_require_outer_location(side, symbol, location):
     p, s, sign = sample(side, symbol)
     for row, offset in zip(s['ma5_pivot_history'], (0., .2, .1)):
         row['ma5'] = 100+sign*offset
@@ -46,10 +46,10 @@ def test_price_pivot_and_closed_ma5_reverse_do_not_require_outer_location(side, 
     result = evaluate_peak_trailing(p, 100., s)
     assert result and result['reason'] == REASON
     evidence = p[STATE_KEY]['ma5_outer_pivot']
-    assert evidence['rule_version'] == 2
+    assert evidence['rule_version'] == 3
     assert evidence['pivot_price'] == (105. if sign == 1 else 95.)
     assert evidence['confirmed_ms'] == 240000.
-    assert sign*(evidence['previous_ma5']-evidence['confirmation_ma5']) > 0
+    assert evidence['confirmation_close'] == 100.
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -101,9 +101,8 @@ def test_first_closed_reversal_exits_without_waiting_inside_or_profit(side, symb
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('fault', ['no_price_pivot', 'equal_price', 'flat_right',
-    'tiny_float_turn', 'still_advancing', 'missing_ma5', 'nan', 'ohlc',
-    'rails', 'gap', 'duplicate', 'preentry', 'stale', 'future', 'fallback'])
+@pytest.mark.parametrize('fault', ['no_price_pivot', 'equal_price', 'nan', 'ohlc',
+    'gap', 'duplicate', 'preentry', 'stale', 'future', 'fallback'])
 def test_unconfirmed_noise_and_bad_data_cannot_close(side, fault):
     p, s, sign = sample(side)
     rows = s['ma5_pivot_history']
@@ -111,13 +110,8 @@ def test_unconfirmed_noise_and_bad_data_cannot_close(side, fault):
         rows[2]['high' if sign == 1 else 'low'] = 106. if sign == 1 else 94.
     elif fault == 'equal_price':
         rows[2]['high' if sign == 1 else 'low'] = rows[1]['high' if sign == 1 else 'low']
-    elif fault == 'flat_right': rows[2]['ma5'] = rows[1]['ma5']
-    elif fault == 'tiny_float_turn': rows[2]['ma5'] = rows[1]['ma5']-sign*1e-11
-    elif fault == 'still_advancing': rows[2]['ma5'] = rows[1]['ma5']+sign*.1
-    elif fault == 'missing_ma5': rows[1].pop('ma5')
-    elif fault == 'nan': rows[1]['ma5'] = float('nan')
+    elif fault == 'nan': rows[1]['low'] = float('nan')
     elif fault == 'ohlc': rows[1]['close'] = 106.
-    elif fault == 'rails': rows[1]['kc_lower'] = rows[1]['kc_upper']
     elif fault == 'gap': rows[0]['timestamp'] = 60000.
     elif fault == 'duplicate': rows[0]['timestamp'] = rows[1]['timestamp']
     elif fault == 'preentry': p['open_timestamp'] = 121.
@@ -128,11 +122,58 @@ def test_unconfirmed_noise_and_bad_data_cannot_close(side, fault):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_live_ma5_turn_cannot_replace_closed_confirmation(side):
+def test_closed_price_pivot_exits_despite_closed_ma5_still_advancing(side):
     p, s, sign = sample(side)
     s['ma5_pivot_history'][-1]['ma5'] = 100+sign*2.1
     s.update(ma5=100+sign*.5, last_ma5=100+sign*2.)
+    assert evaluate_peak_trailing(p, 100., s)['reason'] == REASON
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
+@pytest.mark.parametrize('ma_state', ['flat', 'favorable', 'missing', 'invalid'])
+def test_price_only_history_does_not_wait_for_ma_or_rails(side, symbol, ma_state):
+    p, s, sign = sample(side, symbol)
+    s['pivot_exit_history'] = copy.deepcopy(s.pop('ma5_pivot_history'))
+    for row in s['pivot_exit_history']:
+        row.pop('kc_lower')
+        row.pop('kc_upper')
+        if ma_state == 'missing':
+            row.pop('ma5')
+        else:
+            row['ma5'] = (float('nan') if ma_state == 'invalid' else
+                          100. if ma_state == 'flat' else 100+sign*row['timestamp']/60000)
+    result = evaluate_peak_trailing(p, 100., s)
+    assert result['reason'] == 'EXIT_CLOSED_PRICE_PIVOT'
+    assert result['price'] == 100.
+    assert 'confirmation_ma5' not in p[STATE_KEY]['ma5_outer_pivot']
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
+def test_right_candle_must_close_before_price_pivot_authority(side, symbol):
+    p, s, sign = sample(side, symbol)
+    s.update(quote_ms=241000., live_bar_ms=240000., closed_bar_ms=180000.)
     assert evaluate_peak_trailing(p, 100., s) is None
+    s.update(quote_ms=301000., live_bar_ms=300000., closed_bar_ms=240000.)
+    assert evaluate_peak_trailing(p, 100., s)['reason'] == REASON
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_verified_old_price_ma5_retry_migrates_without_new_market_data(side):
+    p, s, _ = sample(side)
+    evaluate_peak_trailing(p, 100., s)
+    state = p[STATE_KEY]
+    state.update(pending='EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE',
+                 trigger='EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE',
+                 holding_exit_policy='closed_price_pivot_ma5_reverse_v3')
+    state['ma5_outer_pivot']['rule_version'] = 2
+    meta = copy.deepcopy(p)
+    restarted = json.loads(json.dumps(p))
+    migrate_peak_state(restarted, meta)
+    assert restarted[STATE_KEY]['pending'] == REASON
+    assert meta[STATE_KEY]['pending'] == REASON
+    assert evaluate_peak_trailing(restarted, 100., {'quote_ms': 302000., 'reason': 'NO_DATA'})['reason'] == REASON
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

@@ -7,6 +7,7 @@ from core.services.early_swing_reversal import evaluate_early_swing,PHASE as REV
 from core.services.channel_structure_entry import (evaluate_channel_structure, PHASE as STRUCTURE_PHASE, CODES as STRUCTURE_CODES, EVIDENCE_KEYS as STRUCTURE_EVIDENCE_KEYS)
 
 import numpy as np
+import pandas as pd
 from core.services.outer_small_pair_entry import (CODES as OUTER_SMALL_PAIR_CODES,
     PHASE as OUTER_SMALL_PAIR_PHASE, EVIDENCE_KEYS as OUTER_SMALL_PAIR_EVIDENCE_KEYS,
     evaluate_outer_small_pair)
@@ -49,6 +50,34 @@ ENTRY_EVIDENCE_KEYS = SAME_BAR_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + CHASE_EV
 BREAKOUT_EVIDENCE_KEYS = ('breakout_live_open', 'breakout_live_edge', 'breakout_body',
                          'breakout_min_body', 'breakout_previous_ma5', 'breakout_live_ma5')
 ENTRY_EVIDENCE_KEYS += BREAKOUT_EVIDENCE_KEYS
+ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
+
+
+def live_ma_alignment_evidence(frame, quote, side):
+    """Adjust snapshot SMA15 to the same quote used to reconstruct live SMA5."""
+    try:
+        closed = closed_entry_candles(frame)
+        if side not in ('LONG', 'SHORT') or len(closed) < 4 or len(frame) != len(closed)+1:
+            return None
+        close_series = (closed.close_price_spike_filtered.fillna(closed.close)
+                        if 'close_price_spike_filtered' in closed.columns else closed.close)
+        closes = [float(v) for v in close_series.iloc[-4:]]
+        live = frame.iloc[-1]
+        filtered = live.get('close_price_spike_filtered')
+        observed = live.close if filtered is None or pd.isna(filtered) else filtered
+        quote, observed, ma15 = float(quote), float(observed), float(live.ma15)
+        if not all(math.isfinite(v) and v > 0 for v in [quote, observed, ma15, *closes]):
+            return None
+        ma5 = (sum(closes)+quote)/5.
+        ma15 += (quote-observed)/15.
+        if not math.isfinite(ma15) or ma15 <= 0:
+            return None
+        sign = 1 if side == 'LONG' else -1
+        if sign*(ma5-ma15) <= max(ma5, ma15)*1e-12:
+            return None
+        return dict(entry_live_ma5=ma5, entry_live_ma15=ma15)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def live_breakout_ma5_evidence(frame, quote, side):
@@ -770,6 +799,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             fast_distance = fast_sign*(Decimal(str(quote))-Decimal(str(fast_edge)))
             if (0 < fast_distance <= Decimal('0.5')*Decimal(str(float(latest.atr)))
                     and live_breakout_ma5_evidence(ma5_frame, quote, fast_side)
+                    and live_ma_alignment_evidence(ma5_frame, quote, fast_side)
                     and live_adverse_entry_safe(ma5_frame, quote, fast_side)):
                 return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
         if fast_side and breakout_code in (None, fast_code):
@@ -824,7 +854,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
         if code in MA5_PIVOT_CODES:
             if pivot_decision is None or pivot_decision['type'] != code:
-                return reject('WAIT_CLOSED_OUTER_MA5_PRICE_BREAK')
+                return reject('WAIT_SUSTAINED_OUTER_RUN_PIVOT_RETURN')
             decision = pivot_decision
         elif code is None and decision.get('action') != 'ENTER' and pivot_decision:
             decision = pivot_decision
@@ -832,6 +862,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject(decision.get('reason', 'WAIT_NEW_KC_BREAKOUT'))
         if code is not None and decision['type'] != code:
             return reject('BLOCKED_ENTRY_AUTHORITY_MISMATCH')
+        alignment = live_ma_alignment_evidence(ma5_frame, quote, decision['side'])
+        if alignment is None:
+            return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
+        decision.update(alignment)
         if not live_adverse_entry_safe(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_LIVE_ADVERSE_ABNORMAL')
         same_bar_close = (close_fill is not None and float(live.timestamp) == exit_bar
