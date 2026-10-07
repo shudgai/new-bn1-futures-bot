@@ -51,7 +51,16 @@ class WaitAuthority:
             previous_id = (previous.get("candidate") or {}).get("wait_trigger_id")
             if (candidate_id != previous_id
                     or any(state.get(key) != previous.get(key) for key in durable_keys)):
-                self.account.save_state()
+                event = dict(event_id=uuid.uuid4().hex, symbol=symbol, side=state.get("side"),
+                             status=state.get("status"), trigger_id=candidate_id,
+                             observed_ms=time.time()*1000, delivered=False)
+                state.setdefault("event_outbox", []).append(event)
+                self.account.save_state(require_durable=True)
+            for event in state.get("event_outbox", []):
+                if not event["delivered"]:
+                    self.account.log("WAIT_EVENT "+json.dumps(event, ensure_ascii=False), "INFO")
+                    event["delivered"] = True
+                    self.account.save_state(require_durable=True)
             if state.get("status") != previous.get("status"):
                 self.account.log("WAIT_AUTHORITY "+json.dumps({
                     "symbol": symbol, "side": state.get("side"),
@@ -73,6 +82,9 @@ class WaitAuthority:
                                 and claim.get("side") == position.get("side")
                                 and claim.get("phase") in ("CLAIMED", "UNKNOWN", "PARTIAL")):
                             claim["phase"] = "FILLED"
+                            position.setdefault("position_uuid", uuid.uuid4().hex)
+                            claim["position_uuid"] = position["position_uuid"]
+                            self.account.position_meta.setdefault(symbol, {})["position_uuid"] = position["position_uuid"]
                 state.pop("side", None)
                 state.pop("setup", None)
                 state.pop("live", None)
@@ -104,8 +116,7 @@ class WaitAuthority:
             if quote_ms <= state.get("last_quote_ms", 0):
                 return None
             resumed = (state.get("session") != SESSION
-                       or state.pop("suspended_for_position", False)
-                       or state.get("status") == "WAIT_DATA_SUSPENDED")
+                       or state.pop("suspended_for_position", False))
             live = state.get("live", {})
             frozen = state.get("frozen_live") or live
             frozen = frozen if frozen.get("bar") == bar else None
@@ -170,10 +181,10 @@ class WaitAuthority:
             state.update(candidate=candidate, status="WAIT_LIVE_TRIGGER_OBSERVED")
             return copy.deepcopy(candidate)
         except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
-            state.pop("live", None)
             state.pop("candidate", None)
             state["status"] = "WAIT_DATA_SUSPENDED"
-            self.account.log(f"WAIT_DATA_SUSPENDED symbol={symbol} reason={exc}", "WARNING")
+            if previous.get("status") != "WAIT_DATA_SUSPENDED":
+                self.account.log(f"WAIT_DATA_SUSPENDED symbol={symbol} reason={exc}", "WARNING")
             return None
         finally:
             self._save(symbol, state, previous)
@@ -237,6 +248,9 @@ class WaitAuthority:
         if (filled_qty > 0 and position_confirmed and position.get("side") == claim["side"]
                 and float(position.get("qty", 0)) > 0):
             claim["phase"] = "FILLED"
+            position.setdefault("position_uuid", uuid.uuid4().hex)
+            claim["position_uuid"] = position["position_uuid"]
+            self.account.position_meta.setdefault(symbol, {})["position_uuid"] = position["position_uuid"]
             state.pop("side", None)
             state.pop("setup", None)
             state.pop("candidate", None)

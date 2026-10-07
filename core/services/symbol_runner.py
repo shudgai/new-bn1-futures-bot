@@ -49,6 +49,11 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         return [], []
     from core.services.cap_breakout_entry import observe_cap_breakout
     observe_cap_breakout(engine.account, symbol, frame, quote)
+    wait_observer = getattr(engine, "_observe_independent_wait", None)
+    quote_time = getattr(engine, "_channel_entry_quote_times", {}).get(symbol)
+    if callable(wait_observer) and quote_time is not None:
+        frame.attrs["entry_quote_ms"] = float(quote_time)*1000
+        wait_observer(symbol, frame, quote, frame.attrs["entry_quote_ms"])
         
     if daily_halt and not position:
         return [], []

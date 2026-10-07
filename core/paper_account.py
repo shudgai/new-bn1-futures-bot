@@ -356,7 +356,7 @@ class PaperAccount:
         if stored_accounting_version < ACCOUNTING_VERSION:
             self.save_state()
 
-    def save_state(self) -> None:
+    def save_state(self, *, require_durable: bool = False) -> None:
         data = {
             "balance": self.balance,
             "realized_pnl": self.realized_pnl,
@@ -383,9 +383,20 @@ class PaperAccount:
         try:
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                if require_durable:
+                    f.flush()
+                    os.fsync(f.fileno())
             os.replace(tmp_file, STATE_FILE)
-        except Exception:
-            pass
+            if require_durable:
+                directory = os.open(os.path.dirname(os.path.abspath(STATE_FILE)), os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        except (OSError, TypeError, ValueError):
+            if require_durable:
+                self.log("WAIT_PERSISTENCE_FAILED：拒絕未持久化的交易權限", "ERROR")
+                raise
 
     def reset_state(self) -> None:
         """清空所有帳戶狀態，重新從初始餘額開始，並刪除持久化的 state 檔案。"""

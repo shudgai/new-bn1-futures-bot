@@ -1,0 +1,57 @@
+{
+  "scope": "Owner-authorized current paper-only WAIT and existing trading corrections",
+  "live_orders_authorized": false,
+  "testnet_wait_activation_authorized": false,
+  "required_files": [
+    "core/engine.py",
+    "core/paper_account.py",
+    "core/services/wait_authority.py",
+    "core/services/entry_contract.py",
+    "core/services/entry_firewall.py",
+    "core/services/entry_gate_integrity.py",
+    "core/services/symbol_runner.py",
+    "core/services/structure_risk_sizing.py",
+    "core/services/exits/live_ma5_v_exit.py",
+    "core/services/exits/structural_holding_exit.py",
+    "core/services/exits/realtime_profit_exit.py",
+    "core/services/exits/hard_stop_service.py",
+    "services/api.py",
+    "services/runtime_source.py",
+    "tools/deployment_preflight.py",
+    "web/index.html"
+  ],
+  "required_test_files": [
+    "tests/test_wait_authority.py",
+    "tests/test_web_read_only.py",
+    "tests/test_live_ma5_v_exit.py",
+    "tests/test_two_slot_full_margin.py",
+    "tests/test_trade_pressure_exit.py",
+    "tests/test_ma5_outer_pivot_exit.py",
+    "tests/test_channel_hard_stop_restore.py",
+    "tests/test_true_breakout_entry.py",
+    "tests/test_cap_pair_continuation.py",
+    "tests/test_ma5_outer_pivot_entry.py",
+    "tests/test_entry_chop_gate.py"
+  ],
+  "required_behaviors": [
+    "Independent LOBSTER LONG, LOBSTER SHORT, CAP LONG, CAP SHORT",
+    "Completed Entry-style doji before SMALL; inclusive 0.25 and 0.50 ATR",
+    "Bridge priority, refresh, medium/doji/opposite BIG keep; no expiry",
+    "Live observation without candle-close, KC location, peak or MA qualifications",
+    "Frozen preceding ATR and valid authoritative market data",
+    "No downtime reconstruction; suspend while held and rebuild after confirmed FLAT",
+    "Shared firewall and refreshed half-wallet submit lock",
+    "Stable single claims per BIG candle; UNKNOWN quarantine across authorities",
+    "Positive actual position consumption including partial fill; no top-up",
+    "Persisted claims, position UUID and event outbox; persistence failure blocks submission",
+    "Real same-side KC2BAR coexistence and opposite-authority fail-closed arbitration",
+    "Preserve existing MA5 V exits, half-wallet sizing, CAP progress and account hard stops",
+    "Read-only web never starts trading and cannot mutate positions by GET"
+  ],
+  "historical_missing_tests": [
+    "tests/test_channel_swing.py",
+    "tests/test_channel_position_path.py",
+    "tests/test_channel_swing_execution.py"
+  ],
+  "historical_tests_claimed_passed": false
+}

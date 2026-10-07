@@ -60,18 +60,19 @@ def test_four_independent_live_trigger_paths(symbol, side, monkeypatch):
     assert set(a.position_meta[STATE_KEY]) == {symbol}
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("body,expected", [(.499999, False), (.5, True), (.500001, True)])
-def test_live_threshold_without_completed_doji_or_kc_or_ma(side, body, expected, monkeypatch):
-    _, w = armed("CAP/USDT", side, monkeypatch)
+def test_live_threshold_without_completed_doji_or_kc_or_ma(symbol, side, body, expected, monkeypatch):
+    _, w = armed(symbol, side, monkeypatch)
     f = frame(240000.)
-    assert bool(observe(w, "CAP/USDT", f, monkeypatch,
+    assert bool(observe(w, symbol, f, monkeypatch,
                         price=100+(1 if side == "LONG" else -1)*body, offset=2000)) == expected
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_bridges_refresh_medium_doji_opposite_big_and_no_expiry(side, monkeypatch):
-    symbol = "CAP/USDT"
+def test_bridges_refresh_medium_doji_opposite_big_and_no_expiry(symbol, side, monkeypatch):
     a, w = armed(symbol, side, monkeypatch)
     sign = 1 if side == "LONG" else -1
     setup = copy.deepcopy(a.position_meta[STATE_KEY][symbol]["setup"])
@@ -110,52 +111,57 @@ def test_invalid_ohlc_not_doji_or_setup(high, low, close):
     assert completed_classification(SimpleNamespace(open=1., close=close, high=high, low=low), 1.) == "INVALID_CANDLE"
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_restart_does_not_replay_completed_setup_or_trigger(side, monkeypatch):
+def test_restart_does_not_replay_completed_setup_or_trigger(symbol, side, monkeypatch):
     import core.services.wait_authority as module
-    a, w = armed("CAP/USDT", side, monkeypatch)
-    setup = copy.deepcopy(a.position_meta[STATE_KEY]["CAP/USDT"]["setup"])
+    a, w = armed(symbol, side, monkeypatch)
+    setup = copy.deepcopy(a.position_meta[STATE_KEY][symbol]["setup"])
     monkeypatch.setattr(module, "SESSION", "new-process")
-    observe(w, "CAP/USDT", frame(600000., completed_close=100.8), monkeypatch)
-    state = a.position_meta[STATE_KEY]["CAP/USDT"]
+    observe(w, symbol, frame(600000., completed_close=100.8), monkeypatch)
+    state = a.position_meta[STATE_KEY][symbol]
     assert state["setup"] == setup
     assert "candidate" not in state
     assert state["side"] == side
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_position_suspension_and_flat_rebuild_not_old_setup(side, monkeypatch):
-    a, w = armed("CAP/USDT", side, monkeypatch)
-    a.positions["CAP/USDT"] = {"qty": 1., "side": side}
-    observe(w, "CAP/USDT", frame(300000.), monkeypatch)
+def test_position_suspension_and_flat_rebuild_not_old_setup(symbol, side, monkeypatch):
+    a, w = armed(symbol, side, monkeypatch)
+    a.positions[symbol] = {"qty": 1., "side": side}
+    observe(w, symbol, frame(300000.), monkeypatch)
     a.positions.clear()
-    assert observe(w, "CAP/USDT", frame(360000., completed_close=99.8),
+    assert observe(w, symbol, frame(360000., completed_close=99.8),
                    monkeypatch, price=100.5) is None
-    assert "setup" not in a.position_meta[STATE_KEY]["CAP/USDT"]
+    assert "setup" not in a.position_meta[STATE_KEY][symbol]
     close = 99.8 if side == "LONG" else 100.2
-    observe(w, "CAP/USDT", frame(420000., completed_close=close), monkeypatch)
-    assert a.position_meta[STATE_KEY]["CAP/USDT"]["side"] == side
+    observe(w, symbol, frame(420000., completed_close=close), monkeypatch)
+    assert a.position_meta[STATE_KEY][symbol]["side"] == side
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("outcome,filled,position,phase", [
     ("FAILED", 0., False, "FAILED"), ("TIMEOUT", 0., False, "UNKNOWN"),
     ("PARTIAL", .1, True, "FILLED"), ("UNKNOWN", .1, False, "UNKNOWN"),
     ("FILLED", 1., True, "FILLED"),
 ])
-def test_claims_consume_only_authoritative_positive_position(outcome, filled, position, phase, monkeypatch):
-    a, w = armed("CAP/USDT", "LONG", monkeypatch)
-    d = observe(w, "CAP/USDT", frame(240000.), monkeypatch, price=100.5, offset=2000)
-    w.claim("CAP/USDT", d["wait_trigger_id"])
+def test_claims_consume_only_authoritative_positive_position(symbol, side, outcome, filled, position, phase, monkeypatch):
+    a, w = armed(symbol, side, monkeypatch)
+    price = 100+(1 if side == "LONG" else -1)*.5
+    d = observe(w, symbol, frame(240000.), monkeypatch, price=price, offset=2000)
+    w.claim(symbol, d["wait_trigger_id"])
     with pytest.raises(ValueError, match="DUPLICATE_OR_UNKNOWN"):
-        w.claim("CAP/USDT", d["wait_trigger_id"])
+        w.claim(symbol, d["wait_trigger_id"])
     if position:
-        a.positions["CAP/USDT"] = {"qty": filled, "side": "LONG"}
-    w.settle("CAP/USDT", d["wait_trigger_id"], outcome=outcome, filled_qty=filled,
+        a.positions[symbol] = {"qty": filled, "side": side}
+    w.settle(symbol, d["wait_trigger_id"], outcome=outcome, filled_qty=filled,
              position_confirmed=position)
-    state = a.position_meta[STATE_KEY]["CAP/USDT"]
+    state = a.position_meta[STATE_KEY][symbol]
     assert state["claims"]["240000"]["phase"] == phase
     assert ("setup" not in state) == (phase == "FILLED")
-    assert observe(w, "CAP/USDT", frame(240000.), monkeypatch, price=100.6, offset=3000) is None
+    assert observe(w, symbol, frame(240000.), monkeypatch, price=price, offset=3000) is None
 
 
 def test_missing_atr_keeps_wait_and_suspends_authority(monkeypatch):
@@ -188,9 +194,7 @@ def test_restart_freezes_atr_but_requires_new_live_observation(monkeypatch):
     assert d["wait_fixed_atr"] == 1.
 
 
-@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_paper_engine_firewall_shared_lock_claim_fill_and_persistence(symbol, side, monkeypatch, tmp_path):
+def paper_submission_fixture(symbol, side, monkeypatch, tmp_path):
     import core.paper_account as paper
     import core.engine as engine_module
     from core.engine import TradingEngine
@@ -225,6 +229,15 @@ def test_paper_engine_firewall_shared_lock_claim_fill_and_persistence(symbol, si
     e._entry_boundary_frame = AsyncMock(return_value=f)
     signal = dict(side=side, entry_mode="CHANNEL_SWING", signal_code=d["type"],
                   candidate_bar_id=240000., score=100)
+    return a, w, f, d, e, signal
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_paper_engine_firewall_shared_lock_claim_fill_and_persistence(symbol, side, monkeypatch, tmp_path):
+    import core.paper_account as paper
+    a, w, f, d, e, signal = paper_submission_fixture(symbol, side, monkeypatch, tmp_path)
+    price = float(d["price"])
 
     async def run():
         results = await asyncio.gather(*(
@@ -237,6 +250,8 @@ def test_paper_engine_firewall_shared_lock_claim_fill_and_persistence(symbol, si
     restored = paper.PaperAccount()
     assert restored.positions[symbol]["entry_snapshot"]["wait_trigger_id"] == d["wait_trigger_id"]
     assert "setup" not in restored.position_meta[STATE_KEY][symbol]
+    assert restored.positions[symbol]["position_uuid"] == a.positions[symbol]["position_uuid"]
+    assert all(event["delivered"] for event in restored.position_meta[STATE_KEY][symbol]["event_outbox"])
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -335,3 +350,170 @@ def test_unknown_live_candle_finality_is_not_accepted(monkeypatch):
     f.loc[f.index[-1], "is_closed"] = "false"
     assert observe(w, "CAP/USDT", f, monkeypatch, price=100.5, offset=2000) is None
     assert a.position_meta[STATE_KEY]["CAP/USDT"]["status"] == "WAIT_DATA_SUSPENDED"
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("fault", ["pending", "slots", "capital", "stale", "persistence"])
+def test_four_paper_paths_safety_faults_never_open(symbol, side, fault, monkeypatch, tmp_path):
+    import core.paper_account as paper
+    a, w, f, d, e, signal = paper_submission_fixture(symbol, side, monkeypatch, tmp_path)
+    if fault == "pending":
+        a.pending_limit_orders[symbol] = {}
+    elif fault == "slots":
+        a.pending_limit_orders.update({str(i): {} for i in range(2)})
+    elif fault == "capital":
+        a.balance = 10.
+        monkeypatch.setattr(a, "get_available_balance", lambda: 1.)
+    elif fault == "stale":
+        monkeypatch.setattr("time.time", lambda: 249.)
+    elif fault == "persistence":
+        monkeypatch.setattr(paper.os, "fsync", Mock(side_effect=OSError("disk sync failed")))
+    assert not asyncio.run(e._place_structured_entry(symbol, signal, d["price"]))
+    assert not a.positions
+    assert not a.trades
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_engine_interrupted_submit_quarantines_all_new_entries(symbol, side, monkeypatch, tmp_path):
+    from core.services.entry_firewall import validate_account_entry
+    from core.services.entry_gate_integrity import assert_commit_proof
+    from core.services.entry_contract import evaluate_entry_contract
+    a, w, f, d, e, signal = paper_submission_fixture(symbol, side, monkeypatch, tmp_path)
+
+    async def interrupted(**kwargs):
+        context = kwargs["entry_context"]
+        await validate_account_entry(a, symbol, side, context)
+        assert_commit_proof(a, symbol, side, context)
+        raise TimeoutError("unknown submit result")
+
+    monkeypatch.setattr(a, "open_position", interrupted)
+    assert not asyncio.run(e._place_structured_entry(symbol, signal, d["price"]))
+    assert a.position_meta[STATE_KEY][symbol]["claims"]["240000"]["phase"] == "UNKNOWN"
+    assert evaluate_entry_contract(f, account=a, symbol=symbol) is None
+    assert not a.positions and not a.trades
+
+
+def test_outbox_replays_same_event_identity_without_order_claim(monkeypatch):
+    a, w = armed("CAP/USDT", "LONG", monkeypatch)
+    state = a.position_meta[STATE_KEY]["CAP/USDT"]
+    event = state["event_outbox"][0]
+    event["delivered"] = False
+    event_id = event["event_id"]
+    before = len(state["event_outbox"])
+    observe(w, "CAP/USDT", frame(240000.), monkeypatch, offset=2000)
+    state = a.position_meta[STATE_KEY]["CAP/USDT"]
+    assert len(state["event_outbox"]) == before
+    assert state["event_outbox"][0]["event_id"] == event_id
+    assert state["event_outbox"][0]["delivered"]
+    assert not state.get("claims")
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_live_quote_crossing_schedules_entry_without_candle_close(symbol, side, monkeypatch, tmp_path):
+    a, w, f, d, e, signal = paper_submission_fixture(symbol, side, monkeypatch, tmp_path)
+    e.is_running = True
+    e._channel_exit_frames = {symbol: f}
+    sign = 1 if side == "LONG" else -1
+    assert observe(w, symbol, f, monkeypatch, price=100+sign*.49, offset=2500) is None
+    monkeypatch.setattr("time.time", lambda: 243.)
+
+    async def run():
+        e._observe_channel_entry_quote(symbol, d["price"], 243000.)
+        tasks = list(e._exit_followup_tasks.values())
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+    asyncio.run(run())
+    assert symbol in a.positions
+    assert a.positions[symbol]["entry_snapshot"]["entry_phase"] == "INDEPENDENT_WAIT"
+    assert not bool(f.iloc[-1].is_closed)
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("opposite", [False, True])
+def test_real_two_bar_authority_arbitrates_with_wait(symbol, side, opposite, monkeypatch):
+    import core.services.entry_contract as contract
+    from test_entry_chop_gate import eligible_frame
+    a, w = armed(symbol, side, monkeypatch)
+    other_side = ("SHORT" if side == "LONG" else "LONG") if opposite else side
+    f = eligible_frame("pair", other_side)
+    quote = float(f.iloc[-1].close)
+    opened = quote-(1 if side == "LONG" else -1)*.5
+    f.loc[f.index[-1], "open"] = opened
+    f.loc[f.index[-1], "high"] = max(float(f.iloc[-1].high), opened)
+    f.loc[f.index[-1], "low"] = min(float(f.iloc[-1].low), opened)
+    observe(w, symbol, f, monkeypatch, price=opened)
+    # The WAIT scale is frozen; the independent KC authority uses fresh data.
+    f.loc[f.index[-2], "atr"] = 2.
+    observe(w, symbol, f, monkeypatch, price=quote, offset=2000)
+    stamp = float(f.iloc[-1].timestamp)+2000
+    f.attrs.update(entry_quote_ms=stamp, entry_finality_server_ms=stamp,
+                   entry_finality_verified=True)
+    legacy = contract._evaluate_strategy_contract(
+        f, quote, code="KC_2BAR_CONFIRM_"+other_side, account=a, symbol=symbol)
+    assert legacy and legacy["side"] == other_side
+    diagnostics = {}
+    d = contract.evaluate_entry_contract(f, quote, account=a, symbol=symbol, diagnostics=diagnostics)
+    if opposite:
+        assert d is None
+        assert diagnostics["reason"] == "BLOCKED_OPPOSITE_ENTRY_AUTHORITIES"
+    else:
+        assert d["type"] == "WAIT_LIVE_BIG_"+side
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_bar_boundary_cache_delay_does_not_erase_observed_setup(symbol, side, monkeypatch):
+    a = account()
+    w = WaitAuthority(a)
+    old = frame(180000.)
+    observe(w, symbol, old, monkeypatch)
+    assert observe(w, symbol, old, monkeypatch, offset=61000) is None
+    assert a.position_meta[STATE_KEY][symbol]["status"] == "WAIT_DATA_SUSPENDED"
+    close = 99.8 if side == "LONG" else 100.2
+    new = frame(240000., completed_close=close)
+    price = 100+(1 if side == "LONG" else -1)*.5
+    d = observe(w, symbol, new, monkeypatch, price=price, offset=2000)
+    assert d["side"] == side
+    assert d["wait_setup"]["bar"] == 180000.
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("body,expected", [(.249999, True), (.25, True), (.250001, False)])
+def test_four_setup_threshold_paths(symbol, side, body, expected, monkeypatch):
+    a = account()
+    w = WaitAuthority(a)
+    observe(w, symbol, frame(180000.), monkeypatch)
+    sign = 1 if side == "LONG" else -1
+    observe(w, symbol, frame(240000., completed_close=100-sign*body), monkeypatch)
+    assert (a.position_meta[STATE_KEY][symbol].get("side") == side) is expected
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_four_doji_before_small_cannot_create_setup(symbol, side, monkeypatch):
+    a = account()
+    w = WaitAuthority(a)
+    observe(w, symbol, frame(180000.), monkeypatch)
+    sign = 1 if side == "LONG" else -1
+    d = observe(w, symbol, frame(240000., completed_close=100-sign*.001),
+                monkeypatch, price=100+sign*.5)
+    assert d is None
+    assert "side" not in a.position_meta[STATE_KEY][symbol]
+    assert a.position_meta[STATE_KEY][symbol]["status"] == "WAIT_DOJI_KEEP"
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_four_invalid_completed_candles_suspend_without_clearing_wait(symbol, side, monkeypatch):
+    a, w = armed(symbol, side, monkeypatch)
+    f = frame(300000.)
+    f.loc[f.index[-2], ["high", "low"]] = [100., 100.]
+    sign = 1 if side == "LONG" else -1
+    assert observe(w, symbol, f, monkeypatch, price=100+sign*.5) is None
+    assert a.position_meta[STATE_KEY][symbol]["side"] == side
+    assert a.position_meta[STATE_KEY][symbol]["status"] == "WAIT_DATA_SUSPENDED"

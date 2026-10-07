@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from services import api
 
@@ -66,3 +66,19 @@ def test_normal_mode_keeps_existing_position_updates(monkeypatch):
     monkeypatch.setattr(api.engine.account, "update_positions", update)
     assert asyncio.run(api.displayed_unrealized_pnl()) == 12.5
     update.assert_awaited_once_with(api.engine.tickers)
+
+
+def test_runtime_source_is_captured_at_startup_not_read_from_later_files(monkeypatch):
+    from services import runtime_source
+    monkeypatch.setattr(api, "WEB_READ_ONLY", True)
+    monkeypatch.setattr(api, "_runtime_source_at_boot", None)
+    boot = {"commit": "boot-commit", "tree_clean_at_boot": True,
+            "source_hashes": {"core/engine.py": "boot-hash"}}
+    capture = Mock(return_value=boot)
+    monkeypatch.setattr(runtime_source, "capture_runtime_source", capture)
+    asyncio.run(api.startup_event())
+    capture.return_value = {"commit": "changed-after-start"}
+    response = asyncio.run(api.get_runtime_source())
+    assert json.loads(response.body)["commit"] == "boot-commit"
+    assert json.loads(response.body)["web_read_only"] is True
+    capture.assert_called_once()

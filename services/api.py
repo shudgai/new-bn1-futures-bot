@@ -214,6 +214,7 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 BOT_PAUSED_FILE = os.path.join(os.path.dirname(WEB_DIR), "data", "bot_paused.flag")
 BOT_SUPERVISOR_INTERVAL_SECONDS = 5.0
 _bot_supervisor_task = None
+_runtime_source_at_boot = None
 _bot_control_lock = asyncio.Lock()
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
 
@@ -282,7 +283,9 @@ async def bot_supervisor_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global _bot_supervisor_task
+    global _bot_supervisor_task, _runtime_source_at_boot
+    from services.runtime_source import capture_runtime_source
+    _runtime_source_at_boot = capture_runtime_source()
     if WEB_READ_ONLY:
         return
     try:
@@ -435,6 +438,14 @@ async def get_account_exposure():
         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/runtime-source")
+async def get_runtime_source():
+    if _runtime_source_at_boot is None:
+        raise HTTPException(status_code=503, detail="啟動來源尚未完成取樣")
+    return JSONResponse(dict(_runtime_source_at_boot, web_read_only=WEB_READ_ONLY),
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/status")
 async def get_status(response: Response):
     headers = {
@@ -448,7 +459,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "浮盈價格位移達進場 ATR 的 2.0 倍才啟動 20% 淨利回吐保護。相反方向符合現行完整開倉條件時自動反向：確認平倉成功後，以原數量及原槓桿開相反倉，送單前重新驗證行情與帳戶風控；同根 K 不連續反向。",
+        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。KC 入口保留方向及各自資格；獨立 WAIT 採已收線小 K、橋接與即時大 K，不繼承 KC／MA 資格。持倉採進場後實際觀察的 MA5 峰谷反向至少 0.10 ATR，加價格反向至少 0.15 ATR；帳戶硬止損及瀑布保留，自動反手停用。所有入口均須通過送單安全 Gate。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
