@@ -58,8 +58,39 @@ def valid_snapshot(snapshot):
         return False
 
 
+def intact_trend_pullback(snapshot, sign):
+    """A local turn alone cannot close an intact, still advancing trend."""
+    try:
+        if not valid_snapshot(snapshot):
+            return False
+        structure = snapshot['swing_structure_' + ('long' if sign == 1 else 'short')]
+        rows = snapshot['kc_closed_history'][-2:]
+        ma5, previous = float(snapshot['ma5']), float(snapshot['last_ma5'])
+        if (structure.get('side') != ('LONG' if sign == 1 else 'SHORT')
+                or structure.get('intact') is not True
+                or structure.get('closed_break_confirmed') is True or len(rows) != 2):
+            return False
+        stamps = [float(r['timestamp']) for r in rows]
+        middle = [float(r['middle']) for r in rows]
+        if not all(math.isfinite(v) and v > 0 for v in [*stamps,*middle,ma5,previous]):
+            return False
+        return (stamps[1]-stamps[0] == 60000 and stamps[-1] == snapshot['closed_bar_ms']
+                and sign*(middle[1]-middle[0]) > max(middle)*1e-12
+                and sign*(ma5-previous) > max(ma5,previous)*1e-12)
+    except (KeyError,TypeError,ValueError,IndexError,OverflowError):
+        return False
+
+
 def evaluate_structural_holding(position, state, price, snapshot, entry, qty, sign, atr, fee, slippage):
     retire_profit_state(position, state)
+    pullback = intact_trend_pullback(snapshot, sign)
+    state['intact_trend_pullback'] = pullback
+    # Old soft tickets were allowed to trigger before this trend guard existed.
+    if (state.get('pending') in (PIVOT_EXIT, REVERSAL_EXIT)
+            and state.get('pivot_guard_version') != 1 and pullback):
+        state.pop('pending', None)
+        state.pop('trigger', None)
+        state.pop('confirmed_pivot_exit', None)
     reason = state.get('pending') if state.get('pending') in ALLOWED else None
     # Initial hard risk is independent of profit, pivot or a new opposite entry.
     from core.services.exits.hard_stop_service import hard_stop_reason
@@ -68,7 +99,7 @@ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, si
     valid = valid_snapshot(snapshot)
     if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
         reason = WATERFALL
-    if reason is None and valid:
+    if reason is None and valid and not pullback:
         confirmation = confirmed_pivot_turn(position, state, snapshot, price, sign)
         if confirmation:
             reason = PIVOT_EXIT
@@ -86,11 +117,13 @@ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, si
             reason = REASON
             state.update(structure_break_confirmation='CLOSED', structure_break_level=level,
                          structure_break_atr=scale, structure_break_threshold=threshold)
-        elif early_reversal_ready(position, state, snapshot, price, sign):
+        elif not pullback and early_reversal_ready(position, state, snapshot, price, sign):
             reason = REVERSAL_EXIT
     state['holding_exit_policy'] = POLICY
     if not reason:
         return None
+    if reason in (PIVOT_EXIT, REVERSAL_EXIT):
+        state['pivot_guard_version'] = 1
     trigger = 'INITIAL_ATR' if reason == HARD else 'WATERFALL_DROP' if reason == WATERFALL else reason
     state.update(pending=reason, trigger=trigger)
     return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)

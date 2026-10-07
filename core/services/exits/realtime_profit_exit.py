@@ -205,7 +205,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f} '
                     f'quote_age_at_start_ms={quote_age_at_start_ms:.1f} evaluation_ms={(time.perf_counter()-evaluation_started)*1000:.1f}', 'INFO')
-        audit=dict(confirmed_pivot_exit=current.get('confirmed_pivot_exit'),confirmed_trend_exit=current.get('confirmed_trend_exit'),quote_age_at_start_ms=quote_age_at_start_ms,
+        audit=dict(intact_trend_pullback=current.get('intact_trend_pullback'),pivot_guard_version=current.get('pivot_guard_version'),confirmed_pivot_exit=current.get('confirmed_pivot_exit'),confirmed_trend_exit=current.get('confirmed_trend_exit'),quote_age_at_start_ms=quote_age_at_start_ms,
                    evaluation_ms=(time.perf_counter()-evaluation_started)*1000,swing_atr_profit_lock=current.get('swing_atr_profit_lock'),structure_break_warning=current.get('structure_break_warning'),
                    structure_trend_aligned=current.get('structure_trend_aligned'),same_bar_profit_lock=current.get('same_bar_profit_lock'),entry_phase=(position.get('entry_snapshot') or {}).get('entry_phase'),
                    same_bar_exit_deadline_ms=(position.get('entry_snapshot') or {}).get('same_bar_exit_deadline_ms'),

@@ -85,7 +85,11 @@ def test_lobster_closed_1401_valley_can_exit_1403_below_middle():
     p=dict(side='SHORT',entry_mode='CHANNEL_SWING',entry_price=.065353464,qty=1.,
            margin=1.,leverage=1.,entry_atr=.000843,initial_sl=.0666643,open_timestamp=1791352416.)
     s=dict(quote_ms=1791352980010.,live_bar_ms=1791352980000.,closed_bar_ms=1791352920000.,
-           pivot_exit_history=rows,live_open=.06482,atr=.000843,kc_middle=.0654593144449,reason=None)
+           pivot_exit_history=rows,live_open=.06482,atr=.000843,kc_middle=.0654593144449,reason=None,
+           ma5=.064358,last_ma5=.06433,
+           kc_closed_history=[dict(timestamp=1791352860000.,middle=.06552661070226416),
+                              dict(timestamp=1791352920000.,middle=.06545931444490567)],
+           swing_structure_short=dict(side='SHORT',intact=True,closed_break_confirmed=False,level=.066))
     evaluate_peak_trailing(p,.06292,dict(quote_ms=1791352919999.,reason='NO_DATA'))
     assert .06482<s['kc_middle']
     assert evaluate_peak_trailing(p,.06482,s)['reason']==REASON
