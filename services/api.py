@@ -459,7 +459,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。KC 入口保留方向及各自資格；獨立 WAIT 採已收線小 K、橋接與即時大 K，不繼承 KC／MA 資格。MA5 V 策略平倉完全停用，持倉只保留帳戶硬止損與瀑布緊急出口，手動平倉可用，自動反手停用。所有入口均須通過送單安全 Gate。",
+        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。KC 入口保留各自資格；獨立 WAIT 保留小 K、橋接及即時大 K 條件，不繼承 KC／MA 資格。持倉 MA5 進場後峰谷先到持倉側 KC 外軌，再真正反向且 MA5 回退至少 0.10 ATR、價格回退至少 0.15 ATR 才平倉；通道內小轉向及 KC 單獨反向不平。帳戶硬止損、瀑布與手動平倉保留，不自動反手。所有入口均須通過送單安全 Gate。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

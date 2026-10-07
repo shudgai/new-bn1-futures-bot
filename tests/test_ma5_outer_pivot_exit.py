@@ -55,7 +55,7 @@ def test_ma5_small_bend_without_price_extreme_cannot_close(side, symbol):
     for row in s['ma5_pivot_history']:
         row['high'], row['low'] = 104., 96.
     assert evaluate_peak_trailing(p, 100., s) is None
-    assert 'live_ma5_v_status' not in p[STATE_KEY]
+    assert p[STATE_KEY]['live_ma5_v_status'] == 'BLOCKED_LIVE_MA5_V_DATA'
     assert not p[STATE_KEY].get('pending')
 
 

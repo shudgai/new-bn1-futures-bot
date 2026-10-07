@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from core.services.exits.peak_trailing_exit import position_identity
 
-REASON = 'EXIT_LIVE_MA5_V_REVERSAL'
-RULE_VERSION = 1
+REASON = 'EXIT_OUTER_MA5_V_REVERSAL'
+RULE_VERSION = 2
 MA5_REVERSAL_ATR = Decimal('0.10')
 PRICE_REVERSAL_ATR = Decimal('0.15')
 SESSION = str(uuid4())
@@ -26,13 +26,15 @@ def observe_live_ma5_v(position, state, snapshot, price):
         identity = position_identity(position)
         stamp, ma5, atr, price = map(float, (
             snapshot['quote_ms'], snapshot['ma5'], snapshot['atr'], price))
+        lower, upper = float(snapshot['kc_lower']), float(snapshot['kc_upper'])
         bar = math.floor(stamp/60000)*60000
         if (snapshot.get('reason') or snapshot.get('fallback_used')
                 or snapshot.get('live_ma5_verified') is not True
                 or snapshot.get('live_bar_ms') != bar
                 or snapshot.get('closed_bar_ms') != bar-60000
                 or stamp < identity[1]*1000
-                or not all(math.isfinite(v) and v > 0 for v in (stamp, ma5, atr, price))):
+                or not all(math.isfinite(v) and v > 0 for v in (stamp, ma5, atr, price, lower, upper))
+                or lower >= upper):
             return hold('BLOCKED_LIVE_MA5_V_DATA')
         observed = state.get('live_ma5_v_observation') or {}
         if observed.get('identity') != identity or observed.get('rule_version') != RULE_VERSION:
@@ -44,7 +46,7 @@ def observe_live_ma5_v(position, state, snapshot, price):
             observed = dict(identity=identity, rule_version=RULE_VERSION, atr=observed['atr'],
                             session=SESSION, first_ma5=ma5, ma5_extreme=ma5,
                             price_extreme=price, previous_ma5=ma5, last_ms=stamp,
-                            favorable=False)
+                            favorable=False, outer_extreme=None)
             state['live_ma5_v_observation'] = observed
             return hold('WAIT_POST_ENTRY_MA5_PROGRESSION')
         if not all(math.isfinite(float(observed[key])) and float(observed[key]) > 0
@@ -56,8 +58,14 @@ def observe_live_ma5_v(position, state, snapshot, price):
         tolerance = max(ma5, observed['previous_ma5']) * 1e-12
         step = sign*(ma5-observed['previous_ma5'])
         extreme = max if sign == 1 else min
-        observed['ma5_extreme'] = extreme(ma5, observed['ma5_extreme'])
+        prior_extreme = observed['ma5_extreme']
+        observed['ma5_extreme'] = extreme(ma5, prior_extreme)
         observed['price_extreme'] = extreme(price, observed['price_extreme'])
+        edge = upper if sign == 1 else lower
+        if sign*(ma5-prior_extreme) > 0:
+            observed['outer_extreme'] = None
+        if ma5 == observed['ma5_extreme'] and sign*(ma5-edge) >= 0:
+            observed['outer_extreme'] = dict(ma5=ma5, edge=edge, quote_ms=stamp, bar=bar)
         if step > tolerance:
             observed['favorable'] = True
         observed.update(previous_ma5=ma5, last_ms=stamp)
@@ -66,6 +74,8 @@ def observe_live_ma5_v(position, state, snapshot, price):
             return hold('WAIT_POST_ENTRY_MA5_PROGRESSION')
         if step >= -tolerance:
             return hold('WAIT_ACTUAL_MA5_REVERSE_SLOPE')
+        if not observed.get('outer_extreme'):
+            return hold('WAIT_MA5_EXTREME_AT_OUTER_RAIL')
         scale = Decimal(str(observed['atr']))
         ma5_retreat = sign*(Decimal(str(observed['ma5_extreme']))-Decimal(str(ma5)))
         price_retreat = sign*(Decimal(str(observed['price_extreme']))-Decimal(str(price)))
@@ -75,6 +85,7 @@ def observe_live_ma5_v(position, state, snapshot, price):
             return hold('WAIT_PRICE_REVERSAL_AMPLITUDE')
         state['live_ma5_v_status'] = 'CONFIRMED'
         return dict(rule_version=RULE_VERSION, identity=identity, quote_ms=stamp,
+                    outer_extreme=observed['outer_extreme'],
                     atr=observed['atr'], ma5=ma5, ma5_extreme=observed['ma5_extreme'],
                     price=price, price_extreme=observed['price_extreme'],
                     ma5_reversal=str(ma5_retreat), price_reversal=str(price_retreat),

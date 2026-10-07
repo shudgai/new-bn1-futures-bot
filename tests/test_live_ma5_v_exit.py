@@ -26,7 +26,8 @@ def position(side='LONG', symbol='龙虾/USDT'):
 
 def snapshot(ma5=100., stamp=301000., atr=1.):
     return dict(quote_ms=stamp, live_bar_ms=300000., closed_bar_ms=240000.,
-                atr=atr, ma5=ma5, live_ma5_verified=True, live_open=100., reason=None)
+                atr=atr, ma5=ma5, live_ma5_verified=True, live_open=100., reason=None,
+                kc_lower=99.8, kc_upper=100.2)
 
 
 def progress(p):
@@ -131,7 +132,7 @@ def test_retired_confirmed_retry_never_closes_through_account_adapter(symbol, si
     p = position(side, symbol)
     sign = progress(p)
     evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
-    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence,
+    p[STATE_KEY].update(pending='EXIT_LIVE_MA5_V_REVERSAL', trigger=REASON, live_ma5_v_exit=evidence,
                        holding_exit_policy='live_ma5_v_reversal_v6')
     p = json.loads(json.dumps(p))
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
@@ -151,7 +152,7 @@ def test_position_replacement_never_inherits_observation_or_pending(side):
     p['open_timestamp'] = 303.
     assert evaluate_peak_trailing(p, 100., snapshot(100., 304000.)) is None
     assert not p[STATE_KEY].get('pending')
-    assert 'live_ma5_v_observation' not in p[STATE_KEY]
+    assert not p[STATE_KEY]['live_ma5_v_observation']['favorable']
 
 
 @pytest.mark.parametrize('side', SIDES)
@@ -166,7 +167,7 @@ def test_risk_priority_preserved(side, risk):
     assert result['reason'] == (HARD if risk == 'hard' else WATERFALL)
 
 
-@pytest.mark.parametrize('legacy', ['EXIT_AGGRESSIVE_TRADE_PRESSURE', 'EXIT_CLOSED_PRICE_PIVOT', REASON])
+@pytest.mark.parametrize('legacy', ['EXIT_AGGRESSIVE_TRADE_PRESSURE', 'EXIT_CLOSED_PRICE_PIVOT', 'EXIT_LIVE_MA5_V_REVERSAL'])
 def test_replaced_exit_authority_retired_in_both_stores(legacy):
     p = position()
     state = migrate_peak_state(p)
@@ -185,6 +186,7 @@ def test_replaced_exit_authority_retired_in_both_stores(legacy):
 def test_realtime_ma5_reverse_keeps_position_without_retry(symbol, side, monkeypatch):
     p = position(side, symbol)
     sign = progress(p)
+    p[STATE_KEY]['live_ma5_v_observation']['outer_extreme'] = None
     account = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
                               log=Mock(), close_position=AsyncMock(return_value=False))
     engine = SimpleNamespace(account=account, is_running=True, _channel_exit_frames={})
@@ -225,7 +227,8 @@ def test_invalid_persisted_observation_never_authorizes_close(key, value):
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_actual_account_concurrent_v_quotes_keep_position(symbol, side, mode, tmp_path, monkeypatch):
+@pytest.mark.parametrize('outer', [False, True])
+def test_actual_account_concurrent_v_quotes_require_outer_extreme(symbol, side, mode, outer, tmp_path, monkeypatch):
     async def run():
         import core.paper_account as pm
         import core.testnet_account as tm
@@ -255,7 +258,9 @@ def test_actual_account_concurrent_v_quotes_keep_position(symbol, side, mode, tm
         start = math.ceil(p['open_timestamp']*1000)+1.
         bar = math.floor(start/60000)*60000
         def snap(ma5, stamp):
-            return dict(snapshot(ma5, stamp), live_bar_ms=bar, closed_bar_ms=bar-60000)
+            edge = .2 if outer else 1.
+            return dict(snapshot(ma5, stamp), live_bar_ms=bar, closed_bar_ms=bar-60000,
+                        kc_lower=100-edge, kc_upper=100+edge)
         assert evaluate_peak_trailing(p, 100., snap(100., start)) is None
         assert evaluate_peak_trailing(p, 100+sign*.5, snap(100+sign*.2, start+1000)) is None
         stamp = start+2000
@@ -265,21 +270,24 @@ def test_actual_account_concurrent_v_quotes_keep_position(symbol, side, mode, tm
         engine = SimpleNamespace(account=account, is_running=True, _channel_exit_frames={})
         await asyncio.gather(*(enforce_realtime_profit_exit(engine, symbol, 100+sign*.35, stamp)
                                for _ in range(10)))
-        assert symbol in account.positions
-        assert len(closes(account)) == 0
+        assert (symbol not in account.positions) is outer
+        assert len(closes(account)) == int(outer)
         if mode == 'testnet':
-            assert len(close_orders(exchange)) == 0
+            assert len(close_orders(exchange)) == int(outer)
+            if outer:
+                assert close_orders(exchange)[0]['params']['reduceOnly']
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', SIDES)
-def test_ma5_v_disabled_on_entry_bar_and_later_bars_with_persisted_retry(symbol, side):
+def test_legacy_ma5_v_retry_is_retired_before_new_outer_observation(symbol, side):
     p = position(side, symbol)
     sign = progress(p)
     evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
-    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence,
+    p[STATE_KEY].update(pending='EXIT_LIVE_MA5_V_REVERSAL', trigger=REASON, live_ma5_v_exit=evidence,
                        holding_exit_policy='live_ma5_v_reversal_v6')
+    p[STATE_KEY]['live_ma5_v_observation']['rule_version'] = 1
     meta = copy.deepcopy(p)
     migrate_peak_state(p, meta)
     for source in (p, meta):
@@ -290,3 +298,52 @@ def test_ma5_v_disabled_on_entry_bar_and_later_bars_with_persisted_retry(symbol,
                  closed_bar_ms=bar-60000)
         assert evaluate_peak_trailing(p, 100-sign*.5, s) is None
         assert p[STATE_KEY]['holding_exit_policy'] == POLICY
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+@pytest.mark.parametrize('location', ['inside', 'touch', 'outside'])
+def test_outer_ma5_extreme_required_for_production_close(symbol, side, location):
+    p = position(side, symbol)
+    sign = 1 if side == 'LONG' else -1
+    edge = .200001 if location == 'inside' else .2 if location == 'touch' else .199999
+    def data(ma5, stamp):
+        return dict(snapshot(ma5, stamp), kc_lower=100-edge, kc_upper=100+edge)
+    assert evaluate_peak_trailing(p, 100., data(100., 301000.)) is None
+    assert evaluate_peak_trailing(p, 100+sign*.5, data(100+sign*.2, 302000.)) is None
+    result = evaluate_peak_trailing(p, 100+sign*.35, data(100+sign*.1, 303000.))
+    assert bool(result) is (location != 'inside')
+    if result:
+        assert result['reason'] == REASON
+        evidence = p[STATE_KEY]['live_ma5_v_exit']
+        assert evidence['outer_extreme']['quote_ms'] == 302000.
+        p = json.loads(json.dumps(p))
+        account = SimpleNamespace(positions={symbol:p}, position_meta={},
+                                  save_state=Mock(), close_position=AsyncMock(return_value=False))
+        assert not asyncio.run(enforce_atr_protection(account, symbol, 100.))
+        account.close_position.assert_awaited_once()
+        assert p[STATE_KEY]['pending'] == REASON
+
+
+@pytest.mark.parametrize('side', SIDES)
+def test_moving_rail_cannot_retroactively_qualify_inner_extreme(side):
+    p = position(side)
+    sign = 1 if side == 'LONG' else -1
+    assert evaluate_peak_trailing(p, 100., dict(snapshot(), kc_lower=99., kc_upper=101.)) is None
+    assert evaluate_peak_trailing(p, 100+sign*.5,
+                                 dict(snapshot(100+sign*.2, 302000.), kc_lower=99., kc_upper=101.)) is None
+    assert evaluate_peak_trailing(p, 100+sign*.35,
+                                 dict(snapshot(100+sign*.1, 303000.), kc_lower=99.95, kc_upper=100.05)) is None
+    assert not p[STATE_KEY]['live_ma5_v_observation']['outer_extreme']
+
+
+@pytest.mark.parametrize('side', SIDES)
+def test_new_inner_extreme_replaces_old_outer_peak(side):
+    p = position(side)
+    sign = progress(p)
+    assert p[STATE_KEY]['live_ma5_v_observation']['outer_extreme']
+    assert evaluate_peak_trailing(p, 100+sign*.6,
+                                 dict(snapshot(100+sign*.3, 303000.), kc_lower=99., kc_upper=101.)) is None
+    assert evaluate_peak_trailing(p, 100+sign*.45,
+                                 dict(snapshot(100+sign*.2, 304000.), kc_lower=99., kc_upper=101.)) is None
+    assert not p[STATE_KEY]['live_ma5_v_observation']['outer_extreme']
