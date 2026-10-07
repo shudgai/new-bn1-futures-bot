@@ -1251,6 +1251,10 @@ class TradingEngine:
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
         """Abnormal live bodies and hard stops; no REST or candle-close wait."""
+        from core.services.cap_breakout_entry import observe_cap_breakout
+        observe_cap_breakout(self.account, symbol,
+                            getattr(self, '_channel_exit_frames', {}).get(symbol),
+                            price, quote_ms)
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
         closed = await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
         if closed and symbol not in self.account.positions:
@@ -1721,6 +1725,10 @@ class TradingEngine:
         return False
     def _observe_channel_entry_quote(self, symbol, price, quote_ms=None):
         now = time.time()
+        from core.services.cap_breakout_entry import observe_cap_breakout
+        observe_cap_breakout(self.account, symbol,
+                            getattr(self, '_channel_exit_frames', {}).get(symbol),
+                            price, quote_ms)
         quote_times = getattr(self, "_channel_entry_quote_times", None)
         if quote_times is None:
             quote_times = self._channel_entry_quote_times = {}
@@ -1842,7 +1850,11 @@ class TradingEngine:
             frame.loc[frame.index[-1], 'low'] = min(float(frame.iloc[-1]['low']), quote)
             if 'close_price_spike_filtered' in frame.columns:
                 frame.loc[frame.index[-1], 'close_price_spike_filtered'] = quote
-        return self.strategy.compute_indicators(frame)
+        frame = self.strategy.compute_indicators(frame)
+        from core.services.cap_breakout_entry import observe_cap_breakout
+        observe_cap_breakout(self.account, symbol, frame, float(frame.iloc[-1].close),
+                            frame.attrs.get('entry_quote_ms', frame.attrs.get('entry_finality_server_ms')))
+        return frame
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)

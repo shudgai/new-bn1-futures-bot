@@ -5,7 +5,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.confirmed_pivot_exit import closed_price_pivot
 
 PHASE = 'KC_OUTER_RUN_PRICE_PIVOT_RETURN'
-MIN_OUTER_RUN_BARS = 6
+MIN_OUTER_RUN_BARS = 10
 CODES = frozenset(PHASE + '_' + side for side in ('LONG', 'SHORT'))
 EVIDENCE_KEYS = ('ma5_entry_pivot_ms', 'ma5_entry_confirmed_ms', 'ma5_entry_pivot',
                  'ma5_entry_pivot_rail', 'ma5_entry_confirmation', 'ma5_entry_boundary',

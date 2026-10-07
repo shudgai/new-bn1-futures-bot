@@ -16,6 +16,11 @@ from core.services.closed_ma_cross import (CODES as CLOSED_MA_CROSS_CODES,
     EVIDENCE_KEYS as CROSS_EVIDENCE_KEYS, evaluate_closed_ma_cross)
 
 from core.services.candle_data import closed_entry_candles
+from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_EVIDENCE_KEYS
+from core.services.cap_breakout_entry import (
+    SYMBOL as CAP_SYMBOL, CODES as CAP_CONTINUATION_CODES,
+    EVIDENCE_KEYS as CAP_EVIDENCE_KEYS, continuation_decision,
+)
 from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
                                             evaluate_kc_pending_entry)
 from core.services.ma5_outer_pivot_entry import (
@@ -40,7 +45,7 @@ CHANNEL_BODY_PHASE = 'KC_CHANNEL_LIVE_LONG_BODY'
 CHANNEL_BODY_CODES = {CHANNEL_BODY_PHASE+'_LONG',CHANNEL_BODY_PHASE+'_SHORT'}
 FAST_BODY_PHASES = (REVERSAL_PHASE,'KC_LIVE_BODY_BREAKOUT', OUTER_SMALL_PAIR_PHASE, CHANNEL_BODY_PHASE, STRUCTURE_PHASE, PULLBACK_PHASE)
 ENTRY_CODES = frozenset({'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
-                         'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}) | MA5_PIVOT_CODES
+                         'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}) | MA5_PIVOT_CODES | CAP_CONTINUATION_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
@@ -51,6 +56,13 @@ BREAKOUT_EVIDENCE_KEYS = ('breakout_live_open', 'breakout_live_edge', 'breakout_
                          'breakout_min_body', 'breakout_previous_ma5', 'breakout_live_ma5')
 ENTRY_EVIDENCE_KEYS += BREAKOUT_EVIDENCE_KEYS
 ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
+ENTRY_EVIDENCE_KEYS += CHOP_EVIDENCE_KEYS
+ENTRY_EVIDENCE_KEYS += CAP_EVIDENCE_KEYS
+
+
+def _entry_close_series(closed):
+    return (closed.close_price_spike_filtered.fillna(closed.close)
+            if 'close_price_spike_filtered' in closed.columns else closed.close)
 
 
 def live_ma_alignment_evidence(frame, quote, side):
@@ -59,8 +71,7 @@ def live_ma_alignment_evidence(frame, quote, side):
         closed = closed_entry_candles(frame)
         if side not in ('LONG', 'SHORT') or len(closed) < 4 or len(frame) != len(closed)+1:
             return None
-        close_series = (closed.close_price_spike_filtered.fillna(closed.close)
-                        if 'close_price_spike_filtered' in closed.columns else closed.close)
+        close_series = _entry_close_series(closed)
         closes = [float(v) for v in close_series.iloc[-4:]]
         live = frame.iloc[-1]
         filtered = live.get('close_price_spike_filtered')
@@ -86,7 +97,7 @@ def live_breakout_ma5_evidence(frame, quote, side):
         closed = closed_entry_candles(frame)
         if side not in ('LONG', 'SHORT') or len(closed) < 4 or len(frame) != len(closed)+1:
             return None
-        closes = [float(v) for v in closed.close.iloc[-4:]]
+        closes = [float(v) for v in _entry_close_series(closed).iloc[-4:]]
         previous = float(closed.iloc[-1].ma5)
         quote = float(quote)
         if not all(math.isfinite(v) and v > 0 for v in [quote, previous, *closes]):
@@ -538,13 +549,16 @@ def evaluate_pullback_resume(frame, quote, code=None):
     except (AttributeError,KeyError,TypeError,ValueError,IndexError,OverflowError):return None
 
 
-def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', *, account=None):
     """Continuation entry for sustained trend outside the outer rail.
 
     Permits opening when a prior breakout was missed or after a position was closed,
     provided that the KC direction, live MA3 direction, live candle color, and outer band position
     remain consistently in favor of the trend.
     """
+    if symbol == CAP_SYMBOL:
+        decision = evaluate_entry_contract(frame, quote, code, symbol=symbol, account=account)
+        return decision if decision and decision['type'] in CAP_CONTINUATION_CODES else None
     try:
         if frame is None or len(closed_entry_candles(frame)) != len(frame)-1:
             return None
@@ -729,6 +743,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
     reject("WAIT_VALID_ENTRY_DATA")
     if code is not None and code not in ENTRY_CODES:
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+    cap = symbol == CAP_SYMBOL
+    if (cap and code is not None and code not in
+            ({'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'} | CAP_CONTINUATION_CODES)):
+        return reject('BLOCKED_CAP_TWO_BAR_ONLY')
+    if not cap and code in CAP_CONTINUATION_CODES:
+        return reject('BLOCKED_CAP_AUTHORITY_WRONG_SYMBOL')
     if not evaluate_held and account is not None and symbol in getattr(account, "positions", {}):
         return reject("WAIT_EXISTING_POSITION")
     try:
@@ -787,11 +807,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         # The independent pivot authority does not inherit breakout qualifiers.
         if len(frame) != len(closed) + 1:
             return reject('WAIT_FORMING_BREAKOUT_BAR')
-        pivot_decision = evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
+        pivot_decision = None if cap else evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
         if account is not None and symbol in getattr(account, 'positions', {}):
             pivot_decision = None
         breakout_code = code if code not in MA5_PIVOT_CODES else None
-        fast_side = live_body_breakout_side(frame, quote)
+        fast_side = None if cap else live_body_breakout_side(frame, quote)
         fast_code = 'KC_LIVE_BODY_BREAKOUT_' + fast_side if fast_side else None
         if pivot_decision and fast_side and fast_side != pivot_decision['side']:
             fast_sign = 1 if fast_side == 'LONG' else -1
@@ -830,6 +850,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                     decision = dict(reason='WAIT_TWO_CLOSED_SAME_COLOR_BODY_BREAKOUT')
                 elif not live_ma3_direction_ready(ma5_frame, quote, decision['side']):
                     decision = dict(reason='BLOCKED_LIVE_MA3_FLAT_OR_OPPOSITE')
+        if cap and (code in CAP_CONTINUATION_CODES or decision.get('action') != 'ENTER'):
+            continuation = continuation_decision(frame, quote, account, code)
+            if continuation:
+                decision = continuation
         # Breakout producers retain their same-side outer-rail chase limit.
         # Decimal avoids binary subtraction turning an exact 0.5 boundary into
         # an over-limit value; it never tolerates a genuinely larger distance.
@@ -860,12 +884,30 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             decision = pivot_decision
         if decision.get('action') != 'ENTER':
             return reject(decision.get('reason', 'WAIT_NEW_KC_BREAKOUT'))
+        if cap and decision['entry_phase'] == 'KC_2BAR_CLOSED_CONFIRM' and account is not None:
+            from core.services.cap_breakout_entry import STATE_KEY as CAP_STATE_KEY
+            cap_state = getattr(account, 'position_meta', {}).get(CAP_STATE_KEY, {}).get(symbol, {})
+            if decision['pair_confirmation_bar_id'] <= cap_state.get('cancelled_second_ms', 0):
+                return reject('WAIT_CAP_NEW_PAIR_AFTER_RAIL_RETURN')
         if code is not None and decision['type'] != code:
             return reject('BLOCKED_ENTRY_AUTHORITY_MISMATCH')
+        directional_ma5 = live_breakout_ma5_evidence(ma5_frame, quote, decision['side'])
+        if directional_ma5 is None:
+            return reject('BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
+        decision.update(directional_ma5)
         alignment = live_ma_alignment_evidence(ma5_frame, quote, decision['side'])
         if alignment is None:
             return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
         decision.update(alignment)
+        if cap:
+            sign = 1 if decision['side'] == 'LONG' else -1
+            if sign*(quote-alignment['entry_live_ma5']) <= max(quote, alignment['entry_live_ma5'])*1e-12:
+                return reject('BLOCKED_CAP_QUOTE_INSIDE_MA5')
+            decision['cap_quote_ma5'] = alignment['entry_live_ma5']
+        chop_status, chop_evidence = evaluate_entry_chop(ma5_frame)
+        if chop_evidence is None:
+            return reject(chop_status)
+        decision.update(chop_evidence)
         if not live_adverse_entry_safe(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_LIVE_ADVERSE_ABNORMAL')
         same_bar_close = (close_fill is not None and float(live.timestamp) == exit_bar

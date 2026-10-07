@@ -47,6 +47,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                   
     if not math.isfinite(quote) or quote <= 0:
         return [], []
+    from core.services.cap_breakout_entry import observe_cap_breakout
+    observe_cap_breakout(engine.account, symbol, frame, quote)
         
     if daily_halt and not position:
         return [], []

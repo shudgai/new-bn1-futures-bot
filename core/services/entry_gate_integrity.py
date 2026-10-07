@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v46-live-ma5-ma15-alignment'
+VERSION = 'entry-gate-20261007-v48-cap-pair-and-proven-continuation'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 
@@ -27,6 +27,8 @@ def issue_proof(context,symbol,side,decision,frame):
                     signal_id=context.get('signal_id'),candidate_bar_id=context.get('candidate_bar_id'),
                     closed_bar=decision['confirmation_bar_id'],quote_price=decision['price'],
                     entry_phase=decision['entry_phase'],
+                    breakout_bar_id=decision['breakout_bar_id'],
+                    pair_confirmation_bar_id=decision['pair_confirmation_bar_id'],
                     pending_signal_id=decision.get('pending_signal_id'),gate_version=VERSION,
                     evidence=entry_frame_evidence(frame))
     from core.services.entry_contract import ENTRY_EVIDENCE_KEYS
@@ -35,6 +37,8 @@ def issue_proof(context,symbol,side,decision,frame):
                bar=decision['confirmation_bar_id'],quote=decision['price'],
                signal_id=snapshot.get('signal_id'),candidate_bar_id=snapshot.get('candidate_bar_id'),
                pending_signal_id=snapshot.get('pending_signal_id'),
+               pair_confirmation_bar_id=snapshot.get('pair_confirmation_bar_id'),
+               cap_origin_id=snapshot.get('cap_origin_id'),
                entry_phase=snapshot['entry_phase'],
                same_bar_entry_bar_ms=snapshot.get('same_bar_entry_bar_ms'),
                same_bar_exit_deadline_ms=snapshot.get('same_bar_exit_deadline_ms'),
@@ -65,6 +69,8 @@ def assert_commit_proof(account,symbol,side,context):
                 or proof['signal_id']!=context.get('signal_id') or proof['signal_id']!=snapshot.get('signal_id')
                 or proof['candidate_bar_id']!=context.get('candidate_bar_id') or proof['candidate_bar_id']!=snapshot.get('candidate_bar_id')
                 or proof['pending_signal_id']!=snapshot.get('pending_signal_id')
+                or proof['pair_confirmation_bar_id']!=snapshot.get('pair_confirmation_bar_id')
+                or proof['cap_origin_id']!=snapshot.get('cap_origin_id')
                 or snapshot.get('symbol')!=symbol or snapshot.get('side')!=side
                 or snapshot.get('signal_code')!=proof['code'] or snapshot.get('closed_bar')!=proof['bar']
                 or snapshot.get('gate_version')!=VERSION
@@ -81,3 +87,16 @@ def assert_commit_proof(account,symbol,side,context):
             meta.setdefault('_entry_gate_halts',{})[symbol]={'reason':str(exc),'time':time.time(),'version':VERSION}
             account.save_state()
         raise ValueError('[FORBIDDEN_ENTRY] GATE_INTEGRITY_HALT: '+symbol+' '+str(exc)) from exc
+    from core.services.cap_breakout_entry import SYMBOL as CAP_SYMBOL, STATE_KEY, CODES
+    if symbol == CAP_SYMBOL:
+        state = getattr(account, 'position_meta', {}).get(STATE_KEY, {}).get(symbol, {})
+        second = snapshot.get('pair_confirmation_bar_id')
+        if second is None or float(second) <= state.get('cancelled_second_ms', 0):
+            raise ValueError('[FORBIDDEN_ENTRY] CAP_ORIGIN_CANCELLED')
+        if proof['code'] in CODES:
+            origin = state.get('origin') or {}
+            if (origin.get('id') != snapshot.get('cap_origin_id')
+                    or origin.get('side') != side
+                    or state.get('session') != getattr(account, '_cap_breakout_session', None)
+                    or not 0 <= time.time()*1000-state.get('last_quote_ms', 0) <= MAX_AGE_MS):
+                raise ValueError('[FORBIDDEN_ENTRY] CAP_ORIGIN_NOT_CURRENT')

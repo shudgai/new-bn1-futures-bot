@@ -15,28 +15,33 @@ from core.services.ma5_outer_pivot_entry import PHASE
 from test_lobster_cap_gates import frame
 from test_two_slot_full_margin import make_engine
 
-SYMBOLS = ['龙虾/USDT', 'CAP/USDT']
+SYMBOLS = ['龙虾/USDT']
 
 
 @pytest.fixture(autouse=True)
 def isolate_files_and_clock(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path/'logs').mkdir()
-    monkeypatch.setattr('time.time', lambda: 481.)
+    monkeypatch.setattr('time.time', lambda: 721.)
 
 
 def pivot_frame(side='SHORT'):
     f = frame()
-    f['timestamp'] += 120000.
-    prefix = pd.DataFrame([dict(f.iloc[0], timestamp=60000.), dict(f.iloc[0], timestamp=120000.)],
-                          index=[-2, -1])
+    f['timestamp'] += 360000.
+    prefix = pd.DataFrame([dict(f.iloc[0], timestamp=(i+1)*60000.,
+                               open=101.+i*.02, close=101.01+i*.02,
+                               high=101.04+i*.02, low=100.98+i*.02)
+                           for i in range(4)], index=[-6, -5, -4, -3])
+    prefix = pd.concat([prefix, pd.DataFrame([
+        dict(f.iloc[0], timestamp=300000.), dict(f.iloc[0], timestamp=360000.)],
+        index=[-2, -1])])
     f = pd.concat([prefix, f])
     for i, index in enumerate((-2, -1, 0, 1, 2)):
         close = 101.1+i*.2
         f.loc[index, ['open', 'close', 'high', 'low']] = [close-.1, close, close+.2, close-.2]
     f.loc[2:4, 'ma5'] = [101., 102., 101.7]
-    f.loc[3, ['open', 'close', 'high', 'low']] = [102., 103., 104., 100.2]
-    f.loc[4, ['open', 'close', 'high', 'low']] = [102., 101.4, 103., 100.5]
+    f.loc[3, ['open', 'close', 'high', 'low']] = [101.9, 102., 104., 100.2]
+    f.loc[4, ['open', 'close', 'high', 'low']] = [102., 101.9, 103., 100.5]
     f.loc[5, ['open', 'close', 'high', 'low']] = [100.3, 100.1, 100.4, 100.]
     if side == 'LONG':
         old = f.copy()
@@ -46,7 +51,7 @@ def pivot_frame(side='SHORT'):
                             ('kc_lower', 'kc_upper'), ('kc_middle', 'kc_middle')]:
             f[key] = 200.-old[source]
     f.loc[5, 'ma15'] = 103. if side == 'SHORT' else 97.
-    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=481000.)
+    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=721000.)
     return f
 
 
@@ -66,7 +71,7 @@ def test_independent_pivot_inside_kc_needs_no_opposite_rail_break(side, symbol):
     assert result['side'] == side
     assert f.iloc[-1].kc_lower < result['price'] < f.iloc[-1].kc_upper
     assert result['pivot_entry_price'] == f.loc[3, 'low' if side == 'LONG' else 'high']
-    assert result['outer_run_bars'] == 6
+    assert result['outer_run_bars'] == 10
     assert result['close_price'] == f.loc[4, 'close']
     assert 'kc_distance_atr' not in result
     assert evaluate_entry_contract(f, code='KC_LIVE_BODY_BREAKOUT_'+side) is None
@@ -112,7 +117,7 @@ def test_position_close_bar_and_successful_fill_keep_gates_after_restart(side, s
     assert evaluate_entry_contract(f, symbol=symbol, account=a) is None
     assert evaluate_entry_contract(f, symbol=symbol, account=a, code=PHASE+'_'+side, evaluate_held=True) is None
     a.positions.clear()
-    a.last_closed_at[symbol] = 481.
+    a.last_closed_at[symbol] = 721.
     assert evaluate_entry_contract(f, symbol=symbol, account=a) is None
     a.last_closed_at.clear()
     result = evaluate_entry_contract(f, symbol=symbol, account=a)
@@ -122,8 +127,7 @@ def test_position_close_bar_and_successful_fill_keep_gates_after_restart(side, s
     diagnostics = {}
     assert evaluate_entry_contract(f, symbol=symbol, account=a, diagnostics=diagnostics) is None
     assert diagnostics['reason'] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'
-    other = SYMBOLS[1] if symbol == SYMBOLS[0] else SYMBOLS[0]
-    assert evaluate_entry_contract(f, symbol=other, account=a)
+    assert evaluate_entry_contract(f, symbol='CAP/USDT', account=a) is None
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
@@ -131,11 +135,11 @@ def test_position_close_bar_and_successful_fill_keep_gates_after_restart(side, s
 def test_final_firewall_revalidates_pivot_and_quote_and_issues_proof(side, symbol):
     f = pivot_frame(side)
     a = account_for(f)
-    context = dict(entry_signal_code=PHASE+'_'+side, channel_confirmation_bar_id=480000.)
+    context = dict(entry_signal_code=PHASE+'_'+side, channel_confirmation_bar_id=720000.)
     asyncio.run(validate_account_entry(a, symbol, side, context))
     assert_commit_proof(a, symbol, side, context)
     assert context['entry_snapshot']['gate_version'] == VERSION
-    assert context['entry_snapshot']['outer_run_bars'] == 6
+    assert context['entry_snapshot']['outer_run_bars'] == 10
     cached = copy.deepcopy(context)
     f.loc[5, 'close'] = f.loc[5, 'kc_upper' if side == 'SHORT' else 'kc_lower']
     f.loc[5, 'high'] = max(f.loc[5, 'high'], f.loc[5, 'close'])
@@ -152,7 +156,7 @@ def test_next_candle_does_not_reuse_untriggered_old_turn(side):
     f.loc[5, 'is_closed'] = True
     f.loc[5, 'ma5'] = f.loc[4, 'ma5']+sign*.2
     f.loc[6] = old_live
-    f.loc[6, 'timestamp'] = 540000.
+    f.loc[6, 'timestamp'] = 780000.
     assert evaluate_entry_contract(f, code=PHASE+'_'+side) is None
 
 
@@ -163,9 +167,9 @@ def test_firewall_requires_authoritative_fresh_market_data(side, fault):
     if fault == 'unverified': f.attrs.pop('entry_finality_verified')
     else: f.attrs['entry_quote_ms'] = 475000. if fault == 'stale' else 482000.
     a = account_for(f)
-    c = dict(entry_signal_code=PHASE+'_'+side, channel_confirmation_bar_id=480000.)
+    c = dict(entry_signal_code=PHASE+'_'+side, channel_confirmation_bar_id=720000.)
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
-        asyncio.run(validate_account_entry(a, 'CAP/USDT', side, c))
+        asyncio.run(validate_account_entry(a, '龙虾/USDT', side, c))
 
 
 @pytest.mark.parametrize('phase', ['submitting', 'unknown', 'partial'])
@@ -173,10 +177,10 @@ def test_pivot_cannot_bypass_uncertain_order_quarantine(phase):
     f = pivot_frame()
     a = account_for(f)
     a.position_meta['_auto_reverse_tickets'] = {
-        'CAP/USDT': dict(mode='direct_netting_v1', phase=phase)}
-    c = dict(entry_signal_code=PHASE+'_SHORT', channel_confirmation_bar_id=480000.)
+        '龙虾/USDT': dict(mode='direct_netting_v1', phase=phase)}
+    c = dict(entry_signal_code=PHASE+'_SHORT', channel_confirmation_bar_id=720000.)
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
-        asyncio.run(validate_account_entry(a, 'CAP/USDT', 'SHORT', c))
+        asyncio.run(validate_account_entry(a, '龙虾/USDT', 'SHORT', c))
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -230,9 +234,8 @@ def test_real_paper_pivot_entry_uses_shared_full_half_budget(side, symbol, concu
     monkeypatch.setattr(paper, 'STATE_FILE', str(tmp_path/'paper.json'))
     a = paper.PaperAccount()
     a.balance = 200.
-    engine, _ = make_engine(a, monkeypatch, side, symbol)
-    monkeypatch.setattr('time.time', lambda: 481.)
     f = pivot_frame(side)
+    engine, _ = make_engine(a, monkeypatch, side, symbol, entry_frame=f)
     quote = float(f.iloc[-1].close)
     result = evaluate_entry_contract(f, symbol=symbol)
     engine.tickers[symbol] = quote
@@ -275,26 +278,26 @@ def test_mock_testnet_pivot_entry_reaches_verified_order_boundary(side, symbol, 
     a._finalize_new_position = AsyncMock(return_value=True)
     a.entry_frame_provider = AsyncMock(return_value=f)
     context = dict(entry_mode='CHANNEL_SWING', entry_signal_code=PHASE+'_'+side,
-                   channel_confirmation_bar_id=480000.)
+                   channel_confirmation_bar_id=720000.)
     assert asyncio.run(a.open_position(symbol, side, price, 99., 0., 0.,
                       'PIVOT_TEST', atr=1., leverage=5., entry_context=context))
     final_context = a._finalize_new_position.await_args.kwargs['entry_context']
     assert final_context['structure_risk_policy'] == FULL_SLOT_POLICY
-    assert final_context['entry_snapshot']['outer_run_bars'] == 6
+    assert final_context['entry_snapshot']['outer_run_bars'] == 10
     assert a._send_order.await_count == 1
     order_transport.assert_not_awaited()
 
 
 @pytest.mark.parametrize('symbol', SYMBOLS)
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('fault', ['only_five', 'inside_run', 'touch_run', 'flat_run',
+@pytest.mark.parametrize('fault', ['only_nine', 'inside_run', 'touch_run', 'flat_run',
     'reverse_run', 'equal_extreme', 'no_extreme', 'ma5_flat', 'ma5_wrong',
     'quote_upper_touch', 'quote_lower_touch', 'old_code'])
-def test_six_bar_run_price_pivot_and_inside_return_are_all_required(symbol, side, fault):
+def test_ten_bar_run_price_pivot_and_inside_return_are_all_required(symbol, side, fault):
     f = pivot_frame(side)
     pivot_sign = 1 if side == 'SHORT' else -1
     rail = 'kc_upper' if pivot_sign == 1 else 'kc_lower'
-    if fault == 'only_five':
+    if fault == 'only_nine':
         f = f.iloc[1:].copy()
     elif fault in ('inside_run', 'touch_run'):
         price = float(f.loc[0, rail])-(pivot_sign*.05 if fault == 'inside_run' else 0.)
@@ -328,6 +331,6 @@ def test_only_inside_quote_is_required_not_old_pivot_candle_boundary(symbol, sid
     assert result
     boundary = float(f.loc[3, 'low' if side == 'SHORT' else 'high'])
     assert (1 if side == 'SHORT' else -1)*(quote-boundary)>0
-    assert len(result['outer_run_candles']) == 6
+    assert len(result['outer_run_candles']) == 10
     closes = [row['close'] for row in result['outer_run_candles']]
     assert all((1 if side == 'SHORT' else -1)*(b-a)>0 for a,b in zip(closes, closes[1:]))

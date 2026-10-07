@@ -45,21 +45,26 @@ def test_structure_distance_never_shrinks_full_slot_and_loss_limit_stays_five_pe
     assert hard_stop_reason(p, 100-sign*1.) == 'MARGIN_LOSS'
 
 
-def make_engine(account, monkeypatch, side='LONG', symbol='CAP/USDT'):
+def make_engine(account, monkeypatch, side='LONG', symbol='CAP/USDT', entry_frame=None):
     import core.engine as module
     monkeypatch.setattr(module, 'DEFAULT_SYMBOLS', ['龙虾/USDT', 'CAP/USDT'])
     monkeypatch.setattr(module, 'MAX_SLOTS', 2)
-    monkeypatch.setattr('time.time', lambda: 361.)
-    f = frame(side)
+    if entry_frame is None:
+        from test_entry_chop_gate import eligible_frame
+        f = eligible_frame('pair' if symbol == 'CAP/USDT' else 'live', side)
+    else:
+        f = entry_frame
+    now = float(f.iloc[-1].timestamp)/1000+1.
+    monkeypatch.setattr('time.time', lambda: now)
     quote = float(f.iloc[-1].close)
-    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=361000.)
-    decision = evaluate_entry_contract(f, symbol=symbol)
+    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now*1000)
+    decision = evaluate_entry_contract(f, account=account, symbol=symbol)
     assert decision
     engine = TradingEngine.__new__(TradingEngine)
     engine.account = account
     engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *a: 5.)
     engine.tickers = {symbol: quote for symbol in module.DEFAULT_SYMBOLS}
-    engine._channel_entry_quote_times = {symbol: 361. for symbol in module.DEFAULT_SYMBOLS}
+    engine._channel_entry_quote_times = {symbol: now for symbol in module.DEFAULT_SYMBOLS}
     engine.strategy = SimpleNamespace(compute_indicators=lambda f: f)
     engine._execution_price_is_safe = AsyncMock(return_value=True)
     engine._fresh_channel_entry_snapshot = AsyncMock(return_value=dict(frame=f, decision=decision, price=quote))
@@ -161,12 +166,16 @@ def test_testnet_order_quantity_keeps_full_margin_through_account_boundary(symbo
     account._prepare_leverage = AsyncMock()
     account._send_order = AsyncMock(return_value=dict(id='test-order', average=101.5 if side == 'LONG' else 98.5))
     account._finalize_new_position = AsyncMock(return_value=True)
-    monkeypatch.setattr('time.time', lambda: 361.)
-    f = frame(side)
-    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=361000.)
+    from test_entry_chop_gate import eligible_frame
+    kind = 'pair' if symbol == 'CAP/USDT' else 'live'
+    f = eligible_frame(kind, side)
+    now = float(f.iloc[-1].timestamp)+1000
+    monkeypatch.setattr('time.time', lambda: now/1000)
+    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now)
     account.entry_frame_provider = AsyncMock(return_value=f)
-    context = dict(entry_mode='CHANNEL_SWING', entry_signal_code='KC_LIVE_BODY_BREAKOUT_'+side,
-                   channel_confirmation_bar_id=360000.)
+    context = dict(entry_mode='CHANNEL_SWING',
+                   entry_signal_code=('KC_2BAR_CONFIRM_' if kind == 'pair' else 'KC_LIVE_BODY_BREAKOUT_')+side,
+                   channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
     margin = TradingEngine._half_wallet_entry_margin(200., 200., 5.)
     price = float(f.iloc[-1].close)
     assert asyncio.run(account.open_position(symbol, side, price, margin, 0., 0.,

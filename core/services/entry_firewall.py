@@ -7,18 +7,18 @@ from core.services.entry_contract import ENTRY_CODES, ENTRY_EVIDENCE_KEYS, evalu
 
 class EntryFirewall:
     @classmethod
-    def verify_can_open(cls, frame, side, code):
+    def verify_can_open(cls, frame, side, code, symbol=''):
         """Only a supported, freshly validated contract authorizes automatic entry."""
         if code not in ENTRY_CODES:
             raise ValueError('[FORBIDDEN_ENTRY] 已停用的自動入口訊號')
-        decision = evaluate_entry_contract(frame, code=code)
+        decision = evaluate_entry_contract(frame, code=code, symbol=symbol)
         if decision is None or decision['side'] != side:
             raise ValueError('[FORBIDDEN_ENTRY] 最新行情不符合入口訊號')
         return decision
 
 
-def validate_entry_frame(frame, side, code):
-    return EntryFirewall.verify_can_open(frame, side, code)
+def validate_entry_frame(frame, side, code, symbol=''):
+    return EntryFirewall.verify_can_open(frame, side, code, symbol)
 
 async def _validate_account_entry(account, symbol, side, context):
     from core.config import is_entry_disabled
@@ -104,6 +104,9 @@ async def _validate_account_entry(account, symbol, side, context):
             if not math.isfinite(age) or not 0<=age<=5000:
                 raise ValueError('[FORBIDDEN_ENTRY] 最後行情取樣過期或來自未來: '+key)
     diagnostics = {}
+    from core.services.cap_breakout_entry import observe_cap_breakout
+    observe_cap_breakout(account, symbol, frame, float(frame.iloc[-1].close),
+                        frame.attrs.get('entry_quote_ms', frame.attrs.get('entry_finality_server_ms')))
     decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics,
                                       evaluate_held=direct_ticket is not None)
     if decision is None or decision['side'] != side:
