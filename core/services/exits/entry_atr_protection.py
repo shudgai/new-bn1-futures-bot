@@ -45,4 +45,5 @@ async def enforce_atr_protection(account, symbol, price):
         return False
     closed = await account.close_position(symbol, price, "Channel Swing " + reason, is_manual=True)
     from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
-    return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT) else True
+    from core.services.exits.trade_pressure_exit import REASON as PRESSURE_EXIT
+    return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT, PRESSURE_EXIT) else True

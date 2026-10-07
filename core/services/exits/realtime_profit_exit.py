@@ -10,6 +10,7 @@ from core.services.exits.peak_trailing_exit import (
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
+from core.services.exits.trade_pressure_exit import REASON as PRESSURE_EXIT
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 
@@ -173,6 +174,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             snapshot, atr = cached_tick_indicators(getattr(engine,'_channel_exit_frames',{}).get(symbol),price,stamp)
         except (KeyError,TypeError,ValueError,OverflowError,IndexError):
             snapshot, atr = {'quote_ms':stamp}, 0.
+        feed = getattr(engine, '_trade_pressure_feed', None)
+        if entry_m == 'CHANNEL_SWING' and feed is not None:
+            snapshot['trade_pressure'] = feed.evidence(symbol, position, position[STATE_KEY], snapshot, time.time()*1000)
         decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
         current = position[STATE_KEY]
         changed = retired or old != current
@@ -193,7 +197,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         
         reason = decision['type']
         trigger = decision.get('trigger', '')
-        bypass_trend_hold = reason in (MA5_EXIT, 'EXIT_ACCOUNT_HARD_STOP')
+        bypass_trend_hold = reason in (MA5_EXIT, PRESSURE_EXIT, 'EXIT_ACCOUNT_HARD_STOP')
         
         if entry_m == 'CHANNEL_SWING' and reason not in ('EXIT_INITIAL_ATR_HARD_STOP','EXIT_CONFIRMED_TREND_REVERSAL','EXIT_CONFIRMED_PIVOT_TURN') and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, TERMINAL_DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE', 'MA3_CONFIRMED_TURN', 'EXIT_MOVING_PROFIT_STOP', 'CLOSED_MA5_MA15_REVERSE_CROSS', 'EXIT_EARLY_PROFIT_REVERSAL', 'EXIT_NO_PROFIT_ADVERSE_PRESSURE', 'EXIT_CONFIRMED_SWING_STRUCTURE', 'EXIT_FAILED_BREAKOUT_RECLAIM', 'EXIT_EARLY_SWING_REVERSAL', 'LIVE_STRUCTURE_BREAK', 'EXIT_CHANNEL_SAME_BAR_END', 'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL'):
             try:
@@ -209,7 +213,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f} '
                     f'quote_age_at_start_ms={quote_age_at_start_ms:.1f} evaluation_ms={(time.perf_counter()-evaluation_started)*1000:.1f}', 'INFO')
-        audit=dict(ma5_outer_pivot=current.get('ma5_outer_pivot'),intact_trend_pullback=current.get('intact_trend_pullback'),pivot_guard_version=current.get('pivot_guard_version'),confirmed_pivot_exit=current.get('confirmed_pivot_exit'),confirmed_trend_exit=current.get('confirmed_trend_exit'),quote_age_at_start_ms=quote_age_at_start_ms,
+        audit=dict(trade_pressure_exit=current.get('trade_pressure_exit'),ma5_outer_pivot=current.get('ma5_outer_pivot'),intact_trend_pullback=current.get('intact_trend_pullback'),pivot_guard_version=current.get('pivot_guard_version'),confirmed_pivot_exit=current.get('confirmed_pivot_exit'),confirmed_trend_exit=current.get('confirmed_trend_exit'),quote_age_at_start_ms=quote_age_at_start_ms,
                    evaluation_ms=(time.perf_counter()-evaluation_started)*1000,swing_atr_profit_lock=current.get('swing_atr_profit_lock'),structure_break_warning=current.get('structure_break_warning'),
                    structure_trend_aligned=current.get('structure_trend_aligned'),same_bar_profit_lock=current.get('same_bar_profit_lock'),entry_phase=(position.get('entry_snapshot') or {}).get('entry_phase'),
                    same_bar_exit_deadline_ms=(position.get('entry_snapshot') or {}).get('same_bar_exit_deadline_ms'),
@@ -233,6 +237,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         position['exit_protection_snapshot']=audit
         meta['exit_protection_snapshot']=audit
         closed = await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
-        return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT) else True
+        return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT, PRESSURE_EXIT) else True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False

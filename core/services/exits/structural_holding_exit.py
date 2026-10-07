@@ -1,22 +1,23 @@
-"""Closed price pivots without MA qualification; profit locks remain retired."""
+"""Aggressive trade pressure exits; profit locks and local pivots are retired."""
 import math
 from core.config import CHANNEL_WATERFALL_BODY_ATR
 from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
 from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON as PIVOT_EXIT
-from core.services.exits.ma5_outer_pivot_exit import (
-    REASON as MA5_EXIT, RULE_VERSION, confirmed_ma5_outer_pivot,
+from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
+from core.services.exits.trade_pressure_exit import (
+    REASON as PRESSURE_EXIT, RULE_VERSION as PRESSURE_VERSION, confirmed_trade_pressure,
 )
 
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
 HARD = 'EXIT_ACCOUNT_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
-POLICY = 'closed_price_pivot_only_v4'
+POLICY = 'aggressive_trade_pressure_v5'
 LEGACY_PRICE_PIVOT_EXIT = 'EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE'
-ALLOWED = {HARD, WATERFALL, MA5_EXIT}
+ALLOWED = {HARD, WATERFALL, PRESSURE_EXIT}
 RETIRED_CLOSE_REASONS = {
     'EXIT_INITIAL_ATR_HARD_STOP',
     'EXIT_CLOSED_MA5_OUTER_PIVOT',
-    LEGACY_PRICE_PIVOT_EXIT,
+    LEGACY_PRICE_PIVOT_EXIT, MA5_EXIT,
     'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_MOVING_PROFIT_STOP',
     'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_CHANNEL_SAME_BAR_END',
     'EXIT_CONFIRMED_TREND_REVERSAL', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL',
@@ -42,12 +43,6 @@ def retire_profit_state(position, state, meta=None):
     if meta and isinstance(meta.get('peak_trailing_state'), dict):
         sources.append(meta['peak_trailing_state'])
     for source in sources:
-        if (source.get('pending') == LEGACY_PRICE_PIVOT_EXIT
-                and (source.get('ma5_outer_pivot') or {}).get('rule_version') == 2):
-            source['pending'] = MA5_EXIT
-            source['trigger'] = MA5_EXIT
-            source['holding_exit_policy'] = POLICY
-            source['ma5_outer_pivot'] = dict(source['ma5_outer_pivot'], rule_version=RULE_VERSION)
         for key in PROFIT_KEYS:
             source.pop(key, None)
         source['armed'] = False
@@ -58,9 +53,13 @@ def retire_profit_state(position, state, meta=None):
         if pending in RETIRED_CLOSE_REASONS:
             source.pop('pending', None)
             source.pop('trigger', None)
-        if pending == MA5_EXIT and (source.get('ma5_outer_pivot') or {}).get('rule_version') != RULE_VERSION:
-            source.pop('pending', None)
-            source.pop('trigger', None)
+        if pending == PRESSURE_EXIT:
+            from core.services.exits.peak_trailing_exit import position_identity
+            evidence = source.get('trade_pressure_exit') or {}
+            if (evidence.get('rule_version') != PRESSURE_VERSION
+                    or evidence.get('identity') != position_identity(position)):
+                source.pop('pending', None)
+                source.pop('trigger', None)
         for key in ('confirmed_pivot_exit', 'pivot_guard_version',
                     'structure_break_confirmation', 'structure_break_level',
                     'structure_break_atr', 'structure_break_threshold', 'intact_trend_pullback'):
@@ -117,10 +116,10 @@ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, si
     if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
         reason = WATERFALL
     if reason is None and valid:
-        confirmation = confirmed_ma5_outer_pivot(position, state, snapshot, sign)
+        confirmation = confirmed_trade_pressure(position, state, snapshot, price)
         if confirmation:
-            reason = MA5_EXIT
-            state['ma5_outer_pivot'] = confirmation
+            reason = PRESSURE_EXIT
+            state['trade_pressure_exit'] = confirmation
     state['holding_exit_policy'] = POLICY
     if not reason:
         return None
