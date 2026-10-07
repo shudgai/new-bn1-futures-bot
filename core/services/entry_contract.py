@@ -16,6 +16,7 @@ from core.services.closed_ma_cross import (CODES as CLOSED_MA_CROSS_CODES,
     EVIDENCE_KEYS as CROSS_EVIDENCE_KEYS, evaluate_closed_ma_cross)
 
 from core.services.candle_data import closed_entry_candles
+from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
 from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_EVIDENCE_KEYS
 from core.services.cap_breakout_entry import (
     SYMBOL as CAP_SYMBOL, CODES as CAP_CONTINUATION_CODES,
@@ -45,7 +46,7 @@ CHANNEL_BODY_PHASE = 'KC_CHANNEL_LIVE_LONG_BODY'
 CHANNEL_BODY_CODES = {CHANNEL_BODY_PHASE+'_LONG',CHANNEL_BODY_PHASE+'_SHORT'}
 FAST_BODY_PHASES = (REVERSAL_PHASE,'KC_LIVE_BODY_BREAKOUT', OUTER_SMALL_PAIR_PHASE, CHANNEL_BODY_PHASE, STRUCTURE_PHASE, PULLBACK_PHASE)
 ENTRY_CODES = frozenset({'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
-                         'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}) | MA5_PIVOT_CODES | CAP_CONTINUATION_CODES
+                         'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}) | MA5_PIVOT_CODES | CAP_CONTINUATION_CODES | WAIT_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
@@ -58,6 +59,7 @@ ENTRY_EVIDENCE_KEYS += BREAKOUT_EVIDENCE_KEYS
 ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
 ENTRY_EVIDENCE_KEYS += CHOP_EVIDENCE_KEYS
 ENTRY_EVIDENCE_KEYS += CAP_EVIDENCE_KEYS
+ENTRY_EVIDENCE_KEYS += ('wait_trigger_id', 'wait_setup', 'wait_live_open', 'wait_fixed_atr')
 
 
 def _entry_close_series(closed):
@@ -733,7 +735,7 @@ def complete_instant_pattern_ready(frame, quote, side):
         return False
 
 
-def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+def _evaluate_strategy_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None, evaluate_held=False):
     def reject(reason):
         if diagnostics is not None:
@@ -966,3 +968,59 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         return decision
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return reject('WAIT_VALID_ENTRY_DATA')
+
+
+def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+                            symbol="", diagnostics=None, evaluate_held=False):
+    from core.services.wait_authority import STATE_KEY as WAIT_STATE_KEY
+    wait_state = getattr(account, "position_meta", {}).get(WAIT_STATE_KEY, {}).get(symbol, {})
+    if any(c.get("phase") in ("CLAIMED", "UNKNOWN", "PARTIAL")
+           for c in wait_state.get("claims", {}).values()):
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics["reason"] = "BLOCKED_WAIT_ORDER_RECONCILIATION"
+        return None
+    wait = None
+    if account is not None and frame is not None and not frame.empty and not evaluate_held:
+        stamp = frame.attrs.get("entry_quote_ms", frame.attrs.get("entry_finality_server_ms"))
+        quote = frame.iloc[-1].close if price is None else price
+        wait = WaitAuthority(account).candidate(symbol, quote, stamp)
+    if wait is None and code not in WAIT_CODES:
+        return _evaluate_strategy_contract(frame, price, code, account=account,
+                                           symbol=symbol, diagnostics=diagnostics,
+                                           evaluate_held=evaluate_held)
+    other = _evaluate_strategy_contract(frame, price, None, account=account,
+                                        symbol=symbol, evaluate_held=evaluate_held)
+
+    def reject(reason):
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics["reason"] = reason
+        return None
+
+    if wait and other and wait["side"] != other["side"]:
+        return reject("BLOCKED_OPPOSITE_ENTRY_AUTHORITIES")
+    if code not in (None, *WAIT_CODES):
+        return _evaluate_strategy_contract(frame, price, code, account=account,
+                                           symbol=symbol, diagnostics=diagnostics,
+                                           evaluate_held=evaluate_held)
+    if not wait or code not in (None, wait["type"]):
+        return reject("WAIT_NO_OBSERVED_LIVE_TRIGGER")
+    if (symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})):
+        return reject("WAIT_POSITION_OR_PENDING_ORDER_BLOCK")
+    sign = 1 if wait["side"] == "LONG" else -1
+    # Defense sizing is retained; no KC/MA/pattern qualifies this authority.
+    closed = closed_entry_candles(frame)
+    defensive = closed["low" if sign == 1 else "high"].tail(5).astype(float)
+    if not np.isfinite(defensive).all() or not defensive.gt(0).all():
+        return reject("WAIT_INVALID_DEFENSIVE_DATA")
+    level = float(defensive.min() if sign == 1 else defensive.max())
+    stop = level-sign*.1*wait["entry_atr"]
+    if stop <= 0:
+        return reject("WAIT_INVALID_DEFENSIVE_STOP")
+    wait.update(structure_risk_stop=stop, exit_bar_id=None)
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics["reason"] = wait["type"]
+    return wait

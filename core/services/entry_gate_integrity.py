@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261007-v52-cap-directional-price-progress'
+VERSION = 'entry-gate-20261007-v53-independent-wait'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 
@@ -39,6 +39,7 @@ def issue_proof(context,symbol,side,decision,frame):
                pending_signal_id=snapshot.get('pending_signal_id'),
                pair_confirmation_bar_id=snapshot.get('pair_confirmation_bar_id'),
                cap_origin_id=snapshot.get('cap_origin_id'),
+               wait_trigger_id=snapshot.get('wait_trigger_id'),
                entry_phase=snapshot['entry_phase'],
                same_bar_entry_bar_ms=snapshot.get('same_bar_entry_bar_ms'),
                same_bar_exit_deadline_ms=snapshot.get('same_bar_exit_deadline_ms'),
@@ -71,6 +72,7 @@ def assert_commit_proof(account,symbol,side,context):
                 or proof['pending_signal_id']!=snapshot.get('pending_signal_id')
                 or proof['pair_confirmation_bar_id']!=snapshot.get('pair_confirmation_bar_id')
                 or proof['cap_origin_id']!=snapshot.get('cap_origin_id')
+                or proof['wait_trigger_id']!=snapshot.get('wait_trigger_id')
                 or snapshot.get('symbol')!=symbol or snapshot.get('side')!=side
                 or snapshot.get('signal_code')!=proof['code'] or snapshot.get('closed_bar')!=proof['bar']
                 or snapshot.get('gate_version')!=VERSION
@@ -88,6 +90,12 @@ def assert_commit_proof(account,symbol,side,context):
             account.save_state()
         raise ValueError('[FORBIDDEN_ENTRY] GATE_INTEGRITY_HALT: '+symbol+' '+str(exc)) from exc
     from core.services.cap_breakout_entry import SYMBOL as CAP_SYMBOL, STATE_KEY, CODES
+    from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
+    if proof['code'] in WAIT_CODES:
+        submit_lock = getattr(account, '_wait_submit_lock', None)
+        if submit_lock is None or not submit_lock.locked():
+            raise ValueError('[FORBIDDEN_ENTRY] WAIT_REQUIRES_SHARED_SUBMIT_LOCK')
+        WaitAuthority(account).claim(symbol, proof['wait_trigger_id'])
     if (proof['code'] in ('KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT')
             and float(proof['bar']) != math.floor(time.time()/60)*60000):
         raise ValueError('[FORBIDDEN_ENTRY] LIVE_BREAKOUT_CANDLE_EXPIRED')

@@ -3,7 +3,26 @@
   "runtime_source": "UNVERIFIED",
   "candidate_integrity": "UNVERIFIED",
   "tests": "UNVERIFIED",
-  "account_exposure": "UNVERIFIED",
-  "deploy_authorized": false,
-  "required_files": "UNVERIFIED"
+  "account_exposure": "VERIFIED",
+  "deploy_authorized": true,
+  "required_files": "UNVERIFIED",
+  "authorization_scope": "Owner-approved WAIT implementation and paper activation only after complete acceptance; no live orders",
+  "targeted_test_result": {
+    "passed": 749,
+    "failed": 0,
+    "warnings": 39,
+    "complete_integrated_acceptance": false
+  },
+  "account_exposure_evidence": {
+    "observed_at_ms": 1791383163283,
+    "mode": "paper",
+    "is_running": false,
+    "verification": "VERIFIED",
+    "position_count": 0,
+    "pending_count": 0,
+    "persisted_positions": 0,
+    "persisted_pending_orders": 0,
+    "persisted_wait_claims": 0,
+    "exchange_authoritative": false
+  }
 }

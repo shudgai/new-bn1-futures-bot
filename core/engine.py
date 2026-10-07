@@ -1725,6 +1725,15 @@ class TradingEngine:
         return False
     def _observe_channel_entry_quote(self, symbol, price, quote_ms=None):
         now = time.time()
+        wait_candidate = self._observe_independent_wait(
+            symbol, getattr(self, '_channel_exit_frames', {}).get(symbol), price, quote_ms)
+        if wait_candidate is not None:
+            self._schedule_exit_followup(
+                symbol, lambda: self._execute_confirmed_channel_break(
+                    symbol, getattr(self, '_channel_exit_frames', {}).get(symbol),
+                    price, wait_candidate['side'],
+                    v8_reason=wait_candidate['type'],
+                    candidate_bar_id=wait_candidate['confirmation_bar_id']))
         from core.services.cap_breakout_entry import observe_cap_breakout
         observe_cap_breakout(self.account, symbol,
                             getattr(self, '_channel_exit_frames', {}).get(symbol),
@@ -1756,6 +1765,16 @@ class TradingEngine:
             watcher.reset(symbol)
             return
         watcher.observe(symbol, price, quoted)
+
+    def _observe_independent_wait(self, symbol, frame, price, quote_ms):
+        from core.paper_account import PaperAccount
+        from core.services.wait_authority import WaitAuthority
+        if not isinstance(self.account, PaperAccount):
+            return
+        return WaitAuthority(self.account).observe(
+            symbol, frame, price, quote_ms,
+            flat_confirmed=symbol not in self.account.positions
+            and symbol not in self.account.closing_lock)
 
     def _live_pivot_ready(self, symbol, frame, price, side):
         pivot = getattr(self, '_channel_live_pivots', None)
@@ -1851,6 +1870,9 @@ class TradingEngine:
             if 'close_price_spike_filtered' in frame.columns:
                 frame.loc[frame.index[-1], 'close_price_spike_filtered'] = quote
         frame = self.strategy.compute_indicators(frame)
+        self._observe_independent_wait(
+            symbol, frame, float(frame.iloc[-1].close),
+            frame.attrs.get('entry_quote_ms', frame.attrs.get('entry_finality_server_ms')))
         from core.services.cap_breakout_entry import observe_cap_breakout
         observe_cap_breakout(self.account, symbol, frame, float(frame.iloc[-1].close),
                             frame.attrs.get('entry_quote_ms', frame.attrs.get('entry_finality_server_ms')))
@@ -2046,9 +2068,28 @@ class TradingEngine:
                 pass
 
             log_count = len(getattr(self.account, 'logs', []))
-            opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason=('自動反向開倉 ' if reverse_ticket else 'Live1M ')+decision['type'],
-                atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+            from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
+            is_wait = decision['type'] in WAIT_CODES
+            if is_wait:
+                self.account._wait_submit_lock = submit_lock
+            try:
+                opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+                    amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason=('自動反向開倉 ' if reverse_ticket else 'Live1M ')+decision['type'],
+                    atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+            finally:
+                if is_wait:
+                    from core.services.wait_authority import STATE_KEY as WAIT_STATE_KEY
+                    claims = self.account.position_meta.get(WAIT_STATE_KEY, {}).get(symbol, {}).get('claims', {})
+                    trigger_id = decision['wait_trigger_id']
+                    claim = next((c for c in claims.values() if c['trigger_id'] == trigger_id), None)
+                    if claim and claim['phase'] == 'CLAIMED':
+                        position = self.account.positions.get(symbol, {})
+                        matched = (position.get('entry_snapshot') or {}).get('wait_trigger_id') == trigger_id
+                        WaitAuthority(self.account).settle(
+                            symbol, trigger_id, outcome='UNKNOWN',
+                            filled_qty=float(position.get('qty', 0)) if matched else 0.,
+                            position_confirmed=matched)
+                    self.account._wait_submit_lock = None
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]
             detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')

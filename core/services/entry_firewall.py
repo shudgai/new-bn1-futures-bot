@@ -54,6 +54,12 @@ async def _validate_account_entry(account, symbol, side, context):
             raise ValueError('[FORBIDDEN_ENTRY] 未匹配成功自動反向平倉')
     
     is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+    from core.services.wait_authority import CODES as WAIT_CODES
+    wait_entry = context.get('entry_signal_code') in WAIT_CODES
+    if wait_entry:
+        submit_lock = getattr(account, '_wait_submit_lock', None)
+        if is_manual or submit_lock is None or not submit_lock.locked():
+            raise ValueError('[FORBIDDEN_ENTRY] WAIT_REQUIRES_SHARED_SUBMIT_LOCK')
     if is_manual:
         return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
         
@@ -111,7 +117,7 @@ async def _validate_account_entry(account, symbol, side, context):
                                       evaluate_held=direct_ticket is not None)
     if decision is None or decision['side'] != side:
         raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics.get('reason', 'INVALID_ENTRY_DATA'))
-    ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol)
+    ticket = None if wait_entry else getattr(account, 'channel_profit_reentries', {}).get(symbol)
     if ticket:
         from core.services.closed_breakout_entry import matched_reentry_close
         from core.services.strategies.outer_strategy import abnormal_pullback_ready
