@@ -42,7 +42,7 @@
     "Bridge priority, refresh, medium/doji/opposite BIG keep; no expiry",
     "Independent live WAIT formation remains unchanged; Owner-added common swing qualification applies to every actual entry, including WAIT",
     "Every entry passes six-closed-candle data validation, aligned latest closed MA5 move >=0.05 ATR, and fresh completed MA5 pivot or MA5/MA15 cross; valid only in immediately following live candle",
-    "Only valid KC_LIVE_BODY_BREAKOUT and KC_2BAR_CONFIRM authorities bypass chop efficiency/cross-count/overlap limits; WAIT, continuation and pivot retain all chop limits; exemption recorded in final proof",
+    "Every authority including KC_LIVE_BODY_BREAKOUT and KC_2BAR_CONFIRM enforces six-closed-candle efficiency >=70%, middle crosses <=1 and mean body overlap <=50%; no breakout chop exemption; final proof records chop_limits_exempt=false",
     "Frozen preceding ATR and valid authoritative market data",
     "No downtime reconstruction; suspend while held and rebuild after confirmed FLAT",
     "Shared firewall and refreshed half-wallet submit lock",

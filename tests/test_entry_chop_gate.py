@@ -87,18 +87,39 @@ def overlapping_history(f):
 @pytest.mark.parametrize('symbol', ['龙虾/USDT', 'CAP/USDT'])
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('kind', ['live', 'pair', 'pivot'])
-def test_overlapping_history_exempts_only_valid_breakouts(symbol, side, kind):
+def test_overlapping_history_blocks_every_authority(symbol, side, kind):
     f = eligible_frame(kind, side)
     overlapping_history(f)
     diagnostics = {}
     result = evaluate_entry_contract(f, symbol=symbol, code=authority_code(kind, side),
                                     diagnostics=diagnostics)
-    if kind == 'pivot':
-        assert result is None
-        assert diagnostics['reason'] == 'BLOCKED_CHOP_BODY_OVERLAP'
-    else:
-        assert result and result['chop_limits_exempt'] is True
-        assert result['chop_mean_overlap'] > .50
+    assert result is None
+    assert diagnostics['reason'] == 'BLOCKED_CHOP_BODY_OVERLAP'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_cap_0822_saved_closed_metrics_block_without_breakout_exemption(side):
+    f = eligible_frame('live', 'LONG')
+    candles = [
+        (.07243, .07247, .07215, .07215, .07213965488292799),
+        (.07216, .07217, .07205, .07207, .0721330210845539),
+        (.07209, .07229, .07205, .07217, .07213654288602495),
+        (.07217, .07228, .07210, .07216, .07213877689687971),
+        (.07214, .07227, .07209, .07224, .07214841719241498),
+        (.07224, .07232, .07221, .07226, .07215904412647069),
+    ]
+    f.loc[f.index[:-1], ['open', 'high', 'low', 'close', 'kc_middle']] = candles
+    if side == 'SHORT':
+        old = f.copy()
+        for key, source in [('open', 'open'), ('close', 'close'), ('high', 'low'),
+                            ('low', 'high'), ('kc_middle', 'kc_middle')]:
+            f[key] = .15-old[source]
+    status, evidence = evaluate_entry_chop(f)
+    assert status == 'BLOCKED_CHOP_LOW_EFFICIENCY' and evidence is None
+    # Use the actual saved market shape to verify the final shared qualification,
+    # independently of synthetic breakout prices in eligible_frame.
+    from core.services.swing_entry_gate import evaluate_swing_entry_gate
+    assert evaluate_swing_entry_gate(f, side) == (status, None)
 
 
 def metric_frame(closes):
@@ -205,9 +226,5 @@ def test_firewall_revokes_cached_entry_on_new_chop_history(side, symbol, kind, m
     asyncio.run(validate_account_entry(account, symbol, side, context))
     cached = copy.deepcopy(context)
     overlapping_history(f)
-    if kind == 'pivot':
-        with pytest.raises(ValueError, match='BLOCKED_CHOP_BODY_OVERLAP'):
-            asyncio.run(validate_account_entry(account, symbol, side, cached))
-    else:
+    with pytest.raises(ValueError, match='BLOCKED_CHOP_BODY_OVERLAP'):
         asyncio.run(validate_account_entry(account, symbol, side, cached))
-        assert cached['entry_snapshot']['chop_limits_exempt'] is True

@@ -7,10 +7,6 @@ from core.services.closed_ma_cross import closed_cross_evidence
 from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_KEYS
 
 MIN_MA5_SLOPE_ATR = Decimal("0.05")
-CHOP_EXEMPT_CODES = frozenset(
-    prefix+side for prefix in ("KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_")
-    for side in ("LONG", "SHORT")
-)
 EVIDENCE_KEYS = CHOP_KEYS + (
     "swing_event", "swing_event_bar_ms", "swing_live_bar_ms",
     "swing_ma5_left", "swing_ma5_pivot", "swing_ma5_latest",
@@ -20,9 +16,8 @@ EVIDENCE_KEYS = CHOP_KEYS + (
 )
 
 
-def evaluate_swing_entry_gate(frame, side, *, authority_code=None):
-    status, chop = evaluate_entry_chop(
-        frame, enforce_limits=authority_code not in CHOP_EXEMPT_CODES)
+def evaluate_swing_entry_gate(frame, side):
+    status, chop = evaluate_entry_chop(frame)
     if chop is None:
         return status, None
     try:

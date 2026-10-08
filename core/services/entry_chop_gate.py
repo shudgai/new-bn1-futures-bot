@@ -9,7 +9,7 @@ EVIDENCE_KEYS = ('chop_start_ms', 'chop_end_ms', 'chop_bars',
                  'chop_limits_exempt')
 
 
-def evaluate_entry_chop(frame, *, enforce_limits=True):
+def evaluate_entry_chop(frame):
     try:
         closed = closed_entry_candles(frame)
         if len(closed) < 6:
@@ -32,13 +32,13 @@ def evaluate_entry_chop(frame, *, enforce_limits=True):
         prices = [Decimal(str(row[4])) for row in values]
         path = sum(abs(b-a) for a, b in zip(prices, prices[1:]))
         net = abs(prices[-1]-prices[0])
-        if enforce_limits and (path == 0 or net < Decimal('0.70')*path):
+        if path == 0 or net < Decimal('0.70')*path:
             return 'BLOCKED_CHOP_LOW_EFFICIENCY', None
         sides = [1 if c > middle else -1 if c < middle else 0
                  for _, _, _, _, c, middle in values]
         nonzero = [side for side in sides if side]
         crosses = sum(a != b for a, b in zip(nonzero, nonzero[1:]))
-        if enforce_limits and crosses > 1:
+        if crosses > 1:
             return 'BLOCKED_CHOP_MIDDLE_CROSSES', None
         overlaps = []
         for a, b in zip(values, values[1:]):
@@ -48,11 +48,11 @@ def evaluate_entry_chop(frame, *, enforce_limits=True):
             overlaps.append(max(Decimal(0), min(hi_a, hi_b)-max(lo_a, lo_b))/smaller
                             if smaller > 0 else Decimal(1))
         mean_overlap = sum(overlaps)/len(overlaps)
-        if enforce_limits and mean_overlap > Decimal('0.50'):
+        if mean_overlap > Decimal('0.50'):
             return 'BLOCKED_CHOP_BODY_OVERLAP', None
         return 'PASS', dict(chop_start_ms=stamps[0], chop_end_ms=stamps[-1],
-                            chop_bars=6, chop_efficiency=float(net/path) if path else 0.,
+                            chop_bars=6, chop_efficiency=float(net/path),
                             chop_middle_crosses=crosses, chop_mean_overlap=float(mean_overlap),
-                            chop_limits_exempt=not enforce_limits)
+                            chop_limits_exempt=False)
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_CHOP_MARKET_DATA', None

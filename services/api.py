@@ -459,7 +459,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。保留 KC／WAIT 候選；有效即時破軌與兩根確認破軌略過六根盤整數值限制，WAIT、延續與其他入口仍須通過盤整檢查。所有入口均保留行情有效性、最新已收線 MA5 順向位移至少 0.05 ATR，以及該根新確認的 MA5 峰谷或 MA5／MA15 同向交叉；僅緊接的當根即時 K 可評估，不沿用舊事件。持倉 MA5 進場後峰谷先到持倉側 KC 外軌，再同時具備已收線價格峰谷確認、已收線 MA5 真正反向、最近兩根已收線 KC 中軌確認反向、即時反向斜率及 MA5 回退至少 0.10 ATR、價格回退至少 0.15 ATR 才平倉；KC 仍順向或持平時不新增峰谷平倉，普通反向 K、盘中局部回彈及 KC 單獨反向不平倉。帳戶硬止損、瀑布與手動平倉保留，不自動反手。所有入口均須通過送單安全 Gate。",
+        "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金。KC／WAIT 所有入口包含即時長 K 破軌與兩根確認破軌，均須通過六根已收線盤整檢查：價格效率至少 70%、中軌穿越至多一次、平均實體重疊至多 50%，破軌不豁免。非盤整即時長 K 破軌仍盤中評估，不等收線。所有入口均保留行情有效性、最新已收線 MA5 順向位移至少 0.05 ATR，以及該根新確認的 MA5 峰谷或 MA5／MA15 同向交叉；僅緊接的當根即時 K 可評估，不沿用舊事件。持倉 MA5 進場後峰谷先到持倉側 KC 外軌，再同時具備已收線價格峰谷確認、已收線 MA5 真正反向、最近兩根已收線 KC 中軌確認反向、即時反向斜率及 MA5 回退至少 0.10 ATR、價格回退至少 0.15 ATR 才平倉；KC 仍順向或持平時不新增峰谷平倉，普通反向 K、盤中局部回彈及 KC 單獨反向不平倉。帳戶硬止損、瀑布與手動平倉保留，不自動反手。所有入口均須通過送單安全 Gate。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

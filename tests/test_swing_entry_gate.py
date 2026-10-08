@@ -150,7 +150,7 @@ def test_four_wait_paths_final_firewall_revalidation_and_claim_consumption(
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("prefix", ["KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_",
                                   "WAIT_LIVE_BIG_", "CAP_KC_CONTINUATION_"])
-def test_chop_exemption_uses_actual_authority_not_requested_code(symbol, side, prefix, monkeypatch):
+def test_every_authority_blocks_chop_regardless_of_requested_code(symbol, side, prefix, monkeypatch):
     import core.services.entry_contract as contract
     actual_code = prefix+side
     monkeypatch.setattr(contract, "_evaluate_authority_contract",
@@ -160,18 +160,13 @@ def test_chop_exemption_uses_actual_authority_not_requested_code(symbol, side, p
     diagnostics = {}
     result = evaluate_entry_contract(f, symbol=symbol, code="KC_LIVE_BODY_BREAKOUT_"+side,
                                     diagnostics=diagnostics)
-    if prefix in ("KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_"):
-        assert result and result["chop_limits_exempt"] is True
-        assert result["chop_efficiency"] == 0.
-        assert result["chop_mean_overlap"] == 1.
-    else:
-        assert result is None and diagnostics["reason"] == "BLOCKED_CHOP_LOW_EFFICIENCY"
+    assert result is None and diagnostics["reason"] == "BLOCKED_CHOP_LOW_EFFICIENCY"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("prefix", ["KC_LIVE_BODY_BREAKOUT_", "KC_2BAR_CONFIRM_"])
 @pytest.mark.parametrize("fault", ["flat_ma5", "no_event", "gap", "invalid_ohlc", "history"])
-def test_breakout_exemption_preserves_fresh_swing_and_market_validation(side, prefix, fault):
+def test_breakout_retains_fresh_swing_and_market_validation(side, prefix, fault):
     f = swing_frame(side)
     if fault == "flat_ma5":
         f.loc[15, "ma5"] = f.loc[14, "ma5"]
@@ -185,7 +180,7 @@ def test_breakout_exemption_preserves_fresh_swing_and_market_validation(side, pr
         f.loc[14, "low"] = 200.
     else:
         f = f.iloc[-6:].copy()
-    status, evidence = evaluate_swing_entry_gate(f, side, authority_code=prefix+side)
+    status, evidence = evaluate_swing_entry_gate(f, side)
     assert evidence is None
     assert status == {
         "flat_ma5": "BLOCKED_SWING_FLAT_OR_OPPOSITE_MA5",

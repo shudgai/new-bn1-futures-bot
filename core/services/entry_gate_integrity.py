@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261008-v57-closed-pivot-exit'
+VERSION = 'entry-gate-20261008-v58-restore-breakout-chop'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 

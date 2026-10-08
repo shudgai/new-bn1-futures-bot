@@ -19,7 +19,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
 from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_EVIDENCE_KEYS
 from core.services.swing_entry_gate import (
-    evaluate_swing_entry_gate, CHOP_EXEMPT_CODES, EVIDENCE_KEYS as SWING_EVIDENCE_KEYS,
+    evaluate_swing_entry_gate, EVIDENCE_KEYS as SWING_EVIDENCE_KEYS,
 )
 from core.services.cap_breakout_entry import (
     SYMBOL as CAP_SYMBOL, CODES as CAP_CONTINUATION_CODES,
@@ -907,8 +907,7 @@ def _evaluate_strategy_contract(frame, price=None, code=None, *, account=None,
             if sign*(quote-alignment['entry_live_ma5']) <= max(quote, alignment['entry_live_ma5'])*1e-12:
                 return reject('BLOCKED_CAP_QUOTE_INSIDE_MA5')
             decision['cap_quote_ma5'] = alignment['entry_live_ma5']
-        chop_status, chop_evidence = evaluate_entry_chop(
-            ma5_frame, enforce_limits=decision['type'] not in CHOP_EXEMPT_CODES)
+        chop_status, chop_evidence = evaluate_entry_chop(ma5_frame)
         if chop_evidence is None:
             return reject(chop_status)
         decision.update(chop_evidence)
@@ -1038,8 +1037,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         diagnostics=diagnostics, evaluate_held=evaluate_held)
     if decision is None:
         return None
-    status, evidence = evaluate_swing_entry_gate(
-        frame, decision["side"], authority_code=decision["type"])
+    status, evidence = evaluate_swing_entry_gate(frame, decision["side"])
     if evidence is None:
         if diagnostics is not None:
             diagnostics.clear()
