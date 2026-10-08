@@ -1222,8 +1222,16 @@ class TradingEngine:
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
         """Abnormal live bodies and hard stops; no REST or candle-close wait."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+        provenance_ready = True
+        cached_frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
+        if cached_frame is not None and not cached_frame.empty:
+            stamp = float(quote_ms if quote_ms is not None else time.time()*1000)
+            if (math.isfinite(stamp) and 0 <= time.time()*1000-stamp <= 5000
+                    and float(cached_frame.iloc[-1].timestamp) == math.floor(stamp/60000)*60000):
+                from core.services.continuation_qualification import observe_runtime
+                provenance_ready = observe_runtime(self.account, symbol, cached_frame, price)
         closed = await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
-        if closed and symbol not in self.account.positions:
+        if closed and provenance_ready and symbol not in self.account.positions:
             await self._reevaluate_after_close(symbol)
         if not closed:
             cached = getattr(self, '_channel_exit_frames', {}).get(symbol)
@@ -1820,7 +1828,10 @@ class TradingEngine:
             frame.loc[frame.index[-1], 'low'] = min(float(frame.iloc[-1]['low']), quote)
             if 'close_price_spike_filtered' in frame.columns:
                 frame.loc[frame.index[-1], 'close_price_spike_filtered'] = quote
-        return self.strategy.compute_indicators(frame)
+        frame = self.strategy.compute_indicators(frame)
+        from core.services.continuation_qualification import observe
+        observe(self.account, symbol, frame, float(frame.iloc[-1].close))
+        return frame
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)
@@ -2426,7 +2437,7 @@ class TradingEngine:
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
         from core.services.closed_breakout_entry import matched_reentry_close
-        from core.services.entry_contract import evaluate_entry_contract, evaluate_continuation_entry
+        from core.services.entry_contract import evaluate_entry_contract
         filled = matched_reentry_close(self.account, symbol, ticket)
         abnormal = any(k in str(ticket.get('close_reason') or '') for k in ('ADVERSE', 'ABNORMAL', 'WATERFALL'))
         if filled and ticket.get('phase') == 'closed' and not abnormal:
@@ -2436,7 +2447,7 @@ class TradingEngine:
                 ticket['side'] = decision['side']
                 return True
             return False
-        continuation = evaluate_continuation_entry(frame, price, symbol=symbol)
+        continuation = evaluate_entry_contract(frame, price, account=self.account, symbol=symbol)
         if not continuation or continuation['side'] != ticket.get('side'):
             # Inside-channel quotes observe the abnormal pullback without granting entry.
             from core.services.closed_breakout_entry import matched_reentry_close

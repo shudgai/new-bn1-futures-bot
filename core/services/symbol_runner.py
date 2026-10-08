@@ -47,6 +47,10 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                   
     if not math.isfinite(quote) or quote <= 0:
         return [], []
+    from core.services.continuation_qualification import observe_runtime
+    provenance_ready = observe_runtime(engine.account, symbol, frame, quote)
+    if not provenance_ready and not position:
+        return [], []
         
     if daily_halt and not position:
         return [], []

@@ -27,25 +27,31 @@ def market(side):
     frame = pd.DataFrame(rows)
     frame.attrs["timeframe_ms"] = 60000
     position = dict(side=side, entry_mode="CHANNEL_SWING", entry_price=100.,
-                    qty=1., open_timestamp=(bar+100)/1000)
+                    qty=1., open_timestamp=(bar+100)/1000, entry_atr=1.)
     flat_quote = rows[-6]["close"]
     return position, frame, float(bar+1000), flat_quote
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("movement,exit_expected", [(0., True), (-.1, True), (.1, False)])
-def test_live_quote_flat_or_adverse_without_waiting_for_close(symbol, side, movement, exit_expected):
+@pytest.mark.parametrize("movement,exit_expected", [(0., False), (-.1, True), (.1, False)])
+def test_live_observed_peak_needs_adverse_direction_not_flat(symbol, side, movement, exit_expected):
     p, f, stamp, flat_quote = market(side)
     sign = 1 if side == "LONG" else -1
     f.attrs["symbol"] = symbol
+    previous = float(f.iloc[-2].ma5)
+    p[policy.STATE_KEY] = dict(policy=policy.POLICY, identity=policy.position_identity(p),
+                              reference_atr=1.,
+                              ma5_peak=dict(baseline=previous-sign*.1,
+                                            extreme=previous+sign*.1, favorable=True))
+    before = copy.deepcopy(p)
     evidence, _ = policy.evaluate(p, f, flat_quote+sign*movement, stamp)
     assert bool(evidence) is exit_expected
     if evidence:
         assert evidence["reason"] == policy.LIVE_REASON
         assert evidence["quote_ms"] == stamp
-        assert evidence["flat"] is (movement == 0.)
-    assert policy.STATE_KEY not in p
+        assert evidence["ma5_retreat"] >= .1
+    assert p == before
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -72,6 +78,13 @@ def test_live_invalid_data_no_authority(side, fault):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_live_pending_retry_restart_and_position_isolation(symbol, side, monkeypatch):
     p, f, stamp, quote = market(side)
+    sign = 1 if side == "LONG" else -1
+    previous = float(f.iloc[-2].ma5)
+    p[policy.STATE_KEY] = dict(policy=policy.POLICY, identity=policy.position_identity(p),
+                              reference_atr=1.,
+                              ma5_peak=dict(baseline=previous-sign*.1,
+                                            extreme=previous+sign*.1, favorable=True))
+    quote -= sign*.5
     monkeypatch.setattr(time, "time", lambda: stamp/1000)
     account = SimpleNamespace(positions={symbol:p}, position_meta={},
                               save_state=Mock(), log=Mock(),
@@ -105,7 +118,93 @@ def test_real_paper_live_close_once(side, tmp_path, monkeypatch):
     account = PaperAccount()
     account.positions = {"CAP/USDT":p}
     account.position_meta = {}
-    assert asyncio.run(policy.enforce(account, "CAP/USDT", quote, f, stamp))
+    sign = 1 if side == "LONG" else -1
+    assert not asyncio.run(policy.enforce(account, "CAP/USDT", quote-sign, f, stamp))
+    stamp += 1
+    assert not asyncio.run(policy.enforce(account, "CAP/USDT", quote+sign, f, stamp))
+    stamp += 1
+    assert asyncio.run(policy.enforce(account, "CAP/USDT", quote-sign*.5, f, stamp))
     assert account.trades[0]["reason"] == "Channel Swing "+policy.LIVE_REASON
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", quote, f, stamp))
     assert len(account.trades) == 1
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("retreat", [.099, .10, .101])
+def test_observed_live_peak_threshold_and_fixed_atr(symbol, side, retreat, monkeypatch):
+    p, f, stamp, flat_quote = market(side)
+    sign = 1 if side == "LONG" else -1
+    monkeypatch.setattr(time, "time", lambda: stamp/1000)
+    a = SimpleNamespace(positions={symbol:p}, position_meta={}, save_state=Mock(),
+                        log=Mock(), close_position=AsyncMock(return_value=False))
+    assert not asyncio.run(policy.enforce(a, symbol, flat_quote-sign, f, stamp))
+    stamp += 1
+    assert not asyncio.run(policy.enforce(a, symbol, flat_quote+sign*.25, f, stamp))
+    f["atr"] = 100.
+    p["entry_atr"] = 100.
+    peak = p[policy.STATE_KEY]["ma5_peak"]["extreme"]
+    last_closes = float(f.iloc[:-1].close.tail(4).sum())
+    quote = 5*(peak-sign*retreat)-last_closes
+    stamp += 1
+    assert not asyncio.run(policy.enforce(a, symbol, quote, f, stamp))
+    if retreat < .1:
+        a.close_position.assert_not_awaited()
+        assert "pending" not in p[policy.STATE_KEY]
+    else:
+        assert a.close_position.await_count == 1
+        assert p[policy.STATE_KEY]["evidence"]["fixed_entry_atr"] == 1.
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_first_adverse_quote_has_no_observed_favorable_peak(side):
+    p, f, stamp, quote = market(side)
+    sign = 1 if side == "LONG" else -1
+    assert policy.evaluate(p, f, quote-sign*5, stamp)[0] is None
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_real_restart_preserves_peak_fixed_atr_and_consumes_close_once(symbol, side, tmp_path, monkeypatch):
+    from core.paper_account import PaperAccount
+    monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path/"peak.json"))
+    p, f, stamp, quote = market(side)
+    sign = 1 if side == "LONG" else -1
+    monkeypatch.setattr(time, "time", lambda: stamp/1000)
+    a = PaperAccount()
+    a.positions = {symbol:p}
+    assert not asyncio.run(policy.enforce(a, symbol, quote-sign, f, stamp))
+    stamp += 1
+    assert not asyncio.run(policy.enforce(a, symbol, quote+sign*.25, f, stamp))
+    peak = copy.deepcopy(p[policy.STATE_KEY]["ma5_peak"])
+    restored = PaperAccount()
+    assert restored.positions[symbol][policy.STATE_KEY]["ma5_peak"] == peak
+    assert restored.positions[symbol][policy.STATE_KEY]["reference_atr"] == 1.
+    stamp += 1
+    assert asyncio.run(policy.enforce(restored, symbol, quote-sign*.5, f, stamp))
+    after = PaperAccount()
+    assert symbol not in after.positions
+    assert len(after.trades) == 1
+    assert after.trades[0]["reason"] == "Channel Swing "+policy.LIVE_REASON
+    assert not asyncio.run(policy.enforce(after, symbol, quote, f, stamp))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("atr", [0., float("nan"), None])
+def test_missing_entry_atr_cannot_invent_peak_exit(side, atr):
+    p, f, stamp, quote = market(side)
+    p["entry_atr"] = atr
+    assert policy.evaluate(p, f, quote, stamp)[0] is None
+
+
+def test_disk_failure_blocks_close_and_reports_error():
+    from test_trend_pivot_owner_policy import market as closed_market
+    p, f, stamp = closed_market()
+    a = SimpleNamespace(positions={"CAP/USDT":p}, position_meta={},
+                        save_state=Mock(side_effect=OSError("disk unavailable")),
+                        log=Mock(), close_position=AsyncMock())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(time, "time", lambda: stamp/1000)
+        assert not asyncio.run(policy.enforce(a, "CAP/USDT", 100., f, stamp))
+    a.close_position.assert_not_awaited()
+    a.log.assert_called()

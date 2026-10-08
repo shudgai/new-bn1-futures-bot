@@ -73,7 +73,11 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
     from core.services.strategies.outer_strategy import ck_direction
-    direction = ck_direction(closed)
+    direction_frame = closed if live is None else closed.copy()
+    if live is not None:
+        import pandas as pd
+        direction_frame = pd.concat([closed, live.to_frame().T], ignore_index=True)
+    direction = ck_direction(direction_frame)
     if not direction:
         return wait('WAIT_VALID_DIRECTION')
 
@@ -121,7 +125,9 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 
             # MA5 conditions (from old logic)
             k2_ma5_delta = sign * (float(second.ma5) - float(first.ma5))
-            if sign * (float(second.ma5) - float(second.ma15)) <= 0 or k2_ma5_delta <= 0:
+            if k2_ma5_delta <= max(float(first.ma5), float(second.ma5)) * 1e-12:
+                return wait('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
+            if sign * (float(second.ma5) - float(second.ma15)) <= 0:
                 continue
 
             s_atr = float(second.atr)
@@ -160,4 +166,3 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         return wait('WAIT_NEW_KC_BREAKOUT')
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         return wait('WAIT_VALID_KC_PENDING_DATA')
-

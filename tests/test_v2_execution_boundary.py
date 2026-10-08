@@ -2,7 +2,7 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pandas as pd
@@ -12,15 +12,11 @@ from core.services.entry_firewall import validate_account_entry, validate_entry_
 
 
 def candles(side='LONG', live=True):
-    from test_lobster_cap_gates import frame
-    f = frame(side)
-    stamp = int(time.time() // 60) * 60000
-    f['timestamp'] = [stamp-(5-i)*60000 for i in range(6)]
+    from test_strict_entry_contract import candles as general_candles
+    f = general_candles(side)
     prior = f.iloc[[0]].copy()
     prior["timestamp"] -= 60000
     f = pd.concat([prior, f], ignore_index=True)
-    sign = 1 if side == 'LONG' else -1
-    f.loc[f.index[-3], 'ma5'] = float(f.iloc[-2].ma5) - sign * .1
     f.attrs['timeframe_ms'] = 60000
     f.attrs['entry_finality_verified'] = True
     if not live:
@@ -34,7 +30,8 @@ def test_account_boundary_blocks_newly_flat_closed_ma5(side):
     f = candles(side)
     ctx = context(f, side)
     f.loc[f.index[-2], 'ma5'] = float(f.iloc[-3].ma5)
-    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f), last_closed_at={})
+    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f), last_closed_at={},
+                              save_state=Mock(), log=Mock())
     with pytest.raises(ValueError, match='BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID'):
         asyncio.run(validate_account_entry(account, 'CAP/USDT', side, ctx))
 
@@ -52,7 +49,7 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     from core.paper_account import PaperAccount
     from core.services.symbol_runner import process_single_symbol_runner
     monkeypatch.setattr(PaperAccount, 'load_state', lambda self: None)
-    monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
+    monkeypatch.setattr(PaperAccount, 'save_state', lambda self, **kwargs: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
     symbol = 'CAP/USDT'; f = candles(side, live)
@@ -88,7 +85,8 @@ def test_account_boundary_rejects_invalid(side, fault):
     if fault == 'expired':
         f['timestamp'] -= 300000; ctx['channel_confirmation_bar_id'] -= 300000
     if fault == 'changed': ctx['channel_confirmation_bar_id'] -= 60000
-    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f), last_closed_at={})
+    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f), last_closed_at={},
+                              save_state=Mock(), log=Mock())
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account,'TEST',side,ctx))
 
@@ -120,7 +118,7 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
     from core.engine import TradingEngine
     from core.paper_account import PaperAccount
     monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
-    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
+    monkeypatch.setattr(PaperAccount,'save_state',lambda self,**kwargs:None)
     account=PaperAccount(); account.balance=100.
     engine=object.__new__(TradingEngine); engine.account=account
     symbol='CAP/USDT'; f=candles(); ctx=context(f,'LONG')

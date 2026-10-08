@@ -63,6 +63,11 @@ async def validate_account_entry(account, symbol, side, context):
         
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+    live_stamp = float(frame.iloc[-1].timestamp)
+    if not math.isfinite(live_stamp) or math.floor(time.time()/60)*60000 != live_stamp:
+        raise ValueError('[FORBIDDEN_ENTRY] 已收線訊號過期或來自未來')
+    from core.services.continuation_qualification import observe
+    observe(account, symbol, frame, float(frame.iloc[-1].close))
     diagnostics = {}
     decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
     if decision is None or decision['side'] != side:

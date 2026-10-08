@@ -46,7 +46,7 @@ def test_pivot_requires_only_closed_ma5_turn(symbol, side):
     f.loc[5, "ma5"] = f.loc[4, "ma5"] + sign * .1
     assert policy.evaluate(p, f, 100., stamp)[0] is None
     f.loc[5, "ma5"] = f.loc[4, "ma5"]
-    assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.FLAT_REASON
+    assert policy.evaluate(p, f, 100., stamp)[0] is None
     f.loc[5, "ma5"] = float("nan")
     assert policy.evaluate(p, f, 100., stamp)[0] is None
 
@@ -257,9 +257,9 @@ def test_all_retired_pending_revoked(old_policy, reason):
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("legs,allowed", [
-    ((1., -.1), True), ((0., -.1), True), ((1., 0.), True),
-    ((1., 1.), False), ((-1., -1.), True), ((-1., 1.), True),
-    ((1e-13, -.1), True), ((1., -1e-13), True),
+    ((1., -.1), True), ((0., -.1), False), ((1., 0.), False),
+    ((1., 1.), False), ((-1., -1.), False), ((-1., 1.), False),
+    ((1e-13, -.1), False), ((1., -1e-13), False),
 ])
 def test_two_strict_completed_ma5_legs(symbol, side, legs, allowed):
     p, f, stamp = market(side)
@@ -294,36 +294,40 @@ def test_ma5_turn_market_validity(side, fault):
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_restart_catches_earlier_flat_even_after_ma5_resumes(symbol, side):
+def test_restart_catches_earlier_qualified_turn_even_after_ma5_resumes(symbol, side):
     p, f, stamp = market(side)
     sign = 1 if side == "LONG" else -1
     p["open_timestamp"] = f.loc[0, "timestamp"]/1000
-    f.loc[:5, "ma5"] = [100., 100.+sign, 100.+sign, 100.+2*sign,
+    f.loc[:5, "ma5"] = [100., 100.+sign, 100.+.8*sign, 100.+2*sign,
                          100.+3*sign, 100.+4*sign]
     result, _ = policy.evaluate(p, f, 100., stamp)
-    assert result["reason"] == policy.FLAT_REASON
+    assert result["reason"] == policy.PIVOT_REASON
     assert result["closed_bar_ms"] == f.loc[2, "timestamp"]
     assert policy.STATE_KEY not in p
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_flat_pending_persists_retry_and_rejects_replaced_position(symbol, side, monkeypatch):
+def test_old_flat_pending_revoked_and_flat_keeps_position(symbol, side, monkeypatch):
     p, f, stamp = market(side)
     f.loc[5, "ma5"] = f.loc[4, "ma5"]
+    p[policy.STATE_KEY] = dict(policy="live_ma5_flat_or_adverse_v7",
+                              identity=policy.position_identity(p),
+                              pending="EXIT_LIVE_MA5_FLAT_OR_ADVERSE",
+                              evidence={"reason":"EXIT_LIVE_MA5_FLAT_OR_ADVERSE"})
     monkeypatch.setattr(time, "time", lambda: stamp/1000)
     account = SimpleNamespace(positions={symbol:p}, position_meta={},
                               save_state=Mock(), log=Mock(),
                               close_position=AsyncMock(return_value=False))
     assert not asyncio.run(policy.enforce(account, symbol, 100., f, stamp))
-    assert p[policy.STATE_KEY]["pending"] == policy.FLAT_REASON
-    assert policy.close_allowed(p, {}, "Channel Swing "+policy.FLAT_REASON, True)
+    assert "pending" not in p[policy.STATE_KEY]
+    assert not policy.close_allowed(p, {}, "Channel Swing EXIT_LIVE_MA5_FLAT_OR_ADVERSE", True)
     account.positions[symbol] = copy.deepcopy(p)
     assert not asyncio.run(policy.enforce(account, symbol, 100., None, stamp))
-    assert account.close_position.await_count == 2
+    account.close_position.assert_not_awaited()
     account.positions[symbol]["qty"] += 1
     assert not asyncio.run(policy.enforce(account, symbol, 100., None, stamp))
-    assert account.close_position.await_count == 2
+    account.close_position.assert_not_awaited()
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -350,14 +354,14 @@ def test_persisted_cursor_survives_rolled_history(side, monkeypatch):
     next_frame = f.tail(1).copy()
     next_frame["timestamp"] += 60000
     next_frame["is_closed"] = True
-    next_frame["ma5"] = 100.+2*sign
+    next_frame["ma5"] = 100.+1.9*sign
     stamp += 60000
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., next_frame, stamp))
-    assert account.positions["CAP/USDT"][policy.STATE_KEY]["pending"] == policy.FLAT_REASON
+    assert account.positions["CAP/USDT"][policy.STATE_KEY]["pending"] == policy.PIVOT_REASON
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_real_paper_flat_exit_closes_once(side, tmp_path, monkeypatch):
+def test_real_paper_flat_does_not_close(side, tmp_path, monkeypatch):
     from core.paper_account import PaperAccount
     monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path/"flat-account.json"))
     p, f, stamp = market(side)
@@ -366,8 +370,7 @@ def test_real_paper_flat_exit_closes_once(side, tmp_path, monkeypatch):
     account = PaperAccount()
     account.positions = {"CAP/USDT":p}
     account.position_meta = {}
-    assert asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
-    assert "CAP/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "Channel Swing "+policy.FLAT_REASON
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
-    assert len(account.trades) == 1
+    assert "CAP/USDT" in account.positions
+    assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
+    assert not account.trades

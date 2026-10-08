@@ -189,6 +189,8 @@ class BinanceTestnetAccount:
         self.logs: List[dict] = []
         self.position_meta: Dict[str, dict] = {}
         self.channel_profit_reentries: Dict[str, dict] = {}
+        self.channel_continuation_qualifications: Dict[str, dict] = {}
+        self.channel_small_bridge_states: Dict[str, dict] = {}
         self.closing_lock: set = set()
         self.on_trade_closed: Optional[Callable[[], None]] = None
         self.last_sync_at = 0.0
@@ -482,6 +484,8 @@ class BinanceTestnetAccount:
             self.logs = data.get("logs", [])
             self.position_meta = data.get("position_meta", {})
             self.channel_profit_reentries = data.get("channel_profit_reentries", {})
+            self.channel_continuation_qualifications = data.get("channel_continuation_qualifications", {})
+            self.channel_small_bridge_states = data.get("channel_small_bridge_states", {})
             self.daily_date = data.get("daily_date")
             self.daily_start_balance = float(data.get("daily_start_balance", 0.0))
             self.daily_start_realized_pnl = float(data.get("daily_start_realized_pnl", 0.0))
@@ -529,6 +533,8 @@ class BinanceTestnetAccount:
             "logs": self.logs[-200:],
             "position_meta": self.position_meta,
             "channel_profit_reentries": self.channel_profit_reentries,
+            "channel_continuation_qualifications": self.channel_continuation_qualifications,
+            "channel_small_bridge_states": self.channel_small_bridge_states,
             "daily_date": self.daily_date,
             "daily_start_balance": self.daily_start_balance,
             "daily_start_realized_pnl": self.daily_start_realized_pnl,

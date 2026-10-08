@@ -2,6 +2,93 @@
 
 ## Owner decisions
 
+### Final superseding exit: observed MA5 peak/trough, 0.10 entry ATR
+
+The Owner replaced flat-immediate-close with hold-flat/confirmed-peak exit.
+Policy `observed_ma5_peak_turn_010_atr_v8` requires an actual post-entry
+favorable MA5 observation, followed by retreat from the observed MA5 peak
+(LONG) or trough (SHORT) >= 0.10 fixed entry ATR, inclusive, and adverse live
+MA5 direction relative to latest completed MA5. Flat and sub-threshold
+pullbacks do not close; no favorable observation means no peak authority.
+This measures MA5 movement, not price movement or profit percentage.
+
+Freeze the preceding completed ATR saved at entry. Missing/invalid entry ATR
+blocks this authority explicitly; never substitute a later ATR. Persist
+position-bound baseline/extreme, favorable observation, completed cursor and
+pending close evidence strictly. Preserve verified V8 retries across restart,
+but revoke older flat/turn-only pending reasons. Replay only validated
+completed post-entry MA5 observations; never invent missed live quotes or
+historical fills. Entry state/persistence failure blocks new entry, not the
+independent held-position exit evaluation. Staged and manual close remain
+separate. Entry still blocks flat/opposite MA5.
+
+The live 0.10-ATR rule does not wait for candle close. Completed post-entry
+evidence may also confirm the same qualified retreat for restart recovery.
+Neither route guarantees an absolute market extremum or prevents all
+giveback/loss. No profit lock or software hard stop is added. V7 below is
+historical and is not the final integrated deployment policy.
+
+Final integrated validation: 379 passed, zero failed, in the nine modules
+listed in the entry integration section below; 11 existing UTC datetime
+deprecation warnings remain. Covers 0.099/0.100/0.101 ATR MA5 retreat,
+frozen ATR despite later indicator/position changes, live flat hold,
+missing ATR rejection, actual paper restart preservation and close dedupe,
+old flat-ticket revocation, all four symbol/direction paths, and entry
+provenance failures without skipping held-position exit evaluation.
+Stale/future frames cannot mutate runtime provenance or account-boundary
+state. Git diff whitespace and editor diagnostics passed.
+
+Release procedure: commit/push the integrated source, stop only the paper
+service, back up its stopped ledger, restart and verify API entry/exit policy,
+paper-only running status, new process source, persisted state and retained
+historical trade IDs. Runtime evidence belongs to the session artifacts;
+passing tests alone is not deployment verification or live trading approval.
+
+### Final entry integration: approved exception and qualified continuation
+
+The Owner reconfirmed the live-pattern exception after the sideways-chart
+review. Shared automatic authority is limited to:
+
+- SMALL same-direction setup, then one or more consecutive opposite SMALL
+  bridges, then an observed live directional body >= 0.50 fixed preceding
+  completed ATR. SMALL is NOT DOJI and <= 0.25 its own preceding completed ATR.
+  No maximum bridge count. Live raw open may be outside KC; current quote
+  must be strictly beyond the same-side KC rail and live MA5.
+- General K1 completed directional body crosses from inside KC; completed
+  K2 same-direction body confirms outside. Both body/range ratios >= 20%.
+  Evaluate on forming K3, revalidating current quote and existing MA5 gates.
+- Continuation requires a persisted observed general K1/K2 source, current
+  KC/MA5 direction, and quote strictly beyond KC and live MA5. Touch/return
+  to KC or completed KC reversal cancels the source; the same pair cannot
+  resurrect it. Holding may invalidate an origin, never create a new one.
+
+Scan, quotes, reentry, cached execution and the account firewall share this
+contract. Retired channel-turn and three-bar aliases are not whitelisted.
+A generic single giant candle and unqualified outside-KC quote have no
+automatic authority. Persist both provenance stores strictly before exposing
+new qualification; retain completed fill identities across restart. One live
+BIG candle cannot be re-entered after its confirmed fill. Existing closed and
+live MA5 direction/strength and six-bar chop guards remain; no new visual
+sideways threshold is invented.
+
+The saved stash remains a backup, but its entry draft has now been restored
+and integrated. Earlier "excluded/stashed" statements below describe those
+earlier deployments only. Exit is now V8 above. Mobile action labels remain
+unchanged; the chart badge describes hold-flat and 0.10-ATR peak retreat.
+
+Earlier entry integration validation: 333 passed across observed provenance, small/multi-
+bridge, live-MA5 exit, owner-policy, V2-boundary, structured/specialized routes,
+staged implementation and isolated Testnet integration. Includes actual paper
+runner fills and dedupe independently for both symbols/directions and both
+general/live entries. Eleven existing datetime deprecation warnings remain.
+The historical named channel-swing/position-path/execution modules are absent
+from this checkout. No full-suite or actual exchange-order claim.
+
+Deployment target is only `binance-8006-paper.service`; no live/Testnet
+activation. Independent permanent WAIT is not implemented by this pattern.
+Its gates remain BLOCK/NOT_TESTED as listed below; doji PASS is specification/
+static-helper trace only, never runtime WAIT readiness.
+
 ### Final superseding decision: live MA5 flat/adverse exit
 
 Policy `live_ma5_flat_or_adverse_v7`: MA5 = (last four completed closes +
@@ -21,7 +108,8 @@ and execution latency remain risks; profit retention is not guaranteed.
 CAP 20:26 close was old V4: MA5 0.077280 -> 0.077336 -> 0.077236,
 ledger net PnL -3.9975 USDT. Lobster 20:24 close was also old V4:
 0.038952 -> 0.038954 -> 0.038948, not a doji trigger.
-Historical trades are unchanged. Entry drafts remain separately stashed.
+Historical trades are unchanged. At that V7-only deployment, entry drafts
+remained separately stashed; the later integration above supersedes this scope.
 
 V7 verification: 254 passed in the seven targeted owner-policy/live-MA5,
 structured/specialized, V2-boundary and staged regression modules. Tests

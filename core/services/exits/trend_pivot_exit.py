@@ -1,4 +1,4 @@
-"""Channel Swing exits: quote-repriced MA5 flat or adverse movement closes exposure."""
+"""Position-bound observed MA5 peaks; flat and minor pullbacks keep exposure."""
 import copy
 import math
 import time
@@ -9,13 +9,12 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import RETIRED_KEYS, position_identity
 from core.services.exits.staged_risk_service import staged_enabled
 
-POLICY = "live_ma5_flat_or_adverse_v7"
-PREVIOUS_POLICY = "closed_ma5_post_entry_turn_v4"
+POLICY = "observed_ma5_peak_turn_010_atr_v8"
 STATE_KEY = "trend_pivot_exit_state"
-PIVOT_REASON = "EXIT_CLOSED_MA5_CONFIRMED_TURN"
-FLAT_REASON = "EXIT_CLOSED_MA5_FLAT"
-LIVE_REASON = "EXIT_LIVE_MA5_FLAT_OR_ADVERSE"
-REASONS = (PIVOT_REASON, FLAT_REASON, LIVE_REASON)
+PIVOT_REASON = "EXIT_CLOSED_MA5_PEAK_TURN_010_ATR"
+LIVE_REASON = "EXIT_LIVE_MA5_PEAK_TURN_010_ATR"
+REASONS = (PIVOT_REASON, LIVE_REASON)
+MA5_TURN_ATR = 0.10
 DISABLED_KEYS = RETIRED_KEYS + ("peak_trailing_state", "channel_hard_stop_pending")
 
 
@@ -33,11 +32,8 @@ def migrate(position, meta):
     # Older policies cannot authorize retries under the new MA5-only rule.
     if prior.get("identity") == identity and "last_ms" in prior:
         state["last_ms"] = prior["last_ms"]
-    if (prior.get("policy") == PREVIOUS_POLICY and prior.get("identity") == identity
-            and prior.get("pending") == PIVOT_REASON
-            and isinstance(prior.get("evidence"), dict)
-            and prior["evidence"].get("reason") == PIVOT_REASON):
-        state.update(pending=PIVOT_REASON, evidence=copy.deepcopy(prior["evidence"]))
+    if "reference_atr" not in state:
+        state["reference_atr"] = position.get("entry_atr", meta.get("entry_atr"))
     for store in (position, meta):
         for key in DISABLED_KEYS:
             store.pop(key, None)
@@ -46,8 +42,27 @@ def migrate(position, meta):
     return position[STATE_KEY]
 
 
+def _observe_ma5(peak, current, previous, sign, atr, evidence):
+    tolerance = max(current, previous) * 1e-12
+    if not peak:
+        peak.update(baseline=current, extreme=current, favorable=False)
+    if sign * (current - float(peak["extreme"])) > tolerance:
+        peak["extreme"] = current
+    if sign * (current - float(peak["baseline"])) > tolerance:
+        peak["favorable"] = True
+    retreat = sign * (float(peak["extreme"]) - current)
+    threshold = MA5_TURN_ATR * atr
+    if (peak["favorable"] and sign * (current - previous) < -tolerance
+            and (retreat >= threshold or math.isclose(retreat, threshold, rel_tol=1e-12))):
+        return dict(evidence, ma5_pivot=peak["extreme"], ma5_current=current,
+                    ma5_previous=previous, ma5_retreat=retreat,
+                    fixed_entry_atr=atr, ma5_turn_atr=MA5_TURN_ATR,
+                    ma5_retreat_threshold=threshold)
+    return None
+
+
 def _evaluate(position, frame, price, quote_ms):
-    """Use observed live quotes; replay only completed bars after restart."""
+    """Replay completed post-entry observations, never unobserved live quotes."""
     try:
         identity = position_identity(position)
         price, stamp = float(price), float(quote_ms)
@@ -61,6 +76,9 @@ def _evaluate(position, frame, price, quote_ms):
         if (state.get("policy") == POLICY and state.get("identity") == identity
                 and state.get("pending") in REASONS):
             return copy.deepcopy(state["evidence"]), None, {}
+        atr = float(state.get("reference_atr", position.get("entry_atr")))
+        if not math.isfinite(atr) or atr <= 0:
+            return None, "WAIT_MA5_FIXED_ENTRY_ATR", {}
         if (frame is None or frame.empty or "is_closed" not in frame
                 or frame.attrs.get("timeframe_ms", 60000) != 60000
                 or not all(isinstance(v, (bool, np.bool_)) for v in frame.is_closed)):
@@ -69,6 +87,7 @@ def _evaluate(position, frame, price, quote_ms):
         current_bar = math.floor(stamp / 60000) * 60000
         if closed.empty or float(closed.iloc[-1].timestamp) != current_bar - 60000:
             return None, "WAIT_TREND_PIVOT_FRESH_CLOSED", {}
+        live_values = None
         if len(frame) == len(closed) + 1:
             live = frame.iloc[-1]
             if float(live.timestamp) != current_bar or len(closed) < 5:
@@ -79,23 +98,20 @@ def _evaluate(position, frame, price, quote_ms):
                     or not (values.low <= values[["open", "close"]].min(axis=1)).all()
                     or not (values.high >= values[["open", "close"]].max(axis=1)).all()):
                 return None, "WAIT_LIVE_MA5_DATA", {}
-            previous = float(values.iloc[-1].ma5)
-            current = (float(values.close.iloc[-4:].sum()) + price) / 5.
-            delta = (1 if identity[0] == "LONG" else -1) * (current - previous)
-            tolerance = max(current, previous) * 1e-12
-            if delta <= tolerance:
-                return {
-                    "reason": LIVE_REASON, "trigger_bar_ms": current_bar,
-                    "quote_ms": stamp, "trigger_price": price,
-                    "closed_bar_ms": float(values.iloc[-1].timestamp),
-                    "ma5_previous": previous, "ma5_live": current,
-                    "directional_change": delta, "flat_tolerance": tolerance,
-                    "flat": abs(delta) <= tolerance,
-                }, None, {}
+            live_values = values
+        elif len(frame) != len(closed):
+            return None, "WAIT_LIVE_MA5_DATA", {}
         eligible = closed[closed.timestamp >= identity[1] * 1000]
         observation = copy.deepcopy(state.get("ma5_observation", {})) if (
             state.get("policy") == POLICY and state.get("identity") == identity
         ) else {}
+        peak = copy.deepcopy(state.get("ma5_peak", {})) if (
+            state.get("policy") == POLICY and state.get("identity") == identity
+        ) else {}
+        if peak and (not all(math.isfinite(float(peak[k])) and float(peak[k]) > 0
+                             for k in ("baseline", "extreme"))
+                     or not isinstance(peak.get("favorable"), bool)):
+            return None, "WAIT_TREND_PIVOT_DATA", {}
         if observation:
             last_bar = float(observation["bar_ms"])
             last_ma5 = float(observation["ma5"])
@@ -104,9 +120,6 @@ def _evaluate(position, frame, price, quote_ms):
             eligible = eligible[eligible.timestamp > last_bar]
             if not eligible.empty and float(eligible.iloc[0].timestamp) != last_bar + 60000:
                 return None, "WAIT_MA5_HISTORY_GAP", {}
-        if eligible.empty:
-            return None, ("HOLD_WAIT_CLOSED_MA5_TURN" if observation else
-                          "WAIT_POST_ENTRY_PIVOT"), {}
         recent = eligible[["timestamp", "open", "high", "low", "close", "ma5"]].astype(float)
         if (not np.isfinite(recent.to_numpy()).all() or not recent.gt(0).all().all()
                 or not recent.timestamp.diff().dropna().eq(60000).all()
@@ -117,21 +130,27 @@ def _evaluate(position, frame, price, quote_ms):
         sign = 1 if identity[0] == "LONG" else -1
         for _, row in recent.iterrows():
             ma5, bar = float(row.ma5), float(row.timestamp)
-            if observation:
-                previous = float(observation["ma5"])
-                delta = sign * (ma5 - previous)
-                tolerance = max(ma5, previous) * 1e-12
-                if delta <= tolerance:
-                    evidence = {
-                        "reason": FLAT_REASON if abs(delta) <= tolerance else PIVOT_REASON,
-                        "closed_bar_ms": bar, "pivot_bar_ms": observation["bar_ms"],
-                        "ma5_pivot": previous, "ma5_right": ma5,
-                        "directional_change": delta, "flat_tolerance": tolerance,
-                    }
-                    observation.update(bar_ms=bar, ma5=ma5)
-                    return evidence, None, {"ma5_observation": observation}
+            previous = float(observation.get("ma5", ma5))
+            evidence = _observe_ma5(peak, ma5, previous, sign, atr, {
+                "reason": PIVOT_REASON, "closed_bar_ms": bar,
+                "quote_ms": stamp, "trigger_price": price,
+            })
             observation.update(bar_ms=bar, ma5=ma5)
-        return None, "HOLD_WAIT_CLOSED_MA5_TURN", {"ma5_observation": observation}
+            if evidence:
+                return evidence, None, {"ma5_observation": observation, "ma5_peak": peak}
+        patch = {"ma5_observation": observation, "ma5_peak": peak}
+        if live_values is not None:
+            previous = float(live_values.iloc[-1].ma5)
+            current = (float(live_values.close.iloc[-4:].sum()) + price) / 5.
+            evidence = _observe_ma5(peak, current, previous, sign, atr, {
+                "reason": LIVE_REASON, "trigger_bar_ms": current_bar,
+                "quote_ms": stamp, "trigger_price": price,
+                "closed_bar_ms": float(live_values.iloc[-1].timestamp),
+                "ma5_live": current,
+            })
+            patch["ma5_peak"] = peak
+            return evidence, None if evidence else "HOLD_WAIT_MA5_PEAK_TURN", patch
+        return None, "HOLD_WAIT_MA5_PEAK_TURN", patch
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None, "WAIT_TREND_PIVOT_DATA", {}
 
@@ -186,10 +205,10 @@ async def enforce(account, symbol, price, frame=None, quote_ms=None):
         old_state = before[0].get(STATE_KEY, {})
         meaningful_change = any(old_state.get(k) != state.get(k) for k in
                                 ("policy", "identity", "pending", "evidence", "diagnostic",
-                                 "ma5_observation"))
+                                 "ma5_observation", "ma5_peak", "reference_atr"))
         cleaned = any(key in store for store in before for key in DISABLED_KEYS)
-        if meaningful_change or cleaned or any(before[0].get(k) != 0. for k in ("sl", "tp", "atr_sl")):
-            account.save_state()
+        if evidence or meaningful_change or cleaned or any(before[0].get(k) != 0. for k in ("sl", "tp", "atr_sl")):
+            account.save_state(strict=True)
         if not evidence or account.positions.get(symbol) is not position:
             return False
         account.log(f"TREND_PIVOT_EXIT symbol={symbol} reason={evidence['reason']} "
@@ -197,6 +216,6 @@ async def enforce(account, symbol, price, frame=None, quote_ms=None):
         closed = await account.close_position(
             symbol, price, "Channel Swing " + evidence["reason"], is_manual=True)
         return bool(closed and symbol not in account.positions)
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+    except (OSError, KeyError, TypeError, ValueError, OverflowError) as exc:
         account.log(f"TREND_PIVOT_EXIT_INVALID symbol={symbol} error={exc}", "WARNING")
         return False

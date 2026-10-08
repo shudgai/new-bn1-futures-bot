@@ -204,6 +204,8 @@ class PaperAccount:
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
         self.channel_profit_reentries: Dict[str, dict] = {}
+        self.channel_continuation_qualifications: Dict[str, dict] = {}
+        self.channel_small_bridge_states: Dict[str, dict] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         self._rapid_drop_last_price: Dict[str, float] = {}
         self._rapid_drop_window: Dict[str, List[tuple]] = {}
@@ -297,6 +299,8 @@ class PaperAccount:
         self.balance = float(data.get("balance", INITIAL_BALANCE))
         self.realized_pnl = float(data.get("realized_pnl", 0.0))
         self.channel_profit_reentries = data.get("channel_profit_reentries", {})
+        self.channel_continuation_qualifications = data.get("channel_continuation_qualifications", {})
+        self.channel_small_bridge_states = data.get("channel_small_bridge_states", {})
         self.positions = data.get("positions", {})
         self.position_meta = data.get("position_meta", {})
         self.pending_limit_orders = data.get("pending_limit_orders", {})
@@ -355,7 +359,7 @@ class PaperAccount:
         if stored_accounting_version < ACCOUNTING_VERSION:
             self.save_state()
 
-    def save_state(self) -> None:
+    def save_state(self, *, strict: bool = False) -> None:
         data = {
             "balance": self.balance,
             "realized_pnl": self.realized_pnl,
@@ -367,6 +371,8 @@ class PaperAccount:
             "takeover_shadow_events": self.takeover_shadow_events[-2000:],
             "last_closed_at": self.last_closed_at,
             "channel_profit_reentries": self.channel_profit_reentries,
+            "channel_continuation_qualifications": self.channel_continuation_qualifications,
+            "channel_small_bridge_states": self.channel_small_bridge_states,
             "daily_date": self.daily_date,
             "daily_start_balance": self.daily_start_balance,
             "daily_start_realized_pnl": self.daily_start_realized_pnl,
@@ -382,9 +388,19 @@ class PaperAccount:
         try:
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                if strict:
+                    f.flush()
+                    os.fsync(f.fileno())
             os.replace(tmp_file, STATE_FILE)
+            if strict:
+                directory = os.open(os.path.dirname(os.path.abspath(STATE_FILE)), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except Exception:
-            pass
+            if strict:
+                raise
 
     def reset_state(self) -> None:
         """清空所有帳戶狀態，重新從初始餘額開始，並刪除持久化的 state 檔案。"""
@@ -401,6 +417,8 @@ class PaperAccount:
         self.closing_lock = set()
         self.last_closed_at = {}
         self.channel_profit_reentries = {}
+        self.channel_continuation_qualifications = {}
+        self.channel_small_bridge_states = {}
         self.daily_date = None
         self.daily_start_balance = 0.0
         self.daily_start_realized_pnl = 0.0

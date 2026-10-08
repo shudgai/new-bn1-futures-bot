@@ -25,3 +25,35 @@ Concurrency and account-boundary fixtures now use supported CAP/dragon contracts
 - No database reseed, real exchange requests, production switch or restart. The 8006 service remains active at detached commit 2684305.
 
 The mandatory referenced AIDAN common/Python files are absent from this historical checkout; they were not claimed as read or modified.
+
+## Subsequent live-entry draft threshold amendment
+
+The Owner restored the SMALL/multi-bridge live directional body threshold from
+1.0 ATR to 0.5 ATR, inclusive. Both directions use the shared evaluator and
+report `live_body_min_atr = 0.5`. SMALL classification, bridges, MA5 checks,
+general breakout, continuation and exits are unchanged by this amendment.
+At the threshold-only amendment this draft was not deployed. The later
+integration is recorded in `2026-10/20261008_trend_hold_doji06.md` and validated
+by 333 targeted tests. Neither threshold nor integration tests establish
+independent permanent WAIT authority.
+
+```text
+WAIT_LONG_GATE = BLOCK
+WAIT_SHORT_GATE = BLOCK
+LOBSTER_WAIT_GATE = BLOCK
+CAP_WAIT_GATE = BLOCK
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+```
+
+Doji PASS denotes the specification lock/static shared-helper trace only.
