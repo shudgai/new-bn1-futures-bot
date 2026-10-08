@@ -136,7 +136,7 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
     if fault=='balance': account.balance=0.
     if fault=='changed': ctx['channel_confirmation_bar_id']-=60000
     if fault=='exchange_error': account.open_position=AsyncMock(side_effect=RuntimeError('exchange rejected'))
-    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,101.5,'LONG',
+    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,float(f.iloc[-1].close),'LONG',
         v8_reason=ctx['entry_signal_code'],candidate_bar_id=ctx['channel_confirmation_bar_id']))
     reason=engine._entry_gate_diagnostics[(symbol,'LONG','EXECUTION')][1]
     assert {'slots':'MAX_SLOTS','daily':'daily loss','balance':'INSUFFICIENT_MARGIN',

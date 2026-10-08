@@ -598,7 +598,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·MA5持平續抱，峰谷反向0.10ATR平倉</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·KC趨勢續抱，KC反向＋MA5峰谷0.10ATR平倉</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -729,6 +729,8 @@
                         BLOCKED_MA5_RETURNING_TO_KC: 'MA5 正在退回 KC，禁止開倉',
                         BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID: 'MA5 持平、反向、幅度不足或資料無效，禁止開倉',
                         BLOCKED_MA5_CHOP_TURNS: '最近六根已收線 MA5 反覆轉向，盤整不開倉',
+                        BLOCKED_MA5_MA15_ENTANGLED: 'MA5／MA15 連續三根貼近，尚未即時順向拉開，盤整不開倉',
+                        WAIT_MA5_MA15_DATA: 'MA5／MA15 盤整檢查資料不足或無效，不開倉',
                         WAIT_MA5_CHOP_DATA: 'MA5 盤整判斷資料不足或無效，暫不開倉',
                         KC_PENDING_CANCELLED_INSIDE_RAIL: '價格退回軌內，破軌候選取消',
                         FILLED: '該次開倉已成交'

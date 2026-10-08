@@ -420,9 +420,9 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "entry_policy": "small_multi_bridge_half_atr_or_observed_two_bar_v1",
-        "exit_policy": "observed_ma5_peak_turn_010_atr_v8",
-        "strategy": "自動入口只保留三類：小同向K加一根或多根連續反色小K，當根順向實體達0.5ATR且最新價嚴格在同側KC及即時MA5之外；一般兩根已收線同色有效實體，第一根從軌內破軌、第二根軌外確認，第三根評估；或已有持久化一般兩根破軌來源的軌外延續。小K須非十字且實體不超過各自前根ATR的0.25倍；即時大K使用當根固定的前根ATR。取消通道內轉向、任意單根急漲跌及無來源追入。延續退回或碰KC、已收線KC反向即撤銷，原來源不可復活。所有自動入口的已收線及即時MA5均須順向，持平／反向／無效禁止開倉，原強度、盤整檢查與帳戶風控保留，送單前重驗並去重。一般Channel Swing持倉改為MA5持平續抱，進場後先觀察MA5順向推進並記錄峰谷；從MA5峰頂／谷底反向至少0.10倍固定進場ATR，且即時MA5相對最新已收線MA5已反向才平倉，不等當根收線。即時MA5以最近四根已收線收盤加最新報價除以5。固定ATR取進場時上一根已收線值；持久化峰谷、有效出口證據並失敗重試，舊持平即平待平撤銷。重啟可核驗進場後已收線峰谷轉向，不重建未觀察的歷史即時報價，不回填成交價；無有效固定ATR或行情不捏造出口。十字線、鎖利、回吐及硬止損出口停用，手動平倉保留。峰谷確認在反轉後，不保證成交在最高最低點或避免所有回吐虧損。明確啟用的staged策略不在此範圍。此形態入口不是永久獨立WAIT實作。",
+        "entry_policy": "live_ma5_ma15_cross_or_observed_two_bar_v2",
+        "exit_policy": "kc_reverse_observed_ma5_peak_turn_010_atr_v9",
+        "strategy": "自動入口保留即時MA5／MA15交叉、一般兩根收線破軌及有合法破軌來源的延續。取消小K／0.5ATR即時破軌與舊通道轉向。交叉用前根已收線兩線關係比對最新報價重算的MA5／MA15，上穿多、下穿空，兩線即時均須順向，可在KC內，不等當根收線；同根已成交交叉不得重開。一般破軌第一根已收線同向實體從KC內穿出，第二根同色收線確認軌外，每根實體至少全長20%，第三根評估；延續須持久化一般破軌來源，碰回KC或已收線KC反向撤銷。全部自動入口共用MA5順向、六根反覆轉向檢查與MA5／MA15糾纏防護：最近三根已收線兩線距離皆≤各根0.10ATR時禁開，僅兩線即時順向且同向拉開嚴格超過前根0.10ATR才重新評估；風控與送單重驗保留。所有一般Channel Swing持倉在KC趨勢未反向時續抱；最新兩根已收線KC中軌嚴格反向，且進場後已觀察MA5順向峰谷、從峰谷反向至少0.10固定進場ATR且MA5已反向，才平倉。MA5持平或小回調不單獨平倉；即時MA5用最近四根已收線收盤加最新報價除以5，不等當根收線。固定ATR取进場時前根已收線；峰谷與有效出口持久化重試，舊未檢KC的待平撤銷。無效資料不捏造訊號，不重建未觀察的歷史即時報價或成交。手動平倉保留，未新增賣壓、鎖利或硬止損出口。等待KC反向可能增加回吐，不保證成交在絕對峰谷或避免虧損。staged獨立策略不在此範圍，獨立永久WAIT未實作。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

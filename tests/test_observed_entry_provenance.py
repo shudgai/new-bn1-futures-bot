@@ -50,14 +50,15 @@ def test_no_origin_no_continuation_or_turn_alias(symbol, side):
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_small_bridges_persist_beyond_window_and_freeze_atr(symbol, side):
+    from core.services.small_bridge_state import observe as observe_retired
     a = account()
     f = small_candles(side, 2)
     f["kc_middle"] = 100.
     q = float(f.iloc[-1].close)
-    observe(a, symbol, f, q)
+    observe_retired(a, symbol, f)
     assert pattern(a, symbol, f, q)["small_bridge_count"] == 2
     f.loc[f.index[-2], "atr"] = 10.
-    observe(a, symbol, f, q)
+    observe_retired(a, symbol, f)
     assert pattern(a, symbol, f, q)["live_body_reference_atr"] == 1.
     sign = 1 if side == "LONG" else -1
     for _ in range(205):
@@ -72,7 +73,7 @@ def test_small_bridges_persist_beyond_window_and_freeze_atr(symbol, side):
         f = pd.concat([f, next_row.to_frame().T], ignore_index=True)
         f["is_closed"] = f["is_closed"].astype(bool)
         f["atr"] = 1.
-        observe(a, symbol, f, 100.+sign)
+        observe_retired(a, symbol, f)
     assert pattern(a, symbol, f, 100.+sign)["small_bridge_count"] == 207
     assert pattern(copy.deepcopy(a), symbol, f, 100.+sign)
     assert pattern(a, "unrelated", f, q) is None
@@ -92,7 +93,7 @@ def test_persistence_failure_never_authorizes_entry():
     f = general_candles()
     with pytest.raises(OSError):
         observe(a, "CAP/USDT", f, float(f.iloc[-1].close))
-    assert not a.channel_small_bridge_states["CAP/USDT"]["active"]
+    assert not a.channel_continuation_qualifications["CAP/USDT"]["active"]
     a.log.assert_called()
 
 
@@ -176,11 +177,9 @@ def test_live_pattern_shared_contract_and_last_submit_revalidation(symbol, side)
     a.entry_frame_provider = AsyncMock(return_value=f)
     observe(a, symbol, f, float(f.iloc[-1].close))
     decision = evaluate_entry_contract(f, account=a, symbol=symbol)
-    assert decision and decision["type"] == "KC_LIVE_BODY_BREAKOUT_"+side
-    context = dict(entry_signal_code=decision["type"],
-                   channel_confirmation_bar_id=decision["confirmation_bar_id"])
-    assert asyncio.run(validate_account_entry(a, symbol, side, context))
-    f.loc[f.index[-1], "close"] = 100.
+    assert decision is None
+    context = dict(entry_signal_code="KC_LIVE_BODY_BREAKOUT_"+side,
+                   channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(a, symbol, side, context))
 
@@ -205,13 +204,11 @@ def test_live_quote_must_be_strictly_beyond_live_ma5(symbol, side, offset):
     evidence = evaluate_small_bridge_breakout(small_candles(side, 4), 100. + sign)
     diagnostics = {}
     with patch.object(observed, "pattern", return_value=evidence):
-        decision = evaluate_entry_contract(f, quote, account=a, symbol=symbol,
+        decision = evaluate_entry_contract(f, quote, code="KC_LIVE_BODY_BREAKOUT_"+side,
+                                          account=a, symbol=symbol,
                                           diagnostics=diagnostics)
-    if offset <= 0:
-        assert decision is None
-        assert diagnostics["reason"] == "BLOCKED_PRICE_NOT_BEYOND_LIVE_MA5"
-    else:
-        assert decision and decision["side"] == side
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_OBSOLETE_ENTRY_SIGNAL"
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
@@ -236,7 +233,7 @@ def test_continuation_requires_retained_general_pair_and_outside_ma5(symbol, sid
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("entry", ["general", "live"])
+@pytest.mark.parametrize("entry", ["general", "cross"])
 def test_shared_runner_real_paper_fills_each_symbol_and_direction(symbol, side, entry, monkeypatch):
     import asyncio
     import time
@@ -249,16 +246,9 @@ def test_shared_runner_real_paper_fills_each_symbol_and_direction(symbol, side, 
     monkeypatch.setattr(PaperAccount, "save_state", lambda self, **kwargs: None)
     monkeypatch.setattr("core.services.entry_finality.READ_INTERVAL_SECONDS", 0.)
     f = general_candles(side)
-    if entry == "live":
-        f = small_candles(side, 4)
-        stamp = int(time.time()//60)*60000
-        f["timestamp"] += stamp-f.iloc[-1].timestamp
-        sign = 1 if side == "LONG" else -1
-        f["kc_middle"] = 100.
-        f["ma5"] = [100.+sign*i*.005 for i in range(len(f))]
-        f["ma15"], f["ma3"] = 100., 100.
-        f.loc[f.index[-1], ["close", "high", "low"]] = [100.+sign*1.5, 102., 98.]
-        f.attrs["entry_finality_verified"] = True
+    if entry == "cross":
+        from test_live_ma_cross_entry import candles as cross_candles
+        f = cross_candles(side)
     a = PaperAccount()
     a.balance = 100.
     engine = object.__new__(TradingEngine)
@@ -272,7 +262,7 @@ def test_shared_runner_real_paper_fills_each_symbol_and_direction(symbol, side, 
     asyncio.run(process_single_symbol_runner(engine, symbol, time.time(), None, False, exit_frame=f))
     assert a.positions[symbol]["side"] == side
     snapshot = a.trades[0]["entry_snapshot"]
-    assert snapshot["entry_phase"] == ("KC_2BAR_CLOSED_CONFIRM" if entry == "general" else "KC_LIVE_BODY_BREAKOUT")
+    assert snapshot["entry_phase"] == ("KC_2BAR_CLOSED_CONFIRM" if entry == "general" else "MA5_MA15_LIVE_CROSS")
     a.positions.clear()
     asyncio.run(process_single_symbol_runner(engine, symbol, time.time(), None, False, exit_frame=f))
     assert len(a.trades) == 1

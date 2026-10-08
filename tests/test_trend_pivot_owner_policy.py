@@ -36,13 +36,14 @@ def market(side="LONG"):
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pivot_requires_only_closed_ma5_turn(symbol, side):
+def test_pivot_requires_closed_kc_reversal_and_ma5_peak_turn(symbol, side):
     p, f, stamp = market(side)
-    assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.PIVOT_REASON
     sign = 1 if side == "LONG" else -1
+    assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.PIVOT_REASON
     f["kc_middle"] = float("nan")
     f["high"] = 101.
-    assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.PIVOT_REASON
+    assert policy.evaluate(p, f, 100., stamp)[0] is None
+    f.loc[4:5, "kc_middle"] = [100., 100.-sign*.1]
     f.loc[5, "ma5"] = f.loc[4, "ma5"] + sign * .1
     assert policy.evaluate(p, f, 100., stamp)[0] is None
     f.loc[5, "ma5"] = f.loc[4, "ma5"]
@@ -351,10 +352,11 @@ def test_persisted_cursor_survives_rolled_history(side, monkeypatch):
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
     assert p[policy.STATE_KEY]["ma5_observation"]["ma5"] == 100.+2*sign
     account.positions["CAP/USDT"] = copy.deepcopy(p)
-    next_frame = f.tail(1).copy()
-    next_frame["timestamp"] += 60000
+    next_frame = pd.concat([f.tail(1), f.tail(1)], ignore_index=True)
+    next_frame.loc[1, "timestamp"] += 60000
     next_frame["is_closed"] = True
-    next_frame["ma5"] = 100.+1.9*sign
+    next_frame.loc[1, "ma5"] = 100.+1.9*sign
+    next_frame.loc[1, "kc_middle"] = float(next_frame.loc[0, "kc_middle"])-sign*.1
     stamp += 60000
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., next_frame, stamp))
     assert account.positions["CAP/USDT"][policy.STATE_KEY]["pending"] == policy.PIVOT_REASON

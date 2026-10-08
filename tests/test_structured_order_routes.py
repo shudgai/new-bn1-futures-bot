@@ -128,7 +128,7 @@ async def test_channel_swing_order_is_cancelled_after_price_returns_inside_kc(si
     signal = {
         "action": "ENTER_MARKET", "entry_mode": "CHANNEL_SWING",
         "side": side, "score": 100, "atr": 1.0,
-        "signal_code": "KC_LIVE_BODY_BREAKOUT_" + side,
+        "signal_code": "KC_2BAR_CONFIRM_" + side,
         "signal_candle_low": 99.0, "signal_candle_high": 101.0,
         "kc_lower": 99.0, "kc_upper": 101.0,
         "reason": "inside KC must not open",
@@ -160,7 +160,7 @@ async def test_failed_snapshot_is_revalidated_on_each_retry(side):
     signal = {
         "action": "ENTER_MARKET", "entry_mode": "CHANNEL_SWING",
         "side": side, "score": 100, "atr": 1.0,
-        "signal_code": "KC_LIVE_BODY_BREAKOUT_" + side,
+        "signal_code": "KC_2BAR_CONFIRM_" + side,
         "signal_candle_low": 99.0, "signal_candle_high": 101.0,
         "candidate_bar_id": 1_725_000_000_000,
         "reason": "HYPE three-second retry regression",

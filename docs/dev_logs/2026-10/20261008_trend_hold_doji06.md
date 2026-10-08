@@ -2,6 +2,73 @@
 
 ## Owner decisions
 
+### Final entry replacement and KC trend hold (after 23:24 release)
+
+The Owner cancelled all SMALL/multi-bridge 0.50-ATR automatic live breakout
+authority. Final whitelist is live MA5/MA15 cross, general two completed
+breakout bodies, and continuation with observed general-pair provenance.
+Retired live codes and cached snapshots fail at the account firewall. Saved
+SMALL state remains inert historical data; runtime no longer advances it.
+
+Live cross compares latest completed MA5/MA15 relationship to quote-repriced
+MA5 (four completed closes + quote)/5 and MA15 (14 completed closes +
+quote)/15. LONG crosses from below/touch to strictly above; SHORT mirrors.
+Both live averages must move strictly in direction; existing closed/live
+MA5 direction/strength and chop gates remain. KC location is not a cross
+qualification, and candle color/doji/body confirmation is not inherited from
+the retired breakout pattern. Stable symbol/side/reference/live-bar identity
+and saved fills prevent same-cross reentry, including after same-bar close
+and restart. A cross that remains qualified can be evaluated later in that
+forming candle; a following candle already crossed is not a fresh cross.
+
+New shared entry entanglement guard: all latest three completed
+abs(MA5-MA15) <= each bar's 0.10 ATR, inclusive, blocks. It may resume only
+when both quote-repriced averages move in entry direction and their signed
+gap strictly exceeds 0.10 latest completed ATR. Exactly 0.10 does not unlock.
+Never bypass formation, MA5 or account checks on unlock. Invalid required
+data blocks explicitly; no chart-pixel or retrospective threshold.
+
+Exit policy `kc_reverse_observed_ma5_peak_turn_010_atr_v9` requires latest
+two consecutive completed KC middle values to reverse strictly against the
+position AND the approved observed MA5 peak/trough retreat >= 0.10 fixed
+entry ATR with adverse MA5 direction. KC forward/flat holds through MA5
+pullbacks. Live KC does not establish reversal. All automatic entry types
+share this exit. Preserve V8 peak/fixed-ATR/cursor observations, but revoke
+its ungated pending exits. New fully-qualified V9 pending exits retain retry
+authority. No independent selling-pressure exit is added. Waiting for closed
+KC reversal can delay exit and increase giveback; it cannot guarantee the
+historical 21:38 extreme or all first-breakout entry prices.
+
+Ledger audit: CAP 22:43:30 LONG and lobster 22:46:32 SHORT were old generic
+live-body entries; lobster 23:16:40 SHORT was old channel-turn. All predate
+the 23:24:21 paper-only `152dfdc` release, not evidence of that release
+executing retired routes. CAP 22:17:21 ledger action is SHORT, distinct from
+the neighboring chart LONG marker. Old snapshots did not include MA5;
+new saved closed evidence includes it. No historical fills are rewritten or
+intrabar sequence reconstructed from future candle wicks.
+
+V8 and SMALL integration sections below describe superseded releases only.
+Permanent independent WAIT gates below remain BLOCK/NOT_TESTED.
+
+Final cross/KC integration validation: 407 passed, zero failed, across
+entanglement, live cross, observed provenance, live MA5 exits, owner policy,
+V2 boundary, structured/specialized routes and staged implementation/
+isolated Testnet integration. Eleven existing UTC datetime warnings remain.
+All four symbol/direction paths include real paper runner fills; persisted
+cross fills survive disk restart and cannot reuse same-bar close identities.
+Checks include strict/touch/new cross, lost quote qualification, KC-inside
+cross, signed live separation at/below/above 0.10 ATR, KC flat/forward hold,
+completed-only KC reversal and V8 observation/pending migration.
+
+The first integration run had six failures: four routing fixtures still used
+retired live-body codes, and two risk fixtures submitted 101.5 despite a
+valid current quote 101.8, failing MA5 strength before reaching capital/order
+checks. Fixtures now use supported general codes and their actual current
+quote; risk and no-order assertions remain intact. The initial collection
+syntax error from helper placement was fixed before passing validation.
+No full-suite claim, skipped tests, real exchange orders or independent
+WAIT readiness claim. Publish/restart remains paper-only.
+
 ### Final superseding exit: observed MA5 peak/trough, 0.10 entry ATR
 
 The Owner replaced flat-immediate-close with hold-flat/confirmed-peak exit.

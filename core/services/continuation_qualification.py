@@ -107,8 +107,6 @@ def observe(account, symbol, frame, quote):
     price = float(quote)
     if not math.isfinite(price) or price <= 0:
         return
-    from core.services.small_bridge_state import observe as observe_small
-    observe_small(account, symbol, frame)
     states = getattr(account, "channel_continuation_qualifications", None)
     if states is None:
         states = account.channel_continuation_qualifications = {}

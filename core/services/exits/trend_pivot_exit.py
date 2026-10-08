@@ -9,10 +9,10 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import RETIRED_KEYS, position_identity
 from core.services.exits.staged_risk_service import staged_enabled
 
-POLICY = "observed_ma5_peak_turn_010_atr_v8"
+POLICY = "kc_reverse_observed_ma5_peak_turn_010_atr_v9"
 STATE_KEY = "trend_pivot_exit_state"
-PIVOT_REASON = "EXIT_CLOSED_MA5_PEAK_TURN_010_ATR"
-LIVE_REASON = "EXIT_LIVE_MA5_PEAK_TURN_010_ATR"
+PIVOT_REASON = "EXIT_KC_REVERSE_CLOSED_MA5_PEAK_010_ATR"
+LIVE_REASON = "EXIT_KC_REVERSE_LIVE_MA5_PEAK_010_ATR"
 REASONS = (PIVOT_REASON, LIVE_REASON)
 MA5_TURN_ATR = 0.10
 DISABLED_KEYS = RETIRED_KEYS + ("peak_trailing_state", "channel_hard_stop_pending")
@@ -29,6 +29,11 @@ def migrate(position, meta):
     state = copy.deepcopy(prior) if (
         prior.get("policy") == POLICY and prior.get("identity") == identity
     ) else {"policy": POLICY, "identity": identity}
+    if (prior.get("policy") == "observed_ma5_peak_turn_010_atr_v8"
+            and prior.get("identity") == identity):
+        for key in ("reference_atr", "ma5_peak", "ma5_observation"):
+            if key in prior:
+                state[key] = copy.deepcopy(prior[key])
     # Older policies cannot authorize retries under the new MA5-only rule.
     if prior.get("identity") == identity and "last_ms" in prior:
         state["last_ms"] = prior["last_ms"]
@@ -128,6 +133,11 @@ def _evaluate(position, frame, price, quote_ms):
                 or not (recent.high >= recent.low).all()):
             return None, "WAIT_TREND_PIVOT_DATA", {}
         sign = 1 if identity[0] == "LONG" else -1
+        kc = [float(v) for v in closed.kc_middle.tail(2)]
+        if (len(kc) != 2 or not all(math.isfinite(v) and v > 0 for v in kc)
+                or float(closed.iloc[-1].timestamp)-float(closed.iloc[-2].timestamp) != 60000):
+            return None, "WAIT_EXIT_KC_DIRECTION", {}
+        kc_reversed = sign*(kc[1]-kc[0]) < -max(kc)*1e-12
         for _, row in recent.iterrows():
             ma5, bar = float(row.ma5), float(row.timestamp)
             previous = float(observation.get("ma5", ma5))
@@ -136,7 +146,8 @@ def _evaluate(position, frame, price, quote_ms):
                 "quote_ms": stamp, "trigger_price": price,
             })
             observation.update(bar_ms=bar, ma5=ma5)
-            if evidence:
+            if evidence and kc_reversed:
+                evidence.update(kc_previous=kc[0], kc_current=kc[1])
                 return evidence, None, {"ma5_observation": observation, "ma5_peak": peak}
         patch = {"ma5_observation": observation, "ma5_peak": peak}
         if live_values is not None:
@@ -149,6 +160,10 @@ def _evaluate(position, frame, price, quote_ms):
                 "ma5_live": current,
             })
             patch["ma5_peak"] = peak
+            if not kc_reversed:
+                return None, "HOLD_KC_TREND_NOT_REVERSED", patch
+            if evidence:
+                evidence.update(kc_previous=kc[0], kc_current=kc[1])
             return evidence, None if evidence else "HOLD_WAIT_MA5_PEAK_TURN", patch
         return None, "HOLD_WAIT_MA5_PEAK_TURN", patch
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

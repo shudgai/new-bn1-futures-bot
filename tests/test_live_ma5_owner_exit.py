@@ -19,7 +19,7 @@ def market(side):
         close = 100. + sign * i * .1
         rows.append(dict(timestamp=bar-(6-i)*60000, open=close, high=close+.1,
                          low=close-.1, close=close, ma5=close, atr=1.,
-                         is_closed=True))
+                         kc_middle=100.-sign*i*.1, is_closed=True))
     previous = sum(r["close"] for r in rows[-5:]) / 5.
     rows[-1]["ma5"] = previous
     rows.append(dict(timestamp=bar, open=100., high=101., low=99., close=100.,
@@ -165,6 +165,24 @@ def test_first_adverse_quote_has_no_observed_favorable_peak(side):
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("kc_movement", [.1, 0., -.1])
+def test_kc_trend_holds_ma5_pullback_until_closed_reversal(symbol, side, kc_movement):
+    p, f, stamp, quote = market(side)
+    sign = 1 if side == "LONG" else -1
+    previous = float(f.iloc[-2].ma5)
+    p[policy.STATE_KEY] = dict(policy=policy.POLICY, identity=policy.position_identity(p),
+                              reference_atr=1.,
+                              ma5_peak=dict(baseline=previous-sign*.1,
+                                            extreme=previous+sign*.1, favorable=True))
+    f.loc[5, "kc_middle"] = float(f.loc[4, "kc_middle"])+sign*kc_movement
+    evidence, _ = policy.evaluate(p, f, quote-sign, stamp)
+    assert bool(evidence) is (kc_movement < 0)
+    f.loc[6, "kc_middle"] = 1000. if side == "SHORT" else 1.
+    assert bool(policy.evaluate(p, f, quote-sign, stamp)[0]) is (kc_movement < 0)
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_real_restart_preserves_peak_fixed_atr_and_consumes_close_once(symbol, side, tmp_path, monkeypatch):
     from core.paper_account import PaperAccount
     monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path/"peak.json"))
@@ -195,6 +213,20 @@ def test_missing_entry_atr_cannot_invent_peak_exit(side, atr):
     p, f, stamp, quote = market(side)
     p["entry_atr"] = atr
     assert policy.evaluate(p, f, quote, stamp)[0] is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_v8_observation_preserved_but_ungated_pending_revoked(side):
+    p, _, _, _ = market(side)
+    peak = dict(baseline=100., extreme=101. if side == "LONG" else 99., favorable=True)
+    p[policy.STATE_KEY] = dict(policy="observed_ma5_peak_turn_010_atr_v8",
+                              identity=policy.position_identity(p), reference_atr=1.,
+                              ma5_peak=peak, pending="EXIT_LIVE_MA5_PEAK_TURN_010_ATR",
+                              evidence={"reason":"EXIT_LIVE_MA5_PEAK_TURN_010_ATR"})
+    state = policy.migrate(p, {})
+    assert state["ma5_peak"] == peak
+    assert state["reference_atr"] == 1.
+    assert "pending" not in state
 
 
 def test_disk_failure_blocks_close_and_reports_error():
