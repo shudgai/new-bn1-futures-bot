@@ -20,14 +20,23 @@ SIDES = ['LONG', 'SHORT']
 
 def position(side='LONG', symbol='龙虾/USDT'):
     return dict(side=side, symbol=symbol, entry_price=100., qty=1.,
-                open_timestamp=290., entry_atr=9., margin=100., leverage=1.,
+                open_timestamp=100., entry_atr=9., margin=100., leverage=1.,
                 entry_mode='CHANNEL_SWING', initial_sl=90. if side == 'LONG' else 110.)
 
 
 def snapshot(ma5=100., stamp=301000., atr=1.):
-    return dict(quote_ms=stamp, live_bar_ms=300000., closed_bar_ms=240000.,
+    bar = math.floor(stamp/60000)*60000
+    sign = 1 if ma5 >= 100 else -1
+    history = [dict(timestamp=bar-(3-i)*60000, open=100., close=100.,
+                    high=101.+(1 if i == 1 and sign == 1 else 0.),
+                    low=99.-(1 if i == 1 and sign == -1 else 0.),
+                    ma5=100.+sign*(.2 if i == 1 else .1))
+               for i in range(3)]
+    return dict(quote_ms=stamp, live_bar_ms=bar, closed_bar_ms=bar-60000,
                 atr=atr, ma5=ma5, live_ma5_verified=True, live_open=100., reason=None,
-                kc_lower=99.8, kc_upper=100.2)
+                kc_lower=99.8, kc_upper=100.2, ma5_pivot_history=history,
+                kc_closed_history=[dict(timestamp=bar-120000., middle=100.+sign*.1),
+                                   dict(timestamp=bar-60000., middle=100.)])
 
 
 def progress(p):
@@ -102,7 +111,7 @@ def test_invalid_or_unobserved_market_data_cannot_close(fault):
     elif fault == 'stale_bar': s['closed_bar_ms'] = 180000.
     elif fault == 'nan': s['ma5'] = float('nan')
     elif fault == 'invalid_atr': s['atr'] = 0.
-    elif fault == 'preentry': s['quote_ms'] = 289000.
+    elif fault == 'preentry': s['quote_ms'] = 99000.
     elif fault == 'same_stamp': s['quote_ms'] = 302000.
     else: s['quote_ms'] = 301999.
     assert observe_retired_v(p, 100.35, s) is None
@@ -255,7 +264,7 @@ def test_actual_account_concurrent_v_quotes_require_outer_extreme(symbol, side, 
                     atr=1., entry_context={'entry_mode': 'CHANNEL_SWING', 'manual_entry': True})
         p = account.positions[symbol]
         sign = 1 if side == 'LONG' else -1
-        start = math.ceil(p['open_timestamp']*1000)+1.
+        start = (math.floor(p['open_timestamp']/60)+4)*60000+1000.
         bar = math.floor(start/60000)*60000
         def snap(ma5, stamp):
             edge = .2 if outer else 1.
@@ -347,3 +356,103 @@ def test_new_inner_extreme_replaces_old_outer_peak(side):
     assert evaluate_peak_trailing(p, 100+sign*.45,
                                  dict(snapshot(100+sign*.2, 304000.), kc_lower=99., kc_upper=101.)) is None
     assert not p[STATE_KEY]['live_ma5_v_observation']['outer_extreme']
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+@pytest.mark.parametrize('fault', ['no_pivot', 'favorable_ma5', 'flat_ma5', 'missing',
+                                  'unclosed', 'gap', 'invalid_ohlc', 'preentry', 'new_extreme'])
+def test_live_rebound_never_replaces_closed_price_and_ma5_confirmation(symbol, side, fault):
+    p = position(side, symbol)
+    if fault == 'preentry':
+        p['open_timestamp'] = 200.
+    sign = progress(p)
+    s = snapshot(100+sign*.1, 303000.)
+    rows = s['ma5_pivot_history']
+    if fault == 'no_pivot':
+        key = 'high' if side == 'LONG' else 'low'
+        rows[2][key] = rows[1][key]+sign*.1
+    elif fault in ('favorable_ma5', 'flat_ma5'):
+        rows[2]['ma5'] = rows[1]['ma5']+(sign*.1 if fault == 'favorable_ma5' else 0.)
+    elif fault == 'missing':
+        s.pop('ma5_pivot_history')
+    elif fault == 'unclosed':
+        rows[-1]['timestamp'] = s['live_bar_ms']
+    elif fault == 'gap':
+        rows[0]['timestamp'] -= 60000.
+    elif fault == 'invalid_ohlc':
+        rows[1]['low'] = 200.
+    elif fault == 'new_extreme':
+        key = 'high' if side == 'LONG' else 'low'
+        for i, row in enumerate(rows):
+            row[key] = 100+sign*(.3 if i == 1 else .2)
+    assert evaluate_peak_trailing(p, 100+sign*.35, s) is None
+    assert not p[STATE_KEY].get('pending')
+    assert p[STATE_KEY]['live_ma5_v_status'] == {
+        'no_pivot': 'WAIT_CLOSED_PRICE_PIVOT',
+        'favorable_ma5': 'WAIT_CLOSED_MA5_REVERSE_SLOPE',
+        'flat_ma5': 'WAIT_CLOSED_MA5_REVERSE_SLOPE',
+        'missing': 'BLOCKED_CLOSED_PRICE_MA5_DATA',
+        'unclosed': 'BLOCKED_CLOSED_PRICE_MA5_IDENTITY',
+        'gap': 'BLOCKED_CLOSED_PRICE_MA5_IDENTITY',
+        'invalid_ohlc': 'BLOCKED_CLOSED_PRICE_MA5_DATA',
+        'preentry': 'WAIT_POST_ENTRY_CLOSED_PRICE_PIVOT',
+        'new_extreme': 'WAIT_NEW_CLOSED_PRICE_PIVOT',
+    }[fault]
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+def test_old_outer_v_retry_without_closed_confirmation_is_revoked(symbol, side):
+    p = position(side, symbol)
+    sign = progress(p)
+    evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
+    evidence['rule_version'] = 2
+    evidence.pop('closed_confirmation')
+    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence)
+    p[STATE_KEY]['live_ma5_v_observation']['rule_version'] = 2
+    meta = copy.deepcopy(p)
+    migrate_peak_state(p, meta)
+    for source in (p, meta):
+        assert not source[STATE_KEY].get('pending')
+        assert 'live_ma5_v_exit' not in source[STATE_KEY]
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+@pytest.mark.parametrize('kc', ['aligned', 'flat', 'opposite', 'missing', 'stale', 'nan'])
+def test_closed_pivot_and_ma5_cannot_close_until_closed_kc_is_opposite(symbol, side, kc):
+    p = position(side, symbol)
+    sign = progress(p)
+    s = snapshot(100+sign*.1, 303000.)
+    if kc == 'aligned':
+        s['kc_closed_history'][-1]['middle'] = 100+sign*.2
+    elif kc == 'flat':
+        s['kc_closed_history'][-1]['middle'] = 100+sign*.1
+    elif kc == 'missing':
+        s.pop('kc_closed_history')
+    elif kc == 'stale':
+        s['kc_closed_history'][-1]['timestamp'] -= 60000.
+    elif kc == 'nan':
+        s['kc_closed_history'][-1]['middle'] = float('nan')
+    result = evaluate_peak_trailing(p, 100+sign*.35, s)
+    assert bool(result) is (kc == 'opposite')
+    if result:
+        confirmation = p[STATE_KEY]['live_ma5_v_exit']['closed_confirmation']
+        assert confirmation['kc_confirmation'] == 'CLOSED_OPPOSITE'
+    else:
+        assert not p[STATE_KEY].get('pending')
+
+
+@pytest.mark.parametrize('symbol', SYMBOLS)
+@pytest.mark.parametrize('side', SIDES)
+def test_version_three_retry_without_kc_confirmation_is_revoked(symbol, side):
+    p = position(side, symbol)
+    sign = progress(p)
+    evidence = observe_retired_v(p, 100+sign*.35, snapshot(100+sign*.1, 303000.))
+    evidence['rule_version'] = 3
+    evidence['closed_confirmation'].pop('kc_confirmation')
+    p[STATE_KEY].update(pending=REASON, trigger=REASON, live_ma5_v_exit=evidence)
+    meta = copy.deepcopy(p)
+    migrate_peak_state(p, meta)
+    assert not p[STATE_KEY].get('pending') and not meta[STATE_KEY].get('pending')

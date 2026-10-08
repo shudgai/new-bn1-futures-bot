@@ -7,11 +7,58 @@ from uuid import uuid4
 from core.services.exits.peak_trailing_exit import position_identity
 
 REASON = 'EXIT_OUTER_MA5_V_REVERSAL'
-RULE_VERSION = 2
+RULE_VERSION = 4
 MA5_REVERSAL_ATR = Decimal('0.10')
 PRICE_REVERSAL_ATR = Decimal('0.15')
 SESSION = str(uuid4())
 MAX_GAP_MS = 5000
+
+
+def closed_reversal_confirmation(position, snapshot, sign):
+    from core.services.exits.confirmed_pivot_exit import closed_price_pivot
+    try:
+        rows = snapshot['ma5_pivot_history'][-3:]
+        if len(rows) != 3:
+            return 'WAIT_CLOSED_PRICE_MA5_HISTORY', None
+        stamps = [float(row['timestamp']) for row in rows]
+        candles = [[float(row[key]) for key in ('open', 'high', 'low', 'close')]
+                   for row in rows]
+        averages = [float(row['ma5']) for row in rows]
+        entered = float(position['open_timestamp'])*1000
+        if not all(math.isfinite(value) and value > 0
+                   for value in [entered, *stamps, *averages, *[v for row in candles for v in row]]):
+            return 'BLOCKED_CLOSED_PRICE_MA5_DATA', None
+        if (stamps[-1] != snapshot['closed_bar_ms']
+                or any(stamp % 60000 != 0 for stamp in stamps)
+                or any(b-a != 60000 for a, b in zip(stamps, stamps[1:]))):
+            return 'BLOCKED_CLOSED_PRICE_MA5_IDENTITY', None
+        if stamps[1] < entered:
+            return 'WAIT_POST_ENTRY_CLOSED_PRICE_PIVOT', None
+        if any(not low <= min(o, c) <= max(o, c) <= high or high <= low
+               for o, high, low, c in candles):
+            return 'BLOCKED_CLOSED_PRICE_MA5_DATA', None
+        level = closed_price_pivot(candles, sign)
+        if level is None:
+            return 'WAIT_CLOSED_PRICE_PIVOT', None
+        if sign*(averages[2]-averages[1]) >= -max(averages)*1e-12:
+            return 'WAIT_CLOSED_MA5_REVERSE_SLOPE', None
+        kc_rows = snapshot['kc_closed_history'][-2:]
+        if len(kc_rows) != 2:
+            return 'BLOCKED_CLOSED_KC_HISTORY', None
+        kc_stamps = [float(row['timestamp']) for row in kc_rows]
+        middle = [float(row['middle']) for row in kc_rows]
+        if (not all(math.isfinite(value) and value > 0 for value in [*kc_stamps, *middle])
+                or kc_stamps != stamps[-2:]):
+            return 'BLOCKED_CLOSED_KC_HISTORY', None
+        if sign*(middle[1]-middle[0]) >= -max(middle)*1e-12:
+            return 'WAIT_CLOSED_KC_REVERSE_DIRECTION', None
+        return 'CONFIRMED', dict(
+            confirmation='CLOSED', pivot_ms=stamps[1], confirmed_ms=stamps[2],
+            pivot_price=level, previous_closed_ma5=averages[1], closed_ma5=averages[2],
+            kc_confirmation='CLOSED_OPPOSITE',
+            previous_closed_kc_middle=middle[0], closed_kc_middle=middle[1])
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_CLOSED_PRICE_MA5_DATA', None
 
 
 def observe_live_ma5_v(position, state, snapshot, price):
@@ -83,8 +130,15 @@ def observe_live_ma5_v(position, state, snapshot, price):
             return hold('WAIT_MA5_REVERSAL_AMPLITUDE')
         if price_retreat < PRICE_REVERSAL_ATR*scale:
             return hold('WAIT_PRICE_REVERSAL_AMPLITUDE')
+        status, closed_confirmation = closed_reversal_confirmation(position, snapshot, sign)
+        if closed_confirmation is None:
+            return hold(status)
+        pivot_price = closed_confirmation['pivot_price']
+        if sign*(observed['price_extreme']-pivot_price) > max(observed['price_extreme'], pivot_price)*1e-12:
+            return hold('WAIT_NEW_CLOSED_PRICE_PIVOT')
         state['live_ma5_v_status'] = 'CONFIRMED'
         return dict(rule_version=RULE_VERSION, identity=identity, quote_ms=stamp,
+                    closed_confirmation=closed_confirmation,
                     outer_extreme=observed['outer_extreme'],
                     atr=observed['atr'], ma5=ma5, ma5_extreme=observed['ma5_extreme'],
                     price=price, price_extreme=observed['price_extreme'],

@@ -12,7 +12,7 @@ from core.services.exits.live_ma5_v_exit import (
 REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
 HARD = 'EXIT_ACCOUNT_HARD_STOP'
 WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
-POLICY = 'outer_ma5_v_reversal_v8'
+POLICY = 'closed_price_ma5_kc_outer_reversal_v10'
 LEGACY_PRICE_PIVOT_EXIT = 'EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE'
 ALLOWED = {HARD, WATERFALL, V_EXIT}
 RETIRED_CLOSE_REASONS = {
@@ -60,7 +60,9 @@ def retire_profit_state(position, state, meta=None):
             evidence = source.get('live_ma5_v_exit') or {}
             if (evidence.get('rule_version') != V_VERSION
                     or evidence.get('identity') != position_identity(position)
-                    or not evidence.get('outer_extreme')):
+                    or not evidence.get('outer_extreme')
+                    or (evidence.get('closed_confirmation') or {}).get('confirmation') != 'CLOSED'
+                    or (evidence.get('closed_confirmation') or {}).get('kc_confirmation') != 'CLOSED_OPPOSITE'):
                 source.pop('pending', None)
                 source.pop('trigger', None)
         observation = source.get('live_ma5_v_observation') or {}

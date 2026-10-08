@@ -50,7 +50,7 @@
     "Positive actual position consumption including partial fill; no top-up",
     "Persisted claims, position UUID and event outbox; persistence failure blocks submission",
     "Real same-side KC2BAR coexistence and opposite-authority fail-closed arbitration",
-    "Owner-approved outer-rail MA5 V exit: post-entry observed MA5 peak/trough touches or exceeds same-snapshot side rail, adverse slope plus 0.10 ATR MA5 and 0.15 ATR price retreat; retire old unrestricted retries",
+    "Owner-approved outer-rail MA5 exit additionally requires a post-entry completed price pivot confirmed by both adjacent completed candles, latest completed MA5 adverse slope and opposite latest-two-completed KC middle slope; ordinary adverse candles and aligned/flat KC never create this exit; preserve observed outer excursion, live adverse slope, 0.10 ATR MA5 and 0.15 ATR price retreat; revoke older retries lacking version-4 closed confirmations",
     "Preserve half-wallet sizing, CAP progress, account hard stops and waterfalls; no standalone KC reversal exit or auto-reverse",
     "Read-only web never starts trading and cannot mutate positions by GET"
   ],
