@@ -113,8 +113,12 @@ class LegacyProductionAdapter:
             account=self.account, tickers={},
             _take_over_manual_position=lambda *args: None,
             get_velocity_drop_ratio=lambda symbol: 1.0,
+            _reevaluate_after_close=self._after_close,
         )
         self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+
+    async def _after_close(self, symbol):
+        return None  # Flat replay frames cannot authorize a new broker order.
 
     @staticmethod
     def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
@@ -129,6 +133,8 @@ class LegacyProductionAdapter:
         for node in ast.walk(tree):
             if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
                 hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if not hooks and "staged_enabled(position)" in "".join(source):
+            return {}  # Legacy profit branches have been retired in this core.
         if len(hooks) != 2:
             raise ProductionCapabilityMissing(
                 "Legacy source changed: review tracing anchors before using adapter")
@@ -182,7 +188,8 @@ class LegacyProductionAdapter:
         """Exercise actual core valuation; used by adapter provenance tests."""
         frame = self._frame(price, atr, bar, historical_high, historical_low)
         previous_trace = sys.gettrace()
-        self.native_net = None
+        runtime = getattr(self.account, "staged_risk_runtimes", {}).get(self.symbol)
+        self.native_net = runtime.valuation(runtime.engine.position, price) if runtime else None
         log_start = len(self.logs)
         try:
             sys.settrace(self._trace)
@@ -275,6 +282,12 @@ class ProductionAdapter(LegacyProductionAdapter):
         self.account.staged_risk_runtimes = {self.symbol: self.runtime}
         self.raw["use_staged_risk_engine"] = True
         self._persist_staged(self.state.snapshot())
+
+    def evaluate_entry(self, price: float, ma7: float, atr: float) -> str:
+        from core.services.exits.staged_risk_service import staged_entry_permission
+        allowed, reason = staged_entry_permission(price, ma7, atr, self.position.side)
+        self.logs.append(reason)
+        return "ENTRY_ELIGIBLE" if allowed else "ENTRY_BLOCKED"
 
     def _log_staged(self, message: str) -> None:
         self.logs.append(message)

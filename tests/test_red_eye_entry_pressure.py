@@ -6,7 +6,9 @@ import pytest
 from test_entry_e2e_20260928 import candles
 from core.engine import TradingEngine
 from core.paper_account import PaperAccount
-from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
+from core.services.entry_contract import evaluate_entry_contract
+from test_lobster_cap_gates import frame
+import time
 
 
 def engine_fixture(monkeypatch):
@@ -14,8 +16,12 @@ def engine_fixture(monkeypatch):
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
     account=PaperAccount();account.balance=100.
     engine=object.__new__(TradingEngine);engine.account=account
-    f=candles()
-    engine.tickers={'1000PEPE/USDT':100.7,'龙虾/USDT':100.7}
+    f=frame();now=int(time.time()//60)*60000
+    f['timestamp']=[now-(5-i)*60000 for i in range(6)]
+    monkeypatch.setattr(time,'time',lambda:now/1000+10.)
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
+    engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=time.time()*1000))
+    engine.tickers={'CAP/USDT':101.5,'龙虾/USDT':101.5}
     engine.fetch_klines=AsyncMock(return_value=f)
     engine.strategy=SimpleNamespace(compute_indicators=lambda f:f)
     engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
@@ -28,7 +34,7 @@ def test_same_candle_concurrent_requests_fill_once(monkeypatch,parallel):
     engine,f=engine_fixture(monkeypatch)
     async def run():
         return await asyncio.gather(*(engine._execute_confirmed_channel_break(
-            '1000PEPE/USDT',f,100.7,'LONG',v8_reason=evaluate_closed_entry(f,'LONG')[1]) for _ in range(parallel)))
+            'CAP/USDT',f,101.5,'LONG',v8_reason=evaluate_entry_contract(f,101.5,symbol='CAP/USDT')['type']) for _ in range(parallel)))
     assert sum(asyncio.run(run()))==1
     assert len(engine.account.trades)==1
 
@@ -45,7 +51,7 @@ def test_two_symbols_cannot_race_past_single_slot(monkeypatch):
     engine.account.open_position=delayed
     async def run():
         return await asyncio.gather(*(engine._execute_confirmed_channel_break(
-            symbol,f,100.7,'LONG',v8_reason=evaluate_closed_entry(f,'LONG')[1])
+            symbol,f,101.5,'LONG',v8_reason=evaluate_entry_contract(f,101.5,symbol='CAP/USDT')['type'])
             for symbol in engine.tickers))
     assert sum(asyncio.run(run()))==1
     assert len(engine.account.positions)==1
@@ -68,12 +74,12 @@ def test_account_failure_releases_submit_lock_for_other_symbol(monkeypatch):
     engine,f=engine_fixture(monkeypatch)
     original=engine.account.open_position
     async def maybe_fail(*args,**kwargs):
-        if kwargs['symbol']=='1000PEPE/USDT':raise RuntimeError('injected broker failure')
+        if kwargs['symbol']=='CAP/USDT':raise RuntimeError('injected broker failure')
         return await original(*args,**kwargs)
     engine.account.open_position=maybe_fail
     async def run():
-        code=evaluate_closed_entry(f,'LONG')[1]
-        results=await asyncio.gather(*(engine._execute_confirmed_channel_break(symbol,f,100.7,'LONG',v8_reason=code)
+        code=evaluate_entry_contract(f,101.5,symbol='CAP/USDT')['type']
+        results=await asyncio.gather(*(engine._execute_confirmed_channel_break(symbol,f,101.5,'LONG',v8_reason=code)
                                       for symbol in engine.tickers))
         assert not engine._account_entry_submit_lock.locked()
         return results

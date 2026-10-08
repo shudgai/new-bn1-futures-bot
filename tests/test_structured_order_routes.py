@@ -86,7 +86,7 @@ def _engine():
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("entry_mode,action", STRUCTURED_ORDER_CASES)
-async def test_every_structured_trade_mode_uses_the_expected_order_route(
+async def test_retired_or_unauthorized_trade_modes_send_no_orders(
     entry_mode, action, side,
 ):
     engine = _engine()
@@ -110,18 +110,10 @@ async def test_every_structured_trade_mode_uses_the_expected_order_route(
         "MODE/USDT", signal, live_price=100.0,
     )
 
-    assert placed is True
-    assert len(engine.account.orders) == 1
-    order_type, order = engine.account.orders[0]
-    assert order_type == ("limit" if action == "ENTER_LIMIT" else "market")
-    assert order["side"] == side
-    assert order["entry_context"]["entry_mode"] == entry_mode
-    if entry_mode == "CHANNEL_SWING":
-        assert order["sl"] == order["tp"] == 0.0
-    elif side == "LONG":
-        assert order["sl"] < 100.0
-    else:
-        assert order["sl"] > 100.0
+    # Retired modes, and CHANNEL_SWING without a supported signal code,
+    # have no authority to place an order.
+    assert placed is False
+    assert engine.account.orders == []
 
 
 @pytest.mark.anyio
@@ -136,6 +128,7 @@ async def test_channel_swing_order_is_cancelled_after_price_returns_inside_kc(si
     signal = {
         "action": "ENTER_MARKET", "entry_mode": "CHANNEL_SWING",
         "side": side, "score": 100, "atr": 1.0,
+        "signal_code": "KC_LIVE_BODY_BREAKOUT_" + side,
         "signal_candle_low": 99.0, "signal_candle_high": 101.0,
         "kc_lower": 99.0, "kc_upper": 101.0,
         "reason": "inside KC must not open",
@@ -147,12 +140,12 @@ async def test_channel_swing_order_is_cancelled_after_price_returns_inside_kc(si
 
     assert placed is False
     assert engine.account.orders == []
-    assert "取消開倉" in engine.account.logs[-1][0]
+    assert "snapshot is None" in engine.account.logs[-1][0]
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_hype_three_second_retry_locks_only_the_failed_closed_candidate(side):
+async def test_failed_snapshot_is_revalidated_on_each_retry(side):
     engine = _engine()
     engine._channel_invalid_entry_candidates = set()
     validation_calls = []
@@ -161,15 +154,13 @@ async def test_hype_three_second_retry_locks_only_the_failed_closed_candidate(si
         validation_calls.append(candidate_bar_id)
         if candidate_bar_id == 1_725_000_000_000:
             return None
-        return {
-            "price": 101.0 if side == "LONG" else 99.0,
-            "kc_upper": 101.0, "kc_lower": 99.0,
-        }
+        return None
 
     engine._fresh_channel_entry_snapshot = fresh_snapshot
     signal = {
         "action": "ENTER_MARKET", "entry_mode": "CHANNEL_SWING",
         "side": side, "score": 100, "atr": 1.0,
+        "signal_code": "KC_LIVE_BODY_BREAKOUT_" + side,
         "signal_candle_low": 99.0, "signal_candle_high": 101.0,
         "candidate_bar_id": 1_725_000_000_000,
         "reason": "HYPE three-second retry regression",
@@ -183,7 +174,7 @@ async def test_hype_three_second_retry_locks_only_the_failed_closed_candidate(si
     )
 
     assert (first, retry) == (False, False)
-    assert validation_calls == [1_725_000_000_000]
+    assert validation_calls == [1_725_000_000_000, 1_725_000_000_000]
     assert engine.account.orders == []
 
     next_candidate = dict(signal, candidate_bar_id=1_725_000_060_000)
@@ -191,6 +182,6 @@ async def test_hype_three_second_retry_locks_only_the_failed_closed_candidate(si
         "HYPE/USDT", next_candidate, live_price=100.0,
     )
 
-    assert opened is True
-    assert validation_calls == [1_725_000_000_000, 1_725_000_060_000]
-    assert len(engine.account.orders) == 1
+    assert opened is False
+    assert validation_calls == [1_725_000_000_000, 1_725_000_000_000, 1_725_000_060_000]
+    assert engine.account.orders == []

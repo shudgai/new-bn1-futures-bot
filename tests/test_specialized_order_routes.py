@@ -1,4 +1,3 @@
-import pandas as pd
 import pytest
 
 import core.engine as engine_module
@@ -62,126 +61,21 @@ def _base_engine():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize(
-    "requested_mode,pullback_bottom,expected_mode,post_only",
-    [
-        ("MA5_REVERSAL", False, "MA5_REVERSAL", False),
-        ("MA5_BOTTOM_LIMIT", True, "MA5_BOTTOM_LIMIT", True),
-        ("MA5_CROSS_PIVOT", False, "MA5_CROSS_PIVOT", False),
-    ],
-)
-async def test_every_ma5_trade_form_routes_to_the_expected_limit_order(
-    requested_mode, pullback_bottom, expected_mode, post_only, side,
-):
-    engine = _base_engine()
-    signal = {
-        "entry_mode": requested_mode,
-        "pullback_bottom_order": pullback_bottom,
-        "target_price": 100.0,
-        "atr": 1.0,
-        "score": 100,
-        "reason": f"{requested_mode} routing contract",
-    }
-
-    placed = await engine._place_ma5_reversal_entry(
-        SYMBOL, side, signal, live_price=100.0, now=1.0,
-    )
-
-    assert placed is True
-    assert len(engine.account.orders) == 1
-    order_type, order = engine.account.orders[0]
-    assert order_type == "limit"
-    assert order["side"] == side
-    assert order["post_only"] is post_only
-    assert order["entry_context"]["entry_mode"] == expected_mode
-    if requested_mode == "MA5_CROSS_PIVOT":
-        assert order["tp"] == 0.0
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_ma3_ma15_continuation_routes_to_market_for_both_sides(side):
-    engine = _base_engine()
-    frame = pd.DataFrame({
-        "low": [99.0] * 20,
-        "high": [101.0] * 20,
-        "close": [100.0] * 20,
-        "atr": [1.0] * 20,
-        "kc_middle": [100.0] * 20,
-        "kc_upper": [102.0] * 20,
-        "kc_lower": [98.0] * 20,
-        "volume": [150.0] * 20,
-        "vol_ma_20": [100.0] * 20,
-    })
-
-    placed = await engine._place_continuous_market_entry(
-        SYMBOL, side, frame, live_price=100.0,
-        entry_type=f"TREND_{side}", reason="continuation routing contract",
-        score=100, timeframe="1m", wave_regime="TREND",
-    )
-
-    assert placed is True
-    assert len(engine.account.orders) == 1
-    order_type, order = engine.account.orders[0]
-    assert order_type == "market"
-    assert order["side"] == side
-    assert order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET"
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_current_maker_routes_to_post_only_for_both_sides(side):
-    engine = _base_engine()
-    candidate = {
-        "symbol": SYMBOL,
-        "side": side,
-        "score": 100,
-        "entry_mode": "CURRENT_MAKER",
-        "amount_usdt": 50.0,
-        "atr": 1.0,
-        "reason": "current maker routing contract",
-        "leverage": 1,
-        "btc_regime_mode": "ALIGNED",
-        "btc_direction_1h": 0,
-        "btc_score_penalty": 0,
-        "btc_allocation_factor": 1.0,
-        "btc_pre_penalty_score": 100,
-        "raw_signal_score": 100,
-        "btc_adjusted_score": 100,
-        "history_adjusted_score": 100,
-        "history_score_multiplier": 1.0,
-    }
-    engine.pending_pullback_candidates[SYMBOL] = candidate
-
-    placed = await engine._place_current_maker_candidate(
-        SYMBOL, candidate, live_price=100.0, now=1.0,
-    )
-
-    assert placed is True
-    order_type, order = engine.account.orders[0]
-    assert order_type == "limit"
-    assert order["side"] == side
-    assert order["post_only"] is True
-    assert order["entry_context"]["entry_mode"] == "CURRENT_MAKER"
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pullback_candidate_stage_is_created_for_both_sides(monkeypatch, side):
+@pytest.mark.parametrize("mode,retired_method", [
+    ("MA5_REVERSAL", "_place_ma5_reversal_entry"),
+    ("MA5_BOTTOM_LIMIT", "_place_ma5_reversal_entry"),
+    ("MA5_CROSS_PIVOT", "_place_ma5_reversal_entry"),
+    ("MA3_MA15_MARKET", "_place_continuous_market_entry"),
+    ("CURRENT_MAKER", "_place_current_maker_candidate"),
+    ("PULLBACK", "_admit_pullback_candidates"),
+])
+async def test_retired_specialized_routes_cannot_place_orders(monkeypatch, side, mode, retired_method):
     engine = _base_engine()
     monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", [SYMBOL])
-    signal = {
-        "side": side,
-        "target_zone": 100.0,
-        "atr": 1.0,
-        "reason": "pullback candidate routing contract",
-    }
-
-    engine._admit_pullback_candidates(
-        [(80, SYMBOL, signal, 100.0, 1.0)],
-        available_balance=150.0,
-        now=1.0,
-    )
-
-    candidate = engine.pending_pullback_candidates[SYMBOL]
-    assert candidate["side"] == side
-    assert candidate["entry_mode"] == "PULLBACK"
+    assert not hasattr(engine, retired_method)
+    placed = await engine._place_structured_entry(SYMBOL, {
+        "entry_mode": mode, "action": "ENTER_MARKET", "side": side,
+        "score": 100, "atr": 1.0, "target_price": 100.0,
+    }, live_price=100.0)
+    assert placed is False
+    assert engine.account.orders == []

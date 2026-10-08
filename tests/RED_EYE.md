@@ -1,3 +1,5 @@
+> 2026-10-08 修復紀錄：目前 `entry-containment-v2` 的正式核心契約 20 項通過；相關入口／帳戶／併發與補充整合測試合計 359 項通過。歷史適配器斷言已依現行核心更新，退休路由改驗證拒單，原 20 項契約與 reference fixtures 未修改。詳細變更見 [修復紀錄](../docs/dev_logs/entry_containment_repair_20261008.md)。以下為歷史實作紀錄。
+
 # 階段性止損紅眼測試
 
 **正式核心契約：20 passed。分支：`feature/staged-risk-implementation`。**
@@ -70,7 +72,7 @@ RED_EYE_REQUIRE_PRODUCTION=1 RED_EYE_FACTORY=my_package.red_eye_adapter:create_s
 # 正式補充故障與接線（16 passed）
 .venv/bin/python -m pytest -q tests/test_staged_risk_implementation.py
 
-# 未修改的舊適配器行為斷言，明確選用 legacy factory（6 passed）
+# 歷史出口已退休；僅檢查 legacy 缺失能力會明確拒絕（1 passed）
 .venv/bin/python tools/run_red_eye_legacy_baseline.py
 
 # 原參考模型（20 passed；執行前移除 RED_EYE_FACTORY／RED_EYE_REQUIRE_PRODUCTION）

@@ -164,14 +164,18 @@ def test_install_and_runner_share_durable_runtime(tmp_path):
         asyncio.run(scenario(store))
 
 
-def test_legacy_entry_points_are_silent_only_under_new_flag():
+def test_legacy_entry_points_are_silent_only_under_new_flag(monkeypatch):
+    legacy = Mock(return_value='TEST_LEGACY_EXIT')
+    monkeypatch.setattr('core.services.exits.entry_atr_protection.atr_exit_reason', legacy)
     p = dict(side='LONG', entry_price=100, qty=10, margin=1000, use_staged_risk_engine=True)
     assert protection(p, 103, 0.0005, 0.0005) is None
     assert 'channel_profit_protection' not in p
     assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) is None
+    legacy.assert_not_called()
     p['use_staged_risk_engine'] = False
     result = protection(p, 103, 0.0005, 0.0005)
-    assert result['peak_net'] > 3
+    legacy.assert_called_once_with(p, 103, None)
+    assert result['reason'] == 'TEST_LEGACY_EXIT'
 
 
 def test_production_adapter_calls_staged_dispatcher_without_legacy(monkeypatch):

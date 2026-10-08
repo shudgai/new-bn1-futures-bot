@@ -54,7 +54,7 @@ def test_direction_forbidden_zones(strategy):
 # -------------------------------------------------------------
 # 測試 4：盤中黑天鵝大瀑布秒殺測試 (Flash Crash Intra-bar Exit)
 # -------------------------------------------------------------
-def test_intra_bar_flash_crash(strategy):
+def test_retired_emergency_helper_does_not_authorize_exit(strategy):
     position = {'side': 'LONG', 'entry_price': 100.0}
     snapshot = {'open': 100.0, 'atr': 1.0}
     btc_status = {'is_crashing': False}
@@ -62,7 +62,8 @@ def test_intra_bar_flash_crash(strategy):
     # 盤中直接暴跌 2 ATR (現價 98.0)
     current_price = 98.0
     exit_reason = strategy.check_intra_bar_emergency_exit(position, current_price, snapshot, btc_status)
-    assert exit_reason == 'EMERGENCY_FLASH_CRASH_LONG', f"❌ 失敗：大瀑布竟然沒在盤中秒殺！原因={exit_reason}"
+    # Actual staged flash-gap handling is exercised in test_red_eye_staged_contract.
+    assert exit_reason is None
 
 # -------------------------------------------------------------
 # 測試 5：常規行情一股不賣測試 (Hold Tight Test)
@@ -76,3 +77,13 @@ def test_hold_tight_when_normal(strategy):
     current_price = 100.2
     exit_reason = strategy.check_intra_bar_emergency_exit(position, current_price, snapshot, btc_status)
     assert exit_reason is None, "❌ 失敗：正常微小跳動竟然觸發了平倉！沒有做到一股不賣！"
+
+
+def test_short_rejection_diagnostics_do_not_raise_name_error(strategy):
+    current = base_bar()
+    current.update(open=97.0, close=97.2, high=97.4, low=96.8,
+                   ma3=97.0, ma15=98.0, kc_middle=98.0)
+    previous = base_bar()
+    previous.update(kc_middle=99.0, ma3=97.5)
+    assert strategy.evaluate_entry('TEST/USDT', current, previous, previous) is None
+    assert strategy.entry_rejection

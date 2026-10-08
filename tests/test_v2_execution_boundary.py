@@ -1,40 +1,30 @@
-"""V2 signal -> engine -> real paper account, with no external orders."""
+"""Shared entry contract -> engine -> real account boundaries, without network."""
 import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pandas as pd
 import pytest
 
-from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+from core.services.entry_contract import evaluate_entry_contract
 from core.services.entry_firewall import validate_account_entry, validate_entry_frame
 
 
 def candles(side='LONG', live=True):
+    from test_lobster_cap_gates import frame
+    f = frame(side)
     stamp = int(time.time() // 60) * 60000
-    rows = [dict(timestamp=stamp-(5-i)*60000, open=100., close=100.2,
-                 high=100.4, low=99.8, ma3=100.2, ma15=100., atr=1.,
-                 kc_upper=101.4, kc_middle=100., kc_lower=98.6, is_closed=True)
-            for i in range(6)]
-    rows[-3].update(open=100.8, close=101.3, high=101.6, low=100.7)
-    rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4)
-    rows[-1].update(open=101.5, close=101.8, high=101.9, low=101.4, is_closed=not live)
-    if not live:
-        for row in rows: row['timestamp'] -= 60000
-    f = pd.DataFrame(rows)
-    if side == 'SHORT':
-        original = f.copy()
-        for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
-                    ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
-                    ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
-            f[a] = 200-original[b]
+    f['timestamp'] = [stamp-(5-i)*60000 for i in range(6)]
     f.attrs['timeframe_ms'] = 60000
+    f.attrs['entry_finality_verified'] = True
+    if not live:
+        f['is_closed'] = True
+        f['timestamp'] -= 60000
     return f
 
 
 def context(f, side):
-    d = evaluate_v2_frame(f)
+    d = evaluate_entry_contract(f, symbol='CAP/USDT')
     return dict(entry_mode='CHANNEL_SWING', entry_signal_code=d['type'],
                 channel_confirmation_bar_id=d['confirmation_bar_id'])
 
@@ -49,7 +39,9 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '1000PEPE/USDT'; f = candles(side, live)
+    symbol = 'CAP/USDT'; f = candles(side, live)
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
+    engine.exchange = SimpleNamespace(fetch_time=AsyncMock(return_value=time.time()*1000))
     engine.tickers = {symbol: float(f.iloc[-1].close)}
     engine.fetch_klines = AsyncMock(return_value=f)
     engine.strategy = SimpleNamespace(compute_indicators=lambda frame: frame)
@@ -66,7 +58,7 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     account.positions.clear()
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
     assert len(account.trades) == 1
-    assert 'already filled' in engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]
+    assert engine._entry_gate_diagnostics[(symbol,'NONE','SIGNAL')][1] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -86,7 +78,7 @@ def test_account_boundary_rejects_invalid(side, fault):
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_exchange_boundary_sends_v2_order(monkeypatch, side):
+def test_exchange_boundary_sends_supported_order(monkeypatch, side):
     from core.testnet_account import BinanceTestnetAccount
     monkeypatch.setattr(BinanceTestnetAccount,'_load_state',lambda self:None)
     monkeypatch.setattr(BinanceTestnetAccount,'save_state',lambda self,**kwargs:None)
@@ -115,7 +107,9 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
     account=PaperAccount(); account.balance=100.
     engine=object.__new__(TradingEngine); engine.account=account
-    symbol='1000PEPE/USDT'; f=candles(); ctx=context(f,'LONG')
+    symbol='CAP/USDT'; f=candles(); ctx=context(f,'LONG')
+    monkeypatch.setattr('core.services.entry_finality.READ_INTERVAL_SECONDS',0.)
+    engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=time.time()*1000))
     engine.tickers={symbol:float(f.iloc[-1].close)}
     engine.fetch_klines=AsyncMock(return_value=f)
     engine.strategy=SimpleNamespace(compute_indicators=lambda frame:frame)
@@ -128,7 +122,7 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
     if fault=='balance': account.balance=0.
     if fault=='changed': ctx['channel_confirmation_bar_id']-=60000
     if fault=='exchange_error': account.open_position=AsyncMock(side_effect=RuntimeError('exchange rejected'))
-    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,101.8,'LONG',
+    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,101.5,'LONG',
         v8_reason=ctx['entry_signal_code'],candidate_bar_id=ctx['channel_confirmation_bar_id']))
     reason=engine._entry_gate_diagnostics[(symbol,'LONG','EXECUTION')][1]
     assert {'slots':'MAX_SLOTS','daily':'daily loss','balance':'INSUFFICIENT_MARGIN',

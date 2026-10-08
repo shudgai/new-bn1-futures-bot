@@ -43,6 +43,9 @@ class RestExchange:
                     qty=str(qty), realizedPnl=str(pnl), commission=str(commission),
                     commissionAsset="USDT", price=str(self.price))
 
+    async def create_order(self, *args, **kwargs):
+        raise AssertionError("Staged REST tests must not submit through the legacy order route")
+
     def market(self, symbol):
         return {"precision": {"price": 0.0001}}
 
@@ -364,12 +367,12 @@ def test_transport_rejects_other_fee_assets_before_activation(setup_account):
     asyncio.run(scenario())
 
 
-def test_manual_reduce_and_close_share_staged_ledger(setup_account):
+def test_runtime_reduce_and_account_close_share_staged_ledger(setup_account):
     async def scenario():
         account, ex = setup_account()
         runtime = await account.enable_staged_risk(SYMBOL, POLICY, ["1"])
         ex.price = 102
-        assert await account.partial_close_position(SYMBOL, 102, "manual partial", 0.2)
+        assert await runtime.engine.request_reduce(0.2)
         assert runtime.engine.position.qty == 8
         assert not runtime.engine.position.partial_tp_sent
         assert not account.trades
@@ -404,10 +407,10 @@ def test_nonterminal_market_ack_blocks_additional_reduction(setup_account):
                 result["status"] = "PARTIALLY_FILLED"
             return result
         runtime.engine.transport.place_order = delayed_status
-        assert not await account.partial_close_position(SYMBOL, 100, "partial", 0.2)
+        assert not await runtime.engine.request_reduce(0.2)
         assert runtime.engine.position.status == "RECONCILE"
         posts = sum(method == "POST" for _, method, _ in ex.calls)
-        assert not await account.partial_close_position(SYMBOL, 100, "partial", 0.2)
+        assert not await runtime.engine.request_reduce(0.2)
         assert sum(method == "POST" for _, method, _ in ex.calls) == posts
         await runtime.engine.reconcile()
         assert runtime.engine.position.status == "OPEN"

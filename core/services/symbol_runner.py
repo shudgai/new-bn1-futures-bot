@@ -85,6 +85,13 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                            float(frame.iloc[-1]['timestamp']))
         return [], []
 
+    from core.services.exits.staged_risk_service import staged_enabled, run_staged_position
+    if staged_enabled(position):
+        await run_staged_position(engine.account, symbol, frame, quote)
+        if symbol not in engine.account.positions:
+            strict_strategy.set_state(symbol, PositionState.IDLE)
+        return [], []  # Explicit staged owner never falls through to legacy exits.
+
     if await engine._try_channel_turn_reverse(symbol, frame, quote):
         return [], []
 

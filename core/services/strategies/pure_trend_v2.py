@@ -300,6 +300,7 @@ class PureTrendStrategyV2:
         # 1. 價格反彈至 MA5(ma3) 或 KC 中軌附近 (高點觸及或高於)
         touched_resistance_short = (curr_high >= ma3) or (curr_high >= kc_middle_curr)
         
+        held_resistance_short = current_price < kc_middle_curr
         pullback_short = touched_resistance_short and is_red_candle
         
         # 【弱勢貼軌續跌旁路】：行情持續壓制在 MA5 下方沿軌陰跌
