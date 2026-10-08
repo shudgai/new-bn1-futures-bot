@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 from core.services.ma5_chop_gate import ma5_ma15_entanglement_problem
+from core.services import fast_close_reentry
 
 from core.services.candle_data import closed_entry_candles
 from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
@@ -18,7 +19,7 @@ TURN_CODES = {'KC_CHANNEL_TURN_LONG', 'KC_CHANNEL_TURN_SHORT'}
 CROSS_CODES = {"MA5_MA15_LIVE_CROSS_LONG", "MA5_MA15_LIVE_CROSS_SHORT"}
 REVERSAL_CODES = {"KC_LIVE_REVERSAL_BODY_LONG", "KC_LIVE_REVERSAL_BODY_SHORT"}
 ENTRY_CODES = {"KC_2BAR_CONFIRM_LONG", "KC_2BAR_CONFIRM_SHORT",
-               } | CROSS_CODES | OUTER_CODES | REVERSAL_CODES
+               } | CROSS_CODES | OUTER_CODES | REVERSAL_CODES | fast_close_reentry.CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
@@ -34,7 +35,7 @@ CROSS_EVIDENCE_KEYS = ("cross_previous_ma5", "cross_previous_ma15", "cross_live_
                        "cross_live_ma15", "cross_reference_bar_id")
 REVERSAL_EVIDENCE_KEYS = ("reversal_reference_atr", "reversal_live_open", "reversal_body",
                           "reversal_body_atr", "reversal_kc_previous", "reversal_kc_current")
-ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + ("continuation_pair_id",)
+ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + fast_close_reentry.EVIDENCE_KEYS + ("continuation_pair_id",)
 
 
 MA5_MIN_ENTRY_SLOPE_ATR = 0.05
@@ -476,7 +477,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        decision = evaluate_live_reversal_body(frame, quote, code, symbol)
+        decision = fast_close_reentry.evaluate(account, symbol, ma5_frame, quote, code)
+        if decision is None and code in fast_close_reentry.CODES:
+            return reject("WAIT_FAST_REENTRY_CONFIRMED_CLOSE_AND_DIRECTION")
+        if decision is None:
+            decision = evaluate_live_reversal_body(frame, quote, code, symbol)
         if decision is None:
             decision = evaluate_live_ma_cross(ma5_frame, quote, code, symbol)
         if decision is None:
@@ -493,6 +498,14 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
+        if close_fill is not None:
+            try:
+                previous_ma5, current_ma5 = fast_close_reentry.live_ma5_values(ma5_frame, quote)
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+                return reject("BLOCKED_REENTRY_MA5_FLAT_OPPOSITE_OR_INVALID")
+            if ((1 if decision["side"] == "LONG" else -1)*(current_ma5-previous_ma5)
+                    <= max(current_ma5, previous_ma5)*1e-12):
+                return reject("BLOCKED_REENTRY_MA5_FLAT_OPPOSITE_OR_INVALID")
         if decision["type"] in REVERSAL_CODES:
             for trade in getattr(account, "trades", []):
                 if (trade.get("symbol") == symbol and trade.get("action") in ("OPEN_LONG", "OPEN_SHORT")
@@ -508,26 +521,26 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
         doji_reject = (entry_doji_problem(closed, live, quote)
-                       if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES else None)
+                       if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES | fast_close_reentry.CODES else None)
         if doji_reject:
             return reject(doji_reject)
 
         # Strict live candle color guard: Never open Long on a red live candle, never open Short on a green live candle
         live_open = float(live['open'])
-        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and decision['side'] == 'LONG' and quote < live_open:
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES | fast_close_reentry.CODES and decision['side'] == 'LONG' and quote < live_open:
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
-        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and decision['side'] == 'SHORT' and quote > live_open:
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES | fast_close_reentry.CODES and decision['side'] == 'SHORT' and quote > live_open:
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
 
-        if decision["type"] not in REVERSAL_CODES and not ma5_entry_ready(ma5_frame, quote, decision['side'],
+        if decision["type"] not in REVERSAL_CODES | fast_close_reentry.CODES and not ma5_entry_ready(ma5_frame, quote, decision['side'],
                                require_closed_direction=decision["type"] not in CROSS_CODES):
             return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
         entanglement = (ma5_ma15_entanglement_problem(ma5_frame, quote, decision["side"])
-                        if decision["type"] not in REVERSAL_CODES else None)
+                        if decision["type"] not in REVERSAL_CODES | fast_close_reentry.CODES else None)
         if entanglement:
             return reject(entanglement)
 
-        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES | fast_close_reentry.CODES and not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_RETURNING_TO_KC')
 
         # Post-exit formation verification:

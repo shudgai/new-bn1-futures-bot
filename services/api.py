@@ -420,7 +420,9 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "entry_policy": "live_reversal_1atr_or_ma_cross_or_observed_two_bar_v5",
+        "entry_policy": "fast_close_reentry_or_live_reversal_cross_two_bar_v6",
+        "post_close_ma5_gate": "平倉後所有入口均重驗即時MA5：向下不開多、向上不開空，持平或無效不開；獨立反向長K不得繞過。",
+        "fast_reentry_policy": "匹配策略成功平倉且完全空手後，原方向即時MA5嚴格順向、最近兩根已收線KC中軌與MA15皆同向即可快速重開；不等新交叉、破軌來源或軌外位置。MA5反向、持平或資料無效不授權此入口。手動／異常平倉不授權快速重開。每次成功平倉最多一次重開，每幣每根最多一次快速重開，成交後跨重啟不得重用；行情、資金槽位、下單鎖及送單重驗保留。其他獨立入口及出口不變。",
         "exit_policy": "atr_step_priority_dual_trend_ma5_peak_valley_v14",
         "strategy": "一般入口保留即時MA5／MA15交叉、兩根收線破軌及有合法來源延續。交叉不受前段已收線MA5方向否決，兩線即時順向、即時MA5至少0.05前根ATR位移與糾纏防護保留。獨立反向長K入口：最近兩根已收線KC中軌下降＋當根綠實體達固定前根1ATR評估多單，上升＋紅實體達1ATR評估空單；不等收線、破軌、均線資格或糾纏解除，但行情、送單重驗及帳戶安全不豁免，同根成交不得重複。多空皆啟用ATR階梯且鎖利優先：龍蝦1ATR啟動每1ATR升階、CAP2ATR啟動每2ATR升階，鎖半階且不低於扣費滑點後保本線，碰保護線按最新價平倉，即使趨勢仍在也執行。取消十字後及累計十字平倉，撤銷舊十字待平。其餘峰谷出口：進場後先實際觀察MA5順向，再從峰頂／谷底反向至少0.10固定進場ATR且即時MA5反向才評估；最近兩根已收線KC中軌及MA15都同持倉方向嚴格推進時續抱，阻止新增MA5轉彎出口。趨勢解除仍重驗，不追溯被阻擋的舊轉彎；不另等待KC完全反向。普通反色K或相反入口不得直接平倉／反手。ATR固定進場值，階梯只收緊；不补未觀察峰值，狀態按持倉保存，有效待平持久化重試。手動平倉與staged策略不變，獨立永久WAIT未實作。不保證絕對峰谷成交或獲利。",
         "environment": "binance_testnet",

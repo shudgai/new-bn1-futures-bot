@@ -2,6 +2,45 @@
 
 ## Owner decisions
 
+### Fast confirmed-close continuation with live MA5 direction
+
+Owner approved a separate same-side reentry authority after a confirmed
+strategy close and authoritative FLAT. It requires strictly directional
+quote-repriced MA5 versus latest completed MA5, and both latest completed
+KC middle and MA15 slopes in that side. It does not inherit old closed MA5
+slope/0.05 ATR strength, entanglement, fresh cross, general-breakout provenance,
+outside-KC/MA location, live color or body qualifications. It is not a
+permission to reenter when MA5 is adverse/flat/invalid.
+
+Only CLOSED Channel Swing ledger fills with known ATR-step or MA5 exit
+reasons authorize it. Manual/failed/unknown/abnormal closes do not. The
+latest close owns one stable symbol/side/close-ID identity; any subsequent
+open consumes it. Also limit successful fast reentry to one per symbol/live
+bar, including after a new same-bar close and disk restart. No failed
+submission consumes it. Existing immediate after-close evaluator, quote/
+scan paths, final account firewall and account submission locks are shared;
+no account.open_position bypass, extra cooldown or next-bar wait is added.
+Pending/closing/held positions, slots/capital/daily risk, freshness, market
+validity and final quote checks still block. Other independent entries,
+including the previously approved live 1-ATR reversal, and V14 exits remain
+unchanged. Independent WAIT remains BLOCK/NOT_TESTED.
+Entry API policy is V6; this source patch alone is not deployment evidence.
+
+The latest Owner MA5 prohibition also applies at the shared final contract
+to every post-close entry route, so an independent live reversal cannot
+bypass adverse/flat/invalid live MA5 after a close. Initial live reversal
+without a prior close retains its approved independent qualifications.
+
+Final V6 verification: 569 passed across fifteen modules, with 21 instances
+of the existing UTC datetime deprecation warning. Includes four symbol/side
+immediate engine reentries, disk restart one-use consumption, same-bar limit,
+failed execution followed by successful retry, concurrent calls opening once,
+adverse/flat/invalid MA5, failed/manual/future/wrong-symbol closes, current
+trend/finality validation and slot/capital/pending/daily/execution safety.
+All existing V14 exit regressions in that targeted run passed. Whitespace
+checks passed. Absent historical channel suites were not run; this is not
+a full-repository test claim. Owner authorized commit and paper restart.
+
 ### Final symmetric hold with ATR profit priority; doji exits cancelled
 
 Latest Owner selection supersedes all prior short-only and doji-exit sections.
