@@ -6,7 +6,7 @@ import math
 import secrets
 import time
 
-VERSION = 'entry-gate-20261008-v58-restore-breakout-chop'
+VERSION = 'entry-gate-20261008-v59-market-pnl-refresh'
 _SECRET = secrets.token_bytes(32)
 MAX_AGE_MS = 5000
 

@@ -1041,14 +1041,12 @@ class TradingEngine:
                     price = float(t['last'])
                     # 統一存成 "SYMBOL/USDT" 格式（去掉 :USDT 後綴）
                     clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
-                    self.tickers[clean_sym] = price
-                    self.tickers[sym] = price  # 同時保留原格式作為備援
-                    self._observe_channel_entry_quote(clean_sym, price, t.get("timestamp"))
+                    if self._record_market_quote(clean_sym, price, t.get("timestamp")):
+                        self._observe_channel_entry_quote(clean_sym, price, t.get("timestamp"))
                 if 'quoteVolume' in t and t['quoteVolume'] is not None:
                     clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
                     self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
                     self.ticker_volumes[sym] = float(t['quoteVolume'])
-            self.last_ticker_success_ts = time.time()
         except Exception as e:
             now = time.time()
             stale_sec = now - getattr(self, 'last_ticker_success_ts', now)
@@ -1251,6 +1249,7 @@ class TradingEngine:
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
         """Abnormal live bodies and hard stops; no REST or candle-close wait."""
+        self._record_market_quote(symbol, price, quote_ms)
         from core.services.cap_breakout_entry import observe_cap_breakout
         observe_cap_breakout(self.account, symbol,
                             getattr(self, '_channel_exit_frames', {}).get(symbol),
@@ -1325,20 +1324,46 @@ class TradingEngine:
         """Ticker shares the same lock-free decision path as aggTrade."""
         return await self._instant_quote_exit(symbol, price, quote_ms)
 
+    def _record_market_quote(self, symbol: str, price: float, quote_ms=None) -> bool:
+        """Share fresh trade/ticker prices without allowing older feeds to rewind them."""
+        now = time.time()
+        try:
+            price = float(price)
+            stamp = float(quote_ms) / 1000 if quote_ms is not None else now
+            if not math.isfinite(price) or price <= 0 or not math.isfinite(stamp):
+                raise ValueError("nonpositive price or nonfinite quote")
+        except (TypeError, ValueError, OverflowError) as exc:
+            self.account.log(f"MARKET_QUOTE_INVALID symbol={symbol} error={exc}", "WARNING")
+            return False
+        clean_sym = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+        quotes = getattr(self, "_market_quote_times", None)
+        if quotes is None:
+            quotes = self._market_quote_times = {}
+        if not 0 <= now - stamp <= 5 or stamp < quotes.get(clean_sym, 0.0):
+            return False
+        tickers = getattr(self, "tickers", None)
+        if tickers is None:
+            tickers = self.tickers = {}
+        tickers[clean_sym] = price
+        tickers[f"{clean_sym}:USDT"] = price
+        quotes[clean_sym] = stamp
+        self.last_ticker_success_ts = now
+        return True
+
     async def _ticker_loop(self):
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
         while True:
             try:
                 # symbols=None 對 Binance USD-M 會使用 !miniTicker@arr，一條
                 # WebSocket 即可接收所有合約，不會為 500 多個幣建立 REST 請求。
-                tickers = await self.ws_exchange.watch_tickers()
+                tickers = await asyncio.wait_for(self.ws_exchange.watch_tickers(), timeout=5.0)
 
                 for sym, ticker in tickers.items():
                     if ticker.get("last") is not None:
                         price = float(ticker["last"])
                         clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
-                        self.tickers[clean_sym] = price
-                        self.tickers[sym] = price
+                        if not self._record_market_quote(clean_sym, price, ticker.get("timestamp")):
+                            continue
                         
                         # V5.0 極致點位捕捉: 更新 Tick 速度緩衝區
                         ts = ticker.get("timestamp") or (time.time() * 1000)
@@ -1352,7 +1377,6 @@ class TradingEngine:
 
                 now = time.time()
                 self._update_market_surveillance(tickers, now)
-                self.last_ticker_success_ts = now
 
                 # ── BTC 插針偵測 ─────────────────────────────────────
                 # 用 WebSocket 毫秒級報價做滑動視窗；比等到 1m K 收盤快太多。
@@ -1444,7 +1468,7 @@ class TradingEngine:
                 break
             except Exception as exc:
                 self.account.log(
-                    f"⚠️ [WebSocket Ticker Loop] 錯誤: {exc}，暫時退回 REST 抓取...",
+                    f"⚠️ [WebSocket Ticker Loop] {type(exc).__name__}: {exc}，暫時退回 REST 抓取...",
                     "WARNING",
                 )
                 try:

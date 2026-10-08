@@ -34,7 +34,8 @@
     "tests/test_true_breakout_entry.py",
     "tests/test_cap_pair_continuation.py",
     "tests/test_ma5_outer_pivot_entry.py",
-    "tests/test_entry_chop_gate.py"
+    "tests/test_entry_chop_gate.py",
+    "tests/test_market_pnl_refresh.py"
   ],
   "required_behaviors": [
     "Independent LOBSTER LONG, LOBSTER SHORT, CAP LONG, CAP SHORT",
@@ -52,7 +53,9 @@
     "Real same-side KC2BAR coexistence and opposite-authority fail-closed arbitration",
     "Owner-approved outer-rail MA5 exit additionally requires a post-entry completed price pivot confirmed by both adjacent completed candles, latest completed MA5 adverse slope and opposite latest-two-completed KC middle slope; ordinary adverse candles and aligned/flat KC never create this exit; preserve observed outer excursion, live adverse slope, 0.10 ATR MA5 and 0.15 ATR price retreat; revoke older retries lacking version-4 closed confirmations",
     "Preserve half-wallet sizing, CAP progress, account hard stops and waterfalls; no standalone KC reversal exit or auto-reverse",
-    "Read-only web never starts trading and cannot mutate positions by GET"
+    "Read-only web never starts trading and cannot mutate positions by GET",
+    "Fresh aggTrade and ticker feeds share display quotes without older-feed rewind; silent ticker waits time out after five seconds to existing REST fallback; supervisor restores dead market tasks",
+    "Held valuation uses qty and a matching mark price for both directions; dashboard Vue 3 polling updates positions and PnL without $set and preserves newer live valuation over older full-status responses; per-symbol quote age is explicit"
   ],
   "historical_missing_tests": [
     "tests/test_channel_swing.py",

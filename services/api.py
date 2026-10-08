@@ -79,6 +79,21 @@ def visible_tickers():
     return result
 
 
+def market_data_status() -> dict:
+    now = time.time()
+    quotes = getattr(engine, "_market_quote_times", {})
+    ages = {
+        symbol: round(max(0.0, now - quotes[symbol]), 1) if symbol in quotes else None
+        for symbol in visible_symbols()
+    }
+    return {
+        "market_data_stale": not WEB_READ_ONLY and any(
+            age is None or age > 5.0 for age in ages.values()
+        ),
+        "ticker_age_seconds": ages,
+    }
+
+
 def configured_trade_amount() -> float:
     """Return the target size of one slot, independent of current occupancy."""
     wallet_balance = engine.account.get_wallet_balance()
@@ -122,6 +137,7 @@ def positions_with_triggers():
         mark = float(merged.get("mark_price") or entry)
         qty = float(merged.get("qty") or 0.0)
         raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
+        merged["unrealized_pnl"] = raw if not WEB_READ_ONLY else merged.get("unrealized_pnl", raw)
         merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
 
         from core.services.exits.profit_lock_display import profit_lock_display
@@ -248,6 +264,7 @@ async def recover_bot_if_needed() -> bool:
             os.remove(BOT_PAUSED_FILE)
         main_task = getattr(engine, "task", None)
         if engine.is_running and main_task is not None and not main_task.done():
+            engine.start_market_data()
             return False
 
         if engine.is_running:
@@ -456,6 +473,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "web_read_only": WEB_READ_ONLY,
         "market_data_live": not WEB_READ_ONLY,
+        **market_data_status(),
         "is_running": engine.is_running,
         "entry_gate_halts": dict(engine.account.position_meta.get("_entry_gate_halts", {})),
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
@@ -535,6 +553,7 @@ async def get_prices(response: Response):
     payload = numpy_safe({
         "web_read_only": WEB_READ_ONLY,
         "market_data_live": not WEB_READ_ONLY,
+        **market_data_status(),
         "symbols": visible_symbols(),
         "symbol_directions": {
             symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")

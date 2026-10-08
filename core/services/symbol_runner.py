@@ -61,13 +61,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     unrealized_pnl = 0.0
     if position:
         entry_price = float(position.get("entry_price", 0.0))
-        amount = float(position.get("amount", 0.0))
+        amount = float(position["qty"])
         if position.get("side") == "LONG":
             unrealized_pnl = (quote - entry_price) * amount
         elif position.get("side") == "SHORT":
             unrealized_pnl = (entry_price - quote) * amount
             
         # 同步更新引擎中的 pnl，方便後續讀取
+        position["mark_price"] = quote
         position["unrealized_pnl"] = unrealized_pnl
         if unrealized_pnl > position.get("max_pnl_usdt", 0.0):
             position["max_pnl_usdt"] = unrealized_pnl

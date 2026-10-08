@@ -340,6 +340,9 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">未實現損益（即時）</div>
+                        <div v-if="bot.market_data_stale" style="font-size:11px; color:var(--down);">
+                            行情過期或尚未連線，損益為最後報價估值
+                        </div>
                         <div :class="['stat-val', bot.unrealized_pnl > 0 ? 'up' : bot.unrealized_pnl < 0 ? 'down' : '']">
                             {{ bot.unrealized_pnl > 0 ? '+' : '' }}{{ bot.unrealized_pnl.toFixed(2) }}
                         </div>
@@ -670,6 +673,8 @@
                         realized_pnl: 0,
                         unrealized_pnl: 0,
                         estimated_net_unrealized_pnl: 0,
+                        market_data_stale: true,
+                        ticker_age_seconds: {},
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
@@ -701,7 +706,7 @@
                     aiAnalysisExpanded: false,
                     volatilityExpanded: false,
                     lockedProfitBump: {},      // { [symbol]: true } 當 Phase 升級時閪爍
-                    _prevLockedPhase: {},      // { [symbol]: number } 上一次 Phase 編號
+                    prevLockedPhase: {},      // { [symbol]: number } 上一次 Phase 編號
                 }
             },
             computed: {
@@ -1350,6 +1355,10 @@
                             data.tickers = this.bot.tickers;
                             data.positions = this.bot.positions;
                             data.ticker_updated_at = currentTickerTime;
+                            data.unrealized_pnl = this.bot.unrealized_pnl;
+                            data.estimated_net_unrealized_pnl = this.bot.estimated_net_unrealized_pnl;
+                            data.market_data_stale = this.bot.market_data_stale;
+                            data.ticker_age_seconds = this.bot.ticker_age_seconds;
                         }
                         this.bot = data;
                     } catch (e) {
@@ -1376,12 +1385,12 @@
                             newPositions.forEach(p => {
                                 const sym = p.symbol;
                                 const newPhase = p.locked_phase || 0;
-                                const prevPhase = this._prevLockedPhase[sym] || 0;
+                                const prevPhase = this.prevLockedPhase[sym] || 0;
                                 if (newPhase > prevPhase && newPhase > 0) {
-                                    this.$set(this.lockedProfitBump, sym, true);
-                                    setTimeout(() => this.$set(this.lockedProfitBump, sym, false), 560);
+                                    this.lockedProfitBump[sym] = true;
+                                    setTimeout(() => { this.lockedProfitBump[sym] = false; }, 560);
                                 }
-                                this.$set(this._prevLockedPhase, sym, newPhase);
+                                this.prevLockedPhase[sym] = newPhase;
                             });
                             this.bot.positions = newPositions;
                         }
@@ -1389,6 +1398,8 @@
                         if (data.balance !== undefined) this.bot.balance = data.balance;
                         if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
                         if (data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
+                        if (data.market_data_stale !== undefined) this.bot.market_data_stale = data.market_data_stale;
+                        if (data.ticker_age_seconds) this.bot.ticker_age_seconds = data.ticker_age_seconds;
                         this.bot.ticker_updated_at = incomingTickerTime;
                     } catch (e) {
                         console.error('Failed to fetch live prices', e);
