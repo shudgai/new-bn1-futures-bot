@@ -19,12 +19,24 @@ def candles(side='LONG', live=True):
     prior = f.iloc[[0]].copy()
     prior["timestamp"] -= 60000
     f = pd.concat([prior, f], ignore_index=True)
+    sign = 1 if side == 'LONG' else -1
+    f.loc[f.index[-3], 'ma5'] = float(f.iloc[-2].ma5) - sign * .1
     f.attrs['timeframe_ms'] = 60000
     f.attrs['entry_finality_verified'] = True
     if not live:
         f['is_closed'] = True
         f['timestamp'] -= 60000
     return f
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_account_boundary_blocks_newly_flat_closed_ma5(side):
+    f = candles(side)
+    ctx = context(f, side)
+    f.loc[f.index[-2], 'ma5'] = float(f.iloc[-3].ma5)
+    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f), last_closed_at={})
+    with pytest.raises(ValueError, match='BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID'):
+        asyncio.run(validate_account_entry(account, 'CAP/USDT', side, ctx))
 
 
 def context(f, side):

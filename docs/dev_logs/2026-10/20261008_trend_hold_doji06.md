@@ -2,6 +2,55 @@
 
 ## Owner decisions
 
+### Final superseding decision: live MA5 flat/adverse exit
+
+Policy `live_ma5_flat_or_adverse_v7`: MA5 = (last four completed closes +
+fresh current quote) / 5, compared to latest completed MA5. Flat or adverse
+movement closes immediately, not after candle close, a V shape, KC or doji.
+LONG adverse is down; SHORT adverse is up. Flat uses relative-price 1e-12
+tolerance. All four symbol/direction paths share the evaluator.
+Persist evidence and retry through account locks. Restart may replay
+validated completed post-entry history, never unseen historical live quotes
+or execution prices. Preserve the closed cursor across rolling windows;
+gaps explicitly block replay. Consistent zero-range candles are valid.
+Automatic entry requires both closed and live MA5 direction; original live
+strength stays unchanged. Flat/opposite/invalid data blocks fresh submission.
+No doji exit, profit lock or hard stop is restored. Intrabar noise, outages
+and execution latency remain risks; profit retention is not guaranteed.
+
+CAP 20:26 close was old V4: MA5 0.077280 -> 0.077336 -> 0.077236,
+ledger net PnL -3.9975 USDT. Lobster 20:24 close was also old V4:
+0.038952 -> 0.038954 -> 0.038948, not a doji trigger.
+Historical trades are unchanged. Entry drafts remain separately stashed.
+
+V7 verification: 254 passed in the seven targeted owner-policy/live-MA5,
+structured/specialized, V2-boundary and staged regression modules. Tests
+cover live flat/adverse decisions without candle close, both symbols/sides,
+invalid/stale/candle identity, restart retries, replaced-position isolation,
+real paper close deduplication, closed cursor replay and flat entry rejection.
+No full-suite or independent WAIT readiness claim.
+
+### Latest amendment: MA5 flat/adverse closes, flat blocks entry
+
+Policy `closed_ma5_flat_or_adverse_v6` supersedes V4 below. Any two
+completed post-entry MA5 values that are flat (relative-price 1e-12 tolerance)
+or adverse authorize close, without a prior favorable leg, V shape, KC
+reversal or price pivot. LONG adverse is down; SHORT adverse is up.
+Replay validated completed post-entry history chronologically on restart;
+persist the MA5 cursor and pending evidence across rolling history windows.
+Never backfill an execution price; execute/retry using a fresh current quote.
+History gaps and invalid data suspend evaluation explicitly. Zero-range but
+consistent OHLC is valid for this MA5 rule, not rejected as invalid doji.
+
+Automatic entries require the latest two completed MA5 values to move
+strictly in entry direction as well as the existing live-MA5 qualification.
+Flat/opposite/invalid closed MA5 blocks scan and fresh account submission.
+Manual entries retain their separate authority. Unfinished entry drafts
+remain in stash, excluded from this change.
+
+No guarantee of preventing all giveback: missing market data, outages,
+jumps and execution latency remain possible. No profit lock is introduced.
+
 ### Latest superseding decision: closed MA5 turn only
 
 - Policy `closed_ma5_post_entry_turn_v4` supersedes the historical rules below.

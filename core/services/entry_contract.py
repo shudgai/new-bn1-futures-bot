@@ -32,6 +32,14 @@ def ma5_entry_ready(frame, quote, side):
         if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
             return False
         closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return False
+        closed_previous, closed_current = [float(v) for v in closed.ma5.iloc[-2:]]
+        if not all(math.isfinite(v) and v > 0 for v in (closed_previous, closed_current)):
+            return False
+        closed_movement = (1 if side == 'LONG' else -1) * (closed_current - closed_previous)
+        if closed_movement <= max(closed_previous, closed_current) * 1e-12:
+            return False
         if len(frame) == len(closed) + 1:
             atr = float(closed.iloc[-1]['atr'])
             previous = float(closed.iloc[-1]['ma5'])

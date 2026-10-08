@@ -420,7 +420,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "入口及MA5盤整檢查維持目前版本。一般Channel Swing只用進場後最近三根已收線MA5確認兩段轉向平倉：嚴格先升後降平多，先降後升平空；三根K線開盤均不得早於進場，持平或資料無效不觸發，不使用當根未收線MA5。不再要求KC反向或價格峰谷。取消十字線後反向K、3 ATR成熟資格及0.6 ATR反向實體出口，撤銷舊出口待平票據；新MA5出口失敗持久化重試。這是局部MA5峰谷確認，不保證絕對最高或最低點。鎖利、回吐、硬止損及其他一般策略出口停用，手動平倉保留；無虧損底線，交易所強制清算不受程式控制。明確啟用的staged策略不在此變更範圍。",
+        "strategy": "一般Channel Swing即時MA5持平或反向立即平倉，不等收線、V形、中軌或KC反向。即時MA5以最近四根已收線收盤加最新報價除以5，與最新已收線MA5比較；多單下降平多，空單上升平空，持平採相對價格1e-12容差。持久化證據並失敗重試；重啟另核驗持倉期間已收線持平或反向，不重建歷史即時報價，不回填成交價。資料無效或中斷不捏造轉向。自動入口已收線及即時MA5均須順向，持平／反向／無效禁止開倉，原強度與其他風控保留。十字線、鎖利、回吐及硬止損出口停用，手動平倉保留。即時轉向可能被盤中雜訊觸發，不保證避免所有回吐或虧損。明確啟用的staged策略不在此範圍。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
