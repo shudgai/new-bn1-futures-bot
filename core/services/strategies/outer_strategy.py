@@ -14,6 +14,23 @@ ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"} | ENTRY_TREND_CODES
 
 
+def ma5_ma15_trend_confirmed(ma5_values, ma15_values, side):
+    """Confirm strict MA5 and MA15 direction over the latest three closed bars."""
+    try:
+        if side not in ("LONG", "SHORT"):
+            return False
+        ma5 = [float(value) for value in ma5_values]
+        ma15 = [float(value) for value in ma15_values]
+        if (len(ma5) != 3 or len(ma15) != 3
+                or not all(math.isfinite(value) and value > 0 for value in ma5 + ma15)):
+            return False
+        if side == "LONG":
+            return ma5[0] < ma5[1] < ma5[2] and ma15[0] < ma15[1] < ma15[2]
+        return ma5[0] > ma5[1] > ma5[2] and ma15[0] > ma15[1] > ma15[2]
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def ck_momentum_fading(frame, side):
     """Return closed-bar directional fading, or None for invalid data."""
     try:

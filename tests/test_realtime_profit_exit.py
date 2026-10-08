@@ -112,6 +112,26 @@ def test_only_atr_fallback_uses_confirmed_history_not_live_candle():
     assert atr2 == 2.
 
 
+def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
+    rows = [
+        dict(timestamp=60000, is_closed=True, open=99., high=101., low=98., close=100.,
+             atr=1., ma5=98., ma15=95., kc_upper=105., kc_lower=90.),
+        dict(timestamp=120000, is_closed=True, open=100., high=102., low=99., close=101.,
+             atr=1., ma5=99., ma15=96., kc_upper=106., kc_lower=91.),
+        dict(timestamp=180000, is_closed=True, open=101., high=103., low=100., close=102.,
+             atr=1., ma5=100., ma15=97., kc_upper=107., kc_lower=92.),
+        dict(timestamp=240000, is_closed=False, open=102., high=104., low=101., close=103.,
+             atr=50., ma5=200., ma15=200., kc_upper=200., kc_lower=1.),
+    ]
+    frame = pd.DataFrame(rows)
+    frame.attrs['timeframe_ms'] = 60000
+
+    snapshot, _ = cached_tick_indicators(frame, 103., 241000)
+
+    assert snapshot['ma5_history'] == [98., 99., 100.]
+    assert snapshot['ma15_history'] == [95., 96., 97.]
+
+
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
 def test_real_account_reload_keeps_position_without_confirmed_outer_pivot(side, mode, tmp_path, monkeypatch):

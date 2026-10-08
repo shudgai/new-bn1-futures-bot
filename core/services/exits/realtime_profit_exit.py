@@ -38,6 +38,12 @@ def cached_tick_indicators(frame, price, stamp):
             'kc_lower': float(b.get('kc_lower', 0)),
         })
     snapshot['history_5'] = history_bars
+    snapshot['ma5_history'] = [
+        float(bar.get('ma5') or 0.) for _, bar in closed.tail(3).iterrows()
+    ]
+    snapshot['ma15_history'] = [
+        float(bar.get('ma15') or 0.) for _, bar in closed.tail(3).iterrows()
+    ]
     snapshot['history_outer_pivots'] = [
         {
             'ms': float(b.get('timestamp', 0)),

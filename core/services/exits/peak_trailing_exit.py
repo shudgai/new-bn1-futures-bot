@@ -3,6 +3,8 @@ import copy
 import math
 import sys
 
+from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
+
 POLICY = 'abnormal_body_only_v2'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
@@ -137,10 +139,23 @@ def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
     return sign*(execution-entry)*qty - (entry+execution)*qty*fee
 
 
+def ma_trend_confirms_position(position, snapshot):
+    if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
+        return False
+    side = position.get('side')
+    return ma5_ma15_trend_confirmed(
+        snapshot.get('ma5_history', ()),
+        snapshot.get('ma15_history', ()),
+        side,
+    )
+
+
 def kc_outer_pivot_exit(position, snapshot):
     """Return a confirmed opposite KC-outer price pivot formed after entry."""
     try:
         if not isinstance(snapshot, dict):
+            return None
+        if ma_trend_confirms_position(position, snapshot):
             return None
         bars = snapshot.get('history_outer_pivots')
         if not isinstance(bars, list) or len(bars) < 3:
@@ -351,6 +366,15 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
+
+        if (state.get('pending') == ABNORMAL_REASON
+                and state.get('trigger') == 'KC_OUTER_PIVOT'
+                and ma_trend_confirms_position(position, snapshot)):
+            for key in (
+                'pending', 'trigger', 'trigger_bar_ms', 'trigger_confirmed_ms',
+                'trigger_price',
+            ):
+                state.pop(key, None)
 
         if 'peak_price' not in state:
             state['peak_price'] = entry

@@ -10,6 +10,7 @@ from core.services.strategies.outer_strategy import (
     live_candle_color_ready,
     live_adverse_entry_safe,
     ma3_outer_continuation_ready,
+    ma5_ma15_trend_confirmed,
 )
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
@@ -19,7 +20,27 @@ KC_OUTER_PIVOT_SHORT = "KC_OUTER_PIVOT_SHORT"
 ENTRY_CODES = frozenset({KC_OUTER_PIVOT_LONG, KC_OUTER_PIVOT_SHORT})
 ENTRY_EVIDENCE_KEYS = (
     "pivot_bar_id", "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
+    "ma_trend_confirmation_bar_id", "ma5_trend_values", "ma15_trend_values",
 )
+
+
+def evaluate_ma5_ma15_trend(closed, side):
+    """Require MA5 and MA15 to move strictly with the entry side for 3 closed bars."""
+    try:
+        if side not in ("LONG", "SHORT") or closed is None or len(closed) < 3:
+            return None
+        bars = closed.tail(3)
+        ma5 = [float(value) for value in bars["ma5"]]
+        ma15 = [float(value) for value in bars["ma15"]]
+        if not ma5_ma15_trend_confirmed(ma5, ma15, side):
+            return None
+        return {
+            "ma5_trend_values": ma5,
+            "ma15_trend_values": ma15,
+            "ma_trend_confirmation_bar_id": float(bars.iloc[-1]["timestamp"]),
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def evaluate_kc_outer_pivot_entry(closed, quote, *, code=None, symbol=""):
@@ -234,7 +255,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return None
         # Rolling indicators legitimately have an unavailable leading prefix.
         # Trim only that prefix; never bridge missing data inside valid history.
-        indicator_keys = ['atr', 'kc_upper', 'kc_middle', 'kc_lower']
+        indicator_keys = ['atr', 'kc_upper', 'kc_middle', 'kc_lower', 'ma5', 'ma15']
         ready = frame[indicator_keys].notna().all(axis=1).to_numpy()
         valid_indices = np.flatnonzero(ready)
         if not len(valid_indices):
@@ -243,7 +264,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         closed = closed_entry_candles(frame)
         if len(closed) < 2 or len(frame)-len(closed) not in (0, 1):
             return None
-        keys = ['timestamp','open','high','low','close','kc_upper','kc_middle','kc_lower','atr']
+        keys = [
+            'timestamp','open','high','low','close','kc_upper','kc_middle',
+            'kc_lower','atr','ma5','ma15',
+        ]
         values = frame[keys].astype(float)
         if not np.isfinite(values.to_numpy()).all() or not values.gt(0).all().all():
             return None
@@ -282,6 +306,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics["reason"] = "WAIT_KC_OUTER_PIVOT"
             return None
+
+        ma_trend = evaluate_ma5_ma15_trend(closed, decision["side"])
+        if ma_trend is None:
+            return reject("WAIT_MA5_MA15_TREND")
+        decision.update(ma_trend)
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
         doji_reject = entry_doji_problem(closed, live, quote)
