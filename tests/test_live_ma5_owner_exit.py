@@ -18,7 +18,7 @@ def market(side):
     for i in range(6):
         close = 100. + sign * i * .1
         rows.append(dict(timestamp=bar-(6-i)*60000, open=close, high=close+.1,
-                         low=close-.1, close=close, ma5=close, atr=1.,
+                         low=close-.1, close=close, ma5=close, ma15=100., atr=1.,
                          kc_middle=100.-sign*i*.1, is_closed=True))
     previous = sum(r["close"] for r in rows[-5:]) / 5.
     rows[-1]["ma5"] = previous
@@ -176,9 +176,9 @@ def test_kc_trend_holds_ma5_pullback_until_closed_reversal(symbol, side, kc_move
                                             extreme=previous+sign*.1, favorable=True))
     f.loc[5, "kc_middle"] = float(f.loc[4, "kc_middle"])+sign*kc_movement
     evidence, _ = policy.evaluate(p, f, quote-sign, stamp)
-    assert bool(evidence) is (kc_movement < 0)
+    assert evidence
     f.loc[6, "kc_middle"] = 1000. if side == "SHORT" else 1.
-    assert bool(policy.evaluate(p, f, quote-sign, stamp)[0]) is (kc_movement < 0)
+    assert policy.evaluate(p, f, quote-sign, stamp)[0]
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])

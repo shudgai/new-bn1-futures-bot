@@ -16,8 +16,9 @@ LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
 TURN_CODES = {'KC_CHANNEL_TURN_LONG', 'KC_CHANNEL_TURN_SHORT'}
 CROSS_CODES = {"MA5_MA15_LIVE_CROSS_LONG", "MA5_MA15_LIVE_CROSS_SHORT"}
+REVERSAL_CODES = {"KC_LIVE_REVERSAL_BODY_LONG", "KC_LIVE_REVERSAL_BODY_SHORT"}
 ENTRY_CODES = {"KC_2BAR_CONFIRM_LONG", "KC_2BAR_CONFIRM_SHORT",
-               } | CROSS_CODES | OUTER_CODES
+               } | CROSS_CODES | OUTER_CODES | REVERSAL_CODES
 MAX_THIRD_OPEN_CHASE_ATR = 0.10
 CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
@@ -31,12 +32,14 @@ LIVE_PATTERN_KEYS = ("small_first_bar_id", "small_second_bar_id",
                      "small_bridge_count", "small_bridge_bar_ids")
 CROSS_EVIDENCE_KEYS = ("cross_previous_ma5", "cross_previous_ma15", "cross_live_ma5",
                        "cross_live_ma15", "cross_reference_bar_id")
-ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + ("continuation_pair_id",)
+REVERSAL_EVIDENCE_KEYS = ("reversal_reference_atr", "reversal_live_open", "reversal_body",
+                          "reversal_body_atr", "reversal_kc_previous", "reversal_kc_current")
+ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + ("continuation_pair_id",)
 
 
 MA5_MIN_ENTRY_SLOPE_ATR = 0.05
 
-def ma5_entry_ready(frame, quote, side):
+def ma5_entry_ready(frame, quote, side, *, require_closed_direction=True):
     """Require MA5 movement in entry direction of at least 0.05 prior closed ATR."""
     try:
         if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
@@ -48,7 +51,7 @@ def ma5_entry_ready(frame, quote, side):
         if not all(math.isfinite(v) and v > 0 for v in (closed_previous, closed_current)):
             return False
         closed_movement = (1 if side == 'LONG' else -1) * (closed_current - closed_previous)
-        if closed_movement <= max(closed_previous, closed_current) * 1e-12:
+        if require_closed_direction and closed_movement <= max(closed_previous, closed_current) * 1e-12:
             return False
         if len(frame) == len(closed) + 1:
             atr = float(closed.iloc[-1]['atr'])
@@ -369,6 +372,45 @@ def evaluate_live_ma_cross(frame, quote, code=None, symbol=""):
     return None
 
 
+def evaluate_live_reversal_body(frame, quote, code=None, symbol=""):
+    """Opposite live body against completed KC direction; no MA qualification."""
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2 or len(frame) != len(closed)+1:
+            return None
+        live = frame.iloc[-1]
+        previous, current = [float(v) for v in closed.kc_middle.tail(2)]
+        atr, opened, price = float(closed.iloc[-1].atr), float(live.open), float(quote)
+        if not all(math.isfinite(v) and v > 0 for v in (previous, current, atr, opened, price)):
+            return None
+        delta = current-previous
+        tolerance = max(previous, current)*1e-12
+        side = "LONG" if delta < -tolerance else "SHORT" if delta > tolerance else None
+        if side is None:
+            return None
+        signal = "KC_LIVE_REVERSAL_BODY_"+side
+        if code not in (None, signal):
+            return None
+        body = (1 if side == "LONG" else -1)*(price-opened)
+        if body <= 0 or (body < atr and not math.isclose(body, atr, rel_tol=1e-12)):
+            return None
+        stamp, prev_stamp = float(live.timestamp), float(closed.iloc[-1].timestamp)
+        if stamp != prev_stamp+60000 or prev_stamp != float(closed.iloc[-2].timestamp)+60000:
+            return None
+        return dict(action="ENTER", side=side, type=signal, reason=signal, price=price,
+                    entry_atr=atr, confirmation_bar_id=stamp,
+                    close_price=float(closed.iloc[-1].close), intrabar=True,
+                    entry_phase="KC_LIVE_REVERSAL_BODY", breakout_bar_id=stamp,
+                    pair_confirmation_bar_id=prev_stamp, third_bar_id=stamp,
+                    pending_second_bar_id=prev_stamp, pending_wait_bars=1, pending_max_wait_bars=1,
+                    pending_signal_id=f"{symbol}_LIVE_REVERSAL_{int(stamp)}_{side}",
+                    reversal_reference_atr=atr, reversal_live_open=opened,
+                    reversal_body=body, reversal_body_atr=body/atr,
+                    reversal_kc_previous=previous, reversal_kc_current=current)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None):
     def reject(reason):
@@ -434,7 +476,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        decision = evaluate_live_ma_cross(ma5_frame, quote, code, symbol)
+        decision = evaluate_live_reversal_body(frame, quote, code, symbol)
+        if decision is None:
+            decision = evaluate_live_ma_cross(ma5_frame, quote, code, symbol)
         if decision is None:
             decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
                                                  live=live if len(frame) > len(closed) else None)
@@ -449,6 +493,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
+        if decision["type"] in REVERSAL_CODES:
+            for trade in getattr(account, "trades", []):
+                if (trade.get("symbol") == symbol and trade.get("action") in ("OPEN_LONG", "OPEN_SHORT")
+                        and math.floor(float(trade["id"])/60000)*60000 == float(live.timestamp)):
+                    return reject("BLOCKED_LIVE_REVERSAL_BAR_ALREADY_FILLED")
         if decision["entry_phase"] == "MA5_MA15_LIVE_CROSS":
             for trade in getattr(account, "trades", []):
                 snapshot = trade.get("entry_snapshot") or {}
@@ -459,24 +508,26 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
         doji_reject = (entry_doji_problem(closed, live, quote)
-                       if decision["type"] not in OUTER_CODES | CROSS_CODES else None)
+                       if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES else None)
         if doji_reject:
             return reject(doji_reject)
 
         # Strict live candle color guard: Never open Long on a red live candle, never open Short on a green live candle
         live_open = float(live['open'])
-        if decision["type"] not in OUTER_CODES | CROSS_CODES and decision['side'] == 'LONG' and quote < live_open:
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and decision['side'] == 'LONG' and quote < live_open:
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
-        if decision["type"] not in OUTER_CODES | CROSS_CODES and decision['side'] == 'SHORT' and quote > live_open:
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and decision['side'] == 'SHORT' and quote > live_open:
             return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
 
-        if not ma5_entry_ready(ma5_frame, quote, decision['side']):
+        if decision["type"] not in REVERSAL_CODES and not ma5_entry_ready(ma5_frame, quote, decision['side'],
+                               require_closed_direction=decision["type"] not in CROSS_CODES):
             return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
-        entanglement = ma5_ma15_entanglement_problem(ma5_frame, quote, decision["side"])
+        entanglement = (ma5_ma15_entanglement_problem(ma5_frame, quote, decision["side"])
+                        if decision["type"] not in REVERSAL_CODES else None)
         if entanglement:
             return reject(entanglement)
 
-        if decision["type"] not in OUTER_CODES | CROSS_CODES and not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
+        if decision["type"] not in OUTER_CODES | CROSS_CODES | REVERSAL_CODES and not ma5_kc_trend_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_RETURNING_TO_KC')
 
         # Post-exit formation verification:

@@ -15,7 +15,7 @@ def market(side="LONG"):
     bar = int(time.time() // 60) * 60000
     rows = [
         dict(timestamp=bar-(6-i)*60000, open=100., high=101., low=99.,
-             close=100.5, kc_middle=100.+i, ma5=100.+i, atr=1.,
+             close=100.5, kc_middle=100.+i, ma5=100.+i, ma15=100., atr=1.,
              is_closed=True)
         for i in range(6)
     ]

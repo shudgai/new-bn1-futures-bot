@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pandas as pd
 import pytest
 
-from core.services.entry_contract import evaluate_entry_contract, evaluate_live_ma_cross
+from core.services.entry_contract import evaluate_entry_contract, evaluate_live_ma_cross, ma5_entry_ready
 from core.services.entry_firewall import validate_account_entry
 from core.services.ma5_chop_gate import ma5_chop_problem
 
@@ -49,6 +49,38 @@ def test_live_cross_inside_kc_and_fresh_account_revalidation(symbol, side):
     f.loc[f.index[-1], "close"] = 100.
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(a, symbol, side, context))
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("history", ["flat", "opposite"])
+def test_cross_uses_live_direction_not_prior_closed_direction(symbol, side, history):
+    f = candles(side)
+    sign = 1 if side == "LONG" else -1
+    f.loc[13, "ma5"] = float(f.loc[14, "ma5"]) + (sign*.01 if history == "opposite" else 0.)
+    quote = float(f.iloc[-1].close)
+    assert not ma5_entry_ready(f, quote, side)
+    a = SimpleNamespace(positions={}, trades=[], last_closed_at={}, save_state=Mock(),
+                        log=Mock(), entry_frame_provider=AsyncMock(return_value=f))
+    decision = evaluate_entry_contract(f, account=a, symbol=symbol)
+    assert decision and decision["type"] == "MA5_MA15_LIVE_CROSS_"+side
+    context = dict(entry_signal_code=decision["type"],
+                   channel_confirmation_bar_id=decision["confirmation_bar_id"])
+    assert asyncio.run(validate_account_entry(a, symbol, side, context))
+    f.loc[14, "ma5"] = float("nan")
+    with pytest.raises(ValueError):
+        asyncio.run(validate_account_entry(a, symbol, side, context))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_general_keeps_closed_ma5_direction_requirement(side):
+    from test_v2_execution_boundary import candles as general_candles
+    f = general_candles(side)
+    f.loc[4, "ma5"] = float(f.loc[5, "ma5"])
+    diagnostics = {}
+    assert evaluate_entry_contract(f, code="KC_2BAR_CONFIRM_"+side,
+                                   diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

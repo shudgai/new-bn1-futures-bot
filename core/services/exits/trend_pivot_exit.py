@@ -8,12 +8,14 @@ import numpy as np
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import RETIRED_KEYS, position_identity
 from core.services.exits.staged_risk_service import staged_enabled
+from core.services.exits import atr_step_profit
 
-POLICY = "kc_reverse_observed_ma5_peak_turn_010_atr_v9"
+POLICY = "atr_step_priority_dual_trend_ma5_peak_valley_v14"
 STATE_KEY = "trend_pivot_exit_state"
 PIVOT_REASON = "EXIT_KC_REVERSE_CLOSED_MA5_PEAK_010_ATR"
 LIVE_REASON = "EXIT_KC_REVERSE_LIVE_MA5_PEAK_010_ATR"
-REASONS = (PIVOT_REASON, LIVE_REASON)
+DOJI_REASON = "EXIT_THREE_POST_ENTRY_CLOSED_DOJI"
+REASONS = (PIVOT_REASON, LIVE_REASON, atr_step_profit.REASON)
 MA5_TURN_ATR = 0.10
 DISABLED_KEYS = RETIRED_KEYS + ("peak_trailing_state", "channel_hard_stop_pending")
 
@@ -29,6 +31,21 @@ def migrate(position, meta):
     state = copy.deepcopy(prior) if (
         prior.get("policy") == POLICY and prior.get("identity") == identity
     ) else {"policy": POLICY, "identity": identity}
+    if (prior.get("policy") in ("kc_reverse_observed_ma5_peak_turn_010_atr_v9",
+                                "kc_reverse_ma5_peak_or_three_closed_doji_v10",
+                                "fixed_atr_half_step_or_doji_or_kc_ma5_v11",
+                                "long_atr_doji_kc_ma5_short_ma5_valley_v12",
+                                "long_atr_doji_kc_ma5_short_bear_hold_v13")
+            and prior.get("identity") == identity):
+        state = copy.deepcopy(prior)
+        state["policy"] = POLICY
+        if state.get("pending") != atr_step_profit.REASON:
+            state.pop("pending", None)
+            state.pop("evidence", None)
+    state.pop("closed_doji", None)
+    if state.get("pending") == DOJI_REASON:
+        state.pop("pending", None)
+        state.pop("evidence", None)
     if (prior.get("policy") == "observed_ma5_peak_turn_010_atr_v8"
             and prior.get("identity") == identity):
         for key in ("reference_atr", "ma5_peak", "ma5_observation"):
@@ -66,7 +83,7 @@ def _observe_ma5(peak, current, previous, sign, atr, evidence):
     return None
 
 
-def _evaluate(position, frame, price, quote_ms):
+def _evaluate_ma5(position, frame, price, quote_ms):
     """Replay completed post-entry observations, never unobserved live quotes."""
     try:
         identity = position_identity(position)
@@ -133,11 +150,24 @@ def _evaluate(position, frame, price, quote_ms):
                 or not (recent.high >= recent.low).all()):
             return None, "WAIT_TREND_PIVOT_DATA", {}
         sign = 1 if identity[0] == "LONG" else -1
-        kc = [float(v) for v in closed.kc_middle.tail(2)]
-        if (len(kc) != 2 or not all(math.isfinite(v) and v > 0 for v in kc)
-                or float(closed.iloc[-1].timestamp)-float(closed.iloc[-2].timestamp) != 60000):
-            return None, "WAIT_EXIT_KC_DIRECTION", {}
-        kc_reversed = sign*(kc[1]-kc[0]) < -max(kc)*1e-12
+        trend = closed.tail(2)[["timestamp", "kc_middle", "ma15"]].astype(float)
+        trend_problem = None
+        trend_evidence = {}
+        may_exit = False
+        if (len(trend) != 2 or not np.isfinite(trend.to_numpy()).all()
+                or not trend.gt(0).all().all()
+                or not trend.timestamp.diff().dropna().eq(60000).all()):
+            trend_problem = "WAIT_POSITION_TREND_DATA"
+        else:
+            middle = trend.kc_middle.tolist()
+            ma15 = trend.ma15.tolist()
+            strong = (sign*(middle[1]-middle[0]) > max(middle)*1e-12
+                      and sign*(ma15[1]-ma15[0]) > max(ma15)*1e-12)
+            may_exit = not strong
+            trend_problem = "HOLD_POSITION_STRONG_TREND" if strong else None
+            trend_evidence = dict(trend_hold=False, kc_required=False,
+                                  trend_kc_previous=middle[0], trend_kc_current=middle[1],
+                                  trend_ma15_previous=ma15[0], trend_ma15_current=ma15[1])
         for _, row in recent.iterrows():
             ma5, bar = float(row.ma5), float(row.timestamp)
             previous = float(observation.get("ma5", ma5))
@@ -146,8 +176,8 @@ def _evaluate(position, frame, price, quote_ms):
                 "quote_ms": stamp, "trigger_price": price,
             })
             observation.update(bar_ms=bar, ma5=ma5)
-            if evidence and kc_reversed:
-                evidence.update(kc_previous=kc[0], kc_current=kc[1])
+            if evidence and may_exit:
+                evidence.update(trend_evidence)
                 return evidence, None, {"ma5_observation": observation, "ma5_peak": peak}
         patch = {"ma5_observation": observation, "ma5_peak": peak}
         if live_values is not None:
@@ -160,18 +190,40 @@ def _evaluate(position, frame, price, quote_ms):
                 "ma5_live": current,
             })
             patch["ma5_peak"] = peak
-            if not kc_reversed:
-                return None, "HOLD_KC_TREND_NOT_REVERSED", patch
+            if not may_exit:
+                return None, trend_problem, patch
             if evidence:
-                evidence.update(kc_previous=kc[0], kc_current=kc[1])
+                evidence.update(trend_evidence)
             return evidence, None if evidence else "HOLD_WAIT_MA5_PEAK_TURN", patch
-        return None, "HOLD_WAIT_MA5_PEAK_TURN", patch
+        return None, trend_problem or "HOLD_WAIT_MA5_PEAK_TURN", patch
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None, "WAIT_TREND_PIVOT_DATA", {}
 
 
-def evaluate(position, frame, price, quote_ms):
-    evidence, problem, _ = _evaluate(position, frame, price, quote_ms)
+def _evaluate(position, frame, price, quote_ms, symbol="", *, fee=0.0005, slippage=0.0001):
+    try:
+        stamp, quote = float(quote_ms), float(price)
+        identity = position_identity(position)
+        state = position.get(STATE_KEY, {})
+        if (not all(math.isfinite(v) and v > 0 for v in (quote, stamp))
+                or stamp < identity[1]*1000 or stamp < float(state.get("last_ms", 0))):
+            return None, "WAIT_TREND_PIVOT_QUOTE", {}
+        matching = state.get("policy") == POLICY and state.get("identity") == identity
+        if matching and state.get("pending") in REASONS:
+            return copy.deepcopy(state["evidence"]), None, {}
+        evidence, problem, patch = atr_step_profit.evaluate(
+            position, state if matching else {}, symbol, quote, stamp, fee=fee, slippage=slippage)
+        if evidence:
+            return evidence, None, patch
+        candle_evidence, candle_problem, candle_patch = _evaluate_ma5(position, frame, quote, stamp)
+        patch.update(candle_patch)
+        return candle_evidence, None if candle_evidence else problem or candle_problem, patch
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, "WAIT_TREND_PIVOT_DATA", {}
+
+
+def evaluate(position, frame, price, quote_ms, symbol="", *, fee=0.0005, slippage=0.0001):
+    evidence, problem, _ = _evaluate(position, frame, price, quote_ms, symbol, fee=fee, slippage=slippage)
     return evidence, problem
 
 
@@ -207,7 +259,9 @@ async def enforce(account, symbol, price, frame=None, quote_ms=None):
             return False
         before = copy.deepcopy((position, meta))
         state = migrate(position, meta)
-        evidence, problem, observation = _evaluate(position, frame, price, stamp)
+        from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+        evidence, problem, observation = _evaluate(position, frame, price, stamp, symbol,
+                                                  fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
         state.update(observation)
         if evidence:
             state.update(pending=evidence["reason"], evidence=evidence)
@@ -220,7 +274,8 @@ async def enforce(account, symbol, price, frame=None, quote_ms=None):
         old_state = before[0].get(STATE_KEY, {})
         meaningful_change = any(old_state.get(k) != state.get(k) for k in
                                 ("policy", "identity", "pending", "evidence", "diagnostic",
-                                 "ma5_observation", "ma5_peak", "reference_atr"))
+                                 "ma5_observation", "ma5_peak", "reference_atr", "closed_doji",
+                                 "atr_step_profit"))
         cleaned = any(key in store for store in before for key in DISABLED_KEYS)
         if evidence or meaningful_change or cleaned or any(before[0].get(k) != 0. for k in ("sl", "tp", "atr_sl")):
             account.save_state(strict=True)

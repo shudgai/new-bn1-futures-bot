@@ -2,6 +2,138 @@
 
 ## Owner decisions
 
+### Final symmetric hold with ATR profit priority; doji exits cancelled
+
+Latest Owner selection supersedes all prior short-only and doji-exit sections.
+BOTH sides use fixed-entry-ATR half-step ladders: lobster start/step 1 ATR,
+CAP start/step 2 ATR, with estimated fee/slippage breakeven as minimum floor.
+Profit floors have priority even during strong directional trend.
+No automatic exit from doji, accumulated dojis, ordinary opposing candle or
+opposite Entry Authority. Revoke old doji retries and remove counters.
+
+For MA5 peak/valley Close Authority only, suspend new closes while latest two
+consecutive completed KC middles AND MA15 values advance strictly in the
+position direction (LONG up, SHORT down). Invalid inputs grant no new MA5
+close; the ATR floor still runs independently of candle/indicator availability.
+After trend weakens, require a currently qualified post-entry MA5 peak/valley
+retreat >= 0.10 fixed entry ATR plus actual adverse MA5 slope. Do not require
+KC to have fully reversed and do not replay previously held turns. Preserve
+the observation cursor/extreme, favorable observation and fixed ATR.
+Migration revokes old MA5 pending qualifications for revalidation under this
+new symmetric rule, while retaining verified ladder retries and protection.
+Legacy MA5 reason strings remain for telemetry compatibility, with explicit
+trend evidence describing the actual gate; no KC-reversal claim is inferred.
+
+Entry V5 (1-ATR live reversal, improved live cross, general/source continuation)
+is unchanged by this exit amendment. Owner explicitly authorized commit,
+push and paper-service restart after verification. No live/Testnet activation.
+Independent WAIT implementation gates remain BLOCK/NOT_TESTED.
+
+Final pre-release verification: 522 passed across fourteen modules including
+live reversal, cross, provenance, account and structured execution boundaries,
+both-side ladder persistence/retry, both-side trend hold and doji revocation.
+Fifteen existing UTC datetime warnings. Tests prove the four symbol/side ATR
+floors close even in strong trends; MA5-only exits are held by directional
+dual trend, invalid data grants no new MA5 authority, blocked closed turns
+are not replayed, and retired doji tickets cannot close across restart.
+Editor and whitespace checks passed. No live/Testnet orders were submitted;
+the historical three named channel suites absent from this checkout were not
+run, so no full-repository pass is claimed.
+Paper release will preserve stopped account/trade data and verify V5/V14 API,
+source PID/cwd, remote commit and trade-ID retention after restart.
+
+### Short bear-trend hold supersedes earlier symmetric exits
+
+Latest Owner choice: only SHORT positions suspend new MA5 valley-turn
+close authority while BOTH latest two consecutive completed KC middles and
+MA15 values strictly decline, with relative 1e-12 boundary tolerance.
+Incomplete/invalid trend data grants no new close. This is holding existing
+exposure, never adding shorts or closing because an opposite entry appears.
+After the hold clears, re-evaluate a currently qualified MA5 reversal; blocked
+completed turns advance the persisted cursor without creating pending exits,
+so a historical blocked event cannot later be replayed as a close.
+
+SHORT disables ATR profit ladders and the cumulative doji close authority.
+It retains post-entry favorable MA5 observation, fixed-entry-ATR 0.10
+valley retreat, fresh quote/data validity, strict persistence and qualified
+pending-close retries. Previous-version short pending authority is revoked
+on migration and revalidated; peak/fixed ATR/cursor survive. Reason strings
+remain compatible with historical telemetry; short evidence explicitly says
+KC reversal is not required and records the bear-gate inputs.
+
+LONG retains independent cumulative three strict Entry-style dojis, and
+KC reversal plus observed MA5 peak reversal. Owner also approved LONG
+half-step ATR floors: lobster starts/steps at 1 ATR (1 locks .5, 2 locks 1.5);
+CAP starts/steps at 2 ATR (2 locks 1, 4 locks 3). Use immutable entry ATR,
+an observed quote peak only, monotonic floors and the shared estimated-net
+fee/slippage breakeven formula as a minimum floor. Reaching a step arms it;
+touching its floor closes at current quote, not a fabricated floor fill.
+No historical profit peak is reconstructed. Steps may not guarantee a net
+profit after gaps/slippage; manual and staged behavior is unchanged.
+
+Entry V5 also includes the separately approved independent LIVE reversal
+body: opposing latest completed KC middle direction, raw live open to
+current quote body >= last completed ATR, no close/rail/MA/entanglement
+qualification. Stable bar/symbol/side identity, persisted same-bar fill
+dedupe, shared engine/account firewall, capital, slots and submit locks
+remain. It never supplies Close Authority or reconstructs missed live bars.
+All edits remain undeployed until explicit operational approval.
+Independent WAIT gates remain BLOCK/NOT_TESTED; this is not WAIT authority.
+
+Validation after latest Owner short-hold amendment: 524 passed across fourteen
+entry, exit, account-boundary, provenance and staged integration modules.
+Fifteen warnings are from the existing UTC datetime deprecation. Tests include
+both symbols, closed-versus-live trend selection, strict dual decline,
+invalid/stale/missing data, no historical blocked-turn replay, disk restart,
+fresh exit after hold release, and no short doji/ladder close authority.
+The same run covers live reversal 1-ATR thresholds, four symbol/side real
+paper runner fills, final firewall quote revalidation and shared risk gates.
+Editor diagnostics and whitespace checks passed. Historical named channel
+suites absent in this checkout were not run; no full-repository pass claimed.
+No commit, push, service restart or deployment occurred for this patch batch.
+
+### Independent cumulative three-doji exit
+
+The Owner selected nonconsecutive cumulative three completed doji candles,
+regardless of PnL, and the shared Entry helper's strict below-10-percent
+body/range definition with its existing boundary tolerance. Only candles
+whose inception is at/after actual entry count; the partly pre-entry candle
+and live candles do not count. Validate finite positive consistent OHLC and
+strictly positive range before classification. Do not interpret doji as
+proof of low volume or promise a highest-price fill.
+
+V10 adds this independent Close Authority before ATR/MA/KC qualification.
+It preserves V9 qualified pending retries and peak/cursor state. The count
+and processed completed-candle cursor persist strictly before close; failed
+close retries survive restart and cannot transfer to another position.
+Repeated snapshots or later corrections cannot count one candle twice.
+Missing history/finality or invalid candles grant no new close authority.
+Normal existing KC/MA5 peak exits and staged opt-in behavior remain separate.
+Entry policy V4 removes only the cross's preceding closed MA5 direction veto.
+No code deployment, restart or order is inferred from this source patch.
+Independent WAIT remains unimplemented, BLOCK/NOT_TESTED as below.
+
+### Live cross no longer inherits the preceding closed MA5 direction
+
+The Owner approved an entry-only change after the CAP example review.
+For a qualified live MA5/MA15 cross, remove the preceding completed MA5
+direction veto. Both live averages must remain directional; retain the
+live MA5 0.05 prior-ATR movement threshold, valid data, entanglement,
+identity/dedupe and fresh account-firewall revalidation. General two-bar
+and sourced continuation retain their closed MA5 direction requirement.
+No cross is backfilled and no exact bottom/top or profit is guaranteed.
+The subsequent Owner classifier confirmation adds the independent cumulative
+three-doji exit described above; existing V9 KC/MA5 exit conditions are unchanged.
+This source change is not deployment evidence; independent WAIT gates below
+remain BLOCK/NOT_TESTED.
+
+Validation: 284 passed across live-cross, owner-policy, MA5/MA15
+entanglement, observed provenance and V2 execution boundary; 11 existing
+UTC datetime warnings. Eight symbol/side/history cases verify flat/adverse
+preceding MA5 cannot veto a valid live cross at the final account firewall.
+Two general-entry cases still reject closed MA5 flatness. Invalid current
+MA5 remains blocked. Editor and whitespace checks passed.
+
 ### Removing the stale six-MA5-turn veto after the 23:44 review
 
 The Owner approved removing the standalone six-completed-MA5/two-turn veto
