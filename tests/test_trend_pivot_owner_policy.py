@@ -35,6 +35,14 @@ def market(side="LONG"):
     return p, frame, float(bar+1000)
 
 
+def arm_maturity(position):
+    state = policy.migrate(position, {})
+    sign = 1 if position["side"] == "LONG" else -1
+    policy.observe_maturity(state, policy.position_identity(position),
+                            position["entry_price"] + sign*3.,
+                            position["open_timestamp"]*1000 + 1)
+
+
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_pivot_requires_closed_ck_reverse(symbol, side):
@@ -54,6 +62,7 @@ def test_pivot_requires_closed_ck_reverse(symbol, side):
 @pytest.mark.parametrize("body,allowed", [(.599999, False), (.6, True), (.600001, True)])
 def test_doji_live_body_exact_threshold(symbol, side, body, allowed):
     p, f, stamp = market(side)
+    arm_maturity(p)
     sign = 1 if side == "LONG" else -1
     f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.4]
     f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
@@ -137,6 +146,7 @@ def test_lobster_182042_keeps_short():
 @pytest.mark.parametrize("fault", ["doji_ratio", "weak_live", "same_color", "zero_range", "invalid_ohlc", "preentry", "live_doji"])
 def test_doji_rejects_unqualified_pressure(side, fault):
     p, f, stamp = market(side)
+    arm_maturity(p)
     sign = 1 if side == "LONG" else -1
     f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.5]
     f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
@@ -174,6 +184,7 @@ def test_real_paper_authority_persists_and_closes_once(side, tmp_path, monkeypat
     assert asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
     assert "CAP/USDT" not in account.positions
     assert len([t for t in account.trades if t["action"].startswith("CLOSE")]) == 1
+    assert account.trades[0][policy.STATE_KEY]["evidence"]["reason"] == policy.PIVOT_REASON
     assert not asyncio.run(policy.enforce(account, "CAP/USDT", 100., f, stamp))
 
 
@@ -228,4 +239,82 @@ def test_scan_and_quote_adapter_share_new_authority(symbol, side, monkeypatch):
                              _channel_exit_frames={symbol:f})
     assert not asyncio.run(enforce_realtime_profit_exit(engine, symbol, 100., stamp))
     assert account.close_position.await_args.args[2] == "Channel Swing " + policy.PIVOT_REASON
+    assert p[policy.STATE_KEY]["pending"] == policy.PIVOT_REASON
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("gain,allowed", [(2.999999, False), (3., True), (3.000001, True)])
+def test_doji_requires_observed_three_entry_atr(symbol, side, gain, allowed):
+    p, f, stamp = market(side)
+    sign = 1 if side == "LONG" else -1
+    f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.4]
+    f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
+    f.loc[6, ["open", "high", "low"]] = [100., 100.1, 99.9]
+    state = policy.migrate(p, {})
+    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*gain, stamp-1)
+    result, _ = policy.evaluate(p, f, 100.-sign*.6, stamp)
+    assert bool(result) is allowed
+    if result:
+        assert result["doji_arm_gain_atr"] == 3.
+        assert result["max_favorable_move"] == pytest.approx(gain)
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_maturity_no_hindsight_invalid_atr_or_stale_peak(side):
+    p, f, stamp = market(side)
+    sign = 1 if side == "LONG" else -1
+    p["peak_price"] = 100.+sign*50.
+    f["high"] = 150.
+    f["low"] = 50.
+    state = policy.migrate(p, {})
+    assert not policy.doji_mature(state, policy.position_identity(p))
+    state["last_ms"] = stamp
+    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50., stamp-1)
+    assert not policy.doji_mature(state, policy.position_identity(p))
+    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50.,
+                            p["open_timestamp"]*1000-1)
+    assert not policy.doji_mature(state, policy.position_identity(p))
+    p["entry_atr"] = float("nan")
+    p.pop(policy.STATE_KEY)
+    state = policy.migrate(p, {})
+    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50., stamp)
+    assert not policy.doji_mature(state, policy.position_identity(p))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_maturity_persists_fixed_atr_and_isolates_position(side, monkeypatch):
+    p, f, stamp = market(side)
+    sign = 1 if side == "LONG" else -1
+    monkeypatch.setattr(time, "time", lambda: stamp/1000)
+    account = SimpleNamespace(positions={"CAP/USDT":p}, position_meta={},
+                              save_state=Mock(), log=Mock(),
+                              close_position=AsyncMock(return_value=False))
+    asyncio.run(policy.enforce(account, "CAP/USDT", 100.+sign*3., None, stamp))
+    saved = copy.deepcopy(account.position_meta)
+    p.pop(policy.STATE_KEY)
+    p["entry_atr"] = 999.
+    policy.migrate(p, saved["CAP/USDT"])
+    assert p[policy.STATE_KEY]["fixed_entry_atr"] == 1.
+    assert policy.doji_mature(p[policy.STATE_KEY], policy.position_identity(p))
+    assert account.save_state.call_count > 0
+    p["open_timestamp"] += 1.
+    policy.migrate(p, saved["CAP/USDT"])
+    assert not policy.doji_mature(p[policy.STATE_KEY], policy.position_identity(p))
+    other, _, _ = market(side)
+    policy.migrate(other, {})
+    assert not policy.doji_mature(other[policy.STATE_KEY], policy.position_identity(other))
+
+
+def test_old_unqualified_doji_pending_revoked_but_pivot_retry_preserved():
+    p, _, _ = market()
+    old = dict(policy=policy.PREVIOUS_POLICY, identity=policy.position_identity(p),
+               pending=policy.DOJI_REASON, evidence={"reason": policy.DOJI_REASON})
+    p[policy.STATE_KEY] = old
+    policy.migrate(p, {})
+    assert "pending" not in p[policy.STATE_KEY]
+    assert not policy.close_allowed(p, {}, "Channel Swing "+policy.DOJI_REASON, True)
+    p[policy.STATE_KEY] = {**old, "pending": policy.PIVOT_REASON,
+                           "evidence": {"reason": policy.PIVOT_REASON}}
+    policy.migrate(p, {})
     assert p[policy.STATE_KEY]["pending"] == policy.PIVOT_REASON

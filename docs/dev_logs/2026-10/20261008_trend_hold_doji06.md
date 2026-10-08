@@ -6,7 +6,9 @@
 - Ordinary Channel Swing positions have no profit lock, peak giveback, initial ATR stop, account hard-stop, waterfall, or independent turn/reverse close authority.
 - Manual close remains available. There is no software loss floor; exchange liquidation cannot be disabled.
 - General exit requires the latest two completed KC middle values to reverse against the position and the latest three completed candles to confirm a post-entry peak (LONG) or trough (SHORT). All three candle opens must follow entry. Flat or invalid KC does not authorize an exit.
-- Independent exception: a post-entry completed doji (body/range <= 25%) followed immediately by a live adverse body >= 0.60 prior completed ATR, with live body/range strictly above 25%. Use original live open and current quote; no hindsight reconstruction.
+- Independent exception is enabled only after actual observed post-entry favorable movement reaches 3.0 fixed entry ATR, inclusive. LONG measures maximum observed quote minus entry; SHORT measures entry minus minimum observed quote. This is exit qualification, not a profit lock or drawdown threshold.
+- Once qualified, a post-entry completed doji (body/range <= 25%) followed immediately by a live adverse body >= 0.60 prior completed ATR, with live body/range strictly above 25%, may close. Use original live open and current quote; no hindsight reconstruction.
+- Persist fixed entry ATR, observed maximum favorable displacement, and maturity qualification per position. Do not import legacy peaks or reconstruct missed observations from candle wicks. Invalid entry ATR disables this exception, not the independent CK/pivot exit.
 - All automatic entry authorities share one added chop check: six completed MA5 values, ignore relative-tolerance flat steps, block at two direction changes. Missing or invalid data blocks entry. No efficiency, overlap, KC-crossing, or extra location gate is added.
 - Existing MA5 direction/strength qualifications remain unchanged.
 - Explicitly opted-in staged positions and unrelated legacy modes retain their independent authority.
@@ -23,11 +25,13 @@ Scan and quote exits use one position-bound persistent evaluator. Valid failed e
 
 Startup and account updates remove retired pending stop/profit states and zero active local SL/TP lines while retaining historical trades and reference initial-risk metadata. Account-only updates cannot invent candle evidence. Shared account locks and existing retry handling remain in place.
 
+The later 3-ATR owner decision revokes unqualified V1 doji retries on migration, but preserves matching verified CK/pivot retries. Completed trade records and trigger logs retain the observed exit evidence. This patch cannot undo already completed V1 trades.
+
 Frontend retains the prior Gate display and Vue 3 price-update repair, and labels the revised policy.
 
 ## Validation
 
-- 151 passed across owner-policy tests, structured/specialized routes, V2 boundaries, staged implementation, and isolated staged Testnet integration. Includes scan/quote shared authority checks for both symbols and sides. No real exchange orders.
+- Original release: 151 passed. The 3-ATR revision: 168 passed across owner-policy tests, structured/specialized routes, V2 boundaries, staged implementation, and isolated staged Testnet integration. Includes all four symbol/side maturity paths, below/exactly/above 3 ATR and 0.6 ATR, fixed ATR/restart isolation, no hindsight peaks, old-ticket migration, and scan/quote shared authority. No real exchange orders.
 - The first broader run had 22 failures because the V2 fixture provided only five completed candles. Added a sixth historical fixture candle; did not weaken the six-candle gate or assertions.
 - Historical mandatory `test_channel_swing.py`, `test_channel_position_path.py`, and `test_channel_swing_execution.py` are absent in this checkout. No full-suite claim.
 - Existing UTC datetime deprecation warnings remain.
