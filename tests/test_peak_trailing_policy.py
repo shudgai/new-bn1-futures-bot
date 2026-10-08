@@ -30,26 +30,17 @@ def price_for_net(p, net, fee=.001, slip=.002):
     return execution/(1-sign*slip)
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_2u_ladder_arming_and_trigger(monkeypatch, side):
+def test_dynamic_peak_pullback_threshold(monkeypatch, side):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
-    # Test ordinary 2U Ladder without Waterfall keeps existing behavior
-    p = position(side, qty=1., margin=40.) # net_pnl = gain
-    sign = 1 if side == 'LONG' else -1
-    # Drive price to 4U peak -> locks 2U
+    p = position(side)
     observe(p, 4.0, 61000)
-    assert p[STATE_KEY]['peak_net_pnl'] >= 4.0
-    
-    # Retrace to 2.1U -> no trigger
-    assert observe(p, 2.1, 62000) is None
-    
-    # Retrace to 2.0U -> triggers
-    decision = observe(p, 2.0, 63000)
-    assert decision['type'] == PEAK_REASON
-    assert decision['trigger'] == 'TRAILING_2U_LADDER'
+
+    assert observe(p, 3.66, 62000) is None
+    assert observe(p, 3.64, 63000) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_waterfall_priority_over_soft_exits(side):
-    # 2U Ladder candidate + Waterfall same tick => WATERFALL_DROP wins
+    # Dynamic pullback candidate + Waterfall on the same tick => Waterfall wins.
     p = position(side, qty=1., margin=40.)
     sign = 1 if side == 'LONG' else -1
     observe(p, 4.0, 61000) # peak_net_pnl = 4.0
@@ -65,9 +56,7 @@ def test_waterfall_priority_over_soft_exits(side):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_doji_priority_over_soft_exits(side):
-    # Doji candidate + Waterfall same tick => WATERFALL_DROP wins
-    # Actually, we test DOJI alone here overriding 2U Ladder if no Waterfall.
-    # We also test DOJI vs Waterfall in another test.
+    # Waterfall overrides Doji; otherwise valid Doji evidence overrides pullback.
     p = position(side, qty=1., margin=40.)
     sign = 1 if side == 'LONG' else -1
     observe(p, 4.0, 61000) # peak 4.0
@@ -78,19 +67,18 @@ def test_doji_priority_over_soft_exits(side):
                 last_high=100+4.0 if side=='LONG' else 100-3.8, 
                 last_low=100+3.8 if side=='LONG' else 100-4.0, 
                 last_close=100+sign*3.8,
+                live_high=100+4.0 if side=='LONG' else 100-3.8,
+                live_low=100+3.8 if side=='LONG' else 100-4.0,
                 ma5=10.0, last_ma5=10.0, 
                 ma15=20.0 if side=='LONG' else 0.0, 
                 last_ma15=20.0 if side=='LONG' else 0.0, kc_middle=15.0) # doji shape + RELEASED trend
                 
-    # Retrace to 2.0 (hits 2U ladder, but also triggers DOJI if body is small)
+    # This adverse body qualifies as a Waterfall.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
     # Waterfall also hits here because body=2.0 > 1.5 ATR. Waterfall wins!
     assert decision['trigger'] == 'WATERFALL_DROP'
     
-    # To test DOJI wins over 2U ladder without Waterfall, we make body < 1.5 ATR
-    # Retrace to 100+sign*2.6 (locked is 2.0, so 2U ladder NOT hit, but wait, 
-    # we want 2U ladder to hit... lock is at 2.0. If we drop to 2.0, body is 2.0.
-    # If ATR is 2.0, Waterfall threshold is 3.0. Then Waterfall won't hit!
+    # Raising the ATR suppresses Waterfall while preserving the Doji evidence.
     p[STATE_KEY].pop('pending', None)
     p[STATE_KEY].pop('trigger', None)
     snap['atr'] = 2.0
@@ -98,8 +86,7 @@ def test_doji_priority_over_soft_exits(side):
     assert decision2['trigger'] == 'DOJI_REVERSAL_EXIT'
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_initial_atr_stop_priority_over_waterfall(side):
-    # Initial ATR Hard Stop + Waterfall same tick => INITIAL_ATR_HARD_STOP wins
+def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
     p = position(side, atr=1.0, margin=40.)
     sign = 1 if side == 'LONG' else -1
     
@@ -108,29 +95,21 @@ def test_initial_atr_stop_priority_over_waterfall(side):
     
     # Drop below initial stop (100 - sign*1.5)
     decision = evaluate_peak_trailing(p, 100-sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision['type'] == HARD_REASON
-    assert decision['trigger'] == 'INITIAL_ATR'
+    assert decision['type'] == ABNORMAL_REASON
+    assert decision['trigger'] == 'WATERFALL_DROP'
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_2u_ladder_relaxed_floor_under_trend_hold(side):
-    # Test 2U ladder drops to relaxed floor under TREND_HOLD
+def test_channel_swing_holds_through_pullback_under_trend_hold(side):
     p = position(side, qty=1., margin=40.)
     sign = 1 if side == 'LONG' else -1
-    observe(p, 6.0, 61000) # peak 6U -> normally locks 4U
+    observe(p, 6.0, 61000)
     
     snap = dict(quote_ms=62000, live_open=100+sign*6.0, atr=10.0, 
                 live_bar_ms=60000, closed_bar_ms=0,
-                ma5=100+sign*10.0, ma15=100-sign*10.0, kc_middle=100-sign*10.0) # TREND_HOLD -> WARNING (since price retraced below ma5)
-                
-    # Under WARNING, soft exit is blocked.
-    # At 3.0U, it should NOT trigger (since lock is 4U but we're at 3U, so 2U ladder wants to trigger but is blocked)
-    # Actually wait: observe() passes an int, which skips the soft_exit_blocked logic. We must pass a dict.
-    assert evaluate_peak_trailing(p, 100+sign*3.0, snap, 10.0, fee=0., slippage=0.) is None
-    
-    # At 2.0U, it triggers the relaxed lock. But if it's WARNING, soft_exit_blocked is True!
-    snap['quote_ms'] = 63000
-    decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 10.0, fee=0., slippage=0.)
-    assert decision is None # Blocked by WARNING trend
+                ma5=100+sign*10.0, ma15=100-sign*10.0, kc_middle=100-sign*10.0)
+
+    decision = evaluate_peak_trailing(p, 100+sign*3.0, snap, 10.0, fee=0., slippage=0.)
+    assert decision is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_legacy_flags_purged_but_verified_peak_retained(side):
@@ -147,11 +126,12 @@ def test_legacy_flags_purged_but_verified_peak_retained(side):
     assert observe(p,1.9) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_verified_hard_pending_survives_migration(side):
+def test_retired_channel_atr_pending_is_revoked(side):
     p=position(side)
     p['instant_exit_state']=dict(identity=[side,60.,100.,1.],peak=0.)
     p['closed_exit_state']=dict(pending=True,reason=HARD_REASON)
-    assert observe(p,0.)['type']==HARD_REASON
+    assert observe(p,0.) is None
+    assert not p[STATE_KEY].get('pending')
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_new_position_cannot_inherit_previous_peak_or_pending(side):
@@ -185,16 +165,9 @@ def test_account_adapter_cleans_both_copies_and_retries_without_frame(side):
         # Call enforce_atr_protection -> should clean closed_exit_state
         assert not await enforce_atr_protection(a,'X',100+sign*2.)
         assert 'closed_exit_state' not in a.position_meta['X']
-        # The original test checked that PEAK_REASON was hit at 1.0. 
-        # With 2U ladder, peak_net_pnl must be >= 4 to arm.
-        # gain = 2.0 -> peak_net_pnl = 2.0. So it won't arm.
-        # Let's hit the initial ATR hard stop instead (price = 100 - sign*2.0)
-        assert await enforce_atr_protection(a,'X',100-sign*2.0)
-        assert HARD_REASON in a.close_position.await_args.args[2]
-        
-        # Second hit of HARD_REASON
-        assert await enforce_atr_protection(a,'X',100-sign*3.)
-        assert a.close_position.await_count==2
+        assert not await enforce_atr_protection(a,'X',100+sign*1.49)
+        assert not await enforce_atr_protection(a,'X',100+sign*1.4)
+        assert a.close_position.await_count==0
     asyncio.run(run())
 
 def test_startup_cleanup_is_channel_only():
@@ -221,79 +194,34 @@ def test_runner_and_ticker_do_not_require_closed_candles_or_rest(side):
         assert not await e._channel_quote_exit('X',100+sign*6.,now*1000) # drive to 6U peak
         f=pd.DataFrame([dict(timestamp=int(now//60)*60000,is_closed=False,close=100.)])
         
-        # We need a snapshot that returns RELEASED to allow the soft exit (2U ladder).
-        # We'll just monkeypatch evaluate_trend_hold to return RELEASED so soft_exit_blocked=False.
-        import core.services.exits.trend_hold_evaluator as the
-        original_eval = the.evaluate_trend_hold
-        the.evaluate_trend_hold = Mock(return_value=('RELEASED', 'TEST'))
-        try:
-            await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
-        finally:
-            the.evaluate_trend_hold = original_eval
-            
-        assert PEAK_REASON in a.close_position.await_args.args[2]
-        assert any('REALTIME_EXIT' in str(call) and PEAK_REASON in str(call)
-                   and 'trigger=' in str(call) for call in a.log.call_args_list)
+        await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
+
+        assert a.close_position.await_count == 0
+        assert not any('REALTIME_EXIT' in str(call) for call in a.log.call_args_list)
         e.fetch_klines.assert_not_called();lock.release()
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_atr_arming_is_inclusive_and_latched(monkeypatch, side):
+@pytest.mark.parametrize(('peak_gain', 'pullback_limit'), [
+    (0.75, 0.60), (1.5, 0.50), (2.5, 0.40), (3.5, 0.35),
+])
+def test_channel_swing_dynamic_pullback_bands_are_disabled(side, peak_gain, pullback_limit, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
-    # Migration: tests that the 2U ladder arms at exactly 4.0U net, and retains peak state.
-    p = position(side, qty=1.)
-    assert observe(p, 3.99) is None
-    assert p[STATE_KEY]['peak_net_pnl'] < 4.0
-    
-    assert observe(p, 4.0, 62000) is None
-    assert p[STATE_KEY]['peak_net_pnl'] >= 4.0
-    
-    # Locked at 2.0U. A drop to 2.1U does not trigger.
-    assert observe(p, 2.1, 63000) is None
-    
-    # A drop to 2.0U triggers.
-    decision = observe(p, 2.0, 64000)
-    assert decision['type'] == PEAK_REASON
-    assert decision['trigger'] == 'TRAILING_2U_LADDER'
+    p = position(side)
+    observe(p, peak_gain, 61000)
+    assert observe(p, peak_gain - pullback_limit + 0.01, 62000) is None
+    assert observe(p, peak_gain - pullback_limit - 0.001, 63000) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_strict_point_four_atr_and_no_wick_peak(side, monkeypatch):
+def test_channel_swing_pullback_does_not_exit_with_fees_and_slippage(side, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
-    # Migration: tests exact boundary triggering of the 2U ladder and peak retention
-    p = position(side, qty=1.)
-    # Drive net to 6.0U (locked net becomes 4.0U)
-    assert observe(p, 6.0) is None
-    assert p[STATE_KEY]['peak_net_pnl'] >= 6.0
-    
-    # Drop to 4.1U -> no trigger
-    assert observe(p, 4.1, 62000) is None
-    
-    # Drop to 4.0U -> trigger
-    result = observe(p, 4.0, 62001)
-    assert result['trigger'] == 'TRAILING_2U_LADDER'
-    assert p[STATE_KEY]['peak_net_pnl'] == 6.0
-
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_net_five_percent_and_exact_twenty_percent_boundary(side, monkeypatch):
-    monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
-    # Migration: tests the 4U -> 2U, 6U -> 4U scaling exactly
-    p = position(side, qty=1., margin=40.)
-    
-    # Up to 3.99U -> no trigger
-    assert observe(p, 3.999, 61000) is None
-    assert p[STATE_KEY]['peak_net_pnl'] < 4.0
-    
-    # 4.0U -> locked at 2.0U
-    assert observe(p, 4.0, 62000) is None
-    assert p[STATE_KEY]['peak_net_pnl'] >= 4.0
-    
-    # Drop to 2.01U -> no trigger
-    assert observe(p, 2.01, 63000) is None
-    
-    # Drop to 2.0U -> trigger
-    result = observe(p, 2.0, 64000)
-    assert result['trigger'] == 'TRAILING_2U_LADDER'
+    p = position(side)
+    sign = 1 if side == 'LONG' else -1
+    assert evaluate_peak_trailing(p, 100 + sign * 2.0, 61000, fee=.001, slippage=.002) is None
+    assert evaluate_peak_trailing(p, 100 + sign * 1.61, 62000, fee=.001, slippage=.002) is None
+    result = evaluate_peak_trailing(p, 100 + sign * 1.599, 63000, fee=.001, slippage=.002)
+    assert result is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_gross_five_percent_is_not_net_five_percent(side):

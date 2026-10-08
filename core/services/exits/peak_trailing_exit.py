@@ -33,8 +33,8 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 
 PROFIT_FLOOR_ENABLED = False
-PROFIT_FLOOR_ARM_ATR = None
-PROFIT_FLOOR_LOCK_ATR = None
+LOCK_ARM_ATR = None
+TRAILING_DISTANCE_ATR = None
 
 def positive(value):
     try:
@@ -49,6 +49,11 @@ def position_identity(position):
     if result[0] not in ('LONG', 'SHORT') or not all(positive(v) for v in result[1:]):
         raise ValueError('Invalid peak-trailing identity')
     return result
+
+
+def channel_initial_stop_disabled(position: dict, meta: dict | None = None) -> bool:
+    meta = meta or {}
+    return str(position.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING'
 
 
 def migrate_peak_state(position, meta=None):
@@ -93,6 +98,33 @@ def migrate_peak_state(position, meta=None):
     if state.get('trigger') == DOJI_TRIGGER and state.get('doji_rule_version') != DOJI_RULE_VERSION:
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
             state.pop(key, None)
+    # Retired single-point MA turns cannot authorize a close retry.
+    if state.get('trigger') in ('EXIT_PEAK_MA_TURN_PRESSURE', 'EXIT_PARABOLIC_MA3_TURN'):
+        for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
+            state.pop(key, None)
+    if channel_initial_stop_disabled(position, meta):
+        if not position.get('entry_mode'):
+            position['entry_mode'] = 'CHANNEL_SWING'
+        if state.get('pending') == HARD_REASON:
+            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
+                state.pop(key, None)
+        for source in (position, meta):
+            source.update(sl=0., stop_loss=0., atr_sl=0., initial_sl=0., initial_risk=0.)
+            source.pop('profit_floor_armed', None)
+            source.pop('profit_floor_price', None)
+            source.pop('frozen_lock_arm_atr', None)
+            source.pop('frozen_trailing_distance_atr', None)
+        for key in ('profit_floor_armed', 'profit_floor_price', 'frozen_lock_arm_atr',
+                    'frozen_trailing_distance_atr'):
+            state.pop(key, None)
+        if state.get('trigger') in (
+                'EXIT_PROFIT_LOCK_FLOOR', 'EXIT_PEAK_PULLBACK_PRESSURE',
+                'EXIT_PARABOLIC_PULLBACK_1_ATR', 'TRAILING_2U_LADDER'):
+            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                        'trigger_atr', 'trigger_price'):
+                state.pop(key, None)
+        if STATE_KEY in meta:
+            meta[STATE_KEY] = copy.deepcopy(state)
     for source in (position, meta):
         for key in RETIRED_KEYS:
             source.pop(key, None)
@@ -103,6 +135,56 @@ def migrate_peak_state(position, meta=None):
 def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
     execution = price*(1-sign*slippage)
     return sign*(execution-entry)*qty - (entry+execution)*qty*fee
+
+
+def kc_outer_pivot_exit(position, snapshot):
+    """Return a confirmed opposite KC-outer price pivot formed after entry."""
+    try:
+        if not isinstance(snapshot, dict):
+            return None
+        bars = snapshot.get('history_outer_pivots')
+        if not isinstance(bars, list) or len(bars) < 3:
+            return None
+        opened_ms = float(position['open_timestamp']) * 1000
+        sign = 1 if position['side'] == 'LONG' else -1 if position['side'] == 'SHORT' else 0
+        if not sign or not positive(opened_ms):
+            return None
+        candidates = []
+        for index in range(1, len(bars) - 1):
+            before, pivot, confirm = bars[index-1:index+2]
+            keys = ('ms', 'h', 'l', 'c', 'kc_upper', 'kc_lower')
+            values = [float(bar[key]) for bar in (before, pivot, confirm) for key in keys]
+            if not all(positive(value) for value in values):
+                continue
+            if float(pivot['ms']) <= opened_ms:
+                continue
+            if sign == 1:
+                matched = (
+                    float(pivot['h']) > float(before['h'])
+                    and float(pivot['h']) > float(confirm['h'])
+                    and float(pivot['h']) > float(pivot['kc_upper'])
+                    and float(confirm['c']) < float(pivot['c'])
+                )
+            else:
+                matched = (
+                    float(pivot['l']) < float(before['l'])
+                    and float(pivot['l']) < float(confirm['l'])
+                    and float(pivot['l']) < float(pivot['kc_lower'])
+                    and float(confirm['c']) > float(pivot['c'])
+                )
+            if matched:
+                candidates.append((float(confirm['ms']), pivot))
+        if not candidates:
+            return None
+        confirmed_ms, pivot = max(candidates, key=lambda candidate: candidate[0])
+        return {
+            'trigger': 'KC_OUTER_PIVOT',
+            'trigger_bar_ms': float(pivot['ms']),
+            'trigger_confirmed_ms': confirmed_ms,
+            'trigger_price': float(pivot['h'] if sign == 1 else pivot['l']),
+        }
+    except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+        return None
 
 
 def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
@@ -309,6 +391,35 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 暴漲逃頂機制 (Parabolic Reversal Exit): 無視 CK 是否衰退
         parabolic_reason, parabolic_trigger = None, None
         peak_gain_atr = gain / scale if scale > 0 else 0.
+
+        pf_enabled = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ENABLED', False)
+        pf_arm = getattr(sys.modules[__name__], 'LOCK_ARM_ATR', None)
+        pf_trail = getattr(sys.modules[__name__], 'TRAILING_DISTANCE_ATR', None)
+
+        is_channel_swing = channel_initial_stop_disabled(position)
+        if (not is_channel_swing and pf_enabled and pf_arm is not None
+                and pf_trail is not None and pf_arm > 0 and pf_trail > 0 and scale > 0):
+            is_armed = state.get('profit_floor_armed', False)
+            if not is_armed and peak_gain_atr >= pf_arm:
+                is_armed = True
+                state['profit_floor_armed'] = True
+                # ARMED_CONFIG_POLICY = FREEZE: snapshot global parameters into state at first arming.
+                # Global changes after arming must not affect this position's trailing behavior.
+                state['frozen_lock_arm_atr'] = float(pf_arm)
+                state['frozen_trailing_distance_atr'] = float(pf_trail)
+
+            if is_armed:
+                # Always use frozen values from state; ignore current global config.
+                frozen_trail = state.get('frozen_trailing_distance_atr', pf_trail)
+                if sign == 1:
+                    candidate_floor = state['peak_price'] - frozen_trail * scale
+                    existing_floor = state.get('profit_floor_price', -float('inf'))
+                    state['profit_floor_price'] = max(existing_floor, candidate_floor)
+                else:
+                    candidate_floor = state['peak_price'] + frozen_trail * scale
+                    existing_floor = state.get('profit_floor_price', float('inf'))
+                    state['profit_floor_price'] = min(existing_floor, candidate_floor)
+
         try:
             from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
             
@@ -348,7 +459,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if net > 0 and peak_gain_atr >= 0.5:
+        if not is_channel_swing and net > 0 and peak_gain_atr >= 0.5:
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
@@ -361,38 +472,11 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             # 1. 價格從最高點回踩達動態階梯門檻
             if drawdown_atr >= pullback_limit_atr:
-                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
-            # 2. MA 轉向反轉賣壓 (ma5 或 ma3 反向拐頭)
-            elif isinstance(snapshot, dict):
-                ma5 = snapshot.get('ma5')
-                last_ma5 = snapshot.get('last_ma5')
-                ma3 = snapshot.get('ma3')
-                last_ma3 = snapshot.get('last_ma3')
-
-                ma_turned = False
-                if sign == 1:
-                    if (ma5 and last_ma5 and ma5 < last_ma5) or (ma3 and last_ma3 and ma3 < last_ma3):
-                        ma_turned = True
-                else:
-                    if (ma5 and last_ma5 and ma5 > last_ma5) or (ma3 and last_ma3 and ma3 > last_ma3):
-                        ma_turned = True
-
-                if ma_turned:
-                    # [EMERGENCY FAIL-CLOSED]
-                    # Single live MA3/MA5 adverse turn has no direct CLOSE authority.
-                    # parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_MA_TURN_PRESSURE'
-                    pass
-        elif peak_gain_atr >= 3.0:
+                if not state.get('profit_floor_armed', False):
+                    parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
+        elif not is_channel_swing and peak_gain_atr >= 3.0:
             if drawdown_atr >= 1.0:
                 parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'
-            elif isinstance(snapshot, dict):
-                ma5 = snapshot.get('ma5')
-                last_ma5 = snapshot.get('last_ma5')
-                if ma5 and last_ma5:
-                    if sign == 1 and ma5 < last_ma5:
-                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
-                    elif sign == -1 and ma5 > last_ma5:
-                        parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_MA3_TURN'
 
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
 
@@ -401,8 +485,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
 
-        stop = entry-sign*1.5*scale if scale>0 else 0.
-        initial = position.get('initial_sl')
+        initial_stop_enabled = not channel_initial_stop_disabled(position)
+        stop = entry-sign*1.5*scale if scale>0 and initial_stop_enabled else 0.
+        initial = position.get('initial_sl') if initial_stop_enabled else None
         if positive(initial):
             stop = ((max if sign==1 else min)(stop,float(initial)) if positive(stop) else float(initial))
 
@@ -462,47 +547,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
                         state.update(evidence)
 
-            # Catastrophic Profit Floor Evaluation
+            # Model T Profit Floor Hit Evaluation
             floor_reason, floor_trigger = None, None
-            entry_atr = float(state.get('atr', position.get('entry_atr', 0.0)))
-
-            pf_enabled = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ENABLED', False)
-            pf_arm = getattr(sys.modules[__name__], 'PROFIT_FLOOR_ARM_ATR', None)
-            pf_lock = getattr(sys.modules[__name__], 'PROFIT_FLOOR_LOCK_ATR', None)
-
-            if pf_enabled and pf_arm is not None and pf_lock is not None and pf_arm > 0 and 0 <= pf_lock <= pf_arm and entry_atr > 0:
-                mfe_price = state.get('mfe_price', entry)
-                if sign == 1:
-                    mfe_price = max(mfe_price, price)
-                    mfe_atr = (mfe_price - entry) / entry_atr
-                else:
-                    mfe_price = min(mfe_price, price)
-                    mfe_atr = (entry - mfe_price) / entry_atr
-                state['mfe_price'] = mfe_price
-
-                is_armed = state.get('profit_floor_armed', False)
-                if not is_armed and mfe_atr >= pf_arm:
-                    is_armed = True
-                    state['profit_floor_armed'] = True
-                    state['profit_floor_arm_atr'] = float(pf_arm)
-                    state['profit_floor_lock_atr'] = float(pf_lock)
-
-                if is_armed:
-                    latr = state.get('profit_floor_lock_atr', pf_lock)
-                    if sign == 1:
-                        candidate_floor = entry + latr * entry_atr
-                        existing_floor = state.get('profit_floor_price', -float('inf'))
-                        floor = max(existing_floor, candidate_floor)
-                        state['profit_floor_price'] = floor
-                        if price <= floor:
-                            floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_CATASTROPHIC_PROFIT_FLOOR'
-                    else:
-                        candidate_floor = entry - latr * entry_atr
-                        existing_floor = state.get('profit_floor_price', float('inf'))
-                        floor = min(existing_floor, candidate_floor)
-                        state['profit_floor_price'] = floor
-                        if price >= floor:
-                            floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_CATASTROPHIC_PROFIT_FLOOR'
+            if state.get('profit_floor_armed', False) and 'profit_floor_price' in state:
+                floor = state['profit_floor_price']
+                if sign == 1 and price <= floor:
+                    floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_PROFIT_LOCK_FLOOR'
+                elif sign == -1 and price >= floor:
+                    floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_PROFIT_LOCK_FLOOR'
 
             # Floor overrides soft exits (Doji / MA15 / Ladder)
             if floor_reason:
@@ -524,18 +576,25 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
+            pivot_evidence = kc_outer_pivot_exit(position, snapshot)
+            if (pivot_evidence is not None and reason != HARD_REASON
+                    and trigger != 'WATERFALL_DROP'):
+                reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
+                state.update(pivot_evidence)
+
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
-            if reason and reason != HARD_REASON and trigger != 'WATERFALL_DROP':
+            if (reason and reason != HARD_REASON
+                    and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT')):
                 if net <= 0:
                     reason, trigger = None, None
 
             if reason:
                 soft_exit_blocked = False
                 peak_exemptions = (
-                    'WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER,
+                    'WATERFALL_DROP', 'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
-                    'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_PEAK_MA_TURN_PRESSURE',
-                    'EXIT_PARABOLIC_PULLBACK_1_ATR', 'EXIT_PARABOLIC_MA3_TURN'
+                    'EXIT_PEAK_PULLBACK_PRESSURE',
+                    'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):

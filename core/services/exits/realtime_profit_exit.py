@@ -6,6 +6,7 @@ import time
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
+    channel_initial_stop_disabled,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
@@ -32,9 +33,23 @@ def cached_tick_indicators(frame, price, stamp):
             'l': float(b.get('low', 0)),
             'c': float(b.get('close', 0)),
             'ma3': float(b.get('ma3', 0)),
-            'ma5': float(b.get('ma5', b.get('ma3', 0)))
+            'ma5': float(b.get('ma5', b.get('ma3', 0))),
+            'kc_upper': float(b.get('kc_upper', 0)),
+            'kc_lower': float(b.get('kc_lower', 0)),
         })
     snapshot['history_5'] = history_bars
+    snapshot['history_outer_pivots'] = [
+        {
+            'ms': float(b.get('timestamp', 0)),
+            'o': float(b.get('open', 0)),
+            'h': float(b.get('high', 0)),
+            'l': float(b.get('low', 0)),
+            'c': float(b.get('close', 0)),
+            'kc_upper': float(b.get('kc_upper', 0)),
+            'kc_lower': float(b.get('kc_lower', 0)),
+        }
+        for _, b in closed.tail(120).iterrows()
+    ]
 
     last = closed.iloc[-1]
     prev = closed.iloc[-2]
@@ -125,6 +140,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if stamp < ident[1]*1000 or (saved.get('identity') == ident and stamp < saved.get('last_ms',0)):
             return False
         old = copy.deepcopy(meta.get(STATE_KEY) or {})
+        retired_atr_stop = channel_initial_stop_disabled(position, meta) and any(
+            source.get(key) for source in (position, meta)
+            for key in ('sl', 'stop_loss', 'atr_sl', 'initial_sl', 'initial_risk'))
         retired = any(key in source for source in (position,meta) for key in RETIRED_KEYS)
         migrate_peak_state(position, meta)
         try:
@@ -133,7 +151,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             snapshot, atr = {'quote_ms':stamp}, 0.
         decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
         current = position[STATE_KEY]
-        changed = retired or any(old.get(k) != current.get(k) for k in
+        changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending'))
         for key in STATE_KEYS:
             if key in position:
@@ -148,7 +166,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         reason = decision['type']
         trigger = decision.get('trigger', '')
         
-        if entry_m == 'CHANNEL_SWING' and reason != 'EXIT_INITIAL_ATR_HARD_STOP' and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER):
+        if (entry_m == 'CHANNEL_SWING'
+                and reason != 'EXIT_INITIAL_ATR_HARD_STOP'
+                and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR',
+                                    DOJI_TRIGGER, 'KC_OUTER_PIVOT')):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)

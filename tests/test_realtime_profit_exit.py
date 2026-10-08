@@ -63,7 +63,7 @@ def engine_for(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_ticks_bypass_lock_missing_frame_restart_and_reordered_quotes(side, monkeypatch):
+def test_ticks_do_not_profit_close_without_confirmed_outer_pivot(side, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         e, p, now = engine_for(side)
@@ -76,10 +76,10 @@ def test_ticks_bypass_lock_missing_frame_restart_and_reordered_quotes(side, monk
         persisted = copy.deepcopy(e.account.position_meta)
         e.account.positions['X'] = dict(pos(side), open_timestamp=p['open_timestamp'])
         e.account.position_meta = persisted
-        # Drop to 100+sign*2 to trigger it
-        assert await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*2.0, now*1000), .5)
-        assert e.account.close_position.await_count == 1
-        assert e.account.close_position.await_args.args[1] == 100+sign*2.0
+        # Profit pullback alone does not close a Channel Swing position.
+        assert not await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*2.0, now*1000), .5)
+        assert e.account.close_position.await_count == 0
+        assert 'X' in e.account.positions
         e.fetch_klines.assert_not_called()
         lock.release()
     asyncio.run(run())
@@ -114,7 +114,7 @@ def test_only_atr_fallback_uses_confirmed_history_not_live_candle():
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_real_account_reload_and_concurrent_tick_close(side, mode, tmp_path, monkeypatch):
+def test_real_account_reload_keeps_position_without_confirmed_outer_pivot(side, mode, tmp_path, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         import core.paper_account as pm
@@ -137,8 +137,9 @@ def test_real_account_reload_and_concurrent_tick_close(side, mode, tmp_path, mon
             monkeypatch.setattr(tm.BinanceTestnetAccount, 'credentials_configured', staticmethod(lambda: True))
             account = tm.BinanceTestnetAccount(exchange)
             await account.initialize()
-        assert await account.open_position(symbol, side, 100., 100., 0., 0., 'MANUAL', leverage=1, atr=.5,
-                   entry_context={'entry_mode':'CHANNEL_SWING', 'manual_entry':True, 'entry_atr':10.}), account.logs[-3:]
+        await account.open_position(symbol, side, 100., 100., 0., 0., 'MANUAL', leverage=1, atr=.5,
+                                    entry_context={'entry_mode':'CHANNEL_SWING', 'manual_entry':True, 'entry_atr':10.})
+        assert symbol in account.positions, account.logs[-3:]
         e = object.__new__(TradingEngine)
         e.is_running = True
         e.account = account
@@ -154,25 +155,23 @@ def test_real_account_reload_and_concurrent_tick_close(side, mode, tmp_path, mon
         e.account = account
         assert account.positions[symbol]['peak_pnl_usd'] == peak
         await asyncio.gather(*(e._instant_quote_exit(symbol,100+sign*2.0,time.time()*1000) for _ in range(10)))
-        assert symbol not in account.positions
-        assert len(closes(account)) == 1
+        assert symbol in account.positions
+        assert len(closes(account)) == 0
         if mode == 'testnet':
-            assert len(close_orders(exchange)) == 1
-            assert close_orders(exchange)[0]['type'] == 'market'
-            assert close_orders(exchange)[0]['params']['reduceOnly']
+            assert len(close_orders(exchange)) == 0
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_initial_atr_stop_retries_after_metadata_reload(side):
+def test_channel_initial_atr_stop_cannot_retry_after_metadata_reload(side):
     async def run():
         e, p, now = engine_for(side)
         sign = 1 if side == 'LONG' else -1
         p['initial_sl'] = p['sl'] = 100-sign*.5
-        assert await e._instant_quote_exit('X',100-sign*.5,now*1000)
-        assert 'EXIT_INITIAL_ATR_HARD_STOP' in e.account.close_position.await_args.args[2]
+        assert not await e._instant_quote_exit('X',100-sign*.5,now*1000)
         restored = dict(pos(side),open_timestamp=p['open_timestamp'],sl=p['sl'])
         e.account.positions['X'] = restored
-        assert await e._instant_quote_exit('X',100.,now*1000)
-        assert 'EXIT_INITIAL_ATR_HARD_STOP' in e.account.close_position.await_args.args[2]
+        assert not await e._instant_quote_exit('X',100.,now*1000)
+        assert restored['sl'] == 0.
+        e.account.close_position.assert_not_awaited()
     asyncio.run(run())

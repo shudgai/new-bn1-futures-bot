@@ -4,25 +4,87 @@ import math
 import numpy as np
 
 from core.services.candle_data import closed_entry_candles
-from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
-                                            evaluate_kc_pending_entry)
-from core.services.strategies.outer_strategy import (live_body_breakout_side, ck_direction,
-                                                    live_ma3_direction_ready, live_candle_color_ready,
-                                                    live_adverse_entry_safe, ma3_outer_continuation_ready,
-                                                    OUTER_CODES)
+from core.services.strategies.outer_strategy import (
+    ck_direction,
+    live_ma3_direction_ready,
+    live_candle_color_ready,
+    live_adverse_entry_safe,
+    ma3_outer_continuation_ready,
+)
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
-ENTRY_CODES = KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"} | OUTER_CODES
-MAX_THIRD_OPEN_CHASE_ATR = 0.10
-CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
-                       'max_chase_atr', 'chase_atr', 'chase_bar_id',
-                       'chase_open', 'chase_reference_atr')
+KC_OUTER_PIVOT_LONG = "KC_OUTER_PIVOT_LONG"
+KC_OUTER_PIVOT_SHORT = "KC_OUTER_PIVOT_SHORT"
+ENTRY_CODES = frozenset({KC_OUTER_PIVOT_LONG, KC_OUTER_PIVOT_SHORT})
+ENTRY_EVIDENCE_KEYS = (
+    "pivot_bar_id", "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
+)
 
-ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
+
+def evaluate_kc_outer_pivot_entry(closed, quote, *, code=None, symbol=""):
+    """Enter only on a newly confirmed price pivot beyond the matching KC rail."""
+    try:
+        if closed is None or len(closed) < 3:
+            return None
+        pivot, before, confirm = closed.iloc[-2], closed.iloc[-3], closed.iloc[-1]
+        quote = float(quote)
+        if not math.isfinite(quote) or quote <= 0:
+            return None
+        stamp = float(confirm["timestamp"])
+        pivot_stamp = float(pivot["timestamp"])
+        values = [
+            float(row[key])
+            for row in (before, pivot, confirm)
+            for key in ("open", "high", "low", "close", "kc_upper", "kc_lower")
+        ]
+        if (not math.isfinite(stamp) or not math.isfinite(pivot_stamp)
+                or not all(math.isfinite(value) and value > 0 for value in values)):
+            return None
+        if any(
+            float(row["low"]) > min(float(row["open"]), float(row["close"]))
+            or float(row["high"]) < max(float(row["open"]), float(row["close"]))
+            or float(row["kc_lower"]) >= float(row["kc_upper"])
+            for row in (before, pivot, confirm)
+        ):
+            return None
+
+        long_pivot = (
+            float(pivot["low"]) < float(before["low"])
+            and float(pivot["low"]) < float(confirm["low"])
+            and float(pivot["low"]) < float(pivot["kc_lower"])
+            and float(confirm["close"]) > float(pivot["close"])
+            and quote > float(pivot["low"])
+        )
+        short_pivot = (
+            float(pivot["high"]) > float(before["high"])
+            and float(pivot["high"]) > float(confirm["high"])
+            and float(pivot["high"]) > float(pivot["kc_upper"])
+            and float(confirm["close"]) < float(pivot["close"])
+            and quote < float(pivot["high"])
+        )
+        side = "LONG" if long_pivot else "SHORT" if short_pivot else None
+        expected_code = KC_OUTER_PIVOT_LONG if side == "LONG" else KC_OUTER_PIVOT_SHORT
+        if side is None or (code is not None and code != expected_code):
+            return None
+        signal_id = f"{symbol}_{expected_code}_{int(pivot_stamp)}"
+        return dict(
+            action="ENTER", side=side, type=expected_code, reason=expected_code,
+            price=quote, entry_atr=float(pivot["atr"]), confirmation_bar_id=stamp,
+            close_price=float(confirm["close"]), intrabar=False,
+            entry_phase="KC_OUTER_PIVOT_ENTRY", breakout_bar_id=pivot_stamp,
+            pivot_bar_id=pivot_stamp, pair_confirmation_bar_id=stamp,
+            pending_signal_id=signal_id, pending_second_bar_id=stamp,
+            pending_wait_bars=1, pending_max_wait_bars=1,
+            kc_confirmation_edge=float(
+                pivot["kc_lower"] if side == "LONG" else pivot["kc_upper"]
+            ),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
-def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', account=None):
     """Continuation entry for sustained trend outside the outer rail.
 
     Permits opening when a prior breakout was missed or after a position was closed,
@@ -37,15 +99,29 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         if code is not None and code != signal:
             return None
 
+        qual = getattr(account, 'breakout_qualification', {}).get(symbol)
+        if not qual or qual.get('side') != side:
+            return None
+
+        stamp = float(frame.iloc[-1]['timestamp'])
+        qualified_bar = float(qual['breakout_bar_id'])
+        if not math.isfinite(qualified_bar) or qualified_bar <= 0 or stamp <= qualified_bar:
+            return None
         quote = float(quote)
         atr = float(frame.iloc[-2]['atr'])
+        if not all(math.isfinite(v) and v > 0 for v in (quote, atr, stamp)):
+            return None
         sign = 1 if side == 'LONG' else -1
 
         # Check MA5 direction & non-flat slope (漲勢/跌勢)
         closes = [float(v) for v in frame['close'].iloc[-5:-1]]
-        if len(closes) >= 4:
+        if len(closes) != 4 or not all(math.isfinite(v) and v > 0 for v in closes):
+            return None
+        if len(closes) == 4:
             live_ma5 = (sum(closes[-4:]) + quote) / 5.0
             last_ma5 = float(frame.iloc[-2]['ma5'])
+            if not math.isfinite(last_ma5) or last_ma5 <= 0:
+                return None
             ma5_slope = sign * (live_ma5 - last_ma5)
             if ma5_slope <= 0 or (atr > 0 and ma5_slope / atr < 0.01):
                 return None
@@ -53,6 +129,10 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
         if not live_candle_color_ready(frame, quote, side):
             return None
         if not live_adverse_entry_safe(frame, quote, side):
+            return None
+        if not live_ma3_direction_ready(frame, quote, side):
+            return None
+        if not ma3_outer_continuation_ready(frame, quote, side):
             return None
 
         edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
@@ -81,8 +161,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
                     pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
                     pending_second_bar_id=prev_stamp,
                     pending_wait_bars=1, pending_max_wait_bars=1,
-                    kc_confirmation_edge=edge if is_outside_rail else mid,
+                    kc_confirmation_edge=edge,  # FIXED NameError
                     kc_distance_atr=distance,
+                    qualification_signal_id=qual['pending_signal_id'],
                     kc_max_distance_atr=3.0)
     except Exception:
         return None
@@ -193,51 +274,13 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        # [EMERGENCY GUARD: 禁用一根長K即時破軌，嚴格要求多根 K 線確認 (3-bar rule)]
-        fast_side = None
-        
-        decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
-                                             live=live if len(frame) > len(closed) else None)
-                                             
-        # Check MA3 outer cross entry (Dual Entry Rule)
-        if decision['action'] != 'ENTER':
-            from core.services.strategies.outer_strategy import ck_direction, ma3_outer_cross_ready
-            direction = ck_direction(closed)
-            if direction and ma3_outer_cross_ready(frame, quote, direction):
-                atr_val = float(frame.iloc[-2]['atr'])
-                stamp_val = float(live.timestamp)
-                prev_stamp_val = float(frame.iloc[-2]['timestamp'])
-                signal = 'KC_MA3_CROSS_' + direction
-                decision = {
-                    'action': 'ENTER',
-                    'side': direction,
-                    'type': signal,
-                    'reason': signal,
-                    'price': quote,
-                    'entry_atr': atr_val,
-                    'confirmation_bar_id': stamp_val,
-                    'close_price': float(frame.iloc[-2]['close']),
-                    'intrabar': True,
-                    'entry_phase': 'KC_MA3_CROSS',
-                    'pending_signal_id': f"{symbol}_MA3_CROSS_{int(stamp_val)}_{direction}",
-                    'breakout_bar_id': stamp_val,
-                    'pair_confirmation_bar_id': prev_stamp_val,
-                    'third_bar_id': stamp_val,
-                    'pending_second_bar_id': prev_stamp_val,
-                    'pending_wait_bars': 1,
-                    'pending_max_wait_bars': 1
-                }
-
-        # If dual entries are not ready, or is an old breakout from before exit:
-        if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
-            cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
-            if cont_decision and cont_decision['action'] == 'ENTER':
-                decision = cont_decision
-                
-        if decision['action'] != 'ENTER':
+        decision = evaluate_kc_outer_pivot_entry(
+            closed, quote, code=code, symbol=symbol
+        )
+        if decision is None:
             if diagnostics is not None:
                 diagnostics.clear()
-                diagnostics.update(decision)
+                diagnostics["reason"] = "WAIT_KC_OUTER_PIVOT"
             return None
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
@@ -254,17 +297,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
-            # Allow immediate reversal if opening the opposite direction of the just-closed position
-            last_trade = None
-            for trade in reversed(getattr(account, 'trades', [])):
-                if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
-                    last_trade = trade
-                    break
-            last_close_side = 'LONG' if last_trade and last_trade.get('action') == 'CLOSE_LONG' else ('SHORT' if last_trade and last_trade.get('action') == 'CLOSE_SHORT' else None)
-            is_opposite_reversal = (last_close_side is not None and decision['side'] != last_close_side)
-            if not is_opposite_reversal:
-                return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if exit_bar is not None and decision.get('entry_phase') not in ('KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT') and decision.get('breakout_bar_id', 0) <= exit_bar:
+            return reject('WAIT_POST_EXIT_NEW_FORMATION')
+        if exit_bar is not None and decision.get('pivot_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
