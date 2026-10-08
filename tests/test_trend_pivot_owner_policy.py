@@ -21,6 +21,7 @@ def market(side="LONG"):
     ]
     rows[-2]["high"] = 103.
     rows[-1]["kc_middle"] = rows[-2]["kc_middle"] - .1
+    rows[-1]["ma5"] = rows[-2]["ma5"] - .1
     rows.append(dict(timestamp=bar, open=100., high=101., low=99.,
                      close=100.5, kc_middle=104., ma5=106., atr=1., is_closed=False))
     if side == "SHORT":
@@ -35,43 +36,35 @@ def market(side="LONG"):
     return p, frame, float(bar+1000)
 
 
-def arm_maturity(position):
-    state = policy.migrate(position, {})
-    sign = 1 if position["side"] == "LONG" else -1
-    policy.observe_maturity(state, policy.position_identity(position),
-                            position["entry_price"] + sign*3.,
-                            position["open_timestamp"]*1000 + 1)
-
-
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pivot_requires_closed_ck_reverse(symbol, side):
+def test_pivot_requires_only_closed_ma5_turn(symbol, side):
     p, f, stamp = market(side)
     assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.PIVOT_REASON
     sign = 1 if side == "LONG" else -1
-    f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign * .1
+    f["kc_middle"] = float("nan")
+    f["high"] = 101.
+    assert policy.evaluate(p, f, 100., stamp)[0]["reason"] == policy.PIVOT_REASON
+    f.loc[5, "ma5"] = f.loc[4, "ma5"] + sign * .1
     assert policy.evaluate(p, f, 100., stamp)[0] is None
-    f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"]
+    f.loc[5, "ma5"] = f.loc[4, "ma5"]
     assert policy.evaluate(p, f, 100., stamp)[0] is None
-    f.loc[5, "kc_middle"] = float("nan")
+    f.loc[5, "ma5"] = float("nan")
     assert policy.evaluate(p, f, 100., stamp)[0] is None
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("body,allowed", [(.599999, False), (.6, True), (.600001, True)])
-def test_doji_live_body_exact_threshold(symbol, side, body, allowed):
+@pytest.mark.parametrize("body", [.599999, .6, 5.])
+def test_doji_or_large_live_body_cannot_close_without_ma5_turn(symbol, side, body):
     p, f, stamp = market(side)
-    arm_maturity(p)
     sign = 1 if side == "LONG" else -1
     f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.4]
     f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
+    f.loc[5, "ma5"] = f.loc[4, "ma5"] + sign
     f.loc[6, ["open", "high", "low"]] = [100., 100.1, 99.9]
     result, _ = policy.evaluate(p, f, 100.-sign*body, stamp)
-    assert bool(result) is allowed
-    if result:
-        assert result["reason"] == policy.DOJI_REASON
-        assert result["reversal_body_atr"] == pytest.approx(body)
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -139,6 +132,7 @@ def test_lobster_182042_keeps_short():
     f.loc[5, ["open", "high", "low", "close", "atr"]] = [
         .03894, .03899, .03885, .0389, .000583]
     f.loc[6, ["open", "high", "low"]] = [.03892, .03893, .03861]
+    f.loc[5, "ma5"] = f.loc[4, "ma5"] - .1
     assert policy.evaluate(p, f, .03893, stamp)[0] is None
 
 
@@ -146,10 +140,10 @@ def test_lobster_182042_keeps_short():
 @pytest.mark.parametrize("fault", ["doji_ratio", "weak_live", "same_color", "zero_range", "invalid_ohlc", "preentry", "live_doji"])
 def test_doji_rejects_unqualified_pressure(side, fault):
     p, f, stamp = market(side)
-    arm_maturity(p)
     sign = 1 if side == "LONG" else -1
     f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.5]
     f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
+    f.loc[5, "ma5"] = f.loc[4, "ma5"] + sign
     f.loc[6, ["open", "high", "low"]] = [100., 100.1, 99.9]
     price = 100.-sign*.6
     if fault == "doji_ratio":
@@ -242,79 +236,61 @@ def test_scan_and_quote_adapter_share_new_authority(symbol, side, monkeypatch):
     assert p[policy.STATE_KEY]["pending"] == policy.PIVOT_REASON
 
 
-@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("gain,allowed", [(2.999999, False), (3., True), (3.000001, True)])
-def test_doji_requires_observed_three_entry_atr(symbol, side, gain, allowed):
-    p, f, stamp = market(side)
-    sign = 1 if side == "LONG" else -1
-    f.loc[5, ["open", "high", "low", "close"]] = [100., 101., 99., 100.4]
-    f.loc[5, "kc_middle"] = f.loc[4, "kc_middle"] + sign
-    f.loc[6, ["open", "high", "low"]] = [100., 100.1, 99.9]
-    state = policy.migrate(p, {})
-    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*gain, stamp-1)
-    result, _ = policy.evaluate(p, f, 100.-sign*.6, stamp)
-    assert bool(result) is allowed
-    if result:
-        assert result["doji_arm_gain_atr"] == 3.
-        assert result["max_favorable_move"] == pytest.approx(gain)
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_maturity_no_hindsight_invalid_atr_or_stale_peak(side):
-    p, f, stamp = market(side)
-    sign = 1 if side == "LONG" else -1
-    p["peak_price"] = 100.+sign*50.
-    f["high"] = 150.
-    f["low"] = 50.
-    state = policy.migrate(p, {})
-    assert not policy.doji_mature(state, policy.position_identity(p))
-    state["last_ms"] = stamp
-    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50., stamp-1)
-    assert not policy.doji_mature(state, policy.position_identity(p))
-    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50.,
-                            p["open_timestamp"]*1000-1)
-    assert not policy.doji_mature(state, policy.position_identity(p))
-    p["entry_atr"] = float("nan")
-    p.pop(policy.STATE_KEY)
-    state = policy.migrate(p, {})
-    policy.observe_maturity(state, policy.position_identity(p), 100.+sign*50., stamp)
-    assert not policy.doji_mature(state, policy.position_identity(p))
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_maturity_persists_fixed_atr_and_isolates_position(side, monkeypatch):
-    p, f, stamp = market(side)
-    sign = 1 if side == "LONG" else -1
-    monkeypatch.setattr(time, "time", lambda: stamp/1000)
-    account = SimpleNamespace(positions={"CAP/USDT":p}, position_meta={},
-                              save_state=Mock(), log=Mock(),
-                              close_position=AsyncMock(return_value=False))
-    asyncio.run(policy.enforce(account, "CAP/USDT", 100.+sign*3., None, stamp))
-    saved = copy.deepcopy(account.position_meta)
-    p.pop(policy.STATE_KEY)
-    p["entry_atr"] = 999.
-    policy.migrate(p, saved["CAP/USDT"])
-    assert p[policy.STATE_KEY]["fixed_entry_atr"] == 1.
-    assert policy.doji_mature(p[policy.STATE_KEY], policy.position_identity(p))
-    assert account.save_state.call_count > 0
-    p["open_timestamp"] += 1.
-    policy.migrate(p, saved["CAP/USDT"])
-    assert not policy.doji_mature(p[policy.STATE_KEY], policy.position_identity(p))
-    other, _, _ = market(side)
-    policy.migrate(other, {})
-    assert not policy.doji_mature(other[policy.STATE_KEY], policy.position_identity(other))
-
-
-def test_old_unqualified_doji_pending_revoked_but_pivot_retry_preserved():
+@pytest.mark.parametrize("old_policy", [
+    "closed_ck_reverse_pivot_or_doji_06_v1",
+    "closed_ck_reverse_pivot_or_mature_doji_06_v2",
+    "closed_ck_reverse_pivot_or_mature_pressure_06_v3",
+])
+@pytest.mark.parametrize("reason", [
+    "EXIT_POST_ENTRY_DOJI_ADVERSE_06_ATR",
+    "EXIT_MATURE_ADVERSE_BODY_06_ATR",
+    "EXIT_CK_REVERSED_CONFIRMED_PIVOT",
+])
+def test_all_retired_pending_revoked(old_policy, reason):
     p, _, _ = market()
-    old = dict(policy=policy.PREVIOUS_POLICY, identity=policy.position_identity(p),
-               pending=policy.DOJI_REASON, evidence={"reason": policy.DOJI_REASON})
+    old = dict(policy=old_policy, identity=policy.position_identity(p),
+               pending=reason, evidence={"reason": reason})
     p[policy.STATE_KEY] = old
     policy.migrate(p, {})
     assert "pending" not in p[policy.STATE_KEY]
-    assert not policy.close_allowed(p, {}, "Channel Swing "+policy.DOJI_REASON, True)
-    p[policy.STATE_KEY] = {**old, "pending": policy.PIVOT_REASON,
-                           "evidence": {"reason": policy.PIVOT_REASON}}
-    policy.migrate(p, {})
-    assert p[policy.STATE_KEY]["pending"] == policy.PIVOT_REASON
+    assert not policy.close_allowed(p, {}, "Channel Swing "+reason, True)
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("legs,allowed", [
+    ((1., -.1), True), ((0., -.1), False), ((1., 0.), False),
+    ((1., 1.), False), ((-1., -1.), False), ((-1., 1.), False),
+    ((1e-13, -.1), False), ((1., -1e-13), False),
+])
+def test_two_strict_completed_ma5_legs(symbol, side, legs, allowed):
+    p, f, stamp = market(side)
+    sign = 1 if side == "LONG" else -1
+    left = 100.
+    pivot = left + sign * legs[0]
+    right = pivot + sign * legs[1]
+    f.loc[3:5, "ma5"] = [left, pivot, right]
+    f.loc[6, "ma5"] = 100.-sign*50.
+    f.attrs["symbol"] = symbol
+    result, _ = policy.evaluate(p, f, 100., stamp)
+    assert bool(result) is allowed
+    if result:
+        assert result["ma5_pivot"] == pivot
+        assert result["ma5_right"] == right
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("fault", ["preentry", "gap", "nan", "inf", "negative", "short", "not_closed"])
+def test_ma5_turn_market_validity(side, fault):
+    p, f, stamp = market(side)
+    if fault == "preentry":
+        p["open_timestamp"] = (f.loc[3, "timestamp"]+1)/1000
+    elif fault == "gap":
+        f.loc[4, "timestamp"] += 1
+    elif fault in ("nan", "inf", "negative"):
+        f.loc[4, "ma5"] = {"nan": float("nan"), "inf": float("inf"), "negative": -1.}[fault]
+    elif fault == "short":
+        f = f.tail(3)
+    else:
+        f.loc[5, "is_closed"] = False
+    assert policy.evaluate(p, f, 100., stamp)[0] is None

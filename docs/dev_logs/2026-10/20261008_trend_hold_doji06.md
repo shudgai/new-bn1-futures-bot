@@ -2,6 +2,28 @@
 
 ## Owner decisions
 
+### Latest superseding decision: closed MA5 turn only
+
+- Policy `closed_ma5_post_entry_turn_v4` supersedes the historical rules below.
+  Three latest completed post-entry MA5 values must form two strict legs:
+  up then down for LONG, down then up for SHORT. All three candle opens must
+  be at or after entry. Relative-price 1e-12 tolerance treats near-flat steps
+  as flat. No live MA5, KC reversal or price pivot is required.
+- Cancel doji/adverse-body exits and the 3-ATR maturity qualification.
+  Revoke all earlier-policy pending exits. New position-bound MA5 claims
+  persist for retry/restart; no profit lock or hard stop is restored.
+  This is a local MA5 turn, not a guaranteed absolute market extremum.
+- Mobile chart markers at width <= 768px show only 買多 / 賣空 / 平多 /
+  平空 without time suffixes; desktop labels and times remain unchanged.
+- Entry drafts, including SMALL/multi-bridge 0.5-ATR entry, remain preserved
+  in stash `f62561c104732f643c41f8ec36e50f3483608771`, excluded from deployment.
+- Validation: 206 passed across owner-policy, structured/specialized routes,
+  V2 execution boundaries, staged implementation and isolated Testnet
+  integration. No real exchange requests; existing datetime warnings remain.
+  Browser verification at 390px captured all four compact labels.
+
+### Historical superseded decisions
+
 - Base: `8be77071bf1c0f9a42bf21076e1052eb512a4804`.
 - Ordinary Channel Swing positions have no profit lock, peak giveback, initial ATR stop, account hard-stop, waterfall, or independent turn/reverse close authority.
 - Manual close remains available. There is no software loss floor; exchange liquidation cannot be disabled.

@@ -420,7 +420,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "保留現行入口及 MA5 順向條件。盤整只新增一項：最近六根已收線 MA5 忽略持平後方向切換達兩次，禁止自動開倉；資料不足或無效不開。一般 Channel Swing 持倉：KC 趨勢未反向不因局部峰谷平倉；最近兩根已收線 KC 中軌確認反向，且進場後最近三根已收線確認多單峰頂／空單谷底才平倉。例外只於進場後實際觀察最大順向位移達固定進場 ATR 的3倍後啟用：已收線十字線實體不超過全長25%，下一根盤中反向實體達前根已收線0.6 ATR且實體超過當根全長25%即平倉。未達3 ATR或進場 ATR無效不採用此例外，不回填歷史影線。這只是出口資格，不是鎖利；停用鎖利、回吐、硬止損及其他一般策略出口，手動平倉保留。無虧損底線，可能大幅虧損；交易所強制清算不受程式控制。獨立明確啟用的 staged 策略不在此變更範圍。",
+        "strategy": "入口及MA5盤整檢查維持目前版本。一般Channel Swing只用進場後最近三根已收線MA5確認兩段轉向平倉：嚴格先升後降平多，先降後升平空；三根K線開盤均不得早於進場，持平或資料無效不觸發，不使用當根未收線MA5。不再要求KC反向或價格峰谷。取消十字線後反向K、3 ATR成熟資格及0.6 ATR反向實體出口，撤銷舊出口待平票據；新MA5出口失敗持久化重試。這是局部MA5峰谷確認，不保證絕對最高或最低點。鎖利、回吐、硬止損及其他一般策略出口停用，手動平倉保留；無虧損底線，交易所強制清算不受程式控制。明確啟用的staged策略不在此變更範圍。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

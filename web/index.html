@@ -598,7 +598,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·KC反向峰谷／走出3ATR後十字線＋0.6ATR反向實體</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·已收線MA5先順向再反向峰谷平倉</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -1024,6 +1024,7 @@
                     const kcMiddle = [];
                     const kcLower = [];
                     const tradeMarkers = [];
+                    const compactTradeMarkers = window.matchMedia('(max-width: 768px)').matches;
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -1037,10 +1038,10 @@
                             .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
                             .forEach(trade => {
                                 const markerStyle = {
-                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買入開多' },
-                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
-                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
-                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
+                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: compactTradeMarkers ? '買多' : '買入開多' },
+                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: compactTradeMarkers ? '賣空' : '賣出開空' },
+                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: compactTradeMarkers ? '平多' : '賣出平多' },
+                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: compactTradeMarkers ? '平空' : '買回平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
                                 
@@ -1051,7 +1052,7 @@
                                 }).format(new Date(stamp)) : '';
                                 tradeMarkers.push({
                                     time: d.time, ...markerStyle,
-                                    text: clock ? `${markerStyle.text} ${clock}` : markerStyle.text,
+                                    text: !compactTradeMarkers && clock ? `${markerStyle.text} ${clock}` : markerStyle.text,
                                     size: 1,
                                 });
                             });
