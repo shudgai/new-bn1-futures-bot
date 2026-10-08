@@ -340,6 +340,36 @@
                     </div>
                 </div>
 
+                <div class="card" id="entry-gate-panel">
+                    <div class="card-title">
+                        <span>開倉 Gate／攔截原因</span>
+                        <span style="font-size:11px; color:var(--muted)">隨狀態更新</span>
+                    </div>
+                    <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+                        顯示各幣最近一次 Gate 日誌；時間為該次判定時間，非送單授權。破軌不代表全部開倉條件通過。
+                    </p>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr><th>幣種</th><th>軌道位置</th><th>方向／階段</th><th>最近判定／攔截原因</th><th>判定時間</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="gate in entryGateRows" :key="gate.symbol">
+                                    <td>{{ gate.symbol }}</td>
+                                    <td>{{ gate.location }}</td>
+                                    <td>{{ gate.side }}／{{ gate.stage }}</td>
+                                    <td style="white-space:normal; overflow-wrap:anywhere;">
+                                        <div>{{ gate.description }}</div>
+                                        <div v-if="gate.reason" style="font-size:11px; color:var(--muted)">{{ gate.reason }}</div>
+                                    </td>
+                                    <td>{{ gate.time }}</td>
+                                </tr>
+                                <tr v-if="!entryGateRows.length"><td colspan="5">尚無幣種診斷資料</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- POSITIONS TABLE -->
                 <div class="card">
                     <div class="card-title">
@@ -568,7 +598,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA5破位+中軌底線)</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·KC反向峰谷／十字線後0.6ATR反向實體</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -681,10 +711,50 @@
                     aiAnalysisExpanded: false,
                     volatilityExpanded: false,
                     lockedProfitBump: {},      // { [symbol]: true } 當 Phase 升級時閪爍
-                    _prevLockedPhase: {},      // { [symbol]: number } 上一次 Phase 編號
+                    prevLockedPhase: {},      // { [symbol]: number } 上一次 Phase 編號
                 }
             },
             computed: {
+                entryGateRows() {
+                    const locations = {
+                        INSIDE_CHANNEL: 'KC 通道內',
+                        LONG_BROKEN: '上軌外',
+                        SHORT_BROKEN: '下軌外'
+                    };
+                    const descriptions = {
+                        WAIT_NEW_KC_BREAKOUT: '等待新的有效 KC 破軌',
+                        WAIT_VALID_DIRECTION: '等待有效方向',
+                        BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR: '當根 K 線方向不符',
+                        BLOCKED_OPPOSITE_CLOSED_BODY: '已收線 K 棒實體方向不符',
+                        BLOCKED_MA5_RETURNING_TO_KC: 'MA5 正在退回 KC，禁止開倉',
+                        BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID: 'MA5 持平、反向、幅度不足或資料無效，禁止開倉',
+                        BLOCKED_MA5_CHOP_TURNS: '最近六根已收線 MA5 反覆轉向，盤整不開倉',
+                        WAIT_MA5_CHOP_DATA: 'MA5 盤整判斷資料不足或無效，暫不開倉',
+                        KC_PENDING_CANCELLED_INSIDE_RAIL: '價格退回軌內，破軌候選取消',
+                        FILLED: '該次開倉已成交'
+                    };
+                    return (this.bot.symbols || []).map(symbol => {
+                        const log = this.newestLogs.find(item =>
+                            String(item.text || '').startsWith('ENTRY_GATE ')
+                            && String(item.text).includes(' symbol=' + symbol + ' ')
+                        );
+                        const text = log ? log.text : '';
+                        const reasonMatch = text.match(/ reason=(.*)$/);
+                        const reason = reasonMatch ? reasonMatch[1] : '';
+                        const sideMatch = text.match(/ side=(\S+)/);
+                        const stageMatch = text.match(/ stage=(\S+)/);
+                        const metric = (this.bot.chart_metrics || {})[symbol];
+                        return {
+                            symbol,
+                            location: metric ? (locations[metric.breakout_status] || '尚無軌道資料') : '尚無軌道資料',
+                            side: sideMatch ? ({LONG: '多', SHORT: '空', NONE: '未定'}[sideMatch[1]] || sideMatch[1]) : '尚無資料',
+                            stage: stageMatch ? stageMatch[1] : '尚無資料',
+                            reason,
+                            description: reason ? (descriptions[reason] || '後端判定：' + reason) : '尚無 Gate 診斷，不能判定通過',
+                            time: log ? log.time : '—'
+                        };
+                    });
+                },
                 newestLogs() {
                     if (!this.bot || !Array.isArray(this.bot.logs)) return [];
                     // Persisted logs may not retain insertion order after a restart.
@@ -1340,12 +1410,12 @@
                             newPositions.forEach(p => {
                                 const sym = p.symbol;
                                 const newPhase = p.locked_phase || 0;
-                                const prevPhase = this._prevLockedPhase[sym] || 0;
+                                const prevPhase = this.prevLockedPhase[sym] || 0;
                                 if (newPhase > prevPhase && newPhase > 0) {
-                                    this.$set(this.lockedProfitBump, sym, true);
-                                    setTimeout(() => this.$set(this.lockedProfitBump, sym, false), 560);
+                                    this.lockedProfitBump[sym] = true;
+                                    setTimeout(() => { this.lockedProfitBump[sym] = false; }, 560);
                                 }
-                                this.$set(this._prevLockedPhase, sym, newPhase);
+                                this.prevLockedPhase[sym] = newPhase;
                             });
                             this.bot.positions = newPositions;
                         }
@@ -1420,7 +1490,7 @@
                 },
                 async closePos(symbol) {
                     if (this.isClosingPos[symbol]) return;
-                    this.$set ? this.$set(this.isClosingPos, symbol, true) : (this.isClosingPos[symbol] = true);
+                    this.isClosingPos[symbol] = true;
                     try {
                         const res = await this.authorizedFetch('/api/manual_close', {
                             method: 'POST',

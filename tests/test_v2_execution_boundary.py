@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import pandas as pd
 
 from core.services.entry_contract import evaluate_entry_contract
 from core.services.entry_firewall import validate_account_entry, validate_entry_frame
@@ -15,6 +16,9 @@ def candles(side='LONG', live=True):
     f = frame(side)
     stamp = int(time.time() // 60) * 60000
     f['timestamp'] = [stamp-(5-i)*60000 for i in range(6)]
+    prior = f.iloc[[0]].copy()
+    prior["timestamp"] -= 60000
+    f = pd.concat([prior, f], ignore_index=True)
     f.attrs['timeframe_ms'] = 60000
     f.attrs['entry_finality_verified'] = True
     if not live:

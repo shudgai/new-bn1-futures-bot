@@ -103,6 +103,14 @@ def migrate_account_peak_exits(account):
     changed = False
     for symbol, position in account.positions.items():
         meta = account.position_meta.setdefault(symbol, {})
+        from core.services.exits.trend_pivot_exit import enabled, migrate
+        if enabled(position, meta):
+            try:
+                migrate(position, meta)
+                changed = True
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                account.log(f"TREND_PIVOT_MIGRATION_INVALID symbol={symbol} error={exc}", "WARNING")
+            continue
         entry_m = str(position.get('entry_mode') or meta.get('entry_mode') or '').upper()
         if entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
             continue
@@ -126,6 +134,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     entry_m = str((position or {}).get('entry_mode', '')).upper()
     if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
+    from core.services.exits.trend_pivot_exit import enabled, enforce
+    if enabled(position, account.position_meta.get(symbol)):
+        return await enforce(account, symbol, price,
+                             getattr(engine, '_channel_exit_frames', {}).get(symbol), quote_ms)
     try:
         price = float(price)
         stamp = float(quote_ms) if quote_ms is not None else time.time()*1000

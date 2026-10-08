@@ -1243,6 +1243,9 @@ class TradingEngine:
         position = self.account.positions.get(symbol)
         if not position or position.get('entry_mode') != 'CHANNEL_SWING':
             return False
+        from core.services.exits.trend_pivot_exit import enabled
+        if enabled(position, self.account.position_meta.get(symbol)):
+            return False
         decision = evaluate_entry_contract(frame, price, symbol=symbol)
         if not decision or decision['type'] not in TURN_CODES or decision['side'] == position.get('side'):
             return False

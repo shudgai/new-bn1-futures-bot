@@ -9,6 +9,9 @@ from core.interfaces.exit_interface import IExitStrategy
 
 
 def hard_stop_reason(position, price):
+    from core.services.exits.trend_pivot_exit import enabled
+    if enabled(position):
+        return None
     pending = position.get("channel_hard_stop_pending")
     if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
         return pending
@@ -37,6 +40,9 @@ async def enforce_hard_stop(account, symbol, price):
         return False
     meta = account.position_meta.get(symbol, {})
     if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
+        return False
+    from core.services.exits.trend_pivot_exit import enabled
+    if enabled(position, meta):
         return False
     try:
         price = float(price)

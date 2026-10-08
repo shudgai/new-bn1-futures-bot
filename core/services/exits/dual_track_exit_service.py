@@ -38,6 +38,11 @@ class DualTrackExitStrategy(IExitStrategy):
 
     def evaluate_exit(self, position, frame=None, current_price=None, **kwargs):
         import time
+        from core.services.exits.trend_pivot_exit import enabled, evaluate
+        if enabled(position):
+            evidence, _ = evaluate(position, frame, current_price,
+                                   kwargs.get('quote_ms', time.time()*1000))
+            return evidence["reason"] if evidence else None
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
         if current_price is None:
             return None

@@ -105,7 +105,8 @@ def estimated_net_pnl(entry, price, qty, sign, fee, slippage):
     return sign*(execution-entry)*qty - (entry+execution)*qty*fee
 
 
-def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
+def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr,
+                           *, adverse_body_atr=DOJI_ADVERSE_BODY_ATR):
     """A completed doji (or stall) followed immediately by an adverse live body."""
     try:
         stamp = float(snapshot['quote_ms'])
@@ -129,7 +130,7 @@ def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_at
         if ratio > DOJI_BODY_RATIO and not math.isclose(ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
             return None
         body = sign * (opening - price)
-        threshold = DOJI_ADVERSE_BODY_ATR * atr
+        threshold = adverse_body_atr * atr
         if body <= 0 or (body < threshold and not math.isclose(body, threshold, rel_tol=1e-12)):
             return None
         live_span = max(high, price) - min(low, price)
@@ -256,6 +257,9 @@ def evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr):
 
 
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
+    from core.services.exits.trend_pivot_exit import enabled
+    if enabled(position):
+        return None  # This legacy adapter has no closed frame or new exit authority.
     try:
         ident = position_identity(position)
         stamp = float(snapshot) if isinstance(snapshot, (int, float)) else float(snapshot.get('quote_ms', 0))

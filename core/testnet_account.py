@@ -1148,6 +1148,10 @@ class BinanceTestnetAccount:
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
+            from core.services.exits.trend_pivot_exit import enabled, enforce
+            if enabled(pos, meta):
+                await enforce(self, symbol, mark_p)
+                continue
                 
             # =========================================================================
             # 🔥 獨立極值利潤回撤保護 (Extreme Profit Giveback Protection) 🔥
@@ -2807,6 +2811,10 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        from core.services.exits.trend_pivot_exit import close_allowed
+        if not close_allowed(position, meta, close_reason, is_manual):
+            self.log(f"TREND_PIVOT_CLOSE_BLOCKED symbol={symbol} reason={close_reason}", "INFO")
+            return False
         if staged_enabled(position, meta):
             runtime = self.staged_risk_runtimes.get(symbol)
             if runtime is None or not is_manual or is_limit:

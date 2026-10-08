@@ -14,6 +14,8 @@ def valid_entry_atr(value):
 def initialize_atr_protection(position, entry_price, side, atr, initial_stop=None):
     from core.services.exit_service import initialize_chandelier
     initialize_chandelier(position, entry_price, side, atr, initial_stop=initial_stop)
+    if str(position.get("entry_mode") or "CHANNEL_SWING").upper() == "CHANNEL_SWING":
+        position.update(sl=0., tp=0., stop_loss=0., atr_sl=0., atr_tp=0.)
 
 
 def atr_exit_reason(position, price, frame=None):
@@ -28,6 +30,9 @@ async def enforce_atr_protection(account, symbol, price):
     if not position:
         return False
     meta = account.position_meta.setdefault(symbol, {})
+    from core.services.exits.trend_pivot_exit import enabled, enforce
+    if enabled(position, meta):
+        return await enforce(account, symbol, price)
     for key in STATE_KEYS:
         if key not in position and key in meta:
             position[key] = copy.deepcopy(meta[key])

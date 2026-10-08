@@ -1049,6 +1049,10 @@ class PaperAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        from core.services.exits.trend_pivot_exit import close_allowed
+        if not close_allowed(position, meta, close_reason, is_manual):
+            self.log(f"TREND_PIVOT_CLOSE_BLOCKED symbol={symbol} reason={close_reason}", "INFO")
+            return False
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
         # 止損先平倉。硬虧損停損（尚未鎖利）與手動平倉仍照常執行。
         outer_run_profit_lock_hold = bool(
