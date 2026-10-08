@@ -17,6 +17,12 @@ def candles(side='LONG', live=True):
     prior = f.iloc[[0]].copy()
     prior["timestamp"] -= 60000
     f = pd.concat([prior, f], ignore_index=True)
+    prefix = []
+    for offset in range(8, 0, -1):
+        row = f.iloc[0].copy()
+        row["timestamp"] -= offset*60000
+        prefix.append(row)
+    f = pd.concat([pd.DataFrame(prefix, index=range(-8, 0)), f])
     f.attrs['timeframe_ms'] = 60000
     f.attrs['entry_finality_verified'] = True
     if not live:

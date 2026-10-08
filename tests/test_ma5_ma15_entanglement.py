@@ -1,7 +1,32 @@
 import pandas as pd
 import pytest
 
-from core.services.ma5_chop_gate import ma5_ma15_entanglement_problem
+from core.services.ma5_chop_gate import (
+    CAP_MA5_MA15_OVERLAP_RATIO,
+    cap_ma5_ma15_overlap_problem,
+    ma5_ma15_entanglement_problem,
+)
+
+
+@pytest.mark.parametrize(
+    "gap_ratio, expected",
+    [
+        (CAP_MA5_MA15_OVERLAP_RATIO * .99, "BLOCKED_CAP_MA5_MA15_OVERLAP"),
+        (CAP_MA5_MA15_OVERLAP_RATIO, "BLOCKED_CAP_MA5_MA15_OVERLAP"),
+        (CAP_MA5_MA15_OVERLAP_RATIO * 1.01, None),
+    ],
+)
+def test_cap_blocks_overlapping_live_ma5_and_ma15(gap_ratio, expected):
+    assert cap_ma5_ma15_overlap_problem(
+        "CAP/USDT", 100., 100. * (1. + gap_ratio), 100.
+    ) == expected
+
+
+def test_cap_ma_overlap_gate_fails_closed_on_invalid_data_and_is_symbol_scoped():
+    assert cap_ma5_ma15_overlap_problem("CAP/USDT", float("nan"), 100., 100.) == (
+        "WAIT_CAP_MA5_MA15_DATA"
+    )
+    assert cap_ma5_ma15_overlap_problem("龙虾/USDT", 100., 100., 100.) is None
 
 
 def market():

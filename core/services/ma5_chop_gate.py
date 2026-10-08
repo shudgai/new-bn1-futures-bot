@@ -3,6 +3,24 @@ import math
 
 from core.services.candle_data import closed_entry_candles
 
+CAP_MA5_MA15_OVERLAP_RATIO = 0.0002
+
+
+def cap_ma5_ma15_overlap_problem(symbol, ma5, ma15, price):
+    if symbol != "CAP/USDT":
+        return None
+    try:
+        ma5, ma15, price = map(float, (ma5, ma15, price))
+        if not all(math.isfinite(value) and value > 0 for value in (ma5, ma15, price)):
+            return "WAIT_CAP_MA5_MA15_DATA"
+        gap_ratio = abs(ma5 - ma15) / price
+        if (gap_ratio < CAP_MA5_MA15_OVERLAP_RATIO
+                or math.isclose(gap_ratio, CAP_MA5_MA15_OVERLAP_RATIO, rel_tol=1e-12)):
+            return "BLOCKED_CAP_MA5_MA15_OVERLAP"
+        return None
+    except (TypeError, ValueError, OverflowError):
+        return "WAIT_CAP_MA5_MA15_DATA"
+
 
 def ma5_chop_problem(frame):
     try:

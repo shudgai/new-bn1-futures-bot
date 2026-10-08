@@ -8,14 +8,13 @@ import numpy as np
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import RETIRED_KEYS, position_identity
 from core.services.exits.staged_risk_service import staged_enabled
-from core.services.exits import atr_step_profit
 
 POLICY = "atr_step_priority_dual_trend_ma5_peak_valley_v14"
 STATE_KEY = "trend_pivot_exit_state"
 PIVOT_REASON = "EXIT_KC_REVERSE_CLOSED_MA5_PEAK_010_ATR"
 LIVE_REASON = "EXIT_KC_REVERSE_LIVE_MA5_PEAK_010_ATR"
 DOJI_REASON = "EXIT_THREE_POST_ENTRY_CLOSED_DOJI"
-REASONS = (PIVOT_REASON, LIVE_REASON, atr_step_profit.REASON)
+REASONS = (PIVOT_REASON, LIVE_REASON)
 MA5_TURN_ATR = 0.10
 DISABLED_KEYS = RETIRED_KEYS + ("peak_trailing_state", "channel_hard_stop_pending")
 
@@ -39,9 +38,12 @@ def migrate(position, meta):
             and prior.get("identity") == identity):
         state = copy.deepcopy(prior)
         state["policy"] = POLICY
-        if state.get("pending") != atr_step_profit.REASON:
-            state.pop("pending", None)
-            state.pop("evidence", None)
+        state.pop("pending", None)
+        state.pop("evidence", None)
+    state.pop("atr_step_profit", None)
+    if state.get("pending") == "EXIT_FIXED_ATR_HALF_STEP_PROFIT":
+        state.pop("pending", None)
+        state.pop("evidence", None)
     state.pop("closed_doji", None)
     if state.get("pending") == DOJI_REASON:
         state.pop("pending", None)
@@ -211,13 +213,7 @@ def _evaluate(position, frame, price, quote_ms, symbol="", *, fee=0.0005, slippa
         matching = state.get("policy") == POLICY and state.get("identity") == identity
         if matching and state.get("pending") in REASONS:
             return copy.deepcopy(state["evidence"]), None, {}
-        evidence, problem, patch = atr_step_profit.evaluate(
-            position, state if matching else {}, symbol, quote, stamp, fee=fee, slippage=slippage)
-        if evidence:
-            return evidence, None, patch
-        candle_evidence, candle_problem, candle_patch = _evaluate_ma5(position, frame, quote, stamp)
-        patch.update(candle_patch)
-        return candle_evidence, None if candle_evidence else problem or candle_problem, patch
+        return _evaluate_ma5(position, frame, quote, stamp)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None, "WAIT_TREND_PIVOT_DATA", {}
 

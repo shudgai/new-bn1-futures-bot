@@ -135,7 +135,7 @@ def test_historical_ma5_turns_do_not_veto_current_qualified_entry(symbol, side, 
     else:
         from test_v2_execution_boundary import candles as general_candles
         f = general_candles(side)
-        f.loc[:5, "ma5"] = [100.+sign*v for v in (1.3, 1.4, 1.2, 1.3, 1.4, 1.5)]
+        f.loc[0:5, "ma5"] = [100.+sign*v for v in (1.3, 1.4, 1.2, 1.3, 1.4, 1.5)]
     assert ma5_chop_problem(f) == "BLOCKED_MA5_CHOP_TURNS"
     a = SimpleNamespace(positions={}, trades=[], last_closed_at={}, save_state=Mock(),
                         log=Mock(), entry_frame_provider=AsyncMock(return_value=f))

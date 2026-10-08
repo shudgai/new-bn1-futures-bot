@@ -200,18 +200,15 @@ def test_real_paper_update_cannot_hard_stop_or_lock(side, tmp_path, monkeypatch)
 def test_common_contract_and_final_firewall_gate(side):
     from core.services.entry_contract import evaluate_entry_contract
     from core.services.entry_firewall import validate_entry_frame
-    from test_strict_entry_contract import candles
+    from test_v2_execution_boundary import candles
     f = candles(side)
-    first = f.iloc[[0]].copy()
-    first["timestamp"] -= 60000
-    f = pd.concat([first, f], ignore_index=True)
     f.attrs["timeframe_ms"] = 60000
     sign = 1 if side == "LONG" else -1
-    f.loc[:5, "ma5"] = [100.+sign*i*.1 for i in range(6)]
+    f.loc[0:5, "ma5"] = [100.+sign*i*.1 for i in range(6)]
     diagnostics = {}
     decision = evaluate_entry_contract(f, diagnostics=diagnostics)
     assert decision, diagnostics
-    f.loc[:5, "ma5"] = [101.3,101.4,101.2,101.3,101.4,101.5] if side == "LONG" else [
+    f.loc[0:5, "ma5"] = [101.3,101.4,101.2,101.3,101.4,101.5] if side == "LONG" else [
         98.7,98.6,98.8,98.7,98.6,98.5]
     assert evaluate_entry_contract(f, diagnostics=diagnostics)
     assert validate_entry_frame(f, side, decision["type"])

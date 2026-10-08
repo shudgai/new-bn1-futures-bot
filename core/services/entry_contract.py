@@ -2,7 +2,10 @@
 import math
 
 import numpy as np
-from core.services.ma5_chop_gate import ma5_ma15_entanglement_problem
+from core.services.ma5_chop_gate import (
+    cap_ma5_ma15_overlap_problem,
+    ma5_ma15_entanglement_problem,
+)
 from core.services import fast_close_reentry
 
 from core.services.candle_data import closed_entry_candles
@@ -35,7 +38,8 @@ CROSS_EVIDENCE_KEYS = ("cross_previous_ma5", "cross_previous_ma15", "cross_live_
                        "cross_live_ma15", "cross_reference_bar_id")
 REVERSAL_EVIDENCE_KEYS = ("reversal_reference_atr", "reversal_live_open", "reversal_body",
                           "reversal_body_atr", "reversal_kc_previous", "reversal_kc_current")
-ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + fast_close_reentry.EVIDENCE_KEYS + ("continuation_pair_id",)
+DIRECTION_EVIDENCE_KEYS = ("direction_live_ma5", "direction_live_ma15")
+ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS + CROSS_EVIDENCE_KEYS + REVERSAL_EVIDENCE_KEYS + fast_close_reentry.EVIDENCE_KEYS + DIRECTION_EVIDENCE_KEYS + ("continuation_pair_id",)
 
 
 MA5_MIN_ENTRY_SLOPE_ATR = 0.05
@@ -498,6 +502,23 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 diagnostics.clear()
                 diagnostics.update(decision)
             return None
+        direction_closed = closed_entry_candles(ma5_frame)
+        if len(direction_closed) < 14:
+            return reject("WAIT_LIVE_MA_DIRECTION_DATA")
+        direction_prices = [float(v) for v in direction_closed.close.tail(14)] + [quote]
+        if not all(math.isfinite(v) and v > 0 for v in direction_prices):
+            return reject("WAIT_LIVE_MA_DIRECTION_DATA")
+        direction_ma5 = sum(direction_prices[-5:])/5.
+        direction_ma15 = sum(direction_prices)/15.
+        overlap_problem = cap_ma5_ma15_overlap_problem(
+            symbol, direction_ma5, direction_ma15, quote
+        )
+        if overlap_problem:
+            return reject(overlap_problem)
+        if ((1 if decision["side"] == "LONG" else -1)*(direction_ma5-direction_ma15)
+                <= max(direction_ma5, direction_ma15)*1e-12):
+            return reject("BLOCKED_LIVE_MA5_MA15_DIRECTION")
+        decision.update(direction_live_ma5=direction_ma5, direction_live_ma15=direction_ma15)
         if close_fill is not None:
             try:
                 previous_ma5, current_ma5 = fast_close_reentry.live_ma5_values(ma5_frame, quote)
