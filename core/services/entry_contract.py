@@ -2,7 +2,7 @@
 import math
 
 import numpy as np
-from core.services.ma5_chop_gate import ma5_chop_problem, ma5_ma15_entanglement_problem
+from core.services.ma5_chop_gate import ma5_ma15_entanglement_problem
 
 from core.services.candle_data import closed_entry_candles
 from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
@@ -472,9 +472,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
 
         if not ma5_entry_ready(ma5_frame, quote, decision['side']):
             return reject('BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID')
-        chop_problem = ma5_chop_problem(ma5_frame)
-        if chop_problem:
-            return reject(chop_problem)
         entanglement = ma5_ma15_entanglement_problem(ma5_frame, quote, decision["side"])
         if entanglement:
             return reject(entanglement)

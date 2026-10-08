@@ -8,6 +8,7 @@ import pytest
 
 from core.services.entry_contract import evaluate_entry_contract, evaluate_live_ma_cross
 from core.services.entry_firewall import validate_account_entry
+from core.services.ma5_chop_gate import ma5_chop_problem
 
 
 def candles(side="LONG"):
@@ -89,6 +90,40 @@ def test_retired_live_breakout_rejected_even_with_cross(side):
     assert evaluate_entry_contract(f, code="KC_LIVE_BODY_BREAKOUT_"+side,
                                    diagnostics=diagnostics) is None
     assert diagnostics["reason"] == "BLOCKED_OBSOLETE_ENTRY_SIGNAL"
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("entry", ["cross", "general"])
+def test_historical_ma5_turns_do_not_veto_current_qualified_entry(symbol, side, entry):
+    sign = 1 if side == "LONG" else -1
+    if entry == "cross":
+        f = candles(side)
+        f.loc[9:14, "ma5"] = [100.+sign*v for v in (.012, .014, .016, .013, .018, .020)]
+    else:
+        from test_v2_execution_boundary import candles as general_candles
+        f = general_candles(side)
+        f.loc[:5, "ma5"] = [100.+sign*v for v in (1.3, 1.4, 1.2, 1.3, 1.4, 1.5)]
+    assert ma5_chop_problem(f) == "BLOCKED_MA5_CHOP_TURNS"
+    a = SimpleNamespace(positions={}, trades=[], last_closed_at={}, save_state=Mock(),
+                        log=Mock(), entry_frame_provider=AsyncMock(return_value=f))
+    decision = evaluate_entry_contract(f, account=a, symbol=symbol)
+    assert decision and decision["type"] == (
+        "MA5_MA15_LIVE_CROSS_"+side if entry == "cross" else "KC_2BAR_CONFIRM_"+side)
+    context = dict(entry_signal_code=decision["type"],
+                   channel_confirmation_bar_id=decision["confirmation_bar_id"])
+    assert asyncio.run(validate_account_entry(a, symbol, side, context))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_old_turns_removed_does_not_bypass_entanglement(side):
+    f = candles(side)
+    sign = 1 if side == "LONG" else -1
+    f.loc[9:14, "ma5"] = [100.+sign*v for v in (.012, .014, .016, .013, .018, .020)]
+    assert ma5_chop_problem(f) == "BLOCKED_MA5_CHOP_TURNS"
+    diagnostics = {}
+    assert evaluate_entry_contract(f, 100.+sign*.8, diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "BLOCKED_MA5_MA15_ENTANGLED"
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT"])

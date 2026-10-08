@@ -213,8 +213,11 @@ def test_common_contract_and_final_firewall_gate(side):
     assert decision, diagnostics
     f.loc[:5, "ma5"] = [101.3,101.4,101.2,101.3,101.4,101.5] if side == "LONG" else [
         98.7,98.6,98.8,98.7,98.6,98.5]
+    assert evaluate_entry_contract(f, diagnostics=diagnostics)
+    assert validate_entry_frame(f, side, decision["type"])
+    f.loc[5, "ma5"] = f.loc[4, "ma5"]
     assert evaluate_entry_contract(f, diagnostics=diagnostics) is None
-    assert diagnostics["reason"] == "BLOCKED_MA5_CHOP_TURNS"
+    assert diagnostics["reason"] == "BLOCKED_MA5_FLAT_OPPOSITE_OR_INVALID"
     with pytest.raises(ValueError):
         validate_entry_frame(f, side, decision["type"])
 

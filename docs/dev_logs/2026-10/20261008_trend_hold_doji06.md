@@ -2,6 +2,35 @@
 
 ## Owner decisions
 
+### Removing the stale six-MA5-turn veto after the 23:44 review
+
+The Owner approved removing the standalone six-completed-MA5/two-turn veto
+from all shared automatic entry paths. Keep the three-bar MA5/MA15
+entanglement guard and its directional live-separation requirement unchanged.
+Preserve formation, latest closed/live MA5 direction/strength, account
+firewall, capital/slot checks and fill dedupe. Exit V9 is unchanged.
+The old helper remains only as compatibility/test diagnostic, not order
+authority. No historical order is backfilled.
+
+Completed candle review: MA5 at 23:38..23:43 was 0.040062, 0.040164,
+0.040180, 0.040162, 0.040404, 0.040612. The old rule counted two switches
+around the 0.000018 retreat at 23:41 despite renewed advances at 23:42/43.
+MA5/MA15 gap grew from 0.000026 at 23:41 to 0.000164 and 0.000299.
+K1 23:42 crossed outside and K2 23:43 confirmed, with body/range ratios
+about 82% and 30%. This establishes completed structure, not the exact
+23:44:06 quote or guaranteed fill; live doji/color checks may still block
+general entry at other quotes.
+
+Validation: 274 passed in live-cross, owner-policy, entanglement, observed
+provenance and V2 execution-boundary modules; 11 existing UTC datetime
+warnings. New four-symbol/direction cross/general account-firewall checks
+prove old two-turn histories no longer veto qualified entries, while
+entanglement and current flat MA5 remain blocked. Whitespace/editor checks
+passed. This targeted result is not a new full-suite result. Release entry
+policy is `live_ma5_ma15_cross_or_observed_two_bar_v3`; exit stays V9.
+Publish and restart only the paper service, backing up the stopped account.
+Independent WAIT gates below remain BLOCK/NOT_TESTED.
+
 ### Final entry replacement and KC trend hold (after 23:24 release)
 
 The Owner cancelled all SMALL/multi-bridge 0.50-ATR automatic live breakout
