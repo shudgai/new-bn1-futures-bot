@@ -111,6 +111,15 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
         opening = float(live['open'])
         if sign * (quote - opening) < LIVE_BREAKOUT_BODY_ATR * atr:
             return None
+            
+        # 第三根 (Live Bar) 十字星防護
+        high = max(float(live["high"]), quote)
+        low = min(float(live["low"]), quote)
+        curr_range = high - low
+        curr_body = abs(quote - opening)
+        if curr_range > 0 and (curr_body / curr_range < 0.50):
+            return None
+            
         closes = [float(value) for value in frame['close'].iloc[-5:-1]]
         last_ma5 = float(frame.iloc[-2]['ma5'])
         if (len(closes) != 4 or not all(math.isfinite(value) and value > 0 for value in closes)
@@ -260,11 +269,37 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
                 or lower >= upper):
             return None
 
+        # --- 第三根 (Live Bar) 十字星與反向 K 防護 ---
+        high = max(float(live["high"]), quote)
+        low = min(float(live["low"]), quote)
+        curr_range = high - low
+        curr_body = abs(quote - opened)
+        
+        # 十字星防護：實體不到波幅 50% 不開倉
+        if curr_range > 0 and (curr_body / curr_range < 0.50):
+            return None
+
         side = live_body_breakout_side(frame, quote)
         if side is None:
-            return evaluate_closed_outer_body_breakout(
+            ret = evaluate_closed_outer_body_breakout(
                 frame, quote, symbol=symbol, requested_side=requested_side
             )
+            if ret is None:
+                return None
+            side = ret['side']
+            # 當由 evaluate_closed_outer_body_breakout 通過時，反向 K 防護：做多必須是紅 K(漲)，做空必須是綠 K(跌)
+            if side == 'LONG' and quote <= opened:
+                return None
+            if side == 'SHORT' and quote >= opened:
+                return None
+            return ret
+
+        # 當由 live_body_breakout_side 通過時，反向 K 防護
+        if side == 'LONG' and quote <= opened:
+            return None
+        if side == 'SHORT' and quote >= opened:
+            return None
+
         if requested_side is not None and requested_side != side:
             return None
         stamp = float(live["timestamp"])
