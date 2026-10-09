@@ -2,7 +2,7 @@
 import math
 import time
 
-LOCK_TRIGGERS = frozenset({'PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'})
+LOCK_TRIGGERS = frozenset({'PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3','PROFIT_LOCK_SELL_PRESSURE','EXIT_DOJI_BEARISH_CONFIRMATION','EXIT_DOJI_BULLISH_CONFIRMATION'})
 
 
 def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):

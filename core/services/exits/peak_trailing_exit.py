@@ -34,14 +34,14 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
-    'PROFIT_LOCK_T1', 'PROFIT_LOCK_T2', 'PROFIT_LOCK_T3',
+    'PROFIT_LOCK_SELL_PRESSURE', 'EXIT_DOJI_BEARISH_CONFIRMATION', 'EXIT_DOJI_BULLISH_CONFIRMATION',
     'WATERFALL_DROP',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
     'THREE_POINT_PIVOT',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
-    'PROFIT_LOCK_T1', 'PROFIT_LOCK_T2', 'PROFIT_LOCK_T3',
+    'PROFIT_LOCK_SELL_PRESSURE', 'EXIT_DOJI_BEARISH_CONFIRMATION', 'EXIT_DOJI_BULLISH_CONFIRMATION',
     'WATERFALL_DROP',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
@@ -163,13 +163,13 @@ def migrate_peak_state(position, meta=None):
                     'ma5_reversal_favorable_seen', 'ma5_reversal_outside_seen',
                     'ma5_reversal_last_price'):
             state.pop(key, None)
-    if channel_initial_stop_disabled(position, meta) and state.get('profit_lock_basis') != 'price_return_v1':
+    if channel_initial_stop_disabled(position, meta) and state.get('profit_lock_basis') != 'ratchet_sell_pressure_v1':
         if state.get('trigger') in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'):
             for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
                 state.pop(key, None)
         for key in ('tiered_roi_peak','tiered_roi_current','tiered_roi_allowance'):
             state.pop(key, None)
-        state['profit_lock_basis'] = 'price_return_v1'
+        state['profit_lock_basis'] = 'ratchet_sell_pressure_v1'
     if channel_initial_stop_disabled(position, meta) and state.get('lifeline_policy_version') != 1:
         # Older pivot authorization did not check the new unarmed life-line rule.
         if state.get('trigger') == 'THREE_POINT_PIVOT':
@@ -700,26 +700,42 @@ def trend_continuation_hold(side, price, snapshot):
     sign = 1 if side == 'LONG' else -1
     ma = snapshot.get('live_ma5', snapshot.get('ma5'))
     prior_ma = snapshot.get('closed_ma5', snapshot.get('last_ma5'))
-    opened = snapshot.get('live_open', snapshot.get('open'))
-    previous = snapshot.get('last_close')
-    rail = snapshot.get('live_kc_upper' if side == 'LONG' else 'live_kc_lower',
-                        snapshot.get('kc_upper' if side == 'LONG' else 'kc_lower'))
-    strong = any(positive(v) and sign*(price-float(v)) > 0 for v in (opened, previous))
-    strong |= positive(ma) and positive(prior_ma) and sign*(float(ma)-float(prior_ma)) >= 0
-    strong |= any(positive(v) and sign*(price-float(v)) >= 0 for v in (ma, rail))
+    strong = (positive(ma) and positive(prior_ma)
+              and sign*(price-float(ma)) >= 0
+              and sign*(float(ma)-float(prior_ma)) >= 0)
     if strong:
-        return 'HOLDING_ON_BULLISH_MOMENTUM' if side == 'LONG' else 'HOLDING_ON_BEARISH_MOMENTUM'
+        return 'RIDING_STRONG_TREND'
     return None
 
 
-def profit_momentum_turned(side, price, snapshot):
-    if not isinstance(snapshot, dict):
-        return False
-    sign = 1 if side == 'LONG' else -1
-    ma = snapshot.get('live_ma5', snapshot.get('ma5'))
-    prior = snapshot.get('closed_ma5', snapshot.get('last_ma5'))
-    return bool(positive(ma) and positive(prior) and sign*(price-float(ma)) < 0
-                and sign*(float(ma)-float(prior)) < 0)
+def confirmed_doji_reversal(position, snapshot):
+    """Two consecutive closed post-entry bars; no intrabar doji hindsight."""
+    try:
+        bars = snapshot.get('history_5', [])
+        if len(bars) < 2:
+            return None
+        doji, reversal = bars[-2:]
+        stamp = float(snapshot['quote_ms'])
+        if (float(doji['ms']) <= float(position['open_timestamp'])*1000
+                or float(reversal['ms']) != float(doji['ms'])+60000
+                or float(reversal['ms']) != math.floor(stamp/60000)*60000-60000):
+            return None
+        for bar in (doji, reversal):
+            if not all(positive(bar.get(k)) for k in ('o','h','l','c')):
+                return None
+            if not bar['l'] <= min(bar['o'],bar['c']) <= max(bar['o'],bar['c']) <= bar['h']:
+                return None
+        span = doji['h']-doji['l']; body = abs(doji['c']-doji['o'])
+        if span <= 0 or body/span > .2:
+            return None
+        if min(doji['h']-max(doji['o'],doji['c']), min(doji['o'],doji['c'])-doji['l']) <= body:
+            return None
+        sign = 1 if position['side']=='LONG' else -1
+        if sign*(reversal['c']-reversal['o']) >= 0:
+            return None
+        return 'EXIT_DOJI_BEARISH_CONFIRMATION' if sign==1 else 'EXIT_DOJI_BULLISH_CONFIRMATION'
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return None
 
 
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
@@ -896,7 +912,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
-        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON, PEAK_REASON, 'PROFIT_LOCK_T1', 'PROFIT_LOCK_T2', 'PROFIT_LOCK_T3'):
+        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON, PEAK_REASON, 'PROFIT_LOCK_SELL_PRESSURE'):
             reason, trigger = state['pending'], state.get('trigger', 'RETRY')
         else:
             if isinstance(snapshot, dict):
@@ -1085,47 +1101,52 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         pass
                     reason, trigger = None, None
 
-        # Profit tiers use unleveraged price movement, independent of margin ROI.
         if is_channel_swing:
-            roi = sign*(price-entry)/entry
-            observed_peak = sign*(float(state.get('peak_price', price))-entry)/entry
-            state['tiered_price_peak'] = max(float(state.get('tiered_price_peak', 0)), roi, observed_peak)
-            peak_roi = state['tiered_price_peak']
-            lock_trigger = None
-            if peak_roi + 1e-12 >= .15:
-                allowance, lock_trigger = peak_roi*.20, 'PROFIT_LOCK_T3'
-            elif peak_roi + 1e-12 >= .10:
-                allowance, lock_trigger = .025, 'PROFIT_LOCK_T2'
-            elif peak_roi + 1e-12 >= .05:
-                allowance, lock_trigger = .012, 'PROFIT_LOCK_T1'
-            if lock_trigger and peak_roi-roi + 1e-12 >= allowance:
-                if reason != HARD_REASON and trigger not in ('WATERFALL_DROP','TWO_CLOSED_ADVERSE_ABNORMAL','OPPOSITE_KC_BAND_BREACH'):
-                    reason, trigger = lock_trigger, lock_trigger
-                    state.update(tiered_price_current=roi, tiered_price_allowance=allowance)
-            if state.get('pending') in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'):
-                reason, trigger = state['pending'], state['trigger']
-
-        if (is_channel_swing and reason and trigger not in (
-                'PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3','WATERFALL_DROP',
-                'TWO_CLOSED_ADVERSE_ABNORMAL','OPPOSITE_KC_BAND_BREACH') and reason != HARD_REASON
-                and lifeline_held(position['side'], price, snapshot)):
-            reason, trigger = None, None
-            for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
-                state.pop(key, None)
-
-        if is_channel_swing and reason and reason != HARD_REASON:
-            hold_reason = trend_continuation_hold(position['side'], price, snapshot)
-            is_profit = trigger in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3','THREE_POINT_PIVOT')
-            profit_ready = (float(state.get('tiered_price_peak', 0)) >= .05
-                            and float(state.get('tiered_price_peak', 0))-sign*(price-entry)/entry >= .012-1e-12
-                            and profit_momentum_turned(position['side'], price, snapshot))
-            if hold_reason or (is_profit and not profit_ready):
-                state.update(soft_exit_blocked=True, trend_hold_reason=hold_reason or 'WAIT_PROFIT_FLOOR_AND_MOMENTUM_TURN')
+            # Retire all legacy soft authorities; only the two-stage policy can
+            # authorize profit-taking. Hard stops and emergency defenses remain.
+            emergency = trigger in ('WATERFALL_DROP','TWO_CLOSED_ADVERSE_ABNORMAL','OPPOSITE_KC_BAND_BREACH')
+            if reason != HARD_REASON and not emergency:
                 reason, trigger = None, None
                 for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
                     state.pop(key, None)
-            else:
-                state.update(soft_exit_blocked=False, trend_hold_reason=None)
+            peak = float(state.get('peak_price', price))
+            peak_return = sign*(peak-entry)/entry
+            state['ratchet_peak_return'] = max(float(state.get('ratchet_peak_return', 0)), peak_return)
+            if state['ratchet_peak_return'] + 1e-12 >= .05:
+                state['ratchet_armed'] = True
+                candidate = peak*(1-sign*.015)
+                old_floor = state.get('locked_floor_price')
+                state['locked_floor_price'] = ((max if sign == 1 else min)(float(old_floor),candidate)
+                                               if positive(old_floor) else candidate)
+            held = trend_continuation_hold(position['side'], price, snapshot)
+            state.update(soft_exit_blocked=bool(held), trend_hold_reason=held)
+            snap = snapshot if isinstance(snapshot, dict) else {}
+            ma = snap.get('live_ma5',snap.get('ma5'))
+            prior = snap.get('closed_ma5',snap.get('last_ma5'))
+            opened = snap.get('live_open',snap.get('open'))
+            below_ma = positive(ma) and sign*(price-float(ma)) < 0
+            ma_turned = positive(ma) and positive(prior) and sign*(float(ma)-float(prior)) < 0
+            adverse_body = positive(opened) and sign*(price-float(opened)) < 0
+            drawdown = sign*(peak-price)/peak
+            doji_signal = confirmed_doji_reversal(position, snap)
+            high, low = snap.get('live_high'), snap.get('live_low')
+            body = abs(price-float(opened)) if positive(opened) else 0
+            wick = (float(high)-max(price,float(opened)) if sign==1 else min(price,float(opened))-float(low)) if all(positive(v) for v in (high,low,opened)) else 0
+            wick_pressure = body > 0 and wick > 1.5*body and drawdown > .012
+            scale = snap.get('atr',atr)
+            volume, baseline = snap.get('live_volume'), snap.get('prior_volume')
+            heavy_break = (adverse_body and positive(scale) and body >= 1.2*float(scale)
+                           and positive(volume) and positive(baseline) and float(volume) >= 1.5*float(baseline))
+            healthy = (drawdown <= .015 and lifeline_held(position['side'],price,snap)
+                       and not heavy_break and not doji_signal and not wick_pressure)
+            sell_pressure = below_ma or ma_turned or wick_pressure or bool(doji_signal)
+            if (held or healthy) and reason != HARD_REASON and not heavy_break:
+                state.update(soft_exit_blocked=True, trend_hold_reason=held or 'HEALTHY_PULLBACK_HOLD')
+                reason, trigger = None, None
+                for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
+                    state.pop(key,None)
+            elif state.get('ratchet_armed') and sell_pressure and reason != HARD_REASON and not emergency:
+                reason = trigger = doji_signal or 'PROFIT_LOCK_SELL_PRESSURE'
 
         if reason:
             try:

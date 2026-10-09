@@ -1,0 +1,7 @@
+# Two-Stage Ratchet and Sell Pressure
+
+Channel Swing soft exits now use one authority: PROFIT_LOCK_SELL_PRESSURE. A signed unleveraged price peak of 5% arms an internal floor at 1.5% from the observed extreme. The LONG floor only rises and the SHORT floor only falls. Thresholds, floor contact and pure drawdown never independently close a position.
+
+Price on the favorable side of MA5 together with a non-adverse MA5 slope yields RIDING_STRONG_TREND. After arming, price crossing MA5 adversely, an adverse MA5 slope, or drawdown greater than 1.5% with an adverse live body confirms pressure. Arming and pressure, rather than mandatory floor breach, follow the requested A+B specification. Historical extrema, arming, floor and exit receipts persist. Old tier tickets and legacy soft authorities cannot execute. Actual confirmed closes retain post-profit cooldown and extreme gates. Hard stops and dedicated emergency exits remain independent defenses, with existing strong-trend arbitration.
+
+Integrated healthy-pullback policy: supported MA15 or KC middle and drawdown <=1.5% veto ordinary MA5 pressure. A 1.2 ATR adverse body with at least 1.5 times preceding candle volume is an explicit heavy-break exception. Two consecutive closed post-entry bars confirm doji reversal; doji body <=20% of range and both wicks longer than body. The latest confirmation must belong to the immediately preceding minute. Adverse wick >1.5 body plus >1.2% extreme drawdown also confirms pressure. No future or pre-entry candle can authorize a doji exit.

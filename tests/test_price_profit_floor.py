@@ -9,7 +9,7 @@ def test_small_price_profit_never_arms_by_leverage(side,leverage):
     sign=1 if side=='LONG' else -1
     for gain in (.012,.008,.02,.001):
         assert evaluate_peak_trailing(p,100*(1+sign*gain),{'quote_ms':61000}) is None
-    assert p[STATE_KEY]['tiered_price_peak'] < .05
+    assert p[STATE_KEY]['ratchet_peak_return'] < .05
 
 
 def test_cap_actual_peak_does_not_trigger_t1():

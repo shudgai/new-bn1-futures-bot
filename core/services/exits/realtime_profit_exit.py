@@ -108,6 +108,8 @@ def cached_tick_indicators(frame, price, stamp):
             closed_bar_ms=last_ms,
             atr=float(last.get('atr') or 0.),
             live_open=float(live.get('open') or 0.),
+            live_volume=float(live.get('volume') or 0.),
+            prior_volume=float(last.get('volume') or 0.),
             live_high=max(float(live.get('high') or 0.), float(price)),
             live_low=min(float(live.get('low') or 0.), float(price)),
             live_kc_upper=float(live.get('kc_upper') or 0.),
@@ -202,7 +204,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
-                   'net_roe_lock_peak','net_roe_lock_armed','tiered_price_peak','profit_lock_basis','lifeline_policy_version',
+                   'net_roe_lock_peak','net_roe_lock_armed','ratchet_peak_return','ratchet_armed','locked_floor_price','soft_exit_blocked','trend_hold_reason','profit_lock_basis','lifeline_policy_version',
                    'trigger','trigger_bar_ms','trigger_price',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',
