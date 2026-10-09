@@ -2010,7 +2010,21 @@ class TradingEngine:
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
-    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None):
+    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None, qualification_signal_id=None):
+        # Preserve an observed valid breakout even if risk/order checks prevent a fill.
+        # Diagnostic and final account validation remain read-only.
+        from core.services.entry_contract import evaluate_entry_contract
+        observed = evaluate_entry_contract(frame, price, v8_reason,
+                                           account=self.account, symbol=symbol)
+        if (observed and observed['side'] == side and
+                observed['entry_phase'] == 'KC_2BAR_CLOSED_CONFIRM'):
+            qualification = {
+                'side': observed['side'],
+                'pending_signal_id': observed['pending_signal_id'],
+                'breakout_bar_id': observed['confirmation_bar_id'],
+            }
+            if getattr(self.account, 'breakout_qualification', {}).get(symbol) != qualification:
+                self.account.record_qualification(symbol, qualification)
         if daily_halt or symbol in self.account.positions:
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False

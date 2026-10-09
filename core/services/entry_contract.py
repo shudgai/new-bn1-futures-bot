@@ -10,97 +10,40 @@ from core.services.strategies.outer_strategy import (
     live_candle_color_ready,
     live_adverse_entry_safe,
     ma3_outer_continuation_ready,
-    ma5_ma15_trend_confirmed,
 )
+from core.services.kc_pending_entry import KC_PENDING_CODES, evaluate_kc_pending_entry
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
-KC_OUTER_PIVOT_LONG = "KC_OUTER_PIVOT_LONG"
-KC_OUTER_PIVOT_SHORT = "KC_OUTER_PIVOT_SHORT"
-ENTRY_CODES = frozenset({KC_OUTER_PIVOT_LONG, KC_OUTER_PIVOT_SHORT})
+ENTRY_CODES = KC_PENDING_CODES
 ENTRY_EVIDENCE_KEYS = (
-    "pivot_bar_id", "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
-    "ma_trend_confirmation_bar_id", "ma5_trend_values", "ma15_trend_values",
+    "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
+    "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
+    "pair_confirmation_bar_id", "third_bar_id",
 )
 
 
-def evaluate_ma5_ma15_trend(closed, side):
-    """Require MA5 and MA15 to move strictly with the entry side for 3 closed bars."""
+def evaluate_live_ma5_direction(frame, quote, side):
+    """Require the quote-adjusted MA5 to move strictly in the entry direction."""
     try:
-        if side not in ("LONG", "SHORT") or closed is None or len(closed) < 3:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 2:
             return None
-        bars = closed.tail(3)
-        ma5 = [float(value) for value in bars["ma5"]]
-        ma15 = [float(value) for value in bars["ma15"]]
-        if not ma5_ma15_trend_confirmed(ma5, ma15, side):
-            return None
-        return {
-            "ma5_trend_values": ma5,
-            "ma15_trend_values": ma15,
-            "ma_trend_confirmation_bar_id": float(bars.iloc[-1]["timestamp"]),
-        }
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        return None
-
-
-def evaluate_kc_outer_pivot_entry(closed, quote, *, code=None, symbol=""):
-    """Enter only on a newly confirmed price pivot beyond the matching KC rail."""
-    try:
-        if closed is None or len(closed) < 3:
-            return None
-        pivot, before, confirm = closed.iloc[-2], closed.iloc[-3], closed.iloc[-1]
+        previous, latest = frame.iloc[-2], frame.iloc[-1]
+        previous_ma5 = float(previous["ma5"])
+        latest_ma5 = float(latest["ma5"])
+        latest_close = float(latest["close"])
         quote = float(quote)
-        if not math.isfinite(quote) or quote <= 0:
+        values = (previous_ma5, latest_ma5, latest_close, quote)
+        if not all(math.isfinite(value) and value > 0 for value in values):
             return None
-        stamp = float(confirm["timestamp"])
-        pivot_stamp = float(pivot["timestamp"])
-        values = [
-            float(row[key])
-            for row in (before, pivot, confirm)
-            for key in ("open", "high", "low", "close", "kc_upper", "kc_lower")
-        ]
-        if (not math.isfinite(stamp) or not math.isfinite(pivot_stamp)
-                or not all(math.isfinite(value) and value > 0 for value in values)):
+        live_ma5 = latest_ma5 + (quote - latest_close) / 5.0
+        if not math.isfinite(live_ma5):
             return None
-        if any(
-            float(row["low"]) > min(float(row["open"]), float(row["close"]))
-            or float(row["high"]) < max(float(row["open"]), float(row["close"]))
-            or float(row["kc_lower"]) >= float(row["kc_upper"])
-            for row in (before, pivot, confirm)
+        if (side == "LONG" and live_ma5 <= previous_ma5) or (
+            side == "SHORT" and live_ma5 >= previous_ma5
         ):
             return None
-
-        long_pivot = (
-            float(pivot["low"]) < float(before["low"])
-            and float(pivot["low"]) < float(confirm["low"])
-            and float(pivot["low"]) < float(pivot["kc_lower"])
-            and float(confirm["close"]) > float(pivot["close"])
-            and quote > float(pivot["low"])
-        )
-        short_pivot = (
-            float(pivot["high"]) > float(before["high"])
-            and float(pivot["high"]) > float(confirm["high"])
-            and float(pivot["high"]) > float(pivot["kc_upper"])
-            and float(confirm["close"]) < float(pivot["close"])
-            and quote < float(pivot["high"])
-        )
-        side = "LONG" if long_pivot else "SHORT" if short_pivot else None
-        expected_code = KC_OUTER_PIVOT_LONG if side == "LONG" else KC_OUTER_PIVOT_SHORT
-        if side is None or (code is not None and code != expected_code):
-            return None
-        signal_id = f"{symbol}_{expected_code}_{int(pivot_stamp)}"
-        return dict(
-            action="ENTER", side=side, type=expected_code, reason=expected_code,
-            price=quote, entry_atr=float(pivot["atr"]), confirmation_bar_id=stamp,
-            close_price=float(confirm["close"]), intrabar=False,
-            entry_phase="KC_OUTER_PIVOT_ENTRY", breakout_bar_id=pivot_stamp,
-            pivot_bar_id=pivot_stamp, pair_confirmation_bar_id=stamp,
-            pending_signal_id=signal_id, pending_second_bar_id=stamp,
-            pending_wait_bars=1, pending_max_wait_bars=1,
-            kc_confirmation_edge=float(
-                pivot["kc_lower"] if side == "LONG" else pivot["kc_upper"]
-            ),
-        )
+        return [previous_ma5, live_ma5]
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
 
@@ -298,19 +241,24 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        decision = evaluate_kc_outer_pivot_entry(
-            closed, quote, code=code, symbol=symbol
+        decision = evaluate_kc_pending_entry(
+            closed, quote, code=code, symbol=symbol, live=live
         )
-        if decision is None:
-            if diagnostics is not None:
-                diagnostics.clear()
-                diagnostics["reason"] = "WAIT_KC_OUTER_PIVOT"
-            return None
-
-        ma_trend = evaluate_ma5_ma15_trend(closed, decision["side"])
-        if ma_trend is None:
-            return reject("WAIT_MA5_MA15_TREND")
-        decision.update(ma_trend)
+        if decision.get("action") != "ENTER":
+            return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
+        side = decision["side"]
+        sign = 1 if side == "LONG" else -1
+        rail = float(live["kc_upper"] if side == "LONG" else live["kc_lower"])
+        if sign * (quote - rail) <= 0:
+            return reject("WAIT_LIVE_PRICE_OUTSIDE_KC")
+        if not live_candle_color_ready(frame, quote, side):
+            return reject("BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR")
+        live_ma5_trend = evaluate_live_ma5_direction(
+            frame, quote, side
+        )
+        if live_ma5_trend is None:
+            return reject("WAIT_LIVE_MA5_DIRECTION")
+        decision["live_ma5_trend_values"] = live_ma5_trend
 
         # [EMERGENCY GUARD: 無論漲勢或跌勢，出現十字線不要再開倉]
         doji_reject = entry_doji_problem(closed, live, quote)
@@ -318,16 +266,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject(doji_reject)
 
         # Strict live candle color guard: Never open Long on a red live candle, never open Short on a green live candle
-        live_open = float(live['open'])
-        if decision['side'] == 'LONG' and quote < live_open:
-            return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
-        if decision['side'] == 'SHORT' and quote > live_open:
-            return reject('BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR')
-
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if exit_bar is not None and decision.get('pivot_bar_id', 0) <= exit_bar:
+        if exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):

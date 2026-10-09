@@ -6,7 +6,7 @@ Only the immediately following forming candle can authorize entry.
 import math
 from collections import OrderedDict
 
-KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT'))
+KC_PENDING_CODES = frozenset(('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
 KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
                             'confirmation_ma5', 'previous_ma5', 'confirmation_ma15',
                             'pending_signal_id', 'pending_second_bar_id', 'pending_wait_bars',
@@ -71,11 +71,6 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     if len(closed) < 2:
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
-    from core.services.strategies.outer_strategy import ck_direction
-    direction = ck_direction(closed)
-    if not direction:
-        return wait('WAIT_VALID_DIRECTION')
-
     first, second = closed.iloc[-2], closed.iloc[-1]
     
     try:
@@ -88,9 +83,6 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             return wait('WAIT_VALID_KC_PENDING_DATA')
 
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
-            if direction != side:
-                continue
-                
             # Rule 1 & 4 - 必須在軌道內側或碰軌
             if not (float(first.kc_lower) <= float(first.open) <= float(first.kc_upper)):
                 continue
@@ -141,11 +133,16 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if distance <= 0:
                 return wait('KC_PENDING_CANCELLED_INSIDE_RAIL')
                 
-            stamp_val = float(second.timestamp) + 60000 if live is None else float(getattr(live, 'timestamp', float(second.timestamp) + 60000))
+            stamp_val = (
+                float(second.timestamp) + 60000
+                if live is None
+                else float(getattr(live, 'timestamp', float(second.timestamp) + 60000))
+            )
+            is_intrabar = live is None or not bool(getattr(live, 'is_closed', False))
             
             return dict(action='ENTER', side=side, type=signal, reason=signal,
                         price=price, entry_atr=s_atr, confirmation_bar_id=stamp_val,
-                        close_price=float(second.close), intrabar=True,
+                        close_price=float(second.close), intrabar=is_intrabar,
                         entry_phase='KC_2BAR_CLOSED_CONFIRM',
                         breakout_bar_id=float(first.timestamp),
                         pair_confirmation_bar_id=float(second.timestamp),
@@ -157,4 +154,3 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         return wait('WAIT_NEW_KC_BREAKOUT')
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         return wait('WAIT_VALID_KC_PENDING_DATA')
-

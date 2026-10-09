@@ -150,12 +150,12 @@ def ma_trend_confirms_position(position, snapshot):
     )
 
 
-def kc_outer_pivot_exit(position, snapshot):
-    """Return a confirmed opposite KC-outer price pivot formed after entry."""
+def three_point_pivot_exit(position, snapshot):
+    """Return a strict three-candle price pivot confirmed after position entry."""
     try:
         if not isinstance(snapshot, dict):
             return None
-        if ma_trend_confirms_position(position, snapshot):
+        if snapshot.get('reason') is not None:
             return None
         bars = snapshot.get('history_outer_pivots')
         if not isinstance(bars, list) or len(bars) < 3:
@@ -164,38 +164,42 @@ def kc_outer_pivot_exit(position, snapshot):
         sign = 1 if position['side'] == 'LONG' else -1 if position['side'] == 'SHORT' else 0
         if not sign or not positive(opened_ms):
             return None
-        candidates = []
-        for index in range(1, len(bars) - 1):
-            before, pivot, confirm = bars[index-1:index+2]
-            keys = ('ms', 'h', 'l', 'c', 'kc_upper', 'kc_lower')
-            values = [float(bar[key]) for bar in (before, pivot, confirm) for key in keys]
-            if not all(positive(value) for value in values):
-                continue
-            if float(pivot['ms']) <= opened_ms:
-                continue
-            if sign == 1:
-                matched = (
-                    float(pivot['h']) > float(before['h'])
-                    and float(pivot['h']) > float(confirm['h'])
-                    and float(pivot['h']) > float(pivot['kc_upper'])
-                    and float(confirm['c']) < float(pivot['c'])
-                )
-            else:
-                matched = (
-                    float(pivot['l']) < float(before['l'])
-                    and float(pivot['l']) < float(confirm['l'])
-                    and float(pivot['l']) < float(pivot['kc_lower'])
-                    and float(confirm['c']) > float(pivot['c'])
-                )
-            if matched:
-                candidates.append((float(confirm['ms']), pivot))
-        if not candidates:
+        before, pivot, confirm = bars[-3:]
+        values = [
+            float(bar[key])
+            for bar in (before, pivot, confirm)
+            for key in ('ms', 'o', 'h', 'l', 'c')
+        ]
+        if not all(positive(value) for value in values):
             return None
-        confirmed_ms, pivot = max(candidates, key=lambda candidate: candidate[0])
+        if any(
+            float(bar['l']) > min(float(bar['o']), float(bar['c']))
+            or float(bar['h']) < max(float(bar['o']), float(bar['c']))
+            for bar in (before, pivot, confirm)
+        ):
+            return None
+        before_ms, pivot_ms, confirm_ms = (float(bar['ms']) for bar in (before, pivot, confirm))
+        quote_ms = float(snapshot['quote_ms'])
+        snapshot_bar_id = float(snapshot['snapshot_bar_id'])
+        if (pivot_ms <= opened_ms or confirm_ms <= opened_ms
+                or pivot_ms - before_ms != 60000 or confirm_ms - pivot_ms != 60000
+                or not positive(quote_ms) or snapshot_bar_id != confirm_ms
+                or quote_ms < confirm_ms or quote_ms - confirm_ms > 300000):
+            return None
+        if sign == 1 and not (
+            float(pivot['h']) > float(before['h'])
+            and float(pivot['h']) > float(confirm['h'])
+        ):
+            return None
+        if sign == -1 and not (
+            float(pivot['l']) < float(before['l'])
+            and float(pivot['l']) < float(confirm['l'])
+        ):
+            return None
         return {
-            'trigger': 'KC_OUTER_PIVOT',
-            'trigger_bar_ms': float(pivot['ms']),
-            'trigger_confirmed_ms': confirmed_ms,
+            'trigger': 'THREE_POINT_PIVOT',
+            'trigger_bar_ms': pivot_ms,
+            'trigger_confirmed_ms': confirm_ms,
             'trigger_price': float(pivot['h'] if sign == 1 else pivot['l']),
         }
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):
@@ -366,15 +370,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
-
-        if (state.get('pending') == ABNORMAL_REASON
-                and state.get('trigger') == 'KC_OUTER_PIVOT'
-                and ma_trend_confirms_position(position, snapshot)):
-            for key in (
-                'pending', 'trigger', 'trigger_bar_ms', 'trigger_confirmed_ms',
-                'trigger_price',
-            ):
-                state.pop(key, None)
 
         if 'peak_price' not in state:
             state['peak_price'] = entry
@@ -600,7 +595,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         state.update(trigger_bar_ms=bar, trigger_open=float(opening),
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
-            pivot_evidence = kc_outer_pivot_exit(position, snapshot)
+            pivot_evidence = three_point_pivot_exit(position, snapshot)
             if (pivot_evidence is not None and reason != HARD_REASON
                     and trigger != 'WATERFALL_DROP'):
                 reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
@@ -608,7 +603,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
-                    and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT')):
+                    and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT',
+                                        'THREE_POINT_PIVOT')):
                 if net <= 0:
                     reason, trigger = None, None
 
@@ -618,7 +614,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'WATERFALL_DROP', 'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
-                    'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT'
+                    'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
+                    'THREE_POINT_PIVOT'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
