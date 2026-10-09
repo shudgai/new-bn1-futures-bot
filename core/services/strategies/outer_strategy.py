@@ -9,6 +9,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
 LIVE_BREAKOUT_BODY_ATR = 0.5
+LIVE_BREAKOUT_MAX_DISTANCE_ATR = 3.0
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"} | ENTRY_TREND_CODES
@@ -71,14 +72,15 @@ def aligned_direction(frame, side):
     return side in ('LONG', 'SHORT') and ck_direction(frame) == side
 
 
-def ck_direction(frame):
-    """Latest closed middle slope, confirmed by the directional outer slope."""
+def ck_direction(frame, *, has_forming_bar=True):
+    """Latest closed KC direction; set has_forming_bar=False for closed-only frames."""
     try:
-        if frame is None or len(frame) < 3:
+        if frame is None or len(frame) < (3 if has_forming_bar else 2):
             return None
         key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+        confirmed = frame.iloc[-3:-1] if has_forming_bar else frame.iloc[-2:]
         rows = [[float(row[k]) for k in ('kc_lower', key, 'kc_upper')]
-                for _, row in frame.iloc[-3:-1].iterrows()]
+                for _, row in confirmed.iterrows()]
         if any(not all(math.isfinite(v) and v > 0 for v in row)
                or not row[0] < row[1] < row[2] for row in rows):
             return None
@@ -86,7 +88,7 @@ def ck_direction(frame):
         direction = None
         
         # 嚴格盤整過濾：要求 kc_middle 的變化必須大於一個極小的有效閾值，否則視為無方向（盤整）
-        atr = float(frame.iloc[-2]['atr'])
+        atr = float(frame.iloc[-2 if has_forming_bar else -1]['atr'])
         min_slope = (atr * 0.001) if atr > 0 else 1e-9
         
         if (b[1] - a[1]) > min_slope and b[2] >= a[2]:
@@ -212,7 +214,7 @@ def entry_trend_direction(frame):
 
 
 def live_body_breakout_side(frame, price):
-    """Current real body breaks out or thrusts along an outer rail by quote, sized on closed ATR."""
+    """Detect an in-channel breakout or a bounded same-side outer-rail continuation."""
     try:
         if frame is None or len(frame) < 2:
             return None
@@ -225,16 +227,17 @@ def live_body_breakout_side(frame, price):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
 
-        # [EMERGENCY GUARD: 盤整就是不能開倉]
-        # 必須確認通道有明確方向 (KC方向不明 / ck_direction == None 時嚴格阻斷)
-        direction = ck_direction(frame)
-
-        # LONG: 當根原始開盤價在當根上軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格破上軌 (price > upper)、順向實體至少 0.5 ATR
-        if direction == 'LONG' and price > upper and (price - opened) >= threshold and lower <= opened <= upper:
+        # A same-side outside open may continue, but neither opposite-side gaps nor late chases qualify.
+        long_open_valid = lower <= opened <= upper or opened > upper
+        long_distance_atr = (price - upper) / atr
+        if (long_open_valid and price > upper and (price - opened) >= threshold
+                and long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'LONG'
 
-        # SHORT: 當根原始開盤價在當根下軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格跌破下軌 (price < lower)、順向實體至少 0.5 ATR
-        if direction == 'SHORT' and price < lower and (opened - price) >= threshold and lower <= opened <= upper:
+        short_open_valid = lower <= opened <= upper or opened < lower
+        short_distance_atr = (lower - price) / atr
+        if (short_open_valid and price < lower and (opened - price) >= threshold
+                and short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass

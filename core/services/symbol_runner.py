@@ -76,7 +76,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if entry:
             await engine._execute_confirmed_channel_break(
                 symbol, frame, quote, entry['side'], daily_halt,
-                v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'])
+                v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'],
+                qualification_signal_id=entry.get('qualification_signal_id'))
         else:
             log_entry_gate(engine, symbol, 'NONE', 'SIGNAL', diagnostics['reason'],
                            float(frame.iloc[-1]['timestamp']))

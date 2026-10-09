@@ -6,6 +6,7 @@ import numpy as np
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import (
     ck_direction,
+    live_body_breakout_side,
     live_ma3_direction_ready,
     live_candle_color_ready,
     live_adverse_entry_safe,
@@ -21,7 +22,13 @@ from core.services.kc_pending_entry import (
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
-ENTRY_CODES = KC_PENDING_CODES | KC_REALTIME_PATTERN_CODES | CONTINUATION_CODES
+LIVE_BODY_BREAKOUT_CODES = frozenset((
+    "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
+))
+ENTRY_CODES = (
+    KC_PENDING_CODES | KC_REALTIME_PATTERN_CODES | CONTINUATION_CODES
+    | LIVE_BODY_BREAKOUT_CODES
+)
 ENTRY_EVIDENCE_KEYS = (
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
@@ -178,6 +185,47 @@ def is_solid_push(row, side):
         return False
 
 
+def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
+    """Authorize the first live body breakout from an in-channel open."""
+    try:
+        if frame is None or len(frame) < 2:
+            return None
+        live = frame.iloc[-1]
+        opened = float(live["open"])
+        lower, upper = float(live["kc_lower"]), float(live["kc_upper"])
+        quote = float(quote)
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (opened, lower, upper, quote))
+                or lower >= upper or not lower <= opened <= upper):
+            return None
+
+        side = live_body_breakout_side(frame, quote)
+        if side is None or (requested_side is not None and requested_side != side):
+            return None
+        stamp = float(live["timestamp"])
+        atr = float(frame.iloc[-2]["atr"])
+        edge = upper if side == "LONG" else lower
+        distance = (quote - edge) / atr if side == "LONG" else (edge - quote) / atr
+        if not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance):
+            return None
+
+        code = f"KC_LIVE_BODY_BREAKOUT_{side}"
+        return dict(
+            action="ENTER", side=side, type=code, reason=code,
+            price=quote, entry_atr=atr, confirmation_bar_id=stamp,
+            close_price=float(frame.iloc[-2]["close"]), intrabar=True,
+            entry_phase="KC_LIVE_BODY_BREAKOUT",
+            breakout_bar_id=stamp, pair_confirmation_bar_id=None,
+            third_bar_id=stamp,
+            pending_signal_id=f"{symbol}:LIVE_BODY:{int(stamp)}:{side}",
+            pending_second_bar_id=stamp, pending_wait_bars=0,
+            pending_max_wait_bars=0, kc_confirmation_edge=edge,
+            kc_distance_atr=distance, kc_max_distance_atr=3.0,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None):
     def reject(reason):
@@ -242,7 +290,21 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        if code in CONTINUATION_CODES:
+        live_code_side = (
+            code.rsplit("_", 1)[-1] if code in LIVE_BODY_BREAKOUT_CODES else None
+        )
+        live_decision = None
+        if code is None or live_code_side is not None:
+            live_decision = evaluate_live_body_breakout(
+                frame, quote, symbol=symbol, requested_side=live_code_side
+            )
+        if live_code_side is not None:
+            decision = live_decision or {
+                "action": "WAIT", "reason": "WAIT_LIVE_BODY_BREAKOUT",
+            }
+        elif live_decision is not None:
+            decision = live_decision
+        elif code in CONTINUATION_CODES:
             decision = evaluate_continuation_entry(
                 frame, quote, code=code, symbol=symbol, account=account
             ) or {'action': 'WAIT', 'reason': 'WAIT_KC_CONTINUATION'}
