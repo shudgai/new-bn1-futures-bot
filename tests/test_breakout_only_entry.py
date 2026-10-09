@@ -99,6 +99,30 @@ def test_pivot_or_ma_cross_code_is_not_an_entry_authority(side):
     assert f"KC_2BAR_CONFIRM_{side}" in ENTRY_CODES
     assert evaluate_entry_contract(frame, code=f"KC_OUTER_PIVOT_{side}") is None
     assert evaluate_entry_contract(frame, code=f"MA5_MA15_LIVE_CROSS_{side}") is None
+    assert evaluate_entry_contract(frame, code=f"KC_LIVE_BODY_BREAKOUT_{side}") is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_pre_close_breakout_cannot_reopen_after_peak_reversal_close(side):
+    frame = breakout_frame(side)
+    live_bar = float(frame.iloc[-1]["timestamp"])
+    account = SimpleNamespace(
+        positions={},
+        trades=[dict(
+            symbol="LOBSTER/USDT",
+            action=f"CLOSE_{side}",
+            id=live_bar + 1_000.,
+        )],
+        last_closed_at={},
+    )
+    diagnostics = {}
+
+    decision = evaluate_entry_contract(
+        frame, symbol="LOBSTER/USDT", account=account, diagnostics=diagnostics
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == "WAIT_POST_EXIT_NEW_FORMATION"
 
 
 @pytest.mark.parametrize(

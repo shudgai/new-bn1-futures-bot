@@ -109,7 +109,7 @@ def test_channel_swing_holds_through_pullback_under_trend_hold(side):
                 ma5=100+sign*10.0, ma15=100-sign*10.0, kc_middle=100-sign*10.0)
 
     decision = evaluate_peak_trailing(p, 100+sign*3.0, snap, 10.0, fee=0., slippage=0.)
-    assert decision is None
+    assert decision['trigger'] == 'CHANNEL_PEAK_PULLBACK_REVERSAL'
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_legacy_flags_purged_but_verified_peak_retained(side):
@@ -156,7 +156,7 @@ def test_stale_invalid_and_pre_entry_ticks_cannot_mutate(side):
         assert p==saved
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_account_adapter_cleans_both_copies_and_retries_without_frame(side):
+def test_account_adapter_retries_peak_reversal_without_frame(side):
     async def run():
         p=position(side);p['open_timestamp']=time.time()-120
         sign=1 if side=='LONG' else -1
@@ -165,9 +165,9 @@ def test_account_adapter_cleans_both_copies_and_retries_without_frame(side):
         # Call enforce_atr_protection -> should clean closed_exit_state
         assert not await enforce_atr_protection(a,'X',100+sign*2.)
         assert 'closed_exit_state' not in a.position_meta['X']
-        assert not await enforce_atr_protection(a,'X',100+sign*1.49)
-        assert not await enforce_atr_protection(a,'X',100+sign*1.4)
-        assert a.close_position.await_count==0
+        assert await enforce_atr_protection(a,'X',100+sign*1.49)
+        assert await enforce_atr_protection(a,'X',100+sign*1.4)
+        assert a.close_position.await_count==2
     asyncio.run(run())
 
 def test_startup_cleanup_is_channel_only():
@@ -181,7 +181,7 @@ def test_startup_cleanup_is_channel_only():
     assert a.position_meta['X'][STATE_KEY]['identity']==['LONG',60.,100.,1.]
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_runner_and_ticker_do_not_require_closed_candles_or_rest(side):
+def test_runner_and_ticker_close_on_peak_reversal_without_closed_candles_or_rest(side):
     async def run():
         now=time.time();p=position(side);p['open_timestamp']=now-120
         a=SimpleNamespace(positions={'X':p},position_meta={},save_state=Mock(),log=Mock(),
@@ -196,22 +196,20 @@ def test_runner_and_ticker_do_not_require_closed_candles_or_rest(side):
         
         await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
 
-        assert a.close_position.await_count == 0
-        assert not any('REALTIME_EXIT' in str(call) for call in a.log.call_args_list)
+        assert a.close_position.await_count == 1
+        assert 'CHANNEL_PEAK_PULLBACK_REVERSAL' in str(a.close_position.await_args)
         e.fetch_klines.assert_not_called();lock.release()
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize(('peak_gain', 'pullback_limit'), [
-    (0.75, 0.60), (1.5, 0.50), (2.5, 0.40), (3.5, 0.35),
-])
-def test_channel_swing_dynamic_pullback_bands_are_disabled(side, peak_gain, pullback_limit, monkeypatch):
+def test_channel_swing_peak_reversal_uses_fixed_half_atr(side, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     p = position(side)
-    observe(p, peak_gain, 61000)
-    assert observe(p, peak_gain - pullback_limit + 0.01, 62000) is None
-    assert observe(p, peak_gain - pullback_limit - 0.001, 63000) is None
+    observe(p, 2.0, 61000)
+    assert observe(p, 1.51, 62000) is None
+    result = observe(p, 1.50, 63000)
+    assert result['trigger'] == 'CHANNEL_PEAK_PULLBACK_REVERSAL'
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_channel_swing_pullback_does_not_exit_with_fees_and_slippage(side, monkeypatch):

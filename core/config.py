@@ -200,8 +200,8 @@ MA5_FAST_MIN_ATR_MULT = float(os.getenv("MA5_FAST_MIN_ATR_MULT", "0.02"))
 MA5_FAST_MAX_ATR_MULT = float(os.getenv("MA5_FAST_MAX_ATR_MULT", "0.20"))
 MA5_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA5_FAST_MIN_VOLUME_RATIO", "1.5"))
 
-# 連續峰谷模式的即時反手：只適用於正在形成中的 1m 大實體 K 突破
-# MA3，避免一般小轉折在未收線時被過早反手。
+# Channel Swing 觀察峰值後的即時反轉門檻；以持倉 ATR 計算峰值回撤，
+# 不等待 K 線收線或均線交叉。
 RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED = os.getenv(
     "RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED", "true"
 ).lower() == "true"

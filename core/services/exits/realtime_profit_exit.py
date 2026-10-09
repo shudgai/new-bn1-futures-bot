@@ -189,7 +189,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 and reason != 'EXIT_INITIAL_ATR_HARD_STOP'
                 and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR',
                                     DOJI_TRIGGER, 'KC_OUTER_PIVOT',
-                                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')):
+                                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                                    'CHANNEL_PEAK_PULLBACK_REVERSAL')):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)
@@ -204,7 +205,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
         trigger_detail = (
             ' ' + trigger
-            if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')
+            if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                           'CHANNEL_PEAK_PULLBACK_REVERSAL')
             else ''
         )
         await account.close_position(

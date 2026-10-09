@@ -1,4 +1,4 @@
-"""Position-bound abnormal-body exits and independent initial hard stops."""
+"""Position-bound peak, abnormal-body and independent hard-stop exits."""
 import copy
 import math
 import sys
@@ -514,7 +514,19 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if not is_channel_swing and net > 0 and peak_gain_atr >= 0.5:
+        if is_channel_swing:
+            from core.config import (
+                RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
+                RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED,
+            )
+            peak_reversal_limit_atr = RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            if (RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
+                    and peak_gain_atr > 0
+                    and peak_reversal_limit_atr > 0
+                    and drawdown_atr >= peak_reversal_limit_atr):
+                parabolic_reason = PEAK_REASON
+                parabolic_trigger = 'CHANNEL_PEAK_PULLBACK_REVERSAL'
+        elif net > 0 and peak_gain_atr >= 0.5:
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
@@ -569,7 +581,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
-        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON):
+        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON, PEAK_REASON):
             reason, trigger = state['pending'], state.get('trigger', 'RETRY')
         else:
             if isinstance(snapshot, dict):
@@ -633,20 +645,21 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             pivot_evidence = three_point_pivot_exit(position, snapshot)
             if (pivot_evidence is not None and reason != HARD_REASON
-                    and trigger != 'WATERFALL_DROP'):
+                    and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                 reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
                 state.update(pivot_evidence)
 
             ma5_evidence = live_ma5_reversal_exit(position, snapshot, sign)
             if (ma5_evidence is not None and reason != HARD_REASON
-                    and trigger != 'WATERFALL_DROP'):
+                    and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                 reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
                 state.update(ma5_evidence)
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT',
-                                        'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')):
+                                        'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                                        'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                 if net <= 0:
                     reason, trigger = None, None
 
@@ -657,7 +670,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
-                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL'
+                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                    'CHANNEL_PEAK_PULLBACK_REVERSAL'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
