@@ -222,7 +222,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
         trigger_detail = (
             ' ' + trigger
-            if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+            if trigger in (DOJI_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
+                           'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')
             else ''

@@ -163,7 +163,7 @@ def test_waterfall_candidate_remains_in_the_exit_evaluator(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_account_adapter_does_not_close_for_waterfall_candidate(side, monkeypatch):
+def test_account_adapter_closes_for_waterfall_candidate(side, monkeypatch):
     p = position(side)
     p['open_timestamp'] = time.time() - 120
     p[STATE_KEY] = {'pending': ABNORMAL_REASON, 'trigger': 'WATERFALL_DROP'}
@@ -178,10 +178,11 @@ def test_account_adapter_does_not_close_for_waterfall_candidate(side, monkeypatc
 
     result = asyncio.run(enforce_atr_protection(account, 'X', 101.))
 
-    assert not result
-    account.close_position.assert_not_awaited()
-    assert 'pending' not in p[STATE_KEY]
-    assert 'trigger' not in p[STATE_KEY]
+    assert result
+    account.close_position.assert_awaited_once()
+    assert account.close_position.await_args.args[2] == (
+        "Channel Swing " + ABNORMAL_REASON
+    )
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

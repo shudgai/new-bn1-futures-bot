@@ -234,7 +234,7 @@ def test_cached_snapshot_calculates_quote_adjusted_ma5(side, closes, quote):
     ("exit_reason", "trigger"),
     [
         (ABNORMAL_REASON, "MA5_TRUE_PEAK_REVERSAL"),
-        (PEAK_REASON, "KC_CHANNEL_RETURN"),
+        (PEAK_REASON, "EXIT_PROFIT_LOCK_FLOOR"),
     ],
 )
 def test_authorized_peak_exit_bypasses_trend_hold_and_closes(exit_reason, trigger):

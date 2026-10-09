@@ -7,6 +7,7 @@ import pytest
 from core.services.entry_contract import evaluate_entry_contract
 from core.services.entry_firewall import validate_account_entry
 from core.services.exits.peak_trailing_exit import (
+    ABNORMAL_REASON,
     PEAK_REASON,
     evaluate_peak_trailing,
     three_point_pivot_exit,
@@ -47,7 +48,7 @@ def channel_snapshot(price_ms=181_000.):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_channel_peak_reversal_closes_on_live_half_atr_pullback(side):
+def test_channel_peak_reversal_pullback_does_not_close(side):
     sign = 1 if side == "LONG" else -1
     held = position(side)
 
@@ -62,21 +63,19 @@ def test_channel_peak_reversal_closes_on_live_half_atr_pullback(side):
         held, 100. + sign * 1.5, 63_000, fee=0., slippage=0.
     )
 
-    assert result["reason"] == PEAK_REASON
-    assert result["trigger"] == "CHANNEL_PEAK_PULLBACK_REVERSAL"
-    assert held["peak_trailing_state"]["pending"] == PEAK_REASON
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_first_live_breakout_closes_when_quote_returns_inside_kc(side):
+def test_first_live_breakout_stays_open_when_quote_returns_inside_kc(side):
     held = live_breakout_position(side)
     result = evaluate_peak_trailing(
         held, 100., channel_snapshot(), fee=0., slippage=0.
     )
 
-    assert result is not None
-    assert result["trigger"] == "KC_CHANNEL_RETURN"
-    assert held["peak_trailing_state"]["pending"] == PEAK_REASON
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
 
 
 @pytest.mark.parametrize(
@@ -94,33 +93,28 @@ def test_first_live_breakout_stays_open_until_quote_enters_kc(side, price):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_first_live_breakout_ignores_ma_reversal_while_quote_stays_outside_kc(side, monkeypatch):
+def test_first_live_breakout_keeps_confirmed_pivot_exit(side, monkeypatch):
     held = live_breakout_position(side)
     snapshot = channel_snapshot()
-    snapshot["live_kc_lower"], snapshot["live_kc_upper"] = (
-        (95., 97.) if side == "LONG" else (101., 103.)
-    )
-    sign = 1 if side == "LONG" else -1
-    price = 98.5 if side == "LONG" else 99.5
     monkeypatch.setattr(
         "core.services.exits.peak_trailing_exit.three_point_pivot_exit",
         lambda *_: {"trigger": "THREE_POINT_PIVOT"},
     )
     monkeypatch.setattr(
         "core.services.exits.peak_trailing_exit.live_ma5_reversal_exit",
-        lambda *_: {"trigger": "MA5_TRUE_PEAK_REVERSAL"},
+        lambda *_: None,
     )
 
     result = evaluate_peak_trailing(
-        held, price, snapshot, fee=0., slippage=0.
+        held, 98., snapshot, fee=0., slippage=0.
     )
 
-    assert result is None
-    assert not held["peak_trailing_state"].get("pending")
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert held["peak_trailing_state"]["pending"] == ABNORMAL_REASON
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_channel_return_exit_does_not_apply_to_two_bar_breakouts(side):
+def test_channel_return_exit_does_not_apply_to_other_breakouts(side):
     held = position(side)
     held["entry_snapshot"] = {"signal_code": f"KC_2BAR_CONFIRM_{side}"}
     result = evaluate_peak_trailing(
@@ -132,21 +126,50 @@ def test_channel_return_exit_does_not_apply_to_two_bar_breakouts(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_peak_reversal_close_retries_after_failed_order(side):
-    sign = 1 if side == "LONG" else -1
+def test_legacy_pullback_ticket_is_revoked(side):
     held = position(side)
-    evaluate_peak_trailing(held, 100. + sign * 2.0, 61_000, fee=0., slippage=0.)
-    first = evaluate_peak_trailing(
-        held, 100. + sign * 1.5, 62_000, fee=0., slippage=0.
+    held["peak_trailing_state"] = {
+        "pending": PEAK_REASON,
+        "trigger": "CHANNEL_PEAK_PULLBACK_REVERSAL",
+    }
+
+    result = evaluate_peak_trailing(held, 101., 63_000, fee=0., slippage=0.)
+
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "EXIT_PEAK_PULLBACK_PRESSURE",
+        "CHANNEL_PEAK_PULLBACK_REVERSAL",
+        "KC_CHANNEL_RETURN",
+    ],
+)
+def test_restart_revokes_every_disabled_channel_pullback_ticket(side, trigger):
+    held = position(side)
+    state = {
+        "policy": "abnormal_body_only_v2",
+        "identity": [side, 60.0, 100.0, 1.0],
+        "peak_price": 102.0 if side == "LONG" else 98.0,
+        "pending": PEAK_REASON,
+        "trigger": trigger,
+    }
+    held["peak_trailing_state"] = copy.deepcopy(state)
+    meta = {"peak_trailing_state": copy.deepcopy(state)}
+
+    from core.services.exits.peak_trailing_exit import migrate_peak_state
+    migrated = migrate_peak_state(held, meta)
+
+    result = evaluate_peak_trailing(
+        held, 101.0 if side == "LONG" else 99.0, 63_000, fee=0., slippage=0.
     )
 
-    retry = evaluate_peak_trailing(
-        held, 100. + sign * 1.6, 63_000, fee=0., slippage=0.
-    )
-
-    assert first["trigger"] == "CHANNEL_PEAK_PULLBACK_REVERSAL"
-    assert retry["reason"] == PEAK_REASON
-    assert retry["trigger"] == "CHANNEL_PEAK_PULLBACK_REVERSAL"
+    assert result is None
+    assert not migrated.get("pending")
+    assert not meta["peak_trailing_state"].get("pending")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

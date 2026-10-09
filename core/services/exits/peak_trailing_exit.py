@@ -35,11 +35,14 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'EXIT_PROFIT_LOCK_FLOOR',
+    'THREE_POINT_PIVOT',
+    'MA5_TRUE_PEAK_REVERSAL',
+    'WATERFALL_DROP',
+})
+DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PEAK_PULLBACK_PRESSURE',
     'CHANNEL_PEAK_PULLBACK_REVERSAL',
     'KC_CHANNEL_RETURN',
-    'THREE_POINT_PIVOT',
-    'MA5_TRUE_PEAK_REVERSAL',
 })
 
 PROFIT_FLOOR_ENABLED = False
@@ -129,6 +132,10 @@ def migrate_peak_state(position, meta=None):
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
             state.pop(key, None)
     if channel_initial_stop_disabled(position, meta):
+        if state.get('trigger') in DISABLED_CHANNEL_PULLBACK_TRIGGERS:
+            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                        'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+                state.pop(key, None)
         if not position.get('entry_mode'):
             position['entry_mode'] = 'CHANNEL_SWING'
         if live_body_breakout_position_side(position, meta) and state.get('trigger') in (
@@ -636,19 +643,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if is_channel_swing:
-            from core.config import (
-                RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-                RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED,
-            )
-            peak_reversal_limit_atr = RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-            if (RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
-                    and peak_gain_atr > 0
-                    and peak_reversal_limit_atr > 0
-                    and drawdown_atr >= peak_reversal_limit_atr):
-                parabolic_reason = PEAK_REASON
-                parabolic_trigger = 'CHANNEL_PEAK_PULLBACK_REVERSAL'
-        elif net > 0 and peak_gain_atr >= 0.5:
+        if not is_channel_swing and net > 0 and peak_gain_atr >= 0.5:
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
@@ -779,20 +774,14 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
                 state.update(ma5_evidence)
 
-            channel_return_evidence = live_breakout_channel_return_exit(
-                position, snapshot, price, sign
-            )
-            if channel_return_evidence is not None and reason != HARD_REASON:
-                reason, trigger = PEAK_REASON, channel_return_evidence['trigger']
-                state.update(channel_return_evidence)
-
             live_breakout_side = live_body_breakout_position_side(position)
             if live_breakout_side and reason != HARD_REASON:
-                profitable_lock = (
-                    trigger in ('EXIT_PROFIT_LOCK_FLOOR', 'CHANNEL_PEAK_PULLBACK_REVERSAL')
-                    and net > 0
+                authorized_live_breakout_exit = (
+                    trigger in ('EXIT_PROFIT_LOCK_FLOOR', 'WATERFALL_DROP',
+                                'THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL')
+                    and (trigger != 'EXIT_PROFIT_LOCK_FLOOR' or net > 0)
                 )
-                if trigger != 'KC_CHANNEL_RETURN' and not profitable_lock:
+                if not authorized_live_breakout_exit:
                     reason, trigger = None, None
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
