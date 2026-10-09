@@ -31,7 +31,7 @@ CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
-# Continuation requires a persisted, previously observed outer-rail breakout.
+# Legacy KC_OUTSIDE helpers use qualification; Trigger C is candle-derived.
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
 ENTRY_CODES = IMPULSE_CODES | SECOND_THIRD_CODES | KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES | NEW_TRIGGER_CODES
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "CAP/USDT", "龙虾/USDT", "LOBSTER/USDT"))
@@ -442,17 +442,6 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     if len(closed_frame) < 3: return None, None
     prev, curr = closed_frame.iloc[-2], closed_frame.iloc[-1]
 
-    if account is not None and symbol is not None:
-        last_trade = None
-        for trade in reversed(getattr(account, 'trades', [])):
-            if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
-                last_trade = trade
-                break
-        if last_trade:
-            re_side, re_trigger = evaluate_reentry_triggers(closed_frame, last_exit_side=last_trade['side'], bars_since_exit=None)
-            if re_side is not None:
-                return re_side, re_trigger
-
     atr = float(curr['atr'])
 
     # 情境 A: 軌內起爆衝擊 + 軌外標準破軌 (TRIGGER_A_KC_BREAKOUT)
@@ -480,16 +469,14 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
 
     # 情境 B: 軌外順勢追車 (TRIGGER_C_CONTINUATION)
     long_cont = (
-        curr['close'] > curr['kc_upper'] and 
-        curr['close'] > curr['ma5'] and 
-        curr['ma5'] >= prev['ma5'] and 
+        (curr['close'] > curr['kc_upper'] or curr['close'] > curr['ma5']) and
+        curr['ma5'] > prev['ma5'] and
         curr['close'] > curr['open']
     )
     
     short_cont = (
-        curr['close'] < curr['kc_lower'] and 
-        curr['close'] < curr['ma5'] and 
-        curr['ma5'] <= prev['ma5'] and 
+        (curr['close'] < curr['kc_lower'] or curr['close'] < curr['ma5']) and
+        curr['ma5'] < prev['ma5'] and
         curr['close'] < curr['open']
     )
 
@@ -498,10 +485,22 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     long_ma_cross = golden_cross and curr['close'] > curr['kc_middle'] and curr['close'] > curr['open']
     short_ma_cross = death_cross and curr['close'] < curr['kc_middle'] and curr['close'] < curr['open']
 
-    if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
-    if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
+    # Healthy continuation must not be swallowed by the broader breakout test.
     if long_cont: return "LONG", "TRIGGER_C_CONTINUATION"
     if short_cont: return "SHORT", "TRIGGER_C_CONTINUATION"
+    if account is not None and symbol is not None:
+        last_trade = None
+        for trade in reversed(getattr(account, 'trades', [])):
+            if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
+                last_trade = trade
+                break
+        if last_trade:
+            re_side, re_trigger = evaluate_reentry_triggers(closed_frame, last_exit_side=last_trade['side'], bars_since_exit=None)
+            if re_side is not None:
+                return re_side, re_trigger
+
+    if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
+    if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
     if long_ma_cross: return "LONG", "TRIGGER_B_MA_CROSS"
     if short_ma_cross: return "SHORT", "TRIGGER_B_MA_CROSS"
 
