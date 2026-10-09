@@ -1,0 +1,7 @@
+### [2026-10-09 10:39 UTC+8] - Modification Phase: KC live pullback-pattern breakout
+- **Author**: Codex (workspace identity: shudgai999)
+- **Target Files & Lines**: `core/services/kc_pending_entry.py`; `core/services/entry_contract.py`; `tests/test_live_pattern_breakout.py`
+- **Modification Description**: Add a shared, fail-closed live entry for a small breakout-color candle, one to three small opposite-color pullback candles, then a large live body crossing the matching KC outer rail. LONG and SHORT are mirrored. Setup bodies are capped at 0.35 closed ATR and 50% of their ranges; the live body must be at least 0.50 previous-closed ATR and 50% of its range, open inside the channel, finish strictly outside the matching rail, and remain within 3 ATR. Re-enable the existing qualified outside-continuation contract so it remains available alongside the existing two-closed-bar breakout.
+- **Trigger Reason & Requirement**: User requested restoring this exact immediate-breakout shape while retaining regular breakout and continuation entries, prohibiting entries while price remains inside the channel, and preventing wrong-side entries.
+- **Verification & Test Status**: `tests/test_live_pattern_breakout.py`, `tests/test_missed_live_breakout_qualification.py`, and selected standard-breakout guards: 33 passed. `py_compile` and `git diff --check` passed.
+- **Deployment Status**: Restarted `binance-8006.service`; it is active from the requested branch working tree. `/api/status` reports `is_running=true`, `paper_trading=true`, and only `龙虾/USDT` monitored.

@@ -7,6 +7,9 @@ import math
 from collections import OrderedDict
 
 KC_PENDING_CODES = frozenset(('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
+KC_REALTIME_PATTERN_CODES = frozenset((
+    'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+))
 KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
                             'confirmation_ma5', 'previous_ma5', 'confirmation_ma15',
                             'pending_signal_id', 'pending_second_bar_id', 'pending_wait_bars',
@@ -19,6 +22,11 @@ MAX_PULLBACK_BODY_ATR = 0.5
 MIN_ENTRY_BODY_ATR = 0.5
 MAX_ADVERSE_ATR = 0.50
 MIN_MA5_SLOPE_ATR = 0.01
+SMALL_PATTERN_BODY_MAX_ATR = 0.35
+SMALL_PATTERN_BODY_MAX_RANGE_RATIO = 0.50
+LIVE_PATTERN_BODY_MIN_ATR = 0.50
+LIVE_PATTERN_BODY_MIN_RANGE_RATIO = 0.50
+LIVE_PATTERN_MAX_DISTANCE_ATR = 3.0
 
 # Bounded LRU cache for invalidated signals.
 # Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
@@ -67,7 +75,7 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     """Confirm using 2 completed candles (K1 breakout, K2 confirm).
     Live quote (K3) must be strictly outside the rail.
     """
-    wait = lambda reason: dict(action='WAIT', reason=reason)
+    wait = lambda reason, **evidence: dict(action='WAIT', reason=reason, **evidence)
     if len(closed) < 2:
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
@@ -75,7 +83,7 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     
     try:
         for row in (first, second):
-            values = [float(row[key]) for key in ('timestamp', 'open', 'close', 'high', 'low', 'atr', 'kc_upper', 'kc_lower', 'ma5', 'ma15')]
+            values = [float(row[key]) for key in ('timestamp', 'open', 'close', 'high', 'low', 'atr', 'kc_upper', 'kc_lower')]
             if not all(math.isfinite(v) and v > 0 for v in values):
                 return wait('WAIT_VALID_KC_PENDING_DATA')
                 
@@ -110,14 +118,7 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if s_span <= 0 or (s_body / s_span) < 0.20:
                 continue
                 
-            # MA5 conditions (from old logic)
-            k2_ma5_delta = sign * (float(second.ma5) - float(first.ma5))
-            if sign * (float(second.ma5) - float(second.ma15)) <= 0 or k2_ma5_delta <= 0:
-                continue
-
             s_atr = float(second.atr)
-            if s_atr > 0 and k2_ma5_delta / s_atr < MIN_MA5_SLOPE_ATR:
-                return wait('BLOCKED_FLAT_MA5')
 
             signal = 'KC_2BAR_CONFIRM_' + side
             if code is not None and code != signal:
@@ -131,7 +132,14 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             s_edge = float(second[key])
             distance = sign * (price - s_edge) / s_atr if s_atr > 0 else 0.
             if distance <= 0:
-                return wait('KC_PENDING_CANCELLED_INSIDE_RAIL')
+                return wait(
+                    'KC_PENDING_CANCELLED_INSIDE_RAIL',
+                    side=side, type='KC_2BAR_CONFIRM_' + side,
+                    entry_phase='KC_2BAR_CLOSED_CONFIRM',
+                    breakout_bar_id=float(first.timestamp),
+                    pair_confirmation_bar_id=float(second.timestamp),
+                    pending_signal_id=f'{side}:{int(first.timestamp)}:{int(second.timestamp)}',
+                )
                 
             stamp_val = (
                 float(second.timestamp) + 60000
@@ -154,3 +162,97 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
         return wait('WAIT_NEW_KC_BREAKOUT')
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         return wait('WAIT_VALID_KC_PENDING_DATA')
+
+
+def evaluate_kc_live_pattern_entry(closed, quote, live, code=None, symbol: str = ''):
+    """Authorize a live outer-rail break after a small counter-push setup.
+
+    SHORT: one small red candle, followed by one to three small green candles,
+    then a large live red body crossing the lower KC rail. LONG mirrors colors
+    and rail. The live candle must open inside the channel and the quote must
+    already be strictly outside its side's outer rail.
+    """
+    wait = lambda reason, **evidence: dict(action='WAIT', reason=reason, **evidence)
+    if len(closed) < 2 or live is None:
+        return wait('WAIT_LIVE_PATTERN_HISTORY')
+
+    try:
+        quote = float(quote)
+        live_stamp = float(getattr(live, 'timestamp'))
+        opened = float(getattr(live, 'open'))
+        upper = float(getattr(live, 'kc_upper'))
+        lower = float(getattr(live, 'kc_lower'))
+        atr = float(closed.iloc[-1]['atr'])
+        high = max(float(getattr(live, 'high')), opened, quote)
+        low = min(float(getattr(live, 'low')), opened, quote)
+        values = (quote, live_stamp, opened, upper, lower, atr, high, low)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or lower >= upper or high <= low or atr <= 0):
+            return wait('WAIT_VALID_LIVE_PATTERN_DATA')
+
+        # Pattern setup is one initial small directional candle followed by
+        # one, two, or three small opposite-color candles.
+        for side, sign, rail in (('LONG', 1, upper), ('SHORT', -1, lower)):
+            signal = f'KC_LIVE_PATTERN_BREAKOUT_{side}'
+            if code is not None and code != signal:
+                continue
+            for pullback_count in (3, 2, 1):
+                setup_count = pullback_count + 1
+                if len(closed) < setup_count:
+                    continue
+                setup = closed.iloc[-setup_count:]
+                valid_setup = True
+                for index, (_, row) in enumerate(setup.iterrows()):
+                    candle_open = float(row['open'])
+                    candle_close = float(row['close'])
+                    candle_high = float(row['high'])
+                    candle_low = float(row['low'])
+                    candle_atr = float(row['atr'])
+                    candle_range = candle_high - candle_low
+                    body = abs(candle_close - candle_open)
+                    expected_sign = sign if index == 0 else -sign
+                    if (not all(math.isfinite(value) and value > 0 for value in (
+                            candle_open, candle_close, candle_high, candle_low, candle_atr))
+                            or candle_range <= 0
+                            or expected_sign * (candle_close - candle_open) <= 0
+                            or body > SMALL_PATTERN_BODY_MAX_ATR * candle_atr
+                            or body / candle_range > SMALL_PATTERN_BODY_MAX_RANGE_RATIO):
+                        valid_setup = False
+                        break
+                if not valid_setup:
+                    continue
+
+                live_body = sign * (quote - opened)
+                live_range = high - low
+                opens_inside = lower <= opened <= upper
+                outside = quote > upper if sign == 1 else quote < lower
+                distance_atr = sign * (quote - rail) / atr
+                if (opens_inside and outside
+                        and live_body >= LIVE_PATTERN_BODY_MIN_ATR * atr
+                        and live_body / live_range >= LIVE_PATTERN_BODY_MIN_RANGE_RATIO
+                        and 0 < distance_atr <= LIVE_PATTERN_MAX_DISTANCE_ATR):
+                    first_stamp = float(setup.iloc[0]['timestamp'])
+                    last_setup_stamp = float(setup.iloc[-1]['timestamp'])
+                    return dict(
+                        action='ENTER', side=side, type=signal, reason=signal,
+                        price=quote, entry_atr=atr, confirmation_bar_id=live_stamp,
+                        close_price=quote, intrabar=True,
+                        entry_phase='KC_LIVE_PATTERN_BREAKOUT',
+                        breakout_bar_id=live_stamp,
+                        pair_confirmation_bar_id=last_setup_stamp,
+                        third_bar_id=live_stamp,
+                        pending_signal_id=(
+                            f'{symbol}:{side}:LIVE:{int(first_stamp)}:{int(live_stamp)}'
+                        ),
+                        pending_second_bar_id=last_setup_stamp,
+                        pending_wait_bars=0, pending_max_wait_bars=0,
+                        live_pattern_start_bar_id=first_stamp,
+                        live_pattern_pullback_bars=pullback_count,
+                        live_pattern_body_atr=live_body / atr,
+                        kc_confirmation_edge=rail,
+                        kc_distance_atr=distance_atr,
+                        kc_max_distance_atr=LIVE_PATTERN_MAX_DISTANCE_ATR,
+                    )
+        return wait('WAIT_LIVE_PATTERN_BREAKOUT')
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return wait('WAIT_VALID_LIVE_PATTERN_DATA')
