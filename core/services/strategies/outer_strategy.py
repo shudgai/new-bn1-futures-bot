@@ -25,9 +25,14 @@ def ma5_ma15_trend_confirmed(ma5_values, ma15_values, side):
         if (len(ma5) != 3 or len(ma15) != 3
                 or not all(math.isfinite(value) and value > 0 for value in ma5 + ma15)):
             return False
+        # 嚴格盤整過濾：均線斜率必須具備一定陡度，不能是平行線 (0.015%)
+        min_slope = ma15[0] * 0.00015
+        
         if side == "LONG":
-            return ma5[0] < ma5[1] < ma5[2] and ma15[0] < ma15[1] < ma15[2]
-        return ma5[0] > ma5[1] > ma5[2] and ma15[0] > ma15[1] > ma15[2]
+            return (ma5[1] - ma5[0] > min_slope and ma5[2] - ma5[1] > min_slope 
+                    and ma15[1] - ma15[0] > min_slope and ma15[2] - ma15[1] > min_slope)
+        return (ma5[0] - ma5[1] > min_slope and ma5[1] - ma5[2] > min_slope 
+                and ma15[0] - ma15[1] > min_slope and ma15[1] - ma15[2] > min_slope)
     except (TypeError, ValueError, OverflowError):
         return False
 
@@ -87,13 +92,12 @@ def ck_direction(frame, *, has_forming_bar=True):
         a, b = rows
         direction = None
         
-        # 嚴格盤整過濾：要求 kc_middle 的變化必須大於一個極小的有效閾值，否則視為無方向（盤整）
-        atr = float(frame.iloc[-2 if has_forming_bar else -1]['atr'])
-        min_slope = (atr * 0.001) if atr > 0 else 1e-9
+        # 嚴格盤整過濾：要求 kc_middle (中軌) 與外軌的變化必須大於一個極小的有效閾值，否則視為無方向（盤整平緩）
+        min_slope = a[1] * 0.00015
         
-        if (b[1] - a[1]) > min_slope and b[2] >= a[2]:
+        if (b[1] - a[1]) > min_slope and (b[2] - a[2]) > min_slope:
             direction = 'LONG'
-        elif (a[1] - b[1]) > min_slope and b[0] <= a[0]:
+        elif (a[1] - b[1]) > min_slope and (a[0] - b[0]) > min_slope:
             direction = 'SHORT'
             
         import logging
