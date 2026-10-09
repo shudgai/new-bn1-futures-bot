@@ -408,6 +408,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
         if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
+        if evaluate_live_ma5_direction(frame, quote, side) is None:
+            return reject("BLOCKED_LIVE_MA5_DIRECTION")
         if not quote_beyond_side_outer_rail(frame, side, quote):
             return reject("WAIT_LIVE_PRICE_OUTSIDE_KC_RAIL")
         # Post-exit formation verification:

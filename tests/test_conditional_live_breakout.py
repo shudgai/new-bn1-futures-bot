@@ -68,6 +68,23 @@ def test_live_body_breakout_requires_all_closed_trends_in_entry_direction(side, 
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_live_body_breakout_requires_live_ma5_to_slope_in_entry_direction(side):
+    frame = live_outer_frame(side)
+    live = frame.index[-1]
+    previous_ma5 = float(frame.iloc[-2]["ma5"])
+    frame.loc[live, "ma5"] = previous_ma5 + (1 if side == "SHORT" else -1)
+    diagnostics = {}
+
+    decision = evaluate_entry_contract(
+        frame, float(frame.iloc[-1]["close"]), symbol="TEST/USDT",
+        diagnostics=diagnostics,
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_LIVE_MA5_DIRECTION"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_unfilled_live_breakout_falls_back_to_confirmed_two_bar_breakout(side):
     frame = live_outer_frame(side)
     live = frame.index[-1]
@@ -235,7 +252,7 @@ def test_same_side_outer_open_uses_inclusive_half_atr_body_threshold(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_fresh_closed_outer_break_can_enter_during_small_counter_live_candle(side):
+def test_fresh_closed_outer_break_is_blocked_when_live_ma5_is_not_directional(side):
     frame = live_outer_frame(side)
     breakout_index = frame.index[-1]
     breakout_stamp = float(frame.loc[breakout_index, "timestamp"])
@@ -250,15 +267,14 @@ def test_fresh_closed_outer_break_can_enter_during_small_counter_live_candle(sid
     live["low"] = min(float(live["open"]), quote)
     frame.loc[len(frame)] = live
 
+    diagnostics = {}
     decision = evaluate_entry_contract(
-        frame, quote, f"KC_LIVE_BODY_BREAKOUT_{side}", symbol="TEST/USDT"
+        frame, quote, f"KC_LIVE_BODY_BREAKOUT_{side}", symbol="TEST/USDT",
+        diagnostics=diagnostics,
     )
 
-    assert decision is not None
-    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
-    assert decision["intrabar"] is False
-    assert decision["confirmation_bar_id"] == breakout_stamp
-    assert decision["live_opening_context"] == "CLOSED_OUTER_FORMATION"
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_LIVE_MA5_DIRECTION"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
