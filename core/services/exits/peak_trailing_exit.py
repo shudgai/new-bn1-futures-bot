@@ -708,17 +708,30 @@ def trend_continuation_hold(side, price, snapshot):
     return None
 
 
-def confirmed_doji_reversal(position, snapshot):
-    """Two consecutive closed post-entry bars; no intrabar doji hindsight."""
+def confirmed_doji_reversal(position, snapshot, price=None):
+    """A closed post-entry doji followed by a live adverse body, or closed fallback."""
     try:
         bars = snapshot.get('history_5', [])
-        if len(bars) < 2:
+        if not bars:
             return None
-        doji, reversal = bars[-2:]
         stamp = float(snapshot['quote_ms'])
+        live_ms = snapshot.get('live_bar_ms')
+        if (positive(price) and positive(live_ms) and positive(snapshot.get('live_open'))
+                and float(live_ms) == math.floor(stamp/60000)*60000
+                and float(bars[-1]['ms']) == float(live_ms)-60000):
+            doji = bars[-1]
+            reversal = dict(ms=float(live_ms),o=float(snapshot['live_open']),c=float(price),
+                            h=max(float(price),float(snapshot['live_open'])),
+                            l=min(float(price),float(snapshot['live_open'])))
+            expected_reversal = float(live_ms)
+        elif len(bars) >= 2:
+            doji, reversal = bars[-2:]
+            expected_reversal = math.floor(stamp/60000)*60000-60000
+        else:
+            return None
         if (float(doji['ms']) <= float(position['open_timestamp'])*1000
                 or float(reversal['ms']) != float(doji['ms'])+60000
-                or float(reversal['ms']) != math.floor(stamp/60000)*60000-60000):
+                or float(reversal['ms']) != expected_reversal):
             return None
         for bar in (doji, reversal):
             if not all(positive(bar.get(k)) for k in ('o','h','l','c')):
@@ -727,8 +740,6 @@ def confirmed_doji_reversal(position, snapshot):
                 return None
         span = doji['h']-doji['l']; body = abs(doji['c']-doji['o'])
         if span <= 0 or body/span > .2:
-            return None
-        if min(doji['h']-max(doji['o'],doji['c']), min(doji['o'],doji['c'])-doji['l']) <= body:
             return None
         sign = 1 if position['side']=='LONG' else -1
         if sign*(reversal['c']-reversal['o']) >= 0:
@@ -1128,7 +1139,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             ma_turned = positive(ma) and positive(prior) and sign*(float(ma)-float(prior)) < 0
             adverse_body = positive(opened) and sign*(price-float(opened)) < 0
             drawdown = sign*(peak-price)/peak
-            doji_signal = confirmed_doji_reversal(position, snap)
+            doji_signal = confirmed_doji_reversal(position, snap, price)
             high, low = snap.get('live_high'), snap.get('live_low')
             body = abs(price-float(opened)) if positive(opened) else 0
             wick = (float(high)-max(price,float(opened)) if sign==1 else min(price,float(opened))-float(low)) if all(positive(v) for v in (high,low,opened)) else 0
@@ -1140,7 +1151,10 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             healthy = (drawdown <= .015 and lifeline_held(position['side'],price,snap)
                        and not heavy_break and not doji_signal and not wick_pressure)
             sell_pressure = below_ma or ma_turned or wick_pressure or bool(doji_signal)
-            if (held or healthy) and reason != HARD_REASON and not heavy_break:
+            if state.get('ratchet_armed') and doji_signal and reason != HARD_REASON:
+                reason = trigger = doji_signal
+                state.update(soft_exit_blocked=False, trend_hold_reason='CONFIRMED_DOJI_REVERSAL')
+            elif (held or healthy) and reason != HARD_REASON and not heavy_break:
                 state.update(soft_exit_blocked=True, trend_hold_reason=held or 'HEALTHY_PULLBACK_HOLD')
                 reason, trigger = None, None
                 for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
