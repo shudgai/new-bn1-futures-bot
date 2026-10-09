@@ -248,14 +248,17 @@ class PureTrendStrategyV2:
         # 3. 止跌信號：當根 K 棒收出帶下影線的實體陽線 (Close > Open)
         is_green_candle = (current_price > curr_open)
         
-        pullback_long = touched_support_long and held_support_long and is_green_candle
+        # 4. 嚴禁十字星：實體必須大於全波幅的 50%
+        not_doji = (curr_range > 0) and (curr_body / curr_range >= 0.50)
+
+        pullback_long = touched_support_long and held_support_long and is_green_candle and not_doji
 
         # 【弱勢貼軌續漲旁路】：當行情持續在 MA5 上方沿軌走強時
         # 無明顯回踩但符合：
         #   a) 已突破 KC 上軌（curr_high > kc_upper）
         #   b) 前兩根收盤均在 MA5 以上
         #   c) 當根未創新低（非反轉）
-        if not pullback_long and long_trend_valid:
+        if not pullback_long and long_trend_valid and is_green_candle and not_doji:
             prev_close_l = float(bar_prev.get('close', 0))
             prev_ma3_l = float(bar_prev.get('ma3', 0))
             kc_upper_curr = float(bar_curr.get('kc_upper', 0))
@@ -297,14 +300,17 @@ class PureTrendStrategyV2:
         # 【硬門檻】當根 K 棒必須且只能是實體陰線 (Close < Open)！嚴禁綠 K 開空！
         is_red_candle = (current_price < curr_open)
 
+        # 嚴禁十字星：實體必須大於全波幅的 50%
+        not_doji_short = (curr_range > 0) and (curr_body / curr_range >= 0.50)
+
         # 回抽準備與觸發：
         # 1. 價格反彈至 MA5(ma3) 或 KC 中軌附近 (高點觸及或高於)
         touched_resistance_short = (curr_high >= ma3) or (curr_high >= kc_middle_curr)
         
-        pullback_short = touched_resistance_short and is_red_candle
+        pullback_short = touched_resistance_short and is_red_candle and not_doji_short
         
         # 【弱勢貼軌續跌旁路】：行情持續壓制在 MA5 下方沿軌陰跌
-        if not pullback_short and short_trend_valid and is_red_candle:
+        if not pullback_short and short_trend_valid and is_red_candle and not_doji_short:
             prev_close = float(bar_prev.get('close', 0))
             prev_ma3 = float(bar_prev.get('ma3', 0))
             below_ma5_x2 = (prev_close < prev_ma3) and (current_price < ma3)
@@ -312,7 +318,7 @@ class PureTrendStrategyV2:
             if below_ma5_x2 and no_reversal:
                 pullback_short = True
 
-        final_short_signal = pullback_short and short_trend_valid and is_red_candle
+        final_short_signal = pullback_short and short_trend_valid and is_red_candle and not_doji_short
 
         # 【空單硬門檻】收盤必須實質跌破 KC 下軌，禁止在通道內開空！
         if final_short_signal:
