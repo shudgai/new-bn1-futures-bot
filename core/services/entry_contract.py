@@ -7,6 +7,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import (
     ck_direction,
     live_body_breakout_side,
+    ma5_ma15_trend_confirmed,
     live_ma3_direction_ready,
     live_candle_color_ready,
     live_adverse_entry_safe,
@@ -226,6 +227,20 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
         return None
 
 
+def entry_trend_alignment_ready(frame, side):
+    """Require closed KC, MA5 and MA15 trends to agree with every entry side."""
+    try:
+        if side not in ("LONG", "SHORT") or ck_direction(frame) != side:
+            return False
+        closed = closed_entry_candles(frame)
+        if len(closed) < 3 or not {"ma5", "ma15"}.issubset(closed.columns):
+            return False
+        recent = closed.tail(3)
+        return ma5_ma15_trend_confirmed(recent["ma5"], recent["ma15"], side)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None):
     def reject(reason):
@@ -331,6 +346,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if decision.get("action") != "ENTER":
             return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
         side = decision["side"]
+        if not entry_trend_alignment_ready(frame, side):
+            return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
         if not quote_beyond_side_outer_rail(frame, side, quote):
             return reject("WAIT_LIVE_PRICE_OUTSIDE_KC")
         # Post-exit formation verification:
