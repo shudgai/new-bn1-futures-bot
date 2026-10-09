@@ -163,6 +163,13 @@ def migrate_peak_state(position, meta=None):
                     'ma5_reversal_favorable_seen', 'ma5_reversal_outside_seen',
                     'ma5_reversal_last_price'):
             state.pop(key, None)
+    if channel_initial_stop_disabled(position, meta) and state.get('profit_lock_basis') != 'price_return_v1':
+        if state.get('trigger') in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'):
+            for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
+                state.pop(key, None)
+        for key in ('tiered_roi_peak','tiered_roi_current','tiered_roi_allowance'):
+            state.pop(key, None)
+        state['profit_lock_basis'] = 'price_return_v1'
     if channel_initial_stop_disabled(position, meta) and state.get('lifeline_policy_version') != 1:
         # Older pivot authorization did not check the new unarmed life-line rule.
         if state.get('trigger') == 'THREE_POINT_PIVOT':
@@ -1049,12 +1056,12 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         pass
                     reason, trigger = None, None
 
-        # UI net ROI includes leverage, bilateral fees and estimated close slippage.
-        margin = position.get('margin')
-        if is_channel_swing and positive(margin):
-            roi = (sign*(price-entry)*qty - (entry+price)*qty*fee - price*qty*slippage) / float(margin)
-            state['tiered_roi_peak'] = max(float(state.get('tiered_roi_peak', roi)), roi)
-            peak_roi = state['tiered_roi_peak']
+        # Profit tiers use unleveraged price movement, independent of margin ROI.
+        if is_channel_swing:
+            roi = sign*(price-entry)/entry
+            observed_peak = sign*(float(state.get('peak_price', price))-entry)/entry
+            state['tiered_price_peak'] = max(float(state.get('tiered_price_peak', 0)), roi, observed_peak)
+            peak_roi = state['tiered_price_peak']
             lock_trigger = None
             if peak_roi + 1e-12 >= .15:
                 allowance, lock_trigger = peak_roi*.20, 'PROFIT_LOCK_T3'
@@ -1065,12 +1072,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if lock_trigger and peak_roi-roi + 1e-12 >= allowance:
                 if reason != HARD_REASON and trigger not in ('WATERFALL_DROP','TWO_CLOSED_ADVERSE_ABNORMAL','OPPOSITE_KC_BAND_BREACH'):
                     reason, trigger = lock_trigger, lock_trigger
-                    state.update(tiered_roi_current=roi, tiered_roi_allowance=allowance)
+                    state.update(tiered_price_current=roi, tiered_price_allowance=allowance)
             if state.get('pending') in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'):
                 reason, trigger = state['pending'], state['trigger']
 
-        if (is_channel_swing and reason == ABNORMAL_REASON and trigger == 'THREE_POINT_PIVOT'
-                and float(state.get('tiered_roi_peak', 0)) < .05
+        if (is_channel_swing and reason and trigger not in (
+                'PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3','WATERFALL_DROP',
+                'TWO_CLOSED_ADVERSE_ABNORMAL','OPPOSITE_KC_BAND_BREACH') and reason != HARD_REASON
                 and lifeline_held(position['side'], price, snapshot)):
             reason, trigger = None, None
             for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):

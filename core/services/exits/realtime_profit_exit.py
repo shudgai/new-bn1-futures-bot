@@ -201,7 +201,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
-                   'net_roe_lock_peak','net_roe_lock_armed','tiered_roi_peak','lifeline_policy_version',
+                   'net_roe_lock_peak','net_roe_lock_armed','tiered_price_peak','profit_lock_basis','lifeline_policy_version',
                    'trigger','trigger_bar_ms','trigger_price',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',

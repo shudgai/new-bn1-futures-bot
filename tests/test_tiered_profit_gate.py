@@ -17,7 +17,7 @@ def position(side):
 
 def tick(p,roi,stamp):
     sign=1 if p['side']=='LONG' else -1
-    return evaluate_peak_trailing(p,100+sign*roi*10,{'quote_ms':stamp},fee=0.,slippage=0.)
+    return evaluate_peak_trailing(p,100+sign*roi*100,{'quote_ms':stamp},fee=0.,slippage=0.)
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -31,7 +31,7 @@ def test_tier_boundary_and_retry(side,peak,allowance,code):
     assert tick(restored,peak,64000)['trigger']==code
     event=profit_exit_fields(restored,code,65000)
     assert event['last_profit_exit_side']==side
-    assert event['last_profit_exit_peak_price']==100+(1 if side=='LONG' else -1)*peak*10
+    assert event['last_profit_exit_peak_price']==100+(1 if side=='LONG' else -1)*peak*100
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -93,7 +93,7 @@ def test_actual_paper_close_persists_event_and_reload(tmp_path,monkeypatch,side)
     b=pm.PaperAccount()
     event=b.trades[0]
     assert event['last_profit_exit_side']==side
-    assert event['last_profit_exit_peak_price']==101. if side=='LONG' else event['last_profit_exit_peak_price']==99.
+    assert event['last_profit_exit_peak_price']==110. if side=='LONG' else event['last_profit_exit_peak_price']==90.
     assert post_profit_lock_reason(b,'CAP/USDT',frame_for(side).iloc[:-1],side)=='BLOCKED_BY_POST_PROFIT_COOLDOWN'
 
 
@@ -126,7 +126,7 @@ def test_real_testnet_close_only_records_confirmed_event(tmp_path,monkeypatch,fi
     success=asyncio.run(a.close_position('CAP/USDT',100.75,'Channel Swing PROFIT_LOCK_T2',is_manual=True))
     assert success is filled
     if filled:
-        assert a.trades[0]['last_profit_exit_peak_price']==101.
+        assert a.trades[0]['last_profit_exit_peak_price']==110.
         data=__import__('json').load(open(tmp_path/'testnet.json'))
         assert data['trades'][0]['last_profit_exit_side']=='LONG'
     else:
