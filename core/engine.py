@@ -1225,7 +1225,7 @@ class TradingEngine:
         frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
         if frame is None or frame.empty or float(frame.iloc[-1]['timestamp']) != math.floor(stamp/60000)*60000:
             return False
-        impulse = impulse_entry(frame, price, symbol)
+        impulse = impulse_entry(frame, price, symbol, account=self.account)
         if impulse is None:
             return False
         locks = getattr(self, '_breakout_reverse_locks', None)

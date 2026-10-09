@@ -6,7 +6,7 @@ CODES = frozenset({'KC_IMPULSE_BREAKOUT_LONG','KC_IMPULSE_BREAKOUT_SHORT'})
 REASONS = {'LONG':'REVERSE_ON_BULLISH_BREAKOUT','SHORT':'REVERSE_ON_BEARISH_BREAKOUT'}
 
 
-def impulse_entry(frame, quote, symbol=''):
+def impulse_entry(frame, quote, symbol='', account=None):
     try:
         closed=closed_entry_candles(frame)
         if len(closed)<3 or bool(frame.iloc[-1].get('is_closed',True)):
@@ -35,14 +35,26 @@ def impulse_entry(frame, quote, symbol=''):
             lower,middle,upper=map(float,(source.kc_lower,source.kc_middle,source.kc_upper))
             if not lower<middle<upper:continue
             opened=float(source.open);price=quote if intrabar else float(source.close)
-            side=('LONG' if lower<=opened<=upper and price>upper and price-opened>=.5*atr else
-                  'SHORT' if lower<=opened<=upper and price<lower and opened-price>=.5*atr else None)
+            # A fresh opposite close may be followed by a full-channel impulse
+            # opening beyond the old rail. Authorize only the next live candle.
+            exits = [t for t in getattr(account, 'trades', [])
+                     if t.get('symbol') == symbol and t.get('status') == 'CLOSED'
+                     and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
+                     and t.get('id') is not None]
+            latest_exit = max(exits, key=lambda t: float(t['id'])) if exits else None
+            next_after_exit = bool(intrabar and latest_exit and
+                                  float(live.timestamp) == math.floor(float(latest_exit['id'])/60000)*60000+60000)
+            bottom_launch = next_after_exit and latest_exit['action'] == 'CLOSE_SHORT' and opened < lower
+            top_drop = next_after_exit and latest_exit['action'] == 'CLOSE_LONG' and opened > upper
+            side=('LONG' if (lower<=opened<=upper or bottom_launch) and price>upper and price-opened>=.5*atr else
+                  'SHORT' if (lower<=opened<=upper or top_drop) and price<lower and opened-price>=.5*atr else None)
             if side is None:continue
             edge=float(live.kc_upper if side=='LONG' else live.kc_lower)
             if not math.isfinite(edge) or edge<=0 or (quote-edge)*(1 if side=='LONG' else -1)<=0:continue
             bar=float(source.timestamp);code='KC_IMPULSE_BREAKOUT_'+side
             evidence=dict(policy='half_atr_impulse_breakout_v1',passed=True,side=side,
                           source_bar_ms=bar,live_bar_ms=float(live.timestamp),intrabar=intrabar,
+                          post_close_channel_cross=bool(bottom_launch or top_drop),
                           source_open=opened,source_price=price,body_atr=abs(price-opened)/atr,
                           quote=quote,kc_edge=edge,previous_atr=atr)
             return dict(action='ENTER',side=side,type=code,reason='IMPULSE_BREAKOUT_GATE_PASSED',

@@ -572,7 +572,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if code in SECOND_THIRD_CODES:
             return reject('BLOCKED_SECOND_THIRD_OUTSIDE_OR_DOJI')
 
-        impulse = impulse_entry(frame, quote, symbol)
+        impulse = impulse_entry(frame, quote, symbol, account=account)
         if impulse is not None and (code is None or code == impulse['type']):
             if symbol in getattr(account, 'positions', {}):
                 return reject('BLOCKED_BY_POSITION_GATE')
