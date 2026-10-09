@@ -188,12 +188,19 @@ class PureTrendStrategyV2:
         kc_middle_prev = float(bar_prev.get('kc_middle', current_price))
 
         # -------------------------------------------------------------
-        # 門禁 0：趨勢一致性與超買/超賣過濾 (乖離上限)
+        # 門禁 0：趨勢一致性與盤整/超買/超賣過濾 (乖離上限)
         # -------------------------------------------------------------
         if closed is not None and len(closed) >= 4:
             kc_middle_3_ago = float(closed.iloc[-4]['kc_middle'])
-            ck_is_down = kc_middle_prev < kc_middle_3_ago
-            ck_is_up = kc_middle_prev > kc_middle_3_ago
+            kc_slope = (kc_middle_prev - kc_middle_3_ago) / current_price * 100.0
+            
+            # 盤整防護：若 KC 中軌走平 (斜率極小)，視為盤整，嚴禁開倉
+            if abs(kc_slope) < 0.02:
+                self.entry_rejection = f"通道中軌走平 (斜率 {abs(kc_slope):.4f}% < 0.02%)，盤整時不開倉"
+                return None
+                
+            ck_is_down = kc_slope <= -0.02
+            ck_is_up = kc_slope >= 0.02
         else:
             ck_is_down = True
             ck_is_up = True
