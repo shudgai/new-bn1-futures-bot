@@ -125,17 +125,18 @@ class PureTrendStrategyV2:
 
     @staticmethod
     def outside_continuation_side(closed: Any) -> Optional[str]:
-        """A single closed directional outside candle establishes continuation."""
-        if closed is None or len(closed) < 1:
+        """A single closed directional outside candle establishes continuation ONLY if the previous candle was also outside."""
+        if closed is None or len(closed) < 2:
             return None
         try:
-            previous = closed.iloc[-1]
+            before, previous = closed.iloc[-2], closed.iloc[-1]
             for side, edge, sign in (('LONG', 'kc_upper', 1), ('SHORT', 'kc_lower', -1)):
                 opening, close, rail = (float(previous[key]) for key in ('open', 'close', edge))
-                if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail)):
+                b_close, b_rail = float(before['close']), float(before[edge])
+                if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail, b_close, b_rail)):
                     continue
-                # 只要求上一根收盤在外軌之外，即具備延續資格 (不管是否為同色實體)
-                if sign * (close - rail) > 0:
+                # 只要求上一根與前一根收盤皆在外軌之外，即具備延續資格 (不管是否為同色實體)
+                if sign * (close - rail) > 0 and sign * (b_close - b_rail) > 0:
                     return side
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -556,8 +557,33 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     if ticket or continuation:
         is_reentry = True
     else:
-        # 已移除「前段已在軌外但未形成同向延續則阻擋」的限制
-        pass
+        # 嚴格破軌檢查 (Initial Breakout Check)
+        first_bar = closed.iloc[-2]
+        first_open, first_close = float(first_bar['open']), float(first_bar['close'])
+        first_kc_up, first_kc_dn = float(first_bar['kc_upper']), float(first_bar['kc_lower'])
+        second_open, second_close = float(previous['open']), float(previous['close'])
+        second_kc_up, second_kc_dn = float(previous['kc_upper']), float(previous['kc_lower'])
+        
+        if decision['side'] == 'LONG':
+            if not (first_kc_dn <= first_open <= first_kc_up):
+                if diagnostics is not None: diagnostics['reason'] = '第一根開盤未在通道內，非標準破軌'
+                return None
+            if first_close <= first_kc_up or first_close <= first_open:
+                if diagnostics is not None: diagnostics['reason'] = '第一根未實質破上軌或非陽線'
+                return None
+            if second_close <= second_open or second_close <= second_kc_up:
+                if diagnostics is not None: diagnostics['reason'] = '第二根非陽線實體或未站穩上軌外'
+                return None
+        else:
+            if not (first_kc_dn <= first_open <= first_kc_up):
+                if diagnostics is not None: diagnostics['reason'] = '第一根開盤未在通道內，非標準破軌'
+                return None
+            if first_close >= first_kc_dn or first_close >= first_open:
+                if diagnostics is not None: diagnostics['reason'] = '第一根未實質破下軌或非陰線'
+                return None
+            if second_close >= second_open or second_close >= second_kc_dn:
+                if diagnostics is not None: diagnostics['reason'] = '第二根非陰線實體或未站穩下軌外'
+                return None
     if ticket and not is_reentry and bar_index - ticket['exit_bar_index'] < 5:
         if diagnostics is not None:
             diagnostics['reason'] = 'WAIT_POST_EXIT_5_BAR_COOLDOWN'
