@@ -144,9 +144,10 @@ def test_confirmed_two_candle_breakout_is_general_entry(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_accepts_only_the_general_closed_breakout(side):
-    frame = with_chop_history(sui_cross_frame(side))
-    decision = evaluate_entry_contract(frame, symbol="SUI/USDT")
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_accept_the_same_closed_breakout(side, symbol):
+    frame = with_chop_history(breakout_frame(side))
+    decision = evaluate_entry_contract(frame, symbol=symbol)
 
     assert decision is not None
     assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
@@ -154,18 +155,19 @@ def test_sui_accepts_only_the_general_closed_breakout(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_closed_breakout_requires_ma5_ma15_cross_on_confirmation(side):
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        breakout_frame(side), symbol="SUI/USDT", diagnostics=diagnostics
-    )
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_closed_breakout_do_not_require_ma_cross(side, symbol):
+    frame = with_chop_history(breakout_frame(side))
+    decision = evaluate_entry_contract(frame, symbol=symbol)
 
-    assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_SUI_MA5_MA15_CROSS"
+    assert decision is not None
+    assert decision["side"] == side
+    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_live_first_breakout_uses_trend_gate_without_closed_ma_cross(side):
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙蝦/USDT"])
+def test_sui_and_lobster_live_first_breakout_use_the_same_trend_gate(side, symbol):
     frame = with_chop_history(live_outer_frame(side))
     ma5 = [99.0, 99.2, 99.4, 99.6, 99.8, 100.0, 100.2]
     ma15 = [98.0, 98.2, 98.4, 98.6, 98.8, 99.0, 99.2]
@@ -176,7 +178,7 @@ def test_sui_live_first_breakout_uses_trend_gate_without_closed_ma_cross(side):
     frame["ma15"] = ma15
     quote = float(frame.iloc[-1]["close"])
 
-    decision = evaluate_entry_contract(frame, quote, symbol="SUI/USDT")
+    decision = evaluate_entry_contract(frame, quote, symbol=symbol)
 
     assert decision is not None
     assert decision["side"] == side
@@ -200,8 +202,9 @@ def test_sui_rejects_horizontal_kc_or_ma15(side, line):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_live_breakout_without_closed_pair_is_rejected(side):
-    frame = live_outer_frame(side)
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙蝦/USDT"])
+def test_sui_and_lobster_live_breakout_without_closed_pair_share_result(side, symbol):
+    frame = with_chop_history(live_outer_frame(side))
     sign = 1 if side == "LONG" else -1
     rail = "kc_upper" if side == "LONG" else "kc_lower"
     for index in (1, 2):
@@ -214,18 +217,21 @@ def test_sui_live_breakout_without_closed_pair_is_rejected(side):
         ]
 
     decision = evaluate_entry_contract(
-        frame, float(frame.iloc[-1]["close"]), symbol="SUI/USDT"
+        frame, float(frame.iloc[-1]["close"]), symbol=symbol
     )
 
-    assert decision is None
+    assert decision is not None
+    assert decision["side"] == side
+    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
 @pytest.mark.parametrize(
     "code",
     ["KC_LIVE_BODY_BREAKOUT_{side}", "KC_OUTSIDE_{side}"],
 )
-def test_sui_rejects_live_and_continuation_authorities(side, code):
+def test_sui_and_lobster_share_live_and_continuation_authorities(side, symbol, code):
     diagnostics = {}
     code = code.format(side=side)
     frame = sui_cross_frame(side) if "KC_LIVE_BODY_BREAKOUT" in code else breakout_frame(side)
@@ -243,7 +249,7 @@ def test_sui_rejects_live_and_continuation_authorities(side, code):
     decision = evaluate_entry_contract(
         frame,
         code=code,
-        symbol="SUI/USDT",
+        symbol=symbol,
         diagnostics=diagnostics,
     )
 
@@ -253,7 +259,7 @@ def test_sui_rejects_live_and_continuation_authorities(side, code):
         assert decision["entry_phase"] in ("KC_LIVE_OUTER_BREAKOUT", "KC_LIVE_BODY_BREAKOUT")
     else:
         assert decision is None
-        assert diagnostics["reason"] == "BLOCKED_SUI_REQUIRES_CLOSED_BREAKOUT"
+        assert diagnostics["reason"] == "WAIT_KC_CONTINUATION"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -351,8 +357,16 @@ def test_consolidation_gate_blocks_real_entry_contract(
         frame, symbol=symbol, diagnostics=diagnostics
     )
 
-    assert decision is None
-    assert diagnostics["reason"] == expected_reason
+    if kind == "oscillating":
+        assert decision is not None
+        assert decision["side"] == side
+        assert decision["entry_phase"] in (
+            "KC_LIVE_OUTER_BREAKOUT", "KC_2BAR_CLOSED_CONFIRM",
+            "KC_CONTINUATION_ENTRY", "KC_LIVE_BODY_BREAKOUT",
+        )
+    else:
+        assert decision is None
+        assert diagnostics["reason"] == expected_reason
 
 
 @pytest.mark.parametrize(

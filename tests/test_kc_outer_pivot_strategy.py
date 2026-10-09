@@ -42,20 +42,6 @@ def position(side, symbol=None):
     return result
 
 
-def sui_pivot_history(side):
-    bars = [
-        dict(ms=float(index * 60_000), o=100., h=101., l=99., c=100.,
-             ma5=100., volume=500., kc_upper=101., kc_middle=100., kc_lower=99.)
-        for index in range(1, 19)
-    ]
-    tail = pivot_history(side)
-    for index, row in enumerate(tail, start=19):
-        row["ms"] = float(index * 60_000)
-        row["volume"] = float((22 - index) * 100)
-        row.update(kc_upper=100.7, kc_middle=100., kc_lower=99.3)
-    return bars + tail
-
-
 def snapshot(side, bars=None, **overrides):
     rows = pivot_history(side) if bars is None else bars
     result = dict(
@@ -87,71 +73,15 @@ def test_position_exits_on_latest_confirmed_three_point_pivot(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_three_point_pivot_requires_ma5_to_reverse_at_pivot(side):
-    bars = sui_pivot_history(side)
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_use_the_same_three_point_pivot_gate(side, symbol):
+    position_data = position(side, symbol=symbol)
     result = evaluate_peak_trailing(
-        position(side, symbol="SUI/USDT"),
-        101.,
-        snapshot(side, bars, quote_ms=1_320_000.),
-        fee=0.,
-        slippage=0.,
+        position_data, 101., snapshot(side), fee=0., slippage=0.
     )
 
     assert result is not None
     assert result["trigger"] == "THREE_POINT_PIVOT"
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_three_point_pivot_waits_when_ma5_does_not_reverse(side):
-    bars = sui_pivot_history(side)
-    bars[-1]["ma5"] = bars[-2]["ma5"] + (-1. if side == "SHORT" else 1.)
-    position_data = position(side, symbol="SUI/USDT")
-    result = evaluate_peak_trailing(
-        position_data,
-        101.,
-        snapshot(side, bars, quote_ms=1_320_000.),
-        fee=0.,
-        slippage=0.,
-    )
-
-    assert result is None
-    assert not position_data.get("peak_trailing_state", {}).get("pending")
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_sui_three_point_pivot_requires_21_valid_bars(side):
-    bars = sui_pivot_history(side)[1:]
-    result = evaluate_peak_trailing(
-        position(side, symbol="SUI/USDT"),
-        101.,
-        snapshot(side, bars, quote_ms=1_320_000.),
-        fee=0.,
-        slippage=0.,
-    )
-
-    assert result is None
-
-
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("blocker", ["wide_channel", "nondeclining_volume"])
-def test_sui_three_point_pivot_waits_for_narrow_channel_and_falling_volume(
-    side, blocker
-):
-    bars = sui_pivot_history(side)
-    if blocker == "wide_channel":
-        bars[-1]["kc_upper"] = 101.
-        bars[-1]["kc_lower"] = 99.
-    else:
-        bars[-1]["volume"] = bars[-2]["volume"]
-    result = evaluate_peak_trailing(
-        position(side, symbol="SUI/USDT"),
-        101.,
-        snapshot(side, bars, quote_ms=1_320_000.),
-        fee=0.,
-        slippage=0.,
-    )
-
-    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

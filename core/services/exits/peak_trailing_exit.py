@@ -2,7 +2,6 @@
 import copy
 import math
 import sys
-from statistics import median
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 
@@ -140,9 +139,7 @@ def migrate_peak_state(position, meta=None):
     if state.get('trigger') in ('EXIT_PEAK_MA_TURN_PRESSURE', 'EXIT_PARABOLIC_MA3_TURN'):
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
             state.pop(key, None)
-    if (position.get('symbol') == 'SUI/USDT'
-            and state.get('trigger') == 'MA5_TRUE_PEAK_REVERSAL') or (
-            position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+    if (position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
             and state.get('trigger') in (
                 'MA5_TRUE_PEAK_REVERSAL', 'EXIT_PROFIT_LOCK_FLOOR',
                 'EXIT_PEAK_PULLBACK_PRESSURE',
@@ -261,39 +258,6 @@ def three_point_pivot_exit(position, snapshot):
             and float(pivot['l']) < float(confirm['l'])
         ):
             return None
-        if position.get('symbol') == 'SUI/USDT':
-            if len(bars) < 21:
-                return None
-            widths = []
-            volumes = []
-            for bar in bars[-21:]:
-                upper = float(bar['kc_upper'])
-                middle = float(bar['kc_middle'])
-                lower = float(bar['kc_lower'])
-                volume = float(bar['volume'])
-                if (not all(positive(value) for value in (upper, middle, lower))
-                        or upper <= lower or not math.isfinite(volume) or volume < 0):
-                    return None
-                widths.append((upper - lower) / middle)
-                volumes.append(volume)
-            if widths[-1] > median(widths[:-1]) * 0.75:
-                return None
-            if not volumes[-3] > volumes[-2] > volumes[-1]:
-                return None
-            ma5_before, ma5_pivot, ma5_confirm = (
-                float(bar['ma5']) for bar in (before, pivot, confirm)
-            )
-            if not all(positive(value) for value in
-                       (ma5_before, ma5_pivot, ma5_confirm)):
-                return None
-            if sign == 1 and not (
-                ma5_before < ma5_pivot > ma5_confirm
-            ):
-                return None
-            if sign == -1 and not (
-                ma5_before > ma5_pivot < ma5_confirm
-            ):
-                return None
         return {
             'trigger': 'THREE_POINT_PIVOT',
             'trigger_bar_ms': pivot_ms,
