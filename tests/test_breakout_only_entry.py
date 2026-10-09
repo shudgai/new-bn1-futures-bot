@@ -165,6 +165,26 @@ def test_sui_closed_breakout_requires_ma5_ma15_cross_on_confirmation(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_live_first_breakout_uses_trend_gate_without_closed_ma_cross(side):
+    frame = with_chop_history(live_outer_frame(side))
+    ma5 = [99.0, 99.2, 99.4, 99.6, 99.8, 100.0, 100.2]
+    ma15 = [98.0, 98.2, 98.4, 98.6, 98.8, 99.0, 99.2]
+    if side == "SHORT":
+        ma5 = [200.0 - value for value in ma5]
+        ma15 = [200.0 - value for value in ma15]
+    frame["ma5"] = ma5
+    frame["ma15"] = ma15
+    quote = float(frame.iloc[-1]["close"])
+
+    decision = evaluate_entry_contract(frame, quote, symbol="SUI/USDT")
+
+    assert decision is not None
+    assert decision["side"] == side
+    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
+    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("line", ["kc_middle", "ma15"])
 def test_sui_rejects_horizontal_kc_or_ma15(side, line):
     frame = sui_cross_frame(side)

@@ -494,7 +494,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
         if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
-        if symbol == SUI_BREAKOUT_ONLY_SYMBOL:
+        if (symbol == SUI_BREAKOUT_ONLY_SYMBOL
+                and decision.get("entry_phase") == "KC_2BAR_CLOSED_CONFIRM"):
             prior, confirmation = closed.iloc[-2], closed.iloc[-1]
             prior_ma5, prior_ma15 = float(prior["ma5"]), float(prior["ma15"])
             confirmation_ma5 = float(confirmation["ma5"])
