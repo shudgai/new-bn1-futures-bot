@@ -125,24 +125,17 @@ class PureTrendStrategyV2:
 
     @staticmethod
     def outside_continuation_side(closed: Any) -> Optional[str]:
-        """Two adjacent closed directional outside candles establish continuation."""
-        if closed is None or len(closed) < 2:
+        """A single closed directional outside candle establishes continuation."""
+        if closed is None or len(closed) < 1:
             return None
         try:
-            before, previous = closed.iloc[-2], closed.iloc[-1]
-            if float(previous['timestamp']) - float(before['timestamp']) != 60000:
-                return None
+            previous = closed.iloc[-1]
             for side, edge, sign in (('LONG', 'kc_upper', 1), ('SHORT', 'kc_lower', -1)):
-                valid = True
-                for bar in (before, previous):
-                    opening, close, rail = (float(bar[key]) for key in ('open', 'close', edge))
-                    if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail)):
-                        valid = False
-                        break
-                    if sign * (close - opening) <= 0 or sign * (close - rail) <= 0:
-                        valid = False
-                        break
-                if valid:
+                opening, close, rail = (float(previous[key]) for key in ('open', 'close', edge))
+                if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail)):
+                    continue
+                # 只要求上一根收盤在外軌之外且為同色實體
+                if sign * (close - opening) > 0 and sign * (close - rail) > 0:
                     return side
         except (KeyError, TypeError, ValueError, OverflowError):
             return None

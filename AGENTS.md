@@ -54,6 +54,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
   - 若 MA5 與 MA15 之間的距離，或 MA5 與目標突破之 KC 外軌的距離，小於當前通道寬度的 **25%**，視為空間不足、均線過於黏合，拒絕開倉。
 - **延續開倉與獲利重開防護（解封並升級嚴格限制）**：
   - 當「破軌後平倉後」或「破軌沒開倉」時，適用此規則（`evaluate_continuation_entry` 及 `_profit_reentry_ready`）。
+  - **單一軌外延續**：只要上一根 K 線收盤站在 KC 外軌外，並且是順向實體（同色），不管前面有沒有符合破軌開倉條件，皆可視為延續開倉。不再強制要求「連續兩根軌外同色實體」。
   - **嚴格趨勢要求**：必須符合目前通道方向（多單漲勢、空單跌勢，CK方向與MA5斜率皆須符合）。
   - **嚴格軌外要求**：K線最新價（quote）必須**同時嚴格在 KC 外軌與 MA5 之外**（多單 `price > kc_upper` 且 `price > ma5`；空單 `price < kc_lower` 且 `price < ma5`）。
   - **退回防護**：若 K 線已退回 KC 通道內或退回 MA5 內，一律拒絕開倉。
