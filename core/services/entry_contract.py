@@ -401,44 +401,174 @@ def is_doji_candle(row, ratio_threshold=0.2):
     if total_range == 0: return True
     return (abs(row['close'] - row['open']) / total_range) <= ratio_threshold
 
-def check_candle_gate(curr_closed_bar, direction):
-    if is_doji_candle(curr_closed_bar):
-        return False, "BLOCKED_BY_DOJI"
-    if direction == "LONG" and curr_closed_bar['close'] < curr_closed_bar['open']:
-        return False, "BLOCKED_BY_RED_CANDLE"
-    if direction == "SHORT" and curr_closed_bar['close'] > curr_closed_bar['open']:
-        return False, "BLOCKED_BY_GREEN_CANDLE"
-    return True, "PASSED"
+def count_ma_crosses(frame):
+    if len(frame) < 2: return 0
+    ma5 = frame['ma5'].values
+    ma15 = frame['ma15'].values
+    diff = ma5 - ma15
+    crosses = 0
+    for i in range(1, len(diff)):
+        if (diff[i-1] > 0 and diff[i] <= 0) or (diff[i-1] < 0 and diff[i] >= 0):
+            crosses += 1
+    return crosses
 
-def evaluate_dual_track_triggers(closed_frame):
-    if len(closed_frame) < 3:
-        return None, None
-        
-    prev = closed_frame.iloc[-2]
+def evaluate_reentry_triggers(closed_frame, last_exit_side=None, bars_since_exit=None):
+    if len(closed_frame) < 3: return None, None
+    if not last_exit_side: return None, "NO_HISTORY"
+    if bars_since_exit is not None and bars_since_exit < 2: return None, "WAIT_REENTRY_COOLDOWN"
+
     curr = closed_frame.iloc[-1]
+    prev = closed_frame.iloc[-2]
 
-    long_breakout = (prev['close'] > prev['kc_upper']) and (curr['close'] > curr['kc_upper'])
-    short_breakout = (prev['close'] < prev['kc_lower']) and (curr['close'] < curr['kc_lower'])
+    if last_exit_side == "SHORT":
+        if (curr['close'] < curr['kc_middle']) and (curr['ma15'] <= prev['ma15']):
+            if (curr['close'] < curr['open']) and (curr['close'] < curr['ma5'] or curr['close'] < prev['low']):
+                return "SHORT", "RE_ENTRY_SHORT"
 
-    golden_cross = (prev['ma5'] <= prev['ma15']) and (curr['ma5'] > curr['ma15'])
-    death_cross = (prev['ma5'] >= prev['ma15']) and (curr['ma5'] < curr['ma15'])
+    if last_exit_side == "LONG":
+        if (curr['close'] > curr['kc_middle']) and (curr['ma15'] >= prev['ma15']):
+            if (curr['close'] > curr['open']) and (curr['close'] > curr['ma5'] or curr['close'] > prev['high']):
+                return "LONG", "RE_ENTRY_LONG"
+
+    return None, "NO_REENTRY_SIGNAL"
+
+def detect_raw_triggers(closed_frame, account=None, symbol=None):
+    if len(closed_frame) < 3: return None, None
+    prev, curr = closed_frame.iloc[-2], closed_frame.iloc[-1]
+
+    if account is not None and symbol is not None:
+        last_trade = None
+        for trade in reversed(getattr(account, 'trades', [])):
+            if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
+                last_trade = trade
+                break
+        if last_trade:
+            re_side, re_trigger = evaluate_reentry_triggers(closed_frame, last_exit_side=last_trade['side'], bars_since_exit=None)
+            if re_side is not None:
+                return re_side, re_trigger
+
+    atr = float(curr['atr'])
+
+    # 情境 A: 軌內起爆衝擊 + 軌外標準破軌 (TRIGGER_A_KC_BREAKOUT)
+    classic_breakout_long = (curr['close'] > curr['kc_upper'] and curr['close'] > curr['open'])
+    impulsive_breakout_long = (
+        curr['open'] < curr['kc_upper'] and 
+        curr['high'] >= curr['kc_upper'] and 
+        curr['close'] > curr['kc_middle'] and 
+        curr['close'] > curr['open'] and 
+        (curr['close'] - curr['open']) >= atr * 0.5 and 
+        (curr['high'] - curr['close']) <= (curr['close'] - curr['open']) * 0.8
+    )
+    long_breakout = classic_breakout_long or impulsive_breakout_long
     
-    long_ma_cross = golden_cross and (curr['close'] > curr['kc_middle'])
-    short_ma_cross = death_cross and (curr['close'] < curr['kc_middle'])
+    classic_breakout_short = (curr['close'] < curr['kc_lower'] and curr['close'] < curr['open'])
+    impulsive_breakout_short = (
+        curr['open'] > curr['kc_lower'] and 
+        curr['low'] <= curr['kc_lower'] and 
+        curr['close'] < curr['kc_middle'] and 
+        curr['close'] < curr['open'] and 
+        (curr['open'] - curr['close']) >= atr * 0.5 and 
+        (curr['close'] - curr['low']) <= (curr['open'] - curr['close']) * 0.8
+    )
+    short_breakout = classic_breakout_short or impulsive_breakout_short
 
-    if long_breakout or long_ma_cross:
-        passed, reason = check_candle_gate(curr, "LONG")
-        if passed:
-            return "LONG", "BREAKOUT_KC" if long_breakout else "MA_CROSS"
-        return None, reason
-        
-    if short_breakout or short_ma_cross:
-        passed, reason = check_candle_gate(curr, "SHORT")
-        if passed:
-            return "SHORT", "BREAKOUT_KC" if short_breakout else "MA_CROSS"
-        return None, reason
+    # 情境 B: 軌外順勢追車 (TRIGGER_C_CONTINUATION)
+    long_cont = (
+        curr['close'] > curr['kc_upper'] and 
+        curr['close'] > curr['ma5'] and 
+        curr['ma5'] >= prev['ma5'] and 
+        curr['close'] > curr['open']
+    )
+    
+    short_cont = (
+        curr['close'] < curr['kc_lower'] and 
+        curr['close'] < curr['ma5'] and 
+        curr['ma5'] <= prev['ma5'] and 
+        curr['close'] < curr['open']
+    )
 
-    return None, "WAIT_DUAL_TRACK_TRIGGER"
+    golden_cross = prev['ma5'] <= prev['ma15'] and curr['ma5'] > curr['ma15']
+    death_cross = prev['ma5'] >= prev['ma15'] and curr['ma5'] < curr['ma15']
+    long_ma_cross = golden_cross and curr['close'] > curr['kc_middle']
+    short_ma_cross = death_cross and curr['close'] < curr['kc_middle']
+
+    if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
+    if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
+    if long_cont: return "LONG", "TRIGGER_C_CONTINUATION"
+    if short_cont: return "SHORT", "TRIGGER_C_CONTINUATION"
+    if long_ma_cross: return "LONG", "TRIGGER_B_MA_CROSS"
+    if short_ma_cross: return "SHORT", "TRIGGER_B_MA_CROSS"
+
+    return None, None
+
+def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
+    if len(closed_frame) < 12: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
+    curr = closed_frame.iloc[-1]
+    prev = closed_frame.iloc[-2]
+    
+    if account is not None and symbol in getattr(account, "positions", {}):
+        return False, "BLOCKED_BY_POSITION_GATE"
+
+    # ================= 破軌專屬防護 (FRESH & QUALITY GATE) =================
+    if trigger_type == "TRIGGER_A_KC_BREAKOUT":
+        # FRESH_BREAKOUT_GATE: 防止高位連拉盲目追高
+        if side == "LONG" and prev['close'] > prev['kc_upper']:
+            return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
+        if side == "SHORT" and prev['close'] < prev['kc_lower']:
+            return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
+
+        # CANDLE_QUALITY_GATE: 防止急漲急跌插針假突破
+        candle_range = curr['high'] - curr['low'] + 1e-6
+        body = abs(curr['close'] - curr['open'])
+        if body / candle_range < 0.5:
+            return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
+            
+        if side == "LONG":
+            upper_wick = curr['high'] - max(curr['open'], curr['close'])
+            if upper_wick > body:
+                return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
+        elif side == "SHORT":
+            lower_wick = min(curr['open'], curr['close']) - curr['low']
+            if lower_wick > body:
+                return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
+
+    # ================= 快車道豁免 =================
+    is_fast_lane = trigger_type in ("TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT")
+    if is_fast_lane:
+        if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
+        if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
+        if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"
+        return True, "GATE_PASSED_FAST_LANE"
+
+    # ================= 常規進場檢查 (MA_CROSS) =================
+    tolerance = curr['atr'] * 0.05
+    if side == "LONG":
+        if curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
+        if curr['ma5'] < curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
+    elif side == "SHORT":
+        if curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
+        if curr['ma5'] > curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
+
+    if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < 1.2: return False, "BLOCKED_BY_VOLATILITY_GATE"
+
+    past_k = closed_frame.iloc[-4]
+    atr_norm = curr['atr'] + 1e-6
+    if (abs(curr['ma15'] - past_k['ma15']) / atr_norm < 0.10 and abs(curr['kc_middle'] - past_k['kc_middle']) / atr_norm < 0.10):
+        return False, "BLOCKED_BY_FLAT_MARKET_GATE"
+
+    from core.services.strategies.outer_strategy import count_ma_crosses
+    # NOTE: Since count_ma_crosses was explicitly defined previously, we just use it directly
+    if count_ma_crosses(closed_frame.iloc[-8:]) >= 4: return False, "BLOCKED_BY_WHIPSAW_CHOP_GATE"
+
+    is_trend_bypassed = trigger_type == "TRIGGER_B_MA_CROSS"
+    if not is_trend_bypassed and not entry_trend_alignment_ready(closed_frame, side):
+        return False, "BLOCKED_BY_TREND_GATE"
+
+    if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
+    if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"
+    if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
+
+    return True, "GATE_PASSED_STANDARD"
 
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
     def reject(reason):
@@ -450,49 +580,37 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
     reject("WAIT_VALID_ENTRY_DATA")
     if code is not None and code not in ENTRY_CODES:
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
-    if account is not None and symbol in getattr(account, "positions", {}):
-        return reject("WAIT_EXISTING_POSITION")
         
     try:
         if frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000:
             return None
             
         closed = closed_entry_candles(frame)
-        if len(closed) < 3:
-            return reject('WAIT_ENOUGH_CLOSED_CANDLES')
+        if len(closed) < 3: return reject('WAIT_ENOUGH_CLOSED_CANDLES')
             
-        side, trigger_reason = evaluate_dual_track_triggers(closed)
-        if side is None:
-            return reject(trigger_reason)
+        side, trigger_type = detect_raw_triggers(closed, account, symbol)
+        if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")
 
-        if trigger_reason != "MA_CROSS":
-            if not entry_trend_alignment_ready(frame, side):
-                return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
+        passed, gate_reason = check_entry_gates(account, symbol, closed, side, trigger_type)
+        if not passed: return reject(gate_reason)
             
         stamp = float(closed.iloc[-1].timestamp)
         quote = price if price is not None else float(closed.iloc[-1].close)
         
         decision = dict(
-            action='ENTER',
-            side=side,
-            type=trigger_reason,
-            reason=trigger_reason,
-            price=quote,
-            entry_atr=float(closed.iloc[-1]['atr']),
-            confirmation_bar_id=stamp,
-            breakout_bar_id=stamp,
-            pending_signal_id=f'{symbol}:DUAL_TRACK:{int(stamp)}:{side}',
-            entry_phase='KC_2BAR_CLOSED_CONFIRM',
+            action='ENTER', side=side, type=trigger_type, reason=gate_reason,
+            price=quote, entry_atr=float(closed.iloc[-1]['atr']),
+            confirmation_bar_id=stamp, breakout_bar_id=stamp,
+            pending_signal_id=f'{symbol}:{trigger_type}:{int(stamp)}:{side}',
+            entry_phase='PIPELINE_CONFIRMED',
         )
         
-        # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
             if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
                     and (trade.get('entry_snapshot') or {}).get('pending_signal_id') == decision['pending_signal_id']):
                 return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
                 
-        if diagnostics is not None:
-            diagnostics.update(decision)
+        if diagnostics is not None: diagnostics.update(decision)
         return decision
 
     except Exception as e:
