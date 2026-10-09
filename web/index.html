@@ -426,6 +426,63 @@
                     </div>
                 </div>
 
+                <!-- TRADE HISTORY TABLE -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>📜 近期交易明細 (Trade History)</span>
+                        <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
+                            <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
+                                <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
+                                <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
+                            </select>
+                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
+                        </div>
+                    </div>
+                    <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>時間</th>
+                                    <th>幣種</th>
+                                    <th>動作</th>
+                                    <th>狀態</th>
+                                    <th>價格</th>
+                                    <th>數量（合約基礎單位）</th>
+                                    <th>名義價值 (USDT)</th>
+                                    <th>保證金 (USDT)</th>
+                                    <th>手續費 (USDT)</th>
+                                    <th>淨損益 (扣手續費)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="t in bot.trades" :key="t.id"
+                                    :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
+                                    <td>{{ t.time }}</td>
+                                    <td><b>{{ t.symbol }}</b></td>
+                                    <td :style="{
+                                        color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
+                                               (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
+                                    }">{{ formatTradeAction(t.action) }}</td>
+                                    <td :style="{
+                                        color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
+                                               t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
+                                               'var(--muted)',
+                                        fontSize: '11px'
+                                    }">{{ t.status }}</td>
+                                    <td>{{ t.price }}</td>
+                                    <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
+                                    <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
+                                    <td>{{ t.amount }}</td>
+                                    <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
+                                    <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
+                                        {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
 
 
                 <!-- VOLATILITY STATS TABLE -->
@@ -511,61 +568,6 @@
 
             </div>
 
-            <!-- TRADE HISTORY TABLE (MOVED TO BOTTOM, FULL WIDTH) -->
-            <div class="card full-width">
-                <div class="card-title">
-                    <span>📜 近期交易明細 (Trade History)</span>
-                    <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
-                        <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
-                            <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
-                            <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
-                        </select>
-                        <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
-                    </div>
-                </div>
-                <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>時間</th>
-                                <th>幣種</th>
-                                <th>動作</th>
-                                <th>狀態</th>
-                                <th>價格</th>
-                                <th>數量（合約基礎單位）</th>
-                                <th>名義價值 (USDT)</th>
-                                <th>保證金 (USDT)</th>
-                                <th>手續費 (USDT)</th>
-                                <th>淨損益 (扣手續費)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="t in bot.trades" :key="t.id"
-                                :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
-                                <td>{{ t.time }}</td>
-                                <td><b>{{ t.symbol }}</b></td>
-                                <td :style="{
-                                    color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
-                                           (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
-                                }">{{ formatTradeAction(t.action) }}</td>
-                                <td :style="{
-                                    color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
-                                           t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
-                                           'var(--muted)',
-                                    fontSize: '11px'
-                                }">{{ t.status }}</td>
-                                <td>{{ t.price }}</td>
-                                <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
-                                <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
-                                <td>{{ t.amount }}</td>
-                                <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
-                                <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
-                                    {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
             </div>
 
             <!-- SYSTEM LOG CONSOLE (MOVED TO BOTTOM, FULL WIDTH) -->

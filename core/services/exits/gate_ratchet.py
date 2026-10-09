@@ -134,3 +134,41 @@ class GateFuturesRatchetManager:
             )
             return new_stop
         return current_stop
+
+def execute_retracement_close_on_gate(
+    exchange,
+    symbol: str,               # 例如 'BTC/USDT:USDT'
+    amount: float,             # 持倉數量
+    current_price: float,      # 當前即時價格 (Tick / Last Price)
+    highest_price: float,      # 持倉期間歷史最高價
+    entry_price: float,        # 開倉均價
+    activation_pct: float = 0.05,  # 啟動門檻 5%
+    callback_pct: float = 0.01     # 回踩 1%
+) -> bool:
+    # 1. 檢查是否達 5% 啟動門檻
+    max_profit_pct = (highest_price - entry_price) / entry_price
+    if max_profit_pct < activation_pct:
+        return False
+
+    # 2. 計算回踩 1% 的觸發價
+    trigger_price = highest_price * (1.0 - callback_pct)
+    
+    # 3. 觸及回踩價格，立即向 Gate.io 送出市價平多單
+    if current_price <= trigger_price:
+        print(f"[觸發回踩平倉] 最高點: {highest_price}, 當前價: {current_price} <= 觸發價: {trigger_price}")
+        try:
+            # 向 Gate.io 發送市價平倉單 (多單平倉方向為 sell，加 reduceOnly 確保只平倉不反開)
+            order = exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side='sell',
+                amount=amount,
+                params={'reduceOnly': True}
+            )
+            print(f"[Gate.io] 成功平倉並結算利潤！訂單編號: {order.get('id')}")
+            return True
+        except Exception as e:
+            print(f"[Gate.io] 平倉下單失敗: {e}")
+            return False
+
+    return False
