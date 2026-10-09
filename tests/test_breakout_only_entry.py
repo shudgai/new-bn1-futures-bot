@@ -135,3 +135,27 @@ def test_account_revalidation_rechecks_the_same_breakout(side):
     frame.loc[3, "open"] = frame.loc[3, "close"] + (0.1 if side == "LONG" else -0.1)
     with pytest.raises(ValueError, match="OPPOSITE_LIVE_CANDLE_COLOR"):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("invalid_bar", [1, 2])
+def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
+    side, invalid_bar
+):
+    frame = breakout_frame(side)
+    decision = evaluate_entry_contract(frame, symbol="龍蝦/USDT")
+    account = SimpleNamespace(
+        positions={},
+        trades=[],
+        last_closed_at={},
+        entry_frame_provider=AsyncMock(return_value=frame),
+    )
+    context = dict(
+        entry_signal_code=decision["type"],
+        channel_confirmation_bar_id=decision["confirmation_bar_id"],
+    )
+
+    frame.loc[invalid_bar, "close"] = frame.loc[invalid_bar, "open"]
+
+    with pytest.raises(ValueError, match="WAIT_NEW_KC_BREAKOUT"):
+        asyncio.run(validate_account_entry(account, "龍蝦/USDT", side, context))
