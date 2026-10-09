@@ -489,8 +489,8 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
 
     golden_cross = prev['ma5'] <= prev['ma15'] and curr['ma5'] > curr['ma15']
     death_cross = prev['ma5'] >= prev['ma15'] and curr['ma5'] < curr['ma15']
-    long_ma_cross = golden_cross and curr['close'] > curr['kc_middle']
-    short_ma_cross = death_cross and curr['close'] < curr['kc_middle']
+    long_ma_cross = golden_cross and curr['close'] > curr['kc_middle'] and curr['close'] > curr['open']
+    short_ma_cross = death_cross and curr['close'] < curr['kc_middle'] and curr['close'] < curr['open']
 
     if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
     if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
@@ -512,25 +512,17 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     # ================= 破軌專屬防護 (FRESH & QUALITY GATE) =================
     if trigger_type == "TRIGGER_A_KC_BREAKOUT":
         # FRESH_BREAKOUT_GATE: 防止高位連拉盲目追高
-        if side == "LONG" and prev['close'] > prev['kc_upper']:
+        if side == "LONG" and prev['close'] > prev['kc_upper'] and prev['open'] > prev['kc_upper']:
             return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
-        if side == "SHORT" and prev['close'] < prev['kc_lower']:
+        if side == "SHORT" and prev['close'] < prev['kc_lower'] and prev['open'] < prev['kc_lower']:
             return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
 
         # CANDLE_QUALITY_GATE: 防止急漲急跌插針假突破
         candle_range = curr['high'] - curr['low'] + 1e-6
         body = abs(curr['close'] - curr['open'])
-        if body / candle_range < 0.5:
+        # 放寬實體佔比要求，因為大波動破軌常常伴隨較長影線
+        if body / candle_range < 0.35:
             return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
-            
-        if side == "LONG":
-            upper_wick = curr['high'] - max(curr['open'], curr['close'])
-            if upper_wick > body:
-                return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
-        elif side == "SHORT":
-            lower_wick = min(curr['open'], curr['close']) - curr['low']
-            if lower_wick > body:
-                return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
 
     # ================= 快車道豁免 =================
     is_fast_lane = trigger_type in ("TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT")
@@ -542,11 +534,12 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
 
     # ================= 常規進場檢查 (MA_CROSS) =================
     tolerance = curr['atr'] * 0.05
+    is_ma_cross = trigger_type == "TRIGGER_B_MA_CROSS"
     if side == "LONG":
-        if curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
+        if not is_ma_cross and curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
         if curr['ma5'] < curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
     elif side == "SHORT":
-        if curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
+        if not is_ma_cross and curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
         if curr['ma5'] > curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
 
     if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < 1.2: return False, "BLOCKED_BY_VOLATILITY_GATE"
