@@ -27,10 +27,10 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
 INNER_CHANNEL_PRESSURE_ENTRY_PHASE = "KC_INNER_CHANNEL_PRESSURE"
-ENTRY_CODES = (
-    KC_PENDING_CODES | KC_REALTIME_PATTERN_CODES | CONTINUATION_CODES
-    | LIVE_BODY_BREAKOUT_CODES
-)
+# The live in-channel pressure signal is the only executable entry authority.
+# Legacy breakout, continuation, and pending signals may still be diagnosed by
+# their evaluators, but can never reach account submission.
+ENTRY_CODES = LIVE_BODY_BREAKOUT_CODES
 ENTRY_EVIDENCE_KEYS = (
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",

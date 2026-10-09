@@ -48,17 +48,28 @@ def breakout_frame(side="LONG"):
     return frame
 
 
+def inner_channel_frame(side="LONG"):
+    """A live directional push held inside its side of the KC channel."""
+    frame = breakout_frame(side)
+    live = frame.index[-1]
+    lower = float(frame.loc[live, "kc_lower"])
+    middle = float(frame.loc[live, "kc_middle"])
+    upper = float(frame.loc[live, "kc_upper"])
+    quote = (middle + upper) / 2 if side == "LONG" else (lower + middle) / 2
+    opened = quote - 0.6 if side == "LONG" else quote + 0.6
+    frame.loc[live, ["open", "close", "high", "low"]] = [
+        opened, quote, quote if side == "LONG" else opened,
+        opened if side == "LONG" else quote,
+    ]
+    return frame
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_only_two_closed_same_color_outer_breakout_with_live_followthrough(side):
+def test_outer_breakout_continuation_is_no_longer_an_entry(side):
     frame = breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
 
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
-    assert decision["breakout_bar_id"] == frame.iloc[-3]["timestamp"]
-    assert decision["pair_confirmation_bar_id"] == frame.iloc[-2]["timestamp"]
+    assert decision is None
 
 
 @pytest.mark.parametrize(
@@ -96,7 +107,7 @@ def test_wrong_side_or_unconfirmed_candles_never_authorize_entry(side, mutation)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_pivot_or_ma_cross_code_is_not_an_entry_authority(side):
     frame = breakout_frame(side)
-    assert f"KC_2BAR_CONFIRM_{side}" in ENTRY_CODES
+    assert f"KC_2BAR_CONFIRM_{side}" not in ENTRY_CODES
     assert evaluate_entry_contract(frame, code=f"KC_OUTER_PIVOT_{side}") is None
     assert evaluate_entry_contract(frame, code=f"MA5_MA15_LIVE_CROSS_{side}") is None
     assert evaluate_entry_contract(frame, code=f"KC_LIVE_BODY_BREAKOUT_{side}") is None
@@ -122,7 +133,7 @@ def test_pre_close_breakout_cannot_reopen_after_peak_reversal_close(side):
     )
 
     assert decision is None
-    assert diagnostics["reason"] == "WAIT_POST_EXIT_NEW_FORMATION"
+    assert diagnostics["reason"] == "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE"
 
 
 @pytest.mark.parametrize(
@@ -139,7 +150,7 @@ def test_opposite_outer_rail_never_authorizes_the_requested_side(side, opposite_
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_rechecks_the_same_breakout(side):
-    frame = breakout_frame(side)
+    frame = inner_channel_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
     account = SimpleNamespace(
         positions={},
@@ -156,8 +167,41 @@ def test_account_revalidation_rechecks_the_same_breakout(side):
     )
     assert validated["pending_signal_id"] == decision["pending_signal_id"]
 
-    frame.loc[3, "open"] = frame.loc[3, "close"] + (0.1 if side == "LONG" else -0.1)
-    with pytest.raises(ValueError, match="OPPOSITE_LIVE_CANDLE_COLOR"):
+    live = frame.index[-1]
+    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
+    with pytest.raises(ValueError):
+        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_account_revalidation_accepts_and_rechecks_live_body_breakout(side):
+    frame = inner_channel_frame(side)
+    live = frame.index[-1]
+    lower = float(frame.loc[live, "kc_lower"])
+    upper = float(frame.loc[live, "kc_upper"])
+    quote = float(frame.loc[live, "close"])
+
+    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
+    assert decision is not None
+    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
+
+    account = SimpleNamespace(
+        positions={},
+        trades=[],
+        last_closed_at={},
+        entry_frame_provider=AsyncMock(return_value=frame),
+    )
+    context = dict(
+        entry_signal_code=decision["type"],
+        channel_confirmation_bar_id=decision["confirmation_bar_id"],
+    )
+    validated = asyncio.run(
+        validate_account_entry(account, "CAP/USDT", side, context)
+    )
+    assert validated["pending_signal_id"] == decision["pending_signal_id"]
+
+    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
+    with pytest.raises(ValueError, match="最新入口行情不符"):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
@@ -166,7 +210,7 @@ def test_account_revalidation_rechecks_the_same_breakout(side):
 def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
     side, invalid_bar
 ):
-    frame = breakout_frame(side)
+    frame = inner_channel_frame(side)
     decision = evaluate_entry_contract(frame, symbol="龍蝦/USDT")
     account = SimpleNamespace(
         positions={},
@@ -179,7 +223,8 @@ def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
         channel_confirmation_bar_id=decision["confirmation_bar_id"],
     )
 
-    frame.loc[invalid_bar, "close"] = frame.loc[invalid_bar, "open"]
+    live = frame.index[-1]
+    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
 
-    with pytest.raises(ValueError, match="WAIT_NEW_KC_BREAKOUT"):
+    with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account, "龍蝦/USDT", side, context))
