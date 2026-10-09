@@ -47,6 +47,27 @@ def test_live_body_breakout_enters_on_first_qualifying_outer_rail_cross(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("indicator", ["kc", "ma5", "ma15"])
+def test_live_body_breakout_requires_all_closed_trends_in_entry_direction(side, indicator):
+    frame = live_outer_frame(side)
+    previous, latest = frame.index[-3], frame.index[-2]
+    if indicator == "kc":
+        for key in ("kc_lower", "kc_middle", "kc_upper"):
+            frame.loc[latest, key] = frame.loc[previous, key]
+    else:
+        frame.loc[latest, indicator] = frame.loc[previous, indicator]
+    diagnostics = {}
+
+    decision = evaluate_entry_contract(
+        frame, float(frame.iloc[-1]["close"]), symbol="TEST/USDT",
+        diagnostics=diagnostics,
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_KC_MA5_MA15_TREND_MISMATCH"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_unfilled_live_breakout_falls_back_to_confirmed_two_bar_breakout(side):
     frame = live_outer_frame(side)
     live = frame.index[-1]

@@ -406,8 +406,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM',
                 'KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT'):
             return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
-        live_body_entry = decision.get("type") in LIVE_BODY_BREAKOUT_CODES
-        if not live_body_entry and not entry_trend_alignment_ready(frame, side):
+        if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
         if not quote_beyond_side_outer_rail(frame, side, quote):
             return reject("WAIT_LIVE_PRICE_OUTSIDE_KC_RAIL")

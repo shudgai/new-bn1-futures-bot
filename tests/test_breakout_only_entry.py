@@ -229,6 +229,27 @@ def test_account_revalidation_accepts_and_rechecks_live_body_breakout(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_account_revalidation_rejects_live_breakout_when_ma15_stops_trending(side):
+    frame = live_outer_frame(side)
+    quote = float(frame.iloc[-1]["close"])
+    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
+    account = SimpleNamespace(
+        positions={},
+        trades=[],
+        last_closed_at={},
+        entry_frame_provider=AsyncMock(return_value=frame),
+    )
+    context = dict(
+        entry_signal_code=decision["type"],
+        channel_confirmation_bar_id=decision["confirmation_bar_id"],
+    )
+    frame.loc[frame.index[-2], "ma15"] = frame.iloc[-3]["ma15"]
+
+    with pytest.raises(ValueError, match="最新入口行情不符"):
+        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("invalid_bar", [1, 2])
 def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
     side, invalid_bar
