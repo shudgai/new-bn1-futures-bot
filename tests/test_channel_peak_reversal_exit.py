@@ -25,6 +25,27 @@ def position(side):
     )
 
 
+def live_breakout_position(side):
+    held = position(side)
+    held.update(
+        entry_signal_code=f"KC_LIVE_BODY_BREAKOUT_{side}",
+        entry_snapshot={"signal_code": f"KC_LIVE_BODY_BREAKOUT_{side}"},
+    )
+    return held
+
+
+def channel_snapshot(price_ms=181_000.):
+    return dict(
+        reason=None,
+        quote_ms=price_ms,
+        snapshot_bar_id=120_000.,
+        closed_bar_ms=120_000.,
+        live_bar_ms=180_000.,
+        live_kc_lower=99.,
+        live_kc_upper=101.,
+    )
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_channel_peak_reversal_closes_on_live_half_atr_pullback(side):
     sign = 1 if side == "LONG" else -1
@@ -44,6 +65,70 @@ def test_channel_peak_reversal_closes_on_live_half_atr_pullback(side):
     assert result["reason"] == PEAK_REASON
     assert result["trigger"] == "CHANNEL_PEAK_PULLBACK_REVERSAL"
     assert held["peak_trailing_state"]["pending"] == PEAK_REASON
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_first_live_breakout_closes_when_quote_returns_inside_kc(side):
+    held = live_breakout_position(side)
+    result = evaluate_peak_trailing(
+        held, 100., channel_snapshot(), fee=0., slippage=0.
+    )
+
+    assert result is not None
+    assert result["trigger"] == "KC_CHANNEL_RETURN"
+    assert held["peak_trailing_state"]["pending"] == PEAK_REASON
+
+
+@pytest.mark.parametrize(
+    ("side", "price"),
+    [("LONG", 101.), ("SHORT", 99.)],
+)
+def test_first_live_breakout_stays_open_until_quote_enters_kc(side, price):
+    held = live_breakout_position(side)
+    result = evaluate_peak_trailing(
+        held, price, channel_snapshot(), fee=0., slippage=0.
+    )
+
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_first_live_breakout_ignores_ma_reversal_while_quote_stays_outside_kc(side, monkeypatch):
+    held = live_breakout_position(side)
+    snapshot = channel_snapshot()
+    snapshot["live_kc_lower"], snapshot["live_kc_upper"] = (
+        (95., 97.) if side == "LONG" else (101., 103.)
+    )
+    sign = 1 if side == "LONG" else -1
+    price = 98.5 if side == "LONG" else 99.5
+    monkeypatch.setattr(
+        "core.services.exits.peak_trailing_exit.three_point_pivot_exit",
+        lambda *_: {"trigger": "THREE_POINT_PIVOT"},
+    )
+    monkeypatch.setattr(
+        "core.services.exits.peak_trailing_exit.live_ma5_reversal_exit",
+        lambda *_: {"trigger": "MA5_TRUE_PEAK_REVERSAL"},
+    )
+
+    result = evaluate_peak_trailing(
+        held, price, snapshot, fee=0., slippage=0.
+    )
+
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_channel_return_exit_does_not_apply_to_two_bar_breakouts(side):
+    held = position(side)
+    held["entry_snapshot"] = {"signal_code": f"KC_2BAR_CONFIRM_{side}"}
+    result = evaluate_peak_trailing(
+        held, 100., channel_snapshot(), fee=0., slippage=0.
+    )
+
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

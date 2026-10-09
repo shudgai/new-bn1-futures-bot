@@ -1,8 +1,9 @@
 """Account compatibility adapter for tick peak trailing and initial hard stops."""
 from core.interfaces.exit_interface import IExitStrategy
+from core.services.exit_service import initialize_chandelier
 
 from core.services.exits.peak_trailing_exit import (
-    POLICY, STATE_KEY, STATE_KEYS, evaluate_peak_trailing,
+    POLICY, STATE_KEY, STATE_KEYS, channel_initial_stop_disabled, evaluate_peak_trailing,
 )
 DUAL_TRACK_STATE_KEYS = list(STATE_KEYS)
 SL_INIT_MULT = 1.5
@@ -32,6 +33,10 @@ def observe_breakeven(position: dict, price: float) -> dict:
 
 class DualTrackExitStrategy(IExitStrategy):
     def initialize_position(self, position, entry_price, atr):
+        if channel_initial_stop_disabled(position):
+            initialize_chandelier(position, entry_price, position['side'], atr,
+                                 initial_stop_enabled=False)
+            return
         sign = 1 if position['side'] == 'LONG' else -1
         position.update(entry_atr=float(atr), sl=entry_price-sign*SL_INIT_MULT*atr,
                         stop_loss=entry_price-sign*SL_INIT_MULT*atr, tp=0.)

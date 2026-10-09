@@ -101,6 +101,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
+    "trigger_price", "trigger_timestamp",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
@@ -232,6 +234,12 @@ class BinanceTestnetAccount:
         self._last_ticker_prices: Dict[str, float] = {}
         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
         self._rapid_drop_cooldown: Dict[str, float] = {}
+        self.breakout_qualification: Dict[str, dict] = {}
+        self.last_consumed_breakout_signal_id: Dict[str, str] = {}
+        self.d0_in_flight_state: Dict[str, dict] = {}
+        self.d0_consumed_state: Dict[str, str] = {}
+        self.d0_failed_state: Dict[str, str] = {}
+        self.d0_quarantine_state: Dict[str, bool] = {}
         self.tickers: Dict[str, float] = {}
         self.staged_state_directory = f"{self._state_path()}.staged"
         # Account-level 15% circuit breaker (Live Mainnet only). Persisted;
@@ -504,6 +512,14 @@ class BinanceTestnetAccount:
             loaded_shadow_last = data.get("shadow_parameter_last", {})
             if isinstance(loaded_shadow_last, dict):
                 self.shadow_parameter_last = loaded_shadow_last
+            self.breakout_qualification = data.get("breakout_qualification", {})
+            self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
+            self.d0_in_flight_state = data.get("d0_in_flight_state", {})
+            for sym, infl in list(self.d0_in_flight_state.items()):
+                self.d0_quarantine_state[sym] = True
+            self.d0_consumed_state = data.get("d0_consumed_state", {})
+            self.d0_failed_state = data.get("d0_failed_state", {})
+            self.d0_quarantine_state.update(data.get("d0_quarantine_state", {}))
             self.live_session_start_equity = data.get('live_session_start_equity')
             self.circuit_breaker_latched = bool(data.get('circuit_breaker_latched', False))
             self.trigger_timestamp = data.get('trigger_timestamp')
@@ -537,6 +553,12 @@ class BinanceTestnetAccount:
             "pullback_outcome_stats": self.pullback_outcome_stats,
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
+            "breakout_qualification": self.breakout_qualification,
+            "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
+            "d0_in_flight_state": self.d0_in_flight_state,
+            "d0_consumed_state": self.d0_consumed_state,
+            "d0_failed_state": self.d0_failed_state,
+            "d0_quarantine_state": self.d0_quarantine_state,
             "shadow_parameter_stats": self.shadow_parameter_stats,
             "shadow_parameter_last": self.shadow_parameter_last,
             'live_session_start_equity': self.live_session_start_equity,
@@ -583,6 +605,23 @@ class BinanceTestnetAccount:
         self.save_state()
         if level == "DANGER":
             notify_email(f"[Binance Bot] {message}")
+
+    def record_qualification(self, symbol: str, qualification: dict) -> None:
+        self.breakout_qualification[symbol] = qualification
+        self.save_state()
+
+    def consume_breakout_qualification(self, symbol: str, expected_signal_id: str) -> None:
+        if expected_signal_id:
+            self.last_consumed_breakout_signal_id[symbol] = expected_signal_id
+            current = self.breakout_qualification.get(symbol)
+            if current and current.get('pending_signal_id') == expected_signal_id:
+                del self.breakout_qualification[symbol]
+            self.save_state()
+
+    def clear_qualification(self, symbol: str) -> None:
+        if symbol in self.breakout_qualification:
+            del self.breakout_qualification[symbol]
+            self.save_state()
 
     def _check_daily_reset(self) -> None:
         """台北時區跨日就重置今日虧損熔斷的計算基準。"""
@@ -2211,7 +2250,8 @@ class BinanceTestnetAccount:
                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
                 return False
             try:
-                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
+                initialize_atr_protection({'entry_mode': 'CHANNEL_SWING'}, price, side, atr,
+                                          initial_stop=structural_stop)
             except (ValueError, TypeError):
                 return False
             tp = 0.0
@@ -2246,28 +2286,82 @@ class BinanceTestnetAccount:
             self.log(f"🛑 {symbol} 下單數量低於交易所最小精度", "WARNING")
             return False
 
+        if self.d0_quarantine_state.get(symbol):
+            self.log(f"🛑 [D0_QUARANTINE_BLOCKED] {symbol} is quarantined. Order blocked.", "WARNING")
+            return False
+
+        is_d0 = entry_context and entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK"
+        d0_event_id = entry_context.get("d0_event_id") if entry_context else None
+
+        if is_d0:
+            if self.d0_consumed_state.get(symbol) == d0_event_id:
+                return False
+            if self.d0_failed_state.get(symbol) == d0_event_id:
+                return False
+
+        import uuid, time
+        client_order_id = f"AGY_D0_{uuid.uuid4().hex[:16]}" if is_d0 else None
+
+        if is_d0:
+            self.d0_in_flight_state[symbol] = {
+                "d0_event_id": d0_event_id,
+                "client_order_id": client_order_id,
+                "side": side,
+                "submission_timestamp": time.time(),
+            }
+            self.save_state()
+
         try:
             await self._prepare_leverage(symbol, leverage)
+            order_params = {"newOrderRespType": "RESULT"}
+            if is_d0:
+                order_params["newClientOrderId"] = client_order_id
+
             entry_order = await self._send_order(
                 symbol,
                 "market",
                 order_side,
                 qty,
                 None,
-                {"newOrderRespType": "RESULT"},
+                order_params,
                 entry_context=entry_context,
             )
             execution_price = float(entry_order.get("average") or price)
         except Exception as exc:
+            import ccxt
+            is_definitive = False
+            msg = str(exc)
+            if isinstance(exc, (ccxt.InsufficientFunds, ccxt.MarginCall)):
+                is_definitive = True
+            elif isinstance(exc, ccxt.InvalidOrder):
+                if "-1013" in msg and ("MIN_NOTIONAL" in msg or "LOT_SIZE" in msg):
+                    is_definitive = True
+            elif isinstance(exc, ccxt.ExchangeError):
+                if "-2010" in msg and "New order rejected." in msg:
+                    is_definitive = True
+                elif "ReduceOnly Order is rejected" in msg or "Position Side Not Exists" in msg:
+                    is_definitive = True
+
+            if is_d0:
+                self.d0_in_flight_state.pop(symbol, None)
+                if is_definitive:
+                    self.d0_failed_state[symbol] = d0_event_id
+                else:
+                    self.d0_quarantine_state[symbol] = True
+                self.save_state()
+
             self.log(
                 f"🛑 Binance Testnet 開倉失敗 {symbol}："
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: {exc} (Definitive={is_definitive})",
                 "DANGER",
             )
             await self.refresh(force=True)
             return False
 
-        return await self._finalize_new_position(
+        if is_d0:
+            entry_context["actual_fill_price"] = execution_price
+
+        success = await self._finalize_new_position(
             symbol, side, execution_price, qty, price, sl, tp, reason, atr,
             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
             entry_context=entry_context, structural_stop=structural_stop,
@@ -2322,7 +2416,7 @@ class BinanceTestnetAccount:
                 if key in ENTRY_CONTEXT_KEYS
             }
             is_channel_swing = str(entry_context.get("entry_mode") or "").upper() == "CHANNEL_SWING"
-            if is_channel_swing:
+            if is_channel_swing or entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK":
                 tp = 0.0
             else:
                 try:
@@ -2330,6 +2424,11 @@ class BinanceTestnetAccount:
                 except ValueError as exc:
                     self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
                     return False
+
+            if entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK":
+                self.d0_in_flight_state.pop(symbol, None)
+                self.d0_consumed_state[symbol] = entry_context["d0_event_id"]
+                self.save_state()
             is_exhaustion_sniper = entry_context.get("entry_mode") in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
@@ -2374,7 +2473,7 @@ class BinanceTestnetAccount:
                 entry_context["initial_sl"] = sl_price
                 entry_context["initial_risk"] = abs(execution_price - sl_price)
             if is_channel_swing:
-                anchored = {}
+                anchored = {'entry_mode': 'CHANNEL_SWING'}
                 initialize_atr_protection(anchored, execution_price, side, atr, initial_stop=structural_stop)
                 sl_price, tp_price = anchored['sl'], anchored['tp']
             atr_value = atr if atr > 0 else execution_price * 0.015

@@ -9,6 +9,7 @@ import pytest
 
 from core.services.exits.peak_trailing_exit import (
     ABNORMAL_REASON,
+    PEAK_REASON,
     evaluate_peak_trailing,
     live_ma5_reversal_exit,
 )
@@ -39,6 +40,8 @@ def snapshot(side, **overrides):
         live_bar_ms=180_000.,
         closed_ma5=closed_ma5,
         live_ma5=live_ma5,
+        live_kc_upper=100.5 if side == "LONG" else 101.5,
+        live_kc_lower=99.5 if side == "SHORT" else 98.5,
         reason=None,
     )
     result.update(overrides)
@@ -87,6 +90,34 @@ def test_flat_or_favorable_ma5_does_not_trigger_exit(side, live_ma5):
     assert evidence is None
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma5_reversal_inside_outer_rail_is_not_a_peak_exit(side):
+    sign = 1 if side == "LONG" else -1
+    state = {}
+    sequence = (
+        (100., 100.),
+        (101. if sign == 1 else 99., 101. if sign == 1 else 99.),
+        (100.8 if sign == 1 else 99.2, 100.9 if sign == 1 else 99.1),
+    )
+
+    results = []
+    for index, (ma5, price) in enumerate(sequence):
+        result = snapshot(
+            side,
+            quote_ms=181_000. + index * 1_000,
+            live_ma5=ma5,
+            live_kc_upper=102. if side == "LONG" else 101.5,
+            live_kc_lower=98.5,
+            quote_price=price,
+        )
+        results.append(
+            live_ma5_reversal_exit(position(side), result, sign, state)
+        )
+
+    assert results == [None, None, None]
+    assert state["ma5_reversal_outside_seen"] is False
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -130,7 +161,7 @@ def test_triggered_ma5_exit_remains_pending_for_failed_close_retry(side):
     assert retry["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
 
 
-def test_waterfall_keeps_priority_over_the_ma5_reversal():
+def test_waterfall_candidate_is_filtered_by_execution_adapters():
     position_data = position("SHORT")
     live = snapshot("SHORT", live_open=100., atr=1.)
 
@@ -199,7 +230,14 @@ def test_cached_snapshot_calculates_quote_adjusted_ma5(side, closes, quote):
     assert evidence is None
 
 
-def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
+@pytest.mark.parametrize(
+    ("exit_reason", "trigger"),
+    [
+        (ABNORMAL_REASON, "MA5_TRUE_PEAK_REVERSAL"),
+        (PEAK_REASON, "KC_CHANNEL_RETURN"),
+    ],
+)
+def test_authorized_peak_exit_bypasses_trend_hold_and_closes(exit_reason, trigger):
     position_data = position("SHORT")
     account = SimpleNamespace(
         positions={"TEST/USDT": position_data},
@@ -217,7 +255,7 @@ def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
 
     def ma5_exit_decision(current_position, *_):
         current_position["peak_trailing_state"]["peak_net_pnl"] = 0.
-        return dict(type=ABNORMAL_REASON, trigger="MA5_TRUE_PEAK_REVERSAL")
+        return dict(type=exit_reason, trigger=trigger)
 
     async def run():
         with (
@@ -241,4 +279,4 @@ def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
 
     asyncio.run(run())
     assert account.close_position.await_count == 1
-    assert "MA5_TRUE_PEAK_REVERSAL" in account.close_position.await_args.args[2]
+    assert trigger in account.close_position.await_args.args[2]

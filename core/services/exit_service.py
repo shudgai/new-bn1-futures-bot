@@ -12,10 +12,16 @@ def valid(value):
         return False
 
 
-def initialize_chandelier(position, entry_price, side, atr, initial_stop=None):
+def initialize_chandelier(position, entry_price, side, atr, initial_stop=None, *, initial_stop_enabled=True):
     if side not in ("LONG", "SHORT") or not all(valid(v) for v in (entry_price, atr)):
         raise ValueError("Invalid chandelier inputs")
     entry_price, atr = float(entry_price), float(atr)
+    if not initial_stop_enabled:
+        position.update(entry_atr=atr, atr_sl=0., atr_tp=0., atr_protection_version=2,
+                        sl=0., stop_loss=0., tp=0., initial_sl=0., initial_risk=0.)
+        for key in RETIRED_KEYS:
+            position.pop(key, None)
+        return
     sign = 1 if side == "LONG" else -1
     stop = float(initial_stop) if initial_stop is not None else entry_price - sign * 1.5 * atr
     if not valid(stop) or sign * (entry_price-stop) <= 0:

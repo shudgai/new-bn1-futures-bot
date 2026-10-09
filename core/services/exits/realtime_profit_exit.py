@@ -6,16 +6,16 @@ import time
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
-    channel_initial_stop_disabled,
+    channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.services.exits.entry_atr_protection import (
+    channel_strategy_exit_grace_active,
+    clear_channel_strategy_exit_pending,
+)
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
-INNER_CHANNEL_RUN_CODES = {
-    'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
-    'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
-    'KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT',
-}
+
 def cached_tick_indicators(frame, price, stamp):
     """Require the quote minute and its preceding closed ATR for body exits."""
     snapshot = {'quote_ms': stamp, 'reason': 'UNKNOWN'}
@@ -103,6 +103,8 @@ def cached_tick_indicators(frame, price, stamp):
             live_open=float(live.get('open') or 0.),
             live_high=max(float(live.get('high') or 0.), float(price)),
             live_low=min(float(live.get('low') or 0.), float(price)),
+            live_kc_upper=float(live.get('kc_upper') or 0.),
+            live_kc_lower=float(live.get('kc_lower') or 0.),
             last_open=float(last.get('open') or 0.),
             last_high=float(last.get('high') or 0.),
             last_low=float(last.get('low') or 0.)
@@ -162,28 +164,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         saved = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
         if stamp < ident[1]*1000 or (saved.get('identity') == ident and stamp < saved.get('last_ms',0)):
             return False
-        if position.get('entry_signal_code') in INNER_CHANNEL_RUN_CODES:
-            if await enforce_hard_stop(account, symbol, price):
-                return True
-            try:
-                snapshot, _ = cached_tick_indicators(
-                    getattr(engine, '_channel_exit_frames', {}).get(symbol), price, stamp
-                )
-                from core.services.exits.peak_trailing_exit import three_point_pivot_exit
-                pivot = three_point_pivot_exit(position, snapshot)
-            except (KeyError, TypeError, ValueError, OverflowError, IndexError):
-                pivot = None
-            if pivot is None:
-                return False
-            pivot_name = 'TRUE_PEAK' if position.get('side') == 'LONG' else 'TRUE_VALLEY'
-            account.log(
-                f'REALTIME_EXIT symbol={symbol} reason={pivot_name} '
-                f'trigger_bar_ms={pivot["trigger_bar_ms"]} '
-                f'confirmed_ms={pivot["trigger_confirmed_ms"]} price={price}', 'INFO'
-            )
-            return bool(await account.close_position(
-                symbol, price, 'Channel Swing ' + pivot_name, is_manual=True
-            ))
+        if await enforce_hard_stop(account, symbol, price):
+            return True
         old = copy.deepcopy(meta.get(STATE_KEY) or {})
         retired_atr_stop = channel_initial_stop_disabled(position, meta) and any(
             source.get(key) for source in (position, meta)
@@ -198,36 +180,42 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
+                   'trigger','trigger_bar_ms','trigger_price',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
-                   'ma5_reversal_last_price','ma5_reversal_favorable_seen'))
+                   'ma5_reversal_last_price','ma5_reversal_favorable_seen',
+                   'ma5_reversal_outside_seen'))
         for key in STATE_KEYS:
             if key in position:
                 meta[key] = copy.deepcopy(position[key])
         if changed:
             account.save_state()
-        if await enforce_hard_stop(account,symbol,price):
-            return True
         if not decision or account.positions.get(symbol) is not position:
+            return False
+        if (entry_m == 'CHANNEL_SWING'
+                and channel_strategy_exit_grace_active(position, meta, stamp / 1000)):
+            if clear_channel_strategy_exit_pending(position, meta):
+                for key in STATE_KEYS:
+                    if key in position:
+                        meta[key] = copy.deepcopy(position[key])
+                account.save_state()
             return False
         
         reason = decision['type']
         trigger = decision.get('trigger', '')
-        
         if (entry_m == 'CHANNEL_SWING'
-                and reason != 'EXIT_INITIAL_ATR_HARD_STOP'
-                and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR',
-                                    DOJI_TRIGGER, 'KC_OUTER_PIVOT',
-                                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
-                                    'MA5_TRUE_PEAK_REVERSAL',
-                                    'CHANNEL_PEAK_PULLBACK_REVERSAL')):
-            try:
-                from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
-                trend_status, _ = evaluate_trend_hold(position, snapshot, price)
-            except Exception:
-                trend_status = 'UNKNOWN'
-                
-            if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
-                return False
+                and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
+            for state in (
+                current[STATE_KEY], meta.get(STATE_KEY, {}),
+            ):
+                for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                            'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+                    state.pop(key, None)
+            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                        'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+                position.pop(key, None)
+                meta.pop(key, None)
+            account.save_state()
+            return False
 
         account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={trigger} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
@@ -236,7 +224,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             ' ' + trigger
             if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
-                           'CHANNEL_PEAK_PULLBACK_REVERSAL')
+                           'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')
             else ''
         )
         await account.close_position(

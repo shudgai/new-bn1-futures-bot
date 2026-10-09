@@ -49,7 +49,11 @@ def test_valid_breakout_is_remembered_when_order_is_blocked(side):
             200. - row['kc_middle'], 200. - row['kc_upper'],
             200. - row['ma5'], 200. - row['ma15'],
         ]
-    quote = 102. if side == 'LONG' else 98.
+    quote = 102.3 if side == 'LONG' else 97.7
+    below_threshold_quote = 102.1 if side == 'LONG' else 97.9
+    assert evaluate_continuation_entry(
+        frame, below_threshold_quote, symbol='SYM', account=account
+    ) is None
     decision = evaluate_continuation_entry(frame, quote, symbol='SYM', account=account)
     assert decision is not None
     assert decision['qualification_signal_id'] == qual['pending_signal_id']

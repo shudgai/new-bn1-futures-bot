@@ -133,6 +133,8 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
+    "trigger_price", "trigger_timestamp",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
@@ -206,6 +208,12 @@ class PaperAccount:
         self._rapid_drop_last_price: Dict[str, float] = {}
         self._rapid_drop_window: Dict[str, List[tuple]] = {}
         self._rapid_drop_cooldown: Dict[str, float] = {}
+        self.breakout_qualification: Dict[str, dict] = {}
+        self.last_consumed_breakout_signal_id: Dict[str, str] = {}
+        self.d0_in_flight_state: Dict[str, dict] = {}
+        self.d0_consumed_state: Dict[str, str] = {}
+        self.d0_failed_state: Dict[str, str] = {}
+        self.d0_quarantine_state: Dict[str, bool] = {}
         self.on_trade_closed: Optional[Callable[[], None]] = None
 
         self.daily_date: Optional[str] = None
@@ -229,6 +237,12 @@ class PaperAccount:
         """純本地模擬，不用連線、不用載入交易所市場資料。"""
         self._check_daily_reset()
         restored = False
+        from core.services.exits.peak_trailing_exit import channel_initial_stop_disabled, migrate_peak_state
+        for symbol, pos in self.positions.items():
+            meta = self.position_meta.setdefault(symbol, {})
+            if channel_initial_stop_disabled(pos, meta):
+                migrate_peak_state(pos, meta)
+                restored = True
         if not DISABLE_STOP_LOSS:
             for symbol, pos in self.positions.items():
                 meta = self.position_meta.setdefault(symbol, {})
@@ -236,24 +250,6 @@ class PaperAccount:
                     pos.get("entry_mode") or meta.get("entry_mode") or ""
                 ).upper()
                 if entry_mode == "CHANNEL_SWING":
-                    # Repair only from this position's original entry record.
-                    initial_sl = float(pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
-                    opened_ms = int(float(pos.get("open_timestamp") or 0.0) * 1000)
-                    entry_trade = next((t for t in self.trades
-                        if t.get("symbol") == symbol
-                        and t.get("action") == f"OPEN_{pos.get('side')}"
-                        and opened_ms > 0 and abs(int(t.get("id") or 0) - opened_ms) <= 1), {})
-                    initial_sl = initial_sl or float(entry_trade.get("initial_sl") or entry_trade.get("sl") or 0.0)
-                    if initial_sl > 0:
-                        for source in (pos, meta):
-                            source["initial_sl"] = initial_sl
-                            source["initial_risk"] = abs(float(pos["entry_price"]) - initial_sl)
-                            if not float(source.get("sl") or 0.0):
-                                source["sl"] = initial_sl
-                            if source.get("channel_cross_lock") and not source.get("channel_pre_lock_sl"):
-                                source["channel_pre_lock_sl"] = initial_sl
-                        restored = True
-
                     continue
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
@@ -311,6 +307,14 @@ class PaperAccount:
         self.pullback_outcome_stats = data.get("pullback_outcome_stats", {})
         self.entry_filter_stats = data.get("entry_filter_stats", {})
         self.entry_filter_last = data.get("entry_filter_last", {})
+        self.breakout_qualification = data.get("breakout_qualification", {})
+        self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
+        self.d0_in_flight_state = data.get("d0_in_flight_state", {})
+        for sym, infl in list(self.d0_in_flight_state.items()):
+            self.d0_quarantine_state[sym] = True
+        self.d0_consumed_state = data.get("d0_consumed_state", {})
+        self.d0_failed_state = data.get("d0_failed_state", {})
+        self.d0_quarantine_state.update(data.get("d0_quarantine_state", {}))
         self.shadow_parameter_stats = data.get("shadow_parameter_stats", {})
         self.shadow_parameter_last = data.get("shadow_parameter_last", {})
         stored_accounting_version = int(data.get("accounting_version", 1))
@@ -372,6 +376,12 @@ class PaperAccount:
             "pullback_outcome_stats": self.pullback_outcome_stats,
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
+            "breakout_qualification": self.breakout_qualification,
+            "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
+            "d0_in_flight_state": self.d0_in_flight_state,
+            "d0_consumed_state": self.d0_consumed_state,
+            "d0_failed_state": self.d0_failed_state,
+            "d0_quarantine_state": self.d0_quarantine_state,
             "shadow_parameter_stats": self.shadow_parameter_stats,
             "shadow_parameter_last": self.shadow_parameter_last,
             "accounting_version": self.accounting_version,
@@ -406,6 +416,8 @@ class PaperAccount:
         self.pullback_outcome_stats = {}
         self.entry_filter_stats = {}
         self.entry_filter_last = {}
+        self.breakout_qualification = {}
+        self.last_consumed_breakout_signal_id = {}
         self.shadow_parameter_stats = {}
         self.shadow_parameter_last = {}
         self.takeover_shadow_events = []
@@ -435,6 +447,23 @@ class PaperAccount:
             "level": level,
         })
         self.save_state()
+
+    def record_qualification(self, symbol: str, qualification: dict) -> None:
+        self.breakout_qualification[symbol] = qualification
+        self.save_state()
+
+    def consume_breakout_qualification(self, symbol: str, expected_signal_id: str) -> None:
+        if expected_signal_id:
+            self.last_consumed_breakout_signal_id[symbol] = expected_signal_id
+            current = self.breakout_qualification.get(symbol)
+            if current and current.get('pending_signal_id') == expected_signal_id:
+                del self.breakout_qualification[symbol]
+            self.save_state()
+
+    def clear_qualification(self, symbol: str) -> None:
+        if symbol in self.breakout_qualification:
+            del self.breakout_qualification[symbol]
+            self.save_state()
 
     def _check_daily_reset(self) -> None:
         today = get_taipei_now_str("%Y-%m-%d")
@@ -566,12 +595,40 @@ class PaperAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
-        if entry_mode == "CHANNEL_SWING":
-            if not valid_entry_atr(atr):
+
+        if self.d0_quarantine_state.get(symbol):
+            self.log(f"🛑 [D0_QUARANTINE_BLOCKED] {symbol} is quarantined. Order blocked.", "WARNING")
+            return False
+
+        is_d0 = entry_context and entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK"
+        d0_event_id = entry_context.get("d0_event_id") if entry_context else None
+
+        if is_d0:
+            if self.d0_consumed_state.get(symbol) == d0_event_id:
+                return False
+            if self.d0_failed_state.get(symbol) == d0_event_id:
+                return False
+
+        import uuid, time
+        client_order_id = f"AGY_D0_{uuid.uuid4().hex[:16]}" if is_d0 else None
+
+        if is_d0:
+            self.d0_in_flight_state[symbol] = {
+                "d0_event_id": d0_event_id,
+                "client_order_id": client_order_id,
+                "side": side,
+                "submission_timestamp": time.time(),
+            }
+            self.save_state()
+
+        if entry_mode == "CHANNEL_SWING" or is_d0:
+            if not valid_entry_atr(atr) and entry_mode == "CHANNEL_SWING":
                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
                 return False
             try:
-                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
+                if entry_mode == "CHANNEL_SWING":
+                    initialize_atr_protection({'entry_mode': 'CHANNEL_SWING'}, price, side, atr,
+                                              initial_stop=structural_stop)
             except (ValueError, TypeError):
                 return False
             tp = 0.0
@@ -747,6 +804,11 @@ class PaperAccount:
             **entry_context,
         })
         fill_note = "含滑點" if apply_slippage else "Maker限價成交"
+
+        if is_d0:
+            self.d0_in_flight_state.pop(symbol, None)
+            self.d0_consumed_state[symbol] = d0_event_id
+
         self.log(
             f"🚀 [紙上交易] 開倉成功 [{side}] {symbol} @ {execution_price:.6g} "
             f"({leverage}x，{fill_note}，SL={sl:.6g}, TP={pos['tp']:.6g})",

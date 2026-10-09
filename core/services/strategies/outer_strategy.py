@@ -213,35 +213,49 @@ def entry_trend_direction(frame):
         return None
 
 
+def outer_body_breakout_side(opened, price, lower, middle, upper, atr):
+    """Apply the shared live-body rule to either an in-channel or outer open."""
+    try:
+        opened, price, lower, middle, upper, atr = map(
+            float, (opened, price, lower, middle, upper, atr)
+        )
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (opened, price, lower, middle, upper, atr))
+                or not lower < middle < upper):
+            return None
+        opening_side = (
+            'LONG' if opened > upper else
+            'SHORT' if opened < lower else
+            None
+        )
+        threshold = atr * LIVE_BREAKOUT_BODY_ATR
+        long_distance_atr = (upper - price) / atr
+        if ((opening_side in (None, 'LONG'))
+                and (price - opened) >= threshold and price > upper
+                and 0 < -long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+            return 'LONG'
+        short_distance_atr = (price - lower) / atr
+        if ((opening_side in (None, 'SHORT'))
+                and (opened - price) >= threshold and price < lower
+                and 0 < -short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+            return 'SHORT'
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
 def live_body_breakout_side(frame, price):
-    """Detect a live directional body that has strictly crossed its KC outer rail."""
+    """Detect a first cross or same-side outer-rail continuation by live body."""
     try:
         if frame is None or len(frame) < 2:
             return None
         row = frame.iloc[-1]
-        opened, upper, middle, lower, atr, price = (
-            float(row['open']), float(row['kc_upper']), float(row['kc_middle']),
-            float(row['kc_lower']),
-            float(frame.iloc[-2]['atr']), float(price))
-        if (not all(math.isfinite(v) and v > 0
-                    for v in (opened, upper, middle, lower, atr, price))
-                or not lower < middle < upper
-                or not lower <= opened <= upper):
-            return None
-        threshold = atr * LIVE_BREAKOUT_BODY_ATR
-
-        long_distance_atr = (upper - price) / atr
-        if ((price - opened) >= threshold and price > upper
-                and 0 < -long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
-            return 'LONG'
-
-        short_distance_atr = (price - lower) / atr
-        if ((opened - price) >= threshold and price < lower
-                and 0 < -short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
-            return 'SHORT'
+        return outer_body_breakout_side(
+            row['open'], price, row['kc_lower'], row['kc_middle'],
+            row['kc_upper'], frame.iloc[-2]['atr'],
+        )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        pass
-    return None
+        return None
 
 
 def check_half_channel_oscillation(frame, side):

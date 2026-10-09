@@ -5,6 +5,8 @@ import numpy as np
 
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import (
+    LIVE_BREAKOUT_BODY_ATR,
+    LIVE_BREAKOUT_MAX_DISTANCE_ATR,
     ck_direction,
     live_body_breakout_side,
     ma5_ma15_trend_confirmed,
@@ -12,6 +14,7 @@ from core.services.strategies.outer_strategy import (
     live_candle_color_ready,
     live_adverse_entry_safe,
     ma3_outer_continuation_ready,
+    outer_body_breakout_side,
 )
 from core.services.kc_pending_entry import (
     KC_PENDING_CODES,
@@ -31,7 +34,7 @@ ENTRY_EVIDENCE_KEYS = (
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
     "pair_confirmation_bar_id", "third_bar_id", "live_pattern_start_bar_id",
     "live_pattern_pullback_bars", "live_pattern_body_atr", "kc_distance_atr",
-    "kc_max_distance_atr", "qualification_signal_id",
+    "kc_max_distance_atr", "qualification_signal_id", "live_opening_context",
 )
 
 
@@ -101,6 +104,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
             return None
 
         sign = 1 if side == 'LONG' else -1
+        opening = float(live['open'])
+        if sign * (quote - opening) < LIVE_BREAKOUT_BODY_ATR * atr:
+            return None
         closes = [float(value) for value in frame['close'].iloc[-5:-1]]
         last_ma5 = float(frame.iloc[-2]['ma5'])
         if (len(closes) != 4 or not all(math.isfinite(value) and value > 0 for value in closes)
@@ -117,7 +123,8 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
 
         edge = float(live['kc_upper' if side == 'LONG' else 'kc_lower'])
         distance = sign * (quote - edge) / atr
-        if distance <= 0 or distance > 3.0 or sign * (quote - live_ma5) <= 0:
+        if (distance <= 0 or distance > LIVE_BREAKOUT_MAX_DISTANCE_ATR
+                or sign * (quote - live_ma5) <= 0):
             return None
         previous_stamp = float(frame.iloc[-2]['timestamp'])
         return dict(
@@ -129,7 +136,8 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
             pending_signal_id=f'{symbol}:CONTINUATION:{int(stamp)}:{side}',
             pending_second_bar_id=previous_stamp, pending_wait_bars=1,
             pending_max_wait_bars=1, kc_confirmation_edge=edge,
-            kc_distance_atr=distance, kc_max_distance_atr=3.0,
+            kc_distance_atr=distance,
+            kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
             qualification_signal_id=qualification['pending_signal_id'],
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
@@ -182,8 +190,60 @@ def is_solid_push(row, side):
         return False
 
 
+def evaluate_closed_outer_body_breakout(frame, quote, symbol="", requested_side=None):
+    """Allow one fresh live bar to enter from the immediately preceding outer-body break."""
+    try:
+        if frame is None or len(frame) < 3 or 'is_closed' not in frame:
+            return None
+        previous, breakout, live = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        if not (bool(previous['is_closed']) and bool(breakout['is_closed'])
+                and not bool(live['is_closed'])):
+            return None
+
+        breakout_stamp = float(breakout['timestamp'])
+        live_stamp = float(live['timestamp'])
+        atr = float(previous['atr'])
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (breakout_stamp, live_stamp, atr))
+                or live_stamp != breakout_stamp + 60000):
+            return None
+        side = outer_body_breakout_side(
+            breakout['open'], breakout['close'], breakout['kc_lower'],
+            breakout['kc_middle'], breakout['kc_upper'], atr,
+        )
+        if side is None or (requested_side is not None and requested_side != side):
+            return None
+        quote = float(quote)
+        if not quote_beyond_side_outer_rail(frame, side, quote):
+            return None
+
+        sign = 1 if side == 'LONG' else -1
+        edge = float(live['kc_upper' if side == 'LONG' else 'kc_lower'])
+        distance = sign * (quote - edge) / atr
+        if (not math.isfinite(distance) or distance <= 0
+                or distance > LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+            return None
+
+        code = f"KC_LIVE_BODY_BREAKOUT_{side}"
+        return dict(
+            action="ENTER", side=side, type=code, reason=code,
+            price=quote, entry_atr=atr, confirmation_bar_id=breakout_stamp,
+            close_price=float(breakout['close']), intrabar=False,
+            entry_phase='KC_LIVE_OUTER_BREAKOUT',
+            breakout_bar_id=breakout_stamp, pair_confirmation_bar_id=None,
+            third_bar_id=live_stamp, live_opening_context='CLOSED_OUTER_FORMATION',
+            pending_signal_id=f"{symbol}:CLOSED_LIVE_BODY:{int(breakout_stamp)}:{side}",
+            pending_second_bar_id=live_stamp, pending_wait_bars=0,
+            pending_max_wait_bars=0, kc_confirmation_edge=edge,
+            kc_distance_atr=distance,
+            kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
-    """Authorize the first live body breakout from an in-channel open."""
+    """Authorize a first live breakout or same-side outer continuation."""
     try:
         if frame is None or len(frame) < 2:
             return None
@@ -193,21 +253,28 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
         quote = float(quote)
         if (not all(math.isfinite(value) and value > 0
                     for value in (opened, lower, upper, quote))
-                or lower >= upper or not lower <= opened <= upper):
+                or lower >= upper):
             return None
 
         side = live_body_breakout_side(frame, quote)
-        if side is None or (requested_side is not None and requested_side != side):
+        if side is None:
+            return evaluate_closed_outer_body_breakout(
+                frame, quote, symbol=symbol, requested_side=requested_side
+            )
+        if requested_side is not None and requested_side != side:
             return None
         stamp = float(live["timestamp"])
         atr = float(frame.iloc[-2]["atr"])
         edge = upper if side == "LONG" else lower
         distance = (quote - edge) / atr if side == "LONG" else (edge - quote) / atr
         if (not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance)
-                or distance <= 0 or distance > 3.0):
+                or distance <= 0 or distance > LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return None
 
         code = f"KC_LIVE_BODY_BREAKOUT_{side}"
+        opening_context = (
+            'IN_CHANNEL' if lower <= opened <= upper else 'SAME_SIDE_OUTER'
+        )
         return dict(
             action="ENTER", side=side, type=code, reason=code,
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
@@ -215,10 +282,12 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             entry_phase='KC_LIVE_OUTER_BREAKOUT',
             breakout_bar_id=stamp, pair_confirmation_bar_id=None,
             third_bar_id=stamp,
+            live_opening_context=opening_context,
             pending_signal_id=f"{symbol}:LIVE_BODY:{int(stamp)}:{side}",
             pending_second_bar_id=stamp, pending_wait_bars=0,
             pending_max_wait_bars=0, kc_confirmation_edge=edge,
-            kc_distance_atr=distance, kc_max_distance_atr=3.0,
+            kc_distance_atr=distance,
+            kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -335,9 +404,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         side = decision["side"]
         if decision.get("entry_phase") not in (
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM',
-                'KC_CONTINUATION_ENTRY'):
+                'KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT'):
             return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
-        if not entry_trend_alignment_ready(frame, side):
+        live_body_entry = decision.get("type") in LIVE_BODY_BREAKOUT_CODES
+        if not live_body_entry and not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
         if not quote_beyond_side_outer_rail(frame, side, quote):
             return reject("WAIT_LIVE_PRICE_OUTSIDE_KC_RAIL")

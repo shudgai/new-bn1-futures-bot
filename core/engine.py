@@ -1827,6 +1827,17 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
+        live = snapshot['frame'].iloc[-1]
+        candle_high = max(float(live['high']), price)
+        candle_low = min(float(live['low']), price)
+        if not self._abnormal_market_entry_allowed(
+                symbol, side, price, float(decision['entry_atr']),
+                float(live['open']), candle_high, candle_low, price):
+            log_entry_gate(
+                self, symbol, side, 'EXECUTION',
+                'BLOCKED_ABNORMAL_MARKET_ENTRY', bar,
+            )
+            return False
         if not quote_beyond_side_outer_rail(snapshot['frame'], side, price):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
@@ -1889,6 +1900,7 @@ class TradingEngine:
             
             try:
                 from core.services.pre_entry_space_shadow import record_pre_entry_space_shadow
+                # Shadow risk benchmark only; this is not an executable stop.
                 record_pre_entry_space_shadow(
                     symbol=symbol,
                     side=side,
@@ -1907,7 +1919,7 @@ class TradingEngine:
 
             log_count = len(getattr(self.account, 'logs', []))
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Live1M '+decision['type'],
+                amount_usdt=amount,sl=0.,tp=0.,reason='Live1M '+decision['type'],
                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]
@@ -2016,7 +2028,9 @@ class TradingEngine:
         observed = evaluate_entry_contract(frame, price, v8_reason,
                                            account=self.account, symbol=symbol)
         if (observed and observed['side'] == side and observed['entry_phase'] in (
-                'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')):
+                'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')
+                and observed.get('live_opening_context') not in (
+                    'SAME_SIDE_OUTER', 'CLOSED_OUTER_FORMATION')):
             qualification = {
                 'side': observed['side'],
                 'pending_signal_id': observed['pending_signal_id'],
@@ -2471,6 +2485,10 @@ class TradingEngine:
             return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
+        # [EMERGENCY FAIL-CLOSED]
+        # Temporarily disabled until unified entry contract is integrated.
+        self.account.log(f"🛑 [EMERGENCY BLOCK] {symbol} {ticket['side']} 獲利重開已暫時 Fail-Closed 阻斷開倉", "WARNING")
+        return
         from core.services.entry_contract import evaluate_continuation_entry
         decision = evaluate_continuation_entry(frame, price, symbol=symbol)
         if not decision or decision['side'] != ticket['side']:
