@@ -3,188 +3,25 @@ import time
 import pandas as pd
 import numpy as np
 
+from core.services.indicators import (
+    analyze_candle_pattern, bars_since_supertrend_flip, classify_wave_regime,
+    strict_pivot_type,
+)
+
+
 TIMEFRAME_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
-
-def classify_wave_regime(
-    df: pd.DataFrame,
-    previous_regime: str = "RANGE",
-    confirmation_bars: int = 3,
-    range_adx_max: float = 20.0,
-    range_spread_atr_max: float = 0.35,
-    trend_adx_min: float = 25.0,
-    trend_spread_atr_min: float = 0.50,
-) -> dict:
-    """用已收盤 K 的 ADX 與 MA3/MA15 距離判斷短波動或長趨勢。
-
-    RANGE/TREND 都必須連續成立 confirmation_bars 根才切換；落在兩組
-    門檻中間時維持前一狀態，避免模式在臨界值附近來回跳動。
-    """
-    prior = "TREND" if str(previous_regime).upper() == "TREND" else "RANGE"
-    required = max(1, int(confirmation_bars))
-    needed_columns = {"adx", "atr", "ma3", "ma15"}
-    if df is None or len(df) < required or not needed_columns.issubset(df.columns):
-        return {
-            "regime": prior, "candidate": "HOLD", "confirmed": False,
-            "adx": None, "spread_atr": None, "confirmation_bars": required,
-        }
-
-    recent = df.iloc[-required:]
-    states = []
-    last_adx = None
-    last_spread = None
-    for _, row in recent.iterrows():
-        adx = float(row["adx"])
-        atr = float(row["atr"])
-        ma3 = float(row["ma3"])
-        ma15 = float(row["ma15"])
-        if any(pd.isna(value) for value in (adx, atr, ma3, ma15)) or atr <= 0:
-            states.append("HOLD")
-            continue
-        spread_atr = abs(ma3 - ma15) / atr
-        last_adx, last_spread = adx, spread_atr
-        if adx < range_adx_max and spread_atr < range_spread_atr_max:
-            states.append("RANGE")
-        elif adx >= trend_adx_min and spread_atr >= trend_spread_atr_min:
-            states.append("TREND")
-        else:
-            states.append("HOLD")
-
-    candidate = states[-1] if states else "HOLD"
-    confirmed = bool(states and len(set(states)) == 1 and states[0] in ("RANGE", "TREND"))
-    regime = states[0] if confirmed else prior
-    return {
-        "regime": regime, "candidate": candidate, "confirmed": confirmed,
-        "adx": last_adx, "spread_atr": last_spread,
-        "confirmation_bars": required,
-    }
 
 def evaluate_kc_outer_run_lock(
     df: pd.DataFrame, side: str, armed: bool = False,
     outer_run_active: bool = False,
 ) -> dict:
-    """辨識 KC 外軌延伸。
+    """Compatibility facade for the outer-run exit policy."""
+    from core.services.exits.outer_run_lock import evaluate_kc_outer_run_lock as evaluate
+    return evaluate(df, side, armed=armed, outer_run_active=outer_run_active)
 
-    單根影線觸軌只會 armed；連續兩根收在同側外軌、MA3 也在軌外且
-    MA15 同向才進入 OUTER_RUN。外軌外的反向 K 不解除；第一根反向 K
-    收回該側外軌內才解除，讓持倉在 MA3/MA15 完整轉彎前先退出。
-    """
-    result = {
-        "armed": bool(armed), "blocked": bool(armed), "released": False,
-        "touched_outer": False, "reached_middle": False,
-        "outer_run_active": bool(outer_run_active),
-        "returned_inside_outer": False,
-        "outside_close_count": 0, "ma3_outside": False,
-        "ma15_aligned": False,
-        "kc_upper": None, "kc_middle": None, "kc_lower": None,
-    }
-    if df is None or df.empty or str(side or "").upper() not in ("LONG", "SHORT"):
-        return result
 
-    work = df.copy()
-    close = pd.to_numeric(work["close"], errors="coerce")
-    high = pd.to_numeric(work["high"], errors="coerce")
-    low = pd.to_numeric(work["low"], errors="coerce")
-    if "kc_middle" in work.columns:
-        middle = pd.to_numeric(work["kc_middle"], errors="coerce")
-    elif "ema_20" in work.columns:
-        middle = pd.to_numeric(work["ema_20"], errors="coerce")
-    else:
-        middle = close.ewm(span=20, adjust=False).mean()
-    if "atr" in work.columns:
-        atr = pd.to_numeric(work["atr"], errors="coerce")
-    else:
-        previous_close = close.shift(1)
-        tr = pd.concat([
-            high - low, (high - previous_close).abs(), (low - previous_close).abs(),
-        ], axis=1).max(axis=1)
-        atr = tr.rolling(10, min_periods=3).mean()
-    from core.config import KELTNER_ATR_MULTIPLIER
-    upper = (
-        pd.to_numeric(work["kc_upper"], errors="coerce")
-        if "kc_upper" in work.columns else middle + atr * KELTNER_ATR_MULTIPLIER
-    )
-    lower = (
-        pd.to_numeric(work["kc_lower"], errors="coerce")
-        if "kc_lower" in work.columns else middle - atr * KELTNER_ATR_MULTIPLIER
-    )
-    values = [work["open"].iloc[-1], close.iloc[-1], high.iloc[-1], low.iloc[-1],
-              upper.iloc[-1], middle.iloc[-1], lower.iloc[-1]]
-    if any(pd.isna(value) for value in values):
-        return result
 
-    candle_open, candle_close, candle_high, candle_low, kc_upper, kc_middle, kc_lower = map(float, values)
-    side = str(side).upper()
-    touched_outer = bool(
-        candle_high >= kc_upper if side == "LONG" else candle_low <= kc_lower
-    )
-    now_armed = bool(armed or touched_outer)
-    ma3 = (
-        pd.to_numeric(work["ma3"], errors="coerce")
-        if "ma3" in work.columns else close.rolling(3).mean()
-    )
-    ma15 = (
-        pd.to_numeric(work["ma15"], errors="coerce")
-        if "ma15" in work.columns else close.rolling(15).mean()
-    )
-    outside_close_count = 0
-    for offset in range(1, min(len(work), 2) + 1):
-        close_value = float(close.iloc[-offset])
-        rail_value = float(upper.iloc[-offset] if side == "LONG" else lower.iloc[-offset])
-        if (side == "LONG" and close_value >= rail_value) or (
-            side == "SHORT" and close_value <= rail_value
-        ):
-            outside_close_count += 1
-        else:
-            break
-    ma3_outside = bool(
-        pd.notna(ma3.iloc[-1])
-        and (
-            (side == "LONG" and float(ma3.iloc[-1]) >= kc_upper)
-            or (side == "SHORT" and float(ma3.iloc[-1]) <= kc_lower)
-        )
-    )
-    ma15_aligned = bool(
-        len(ma15.dropna()) >= 2
-        and (
-            (side == "LONG" and float(ma15.dropna().iloc[-1]) > float(ma15.dropna().iloc[-2]))
-            or (side == "SHORT" and float(ma15.dropna().iloc[-1]) < float(ma15.dropna().iloc[-2]))
-        )
-    )
-    confirmed_outer_run = bool(
-        outside_close_count >= 2 and ma3_outside and ma15_aligned
-    )
-    reached_middle = bool(
-        now_armed
-        and (
-            (side == "LONG" and candle_close < candle_open and candle_low <= kc_middle)
-            or (side == "SHORT" and candle_close > candle_open and candle_high >= kc_middle)
-        )
-    )
-    outer_run_was_active = bool(outer_run_active or confirmed_outer_run)
-    returned_inside_outer = bool(
-        outer_run_was_active
-        and (
-            (side == "LONG" and candle_close < candle_open and candle_close < kc_upper)
-            or (side == "SHORT" and candle_close > candle_open and candle_close > kc_lower)
-        )
-    )
-    active_outer_run = bool(
-        outer_run_was_active and not returned_inside_outer
-    )
-    released = bool(returned_inside_outer or (not outer_run_was_active and reached_middle))
-    result.update({
-        "armed": bool(now_armed and not released),
-        "blocked": bool((now_armed and not released) or active_outer_run),
-        "released": released, "touched_outer": touched_outer,
-        "outer_run_active": active_outer_run,
-        "returned_inside_outer": returned_inside_outer,
-        "outside_close_count": outside_close_count,
-        "ma3_outside": ma3_outside, "ma15_aligned": ma15_aligned,
-        "reached_middle": reached_middle, "kc_upper": kc_upper,
-        "kc_middle": kc_middle, "kc_lower": kc_lower,
-    })
-    return result
 
 
 def matching_exit_pivot_detected(side: str, signal_info: dict) -> bool:
@@ -574,26 +411,6 @@ def evaluate_minimum_kc_wave(
             else f"{label}距離 {wave_distance:.8g} < KC全寬 {kc_width:.8g}，視為途中小回調"
         ),
     }
-
-
-def strict_pivot_type(values, index):
-    """Use adjacent closed samples; reject ties, missing neighbours and broken pivots.
-
-    Callers supply closed bars only. Confirmation is available at index + 1.
-    """
-    values = np.asarray(values, dtype=float)
-    if index < 0:
-        index += len(values)
-    if index < 1 or index + 1 >= len(values):
-        return None
-    if not np.isfinite(values[index - 1:]).all():
-        return None
-    left, center, right = values[index - 1:index + 2]
-    if center > left and center > right and np.all(values[index + 1:] < center):
-        return "PEAK_TURN"
-    if center < left and center < right and np.all(values[index + 1:] > center):
-        return "TROUGH_TURN"
-    return None
 
 
 def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
@@ -1167,97 +984,4 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "kc_lower": kc_lower,
         "adx": float(df['adx'].iloc[-1]) if 'adx' in df.columns else 0.0,
         "atr": atr_val,
-    }
-
-def bars_since_supertrend_flip(direction_series: pd.Series) -> int:
-    """
-    計算 SuperTrend 方向自上次轉向（Flip）以來經過的 K 棒數量 (Bars)。
-    若剛轉向，回傳 0；1 根前轉向，回傳 1；依此類推。
-    """
-    if direction_series is None or len(direction_series) < 2:
-        return 999
-
-    curr_dir = direction_series.iloc[-1]
-    bars = 0
-
-    for i in range(len(direction_series) - 1, 0, -1):
-        if direction_series.iloc[i] == curr_dir:
-            if direction_series.iloc[i - 1] != curr_dir:
-                return bars
-            bars += 1
-        else:
-            break
-
-    return bars
-
-
-def analyze_candle_pattern(candle: pd.Series) -> dict:
-    """
-    分析單根 K 線的形態特徵 (Price Action)。
-    回傳字典包含以下布林值特徵：
-    - is_long_bull: 長紅 K 線 (實體 > 全長 60%)
-    - is_long_bear: 長黑 K 線 (實體 > 全長 60%)
-    - is_doji: 十字線 (實體 < 全長 10%)
-    - is_hammer: 錘頭線 (下影線 > 實體 2 倍，且上影線 < 全長 10%)
-    - is_shooting_star: 流星線 (上影線 > 實體 2 倍，且下影線 < 全長 10%)
-    """
-    try:
-        o = float(candle['open'])
-        h = float(candle['high'])
-        l = float(candle['low'])
-        c = float(candle['close'])
-    except KeyError:
-        # 如果缺少 o/h/l/c，回傳全部為 False
-        return {
-            "is_long_bull": False, "is_long_bear": False,
-            "is_doji": False, "is_hammer": False, "is_shooting_star": False,
-            "pattern_name": "None",
-        }
-
-    total_range = h - l
-    if total_range <= 0:
-        return {
-            "is_long_bull": False, "is_long_bear": False,
-            "is_doji": True, "is_hammer": False, "is_shooting_star": False,
-            "pattern_name": "Doji",
-        }
-
-    body = abs(c - o)
-    upper_shadow = h - max(o, c)
-    lower_shadow = min(o, c) - l
-
-    body_ratio = body / total_range
-    upper_ratio = upper_shadow / total_range
-    lower_ratio = lower_shadow / total_range
-
-    is_long_bull = body_ratio >= 0.6 and c > o
-    is_long_bear = body_ratio >= 0.6 and c < o
-    is_doji = body_ratio <= 0.10
-
-    # 錘頭線：下影線長（大於實體 2 倍），且上影線極短（<10% 全長）
-    is_hammer = (lower_shadow > body * 2.0) and (upper_ratio <= 0.10)
-
-    # 流星線：上影線長（大於實體 2 倍），且下影線極短（<10% 全長）
-    is_shooting_star = (upper_shadow > body * 2.0) and (lower_ratio <= 0.10)
-
-    pattern_name = "None"
-    if is_doji:
-        pattern_name = "Doji"
-    elif is_hammer:
-        pattern_name = "Hammer"
-    elif is_shooting_star:
-        pattern_name = "Shooting Star"
-    elif is_long_bull:
-        pattern_name = "Long Bull"
-    elif is_long_bear:
-        pattern_name = "Long Bear"
-
-    return {
-        "is_long_bull": is_long_bull,
-        "is_long_bear": is_long_bear,
-        "is_doji": is_doji,
-        "is_hammer": is_hammer,
-        "is_shooting_star": is_shooting_star,
-        "pattern_name": pattern_name,
-        "body_ratio": body_ratio,
     }

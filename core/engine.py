@@ -157,7 +157,8 @@ from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import drop_unclosed_candle, compute_position_trigger
-from core.services.candle_data import mark_candle_closure, closed_entry_candles, log_entry_gate
+from core.services.candle_data import closed_entry_candles, log_entry_gate
+from core.services.market_data_service import fetch_klines as fetch_market_klines
 from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES, MOMENTUM_ENTRY_CODES
 
 class TradingEngine:
@@ -996,24 +997,10 @@ class TradingEngine:
 
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
-        try:
-            # Finality is fixed before I/O, including requests spanning a bar close.
-            snapshot_ms = time.time() * 1000
-            ohlcv = await asyncio.wait_for(
-                self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit),
-                timeout=12.0,
-            )
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
-            # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
-            # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
-            df = mark_candle_closure(df, timeframe, snapshot_ms)
-            if keep_live:
-                return df
-            return df.loc[df["is_closed"]].reset_index(drop=True)
-        except Exception as e:
-            print(f"fetch_klines ERROR: {e}")
-            return pd.DataFrame()
+        """Compatibility facade; market-data I/O lives in its service."""
+        return await fetch_market_klines(
+            self.exchange, symbol, timeframe=timeframe, limit=limit, keep_live=keep_live,
+        )
 
     async def update_market_prices(self):
         try:
