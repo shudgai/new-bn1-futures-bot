@@ -134,8 +134,8 @@ class PureTrendStrategyV2:
                 opening, close, rail = (float(previous[key]) for key in ('open', 'close', edge))
                 if not all(math.isfinite(value) and value > 0 for value in (opening, close, rail)):
                     continue
-                # 只要求上一根收盤在外軌之外且為同色實體
-                if sign * (close - opening) > 0 and sign * (close - rail) > 0:
+                # 只要求上一根收盤在外軌之外，即具備延續資格 (不管是否為同色實體)
+                if sign * (close - rail) > 0:
                     return side
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -550,17 +550,8 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     if ticket or continuation:
         is_reentry = True
     else:
-        # Prevent opening a brand new initial breakout if we are already outside
-        before = closed.iloc[-2]
-        edge = 'kc_upper' if decision['side'] == 'LONG' else 'kc_lower'
-        before_close, before_edge = float(before['close']), float(before[edge])
-        if all(math.isfinite(value) and value > 0 for value in (before_close, before_edge)):
-            if float(previous['timestamp']) - float(before['timestamp']) == 60000:
-                if before_close > before_edge if decision['side'] == 'LONG' else before_close < before_edge:
-                    if diagnostics is not None:
-                        diagnostics['reason'] = '前段已在軌外，但尚未形成同向延續'
-                    return None
-
+        # 已移除「前段已在軌外但未形成同向延續則阻擋」的限制
+        pass
     if ticket and not is_reentry and bar_index - ticket['exit_bar_index'] < 5:
         if diagnostics is not None:
             diagnostics['reason'] = 'WAIT_POST_EXIT_5_BAR_COOLDOWN'
