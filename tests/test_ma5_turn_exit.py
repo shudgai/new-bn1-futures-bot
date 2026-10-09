@@ -46,19 +46,32 @@ def snapshot(side, **overrides):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_quote_derived_ma5_reversal_exits_both_sides_even_at_a_loss(side):
+def test_observed_ma5_peak_or_trough_reversal_exits_both_sides(side):
     sign = 1 if side == "LONG" else -1
     position_data = position(side)
+    # First establish a quote-derived extreme, then observe favorable MA5
+    # progress, then close on the first MA5 retreat confirmed by price.
+    for index, (ma5, price) in enumerate(((100., 100.), (101. * sign + 100. * (1-sign), 101. if sign == 1 else 99.))):
+        result = evaluate_peak_trailing(
+            position_data, price,
+            snapshot(side, quote_ms=181_000. + index * 1_000, live_ma5=ma5),
+            fee=0., slippage=0.,
+        )
+        assert result is None
 
+    reversal_ma5 = 100.8 if sign == 1 else 99.2
+    reversal_price = 100.9 if sign == 1 else 99.1
     result = evaluate_peak_trailing(
-        position_data, 100. - sign, snapshot(side), fee=0., slippage=0.
+        position_data, reversal_price,
+        snapshot(side, quote_ms=183_000., live_ma5=reversal_ma5),
+        fee=0., slippage=0.,
     )
 
     assert result is not None
     assert result["type"] == ABNORMAL_REASON
-    assert result["trigger"] == "MA5_TURN_REVERSAL"
+    assert result["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
     assert position_data["peak_trailing_state"]["pending"] == ABNORMAL_REASON
-    assert position_data["peak_trailing_state"]["trigger"] == "MA5_TURN_REVERSAL"
+    assert position_data["peak_trailing_state"]["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
 
 
 @pytest.mark.parametrize(
@@ -98,17 +111,23 @@ def test_invalid_or_stale_ma5_snapshot_cannot_create_a_close(side, changes):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_triggered_ma5_exit_remains_pending_for_failed_close_retry(side):
     position_data = position(side)
-    first = evaluate_peak_trailing(
-        position_data, 100., snapshot(side), fee=0., slippage=0.
-    )
-    assert first["trigger"] == "MA5_TURN_REVERSAL"
+    first = None
+    sign = 1 if side == "LONG" else -1
+    for index, (ma5, price) in enumerate(((100., 100.), (101. if sign == 1 else 99., 101. if sign == 1 else 99.),
+                                          (100.8 if sign == 1 else 99.2, 100.9 if sign == 1 else 99.1))):
+        first = evaluate_peak_trailing(
+            position_data, price,
+            snapshot(side, quote_ms=181_000. + index * 1_000, live_ma5=ma5),
+            fee=0., slippage=0.,
+        )
+    assert first["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
 
     restored = copy.deepcopy(position_data)
     retry = evaluate_peak_trailing(
         restored, 100., {"quote_ms": 241_000.}, fee=0., slippage=0.
     )
 
-    assert retry["trigger"] == "MA5_TURN_REVERSAL"
+    assert retry["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
 
 
 def test_waterfall_keeps_priority_over_the_ma5_reversal():
@@ -123,15 +142,15 @@ def test_waterfall_keeps_priority_over_the_ma5_reversal():
 
 
 @pytest.mark.parametrize(
-    ("side", "closes", "quote", "should_turn"),
+    ("side", "closes", "quote"),
     [
-        ("SHORT", [99., 100., 101., 102., 103.], 110., True),
-        ("LONG", [103., 102., 101., 100., 99.], 90., True),
-        ("SHORT", [99., 100., 101., 102., 103.], 90., False),
-        ("LONG", [103., 102., 101., 100., 99.], 110., False),
+        ("SHORT", [99., 100., 101., 102., 103.], 110.),
+        ("LONG", [103., 102., 101., 100., 99.], 90.),
+        ("SHORT", [99., 100., 101., 102., 103.], 90.),
+        ("LONG", [103., 102., 101., 100., 99.], 110.),
     ],
 )
-def test_cached_snapshot_calculates_quote_adjusted_ma5(side, closes, quote, should_turn):
+def test_cached_snapshot_calculates_quote_adjusted_ma5(side, closes, quote):
     timestamps = [60_000., 120_000., 180_000., 240_000., 300_000.]
     rows = [
         dict(
@@ -176,7 +195,8 @@ def test_cached_snapshot_calculates_quote_adjusted_ma5(side, closes, quote, shou
     evidence = live_ma5_reversal_exit(
         position(side), result, 1 if side == "LONG" else -1
     )
-    assert (evidence is not None) is should_turn
+    # One snapshot cannot establish an observed in-position peak/trough.
+    assert evidence is None
 
 
 def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
@@ -197,7 +217,7 @@ def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
 
     def ma5_exit_decision(current_position, *_):
         current_position["peak_trailing_state"]["peak_net_pnl"] = 0.
-        return dict(type=ABNORMAL_REASON, trigger="MA5_TURN_REVERSAL")
+        return dict(type=ABNORMAL_REASON, trigger="MA5_TRUE_PEAK_REVERSAL")
 
     async def run():
         with (
@@ -221,4 +241,4 @@ def test_ma5_exit_bypasses_trend_hold_and_closes_with_trigger_reason():
 
     asyncio.run(run())
     assert account.close_position.await_count == 1
-    assert "MA5_TURN_REVERSAL" in account.close_position.await_args.args[2]
+    assert "MA5_TRUE_PEAK_REVERSAL" in account.close_position.await_args.args[2]

@@ -171,7 +171,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         decision = PureTrendStrategyV2().evaluate_anti_whipsaw_profit_lock(position,price,snapshot,atr)
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
-                  ('identity','peak_price','peak_net_pnl','atr','armed','pending'))
+                  ('identity','peak_price','peak_net_pnl','atr','armed','pending',
+                   'ma5_reversal_extreme','ma5_reversal_last_value',
+                   'ma5_reversal_last_price','ma5_reversal_favorable_seen'))
         for key in STATE_KEYS:
             if key in position:
                 meta[key] = copy.deepcopy(position[key])
@@ -190,6 +192,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR',
                                     DOJI_TRIGGER, 'KC_OUTER_PIVOT',
                                     'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                                    'MA5_TRUE_PEAK_REVERSAL',
                                     'CHANNEL_PEAK_PULLBACK_REVERSAL')):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
@@ -206,6 +209,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger_detail = (
             ' ' + trigger
             if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                           'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL')
             else ''
         )

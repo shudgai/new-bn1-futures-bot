@@ -206,8 +206,15 @@ def three_point_pivot_exit(position, snapshot):
         return None
 
 
-def live_ma5_reversal_exit(position, snapshot, sign):
-    """Exit when the quote-derived MA5 moves against the held position."""
+def live_ma5_reversal_exit(position, snapshot, sign, state=None):
+    """Exit on an observed quote-by-quote MA5 peak/trough reversal.
+
+    The previous implementation waited for live MA5 to cross the prior
+    candle's MA5. That anchor can be far behind the actual intrabar extreme,
+    so it often authorized the close only after most of the move had retraced.
+    Keep the best MA5 observed while this position is open and act on the
+    first adverse MA5 update that is also confirmed by an adverse price tick.
+    """
     try:
         if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
             return None
@@ -227,16 +234,49 @@ def live_ma5_reversal_exit(position, snapshot, sign):
                 or quote_ms < closed_bar_ms
                 or quote_ms - closed_bar_ms > 120000):
             return None
-        turned_against_position = (
-            live_ma5 < closed_ma5 if sign == 1 else live_ma5 > closed_ma5
+        state = state if isinstance(state, dict) else {}
+        previous_ma5 = state.get('ma5_reversal_last_value')
+        previous_price = state.get('ma5_reversal_last_price')
+        peak = state.get('ma5_reversal_extreme')
+        favorable_seen = bool(state.get('ma5_reversal_favorable_seen', False))
+
+        # Seed from the current quote only. Never infer an unobserved intrabar
+        # peak from candle highs/lows or from data preceding position entry.
+        if not positive(peak):
+            peak = live_ma5
+        if previous_ma5 is not None and positive(previous_ma5):
+            if sign * (live_ma5 - float(previous_ma5)) > 0:
+                favorable_seen = True
+
+        if sign * (live_ma5 - float(peak)) > 0:
+            peak = live_ma5
+
+        ma5_reversed = sign * (live_ma5 - float(peak)) < 0
+        # The exit decision receives the authoritative latest quote separately;
+        # the caller attaches it here without reconstructing tick order from OHLC.
+        quote_price = snapshot.get('quote_price', snapshot.get('price'))
+        price_reversed = (
+            quote_price is not None and positive(quote_price)
+            and previous_price is not None and positive(previous_price)
+            and sign * (float(quote_price) - float(previous_price)) < 0
         )
-        if not turned_against_position:
+
+        state.update(
+            ma5_reversal_extreme=float(peak),
+            ma5_reversal_last_value=live_ma5,
+            ma5_reversal_favorable_seen=favorable_seen,
+        )
+        if quote_price is not None and positive(quote_price):
+            state['ma5_reversal_last_price'] = float(quote_price)
+        if not (favorable_seen and ma5_reversed and price_reversed):
             return None
         return {
-            'trigger': 'MA5_TURN_REVERSAL',
+            'trigger': 'MA5_TRUE_PEAK_REVERSAL',
             'trigger_bar_ms': live_bar_ms,
+            'trigger_price': float(quote_price),
             'closed_ma5': closed_ma5,
             'live_ma5': live_ma5,
+            'ma5_reversal_extreme': float(peak),
         }
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -649,7 +689,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
                 state.update(pivot_evidence)
 
-            ma5_evidence = live_ma5_reversal_exit(position, snapshot, sign)
+            ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+            ma5_snapshot['quote_price'] = price
+            ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
             if (ma5_evidence is not None and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                 reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
@@ -659,6 +701,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if (reason and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT',
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                                        'MA5_TRUE_PEAK_REVERSAL',
                                         'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                 if net <= 0:
                     reason, trigger = None, None
@@ -671,6 +714,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'EXIT_PEAK_PULLBACK_PRESSURE',
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
                     'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                    'MA5_TRUE_PEAK_REVERSAL',
                     'CHANNEL_PEAK_PULLBACK_REVERSAL'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
