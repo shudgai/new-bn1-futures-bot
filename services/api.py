@@ -411,7 +411,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "破軌入口：第一根已收線實體穿出 KC 外軌，第二根已收線同色實體確認在同側軌外，兩根實體各至少占全長 20%。確認後未成交或平倉，後續已收線 K 仍在同側軌外時，實際報價出現逆向回踩即可評估延續，不等再轉向或重新破軌；平倉當根不重開，異常平倉另須專用回踩。保留 CK／MA 方向與帳戶風控。另保留 KC 外軌回轉：已收線中軌上升且 MA3 > MA15，下軌外先跌再回升 0.10 ATR 才開多；中軌下降且 MA3 < MA15，上軌外先升再回落 0.10 ATR 才開空。ATR 固定取本輪觀察開始時最新已收線值。送單時仍須在指定軌外，保留報價、異常行情及帳戶風控。一般出口：中軌反向、階梯鎖利與緊急／帳戶硬止損；固定 ATR 止盈止損已移除。明確啟用的 staged 持倉沿用獨立引擎。",
+        "strategy": "破軌入口：第一根正在形成的 K 線，原始開盤須在 KC 通道內或碰軌；最新報價嚴格站在突破側外軌外，順向實體至少 0.5 ATR，距同側外軌不超過 3 ATR，即可即時評估開倉，不等收線或第二根。報價退回通道、實體不足或超過 3 ATR 不追價。另保留已收線兩根確認與合法延續入口。平倉當根不重開，異常平倉另須專用回踩。保留 CK／MA 方向與帳戶風控。另保留 KC 外軌回轉：已收線中軌上升且 MA3 > MA15，下軌外先跌再回升 0.10 ATR 才開多；中軌下降且 MA3 < MA15，上軌外先升再回落 0.10 ATR 才開空。ATR 固定取本輪觀察開始時最新已收線值。送單時仍須在指定軌外，保留報價、異常行情及帳戶風控。一般出口：中軌反向、階梯鎖利與緊急／帳戶硬止損；固定 ATR 止盈止損已移除。明確啟用的 staged 持倉沿用獨立引擎。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
