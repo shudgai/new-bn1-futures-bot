@@ -72,8 +72,11 @@ def test_no_trigger_can_bypass_strict_gates(code, failure, monkeypatch):
     monkeypatch.setattr(entry_contract, 'detect_raw_triggers', lambda *a:("LONG",code))
     diagnostics = {}
     assert entry_contract.evaluate_entry_contract(f, quote, code, diagnostics=diagnostics) is None
-    assert diagnostics['reason'].startswith('BLOCKED_STRICT_')
-    assert diagnostics['strict_gate_evidence']['passed'] is False
+    if failure == 'bad_data':
+        assert diagnostics['reason'] == 'BLOCKED_BY_INVALID_MA5'
+    else:
+        assert diagnostics['reason'].startswith('BLOCKED_STRICT_')
+        assert diagnostics['strict_gate_evidence']['passed'] is False
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

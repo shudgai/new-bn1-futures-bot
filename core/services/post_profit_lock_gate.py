@@ -5,12 +5,12 @@ import time
 LOCK_TRIGGERS = frozenset({'PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'})
 
 
-def profit_exit_fields(position, reason, timestamp_ms):
+def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):
     state = position.get('peak_trailing_state') or {}
     trigger = state.get('trigger', '')
     is_lock = trigger in LOCK_TRIGGERS and trigger in str(reason)
     is_pivot_profit = ('THREE_POINT_PIVOT' in str(reason)
-                       and float(position.get('current_net_pnl_usd') or 0) > 0)
+                       and float(position.get('current_net_pnl_usd') or 0 if net_pnl is None else net_pnl) > 0)
     if not (is_lock or is_pivot_profit):
         return {}
     peak = float(state.get('peak_price') or 0)
@@ -24,6 +24,15 @@ def post_profit_lock_reason(account, symbol, closed, side, now_ms=None):
     events = [t for t in getattr(account,'trades',[]) if t.get('symbol') == symbol
               and t.get('status') == 'CLOSED' and t.get('action') == 'CLOSE_'+side
               and t.get('last_profit_exit_side') == side]
+    # Older profitable pivot closes lacked state fields. Do not silently reopen.
+    for trade in getattr(account, 'trades', []):
+        if (trade.get('symbol') == symbol and trade.get('status') == 'CLOSED'
+                and trade.get('action') == 'CLOSE_'+side
+                and not trade.get('last_profit_exit_side')
+                and 'THREE_POINT_PIVOT' in str(trade.get('reason', ''))
+                and float(trade.get('pnl') or 0) > 0):
+            events.append(dict(trade, last_profit_exit_timestamp=trade.get('id'),
+                               last_profit_exit_peak_price=0))
     if not events:
         return None
     try:
@@ -31,13 +40,15 @@ def post_profit_lock_reason(account, symbol, closed, side, now_ms=None):
         exited=float(event['last_profit_exit_timestamp'])
         peak=float(event['last_profit_exit_peak_price'])
         now=float(time.time()*1000 if now_ms is None else now_ms)
-        if not all(math.isfinite(v) and v > 0 for v in (exited,peak,now)):
+        if not all(math.isfinite(v) and v > 0 for v in (exited,now)):
             return 'BLOCKED_BY_POST_PROFIT_INVALID_STATE'
         elapsed=now-exited
         if elapsed < 240000:
             return 'BLOCKED_BY_POST_PROFIT_COOLDOWN'
         if elapsed >= 900000:
             return None
+        if not math.isfinite(peak) or peak <= 0:
+            return 'BLOCKED_BY_POST_PROFIT_INVALID_STATE'
         if closed is None or closed.empty:
             return 'BLOCKED_BY_POST_PROFIT_INVALID_STATE'
         for _, bar in closed.iterrows():

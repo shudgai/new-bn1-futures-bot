@@ -34,7 +34,7 @@ def test_pipeline_decision_reaches_account_and_deduplicates(monkeypatch, side, c
     monkeypatch.setattr(entry_contract, 'detect_raw_triggers',
                         lambda *args: (side, code))
     monkeypatch.setattr(entry_contract, 'check_entry_gates',
-                        lambda *args: (True, 'ENTRY_GATES_PASSED'))
+                        lambda *args, **kwargs: (True, 'ENTRY_GATES_PASSED'))
     monkeypatch.setattr(entry_contract, 'validate_strict_entry',
                         lambda *args: (True, 'STRICT_ENTRY_GATES_PASSED', {'passed': True}))
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [symbol])

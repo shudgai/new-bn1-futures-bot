@@ -507,8 +507,29 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
 
     return None, None
 
-def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
+def ma_momentum_reason(frame, side, quote=None):
+    """Reject adverse MA5 slope, correcting the forming SMA for the latest quote."""
+    try:
+        curr, prev = frame.iloc[-1], frame.iloc[-2]
+        current, previous = float(curr['ma5']), float(prev['ma5'])
+        if quote is not None:
+            current += (float(quote) - float(curr['close'])) / 5
+        if not np.isfinite(current) or not np.isfinite(previous) or min(current, previous) <= 0:
+            return 'BLOCKED_BY_INVALID_MA5'
+        if side == 'LONG' and current < previous:
+            return 'BLOCKED_BY_FALLING_MA5'
+        if side == 'SHORT' and current > previous:
+            return 'BLOCKED_BY_RISING_MA5'
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return 'BLOCKED_BY_INVALID_MA5'
+    return None
+
+
+def check_entry_gates(account, symbol, closed_frame, side, trigger_type, *, live_frame=None, quote=None):
     """Account prerequisites; live strict gates run for every trigger below."""
+    momentum = ma_momentum_reason(closed_frame if live_frame is None else live_frame, side, quote)
+    if momentum:
+        return False, momentum
     post_reason = post_profit_lock_reason(account, symbol, closed_frame, side)
     if post_reason:
         return False, post_reason
@@ -539,6 +560,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         continuation = evaluate_second_third(frame, quote, account, symbol)
         if continuation is not None and (code is None or code == continuation['type']):
+            momentum = ma_momentum_reason(frame, continuation['side'], quote)
+            if momentum:
+                return reject(momentum)
             post_reason = post_profit_lock_reason(account, symbol, closed, continuation['side'])
             if post_reason:
                 return reject(post_reason)
@@ -552,6 +576,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if impulse is not None and (code is None or code == impulse['type']):
             if symbol in getattr(account, 'positions', {}):
                 return reject('BLOCKED_BY_POSITION_GATE')
+            momentum = ma_momentum_reason(frame, impulse['side'], quote)
+            if momentum:
+                return reject(momentum)
             post_reason = post_profit_lock_reason(account, symbol, closed, impulse['side'])
             if post_reason:
                 return reject(post_reason)
@@ -574,7 +601,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if code is not None and code != trigger_type:
             return reject("BLOCKED_STRICT_SIGNAL_CHANGED")
 
-        passed, gate_reason = check_entry_gates(account, symbol, closed, side, trigger_type)
+        passed, gate_reason = check_entry_gates(account, symbol, closed, side, trigger_type, live_frame=frame, quote=quote)
         if not passed: return reject(gate_reason)
             
         stamp = float(closed.iloc[-1].timestamp)

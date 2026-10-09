@@ -2981,7 +2981,7 @@ class BinanceTestnetAccount:
             profit_candidate = profit_exit_fields(position, close_reason, time.time()*1000)
             from core.services.impulse_breakout import reverse_close_fields
             reverse_candidate = reverse_close_fields(position, close_reason, time.time()*1000)
-            if (profit_candidate or reverse_candidate) and not confirmed_full_close(order, position['qty']):
+            if (profit_candidate or reverse_candidate or 'THREE_POINT_PIVOT' in str(close_reason)) and not confirmed_full_close(order, position['qty']):
                 # Keep the position and pending close until authoritative fill evidence.
                 raise ValueError('Strategy exit not confirmed fully filled; no close receipt recorded')
             # HARD_STOP 送完市價單後再撤剩餘委託，不阻塞成交確認
@@ -3014,7 +3014,7 @@ class BinanceTestnetAccount:
             self.realized_pnl += net_pnl
             from core.services.post_profit_lock_gate import profit_exit_fields
             profit_exit_ms = int(time.time() * 1000)
-            profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms)
+            profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms, net_pnl=net_pnl)
             from core.services.impulse_breakout import reverse_close_fields
             profit_fields.update(reverse_close_fields(position, close_reason, profit_exit_ms))
             self.trades.insert(0, {

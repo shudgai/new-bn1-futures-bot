@@ -19,8 +19,8 @@ def impulse_frame(side):
     f.loc[f.index[-1],'open']=100.
     f.loc[f.index[-1],'low']=min(100.,float(f.iloc[-1].low))
     f.loc[f.index[-1],'high']=max(100.,float(f.iloc[-1].high))
-    # Deliberately lagging MA/KC slope; impulse must not wait for them.
-    f.loc[f.index[-1],'ma5']=100.
+    # Lagging long MA/KC is allowed; MA5 must not point against entry.
+    f.loc[f.index[-1],'ma5']=float(f.iloc[-2].ma5)
     f.loc[f.index[-1],'ma15']=100.
     return f
 
