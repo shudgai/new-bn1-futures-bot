@@ -411,7 +411,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "方向 Gate：所有自動入口與送單重驗均須 KC 方向、MA5、MA15 三者一致；KC 方向按最近兩根已收線中軌判定，MA5/MA15 最近三根已收線須嚴格同向移動，方向不明或任一反向均拒絕。通道內早進：當根開盤與最新報價都在 KC 通道內，多單報價位於中軌上方、空單位於中軌下方；順向實體至少 0.5 ATR，且距同側外軌不超過 3 ATR，即可即時評估，不等破軌。其他外軌突破、延續與替代入口不授權。此入口持倉沿趨勢續抱；空單等三根已收線確認真谷底、多單等真峰頂才平倉，不因一般賣壓／買壓、MA 或獲利回吐提前退出；帳戶硬停損保留。ATR 取前一根已收線值。",
+        "strategy": "方向 Gate：自動入口及送單重驗均須 KC 方向、MA5、MA15 三者一致；方向不明或任一反向均拒絕。開倉必須先實際突破 KC 外軌：即時入口要求當根開盤在通道內、順向實體至少 0.5 ATR，最新報價嚴格越過同側外軌且距離不超過 3 ATR；即時未成交會記錄突破資格，後續可由一般兩根實體破軌確認或同側延續入口接手。延續入口要求突破資格仍相符、KC／MA 方向一致，且最新報價仍在同側外軌之外。價格仍在通道內不得開倉；無突破資格的延續及其他替代入口不授權。所有突破持倉續抱至三根已收線確認真峰谷；帳戶硬停損保留。ATR 取前一根已收線值。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

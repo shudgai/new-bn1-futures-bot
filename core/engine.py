@@ -1760,7 +1760,7 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
         from core.services.entry_contract import (
-            ENTRY_CODES, ENTRY_EVIDENCE_KEYS, quote_inside_directional_channel,
+            ENTRY_CODES, ENTRY_EVIDENCE_KEYS, quote_beyond_side_outer_rail,
         )
         if signal.get('signal_code') not in ENTRY_CODES:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'BLOCKED_OBSOLETE_ENTRY_SIGNAL', signal.get('candidate_bar_id'))
@@ -1827,10 +1827,10 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
-        if not quote_inside_directional_channel(snapshot['frame'], side, price):
+        if not quote_beyond_side_outer_rail(snapshot['frame'], side, price):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
-                'BLOCKED_QUOTE_OUTSIDE_DIRECTIONAL_KC_HALF', bar,
+                'BLOCKED_QUOTE_NOT_OUTSIDE_KC_RAIL', bar,
             )
             return False
 
@@ -1917,6 +1917,10 @@ class TradingEngine:
             used.add(identity)
             # Keep bounded in-memory dedupe; persisted fills remain authoritative.
             self._closed_entry_fills = {key for key in used if key[2] >= bar-86400000}
+
+            qualification_signal_id = signal.get('qualification_signal_id')
+            if qualification_signal_id:
+                self.account.consume_breakout_qualification(symbol, expected_signal_id=qualification_signal_id)
         return bool(opened)
 
 
@@ -2011,8 +2015,8 @@ class TradingEngine:
         from core.services.entry_contract import evaluate_entry_contract
         observed = evaluate_entry_contract(frame, price, v8_reason,
                                            account=self.account, symbol=symbol)
-        if (observed and observed['side'] == side and
-                observed['entry_phase'] == 'KC_2BAR_CLOSED_CONFIRM'):
+        if (observed and observed['side'] == side and observed['entry_phase'] in (
+                'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')):
             qualification = {
                 'side': observed['side'],
                 'pending_signal_id': observed['pending_signal_id'],
@@ -2020,6 +2024,8 @@ class TradingEngine:
             }
             if getattr(self.account, 'breakout_qualification', {}).get(symbol) != qualification:
                 self.account.record_qualification(symbol, qualification)
+            if qualification_signal_id is None:
+                qualification_signal_id = observed['pending_signal_id']
         if daily_halt or symbol in self.account.positions:
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
@@ -2049,6 +2055,7 @@ class TradingEngine:
         
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=candidate_bar_id,
+                      qualification_signal_id=qualification_signal_id,
                       size_fraction=size_fraction)
         return await self._place_structured_entry(symbol,signal,price)
 

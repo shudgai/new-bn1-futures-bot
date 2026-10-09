@@ -13,6 +13,8 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 INNER_CHANNEL_RUN_CODES = {
     'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+    'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
+    'KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT',
 }
 def cached_tick_indicators(frame, price, stamp):
     """Require the quote minute and its preceding closed ATR for body exits."""

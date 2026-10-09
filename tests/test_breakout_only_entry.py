@@ -64,12 +64,30 @@ def inner_channel_frame(side="LONG"):
     return frame
 
 
+def live_outer_frame(side="LONG"):
+    """A live body opens in-channel and has already crossed its own outer rail."""
+    frame = breakout_frame(side)
+    live = frame.index[-1]
+    lower = float(frame.loc[live, "kc_lower"])
+    upper = float(frame.loc[live, "kc_upper"])
+    opened = (lower + upper) / 2
+    quote = upper + 0.6 if side == "LONG" else lower - 0.6
+    frame.loc[live, ["open", "close", "high", "low"]] = [
+        opened, quote, quote if side == "LONG" else opened,
+        opened if side == "LONG" else quote,
+    ]
+    return frame
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_outer_breakout_continuation_is_no_longer_an_entry(side):
+def test_confirmed_two_candle_breakout_is_general_entry(side):
     frame = breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
 
-    assert decision is None
+    assert decision is not None
+    assert decision["side"] == side
+    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
+    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
 @pytest.mark.parametrize(
@@ -83,7 +101,7 @@ def test_outer_breakout_continuation_is_no_longer_an_entry(side):
         ("SHORT", "live_green"),
     ],
 )
-def test_wrong_side_or_unconfirmed_candles_never_authorize_entry(side, mutation):
+def test_invalid_closed_pair_blocks_entry_but_live_color_does_not(side, mutation):
     frame = breakout_frame(side)
     sign = 1 if side == "LONG" else -1
     if mutation == "first_inside":
@@ -101,13 +119,18 @@ def test_wrong_side_or_unconfirmed_candles_never_authorize_entry(side, mutation)
     if mutation in ("live_red", "live_green"):
         quote = float(frame.iloc[-1]["open"])
     assert sign * (quote - float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])) > 0
-    assert evaluate_entry_contract(frame, quote, symbol="CAP/USDT") is None
+    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
+    if mutation in ("live_red", "live_green"):
+        assert decision is not None
+        assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
+    else:
+        assert decision is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_pivot_or_ma_cross_code_is_not_an_entry_authority(side):
     frame = breakout_frame(side)
-    assert f"KC_2BAR_CONFIRM_{side}" not in ENTRY_CODES
+    assert f"KC_2BAR_CONFIRM_{side}" in ENTRY_CODES
     assert evaluate_entry_contract(frame, code=f"KC_OUTER_PIVOT_{side}") is None
     assert evaluate_entry_contract(frame, code=f"MA5_MA15_LIVE_CROSS_{side}") is None
     assert evaluate_entry_contract(frame, code=f"KC_LIVE_BODY_BREAKOUT_{side}") is None
@@ -133,7 +156,7 @@ def test_pre_close_breakout_cannot_reopen_after_peak_reversal_close(side):
     )
 
     assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE"
+    assert diagnostics["reason"] == "WAIT_POST_EXIT_NEW_FORMATION"
 
 
 @pytest.mark.parametrize(
@@ -150,7 +173,7 @@ def test_opposite_outer_rail_never_authorizes_the_requested_side(side, opposite_
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_rechecks_the_same_breakout(side):
-    frame = inner_channel_frame(side)
+    frame = breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
     account = SimpleNamespace(
         positions={},
@@ -175,7 +198,7 @@ def test_account_revalidation_rechecks_the_same_breakout(side):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_accepts_and_rechecks_live_body_breakout(side):
-    frame = inner_channel_frame(side)
+    frame = live_outer_frame(side)
     live = frame.index[-1]
     lower = float(frame.loc[live, "kc_lower"])
     upper = float(frame.loc[live, "kc_upper"])
@@ -210,7 +233,7 @@ def test_account_revalidation_accepts_and_rechecks_live_body_breakout(side):
 def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
     side, invalid_bar
 ):
-    frame = inner_channel_frame(side)
+    frame = breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="龍蝦/USDT")
     account = SimpleNamespace(
         positions={},
@@ -223,8 +246,7 @@ def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
         channel_confirmation_bar_id=decision["confirmation_bar_id"],
     )
 
-    live = frame.index[-1]
-    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
+    frame.loc[invalid_bar, "close"] = frame.loc[invalid_bar, "open"]
 
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account, "龍蝦/USDT", side, context))

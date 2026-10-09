@@ -214,7 +214,7 @@ def entry_trend_direction(frame):
 
 
 def live_body_breakout_side(frame, price):
-    """Detect a directional push while price remains inside the matching KC half."""
+    """Detect a live directional body that has strictly crossed its KC outer rail."""
     try:
         if frame is None or len(frame) < 2:
             return None
@@ -226,19 +226,18 @@ def live_body_breakout_side(frame, price):
         if (not all(math.isfinite(v) and v > 0
                     for v in (opened, upper, middle, lower, atr, price))
                 or not lower < middle < upper
-                or not lower <= opened <= upper
-                or not lower <= price <= upper):
+                or not lower <= opened <= upper):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
 
         long_distance_atr = (upper - price) / atr
-        if (price > middle and (price - opened) >= threshold
-                and 0 <= long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+        if ((price - opened) >= threshold and price > upper
+                and 0 < -long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'LONG'
 
         short_distance_atr = (price - lower) / atr
-        if (price < middle and (opened - price) >= threshold
-                and 0 <= short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+        if ((opened - price) >= threshold and price < lower
+                and 0 < -short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass
