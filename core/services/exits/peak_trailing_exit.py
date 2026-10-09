@@ -163,6 +163,12 @@ def migrate_peak_state(position, meta=None):
                     'ma5_reversal_favorable_seen', 'ma5_reversal_outside_seen',
                     'ma5_reversal_last_price'):
             state.pop(key, None)
+    if channel_initial_stop_disabled(position, meta) and state.get('lifeline_policy_version') != 1:
+        # Older pivot authorization did not check the new unarmed life-line rule.
+        if state.get('trigger') == 'THREE_POINT_PIVOT':
+            for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
+                state.pop(key, None)
+        state['lifeline_policy_version'] = 1
     if channel_initial_stop_disabled(position, meta):
         if (state.get('pending') and state.get('trigger') != HARD_REASON
                 and state.get('trigger') not in CHANNEL_SWING_EXIT_TRIGGERS):
@@ -671,6 +677,15 @@ def evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr):
         return None
 
 
+def lifeline_held(side, price, snapshot):
+    """A valid MA15 or KC middle still supporting the held direction."""
+    if not isinstance(snapshot, dict):
+        return False
+    sign = 1 if side == 'LONG' else -1
+    return any(positive(snapshot.get(key)) and sign*(price-float(snapshot[key])) >= 0
+               for key in ('ma15','kc_middle'))
+
+
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
     try:
         ident = position_identity(position)
@@ -1053,6 +1068,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     state.update(tiered_roi_current=roi, tiered_roi_allowance=allowance)
             if state.get('pending') in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3'):
                 reason, trigger = state['pending'], state['trigger']
+
+        if (is_channel_swing and reason == ABNORMAL_REASON and trigger == 'THREE_POINT_PIVOT'
+                and float(state.get('tiered_roi_peak', 0)) < .05
+                and lifeline_held(position['side'], price, snapshot)):
+            reason, trigger = None, None
+            for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
+                state.pop(key, None)
 
         if reason:
             try:

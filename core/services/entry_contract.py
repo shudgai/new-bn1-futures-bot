@@ -5,6 +5,7 @@ import numpy as np
 
 from core.services.candle_data import closed_entry_candles
 from core.services.strict_entry_gates import validate_strict_entry
+from core.services.impulse_breakout import CODES as IMPULSE_CODES, impulse_entry, reverse_receipt
 from core.services.post_profit_lock_gate import post_profit_lock_reason
 from core.services.second_third_entry import CODES as SECOND_THIRD_CODES, evaluate_second_third
 from core.services.strategies.outer_strategy import (
@@ -32,13 +33,13 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 ))
 # Continuation requires a persisted, previously observed outer-rail breakout.
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
-ENTRY_CODES = SECOND_THIRD_CODES | KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES | NEW_TRIGGER_CODES
+ENTRY_CODES = IMPULSE_CODES | SECOND_THIRD_CODES | KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES | NEW_TRIGGER_CODES
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "CAP/USDT", "龙虾/USDT", "LOBSTER/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
 ENTRY_EVIDENCE_KEYS = (
-    "strict_gate_evidence",
+    "strict_gate_evidence", "reverse_close_trade_id",
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
     "pair_confirmation_bar_id", "third_bar_id", "live_pattern_start_bar_id",
@@ -546,6 +547,27 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return continuation
         if code in SECOND_THIRD_CODES:
             return reject('BLOCKED_SECOND_THIRD_OUTSIDE_OR_DOJI')
+
+        impulse = impulse_entry(frame, quote, symbol)
+        if impulse is not None and (code is None or code == impulse['type']):
+            if symbol in getattr(account, 'positions', {}):
+                return reject('BLOCKED_BY_POSITION_GATE')
+            post_reason = post_profit_lock_reason(account, symbol, closed, impulse['side'])
+            if post_reason:
+                return reject(post_reason)
+            receipt = reverse_receipt(account, symbol, impulse)
+            if receipt is not None:
+                impulse['reverse_close_trade_id'] = receipt['id']
+                impulse['pending_signal_id'] += ':reverse:' + str(receipt['id'])
+            if any(t.get('symbol') == symbol and t.get('action','').startswith('OPEN_')
+                   and (t.get('entry_snapshot') or {}).get('pending_signal_id') == impulse['pending_signal_id']
+                   for t in getattr(account, 'trades', [])):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            if diagnostics is not None:
+                diagnostics.update(impulse)
+            return impulse
+        if code in IMPULSE_CODES:
+            return reject('BLOCKED_IMPULSE_REVALIDATION')
 
         side, trigger_type = detect_raw_triggers(closed, account, symbol)
         if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")

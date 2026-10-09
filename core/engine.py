@@ -1206,13 +1206,78 @@ class TradingEngine:
                 self.account.log(f'即時成交出口串流錯誤: {exc}', 'WARNING')
                 await asyncio.sleep(.1)
 
+    async def _try_reverse_on_breakout(self, symbol, price, quote_ms=None):
+        """Close a confirmed opposite impulse, then revalidate one receipt-backed entry."""
+        from core.services.impulse_breakout import impulse_entry, reverse_receipt, REASONS
+        from core.services.candle_data import log_entry_gate
+        if not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS:
+            return False
+        now = time.time() * 1000
+        try:
+            stamp = now if quote_ms is None else float(quote_ms)
+            price = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(price) or price <= 0:
+            return False
+        if not math.isfinite(stamp) or not 0 <= now-stamp <= 5000:
+            return False
+        frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
+        if frame is None or frame.empty or float(frame.iloc[-1]['timestamp']) != math.floor(stamp/60000)*60000:
+            return False
+        impulse = impulse_entry(frame, price, symbol)
+        if impulse is None:
+            return False
+        locks = getattr(self, '_breakout_reverse_locks', None)
+        if locks is None:
+            locks = self._breakout_reverse_locks = {}
+        lock = locks.setdefault(symbol, asyncio.Lock())
+        if lock.locked():
+            return True
+        async with lock:
+            position = self.account.positions.get(symbol)
+            if position:
+                if (position.get('side') == impulse['side']
+                        or str(position.get('entry_mode', '')).upper() != 'CHANNEL_SWING'):
+                    return False
+                source = impulse['strict_gate_evidence']
+                if (not source['intrabar']
+                        and source['source_bar_ms']+60000 <= float(position['open_timestamp'])*1000):
+                    return False
+                pending = dict(side=impulse['side'], live_bar_ms=source['live_bar_ms'])
+                meta = self.account.position_meta.setdefault(symbol, {})
+                if position.get('reverse_breakout_pending') != pending or meta.get('reverse_breakout_pending') != pending:
+                    position['reverse_breakout_pending'] = pending
+                    meta['reverse_breakout_pending'] = dict(pending)
+                    self.account.save_state()
+                closed = await self.account.close_position(symbol, float(price), REASONS[impulse['side']], is_manual=True)
+                if not closed or symbol in self.account.positions:
+                    log_entry_gate(self, symbol, impulse['side'], 'REVERSE', 'WAIT_CONFIRMED_REVERSE_CLOSE', impulse['confirmation_bar_id'])
+                    return True
+            receipt = reverse_receipt(self.account, symbol, impulse)
+            if receipt is None:
+                return False
+            # Never reuse the pre-close quote as order authorization.
+            fresh = await self._fresh_channel_entry_snapshot(symbol, impulse['side'], impulse['confirmation_bar_id'], code=impulse['type'])
+            if fresh is None:
+                return True
+            decision = fresh['decision']
+            if decision.get('reverse_close_trade_id') != receipt['id']:
+                return True
+            signal = dict(side=decision['side'], score=100, entry_mode='CHANNEL_SWING',
+                          signal_code=decision['type'], candidate_bar_id=decision['confirmation_bar_id'])
+            await self._place_structured_entry(symbol, signal, fresh['price'])
+            return True
+
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Abnormal live bodies and hard stops; no REST or candle-close wait."""
+        """Arbitrate confirmed reversals before ordinary realtime exits."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+        if await self._try_reverse_on_breakout(symbol, price, quote_ms):
+            return True
         return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
-        """Ticker shares the same lock-free decision path as aggTrade."""
+        """Ticker and aggTrade share reversal and realtime exit arbitration."""
         return await self._instant_quote_exit(symbol, price, quote_ms)
 
     async def _ticker_loop(self):
@@ -1804,8 +1869,11 @@ class TradingEngine:
         if used is None:
             used = self._closed_entry_fills = set()
         identity = (symbol,side,bar)
-        if any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
+        from core.services.impulse_breakout import reverse_receipt
+        receipt = reverse_receipt(self.account, symbol, decision) if decision.get('reverse_close_trade_id') else None
+        reverse_authorized = receipt is not None and receipt['id'] == decision.get('reverse_close_trade_id')
+        if not reverse_authorized and (any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades)):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
 
@@ -1927,6 +1995,9 @@ class TradingEngine:
             recent = getattr(self.account, 'logs', [])[log_count:]
             detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')
             log_entry_gate(self, symbol, side, 'EXECUTION', detail, bar)
+        if opened and reverse_authorized and self.account.positions.get(symbol, {}).get('side') == side:
+            receipt['reverse_entry_consumed'] = True
+            self.account.save_state()
         if opened:
             used.add(identity)
             # Keep bounded in-memory dedupe; persisted fills remain authoritative.

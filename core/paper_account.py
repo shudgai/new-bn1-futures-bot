@@ -1195,6 +1195,8 @@ class PaperAccount:
             from core.services.post_profit_lock_gate import profit_exit_fields
             profit_exit_ms = int(time.time() * 1000)
             profit_fields = profit_exit_fields(pos, close_reason, profit_exit_ms)
+            from core.services.impulse_breakout import reverse_close_fields
+            profit_fields.update(reverse_close_fields(pos, close_reason, profit_exit_ms))
             self.trades.insert(0, {
                 "id": profit_exit_ms,
                 **profit_fields,

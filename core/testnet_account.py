@@ -2957,7 +2957,7 @@ class BinanceTestnetAccount:
         #          一般策略平倉仍受冷卻保護，手動平倉也跳過。
         _now = time.time()
         is_hard_stop_close = "HARD_STOP" in str(close_reason)
-        strategy_close = str(close_reason).startswith(("Channel Swing ", "DualTrackExit "))
+        strategy_close = str(close_reason).startswith(("Channel Swing ", "DualTrackExit ", "REVERSE_ON_"))
         if not is_hard_stop_close and (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)
@@ -2979,9 +2979,11 @@ class BinanceTestnetAccount:
             )
             from core.services.post_profit_lock_gate import profit_exit_fields, confirmed_full_close
             profit_candidate = profit_exit_fields(position, close_reason, time.time()*1000)
-            if profit_candidate and not confirmed_full_close(order, position['qty']):
+            from core.services.impulse_breakout import reverse_close_fields
+            reverse_candidate = reverse_close_fields(position, close_reason, time.time()*1000)
+            if (profit_candidate or reverse_candidate) and not confirmed_full_close(order, position['qty']):
                 # Keep the position and pending close until authoritative fill evidence.
-                raise ValueError('Profit exit not confirmed fully filled; no post-profit event recorded')
+                raise ValueError('Strategy exit not confirmed fully filled; no close receipt recorded')
             # HARD_STOP 送完市價單後再撤剩餘委託，不阻塞成交確認
             if is_hard_stop_now:
                 try:
@@ -3013,6 +3015,8 @@ class BinanceTestnetAccount:
             from core.services.post_profit_lock_gate import profit_exit_fields
             profit_exit_ms = int(time.time() * 1000)
             profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms)
+            from core.services.impulse_breakout import reverse_close_fields
+            profit_fields.update(reverse_close_fields(position, close_reason, profit_exit_ms))
             self.trades.insert(0, {
                 "id": profit_exit_ms,
                 **profit_fields,
@@ -3057,10 +3061,10 @@ class BinanceTestnetAccount:
         except Exception as exc:
             # ✅ 修正：HARD_STOP 失敗後冷卻縮短至 5 秒快速重試；一般失敗維持 30 秒冷卻
             is_hard_stop_close = "HARD_STOP" in str(close_reason)
-            cooldown_secs = 5.0 if is_hard_stop_close else 30.0
+            cooldown_secs = 5.0 if is_hard_stop_close or str(close_reason).startswith("REVERSE_ON_") else 30.0
             self._close_retry_after[symbol] = time.time() + cooldown_secs
             self.log(
-                f"🚨 Binance Testnet 平倉失敗 {symbol}（{'HARD_STOP 5' if is_hard_stop_close else '30'} 秒後自動重試）："
+                f"🚨 Binance Testnet 平倉失敗 {symbol}（{cooldown_secs:g} 秒後自動重試）："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )

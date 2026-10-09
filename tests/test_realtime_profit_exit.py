@@ -63,7 +63,7 @@ def engine_for(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_peak_pullback_holds_without_an_authorized_channel_exit(side, monkeypatch):
+def test_tiered_profit_pullback_requests_close_after_reload(side, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         e, p, now = engine_for(side)
@@ -76,8 +76,9 @@ def test_peak_pullback_holds_without_an_authorized_channel_exit(side, monkeypatc
         persisted = copy.deepcopy(e.account.position_meta)
         e.account.positions['X'] = dict(pos(side), open_timestamp=p['open_timestamp'])
         e.account.position_meta = persisted
-        assert not await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*1.0, now*1000), .5)
-        e.account.close_position.assert_not_awaited()
+        assert await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*1.0, now*1000), .5)
+        e.account.close_position.assert_awaited_once()
+        assert p.get('entry_mode') == 'CHANNEL_SWING'
         assert 'X' in e.account.positions
         e.fetch_klines.assert_not_called()
         lock.release()
@@ -133,7 +134,7 @@ def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_real_account_reload_holds_peak_pullback_without_authorized_exit(side, mode, tmp_path, monkeypatch):
+def test_real_account_reload_closes_tiered_profit_once(side, mode, tmp_path, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         import core.paper_account as pm
@@ -142,6 +143,13 @@ def test_real_account_reload_holds_peak_pullback_without_authorized_exit(side, m
         from test_close_deduplication import close_orders, closes
         symbol = 'DOGE/USDT'
         exchange = FakeTestnetExchange()
+        original_create = exchange.create_order
+        async def filled_create(*args, **kwargs):
+            order = await original_create(*args, **kwargs)
+            if str(args[1]).lower() == 'market':
+                order.update(status='closed', filled=float(args[3]))
+            return order
+        exchange.create_order = filled_create
         exchange.market = lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
             dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
             for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
@@ -174,10 +182,10 @@ def test_real_account_reload_holds_peak_pullback_without_authorized_exit(side, m
         e.account = account
         assert account.positions[symbol]['peak_pnl_usd'] == peak
         await asyncio.gather(*(e._instant_quote_exit(symbol,100+sign*1.0,time.time()*1000) for _ in range(10)))
-        assert symbol in account.positions
-        assert not closes(account)
+        assert symbol not in account.positions
+        assert len(closes(account))==1
         if mode == 'testnet':
-            assert not close_orders(exchange)
+            assert len(close_orders(exchange))==1
     asyncio.run(run())
 
 

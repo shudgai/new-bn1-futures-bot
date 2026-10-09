@@ -84,6 +84,7 @@ def cached_tick_indicators(frame, price, stamp):
         ma3=float(last.get('ma3', 0.)),
         ma5=float(last.get('ma5', last.get('ma3', 0.))),
         ma15=float(last.get('ma15', 0.)),
+        kc_middle=float(last.get('kc_middle', 0.)),
         last_ma3=float(prev.get('ma3', 0.)),
         last_ma5=float(prev.get('ma5', prev.get('ma3', 0.))),
         last_ma15=float(prev.get('ma15', 0.)),
@@ -178,7 +179,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is not None and not frame.empty:
                 ck_dir = ck_direction(frame)
-                if ck_dir and ck_dir != ident[0]:
+                from core.services.exits.peak_trailing_exit import lifeline_held
+                if ck_dir and ck_dir != ident[0] and not lifeline_held(ident[0], price, frame.iloc[-1].to_dict()):
                     await account.close_position(
                         symbol, price, f'WRONG_DIRECTION_CORRECTION (CK={ck_dir}, POS={ident[0]})', is_manual=True
                     )
@@ -199,7 +201,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
-                   'net_roe_lock_peak','net_roe_lock_armed','tiered_roi_peak',
+                   'net_roe_lock_peak','net_roe_lock_armed','tiered_roi_peak','lifeline_policy_version',
                    'trigger','trigger_bar_ms','trigger_price',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',
