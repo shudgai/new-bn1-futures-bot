@@ -213,7 +213,7 @@ def ma_trend_confirms_position(position, snapshot):
 
 
 def three_point_pivot_exit(position, snapshot):
-    """Return a strict three-candle price pivot confirmed after position entry."""
+    """Return the latest confirmed pivot formed after entry began."""
     try:
         if not isinstance(snapshot, dict):
             return None
@@ -226,44 +226,66 @@ def three_point_pivot_exit(position, snapshot):
         sign = 1 if position['side'] == 'LONG' else -1 if position['side'] == 'SHORT' else 0
         if not sign or not positive(opened_ms):
             return None
-        before, pivot, confirm = bars[-3:]
-        values = [
-            float(bar[key])
-            for bar in (before, pivot, confirm)
-            for key in ('ms', 'o', 'h', 'l', 'c')
-        ]
-        if not all(positive(value) for value in values):
-            return None
-        if any(
-            float(bar['l']) > min(float(bar['o']), float(bar['c']))
-            or float(bar['h']) < max(float(bar['o']), float(bar['c']))
-            for bar in (before, pivot, confirm)
-        ):
-            return None
-        before_ms, pivot_ms, confirm_ms = (float(bar['ms']) for bar in (before, pivot, confirm))
         quote_ms = float(snapshot['quote_ms'])
         snapshot_bar_id = float(snapshot['snapshot_bar_id'])
-        if (pivot_ms <= opened_ms or confirm_ms <= opened_ms
-                or pivot_ms - before_ms != 60000 or confirm_ms - pivot_ms != 60000
-                or not positive(quote_ms) or snapshot_bar_id != confirm_ms
-                or quote_ms < confirm_ms or quote_ms - confirm_ms > 300000):
+        if (not positive(quote_ms) or not positive(snapshot_bar_id)
+                or snapshot_bar_id > quote_ms):
             return None
-        if sign == 1 and not (
-            float(pivot['h']) > float(before['h'])
-            and float(pivot['h']) > float(confirm['h'])
-        ):
+        entry_bar_ms = math.floor(opened_ms / 60000) * 60000
+        allow_entry_bar_pivot = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+        if (not positive(quote_ms) or quote_ms < snapshot_bar_id
+                or quote_ms - snapshot_bar_id > 300000):
             return None
-        if sign == -1 and not (
-            float(pivot['l']) < float(before['l'])
-            and float(pivot['l']) < float(confirm['l'])
-        ):
-            return None
-        return {
-            'trigger': 'THREE_POINT_PIVOT',
-            'trigger_bar_ms': pivot_ms,
-            'trigger_confirmed_ms': confirm_ms,
-            'trigger_price': float(pivot['h'] if sign == 1 else pivot['l']),
-        }
+        first_index = len(bars) - 3 if not allow_entry_bar_pivot else 0
+        for index in range(len(bars) - 3, first_index - 1, -1):
+            before, pivot, confirm = bars[index:index + 3]
+            values = [
+                float(bar[key])
+                for bar in (before, pivot, confirm)
+                for key in ('ms', 'o', 'h', 'l', 'c')
+            ]
+            if not all(positive(value) for value in values):
+                continue
+            if any(
+                float(bar['l']) > min(float(bar['o']), float(bar['c']))
+                or float(bar['h']) < max(float(bar['o']), float(bar['c']))
+                for bar in (before, pivot, confirm)
+            ):
+                continue
+            before_ms, pivot_ms, confirm_ms = (
+                float(bar['ms']) for bar in (before, pivot, confirm)
+            )
+            entry_bar_pivot = allow_entry_bar_pivot and pivot_ms == entry_bar_ms
+            latest_confirmed_pivot = snapshot_bar_id == confirm_ms
+            pivot_confirmation_is_fresh = quote_ms - confirm_ms <= 300000
+            if (not (pivot_ms > opened_ms or entry_bar_pivot)
+                    or confirm_ms <= opened_ms
+                    or pivot_ms - before_ms != 60000
+                    or confirm_ms - pivot_ms != 60000
+                    or not (
+                        (latest_confirmed_pivot and pivot_confirmation_is_fresh)
+                        or entry_bar_pivot
+                    )
+                    or quote_ms < confirm_ms
+                    ):
+                continue
+            if sign == 1 and not (
+                float(pivot['h']) > float(before['h'])
+                and float(pivot['h']) > float(confirm['h'])
+            ):
+                continue
+            if sign == -1 and not (
+                float(pivot['l']) < float(before['l'])
+                and float(pivot['l']) < float(confirm['l'])
+            ):
+                continue
+            return {
+                'trigger': 'THREE_POINT_PIVOT',
+                'trigger_bar_ms': pivot_ms,
+                'trigger_confirmed_ms': confirm_ms,
+                'trigger_price': float(pivot['h'] if sign == 1 else pivot['l']),
+            }
+        return None
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):
         return None
 

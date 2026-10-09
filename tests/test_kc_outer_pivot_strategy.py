@@ -3,6 +3,7 @@ import pytest
 from core.services.exits.peak_trailing_exit import (
     ABNORMAL_REASON,
     evaluate_peak_trailing,
+    three_point_pivot_exit,
 )
 from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
 
@@ -82,6 +83,75 @@ def test_sui_and_lobster_use_the_same_three_point_pivot_gate(side, symbol):
 
     assert result is not None
     assert result["trigger"] == "THREE_POINT_PIVOT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_exit_when_entry_bar_pivot_is_confirmed(side, symbol):
+    position_data = position(side, symbol=symbol)
+    position_data["open_timestamp"] = 195.
+    result = three_point_pivot_exit(position_data, snapshot(side))
+
+    assert result is not None
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result["trigger_bar_ms"] == 180_000.
+    assert result["trigger_confirmed_ms"] == 240_000.
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_do_not_lose_entry_bar_pivot_after_next_candle(side, symbol):
+    position_data = position(side, symbol=symbol)
+    position_data["open_timestamp"] = 195.
+    bars = pivot_history(side) + [
+        dict(ms=300_000., o=107., h=108., l=101., c=106., ma5=99.)
+        if side == "LONG" else
+        dict(ms=300_000., o=93., h=99., l=92., c=94., ma5=101.)
+    ]
+
+    result = three_point_pivot_exit(
+        position_data, snapshot(side, bars, quote_ms=360_000.)
+    )
+
+    assert result is not None
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result["trigger_bar_ms"] == 180_000.
+    assert result["trigger_confirmed_ms"] == 240_000.
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_sui_and_lobster_recover_entry_bar_pivot_for_open_position(side, symbol):
+    position_data = position(side, symbol=symbol)
+    position_data["open_timestamp"] = 195.
+    bars = pivot_history(side)
+    for index, ms in enumerate(range(300_000, 900_000, 60_000)):
+        if side == "LONG":
+            high = 108. - index
+            bars.append(dict(ms=float(ms), o=high - 2., h=high, l=high - 8.,
+                             c=high - 1.))
+        else:
+            low = 92. + index
+            bars.append(dict(ms=float(ms), o=low + 2., h=low + 7., l=low,
+                             c=low + 3.))
+
+    result = three_point_pivot_exit(
+        position_data, snapshot(side, bars, quote_ms=900_000.)
+    )
+
+    assert result is not None
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result["trigger_bar_ms"] == 180_000.
+    assert result["trigger_confirmed_ms"] == 240_000.
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_other_symbols_do_not_reuse_a_pivot_formed_before_entry(side):
+    position_data = position(side)
+    position_data["open_timestamp"] = 195.
+    result = three_point_pivot_exit(position_data, snapshot(side))
+
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
