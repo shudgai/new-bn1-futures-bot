@@ -2,6 +2,7 @@
 import copy
 import math
 import sys
+from statistics import median
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 
@@ -38,6 +39,14 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'MA5_TRUE_PEAK_REVERSAL',
     'WATERFALL_DROP',
+})
+PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
+    DOJI_TRIGGER,
+    'THREE_POINT_PIVOT',
+    'WATERFALL_DROP',
+})
+PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
+    'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
 })
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PEAK_PULLBACK_PRESSURE',
@@ -131,6 +140,20 @@ def migrate_peak_state(position, meta=None):
     if state.get('trigger') in ('EXIT_PEAK_MA_TURN_PRESSURE', 'EXIT_PARABOLIC_MA3_TURN'):
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
             state.pop(key, None)
+    if (position.get('symbol') == 'SUI/USDT'
+            and state.get('trigger') == 'MA5_TRUE_PEAK_REVERSAL') or (
+            position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+            and state.get('trigger') in (
+                'MA5_TRUE_PEAK_REVERSAL', 'EXIT_PROFIT_LOCK_FLOOR',
+                'EXIT_PEAK_PULLBACK_PRESSURE',
+            )):
+        for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                    'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+            state.pop(key, None)
+        for key in ('ma5_reversal_extreme', 'ma5_reversal_last_value',
+                    'ma5_reversal_favorable_seen', 'ma5_reversal_outside_seen',
+                    'ma5_reversal_last_price'):
+            state.pop(key, None)
     if channel_initial_stop_disabled(position, meta):
         if state.get('trigger') in DISABLED_CHANNEL_PULLBACK_TRIGGERS:
             for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
@@ -140,7 +163,7 @@ def migrate_peak_state(position, meta=None):
             position['entry_mode'] = 'CHANNEL_SWING'
         if live_body_breakout_position_side(position, meta) and state.get('trigger') in (
                 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
-                'MA5_TRUE_PEAK_REVERSAL'):
+                'MA5_TRUE_PEAK_REVERSAL') and position.get('symbol') not in PIVOT_ONLY_CHANNEL_SYMBOLS:
             for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                         'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
                 state.pop(key, None)
@@ -238,6 +261,39 @@ def three_point_pivot_exit(position, snapshot):
             and float(pivot['l']) < float(confirm['l'])
         ):
             return None
+        if position.get('symbol') == 'SUI/USDT':
+            if len(bars) < 21:
+                return None
+            widths = []
+            volumes = []
+            for bar in bars[-21:]:
+                upper = float(bar['kc_upper'])
+                middle = float(bar['kc_middle'])
+                lower = float(bar['kc_lower'])
+                volume = float(bar['volume'])
+                if (not all(positive(value) for value in (upper, middle, lower))
+                        or upper <= lower or not math.isfinite(volume) or volume < 0):
+                    return None
+                widths.append((upper - lower) / middle)
+                volumes.append(volume)
+            if widths[-1] > median(widths[:-1]) * 0.75:
+                return None
+            if not volumes[-3] > volumes[-2] > volumes[-1]:
+                return None
+            ma5_before, ma5_pivot, ma5_confirm = (
+                float(bar['ma5']) for bar in (before, pivot, confirm)
+            )
+            if not all(positive(value) for value in
+                       (ma5_before, ma5_pivot, ma5_confirm)):
+                return None
+            if sign == 1 and not (
+                ma5_before < ma5_pivot > ma5_confirm
+            ):
+                return None
+            if sign == -1 and not (
+                ma5_before > ma5_pivot < ma5_confirm
+            ):
+                return None
         return {
             'trigger': 'THREE_POINT_PIVOT',
             'trigger_bar_ms': pivot_ms,
@@ -371,7 +427,9 @@ def live_breakout_channel_return_exit(position, snapshot, price, sign):
         return None
 
 
-def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
+def doji_reversal_evidence(
+    snapshot, price, sign, entry, opened_ms, peak_gain_atr, symbol=None
+):
     """A completed doji (or stall) followed immediately by an adverse live body."""
     try:
         stamp = float(snapshot['quote_ms'])
@@ -394,6 +452,21 @@ def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_at
         ratio = abs(last_close - last_open) / span
         if ratio > DOJI_BODY_RATIO and not math.isclose(ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
             return None
+        if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS:
+            history = snapshot.get('history_outer_pivots')
+            if not isinstance(history, list) or len(history) < 2:
+                return None
+            previous_bar, doji_bar = history[-2:]
+            previous_ms = float(previous_bar['ms'])
+            doji_ms = float(doji_bar['ms'])
+            previous_extreme = float(previous_bar['h'] if sign > 0 else previous_bar['l'])
+            doji_extreme = float(doji_bar['h'] if sign > 0 else doji_bar['l'])
+            if (doji_ms != bar - 60000 or doji_ms - previous_ms != 60000
+                    or not all(positive(value) for value in
+                               (previous_ms, doji_ms, previous_extreme, doji_extreme))
+                    or (sign > 0 and doji_extreme <= previous_extreme)
+                    or (sign < 0 and doji_extreme >= previous_extreme)):
+                return None
         body = sign * (opening - price)
         threshold = DOJI_ADVERSE_BODY_ATR * atr
         if body <= 0 or (body < threshold and not math.isclose(body, threshold, rel_tol=1e-12)):
@@ -726,7 +799,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
                     # 2. Older Doji evidence check (this uses live candle for reversal)
                     evidence = doji_reversal_evidence(
-                        snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr)
+                        snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr,
+                        symbol=position.get('symbol'))
                     if evidence is not None and not mature_evidence and reason != HARD_REASON:
                         reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
                         state.update(evidence)
@@ -766,23 +840,38 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
                 state.update(pivot_evidence)
 
-            ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
-            ma5_snapshot['quote_price'] = price
-            ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
-            if (ma5_evidence is not None and reason != HARD_REASON
-                    and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
-                reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
-                state.update(ma5_evidence)
+            pivot_only_symbol = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+            if not pivot_only_symbol:
+                ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+                ma5_snapshot['quote_price'] = price
+                ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
+                if (ma5_evidence is not None and reason != HARD_REASON
+                        and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
+                    reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
+                    state.update(ma5_evidence)
+
+            if (pivot_only_symbol and reason != HARD_REASON
+                    and trigger not in PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS):
+                reason, trigger = None, None
 
             live_breakout_side = live_body_breakout_position_side(position)
             if live_breakout_side and reason != HARD_REASON:
+                allowed_triggers = (
+                    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS if pivot_only_symbol else (
+                        'EXIT_PROFIT_LOCK_FLOOR', 'WATERFALL_DROP',
+                        'THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL',
+                    )
+                )
                 authorized_live_breakout_exit = (
-                    trigger in ('EXIT_PROFIT_LOCK_FLOOR', 'WATERFALL_DROP',
-                                'THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL')
+                    trigger in allowed_triggers
                     and (trigger != 'EXIT_PROFIT_LOCK_FLOOR' or net > 0)
                 )
                 if not authorized_live_breakout_exit:
                     reason, trigger = None, None
+
+            if (pivot_only_symbol and reason != HARD_REASON
+                    and trigger not in PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS):
+                reason, trigger = None, None
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON

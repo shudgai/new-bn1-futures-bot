@@ -29,6 +29,11 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 ))
 # Continuation requires a persisted, previously observed outer-rail breakout.
 ENTRY_CODES = KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES
+SUI_BREAKOUT_ONLY_SYMBOL = "SUI/USDT"
+CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
+CHOP_MA_OVERLAP_ATR = 0.1
+CHOP_FLAT_MOVE_ATR = 0.1
+CHOP_MA5_RANGE_ATR = 1.0
 ENTRY_EVIDENCE_KEYS = (
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
@@ -307,6 +312,55 @@ def entry_trend_alignment_ready(frame, side):
         return False
 
 
+def entry_consolidation_problem(frame, quote):
+    """Reject MA overlap, jointly flat MA15/KC, or bounded MA5 oscillation."""
+    try:
+        closed = closed_entry_candles(frame)
+        required = {"ma5", "ma15", "kc_middle", "close", "atr"}
+        if len(closed) < 6 or not required.issubset(closed.columns):
+            return "WAIT_CONSOLIDATION_GATE_DATA"
+        latest = closed.iloc[-1]
+        ma5, ma15, close, atr = (
+            float(latest[key]) for key in ("ma5", "ma15", "close", "atr")
+        )
+        quote = float(quote)
+        if not all(math.isfinite(value) and value > 0 for value in
+                   (ma5, ma15, close, atr, quote)):
+            return "WAIT_CONSOLIDATION_GATE_DATA"
+        live_ma5 = ma5 + (quote - close) / 5.0
+        live_ma15 = ma15 + (quote - close) / 15.0
+        if not all(math.isfinite(value) and value > 0 for value in (live_ma5, live_ma15)):
+            return "WAIT_CONSOLIDATION_GATE_DATA"
+        if abs(live_ma5 - live_ma15) <= CHOP_MA_OVERLAP_ATR * atr:
+            return "BLOCKED_MA5_MA15_OVERLAP"
+
+        recent = closed.tail(6)
+        ma5_values = [float(value) for value in recent["ma5"]]
+        ma15_values = [float(value) for value in recent["ma15"]]
+        kc_values = [float(value) for value in recent["kc_middle"]]
+        if not all(math.isfinite(value) and value > 0
+                   for value in ma5_values + ma15_values + kc_values):
+            return "WAIT_CONSOLIDATION_GATE_DATA"
+
+        if (abs(ma15_values[-1] - ma15_values[0]) <= CHOP_FLAT_MOVE_ATR * atr
+                and abs(kc_values[-1] - kc_values[0]) <= CHOP_FLAT_MOVE_ATR * atr):
+            return "BLOCKED_FLAT_MA15_KC"
+
+        changes = [right - left for left, right in zip(ma5_values, ma5_values[1:])]
+        directions = [1 if change > 0 else -1 if change < 0 else 0 for change in changes]
+        nonzero_directions = [direction for direction in directions if direction]
+        reversals = sum(
+            previous != current
+            for previous, current in zip(nonzero_directions, nonzero_directions[1:])
+        )
+        if (reversals >= 2
+                and max(ma5_values) - min(ma5_values) <= CHOP_MA5_RANGE_ATR * atr):
+            return "BLOCKED_MA5_REGULAR_OSCILLATION"
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return "WAIT_CONSOLIDATION_GATE_DATA"
+
+
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                             symbol="", diagnostics=None):
     def reject(reason):
@@ -317,6 +371,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
     reject("WAIT_VALID_ENTRY_DATA")
     if code is not None and code not in ENTRY_CODES:
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+    if (symbol == SUI_BREAKOUT_ONLY_SYMBOL and code is not None
+            and code not in (KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES)):
+        return reject("BLOCKED_SUI_REQUIRES_CLOSED_BREAKOUT")
     if account is not None and symbol in getattr(account, "positions", {}):
         return reject("WAIT_EXISTING_POSITION")
     try:
@@ -371,43 +428,84 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
                 return reject('WAIT_VALID_CLOSE_HISTORY')
             saved_bar = math.floor(saved_close/60)*60000
             exit_bar = max(exit_bar or saved_bar, saved_bar)
-        live_code_side = (
-            code.rsplit("_", 1)[-1] if code in LIVE_BODY_BREAKOUT_CODES else None
-        )
-        live_decision = None
-        if code is None or live_code_side is not None:
-            live_decision = evaluate_live_body_breakout(
-                frame, quote, symbol=symbol, requested_side=live_code_side
+        if symbol == SUI_BREAKOUT_ONLY_SYMBOL:
+            # For SUI allow a live-body breakout only when the live decision exists
+            # and the closed KC/MA5/MA15 trend alignment gate passes. Otherwise fall
+            # back to the closed (KC pending) path.
+            live_requested_side = (
+                code.rsplit("_", 1)[-1] if code in LIVE_BODY_BREAKOUT_CODES else None
             )
-        if live_code_side is not None:
-            decision = live_decision or {
-                "action": "WAIT", "reason": "WAIT_LIVE_BODY_BREAKOUT",
-            }
-        elif live_decision is not None:
-            decision = live_decision
-        elif code in CONTINUATION_CODES:
-            decision = evaluate_continuation_entry(
-                frame, quote, code=code, symbol=symbol, account=account
-            ) or {'action': 'WAIT', 'reason': 'WAIT_KC_CONTINUATION'}
-        else:
-            decision = evaluate_kc_pending_entry(
-                closed, quote, code=code, symbol=symbol, live=live
-            )
-            if code is None and decision.get('action') != 'ENTER':
-                continuation = evaluate_continuation_entry(
-                    frame, quote, symbol=symbol, account=account
+            live_decision = None
+            if code is None or live_requested_side is not None:
+                live_decision = evaluate_live_body_breakout(
+                    frame, quote, symbol=symbol, requested_side=live_requested_side
                 )
-                if continuation:
-                    decision = continuation
+            if live_decision is not None:
+                # Only accept live breakout for SUI when closed KC/MA5/MA15 trend aligns
+                side_candidate = live_decision.get('side')
+                if entry_trend_alignment_ready(frame, side_candidate):
+                    decision = live_decision
+                else:
+                    decision = evaluate_kc_pending_entry(
+                        closed, quote, code=code, symbol=symbol, live=live
+                    )
+            else:
+                decision = evaluate_kc_pending_entry(
+                    closed, quote, code=code, symbol=symbol, live=live
+                )
+        else:
+            live_code_side = (
+                code.rsplit("_", 1)[-1] if code in LIVE_BODY_BREAKOUT_CODES else None
+            )
+            live_decision = None
+            if code is None or live_code_side is not None:
+                live_decision = evaluate_live_body_breakout(
+                    frame, quote, symbol=symbol, requested_side=live_code_side
+                )
+            if live_code_side is not None:
+                decision = live_decision or {
+                    "action": "WAIT", "reason": "WAIT_LIVE_BODY_BREAKOUT",
+                }
+            elif live_decision is not None:
+                decision = live_decision
+            elif code in CONTINUATION_CODES:
+                decision = evaluate_continuation_entry(
+                    frame, quote, code=code, symbol=symbol, account=account
+                ) or {'action': 'WAIT', 'reason': 'WAIT_KC_CONTINUATION'}
+            else:
+                decision = evaluate_kc_pending_entry(
+                    closed, quote, code=code, symbol=symbol, live=live
+                )
+                if code is None and decision.get('action') != 'ENTER':
+                    continuation = evaluate_continuation_entry(
+                        frame, quote, symbol=symbol, account=account
+                    )
+                    if continuation:
+                        decision = continuation
         if decision.get("action") != "ENTER":
             return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
         side = decision["side"]
+        if (symbol == SUI_BREAKOUT_ONLY_SYMBOL
+                and decision.get("entry_phase") not in ('KC_2BAR_CLOSED_CONFIRM','KC_LIVE_OUTER_BREAKOUT','KC_LIVE_BODY_BREAKOUT')):
+            return reject("BLOCKED_SUI_REQUIRES_CLOSED_BREAKOUT")
         if decision.get("entry_phase") not in (
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM',
                 'KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT'):
             return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
         if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
+        if symbol == SUI_BREAKOUT_ONLY_SYMBOL:
+            prior, confirmation = closed.iloc[-2], closed.iloc[-1]
+            prior_ma5, prior_ma15 = float(prior["ma5"]), float(prior["ma15"])
+            confirmation_ma5 = float(confirmation["ma5"])
+            confirmation_ma15 = float(confirmation["ma15"])
+            crossed = (
+                prior_ma5 <= prior_ma15 and confirmation_ma5 > confirmation_ma15
+                if side == "LONG" else
+                prior_ma5 >= prior_ma15 and confirmation_ma5 < confirmation_ma15
+            )
+            if not crossed:
+                return reject("BLOCKED_SUI_MA5_MA15_CROSS")
         if evaluate_live_ma5_direction(frame, quote, side) is None:
             return reject("BLOCKED_LIVE_MA5_DIRECTION")
         if not quote_beyond_side_outer_rail(frame, side, quote):
@@ -417,6 +515,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
         if exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
+        if symbol in CHOP_FILTER_SYMBOLS:
+            consolidation_problem = entry_consolidation_problem(frame, quote)
+            if consolidation_problem:
+                return reject(consolidation_problem)
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
             if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')

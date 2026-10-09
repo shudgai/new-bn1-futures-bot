@@ -3,7 +3,9 @@ import math
 import time
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
-from core.services.exits.peak_trailing_exit import CHANNEL_SWING_EXIT_TRIGGERS
+from core.services.exits.peak_trailing_exit import (
+    CHANNEL_SWING_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
+)
 
 
 def valid_entry_atr(value):
@@ -97,8 +99,13 @@ async def enforce_atr_protection(account, symbol, price):
                          for key in STATE_KEYS if key in position})
             account.save_state()
         return False
+    allowed_triggers = (
+        PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
+        if symbol in ("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT")
+        else CHANNEL_SWING_EXIT_TRIGGERS
+    )
     if (entry_mode == "CHANNEL_SWING"
-            and decision.get("trigger") not in CHANNEL_SWING_EXIT_TRIGGERS):
+            and decision.get("trigger") not in allowed_triggers):
         state = position.get("peak_trailing_state", {})
         meta_state = meta.get("peak_trailing_state", {})
         pending_keys = ("pending", "trigger", "trigger_bar_ms", "trigger_open",

@@ -12,7 +12,13 @@ from core.services.exits.peak_trailing_exit import (
     evaluate_peak_trailing,
     three_point_pivot_exit,
 )
+from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
 from test_breakout_only_entry import breakout_frame
+
+
+@pytest.fixture(autouse=True)
+def disable_exit_telemetry(monkeypatch):
+    monkeypatch.setattr(ProfitExitTelemetry, "ENABLED", False)
 
 
 def position(side):

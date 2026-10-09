@@ -118,3 +118,70 @@ def test_realtime_strategy_exit_waits_but_account_hard_stop_still_runs(
     )
     hard_stop.assert_awaited_once()
     account.close_position.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("symbol", "trigger", "should_close"),
+    [
+        ("SUI/USDT", "MA5_TRUE_PEAK_REVERSAL", False),
+        ("SUI/USDT", "EXIT_PEAK_PULLBACK_PRESSURE", False),
+        ("SUI/USDT", "KC_CHANNEL_RETURN", False),
+        ("SUI/USDT", "EXIT_PROFIT_LOCK_FLOOR", False),
+        ("SUI/USDT", "DOJI_REVERSAL_EXIT", True),
+        ("SUI/USDT", "THREE_POINT_PIVOT", True),
+        ("SUI/USDT", "WATERFALL_DROP", True),
+        ("龙虾/USDT", "MA5_TRUE_PEAK_REVERSAL", False),
+        ("龙虾/USDT", "EXIT_PEAK_PULLBACK_PRESSURE", False),
+        ("龙虾/USDT", "EXIT_PROFIT_LOCK_FLOOR", False),
+        ("龙虾/USDT", "DOJI_REVERSAL_EXIT", True),
+        ("龙虾/USDT", "THREE_POINT_PIVOT", True),
+        ("龙虾/USDT", "WATERFALL_DROP", True),
+    ],
+)
+def test_pivot_only_symbols_reject_locks_and_pullbacks(
+    symbol, trigger, should_close, monkeypatch
+):
+    position = {
+        "symbol": symbol,
+        "side": "LONG",
+        "entry_price": 100.0,
+        "qty": 1.0,
+        "open_timestamp": time.time() - 3600,
+        "entry_mode": "CHANNEL_SWING",
+    }
+    account = SimpleNamespace(
+        positions={symbol: position},
+        position_meta={symbol: {}},
+        save_state=Mock(),
+        log=Mock(),
+        close_position=AsyncMock(),
+    )
+    engine = SimpleNamespace(
+        is_running=True,
+        account=account,
+        _channel_exit_frames={},
+    )
+    monkeypatch.setattr(
+        "core.services.exits.realtime_profit_exit.enforce_hard_stop",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "core.services.exits.realtime_profit_exit.cached_tick_indicators",
+        lambda *_args, **_kwargs: ({"quote_ms": time.time() * 1000}, 1.0),
+    )
+    def trigger_strategy_exit(_self, position, *_args, **_kwargs):
+        position[STATE_KEY].update(peak_price=100.0, peak_net_pnl=0.0)
+        return {"type": "EXIT_ADVERSE_ABNORMAL_BODY", "trigger": trigger}
+
+    from core.services.exits.peak_trailing_exit import STATE_KEY
+    monkeypatch.setattr(
+        "core.services.exits.realtime_profit_exit.PureTrendStrategyV2.evaluate_anti_whipsaw_profit_lock",
+        trigger_strategy_exit,
+    )
+
+    closed = asyncio.run(
+        enforce_realtime_profit_exit(engine, symbol, 101.0, time.time() * 1000)
+    )
+
+    assert closed is should_close
+    assert account.close_position.await_count == int(should_close)

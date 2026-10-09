@@ -4,25 +4,32 @@ from core.services.exits.peak_trailing_exit import (
     ABNORMAL_REASON,
     evaluate_peak_trailing,
 )
+from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
+
+
+@pytest.fixture(autouse=True)
+def disable_exit_telemetry(monkeypatch):
+    monkeypatch.setattr(ProfitExitTelemetry, "ENABLED", False)
 
 
 def pivot_history(side):
     rows = [
-        dict(ms=120_000., o=100., h=104., l=98., c=102.),
-        dict(ms=180_000., o=102., h=110., l=99., c=108.),
-        dict(ms=240_000., o=108., h=109., l=100., c=107.),
+        dict(ms=120_000., o=100., h=104., l=98., c=102., ma5=98.),
+        dict(ms=180_000., o=102., h=110., l=99., c=108., ma5=99.),
+        dict(ms=240_000., o=108., h=109., l=100., c=107., ma5=98.5),
     ]
     if side == "SHORT":
         return [
             dict(ms=row["ms"], o=200. - row["o"], h=200. - row["l"],
-                 l=200. - row["h"], c=200. - row["c"])
+                 l=200. - row["h"], c=200. - row["c"],
+                 ma5=201. - row["ma5"])
             for row in rows
         ]
     return rows
 
 
-def position(side):
-    return dict(
+def position(side, symbol=None):
+    result = dict(
         side=side,
         entry_price=100.,
         qty=1.,
@@ -30,6 +37,23 @@ def position(side):
         entry_mode="CHANNEL_SWING",
         leverage=1.,
     )
+    if symbol is not None:
+        result["symbol"] = symbol
+    return result
+
+
+def sui_pivot_history(side):
+    bars = [
+        dict(ms=float(index * 60_000), o=100., h=101., l=99., c=100.,
+             ma5=100., volume=500., kc_upper=101., kc_middle=100., kc_lower=99.)
+        for index in range(1, 19)
+    ]
+    tail = pivot_history(side)
+    for index, row in enumerate(tail, start=19):
+        row["ms"] = float(index * 60_000)
+        row["volume"] = float((22 - index) * 100)
+        row.update(kc_upper=100.7, kc_middle=100., kc_lower=99.3)
+    return bars + tail
 
 
 def snapshot(side, bars=None, **overrides):
@@ -60,6 +84,74 @@ def test_position_exits_on_latest_confirmed_three_point_pivot(side):
         position_data, 101., {"quote_ms": 360_000.}, fee=0., slippage=0.
     )
     assert retry["trigger"] == "THREE_POINT_PIVOT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_three_point_pivot_requires_ma5_to_reverse_at_pivot(side):
+    bars = sui_pivot_history(side)
+    result = evaluate_peak_trailing(
+        position(side, symbol="SUI/USDT"),
+        101.,
+        snapshot(side, bars, quote_ms=1_320_000.),
+        fee=0.,
+        slippage=0.,
+    )
+
+    assert result is not None
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_three_point_pivot_waits_when_ma5_does_not_reverse(side):
+    bars = sui_pivot_history(side)
+    bars[-1]["ma5"] = bars[-2]["ma5"] + (-1. if side == "SHORT" else 1.)
+    position_data = position(side, symbol="SUI/USDT")
+    result = evaluate_peak_trailing(
+        position_data,
+        101.,
+        snapshot(side, bars, quote_ms=1_320_000.),
+        fee=0.,
+        slippage=0.,
+    )
+
+    assert result is None
+    assert not position_data.get("peak_trailing_state", {}).get("pending")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_three_point_pivot_requires_21_valid_bars(side):
+    bars = sui_pivot_history(side)[1:]
+    result = evaluate_peak_trailing(
+        position(side, symbol="SUI/USDT"),
+        101.,
+        snapshot(side, bars, quote_ms=1_320_000.),
+        fee=0.,
+        slippage=0.,
+    )
+
+    assert result is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("blocker", ["wide_channel", "nondeclining_volume"])
+def test_sui_three_point_pivot_waits_for_narrow_channel_and_falling_volume(
+    side, blocker
+):
+    bars = sui_pivot_history(side)
+    if blocker == "wide_channel":
+        bars[-1]["kc_upper"] = 101.
+        bars[-1]["kc_lower"] = 99.
+    else:
+        bars[-1]["volume"] = bars[-2]["volume"]
+    result = evaluate_peak_trailing(
+        position(side, symbol="SUI/USDT"),
+        101.,
+        snapshot(side, bars, quote_ms=1_320_000.),
+        fee=0.,
+        slippage=0.,
+    )
+
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

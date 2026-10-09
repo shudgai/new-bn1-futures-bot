@@ -7,6 +7,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
+    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.entry_atr_protection import (
@@ -55,7 +56,10 @@ def cached_tick_indicators(frame, price, stamp):
             'h': float(b.get('high', 0)),
             'l': float(b.get('low', 0)),
             'c': float(b.get('close', 0)),
+            'ma5': float(b.get('ma5', 0)),
+            'volume': float(b.get('volume', 0)),
             'kc_upper': float(b.get('kc_upper', 0)),
+            'kc_middle': float(b.get('kc_middle', 0)),
             'kc_lower': float(b.get('kc_lower', 0)),
         }
         for _, b in closed.tail(120).iterrows()
@@ -202,8 +206,13 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         
         reason = decision['type']
         trigger = decision.get('trigger', '')
+        allowed_triggers = (
+            PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
+            if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
+            else CHANNEL_SWING_EXIT_TRIGGERS
+        )
         if (entry_m == 'CHANNEL_SWING'
-                and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
+                and trigger not in allowed_triggers):
             for state in (
                 current[STATE_KEY], meta.get(STATE_KEY, {}),
             ):

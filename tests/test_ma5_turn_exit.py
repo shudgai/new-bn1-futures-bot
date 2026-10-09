@@ -14,6 +14,12 @@ from core.services.exits.peak_trailing_exit import (
     live_ma5_reversal_exit,
 )
 from core.services.exits.realtime_profit_exit import cached_tick_indicators
+from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
+
+
+@pytest.fixture(autouse=True)
+def disable_exit_telemetry(monkeypatch):
+    monkeypatch.setattr(ProfitExitTelemetry, "ENABLED", False)
 
 
 def position(side):
@@ -75,6 +81,53 @@ def test_observed_ma5_peak_or_trough_reversal_exits_both_sides(side):
     assert result["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
     assert position_data["peak_trailing_state"]["pending"] == ABNORMAL_REASON
     assert position_data["peak_trailing_state"]["trigger"] == "MA5_TRUE_PEAK_REVERSAL"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_holds_through_live_ma5_pullback_until_confirmed_price_pivot(side):
+    sign = 1 if side == "LONG" else -1
+    position_data = position(side)
+    position_data["symbol"] = "SUI/USDT"
+    sequence = (
+        (100., 100.),
+        (101. if sign == 1 else 99., 101. if sign == 1 else 99.),
+        (100.8 if sign == 1 else 99.2, 100.9 if sign == 1 else 99.1),
+    )
+
+    for index, (ma5, price) in enumerate(sequence):
+        result = evaluate_peak_trailing(
+            position_data,
+            price,
+            snapshot(side, quote_ms=181_000. + index * 1_000, live_ma5=ma5),
+            fee=0.,
+            slippage=0.,
+        )
+        assert result is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_sui_waterfall_exit_remains_active(side):
+    position_data = position(side)
+    position_data["symbol"] = "SUI/USDT"
+    sign = 1 if side == "LONG" else -1
+    live_open = 100.
+    price = live_open - sign * 2.
+
+    result = evaluate_peak_trailing(
+        position_data,
+        price,
+        snapshot(
+            side,
+            quote_ms=181_000.,
+            live_open=live_open,
+            atr=1.,
+        ),
+        fee=0.,
+        slippage=0.,
+    )
+
+    assert result is not None
+    assert result["trigger"] == "WATERFALL_DROP"
 
 
 @pytest.mark.parametrize(
