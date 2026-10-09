@@ -17,7 +17,9 @@ def position(side):
 
 def tick(p,roi,stamp):
     sign=1 if p['side']=='LONG' else -1
-    return evaluate_peak_trailing(p,100+sign*roi*100,{'quote_ms':stamp},fee=0.,slippage=0.)
+    price=100+sign*roi*100
+    return evaluate_peak_trailing(p,price,dict(quote_ms=stamp,ma5=price+sign,
+        last_ma5=price+2*sign,live_open=price+sign,last_close=price+sign),fee=0.,slippage=0.)
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -28,7 +30,7 @@ def test_tier_boundary_and_retry(side,peak,allowance,code):
     assert tick(p,peak-allowance+.00001,62000) is None
     assert tick(p,peak-allowance,63000)['trigger']==code
     restored=copy.deepcopy(p)
-    assert tick(restored,peak,64000)['trigger']==code
+    assert tick(restored,peak-allowance,64000)['trigger']==code
     event=profit_exit_fields(restored,code,65000)
     assert event['last_profit_exit_side']==side
     assert event['last_profit_exit_peak_price']==100+(1 if side=='LONG' else -1)*peak*100

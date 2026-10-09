@@ -100,7 +100,7 @@ def test_unarmed_pivot_holds_supported_lifeline_and_retires_pending(side):
     price=101. if side=='LONG' else 99.
     assert evaluate_peak_trailing(p,price,data,fee=0.,slippage=0.) is None
     assert not p[STATE_KEY].get('pending')
-    assert evaluate_peak_trailing(p,98. if side=='LONG' else 102.,data,fee=0.,slippage=0.)['trigger']=='THREE_POINT_PIVOT'
+    assert evaluate_peak_trailing(p,98. if side=='LONG' else 102.,data,fee=0.,slippage=0.) is None # Below 5% cannot authorize a soft pivot exit.
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

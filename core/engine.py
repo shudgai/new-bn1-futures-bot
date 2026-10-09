@@ -1240,6 +1240,11 @@ class TradingEngine:
                 if (position.get('side') == impulse['side']
                         or str(position.get('entry_mode', '')).upper() != 'CHANNEL_SWING'):
                     return False
+                from core.services.exits.realtime_profit_exit import cached_tick_indicators
+                from core.services.exits.peak_trailing_exit import trend_continuation_hold
+                hold_snapshot, _ = cached_tick_indicators(frame, price, stamp)
+                if trend_continuation_hold(position['side'], price, hold_snapshot):
+                    return False
                 source = impulse['strict_gate_evidence']
                 if (not source['intrabar']
                         and source['source_bar_ms']+60000 <= float(position['open_timestamp'])*1000):

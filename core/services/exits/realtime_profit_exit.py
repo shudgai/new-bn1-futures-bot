@@ -179,8 +179,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is not None and not frame.empty:
                 ck_dir = ck_direction(frame)
-                from core.services.exits.peak_trailing_exit import lifeline_held
-                if ck_dir and ck_dir != ident[0] and not lifeline_held(ident[0], price, frame.iloc[-1].to_dict()):
+                from core.services.exits.peak_trailing_exit import lifeline_held, trend_continuation_hold
+                hold_snapshot, _ = cached_tick_indicators(frame, price, stamp)
+                if ck_dir and ck_dir != ident[0] and not trend_continuation_hold(ident[0], price, hold_snapshot) and not lifeline_held(ident[0], price, frame.iloc[-1].to_dict()):
                     await account.close_position(
                         symbol, price, f'WRONG_DIRECTION_CORRECTION (CK={ck_dir}, POS={ident[0]})', is_manual=True
                     )

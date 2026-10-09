@@ -693,6 +693,35 @@ def lifeline_held(side, price, snapshot):
                for key in ('ma15','kc_middle'))
 
 
+def trend_continuation_hold(side, price, snapshot):
+    """Any observed directional candle, MA slope or rail support vetoes soft exits."""
+    if not isinstance(snapshot, dict):
+        return None
+    sign = 1 if side == 'LONG' else -1
+    ma = snapshot.get('live_ma5', snapshot.get('ma5'))
+    prior_ma = snapshot.get('closed_ma5', snapshot.get('last_ma5'))
+    opened = snapshot.get('live_open', snapshot.get('open'))
+    previous = snapshot.get('last_close')
+    rail = snapshot.get('live_kc_upper' if side == 'LONG' else 'live_kc_lower',
+                        snapshot.get('kc_upper' if side == 'LONG' else 'kc_lower'))
+    strong = any(positive(v) and sign*(price-float(v)) > 0 for v in (opened, previous))
+    strong |= positive(ma) and positive(prior_ma) and sign*(float(ma)-float(prior_ma)) >= 0
+    strong |= any(positive(v) and sign*(price-float(v)) >= 0 for v in (ma, rail))
+    if strong:
+        return 'HOLDING_ON_BULLISH_MOMENTUM' if side == 'LONG' else 'HOLDING_ON_BEARISH_MOMENTUM'
+    return None
+
+
+def profit_momentum_turned(side, price, snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+    sign = 1 if side == 'LONG' else -1
+    ma = snapshot.get('live_ma5', snapshot.get('ma5'))
+    prior = snapshot.get('closed_ma5', snapshot.get('last_ma5'))
+    return bool(positive(ma) and positive(prior) and sign*(price-float(ma)) < 0
+                and sign*(float(ma)-float(prior)) < 0)
+
+
 def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, slippage=0.0001):
     try:
         ident = position_identity(position)
@@ -1083,6 +1112,20 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             reason, trigger = None, None
             for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
                 state.pop(key, None)
+
+        if is_channel_swing and reason and reason != HARD_REASON:
+            hold_reason = trend_continuation_hold(position['side'], price, snapshot)
+            is_profit = trigger in ('PROFIT_LOCK_T1','PROFIT_LOCK_T2','PROFIT_LOCK_T3','THREE_POINT_PIVOT')
+            profit_ready = (float(state.get('tiered_price_peak', 0)) >= .05
+                            and float(state.get('tiered_price_peak', 0))-sign*(price-entry)/entry >= .012-1e-12
+                            and profit_momentum_turned(position['side'], price, snapshot))
+            if hold_reason or (is_profit and not profit_ready):
+                state.update(soft_exit_blocked=True, trend_hold_reason=hold_reason or 'WAIT_PROFIT_FLOOR_AND_MOMENTUM_TURN')
+                reason, trigger = None, None
+                for key in ('pending','trigger','trigger_bar_ms','trigger_confirmed_ms'):
+                    state.pop(key, None)
+            else:
+                state.update(soft_exit_blocked=False, trend_hold_reason=None)
 
         if reason:
             try:
