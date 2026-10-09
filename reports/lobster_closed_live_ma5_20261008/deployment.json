@@ -1,0 +1,9 @@
+{
+  "is_running": true,
+  "paper_trading": true,
+  "entry_gate_halts": {},
+  "commit": "cd5a93164a50ea8723dc92b81d4d7284bca19f5e",
+  "branch": "release/wait-paper-gate-candidate",
+  "service": "MainPID=1238851\nActiveState=active\nActiveEnterTimestamp=Thu 2026-10-08 06:33:39 UTC\n",
+  "entry_version": "entry-gate-20261008-v64-closed-live-ma5-alignment"
+}

@@ -1,0 +1,512 @@
+diff --git a/core/engine.py b/core/engine.py
+index 860078d..b03c556 100644
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -1922,6 +1922,10 @@ class TradingEngine:
+             used.add(identity)
+             # Keep bounded in-memory dedupe; persisted fills remain authoritative.
+             self._closed_entry_fills = {key for key in used if key[2] >= bar-86400000}
++            
++            qualification_signal_id = signal.get('qualification_signal_id')
++            if qualification_signal_id:
++                self.account.consume_breakout_qualification(symbol, expected_signal_id=qualification_signal_id)
+         return bool(opened)
+ 
+ 
+@@ -2010,7 +2014,7 @@ class TradingEngine:
+     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
+     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
+ 
+-    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None):
++    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None, qualification_signal_id=None):
+         if daily_halt or symbol in self.account.positions:
+             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
+             return False
+@@ -2040,6 +2044,7 @@ class TradingEngine:
+         
+         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
+                       signal_code=reason,candidate_bar_id=candidate_bar_id,
++                      qualification_signal_id=qualification_signal_id,
+                       size_fraction=size_fraction)
+         return await self._place_structured_entry(symbol,signal,price)
+ 
+@@ -2455,6 +2460,10 @@ class TradingEngine:
+             return
+         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
+             return
++        # [EMERGENCY FAIL-CLOSED]
++        # Temporarily disabled until unified entry contract is integrated.
++        self.account.log(f"🛑 [EMERGENCY BLOCK] {symbol} {ticket['side']} 獲利重開已暫時 Fail-Closed 阻斷開倉", "WARNING")
++        return
+         from core.services.entry_contract import evaluate_continuation_entry
+         decision = evaluate_continuation_entry(frame, price, symbol=symbol)
+         if not decision or decision['side'] != ticket['side']:
+diff --git a/core/paper_account.py b/core/paper_account.py
+index cac51f7..42d303f 100644
+--- a/core/paper_account.py
++++ b/core/paper_account.py
+@@ -133,6 +133,8 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
+     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
+     return OUTER_RUN_NET_GIVEBACK_USDT
+ ENTRY_CONTEXT_KEYS = (
++    "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
++    "trigger_price", "trigger_timestamp",
+     "channel_fading_ma3_turn",
+     "channel_reverse_wait_ck",
+     "channel_pivot_entry", "channel_pivot_middle_reached",
+@@ -206,6 +208,12 @@ class PaperAccount:
+         self._rapid_drop_last_price: Dict[str, float] = {}
+         self._rapid_drop_window: Dict[str, List[tuple]] = {}
+         self._rapid_drop_cooldown: Dict[str, float] = {}
++        self.breakout_qualification: Dict[str, dict] = {}
++        self.last_consumed_breakout_signal_id: Dict[str, str] = {}
++        self.d0_in_flight_state: Dict[str, dict] = {}
++        self.d0_consumed_state: Dict[str, str] = {}
++        self.d0_failed_state: Dict[str, str] = {}
++        self.d0_quarantine_state: Dict[str, bool] = {}
+         self.on_trade_closed: Optional[Callable[[], None]] = None
+ 
+         self.daily_date: Optional[str] = None
+@@ -311,6 +319,14 @@ class PaperAccount:
+         self.pullback_outcome_stats = data.get("pullback_outcome_stats", {})
+         self.entry_filter_stats = data.get("entry_filter_stats", {})
+         self.entry_filter_last = data.get("entry_filter_last", {})
++        self.breakout_qualification = data.get("breakout_qualification", {})
++        self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
++        self.d0_in_flight_state = data.get("d0_in_flight_state", {})
++        for sym, infl in list(self.d0_in_flight_state.items()):
++            self.d0_quarantine_state[sym] = True
++        self.d0_consumed_state = data.get("d0_consumed_state", {})
++        self.d0_failed_state = data.get("d0_failed_state", {})
++        self.d0_quarantine_state.update(data.get("d0_quarantine_state", {}))
+         self.shadow_parameter_stats = data.get("shadow_parameter_stats", {})
+         self.shadow_parameter_last = data.get("shadow_parameter_last", {})
+         stored_accounting_version = int(data.get("accounting_version", 1))
+@@ -372,6 +388,12 @@ class PaperAccount:
+             "pullback_outcome_stats": self.pullback_outcome_stats,
+             "entry_filter_stats": self.entry_filter_stats,
+             "entry_filter_last": self.entry_filter_last,
++            "breakout_qualification": self.breakout_qualification,
++            "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
++            "d0_in_flight_state": self.d0_in_flight_state,
++            "d0_consumed_state": self.d0_consumed_state,
++            "d0_failed_state": self.d0_failed_state,
++            "d0_quarantine_state": self.d0_quarantine_state,
+             "shadow_parameter_stats": self.shadow_parameter_stats,
+             "shadow_parameter_last": self.shadow_parameter_last,
+             "accounting_version": self.accounting_version,
+@@ -406,6 +428,8 @@ class PaperAccount:
+         self.pullback_outcome_stats = {}
+         self.entry_filter_stats = {}
+         self.entry_filter_last = {}
++        self.breakout_qualification = {}
++        self.last_consumed_breakout_signal_id = {}
+         self.shadow_parameter_stats = {}
+         self.shadow_parameter_last = {}
+         self.takeover_shadow_events = []
+@@ -436,6 +460,23 @@ class PaperAccount:
+         })
+         self.save_state()
+ 
++    def record_qualification(self, symbol: str, qualification: dict) -> None:
++        self.breakout_qualification[symbol] = qualification
++        self.save_state()
++
++    def consume_breakout_qualification(self, symbol: str, expected_signal_id: str) -> None:
++        if expected_signal_id:
++            self.last_consumed_breakout_signal_id[symbol] = expected_signal_id
++            current = self.breakout_qualification.get(symbol)
++            if current and current.get('pending_signal_id') == expected_signal_id:
++                del self.breakout_qualification[symbol]
++            self.save_state()
++
++    def clear_qualification(self, symbol: str) -> None:
++        if symbol in self.breakout_qualification:
++            del self.breakout_qualification[symbol]
++            self.save_state()
++
+     def _check_daily_reset(self) -> None:
+         today = get_taipei_now_str("%Y-%m-%d")
+         if self.daily_date != today:
+@@ -566,12 +607,39 @@ class PaperAccount:
+         if amount_usdt <= 0:
+             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
+             return False
+-        if entry_mode == "CHANNEL_SWING":
+-            if not valid_entry_atr(atr):
++
++        if self.d0_quarantine_state.get(symbol):
++            self.log(f"🛑 [D0_QUARANTINE_BLOCKED] {symbol} is quarantined. Order blocked.", "WARNING")
++            return False
++
++        is_d0 = entry_context and entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK"
++        d0_event_id = entry_context.get("d0_event_id") if entry_context else None
++
++        if is_d0:
++            if self.d0_consumed_state.get(symbol) == d0_event_id:
++                return False
++            if self.d0_failed_state.get(symbol) == d0_event_id:
++                return False
++
++        import uuid, time
++        client_order_id = f"AGY_D0_{uuid.uuid4().hex[:16]}" if is_d0 else None
++
++        if is_d0:
++            self.d0_in_flight_state[symbol] = {
++                "d0_event_id": d0_event_id,
++                "client_order_id": client_order_id,
++                "side": side,
++                "submission_timestamp": time.time(),
++            }
++            self.save_state()
++
++        if entry_mode == "CHANNEL_SWING" or is_d0:
++            if not valid_entry_atr(atr) and entry_mode == "CHANNEL_SWING":
+                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
+                 return False
+             try:
+-                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
++                if entry_mode == "CHANNEL_SWING":
++                    initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
+             except (ValueError, TypeError):
+                 return False
+             tp = 0.0
+@@ -747,6 +815,11 @@ class PaperAccount:
+             **entry_context,
+         })
+         fill_note = "含滑點" if apply_slippage else "Maker限價成交"
++        
++        if is_d0:
++            self.d0_in_flight_state.pop(symbol, None)
++            self.d0_consumed_state[symbol] = d0_event_id
++            
+         self.log(
+             f"🚀 [紙上交易] 開倉成功 [{side}] {symbol} @ {execution_price:.6g} "
+             f"({leverage}x，{fill_note}，SL={sl:.6g}, TP={pos['tp']:.6g})",
+diff --git a/core/services/entry_contract.py b/core/services/entry_contract.py
+index fc865a6..edd583a 100644
+--- a/core/services/entry_contract.py
++++ b/core/services/entry_contract.py
+@@ -22,7 +22,7 @@ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
+ ENTRY_EVIDENCE_KEYS = CHASE_EVIDENCE_KEYS + KC_PENDING_EVIDENCE_KEYS
+ 
+ 
+-def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
++def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', account=None):
+     """Continuation entry for sustained trend outside the outer rail.
+ 
+     Permits opening when a prior breakout was missed or after a position was closed,
+@@ -37,6 +37,10 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+         if code is not None and code != signal:
+             return None
+ 
++        qual = account.breakout_qualification.get(symbol) if account else None
++        if not qual:
++            return None
++
+         quote = float(quote)
+         atr = float(frame.iloc[-2]['atr'])
+         sign = 1 if side == 'LONG' else -1
+@@ -54,6 +58,10 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+             return None
+         if not live_adverse_entry_safe(frame, quote, side):
+             return None
++        if not live_ma3_direction_ready(frame, side):
++            return None
++        if not ma3_outer_continuation_ready(frame, quote, side):
++            return None
+ 
+         edge = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+         
+@@ -81,8 +89,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = ''):
+                     pending_signal_id=f"{symbol}_CONTINUATION_{int(stamp)}_{side}",
+                     pending_second_bar_id=prev_stamp,
+                     pending_wait_bars=1, pending_max_wait_bars=1,
+-                    kc_confirmation_edge=edge if is_outside_rail else mid,
++                    kc_confirmation_edge=edge,  # FIXED NameError
+                     kc_distance_atr=distance,
++                    qualification_signal_id=qual['pending_signal_id'],
+                     kc_max_distance_atr=3.0)
+     except Exception:
+         return None
+@@ -198,43 +207,36 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+         
+         decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
+                                              live=live if len(frame) > len(closed) else None)
+-                                             
+-        # Check MA3 outer cross entry (Dual Entry Rule)
+-        if decision['action'] != 'ENTER':
+-            from core.services.strategies.outer_strategy import ck_direction, ma3_outer_cross_ready
+-            direction = ck_direction(closed)
+-            if direction and ma3_outer_cross_ready(frame, quote, direction):
+-                atr_val = float(frame.iloc[-2]['atr'])
+-                stamp_val = float(live.timestamp)
+-                prev_stamp_val = float(frame.iloc[-2]['timestamp'])
+-                signal = 'KC_MA3_CROSS_' + direction
+-                decision = {
+-                    'action': 'ENTER',
+-                    'side': direction,
+-                    'type': signal,
+-                    'reason': signal,
+-                    'price': quote,
+-                    'entry_atr': atr_val,
+-                    'confirmation_bar_id': stamp_val,
+-                    'close_price': float(frame.iloc[-2]['close']),
+-                    'intrabar': True,
+-                    'entry_phase': 'KC_MA3_CROSS',
+-                    'pending_signal_id': f"{symbol}_MA3_CROSS_{int(stamp_val)}_{direction}",
+-                    'breakout_bar_id': stamp_val,
+-                    'pair_confirmation_bar_id': prev_stamp_val,
+-                    'third_bar_id': stamp_val,
+-                    'pending_second_bar_id': prev_stamp_val,
+-                    'pending_wait_bars': 1,
+-                    'pending_max_wait_bars': 1
+-                }
+-
+-        # If dual entries are not ready, or is an old breakout from before exit:
++        # If 3-bar entry is not ready, or is an old breakout from before exit:
+         if decision['action'] != 'ENTER' or (exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar):
+-            cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol)
++            cont_decision = evaluate_continuation_entry(frame, quote, code, symbol=symbol, account=account)
+             if cont_decision and cont_decision['action'] == 'ENTER':
+                 decision = cont_decision
+                 
+         if decision['action'] != 'ENTER':
++            from core.services.evaluate_structure_break_entry import evaluate_structure_break_entry
++            d0_decision = evaluate_structure_break_entry(frame, symbol)
++            if d0_decision:
++                if exit_bar is not None and float(live.timestamp) <= exit_bar:
++                    last_trade = None
++                    for trade in reversed(getattr(account, 'trades', [])):
++                        if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
++                            last_trade = trade
++                            break
++                    last_close_side = 'LONG' if last_trade and last_trade.get('action') == 'CLOSE_LONG' else ('SHORT' if last_trade and last_trade.get('action') == 'CLOSE_SHORT' else None)
++                    if last_close_side is not None and d0_decision['side'] != last_close_side:
++                        d0_decision['exit_bar_id'] = exit_bar
++                        if diagnostics is not None:
++                            diagnostics.clear()
++                            diagnostics['reason'] = d0_decision['reason']
++                        return d0_decision
++                else:
++                    d0_decision['exit_bar_id'] = exit_bar
++                    if diagnostics is not None:
++                        diagnostics.clear()
++                        diagnostics['reason'] = d0_decision['reason']
++                    return d0_decision
++
+             if diagnostics is not None:
+                 diagnostics.clear()
+                 diagnostics.update(decision)
+diff --git a/core/services/kc_pending_entry.py b/core/services/kc_pending_entry.py
+index 586d958..48d2521 100644
+--- a/core/services/kc_pending_entry.py
++++ b/core/services/kc_pending_entry.py
+@@ -6,7 +6,7 @@ Only the immediately following forming candle can authorize entry.
+ import math
+ from collections import OrderedDict
+ 
+-KC_PENDING_CODES = frozenset(('KC_3BAR_CONFIRM_LONG', 'KC_3BAR_CONFIRM_SHORT'))
++KC_PENDING_CODES = frozenset(('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
+ KC_PENDING_EVIDENCE_KEYS = ('kc_confirmation_edge', 'kc_distance_atr', 'kc_max_distance_atr',
+                             'confirmation_ma5', 'previous_ma5', 'confirmation_ma15',
+                             'pending_signal_id', 'pending_second_bar_id', 'pending_wait_bars',
+diff --git a/core/services/symbol_runner.py b/core/services/symbol_runner.py
+index 8e42455..8cc7bd1 100644
+--- a/core/services/symbol_runner.py
++++ b/core/services/symbol_runner.py
+@@ -76,7 +76,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
+         if entry:
+             await engine._execute_confirmed_channel_break(
+                 symbol, frame, quote, entry['side'], daily_halt,
+-                v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'])
++                v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'],
++                qualification_signal_id=entry.get('qualification_signal_id'))
+         else:
+             log_entry_gate(engine, symbol, 'NONE', 'SIGNAL', diagnostics['reason'],
+                            float(frame.iloc[-1]['timestamp']))
+diff --git a/core/testnet_account.py b/core/testnet_account.py
+index 1f60ee6..21c584b 100644
+--- a/core/testnet_account.py
++++ b/core/testnet_account.py
+@@ -101,6 +101,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
+ STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
+ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+ ENTRY_CONTEXT_KEYS = (
++    "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
++    "trigger_price", "trigger_timestamp",
+     "channel_fading_ma3_turn",
+     "channel_reverse_wait_ck",
+     "channel_pivot_entry", "channel_pivot_middle_reached",
+@@ -232,6 +234,12 @@ class BinanceTestnetAccount:
+         self._last_ticker_prices: Dict[str, float] = {}
+         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
+         self._rapid_drop_cooldown: Dict[str, float] = {}
++        self.breakout_qualification: Dict[str, dict] = {}
++        self.last_consumed_breakout_signal_id: Dict[str, str] = {}
++        self.d0_in_flight_state: Dict[str, dict] = {}
++        self.d0_consumed_state: Dict[str, str] = {}
++        self.d0_failed_state: Dict[str, str] = {}
++        self.d0_quarantine_state: Dict[str, bool] = {}
+         self.tickers: Dict[str, float] = {}
+         self.staged_state_directory = f"{self._state_path()}.staged"
+         # Account-level 15% circuit breaker (Live Mainnet only). Persisted;
+@@ -504,6 +512,14 @@ class BinanceTestnetAccount:
+             loaded_shadow_last = data.get("shadow_parameter_last", {})
+             if isinstance(loaded_shadow_last, dict):
+                 self.shadow_parameter_last = loaded_shadow_last
++            self.breakout_qualification = data.get("breakout_qualification", {})
++            self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
++            self.d0_in_flight_state = data.get("d0_in_flight_state", {})
++            for sym, infl in list(self.d0_in_flight_state.items()):
++                self.d0_quarantine_state[sym] = True
++            self.d0_consumed_state = data.get("d0_consumed_state", {})
++            self.d0_failed_state = data.get("d0_failed_state", {})
++            self.d0_quarantine_state.update(data.get("d0_quarantine_state", {}))
+             self.live_session_start_equity = data.get('live_session_start_equity')
+             self.circuit_breaker_latched = bool(data.get('circuit_breaker_latched', False))
+             self.trigger_timestamp = data.get('trigger_timestamp')
+@@ -537,6 +553,12 @@ class BinanceTestnetAccount:
+             "pullback_outcome_stats": self.pullback_outcome_stats,
+             "entry_filter_stats": self.entry_filter_stats,
+             "entry_filter_last": self.entry_filter_last,
++            "breakout_qualification": self.breakout_qualification,
++            "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
++            "d0_in_flight_state": self.d0_in_flight_state,
++            "d0_consumed_state": self.d0_consumed_state,
++            "d0_failed_state": self.d0_failed_state,
++            "d0_quarantine_state": self.d0_quarantine_state,
+             "shadow_parameter_stats": self.shadow_parameter_stats,
+             "shadow_parameter_last": self.shadow_parameter_last,
+             'live_session_start_equity': self.live_session_start_equity,
+@@ -584,6 +606,23 @@ class BinanceTestnetAccount:
+         if level == "DANGER":
+             notify_email(f"[Binance Bot] {message}")
+ 
++    def record_qualification(self, symbol: str, qualification: dict) -> None:
++        self.breakout_qualification[symbol] = qualification
++        self.save_state()
++
++    def consume_breakout_qualification(self, symbol: str, expected_signal_id: str) -> None:
++        if expected_signal_id:
++            self.last_consumed_breakout_signal_id[symbol] = expected_signal_id
++            current = self.breakout_qualification.get(symbol)
++            if current and current.get('pending_signal_id') == expected_signal_id:
++                del self.breakout_qualification[symbol]
++            self.save_state()
++
++    def clear_qualification(self, symbol: str) -> None:
++        if symbol in self.breakout_qualification:
++            del self.breakout_qualification[symbol]
++            self.save_state()
++
+     def _check_daily_reset(self) -> None:
+         """台北時區跨日就重置今日虧損熔斷的計算基準。"""
+         today = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+@@ -2246,28 +2285,82 @@ class BinanceTestnetAccount:
+             self.log(f"🛑 {symbol} 下單數量低於交易所最小精度", "WARNING")
+             return False
+ 
++        if self.d0_quarantine_state.get(symbol):
++            self.log(f"🛑 [D0_QUARANTINE_BLOCKED] {symbol} is quarantined. Order blocked.", "WARNING")
++            return False
++
++        is_d0 = entry_context and entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK"
++        d0_event_id = entry_context.get("d0_event_id") if entry_context else None
++
++        if is_d0:
++            if self.d0_consumed_state.get(symbol) == d0_event_id:
++                return False
++            if self.d0_failed_state.get(symbol) == d0_event_id:
++                return False
++
++        import uuid, time
++        client_order_id = f"AGY_D0_{uuid.uuid4().hex[:16]}" if is_d0 else None
++
++        if is_d0:
++            self.d0_in_flight_state[symbol] = {
++                "d0_event_id": d0_event_id,
++                "client_order_id": client_order_id,
++                "side": side,
++                "submission_timestamp": time.time(),
++            }
++            self.save_state()
++
+         try:
+             await self._prepare_leverage(symbol, leverage)
++            order_params = {"newOrderRespType": "RESULT"}
++            if is_d0:
++                order_params["newClientOrderId"] = client_order_id
++            
+             entry_order = await self._send_order(
+                 symbol,
+                 "market",
+                 order_side,
+                 qty,
+                 None,
+-                {"newOrderRespType": "RESULT"},
++                order_params,
+                 entry_context=entry_context,
+             )
+             execution_price = float(entry_order.get("average") or price)
+         except Exception as exc:
++            import ccxt
++            is_definitive = False
++            msg = str(exc)
++            if isinstance(exc, (ccxt.InsufficientFunds, ccxt.MarginCall)):
++                is_definitive = True
++            elif isinstance(exc, ccxt.InvalidOrder):
++                if "-1013" in msg and ("MIN_NOTIONAL" in msg or "LOT_SIZE" in msg):
++                    is_definitive = True
++            elif isinstance(exc, ccxt.ExchangeError):
++                if "-2010" in msg and "New order rejected." in msg:
++                    is_definitive = True
++                elif "ReduceOnly Order is rejected" in msg or "Position Side Not Exists" in msg:
++                    is_definitive = True
++
++            if is_d0:
++                self.d0_in_flight_state.pop(symbol, None)
++                if is_definitive:
++                    self.d0_failed_state[symbol] = d0_event_id
++                else:
++                    self.d0_quarantine_state[symbol] = True
++                self.save_state()
++
+             self.log(
+                 f"🛑 Binance Testnet 開倉失敗 {symbol}："
+-                f"{type(exc).__name__}: {exc}",
++                f"{type(exc).__name__}: {exc} (Definitive={is_definitive})",
+                 "DANGER",
+             )
+             await self.refresh(force=True)
+             return False
+ 
+-        return await self._finalize_new_position(
++        if is_d0:
++            entry_context["actual_fill_price"] = execution_price
++
++        success = await self._finalize_new_position(
+             symbol, side, execution_price, qty, price, sl, tp, reason, atr,
+             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
+             entry_context=entry_context, structural_stop=structural_stop,
+@@ -2322,7 +2415,7 @@ class BinanceTestnetAccount:
+                 if key in ENTRY_CONTEXT_KEYS
+             }
+             is_channel_swing = str(entry_context.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+-            if is_channel_swing:
++            if is_channel_swing or entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK":
+                 tp = 0.0
+             else:
+                 try:
+@@ -2330,6 +2423,11 @@ class BinanceTestnetAccount:
+                 except ValueError as exc:
+                     self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
+                     return False
++            
++            if entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK":
++                self.d0_in_flight_state.pop(symbol, None)
++                self.d0_consumed_state[symbol] = entry_context["d0_event_id"]
++                self.save_state()
+             is_exhaustion_sniper = entry_context.get("entry_mode") in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+             sl_distance = abs(price_ref - sl)
+             tp_distance = abs(tp - price_ref)

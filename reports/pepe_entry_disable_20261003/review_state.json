@@ -1,0 +1,12 @@
+{
+  "service_read_only": "MainPID=1949454\nExecMainStartTimestamp=Sat 2026-10-03 00:37:19 UTC\nActiveState=active\n",
+  "account_read_only": {
+    "pepe_position_present": false,
+    "pepe_pending_entry_present": false
+  },
+  "commit": false,
+  "restart": false,
+  "deploy": false,
+  "force_close": false,
+  "SAFE_TO_RESTART": "NO"
+}

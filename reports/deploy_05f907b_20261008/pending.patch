@@ -1,0 +1,104 @@
+diff --git a/core/services/dual_breakout_entry.py b/core/services/dual_breakout_entry.py
+index a5eaf03..b72270a 100644
+--- a/core/services/dual_breakout_entry.py
++++ b/core/services/dual_breakout_entry.py
+@@ -4,7 +4,7 @@ import math
+ LIVE_CODES = frozenset(("KC_LIVE_CROSS_LONG", "KC_LIVE_CROSS_SHORT"))
+ PAIR_CODES = frozenset(("KC_2BAR_CONFIRM_LONG", "KC_2BAR_CONFIRM_SHORT"))
+ CODES = LIVE_CODES | PAIR_CODES
+-POLICY = "LIVE_CROSS_OR_TWO_CLOSED_KC_V1"
++POLICY = "LIVE_CROSS_OR_TWO_CLOSED_KC_MA_CHOP_V2"
+ 
+ 
+ def evaluate_breakout(frame, quote, account, symbol, diagnostics, requested=None):
+@@ -50,6 +50,15 @@ def evaluate_breakout(frame, quote, account, symbol, diagnostics, requested=None
+     if code is None:
+         diagnostics["reason"] = pair_reason if requested in PAIR_CODES else "WAIT_VALID_BREAKOUT_FORMATION"
+         return None
++    from core.services.entry_contract import live_ma_direction_evidence
++    averages = live_ma_direction_evidence(frame, quote, side, diagnostics)
++    if averages is None:
++        return None
++    from core.services.entry_chop_gate import evaluate_entry_chop
++    chop_status, chop = evaluate_entry_chop(frame, check_ma5_turns=True)
++    if chop is None:
++        diagnostics["reason"] = chop_status
++        return None
+     atr = float(closed.iloc[-1].atr)
+     defensive = closed["low" if sign == 1 else "high"].tail(5)
+     level = float(defensive.min() if sign == 1 else defensive.max())
+@@ -75,4 +84,4 @@ def evaluate_breakout(frame, quote, account, symbol, diagnostics, requested=None
+                 pending_signal_id=signal_id,
+                 structure_risk_stop=stop,
+                 entry_failure_level=float(live.kc_upper if sign == 1 else live.kc_lower),
+-                exit_bar_id=None, entry_qualification_policy=POLICY)
++                exit_bar_id=None, entry_qualification_policy=POLICY, **averages, **chop)
+diff --git a/tests/test_dual_breakout_first_profit.py b/tests/test_dual_breakout_first_profit.py
+index a6ebd10..ce28482 100644
+--- a/tests/test_dual_breakout_first_profit.py
++++ b/tests/test_dual_breakout_first_profit.py
+@@ -4,6 +4,7 @@ from types import SimpleNamespace
+ from unittest.mock import AsyncMock, Mock
+ 
+ import pytest
++import pandas as pd
+ 
+ from core.engine import TradingEngine
+ from core.services.entry_contract import ENTRY_CODES, evaluate_entry_contract
+@@ -26,6 +27,18 @@ def outside_frame(side, bar=600000.):
+     price = 100.+(.3 if side == "LONG" else -.3)
+     f.loc[2, ["open", "close", "high", "low"]] = [
+         100., price, max(100., price), min(100., price)]
++    sign = 1 if side == "LONG" else -1
++    for i in range(2):
++        c = 100.+sign*i*.1
++        f.loc[i, ["open", "close", "high", "low"]] = [c-sign*.05, c, c+.06, c-.06]
++    prefix = []
++    for i in range(4):
++        c = 100.+sign*(-.4+i*.1)
++        prefix.append(dict(f.iloc[0], timestamp=bar-360000.+i*60000.,
++                           open=c-sign*.05, close=c, high=c+.06, low=c-.06))
++    f = pd.concat([pd.DataFrame(prefix, index=[-4, -3, -2, -1]), f])
++    f["ma5"] = f["close"].rolling(5).mean().fillna(f["close"]-sign*.2)
++    f["ma15"] = 100.+(f["close"]-100.).cumsum()/15.
+     f.attrs.update(entry_finality_verified=True, entry_quote_ms=bar+2000,
+                    entry_finality_server_ms=bar+2000)
+     return f
+@@ -82,7 +95,7 @@ def test_next_candle_continues_without_new_cross_or_two_colors(symbol, side):
+     a.last_closed_at = {symbol: 599.9}
+     a.trades = [dict(symbol=symbol, action="CLOSE_"+side, id=599900)]
+     f = outside_frame(side)
+-    f.loc[0:1, ["open", "close"]] = 100.
++    f.loc[1, "open"] = f.loc[1, "close"]
+     assert evaluate_entry_contract(f, account=a, symbol=symbol)["side"] == side
+     a.last_closed_at[symbol] = 600.
+     assert evaluate_entry_contract(f, account=a, symbol=symbol) is None
+diff --git a/tests/test_dual_breakout_pair.py b/tests/test_dual_breakout_pair.py
+index e4a93e6..eaf892d 100644
+--- a/tests/test_dual_breakout_pair.py
++++ b/tests/test_dual_breakout_pair.py
+@@ -28,6 +28,15 @@ def pair_frame(side):
+                             ("low", "high"), ("kc_lower", "kc_upper"),
+                             ("kc_upper", "kc_lower"), ("kc_middle", "kc_middle")):
+             f[key] = 200-src[origin]
++    sign = 1 if side == "LONG" else -1
++    prefix = []
++    for i in range(4):
++        c = 100.+sign*(-.4+i*.1)
++        prefix.append(dict(f.iloc[0], timestamp=240000.+i*60000.,
++                           open=c-sign*.05, close=c, high=c+.06, low=c-.06))
++    f = pd.concat([pd.DataFrame(prefix, index=[-4, -3, -2, -1]), f])
++    f["ma5"] = f["close"].rolling(5).mean().fillna(f["close"]-sign*.2)
++    f["ma15"] = 100.+(f["close"]-100.).cumsum()/15.
+     f.attrs.update(entry_finality_verified=True, entry_quote_ms=602000.,
+                    entry_finality_server_ms=602000., timeframe_ms=60000)
+     return f
+@@ -35,7 +44,7 @@ def pair_frame(side):
+ 
+ @pytest.mark.parametrize("symbol", SYMBOLS)
+ @pytest.mark.parametrize("side", SIDES)
+-def test_general_two_closed_bodies_kc_direction_no_ma(symbol, side):
++def test_general_two_closed_bodies_kc_ma_directions_and_nonchoppy_history(symbol, side):
+     f = pair_frame(side)
+     d = evaluate_entry_contract(f, account=account(), symbol=symbol)
+     assert d["type"] == "KC_2BAR_CONFIRM_"+side

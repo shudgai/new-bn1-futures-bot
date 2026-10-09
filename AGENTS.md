@@ -40,34 +40,40 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
-## 嚴格開倉 Gate 規範（2026-10-04 最新授權）
+## 嚴格開倉 Gate 規範（2026-10-09 最新授權）
 - **破軌開倉 Gate 嚴格條件**：
-  1. 當根原始開盤價必須在軌道內側或碰軌（多單與空單皆須滿足 `lower <= opened <= upper`）。
-  2. 當前最新價必須嚴格破軌（多單 `price > upper`，空單 `price < lower`）。
-  3. 當根順向實體長度必須至少達到前一根已收線 ATR 的 0.5 倍（`abs(price - opened) >= 0.5 * atr`）。
-  4. **跳空開盤已在外軌外（`opened > upper` 或 `opened < lower`）或沿軌道外連開者，一律嚴格 Fail-Closed 阻斷**，不得繞過 Gate 違規開倉。
+  1. 一般第一根突破要求當根原始開盤價在通道內或碰軌（`lower <= opened <= upper`）；同側外軌外開盤可走延續入口，反側外軌外開盤仍阻斷。
+  2. 當前最新價必須嚴格在突破方向外軌之外（多單 `price > upper`，空單 `price < lower`）。
+  3. 順向實體至少達前一根已收線 ATR 的 0.5 倍（`abs(price - opened) >= 0.5 * atr`），且最新價距同側外軌不超過 3 ATR；超過 3 ATR 不追價。
+  4. 上述突破及同側延續均須以最新報價重新驗證；反側跳空開盤、報價退回通道或實體不足一律 Fail-Closed。
+- **MA5 均線方向嚴格防護**：
+  - 開多單時，MA5 必須呈現絕對**向上**斜率（當前 MA5 > 上一根 MA5），走平或向下嚴禁開多。
+  - 開空單時，MA5 必須呈現絕對**向下**斜率（當前 MA5 < 上一根 MA5），走平或向上嚴禁開空。
+- **通道極度收斂防護 (25% 剩餘空間)**：
+  - 開倉時會回顧過去 20 根 K 線的通道最大寬度。若當前通道寬度已縮小至最高峰的 **25% 或以下**，表示行情陷入極度死水，直接拒絕開倉，直到通道打開且有新趨勢。
+  - 若 MA5 與 MA15 之間的距離，或 MA5 與目標突破之 KC 外軌的距離，小於當前通道寬度的 **25%**，視為空間不足、均線過於黏合，拒絕開倉。
 - **延續開倉與獲利重開防護（解封並升級嚴格限制）**：
   - 當「破軌後平倉後」或「破軌沒開倉」時，適用此規則（`evaluate_continuation_entry` 及 `_profit_reentry_ready`）。
   - **嚴格趨勢要求**：必須符合目前通道方向（多單漲勢、空單跌勢，CK方向與MA5斜率皆須符合）。
   - **嚴格軌外要求**：K線最新價（quote）必須**同時嚴格在 KC 外軌與 MA5 之外**（多單 `price > kc_upper` 且 `price > ma5`；空單 `price < kc_lower` 且 `price < ma5`）。
   - **退回防護**：若 K 線已退回 KC 通道內或退回 MA5 內，一律拒絕開倉。
 
-## 動態階梯鎖利與 MA 抖動防護（2026-10-04 最新授權）
-- **方案 2 動態 ATR 鎖利階梯（利潤越高，允許回吐 ATR 越小）**：
-  - `0.5 <= peak_gain_atr < 1.0`：允許回踩門檻為 **0.60 ATR**（防 1M 雜訊與正常回調甩轎）。
-  - `1.0 <= peak_gain_atr < 2.0`：允許回踩門檻為 **0.50 ATR**（鎖定 50% ~ 75% 獲利）。
-  - `2.0 <= peak_gain_atr < 3.0`：允許回踩門檻為 **0.40 ATR**（鎖定 80% ~ 87% 獲利）。
-  - `peak_gain_atr >= 3.0`：允許回踩門檻為 **0.35 ATR**（大波段噴出鎖定 ≥ 88% ~ 90%+ 獲利）。
-  - 價格自峰值回踩達到動態階梯門檻時，由 `EXIT_PEAK_PULLBACK_PRESSURE` 執行平倉。
+## 動態階梯鎖利與 MA 抖動防護（2026-10-09 最新授權）
+- **取消一般回踩平倉，僅保留強勢噴發防護**：
+  - 除非走勢為「直線直衝」（Strong Trend 且利潤 > 2 ATR，或極端噴發 > 3 ATR），否則**不執行回踩平倉**，避免小幅度 MA 抖動洗下車。
+  - 震盪或一般推進將耐心等待峰谷（Three-Point Pivot）成型或瀑布/破軌防禦。
+- **方向糾正與反側破軌強制平倉機制**：
+  - **反側 KC 軌道破位**：持有多單且最新價跌破 `kc_lower`（或空單突破 `kc_upper`），立刻以 `OPPOSITE_KC_BAND_BREACH` 異常平倉逃命。
+  - **大趨勢 CK 糾正**：若即時監測發現當前大趨勢 CK 方向與持倉方向相反，立刻以 `WRONG_DIRECTION_CORRECTION` 理由強制平倉，絕不死扛。
 - **MA 抖動直接平倉權限停用**：
   - 停用 `EXIT_PEAK_MA_TURN_PRESSURE`（即時 MA3/MA5 單點拐頭不具備直接平倉授權），避免盤中毛刺與雜訊誤平。
 - **基礎風控與出口維持**：
   - 初始 ATR 硬止損（`EXIT_INITIAL_ATR_HARD_STOP`）、瀑布暴跌防護（Waterfall）、成熟反轉（Mature Reversal Pinbar）與帳戶硬止損均 100% 保持生效。
 
 
-## 多空第一根長K即時破軌（2026-09-11最新授權）
-- 新增入口優先於一般CK中軌趨勢：當根原始開盤價在當根上軌內側或碰軌、最新價嚴格破上軌、順向實體至少上一根已收線ATR的0.5倍即評估多單；空單對稱以長紅實體跌破下軌。0.5為本輪實作預設，獨立於出口ATR参数。
-- 不等收線、MA3交叉或CK中軌轉向；比較當根原始開盤、最新報價及當根KC外軌，不拿影線或未來K重建穿越時間。跳空開盤已在外軌外不作本入口；原CK趨勢入口保留。
+## 多空第一根長K即時破軌與同側延續（2026-09-11最新授權）
+- 新增入口優先於一般CK中軌趨勢：第一根突破的當根開盤在通道內或碰軌；若開盤已在同側外軌外，僅可依同側延續入口評估。多空均須最新報價嚴格在同側外軌外、順向實體至少上一根已收線ATR的0.5倍、距同側外軌不超過3 ATR；反側外軌外開盤不入場。
+- 不等收線、MA3交叉或CK中軌轉向；比較當根原始開盤、最新報價及當根KC外軌，不拿影線或未來K重建穿越時間。超過3 ATR不追；原CK趨勢入口保留。
 - 掃描、逐報價、快取、一般重開與送單重驗共用；診斷採實際突破方向，不能被舊CK方向誤標。最新價退回或實體不足時取消此入口，其他合法入口仍可重新評估。
 - 淨利空間0.15%、末端雙向禁開、反向異常、異常專用回踩、每根限次及帳戶風控保留。持倉出口不變，不直接反手。
 
@@ -554,3 +560,172 @@ new bn/
 └── data/
     └── paper_account.json ← 帳戶持久化（bot 自動維護）
 ```
+
+
+## Permanent Owner Gate: SMALL -> BRIDGE -> LIVE BIG WAIT (2026-10-05)
+
+This Owner-approved specification is a permanent AI trading review gate. It defines the final shared entry requirement for `龙虾/USDT` and `CAP/USDT`; it does not authorize implementation, activation, deployment, orders, or restart. This section governs WAIT semantics over earlier conflicting WAIT exclusions. Other strategy authorities retain their separately approved scope.
+
+### Formation and thresholds
+
+- LONG: completed SMALL RED setup -> zero or more completed SMALL GREEN bridges -> LIVE BIG GREEN trigger -> immediately evaluate LONG entry. A newer valid SMALL RED refreshes the LONG setup. A SMALL GREEN bridge must not cancel LONG WAIT.
+- SHORT: completed SMALL GREEN setup -> zero or more completed SMALL RED bridges -> LIVE BIG RED trigger -> immediately evaluate SHORT entry. A newer valid SMALL GREEN refreshes the SHORT setup. A SMALL RED bridge must not cancel SHORT WAIT.
+- `SMALL_BODY_MAX = 0.25 ATR`: `abs(close - open) <= 0.25 * reference_ATR`. Setup and bridge candles must be completed. Each uses the ATR of its immediately preceding completed candle.
+- `BIG_BODY_MIN = 0.50 ATR`: LONG body is `live_price - current_candle_open`; SHORT body is `current_candle_open - live_price`. The trigger ATR is the last completed candle ATR before the live candle starts and remains fixed throughout that candle.
+- A valid live directional body reaching the threshold creates a WAIT entry candidate immediately. Do not wait for the BIG candle to close or use completed close as the sole trigger. These approved specification thresholds are not evidence of deployed functionality.
+
+### Independent authority and unresolved transitions
+
+- WAIT is an independent entry authority, not KC pending WAIT, diagnostic WAIT, continuation qualification WAIT, or a KC2BAR alias. Neither WAIT nor KC2BAR requires the other authority first.
+- Setup/bridge location inside KC, near its middle, or outside KC does not invalidate formation without a separate Owner location rule. `PEAK_REQUIRED_FOR_SHORT = NO`; `VALLEY_REQUIRED_FOR_LONG = NO`. Do not invent peak/valley requirements.
+- Do not introduce N-bar expiry, timeout expiry, lookback expiry, or a maximum bridge count. Time alone must not clear valid WAIT.
+- State is per symbol and direction, with at most one armed direction per symbol. Opposite-setup CLEAR/KEEP/REPLACE is unresolved where not explicitly specified. A bridge may also resemble an opposite setup; do not auto-flip or silently override bridge preservation. Report `OWNER_DECISION_REQUIRED`.
+- Medium candles, doji, and opposite BIG candles have no invented clear/keep/reverse transition. Report `OWNER_DECISION_REQUIRED` until the Owner defines their exact transitions.
+
+### Order identity, consumption, and safety
+
+- Stable trigger identity includes symbol, side, live candle identity, and WAIT setup provenance. The same trigger has at most one Order Authority claim; never submit duplicate entries for the same BIG candle.
+- Decision and submission are not successful open. Consume WAIT trigger/state only after authoritative confirmed successful position open. FAILED is not a fill. PARTIAL/TIMEOUT/UNKNOWN require reconciliation/quarantine; do not immediately resubmit the same trigger or retry a zero-fill trigger without limit. A future distinct trigger may be independently evaluated.
+- WAIT must pass Position Gate, Safety Gate, Entry Firewall, slot/capital checks, pending-order checks, UNKNOWN protection, and the account submit lock. It must not bypass these gates by calling `account.open_position()` directly.
+- Existing positions require a valid independent Close Authority, successful close, authoritative fully-closed confirmation, and actual FLAT before WAIT entry evaluation. After FLAT, a still-valid trigger may be evaluated in the same market stage without an artificial next-candle delay. Close does not create WAIT authority or auto-open the opposite side.
+- Support KC2BAR only, WAIT only, and same-side coexistence. Same-side concurrent authorities yield at most one order/position. Opposite authorities in the same market stage fail closed and require Owner arbitration; do not choose a side automatically.
+
+### Isolation, persistence, and evidence
+
+- Both symbols use the same evaluator, thresholds, and authority semantics, with isolated candles, ATR, WAIT state, trigger identity, and position state.
+- Persist state and claims for restart safety. Restart must not convert existing WAIT into a new signal, duplicate triggers/orders, or contaminate another symbol. Do not backfill live triggers that were not actually observed during downtime. No hindsight reconstruction.
+- Verify and test LOBSTER LONG, LOBSTER SHORT, CAP LONG, and CAP SHORT independently. Never infer one direction or symbol passes because another passes.
+- At registration: `CURRENT_SOURCE_WAIT_IMPLEMENTED = NO`, LONG/SHORT WAIT order authority is missing, and `WAIT_IMPLEMENTATION_GATE = BLOCK`. Runtime implementation remains unverified. Spec approval must not be reported as Production readiness.
+
+### Mandatory AI review output
+
+Every Entry Strategy audit, patch plan, patch, test, deployment review, and restart review must explicitly report:
+
+```text
+WAIT_LONG_GATE = PASS / BLOCK / N/A / NOT_TESTED
+WAIT_SHORT_GATE = PASS / BLOCK / N/A / NOT_TESTED
+LOBSTER_WAIT_GATE = PASS / BLOCK / NOT_TESTED
+CAP_WAIT_GATE = PASS / BLOCK / NOT_TESTED
+LIVE_TRIGGER_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_DEDUPE_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_PERSISTENCE_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = PASS / BLOCK / NOT_TESTED
+TRADING_GATE = PASS / BLOCK
+```
+
+Any applicable BLOCK, UNKNOWN, or NOT_TESTED result requires `TRADING_GATE = BLOCK`. N/A must not conceal an applicable missing implementation. WAIT cannot be declared Production Ready until the authorized patch and all four symbol/direction tests pass, with the required safety and persistence evidence.
+
+```text
+WAIT_GATE_SPEC_APPROVED = YES
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+```
+
+Only this permanent specification registration is authorized by the 2026-10-05 Owner instruction. Later implementation or operational actions require their own explicit authorization.
+
+
+## Owner WAIT State-Machine Completion and Integrated Manifest (2026-10-05)
+
+This later Owner specification supersedes unresolved transitions and pre-position WAIT reuse in the preceding Permanent Owner WAIT Gate. It approves semantics, thresholds, and the reproducible integrated source anchor only. No code patch, candidate creation, deployment, restart, activation, or live order is authorized.
+
+### Final transitions
+
+- `BRIDGE_PRIORITY = YES`: with LONG_WAIT active, completed valid SMALL GREEN is exclusively a LONG bridge, not a SHORT setup. With SHORT_WAIT active, completed valid SMALL RED is exclusively a SHORT bridge, not a LONG setup. Never clear, replace, or flip the active direction for these bridges. At most one active direction per symbol; `WAIT_AUTO_FLIP = NO`.
+- With LONG_WAIT active, a newer completed SMALL RED refreshes the LONG setup; SHORT mirrors with SMALL GREEN. Refresh is neither consumption nor an order claim.
+- Completed medium candles (neither SMALL nor a BIG trigger with a successful order claim) keep existing WAIT. No time or N-bar expiry.
+- Doji keeps WAIT without clear, flip, or refresh. Before implementation, trace the exact existing Production definition. Without a unique, verified definition, `DOJI_CLASSIFICATION_GATE = BLOCK`; never invent a body threshold. Current static source has an entry body/span rule strictly below 0.10 (with boundary tolerance) and a separate exit doji rule at 0.25; this does not establish a canonical runtime WAIT classifier. Owner selection/proof remains required.
+- Opposite BIG keeps the active WAIT and cannot produce an opposite WAIT authority. Any independent opposite authority goes through entry arbitration.
+- A completed same-direction BIG without a recorded runtime live trigger/claim does not authorize a late order. Keep WAIT and record `MISSED_LIVE_TRIGGER`; no late chase or backfill. This diagnostic is not historical live-trigger proof.
+- Missing/invalid ATR, stale quote, unknown candle identity, or interrupted data prohibits new authority. Keep existing WAIT under `WAIT_DATA_SUSPENDED`; resume only from new authoritative market data, without replaying unobserved live triggers.
+- While a position exists, suspend all WAIT setup observation, refresh, bridge progression, and live-trigger claims. After authoritative fully-closed FLAT, old pre-position WAIT is not reusable. Rebuild from current/subsequent eligible market events after FLAT; never reconstruct setups from candles accumulated during the position. A valid trigger arising after FLAT may be evaluated immediately without forcing a next-bar delay. Close itself is not a setup.
+- Authoritative evidence of `filled_qty > 0` and an actual position establishes the position and consumes WAIT, including partial fills. Do not use the same trigger to top up requested quantity. Reconcile any remaining order under account safety. Unknown fill/position evidence requires quarantine and no new entry until reconciliation.
+
+### Thresholds and safety separation
+
+- Owner-approved thresholds: `SMALL_BODY_MAX = 0.25 ATR`, inclusive; `BIG_BODY_MIN = 0.50 ATR`, inclusive. Setup/bridge use the preceding completed candle ATR; live trigger uses the completed ATR preceding live candle inception, frozen throughout that candle. These are specification approvals, not activation or deployment evidence.
+- WAIT common safety gates: market data validity, position, pending order, UNKNOWN order, slots, capital, entry firewall, account submit lock, order sizing/exchange metadata, duplicate trigger, and genuine account/risk safety checks.
+- WAIT does not inherit KC2BAR breakout, outside-KC location, K1/K2 pattern, adjacency, pending_signal_id, or confirmation structure. WAIT adds no MA3/MA5/MA15 qualification, KC location, peak, or valley requirement. Trace and separate existing mixed strategy/account checks before implementation; do not disguise strategy qualifications as account safety.
+- Stable trigger claims, successful-open-only consumption, per-symbol isolation, restart persistence, KC2BAR same-side single-order arbitration, and opposite-authority fail-closed rules remain mandatory.
+
+### Final integrated patch manifest scope
+
+- Approved reproducible isolated source anchor: `05103c3c74897c788e01daccc8e3a4e5b5ccf1da`. This is not the historical PID runtime source and does not approve every anchor behavior.
+- One planned candidate includes lobster/CAP two-slot shared strategy, the approved half-wallet capital formula inside the shared refreshed submit lock, Close -> authoritative FLAT -> independent Entry, KC2BAR producer/whitelist alignment, independent WAIT, canonical Model T, position UUID, state/event outbox, concurrency and restart safety.
+- Continuation remains specification-approved but implementation fail-closed until verified. Exclude D0, standalone MA3 entry, CAP-specific strategy, chart frontend, and unrelated dirty changes. Profit Lock remains disabled with parameters unset until separate approval.
+- Implement only explicitly approved minimal deltas after code approval. Additional WAIT work requires the shared WAIT evaluator, authority arbitration, authority-aware entry/firewall separation, lifecycle persistence/consumption, and tests for all four symbol/direction paths. No candidate is created by this specification update.
+
+### Mandatory expanded review gates
+
+```text
+WAIT_LONG_GATE = PASS / BLOCK / N/A / NOT_TESTED
+WAIT_SHORT_GATE = PASS / BLOCK / N/A / NOT_TESTED
+LOBSTER_WAIT_GATE = PASS / BLOCK / NOT_TESTED
+CAP_WAIT_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_ATR_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_BRIDGE_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_DEDUPE_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_CONSUMPTION_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_PERSISTENCE_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_RESTART_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = PASS / BLOCK / NOT_TESTED
+WAIT_ARBITRATION_GATE = PASS / BLOCK / NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS / BLOCK
+TRADING_GATE = PASS / BLOCK
+```
+
+An applicable BLOCK, UNKNOWN, or NOT_TESTED requires `TRADING_GATE = BLOCK`. The preceding `LIVE_TRIGGER_GATE` remains an alias of `WAIT_LIVE_TRIGGER_GATE`, not a separate authority. At registration, LONG/SHORT and both-symbol implementation gates remain BLOCK; runtime/functional safety gates are NOT_TESTED, and doji classification is BLOCK. No implementation or test pass is inferred from specification registration.
+
+```text
+WAIT_STATE_MACHINE_SPEC_APPROVED = YES
+WAIT_THRESHOLDS_SPEC_APPROVED = YES
+INTEGRATED_SOURCE_ANCHOR_APPROVED = YES
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+```
+
+
+## Owner WAIT Doji Classification Lock (2026-10-05)
+
+This Owner-approved specification supersedes the preceding unresolved WAIT doji definition and specification classification BLOCK. It does not authorize trading code changes, candidate creation, deployment, restart, activation, or orders.
+
+### Unique completed-candle classifier
+
+- `WAIT_DOJI_DEFINITION = ENTRY_STYLE_BODY_RANGE_LT_10_PERCENT`. For valid completed OHLC, `candle_range = high - low` and `body = abs(close - open)`. A nonpositive range is INVALID_CANDLE, not a WAIT setup, bridge, or trigger; never misclassify invalid data as doji.
+- The mathematical boundary is strictly `body / candle_range < 0.10`; at or above 0.10 is NOT DOJI. Preserve the existing Entry helper's floating-point boundary convention, using the same helper and tolerance rather than a second approximate classifier.
+- Static trace of the designated anchor and current source: `is_entry_doji` in `core/services/entry_contract.py`, with `DOJI_BODY_RATIO = 0.10`, computes `threshold = DOJI_BODY_RATIO * span` and returns `body < threshold and not math.isclose(body, threshold, rel_tol=1e-12)`. The existing default absolute tolerance is 0.0. Numerically close values just below the boundary are treated as boundary/NOT DOJI under this shared convention. Do not claim a raw division-only classifier has identical floating-point behavior.
+- Perform authoritative market-data validation before calling the helper. The existing helper returns True for invalid data and adjusts the range to include closing price; neither behavior replaces WAIT validation. Reject inconsistent OHLC before classification, so valid completed candles use their actual `high - low` range. This is a future implementation requirement, not a code change here.
+- Do not use Exit 25-percent doji rules. `EXIT_25_PERCENT_DOJI_USED_BY_WAIT = NO`.
+
+### Priority and transitions
+
+Completed-candle classification order is: VALID MARKET DATA -> DOJI -> SMALL BODY -> directional setup/bridge/refresh -> other transition.
+
+- Doji takes priority even when body is at most 0.25 reference ATR. It cannot create LONG/SHORT setup, bridge, or refresh.
+- NO WAIT + doji remains NO WAIT. Active LONG_WAIT + doji keeps LONG_WAIT. Active SHORT_WAIT + doji keeps SHORT_WAIT. Doji never bridges, refreshes, clears, or flips state.
+- LONG SMALL RED setup and SMALL GREEN bridge both require NOT DOJI and body <= 0.25 reference ATR. SHORT mirrors with SMALL GREEN setup and SMALL RED bridge.
+- Completed-candle doji classification is only for setup/bridge state transitions. LIVE BIG triggers remain LONG `live_price - live_open >= 0.50 * fixed_ATR` and SHORT `live_open - live_price >= 0.50 * fixed_ATR`. Do not impose completed-candle doji classification on a live trigger or wait for candle close.
+
+```text
+WAIT_DOJI_DEFINITION = ENTRY_STYLE_BODY_RANGE_LT_10_PERCENT
+WAIT_DOJI_PRIORITY = BEFORE_SMALL_CLASSIFICATION
+WAIT_DOJI_TRANSITION = KEEP_EXISTING_WAIT
+WAIT_DOJI_CAN_CREATE_SETUP = NO
+WAIT_DOJI_CAN_BRIDGE = NO
+WAIT_DOJI_CAN_REFRESH = NO
+EXIT_25_PERCENT_DOJI_USED_BY_WAIT = NO
+DOJI_CLASSIFICATION_GATE = PASS (specification lock and static helper trace only)
+WAIT_GATE_SPEC_COMPLETE = YES
+OWNER_DECISIONS_REMAINING = NONE for WAIT state-machine semantics; code patch approval remains separate
+READY_FOR_FINAL_INTEGRATED_PATCH_APPROVAL = YES (specification/plan only)
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+TRADING_GATE = BLOCK UNTIL IMPLEMENTED + TESTED
+```
+
+The specification PASS is not runtime or implementation verification. All permanent WAIT implementation/symbol/direction/safety/restart gates remain BLOCK or NOT_TESTED until independently verified. Future tests must cover below/exactly/above 0.10, the shared tolerance neighborhood, zero/negative range, invalid OHLC, doji-before-SMALL precedence, all three state transitions, and live-trigger independence across all four symbol/direction paths. Historical runtime source identity remains UNKNOWN.

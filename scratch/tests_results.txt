@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.1.1, pluggy-1.6.0
+rootdir: /home/shudgai999/project/new bn
+configfile: pytest.ini
+plugins: anyio-4.13.0
+collected 3 items
+
+tests/test_d0_structure_break_integration.py ...                         [100%]
+
+=============================== warnings summary ===============================
+core/testnet_account.py:137
+  /home/shudgai999/project/new bn/core/testnet_account.py:137: PytestCollectionWarning: cannot collect test class 'BinanceTestnetAccount' because it has a __init__ constructor (from: tests/test_d0_structure_break_integration.py)
+    class BinanceTestnetAccount:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= 3 passed, 1 warning in 1.41s =========================

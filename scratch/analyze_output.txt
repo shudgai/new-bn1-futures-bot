@@ -1,0 +1,100 @@
+=== SUMMARY ===
+
+--- MODEL A0 ---
+Total Candidates: 2860
+LONG: 1319
+SHORT: 1540
+R0.5: 1642 / 2859 = 57.43%
+R1.0: 1292 / 2859 = 45.19%
+R1.5: 1043 / 2859 = 36.48%
+R2.0: 862 / 2859 = 30.15%
+Median 5m MFE: 0.85
+Median 5m MAE: 1.10
+Median 10m MFE: 1.25
+Median 10m MAE: 1.53
+Median 20m MFE: 1.81
+Median 20m MAE: 2.14
+Median 30m MFE: 2.25
+Median 30m MAE: 2.58
+Blocks:
+Block 1: N=529 (L:222/S:307) R0.5=56.14% R1.0=43.10% MFE20m=1.58 MAE20m=2.04
+Block 2: N=599 (L:295/S:304) R0.5=56.26% R1.0=44.41% MFE20m=1.78 MAE20m=2.33
+Block 3: N=549 (L:265/S:284) R0.5=60.66% R1.0=47.18% MFE20m=1.97 MAE20m=1.96
+Block 4: N=605 (L:309/S:296) R0.5=54.38% R1.0=43.80% MFE20m=1.77 MAE20m=2.21
+Block 5: N=577 (L:228/S:349) R0.5=59.97% R1.0=47.49% MFE20m=2.11 MAE20m=2.09
+
+--- MODEL A ---
+RANGE_BLOCKED: 0
+Total Candidates: 2784
+LONG: 1284
+SHORT: 1499
+R0.5: 1600 / 2783 = 57.49%
+R1.0: 1264 / 2783 = 45.42%
+R1.5: 1017 / 2783 = 36.54%
+R2.0: 838 / 2783 = 30.11%
+Median 5m MFE: 0.85
+Median 5m MAE: 1.10
+Median 10m MFE: 1.26
+Median 10m MAE: 1.53
+Median 20m MFE: 1.81
+Median 20m MAE: 2.14
+Median 30m MFE: 2.25
+Median 30m MAE: 2.58
+Blocks:
+Block 1: N=511 (L:215/S:296) R0.5=56.36% R1.0=43.25% MFE20m=1.57 MAE20m=2.04
+Block 2: N=592 (L:291/S:301) R0.5=56.25% R1.0=44.43% MFE20m=1.75 MAE20m=2.34
+Block 3: N=528 (L:258/S:270) R0.5=60.42% R1.0=47.73% MFE20m=2.00 MAE20m=1.96
+Block 4: N=589 (L:299/S:290) R0.5=54.50% R1.0=43.97% MFE20m=1.77 MAE20m=2.21
+Block 5: N=563 (L:221/S:342) R0.5=60.21% R1.0=47.78% MFE20m=2.11 MAE20m=2.09
+
+--- MODEL B ---
+Total Candidates: 2363
+LONG: 1059
+SHORT: 1161
+R0.5: 1270 / 2220 = 57.21%
+R1.0: 1005 / 2220 = 45.27%
+R1.5: 811 / 2220 = 36.53%
+R2.0: 664 / 2220 = 29.91%
+Median 5m MFE: 0.86
+Median 5m MAE: 1.11
+Median 10m MFE: 1.25
+Median 10m MAE: 1.56
+Median 20m MFE: 1.82
+Median 20m MAE: 2.20
+Median 30m MFE: 2.24
+Median 30m MAE: 2.63
+Vetoed: 388 (14.10%)
+Blocks:
+Block 1: N=407 (L:183/S:224) R0.5=57.00% R1.0=43.24% MFE20m=1.57 MAE20m=2.09
+Block 2: N=470 (L:242/S:228) R0.5=57.02% R1.0=44.68% MFE20m=1.69 MAE20m=2.35
+Block 3: N=420 (L:202/S:218) R0.5=58.81% R1.0=47.14% MFE20m=2.01 MAE20m=1.98
+Block 4: N=473 (L:248/S:225) R0.5=53.91% R1.0=43.97% MFE20m=1.80 MAE20m=2.32
+Block 5: N=450 (L:184/S:266) R0.5=59.56% R1.0=47.33% MFE20m=2.11 MAE20m=2.17
+
+--- MODEL C ---
+Total Candidates: 2363
+LONG: 1129
+SHORT: 1233
+R0.5: 1355 / 2362 = 57.37%
+R1.0: 1077 / 2362 = 45.60%
+R1.5: 871 / 2362 = 36.88%
+R2.0: 711 / 2362 = 30.10%
+Median 5m MFE: 0.86
+Median 5m MAE: 1.11
+Median 10m MFE: 1.26
+Median 10m MAE: 1.56
+Median 20m MFE: 1.85
+Median 20m MAE: 2.21
+Median 30m MFE: 2.25
+Median 30m MAE: 2.63
+Original Vetoed: 388
+Recovered: 142
+Cancelled by structure: 91
+Cancelled by pullback: 155
+Veto Reactivations: 2
+Blocks:
+Block 1: N=432 (L:193/S:239) R0.5=56.94% R1.0=43.75% MFE20m=1.58 MAE20m=2.08
+Block 2: N=498 (L:257/S:241) R0.5=57.23% R1.0=44.78% MFE20m=1.75 MAE20m=2.35
+Block 3: N=449 (L:220/S:229) R0.5=59.24% R1.0=47.44% MFE20m=2.04 MAE20m=1.96
+Block 4: N=501 (L:265/S:236) R0.5=54.69% R1.0=44.91% MFE20m=1.85 MAE20m=2.27
+Block 5: N=482 (L:194/S:288) R0.5=58.92% R1.0=47.10% MFE20m=2.05 MAE20m=2.18

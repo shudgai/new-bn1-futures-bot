@@ -50,11 +50,11 @@ def test_account_update_does_not_close_strategy_exit_during_grace(
     def trigger_strategy_exit(pos, *_args, **_kwargs):
         pos[STATE_KEY].update(
             pending="EXIT_PEAK_PULLBACK_PRESSURE",
-            trigger="THREE_POINT_PIVOT",
+            trigger="EXIT_PEAK_PULLBACK_PRESSURE",
         )
         return {
             "type": "EXIT_PEAK_PULLBACK_PRESSURE",
-            "trigger": "THREE_POINT_PIVOT",
+            "trigger": "EXIT_PEAK_PULLBACK_PRESSURE",
         }
 
     monkeypatch.setattr(
@@ -97,7 +97,7 @@ def test_realtime_strategy_exit_waits_but_account_hard_stop_still_runs(
     def trigger_strategy_exit(*_args, **_kwargs):
         return {
             "type": "EXIT_PEAK_PULLBACK_PRESSURE",
-            "trigger": "THREE_POINT_PIVOT",
+            "trigger": "EXIT_PEAK_PULLBACK_PRESSURE",
         }
 
     monkeypatch.setattr(
@@ -127,15 +127,17 @@ def test_realtime_strategy_exit_waits_but_account_hard_stop_still_runs(
         ("SUI/USDT", "EXIT_PEAK_PULLBACK_PRESSURE", False),
         ("SUI/USDT", "KC_CHANNEL_RETURN", False),
         ("SUI/USDT", "EXIT_PROFIT_LOCK_FLOOR", False),
-        ("SUI/USDT", "DOJI_REVERSAL_EXIT", True),
+        ("SUI/USDT", "DOJI_REVERSAL_EXIT", False),
         ("SUI/USDT", "THREE_POINT_PIVOT", True),
         ("SUI/USDT", "WATERFALL_DROP", True),
+        ("SUI/USDT", "TWO_CLOSED_ADVERSE_ABNORMAL", True),
         ("龙虾/USDT", "MA5_TRUE_PEAK_REVERSAL", False),
         ("龙虾/USDT", "EXIT_PEAK_PULLBACK_PRESSURE", False),
         ("龙虾/USDT", "EXIT_PROFIT_LOCK_FLOOR", False),
-        ("龙虾/USDT", "DOJI_REVERSAL_EXIT", True),
+        ("龙虾/USDT", "DOJI_REVERSAL_EXIT", False),
         ("龙虾/USDT", "THREE_POINT_PIVOT", True),
         ("龙虾/USDT", "WATERFALL_DROP", True),
+        ("龙虾/USDT", "TWO_CLOSED_ADVERSE_ABNORMAL", True),
     ],
 )
 def test_pivot_only_symbols_reject_locks_and_pullbacks(

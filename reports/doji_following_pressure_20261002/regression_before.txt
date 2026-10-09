@@ -1,0 +1,549 @@
+...F.....F...F...............................................FFFFFFF..F. [100%]
+=================================== FAILURES ===================================
+_______________________ test_long_released_peak_trailing _______________________
+
+    def test_long_released_peak_trailing():
+        # 5. RELEASED + Peak trailing -> normal exit
+        position = {'side': 'LONG', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 110, 'peak_net_pnl': 10.0, 'identity': ['LONG', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 90, 'open_timestamp': 60.0}
+        snapshot = get_base_snapshot('RELEASED')
+        res = evaluate_peak_trailing(position, 105, snapshot)
+>       assert res is not None
+E       assert None is not None
+
+tests/test_trend_hold_integration.py:72: AssertionError
+______________________ test_short_released_peak_trailing _______________________
+
+    def test_short_released_peak_trailing():
+        position = {'side': 'SHORT', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 90, 'peak_net_pnl': 10.0, 'identity': ['SHORT', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 110, 'open_timestamp': 60.0}
+        snapshot = get_base_snapshot_short('RELEASED')
+        res = evaluate_peak_trailing(position, 95, snapshot)
+>       assert res is not None
+E       assert None is not None
+
+tests/test_trend_hold_integration.py:150: AssertionError
+_________________ test_trend_hold_transition_warning_released __________________
+
+    def test_trend_hold_transition_warning_released():
+        position = {'side': 'LONG', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 110, 'peak_net_pnl': 10.0, 'identity': ['LONG', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 90, 'open_timestamp': 60.0}
+    
+        # WARNING
+        snap2 = get_base_snapshot('WARNING')
+        res2 = evaluate_peak_trailing(position, 105, snap2)
+        assert res2 is None
+        assert position.get('trend_hold_status') == 'WARNING'
+    
+        # RELEASED
+        snap3 = get_base_snapshot('RELEASED')
+        snap3['quote_ms'] = 61000
+        res3 = evaluate_peak_trailing(position, 105, snap3)
+>       assert res3 is not None
+E       assert None is not None
+
+tests/test_trend_hold_integration.py:208: AssertionError
+__ test_cached_snapshot_requires_actual_live_bar_and_supports_one_closed_bar ___
+
+    def test_cached_snapshot_requires_actual_live_bar_and_supports_one_closed_bar():
+        now = time.time(); f = frame_for('LONG', now)
+        snap, atr = cached_tick_indicators(f, 108., now*1000)
+>       assert atr == 1. and snap['live_open'] == 110.
+E       assert (0.0 == 1.0)
+
+tests/test_abnormal_only_hold.py:126: AssertionError
+______________ test_scan_tick_retry_no_rest_and_no_position[LONG] ______________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_scan_tick_retry_no_rest_and_no_position(side):
+        async def run():
+            now=time.time(); p=position(side, now-120); f=frame_for(side, now)
+            account=SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(), log=Mock(),
+                                    close_position=AsyncMock(return_value=False))
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'X':f},
+                                   fetch_klines=AsyncMock(side_effect=AssertionError('No REST')))
+            price = 108. if side == 'LONG' else 92.
+            await process_single_symbol_runner(engine,'X',now,None,True,exit_frame=f,exit_quote=price)
+            assert account.close_position.await_count == 1
+            assert ABNORMAL_REASON in account.close_position.await_args.args[2]
+            engine._channel_exit_frames = {}
+            assert await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
+            assert account.close_position.await_count == 2
+            saved=copy.deepcopy(p)
+            assert not await enforce_realtime_profit_exit(engine,'X',100.,(now-10)*1000)
+            assert p==saved
+            account.positions.clear()
+            assert not await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
+            engine.fetch_klines.assert_not_awaited()
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        now=time.time(); p=position(side, now-120); f=frame_for(side, now)
+        account=SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(), log=Mock(),
+                                close_position=AsyncMock(return_value=False))
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'X':f},
+                               fetch_klines=AsyncMock(side_effect=AssertionError('No REST')))
+        price = 108. if side == 'LONG' else 92.
+        await process_single_symbol_runner(engine,'X',now,None,True,exit_frame=f,exit_quote=price)
+>       assert account.close_position.await_count == 1
+E       AssertionError: assert 0 == 1
+E        +  where 0 = <AsyncMock id='128201312419088'>.await_count
+E        +    where <AsyncMock id='128201312419088'> = namespace(positions={'X': {'side': 'LONG', 'entry_price': 100.0, 'qty': 1.0, 'margin': 100.0, 'leverage': 1.0, 'open_t...ve_state=<Mock id='128200247961664'>, log=<Mock id='128200247749008'>, close_position=<AsyncMock id='128201312419088'>).close_position
+
+tests/test_abnormal_only_hold.py:141: AssertionError
+_____________ test_scan_tick_retry_no_rest_and_no_position[SHORT] ______________
+
+side = 'SHORT'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_scan_tick_retry_no_rest_and_no_position(side):
+        async def run():
+            now=time.time(); p=position(side, now-120); f=frame_for(side, now)
+            account=SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(), log=Mock(),
+                                    close_position=AsyncMock(return_value=False))
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'X':f},
+                                   fetch_klines=AsyncMock(side_effect=AssertionError('No REST')))
+            price = 108. if side == 'LONG' else 92.
+            await process_single_symbol_runner(engine,'X',now,None,True,exit_frame=f,exit_quote=price)
+            assert account.close_position.await_count == 1
+            assert ABNORMAL_REASON in account.close_position.await_args.args[2]
+            engine._channel_exit_frames = {}
+            assert await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
+            assert account.close_position.await_count == 2
+            saved=copy.deepcopy(p)
+            assert not await enforce_realtime_profit_exit(engine,'X',100.,(now-10)*1000)
+            assert p==saved
+            account.positions.clear()
+            assert not await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
+            engine.fetch_klines.assert_not_awaited()
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        now=time.time(); p=position(side, now-120); f=frame_for(side, now)
+        account=SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(), log=Mock(),
+                                close_position=AsyncMock(return_value=False))
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'X':f},
+                               fetch_klines=AsyncMock(side_effect=AssertionError('No REST')))
+        price = 108. if side == 'LONG' else 92.
+        await process_single_symbol_runner(engine,'X',now,None,True,exit_frame=f,exit_quote=price)
+>       assert account.close_position.await_count == 1
+E       AssertionError: assert 0 == 1
+E        +  where 0 = <AsyncMock id='128201392524656'>.await_count
+E        +    where <AsyncMock id='128201392524656'> = namespace(positions={'X': {'side': 'SHORT', 'entry_price': 100.0, 'qty': 1.0, 'margin': 100.0, 'leverage': 1.0, 'open_...ve_state=<Mock id='128200247957008'>, log=<Mock id='128200247957968'>, close_position=<AsyncMock id='128201392524656'>).close_position
+
+tests/test_abnormal_only_hold.py:141: AssertionError
+____ test_real_account_reload_and_single_flight_abnormal_close[paper-LONG] _____
+
+side = 'LONG', mode = 'paper'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-51/test_real_account_reload_and_s0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7499373cdb50>
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('mode', ['paper', 'testnet'])
+    def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_path, monkeypatch):
+        async def run():
+            import core.paper_account as pm
+            import core.testnet_account as tm
+            from test_testnet_account import FakeTestnetExchange
+            from test_close_deduplication import close_orders, closes
+            ex=FakeTestnetExchange()
+            ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+                dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+                for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+            ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+            monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+            monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+            monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+            monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+            monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+                entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+            p=account.positions['DOGE/USDT']
+            assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+            now=time.time();f=frame_for(side,now)
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+            assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            engine.account=account
+            assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+            price=108. if side=='LONG' else 92.
+            await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+            assert 'DOGE/USDT' not in account.positions
+            assert len(closes(account))==1
+            if mode=='testnet':
+                assert len(close_orders(ex))==1
+                assert close_orders(ex)[0]['params']['reduceOnly']
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        import core.paper_account as pm
+        import core.testnet_account as tm
+        from test_testnet_account import FakeTestnetExchange
+        from test_close_deduplication import close_orders, closes
+        ex=FakeTestnetExchange()
+        ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+        ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+        monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+        monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+        monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+        monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+        monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+        p=account.positions['DOGE/USDT']
+        assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+        now=time.time();f=frame_for(side,now)
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+        assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        engine.account=account
+        assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+        price=108. if side=='LONG' else 92.
+        await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+>       assert 'DOGE/USDT' not in account.positions
+E       AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 85.01, 'atr_tp': 0.0, ...}}
+E        +  where {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 85.01, 'atr_tp': 0.0, ...}} = <core.paper_account.PaperAccount object at 0x7498e73b4830>.positions
+
+tests/test_abnormal_only_hold.py:188: AssertionError
+____ test_real_account_reload_and_single_flight_abnormal_close[paper-SHORT] ____
+
+side = 'SHORT', mode = 'paper'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-51/test_real_account_reload_and_s1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7498c11c50d0>
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('mode', ['paper', 'testnet'])
+    def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_path, monkeypatch):
+        async def run():
+            import core.paper_account as pm
+            import core.testnet_account as tm
+            from test_testnet_account import FakeTestnetExchange
+            from test_close_deduplication import close_orders, closes
+            ex=FakeTestnetExchange()
+            ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+                dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+                for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+            ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+            monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+            monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+            monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+            monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+            monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+                entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+            p=account.positions['DOGE/USDT']
+            assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+            now=time.time();f=frame_for(side,now)
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+            assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            engine.account=account
+            assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+            price=108. if side=='LONG' else 92.
+            await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+            assert 'DOGE/USDT' not in account.positions
+            assert len(closes(account))==1
+            if mode=='testnet':
+                assert len(close_orders(ex))==1
+                assert close_orders(ex)[0]['params']['reduceOnly']
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        import core.paper_account as pm
+        import core.testnet_account as tm
+        from test_testnet_account import FakeTestnetExchange
+        from test_close_deduplication import close_orders, closes
+        ex=FakeTestnetExchange()
+        ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+        ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+        monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+        monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+        monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+        monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+        monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+        p=account.positions['DOGE/USDT']
+        assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+        now=time.time();f=frame_for(side,now)
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+        assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        engine.account=account
+        assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+        price=108. if side=='LONG' else 92.
+        await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+>       assert 'DOGE/USDT' not in account.positions
+E       AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 114.99, 'atr_tp': 0.0, ...}}
+E        +  where {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 114.99, 'atr_tp': 0.0, ...}} = <core.paper_account.PaperAccount object at 0x7498c11c4740>.positions
+
+tests/test_abnormal_only_hold.py:188: AssertionError
+___ test_real_account_reload_and_single_flight_abnormal_close[testnet-LONG] ____
+
+side = 'LONG', mode = 'testnet'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-51/test_real_account_reload_and_s2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7498c11c5970>
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('mode', ['paper', 'testnet'])
+    def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_path, monkeypatch):
+        async def run():
+            import core.paper_account as pm
+            import core.testnet_account as tm
+            from test_testnet_account import FakeTestnetExchange
+            from test_close_deduplication import close_orders, closes
+            ex=FakeTestnetExchange()
+            ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+                dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+                for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+            ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+            monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+            monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+            monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+            monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+            monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+                entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+            p=account.positions['DOGE/USDT']
+            assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+            now=time.time();f=frame_for(side,now)
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+            assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            engine.account=account
+            assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+            price=108. if side=='LONG' else 92.
+            await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+            assert 'DOGE/USDT' not in account.positions
+            assert len(closes(account))==1
+            if mode=='testnet':
+                assert len(close_orders(ex))==1
+                assert close_orders(ex)[0]['params']['reduceOnly']
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        import core.paper_account as pm
+        import core.testnet_account as tm
+        from test_testnet_account import FakeTestnetExchange
+        from test_close_deduplication import close_orders, closes
+        ex=FakeTestnetExchange()
+        ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+        ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+        monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+        monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+        monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+        monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+        monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+        p=account.positions['DOGE/USDT']
+        assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+        now=time.time();f=frame_for(side,now)
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+        assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        engine.account=account
+        assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+        price=108. if side=='LONG' else 92.
+        await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+>       assert 'DOGE/USDT' not in account.positions
+E       AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 85.0, 'atr_tp': 0.0, ...}}
+E        +  where {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 85.0, 'atr_tp': 0.0, ...}} = <core.testnet_account.BinanceTestnetAccount object at 0x7498f2398a40>.positions
+
+tests/test_abnormal_only_hold.py:188: AssertionError
+___ test_real_account_reload_and_single_flight_abnormal_close[testnet-SHORT] ___
+
+side = 'SHORT', mode = 'testnet'
+tmp_path = PosixPath('/tmp/pytest-of-shudgai999/pytest-51/test_real_account_reload_and_s3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7498c1193c80>
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    @pytest.mark.parametrize('mode', ['paper', 'testnet'])
+    def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_path, monkeypatch):
+        async def run():
+            import core.paper_account as pm
+            import core.testnet_account as tm
+            from test_testnet_account import FakeTestnetExchange
+            from test_close_deduplication import close_orders, closes
+            ex=FakeTestnetExchange()
+            ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+                dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+                for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+            ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+            monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+            monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+            monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+            monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+            monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+                entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+            p=account.positions['DOGE/USDT']
+            assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+            now=time.time();f=frame_for(side,now)
+            engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+            assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+            account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+            if mode=='testnet': await account.initialize()
+            engine.account=account
+            assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+            price=108. if side=='LONG' else 92.
+            await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+            assert 'DOGE/USDT' not in account.positions
+            assert len(closes(account))==1
+            if mode=='testnet':
+                assert len(close_orders(ex))==1
+                assert close_orders(ex)[0]['params']['reduceOnly']
+>       asyncio.run(run())
+
+tests/test_abnormal_only_hold.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def run():
+        import core.paper_account as pm
+        import core.testnet_account as tm
+        from test_testnet_account import FakeTestnetExchange
+        from test_close_deduplication import close_orders, closes
+        ex=FakeTestnetExchange()
+        ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
+            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
+            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
+        ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
+        monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
+        monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
+        monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
+        monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
+        monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
+            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+        p=account.positions['DOGE/USDT']
+        assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
+        now=time.time();f=frame_for(side,now)
+        engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
+        assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
+        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
+        if mode=='testnet': await account.initialize()
+        engine.account=account
+        assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
+        price=108. if side=='LONG' else 92.
+        await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+>       assert 'DOGE/USDT' not in account.positions
+E       AssertionError: assert 'DOGE/USDT' not in {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 115.0, 'atr_tp': 0.0, ...}}
+E        +  where {'DOGE/USDT': {'atr': 10.0, 'atr_protection_version': 2, 'atr_sl': 115.0, 'atr_tp': 0.0, ...}} = <core.testnet_account.BinanceTestnetAccount object at 0x7498c1001be0>.positions
+
+tests/test_abnormal_only_hold.py:188: AssertionError
+________ test_old_state_machine_cannot_exit_on_ma_middle_or_doji[LONG] _________
+
+side = 'LONG'
+
+    @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+    def test_old_state_machine_cannot_exit_on_ma_middle_or_doji(side):
+        from core.services.strategies.strict_state_machine import StrictStateMachineStrategy, PositionState
+        strategy=StrictStateMachineStrategy()
+        strategy.set_state('X', PositionState[side], {'entry_price':100., 'max_pnl':100.})
+        frame=pd.DataFrame([dict(timestamp=60000*i,open=100.,close=99.,high=110.,low=90.,
+                                kc_middle=100.,kc_upper=105.,kc_lower=95.,ma3=101.,ma15=102.,atr=1.)
+                            for i in (1,2,3)])
+>       assert strategy.evaluate_tick('X',frame,99. if side=='LONG' else 101.,0.)['action']=='WAIT'
+E       AssertionError: assert 'EXIT_LONG' == 'WAIT'
+E         
+E         - WAIT
+E         + EXIT_LONG
+
+tests/test_abnormal_only_hold.py:219: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_trend_hold_integration.py::test_long_released_peak_trailing
+FAILED tests/test_trend_hold_integration.py::test_short_released_peak_trailing
+FAILED tests/test_trend_hold_integration.py::test_trend_hold_transition_warning_released
+FAILED tests/test_abnormal_only_hold.py::test_cached_snapshot_requires_actual_live_bar_and_supports_one_closed_bar
+FAILED tests/test_abnormal_only_hold.py::test_scan_tick_retry_no_rest_and_no_position[LONG]
+FAILED tests/test_abnormal_only_hold.py::test_scan_tick_retry_no_rest_and_no_position[SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_real_account_reload_and_single_flight_abnormal_close[paper-LONG]
+FAILED tests/test_abnormal_only_hold.py::test_real_account_reload_and_single_flight_abnormal_close[paper-SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_real_account_reload_and_single_flight_abnormal_close[testnet-LONG]
+FAILED tests/test_abnormal_only_hold.py::test_real_account_reload_and_single_flight_abnormal_close[testnet-SHORT]
+FAILED tests/test_abnormal_only_hold.py::test_old_state_machine_cannot_exit_on_ma_middle_or_doji[LONG]
+11 failed, 61 passed in 1.88s

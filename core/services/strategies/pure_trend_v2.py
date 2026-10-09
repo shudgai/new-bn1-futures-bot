@@ -87,6 +87,19 @@ class PureTrendStrategyV2:
         if spread_pct < 0.04:
             return False, f"MA3 與 MA15 黏合 (張角僅 {spread_pct:.4f}% < 0.04%)，橫盤死魚拒絕開單！"
 
+        # ---------------------------------------------------------
+        # 門禁 4：均線方向防禦 (MA5 必須朝向開倉方向)
+        # ---------------------------------------------------------
+        ma3_prev = float(closed.iloc[-2]['ma3']) if closed is not None and len(closed) >= 2 else ma3
+        if ma3 > ma15:
+            # LONG context
+            if ma3 <= ma3_prev:
+                return False, "MA5 已向下或走平，嚴禁開多單！"
+        else:
+            # SHORT context
+            if ma3 >= ma3_prev:
+                return False, "MA5 已向上或走平，嚴禁開空單！"
+
         return True, "驗證通過"
 
     def is_valid_directional_entry_bar(self, bar_curr, side):
@@ -225,8 +238,9 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 多單做多開倉 (Pullback Long Entry)：回踩均線確認支撐
         # -------------------------------------------------------------
-        # 【趨勢過濾】做多必須 CK 向上 且 MA3 > MA15 (多頭排列)
-        is_ma_bullish = (ma3 > ma15)
+        # 【趨勢過濾】做多必須 CK 向上 且 MA3 > MA15 (多頭排列)，且 MA5 必須朝上
+        ma3_prev = float(bar_prev.get('ma3', 0))
+        is_ma_bullish = (ma3 > ma15) and (ma3 > ma3_prev)
         long_trend_valid = ck_is_up and is_ma_bullish
             
         # 【乖離過濾】做多進場價與 MA15 的距離不得大於 ma15_dist_limit
@@ -278,8 +292,9 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 空單做空開倉 (Pullback Short Entry)：回抽均線確認阻力
         # -------------------------------------------------------------
-        # 【趨勢過濾】做空必須 CK 向下 且 MA3 < MA15 (空頭排列)
-        is_ma_bearish = (ma3 < ma15)
+        # 【趨勢過濾】做空必須 CK 向下 且 MA3 < MA15 (空頭排列)，且 MA5 必須朝下
+        ma3_prev_short = float(bar_prev.get('ma3', float('inf')))
+        is_ma_bearish = (ma3 < ma15) and (ma3 < ma3_prev_short)
         short_trend_valid = ck_is_down and is_ma_bearish
             
         # 【乖離過濾】嚴禁極度超賣追空

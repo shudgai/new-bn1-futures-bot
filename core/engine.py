@@ -1714,7 +1714,9 @@ class TradingEngine:
     def _full_wallet_entry_margin(wallet, available, leverage):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
-        return min(wallet * 1.0, available / (1.0 + leverage * TAKER_FEE_RATE))
+        slot_count = get_effective_slot_count(wallet)
+        per_slot_budget = wallet / slot_count if slot_count > 0 else wallet
+        return min(per_slot_budget, available / (1.0 + leverage * TAKER_FEE_RATE))
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame

@@ -1,0 +1,528 @@
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -562,7 +562,7 @@
+         await self.account.initialize()
+         from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
+         migrate_account_peak_exits(self.account)
+-        self.account.log('ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
++        self.account.log('CHANNEL_EXIT_POLICY_READY exits=CLOSED_PRICE_PIVOT_OR_STRUCTURE_BREAK hard_stops=OFF tick=aggTrade+ticker', 'INFO')
+         # 策略切換後撤掉尚未成交的舊 MA5/舊回踩進場單，避免重啟後偷渡成交。
+         for symbol, pending in list(self.account.pending_limit_orders.items()):
+             mode = (pending.get("entry_context") or {}).get("entry_mode")
+--- a/core/services/exits/hard_stop_service.py
++++ b/core/services/exits/hard_stop_service.py
+@@ -9,22 +9,22 @@
+ 
+ 
+ def retire_initial_atr_pending(position, meta=None):
+-    """Revoke obsolete ATR close retries, without changing account loss limits."""
++    """Revoke all hard-stop retries for structural Channel Swing holdings."""
+     meta = meta if meta is not None else {}
+     if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
+         return False
+     changed = False
+     for source in (position, meta):
+-        if source.get("channel_hard_stop_pending") == "INITIAL_ATR":
++        if source.get("channel_hard_stop_pending") in ("INITIAL_ATR", "MARGIN_LOSS", "PRICE_LOSS"):
+             source.pop("channel_hard_stop_pending")
+             changed = True
+         for key in ("peak_trailing_state", "closed_exit_state", "exit_protection_snapshot"):
+             state = source.get(key)
+             if not isinstance(state, dict):
+                 continue
+-            if (state.get("pending") == "EXIT_INITIAL_ATR_HARD_STOP"
+-                    or state.get("reason") == "EXIT_INITIAL_ATR_HARD_STOP"
+-                    or state.get("trigger") == "INITIAL_ATR"):
++            if (state.get("pending") in ("EXIT_INITIAL_ATR_HARD_STOP", "EXIT_ACCOUNT_HARD_STOP")
++                    or state.get("reason") in ("EXIT_INITIAL_ATR_HARD_STOP", "EXIT_ACCOUNT_HARD_STOP")
++                    or state.get("trigger") in ("INITIAL_ATR", "MARGIN_LOSS", "PRICE_LOSS")):
+                 if key == "peak_trailing_state":
+                     state.pop("pending", None)
+                     state.pop("trigger", None)
+@@ -35,6 +35,8 @@
+ 
+ 
+ def hard_stop_reason(position, price):
++    if str(position.get("entry_mode") or "").upper() == "CHANNEL_SWING":
++        return None
+     pending = position.get("channel_hard_stop_pending")
+     if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
+         return pending
+--- a/core/services/exits/structural_holding_exit.py
++++ b/core/services/exits/structural_holding_exit.py
+@@ -1,9 +1,9 @@
+-"""Outer-rail MA5 V reversal, account hard stops and emergency waterfalls."""
++"""Confirmed post-entry price pivots and completed swing-structure breaks."""
+ import math
+ from core.config import CHANNEL_WATERFALL_BODY_ATR
+ from core.services.early_swing_reversal import EXIT as REVERSAL_EXIT
+ from core.services.exits.confirmed_pivot_exit import confirmed_pivot_turn, REASON as PIVOT_EXIT
+-from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT
++from core.services.exits.ma5_outer_pivot_exit import REASON as MA5_EXIT, confirmed_ma5_outer_pivot
+ from core.services.exits.trade_pressure_exit import REASON as PRESSURE_EXIT
+ from core.services.exits.live_ma5_v_exit import (
+     REASON as V_EXIT, RULE_VERSION as V_VERSION, observe_live_ma5_v,
+@@ -12,20 +12,20 @@
+ REASON = 'EXIT_CONFIRMED_SWING_STRUCTURE'
+ HARD = 'EXIT_ACCOUNT_HARD_STOP'
+ WATERFALL = 'EXIT_STRUCTURAL_WATERFALL'
+-POLICY = 'observed_outer_ma5_price_reversal_v11'
++POLICY = 'closed_price_pivot_or_structure_break_v12'
+ LEGACY_PRICE_PIVOT_EXIT = 'EXIT_CLOSED_PRICE_PIVOT_MA5_REVERSE'
+ FIRST_NET_PROFIT = 'EXIT_ENTRY_CANDLE_FIRST_NET_PROFIT'
+-ALLOWED = {HARD, WATERFALL, V_EXIT, FIRST_NET_PROFIT}
++ALLOWED = {MA5_EXIT, REASON}
+ RETIRED_CLOSE_REASONS = {
+     'EXIT_INITIAL_ATR_HARD_STOP',
+     'EXIT_CLOSED_MA5_OUTER_PIVOT',
+-    LEGACY_PRICE_PIVOT_EXIT, MA5_EXIT, PRESSURE_EXIT,
++    LEGACY_PRICE_PIVOT_EXIT, PRESSURE_EXIT, HARD, WATERFALL, V_EXIT, FIRST_NET_PROFIT,
+     'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_MOVING_PROFIT_STOP',
+     'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_CHANNEL_SAME_BAR_END',
+     'EXIT_CONFIRMED_TREND_REVERSAL', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL',
+     'EXIT_PEAK_PULLBACK_PRESSURE', 'EXIT_REALTIME_PEAK_TRAILING',
+     'EXIT_OPPOSITE_KC_BREAK',
+-    REASON, REVERSAL_EXIT, PIVOT_EXIT, 'EXIT_LIVE_MA5_V_REVERSAL',
++    REVERSAL_EXIT, PIVOT_EXIT, 'EXIT_LIVE_MA5_V_REVERSAL',
+     'EXIT_CONFIRMED_KC_DIRECTION_REVERSAL',
+     'EXIT_TERMINAL_DOJI_PRESSURE', 'EXIT_ADVERSE_ABNORMAL_BODY',
+ }
+@@ -37,7 +37,7 @@
+ 
+ 
+ def retire_profit_state(position, state, meta=None):
+-    """Revoke old soft-close retries in both persisted copies; keep hard retries."""
++    """Retain only the current position's confirmed pivot/structure retries."""
+     if str(position.get('entry_mode', '')).upper() != 'CHANNEL_SWING':
+         return
+     from core.services.exits.hard_stop_service import retire_initial_atr_pending
+@@ -50,7 +50,7 @@
+             source.pop(key, None)
+         source['armed'] = False
+         pending = source.get('pending')
+-        if pending not in ALLOWED and source.get('holding_exit_policy') != POLICY:
++        if pending not in ALLOWED or source.get('holding_exit_policy') != POLICY:
+             source.pop('pending', None)
+             source.pop('trigger', None)
+         if pending in RETIRED_CLOSE_REASONS:
+@@ -72,7 +72,7 @@
+         source.pop('trade_pressure_observation', None)
+         source.pop('trade_pressure_exit', None)
+         for key in ('confirmed_pivot_exit', 'pivot_guard_version',
+-                    'structure_break_confirmation', 'structure_break_level',
++                    'structure_break_level',
+                     'structure_break_atr', 'structure_break_threshold', 'intact_trend_pullback'):
+             source.pop(key, None)
+     for source in (position, meta or {}):
+@@ -118,40 +118,44 @@
+ def evaluate_structural_holding(position, state, price, snapshot, entry, qty, sign, atr, fee, slippage):
+     retire_profit_state(position, state)
+     reason = state.get('pending') if state.get('pending') in ALLOWED else None
+-    # Account loss limits are independent of profit, pivot or a new opposite entry.
+-    from core.services.exits.hard_stop_service import hard_stop_reason
+-    account_reason = hard_stop_reason(position, price)
+-    if account_reason:
+-        reason = HARD
+     valid = valid_snapshot(snapshot)
+-    if reason != HARD and valid and waterfall_ready(position, snapshot, price, sign):
+-        reason = WATERFALL
+     if reason is None and valid:
+-        from core.services.dual_breakout_entry import LIVE_CODES
+-        from core.services.exits.peak_trailing_exit import estimated_net_pnl
+-        entry_snapshot = position.get('entry_snapshot') or {}
+-        if entry_snapshot.get('signal_code') in LIVE_CODES:
+-            opened_bar = math.floor(float(position['open_timestamp'])*1000/60000)*60000
+-            net = estimated_net_pnl(entry, price, qty, sign, fee, slippage)
+-            paid = float(position.get('entry_fee_paid', entry*qty*fee))
+-            net += entry*qty*fee-paid
+-            if (snapshot['live_bar_ms'] == opened_bar
+-                    and float(snapshot['quote_ms']) >= float(position['open_timestamp'])*1000
+-                    and math.isfinite(paid) and paid >= 0 and math.isfinite(net) and net > 0):
+-                reason = FIRST_NET_PROFIT
+-                state['first_net_profit'] = dict(net=net, quote_ms=snapshot['quote_ms'],
+-                                                price=price, entry_bar_ms=opened_bar)
++        confirmation = confirmed_structure_break(position, snapshot, sign)
++        if confirmation:
++            reason = REASON
++            state['structure_break_confirmation'] = confirmation
+     if reason is None and valid:
+-        confirmation = observe_live_ma5_v(position, state, snapshot, price)
++        confirmation = confirmed_ma5_outer_pivot(position, state, snapshot, sign)
+         if confirmation:
+-            reason = V_EXIT
+-            state['live_ma5_v_exit'] = confirmation
++            reason = MA5_EXIT
++            state['ma5_outer_pivot'] = confirmation
+     state['holding_exit_policy'] = POLICY
+     if not reason:
+         return None
+-    trigger = (account_reason or state.get('trigger', 'ACCOUNT_LOSS')) if reason == HARD else 'WATERFALL_DROP' if reason == WATERFALL else reason
++    trigger = reason
+     state.update(pending=reason, trigger=trigger)
+     return dict(action='FULL_CLOSE', type=reason, reason=reason, trigger=trigger, price=price)
++
++
++def confirmed_structure_break(position, snapshot, sign):
++    """A completed post-entry close must break an earlier confirmed swing level."""
++    try:
++        side = 'LONG' if sign == 1 else 'SHORT' if sign == -1 else None
++        evidence = snapshot['swing_structure_' + side.lower()]
++        level, closing, pivot, confirmed, closed, entered = map(float, (
++            evidence['level'], snapshot['last_close'], evidence['pivot_ms'],
++            evidence['confirmed_ms'], evidence['closed_bar_ms'], position['open_timestamp']))
++        if (evidence.get('side') != side or evidence.get('closed_break_confirmed') is not True
++                or not all(math.isfinite(v) and v > 0 for v in (level, closing, pivot, confirmed, closed, entered))
++                or any(v % 60000 != 0 for v in (pivot, confirmed, closed))
++                or not pivot < confirmed < closed or closed != snapshot['closed_bar_ms']
++                or closed < entered*1000 or sign*(closing-level) >= 0):
++            return None
++        return dict(level=level, closing=closing, pivot_ms=pivot,
++                    confirmed_ms=confirmed, closed_bar_ms=closed,
++                    quote_ms=snapshot['quote_ms'], confirmation='CLOSED')
++    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
++        return None
+ 
+ 
+ def early_reversal_ready(position, state, snapshot, price, sign):
+--- a/core/services/exits/trend_hold_evaluator.py
++++ b/core/services/exits/trend_hold_evaluator.py
+@@ -70,6 +70,13 @@
+         return None
+     column = 'low' if side == 'LONG' else 'high'
+     try:
++        rows = closed.iloc[-60:]
++        if all(key in rows for key in ('timestamp', 'open', 'high', 'low', 'close')):
++            data = rows[['timestamp', 'open', 'high', 'low', 'close']].astype(float).to_numpy()
++            if (any(not math.isfinite(v) or v <= 0 for row in data for v in row)
++                    or any(row[0] % 60000 != 0 or not row[3] <= min(row[1], row[4]) <= max(row[1], row[4]) <= row[2] or row[2] <= row[3] for row in data)
++                    or any(b[0]-a[0] != 60000 for a, b in zip(data, data[1:]))):
++                return None
+         values = [float(v) for v in closed[column].iloc[-60:]]
+         price = float(price)
+         if not math.isfinite(price) or price <= 0 or any(not math.isfinite(v) or v <= 0 for v in values):
+@@ -91,7 +98,10 @@
+                     return None
+                 closed_break = closing < pivot if side == 'LONG' else closing > pivot
+                 return {'intact': intact, 'level': pivot, 'side': side,
+-                        'closed_break_confirmed': closed_break}
++                        'closed_break_confirmed': closed_break,
++                        'pivot_ms': float(rows.iloc[i].get('timestamp', 0)),
++                        'confirmed_ms': float(rows.iloc[i+1].get('timestamp', 0)),
++                        'closed_bar_ms': float(rows.iloc[-1].get('timestamp', 0))}
+     except (KeyError, TypeError, ValueError):
+         return None
+     return None
+--- a/core/services/exits/realtime_profit_exit.py
++++ b/core/services/exits/realtime_profit_exit.py
+@@ -195,8 +195,8 @@
+         
+         reason = decision['type']
+         trigger = decision.get('trigger', '')
+-        from core.services.exits.structural_holding_exit import FIRST_NET_PROFIT
+-        bypass_trend_hold = reason in (MA5_EXIT, 'EXIT_ACCOUNT_HARD_STOP', 'EXIT_OUTER_MA5_V_REVERSAL', FIRST_NET_PROFIT)
++        from core.services.exits.structural_holding_exit import ALLOWED
++        bypass_trend_hold = reason in ALLOWED
+         
+         if entry_m == 'CHANNEL_SWING' and reason not in ('EXIT_INITIAL_ATR_HARD_STOP','EXIT_CONFIRMED_TREND_REVERSAL','EXIT_CONFIRMED_PIVOT_TURN') and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR', DOJI_TRIGGER, TERMINAL_DOJI_TRIGGER, 'EXIT_PEAK_PULLBACK_PRESSURE', 'MA3_CONFIRMED_TURN', 'EXIT_MOVING_PROFIT_STOP', 'CLOSED_MA5_MA15_REVERSE_CROSS', 'EXIT_EARLY_PROFIT_REVERSAL', 'EXIT_NO_PROFIT_ADVERSE_PRESSURE', 'EXIT_CONFIRMED_SWING_STRUCTURE', 'EXIT_FAILED_BREAKOUT_RECLAIM', 'EXIT_EARLY_SWING_REVERSAL', 'LIVE_STRUCTURE_BREAK', 'EXIT_CHANNEL_SAME_BAR_END', 'EXIT_CHANNEL_SAME_BAR_NET_PROFIT_LOCK', 'EXIT_SWING_ATR_PROFIT_LOCK', 'EXIT_EXHAUSTED_OUTER_SWING_REVERSAL'):
+             try:
+@@ -232,10 +232,10 @@
+                    structure_break_confirmation=position.get(STATE_KEY,{}).get('structure_break_confirmation'),
+                    structure_break_threshold=position.get(STATE_KEY,{}).get('structure_break_threshold'),
+                    trend_exhaustion_warning=position.get(STATE_KEY,{}).get('trend_exhaustion_warning',False),
+-                   single_body_exit_enabled=True if entry_m=='CHANNEL_SWING' else None)
++                   single_body_exit_enabled=False if entry_m=='CHANNEL_SWING' else None)
+         position['exit_protection_snapshot']=audit
+         meta['exit_protection_snapshot']=audit
+         closed = await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
+-        return bool(closed) if reason in ('EXIT_CONFIRMED_SWING_STRUCTURE', MA5_EXIT, 'EXIT_OUTER_MA5_V_REVERSAL', FIRST_NET_PROFIT) else True
++        return bool(closed) if reason in ALLOWED else True
+     except (KeyError,TypeError,ValueError,OverflowError):
+         return False
+--- a/tests/test_two_slot_full_margin.py
++++ b/tests/test_two_slot_full_margin.py
+@@ -32,7 +32,7 @@
+ 
+ @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+ @pytest.mark.parametrize('stop_distance', [1.5, 3., 20.])
+-def test_structure_distance_never_shrinks_full_slot_and_loss_limit_stays_five_percent(side, stop_distance):
++def test_structure_distance_never_shrinks_full_slot_and_loss_budget_is_not_exit_authority(side, stop_distance):
+     sign = 1 if side == 'LONG' else -1
+     plan = structure_risk_plan(100., side, 1., 100-sign*stop_distance,
+                               80., 5., .05, .0005, .0001, preserve_margin=True)
+@@ -42,7 +42,7 @@
+     p = dict(side=side, entry_price=100., qty=4., margin=80., leverage=5.,
+              entry_mode='CHANNEL_SWING', **{k: v for k, v in plan.items() if k.startswith('structure_')})
+     assert hard_stop_reason(p, 100-sign*.99) is None
+-    assert hard_stop_reason(p, 100-sign*1.) == 'MARGIN_LOSS'
++    assert hard_stop_reason(p, 100-sign*1.) is None
+ 
+ 
+ def make_engine(account, monkeypatch, side='LONG', symbol='CAP/USDT', entry_frame=None):
+--- a/tests/test_channel_hard_stop_restore.py
++++ b/tests/test_channel_hard_stop_restore.py
+@@ -36,17 +36,17 @@
+ 
+ @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+ @pytest.mark.parametrize('cause', ['MARGIN_LOSS', 'PRICE_LOSS'])
+-def test_account_limits_remain_independent_of_opposite_entry(side,cause,monkeypatch):
++def test_channel_account_limits_do_not_authorize_close(side,cause,monkeypatch):
+     from core import config
+     from core.services.structure_risk_sizing import POLICY
+     monkeypatch.setattr(config,'MAX_POSITION_MARGIN_LOSS_RATIO',.1 if cause=='MARGIN_LOSS' else 0.)
+     monkeypatch.setattr(config,'MAX_ACCEPTABLE_LOSS_PCT',-.02)
+     p=dict(side=side,entry_price=100.,qty=1.,margin=10.,leverage=10.,entry_mode='CHANNEL_SWING')
+     price=100-(1 if side=='LONG' else -1)*(1. if cause=='MARGIN_LOSS' else 2.)
+-    assert hard_stop_reason(p,price)==cause
++    assert hard_stop_reason(p,price) is None
+ 
+ 
+-def test_cap_observed_stop_cross_and_failed_close_retry():
++def test_cap_observed_stop_cross_does_not_create_hard_close_retry():
+     p=dict(side='SHORT',entry_price=.085971402,qty=3665.65821753321,
+            margin=63.02835524283021,leverage=5,entry_mode='CHANNEL_SWING',
+            initial_sl=.0866494,structure_risk_policy='structure_fixed_budget_v1',
+@@ -54,8 +54,7 @@
+     a=SimpleNamespace(positions={'CAP/USDT':p},position_meta={},save_state=Mock(),
+                       close_position=AsyncMock(return_value=False),channel_profit_reentries={})
+     assert not asyncio.run(enforce_hard_stop(a,'CAP/USDT',.08714))
+-    assert p['channel_hard_stop_pending']=='MARGIN_LOSS'
++    assert 'channel_hard_stop_pending' not in p
+     a.close_position.return_value=True
+-    assert asyncio.run(enforce_hard_stop(a,'CAP/USDT',.086))
+-    assert a.close_position.await_count==2
+-    assert a.close_position.await_args.args[2]=='Channel Swing HARD_STOP MARGIN_LOSS'
++    assert not asyncio.run(enforce_hard_stop(a,'CAP/USDT',.086))
++    a.close_position.assert_not_awaited()
+--- /dev/null
++++ b/tests/test_pivot_structure_only_exits.py
+@@ -0,0 +1,216 @@
++import asyncio
++import copy
++import json
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, Mock
++
++import pandas as pd
++import pytest
++
++from core.services.exits.hard_stop_service import enforce_hard_stop, hard_stop_reason
++from core.services.exits.entry_atr_protection import enforce_atr_protection
++from core.services.exits.peak_trailing_exit import STATE_KEY, evaluate_peak_trailing
++from core.services.exits.realtime_profit_exit import cached_tick_indicators, enforce_realtime_profit_exit
++from core.services.exits.structural_holding_exit import POLICY, REASON, MA5_EXIT
++
++SYMBOLS = ['龙虾/USDT', 'CAP/USDT']
++SIDES = ['LONG', 'SHORT']
++
++
++def position(side, symbol):
++    return dict(side=side, symbol=symbol, entry_price=100., qty=1., entry_atr=1.,
++                entry_mode='CHANNEL_SWING', open_timestamp=60., margin=1., leverage=100.)
++
++
++def frame(kind, side):
++    lows = [98., 97., 98., 99., 96.] if kind == 'structure' else [98.]*5
++    highs = [102., 102., 102., 104., 103.] if kind == 'pivot' else [102.]*5
++    closes = [100.]*5
++    if kind == 'structure':
++        closes[-1] = 96.5
++    rows = [dict(timestamp=(i+1)*60000., open=100., high=highs[i], low=lows[i],
++                 close=closes[i], ma5=100., ma3=100., ma15=100., atr=1.,
++                 kc_upper=101., kc_middle=100., kc_lower=99., is_closed=True)
++            for i in range(5)]
++    rows.append(dict(rows[-1], timestamp=360000., open=100., high=102., low=98.,
++                     close=100., is_closed=False))
++    f = pd.DataFrame(rows)
++    if side == 'SHORT':
++        old = f.copy()
++        for key, source in [('open', 'open'), ('close', 'close'), ('high', 'low'),
++                            ('low', 'high'), ('kc_lower', 'kc_upper'), ('kc_upper', 'kc_lower')]:
++            f[key] = 200.-old[source]
++    return f
++
++
++def snapshot(kind, side):
++    return cached_tick_indicators(frame(kind, side), 100., 361000.)[0]
++
++
++@pytest.mark.parametrize('symbol', SYMBOLS)
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('kind,reason', [('pivot', MA5_EXIT), ('structure', REASON)])
++def test_confirmed_exit_without_profit_ma_or_entry_gate(symbol, side, kind, reason):
++    p = position(side, symbol)
++    s = snapshot(kind, side)
++    s.update(ma5=float('nan'), ma15=float('nan'))
++    decision = evaluate_peak_trailing(p, 100., s)
++    assert decision and decision['reason'] == reason
++    assert p[STATE_KEY]['holding_exit_policy'] == POLICY
++    assert decision['price'] == 100.
++
++
++@pytest.mark.parametrize('symbol', SYMBOLS)
++@pytest.mark.parametrize('side', SIDES)
++def test_deep_loss_waterfall_and_initial_profit_do_not_close(symbol, side):
++    p = position(side, symbol)
++    sign = 1 if side == 'LONG' else -1
++    p.update(initial_sl=100-sign*.1,
++             entry_snapshot={'signal_code': 'KC_LIVE_CROSS_'+side})
++    s = snapshot('none', side)
++    s['live_open'] = 100+sign*10.
++    assert hard_stop_reason(p, 100-sign*30.) is None
++    assert evaluate_peak_trailing(p, 100-sign*30., s) is None
++    p['open_timestamp'] = 360.
++    assert evaluate_peak_trailing(p, 100+sign*.5, s) is None
++
++
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('cause', ['INITIAL_ATR', 'MARGIN_LOSS', 'PRICE_LOSS'])
++def test_old_hard_stop_is_cleared_from_position_and_metadata(side, cause):
++    p = position(side, 'CAP/USDT')
++    p['channel_hard_stop_pending'] = cause
++    p[STATE_KEY] = dict(pending='EXIT_ACCOUNT_HARD_STOP', trigger=cause)
++    meta = copy.deepcopy(p)
++    a = SimpleNamespace(positions={'CAP/USDT': p}, position_meta={'CAP/USDT': meta},
++                        save_state=Mock(), close_position=AsyncMock())
++    assert not asyncio.run(enforce_hard_stop(a, 'CAP/USDT', 50.))
++    for source in (p, meta):
++        assert 'channel_hard_stop_pending' not in source
++        assert 'pending' not in source[STATE_KEY]
++    a.close_position.assert_not_awaited()
++    a.save_state.assert_called_once()
++
++
++@pytest.mark.parametrize('side', SIDES)
++def test_other_entry_modes_retain_their_account_limits(side):
++    p = position(side, 'CAP/USDT')
++    p['entry_mode'] = 'PIVOT_TURN'
++    sign = 1 if side == 'LONG' else -1
++    assert hard_stop_reason(p, 100-sign*30.) == 'MARGIN_LOSS'
++
++
++@pytest.mark.parametrize('kind', ['pivot', 'structure'])
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('fault', ['preentry', 'stale', 'fallback', 'unconfirmed', 'invalid'])
++def test_unverified_or_preentry_formation_holds(kind, side, fault):
++    p = position(side, 'CAP/USDT')
++    s = snapshot(kind, side)
++    if fault == 'preentry':
++        p['open_timestamp'] = 301.
++    elif fault == 'stale':
++        s['closed_bar_ms'] = 240000.
++    elif fault == 'fallback':
++        s['fallback_used'] = True
++    elif kind == 'pivot':
++        rows = s['pivot_exit_history']
++        if fault == 'unconfirmed':
++            key = 'high' if side == 'LONG' else 'low'
++            rows[-1][key] = rows[-2][key]
++        else:
++            rows[-1]['close'] = float('nan')
++    else:
++        evidence = s['swing_structure_'+side.lower()]
++        if fault == 'unconfirmed':
++            evidence['closed_break_confirmed'] = False
++        else:
++            evidence['level'] = float('nan')
++    assert evaluate_peak_trailing(p, 100., s) is None
++
++
++@pytest.mark.parametrize('side', SIDES)
++def test_touch_or_live_only_structure_break_holds(side):
++    p = position(side, 'CAP/USDT')
++    s = snapshot('structure', side)
++    s['last_close'] = s['swing_structure_'+side.lower()]['level']
++    assert evaluate_peak_trailing(p, 100., s) is None
++
++
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('kind', ['pivot', 'structure'])
++def test_confirmed_retry_survives_restart_and_later_missing_data(side, kind):
++    p = position(side, 'CAP/USDT')
++    original = evaluate_peak_trailing(p, 100., snapshot(kind, side))
++    assert original
++    p = json.loads(json.dumps(p))
++    retry = evaluate_peak_trailing(p, 100., {'quote_ms': 362000., 'reason': 'NO_DATA'})
++    assert retry and retry['reason'] == original['reason']
++    p['open_timestamp'] = 362.
++    assert evaluate_peak_trailing(p, 100., {'quote_ms': 363000., 'reason': 'NO_DATA'}) is None
++
++
++@pytest.mark.parametrize('symbol', SYMBOLS)
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('kind', ['pivot', 'structure'])
++def test_realtime_submission_bypasses_trend_hold_and_retries_failed_close(symbol, side, kind, monkeypatch):
++    p = position(side, symbol)
++    a = SimpleNamespace(positions={symbol: p}, position_meta={}, save_state=Mock(),
++                        log=Mock(), close_position=AsyncMock(side_effect=[False, True]))
++    e = SimpleNamespace(account=a, is_running=True, _channel_exit_frames={symbol: frame(kind, side)})
++    monkeypatch.setattr('time.time', lambda: 361.)
++    monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
++                        lambda *args: ('HOLD', 'TEST'))
++    assert not asyncio.run(enforce_realtime_profit_exit(e, symbol, 100., 361000.))
++    monkeypatch.setattr('time.time', lambda: 362.)
++    assert asyncio.run(enforce_realtime_profit_exit(e, symbol, 100., 362000.))
++    assert a.close_position.await_count == 2
++    assert a.position_meta[symbol]['exit_protection_snapshot']['holding_exit_policy'] == POLICY
++    assert a.close_position.await_args.args[2].startswith('Channel Swing EXIT_')
++
++
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('adapter', ['paper', 'testnet'])
++def test_account_update_cannot_close_on_loss_thresholds(side, adapter, monkeypatch, tmp_path):
++    if adapter == 'paper':
++        from core.paper_account import PaperAccount
++        monkeypatch.setattr(PaperAccount, 'load_state', lambda self: None)
++        a = PaperAccount()
++    else:
++        from core.testnet_account import BinanceTestnetAccount
++        a = BinanceTestnetAccount(Mock(), state_file=str(tmp_path/'testnet.json'))
++        a.refresh = AsyncMock()
++    a.save_state = Mock()
++    a.log = Mock()
++    a.close_position = AsyncMock()
++    a.positions = {'CAP/USDT': position(side, 'CAP/USDT')}
++    a.position_meta = {'CAP/USDT': {'entry_mode': 'CHANNEL_SWING'}}
++    sign = 1 if side == 'LONG' else -1
++    asyncio.run(a.update_positions({'CAP/USDT': 100-sign*30.}))
++    a.close_position.assert_not_awaited()
++
++
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('kind', ['pivot', 'structure'])
++def test_confirmed_retry_can_complete_through_account_adapter(side, kind):
++    p = position(side, 'CAP/USDT')
++    d = evaluate_peak_trailing(p, 100., snapshot(kind, side))
++    assert d
++    a = SimpleNamespace(positions={'CAP/USDT': p}, position_meta={}, save_state=Mock(),
++                        close_position=AsyncMock(side_effect=[False, True]))
++    assert not asyncio.run(enforce_atr_protection(a, 'CAP/USDT', 100.))
++    assert asyncio.run(enforce_atr_protection(a, 'CAP/USDT', 100.))
++    assert a.close_position.await_count == 2
++
++
++@pytest.mark.parametrize('side', SIDES)
++@pytest.mark.parametrize('fault', ['gap', 'invalid_ohlc', 'nan'])
++def test_invalid_structure_source_cannot_create_break_authority(side, fault):
++    from core.services.exits.trend_hold_evaluator import confirmed_swing_structure
++    f = frame('structure', side).iloc[:-1].copy()
++    if fault == 'gap':
++        f.loc[0, 'timestamp'] -= 60000
++    elif fault == 'invalid_ohlc':
++        f.loc[0, 'low'] = 200.
++    else:
++        f.loc[0, 'high'] = float('nan')
++    assert confirmed_swing_structure({'side': side}, f, 100.) is None
+--- /dev/null
++++ b/docs/dev_logs/2026-10/20261008_pivot_structure_exits.md
+@@ -0,0 +1,11 @@
++# Channel Swing: confirmed pivot or structure exits
++
++Owner explicitly removed hard-stop close authority and selected post-entry peak/valley or structure destruction exits. Applies to the Channel Swing strategy running on paper port 8006; other strategy policies and exchange liquidation are not changed.
++
++Channel Swing account-margin and adverse-price limits no longer authorize a close through hard_stop_reason, realtime ticks, or paper/account protection adapters. Revoke persisted INITIAL_ATR, MARGIN_LOSS, PRICE_LOSS and hard-stop audit/pending state in both position and metadata. Retire prior standalone waterfall, first-positive-profit and live MA5 V close tickets. Valid new pivot/structure tickets retain durable failed-close retry and position-identity isolation.
++
++Two automatic exit authorities remain: (1) a strict completed three-candle price peak for LONG or valley for SHORT, with all three candles after entry and the right candle completed; no MA, KC location, profit or ATR amplitude requirement; (2) a completed post-entry close strictly below an earlier confirmed support pivot for LONG or above confirmed resistance for SHORT. The latter uses the existing 60-completed-candle swing/plateau definition, now carrying pivot and confirmation timestamps. A live-only breach or exact level touch does not authorize structure exit. Both execute at the actual latest quote and bypass entry gates and generic trend-hold vetoes. This does not predict the final extreme of a future move.
++
++Validation: 321 passed across new pivot/structure-only, updated hard-stop/slot, CAP continuation, chop and lobster pivot entry tests; 19 existing datetime warnings. Twelve shared trend tests pass. test_trend_hold_snapshot_desync::test_sync_released_soft_exit_allowed fails on both the baseline and candidate; not a new regression or full-suite pass. Compilation and whitespace checks pass. New tests cover both symbols/sides, invalid/stale/pre-entry/unconfirmed data, touch/live-only structure breaks, loss without exit, metadata cleanup, preserved other strategy loss behavior, actual paper and mocked Testnet update adapters, trend-hold bypass, failed close retries, JSON restart and position replacement.
++
++Entry modules and amounts/leverage are unchanged. Preserve unrelated pre-existing dual-breakout edits. Deployment commit, source hashes, backup and paper API readiness are recorded separately in the primary workspace reports/pivot_structure_exits_20261008. AIDAN common/Python files remain unavailable in the previously inspected paths; no specification files were changed.

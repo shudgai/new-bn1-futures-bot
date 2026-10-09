@@ -1,0 +1,18 @@
+{
+  "branch": "release/wait-paper-gate-candidate",
+  "commit": "f722e8519d000702d86d26b0958e7f04e231ea3f",
+  "files": [
+    "core/services/entry_contract.py",
+    "core/services/entry_firewall.py",
+    "core/services/entry_gate_integrity.py",
+    "core/services/cap_breakout_entry.py",
+    "core/services/entry_chop_gate.py",
+    "core/services/strategies/outer_strategy.py",
+    "tests/test_cap_pair_continuation.py",
+    "tests/test_entry_chop_gate.py",
+    "tests/test_ma5_outer_pivot_entry.py",
+    "tests/test_two_slot_full_margin.py",
+    "docs/dev_logs/2026-10/20261008_entry_restore_1908.md"
+  ],
+  "selected_tests_passed": 408
+}

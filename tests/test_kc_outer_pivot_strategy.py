@@ -15,15 +15,21 @@ def disable_exit_telemetry(monkeypatch):
 
 def pivot_history(side):
     rows = [
-        dict(ms=120_000., o=100., h=104., l=98., c=102., ma5=98.),
-        dict(ms=180_000., o=102., h=110., l=99., c=108., ma5=99.),
-        dict(ms=240_000., o=108., h=109., l=100., c=107., ma5=98.5),
+        dict(ms=120_000., o=100., h=104., l=98., c=102., ma5=98.,
+             atr=1., kc_lower=90., kc_middle=100., kc_upper=110.),
+        dict(ms=180_000., o=102., h=110., l=99., c=108., ma5=99.,
+             atr=1., kc_lower=91., kc_middle=101., kc_upper=111.),
+        dict(ms=240_000., o=108., h=109., l=100., c=107., ma5=98.5,
+             atr=1., kc_lower=92., kc_middle=102., kc_upper=112.),
     ]
     if side == "SHORT":
         return [
             dict(ms=row["ms"], o=200. - row["o"], h=200. - row["l"],
                  l=200. - row["h"], c=200. - row["c"],
-                 ma5=201. - row["ma5"])
+                 ma5=201. - row["ma5"], atr=row["atr"],
+                 kc_lower=200. - row["kc_upper"],
+                 kc_middle=200. - row["kc_middle"],
+                 kc_upper=200. - row["kc_lower"])
             for row in rows
         ]
     return rows
@@ -50,6 +56,9 @@ def snapshot(side, bars=None, **overrides):
         snapshot_bar_id=rows[-1]["ms"],
         reason=None,
         history_outer_pivots=rows,
+        atr=1.,
+        ma5_history=[97., 98., 99.] if side == "LONG" else [103., 102., 101.],
+        ma15_history=[95., 96., 97.] if side == "LONG" else [105., 104., 103.],
     )
     result.update(overrides)
     return result
@@ -129,11 +138,13 @@ def test_sui_and_lobster_recover_entry_bar_pivot_for_open_position(side, symbol)
         if side == "LONG":
             high = 108. - index
             bars.append(dict(ms=float(ms), o=high - 2., h=high, l=high - 8.,
-                             c=high - 1.))
+                             c=high - 1., atr=1., kc_lower=92. + index,
+                             kc_middle=102. + index, kc_upper=112. + index))
         else:
             low = 92. + index
             bars.append(dict(ms=float(ms), o=low + 2., h=low + 7., l=low,
-                             c=low + 3.))
+                             c=low + 3., atr=1., kc_lower=88. - index,
+                             kc_middle=98. - index, kc_upper=108. - index))
 
     result = three_point_pivot_exit(
         position_data, snapshot(side, bars, quote_ms=900_000.)
@@ -183,6 +194,79 @@ def test_three_point_pivot_does_not_require_kc_outer_rail(side):
 
     assert result is not None
     assert result["trigger"] == "THREE_POINT_PIVOT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_pivot_waits_when_ma_or_ck_direction_is_unclear(side):
+    data = snapshot(side, ma5_history=[100., 100., 100.],
+                    ma15_history=[100., 100., 100.])
+
+    result = evaluate_peak_trailing(
+        position(side), 101., data, fee=0., slippage=0.
+    )
+
+    assert result is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_pivot_does_not_exit_before_confirmation_candle_is_closed(side):
+    data = snapshot(side, snapshot_bar_id=180_000.)
+
+    result = evaluate_peak_trailing(
+        position(side), 101., data, fee=0., slippage=0.
+    )
+
+    assert result is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_two_consecutive_closed_adverse_abnormal_bodies_exit(side):
+    bars = [
+        dict(ms=120_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+        dict(ms=180_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+        dict(ms=240_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+    ]
+    if side == "LONG":
+        bars[1].update(o=100., c=99.4, l=99.4)
+        bars[2].update(o=99.4, c=98.8, l=98.8)
+    else:
+        bars[1].update(o=100., c=100.6, h=100.6)
+        bars[2].update(o=100.6, c=101.2, h=101.2)
+    data = snapshot(side, bars, quote_ms=300_000.)
+
+    result = evaluate_peak_trailing(
+        position(side), 99. if side == "LONG" else 101.,
+        data, fee=0., slippage=0.,
+    )
+
+    assert result is not None
+    assert result["trigger"] == "TWO_CLOSED_ADVERSE_ABNORMAL"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_one_closed_abnormal_body_alone_does_not_exit(side):
+    bars = [
+        dict(ms=120_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+        dict(ms=180_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+        dict(ms=240_000., o=100., h=101., l=99., c=100., atr=1.,
+             kc_lower=90., kc_middle=100., kc_upper=110.),
+    ]
+    if side == "LONG":
+        bars[1].update(o=100., c=99.4, l=99.4)
+    else:
+        bars[1].update(o=100., c=100.6, h=100.6)
+
+    result = evaluate_peak_trailing(
+        position(side), 100., snapshot(side, bars, quote_ms=300_000.),
+        fee=0., slippage=0.,
+    )
+
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

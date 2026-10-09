@@ -1,0 +1,138 @@
+{
+  "time": "2026-10-08T16:02:12.591469+08:00",
+  "kept": "entry-containment-v2",
+  "deleted": [
+    "bugfix/doji-first-reversal-exit",
+    "bugfix/entry-gate-consistency",
+    "bugfix/entry-momentum-exhaustion",
+    "bugfix/kc-entry-atr-profit-lock",
+    "bugfix/lobster-ma-exit-churn",
+    "bugfix/missed-breakout-continuation",
+    "bugfix/peak-trailing-04atr",
+    "bugfix/realtime-profit-exit",
+    "feature/cap-five-kc-moves-20261007",
+    "feature/channel-net-profit-lock-20261007",
+    "feature/confirmed-pivot-exit-20261007",
+    "feature/lobster-cap-two-slots-gates",
+    "feature/opposite-small-k-gate-20261007",
+    "feature/outer-pivot-ma-cross-entry-20261007",
+    "feature/structure-reversal-waterfall-20261007",
+    "feature/swing-two-atr-lock-20261007",
+    "feature/trend-structure-close-20261007",
+    "fix/cap-lobster-identical-entry",
+    "fix/entry-closed-live-ma5-alignment",
+    "fix/pivot-structure-exits-only",
+    "fix/restore-entry-20261007-1908",
+    "fix/structure-net-profit-exit",
+    "fix/structure-only-exit",
+    "refactor/clean-trend-v2",
+    "release/channel-same-bar-20261007",
+    "release/entry-structure-20261007",
+    "release/kc-direction-20261007",
+    "release/swing-hold-20261007",
+    "release/true-breakout-20261007",
+    "release/wait-paper-gate-candidate"
+  ],
+  "worktrees": [
+    {
+      "path": "/home/shudgai999/project/new bn",
+      "head": "05103c3c74897c788e01daccc8e3a4e5b5ccf1da",
+      "previous_branch": "refs/heads/bugfix/lobster-ma-exit-churn",
+      "preserved": true,
+      "fingerprint": {
+        "status": "0e28deedb7d77dbc70b72d608c730a43aa7f4c2dedb8d9e4ee44569a1cc9df13",
+        "diff": "28e579afc211eb123392c8e1b6b515519b792a5f3d076816fa93c5bc1fbf5f2d",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/isolated_candidate",
+      "head": "05103c3c74897c788e01daccc8e3a4e5b5ccf1da",
+      "previous_branch": null,
+      "preserved": true,
+      "fingerprint": {
+        "status": "925ff926e71c894a8b9666d0ab2e953a2d31fa3635cac6240a395f3c3e203db2",
+        "diff": "b7754dbec9765b07d79925de0b54916dd6652fd97dbb63ec148b77256808dfd2",
+        "staged": "21ef23fee228513a43d33a89da66112d53bbff174f9a356bbf4d47d948b613a5"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/cap-lobster-identical-entry",
+      "head": "84c304c70951682b0903c2f2a1a8c0587b5ec805",
+      "previous_branch": "refs/heads/fix/cap-lobster-identical-entry",
+      "preserved": true,
+      "fingerprint": {
+        "status": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/entry-closed-live-ma5-alignment",
+      "head": "657ae034cfce39dc772f7f597a9528a7fd221663",
+      "previous_branch": "refs/heads/fix/entry-closed-live-ma5-alignment",
+      "preserved": true,
+      "fingerprint": {
+        "status": "6e54f67d31862ca20c61a4b9fed28f31c031aee42f364e9827207b89009fe81d",
+        "diff": "73a039cd088ef8a0c06ec681fd898dc535d3b018f904473b049f460538407f6c",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/entry-containment-v2",
+      "head": "f3365aaf902b49d4d1ff56f85821e5e764ef4d59",
+      "previous_branch": "refs/heads/entry-containment-v2",
+      "preserved": true,
+      "fingerprint": {
+        "status": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/lobster-cap-gates",
+      "head": "e79dec761ed0396e7489101a083fa3624a7c003e",
+      "previous_branch": "refs/heads/feature/lobster-cap-two-slots-gates",
+      "preserved": true,
+      "fingerprint": {
+        "status": "925ca981d8a5fd0d6c6a5da78e663047dbfc700a818695d711667b80a32c94e1",
+        "diff": "f1d8fe8907288fbaf804241860dc5320f5d1453acf78801cd2b0b1b9b8d494ca",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/pivot-structure-exits-only",
+      "head": "f722e8519d000702d86d26b0958e7f04e231ea3f",
+      "previous_branch": "refs/heads/fix/pivot-structure-exits-only",
+      "preserved": true,
+      "fingerprint": {
+        "status": "04e8d3990ccee2970c8bbe09c4cc2fae57d2260318e80506c4314a417c743fc3",
+        "diff": "23d7d0cc7ffa0a24c9b16f686ae0e22164c08e796bf0548e7db66c81d44154e7",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/new bn/.worktrees/restore-entry-20261007-1908",
+      "head": "cd7ea9cb3f63d762999256300df0f790cfccdac9",
+      "previous_branch": "refs/heads/fix/restore-entry-20261007-1908",
+      "preserved": true,
+      "fingerprint": {
+        "status": "3c080f64fbc5918fe7ec1d26f12273cfb92ac9367ae611db252a475ef9b88549",
+        "diff": "463a3e546d416fcb88f6e779943404d3003b88cd62ca1fed66578691060161d9",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "/home/shudgai999/project/wait-paper-gate-candidate",
+      "head": "2684305e82324a3e49352fa55ebcdc727529a5d2",
+      "previous_branch": "refs/heads/release/wait-paper-gate-candidate",
+      "preserved": true,
+      "fingerprint": {
+        "status": "9e12288aa33c1ac3c8f92e3820f27d843a99536a44ab93875347c7b85a387595",
+        "diff": "146ab8bed75a4ef7db797f4834050564a388dc3b8d63ea87397c3a3c3d49ce82",
+        "staged": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "remote_refs_unchanged": true
+}

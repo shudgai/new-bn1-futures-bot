@@ -1,0 +1,38 @@
+diff --git a/core/services/entry_contract.py b/core/services/entry_contract.py
+index e5c3349..12c60d2 100644
+--- a/core/services/entry_contract.py
++++ b/core/services/entry_contract.py
+@@ -6,10 +6,11 @@ import numpy as np
+ from core.services.candle_data import closed_entry_candles
+ from core.services.kc_pending_entry import (KC_PENDING_CODES, KC_PENDING_EVIDENCE_KEYS,
+                                             evaluate_kc_pending_entry)
++from core.services.strategies.outer_strategy import live_body_breakout_side
+ 
+ LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
+ SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
+-ENTRY_CODES = KC_PENDING_CODES
++ENTRY_CODES = KC_PENDING_CODES | {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
+ MAX_THIRD_OPEN_CHASE_ATR = 0.10
+ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
+                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
+@@ -130,8 +131,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+                 return reject('WAIT_VALID_CLOSE_HISTORY')
+             saved_bar = math.floor(saved_close/60)*60000
+             exit_bar = max(exit_bar or saved_bar, saved_bar)
+-        decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
+-                                             live=live if len(frame) > len(closed) else None)
++        fast_side = live_body_breakout_side(frame, quote) if len(frame) > len(closed) else None
++        if fast_side:
++            decision = {
++                'action': 'ENTER',
++                'side': fast_side,
++                'type': 'KC_LIVE_BODY_BREAKOUT_' + fast_side,
++                'pending_signal_id': f"{symbol}_LIVE_BREAKOUT_{int(float(live.timestamp))}_{fast_side}",
++                'breakout_bar_id': float(live.timestamp)
++            }
++        else:
++            decision = evaluate_kc_pending_entry(closed, quote, code, symbol=symbol,
++                                                 live=live if len(frame) > len(closed) else None)
+         if decision['action'] != 'ENTER':
+             if diagnostics is not None:
+                 diagnostics.clear()

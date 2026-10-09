@@ -1,0 +1,13 @@
+{
+  "commit": "df75f5f",
+  "status": {
+    "is_running": true,
+    "paper_trading": true,
+    "market_data_live": true,
+    "market_data_stale": false,
+    "ticker_age_seconds": {
+      "龙虾/USDT": 1.1,
+      "CAP/USDT": 2.0
+    }
+  }
+}

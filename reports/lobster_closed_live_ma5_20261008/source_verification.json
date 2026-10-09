@@ -1,0 +1,47 @@
+{
+  "base_commit": "657ae03",
+  "files": {
+    "core/services/entry_contract.py": {
+      "exists_before": true,
+      "before_sha256": "d2d5628f75fc61ba01e072f10a7f431a840b38be6988ac44d19dd50bf144a71d",
+      "after_sha256": "913d0327d957085b325b43a26a91d87e54c6817c597d4714b33f2675b8634261"
+    },
+    "core/services/entry_gate_integrity.py": {
+      "exists_before": true,
+      "before_sha256": "29f2d2f3e64f869ae8e88f5371d8d3acf9cda7d55eabe196499ceeec5844d095",
+      "after_sha256": "384ab7a1805d536f727f778483081008bd47147c5381d348f9a8731ba5048128"
+    },
+    "tests/test_entry_chop_gate.py": {
+      "exists_before": true,
+      "before_sha256": "21212a9d1c52333e8629b09eb1e9132d202c0858c2c8af9b51091d48214a12a9",
+      "after_sha256": "7a186b6b0f25d6f33f6a968ce4e2fca7cddd6d9aa8fbd58207515bd7a1db1aec"
+    },
+    "tests/test_cap_pair_continuation.py": {
+      "exists_before": true,
+      "before_sha256": "544449295a4e131b2312dea2fd362fba520a08844f865b67c2c10c72d68c3bd3",
+      "after_sha256": "47c32fc9a861550fe312a60328b4b821d7f09fd785aa6d39028307dd805e94b5"
+    },
+    "tests/test_ma5_outer_pivot_entry.py": {
+      "exists_before": true,
+      "before_sha256": "5f6a827369034b48cd754c3e50833f8928b47fb049e79e4ce9c73877fbf8ecf1",
+      "after_sha256": "20f5882634d0b3d25032f34ce7a4cf8a248a18c5dabb2ac8da0c9dd28bcb5001"
+    },
+    "tests/test_closed_live_ma5_entry_alignment.py": {
+      "exists_before": false,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "9754c5882dbb5ef44c4b6fb2408ddecff365d58064ed79131e8eab4871f513f2"
+    },
+    "tests/fixtures/lobster_20261008_141723.json": {
+      "exists_before": false,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "5a827e84efeea084089900db70ec1e8465e222d8529fdd1e58ed8be008974946"
+    },
+    "docs/dev_logs/2026-10/20261008_lobster_closed_live_ma5.md": {
+      "exists_before": false,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "c0f2d5e742f5eed4e63dcf659186f083f9bafbd43c8e2290f087de4d42c2f1ea"
+    }
+  },
+  "exit_files_unchanged": true,
+  "selected_tests_passed": 357
+}

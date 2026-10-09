@@ -92,18 +92,20 @@ async def enforce_atr_protection(account, symbol, price):
         account.save_state()
     if not reason:
         return False
-    if (entry_mode == "CHANNEL_SWING"
-            and channel_strategy_exit_grace_active(position, meta)):
-        if clear_channel_strategy_exit_pending(position, meta):
-            meta.update({key: copy.deepcopy(position[key])
-                         for key in STATE_KEYS if key in position})
-            account.save_state()
-        return False
     allowed_triggers = (
         PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
         if symbol in ("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT")
         else CHANNEL_SWING_EXIT_TRIGGERS
     )
+    trigger = decision.get("trigger") if decision else None
+    if (entry_mode == "CHANNEL_SWING"
+            and channel_strategy_exit_grace_active(position, meta)
+            and trigger not in allowed_triggers):
+        if clear_channel_strategy_exit_pending(position, meta):
+            meta.update({key: copy.deepcopy(position[key])
+                         for key in STATE_KEYS if key in position})
+            account.save_state()
+        return False
     if (entry_mode == "CHANNEL_SWING"
             and decision.get("trigger") not in allowed_triggers):
         state = position.get("peak_trailing_state", {})

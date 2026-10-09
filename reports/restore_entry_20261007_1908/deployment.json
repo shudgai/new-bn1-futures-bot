@@ -1,0 +1,9 @@
+{
+  "api_ok": true,
+  "is_running": true,
+  "paper_trading": true,
+  "position_count": 1,
+  "entry_gate_halts": {},
+  "service": "MainPID=1224797\nActiveState=active\nActiveEnterTimestamp=Thu 2026-10-08 06:11:38 UTC\n",
+  "entry_version": "entry-gate-20261007-v48-cap-pair-and-proven-continuation"
+}

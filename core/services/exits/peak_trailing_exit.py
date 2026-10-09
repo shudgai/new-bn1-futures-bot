@@ -5,7 +5,7 @@ import sys
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 
-POLICY = 'abnormal_body_only_v2'
+POLICY = 'confirmed_pivot_abnormal_only_v3'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
@@ -34,15 +34,16 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
-    'EXIT_PROFIT_LOCK_FLOOR',
     'THREE_POINT_PIVOT',
-    'MA5_TRUE_PEAK_REVERSAL',
     'WATERFALL_DROP',
+    'TWO_CLOSED_ADVERSE_ABNORMAL',
+    'OPPOSITE_KC_BAND_BREACH',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
-    DOJI_TRIGGER,
     'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
+    'TWO_CLOSED_ADVERSE_ABNORMAL',
+    'OPPOSITE_KC_BAND_BREACH',
 })
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
     'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
@@ -127,6 +128,14 @@ def migrate_peak_state(position, meta=None):
                     state[key] = prior[key]
             if prior.get('pending') == HARD_REASON:
                 state.update(pending=HARD_REASON, trigger='INITIAL_ATR')
+            elif (prior.get('pending') == ABNORMAL_REASON
+                    and prior.get('trigger') in (
+                        'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                    )):
+                for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                            'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+                    if key in prior:
+                        state[key] = copy.deepcopy(prior[key])
             initial = position.get('initial_sl') or meta.get('initial_sl')
             if positive(initial):
                 position.update(sl=float(initial), stop_loss=float(initial), atr_sl=float(initial))
@@ -152,6 +161,11 @@ def migrate_peak_state(position, meta=None):
                     'ma5_reversal_last_price'):
             state.pop(key, None)
     if channel_initial_stop_disabled(position, meta):
+        if (state.get('pending') and state.get('trigger') != HARD_REASON
+                and state.get('trigger') not in CHANNEL_SWING_EXIT_TRIGGERS):
+            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                        'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+                state.pop(key, None)
         if state.get('trigger') in DISABLED_CHANNEL_PULLBACK_TRIGGERS:
             for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                         'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
@@ -210,6 +224,82 @@ def ma_trend_confirms_position(position, snapshot):
         snapshot.get('ma15_history', ()),
         side,
     )
+
+
+def channel_pivot_trend_confirmed(position, snapshot):
+    """Require clear MA and closed-KC direction before a channel pivot can exit."""
+    if not ma_trend_confirms_position(position, snapshot):
+        return False
+    try:
+        bars = snapshot.get('history_outer_pivots')
+        if not isinstance(bars, list) or len(bars) < 2:
+            return False
+        previous, latest = bars[-2:]
+        values = [
+            float(previous[key]) for key in ('kc_lower', 'kc_middle', 'kc_upper')
+        ] + [
+            float(latest[key]) for key in ('kc_lower', 'kc_middle', 'kc_upper')
+        ]
+        atr = float(snapshot.get('atr'))
+        if (not all(positive(value) for value in values) or not positive(atr)
+                or not values[0] < values[1] < values[2]
+                or not values[3] < values[4] < values[5]
+                or float(latest['ms']) - float(previous['ms']) != 60000):
+            return False
+        side = position.get('side')
+        middle_move = values[4] - values[1]
+        minimum_move = atr * 0.001
+        if side == 'LONG':
+            return middle_move > minimum_move and values[5] >= values[2]
+        if side == 'SHORT':
+            return middle_move < -minimum_move and values[3] <= values[0]
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return False
+
+
+def two_closed_adverse_abnormal_exit(position, snapshot):
+    """Confirm two consecutive post-entry adverse closed bodies using prior ATR."""
+    try:
+        from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+
+        if not isinstance(snapshot, dict):
+            return None
+        bars = snapshot.get('history_outer_pivots')
+        if not isinstance(bars, list) or len(bars) < 3:
+            return None
+        opened_ms = float(position['open_timestamp']) * 1000
+        entry = float(position['entry_price'])
+        sign = 1 if position.get('side') == 'LONG' else -1 if position.get('side') == 'SHORT' else 0
+        if not sign or not positive(opened_ms) or not positive(entry):
+            return None
+        first, second = bars[-2:]
+        before_first = bars[-3]
+        adverse_bodies = []
+        for prior, bar in ((before_first, first), (first, second)):
+            prior_ms = float(prior['ms'])
+            bar_ms = float(bar['ms'])
+            opened = float(bar['o'])
+            closed = float(bar['c'])
+            atr = float(prior['atr'])
+            if (bar_ms - prior_ms != 60000 or bar_ms + 60000 <= opened_ms
+                    or not all(positive(value) for value in
+                               (prior_ms, bar_ms, opened, closed, atr))):
+                return None
+            effective_open = entry if math.floor(opened_ms / 60000) * 60000 == bar_ms else opened
+            adverse_body = -sign * (closed - effective_open)
+            threshold = atr * float(RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR)
+            if not positive(threshold) or adverse_body < threshold:
+                return None
+            adverse_bodies.append(adverse_body)
+        return {
+            'trigger': 'TWO_CLOSED_ADVERSE_ABNORMAL',
+            'trigger_bar_ms': float(second['ms']),
+            'trigger_price': float(second['c']),
+            'trigger_atr': float(bars[-2]['atr']),
+        }
+    except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+        return None
 
 
 def three_point_pivot_exit(position, snapshot):
@@ -702,16 +792,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         # 高點賣壓即時平倉機制 (Peak Opposing Pressure Exit): 只要有利潤，高點後面出現賣壓/買壓立即平倉，不需等 MA5 進入通道
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
-        if not is_channel_swing and net > 0 and peak_gain_atr >= 0.5:
+        is_straight_rocket = (trend_status == 'HOLD' and peak_gain_atr >= 2.0) or (peak_gain_atr >= 3.0)
+        if not is_channel_swing and net > 0 and is_straight_rocket:
             # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
             if peak_gain_atr >= 3.0:
                 pullback_limit_atr = 0.35
-            elif peak_gain_atr >= 2.0:
-                pullback_limit_atr = 0.40
-            elif peak_gain_atr >= 1.0:
-                pullback_limit_atr = 0.50
             else:
-                pullback_limit_atr = 0.60
+                pullback_limit_atr = 0.40
 
             # 1. 價格從最高點回踩達動態階梯門檻
             if drawdown_atr >= pullback_limit_atr:
@@ -773,27 +860,28 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     ma15 = snapshot.get('ma15')
                     # MA15 Tracking Defense is DISABLED per user request
 
-                    # 1. Mature Swing Reversal check (strictly closed bars)
-                    e_atr = position.get('entry_atr')
-                    mature_evidence = None
-                    if e_atr is not None and float(e_atr) > 0:
-                        mature_evidence = evaluate_mature_reversal_exit(position, snapshot, state, sign, entry_atr=float(e_atr))
+                    if not is_channel_swing:
+                        e_atr = position.get('entry_atr')
+                        mature_evidence = None
+                        if e_atr is not None and float(e_atr) > 0:
+                            mature_evidence = evaluate_mature_reversal_exit(
+                                position, snapshot, state, sign, entry_atr=float(e_atr)
+                            )
+                        if mature_evidence is not None and reason != HARD_REASON:
+                            reason, trigger = ABNORMAL_REASON, mature_evidence['trigger']
+                            state.update(mature_evidence)
 
-                    if mature_evidence is not None and reason != HARD_REASON:
-                        reason, trigger = ABNORMAL_REASON, mature_evidence['trigger']
-                        state.update(mature_evidence)
-
-                    # 2. Older Doji evidence check (this uses live candle for reversal)
-                    evidence = doji_reversal_evidence(
-                        snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr,
-                        symbol=position.get('symbol'))
-                    if evidence is not None and not mature_evidence and reason != HARD_REASON:
-                        reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
-                        state.update(evidence)
+                        evidence = doji_reversal_evidence(
+                            snapshot, price, sign, entry, ident[1]*1000, peak_gain_atr,
+                            symbol=position.get('symbol'))
+                        if evidence is not None and not mature_evidence and reason != HARD_REASON:
+                            reason, trigger = ABNORMAL_REASON, DOJI_TRIGGER
+                            state.update(evidence)
 
             # Model T Profit Floor Hit Evaluation
             floor_reason, floor_trigger = None, None
-            if state.get('profit_floor_armed', False) and 'profit_floor_price' in state:
+            if (not is_channel_swing and state.get('profit_floor_armed', False)
+                    and 'profit_floor_price' in state):
                 floor = state['profit_floor_price']
                 if sign == 1 and price <= floor:
                     floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_PROFIT_LOCK_FLOOR'
@@ -809,25 +897,50 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 if (snapshot.get('live_bar_ms') == bar
                         and snapshot.get('closed_bar_ms') == bar - 60000
                         and positive(opening) and positive(prior_atr)):
-                    body = sign*(float(opening)-price)
-                    try:
+                    live_open = float(opening)
+                    entry_bar_ms = math.floor(ident[1] * 1000 / 60000) * 60000
+                    if is_channel_swing and bar == entry_bar_ms:
+                        live_open = entry
+                    body = sign*(live_open-price)
+                    if is_channel_swing:
+                        from core.config import CHANNEL_WATERFALL_BODY_ATR
+                        threshold = CHANNEL_WATERFALL_BODY_ATR * float(prior_atr)
+                    else:
                         threshold = ABNORMAL_BODY_ATR * float(prior_atr)
-                    except NameError:
-                        threshold = 1.5 * float(prior_atr)
 
                     if body > 0 and body >= threshold:
                         reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
-                        state.update(trigger_bar_ms=bar, trigger_open=float(opening),
+                        state.update(trigger_bar_ms=bar, trigger_open=live_open,
                                      trigger_atr=float(prior_atr), trigger_price=price)
 
-            pivot_evidence = three_point_pivot_exit(position, snapshot)
-            if (pivot_evidence is not None and reason != HARD_REASON
-                    and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
-                reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
-                state.update(pivot_evidence)
+            if isinstance(snapshot, dict) and 'kc_lower' in snapshot and 'kc_upper' in snapshot:
+                kc_lower = float(snapshot.get('kc_lower', 0))
+                kc_upper = float(snapshot.get('kc_upper', 0))
+                if sign == 1 and kc_lower > 0 and price < kc_lower:
+                    reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
+                elif sign == -1 and kc_upper > 0 and price > kc_upper:
+                    reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
 
             pivot_only_symbol = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
-            if not pivot_only_symbol:
+            if is_channel_swing:
+                abnormal_evidence = two_closed_adverse_abnormal_exit(position, snapshot)
+                if (abnormal_evidence is not None and reason != HARD_REASON
+                        and trigger != 'WATERFALL_DROP'):
+                    reason, trigger = ABNORMAL_REASON, abnormal_evidence['trigger']
+                    state.update(abnormal_evidence)
+                pivot_evidence = three_point_pivot_exit(position, snapshot)
+                if (pivot_evidence is not None
+                        and channel_pivot_trend_confirmed(position, snapshot)
+                        and reason != HARD_REASON
+                        and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL')):
+                    reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
+                    state.update(pivot_evidence)
+            elif not pivot_only_symbol:
+                pivot_evidence = three_point_pivot_exit(position, snapshot)
+                if (pivot_evidence is not None and reason != HARD_REASON
+                        and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
+                    reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
+                    state.update(pivot_evidence)
                 ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
                 ma5_snapshot['quote_price'] = price
                 ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
@@ -836,32 +949,26 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
                     state.update(ma5_evidence)
 
-            if (pivot_only_symbol and reason != HARD_REASON
-                    and trigger not in PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS):
+            if (is_channel_swing and reason != HARD_REASON
+                    and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
                 reason, trigger = None, None
 
             live_breakout_side = live_body_breakout_position_side(position)
             if live_breakout_side and reason != HARD_REASON:
-                allowed_triggers = (
-                    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS if pivot_only_symbol else (
-                        'EXIT_PROFIT_LOCK_FLOOR', 'WATERFALL_DROP',
-                        'THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL',
-                    )
-                )
                 authorized_live_breakout_exit = (
-                    trigger in allowed_triggers
-                    and (trigger != 'EXIT_PROFIT_LOCK_FLOOR' or net > 0)
+                    trigger in CHANNEL_SWING_EXIT_TRIGGERS
                 )
                 if not authorized_live_breakout_exit:
                     reason, trigger = None, None
 
-            if (pivot_only_symbol and reason != HARD_REASON
-                    and trigger not in PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS):
+            if (is_channel_swing and reason != HARD_REASON
+                    and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
                 reason, trigger = None, None
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
-                    and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT',
+                    and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                                        'KC_OUTER_PIVOT',
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                                         'MA5_TRUE_PEAK_REVERSAL',
                                         'CHANNEL_PEAK_PULLBACK_REVERSAL',
@@ -872,7 +979,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if reason:
                 soft_exit_blocked = False
                 peak_exemptions = (
-                    'WATERFALL_DROP', 'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
+                    'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                    'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',

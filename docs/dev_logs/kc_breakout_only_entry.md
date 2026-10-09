@@ -1,0 +1,6 @@
+### [2026-10-09 10:14:18 UTC+8] - Modification Phase: Enforce KC two-bar breakout as the only automatic entry
+- **Author**: Codex (workspace identity: shudgai999)
+- **Target Files & Lines**: `core/services/entry_contract.py` (`ENTRY_CODES`, `evaluate_entry_contract`, `evaluate_continuation_entry`); `core/services/kc_pending_entry.py` (`evaluate_kc_pending_entry`)
+- **Modification Description**: Restrict automatic entry authority to `KC_2BAR_CONFIRM_LONG/SHORT`; remove pullback-resume authorization and continuation decisions. The shared entry contract now requires exactly two completed candles followed by one current forming candle, and no longer requires third-candle color or MA5 direction. K1/K2 breakout body, same-color, minimum body ratio and latest quote outside the current side's KC rail remain checked at scan and submit revalidation.
+- **Trigger Reason & Requirement**: User reported both symbols continued opening through alternate modes after specifying first-bar body breakout, second same-color body confirmation, and third-bar quote outside KC as the sole automatic entry.
+- **Verification & Test Status**: Source paths were inspected statically. Tests were not run in this change.

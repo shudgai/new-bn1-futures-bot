@@ -1,0 +1,57 @@
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -1724,10 +1724,10 @@
+         return 0.0
+         
+     @staticmethod
+-    def _full_wallet_entry_margin(wallet, available, leverage):
++    def _half_wallet_entry_margin(wallet, available, leverage):
+         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
+             return 0.
+-        return min(wallet * 1.0, available / (1.0 + leverage * TAKER_FEE_RATE))
++        return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
+ 
+     async def _entry_boundary_frame(self, symbol):
+         from core.services.entry_finality import fetch_settled_entry_frame
+@@ -1822,7 +1822,7 @@
+         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
+         wallet = float(self.account.get_wallet_balance())
+         available = float(self.account.get_available_balance())
+-        amount = self._full_wallet_entry_margin(wallet, available, leverage)
++        amount = self._half_wallet_entry_margin(wallet, available, leverage)
+ 
+         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
+@@ -1872,7 +1872,7 @@
+             if daily and daily()[0]:
+                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
+                 return False
+-            amount = self._full_wallet_entry_margin(float(self.account.get_wallet_balance()),
++            amount = self._half_wallet_entry_margin(float(self.account.get_wallet_balance()),
+                 float(self.account.get_available_balance()), leverage)
+             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
+--- a/web/index.html
++++ b/web/index.html
+@@ -653,7 +653,7 @@
+                         leverage: 5,
+                         leverage_map: {},
+                         leverage_by_score: {},
+-                        symbols: ['龙虾/USDT'],
++                        symbols: ['龙虾/USDT', 'CAP/USDT'],
+                         symbol_directions: {},
+                         market_modes: {},
+                         volatility_stats: {},
+@@ -762,11 +762,10 @@
+ 
+             openChartModal(symbol) {
+                 this.destroyCharts();
+-                const desktop = window.matchMedia('(min-width: 861px)').matches;
+                 const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
+                 const symbols = [symbol, ...available.filter(item => item !== symbol)]
+                     .filter(Boolean)
+-                    .slice(0, desktop ? 2 : 1);
++                    .slice(0, 2);
+                 this.chartModal.symbol = symbol;
+                 this.chartModal.symbols = symbols;
+                 this.chartModal.states = Object.fromEntries(

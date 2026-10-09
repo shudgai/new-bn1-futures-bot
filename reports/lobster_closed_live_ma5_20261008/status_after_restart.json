@@ -1,0 +1,1043 @@
+{
+  "web_read_only": false,
+  "market_data_live": true,
+  "market_data_stale": true,
+  "ticker_age_seconds": {
+    "龙虾/USDT": null,
+    "CAP/USDT": null
+  },
+  "ticker_quote_times": {
+    "龙虾/USDT": null,
+    "CAP/USDT": null
+  },
+  "is_running": true,
+  "entry_gate_halts": {},
+  "api_weight_1m": 0,
+  "strategy": "龍蝦／CAP 共用兩槽與半帳戶資金，多空對稱雙入口。即時入口：當根原始開盤在 KC 通道內或碰軌，最新報價嚴格穿出上軌評估多單、下軌評估空單；不等收線、小反色 K、0.5 ATR、KC 方向或 MA。一般入口：最近兩根已收線同色有效實體各至少全長 20%，第一根由通道內實體穿出外軌、第二根同色收在軌外，KC 已收線中軌同向，最新價仍在同側軌外；不加 MA 或盤整條件。軌外開盤且沒有兩根確認不開。新即時破軌倉在進場當根扣雙邊費用與預估平倉滑點後淨利首次轉正即平，不等回踩；後續空手重新驗證雙入口。每幣每根最多一次成功自動開倉，成功平倉當根不重開，重啟依成交紀錄去重。硬止損、瀑布與 MA5 備援出口保留；手動及舊持倉不新增當根淨利出口。不自動反手，保留行情有效性、未知委託、額度與送單鎖。不保證獲利、最低點進場或最高點成交。",
+  "environment": "binance_testnet",
+  "paper_trading": true,
+  "available_balance": 75.0,
+  "port": 8006,
+  "balance": 149.81,
+  "realized_pnl": 0.0,
+  "unrealized_pnl": -0.51,
+  "estimated_net_unrealized_pnl": -0.92,
+  "leverage": 5,
+  "leverage_map": {
+    "龙虾/USDT": 5,
+    "CAP/USDT": 5
+  },
+  "leverage_by_score": {
+    "70": {
+      "龙虾/USDT": 5,
+      "CAP/USDT": 5
+    },
+    "80": {
+      "龙虾/USDT": 5,
+      "CAP/USDT": 5
+    },
+    "100": {
+      "龙虾/USDT": 5,
+      "CAP/USDT": 5
+    }
+  },
+  "signal_leverage_caps": {
+    "90": 5,
+    "80": 5,
+    "70": 5
+  },
+  "max_slots": 2,
+  "effective_slots": 2,
+  "trade_amount": 74.91,
+  "pullback_outcome_stats": {},
+  "entry_filter_stats": {},
+  "entry_filter_last": {},
+  "shadow_parameter_stats": {},
+  "shadow_parameter_last": {},
+  "btc_lead_shadow": {
+    "active": {},
+    "events": [],
+    "total_events": 0,
+    "eligible_events": 0,
+    "average_delay_sec": null
+  },
+  "taker_fee_rate": 0.0005,
+  "slippage_pct": 0.0001,
+  "symbols": [
+    "龙虾/USDT",
+    "CAP/USDT"
+  ],
+  "symbol_directions": {
+    "龙虾/USDT": "WAIT",
+    "CAP/USDT": "WAIT"
+  },
+  "market_modes": {
+    "龙虾/USDT": "WAIT",
+    "CAP/USDT": "WAIT"
+  },
+  "symbol_rotation": {
+    "last_rotation_at": 0.0,
+    "changes": [],
+    "reason": "尚未執行",
+    "ai": {
+      "enabled": true,
+      "status": "not_called",
+      "model": "",
+      "summary": "",
+      "error": "",
+      "url": "http://127.0.0.1:8888/v1/chat/completions"
+    },
+    "top_metrics": [],
+    "direction_map": {},
+    "entry_scan_symbols": [],
+    "entry_scan_count": 0,
+    "trade_ai_analysis": {
+      "status": "no_data",
+      "updated_at": 1791440263.8072848,
+      "trade_count": 0,
+      "summary": "目前沒有已平倉交易可供 AI 分析",
+      "strengths": [
+        "系統成功識別並觸發了硬止損(HARD_STOP)機制，避免了潛在的更大規模虧損。",
+        "交易訊號分數為100分，顯示系統在訊號生成階段具有明確的邏輯依據。"
+      ],
+      "weaknesses": [
+        "樣本量過小（僅1筆），無法評估5分鐘SuperTrend與Keltner策略的長期穩定性與勝率。",
+        "交易持續時間極短（僅12秒），顯示進場後價格立即反向，可能反映進場時機過於激進或市場處於高波動雜訊區。",
+        "虧損原因包含保證金損失(MARGIN_LOSS)，顯示在5x槓桿下，初始風險控制或止損距離可能過大。"
+      ],
+      "recommendations": [
+        "建議增加樣本量至至少30-50筆以上，以獲得更具統計意義的勝率與獲利因子數據。",
+        "考慮在進場邏輯中增加對市場波動率（如ATR）的過濾，避免在極高波動或雜訊環境下進場。",
+        "檢視5x槓桿下的止損距離設定，確保在觸發硬止損前，保證金損失不會過快累積。"
+      ],
+      "risk_flags": [
+        "樣本量不足，當前績效數據不具代表性，不應作為策略優化的唯一依據。",
+        "短單在極短時間內觸發硬止損，可能暗示策略在特定市場結構下存在系統性缺陷。"
+      ],
+      "statistics": {
+        "overview": {
+          "closed_trades": 1,
+          "net_pnl": -4.2329,
+          "total_fees": 0.376,
+          "win_rate": 0.0,
+          "avg_pnl": -4.2329,
+          "profit_factor": 0.0,
+          "stop_rate": 0.0,
+          "protection_stop_rate": 0.0,
+          "tp_count": 0,
+          "sl_count": 0,
+          "profit_protect_count": 0,
+          "unknown_exit_count": 0
+        },
+        "by_symbol": [
+          {
+            "symbol": "龙虾/USDT",
+            "trades": 1,
+            "net_pnl": -4.2329,
+            "avg_pnl": -4.2329,
+            "win_rate": 0.0,
+            "stop_rate": 0.0
+          }
+        ],
+        "by_signal_score": [
+          {
+            "signal_score": "100",
+            "trades": 1,
+            "net_pnl": -4.2329,
+            "avg_pnl": -4.2329,
+            "win_rate": 0.0,
+            "stop_rate": 0.0
+          }
+        ],
+        "by_score_bucket": [
+          {
+            "score_bucket": "91+",
+            "trades": 1,
+            "net_pnl": -4.2329,
+            "avg_pnl": -4.2329,
+            "win_rate": 0.0,
+            "stop_rate": 0.0
+          }
+        ],
+        "by_exit_type": [
+          {
+            "exit_type": "OTHER",
+            "trades": 1,
+            "net_pnl": -4.2329,
+            "avg_pnl": -4.2329,
+            "win_rate": 0.0,
+            "stop_rate": 0.0
+          }
+        ],
+        "by_exit_reason": [
+          {
+            "exit_reason": "Channel Swing HARD_STOP MARGIN_LOSS",
+            "trades": 1,
+            "net_pnl": -4.2329,
+            "avg_pnl": -4.2329,
+            "win_rate": 0.0,
+            "stop_rate": 0.0
+          }
+        ]
+      },
+      "error": "",
+      "history_digest": "aa04007db29a157cba425ade9be769ba596d2e859bb2e93250c12666285b290f",
+      "model": "Qwen3.8-27B-UD-IQ3_S.gguf"
+    },
+    "volatility_stats": {}
+  },
+  "market_surveillance": {
+    "enabled": false,
+    "mode": "binance_all_contracts_websocket",
+    "tracked_contracts": 0,
+    "eligible_contracts": 522,
+    "shortlist": [],
+    "directions": {},
+    "updated_at": 0.0
+  },
+  "volatility_stats": {},
+  "trade_ai_analysis": {
+    "status": "no_data",
+    "updated_at": 1791440263.8072848,
+    "trade_count": 0,
+    "summary": "目前沒有已平倉交易可供 AI 分析",
+    "strengths": [
+      "系統成功識別並觸發了硬止損(HARD_STOP)機制，避免了潛在的更大規模虧損。",
+      "交易訊號分數為100分，顯示系統在訊號生成階段具有明確的邏輯依據。"
+    ],
+    "weaknesses": [
+      "樣本量過小（僅1筆），無法評估5分鐘SuperTrend與Keltner策略的長期穩定性與勝率。",
+      "交易持續時間極短（僅12秒），顯示進場後價格立即反向，可能反映進場時機過於激進或市場處於高波動雜訊區。",
+      "虧損原因包含保證金損失(MARGIN_LOSS)，顯示在5x槓桿下，初始風險控制或止損距離可能過大。"
+    ],
+    "recommendations": [
+      "建議增加樣本量至至少30-50筆以上，以獲得更具統計意義的勝率與獲利因子數據。",
+      "考慮在進場邏輯中增加對市場波動率（如ATR）的過濾，避免在極高波動或雜訊環境下進場。",
+      "檢視5x槓桿下的止損距離設定，確保在觸發硬止損前，保證金損失不會過快累積。"
+    ],
+    "risk_flags": [
+      "樣本量不足，當前績效數據不具代表性，不應作為策略優化的唯一依據。",
+      "短單在極短時間內觸發硬止損，可能暗示策略在特定市場結構下存在系統性缺陷。"
+    ],
+    "statistics": {
+      "overview": {
+        "closed_trades": 1,
+        "net_pnl": -4.2329,
+        "total_fees": 0.376,
+        "win_rate": 0.0,
+        "avg_pnl": -4.2329,
+        "profit_factor": 0.0,
+        "stop_rate": 0.0,
+        "protection_stop_rate": 0.0,
+        "tp_count": 0,
+        "sl_count": 0,
+        "profit_protect_count": 0,
+        "unknown_exit_count": 0
+      },
+      "by_symbol": [
+        {
+          "symbol": "龙虾/USDT",
+          "trades": 1,
+          "net_pnl": -4.2329,
+          "avg_pnl": -4.2329,
+          "win_rate": 0.0,
+          "stop_rate": 0.0
+        }
+      ],
+      "by_signal_score": [
+        {
+          "signal_score": "100",
+          "trades": 1,
+          "net_pnl": -4.2329,
+          "avg_pnl": -4.2329,
+          "win_rate": 0.0,
+          "stop_rate": 0.0
+        }
+      ],
+      "by_score_bucket": [
+        {
+          "score_bucket": "91+",
+          "trades": 1,
+          "net_pnl": -4.2329,
+          "avg_pnl": -4.2329,
+          "win_rate": 0.0,
+          "stop_rate": 0.0
+        }
+      ],
+      "by_exit_type": [
+        {
+          "exit_type": "OTHER",
+          "trades": 1,
+          "net_pnl": -4.2329,
+          "avg_pnl": -4.2329,
+          "win_rate": 0.0,
+          "stop_rate": 0.0
+        }
+      ],
+      "by_exit_reason": [
+        {
+          "exit_reason": "Channel Swing HARD_STOP MARGIN_LOSS",
+          "trades": 1,
+          "net_pnl": -4.2329,
+          "avg_pnl": -4.2329,
+          "win_rate": 0.0,
+          "stop_rate": 0.0
+        }
+      ]
+    },
+    "error": "",
+    "history_digest": "aa04007db29a157cba425ade9be769ba596d2e859bb2e93250c12666285b290f",
+    "model": "Qwen3.8-27B-UD-IQ3_S.gguf"
+  },
+  "trade_ai_worker": {
+    "mode": "event_driven",
+    "running": true,
+    "retry_after_sec": 900.0
+  },
+  "tickers": {
+    "CAP/USDT": 0.07168
+  },
+  "ticker_updated_at": 1791441220.8106575,
+  "positions": [
+    {
+      "symbol": "CAP/USDT",
+      "side": "SHORT",
+      "entry_price": 0.07158284100000001,
+      "qty": 5225.62156907459,
+      "margin": 74.81296758104739,
+      "leverage": 5,
+      "sl": 0.0724285,
+      "tp": 0.0,
+      "atr": 0.00028499999999999777,
+      "open_timestamp": 1791441188.061652,
+      "open_time": "2026-10-08 14:33:08",
+      "reason": "Live1M KC_2BAR_CONFIRM_SHORT",
+      "signal_score": 100,
+      "mark_price": 0.07168,
+      "unrealized_pnl": -0.5077161660296426,
+      "peak_pnl_pct": 0.0,
+      "profit_alert": false,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1791441180000.0,
+      "entry_atr": 0.00028499999999999777,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "KC_2BAR_CONFIRM_SHORT",
+        "closed_bar": 1791441180000.0,
+        "closed_price": 0.07157,
+        "quote_price": 0.07159,
+        "entry_phase": "KC_2BAR_CLOSED_CONFIRM",
+        "breakout_bar_id": 1791441060000.0,
+        "pair_confirmation_bar_id": 1791441120000.0,
+        "symbol": "CAP/USDT",
+        "side": "SHORT",
+        "signal_id": "SHORT:1791441060000:1791441120000",
+        "candidate_bar_id": 1791441180000.0,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1791440820000.0,
+              "open": 0.07207,
+              "high": 0.07218,
+              "low": 0.07187,
+              "close": 0.07214,
+              "ma3": 0.07209333333333333,
+              "ma15": 0.07209266666666667,
+              "atr": 0.00021099999999999868,
+              "ma5": 0.07212199999999999,
+              "kc_upper": 0.07231632593698974,
+              "kc_middle": 0.07210532593698973,
+              "kc_lower": 0.07189432593698973
+            },
+            {
+              "timestamp": 1791440880000.0,
+              "open": 0.07213,
+              "high": 0.0724,
+              "low": 0.07192,
+              "close": 0.07224,
+              "ma3": 0.07214666666666668,
+              "ma15": 0.07211133333333333,
+              "atr": 0.0002489999999999992,
+              "ma5": 0.072132,
+              "kc_upper": 0.0723671520382288,
+              "kc_middle": 0.0721181520382288,
+              "kc_lower": 0.0718691520382288
+            },
+            {
+              "timestamp": 1791440940000.0,
+              "open": 0.07224,
+              "high": 0.07224,
+              "low": 0.07183,
+              "close": 0.07197,
+              "ma3": 0.07211666666666666,
+              "ma15": 0.072108,
+              "atr": 0.00025999999999999775,
+              "ma5": 0.07209800000000001,
+              "kc_upper": 0.07236404232030225,
+              "kc_middle": 0.07210404232030225,
+              "kc_lower": 0.07184404232030225
+            },
+            {
+              "timestamp": 1791441000000.0,
+              "open": 0.07197,
+              "high": 0.0721,
+              "low": 0.07182,
+              "close": 0.07193,
+              "ma3": 0.07204666666666666,
+              "ma15": 0.07210733333333333,
+              "atr": 0.0002779999999999977,
+              "ma5": 0.072068,
+              "kc_upper": 0.07236546686122584,
+              "kc_middle": 0.07208746686122584,
+              "kc_lower": 0.07180946686122584
+            },
+            {
+              "timestamp": 1791441060000.0,
+              "open": 0.07194,
+              "high": 0.07194,
+              "low": 0.07172,
+              "close": 0.07177,
+              "ma3": 0.07189,
+              "ma15": 0.072092,
+              "atr": 0.00027299999999999823,
+              "ma5": 0.07200999999999999,
+              "kc_upper": 0.07233023192206146,
+              "kc_middle": 0.07205723192206147,
+              "kc_lower": 0.07178423192206147
+            },
+            {
+              "timestamp": 1791441120000.0,
+              "open": 0.07178,
+              "high": 0.07187,
+              "low": 0.07155,
+              "close": 0.07157,
+              "ma3": 0.07175666666666668,
+              "ma15": 0.07206466666666667,
+              "atr": 0.00028499999999999777,
+              "ma5": 0.07189599999999999,
+              "kc_upper": 0.07229582888186513,
+              "kc_middle": 0.07201082888186514,
+              "kc_lower": 0.07172582888186514
+            }
+          ],
+          "live_candle": {
+            "timestamp": 1791441180000.0,
+            "open": 0.07157,
+            "high": 0.07162,
+            "low": 0.07155,
+            "close": 0.07159,
+            "ma3": 0.07164333333333334,
+            "ma15": 0.072042,
+            "atr": 0.00027599999999999847,
+            "ma5": 0.071766,
+            "kc_upper": 0.07224674994073511,
+            "kc_middle": 0.07197074994073512,
+            "kc_lower": 0.07169474994073512,
+            "is_closed": false,
+            "reference_closed_atr": 0.00028499999999999777
+          },
+          "previous5_low": 0.07172,
+          "previous5_high": 0.0724
+        },
+        "third_bar_id": 1791441180000.0,
+        "kc_confirmation_edge": 0.07169474994073512,
+        "kc_distance_atr": 0.3675436517021783,
+        "kc_max_distance_atr": 0.5,
+        "pending_signal_id": "SHORT:1791441060000:1791441120000",
+        "pending_second_bar_id": 1791441120000.0,
+        "pending_wait_bars": 1,
+        "pending_max_wait_bars": 1,
+        "structure_risk_stop": 0.0724285,
+        "breakout_previous_ma5": 0.07189599999999999,
+        "breakout_live_ma5": 0.071766,
+        "entry_live_ma5": 0.071766,
+        "entry_live_ma15": 0.072042,
+        "chop_start_ms": 1791440820000.0,
+        "chop_end_ms": 1791441120000.0,
+        "chop_bars": 6,
+        "chop_efficiency": 0.7402597402597403,
+        "chop_middle_crosses": 1,
+        "chop_mean_overlap": 0.29033613445378154,
+        "cap_quote_ma5": 0.071766,
+        "finality_server_ms": 1791441187855.0,
+        "gate_version": "entry-gate-20261007-v48-cap-pair-and-proven-continuation",
+        "gate_proof": {
+          "version": "entry-gate-20261007-v48-cap-pair-and-proven-continuation",
+          "symbol": "CAP/USDT",
+          "side": "SHORT",
+          "code": "KC_2BAR_CONFIRM_SHORT",
+          "bar": 1791441180000.0,
+          "quote": 0.07159,
+          "signal_id": "SHORT:1791441060000:1791441120000",
+          "candidate_bar_id": 1791441180000.0,
+          "pending_signal_id": "SHORT:1791441060000:1791441120000",
+          "pair_confirmation_bar_id": 1791441120000.0,
+          "cap_origin_id": null,
+          "entry_phase": "KC_2BAR_CLOSED_CONFIRM",
+          "same_bar_entry_bar_ms": null,
+          "same_bar_exit_deadline_ms": null,
+          "issued_ms": 1791441188057.944,
+          "evidence_hash": "d78d95b2d1ebdcc20facbdb9a5c4412e8545bb07397ee527499fd4476470ac68",
+          "signature": "20c4d2b2f6d38ca65a2a2ab15ba0244d7a5c6748ffbe5b54adac509995263c58"
+        }
+      },
+      "structure_risk_policy": "half_wallet_margin_budget_v2",
+      "structure_risk_budget_usdt": 3.7406483790523697,
+      "structure_original_margin": 74.81296758104739,
+      "atr_sl": 0.0724285,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.0724285,
+      "initial_risk": 0.0008456589999999986,
+      "position_uuid": "12baf8e69d054ac28458bdae715d2347",
+      "entry_fee_paid": 0.1870324189526185,
+      "armed": false,
+      "peak_trailing_state": {
+        "policy": "abnormal_body_only_v2",
+        "identity": [
+          "SHORT",
+          1791441188.061652,
+          0.07158284100000001,
+          5225.62156907459
+        ],
+        "peak_price": 0.07156,
+        "entry_margin": 74.81296758104739,
+        "armed": false,
+        "atr": 0.00028499999999999777,
+        "crossed_kc_middle": true,
+        "last_ms": 1791441216676.904,
+        "peak_net_pnl": -0.2920599816570667,
+        "holding_exit_policy": "closed_price_pivot_or_structure_break_v12",
+        "ma3_turn_observation": {
+          "first": 0.07166,
+          "peak": 0.07163333333333333,
+          "stamp": 1791441216653.8848,
+          "favorable": false
+        },
+        "ma5_pivot_status": "WAIT_POST_ENTRY_MA5_HISTORY"
+      },
+      "trend_hold_status": "UNKNOWN",
+      "trend_hold_reason": "NO_DATA",
+      "max_pnl_usdt": 0.11935842225928261,
+      "trigger": {
+        "active": false,
+        "reasons": []
+      },
+      "estimated_net_unrealized_pnl": -0.919492117425021,
+      "profit_lock_amount": null,
+      "profit_lock_status": "已停用",
+      "entry_reason": "Live1M KC_2BAR_CONFIRM_SHORT",
+      "ratchet_floor": null,
+      "phase_info": null,
+      "locked_profit_usdt": 0.0,
+      "locked_phase": 0
+    }
+  ],
+  "trades": [
+    {
+      "id": 1791441188061,
+      "time": "10/08 14:33:08",
+      "symbol": "CAP/USDT",
+      "action": "OPEN_SHORT",
+      "side": "SHORT",
+      "price": 0.07158284,
+      "qty": 5225.62156907,
+      "amount": 74.81296758104739,
+      "fee": 0.187,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "Live1M KC_2BAR_CONFIRM_SHORT",
+      "sl": 0.0724285,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1791441180000.0,
+      "entry_atr": 0.00028499999999999777,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "KC_2BAR_CONFIRM_SHORT",
+        "closed_bar": 1791441180000.0,
+        "closed_price": 0.07157,
+        "quote_price": 0.07159,
+        "entry_phase": "KC_2BAR_CLOSED_CONFIRM",
+        "breakout_bar_id": 1791441060000.0,
+        "pair_confirmation_bar_id": 1791441120000.0,
+        "symbol": "CAP/USDT",
+        "side": "SHORT",
+        "signal_id": "SHORT:1791441060000:1791441120000",
+        "candidate_bar_id": 1791441180000.0,
+        "evidence": {
+          "closed_count": 199,
+          "is_closed": true,
+          "candles": [
+            {
+              "timestamp": 1791440820000.0,
+              "open": 0.07207,
+              "high": 0.07218,
+              "low": 0.07187,
+              "close": 0.07214,
+              "ma3": 0.07209333333333333,
+              "ma15": 0.07209266666666667,
+              "atr": 0.00021099999999999868,
+              "ma5": 0.07212199999999999,
+              "kc_upper": 0.07231632593698974,
+              "kc_middle": 0.07210532593698973,
+              "kc_lower": 0.07189432593698973
+            },
+            {
+              "timestamp": 1791440880000.0,
+              "open": 0.07213,
+              "high": 0.0724,
+              "low": 0.07192,
+              "close": 0.07224,
+              "ma3": 0.07214666666666668,
+              "ma15": 0.07211133333333333,
+              "atr": 0.0002489999999999992,
+              "ma5": 0.072132,
+              "kc_upper": 0.0723671520382288,
+              "kc_middle": 0.0721181520382288,
+              "kc_lower": 0.0718691520382288
+            },
+            {
+              "timestamp": 1791440940000.0,
+              "open": 0.07224,
+              "high": 0.07224,
+              "low": 0.07183,
+              "close": 0.07197,
+              "ma3": 0.07211666666666666,
+              "ma15": 0.072108,
+              "atr": 0.00025999999999999775,
+              "ma5": 0.07209800000000001,
+              "kc_upper": 0.07236404232030225,
+              "kc_middle": 0.07210404232030225,
+              "kc_lower": 0.07184404232030225
+            },
+            {
+              "timestamp": 1791441000000.0,
+              "open": 0.07197,
+              "high": 0.0721,
+              "low": 0.07182,
+              "close": 0.07193,
+              "ma3": 0.07204666666666666,
+              "ma15": 0.07210733333333333,
+              "atr": 0.0002779999999999977,
+              "ma5": 0.072068,
+              "kc_upper": 0.07236546686122584,
+              "kc_middle": 0.07208746686122584,
+              "kc_lower": 0.07180946686122584
+            },
+            {
+              "timestamp": 1791441060000.0,
+              "open": 0.07194,
+              "high": 0.07194,
+              "low": 0.07172,
+              "close": 0.07177,
+              "ma3": 0.07189,
+              "ma15": 0.072092,
+              "atr": 0.00027299999999999823,
+              "ma5": 0.07200999999999999,
+              "kc_upper": 0.07233023192206146,
+              "kc_middle": 0.07205723192206147,
+              "kc_lower": 0.07178423192206147
+            },
+            {
+              "timestamp": 1791441120000.0,
+              "open": 0.07178,
+              "high": 0.07187,
+              "low": 0.07155,
+              "close": 0.07157,
+              "ma3": 0.07175666666666668,
+              "ma15": 0.07206466666666667,
+              "atr": 0.00028499999999999777,
+              "ma5": 0.07189599999999999,
+              "kc_upper": 0.07229582888186513,
+              "kc_middle": 0.07201082888186514,
+              "kc_lower": 0.07172582888186514
+            }
+          ],
+          "live_candle": {
+            "timestamp": 1791441180000.0,
+            "open": 0.07157,
+            "high": 0.07162,
+            "low": 0.07155,
+            "close": 0.07159,
+            "ma3": 0.07164333333333334,
+            "ma15": 0.072042,
+            "atr": 0.00027599999999999847,
+            "ma5": 0.071766,
+            "kc_upper": 0.07224674994073511,
+            "kc_middle": 0.07197074994073512,
+            "kc_lower": 0.07169474994073512,
+            "is_closed": false,
+            "reference_closed_atr": 0.00028499999999999777
+          },
+          "previous5_low": 0.07172,
+          "previous5_high": 0.0724
+        },
+        "third_bar_id": 1791441180000.0,
+        "kc_confirmation_edge": 0.07169474994073512,
+        "kc_distance_atr": 0.3675436517021783,
+        "kc_max_distance_atr": 0.5,
+        "pending_signal_id": "SHORT:1791441060000:1791441120000",
+        "pending_second_bar_id": 1791441120000.0,
+        "pending_wait_bars": 1,
+        "pending_max_wait_bars": 1,
+        "structure_risk_stop": 0.0724285,
+        "breakout_previous_ma5": 0.07189599999999999,
+        "breakout_live_ma5": 0.071766,
+        "entry_live_ma5": 0.071766,
+        "entry_live_ma15": 0.072042,
+        "chop_start_ms": 1791440820000.0,
+        "chop_end_ms": 1791441120000.0,
+        "chop_bars": 6,
+        "chop_efficiency": 0.7402597402597403,
+        "chop_middle_crosses": 1,
+        "chop_mean_overlap": 0.29033613445378154,
+        "cap_quote_ma5": 0.071766,
+        "finality_server_ms": 1791441187855.0,
+        "gate_version": "entry-gate-20261007-v48-cap-pair-and-proven-continuation",
+        "gate_proof": {
+          "version": "entry-gate-20261007-v48-cap-pair-and-proven-continuation",
+          "symbol": "CAP/USDT",
+          "side": "SHORT",
+          "code": "KC_2BAR_CONFIRM_SHORT",
+          "bar": 1791441180000.0,
+          "quote": 0.07159,
+          "signal_id": "SHORT:1791441060000:1791441120000",
+          "candidate_bar_id": 1791441180000.0,
+          "pending_signal_id": "SHORT:1791441060000:1791441120000",
+          "pair_confirmation_bar_id": 1791441120000.0,
+          "cap_origin_id": null,
+          "entry_phase": "KC_2BAR_CLOSED_CONFIRM",
+          "same_bar_entry_bar_ms": null,
+          "same_bar_exit_deadline_ms": null,
+          "issued_ms": 1791441188057.944,
+          "evidence_hash": "d78d95b2d1ebdcc20facbdb9a5c4412e8545bb07397ee527499fd4476470ac68",
+          "signature": "20c4d2b2f6d38ca65a2a2ab15ba0244d7a5c6748ffbe5b54adac509995263c58"
+        }
+      },
+      "structure_risk_policy": "half_wallet_margin_budget_v2",
+      "structure_risk_budget_usdt": 3.7406483790523697,
+      "structure_original_margin": 74.81296758104739,
+      "atr_sl": 0.0724285,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.0724285,
+      "initial_risk": 0.0008456589999999986
+    }
+  ],
+  "total_trades": 1,
+  "trade_dates": [
+    "2026-10-08"
+  ],
+  "logs": [
+    {
+      "time": "14:32:00",
+      "timestamp": 1791441120.9663677,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_DATA_SUSPENDED\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:02",
+      "timestamp": 1791441122.0107753,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=CAP/USDT side=NONE bar=1791441060000.0 reason=WAIT_FORMING_BREAKOUT_BAR",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:04",
+      "timestamp": 1791441124.6260731,
+      "text": "WAIT_EVENT {\"event_id\": \"26a4d8d7e35f44b0848066240f0679bb\", \"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_MEDIUM_KEEP\", \"trigger_id\": null, \"observed_ms\": 1791441124622.0432, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:04",
+      "timestamp": 1791441124.6308477,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_MEDIUM_KEEP\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:04",
+      "timestamp": 1791441124.6481447,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1791441120000.0 reason=WAIT_NEW_KC_BREAKOUT",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:05",
+      "timestamp": 1791441125.6746614,
+      "text": "WAIT_EVENT {\"event_id\": \"d3157fbd7137400088f7091e9283d770\", \"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_COMPLETED_BIG_KEEP\", \"trigger_id\": null, \"observed_ms\": 1791441125670.8367, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:05",
+      "timestamp": 1791441125.6791813,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_COMPLETED_BIG_KEEP\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:05",
+      "timestamp": 1791441125.7199526,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=CAP/USDT side=NONE bar=1791441120000.0 reason=WAIT_NEW_KC_BREAKOUT",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:09",
+      "timestamp": 1791441129.9134881,
+      "text": "WAIT_DATA_SUSPENDED symbol=CAP/USDT reason=WAIT_DATA_SUSPENDED",
+      "level": "WARNING"
+    },
+    {
+      "time": "14:32:09",
+      "timestamp": 1791441129.9194827,
+      "text": "WAIT_EVENT {\"event_id\": \"20d010a3de324f29a7d0f6708597e74d\", \"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_DATA_SUSPENDED\", \"trigger_id\": null, \"observed_ms\": 1791441129914.353, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:09",
+      "timestamp": 1791441129.924271,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_DATA_SUSPENDED\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:15",
+      "timestamp": 1791441135.2674282,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:31",
+      "timestamp": 1791441151.1610403,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:32:47",
+      "timestamp": 1791441167.3013315,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:00",
+      "timestamp": 1791441180.9550242,
+      "text": "WAIT_DATA_SUSPENDED symbol=龙虾/USDT reason=WAIT_DATA_SUSPENDED",
+      "level": "WARNING"
+    },
+    {
+      "time": "14:33:00",
+      "timestamp": 1791441180.9608932,
+      "text": "WAIT_EVENT {\"event_id\": \"877a786113d544119cb80f879fb0b46f\", \"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_DATA_SUSPENDED\", \"trigger_id\": null, \"observed_ms\": 1791441180955.9192, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:00",
+      "timestamp": 1791441180.9659014,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_DATA_SUSPENDED\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:01",
+      "timestamp": 1791441181.7427065,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1791441120000.0 reason=WAIT_FORMING_BREAKOUT_BAR",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:01",
+      "timestamp": 1791441181.8995779,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=CAP/USDT side=NONE bar=1791441120000.0 reason=WAIT_FORMING_BREAKOUT_BAR",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:03",
+      "timestamp": 1791441183.8231502,
+      "text": "CAP_ORIGIN_ARMED symbol=CAP/USDT",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:03",
+      "timestamp": 1791441183.833173,
+      "text": "WAIT_EVENT {\"event_id\": \"0ba42a3a626746d19dbd79aa14cae940\", \"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_COMPLETED_BIG_KEEP\", \"trigger_id\": null, \"observed_ms\": 1791441183828.9033, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:03",
+      "timestamp": 1791441183.8386261,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"CAP/USDT\", \"side\": \"LONG\", \"status\": \"WAIT_COMPLETED_BIG_KEEP\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:03",
+      "timestamp": 1791441183.8657322,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:1913 stage=EXECUTION symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:05",
+      "timestamp": 1791441185.3120449,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:1977 stage=EXECUTION symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=🛑 [ENTRY_GATE_FAIL] CAP/USDT snapshot is None (二次快照校驗失敗)",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:05",
+      "timestamp": 1791441185.314002,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:1913 stage=EXECUTION symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:05",
+      "timestamp": 1791441185.3161528,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:06",
+      "timestamp": 1791441186.6224353,
+      "text": "WAIT_EVENT {\"event_id\": \"8bbb36b3b54f4ab2ac2a14f2cddc2180\", \"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_MEDIUM_KEEP\", \"trigger_id\": null, \"observed_ms\": 1791441186616.4016, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:06",
+      "timestamp": 1791441186.6279838,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"龙虾/USDT\", \"side\": \"SHORT\", \"status\": \"WAIT_MEDIUM_KEEP\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:06",
+      "timestamp": 1791441186.6454272,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/services/symbol_runner.py:97 stage=SIGNAL symbol=龙虾/USDT side=NONE bar=1791441180000.0 reason=WAIT_NEW_KC_BREAKOUT",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:07",
+      "timestamp": 1791441187.4254804,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:1984 stage=ENTRY_SEQUENCE symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=KC_2BAR_CLOSED_CONFIRM first_bar=1791441060000.0 exit_bar=None",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:07",
+      "timestamp": 1791441187.4564512,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:2072 stage=EXECUTION symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=ACCOUNT_SUBMIT code=KC_2BAR_CONFIRM_SHORT margin=74.81296758104739 leverage=5",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:07",
+      "timestamp": 1791441187.457449,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:2073 stage=SLOT_BUDGET symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=HALF_WALLET_WITH_ENTRY_FEE wallet=150.0 available=150.0 slots=2 margin=74.81296758104739 entry_fee_reserve=0.18703241895261846",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.058306,
+      "text": "ENTRY_GATE_AUDIT {\"symbol\": \"CAP/USDT\", \"side\": \"SHORT\", \"result\": \"PASS\", \"proof\": {\"version\": \"entry-gate-20261007-v48-cap-pair-and-proven-continuation\", \"symbol\": \"CAP/USDT\", \"side\": \"SHORT\", \"code\": \"KC_2BAR_CONFIRM_SHORT\", \"bar\": 1791441180000.0, \"quote\": 0.07159, \"signal_id\": \"SHORT:1791441060000:1791441120000\", \"candidate_bar_id\": 1791441180000.0, \"pending_signal_id\": \"SHORT:1791441060000:1791441120000\", \"pair_confirmation_bar_id\": 1791441120000.0, \"cap_origin_id\": null, \"entry_phase\": \"KC_2BAR_CLOSED_CONFIRM\", \"same_bar_entry_bar_ms\": null, \"same_bar_exit_deadline_ms\": null, \"issued_ms\": 1791441188057.944, \"evidence_hash\": \"d78d95b2d1ebdcc20facbdb9a5c4412e8545bb07397ee527499fd4476470ac68\", \"signature\": \"20c4d2b2f6d38ca65a2a2ab15ba0244d7a5c6748ffbe5b54adac509995263c58\"}}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.060155,
+      "text": "🧮 [資金換算] CAP/USDT | 本金保證金=74.8130U, 槓桿=5x, 名義價值=374.0648U, 價格=0.0715828, 下單數量(qty)=5225.6216",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.0620923,
+      "text": "🚀 [紙上交易] 開倉成功 [SHORT] CAP/USDT @ 0.0715828 (5x，含滑點，SL=0.0724285, TP=0)",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.0684872,
+      "text": "WAIT_EVENT {\"event_id\": \"15ed27cd8d9a4832b93bbdeafda6c6d7\", \"symbol\": \"CAP/USDT\", \"side\": null, \"status\": \"WAIT_POSITION_SUSPENDED\", \"trigger_id\": null, \"observed_ms\": 1791441188063.803, \"delivered\": false}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.0745833,
+      "text": "WAIT_AUTHORITY {\"symbol\": \"CAP/USDT\", \"side\": null, \"status\": \"WAIT_POSITION_SUSPENDED\"}",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:08",
+      "timestamp": 1791441188.0775995,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/wait-paper-gate-candidate/core/engine.py:1921 stage=EXECUTION symbol=CAP/USDT side=SHORT bar=1791441180000.0 reason=FILLED",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:09",
+      "timestamp": 1791441189.2506196,
+      "text": "INSTANT_EXIT_STREAM symbol=CAP/USDT feed=aggTrade",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:18",
+      "timestamp": 1791441198.3790162,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:31",
+      "timestamp": 1791441211.7664647,
+      "text": "CAP_ORIGIN_CANCELLED_RAIL_RETURN symbol=CAP/USDT",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:33",
+      "timestamp": 1791441213.9591706,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:37",
+      "timestamp": 1791441217.9298582,
+      "text": "⏹️ 量化交易機器人已停止",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:40",
+      "timestamp": 1791441220.8491626,
+      "text": "⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動",
+      "level": "WARNING"
+    },
+    {
+      "time": "14:33:40",
+      "timestamp": 1791441220.8515203,
+      "text": "▶️ 紙上交易帳戶已啟動（純本地模擬，不連接真實交易所）",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:40",
+      "timestamp": 1791441220.8569326,
+      "text": "CHANNEL_EXIT_POLICY_READY exits=CLOSED_PRICE_PIVOT_OR_STRUCTURE_BREAK hard_stops=OFF tick=aggTrade+ticker",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:41",
+      "timestamp": 1791441221.1797698,
+      "text": "✅ [幣種名單核對] MAINSTREAM_SYMBOLS 共 15 個幣種皆為真實有效的幣安永續合約",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:41",
+      "timestamp": 1791441221.181106,
+      "text": "▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（2幣雙向交易）",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:41",
+      "timestamp": 1791441221.183161,
+      "text": "⏸️ [自動幣種輪替] 已停用，鎖定預設 2 個幣種交易",
+      "level": "INFO"
+    },
+    {
+      "time": "14:33:41",
+      "timestamp": 1791441221.1842356,
+      "text": "✅ [自動恢復] 機器人已重新啟動",
+      "level": "SUCCESS"
+    }
+  ],
+  "chart_metrics": {}
+}

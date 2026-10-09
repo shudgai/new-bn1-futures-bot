@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="31" skipped="0" tests="36" time="2.697" timestamp="2026-10-08T08:04:27.384586" hostname="htlocalserver"><testcase classname="tests.test_red_eye_stress" name="test_reject_unclosed_bar" time="0.001" /><testcase classname="tests.test_red_eye_stress" name="test_reject_3rd_bar_red_candle" time="0.001" /><testcase classname="tests.test_red_eye_stress" name="test_direction_forbidden_zones" time="0.000" /><testcase classname="tests.test_red_eye_stress" name="test_intra_bar_flash_crash" time="0.001"><failure message="AssertionError: ❌ 失敗：大瀑布竟然沒在盤中秒殺！原因=None&#10;assert None == 'EMERGENCY_FLASH_CRASH_LONG'">tests/test_red_eye_stress.py:65: in test_intra_bar_flash_crash
+    assert exit_reason == 'EMERGENCY_FLASH_CRASH_LONG', f"❌ 失敗：大瀑布竟然沒在盤中秒殺！原因={exit_reason}"
+E   AssertionError: ❌ 失敗：大瀑布竟然沒在盤中秒殺！原因=None
+E   assert None == 'EMERGENCY_FLASH_CRASH_LONG'</failure></testcase><testcase classname="tests.test_red_eye_stress" name="test_hold_tight_when_normal" time="0.000" /><testcase classname="tests.test_red_eye_staged_contract" name="test_flash_gap[LONG]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:54: in test_flash_gap
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_flash_gap[SHORT]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:54: in test_flash_gap
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_fake_breakout[LONG]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:89: in test_fake_breakout
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_fake_breakout[SHORT]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:89: in test_fake_breakout
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_order_black_hole[timeout_after_fill]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:114: in test_order_black_hole
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_order_black_hole[unknown_after_fill]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:114: in test_order_black_hole
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_micro_chop[None]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:150: in test_micro_chop
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_micro_chop[timeout]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:150: in test_micro_chop
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_micro_chop[fill_then_timeout]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:150: in test_micro_chop
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_extreme_deviation" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:190: in test_extreme_deviation
+    sut, old_be, old_dd = build(p, ex)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_upgrade_and_trailing[LONG-A]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:211: in test_stage_upgrade_and_trailing
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_upgrade_and_trailing[LONG-B]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:211: in test_stage_upgrade_and_trailing
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_upgrade_and_trailing[SHORT-A]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:211: in test_stage_upgrade_and_trailing
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_upgrade_and_trailing[SHORT-B]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:211: in test_stage_upgrade_and_trailing
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_monotonicity[LONG-A]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:242: in test_stage_monotonicity
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_monotonicity[LONG-B]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:242: in test_stage_monotonicity
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_monotonicity[SHORT-A]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:242: in test_stage_monotonicity
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_stage_monotonicity[SHORT-B]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:242: in test_stage_monotonicity
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_legacy_suppression[A]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:263: in test_legacy_suppression
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_staged_contract" name="test_legacy_suppression[B]" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_staged_contract.py:263: in test_legacy_suppression
+    sut, old_be, old_dd = build(p, ex, option)
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_adapter_calls_actual_runner_and_inline_legacy_branch" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:36: in test_adapter_calls_actual_runner_and_inline_legacy_branch
+    sut = bridge.create_strategy(p, ex, be, dd, RISK_PARAMS["B"])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_real_drawdown_closes_without_waiting_for_tp_cancel" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:58: in test_real_drawdown_closes_without_waiting_for_tp_cancel
+    sut = bridge.create_strategy(p, ex, Mock(), Mock(), RISK_PARAMS["B"])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_actual_legacy_observer_failure_is_not_swallowed" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:73: in test_actual_legacy_observer_failure_is_not_swallowed
+    sut = bridge.create_strategy(p, ex, ex.old_logic, ex.old_logic, RISK_PARAMS["B"])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_independent_pnl_is_not_silently_injected_into_core" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:82: in test_independent_pnl_is_not_silently_injected_into_core
+    sut = bridge.create_strategy(PositionState(), MockExchange(), Mock(), Mock(), RISK_PARAMS["B"])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_missing_reconcile_is_explicit_and_sends_nothing" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:91: in test_missing_reconcile_is_explicit_and_sends_nothing
+    sut = bridge.create_strategy(p, ex, Mock(), Mock(), RISK_PARAMS["B"])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_production_adapter" name="test_entry_reason_is_preserved_from_actual_strategy" time="0.001"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">tests/test_red_eye_production_adapter.py:99: in test_entry_reason_is_preserved_from_actual_strategy
+    sut = bridge.create_strategy(PositionState(qty=0, status="FLAT"), MockExchange(qty=0),
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+my_package/red_eye_adapter.py:133: in _find_legacy_lines
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter</failure></testcase><testcase classname="tests.test_red_eye_entry_pressure" name="test_same_candle_concurrent_requests_fill_once[2]" time="0.012"><failure message="assert 0 == 1&#10; +  where 0 = sum([False, False])&#10; +    where [False, False] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482dc4bce50&gt;)&#10; +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run&#10; +      and   &lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482dc4bce50&gt; = &lt;function test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x748266153ba0&gt;()">tests/test_red_eye_entry_pressure.py:32: in test_same_candle_concurrent_requests_fill_once
+    assert sum(asyncio.run(run()))==1
+E   assert 0 == 1
+E    +  where 0 = sum([False, False])
+E    +    where [False, False] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482dc4bce50&gt;)
+E    +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run
+E    +      and   &lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482dc4bce50&gt; = &lt;function test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x748266153ba0&gt;()</failure></testcase><testcase classname="tests.test_red_eye_entry_pressure" name="test_same_candle_concurrent_requests_fill_once[50]" time="0.214"><failure message="assert 0 == 1&#10; +  where 0 = sum([False, False, False, False, False, False, ...])&#10; +    where [False, False, False, False, False, False, ...] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482661d5b70&gt;)&#10; +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run&#10; +      and   &lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482661d5b70&gt; = &lt;function test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x748266151760&gt;()">tests/test_red_eye_entry_pressure.py:32: in test_same_candle_concurrent_requests_fill_once
+    assert sum(asyncio.run(run()))==1
+E   assert 0 == 1
+E    +  where 0 = sum([False, False, False, False, False, False, ...])
+E    +    where [False, False, False, False, False, False, ...] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482661d5b70&gt;)
+E    +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run
+E    +      and   &lt;coroutine object test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x7482661d5b70&gt; = &lt;function test_same_candle_concurrent_requests_fill_once.&lt;locals&gt;.run at 0x748266151760&gt;()</failure></testcase><testcase classname="tests.test_red_eye_entry_pressure" name="test_two_symbols_cannot_race_past_single_slot" time="0.011"><failure message="assert 0 == 1&#10; +  where 0 = sum([False, False])&#10; +    where [False, False] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x748265fa4e10&gt;)&#10; +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run&#10; +      and   &lt;coroutine object test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x748265fa4e10&gt; = &lt;function test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x7482dce496c0&gt;()">tests/test_red_eye_entry_pressure.py:50: in test_two_symbols_cannot_race_past_single_slot
+    assert sum(asyncio.run(run()))==1
+E   assert 0 == 1
+E    +  where 0 = sum([False, False])
+E    +    where [False, False] = &lt;function run at 0x7482dc40eac0&gt;(&lt;coroutine object test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x748265fa4e10&gt;)
+E    +      where &lt;function run at 0x7482dc40eac0&gt; = asyncio.run
+E    +      and   &lt;coroutine object test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x748265fa4e10&gt; = &lt;function test_two_symbols_cannot_race_past_single_slot.&lt;locals&gt;.run at 0x7482dce496c0&gt;()</failure></testcase><testcase classname="tests.test_red_eye_entry_pressure" name="test_snapshot_evidence_excludes_forming_candle" time="0.005" /><testcase classname="tests.test_red_eye_entry_pressure" name="test_account_failure_releases_submit_lock_for_other_symbol" time="0.006"><failure message="AttributeError: 'TradingEngine' object has no attribute '_account_entry_submit_lock'">tests/test_red_eye_entry_pressure.py:80: in test_account_failure_releases_submit_lock_for_other_symbol
+    assert asyncio.run(run())==[False,True]
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_red_eye_entry_pressure.py:78: in run
+    assert not engine._account_entry_submit_lock.locked()
+E   AttributeError: 'TradingEngine' object has no attribute '_account_entry_submit_lock'</failure></testcase></testsuite></testsuites>

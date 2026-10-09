@@ -489,6 +489,38 @@ class UnifiedEntryStrategy(IEntryStrategy):
                 kc_upper = float(curr.kc_upper)
                 kc_lower = float(curr.kc_lower)
                 
+                # 判斷通道是否極度收斂 (剩餘25%以下)
+                if len(frame) >= 20:
+                    try:
+                        past_20 = frame.iloc[-21:-1] if not kwargs.get('after_close', False) else frame.iloc[-20:]
+                        if not past_20.empty:
+                            past_widths = past_20['kc_upper'].astype(float) - past_20['kc_lower'].astype(float)
+                            max_width = float(past_widths.max())
+                            curr_width = kc_upper - kc_lower
+                            if max_width > 0 and curr_width <= max_width * 0.25:
+                                return False, f"REJECT_CHANNEL_TOO_NARROW (width {curr_width:.4f} <= 25% of max {max_width:.4f})", {'action': 'WAIT'}
+                    except Exception as e:
+                        pass
+                        
+                # 判斷 MA5 和 MA15，或 MA5 和 KC 外軌的距離是否太近 (< 25% 通道寬度)
+                ma3 = float(curr.ma3)
+                ma15 = float(curr.ma15)
+                curr_width = kc_upper - kc_lower
+                if curr_width > 0:
+                    dist_ma5_ma15 = abs(ma3 - ma15)
+                    if dist_ma5_ma15 < curr_width * 0.25:
+                        return False, f"REJECT_MA5_MA15_TOO_CLOSE (dist {dist_ma5_ma15:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
+                        
+                    if side == 'LONG':
+                        dist_ma5_kc = abs(ma3 - kc_upper)
+                        if dist_ma5_kc < curr_width * 0.25:
+                            return False, f"REJECT_MA5_KC_TOO_CLOSE (dist {dist_ma5_kc:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
+                    elif side == 'SHORT':
+                        dist_ma5_kc = abs(ma3 - kc_lower)
+                        if dist_ma5_kc < curr_width * 0.25:
+                            return False, f"REJECT_MA5_KC_TOO_CLOSE (dist {dist_ma5_kc:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
+                
+                
                 # 嚴禁在通道內部開倉 (Price <= KC_Upper and Price >= KC_Lower)
                 if price <= kc_upper and price >= kc_lower:
                     return False, f"REJECT_LIVE_PRICE_INSIDE_CHANNEL (Price={price})", {'action': 'WAIT'}

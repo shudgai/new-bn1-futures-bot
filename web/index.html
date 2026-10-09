@@ -72,6 +72,9 @@
         .system-log-card { order: 2; }
         .ai-analysis-card { order: 3; }
 
+        /* Full width for elements at bottom */
+        .full-width { grid-column: 1 / -1; }
+
         /* Cards */
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
         .card-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
@@ -257,10 +260,27 @@
             border: 1px solid rgba(37, 99, 235, 0.25);
         }
         @media (max-width: 860px) {
-            .chart-modal { width: calc(100% - 20px); max-height: calc(100vh - 20px); }
-            .chart-modal-header { padding: 12px 14px; }
+            .chart-modal { width: 100vw; height: 100vh; max-height: none; margin: 0; border-radius: 0; position: relative; }
+            .chart-modal-header { padding: 12px 14px; padding-right: 60px; }
             .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
-            .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+            .chart-header-actions .badge { display: none !important; }
+            .chart-modal-close {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                font-size: 24px !important;
+                background: rgba(255,255,255,0.95) !important;
+                border-radius: 50%;
+                width: 36px;
+                height: 36px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+                z-index: 999;
+                color: #333 !important;
+            }
+            .chart-modal-body { flex: 1; height: auto; min-height: 80vh; padding: 4px; }
             .chart-grid { grid-template-columns: 1fr; }
         }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
@@ -280,10 +300,7 @@
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
             <div class="strategy-panel">
-                <button type="button" class="strategy-toggle" @click="strategyExpanded = !strategyExpanded" :aria-expanded="strategyExpanded" aria-controls="strategy-description">
-                    策略說明 <span class="collapse-arrow" :class="{ open: strategyExpanded }" aria-hidden="true">▶</span>
-                </button>
-                <span id="strategy-description" class="strategy-description" :class="{ expanded: strategyExpanded }">Strategy: {{ bot.strategy }}</span>
+
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
                     {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
                 </div>
@@ -409,62 +426,7 @@
                     </div>
                 </div>
 
-                <!-- TRADE HISTORY TABLE -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>📜 近期交易明細 (Trade History)</span>
-                        <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
-                            <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
-                                <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
-                                <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
-                            </select>
-                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
-                        </div>
-                    </div>
-                    <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>時間</th>
-                                    <th>幣種</th>
-                                    <th>動作</th>
-                                    <th>狀態</th>
-                                    <th>價格</th>
-                                    <th>數量（合約基礎單位）</th>
-                                    <th>名義價值 (USDT)</th>
-                                    <th>保證金 (USDT)</th>
-                                    <th>手續費 (USDT)</th>
-                                    <th>淨損益 (扣手續費)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="t in bot.trades" :key="t.id"
-                                    :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
-                                    <td>{{ t.time }}</td>
-                                    <td><b>{{ t.symbol }}</b></td>
-                                    <td :style="{
-                                        color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
-                                               (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
-                                    }">{{ formatTradeAction(t.action) }}</td>
-                                    <td :style="{
-                                        color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
-                                               t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
-                                               'var(--muted)',
-                                        fontSize: '11px'
-                                    }">{{ t.status }}</td>
-                                    <td>{{ t.price }}</td>
-                                    <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
-                                    <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
-                                    <td>{{ t.amount }}</td>
-                                    <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
-                                    <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
-                                        {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+
 
                 <!-- VOLATILITY STATS TABLE -->
                 <div class="card">
@@ -546,21 +508,80 @@
 
 
 
-                <!-- SYSTEM LOG CONSOLE -->
-                <div class="card system-log-card">
-                    <div class="card-title">💻 系統日誌 (System Logs)</div>
-                    <div class="console">
-                        <template v-for="(log, i) in newestLogs" :key="i">
-                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': line.startsWith('⚡') }">
-                                <span class="log-time">[{{ log.time }}]</span>
-                                <span>{{ line }}</span>
-                            </div>
-                        </template>
+
+            </div>
+
+            <!-- TRADE HISTORY TABLE (MOVED TO BOTTOM, FULL WIDTH) -->
+            <div class="card full-width">
+                <div class="card-title">
+                    <span>📜 近期交易明細 (Trade History)</span>
+                    <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
+                        <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
+                            <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
+                            <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
+                        </select>
+                        <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
                     </div>
+                </div>
+                <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>時間</th>
+                                <th>幣種</th>
+                                <th>動作</th>
+                                <th>狀態</th>
+                                <th>價格</th>
+                                <th>數量（合約基礎單位）</th>
+                                <th>名義價值 (USDT)</th>
+                                <th>保證金 (USDT)</th>
+                                <th>手續費 (USDT)</th>
+                                <th>淨損益 (扣手續費)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="t in bot.trades" :key="t.id"
+                                :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
+                                <td>{{ t.time }}</td>
+                                <td><b>{{ t.symbol }}</b></td>
+                                <td :style="{
+                                    color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
+                                           (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
+                                }">{{ formatTradeAction(t.action) }}</td>
+                                <td :style="{
+                                    color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
+                                           t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
+                                           'var(--muted)',
+                                    fontSize: '11px'
+                                }">{{ t.status }}</td>
+                                <td>{{ t.price }}</td>
+                                <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
+                                <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
+                                <td>{{ t.amount }}</td>
+                                <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
+                                <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
+                                    {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- SYSTEM LOG CONSOLE (MOVED TO BOTTOM, FULL WIDTH) -->
+            <div class="card system-log-card full-width">
+                <div class="card-title">💻 系統日誌 (System Logs)</div>
+                <div class="console">
+                    <template v-for="(log, i) in newestLogs" :key="i">
+                        <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': line.startsWith('⚡') }">
+                            <span class="log-time">[{{ log.time }}]</span>
+                            <span>{{ line }}</span>
+                        </div>
+                    </template>
                 </div>
             </div>
         </div>
-    <!-- K 線圖：桌面顯示兩幣並排，手機維持點選幣種單圖 -->
+    <!-- K 線圖：桌面顯示兩幣並排，手機也顯示兩幣上下排列 -->
     <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
         <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" aria-label="K線圖">
             <div class="chart-modal-header">
@@ -602,6 +623,13 @@
                                 <span class="chart-pos-info-label">未實現盈虧:</span>
                                 <span class="chart-pos-info-value" :style="((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
                                     {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep" v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) !== null">｜</span>
+                            <span class="chart-pos-info-item" v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) !== null">
+                                <span class="chart-pos-info-label">保底鎖利:</span>
+                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) === 0 ? 'zero' : '']">
+                                    {{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)).toFixed(4) }} USDT
                                 </span>
                             </span>
                         </div>
@@ -762,11 +790,10 @@
 
             openChartModal(symbol) {
                 this.destroyCharts();
-                const desktop = window.matchMedia('(min-width: 861px)').matches;
                 const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
                 const symbols = [symbol, ...available.filter(item => item !== symbol)]
                     .filter(Boolean)
-                    .slice(0, desktop ? 2 : 1);
+                    .slice(0, 2);
                 this.chartModal.symbol = symbol;
                 this.chartModal.symbols = symbols;
                 this.chartModal.states = Object.fromEntries(
@@ -898,20 +925,20 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
                     lastValueVisible: true, priceLineVisible: true
                 });
-                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: 'MA5', priceScaleId: 'right' });
+                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: '', priceScaleId: 'right', lastValueVisible: false });
                 ctx.ma5Series.applyOptions({
-                    lastValueVisible: true,
+                    lastValueVisible: false,
                     priceFormat: {
                         type: 'price',
                         precision: 8,
                         minMove: 0.00000001
                     }
                 });
-                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
+                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: '', lastValueVisible: false });
 
-                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
-                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
-                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
+                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: '', lastValueVisible: false });
+                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
                 this._charts = this._charts || {};
                 this._charts[symbol] = ctx;
 
@@ -969,10 +996,10 @@
                             .sort((a, b) => Number(b.action.startsWith('CLOSE_')) - Number(a.action.startsWith('CLOSE_')))
                             .forEach(trade => {
                                 const markerStyle = {
-                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買入開多' },
-                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
-                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
-                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
+                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買多' },
+                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣空' },
+                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '平多' },
+                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
                                 

@@ -1,0 +1,2 @@
+]633;E;{ sha256sum data/testnet_account.json\x3b stat -c 'mtime=%.9Y size=%s' data/testnet_account.json\x3b } > scratch/testnet_account_state_start.txt;c1c060a4-81a9-44fe-9237-10cad009216c]633;Cd13ae5eb6447606c6093e2244ea119f60a92c920d4bd32da86d88cfefec6a0bf  data/testnet_account.json
+mtime=1791085029.759506989 size=4965

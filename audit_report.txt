@@ -1,0 +1,16 @@
+==================================================
+647-BAR TRADE TRACE
+==================================================
+entry timestamp: 10/02 20:59:07
+entry price: 0.03288329
+ATR at entry: 0.00084600
+initial risk: 0.00064350 (0.76 ATR)
+第一次達到 +1 ATR timestamp: 2026-10-02 13:05:00
+第一次達到 +2 ATR timestamp: 2026-10-02 13:05:00
+第一次達到 +3 ATR timestamp: 2026-10-02 13:05:00
+第一次達到 +5 ATR timestamp: 2026-10-02 13:13:00
+
+max favorable price: 0.04337000
+max gain %: 31.89%
+max gain R: 16.30R
+max gain ATR: 12.40 ATR

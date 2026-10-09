@@ -1,0 +1,263 @@
+ M core/config.py
+ M core/engine.py
+ M core/paper_account.py
+ M core/services/entry_firewall.py
+ M core/testnet_account.py
+ D scratch/abnormal-direction-evidence.json
+ D scratch/add_order_hooks.py
+ D scratch/add_pullback.py
+ D scratch/add_velocity.py
+ D scratch/all_exits.txt
+ D scratch/all_short_exits.txt
+ D scratch/analyze_api.py
+ D scratch/analyze_api_lobster.py
+ D scratch/analyze_api_pepe.py
+ D scratch/analyze_api_pepe2.py
+ D scratch/analyze_bars.py
+ D scratch/analyze_bars2.py
+ D scratch/analyze_ccxt.py
+ D scratch/analyze_lobster.py
+ D scratch/analyze_trades.py
+ D scratch/atr_analysis.txt
+ D scratch/atr_chase_analysis.py
+ D scratch/audit_0148.py
+ D scratch/audit_integrity.py
+ D scratch/audit_integrity2.py
+ D scratch/channel-fix-validation.md
+ D scratch/check_api_weight.py
+ D scratch/check_bug.py
+ D scratch/check_meta.py
+ D scratch/check_pepe.py
+ D scratch/check_pepe_push.py
+ D scratch/check_qty.py
+ D scratch/check_qty2.py
+ D scratch/check_realtime.py
+ D scratch/ck-breakout-only-validation.md
+ D scratch/ck-immediate-exits-validation.md
+ D scratch/cleanup_dual_track.py
+ D scratch/close_all.py
+ D scratch/current-exit-validation.md
+ D scratch/debug_1000pepe.py
+ D scratch/debug_abs.py
+ D scratch/debug_atr.py
+ D scratch/debug_before_eval.py
+ D scratch/debug_burst.py
+ D scratch/debug_current_entry.py
+ D scratch/debug_df.py
+ D scratch/debug_early_returns.py
+ D scratch/debug_entry.py
+ D scratch/debug_entry_local.py
+ D scratch/debug_eval.py
+ D scratch/debug_eval_exit.py
+ D scratch/debug_locked_net.py
+ D scratch/debug_patch.py
+ D scratch/debug_peak.py
+ D scratch/debug_peak_trailing.py
+ D scratch/debug_pepe.py
+ D scratch/debug_pepe2.py
+ D scratch/debug_pullback.py
+ D scratch/debug_symbol.py
+ D scratch/debug_test.py
+ D scratch/dump_candles.py
+ D scratch/entry_logs.txt
+ D scratch/entry_logs_full.txt
+ D scratch/exit_log_check.txt
+ D scratch/failed_tests_trace.txt
+ D scratch/fetch_doge.py
+ D scratch/fetch_klines.py
+ D scratch/fetch_lobster.py
+ D scratch/fetch_lobster_replay.py
+ D scratch/fetch_lunc.py
+ D scratch/fetch_pepe.py
+ D scratch/find_trade.py
+ D scratch/fix_diagnostics.py
+ D scratch/fix_indent.py
+ D scratch/fix_mobile_safari.py
+ D scratch/fix_tests.py
+ D scratch/fix_tests_ast.py
+ D scratch/full_journal.txt
+ D scratch/git_diff_exit.txt
+ D scratch/git_grep.txt
+ D scratch/hotfix_state_machine.py
+ D scratch/hotfix_symbol_runner.py
+ D scratch/insert_wrong_entry_defense.py
+ D scratch/journal_out.txt
+ D scratch/journal_out3.txt
+ D scratch/late-entry-room-validation.md
+ D scratch/latest_journal.txt
+ D scratch/latest_journal_2.txt
+ D scratch/lobster.txt
+ D scratch/lobster_audit.py
+ D scratch/lobster_highlow_replay.py
+ D scratch/lobster_klines.json
+ D scratch/lobster_replay.py
+ D scratch/lobster_short_audit.py
+ D scratch/ma15-pivot-validation.md
+ D scratch/ma3-outer-validation.md
+ D scratch/old_peak.py
+ D scratch/outside-continuation-validation.md
+ D scratch/patch2.py
+ D scratch/patch_all.py
+ D scratch/patch_all_returns.py
+ D scratch/patch_anti_chase.py
+ D scratch/patch_api.py
+ D scratch/patch_debug_eval.py
+ D scratch/patch_engine.py
+ D scratch/patch_entry.py
+ D scratch/patch_entry2.py
+ D scratch/patch_entry_service.py
+ D scratch/patch_eval.py
+ D scratch/patch_false.py
+ D scratch/patch_false2.py
+ D scratch/patch_false3.py
+ D scratch/patch_guard.py
+ D scratch/patch_inspect.py
+ D scratch/patch_kc_middle.py
+ D scratch/patch_kc_middle_2.py
+ D scratch/patch_keys.py
+ D scratch/patch_ladder.py
+ D scratch/patch_locked_net.py
+ D scratch/patch_long_chase.py
+ D scratch/patch_ma15.py
+ D scratch/patch_ma15_opt.py
+ D scratch/patch_ma3.py
+ D scratch/patch_ma3_kc.py
+ D scratch/patch_manual.py
+ D scratch/patch_open_position_entry.py
+ D scratch/patch_open_q.py
+ D scratch/patch_paper.py
+ D scratch/patch_peak_exit.py
+ D scratch/patch_plan.py
+ D scratch/patch_plan_v51.py
+ D scratch/patch_plan_v51_final.py
+ D scratch/patch_plan_v51_final_final.py
+ D scratch/patch_print_columns.py
+ D scratch/patch_print_len.py
+ D scratch/patch_print_reason.py
+ D scratch/patch_profit.py
+ D scratch/patch_state_machine.py
+ D scratch/patch_task.py
+ D scratch/patch_task_2.py
+ D scratch/patch_task_v51.py
+ D scratch/patch_testnet.py
+ D scratch/patch_tp.py
+ D scratch/patch_type.py
+ D scratch/patch_ui.py
+ D scratch/patch_ui_2.py
+ D scratch/patch_unified_strict.py
+ D scratch/pepe-entry-and-ma3-validation.md
+ D scratch/pepe_full.txt
+ D scratch/pepe_logs.txt
+ D scratch/pepe_short_audit.py
+ D scratch/pivot-close-release-validation.md
+ D scratch/plan.py
+ D scratch/profit-room-validation.md
+ D scratch/relax_shadow.py
+ D scratch/remove_more_tests.py
+ D scratch/replace_entry.py
+ D scratch/replace_entry2.py
+ D scratch/replace_exit.py
+ D scratch/replace_script.py
+ D scratch/replace_strategy.py
+ D scratch/replace_unified_entry.py
+ D scratch/replace_velocity.py
+ D scratch/replay-abnormal-direction.py
+ D scratch/reply.txt
+ D scratch/reset_account.py
+ D scratch/rewrite_exits.py
+ D scratch/rewrite_fast_entry.py
+ D scratch/rewrite_v10_exits.py
+ D scratch/rewrite_v9_exits.py
+ D scratch/run_lobster_fixture.py
+ D scratch/shadow_parity_test.py
+ D scratch/simulate_exit.py
+ D scratch/swing_replay.py
+ D scratch/symmetric-validation.md
+ D scratch/test_btc_crash_entry_gate.py
+ D scratch/test_calc.py
+ D scratch/test_entry_gate_fix.py
+ D scratch/test_manual_order.py
+ D scratch/test_mass_replay.py
+ D scratch/test_master_breaker.py
+ D scratch/test_pullback.py
+ D scratch/test_pullback2.py
+ D scratch/test_pullback_continuation.py
+ D scratch/test_replay_engine.py
+ D scratch/test_shadow_filter.py
+ D scratch/test_strict_breakout.py
+ D scratch/test_swing_exit.py
+ D scratch/trade_dump.json
+ D scratch/unpatch_debug.py
+ D scratch/update_exits.py
+ D scratch/update_tasks.py
+ D scratch/verify_bar2_breakout.py
+ D scratch/verify_bar3_breakout.py
+ D scratch/verify_bar3_breakout_v2.py
+ D scratch/verify_bar3_breakout_v3.py
+ D scratch/verify_diff.txt
+ D scratch/verify_exit_guard.py
+ D scratch/verify_grep.txt
+ D scratch/verify_two_stage.py
+?? abnormal_analysis.py
+?? analyze_exits.py
+?? analyze_gate.py
+?? analyze_premature_exits.py
+?? audit_candidate_a.py
+?? audit_full_candidate_a.py
+?? audit_report.txt
+?? audit_report2.txt
+?? audit_report3.txt
+?? audit_report4.txt
+?? audit_report5.txt
+?? baseline.txt
+?? calc_impact.py
+?? core/services/canonical_entry.py
+?? core/services/entry_veto_shadow_logger.py
+?? core/services/wave_end_shadow_logger.py
+?? counterfactual_abnormal.py
+?? data/
+?? fix.py
+?? full_audit_results_fixed.txt
+?? generate_audit_report.py
+?? logs/
+?? pairing_audit.py
+?? patch_paper_account.py
+?? print_21.py
+?? replay_audit_assertions.py
+?? reports/doji_following_pressure_20261002/
+?? reports/live_third_weak_20261002/
+?? reports/pepe_entry_disable_20261003/
+?? scratch/fetch_realized_mfe.py
+?? scratch/run_char_tests.py
+?? scratch/test_testnet_coexistence.py
+?? scratch/verify_multiple_stops.py
+?? test_fixed_profit_math.py
+?? test_intrabar_entry.py
+?? tests/run_bypass.py
+?? tests/run_bypass2.py
+?? tests/run_bypass3.py
+?? tests/run_bypass4.py
+?? tests/run_bypass5.py
+?? tests/run_final_test.py
+?? tests/test_atr_curve_shadow.py
+?? tests/test_canonical_runtime.py
+?? tests/test_channel_swing_sl_authority.py
+?? tests/test_continuation_entry.py
+?? tests/test_current_characterization.py
+?? tests/test_doji_following_pressure_exit.py
+?? tests/test_early_net_be_guard.py
+?? tests/test_entry_veto_shadow.py
+?? tests/test_failsafe_shadow_log.py
+?? tests/test_kc_live_third_confirmation.py
+?? tests/test_lobster_regression.py
+?? tests/test_parity_1000pepe_lobster.py
+?? tests/test_pepe_disable_production_bound.py
+?? tests/test_pepe_entry_disabled.py
+?? tests/test_pre_entry_space_shadow.py
+?? tests/test_production_integration.py
+?? tests/test_realtime_bypass.py
+?? tests/test_target_acceptance.py
+?? tests/test_target_canonical_entry.py
+?? trace_neiro.py
+?? true_production_replay.py
+?? verify_abnormal_exits.py

@@ -1,0 +1,9 @@
+{
+  "is_running": true,
+  "paper_trading": true,
+  "entry_gate_halts": {},
+  "commit": "657ae034cfce39dc772f7f597a9528a7fd221663",
+  "branch": "release/wait-paper-gate-candidate",
+  "service": "MainPID=1233877\nActiveState=active\nActiveEnterTimestamp=Thu 2026-10-08 06:25:46 UTC\n",
+  "exit_policy": "closed_price_pivot_or_structure_break_v12"
+}

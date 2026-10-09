@@ -1,0 +1,54 @@
+{
+  "base_commit": "f722e85",
+  "files": {
+    "core/engine.py": {
+      "exists_before": true,
+      "before_sha256": "4c7df5fbde90e58c753bf2dc3fd7408ebd8f12c3dc626c7c40bc0f37cd515d31",
+      "after_sha256": "f6fff094d0a3e67efb6fec1ff812816dc5624d2199baf57b6dfb6881b6276104"
+    },
+    "core/services/exits/hard_stop_service.py": {
+      "exists_before": true,
+      "before_sha256": "2ebbf921aa7c29914500814c1945c08e227191727ec5274f9c689387d6c0bb5d",
+      "after_sha256": "5ac8e63fedabc19c6dfebebb857eb5cd14af75439a4a7776d90ad898b1f48f2c"
+    },
+    "core/services/exits/structural_holding_exit.py": {
+      "exists_before": true,
+      "before_sha256": "cdf357ee5af54b0b73652e8b88fd4d2166e4b05411097959dcb3b0055c0c0525",
+      "after_sha256": "e82202c9924f5926549ce7cfbe9271d8ac8b44fb90f2e10642fb8e6d52e512da"
+    },
+    "core/services/exits/trend_hold_evaluator.py": {
+      "exists_before": true,
+      "before_sha256": "6e2a93358a44ed5576941bbed72b60c4c28854bfc00c4932621b8762d548f0ad",
+      "after_sha256": "c8026934190beaaeaa32146c0dca4c14b05ac0dfa2c2add60215b124445199bb"
+    },
+    "core/services/exits/realtime_profit_exit.py": {
+      "exists_before": true,
+      "before_sha256": "27e4941c77d8d6a6eae374be696a9663b7accd607132483b83f2ef11c1e49a77",
+      "after_sha256": "84ce00a49825fef6a66d31c1d2d8be238c0281dcea54c5d01667189438ab55c7"
+    },
+    "tests/test_two_slot_full_margin.py": {
+      "exists_before": true,
+      "before_sha256": "867e4d4ca96343b7cf0d2270cbc380cf3566e0afb469b7412fd2aa30ac98cf57",
+      "after_sha256": "8d58d3317acff08b1c3429b908db4ed2e89200760ad21c6d4c5acf2648735a72"
+    },
+    "tests/test_channel_hard_stop_restore.py": {
+      "exists_before": true,
+      "before_sha256": "ac250af88197bfb9a6e51812cf60d457a93999e6230a0b64834bc8ec8d4aa48c",
+      "after_sha256": "52458924543b5e99b8ebc5dd519d8b53cd77b0f7f866291129c3e7deb29bfd0c"
+    },
+    "tests/test_pivot_structure_only_exits.py": {
+      "exists_before": false,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "c54d0dd46cbe85f2694d0323280557c8028bb2863617705326c61527d8369602"
+    },
+    "docs/dev_logs/2026-10/20261008_pivot_structure_exits.md": {
+      "exists_before": false,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "8c87fd31f2a9a8ff7ad140a029cdb6ea3cde75e6b733dc0b9d6ab8a26ba99ccb"
+    }
+  },
+  "entry_modules_unchanged": true,
+  "selected_tests_passed": 321,
+  "shared_tests_passed": 12,
+  "baseline_failure": "test_sync_released_soft_exit_allowed"
+}

@@ -1,0 +1,622 @@
+--- a/core/services/entry_contract.py
++++ b/core/services/entry_contract.py
+@@ -16,11 +16,7 @@
+     EVIDENCE_KEYS as CROSS_EVIDENCE_KEYS, evaluate_closed_ma_cross)
+ 
+ from core.services.candle_data import closed_entry_candles
+-from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
+ from core.services.entry_chop_gate import evaluate_entry_chop, EVIDENCE_KEYS as CHOP_EVIDENCE_KEYS
+-from core.services.swing_entry_gate import (
+-    evaluate_swing_entry_gate, EVIDENCE_KEYS as SWING_EVIDENCE_KEYS,
+-)
+ from core.services.cap_breakout_entry import (
+     SYMBOL as CAP_SYMBOL, CODES as CAP_CONTINUATION_CODES,
+     EVIDENCE_KEYS as CAP_EVIDENCE_KEYS, continuation_decision,
+@@ -34,8 +30,7 @@
+ from core.services.strategies.outer_strategy import (live_body_breakout_side, ck_direction,
+                                                     live_ma3_direction_ready, live_candle_color_ready,
+                                                     live_adverse_entry_safe, ma3_outer_continuation_ready,
+-                                                    OUTER_CODES, LIVE_BREAKOUT_BODY_ATR,
+-                                                    LIVE_BODY_BREAKOUT_CODES)
++                                                    OUTER_CODES, LIVE_BREAKOUT_BODY_ATR)
+ 
+ LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
+ SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
+@@ -49,8 +44,8 @@
+ CHANNEL_BODY_PHASE = 'KC_CHANNEL_LIVE_LONG_BODY'
+ CHANNEL_BODY_CODES = {CHANNEL_BODY_PHASE+'_LONG',CHANNEL_BODY_PHASE+'_SHORT'}
+ FAST_BODY_PHASES = (REVERSAL_PHASE,'KC_LIVE_BODY_BREAKOUT', OUTER_SMALL_PAIR_PHASE, CHANNEL_BODY_PHASE, STRUCTURE_PHASE, PULLBACK_PHASE)
+-from core.services.dual_breakout_entry import CODES as BREAKOUT_CODES, evaluate_breakout
+-ENTRY_CODES = BREAKOUT_CODES
++ENTRY_CODES = frozenset({'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
++                         'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'}) | MA5_PIVOT_CODES | CAP_CONTINUATION_CODES
+ MAX_THIRD_OPEN_CHASE_ATR = 0.10
+ CHASE_EVIDENCE_KEYS = ('third_bar_id', 'third_open', 'third_reference_atr',
+                        'max_chase_atr', 'chase_atr', 'chase_bar_id',
+@@ -63,148 +58,6 @@
+ ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
+ ENTRY_EVIDENCE_KEYS += CHOP_EVIDENCE_KEYS
+ ENTRY_EVIDENCE_KEYS += CAP_EVIDENCE_KEYS
+-ENTRY_EVIDENCE_KEYS += ('wait_trigger_id', 'wait_setup', 'wait_live_open', 'wait_fixed_atr')
+-ENTRY_EVIDENCE_KEYS += SWING_EVIDENCE_KEYS
+-LIVE_KC_EVIDENCE_KEYS = (
+-    'entry_qualification_policy', 'breakout_previous_kc_middle',
+-    'breakout_latest_kc_middle', 'breakout_kc_direction', 'breakout_direction',
+-)
+-ENTRY_EVIDENCE_KEYS += LIVE_KC_EVIDENCE_KEYS
+-ENTRY_EVIDENCE_KEYS += ('wait_outer_edge', 'wait_outer_quote', 'wait_entry_policy')
+-ENTRY_EVIDENCE_KEYS += ('entry_previous_ma5', 'entry_previous_ma15')
+-
+-
+-def validated_entry_market_frame(frame):
+-    """Trim indicator warm-up only; reject gaps or invalid authoritative candles."""
+-    if (frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000
+-            or 'is_closed' not in frame
+-            or not all(isinstance(v, (bool, np.bool_)) for v in frame.is_closed)):
+-        raise ValueError('WAIT_INVALID_MARKET_DATA')
+-    ready = frame[['atr', 'kc_upper', 'kc_middle', 'kc_lower']].notna().all(axis=1).to_numpy()
+-    indices = np.flatnonzero(ready)
+-    if not len(indices):
+-        raise ValueError('WAIT_INVALID_MARKET_DATA')
+-    validated = frame.iloc[int(indices[0]):].copy()
+-    closed = closed_entry_candles(validated)
+-    if len(closed) < 2 or len(validated) != len(closed)+1:
+-        raise ValueError('WAIT_FORMING_BREAKOUT_BAR')
+-    values = validated[['timestamp', 'open', 'high', 'low', 'close',
+-                        'kc_upper', 'kc_middle', 'kc_lower', 'atr']].astype(float)
+-    if (not np.isfinite(values.to_numpy()).all() or not values.gt(0).all().all()
+-            or not values.timestamp.diff().dropna().eq(60000).all()
+-            or not values.timestamp.mod(60000).eq(0).all()
+-            or not ((values.low <= values[['open', 'close']].min(axis=1))
+-                    & (values.high >= values[['open', 'close']].max(axis=1))
+-                    & (values.kc_lower < values.kc_middle)
+-                    & (values.kc_middle < values.kc_upper)).all()):
+-        raise ValueError('WAIT_INVALID_MARKET_DATA')
+-    if not closed.high.gt(closed.low).all():
+-        raise ValueError('WAIT_INVALID_MARKET_DATA')
+-    return validated
+-
+-
+-def _evaluate_small_to_big_entry(frame, price, code, account, symbol, diagnostics):
+-    from core.services.wait_authority import STATE_KEY, SYMBOLS
+-
+-    def reject(reason):
+-        if diagnostics is not None:
+-            diagnostics.clear()
+-            diagnostics['reason'] = reason
+-        return None
+-
+-    if symbol not in SYMBOLS or code not in (None, *WAIT_CODES):
+-        return reject('BLOCKED_OBSOLETE_ENTRY_SIGNAL')
+-    state = getattr(account, 'position_meta', {}).get(STATE_KEY, {}).get(symbol, {})
+-    if any(c.get('phase') in ('CLAIMED', 'UNKNOWN', 'PARTIAL')
+-           for c in state.get('claims', {}).values()):
+-        return reject('BLOCKED_WAIT_ORDER_RECONCILIATION')
+-    if account is None:
+-        return reject('WAIT_NO_OBSERVED_LIVE_TRIGGER')
+-    if (symbol in getattr(account, 'positions', {})
+-            or symbol in getattr(account, 'closing_lock', set())
+-            or symbol in getattr(account, 'pending_limit_orders', {})):
+-        return reject('WAIT_POSITION_OR_PENDING_ORDER_BLOCK')
+-    try:
+-        frame = validated_entry_market_frame(frame)
+-        quote = float(frame.iloc[-1].close if price is None else price)
+-        stamp = frame.attrs.get('entry_quote_ms', frame.attrs.get('entry_finality_server_ms'))
+-        wait = WaitAuthority(account).candidate(symbol, quote, stamp)
+-        if not wait or code not in (None, wait['type']):
+-            return reject('WAIT_NO_OBSERVED_LIVE_TRIGGER')
+-        live = frame.iloc[-1]
+-        if (float(live.timestamp) != wait['confirmation_bar_id']
+-                or float(live.open) != wait['wait_live_open']):
+-            return reject('WAIT_LIVE_CANDLE_IDENTITY_MISMATCH')
+-        sign = 1 if wait['side'] == 'LONG' else -1
+-        edge = float(live['kc_upper' if sign == 1 else 'kc_lower'])
+-        if sign*(quote-edge) <= 0:
+-            return reject('WAIT_QUOTE_NOT_STRICTLY_OUTSIDE_KC')
+-        closed = closed_entry_candles(frame)
+-        defensive = closed['low' if sign == 1 else 'high'].tail(5).astype(float)
+-        level = float(defensive.min() if sign == 1 else defensive.max())
+-        stop = level-sign*.1*wait['entry_atr']
+-        if stop <= 0:
+-            return reject('WAIT_INVALID_DEFENSIVE_STOP')
+-        wait.update(structure_risk_stop=stop, exit_bar_id=None,
+-                    wait_outer_edge=edge, wait_outer_quote=quote,
+-                    wait_entry_policy='SMALL_OPPOSITE_LIVE_BIG_OUTSIDE_KC_V1',
+-                    entry_failure_level=edge)
+-        if diagnostics is not None:
+-            diagnostics.clear()
+-            diagnostics['reason'] = wait['type']
+-        return wait
+-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, ArithmeticError):
+-        return reject('WAIT_INVALID_MARKET_DATA')
+-
+-
+-def live_breakout_kc_evidence(frame, quote, side):
+-    """Real live breakout owns direction; closed KC slope is diagnostic only."""
+-    try:
+-        closed = closed_entry_candles(frame)
+-        if side not in ('LONG', 'SHORT') or len(closed) < 2 or len(frame) != len(closed)+1:
+-            return None
+-        if live_body_breakout_side(frame, quote) != side:
+-            return None
+-        previous, latest = map(float, closed.kc_middle.iloc[-2:])
+-        if not all(math.isfinite(value) and value > 0 for value in (previous, latest)):
+-            return None
+-        direction = 'LONG' if latest > previous else 'SHORT' if latest < previous else 'FLAT'
+-        return dict(entry_qualification_policy='LIVE_BODY_BREAKOUT_V2',
+-                    breakout_previous_kc_middle=previous,
+-                    breakout_latest_kc_middle=latest, breakout_kc_direction=direction,
+-                    breakout_direction=side)
+-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+-        return None
+-
+-
+-def live_ma_alignment_evidence(frame, quote, side):
+-    evidence = live_ma_values(frame, quote)
+-    if evidence is None or side not in ('LONG', 'SHORT'):
+-        return None
+-    ma5, ma15 = evidence['entry_live_ma5'], evidence['entry_live_ma15']
+-    if (1 if side == 'LONG' else -1)*(ma5-ma15) <= max(ma5, ma15)*1e-12:
+-        return None
+-    return evidence
+-
+-
+-def live_ma_direction_evidence(frame, quote, side, diagnostics):
+-    evidence = live_ma_values(frame, quote)
+-    try:
+-        closed = closed_entry_candles(frame)
+-        previous = {period: float(closed.iloc[-1][f'ma{period}']) for period in (5, 15)}
+-        if evidence is None or not all(math.isfinite(v) and v > 0 for v in previous.values()):
+-            raise ValueError('INVALID_MA_DATA')
+-        sign = 1 if side == 'LONG' else -1
+-        for period in (5, 15):
+-            current = evidence[f'entry_live_ma{period}']
+-            if sign*(current-previous[period]) <= max(current, previous[period])*1e-12:
+-                diagnostics['reason'] = f'WAIT_LIVE_MA{period}_DIRECTION'
+-                return None
+-        return dict(**evidence, entry_previous_ma5=previous[5],
+-                    entry_previous_ma15=previous[15])
+-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+-        diagnostics['reason'] = 'BLOCKED_LIVE_MA_DIRECTION_DATA'
+-        return None
+ 
+ 
+ def _entry_close_series(closed):
+@@ -212,11 +65,11 @@
+             if 'close_price_spike_filtered' in closed.columns else closed.close)
+ 
+ 
+-def live_ma_values(frame, quote):
++def live_ma_alignment_evidence(frame, quote, side):
+     """Adjust snapshot SMA15 to the same quote used to reconstruct live SMA5."""
+     try:
+         closed = closed_entry_candles(frame)
+-        if len(closed) < 4 or len(frame) != len(closed)+1:
++        if side not in ('LONG', 'SHORT') or len(closed) < 4 or len(frame) != len(closed)+1:
+             return None
+         close_series = _entry_close_series(closed)
+         closes = [float(v) for v in close_series.iloc[-4:]]
+@@ -229,6 +82,9 @@
+         ma5 = (sum(closes)+quote)/5.
+         ma15 += (quote-observed)/15.
+         if not math.isfinite(ma15) or ma15 <= 0:
++            return None
++        sign = 1 if side == 'LONG' else -1
++        if sign*(ma5-ma15) <= max(ma5, ma15)*1e-12:
+             return None
+         return dict(entry_live_ma5=ma5, entry_live_ma15=ma15)
+     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+@@ -877,7 +733,7 @@
+         return False
+ 
+ 
+-def _evaluate_strategy_contract(frame, price=None, code=None, *, account=None,
++def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+                             symbol="", diagnostics=None, evaluate_held=False):
+     def reject(reason):
+         if diagnostics is not None:
+@@ -888,6 +744,9 @@
+     if code is not None and code not in ENTRY_CODES:
+         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+     cap = symbol == CAP_SYMBOL
++    if (cap and code is not None and code not in
++            ({'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'} | CAP_CONTINUATION_CODES)):
++        return reject('BLOCKED_CAP_TWO_BAR_ONLY')
+     if not cap and code in CAP_CONTINUATION_CODES:
+         return reject('BLOCKED_CAP_AUTHORITY_WRONG_SYMBOL')
+     if not evaluate_held and account is not None and symbol in getattr(account, "positions", {}):
+@@ -948,18 +807,22 @@
+         # The independent pivot authority does not inherit breakout qualifiers.
+         if len(frame) != len(closed) + 1:
+             return reject('WAIT_FORMING_BREAKOUT_BAR')
+-        pivot_decision = evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
++        pivot_decision = None if cap else evaluate_ma5_outer_pivot_entry(frame, quote, symbol)
+         if account is not None and symbol in getattr(account, 'positions', {}):
+             pivot_decision = None
+         breakout_code = code if code not in MA5_PIVOT_CODES else None
+-        fast_side = live_body_breakout_side(frame, quote)
++        fast_side = None if cap else live_body_breakout_side(frame, quote)
+         fast_code = 'KC_LIVE_BODY_BREAKOUT_' + fast_side if fast_side else None
+-        fast_evidence = live_breakout_kc_evidence(frame, quote, fast_side)
+-        if pivot_decision and fast_evidence and fast_side != pivot_decision['side']:
+-            return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
+-        if fast_side and code in LIVE_BODY_BREAKOUT_CODES and fast_evidence is None:
+-            return reject('BLOCKED_LIVE_BREAKOUT_INVALID_KC_DATA')
+-        if fast_evidence and breakout_code in (None, fast_code):
++        if pivot_decision and fast_side and fast_side != pivot_decision['side']:
++            fast_sign = 1 if fast_side == 'LONG' else -1
++            fast_edge = float(live['kc_upper' if fast_sign == 1 else 'kc_lower'])
++            fast_distance = fast_sign*(Decimal(str(quote))-Decimal(str(fast_edge)))
++            if (0 < fast_distance <= Decimal('0.5')*Decimal(str(float(latest.atr)))
++                    and live_breakout_ma5_evidence(ma5_frame, quote, fast_side)
++                    and live_ma_alignment_evidence(ma5_frame, quote, fast_side)
++                    and live_adverse_entry_safe(ma5_frame, quote, fast_side)):
++                return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
++        if fast_side and breakout_code in (None, fast_code):
+             stamp = float(live.timestamp)
+             prev_stamp = float(latest.timestamp)
+             decision = dict(action='ENTER', side=fast_side, type=fast_code,
+@@ -974,7 +837,6 @@
+                             breakout_live_edge=float(live['kc_upper' if fast_side == 'LONG' else 'kc_lower']),
+                             breakout_body=(1 if fast_side == 'LONG' else -1)*(quote-float(live.open)),
+                             breakout_min_body=LIVE_BREAKOUT_BODY_ATR*float(latest.atr))
+-            decision.update(fast_evidence)
+         else:
+             decision = evaluate_kc_pending_entry(closed, quote, breakout_code, symbol=symbol, live=live)
+             if decision.get('action') == 'ENTER':
+@@ -992,10 +854,10 @@
+             continuation = continuation_decision(frame, quote, account, code)
+             if continuation:
+                 decision = continuation
+-        # Other producers retain their same-side outer-rail chase limit.
++        # Breakout producers retain their same-side outer-rail chase limit.
+         # Decimal avoids binary subtraction turning an exact 0.5 boundary into
+         # an over-limit value; it never tolerates a genuinely larger distance.
+-        if decision.get('action') == 'ENTER' and decision['type'] not in LIVE_BODY_BREAKOUT_CODES:
++        if decision.get('action') == 'ENTER':
+             sign = 1 if decision['side'] == 'LONG' else -1
+             edge = float(live['kc_upper' if sign == 1 else 'kc_lower'])
+             scale = float(latest.atr)
+@@ -1005,7 +867,7 @@
+             else:
+                 decision.update(kc_confirmation_edge=edge, kc_distance_atr=float(distance)/scale,
+                                 kc_max_distance_atr=.5)
+-        if decision.get('action') == 'ENTER' and decision['type'] not in LIVE_BODY_BREAKOUT_CODES:
++        if decision.get('action') == 'ENTER':
+             ma5_evidence = live_breakout_ma5_evidence(ma5_frame, quote, decision['side'])
+             if ma5_evidence is None:
+                 decision = dict(reason='BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
+@@ -1029,30 +891,23 @@
+                 return reject('WAIT_CAP_NEW_PAIR_AFTER_RAIL_RETURN')
+         if code is not None and decision['type'] != code:
+             return reject('BLOCKED_ENTRY_AUTHORITY_MISMATCH')
+-        if decision['type'] not in LIVE_BODY_BREAKOUT_CODES:
+-            directional_ma5 = live_breakout_ma5_evidence(ma5_frame, quote, decision['side'])
+-            if directional_ma5 is None:
+-                return reject('BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
+-            decision.update(directional_ma5)
+-            alignment = live_ma_alignment_evidence(ma5_frame, quote, decision['side'])
+-            if alignment is None:
+-                return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
+-            decision.update(alignment)
+-            if cap and decision['type'] not in MA5_PIVOT_CODES:
+-                sign = 1 if decision['side'] == 'LONG' else -1
+-                if sign*(quote-alignment['entry_live_ma5']) <= max(quote, alignment['entry_live_ma5'])*1e-12:
+-                    return reject('BLOCKED_CAP_QUOTE_INSIDE_MA5')
+-                decision['cap_quote_ma5'] = alignment['entry_live_ma5']
+-            chop_status, chop_evidence = evaluate_entry_chop(ma5_frame)
+-            if chop_evidence is None:
+-                return reject(chop_status)
+-            decision.update(chop_evidence)
+-        if cap and decision['entry_phase'] in ('KC_2BAR_CLOSED_CONFIRM', 'KC_CONTINUATION_ENTRY'):
+-            from core.services.cap_breakout_entry import directional_price_progress
+-            progress = directional_price_progress(frame, quote, decision['side'])
+-            if progress is None:
+-                return reject('BLOCKED_CAP_PRICE_NOT_ADVANCING')
+-            decision.update(progress)
++        directional_ma5 = live_breakout_ma5_evidence(ma5_frame, quote, decision['side'])
++        if directional_ma5 is None:
++            return reject('BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
++        decision.update(directional_ma5)
++        alignment = live_ma_alignment_evidence(ma5_frame, quote, decision['side'])
++        if alignment is None:
++            return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
++        decision.update(alignment)
++        if cap:
++            sign = 1 if decision['side'] == 'LONG' else -1
++            if sign*(quote-alignment['entry_live_ma5']) <= max(quote, alignment['entry_live_ma5'])*1e-12:
++                return reject('BLOCKED_CAP_QUOTE_INSIDE_MA5')
++            decision['cap_quote_ma5'] = alignment['entry_live_ma5']
++        chop_status, chop_evidence = evaluate_entry_chop(ma5_frame)
++        if chop_evidence is None:
++            return reject(chop_status)
++        decision.update(chop_evidence)
+         if not live_adverse_entry_safe(ma5_frame, quote, decision['side']):
+             return reject('BLOCKED_LIVE_ADVERSE_ABNORMAL')
+         same_bar_close = (close_fill is not None and float(live.timestamp) == exit_bar
+@@ -1108,101 +963,3 @@
+         return decision
+     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+         return reject('WAIT_VALID_ENTRY_DATA')
+-
+-
+-def _evaluate_authority_contract(frame, price=None, code=None, *, account=None,
+-                            symbol="", diagnostics=None, evaluate_held=False):
+-    from core.services.wait_authority import STATE_KEY as WAIT_STATE_KEY
+-    wait_state = getattr(account, "position_meta", {}).get(WAIT_STATE_KEY, {}).get(symbol, {})
+-    if any(c.get("phase") in ("CLAIMED", "UNKNOWN", "PARTIAL")
+-           for c in wait_state.get("claims", {}).values()):
+-        if diagnostics is not None:
+-            diagnostics.clear()
+-            diagnostics["reason"] = "BLOCKED_WAIT_ORDER_RECONCILIATION"
+-        return None
+-    wait = None
+-    if account is not None and frame is not None and not frame.empty and not evaluate_held:
+-        stamp = frame.attrs.get("entry_quote_ms", frame.attrs.get("entry_finality_server_ms"))
+-        quote = frame.iloc[-1].close if price is None else price
+-        wait = WaitAuthority(account).candidate(symbol, quote, stamp)
+-    if wait is None and code not in WAIT_CODES:
+-        return _evaluate_strategy_contract(frame, price, code, account=account,
+-                                           symbol=symbol, diagnostics=diagnostics,
+-                                           evaluate_held=evaluate_held)
+-    other = _evaluate_strategy_contract(frame, price, None, account=account,
+-                                        symbol=symbol, evaluate_held=evaluate_held)
+-
+-    def reject(reason):
+-        if diagnostics is not None:
+-            diagnostics.clear()
+-            diagnostics["reason"] = reason
+-        return None
+-
+-    if wait and other and wait["side"] != other["side"]:
+-        return reject("BLOCKED_OPPOSITE_ENTRY_AUTHORITIES")
+-    if code is None and other and other['type'] in LIVE_BODY_BREAKOUT_CODES:
+-        return other
+-    if code not in (None, *WAIT_CODES):
+-        return _evaluate_strategy_contract(frame, price, code, account=account,
+-                                           symbol=symbol, diagnostics=diagnostics,
+-                                           evaluate_held=evaluate_held)
+-    if not wait or code not in (None, wait["type"]):
+-        return reject("WAIT_NO_OBSERVED_LIVE_TRIGGER")
+-    if (symbol in getattr(account, "closing_lock", set())
+-            or symbol in getattr(account, "pending_limit_orders", {})):
+-        return reject("WAIT_POSITION_OR_PENDING_ORDER_BLOCK")
+-    sign = 1 if wait["side"] == "LONG" else -1
+-    # WAIT forms independently; the Owner-approved shared swing gate follows.
+-    closed = closed_entry_candles(frame)
+-    defensive = closed["low" if sign == 1 else "high"].tail(5).astype(float)
+-    if not np.isfinite(defensive).all() or not defensive.gt(0).all():
+-        return reject("WAIT_INVALID_DEFENSIVE_DATA")
+-    level = float(defensive.min() if sign == 1 else defensive.max())
+-    stop = level-sign*.1*wait["entry_atr"]
+-    if stop <= 0:
+-        return reject("WAIT_INVALID_DEFENSIVE_STOP")
+-    wait.update(structure_risk_stop=stop, exit_bar_id=None)
+-    if diagnostics is not None:
+-        diagnostics.clear()
+-        diagnostics["reason"] = wait["type"]
+-    return wait
+-
+-
+-def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
+-                            symbol="", diagnostics=None, evaluate_held=False):
+-    from core.services.wait_authority import STATE_KEY, SYMBOLS
+-
+-    def reject(reason):
+-        if diagnostics is not None:
+-            diagnostics.clear()
+-            diagnostics['reason'] = reason
+-        return None
+-
+-    if symbol not in SYMBOLS or code not in (None, *ENTRY_CODES):
+-        return reject('BLOCKED_OBSOLETE_ENTRY_SIGNAL')
+-    state = getattr(account, 'position_meta', {}).get(STATE_KEY, {}).get(symbol, {})
+-    if any(c.get('phase') in ('CLAIMED', 'UNKNOWN', 'PARTIAL')
+-           for c in state.get('claims', {}).values()):
+-        return reject('BLOCKED_WAIT_ORDER_RECONCILIATION')
+-    if (symbol in getattr(account, 'positions', {})
+-            or symbol in getattr(account, 'closing_lock', set())
+-            or symbol in getattr(account, 'pending_limit_orders', {})):
+-        return reject('WAIT_POSITION_OR_PENDING_ORDER_BLOCK')
+-    try:
+-        frame = validated_entry_market_frame(frame)
+-        quote = float(frame.iloc[-1].close if price is None else price)
+-        if not math.isfinite(quote) or quote <= 0:
+-            return reject('WAIT_INVALID_MARKET_DATA')
+-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, ArithmeticError):
+-        return reject('WAIT_INVALID_MARKET_DATA')
+-    outside_diagnostics = {}
+-    try:
+-        decision = evaluate_breakout(frame, quote, account, symbol, outside_diagnostics, code)
+-    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+-        return reject('BLOCKED_INVALID_ACCOUNT_ENTRY_HISTORY')
+-    if not decision or code not in (None, decision['type']):
+-        return reject(outside_diagnostics.get('reason', 'WAIT_QUOTE_NOT_STRICTLY_OUTSIDE_KC'))
+-    if diagnostics is not None:
+-        diagnostics.clear()
+-        diagnostics['reason'] = decision['type']
+-    return decision
+--- a/core/services/entry_firewall.py
++++ b/core/services/entry_firewall.py
+@@ -54,12 +54,6 @@
+             raise ValueError('[FORBIDDEN_ENTRY] 未匹配成功自動反向平倉')
+     
+     is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+-    from core.services.wait_authority import CODES as WAIT_CODES
+-    wait_entry = context.get('entry_signal_code') in WAIT_CODES
+-    if wait_entry:
+-        submit_lock = getattr(account, '_wait_submit_lock', None)
+-        if is_manual or submit_lock is None or not submit_lock.locked():
+-            raise ValueError('[FORBIDDEN_ENTRY] WAIT_REQUIRES_SHARED_SUBMIT_LOCK')
+     if is_manual:
+         return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
+         
+@@ -117,8 +111,7 @@
+                                       evaluate_held=direct_ticket is not None)
+     if decision is None or decision['side'] != side:
+         raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics.get('reason', 'INVALID_ENTRY_DATA'))
+-    from core.services.dual_breakout_entry import CODES as BREAKOUT_CODES
+-    ticket = None if wait_entry or code in BREAKOUT_CODES else getattr(account, 'channel_profit_reentries', {}).get(symbol)
++    ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol)
+     if ticket:
+         from core.services.closed_breakout_entry import matched_reentry_close
+         from core.services.strategies.outer_strategy import abnormal_pullback_ready
+--- a/core/services/entry_gate_integrity.py
++++ b/core/services/entry_gate_integrity.py
+@@ -6,7 +6,7 @@
+ import secrets
+ import time
+ 
+-VERSION = 'entry-gate-20261008-v64-breakout-ma-direction-chop'
++VERSION = 'entry-gate-20261007-v48-cap-pair-and-proven-continuation'
+ _SECRET = secrets.token_bytes(32)
+ MAX_AGE_MS = 5000
+ 
+@@ -39,7 +39,6 @@
+                pending_signal_id=snapshot.get('pending_signal_id'),
+                pair_confirmation_bar_id=snapshot.get('pair_confirmation_bar_id'),
+                cap_origin_id=snapshot.get('cap_origin_id'),
+-               wait_trigger_id=snapshot.get('wait_trigger_id'),
+                entry_phase=snapshot['entry_phase'],
+                same_bar_entry_bar_ms=snapshot.get('same_bar_entry_bar_ms'),
+                same_bar_exit_deadline_ms=snapshot.get('same_bar_exit_deadline_ms'),
+@@ -72,7 +71,6 @@
+                 or proof['pending_signal_id']!=snapshot.get('pending_signal_id')
+                 or proof['pair_confirmation_bar_id']!=snapshot.get('pair_confirmation_bar_id')
+                 or proof['cap_origin_id']!=snapshot.get('cap_origin_id')
+-                or proof['wait_trigger_id']!=snapshot.get('wait_trigger_id')
+                 or snapshot.get('symbol')!=symbol or snapshot.get('side')!=side
+                 or snapshot.get('signal_code')!=proof['code'] or snapshot.get('closed_bar')!=proof['bar']
+                 or snapshot.get('gate_version')!=VERSION
+@@ -90,17 +88,7 @@
+             account.save_state()
+         raise ValueError('[FORBIDDEN_ENTRY] GATE_INTEGRITY_HALT: '+symbol+' '+str(exc)) from exc
+     from core.services.cap_breakout_entry import SYMBOL as CAP_SYMBOL, STATE_KEY, CODES
+-    from core.services.wait_authority import CODES as WAIT_CODES, WaitAuthority
+-    if proof['code'] in WAIT_CODES:
+-        submit_lock = getattr(account, '_wait_submit_lock', None)
+-        if submit_lock is None or not submit_lock.locked():
+-            raise ValueError('[FORBIDDEN_ENTRY] WAIT_REQUIRES_SHARED_SUBMIT_LOCK')
+-        WaitAuthority(account).claim(symbol, proof['wait_trigger_id'])
+-    from core.services.dual_breakout_entry import CODES as BREAKOUT_CODES
+-    if (proof['code'] in BREAKOUT_CODES
+-            and float(proof['bar']) != math.floor(time.time()/60)*60000):
+-        raise ValueError('[FORBIDDEN_ENTRY] LIVE_BREAKOUT_CANDLE_EXPIRED')
+-    if symbol == CAP_SYMBOL and proof['code'] in CODES:
++    if symbol == CAP_SYMBOL:
+         state = getattr(account, 'position_meta', {}).get(STATE_KEY, {}).get(symbol, {})
+         second = snapshot.get('pair_confirmation_bar_id')
+         if second is None or float(second) <= state.get('cancelled_second_ms', 0):
+--- a/core/services/cap_breakout_entry.py
++++ b/core/services/cap_breakout_entry.py
+@@ -11,27 +11,7 @@
+ STATE_KEY = '_cap_breakout_origins'
+ CODES = frozenset('CAP_KC_CONTINUATION_'+side for side in ('LONG', 'SHORT'))
+ EVIDENCE_KEYS = ('cap_origin_id', 'cap_origin_first_ms', 'cap_origin_second_ms',
+-                 'cap_origin_candles', 'cap_quote_ma5', 'cap_progress_previous_close',
+-                 'cap_progress_last_close', 'cap_progress_quote')
+-
+-
+-def directional_price_progress(frame, quote, side):
+-    """Both recent completed closes and the live quote must advance."""
+-    try:
+-        closed = closed_entry_candles(frame)
+-        if side not in ('LONG', 'SHORT') or len(closed) < 2:
+-            return None
+-        previous, latest, quote = map(float, (closed.iloc[-2].close, closed.iloc[-1].close, quote))
+-        if not all(math.isfinite(value) and value > 0 for value in (previous, latest, quote)):
+-            return None
+-        sign = 1 if side == 'LONG' else -1
+-        tolerance = max(previous, latest, quote)*1e-12
+-        if sign*(latest-previous) <= tolerance or sign*(quote-latest) <= tolerance:
+-            return None
+-        return dict(cap_progress_previous_close=previous,
+-                    cap_progress_last_close=latest, cap_progress_quote=quote)
+-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+-        return None
++                 'cap_origin_candles', 'cap_quote_ma5')
+ 
+ 
+ def confirmed_pair(frame, quote):
+--- a/core/services/entry_chop_gate.py
++++ b/core/services/entry_chop_gate.py
+@@ -5,11 +5,10 @@
+ from core.services.candle_data import closed_entry_candles
+ 
+ EVIDENCE_KEYS = ('chop_start_ms', 'chop_end_ms', 'chop_bars',
+-                 'chop_efficiency', 'chop_middle_crosses', 'chop_mean_overlap',
+-                 'chop_limits_exempt', 'chop_ma5_direction_changes')
++                 'chop_efficiency', 'chop_middle_crosses', 'chop_mean_overlap')
+ 
+ 
+-def evaluate_entry_chop(frame, *, check_ma5_turns=False):
++def evaluate_entry_chop(frame):
+     try:
+         closed = closed_entry_candles(frame)
+         if len(closed) < 6:
+@@ -50,23 +49,8 @@
+         mean_overlap = sum(overlaps)/len(overlaps)
+         if mean_overlap > Decimal('0.50'):
+             return 'BLOCKED_CHOP_BODY_OVERLAP', None
+-        ma5_evidence = {}
+-        if check_ma5_turns:
+-            averages = [float(value) for value in rows.ma5]
+-            if not all(math.isfinite(value) and value > 0 for value in averages):
+-                return 'BLOCKED_CHOP_MA5_DATA', None
+-            directions = []
+-            for previous, current in zip(averages, averages[1:]):
+-                delta = current-previous
+-                if abs(delta) > max(current, previous)*1e-12:
+-                    directions.append(1 if delta > 0 else -1)
+-            changes = sum(a != b for a, b in zip(directions, directions[1:]))
+-            if changes >= 2:
+-                return 'BLOCKED_CHOP_MA5_DIRECTION_CHANGES', None
+-            ma5_evidence['chop_ma5_direction_changes'] = changes
+         return 'PASS', dict(chop_start_ms=stamps[0], chop_end_ms=stamps[-1],
+                             chop_bars=6, chop_efficiency=float(net/path),
+-                            chop_middle_crosses=crosses, chop_mean_overlap=float(mean_overlap),
+-                            chop_limits_exempt=False, **ma5_evidence)
++                            chop_middle_crosses=crosses, chop_mean_overlap=float(mean_overlap))
+     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+         return 'BLOCKED_CHOP_MARKET_DATA', None
+--- a/core/services/strategies/outer_strategy.py
++++ b/core/services/strategies/outer_strategy.py
+@@ -9,7 +9,6 @@
+ LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
+ LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
+ LIVE_BREAKOUT_BODY_ATR = 0.5
+-LIVE_CONTINUATION_MAX_DISTANCE_ATR = 3.0
+ OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
+ ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
+ TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"} | ENTRY_TREND_CODES
+@@ -196,7 +195,7 @@
+ 
+ 
+ def live_body_breakout_side(frame, price):
+-    """Live breakout or bounded same-side continuation, using the original open."""
++    """Current real body breaks out or thrusts along an outer rail by quote, sized on closed ATR."""
+     try:
+         if frame is None or len(frame) < 2:
+             return None
+@@ -209,13 +208,16 @@
+             return None
+         threshold = atr * LIVE_BREAKOUT_BODY_ATR
+ 
+-        inside = lower <= opened <= upper
+-        long_open = inside or (opened > upper and (price-upper)/atr <= LIVE_CONTINUATION_MAX_DISTANCE_ATR)
+-        if price > upper and (price - opened) >= threshold and long_open:
++        # [EMERGENCY GUARD: 盤整就是不能開倉]
++        # 必須確認通道有明確方向 (KC方向不明 / ck_direction == None 時嚴格阻斷)
++        direction = ck_direction(frame)
++
++        # LONG: 當根原始開盤價在當根上軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格破上軌 (price > upper)、順向實體至少 0.5 ATR
++        if price > upper and (price - opened) >= threshold and lower <= opened <= upper:
+             return 'LONG'
+ 
+-        short_open = inside or (opened < lower and (lower-price)/atr <= LIVE_CONTINUATION_MAX_DISTANCE_ATR)
+-        if price < lower and (opened - price) >= threshold and short_open:
++        # SHORT: 當根原始開盤價在當根下軌內側或碰軌 (lower <= opened <= upper)、最新價嚴格跌破下軌 (price < lower)、順向實體至少 0.5 ATR
++        if price < lower and (opened - price) >= threshold and lower <= opened <= upper:
+             return 'SHORT'
+     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+         pass

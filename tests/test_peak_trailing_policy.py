@@ -42,6 +42,7 @@ def test_dynamic_peak_pullback_threshold(monkeypatch, side):
 def test_waterfall_priority_over_soft_exits(side):
     # Dynamic pullback candidate + Waterfall on the same tick => Waterfall wins.
     p = position(side, qty=1., margin=40.)
+    p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
     observe(p, 4.0, 61000) # peak_net_pnl = 4.0
     
@@ -58,6 +59,7 @@ def test_waterfall_priority_over_soft_exits(side):
 def test_doji_priority_over_soft_exits(side):
     # Waterfall overrides Doji; otherwise valid Doji evidence overrides pullback.
     p = position(side, qty=1., margin=40.)
+    p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
     observe(p, 4.0, 61000) # peak 4.0
     
@@ -78,12 +80,12 @@ def test_doji_priority_over_soft_exits(side):
     # Waterfall also hits here because body=2.0 > 1.5 ATR. Waterfall wins!
     assert decision['trigger'] == 'WATERFALL_DROP'
     
-    # Raising the ATR suppresses Waterfall while preserving the Doji evidence.
+    # Channel Swing positions hold through Doji pressure when waterfall is absent.
     p[STATE_KEY].pop('pending', None)
     p[STATE_KEY].pop('trigger', None)
     snap['atr'] = 2.0
     decision2 = evaluate_peak_trailing(p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.)
-    assert decision2['trigger'] == 'DOJI_REVERSAL_EXIT'
+    assert decision2 is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
@@ -101,6 +103,7 @@ def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_channel_swing_ignores_pullback_and_retains_waterfall(side):
     p = position(side, qty=1., margin=40.)
+    p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
     observe(p, 6.0, 61000)
     

@@ -39,6 +39,7 @@ def cached_tick_indicators(frame, price, stamp):
             'c': float(b.get('close', 0)),
             'ma3': float(b.get('ma3', 0)),
             'ma5': float(b.get('ma5', b.get('ma3', 0))),
+            'atr': float(b.get('atr', 0)),
             'kc_upper': float(b.get('kc_upper', 0)),
             'kc_lower': float(b.get('kc_lower', 0)),
         })
@@ -58,6 +59,7 @@ def cached_tick_indicators(frame, price, stamp):
             'c': float(b.get('close', 0)),
             'ma5': float(b.get('ma5', 0)),
             'volume': float(b.get('volume', 0)),
+            'atr': float(b.get('atr', 0)),
             'kc_upper': float(b.get('kc_upper', 0)),
             'kc_middle': float(b.get('kc_middle', 0)),
             'kc_lower': float(b.get('kc_lower', 0)),
@@ -170,6 +172,19 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             return False
         if await enforce_hard_stop(account, symbol, price):
             return True
+            
+        try:
+            from core.services.entry_contract import ck_direction
+            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+            if frame is not None and not frame.empty:
+                ck_dir = ck_direction(frame)
+                if ck_dir and ck_dir != ident[0]:
+                    await account.close_position(
+                        symbol, price, f'WRONG_DIRECTION_CORRECTION (CK={ck_dir}, POS={ident[0]})', is_manual=True
+                    )
+                    return True
+        except Exception as e:
+            account.log(f'CK direction check failed: {e}', 'DEBUG')
         old = copy.deepcopy(meta.get(STATE_KEY) or {})
         retired_atr_stop = channel_initial_stop_disabled(position, meta) and any(
             source.get(key) for source in (position, meta)
@@ -195,15 +210,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             account.save_state()
         if not decision or account.positions.get(symbol) is not position:
             return False
-        if (entry_m == 'CHANNEL_SWING'
-                and channel_strategy_exit_grace_active(position, meta, stamp / 1000)):
-            if clear_channel_strategy_exit_pending(position, meta):
-                for key in STATE_KEYS:
-                    if key in position:
-                        meta[key] = copy.deepcopy(position[key])
-                account.save_state()
-            return False
-        
         reason = decision['type']
         trigger = decision.get('trigger', '')
         allowed_triggers = (
@@ -211,6 +217,16 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
             else CHANNEL_SWING_EXIT_TRIGGERS
         )
+        if (entry_m == 'CHANNEL_SWING'
+                and channel_strategy_exit_grace_active(position, meta, stamp / 1000)
+                and trigger not in allowed_triggers):
+            if clear_channel_strategy_exit_pending(position, meta):
+                for key in STATE_KEYS:
+                    if key in position:
+                        meta[key] = copy.deepcopy(position[key])
+                account.save_state()
+            return False
+        
         if (entry_m == 'CHANNEL_SWING'
                 and trigger not in allowed_triggers):
             for state in (
@@ -232,7 +248,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger_detail = (
             ' ' + trigger
             if trigger in (DOJI_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
-                           'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
+                           'THREE_POINT_PIVOT', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                           'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')
             else ''

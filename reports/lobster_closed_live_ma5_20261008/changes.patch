@@ -1,0 +1,391 @@
+--- a/core/services/entry_contract.py
++++ b/core/services/entry_contract.py
+@@ -58,6 +58,8 @@
+ ENTRY_EVIDENCE_KEYS += ('entry_live_ma5', 'entry_live_ma15')
+ ENTRY_EVIDENCE_KEYS += CHOP_EVIDENCE_KEYS
+ ENTRY_EVIDENCE_KEYS += CAP_EVIDENCE_KEYS
++ENTRY_EVIDENCE_KEYS += ('entry_previous_closed_ma5', 'entry_latest_closed_ma5',
++                        'entry_previous_closed_ma5_ms', 'entry_latest_closed_ma5_ms')
+ 
+ 
+ def _entry_close_series(closed):
+@@ -87,6 +89,25 @@
+         if sign*(ma5-ma15) <= max(ma5, ma15)*1e-12:
+             return None
+         return dict(entry_live_ma5=ma5, entry_live_ma15=ma15)
++    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
++        return None
++
++
++def closed_ma5_direction_evidence(frame, side):
++    """A live price excursion cannot override the latest completed MA5 slope."""
++    try:
++        closed = closed_entry_candles(frame)
++        if side not in ('LONG', 'SHORT') or len(closed) < 2:
++            return None
++        previous, latest = closed.iloc[-2], closed.iloc[-1]
++        earlier, current, earlier_ms, current_ms = map(float, (
++            previous.ma5, latest.ma5, previous.timestamp, latest.timestamp))
++        if (not all(math.isfinite(v) and v > 0 for v in (earlier, current, earlier_ms, current_ms))
++                or current_ms-earlier_ms != 60000
++                or (1 if side == 'LONG' else -1)*(current-earlier) <= max(earlier, current)*1e-12):
++            return None
++        return dict(entry_previous_closed_ma5=earlier, entry_latest_closed_ma5=current,
++                    entry_previous_closed_ma5_ms=earlier_ms, entry_latest_closed_ma5_ms=current_ms)
+     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+         return None
+ 
+@@ -819,6 +840,7 @@
+             fast_distance = fast_sign*(Decimal(str(quote))-Decimal(str(fast_edge)))
+             if (0 < fast_distance <= Decimal('0.5')*Decimal(str(float(latest.atr)))
+                     and live_breakout_ma5_evidence(ma5_frame, quote, fast_side)
++                    and closed_ma5_direction_evidence(ma5_frame, fast_side)
+                     and live_ma_alignment_evidence(ma5_frame, quote, fast_side)
+                     and live_adverse_entry_safe(ma5_frame, quote, fast_side)):
+                 return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
+@@ -873,6 +895,11 @@
+                 decision = dict(reason='BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
+             else:
+                 decision.update(ma5_evidence)
++                closed_evidence = closed_ma5_direction_evidence(ma5_frame, decision['side'])
++                if closed_evidence is None:
++                    decision = dict(reason='BLOCKED_CLOSED_MA5_FLAT_OPPOSITE_OR_INVALID')
++                else:
++                    decision.update(closed_evidence)
+         if (pivot_decision and decision.get('action') == 'ENTER'
+                 and pivot_decision['side'] != decision['side']):
+             return reject('BLOCKED_OPPOSITE_ENTRY_AUTHORITIES')
+@@ -895,6 +922,10 @@
+         if directional_ma5 is None:
+             return reject('BLOCKED_LIVE_MA5_FLAT_OPPOSITE_OR_INVALID')
+         decision.update(directional_ma5)
++        closed_direction = closed_ma5_direction_evidence(ma5_frame, decision['side'])
++        if closed_direction is None:
++            return reject('BLOCKED_CLOSED_MA5_FLAT_OPPOSITE_OR_INVALID')
++        decision.update(closed_direction)
+         alignment = live_ma_alignment_evidence(ma5_frame, quote, decision['side'])
+         if alignment is None:
+             return reject('BLOCKED_LIVE_MA5_MA15_ALIGNMENT')
+--- a/core/services/entry_gate_integrity.py
++++ b/core/services/entry_gate_integrity.py
+@@ -6,7 +6,7 @@
+ import secrets
+ import time
+ 
+-VERSION = 'entry-gate-20261007-v48-cap-pair-and-proven-continuation'
++VERSION = 'entry-gate-20261008-v64-closed-live-ma5-alignment'
+ _SECRET = secrets.token_bytes(32)
+ MAX_AGE_MS = 5000
+ 
+--- a/tests/test_entry_chop_gate.py
++++ b/tests/test_entry_chop_gate.py
+@@ -41,6 +41,10 @@
+             continue
+         f.loc[index, ['open', 'close', 'high', 'low']] = [
+             close-.03, close, close+.05, close-.05]
++    if kind == 'live':
++        # Production MA5 comes from five closes; the old live fixture had a
++        # flat placeholder despite its strictly progressing completed closes.
++        f['ma5'] = f.close.rolling(5).mean().fillna(f.ma5)
+     if side == 'SHORT':
+         old = f.copy()
+         for key, source in [('open', 'open'), ('close', 'close'), ('high', 'low'),
+--- a/tests/test_cap_pair_continuation.py
++++ b/tests/test_cap_pair_continuation.py
+@@ -36,6 +36,9 @@
+     row.update(timestamp=float(row['timestamp'])+60000, is_closed=False,
+                kc_middle=float(row['kc_middle'])+.01 if row['close'] > 100 else float(row['kc_middle'])-.01)
+     f.loc[index] = row
++    # Each newly completed candle must carry its newly calculated MA5, rather
++    # than copying the old forming-candle placeholder into closed history.
++    f['ma5'] = f.close.rolling(5).mean().fillna(f.ma5)
+     return f
+ 
+ 
+@@ -251,6 +254,7 @@
+         min(quote, float(f.iloc[-1].open))-.1]
+     # Keep MA5 direction valid to isolate quote versus MA5.
+     f.loc[f.index[-2], 'ma5'] = 101.1 if side == 'LONG' else 98.9
++    f.loc[f.index[-3], 'ma5'] = 101.0 if side == 'LONG' else 99.0
+     observe(a, f, monkeypatch)
+     assert a.position_meta[STATE_KEY]['CAP/USDT']['origin']['id'] == ident
+     assert sign*(quote-f.iloc[-1]['kc_upper' if sign == 1 else 'kc_lower']) > 0
+--- a/tests/test_ma5_outer_pivot_entry.py
++++ b/tests/test_ma5_outer_pivot_entry.py
+@@ -204,7 +204,10 @@
+     diagnostics = {}
+     result = evaluate_entry_contract(f, code=code, diagnostics=diagnostics)
+     if requested in ('breakout', 'default'):
+-        assert result and result['type'] == 'KC_LIVE_BODY_BREAKOUT_'+opposite
++        # The apparent opposite live breakout is against completed MA5; its
++        # instantaneous quote-derived slope cannot authorize this order.
++        assert result is None
++        assert diagnostics['reason'] == 'BLOCKED_CLOSED_MA5_FLAT_OPPOSITE_OR_INVALID'
+     else:
+         assert result is None
+ 
+--- /dev/null
++++ b/tests/test_closed_live_ma5_entry_alignment.py
+@@ -0,0 +1,133 @@
++import asyncio
++import copy
++import json
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, Mock
++
++import pandas as pd
++import pytest
++
++from core.services.entry_contract import (
++    closed_ma5_direction_evidence, evaluate_entry_contract, live_breakout_ma5_evidence,
++)
++from core.services.entry_firewall import validate_account_entry
++from test_entry_chop_gate import eligible_frame, authority_code
++from test_cap_pair_continuation import account, observe, advance
++
++BLOCK = 'BLOCKED_CLOSED_MA5_FLAT_OPPOSITE_OR_INVALID'
++
++
++def recorded_frame():
++    data = json.loads((Path(__file__).parent/'fixtures/lobster_20261008_141723.json').read_text())
++    rows = [dict(row, is_closed=True) for row in data['candles']]
++    rows.append(dict(data['live_candle'], is_closed=False))
++    f = pd.DataFrame(rows)
++    f.attrs['timeframe_ms'] = 60000
++    return data, f
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++def test_exact_recorded_entry_is_blocked_despite_live_ma5_direction(side):
++    data, f = recorded_frame()
++    quote = data['quote']
++    if side == 'LONG':
++        original = f.copy()
++        for key, source in [('open', 'open'), ('close', 'close'), ('high', 'low'),
++                            ('low', 'high'), ('ma3', 'ma3'), ('ma5', 'ma5'),
++                            ('ma15', 'ma15'), ('kc_middle', 'kc_middle'),
++                            ('kc_upper', 'kc_lower'), ('kc_lower', 'kc_upper')]:
++            f[key] = .08-original[source]
++        quote = .08-quote
++    assert live_breakout_ma5_evidence(f, quote, side)
++    diagnostics = {}
++    assert evaluate_entry_contract(f, quote, 'KC_LIVE_BODY_BREAKOUT_'+side,
++                                   symbol='龙虾/USDT', diagnostics=diagnostics) is None
++    assert diagnostics['reason'] == BLOCK
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++@pytest.mark.parametrize('kind', ['live', 'pair', 'pivot'])
++@pytest.mark.parametrize('fault', ['opposite', 'flat', 'nan', 'negative'])
++def test_every_lobster_authority_rejects_wrong_closed_direction(side, kind, fault):
++    f = eligible_frame(kind, side)
++    code = authority_code(kind, side)
++    assert evaluate_entry_contract(f, code=code, symbol='龙虾/USDT')
++    current = float(f.iloc[-2].ma5)
++    sign = 1 if side == 'LONG' else -1
++    if fault == 'opposite':
++        f.loc[f.index[-3], 'ma5'] = current+sign*.1
++    elif fault == 'flat':
++        f.loc[f.index[-3], 'ma5'] = current
++    else:
++        f.loc[f.index[-3], 'ma5'] = float('nan') if fault == 'nan' else -1.
++    diagnostics = {}
++    assert closed_ma5_direction_evidence(f, side) is None
++    assert evaluate_entry_contract(f, code=code, symbol='龙虾/USDT', diagnostics=diagnostics) is None
++    if kind == 'live':
++        assert diagnostics['reason'] == BLOCK
++    else:
++        # Pair/pivot formation already rejects invalid or opposite completed
++        # MA5 before the common final gate; neither may bypass that rejection.
++        assert diagnostics['reason'] in (BLOCK, 'WAIT_NEW_KC_BREAKOUT',
++            'WAIT_VALID_KC_PENDING_DATA', 'WAIT_SUSTAINED_OUTER_RUN_PIVOT_RETURN')
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++@pytest.mark.parametrize('continuation', [False, True])
++def test_cap_pair_and_observed_continuation_share_closed_gate(side, continuation, monkeypatch):
++    a = account()
++    f = eligible_frame('pair', side)
++    observe(a, f, monkeypatch)
++    if continuation:
++        f = advance(a, f, monkeypatch)
++    decision = evaluate_entry_contract(f, account=a, symbol='CAP/USDT')
++    assert decision
++    sign = 1 if side == 'LONG' else -1
++    f.loc[f.index[-3], 'ma5'] = float(f.iloc[-2].ma5)+sign*.1
++    diagnostics = {}
++    assert evaluate_entry_contract(f, code=decision['type'], account=a,
++                                   symbol='CAP/USDT', diagnostics=diagnostics) is None
++    assert closed_ma5_direction_evidence(f, side) is None
++    assert diagnostics['reason'] in (BLOCK, 'WAIT_NEW_KC_BREAKOUT')
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++def test_final_firewall_revokes_cached_permission_when_closed_direction_changes(side, monkeypatch):
++    f = eligible_frame('live', side)
++    symbol = '龙虾/USDT'
++    now = float(f.iloc[-1].timestamp)+1000
++    monkeypatch.setattr('time.time', lambda: now/1000)
++    f.attrs.update(entry_finality_verified=True, entry_finality_server_ms=now)
++    a = SimpleNamespace(positions={}, position_meta={}, pending_limit_orders={}, trades=[],
++                        last_closed_at={}, channel_profit_reentries={}, save_state=Mock(),
++                        log=Mock(), entry_frame_provider=AsyncMock(return_value=f))
++    d = evaluate_entry_contract(f, symbol=symbol)
++    assert d
++    context = dict(entry_signal_code=d['type'], channel_confirmation_bar_id=d['confirmation_bar_id'])
++    asyncio.run(validate_account_entry(a, symbol, side, context))
++    prior = copy.deepcopy(context['entry_snapshot'])
++    assert prior['entry_latest_closed_ma5'] != prior['entry_previous_closed_ma5']
++    sign = 1 if side == 'LONG' else -1
++    f.loc[f.index[-3], 'ma5'] = float(f.iloc[-2].ma5)+sign*.1
++    with pytest.raises(ValueError, match=BLOCK):
++        asyncio.run(validate_account_entry(a, symbol, side, context))
++    assert not a.position_meta.get('_entry_gate_halts')
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++def test_live_frame_ma5_cannot_substitute_for_completed_direction(side):
++    f = eligible_frame('live', side)
++    expected = closed_ma5_direction_evidence(f, side)
++    assert expected
++    f.loc[f.index[-1], 'ma5'] = float('nan')
++    assert closed_ma5_direction_evidence(f, side) == expected
++
++
++@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
++def test_floating_point_noise_is_not_closed_ma5_direction(side):
++    f = eligible_frame('live', side)
++    sign = 1 if side == 'LONG' else -1
++    current = float(f.iloc[-2].ma5)
++    f.loc[f.index[-3], 'ma5'] = current-sign*current*1e-13
++    assert closed_ma5_direction_evidence(f, side) is None
+--- /dev/null
++++ b/tests/fixtures/lobster_20261008_141723.json
+@@ -0,0 +1,112 @@
++{
++  "symbol": "龙虾/USDT",
++  "entry_ms": 1791440243155,
++  "entry_price": 0.03857614,
++  "quote": 0.03858,
++  "code": "KC_LIVE_BODY_BREAKOUT_SHORT",
++  "candles": [
++    {
++      "timestamp": 1791439860000.0,
++      "open": 0.0387,
++      "high": 0.03882,
++      "low": 0.03839,
++      "close": 0.03861,
++      "ma3": 0.03858,
++      "ma15": 0.039292,
++      "atr": 0.0005830000000000002,
++      "ma5": 0.038858,
++      "kc_upper": 0.040034302689624574,
++      "kc_middle": 0.03945130268962457,
++      "kc_lower": 0.03886830268962457
++    },
++    {
++      "timestamp": 1791439920000.0,
++      "open": 0.0386,
++      "high": 0.03875,
++      "low": 0.03846,
++      "close": 0.03864,
++      "ma3": 0.03865,
++      "ma15": 0.039225333333333334,
++      "atr": 0.0005770000000000005,
++      "ma5": 0.038746,
++      "kc_upper": 0.039951035766803186,
++      "kc_middle": 0.039374035766803185,
++      "kc_lower": 0.038797035766803184
++    },
++    {
++      "timestamp": 1791439980000.0,
++      "open": 0.03864,
++      "high": 0.03879,
++      "low": 0.03863,
++      "close": 0.03876,
++      "ma3": 0.03867,
++      "ma15": 0.03916066666666666,
++      "atr": 0.0005100000000000007,
++      "ma5": 0.038628,
++      "kc_upper": 0.03982555616996479,
++      "kc_middle": 0.03931555616996479,
++      "kc_lower": 0.03880555616996478
++    },
++    {
++      "timestamp": 1791440040000.0,
++      "open": 0.03876,
++      "high": 0.03888,
++      "low": 0.03872,
++      "close": 0.03884,
++      "ma3": 0.038746666666666665,
++      "ma15": 0.039143333333333336,
++      "atr": 0.00048500000000000073,
++      "ma5": 0.03871,
++      "kc_upper": 0.039755265106158615,
++      "kc_middle": 0.039270265106158615,
++      "kc_lower": 0.038785265106158616
++    },
++    {
++      "timestamp": 1791440100000.0,
++      "open": 0.03884,
++      "high": 0.03891,
++      "low": 0.03879,
++      "close": 0.03882,
++      "ma3": 0.03880666666666666,
++      "ma15": 0.039108000000000004,
++      "atr": 0.0004740000000000008,
++      "ma5": 0.038734000000000005,
++      "kc_upper": 0.03970138271509589,
++      "kc_middle": 0.03922738271509589,
++      "kc_lower": 0.03875338271509589
++    },
++    {
++      "timestamp": 1791440160000.0,
++      "open": 0.03883,
++      "high": 0.0389,
++      "low": 0.03874,
++      "close": 0.03881,
++      "ma3": 0.03882333333333333,
++      "ma15": 0.039044666666666665,
++      "atr": 0.00037900000000000086,
++      "ma5": 0.038773999999999996,
++      "kc_upper": 0.039566631980324854,
++      "kc_middle": 0.03918763198032486,
++      "kc_lower": 0.03880863198032486
++    }
++  ],
++  "live_candle": {
++    "timestamp": 1791440220000.0,
++    "open": 0.03881,
++    "high": 0.03883,
++    "low": 0.03813,
++    "close": 0.03858,
++    "ma3": 0.03873666666666667,
++    "ma15": 0.038976000000000004,
++    "atr": 0.0003940000000000013,
++    "ma5": 0.038762,
++    "kc_upper": 0.03952376226791297,
++    "kc_middle": 0.03912976226791297,
++    "kc_lower": 0.03873576226791297,
++    "is_closed": false,
++    "reference_closed_atr": 0.00037900000000000086
++  },
++  "close_ms": 1791440255780,
++  "close_reason": "Channel Swing HARD_STOP MARGIN_LOSS",
++  "close_net_pnl": -4.2329
++}
+--- /dev/null
++++ b/docs/dev_logs/2026-10/20261008_lobster_closed_live_ma5.md
+@@ -0,0 +1,11 @@
++# Block live breakout against completed MA5
++
++Owner reported the lobster SHORT marked near 14:17 despite the visible MA5 rebound. Matched persisted records: OPEN_SHORT 2026-10-08 14:17:23 Taipei (id 1791440243155), fill 0.03857614, latest quote 0.03858, code KC_LIVE_BODY_BREAKOUT_SHORT; CLOSE_SHORT 14:17:35 (id 1791440255780), price 0.0389739, reason Channel Swing HARD_STOP MARGIN_LOSS, net -4.2329 USDT. This predates the hard-stop retirement deployment at 14:25:46. Historical records are not rewritten or reopened.
++
++The latest completed MA5 rose from 0.038734 to 0.038774. The instantaneous quote reconstructed MA5 at 0.038762, slightly below the latter. The former entry contract checked only this instantaneous slope, so it accepted the recorded SHORT. Baseline replay using only recorded closed/live candle evidence reproduces acceptance; no later candle or screenshot-derived ordering is used. The snapshot's original open-to-quote short body is 0.00023 versus 0.5 closed ATR = 0.0001895; quote was below lower rail 0.0387357623 and within the existing 0.5 ATR chase limit.
++
++Require strict same-direction latest completed MA5 movement AND existing latest-quote live MA5 direction for every automatic authority. LONG must pass both rising slopes; SHORT must pass both falling slopes; flat, opposite and invalid completed values reject. Use the existing relative-price 1e-12 tolerance. Persist completed MA5 values and candle identities in entry evidence. Check both during breakout/pivot arbitration and final common validation, including CAP observed continuation and account firewall revalidation. Invalid breakout direction cannot veto a valid independent pivot as a supposedly conflicting authority. Advance signed permission version to entry-gate-20261008-v64-closed-live-ma5-alignment.
++
++Validation: 357 selected tests pass with 19 existing datetime warnings, including exact recorded entry rejection, symmetric LONG regression, all lobster authorities, CAP pair/continuation, invalid/flat/opposite completed slopes, cached permission revocation, actual isolated paper and mocked Testnet entries, deduplication, sizing, hard-stop retirement, and confirmed pivot/structure close retries. Correct live and advanced-candle test fixtures to compute completed MA5 from rolling closes; update the previously valid opposite live breakout case to reject under the new Owner rule. No entry restriction is removed. Compilation and whitespace checks pass; no full historical-suite pass is claimed.
++
++All current exit source files remain unchanged. Ordinary price rebound or reaching a fixed loss threshold does not close Channel Swing; completed price-pivot or confirmed structure-break authority still can. Neither the recorded case nor this change proves that waiting would eventually recover a loss. Detailed backup, trade evidence, source verification, deployment and commit are in the primary workspace reports/lobster_closed_live_ma5_20261008. Unrelated existing dual-breakout edits are excluded. AIDAN common/Python files remain unavailable in previously inspected repository paths; no specification files are changed.

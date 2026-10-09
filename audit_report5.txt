@@ -1,0 +1,30 @@
+==================================================
+647-BAR TRADE TRACE
+==================================================
+entry timestamp: 10/02 20:59:07
+entry price: 0.03288329
+ATR at entry: 0.00084600
+initial risk: 0.00064350 (0.76 ATR)
+第一次達到 +1 ATR timestamp: 2026-10-02 13:05:00
+第一次達到 +2 ATR timestamp: 2026-10-02 13:05:00
+第一次達到 +3 ATR timestamp: 2026-10-02 13:05:00
+
+[Trigger Event Detected]
+first expected profit-exit timestamp: 2026-10-02 13:05:00
+trigger: EXIT_PARABOLIC_PULLBACK_1_ATR
+peak state: price=0.03575000, gain_atr=6.68, drawdown_atr=2.75
+parabolic armed? True
+MA3 armed? No
+trend_status: HOLD (STRONG_TREND_LONG)
+block condition: TREND_HOLD status HOLD (STRONG_TREND_LONG)
+
+[PRODUCTION EXIT TRIGGERED]
+exit timestamp: 2026-10-02 13:05:00
+exit price: 0.03457000
+reason: EXIT_ADVERSE_ABNORMAL_BODY (WATERFALL_DROP)
+
+max favorable price: 0.03575000
+max gain %: 8.72%
+max gain R: 4.45R
+
+FINAL STATE: {'policy': 'abnormal_body_only_v2', 'identity': ['LONG', 1790945947.597, 0.03288329, 10870.35786113], 'peak_price': 0.03575, 'entry_margin': 71.49062599026351, 'armed': False, 'atr': 0.00042900000000000024, 'crossed_kc_middle': True, 'last_ms': 1790946300000.0, 'peak_net_pnl': 30.750287273747716, 'trigger_bar_ms': 1790946300000, 'trigger_open': 0.03575, 'trigger_atr': 0.0008459999999999995, 'trigger_price': 0.03457, 'pending': 'EXIT_ADVERSE_ABNORMAL_BODY', 'trigger': 'WATERFALL_DROP'}

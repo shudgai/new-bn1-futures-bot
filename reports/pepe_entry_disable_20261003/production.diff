@@ -1,0 +1,93 @@
+diff --git a/core/config.py b/core/config.py
+index 1c254e5..f7373b0 100644
+--- a/core/config.py
++++ b/core/config.py
+@@ -1176,6 +1176,17 @@ ENTRY_DISABLED_SYMBOLS = {
+     if symbol.strip()
+ }
+ 
++# Owner decision: no new PEPE exposure; held positions remain managed.
++ENTRY_DISABLED_SYMBOLS.add("1000PEPE/USDT")
++
++
++def is_entry_disabled(symbol: str) -> bool:
++    """Apply the entry-only denylist to CCXT, settled and exchange symbol forms."""
++    key = str(symbol).strip().upper().split(":", 1)[0].replace("/", "")
++    return any(key == item.strip().upper().split(":", 1)[0].replace("/", "")
++               for item in ENTRY_DISABLED_SYMBOLS)
++
++
+ # 停用幣不可再占候選池名額；環境變數新增的停用幣也同步生效。
+ SYMBOL_CANDIDATE_POOL[:] = [
+     symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS
+diff --git a/core/engine.py b/core/engine.py
+index ba6a7fb..7117fe5 100644
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -1764,6 +1764,9 @@ class TradingEngine:
+             return opened
+ 
+     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
++        from core.config import is_entry_disabled
++        if is_entry_disabled(symbol):
++            return False
+         
+         if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'):
+ 
+diff --git a/core/paper_account.py b/core/paper_account.py
+index f7b83f5..cac51f7 100644
+--- a/core/paper_account.py
++++ b/core/paper_account.py
+@@ -892,7 +892,11 @@ class PaperAccount:
+ 
+     async def check_pending_limit_orders(self) -> None:
+         """模擬掛單；支撐反轉單觸價後須先確認回收，避免接住持續下跌。"""
++        from core.config import is_entry_disabled
+         for symbol, info in list(self.pending_limit_orders.items()):
++            if is_entry_disabled(symbol):
++                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
++                continue
+             current_price = self.latest_prices.get(symbol)
+             if current_price is None:
+                 continue
+diff --git a/core/services/entry_firewall.py b/core/services/entry_firewall.py
+index d9a97c5..46d47d2 100644
+--- a/core/services/entry_firewall.py
++++ b/core/services/entry_firewall.py
+@@ -21,6 +21,9 @@ def validate_entry_frame(frame, side, code):
+     return EntryFirewall.verify_can_open(frame, side, code)
+ 
+ async def validate_account_entry(account, symbol, side, context):
++    from core.config import is_entry_disabled
++    if is_entry_disabled(symbol):
++        raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
+     context = context if isinstance(context, dict) else {}
+     
+     is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
+diff --git a/core/testnet_account.py b/core/testnet_account.py
+index 9628e30..408b693 100644
+--- a/core/testnet_account.py
++++ b/core/testnet_account.py
+@@ -2157,6 +2157,10 @@ class BinanceTestnetAccount:
+         """
+         # ✅ 修正：配合突破確認後限價回踩優化，90 分以上也完全恢復使用限價單，移除先前強制轉市價的設定。
+         
++        from core.config import is_entry_disabled
++        if is_entry_disabled(symbol):
++            return False
++
+         is_manual = entry_context is not None and entry_context.get("manual_entry") is True
+ 
+         # DCA 分批掛單處理
+@@ -2333,7 +2337,11 @@ class BinanceTestnetAccount:
+         交易；被交易所取消/拒絕的直接清掉追蹤。超時/條件變差的主動撤單
+         判斷交給 engine.py（需要策略/K線資料才能重新驗證條件），這裡只
+         處理「有沒有成交」。"""
++        from core.config import is_entry_disabled
+         for symbol, info in list(self.pending_limit_orders.items()):
++            if is_entry_disabled(symbol):
++                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
++                continue
+             try:
+                 order_status = await self.exchange.fetch_order(info["order_id"], symbol)
+             except Exception as exc:
