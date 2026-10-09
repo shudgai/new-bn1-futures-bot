@@ -11,7 +11,9 @@ from core.services.exits.peak_trailing_exit import (
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
-
+INNER_CHANNEL_RUN_CODES = {
+    'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+}
 def cached_tick_indicators(frame, price, stamp):
     """Require the quote minute and its preceding closed ATR for body exits."""
     snapshot = {'quote_ms': stamp, 'reason': 'UNKNOWN'}
@@ -158,6 +160,28 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         saved = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
         if stamp < ident[1]*1000 or (saved.get('identity') == ident and stamp < saved.get('last_ms',0)):
             return False
+        if position.get('entry_signal_code') in INNER_CHANNEL_RUN_CODES:
+            if await enforce_hard_stop(account, symbol, price):
+                return True
+            try:
+                snapshot, _ = cached_tick_indicators(
+                    getattr(engine, '_channel_exit_frames', {}).get(symbol), price, stamp
+                )
+                from core.services.exits.peak_trailing_exit import three_point_pivot_exit
+                pivot = three_point_pivot_exit(position, snapshot)
+            except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+                pivot = None
+            if pivot is None:
+                return False
+            pivot_name = 'TRUE_PEAK' if position.get('side') == 'LONG' else 'TRUE_VALLEY'
+            account.log(
+                f'REALTIME_EXIT symbol={symbol} reason={pivot_name} '
+                f'trigger_bar_ms={pivot["trigger_bar_ms"]} '
+                f'confirmed_ms={pivot["trigger_confirmed_ms"]} price={price}', 'INFO'
+            )
+            return bool(await account.close_position(
+                symbol, price, 'Channel Swing ' + pivot_name, is_manual=True
+            ))
         old = copy.deepcopy(meta.get(STATE_KEY) or {})
         retired_atr_stop = channel_initial_stop_disabled(position, meta) and any(
             source.get(key) for source in (position, meta)

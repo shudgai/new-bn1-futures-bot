@@ -1760,7 +1760,7 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
         from core.services.entry_contract import (
-            ENTRY_CODES, ENTRY_EVIDENCE_KEYS, quote_beyond_side_outer_rail,
+            ENTRY_CODES, ENTRY_EVIDENCE_KEYS, quote_inside_directional_channel,
         )
         if signal.get('signal_code') not in ENTRY_CODES:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'BLOCKED_OBSOLETE_ENTRY_SIGNAL', signal.get('candidate_bar_id'))
@@ -1827,10 +1827,10 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
-        if not quote_beyond_side_outer_rail(snapshot['frame'], side, price):
+        if not quote_inside_directional_channel(snapshot['frame'], side, price):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
-                'BLOCKED_WRONG_SIDE_KC_OUTER_RAIL', bar,
+                'BLOCKED_QUOTE_OUTSIDE_DIRECTIONAL_KC_HALF', bar,
             )
             return False
 

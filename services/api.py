@@ -411,7 +411,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "方向 Gate：所有自動入口與送單重驗均須 KC 方向、MA5、MA15 三者一致；KC 方向按最近兩根已收線中軌判定，MA5/MA15 最近三根已收線須嚴格同向移動，方向不明或任一反向均拒絕。破軌入口：第一根正在形成的 K 線，原始開盤須在 KC 通道內或碰軌；最新報價嚴格站在突破側外軌外，順向實體至少 0.5 ATR，距同側外軌不超過 3 ATR，即可即時評估開倉，不等收線或第二根。報價退回通道、實體不足或超過 3 ATR 不追價。另保留已收線兩根確認與合法延續入口。平倉當根不重開，異常平倉另須專用回踩。保留帳戶風控。另保留 KC 外軌回轉：已收線中軌上升且 MA3 > MA15，下軌外先跌再回升 0.10 ATR 才開多；中軌下降且 MA3 < MA15，上軌外先升再回落 0.10 ATR 才開空。ATR 固定取本輪觀察開始時最新已收線值。送單時仍須在指定軌外，保留報價、異常行情及帳戶風控。一般出口：中軌反向、階梯鎖利與緊急／帳戶硬止損；固定 ATR 止盈止損已移除。明確啟用的 staged 持倉沿用獨立引擎。",
+        "strategy": "方向 Gate：所有自動入口與送單重驗均須 KC 方向、MA5、MA15 三者一致；KC 方向按最近兩根已收線中軌判定，MA5/MA15 最近三根已收線須嚴格同向移動，方向不明或任一反向均拒絕。通道內早進：當根開盤與最新報價都在 KC 通道內，多單報價位於中軌上方、空單位於中軌下方；順向實體至少 0.5 ATR，且距同側外軌不超過 3 ATR，即可即時評估，不等破軌。其他外軌突破、延續與替代入口不授權。此入口持倉沿趨勢續抱；空單等三根已收線確認真谷底、多單等真峰頂才平倉，不因一般賣壓／買壓、MA 或獲利回吐提前退出；帳戶硬停損保留。ATR 取前一根已收線值。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

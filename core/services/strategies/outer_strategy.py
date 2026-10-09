@@ -214,30 +214,31 @@ def entry_trend_direction(frame):
 
 
 def live_body_breakout_side(frame, price):
-    """Detect an in-channel breakout or a bounded same-side outer-rail continuation."""
+    """Detect a directional push while price remains inside the matching KC half."""
     try:
         if frame is None or len(frame) < 2:
             return None
         row = frame.iloc[-1]
-        opened, upper, lower, atr, price = (
-            float(row['open']), float(row['kc_upper']), float(row['kc_lower']),
+        opened, upper, middle, lower, atr, price = (
+            float(row['open']), float(row['kc_upper']), float(row['kc_middle']),
+            float(row['kc_lower']),
             float(frame.iloc[-2]['atr']), float(price))
-        if (not all(math.isfinite(v) and v > 0 for v in (opened, upper, lower, atr, price))
-                or lower >= upper):
+        if (not all(math.isfinite(v) and v > 0
+                    for v in (opened, upper, middle, lower, atr, price))
+                or not lower < middle < upper
+                or not lower <= opened <= upper
+                or not lower <= price <= upper):
             return None
         threshold = atr * LIVE_BREAKOUT_BODY_ATR
 
-        # A same-side outside open may continue, but neither opposite-side gaps nor late chases qualify.
-        long_open_valid = lower <= opened <= upper or opened > upper
-        long_distance_atr = (price - upper) / atr
-        if (long_open_valid and price > upper and (price - opened) >= threshold
-                and long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+        long_distance_atr = (upper - price) / atr
+        if (price > middle and (price - opened) >= threshold
+                and 0 <= long_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'LONG'
 
-        short_open_valid = lower <= opened <= upper or opened < lower
-        short_distance_atr = (lower - price) / atr
-        if (short_open_valid and price < lower and (opened - price) >= threshold
-                and short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
+        short_distance_atr = (price - lower) / atr
+        if (price < middle and (opened - price) >= threshold
+                and 0 <= short_distance_atr <= LIVE_BREAKOUT_MAX_DISTANCE_ATR):
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass

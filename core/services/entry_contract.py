@@ -26,6 +26,7 @@ CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
+INNER_CHANNEL_PRESSURE_ENTRY_PHASE = "KC_INNER_CHANNEL_PRESSURE"
 ENTRY_CODES = (
     KC_PENDING_CODES | KC_REALTIME_PATTERN_CODES | CONTINUATION_CODES
     | LIVE_BODY_BREAKOUT_CODES
@@ -52,6 +53,24 @@ def quote_beyond_side_outer_rail(frame, side, quote):
         if lower >= upper:
             return False
         return quote > upper if side == "LONG" else quote < lower
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
+def quote_inside_directional_channel(frame, side, quote):
+    """Require a pre-breakout quote inside the KC half matching its side."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or frame.empty:
+            return False
+        row = frame.iloc[-1]
+        lower, middle, upper, quote = map(float, (
+            row["kc_lower"], row["kc_middle"], row["kc_upper"], quote,
+        ))
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (lower, middle, upper, quote))
+                or not lower < middle < upper or not lower <= quote <= upper):
+            return False
+        return quote > middle if side == "LONG" else quote < middle
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return False
 
@@ -206,8 +225,9 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
         stamp = float(live["timestamp"])
         atr = float(frame.iloc[-2]["atr"])
         edge = upper if side == "LONG" else lower
-        distance = (quote - edge) / atr if side == "LONG" else (edge - quote) / atr
-        if not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance):
+        distance = (edge - quote) / atr if side == "LONG" else (quote - edge) / atr
+        if (not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance)
+                or distance < 0 or distance > 3.0):
             return None
 
         code = f"KC_LIVE_BODY_BREAKOUT_{side}"
@@ -215,7 +235,7 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             action="ENTER", side=side, type=code, reason=code,
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
             close_price=float(frame.iloc[-2]["close"]), intrabar=True,
-            entry_phase="KC_LIVE_BODY_BREAKOUT",
+            entry_phase=INNER_CHANNEL_PRESSURE_ENTRY_PHASE,
             breakout_bar_id=stamp, pair_confirmation_bar_id=None,
             third_bar_id=stamp,
             pending_signal_id=f"{symbol}:LIVE_BODY:{int(stamp)}:{side}",
@@ -346,10 +366,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if decision.get("action") != "ENTER":
             return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
         side = decision["side"]
+        if decision.get("entry_phase") != INNER_CHANNEL_PRESSURE_ENTRY_PHASE:
+            return reject("BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE")
         if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
-        if not quote_beyond_side_outer_rail(frame, side, quote):
-            return reject("WAIT_LIVE_PRICE_OUTSIDE_KC")
+        if not quote_inside_directional_channel(frame, side, quote):
+            return reject("WAIT_LIVE_PRICE_INSIDE_DIRECTIONAL_KC")
         # Post-exit formation verification:
         if exit_bar is not None and float(live.timestamp) <= exit_bar:
             return reject('WAIT_POST_EXIT_NEW_FORMATION')
