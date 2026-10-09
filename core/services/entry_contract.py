@@ -395,131 +395,105 @@ def entry_consolidation_problem(frame, quote, *, allow_directional_breakout=Fals
         return "WAIT_CONSOLIDATION_GATE_DATA"
 
 
-def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
-                            symbol="", diagnostics=None):
+
+def is_doji_candle(row, ratio_threshold=0.2):
+    total_range = row['high'] - row['low']
+    if total_range == 0: return True
+    return (abs(row['close'] - row['open']) / total_range) <= ratio_threshold
+
+def check_candle_gate(curr_closed_bar, direction):
+    if is_doji_candle(curr_closed_bar):
+        return False, "BLOCKED_BY_DOJI"
+    if direction == "LONG" and curr_closed_bar['close'] < curr_closed_bar['open']:
+        return False, "BLOCKED_BY_RED_CANDLE"
+    if direction == "SHORT" and curr_closed_bar['close'] > curr_closed_bar['open']:
+        return False, "BLOCKED_BY_GREEN_CANDLE"
+    return True, "PASSED"
+
+def evaluate_dual_track_triggers(closed_frame):
+    if len(closed_frame) < 3:
+        return None, None
+        
+    prev = closed_frame.iloc[-2]
+    curr = closed_frame.iloc[-1]
+
+    long_breakout = (prev['close'] > prev['kc_upper']) and (curr['close'] > curr['kc_upper'])
+    short_breakout = (prev['close'] < prev['kc_lower']) and (curr['close'] < curr['kc_lower'])
+
+    golden_cross = (prev['ma5'] <= prev['ma15']) and (curr['ma5'] > curr['ma15'])
+    death_cross = (prev['ma5'] >= prev['ma15']) and (curr['ma5'] < curr['ma15'])
+    
+    long_ma_cross = golden_cross and (curr['close'] > curr['kc_middle'])
+    short_ma_cross = death_cross and (curr['close'] < curr['kc_middle'])
+
+    if long_breakout or long_ma_cross:
+        passed, reason = check_candle_gate(curr, "LONG")
+        if passed:
+            return "LONG", "BREAKOUT_KC" if long_breakout else "MA_CROSS"
+        return None, reason
+        
+    if short_breakout or short_ma_cross:
+        passed, reason = check_candle_gate(curr, "SHORT")
+        if passed:
+            return "SHORT", "BREAKOUT_KC" if short_breakout else "MA_CROSS"
+        return None, reason
+
+    return None, "WAIT_DUAL_TRACK_TRIGGER"
+
+def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
     def reject(reason):
         if diagnostics is not None:
             diagnostics.clear()
             diagnostics["reason"] = reason
         return None
+        
     reject("WAIT_VALID_ENTRY_DATA")
     if code is not None and code not in ENTRY_CODES:
         return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
     if account is not None and symbol in getattr(account, "positions", {}):
         return reject("WAIT_EXISTING_POSITION")
+        
     try:
         if frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000:
             return None
-        if 'is_closed' not in frame or not all(isinstance(v, (bool, np.bool_)) for v in frame.is_closed):
-            return None
-        # Rolling indicators legitimately have an unavailable leading prefix.
-        # Trim only that prefix; never bridge missing data inside valid history.
-        indicator_keys = ['atr', 'kc_upper', 'kc_middle', 'kc_lower']
-        ready = frame[indicator_keys].notna().all(axis=1).to_numpy()
-        valid_indices = np.flatnonzero(ready)
-        if not len(valid_indices):
-            return None
-        frame = frame.iloc[int(valid_indices[0]):].copy()
+            
         closed = closed_entry_candles(frame)
-        if len(closed) < 2 or len(frame)-len(closed) != 1:
-            return reject('WAIT_LIVE_THIRD_CANDLE')
-        live = frame.iloc[-1]
-        if (bool(live.is_closed)
-                or float(live.timestamp) != float(closed.iloc[-1].timestamp) + 60000):
-            return reject('WAIT_LIVE_THIRD_CANDLE')
-        keys = [
-            'timestamp','open','high','low','close','kc_upper','kc_middle',
-            'kc_lower','atr',
-        ]
-        values = frame[keys].astype(float)
-        if not np.isfinite(values.to_numpy()).all() or not values.gt(0).all().all():
-            return None
-        if not values.timestamp.diff().dropna().eq(60000).all():
-            return None
-        if not ((values.low <= values[['open','close']].min(axis=1)) &
-                (values.high >= values[['open','close']].max(axis=1)) &
-                (values.kc_lower < values.kc_middle) & (values.kc_middle < values.kc_upper)).all():
-            return None
-        quote = float(frame.iloc[-1].close if price is None else price)
-        if not math.isfinite(quote) or quote <= 0:
-            return None
-        # Do not reopen in the candle of a successful close, even after restart.
-        exit_bar = None
-        for trade in getattr(account, 'trades', []):
-            if trade.get('symbol') == symbol and trade.get('action') in ('CLOSE_LONG','CLOSE_SHORT'):
-                stamp = float(trade['id'])
-                if not math.isfinite(stamp) or stamp <= 0:
-                    return reject('WAIT_VALID_CLOSE_HISTORY')
-                bar = math.floor(stamp/60000)*60000
-                exit_bar = max(exit_bar or bar, bar)
-        saved_close = getattr(account, 'last_closed_at', {}).get(symbol)
-        if saved_close is not None:
-            saved_close = float(saved_close)
-            if not math.isfinite(saved_close) or saved_close <= 0:
-                return reject('WAIT_VALID_CLOSE_HISTORY')
-            saved_bar = math.floor(saved_close/60)*60000
-            exit_bar = max(exit_bar or saved_bar, saved_bar)
-        live_code_side = (
-            code.rsplit("_", 1)[-1] if code in LIVE_BODY_BREAKOUT_CODES else None
-        )
-        live_decision = None
-        if code is None or live_code_side is not None:
-            live_decision = evaluate_live_body_breakout(
-                frame, quote, symbol=symbol, requested_side=live_code_side
-            )
-        if live_code_side is not None:
-            decision = live_decision or {
-                "action": "WAIT", "reason": "WAIT_LIVE_BODY_BREAKOUT",
-            }
-        elif live_decision is not None:
-            decision = live_decision
-        elif code in CONTINUATION_CODES:
-            decision = evaluate_continuation_entry(
-                frame, quote, code=code, symbol=symbol, account=account
-            ) or {'action': 'WAIT', 'reason': 'WAIT_KC_CONTINUATION'}
-        else:
-            decision = evaluate_kc_pending_entry(
-                closed, quote, code=code, symbol=symbol, live=live
-            )
-            if code is None and decision.get('action') != 'ENTER':
-                continuation = evaluate_continuation_entry(
-                    frame, quote, symbol=symbol, account=account
-                )
-                if continuation:
-                    decision = continuation
-        if decision.get("action") != "ENTER":
-            return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
-        side = decision["side"]
-        if decision.get("entry_phase") not in (
-                'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM',
-                'KC_CONTINUATION_ENTRY', 'KC_LIVE_BODY_BREAKOUT'):
-            return reject("BLOCKED_ENTRY_REQUIRES_CONFIRMED_KC_BREAKOUT")
+        if len(closed) < 3:
+            return reject('WAIT_ENOUGH_CLOSED_CANDLES')
+            
+        side, trigger_reason = evaluate_dual_track_triggers(closed)
+        if side is None:
+            return reject(trigger_reason)
+
         if not entry_trend_alignment_ready(frame, side):
             return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
-        if evaluate_live_ma5_direction(frame, quote, side) is None:
-            return reject("BLOCKED_LIVE_MA5_DIRECTION")
-        if not quote_beyond_side_outer_rail(frame, side, quote):
-            return reject("WAIT_LIVE_PRICE_OUTSIDE_KC_RAIL")
-        # Post-exit formation verification:
-        if exit_bar is not None and float(live.timestamp) <= exit_bar:
-            return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if exit_bar is not None and decision.get('breakout_bar_id', 0) <= exit_bar:
-            return reject('WAIT_POST_EXIT_NEW_FORMATION')
-        if symbol in CHOP_FILTER_SYMBOLS:
-            consolidation_problem = entry_consolidation_problem(
-                frame, quote, allow_directional_breakout=True,
-            )
-            if consolidation_problem:
-                return reject(consolidation_problem)
+            
+        stamp = float(closed.iloc[-1].timestamp)
+        quote = price if price is not None else float(closed.iloc[-1].close)
+        
+        decision = dict(
+            action='ENTER',
+            side=side,
+            type=trigger_reason,
+            reason=trigger_reason,
+            price=quote,
+            entry_atr=float(closed.iloc[-1]['atr']),
+            confirmation_bar_id=stamp,
+            breakout_bar_id=stamp,
+            pending_signal_id=f'{symbol}:DUAL_TRACK:{int(stamp)}:{side}',
+            entry_phase='KC_2BAR_CLOSED_CONFIRM',
+        )
+        
         # Persisted successful fills own deduplication, including after restart.
         for trade in getattr(account, 'trades', []):
             if (trade.get('symbol') == symbol and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
                     and (trade.get('entry_snapshot') or {}).get('pending_signal_id') == decision['pending_signal_id']):
                 return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
-        decision['exit_bar_id'] = exit_bar
+                
         if diagnostics is not None:
-            diagnostics.clear()
-            diagnostics['reason'] = decision['type']
+            diagnostics.update(decision)
         return decision
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        return reject('WAIT_VALID_ENTRY_DATA')
+
+    except Exception as e:
+        return reject(f"ENTRY_ERROR_{str(e)}")
+
