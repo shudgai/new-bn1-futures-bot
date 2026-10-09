@@ -465,8 +465,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if side is None:
             return reject(trigger_reason)
 
-        if not entry_trend_alignment_ready(frame, side):
-            return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
+        if trigger_reason != "MA_CROSS":
+            if not entry_trend_alignment_ready(frame, side):
+                return reject("BLOCKED_KC_MA5_MA15_TREND_MISMATCH")
             
         stamp = float(closed.iloc[-1].timestamp)
         quote = price if price is not None else float(closed.iloc[-1].close)
