@@ -411,7 +411,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "方向 Gate：自動入口及送單重驗均須 KC 方向、MA5、MA15 三者一致；方向不明或任一反向均拒絕。開倉必須先實際突破 KC 外軌：即時入口要求當根開盤在通道內、順向實體至少 0.5 ATR，最新報價嚴格越過同側外軌且距離不超過 3 ATR；即時未成交會記錄突破資格，後續可由一般兩根實體破軌確認或同側延續入口接手。延續入口要求突破資格仍相符、KC／MA 方向一致，且最新報價仍在同側外軌之外。價格仍在通道內不得開倉；無突破資格的延續及其他替代入口不授權。所有突破持倉續抱至三根已收線確認真峰谷；帳戶硬停損保留。ATR 取前一根已收線值。",
+        "strategy": "強動能入口：原始開盤在 KC 通道內，順向實體至少前根已收線 ATR 的 0.5 倍，最新價嚴格在同側外軌外；此入口豁免滯後的均線與 KC 斜率。第二／第三根軌外入口及一般嚴格 Gate 保留。反向強動能先平舊倉，確認全部成交後以最新行情重驗反手；未確認成交不開新倉。未達 5% 淨 ROI 峰值且守住 MA15 或 KC 中軌時，不因普通峰谷或滯後 CK 軟退出。階梯鎖利：5% 峰值回吐 1.2 百分點、10% 回吐 2.5 百分點、15% 回吐峰值的 20%。鎖利後同向冷卻 240 秒，之後須已收線收盤突破前次峰谷；15 根 K 或反向穿越 KC 中軌重置結構限制，冷卻期仍有效。所有入口均保留送單重驗與帳戶風控。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
