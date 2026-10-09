@@ -86,7 +86,7 @@ def entry_frame_evidence(frame):
     closed = closed_entry_candles(frame)
     if closed.empty:
         return {'closed_count': 0}
-    keys = ('timestamp', 'open', 'high', 'low', 'close', 'ma3', 'ma15',
+    keys = ('timestamp', 'open', 'high', 'low', 'close', 'ma3', 'ma5', 'ma15',
             'atr', 'kc_upper', 'kc_middle', 'kc_lower')
     rows = [{key: float(row[key]) for key in keys if key in row}
             for _, row in closed.tail(6).iterrows()]

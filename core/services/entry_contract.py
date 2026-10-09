@@ -4,6 +4,9 @@ import math
 import numpy as np
 
 from core.services.candle_data import closed_entry_candles
+from core.services.strict_entry_gates import validate_strict_entry
+from core.services.post_profit_lock_gate import post_profit_lock_reason
+from core.services.second_third_entry import CODES as SECOND_THIRD_CODES, evaluate_second_third
 from core.services.strategies.outer_strategy import (
     LIVE_BREAKOUT_BODY_ATR,
     LIVE_BREAKOUT_MAX_DISTANCE_ATR,
@@ -29,12 +32,13 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 ))
 # Continuation requires a persisted, previously observed outer-rail breakout.
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
-ENTRY_CODES = KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES | NEW_TRIGGER_CODES
-CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
+ENTRY_CODES = SECOND_THIRD_CODES | KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES | NEW_TRIGGER_CODES
+CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "CAP/USDT", "龙虾/USDT", "LOBSTER/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
 ENTRY_EVIDENCE_KEYS = (
+    "strict_gate_evidence",
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",
     "pair_confirmation_bar_id", "third_bar_id", "live_pattern_start_bar_id",
@@ -503,66 +507,15 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     return None, None
 
 def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
-    if len(closed_frame) < 12: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
-    curr = closed_frame.iloc[-1]
-    prev = closed_frame.iloc[-2]
-    
-    if account is not None and symbol in getattr(account, "positions", {}):
-        return False, "BLOCKED_BY_POSITION_GATE"
-
-    # ================= 破軌專屬防護 (FRESH & QUALITY GATE) =================
-    if trigger_type == "TRIGGER_A_KC_BREAKOUT":
-        # FRESH_BREAKOUT_GATE: 防止高位連拉盲目追高
-        if side == "LONG" and prev['close'] > prev['kc_upper'] and prev['open'] > prev['kc_upper']:
-            return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
-        if side == "SHORT" and prev['close'] < prev['kc_lower'] and prev['open'] < prev['kc_lower']:
-            return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
-
-        # CANDLE_QUALITY_GATE: 防止急漲急跌插針假突破
-        candle_range = curr['high'] - curr['low'] + 1e-6
-        body = abs(curr['close'] - curr['open'])
-        # 放寬實體佔比要求，因為大波動破軌常常伴隨較長影線
-        if body / candle_range < 0.35:
-            return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
-
-    # ================= 快車道豁免 =================
-    is_fast_lane = trigger_type in ("TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT")
-    if is_fast_lane:
-        if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
-        if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
-        if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"
-        return True, "GATE_PASSED_FAST_LANE"
-
-    # ================= 常規進場檢查 (MA_CROSS) =================
-    tolerance = curr['atr'] * 0.05
-    is_ma_cross = trigger_type == "TRIGGER_B_MA_CROSS"
-    if side == "LONG":
-        if not is_ma_cross and curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
-        if curr['ma5'] < curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
-    elif side == "SHORT":
-        if not is_ma_cross and curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
-        if curr['ma5'] > curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
-
-    if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < 1.2: return False, "BLOCKED_BY_VOLATILITY_GATE"
-
-    past_k = closed_frame.iloc[-4]
-    atr_norm = curr['atr'] + 1e-6
-    if (abs(curr['ma15'] - past_k['ma15']) / atr_norm < 0.10 and abs(curr['kc_middle'] - past_k['kc_middle']) / atr_norm < 0.10):
-        return False, "BLOCKED_BY_FLAT_MARKET_GATE"
-
-    from core.services.strategies.outer_strategy import count_ma_crosses
-    # NOTE: Since count_ma_crosses was explicitly defined previously, we just use it directly
-    if count_ma_crosses(closed_frame.iloc[-8:]) >= 4: return False, "BLOCKED_BY_WHIPSAW_CHOP_GATE"
-
-    is_trend_bypassed = trigger_type == "TRIGGER_B_MA_CROSS"
-    if not is_trend_bypassed and not entry_trend_alignment_ready(closed_frame, side):
-        return False, "BLOCKED_BY_TREND_GATE"
-
-    if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
-    if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"
-    if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
-
-    return True, "GATE_PASSED_STANDARD"
+    """Account prerequisites; live strict gates run for every trigger below."""
+    post_reason = post_profit_lock_reason(account, symbol, closed_frame, side)
+    if post_reason:
+        return False, post_reason
+    if len(closed_frame) < 60:
+        return False, 'BLOCKED_STRICT_INSUFFICIENT_DATA'
+    if account is not None and symbol in getattr(account, 'positions', {}):
+        return False, 'BLOCKED_BY_POSITION_GATE'
+    return True, 'STRICT_ENTRY_GATES_PASSED'
 
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
     def reject(reason):
@@ -582,19 +535,42 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         closed = closed_entry_candles(frame)
         if len(closed) < 3: return reject('WAIT_ENOUGH_CLOSED_CANDLES')
             
+        quote = price if price is not None else float(frame.iloc[-1].close)
+        continuation = evaluate_second_third(frame, quote, account, symbol)
+        if continuation is not None and (code is None or code == continuation['type']):
+            post_reason = post_profit_lock_reason(account, symbol, closed, continuation['side'])
+            if post_reason:
+                return reject(post_reason)
+            if diagnostics is not None:
+                diagnostics.update(continuation)
+            return continuation
+        if code in SECOND_THIRD_CODES:
+            return reject('BLOCKED_SECOND_THIRD_OUTSIDE_OR_DOJI')
+
         side, trigger_type = detect_raw_triggers(closed, account, symbol)
         if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")
+        if code is not None and code != trigger_type:
+            return reject("BLOCKED_STRICT_SIGNAL_CHANGED")
 
         passed, gate_reason = check_entry_gates(account, symbol, closed, side, trigger_type)
         if not passed: return reject(gate_reason)
             
         stamp = float(closed.iloc[-1].timestamp)
-        quote = price if price is not None else float(closed.iloc[-1].close)
+        quote = price if price is not None else float(frame.iloc[-1].close)
+        passed, gate_reason, gate_evidence = validate_strict_entry(frame, quote, side)
+        if not passed:
+            reject(gate_reason)
+            if diagnostics is not None:
+                diagnostics['strict_gate_evidence'] = gate_evidence
+            return None
         
         decision = dict(
             action='ENTER', side=side, type=trigger_type, reason=gate_reason,
+            strict_gate_evidence=gate_evidence,
             price=quote, entry_atr=float(closed.iloc[-1]['atr']),
             confirmation_bar_id=stamp, breakout_bar_id=stamp,
+            close_price=float(closed.iloc[-1]['close']),
+            pair_confirmation_bar_id=stamp,
             pending_signal_id=f'{symbol}:{trigger_type}:{int(stamp)}:{side}',
             entry_phase='PIPELINE_CONFIRMED',
         )

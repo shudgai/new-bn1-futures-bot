@@ -4,7 +4,7 @@ import time
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
 from core.services.exits.peak_trailing_exit import (
-    CHANNEL_SWING_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
+    CHANNEL_SWING_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
 )
 
 
@@ -94,7 +94,7 @@ async def enforce_atr_protection(account, symbol, price):
         return False
     allowed_triggers = (
         PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-        if symbol in ("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT")
+        if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
         else CHANNEL_SWING_EXIT_TRIGGERS
     )
     trigger = decision.get("trigger") if decision else None

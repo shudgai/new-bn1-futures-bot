@@ -7,7 +7,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
-    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
+    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.entry_atr_protection import (
@@ -199,6 +199,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
+                   'net_roe_lock_peak','net_roe_lock_armed','tiered_roi_peak',
                    'trigger','trigger_bar_ms','trigger_price',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',
@@ -214,7 +215,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger = decision.get('trigger', '')
         allowed_triggers = (
             PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-            if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
+            if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
             else CHANNEL_SWING_EXIT_TRIGGERS
         )
         if (entry_m == 'CHANNEL_SWING'
@@ -230,7 +231,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if (entry_m == 'CHANNEL_SWING'
                 and trigger not in allowed_triggers):
             for state in (
-                current[STATE_KEY], meta.get(STATE_KEY, {}),
+                current, meta.get(STATE_KEY, {}),
             ):
                 for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                             'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):

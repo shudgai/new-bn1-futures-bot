@@ -1192,8 +1192,12 @@ class PaperAccount:
                     else "觸發止損 (Stop-Loss)"
                 )
 
+            from core.services.post_profit_lock_gate import profit_exit_fields
+            profit_exit_ms = int(time.time() * 1000)
+            profit_fields = profit_exit_fields(pos, close_reason, profit_exit_ms)
             self.trades.insert(0, {
-                "id": int(time.time() * 1000),
+                "id": profit_exit_ms,
+                **profit_fields,
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),
                 "symbol": symbol,
                 "action": f"CLOSE_{side}",

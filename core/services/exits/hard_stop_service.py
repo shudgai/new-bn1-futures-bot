@@ -1,6 +1,4 @@
-"""Account loss limits shared by Channel Swing quotes and account updates.
-Implements IExitStrategy interface.
-"""
+"""Loss-stop evaluation; Channel Swing position loss exits are retired."""
 import math
 from typing import Dict, Any, Optional
 import pandas as pd
@@ -9,6 +7,10 @@ from core.interfaces.exit_interface import IExitStrategy
 
 
 def hard_stop_reason(position, price):
+    # Channel Swing position loss stops are disabled by explicit user policy.
+    # Account-level circuit breakers are independent of this position exit.
+    if str(position.get("entry_mode") or "").upper() == "CHANNEL_SWING":
+        return None
     pending = position.get("channel_hard_stop_pending")
     if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
         return pending
@@ -38,23 +40,13 @@ async def enforce_hard_stop(account, symbol, price):
     meta = account.position_meta.get(symbol, {})
     if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
         return False
-    try:
-        price = float(price)
-    except (TypeError, ValueError):
-        return False
-    if not math.isfinite(price) or price <= 0:
-        return False
-    reason = hard_stop_reason({**meta, **position}, price)
-    if not reason:
-        return False
-    if getattr(account, "channel_profit_reentries", {}).pop(symbol, None) is not None:
+    # Retire previously persisted loss-stop retries as well as new triggers.
+    changed = False
+    for source in (position, meta):
+        changed = source.pop("channel_hard_stop_pending", None) is not None or changed
+    if changed:
         account.save_state()
-    if position.get("channel_hard_stop_pending") != reason:
-        position["channel_hard_stop_pending"] = reason
-        account.position_meta.setdefault(symbol, {})["channel_hard_stop_pending"] = reason
-        account.save_state()
-    await account.close_position(symbol, price, "Channel Swing HARD_STOP " + reason, is_manual=True)
-    return True
+    return False
 
 
 class HardStopExitStrategy(IExitStrategy):

@@ -2977,6 +2977,11 @@ class BinanceTestnetAccount:
                 None,
                 {"reduceOnly": True, "newOrderRespType": "RESULT"},
             )
+            from core.services.post_profit_lock_gate import profit_exit_fields, confirmed_full_close
+            profit_candidate = profit_exit_fields(position, close_reason, time.time()*1000)
+            if profit_candidate and not confirmed_full_close(order, position['qty']):
+                # Keep the position and pending close until authoritative fill evidence.
+                raise ValueError('Profit exit not confirmed fully filled; no post-profit event recorded')
             # HARD_STOP 送完市價單後再撤剩餘委託，不阻塞成交確認
             if is_hard_stop_now:
                 try:
@@ -3005,8 +3010,12 @@ class BinanceTestnetAccount:
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
             self.realized_pnl += net_pnl
+            from core.services.post_profit_lock_gate import profit_exit_fields
+            profit_exit_ms = int(time.time() * 1000)
+            profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms)
             self.trades.insert(0, {
-                "id": int(time.time() * 1000),
+                "id": profit_exit_ms,
+                **profit_fields,
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),
                 "symbol": symbol,
                 "action": f"CLOSE_{position['side']}",

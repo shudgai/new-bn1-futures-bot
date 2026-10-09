@@ -79,6 +79,7 @@ async def validate_account_entry(account, symbol, side, context):
     from core.services.candle_data import entry_frame_evidence
     if snapshot:
         snapshot.update(signal_code=decision['type'], closed_bar=stamp,
+                        quote_price=decision['price'],
                         closed_price=decision['close_price'],
                         entry_phase=decision['entry_phase'],
                         breakout_bar_id=decision['breakout_bar_id'],

@@ -1799,7 +1799,7 @@ class TradingEngine:
             return False
         bar = decision['confirmation_bar_id']
         log_entry_gate(self, symbol, side, 'ENTRY_SEQUENCE', decision['entry_phase'], bar,
-                       first_bar=decision['breakout_bar_id'], exit_bar=decision['exit_bar_id'])
+                       first_bar=decision['breakout_bar_id'], exit_bar=decision.get('exit_bar_id'))
         used = getattr(self,'_closed_entry_fills',None)
         if used is None:
             used = self._closed_entry_fills = set()
