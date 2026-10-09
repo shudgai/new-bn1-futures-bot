@@ -103,6 +103,19 @@ def cached_tick_indicators(frame, price, stamp):
             last_high=float(last.get('high') or 0.),
             last_low=float(last.get('low') or 0.)
         )
+        ma5_bars = closed.tail(5)
+        ma5_closes = [float(value) for value in ma5_bars['close']]
+        ma5_timestamps = [float(value) for value in ma5_bars['timestamp']]
+        if (len(ma5_closes) == 5
+                and all(math.isfinite(value) and value > 0 for value in ma5_closes)
+                and all(math.isfinite(value) and value > 0 for value in ma5_timestamps)
+                and all(right - left == 60000
+                        for left, right in zip(ma5_timestamps, ma5_timestamps[1:]))
+                and math.isfinite(float(price)) and float(price) > 0):
+            snapshot.update(
+                closed_ma5=sum(ma5_closes) / 5.0,
+                live_ma5=(sum(ma5_closes[-4:]) + float(price)) / 5.0,
+            )
     return snapshot, float(last.get('atr') or 0.)
 
 
@@ -176,7 +189,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 and reason != 'EXIT_INITIAL_ATR_HARD_STOP'
                 and trigger not in ('WATERFALL_DROP', 'EXIT_CATASTROPHIC_PROFIT_FLOOR',
                                     DOJI_TRIGGER, 'KC_OUTER_PIVOT',
-                                    'THREE_POINT_PIVOT')):
+                                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')):
             try:
                 from core.services.exits.trend_hold_evaluator import evaluate_trend_hold
                 trend_status, _ = evaluate_trend_hold(position, snapshot, price)
@@ -189,7 +202,14 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         account.log(f'REALTIME_EXIT symbol={symbol} reason={reason} trigger={trigger} '
                     f'quote_ms={stamp} price={price} peak_price={current["peak_price"]} '
                     f'peak_net_pnl={current["peak_net_pnl"]} latency_ms={time.time()*1000-stamp:.1f}', 'INFO')
-        await account.close_position(symbol,price,'Channel Swing ' + reason + (' ' + trigger if trigger == DOJI_TRIGGER else ''),is_manual=True)
+        trigger_detail = (
+            ' ' + trigger
+            if trigger in (DOJI_TRIGGER, 'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')
+            else ''
+        )
+        await account.close_position(
+            symbol, price, 'Channel Swing ' + reason + trigger_detail, is_manual=True
+        )
         return True
     except (KeyError,TypeError,ValueError,OverflowError):
         return False

@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
-from core.services.entry_contract import ENTRY_CODES, evaluate_entry_contract
+from core.services.entry_contract import (
+    ENTRY_CODES,
+    evaluate_entry_contract,
+    quote_beyond_side_outer_rail,
+)
 from core.services.entry_firewall import validate_account_entry
 
 
@@ -95,6 +99,18 @@ def test_pivot_or_ma_cross_code_is_not_an_entry_authority(side):
     assert f"KC_2BAR_CONFIRM_{side}" in ENTRY_CODES
     assert evaluate_entry_contract(frame, code=f"KC_OUTER_PIVOT_{side}") is None
     assert evaluate_entry_contract(frame, code=f"MA5_MA15_LIVE_CROSS_{side}") is None
+
+
+@pytest.mark.parametrize(
+    ("side", "opposite_rail"),
+    [("LONG", "kc_lower"), ("SHORT", "kc_upper")],
+)
+def test_opposite_outer_rail_never_authorizes_the_requested_side(side, opposite_rail):
+    frame = breakout_frame(side)
+    quote = float(frame.iloc[-1][opposite_rail])
+
+    assert not quote_beyond_side_outer_rail(frame, side, quote)
+    assert evaluate_entry_contract(frame, quote, symbol="CAP/USDT") is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

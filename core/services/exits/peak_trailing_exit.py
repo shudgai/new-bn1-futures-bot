@@ -206,6 +206,42 @@ def three_point_pivot_exit(position, snapshot):
         return None
 
 
+def live_ma5_reversal_exit(position, snapshot, sign):
+    """Exit when the quote-derived MA5 moves against the held position."""
+    try:
+        if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
+            return None
+        quote_ms = float(snapshot['quote_ms'])
+        live_bar_ms = float(snapshot['live_bar_ms'])
+        closed_bar_ms = float(snapshot['closed_bar_ms'])
+        snapshot_bar_id = float(snapshot['snapshot_bar_id'])
+        closed_ma5 = float(snapshot['closed_ma5'])
+        live_ma5 = float(snapshot['live_ma5'])
+        bar_ms = math.floor(quote_ms / 60000) * 60000
+        if (not all(positive(value) for value in
+                    (quote_ms, live_bar_ms, closed_bar_ms, snapshot_bar_id,
+                     closed_ma5, live_ma5))
+                or live_bar_ms != bar_ms
+                or closed_bar_ms != bar_ms - 60000
+                or snapshot_bar_id != closed_bar_ms
+                or quote_ms < closed_bar_ms
+                or quote_ms - closed_bar_ms > 120000):
+            return None
+        turned_against_position = (
+            live_ma5 < closed_ma5 if sign == 1 else live_ma5 > closed_ma5
+        )
+        if not turned_against_position:
+            return None
+        return {
+            'trigger': 'MA5_TURN_REVERSAL',
+            'trigger_bar_ms': live_bar_ms,
+            'closed_ma5': closed_ma5,
+            'live_ma5': live_ma5,
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def doji_reversal_evidence(snapshot, price, sign, entry, opened_ms, peak_gain_atr):
     """A completed doji (or stall) followed immediately by an adverse live body."""
     try:
@@ -601,10 +637,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
                 state.update(pivot_evidence)
 
+            ma5_evidence = live_ma5_reversal_exit(position, snapshot, sign)
+            if (ma5_evidence is not None and reason != HARD_REASON
+                    and trigger != 'WATERFALL_DROP'):
+                reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
+                state.update(ma5_evidence)
+
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'KC_OUTER_PIVOT',
-                                        'THREE_POINT_PIVOT')):
+                                        'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL')):
                 if net <= 0:
                     reason, trigger = None, None
 
@@ -615,7 +657,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
-                    'THREE_POINT_PIVOT'
+                    'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL'
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):

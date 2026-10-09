@@ -23,6 +23,23 @@ ENTRY_EVIDENCE_KEYS = (
 )
 
 
+def quote_beyond_side_outer_rail(frame, side, quote):
+    """Fail closed unless the quote is strictly beyond its own KC entry rail."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or frame.empty:
+            return False
+        lower = float(frame.iloc[-1]["kc_lower"])
+        upper = float(frame.iloc[-1]["kc_upper"])
+        quote = float(quote)
+        if not all(math.isfinite(value) and value > 0 for value in (lower, upper, quote)):
+            return False
+        if lower >= upper:
+            return False
+        return quote > upper if side == "LONG" else quote < lower
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def evaluate_live_ma5_direction(frame, quote, side):
     """Require the quote-adjusted MA5 to move strictly in the entry direction."""
     try:
@@ -247,9 +264,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None,
         if decision.get("action") != "ENTER":
             return reject(decision.get("reason", "WAIT_KC_2BAR_BREAKOUT"))
         side = decision["side"]
-        sign = 1 if side == "LONG" else -1
-        rail = float(live["kc_upper"] if side == "LONG" else live["kc_lower"])
-        if sign * (quote - rail) <= 0:
+        if not quote_beyond_side_outer_rail(frame, side, quote):
             return reject("WAIT_LIVE_PRICE_OUTSIDE_KC")
         if not live_candle_color_ready(frame, quote, side):
             return reject("BLOCKED_OPPOSITE_LIVE_CANDLE_COLOR")
