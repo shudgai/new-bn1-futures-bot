@@ -88,13 +88,56 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if not sign or not math.isfinite(quote) or quote <= 0:
             return None, False
-        
-        # Min Hold Bars: Do not allow soft structural exits in the first 1-2 bars
-        # (This prevents intraday jitters from instantly closing a new position, 
-        # unless it hits the hard stop-loss handled elsewhere).
         open_ms = float(position.get('open_timestamp') or 0.0) * 1000.0
         time_held_ms = stamp - open_ms
         is_early_hold_period = (time_held_ms < 120000)
+        
+        entry = float(position.get('entry_price') or 0.)
+        lifecycle_stage = meta.get('lifecycle_stage', 1)
+        entry_bar_ms = math.floor(open_ms / 60000) * 60000
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.0)
+        closed_bar_ms = float(snapshot.get('closed_bar_ms') or 0.0)
+        lower = float(snapshot.get('live_kc_lower') or snapshot.get('kc_lower') or 0.)
+        upper = float(snapshot.get('live_kc_upper') or snapshot.get('kc_upper') or 0.)
+        atr = float(snapshot.get('atr') or 0.0)
+        profit_cushion = sign * (quote - entry)
+        state_updated = False
+        
+        if lifecycle_stage < 3:
+            if profit_cushion >= 1.0 * atr and atr > 0:
+                lifecycle_stage = 3
+                meta['lifecycle_stage'] = 3
+                state_updated = True
+            elif live_bar_ms > entry_bar_ms + 60000:
+                lifecycle_stage = 3
+                meta['lifecycle_stage'] = 3
+                state_updated = True
+            elif live_bar_ms > entry_bar_ms and lifecycle_stage == 1:
+                lifecycle_stage = 2
+                meta['lifecycle_stage'] = 2
+                state_updated = True
+
+        if lifecycle_stage == 1:
+            if live_bar_ms == entry_bar_ms and entry > 0:
+                if side == 'SHORT':
+                    if quote >= entry or (lower > 0 and quote >= lower):
+                        return 'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT', state_updated
+                elif side == 'LONG':
+                    if quote <= entry or (upper > 0 and quote <= upper):
+                        return 'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT', state_updated
+        
+        if lifecycle_stage == 2:
+            if live_bar_ms > entry_bar_ms and closed_bar_ms == entry_bar_ms:
+                closed_open = float(snapshot.get('last_open') or 0.)
+                closed_close = float(snapshot.get('last_close') or 0.)
+                if closed_open > 0 and closed_close > 0:
+                    if side == 'SHORT' and closed_close > closed_open:
+                        return 'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT', state_updated
+                    elif side == 'LONG' and closed_close < closed_open:
+                        return 'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT', state_updated
+                lifecycle_stage = 3
+                meta['lifecycle_stage'] = 3
+                state_updated = True
 
         # 2. 谷底與波峰真實反轉避險 (Catastrophic Dump / Pump & Shadow Rejection)
         # 徹底拔除「微幅跌破就出場」的延遲邏輯，只在實質跌破關鍵大支撐/阻力，或出現爆量長影線時才避險
@@ -121,7 +164,6 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
                     return 'TROUGH_REJECTION_EXIT', False
 
-        entry = float(position.get('entry_price') or 0.)
         qty = float(position.get('qty') or 0.)
         margin = float(position.get('margin') or 0.)
         if margin <= 0:
@@ -129,11 +171,11 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
             if leverage > 0:
                 margin = entry * qty / leverage
         if not all(math.isfinite(value) and value > 0 for value in (entry, qty, margin)):
-            return None, False
+            return None, state_updated
         net_pnl = estimated_display_net_pnl(entry, quote, qty, sign, fee, slippage)
         current_roe = net_pnl / margin * 100.0
         if not math.isfinite(current_roe):
-            return None, False
+            return None, state_updated
 
         identity = _profit_lock_identity(position)
         state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
@@ -141,7 +183,7 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
             state = {'identity': identity, 'peak_net_roe_pct': current_roe,
                      'last_ms': stamp, 'tier': 0, 'floor_net_roe_pct': None}
         elif stamp < float(state.get('last_ms') or 0.):
-            return None, False
+            return None, state_updated
         else:
             state = copy.deepcopy(state)
             state['peak_net_roe_pct'] = max(
@@ -351,8 +393,12 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     account.save_state()
                 if gate_trigger:
                     if (entry_m != 'CHANNEL_SWING'
-                            or gate_trigger == 'CATASTROPHIC_DUMP_EXIT'
-                            or gate_trigger == 'CATASTROPHIC_PUMP_EXIT'
+                            or gate_trigger in (
+                                'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT',
+                                'PEAK_REJECTION_EXIT', 'TROUGH_REJECTION_EXIT',
+                                'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT',
+                                'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT',
+                            )
                             or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
                         account.log(
                             f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
@@ -367,7 +413,12 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     # MA5 reclaim/break or the existing net-ROE profit lock.
                     # This keeps doji, deceleration, live V-reversal and CK-side
                     # heuristics from closing a trend trade mid-wave.
-                    if (gate_trigger in ('CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT')
+                    if (gate_trigger in (
+                                'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT',
+                                'PEAK_REJECTION_EXIT', 'TROUGH_REJECTION_EXIT',
+                                'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT',
+                                'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT',
+                            )
                             or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
                         pass
                     else:
