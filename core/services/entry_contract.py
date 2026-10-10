@@ -1026,7 +1026,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         decision = dict(
             action='ENTER', side=side, type=trigger_type, reason=gate_reason,
             price=quote, entry_atr=float(closed.iloc[-1]['atr']),
-            confirmation_bar_id=stamp, breakout_bar_id=stamp,
+            confirmation_bar_id=stamp, breakout_bar_id=stamp, exit_bar_id=stamp,
             pending_signal_id=f'{symbol}:{trigger_type}:{int(stamp)}:{side}',
             entry_phase='PIPELINE_CONFIRMED',
         )
