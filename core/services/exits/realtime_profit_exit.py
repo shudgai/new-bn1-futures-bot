@@ -124,50 +124,35 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         last_close = float(snapshot.get('last_close') or 0.)
         
         if not is_early_hold_period and live_high > 0 and live_low > 0 and live_ma3 > 0 and live_kc_upper > 0 and live_kc_lower > 0 and last_open > 0 and last_close > 0:
-            entry_price = float(position.get('entry_price') or 0.)
-            qty = float(position.get('qty') or 0.)
-            margin = float(position.get('margin') or 0.)
-            if margin <= 0:
-                leverage = float(position.get('leverage') or 0.)
-                if leverage > 0 and entry_price > 0:
-                    margin = entry_price * qty / leverage
-            
-            if margin > 0 and entry_price > 0:
-                from core.services.exits.realtime_profit_exit import estimated_display_net_pnl
-                net_pnl = estimated_display_net_pnl(entry_price, quote, qty, sign, fee, slippage)
-                current_roe = net_pnl / margin * 100.0
-                
-                if side == 'LONG':
-                    is_activated = (current_roe >= 0.8) or (live_high >= live_kc_upper)
-                    if is_activated:
-                        drawdown_pct = (live_high - quote) / live_high * 100.0
-                        live_amplitude = live_high - min(live_open, quote)
-                        upper_shadow = live_high - max(live_open, quote)
-                        upper_shadow_ratio = upper_shadow / (live_amplitude + 1e-9)
+            if side == 'LONG':
+                # 必備前提：高位超買 (觸碰或刺破 KC 上軌)
+                if live_high >= live_kc_upper:
+                    live_amplitude = live_high - min(live_open, quote)
+                    upper_shadow = live_high - max(live_open, quote)
+                    upper_shadow_ratio = upper_shadow / (live_amplitude + 1e-9)
+                    
+                    # 特徵 1: 避雷針 (上影線 >= 45%)
+                    # 特徵 2: 反向巨陰吞沒 (跌破前一根起漲點)
+                    is_shadow_dump = (upper_shadow_ratio >= 0.45)
+                    is_engulfing_dump = (quote < min(last_open, last_close))
+                    
+                    if is_shadow_dump or is_engulfing_dump:
+                        return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
                         
-                        cond_1 = (live_high >= live_kc_upper) and (
-                            (upper_shadow_ratio >= 0.45) or (drawdown_pct >= 0.7) or (quote < live_open)
-                        )
-                        cond_2 = (quote < live_ma3) or (quote < min(last_open, last_close))
-                        
-                        if cond_1 or cond_2:
-                            return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
-                            
-                elif side == 'SHORT':
-                    is_activated = (current_roe >= 0.8) or (live_low <= live_kc_lower)
-                    if is_activated:
-                        drawdown_pct = (quote - live_low) / live_low * 100.0
-                        live_amplitude = max(live_open, quote) - live_low
-                        lower_shadow = min(live_open, quote) - live_low
-                        lower_shadow_ratio = lower_shadow / (live_amplitude + 1e-9)
-                        
-                        cond_1 = (live_low <= live_kc_lower) and (
-                            (lower_shadow_ratio >= 0.45) or (drawdown_pct >= 0.7) or (quote > live_open)
-                        )
-                        cond_2 = (quote > live_ma3) or (quote > max(last_open, last_close))
-                        
-                        if cond_1 or cond_2:
-                            return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
+            elif side == 'SHORT':
+                # 必備前提：低位超賣 (觸碰或跌破 KC 下軌)
+                if live_low <= live_kc_lower:
+                    live_amplitude = max(live_open, quote) - live_low
+                    lower_shadow = min(live_open, quote) - live_low
+                    lower_shadow_ratio = lower_shadow / (live_amplitude + 1e-9)
+                    
+                    # 特徵 1: 避雷針 (下影線 >= 45%)
+                    # 特徵 2: 反向巨陽吞沒 (突破前一根起跌點)
+                    is_shadow_pump = (lower_shadow_ratio >= 0.45)
+                    is_engulfing_pump = (quote > max(last_open, last_close))
+                    
+                    if is_shadow_pump or is_engulfing_pump:
+                        return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
 
         if not is_early_hold_period and math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
             return 'GLOBAL_KC_MIDDLE_CROSS', False
