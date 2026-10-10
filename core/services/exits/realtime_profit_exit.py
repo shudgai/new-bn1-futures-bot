@@ -69,11 +69,13 @@ def _tiered_net_roe_floor(peak_net_roe_pct):
     peak = float(peak_net_roe_pct)
     reached = lambda value, edge: value >= edge or math.isclose(value, edge, rel_tol=1e-12)
     if reached(peak, 20.0):
-        return peak * 0.85, 3
+        return peak * 0.50, 4
     if reached(peak, 15.0):
-        return max(peak * 0.80, 12.0), 2
+        return peak * 0.50, 3
     if reached(peak, 10.0):
-        return max(peak * 0.60, 6.0), 1
+        return peak * 0.50, 2
+    if reached(peak, 5.0):
+        return 0.1, 1
     return None, 0
 
 

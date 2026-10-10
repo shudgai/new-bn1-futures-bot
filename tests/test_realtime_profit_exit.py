@@ -287,11 +287,13 @@ def test_tiered_profit_pullback_does_not_close_after_reload(side, monkeypatch):
 
 
 def test_net_roe_tier_floors():
-    assert _tiered_net_roe_floor(10.0) == (6.0, 1)
-    assert _tiered_net_roe_floor(14.99) == (pytest.approx(8.994), 1)
-    assert _tiered_net_roe_floor(15.0) == (12.0, 2)
-    assert _tiered_net_roe_floor(19.99) == (pytest.approx(15.992), 2)
-    assert _tiered_net_roe_floor(20.0) == (17.0, 3)
+    assert _tiered_net_roe_floor(5.0) == (0.1, 1)
+    assert _tiered_net_roe_floor(9.99) == (0.1, 1)
+    assert _tiered_net_roe_floor(10.0) == (5.0, 2)
+    assert _tiered_net_roe_floor(14.99) == (pytest.approx(7.495), 2)
+    assert _tiered_net_roe_floor(15.0) == (7.5, 3)
+    assert _tiered_net_roe_floor(19.99) == (pytest.approx(9.995), 3)
+    assert _tiered_net_roe_floor(20.0) == (10.0, 4)
 
 
 # Skipped tests for removed logic
