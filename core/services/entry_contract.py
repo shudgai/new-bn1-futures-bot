@@ -254,7 +254,7 @@ def evaluate_post_close_continuation(frame, quote, symbol, account):
             reason=('POST_CLOSE_BULLISH_CONTINUATION'
                     if side == 'LONG' else 'POST_CLOSE_BEARISH_CONTINUATION'),
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
-            close_price=quote, intrabar=True,
+            close_price=quote, intrabar=True, exit_bar_id=stamp,
             entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
             breakout_bar_id=stamp, pair_confirmation_bar_id=previous_stamp,
             third_bar_id=stamp, pending_signal_id=signal_id,
@@ -336,7 +336,7 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
             action='ENTER', side=side, type='TRIGGER_C_CONTINUATION',
             reason='KC_EXPANSION_OUTER_TREND_CONTINUATION',
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
-            close_price=quote, intrabar=True,
+            close_price=quote, intrabar=True, exit_bar_id=stamp,
             entry_phase='KC_CONTINUATION_ENTRY', breakout_bar_id=stamp,
             pair_confirmation_bar_id=previous_stamp, third_bar_id=stamp,
             pending_signal_id=signal_id,

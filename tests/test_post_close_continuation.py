@@ -120,6 +120,7 @@ def test_successful_long_close_allows_next_live_bullish_ma5_reclaim():
     assert decision["side"] == "LONG"
     assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"
     assert decision["post_close_continuation_close_id"] == close_id
+    assert decision["exit_bar_id"] == decision["confirmation_bar_id"]
 
 
 def test_successful_short_close_allows_next_live_bearish_ma5_reclaim():
@@ -138,6 +139,7 @@ def test_successful_short_close_allows_next_live_bearish_ma5_reclaim():
     assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"
     assert decision["reason"] == "POST_CLOSE_BEARISH_CONTINUATION"
     assert decision["post_close_continuation_close_id"] == close_id
+    assert decision["exit_bar_id"] == decision["confirmation_bar_id"]
 
 
 def test_short_post_close_continuation_passes_fresh_account_revalidation():
