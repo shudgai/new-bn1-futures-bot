@@ -340,6 +340,88 @@ def test_outer_band_hold_does_not_block_emergency_exit(monkeypatch, side):
     assert result["trigger"] == "TWO_CLOSED_ADVERSE_ABNORMAL"
 
 
+def short_upper_wick_snapshot():
+    price, snapshot = reversal_snapshot("SHORT")
+    snapshot["history_5"] = [
+        dict(ms=60000., o=100.1, h=100.2, l=99.9, c=100.0,
+             ma5=100.2, kc_middle=100.3, kc_upper=101., kc_lower=99.),
+        dict(ms=120000., o=100.0, h=100.1, l=99.8, c=99.9,
+             ma5=100.1, kc_middle=100.2, kc_upper=101., kc_lower=99.),
+        dict(ms=180000., o=100.0, h=100.5, l=99.7, c=99.8,
+             ma5=100.0, kc_middle=100.1, kc_upper=101., kc_lower=99.),
+    ]
+    snapshot["snapshot_bar_id"] = 180000.
+    return price, snapshot
+
+
+def test_short_upper_shadow_below_kc_mid_blocks_soft_exit(monkeypatch):
+    import core.services.exits.peak_trailing_exit as exit_contract
+
+    monkeypatch.setattr(
+        exit_contract, "three_point_pivot_exit",
+        lambda *args, **kwargs: {"trigger": "THREE_POINT_PIVOT"},
+    )
+    monkeypatch.setattr(exit_contract, "channel_pivot_trend_confirmed", lambda *args: True)
+    price, snapshot = short_upper_wick_snapshot()
+    position = exit_position("SHORT")
+
+    result = evaluate_peak_trailing(
+        position, price, snapshot, fee=0., slippage=0.,
+    )
+
+    assert result is None
+    assert position["peak_trailing_state"]["soft_exit_blocked"] is True
+    assert position["peak_trailing_state"]["trend_hold_reason"] == (
+        "HOLD_ON_UPPER_SHADOW_RESISTANCE"
+    )
+
+
+@pytest.mark.parametrize("release", ["close_above_mid", "ma5_turns_up"])
+def test_short_upper_shadow_lock_releases_on_confirmed_reversal(monkeypatch, release):
+    import core.services.exits.peak_trailing_exit as exit_contract
+
+    monkeypatch.setattr(
+        exit_contract, "three_point_pivot_exit",
+        lambda *args, **kwargs: {"trigger": "THREE_POINT_PIVOT"},
+    )
+    monkeypatch.setattr(exit_contract, "channel_pivot_trend_confirmed", lambda *args: True)
+    price, snapshot = short_upper_wick_snapshot()
+    candle = snapshot["history_5"][-1]
+    if release == "close_above_mid":
+        candle["c"] = 100.2
+        candle["kc_middle"] = 100.1
+        candle["h"] = 100.5
+    else:
+        snapshot["history_5"][-3]["ma5"] = 99.8
+        snapshot["history_5"][-2]["ma5"] = 99.9
+        candle["ma5"] = 100.0
+    position = exit_position("SHORT")
+
+    result = evaluate_peak_trailing(
+        position, price, snapshot, fee=0., slippage=0.,
+    )
+
+    assert result is not None
+    assert result["trigger"] == "THREE_POINT_PIVOT"
+
+
+def test_short_upper_shadow_does_not_block_emergency_exit(monkeypatch):
+    import core.services.exits.peak_trailing_exit as exit_contract
+
+    monkeypatch.setattr(
+        exit_contract, "two_closed_adverse_abnormal_exit",
+        lambda *args, **kwargs: {"trigger": "TWO_CLOSED_ADVERSE_ABNORMAL"},
+    )
+    price, snapshot = short_upper_wick_snapshot()
+
+    result = evaluate_peak_trailing(
+        exit_position("SHORT"), price, snapshot, fee=0., slippage=0.,
+    )
+
+    assert result is not None
+    assert result["trigger"] == "TWO_CLOSED_ADVERSE_ABNORMAL"
+
+
 def test_oversold_breakout_exit_has_priority_and_can_reverse():
     position = exit_position("LONG")
     price, snapshot = reversal_snapshot("LONG")

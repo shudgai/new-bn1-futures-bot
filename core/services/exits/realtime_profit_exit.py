@@ -41,6 +41,7 @@ def cached_tick_indicators(frame, price, stamp):
             'ma5': float(b.get('ma5', b.get('ma3', 0))),
             'atr': float(b.get('atr', 0)),
             'kc_upper': float(b.get('kc_upper', 0)),
+            'kc_middle': float(b.get('kc_middle', 0)),
             'kc_lower': float(b.get('kc_lower', 0)),
         })
     snapshot['history_5'] = history_bars

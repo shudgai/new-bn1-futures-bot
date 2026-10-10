@@ -146,6 +146,41 @@ def lower_shadow_support_hold(position, snapshot, price):
         return False
 
 
+def upper_shadow_resistance_hold(position, snapshot):
+    """Hold SHORTs under KC mid when a completed upper wick rejects higher prices."""
+    try:
+        if (position.get('side') != 'SHORT' or not isinstance(snapshot, dict)):
+            return False
+        history = snapshot.get('history_5')
+        if not isinstance(history, list) or len(history) < 3:
+            return False
+        candle = history[-1]
+        stamp = float(snapshot.get('snapshot_bar_id') or 0.)
+        candle_ms = float(candle.get('ms') or 0.)
+        opening, high, low, close = (
+            float(candle[key]) for key in ('o', 'h', 'l', 'c')
+        )
+        middle = float(candle.get('kc_middle') or 0.)
+        values = (stamp, candle_ms, opening, high, low, close, middle)
+        if (not all(positive(value) for value in values)
+                or candle_ms != stamp
+                or not low <= min(opening, close) <= max(opening, close) <= high):
+            return False
+
+        body = abs(close - opening)
+        upper_shadow = high - max(opening, close)
+        if upper_shadow <= body or close > middle:
+            return False
+
+        ma5_values = [float(bar.get('ma5') or 0.) for bar in history[-3:]]
+        if (all(positive(value) for value in ma5_values)
+                and ma5_values[0] < ma5_values[1] < ma5_values[2]):
+            return False
+        return True
+    except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def kc_outer_hold_reason(position, snapshot):
     """Return a hold lock while the latest completed Channel Swing candle closes outside KC."""
     try:
@@ -1173,6 +1208,25 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         state.pop(key, None)
         else:
             state.pop('kc_outer_hold_lock', None)
+
+        if (reason is not None and reason != HARD_REASON
+                and trigger not in emergency_triggers
+                and upper_shadow_resistance_hold(position, snapshot)):
+            reason = trigger = None
+            state.update(
+                soft_exit_blocked=True,
+                trend_hold_reason='HOLD_ON_UPPER_SHADOW_RESISTANCE',
+                upper_shadow_resistance_hold=True,
+            )
+            if state.get('pending') in (ABNORMAL_REASON, PEAK_REASON):
+                pending_trigger = state.get('trigger')
+                if pending_trigger not in emergency_triggers:
+                    for key in ('pending', 'trigger', 'trigger_bar_ms',
+                                'trigger_confirmed_ms', 'trigger_open',
+                                'trigger_atr', 'trigger_price'):
+                        state.pop(key, None)
+        else:
+            state.pop('upper_shadow_resistance_hold', None)
 
         if (reason is not None and reason != HARD_REASON and not pending_at_start
                 and trigger not in (
