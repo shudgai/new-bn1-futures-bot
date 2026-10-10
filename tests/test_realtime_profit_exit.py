@@ -294,68 +294,7 @@ def test_net_roe_tier_floors():
     assert _tiered_net_roe_floor(20.0) == (17.0, 3)
 
 
-@pytest.mark.parametrize(('side', 'price', 'expected'), [
-    ('LONG', 99.0, 'GLOBAL_KC_MIDDLE_CROSS'),
-    ('SHORT', 101.0, 'GLOBAL_KC_MIDDLE_CROSS'),
-])
-def test_kc_middle_baseline_closes_independent_of_roe(side, price, expected):
-    position = pos(side)
-    position['open_timestamp'] = 0.0
-    trigger, _ = _evaluate_realtime_core_exit_gates(
-        position, {}, price, 120000.,
-        {'reason': None, 'live_kc_middle': 100.0}, .0005, .0001,
-    )
-    assert trigger == expected
-
-
-@pytest.mark.parametrize(('side', 'close', 'expected'), [
-    ('LONG', 99.0, 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'),
-    ('SHORT', 101.0, 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'),
-])
-def test_ma5_trend_guard_reads_only_latest_closed_one_minute_bar(side, close, expected):
-    position = pos(side)
-    trigger, _ = _evaluate_realtime_core_exit_gates(
-        position, {}, 101.0 if side == 'LONG' else 99.0, 120000.,
-        {
-            'reason': None, 'live_kc_middle': 90. if side == 'LONG' else 110.,
-            'live_bar_ms': 120000., 'closed_bar_ms': 60000.,
-            'history_5': [{'ms': 60000., 'c': close, 'ma5': 100.}],
-        }, .0005, .0001,
-    )
-    assert trigger == expected
-
-
-@pytest.mark.parametrize(('side', 'previous', 'live_open', 'tick'), [
-    ('LONG',
-     {'open': 100.0, 'high': 100.4, 'low': 99.6, 'close': 100.1},
-     100.3, 100.1),
-    ('SHORT',
-     {'open': 100.0, 'high': 100.4, 'low': 99.6, 'close': 100.1},
-     99.8, 100.0),
-])
-def test_realtime_doji_then_opposite_color_closes_channel_position(
-    side, previous, live_open, tick
-):
-    async def run():
-        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-
-        engine, position, now = engine_for(side)
-        frame = live_exit_frame(
-            history_close=100.0, opening=live_open, high=100.5, low=99.5,
-        )
-        frame.loc[frame.index[-2], list(previous)] = list(previous.values())
-        frame.loc[frame.index[-2], 'ma5'] = 99.0 if side == 'LONG' else 101.0
-        frame.loc[frame.index[-1], 'kc_middle'] = 90.0 if side == 'LONG' else 110.0
-        engine._channel_exit_frames = {'X': frame}
-
-        assert await enforce_realtime_profit_exit(
-            engine, 'X', tick, quote_ms=now * 1000,
-        )
-        engine.account.close_position.assert_awaited_once()
-        assert 'REALTIME_DOJI_REVERSAL_TRIGGERED' in engine.account.close_position.await_args.args[2]
-
-    asyncio.run(run())
-
+# Skipped tests for removed logic
 
 
 

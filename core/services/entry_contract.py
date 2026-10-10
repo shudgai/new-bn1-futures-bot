@@ -1238,20 +1238,22 @@ def count_ma_crosses(frame):
 def evaluate_reentry_triggers(closed_frame, last_exit_side=None, bars_since_exit=None):
     if len(closed_frame) < 3: return None, None
     if not last_exit_side: return None, "NO_HISTORY"
-    if bars_since_exit is not None and bars_since_exit < 2: return None, "WAIT_REENTRY_COOLDOWN"
-
+    # 完全取消冷卻等待
+    
     curr = closed_frame.iloc[-1]
     prev = closed_frame.iloc[-2]
 
-    if last_exit_side == "SHORT":
-        if (curr['close'] < curr['kc_middle']) and (curr['ma15'] <= prev['ma15']):
-            if (curr['close'] < curr['open']) and (curr['close'] < curr['ma5'] or curr['close'] < prev['low']):
-                return "SHORT", "RE_ENTRY_SHORT"
-
+    # 多單：大趨勢確立 (KC向上)，且重新轉漲 (收紅K或突破前高) 即刻進場
     if last_exit_side == "LONG":
-        if (curr['close'] > curr['kc_middle']) and (curr['ma15'] >= prev['ma15']):
-            if (curr['close'] > curr['open']) and (curr['close'] > curr['ma5'] or curr['close'] > prev['high']):
+        if curr['kc_middle'] >= prev['kc_middle']:
+            if (curr['close'] > curr['open']) or (curr['close'] > prev['high']):
                 return "LONG", "RE_ENTRY_LONG"
+
+    # 空單：大趨勢確立 (KC向下)，且重新轉跌 (收黑K或跌破前低) 即刻進場
+    if last_exit_side == "SHORT":
+        if curr['kc_middle'] <= prev['kc_middle']:
+            if (curr['close'] < curr['open']) or (curr['close'] < prev['low']):
+                return "SHORT", "RE_ENTRY_SHORT"
 
     return None, "NO_REENTRY_SIGNAL"
 
@@ -1368,12 +1370,6 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
             continuation_problem = continuation_entry_problem(closed_frame, side)
             if continuation_problem:
                 return False, continuation_problem
-        if trigger_type in ('RE_ENTRY_LONG', 'RE_ENTRY_SHORT'):
-            direction_problem = continuation_direction_problem(
-                side, curr['open'], curr['close'], curr['ma5'], prev['ma5'],
-            )
-            if direction_problem:
-                return False, direction_problem
         if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
         if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
         if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"

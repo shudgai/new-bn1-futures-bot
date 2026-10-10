@@ -96,78 +96,22 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         time_held_ms = stamp - open_ms
         is_early_hold_period = (time_held_ms < 120000)
 
-        history = snapshot.get('history_5')
-        closed_ms = float(snapshot.get('closed_bar_ms') or 0.)
-        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
-        if (isinstance(history, list) and history
-                and live_bar_ms > 0 and closed_ms == live_bar_ms - 60000
-                and float(history[-1].get('ms') or 0.) == closed_ms):
-            prev_bar = history[-1]
-            po, ph, pl, pc = (float(prev_bar.get(k) or 0.) for k in ('o', 'h', 'l', 'c'))
-            live_open = float(snapshot.get('live_open') or 0.)
-            if po > 0 and ph > 0 and pl > 0 and pc > 0 and ph > pl and live_open > 0:
-                doji_body_ratio = abs(pc - po) / (ph - pl + 1e-9)
-                if doji_body_ratio <= 0.35 and not is_early_hold_period:
-                    if side == 'LONG' and quote < live_open:
-                        return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
-                    if side == 'SHORT' and quote > live_open:
-                        return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
-
-        # TRUE SELLING / BUYING PRESSURE EXIT (Intra-bar)
+        # 2. Catastrophic Dump / Pump (大瀑布/崩盤緊急避險)
+        # 徹底拔除「微幅跌破就出場」的延遲邏輯，只在實質跌破關鍵大支撐/阻力時才避險
+        mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         live_open = float(snapshot.get('live_open') or 0.)
-        live_high = float(snapshot.get('live_high') or 0.)
-        live_low = float(snapshot.get('live_low') or 0.)
-        live_kc_upper = float(snapshot.get('live_kc_upper') or 0.)
-        live_kc_lower = float(snapshot.get('live_kc_lower') or 0.)
-        live_ma3 = float(snapshot.get('live_ma3') or 0.)
-        last_open = float(snapshot.get('last_open') or 0.)
-        last_close = float(snapshot.get('last_close') or 0.)
-        
-        if not is_early_hold_period and live_high > 0 and live_low > 0 and live_ma3 > 0 and live_kc_upper > 0 and live_kc_lower > 0 and last_open > 0 and last_close > 0:
+        if not is_early_hold_period and mid > 0 and live_open > 0:
             if side == 'LONG':
-                # 必備前提：高位超買 (觸碰或刺破 KC 上軌)
-                if live_high >= live_kc_upper:
-                    live_amplitude = live_high - min(live_open, quote)
-                    upper_shadow = live_high - max(live_open, quote)
-                    upper_shadow_ratio = upper_shadow / (live_amplitude + 1e-9)
-                    
-                    # 特徵 1: 避雷針 (上影線 >= 45%)
-                    # 特徵 2: 反向巨陰吞沒 (跌破前一根起漲點)
-                    is_shadow_dump = (upper_shadow_ratio >= 0.45)
-                    is_engulfing_dump = (quote < min(last_open, last_close))
-                    
-                    if is_shadow_dump or is_engulfing_dump:
-                        return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
-                        
+                # 實體長黑K且實質跌破中軌
+                if quote < live_open and quote < mid:
+                    # 判斷是否為「長」黑K (簡單抓一個較大實體，例如跌幅 > 0.5%)
+                    if (live_open - quote) / live_open > 0.005:
+                        return 'CATASTROPHIC_DUMP_EXIT', False
             elif side == 'SHORT':
-                # 必備前提：低位超賣 (觸碰或跌破 KC 下軌)
-                if live_low <= live_kc_lower:
-                    live_amplitude = max(live_open, quote) - live_low
-                    lower_shadow = min(live_open, quote) - live_low
-                    lower_shadow_ratio = lower_shadow / (live_amplitude + 1e-9)
-                    
-                    # 特徵 1: 避雷針 (下影線 >= 45%)
-                    # 特徵 2: 反向巨陽吞沒 (突破前一根起跌點)
-                    is_shadow_pump = (lower_shadow_ratio >= 0.45)
-                    is_engulfing_pump = (quote > max(last_open, last_close))
-                    
-                    if is_shadow_pump or is_engulfing_pump:
-                        return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
-
-        if not is_early_hold_period and math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
-            return 'GLOBAL_KC_MIDDLE_CROSS', False
-
-        if isinstance(history, list) and history:
-            bar = history[-1]
-            bar_ms = float(bar.get('ms') or 0.)
-            close = float(bar.get('c') or 0.)
-            ma5 = float(bar.get('ma5') or 0.)
-            if (bar_ms == closed_ms and live_bar_ms > 0
-                    and closed_ms == live_bar_ms - 60000
-                    and bar_ms > 0 and close > 0 and ma5 > 0
-                    and math.isfinite(close) and math.isfinite(ma5)
-                    and ((sign > 0 and close < ma5) or (sign < 0 and close > ma5))):
-                return 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD', False
+                # 實體長紅K且實質突破中軌
+                if quote > live_open and quote > mid:
+                    if (quote - live_open) / live_open > 0.005:
+                        return 'CATASTROPHIC_PUMP_EXIT', False
 
         entry = float(position.get('entry_price') or 0.)
         qty = float(position.get('qty') or 0.)
@@ -399,21 +343,13 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     account.save_state()
                 if gate_trigger:
                     if (entry_m != 'CHANNEL_SWING'
-                            or gate_trigger == 'REALTIME_DOJI_REVERSAL_TRIGGERED'
-                            or gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
-                            or gate_trigger == 'REALTIME_TRUE_SELLING_PRESSURE_EXIT'
-                            or gate_trigger == 'REALTIME_TRUE_BUYING_PRESSURE_EXIT'
+                            or gate_trigger == 'CATASTROPHIC_DUMP_EXIT'
+                            or gate_trigger == 'CATASTROPHIC_PUMP_EXIT'
                             or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
                         account.log(
                             f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
                             f'quote_ms={stamp} price={price}', 'WARNING',
                         )
-                        if gate_trigger in ('REALTIME_TRUE_SELLING_PRESSURE_EXIT', 'REALTIME_TRUE_BUYING_PRESSURE_EXIT'):
-                            cooldowns = getattr(account, '_rapid_drop_cooldown', None)
-                            if cooldowns is None:
-                                cooldowns = {}
-                                setattr(account, '_rapid_drop_cooldown', cooldowns)
-                            cooldowns[symbol] = time.time()
                         await account.close_position(
                             symbol, price, f'Channel Swing {gate_trigger}', is_manual=True,
                         )
@@ -423,10 +359,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     # MA5 reclaim/break or the existing net-ROE profit lock.
                     # This keeps doji, deceleration, live V-reversal and CK-side
                     # heuristics from closing a trend trade mid-wave.
-                    if (gate_trigger in ('REALTIME_DOJI_REVERSAL_TRIGGERED',
-                                         'ONE_MINUTE_CLOSED_MA5_TREND_GUARD',
-                                         'REALTIME_TRUE_SELLING_PRESSURE_EXIT',
-                                         'REALTIME_TRUE_BUYING_PRESSURE_EXIT')
+                    if (gate_trigger in ('CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT')
                             or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
                         pass
                     else:
