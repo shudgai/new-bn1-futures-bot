@@ -3,7 +3,7 @@ import pandas as pd
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from core.services.entry_contract import evaluate_entry_contract
 from core.services.strategies.outer_strategy import live_body_breakout_side
@@ -82,6 +82,93 @@ def test_range_veto_ordering(engine):
         ))
     assert result is False
     assert 'BLOCKED_ABNORMAL_MARKET_ENTRY' in repr(engine.account.log.call_args)
+
+
+@pytest.mark.parametrize(
+    ('side', 'entry_code', 'is_exempt'),
+    [
+        ('LONG', 'TRIGGER_C_CONTINUATION', True),
+        ('SHORT', 'TRIGGER_C_CONTINUATION', True),
+        ('LONG', 'TRIGGER_A_KC_BREAKOUT', False),
+    ],
+)
+def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
+    engine, side, entry_code, is_exempt, monkeypatch,
+):
+    symbol = 'LOBSTER/USDT'
+    quote = 102.0 if side == 'LONG' else 98.0
+    stamp = int(time.time() // 60) * 60_000
+    frame = pd.DataFrame([dict(
+        timestamp=stamp,
+        is_closed=True,
+        open=quote - 0.1 if side == 'LONG' else quote + 0.1,
+        high=quote + 0.2,
+        low=quote - 0.2,
+        close=quote,
+        ma3=quote,
+        ma5=quote,
+        ma15=quote,
+        atr=1.0,
+        kc_upper=quote + 1.0,
+        kc_middle=quote,
+        kc_lower=quote - 1.0,
+    )])
+    decision = dict(
+        type=entry_code,
+        side=side,
+        reason='POST_CLOSE_CONTINUATION',
+        confirmation_bar_id=float(stamp),
+        breakout_bar_id=float(stamp),
+        exit_bar_id=float(stamp),
+        close_price=quote,
+        pair_confirmation_bar_id=None,
+        entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
+        entry_atr=1.0,
+        pending_signal_id=f'{symbol}:{entry_code}:{stamp}:{side}',
+    )
+    engine.account.pending_limit_orders = {}
+    engine.account.daily_loss_limit_hit.return_value = (False, 0.0)
+    engine.account.trades = []
+    engine.account.get_wallet_balance.return_value = 1_000.0
+    engine.account.get_available_balance.return_value = 1_000.0
+    engine.account.open_position = AsyncMock(return_value=True)
+    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *_: 2)
+    engine.tickers = {symbol: quote}
+    engine._execution_price_is_safe = AsyncMock(return_value=True)
+    engine._fresh_channel_entry_snapshot = AsyncMock(return_value={
+        'frame': frame, 'price': quote, 'decision': decision,
+    })
+    engine._abnormal_market_entry_allowed = Mock(return_value=False)
+    signal = dict(
+        side=side,
+        score=100,
+        entry_mode='CHANNEL_SWING',
+        signal_code=entry_code,
+        candidate_bar_id=float(stamp),
+    )
+    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [symbol])
+    monkeypatch.setattr('core.config.is_entry_disabled', lambda _: False)
+    monkeypatch.setattr(
+        'core.services.entry_contract.evaluate_entry_contract',
+        lambda *_args, **_kwargs: decision,
+    )
+    monkeypatch.setattr(
+        'core.services.pre_entry_space_shadow.record_pre_entry_space_shadow',
+        lambda **_kwargs: None,
+    )
+
+    result = asyncio.run(
+        engine._place_structured_entry_locked(symbol, signal, quote),
+    )
+
+    if is_exempt:
+        assert result is True
+        engine._abnormal_market_entry_allowed.assert_not_called()
+        engine.account.open_position.assert_awaited_once()
+    else:
+        assert result is False
+        engine._abnormal_market_entry_allowed.assert_called_once()
+        engine.account.open_position.assert_not_awaited()
 
 
 def test_post_exit_firewall():

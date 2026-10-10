@@ -7,7 +7,7 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
-    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
+    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.entry_atr_protection import (
@@ -41,6 +41,7 @@ def cached_tick_indicators(frame, price, stamp):
             'ma5': float(b.get('ma5', b.get('ma3', 0))),
             'atr': float(b.get('atr', 0)),
             'kc_upper': float(b.get('kc_upper', 0)),
+            'kc_middle': float(b.get('kc_middle', 0)),
             'kc_lower': float(b.get('kc_lower', 0)),
         })
     snapshot['history_5'] = history_bars
@@ -84,7 +85,6 @@ def cached_tick_indicators(frame, price, stamp):
         ma3=float(last.get('ma3', 0.)),
         ma5=float(last.get('ma5', last.get('ma3', 0.))),
         ma15=float(last.get('ma15', 0.)),
-        kc_middle=float(last.get('kc_middle', 0.)),
         last_ma3=float(prev.get('ma3', 0.)),
         last_ma5=float(prev.get('ma5', prev.get('ma3', 0.))),
         last_ma15=float(prev.get('ma15', 0.)),
@@ -108,11 +108,11 @@ def cached_tick_indicators(frame, price, stamp):
             closed_bar_ms=last_ms,
             atr=float(last.get('atr') or 0.),
             live_open=float(live.get('open') or 0.),
-            live_volume=float(live.get('volume') or 0.),
-            prior_volume=float(last.get('volume') or 0.),
             live_high=max(float(live.get('high') or 0.), float(price)),
             live_low=min(float(live.get('low') or 0.), float(price)),
+            live_price=float(price),
             live_kc_upper=float(live.get('kc_upper') or 0.),
+            live_kc_middle=float(live.get('kc_middle') or last.get('kc_middle') or 0.),
             live_kc_lower=float(live.get('kc_lower') or 0.),
             last_open=float(last.get('open') or 0.),
             last_high=float(last.get('high') or 0.),
@@ -181,9 +181,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is not None and not frame.empty:
                 ck_dir = ck_direction(frame)
-                from core.services.exits.peak_trailing_exit import lifeline_held, trend_continuation_hold
-                hold_snapshot, _ = cached_tick_indicators(frame, price, stamp)
-                if ck_dir and ck_dir != ident[0] and not trend_continuation_hold(ident[0], price, hold_snapshot) and not lifeline_held(ident[0], price, frame.iloc[-1].to_dict()):
+                if ck_dir and ck_dir != ident[0]:
                     await account.close_position(
                         symbol, price, f'WRONG_DIRECTION_CORRECTION (CK={ck_dir}, POS={ident[0]})', is_manual=True
                     )
@@ -204,8 +202,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         current = position[STATE_KEY]
         changed = retired or retired_atr_stop or any(old.get(k) != current.get(k) for k in
                   ('identity','peak_price','peak_net_pnl','atr','armed','pending',
-                   'net_roe_lock_peak','net_roe_lock_armed','ratchet_peak_return','ratchet_armed','locked_floor_price','soft_exit_blocked','trend_hold_reason','profit_lock_basis','lifeline_policy_version',
                    'trigger','trigger_bar_ms','trigger_price',
+                   'net_roe_peak_pct','net_roe_lock_armed','net_roe_lock_floor_pct',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',
                    'ma5_reversal_outside_seen'))
@@ -220,7 +218,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger = decision.get('trigger', '')
         allowed_triggers = (
             PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-            if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
+            if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
             else CHANNEL_SWING_EXIT_TRIGGERS
         )
         if (entry_m == 'CHANNEL_SWING'
@@ -236,7 +234,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if (entry_m == 'CHANNEL_SWING'
                 and trigger not in allowed_triggers):
             for state in (
-                current, meta.get(STATE_KEY, {}),
+                current[STATE_KEY], meta.get(STATE_KEY, {}),
             ):
                 for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                             'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
@@ -254,7 +252,13 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger_detail = (
             ' ' + trigger
             if trigger in (DOJI_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
+                           'NET_ROE_STAGED_GIVEBACK',
+                           'EXIT_CONTINUATION_FAILED',
+                           'LIVE_MA5_BREAKDOWN_EXIT', 'LIVE_FLASH_DUMP_EXIT',
                            'THREE_POINT_PIVOT', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                           'WATERFALL_DROP', 'BEARISH_INSTANT_BREAKOUT',
+                           'EXIT_DOJI_BEARISH_CONFIRMATION',
+                           'EXIT_DOJI_BULLISH_CONFIRMATION',
                            'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')

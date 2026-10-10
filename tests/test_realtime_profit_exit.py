@@ -9,6 +9,12 @@ import pytest
 
 from core.engine import TradingEngine
 from core.services.exits.realtime_profit_exit import cached_tick_indicators
+from core.services.exits.peak_trailing_exit import (
+    LIVE_FLASH_DUMP_TRIGGER,
+    LIVE_MA5_BREAKDOWN_TRIGGER,
+    NET_ROE_LOCK_TRIGGER,
+    evaluate_peak_trailing,
+)
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.symbol_runner import process_single_symbol_runner
 from test_intraday_instant_exit import pos, observe
@@ -60,6 +66,172 @@ def engine_for(side):
     engine._channel_exit_frames = {}
     engine.fetch_klines = AsyncMock(side_effect=AssertionError('Exit must not fetch'))
     return engine, p, now
+
+
+def live_exit_frame(*, history_close, opening, high, low):
+    bar_ms = int(time.time() // 60) * 60_000
+    rows = [
+        dict(
+            timestamp=bar_ms - (5 - index) * 60_000,
+            is_closed=True,
+            open=history_close,
+            high=history_close + 0.1,
+            low=history_close - 0.1,
+            close=history_close,
+            atr=1.0,
+            ma5=history_close,
+            ma15=history_close,
+            kc_upper=history_close + 1.0,
+            kc_middle=history_close,
+            kc_lower=history_close - 1.0,
+        )
+        for index in range(5)
+    ]
+    rows.append(dict(
+        timestamp=bar_ms,
+        is_closed=False,
+        open=opening,
+        high=high,
+        low=low,
+        close=opening,
+        atr=1000.0,
+        ma5=opening,
+        ma15=history_close,
+        kc_upper=history_close + 1.0,
+        kc_middle=history_close,
+        kc_lower=history_close - 1.0,
+    ))
+    frame = pd.DataFrame(rows)
+    frame.attrs['timeframe_ms'] = 60_000
+    return frame
+
+
+@pytest.mark.parametrize(
+    ('history_close', 'opening', 'high', 'low', 'price', 'expected_trigger'),
+    [
+        (100.0, 100.0, 100.1, 99.5, 99.5, LIVE_MA5_BREAKDOWN_TRIGGER),
+        (98.0, 100.0, 101.0, 99.3, 99.3, LIVE_FLASH_DUMP_TRIGGER),
+    ],
+)
+def test_live_long_sell_pressure_closes_inside_unclosed_bar(
+    history_close, opening, high, low, price, expected_trigger, monkeypatch,
+):
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('RELEASED', 'TEST'),
+    )
+    monkeypatch.setattr('core.services.entry_contract.ck_direction', lambda _frame: None)
+
+    async def run():
+        engine, _, _ = engine_for('LONG')
+        engine._channel_exit_frames = {
+            'X': live_exit_frame(
+                history_close=history_close, opening=opening, high=high, low=low,
+            ),
+        }
+
+        assert await engine._instant_quote_exit('X', price, time.time() * 1000)
+        engine.account.close_position.assert_awaited_once()
+        assert expected_trigger in engine.account.close_position.await_args.args[2]
+
+    asyncio.run(run())
+
+
+def test_small_live_bearish_candle_does_not_trigger_intraday_sell_exit(monkeypatch):
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('RELEASED', 'TEST'),
+    )
+    monkeypatch.setattr('core.services.entry_contract.ck_direction', lambda _frame: None)
+
+    async def run():
+        engine, _, _ = engine_for('LONG')
+        engine._channel_exit_frames = {
+            'X': live_exit_frame(
+                history_close=100.0, opening=100.0, high=100.1, low=99.9,
+            ),
+        }
+
+        assert not await engine._instant_quote_exit('X', 99.95, time.time() * 1000)
+        engine.account.close_position.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_net_roe_lock_floor_overrides_kc_outer_and_lower_shadow_holds(monkeypatch):
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('RELEASED', 'TEST'),
+    )
+    position = pos('LONG')
+    stamp = int(time.time() // 60) * 60_000 + 1_000
+    snapshot = {
+        'quote_ms': stamp,
+        'live_bar_id': stamp // 60_000 * 60_000,
+        'live_bar_ms': stamp // 60_000 * 60_000,
+        'closed_bar_ms': stamp // 60_000 * 60_000 - 60_000,
+        'live_open': 103.6,
+        'live_high': 107.0,
+        'live_low': 99.0,
+        'live_kc_middle': 100.0,
+        'ma15': 100.0,
+        'atr': 1.0,
+        'history_5': [{
+            'ms': stamp // 60_000 * 60_000 - 60_000,
+            'o': 101.0, 'h': 103.0, 'l': 100.5, 'c': 102.0,
+            'kc_upper': 101.0, 'kc_lower': 99.0, 'kc_middle': 100.0,
+        }],
+    }
+
+    def quote_for_net_roe(net_roe_pct):
+        fee, slippage = 0.0005, 0.0001
+        target_pnl = net_roe_pct
+        return (target_pnl + 100. + 100. * fee) / (1. - fee - slippage)
+
+    evaluate_peak_trailing(
+        position, quote_for_net_roe(5.5), snapshot, fee=0.0005, slippage=0.0001,
+    )
+    decision = evaluate_peak_trailing(
+        position, quote_for_net_roe(3.5), snapshot, fee=0.0005, slippage=0.0001,
+    )
+
+    assert decision is not None
+    assert decision['trigger'] == NET_ROE_LOCK_TRIGGER
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_net_roe_staged_giveback_closes_through_realtime_path(side, monkeypatch):
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('RELEASED', 'TEST'),
+    )
+
+    def quote_for_net_roe(net_roe_pct):
+        sign = 1 if side == 'LONG' else -1
+        target_pnl = net_roe_pct * 100. / 100.
+        fee, slippage = .0005, .0001
+        return (target_pnl + sign * 100. + 100. * fee) / (sign - fee - slippage)
+
+    async def run():
+        e, p, now = engine_for(side)
+        assert not await e._instant_quote_exit(
+            'X', quote_for_net_roe(5.5), time.time() * 1000
+        )
+        assert p['peak_trailing_state']['net_roe_lock_floor_pct'] == pytest.approx(3.5)
+
+        persisted_meta = copy.deepcopy(e.account.position_meta)
+        replacement = dict(pos(side), open_timestamp=p['open_timestamp'])
+        e.account.positions['X'] = replacement
+        e.account.position_meta = persisted_meta
+
+        assert await e._instant_quote_exit(
+            'X', quote_for_net_roe(3.5), time.time() * 1000
+        )
+        e.account.close_position.assert_awaited_once()
+        args = e.account.close_position.await_args.args
+        assert 'NET_ROE_STAGED_GIVEBACK' in args[2]
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
