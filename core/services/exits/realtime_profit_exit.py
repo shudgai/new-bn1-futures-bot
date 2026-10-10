@@ -164,7 +164,8 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 is_trend_following = (kc_slope > slope_threshold)
                 is_counter_trend = not is_trend_following
 
-        if not is_early_hold_period and mid > 0 and live_open > 0:
+        # [2026-10-10] 移除 2 分鐘 (120000ms) 防抖延時 (is_early_hold_period)，允許首棒即時平倉
+        if mid > 0 and live_open > 0:
             candle_range = live_high - live_low + 1e-9
             if side == 'LONG':
                 # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
@@ -206,6 +207,22 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 if is_deep_trough and candle_range > 0.2 * atr and (lower_bounce / candle_range >= 0.35):
                     return 'LIVE_BOTTOM_REJECTION_EXIT', False
                     
+                # 04:59 回踩當棒即時平空（Intra-bar Pullback Exit - Zero Lag）
+                history = snapshot.get('history_5') or []
+                if len(history) >= 1 and atr > 0:
+                    prev_b = history[-1]
+                    prev_o, prev_c, prev_l, prev_h = prev_b['o'], prev_b['c'], prev_b['l'], prev_b['h']
+                    prev_drop = prev_o - prev_c
+                    prev_range = prev_h - prev_l + 1e-9
+                    prev_lower_shadow = min(prev_o, prev_c) - prev_l
+                    
+                    # 暴跌後（前棒實體跌幅 >= 2.0*ATR 或極端下影線）
+                    is_massive_drop = (prev_drop >= 2.0 * atr) or (prev_range >= 1.5 * atr and (prev_lower_shadow / prev_range) >= 0.5)
+                    if is_massive_drop:
+                        # 當前棒出現向上回踩：站上開盤價，或回彈幅度 >= 0.5 * 前棒實體
+                        if quote > live_open or (quote - live_low) >= 0.5 * max(prev_drop, 1e-9):
+                            return 'REALTIME_SHORT_PULLBACK_EXIT', False
+                            
                 # 3. 空單結構徹底破壞平倉 (Exit Short on Invalidation)
                 closed_close = float(snapshot.get('last_close') or 0.)
                 closed_ma5 = float(snapshot.get('ma5') or 0.)
