@@ -120,19 +120,54 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         live_kc_upper = float(snapshot.get('live_kc_upper') or 0.)
         live_kc_lower = float(snapshot.get('live_kc_lower') or 0.)
         live_ma3 = float(snapshot.get('live_ma3') or 0.)
-        if not is_early_hold_period and live_high > 0 and live_low > 0 and live_ma3 > 0 and live_kc_upper > 0 and live_kc_lower > 0:
-            if side == 'LONG':
-                cond_a = live_high >= live_kc_upper
-                cond_b = (live_high - quote) / (live_high - live_low + 1e-9) >= 0.45
-                cond_c = quote < live_ma3
-                if (cond_a and cond_b) or cond_c:
-                    return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
-            elif side == 'SHORT':
-                cond_a = live_low <= live_kc_lower
-                cond_b = (quote - live_low) / (live_high - live_low + 1e-9) >= 0.45
-                cond_c = quote > live_ma3
-                if (cond_a and cond_b) or cond_c:
-                    return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
+        last_open = float(snapshot.get('last_open') or 0.)
+        last_close = float(snapshot.get('last_close') or 0.)
+        
+        if not is_early_hold_period and live_high > 0 and live_low > 0 and live_ma3 > 0 and live_kc_upper > 0 and live_kc_lower > 0 and last_open > 0 and last_close > 0:
+            entry_price = float(position.get('entry_price') or 0.)
+            qty = float(position.get('qty') or 0.)
+            margin = float(position.get('margin') or 0.)
+            if margin <= 0:
+                leverage = float(position.get('leverage') or 0.)
+                if leverage > 0 and entry_price > 0:
+                    margin = entry_price * qty / leverage
+            
+            if margin > 0 and entry_price > 0:
+                from core.services.exits.realtime_profit_exit import estimated_display_net_pnl
+                net_pnl = estimated_display_net_pnl(entry_price, quote, qty, sign, fee, slippage)
+                current_roe = net_pnl / margin * 100.0
+                
+                if side == 'LONG':
+                    is_activated = (current_roe >= 0.8) or (live_high >= live_kc_upper)
+                    if is_activated:
+                        drawdown_pct = (live_high - quote) / live_high * 100.0
+                        live_amplitude = live_high - min(live_open, quote)
+                        upper_shadow = live_high - max(live_open, quote)
+                        upper_shadow_ratio = upper_shadow / (live_amplitude + 1e-9)
+                        
+                        cond_1 = (live_high >= live_kc_upper) and (
+                            (upper_shadow_ratio >= 0.45) or (drawdown_pct >= 0.7) or (quote < live_open)
+                        )
+                        cond_2 = (quote < live_ma3) or (quote < min(last_open, last_close))
+                        
+                        if cond_1 or cond_2:
+                            return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
+                            
+                elif side == 'SHORT':
+                    is_activated = (current_roe >= 0.8) or (live_low <= live_kc_lower)
+                    if is_activated:
+                        drawdown_pct = (quote - live_low) / live_low * 100.0
+                        live_amplitude = max(live_open, quote) - live_low
+                        lower_shadow = min(live_open, quote) - live_low
+                        lower_shadow_ratio = lower_shadow / (live_amplitude + 1e-9)
+                        
+                        cond_1 = (live_low <= live_kc_lower) and (
+                            (lower_shadow_ratio >= 0.45) or (drawdown_pct >= 0.7) or (quote > live_open)
+                        )
+                        cond_2 = (quote > live_ma3) or (quote > max(last_open, last_close))
+                        
+                        if cond_1 or cond_2:
+                            return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
 
         if not is_early_hold_period and math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
             return 'GLOBAL_KC_MIDDLE_CROSS', False
@@ -388,6 +423,12 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
                             f'quote_ms={stamp} price={price}', 'WARNING',
                         )
+                        if gate_trigger in ('REALTIME_TRUE_SELLING_PRESSURE_EXIT', 'REALTIME_TRUE_BUYING_PRESSURE_EXIT'):
+                            cooldowns = getattr(account, '_rapid_drop_cooldown', None)
+                            if cooldowns is None:
+                                cooldowns = {}
+                                setattr(account, '_rapid_drop_cooldown', cooldowns)
+                            cooldowns[symbol] = time.time()
                         await account.close_position(
                             symbol, price, f'Channel Swing {gate_trigger}', is_manual=True,
                         )
