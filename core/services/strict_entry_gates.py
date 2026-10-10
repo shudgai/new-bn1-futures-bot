@@ -8,7 +8,7 @@ POLICY = 'strict_entry_gates_20261009_v1'
 NET_ROOM_MIN = 0.0015
 
 
-def validate_strict_entry(frame, quote, side):
+def validate_strict_entry(frame, quote, side, *, entry_mode='BREAKOUT'):
     """Return auditable live-quote evidence or a specific rejection reason."""
     evidence = {'policy': POLICY, 'side': side}
     def reject(reason):
@@ -18,6 +18,8 @@ def validate_strict_entry(frame, quote, side):
     try:
         if side not in ('LONG', 'SHORT'):
             return reject('BLOCKED_STRICT_INVALID_SIDE')
+        if entry_mode not in ('BREAKOUT', 'PULLBACK'):
+            return reject('BLOCKED_STRICT_INVALID_ENTRY_MODE')
         closed = closed_entry_candles(frame)
         if len(closed) < 60 or bool(frame.iloc[-1].get('is_closed', True)):
             return reject('BLOCKED_STRICT_INSUFFICIENT_DATA')
@@ -58,7 +60,7 @@ def validate_strict_entry(frame, quote, side):
         width = upper - lower
         max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
         live_span = max(float(live['high']), quote) - min(float(live['low']), quote)
-        if live_span <= 0 or abs(quote-opening) / live_span <= .2:
+        if entry_mode != 'PULLBACK' and (live_span <= 0 or abs(quote-opening) / live_span <= .2):
             return reject('BLOCKED_STRICT_LIVE_DOJI')
         evidence.update(quote=quote, live_bar_ms=float(live['timestamp']), opened=opening,
                         previous_atr=atr, kc_lower=lower, kc_middle=middle, kc_upper=upper,
@@ -66,13 +68,16 @@ def validate_strict_entry(frame, quote, side):
                         previous_ma5=float(previous['ma5']), live_ma5=live_ma5,
                         live_ma15=live_ma15, channel_width=width, max_width_20=max_width,
                         ma_spacing=abs(live_ma5-live_ma15), rail_spacing=abs(live_ma5-edge))
-        if distance <= 0:
+        if entry_mode == 'PULLBACK':
+            if not lower < quote < upper:
+                return reject('BLOCKED_STRICT_PULLBACK_NOT_INSIDE_KC')
+        elif distance <= 0:
             return reject('BLOCKED_STRICT_QUOTE_INSIDE_KC')
         if (sign == 1 and opening < lower) or (sign == -1 and opening > upper):
             return reject('BLOCKED_STRICT_OPPOSITE_GAP')
-        if body_atr < 0.5:
+        if entry_mode != 'PULLBACK' and body_atr < 0.5:
             return reject('BLOCKED_STRICT_BODY_BELOW_HALF_ATR')
-        if distance > 3.:
+        if entry_mode != 'PULLBACK' and distance > 3.:
             return reject('BLOCKED_STRICT_DISTANCE_ABOVE_3_ATR')
         if sign * (live_ma5 - float(previous['ma5'])) <= 0:
             return reject('BLOCKED_STRICT_MA5_DIRECTION')

@@ -77,6 +77,37 @@ def aligned_direction(frame, side):
     return side in ('LONG', 'SHORT') and ck_direction(frame) == side
 
 
+def resolve_kc_direction(
+    kc_mid_slope: float,
+    current_price: float,
+    kc_mid: float,
+    ma5: float,
+    ma15: float,
+    atr: float,
+    slope_threshold: float = 0.10,
+) -> str:
+    """Resolve normalized KC slope, with a 0.25 ATR MA-alignment override."""
+    try:
+        slope, price, middle, fast, slow, scale, threshold = map(float, (
+            kc_mid_slope, current_price, kc_mid, ma5, ma15, atr, slope_threshold
+        ))
+        if (not all(math.isfinite(value) for value in
+                    (slope, price, middle, fast, slow, scale, threshold))
+                or min(price, middle, fast, slow, scale) <= 0 or threshold < 0):
+            return 'UNKNOWN'
+        if fast < slow and price < middle - 0.25 * scale:
+            return 'DOWN'
+        if fast > slow and price > middle + 0.25 * scale:
+            return 'UP'
+        if slope > threshold:
+            return 'UP'
+        if slope < -threshold:
+            return 'DOWN'
+        return 'UNKNOWN'
+    except (TypeError, ValueError, OverflowError):
+        return 'UNKNOWN'
+
+
 def ck_direction(frame, *, has_forming_bar=True):
     """Latest closed KC direction; set has_forming_bar=False for closed-only frames."""
     try:
@@ -90,6 +121,17 @@ def ck_direction(frame, *, has_forming_bar=True):
                or not row[0] < row[1] < row[2] for row in rows):
             return None
         a, b = rows
+        closed_row = confirmed.iloc[-1]
+        direction_fields = ('atr', 'close', 'ma5', 'ma15')
+        if all(field in confirmed.columns for field in direction_fields):
+            scale, price, fast, slow = [float(closed_row[field]) for field in direction_fields]
+            if all(math.isfinite(value) and value > 0 for value in (scale, price, fast, slow)):
+                resolved = resolve_kc_direction(
+                    (b[1] - a[1]) / scale, price, b[1], fast, slow, scale,
+                )
+                if resolved != 'UNKNOWN':
+                    return 'LONG' if resolved == 'UP' else 'SHORT'
+                return None
         direction = None
         
         # 嚴格盤整過濾：要求 kc_middle (中軌) 與外軌的變化必須大於一個極小的有效閾值，否則視為無方向（盤整平緩）

@@ -24,6 +24,10 @@ LIVE_MA5_BREAKDOWN_TRIGGER = 'LIVE_MA5_BREAKDOWN_EXIT'
 LIVE_FLASH_DUMP_TRIGGER = 'LIVE_FLASH_DUMP_EXIT'
 LIVE_MA5_BREAKDOWN_ATR = 0.25
 LIVE_FLASH_DUMP_ATR = 0.60
+CONSECUTIVE_DOJI_STALL_TRIGGER = 'EXIT_CONSECUTIVE_DOJI_STALL'
+CONSECUTIVE_DOJI_STALL_BARS = 3
+DOJI_STALL_BODY_ATR = 0.25
+DOJI_STALL_BODY_RANGE_RATIO = 0.30
 CONTINUATION_FAILED_TRIGGER = 'EXIT_CONTINUATION_FAILED'
 RETIRED_KEYS = (
     'instant_exit_state', 'closed_exit_state', 'doji_reversal_state',
@@ -51,6 +55,7 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
+    CONSECUTIVE_DOJI_STALL_TRIGGER,
     NET_ROE_LOCK_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
@@ -64,6 +69,7 @@ PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
+    CONSECUTIVE_DOJI_STALL_TRIGGER,
     NET_ROE_LOCK_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
@@ -191,6 +197,72 @@ def confirmed_doji_reversal(position, snapshot):
         return ('EXIT_DOJI_BEARISH_CONFIRMATION' if sign > 0
                 else 'EXIT_DOJI_BULLISH_CONFIRMATION')
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def consecutive_doji_stall_exit(position, snapshot):
+    """Return an exit trigger after three full, consecutive post-entry doji bars."""
+    try:
+        if not isinstance(snapshot, dict):
+            return None
+        bars = snapshot.get('history_5')
+        if not isinstance(bars, list) or len(bars) < CONSECUTIVE_DOJI_STALL_BARS:
+            return None
+
+        quote_ms = float(snapshot['quote_ms'])
+        live_bar_ms = math.floor(quote_ms / 60000) * 60000
+        closed_bar_ms = float(snapshot['closed_bar_ms'])
+        if (snapshot.get('live_bar_ms') != live_bar_ms
+                or closed_bar_ms != live_bar_ms - 60000
+                or float(snapshot.get('snapshot_bar_id') or 0.) != closed_bar_ms):
+            return None
+
+        opened_ms = float(position['open_timestamp']) * 1000
+        first_full_bar_ms = math.ceil(opened_ms / 60000) * 60000
+        recent = bars[-CONSECUTIVE_DOJI_STALL_BARS:]
+        parsed = []
+        for bar in recent:
+            bar_ms = float(bar['ms'])
+            opening, high, low, close = (
+                float(bar[key]) for key in ('o', 'h', 'l', 'c')
+            )
+            atr = float(bar.get('atr') or 0.)
+            if (not all(math.isfinite(value) and value > 0
+                        for value in (bar_ms, opening, high, low, close))
+                    or not low <= min(opening, close) <= max(opening, close) <= high):
+                return None
+            parsed.append((bar_ms, opening, high, low, close, atr))
+
+        if (parsed[0][0] < first_full_bar_ms
+                or parsed[-1][0] != closed_bar_ms
+                or any(right[0] - left[0] != 60000
+                       for left, right in zip(parsed, parsed[1:]))):
+            return None
+
+        for _, opening, high, low, close, atr in parsed:
+            body = abs(close - opening)
+            span = high - low
+            body_atr_doji = (
+                positive(atr)
+                and (body <= DOJI_STALL_BODY_ATR * atr
+                     or math.isclose(
+                         body, DOJI_STALL_BODY_ATR * atr, rel_tol=1e-12,
+                     ))
+            )
+            body_ratio = body / span if span > 0 else float('inf')
+            body_range_doji = (
+                span > 0
+                and (body_ratio <= DOJI_STALL_BODY_RANGE_RATIO
+                     or math.isclose(
+                         body_ratio, DOJI_STALL_BODY_RANGE_RATIO,
+                         rel_tol=1e-12,
+                     ))
+            )
+            if not (body_atr_doji or body_range_doji):
+                return None
+
+        return CONSECUTIVE_DOJI_STALL_TRIGGER
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
 
@@ -1302,6 +1374,15 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 reason, trigger = ABNORMAL_REASON, CONTINUATION_FAILED_TRIGGER
                 state.update(continuation_failure)
 
+            doji_stall_trigger = consecutive_doji_stall_exit(position, snapshot)
+            if (doji_stall_trigger is not None
+                    and reason != HARD_REASON
+                    and trigger not in (
+                        'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                        'OPPOSITE_KC_BAND_BREACH',
+                    )):
+                reason, trigger = ABNORMAL_REASON, doji_stall_trigger
+
             live_sell_pressure = live_intraday_sell_pressure_trigger(
                 position, price, snapshot,
             )
@@ -1352,6 +1433,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                         'CHANNEL_PEAK_PULLBACK_REVERSAL',
                                         'KC_CHANNEL_RETURN',
                                         CONTINUATION_FAILED_TRIGGER,
+                                        CONSECUTIVE_DOJI_STALL_TRIGGER,
                                         NET_ROE_LOCK_TRIGGER,
                                         'EXIT_DOJI_BEARISH_CONFIRMATION',
                                         'EXIT_DOJI_BULLISH_CONFIRMATION',
@@ -1367,6 +1449,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'BEARISH_INSTANT_BREAKOUT',
                     'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     NET_ROE_LOCK_TRIGGER,
+                    CONSECUTIVE_DOJI_STALL_TRIGGER,
                     CONTINUATION_FAILED_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
@@ -1419,6 +1502,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
             'OPPOSITE_KC_BAND_BREACH', 'BEARISH_INSTANT_BREAKOUT',
             CONTINUATION_FAILED_TRIGGER, NET_ROE_LOCK_TRIGGER,
+            CONSECUTIVE_DOJI_STALL_TRIGGER,
             'EXIT_PROFIT_LOCK_FLOOR',
             LIVE_MA5_BREAKDOWN_TRIGGER, LIVE_FLASH_DUMP_TRIGGER,
         }
@@ -1464,6 +1548,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'BEARISH_INSTANT_BREAKOUT',
                     'OPPOSITE_KC_BAND_BREACH',
                     CONTINUATION_FAILED_TRIGGER,
+                    CONSECUTIVE_DOJI_STALL_TRIGGER,
                     NET_ROE_LOCK_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
                     LIVE_MA5_BREAKDOWN_TRIGGER, LIVE_FLASH_DUMP_TRIGGER,
                 )

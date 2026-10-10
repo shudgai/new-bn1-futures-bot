@@ -10,7 +10,10 @@ import pytest
 from core.engine import TradingEngine
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, RETIRED_KEYS, PEAK_REASON, HARD_REASON, ABNORMAL_REASON,
-    evaluate_peak_trailing, estimated_net_pnl, migrate_peak_state,
+    CONSECUTIVE_DOJI_STALL_TRIGGER, NET_ROE_LOCK_TRIGGER,
+    LIVE_FLASH_DUMP_TRIGGER,
+    evaluate_peak_trailing, estimated_net_pnl,
+    migrate_peak_state,
 )
 from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
 from core.services.exits.entry_atr_protection import enforce_atr_protection
@@ -73,19 +76,22 @@ def test_doji_priority_over_soft_exits(side):
                 live_low=100+3.8 if side=='LONG' else 100-4.0,
                 ma5=10.0, last_ma5=10.0, 
                 ma15=20.0 if side=='LONG' else 0.0, 
-                last_ma15=20.0 if side=='LONG' else 0.0, kc_middle=15.0) # doji shape + RELEASED trend
+                    last_ma15=20.0 if side=='LONG' else 0.0,
+                    kc_middle=15.0 if side=='LONG' else 99.0) # doji shape + RELEASED trend
                 
     # This adverse body qualifies as a Waterfall.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
     # Waterfall also hits here because body=2.0 > 1.5 ATR. Waterfall wins!
     assert decision['trigger'] == 'WATERFALL_DROP'
     
-    # Channel Swing positions hold through Doji pressure when waterfall is absent.
+    # The 5% net-ROE lock exits before a soft doji hold can veto it.
     p[STATE_KEY].pop('pending', None)
     p[STATE_KEY].pop('trigger', None)
     snap['atr'] = 2.0
     decision2 = evaluate_peak_trailing(p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.)
-    assert decision2 is None
+    assert decision2['trigger'] == (
+        LIVE_FLASH_DUMP_TRIGGER if side == 'LONG' else NET_ROE_LOCK_TRIGGER
+    )
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
@@ -102,7 +108,7 @@ def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_channel_swing_ignores_pullback_and_retains_waterfall(side):
-    p = position(side, qty=1., margin=40.)
+    p = position(side, qty=1., margin=200.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
     observe(p, 6.0, 61000)
@@ -110,6 +116,10 @@ def test_channel_swing_ignores_pullback_and_retains_waterfall(side):
     snap = dict(quote_ms=62000, live_open=100+sign*6.0, atr=10.0, 
                 live_bar_ms=60000, closed_bar_ms=0,
                 ma5=100+sign*10.0, ma15=100-sign*10.0, kc_middle=100-sign*10.0)
+    if side == 'LONG':
+        snap.update(ma5=102., kc_middle=101.)
+    else:
+        snap.update(ma5=98.)
 
     decision = evaluate_peak_trailing(p, 100+sign*3.0, snap, 10.0, fee=0., slippage=0.)
     assert decision is None
@@ -204,7 +214,8 @@ def test_runner_and_ticker_hold_through_pullback_without_closed_candles_or_rest(
         
         await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
 
-        assert a.close_position.await_count == 0
+        assert a.close_position.await_count == 1
+        assert 'NET_ROE_STAGED_GIVEBACK' in a.close_position.await_args.args[2]
         e.fetch_klines.assert_not_called();lock.release()
     asyncio.run(run())
 
@@ -250,3 +261,95 @@ def test_latest_rule_has_no_tp1_partial_or_independent_ma_middle_exit(side):
     # Verify the peak_net_pnl was set (ladder armed)
     assert p[STATE_KEY]['peak_net_pnl'] >= 4.0
     assert PureTrendStrategyV2().evaluate_bar_closed_exit(p, pd.DataFrame([snap])) is None
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_three_consecutive_closed_doji_exit_even_when_trend_hold_is_active(
+    side, monkeypatch,
+):
+    monkeypatch.setattr(
+        'core.services.exits.profit_exit_telemetry.ProfitExitTelemetry.log_event',
+        Mock(),
+    )
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('HOLD', 'TREND_STILL_ACTIVE'),
+    )
+    current_position = position(side)
+    current_position['open_timestamp'] = 60.
+    history = [
+        dict(ms=60_000., o=100., h=100.05, l=99.95, c=100.04, atr=.2),
+        dict(ms=120_000., o=100., h=100.06, l=99.94, c=99.98, atr=.02),
+        dict(ms=180_000., o=100., h=100.06, l=99.94, c=100.02, atr=.02),
+    ]
+    snapshot = dict(
+        quote_ms=240_001.,
+        live_bar_ms=240_000.,
+        closed_bar_ms=180_000.,
+        snapshot_bar_id=180_000.,
+        live_open=100.,
+        live_high=100.01,
+        live_low=99.99,
+        atr=.02,
+        kc_upper=110.,
+        kc_middle=100.,
+        kc_lower=90.,
+        history_5=history,
+    )
+
+    decision = evaluate_peak_trailing(
+        current_position, 100., snapshot, .02, fee=0., slippage=0.,
+    )
+
+    assert decision['type'] == ABNORMAL_REASON
+    assert decision['trigger'] == CONSECUTIVE_DOJI_STALL_TRIGGER
+    assert current_position[STATE_KEY]['pending'] == ABNORMAL_REASON
+    assert current_position[STATE_KEY]['trigger'] == CONSECUTIVE_DOJI_STALL_TRIGGER
+
+
+def test_consecutive_doji_stall_requires_three_contiguous_post_entry_bars(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        'core.services.exits.profit_exit_telemetry.ProfitExitTelemetry.log_event',
+        Mock(),
+    )
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('RELEASED', 'TEST'),
+    )
+    current_position = position('SHORT')
+    current_position['open_timestamp'] = 60.
+    history = [
+        dict(ms=60_000., o=100., h=100.05, l=99.95, c=100.04, atr=.2),
+        dict(ms=120_000., o=100., h=100.06, l=99.94, c=99.98, atr=.02),
+        dict(ms=180_000., o=100., h=100.06, l=99.94, c=100.02, atr=.02),
+    ]
+    snapshot = dict(
+        quote_ms=240_001.,
+        live_bar_ms=240_000.,
+        closed_bar_ms=180_000.,
+        snapshot_bar_id=180_000.,
+        live_open=100.,
+        live_high=100.01,
+        live_low=99.99,
+        atr=.02,
+        kc_upper=110.,
+        kc_middle=100.,
+        kc_lower=90.,
+        history_5=history[-2:],
+    )
+    assert evaluate_peak_trailing(
+        current_position, 100., snapshot, .02, fee=0., slippage=0.,
+    ) is None
+
+    snapshot['history_5'] = [history[0], dict(history[1], ms=121_000.), history[2]]
+    assert evaluate_peak_trailing(
+        current_position, 100., snapshot, .02, fee=0., slippage=0.,
+    ) is None
+
+    current_position['open_timestamp'] = 61.
+    snapshot['history_5'] = history
+    assert evaluate_peak_trailing(
+        current_position, 100., snapshot, .02, fee=0., slippage=0.,
+    ) is None

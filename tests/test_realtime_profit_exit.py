@@ -13,6 +13,7 @@ from core.services.exits.peak_trailing_exit import (
     LIVE_FLASH_DUMP_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
     NET_ROE_LOCK_TRIGGER,
+    CONSECUTIVE_DOJI_STALL_TRIGGER,
     evaluate_peak_trailing,
 )
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
@@ -154,6 +155,34 @@ def test_small_live_bearish_candle_does_not_trigger_intraday_sell_exit(monkeypat
 
         assert not await engine._instant_quote_exit('X', 99.95, time.time() * 1000)
         engine.account.close_position.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_three_closed_doji_stall_closes_short_on_first_following_quote(monkeypatch):
+    monkeypatch.setattr(
+        'core.services.exits.profit_exit_telemetry.ProfitExitTelemetry.log_event',
+        Mock(),
+    )
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *a, **k: ('HOLD', 'TREND_STILL_ACTIVE'),
+    )
+    monkeypatch.setattr('core.services.entry_contract.ck_direction', lambda _frame: None)
+
+    async def run():
+        engine, position, now = engine_for('SHORT')
+        bar_ms = int(now // 60) * 60_000
+        position['open_timestamp'] = (bar_ms - 180_000) / 1000
+        engine._channel_exit_frames = {
+            'X': live_exit_frame(
+                history_close=98.0, opening=98.0, high=98.1, low=97.9,
+            ),
+        }
+
+        assert await engine._instant_quote_exit('X', 98.0, now * 1000)
+        engine.account.close_position.assert_awaited_once()
+        assert CONSECUTIVE_DOJI_STALL_TRIGGER in engine.account.close_position.await_args.args[2]
 
     asyncio.run(run())
 
