@@ -14,6 +14,16 @@ import math
 from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import ck_direction
+from core.services.strict_entry_gates import validate_strict_entry
+
+ANTI_BOTTOM_SHORT_STRETCH_ATR = 0.20
+ANTI_BOTTOM_SHORT_PULLBACK_ATR = 0.20
+ANTI_BOTTOM_SHORT_POST_CLOSE_REBOUND_ATR = 0.50
+ANTI_BOTTOM_SHORT_WICK_BODY_RATIO = 1.50
+ANTI_BOTTOM_SHORT_BOUNCE_BODY_ATR = 0.50
+ANTI_BOTTOM_SHORT_COOLDOWN_BARS = 3
+ANTI_BOTTOM_SHORT_TREND_LOOKBACK_BARS = 3
+ANTI_BOTTOM_SHORT_MIN_KC_DROP_ATR = 0.10
 
 # 合法入場信號：只保留兩根破軌確認 (TREND_BREAKOUT)
 RULE_CODES = frozenset(
@@ -175,7 +185,153 @@ def had_close(account, symbol):
                for t in getattr(account, 'trades', []))
 
 
-def evaluate_closed_entry(frame, side, price=None, *, after_close=False):
+def short_kc_trend_problem(frame):
+    """Require smoothed KC middle/lower rails to show a material down slope."""
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < ANTI_BOTTOM_SHORT_TREND_LOOKBACK_BARS:
+            return 'BLOCKED_SHORT_KC_TREND_NOT_DOWN'
+        rows = closed.tail(ANTI_BOTTOM_SHORT_TREND_LOOKBACK_BARS)
+        middle = [float(value) for value in rows['kc_middle']]
+        lower = [float(value) for value in rows['kc_lower']]
+        atr = float(rows.iloc[-1]['atr'])
+        if not all(math.isfinite(value) and value > 0 for value in middle + lower + [atr]):
+            return 'BLOCKED_SHORT_KC_TREND_NOT_DOWN'
+        middle_drop = middle[0] - middle[-1]
+        if (middle[-1] >= middle[-2] or lower[-1] >= lower[-2]
+                or middle_drop < ANTI_BOTTOM_SHORT_MIN_KC_DROP_ATR * atr):
+            return 'BLOCKED_SHORT_KC_TREND_NOT_DOWN'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_SHORT_KC_TREND_NOT_DOWN'
+
+
+def anti_bottom_short_problem(frame, price=None, *, account=None, symbol=''):
+    """Block exhausted shorts until a measured rebound is rejected near structure."""
+    try:
+        if frame is None or frame.empty:
+            return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+        closed = closed_entry_candles(frame)
+        live = frame.iloc[-1]
+        forming = ('is_closed' in frame.columns and not bool(live['is_closed']))
+        if forming:
+            signal = live
+            history = closed.tail(ANTI_BOTTOM_SHORT_COOLDOWN_BARS)
+            raw_close = float(live['close'])
+            close = float(price) if price is not None else raw_close
+            high = max(float(live['high']), close)
+            low = min(float(live['low']), close)
+        else:
+            if closed.empty:
+                return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+            signal = closed.iloc[-1]
+            history = closed.iloc[:-1].tail(ANTI_BOTTOM_SHORT_COOLDOWN_BARS)
+            close = float(price) if price is not None else float(signal['close'])
+            high = max(float(signal['high']), close)
+            low = min(float(signal['low']), close)
+        atr = float(signal['atr'])
+        lower = float(signal['kc_lower'])
+        middle = float(signal['kc_middle'])
+        ma3 = float(signal['ma3'])
+        opening = float(signal['open'])
+        values = (close, atr, lower, middle, ma3, opening, high, low)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or atr <= 0 or lower >= middle):
+            return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+
+        trend_problem = short_kc_trend_problem(frame)
+        if trend_problem:
+            return trend_problem
+
+        if close < lower - ANTI_BOTTOM_SHORT_STRETCH_ATR * atr:
+            return 'BLOCKED_SHORT_KC_LOWER_STRETCH'
+
+        # Do not sell directly into a recent rejection wick or a forceful
+        # bullish reclaim through MA3. Three completed bars provide cooldown.
+        for _, bar in history.iterrows():
+            bar_open, bar_close, bar_high, bar_low, bar_atr, bar_ma3 = (
+                float(bar[key]) for key in ('open', 'close', 'high', 'low', 'atr', 'ma3')
+            )
+            vals = (bar_open, bar_close, bar_high, bar_low, bar_atr, bar_ma3)
+            if (not all(math.isfinite(value) and value > 0 for value in vals)
+                    or bar_high < max(bar_open, bar_close)
+                    or bar_low > min(bar_open, bar_close)):
+                return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+            body = abs(bar_close - bar_open)
+            lower_wick = min(bar_open, bar_close) - bar_low
+            long_lower_wick = lower_wick > ANTI_BOTTOM_SHORT_WICK_BODY_RATIO * body
+            strong_ma3_reclaim = (
+                bar_close > bar_open
+                and bar_open < bar_ma3 < bar_close
+                and body >= ANTI_BOTTOM_SHORT_BOUNCE_BODY_ATR * bar_atr
+            )
+            if long_lower_wick or strong_ma3_reclaim:
+                return 'BLOCKED_SHORT_EXHAUSTION_COOLDOWN'
+
+        if close < lower:
+            # A short below the band is eligible only after this bar actually
+            # tested MA3/KC support from below and closed bearish back under it.
+            red_close = close < opening
+            targets = (ma3, lower, middle)
+            same_bar_rejection = red_close and any(
+                high >= target - ANTI_BOTTOM_SHORT_PULLBACK_ATR * atr
+                and high - close >= ANTI_BOTTOM_SHORT_PULLBACK_ATR * atr
+                and close < target
+                for target in targets
+            )
+            prior_pullback = False
+            for _, bar in history.iterrows():
+                bar_open, bar_close, bar_high = (
+                    float(bar[key]) for key in ('open', 'close', 'high')
+                )
+                if bar_close > bar_open and any(
+                    bar_high >= target - ANTI_BOTTOM_SHORT_PULLBACK_ATR * atr
+                    and bar_close > target - ANTI_BOTTOM_SHORT_PULLBACK_ATR * atr
+                    for target in targets
+                ):
+                    prior_pullback = True
+                    break
+            rejection = red_close and any(close < target for target in targets) and (
+                same_bar_rejection or prior_pullback
+            )
+            if not rejection:
+                return 'BLOCKED_SHORT_WAIT_PULLBACK_REJECTION'
+
+        signal_body = abs(close - opening)
+        signal_lower_wick = min(opening, close) - low
+        if signal_lower_wick > ANTI_BOTTOM_SHORT_WICK_BODY_RATIO * signal_body:
+            return 'BLOCKED_SHORT_EXHAUSTION_COOLDOWN'
+
+        # A matched recent short close must first see a real 0.5 ATR rebound
+        # from the post-close low; a fresh low alone cannot authorize a relay.
+        if account is not None and symbol:
+            relevant = [
+                trade for trade in getattr(account, 'trades', [])
+                if trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_SHORT', 'CLOSE_SHORT')
+            ]
+            latest = max(relevant, key=lambda trade: float(trade.get('id') or 0.)) if relevant else None
+            if latest and latest.get('action') == 'CLOSE_SHORT' and latest.get('status') == 'CLOSED':
+                close_ms = float(latest.get('id') or 0.)
+                close_price = float(latest.get('price') or 0.)
+                if not all(math.isfinite(value) and value > 0 for value in (close_ms, close_price)):
+                    return 'BLOCKED_SHORT_POST_CLOSE_NO_PULLBACK'
+                first_after_close = math.floor(close_ms / 60000.) * 60000. + 60000.
+                post_close_rows = frame.loc[frame['timestamp'].astype(float) >= first_after_close]
+                if post_close_rows.empty:
+                    return 'BLOCKED_SHORT_POST_CLOSE_NO_PULLBACK'
+                lows = [float(value) for value in post_close_rows['low']]
+                if not all(math.isfinite(value) and value > 0 for value in lows):
+                    return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+                post_close_low = min(lows)
+                if close - post_close_low < ANTI_BOTTOM_SHORT_POST_CLOSE_REBOUND_ATR * atr:
+                    return 'BLOCKED_SHORT_POST_CLOSE_NO_PULLBACK'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
+
+
+def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account=None, symbol=''):
     wait = lambda reason: (False, reason, dict(action='WAIT', side=side, reason=reason))
     
 
@@ -184,6 +340,13 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False):
         return wait("NOT_READY")
         
     c = closed.iloc[-1]
+
+    if side == 'SHORT':
+        problem = anti_bottom_short_problem(
+            frame, price, account=account, symbol=symbol,
+        )
+        if problem:
+            return wait(problem)
     
     # 嚴格校驗已收線 K 棒的真實顏色與實體 (絕對防範由綠翻紅)
     bar_close = float(c.close)
@@ -416,12 +579,18 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False):
     except Exception as e:
         return wait("WAIT_VALID_LIVE_BAR3")
 
+    # === 強制掛載嚴格 Gate 防線 ===
+    gate_passed, gate_reason, gate_evidence = validate_strict_entry(frame, live_price, side, entry_mode='BREAKOUT')
+    if not gate_passed:
+        return wait(f"BLOCKED_BY_STRICT_GATE ({gate_reason})")
+
     return True, code, dict(
         action='ENTER', side=side, reason=code, rule=rule,
         entry_type=rule, entry_atr=atr, is_breakout=True,
         confirmation_bar_id=float(c.timestamp), close_price=float(c.close),
         pending_signal_id=pending_signal_id, candidate_bar_id=candidate_bar_id,
-        intrabar=True
+        intrabar=True,
+        strict_gate_evidence=gate_evidence
     )
 
 
@@ -447,7 +616,10 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
         except Exception:
             pass
             
-    return evaluate_closed_entry(df, side, price=live_price, after_close=kwargs.get('after_close', False))
+    return evaluate_closed_entry(
+        df, side, price=live_price, after_close=kwargs.get('after_close', False),
+        account=kwargs.get('account'), symbol=kwargs.get('symbol', ''),
+    )
 
 
 def check_ma_cross_entry(df, live_price=None):
@@ -537,4 +709,8 @@ class UnifiedEntryStrategy(IEntryStrategy):
         engine = kwargs.get('engine')
         after_close = (had_close(engine.account, kwargs.get('symbol', ''))
                        if engine is not None else kwargs.get('after_close', False))
-        return evaluate_closed_entry(frame, side, price=price, after_close=after_close)
+        return evaluate_closed_entry(
+            frame, side, price=price, after_close=after_close,
+            account=getattr(engine, 'account', None) if engine is not None else None,
+            symbol=kwargs.get('symbol', ''),
+        )

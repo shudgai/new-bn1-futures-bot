@@ -5,7 +5,6 @@ from core import config
 from core.services.candle_data import closed_entry_candles
 
 POLICY = 'strict_entry_gates_20261009_v1'
-NET_ROOM_MIN = 0.0015
 
 
 def validate_strict_entry(frame, quote, side, *, entry_mode='BREAKOUT'):
@@ -97,28 +96,7 @@ def validate_strict_entry(frame, quote, side, *, entry_mode='BREAKOUT'):
                 return reject('BLOCKED_STRICT_CK_DIRECTION')
             if sign * (quote - live_ma5) <= 0:
                 return reject('BLOCKED_STRICT_QUOTE_INSIDE_MA5')
-        targets = []
-        rows = history.to_dict('records')
-        key = 'high' if sign == 1 else 'low'
-        for i in range(1, len(rows)-1):
-            target = float(rows[i][key])
-            if (sign * (target-float(rows[i-1][key])) > 0
-                    and sign * (target-float(rows[i+1][key])) > 0
-                    and all(sign * (float(r[key])-target) < 0 for r in rows[i+1:])
-                    and sign * (target-quote) > 0
-                    and sign * (float(live[key])-target) < 0):
-                targets.append((target, float(rows[i]['timestamp'])))
-        if not targets:
-            return reject('BLOCKED_STRICT_NO_UNTOUCHED_TARGET')
-        target, target_ms = min(targets, key=lambda item: sign*(item[0]-quote))
-        fee, slip = float(config.TAKER_FEE_RATE), float(config.SLIPPAGE_PCT)
-        if not all(math.isfinite(v) and 0 <= v < 1 for v in (fee, slip)):
-            return reject('BLOCKED_STRICT_INVALID_COSTS')
-        net_room = sign*(target-quote)/quote - (1+target/quote)*(fee+slip)
-        evidence.update(target=target, target_bar_ms=target_ms, fee_rate=fee,
-                        slippage_rate=slip, net_room=net_room, min_net_room=NET_ROOM_MIN)
-        if net_room < NET_ROOM_MIN:
-            return reject('BLOCKED_STRICT_NET_ROOM')
+        evidence.update(passed=True, reason='STRICT_ENTRY_GATES_PASSED')
         evidence.update(passed=True, reason='STRICT_ENTRY_GATES_PASSED')
         return True, 'STRICT_ENTRY_GATES_PASSED', evidence
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
