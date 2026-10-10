@@ -1832,15 +1832,20 @@ class TradingEngine:
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
-        if not self._abnormal_market_entry_allowed(
+        is_instant_reverse = decision['type'] == 'BEARISH_INSTANT_BREAKOUT'
+        if (not is_instant_reverse and not self._abnormal_market_entry_allowed(
                 symbol, side, price, float(decision['entry_atr']),
-                float(live['open']), candle_high, candle_low, price):
+                float(live['open']), candle_high, candle_low, price)):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
                 'BLOCKED_ABNORMAL_MARKET_ENTRY', bar,
             )
             return False
-        if not quote_beyond_side_outer_rail(snapshot['frame'], side, price):
+        is_priority_entry = decision['type'] in (
+            'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+        )
+        if (not is_priority_entry
+                and not quote_beyond_side_outer_rail(snapshot['frame'], side, price)):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
                 'BLOCKED_QUOTE_NOT_OUTSIDE_KC_RAIL', bar,
@@ -2029,6 +2034,11 @@ class TradingEngine:
         from core.services.entry_contract import evaluate_entry_contract
         observed = evaluate_entry_contract(frame, price, v8_reason,
                                            account=self.account, symbol=symbol)
+        is_priority_entry = bool(
+            observed and observed.get('type') in (
+                'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+            ) and observed.get('side') == side
+        )
         if (observed and observed['side'] == side and observed['entry_phase'] in (
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')
                 and observed.get('live_opening_context') not in (
@@ -2047,12 +2057,13 @@ class TradingEngine:
             return False
             
         import time
-        if getattr(self, '_market_crash_entries_paused', lambda x: False)(time.time()):
+        if (not is_priority_entry
+                and getattr(self, '_market_crash_entries_paused', lambda x: False)(time.time())):
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} BTC_FLASH_CRASH_COOLDOWN ACTIVE', 'WARNING')
             return False
 
         cooldown_until = getattr(self, '_market_crash_entry_cooldown_until', 0.0)
-        if cooldown_until > 0 and frame is not None and not frame.empty:
+        if not is_priority_entry and cooldown_until > 0 and frame is not None and not frame.empty:
             try:
                 closed = frame[frame['is_closed'] == True] if 'is_closed' in frame.columns else frame.iloc[:-1]
                 if not closed.empty:

@@ -24,12 +24,13 @@ from core.services.kc_pending_entry import (
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
 GOLDEN_CROSS_FAST_LONG_CODE = "KC_GOLDEN_CROSS_FAST_LONG"
+BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
-# Continuation requires a persisted, previously observed outer-rail breakout.
-NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
+# Continuation is independently revalidated from the current expanding KC candle.
+NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", BEARISH_INSTANT_BREAKOUT_CODE, "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
 ENTRY_CODES = (KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES
                | NEW_TRIGGER_CODES | frozenset((GOLDEN_CROSS_FAST_LONG_CODE,)))
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
@@ -42,6 +43,7 @@ ENTRY_EVIDENCE_KEYS = (
     "pair_confirmation_bar_id", "third_bar_id", "live_pattern_start_bar_id",
     "live_pattern_pullback_bars", "live_pattern_body_atr", "kc_distance_atr",
     "kc_max_distance_atr", "qualification_signal_id", "live_opening_context",
+    "reverse_close_id", "live_body_atr",
 )
 
 
@@ -174,76 +176,141 @@ def evaluate_live_ma5_direction(frame, quote, side):
 
 
 def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', account=None):
-    """Continue only a qualified breakout while live trend and price stay outside."""
+    """Re-enter an expanding outer-rail trend on a live directional candle."""
     try:
-        side = ck_direction(frame)
-        if not side:
+        if (frame is None or frame.empty or code not in (None, 'TRIGGER_C_CONTINUATION')
+                or ('is_closed' in frame.columns and bool(frame.iloc[-1]['is_closed']))):
             return None
-        signal = 'KC_OUTSIDE_' + side
-        if code is not None and code != signal:
+        if account is not None and symbol in getattr(account, 'positions', {}):
             return None
-
-        qualification = getattr(account, 'breakout_qualification', {}).get(symbol)
-        if not qualification or qualification.get('side') != side:
+        closed = closed_entry_candles(frame)
+        if closed.empty or float(frame.iloc[-1]['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
             return None
         live = frame.iloc[-1]
-        stamp = float(live['timestamp'])
-        qualified_bar = float(qualification['breakout_bar_id'])
+        previous = closed.iloc[-1]
+        stamp, previous_stamp = float(live['timestamp']), float(previous['timestamp'])
         quote = float(quote)
-        atr = float(frame.iloc[-2]['atr'])
-        if (not all(math.isfinite(value) and value > 0
-                    for value in (stamp, qualified_bar, quote, atr))
-                or stamp <= qualified_bar):
-            return None
-
-        sign = 1 if side == 'LONG' else -1
         opening = float(live['open'])
-        if sign * (quote - opening) < LIVE_BREAKOUT_BODY_ATR * atr:
-            return None
-            
-        # 第三根 (Live Bar) 十字星防護
-        high = max(float(live["high"]), quote)
-        low = min(float(live["low"]), quote)
-        curr_range = high - low
-        curr_body = abs(quote - opening)
-        if curr_range > 0 and (curr_body / curr_range < 0.50):
-            return None
-            
-        closes = [float(value) for value in frame['close'].iloc[-5:-1]]
-        last_ma5 = float(frame.iloc[-2]['ma5'])
-        if (len(closes) != 4 or not all(math.isfinite(value) and value > 0 for value in closes)
-                or not math.isfinite(last_ma5) or last_ma5 <= 0):
-            return None
-        live_ma5 = (sum(closes) + quote) / 5.0
-        if sign * (live_ma5 - last_ma5) < 0.01 * atr:
-            return None
-        if (not live_candle_color_ready(frame, quote, side)
-                or not live_adverse_entry_safe(frame, quote, side)
-                or not live_ma3_direction_ready(frame, quote, side)
-                or not ma3_outer_continuation_ready(frame, quote, side)):
+        close = float(live['close'])
+        high = max(float(live['high']), quote)
+        low = min(float(live['low']), quote)
+        upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+        previous_upper, previous_lower = float(previous['kc_upper']), float(previous['kc_lower'])
+        ma5 = float(live['ma5']) + (quote - close) / 5.0
+        atr = float(previous['atr'])
+        values = (stamp, previous_stamp, quote, opening, close, high, low,
+                  upper, lower, previous_upper, previous_lower, ma5, atr)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or lower >= upper or previous_lower >= previous_upper
+                or low > min(opening, quote) or high < max(opening, quote)):
             return None
 
-        edge = float(live['kc_upper' if side == 'LONG' else 'kc_lower'])
-        distance = sign * (quote - edge) / atr
-        if (distance <= 0 or distance > LIVE_BREAKOUT_MAX_DISTANCE_ATR
-                or sign * (quote - live_ma5) <= 0):
+        widths = (upper - lower, previous_upper - previous_lower)
+        if widths[0] <= widths[1]:
             return None
-        previous_stamp = float(frame.iloc[-2]['timestamp'])
+        if quote > opening:
+            side = 'LONG'
+            supported = quote > upper or quote > ma5
+        elif quote < opening:
+            side = 'SHORT'
+            supported = quote < lower or quote < ma5
+        else:
+            return None
+        if not supported:
+            return None
+        qualification = getattr(account, 'breakout_qualification', {}).get(symbol)
+        qualification_id = (
+            qualification.get('pending_signal_id')
+            if qualification and qualification.get('side') == side else None
+        )
+        signal_id = f'{symbol}:TRIGGER_C_CONTINUATION:{int(stamp)}:{side}'
         return dict(
-            action='ENTER', side=side, type=signal, reason=signal,
+            action='ENTER', side=side, type='TRIGGER_C_CONTINUATION',
+            reason='KC_EXPANSION_OUTER_TREND_CONTINUATION',
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
-            close_price=float(frame.iloc[-2]['close']), intrabar=True,
+            close_price=quote, intrabar=True,
             entry_phase='KC_CONTINUATION_ENTRY', breakout_bar_id=stamp,
             pair_confirmation_bar_id=previous_stamp, third_bar_id=stamp,
-            pending_signal_id=f'{symbol}:CONTINUATION:{int(stamp)}:{side}',
+            pending_signal_id=signal_id,
             pending_second_bar_id=previous_stamp, pending_wait_bars=1,
-            pending_max_wait_bars=1, kc_confirmation_edge=edge,
-            kc_distance_atr=distance,
-            kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
-            qualification_signal_id=qualification['pending_signal_id'],
+            pending_max_wait_bars=1,
+            kc_confirmation_edge=upper if side == 'LONG' else lower,
+            kc_width=widths[0], kc_width_prev=widths[1],
+            qualification_signal_id=qualification_id,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
+
+
+def evaluate_bearish_instant_breakout(frame, quote, symbol: str = '', account=None):
+    """Authorize a same-candle SHORT only after a confirmed LONG waterfall close."""
+    try:
+        if (frame is None or frame.empty or account is None
+                or symbol in getattr(account, 'positions', {})
+                or ('is_closed' in frame.columns and bool(frame.iloc[-1]['is_closed']))):
+            return None
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        live, previous = frame.iloc[-1], closed.iloc[-1]
+        stamp = float(live['timestamp'])
+        previous_stamp = float(previous['timestamp'])
+        quote = float(quote)
+        if (not math.isfinite(stamp) or stamp != previous_stamp + 60000
+                or not math.isfinite(quote) or quote <= 0):
+            return None
+
+        close_trade = next((
+            trade for trade in getattr(account, 'trades', [])
+            if trade.get('symbol') == symbol and trade.get('action') == 'CLOSE_LONG'
+        ), None)
+        if not close_trade or close_trade.get('status') != 'CLOSED':
+            return None
+        close_id = float(close_trade.get('id') or 0.)
+        close_reason = str(close_trade.get('reason') or '')
+        if (not math.isfinite(close_id) or not stamp <= close_id < stamp + 60000
+                or not any(trigger in close_reason for trigger in (
+                    'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
+                    'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+                ))):
+            return None
+
+        opening = float(live['open'])
+        raw_close = float(live['close'])
+        high = max(float(live['high']), quote)
+        low = min(float(live['low']), quote)
+        upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+        middle = float(live['kc_middle'])
+        ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
+        atr = float(previous['atr'])
+        values = (opening, raw_close, high, low, upper, lower, middle, ma5, atr)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or lower >= upper or low > min(opening, quote)
+                or high < max(opening, quote)
+                or not lower <= opening <= upper
+                or opening - quote < 0.5 * atr
+                or quote >= lower or quote >= middle or quote >= ma5):
+            return None
+
+        signal_id = (
+            f'{symbol}:{BEARISH_INSTANT_BREAKOUT_CODE}:'
+            f'{int(stamp)}:{int(close_id)}:SHORT'
+        )
+        return dict(
+            action='ENTER', side='SHORT', type=BEARISH_INSTANT_BREAKOUT_CODE,
+            reason='LONG_WATERFALL_CLOSED_THEN_BEARISH_KC_BREAKOUT',
+            price=quote, entry_atr=atr, confirmation_bar_id=stamp,
+            breakout_bar_id=stamp, pair_confirmation_bar_id=previous_stamp,
+            close_price=quote, intrabar=True,
+            entry_phase='ATOMIC_BEARISH_REVERSE',
+            pending_signal_id=signal_id,
+            reverse_close_id=int(close_id),
+            kc_confirmation_edge=lower,
+            live_body_atr=(opening - quote) / atr,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
 
 DOJI_BODY_RATIO = 0.10
 
@@ -693,6 +760,47 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return live_cross
         if code == GOLDEN_CROSS_FAST_LONG_CODE:
             return reject("BLOCKED_GOLDEN_CROSS_FAST_LANE_NOT_QUALIFIED")
+
+        instant_reverse = evaluate_bearish_instant_breakout(
+            frame, quote, symbol=symbol, account=account,
+        )
+        if (instant_reverse is not None
+                and code in (None, BEARISH_INSTANT_BREAKOUT_CODE)):
+            if any(
+                trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                    == instant_reverse['pending_signal_id']
+                for trade in getattr(account, 'trades', [])
+            ):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            if diagnostics is not None:
+                diagnostics.clear()
+                diagnostics.update(instant_reverse)
+            return instant_reverse
+        if code == BEARISH_INSTANT_BREAKOUT_CODE:
+            return reject('BLOCKED_BEARISH_INSTANT_BREAKOUT_NOT_CONFIRMED')
+
+        continuation = evaluate_continuation_entry(
+            frame, quote,
+            code='TRIGGER_C_CONTINUATION' if code == 'TRIGGER_C_CONTINUATION' else None,
+            symbol=symbol, account=account,
+        )
+        if continuation is not None and code in (None, 'TRIGGER_C_CONTINUATION'):
+            if any(
+                trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                    == continuation['pending_signal_id']
+                for trade in getattr(account, 'trades', [])
+            ):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            if diagnostics is not None:
+                diagnostics.clear()
+                diagnostics.update(continuation)
+            return continuation
+        if code == 'TRIGGER_C_CONTINUATION':
+            return reject('BLOCKED_CONTINUATION_NOT_EXPANDING_OR_NOT_DIRECTIONAL')
             
         side, trigger_type = detect_raw_triggers(closed, account, symbol)
         if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")

@@ -88,4 +88,34 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     await enforce_realtime_profit_exit(engine, symbol, quote)
     if symbol not in engine.account.positions:
         strict_strategy.set_state(symbol, PositionState.IDLE)
+        if not exit_only:
+            bar_id = float(frame.iloc[-1]['timestamp'])
+            close_trade = next((
+                trade for trade in getattr(engine.account, 'trades', [])
+                if trade.get('symbol') == symbol and trade.get('action') == 'CLOSE_LONG'
+                and trade.get('status') == 'CLOSED'
+            ), None)
+            if close_trade:
+                close_id = float(close_trade.get('id') or 0.)
+                close_reason = str(close_trade.get('reason') or '')
+                same_bar_close = math.isfinite(close_id) and bar_id <= close_id < bar_id + 60000
+                instant_reverse_close = any(trigger in close_reason for trigger in (
+                    'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
+                    'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+                ))
+                if same_bar_close and instant_reverse_close:
+                    from core.services.entry_contract import (
+                        BEARISH_INSTANT_BREAKOUT_CODE,
+                        evaluate_entry_contract,
+                    )
+                    decision = evaluate_entry_contract(
+                        frame, quote, BEARISH_INSTANT_BREAKOUT_CODE,
+                        account=engine.account, symbol=symbol,
+                    )
+                    if decision is not None:
+                        await engine._execute_confirmed_channel_break(
+                            symbol, frame, quote, decision['side'], daily_halt,
+                            v8_reason=decision['type'],
+                            candidate_bar_id=decision['confirmation_bar_id'],
+                        )
     return [], []

@@ -250,6 +250,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             ' ' + trigger
             if trigger in (DOJI_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
                            'THREE_POINT_PIVOT', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                           'WATERFALL_DROP', 'BEARISH_INSTANT_BREAKOUT',
+                           'EXIT_DOJI_BEARISH_CONFIRMATION',
+                           'EXIT_DOJI_BULLISH_CONFIRMATION',
                            'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')

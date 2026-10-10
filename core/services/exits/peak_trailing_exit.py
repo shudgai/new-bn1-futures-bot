@@ -36,6 +36,7 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
+    'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
@@ -44,6 +45,7 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
+    'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
@@ -142,6 +144,33 @@ def lower_shadow_support_hold(position, snapshot, price):
         return lower_shadow > body and close > ma15 and close > middle
     except (AttributeError, TypeError, ValueError, OverflowError):
         return False
+
+
+def kc_outer_hold_reason(position, snapshot):
+    """Return a hold lock while the latest completed Channel Swing candle closes outside KC."""
+    try:
+        if (str(position.get('entry_mode') or '').upper() != 'CHANNEL_SWING'
+                or not isinstance(snapshot, dict)):
+            return None
+        history = snapshot.get('history_5')
+        if not isinstance(history, list) or not history:
+            return None
+        candle = history[-1]
+        stamp = float(snapshot.get('snapshot_bar_id') or 0.)
+        candle_ms = float(candle.get('ms') or 0.)
+        close = float(candle.get('c') or 0.)
+        upper = float(candle.get('kc_upper') or 0.)
+        lower = float(candle.get('kc_lower') or 0.)
+        if (not all(positive(value) for value in (stamp, candle_ms, close, upper, lower))
+                or candle_ms != stamp or lower >= upper):
+            return None
+        if position.get('side') == 'LONG' and close > upper:
+            return 'HOLD_OUTSIDE_KC_UPPER'
+        if position.get('side') == 'SHORT' and close < lower:
+            return 'HOLD_OUTSIDE_KC_LOWER'
+        return None
+    except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def live_body_breakout_position_side(position, meta=None):
@@ -986,11 +1015,25 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         reason, trigger = ABNORMAL_REASON, 'WATERFALL_DROP'
                         state.update(trigger_bar_ms=bar, trigger_open=live_open,
                                      trigger_atr=float(prior_atr), trigger_price=price)
+                    if is_channel_swing and sign == 1:
+                        lower = float(snapshot.get('kc_lower') or 0.)
+                        upper = float(snapshot.get('kc_upper') or 0.)
+                        middle = float(snapshot.get('kc_middle') or 0.)
+                        ma5 = float(snapshot.get('ma5') or 0.)
+                        if (positive(lower) and positive(upper) and lower < upper
+                                and positive(middle) and positive(ma5)
+                                and lower <= live_open <= upper
+                                and live_open - price >= 0.5 * float(prior_atr)
+                                and price < lower and price < middle and price < ma5):
+                            reason, trigger = ABNORMAL_REASON, 'BEARISH_INSTANT_BREAKOUT'
+                            state.update(trigger_bar_ms=bar, trigger_open=live_open,
+                                         trigger_atr=float(prior_atr), trigger_price=price)
 
             if isinstance(snapshot, dict) and 'kc_lower' in snapshot and 'kc_upper' in snapshot:
                 kc_lower = float(snapshot.get('kc_lower', 0))
                 kc_upper = float(snapshot.get('kc_upper', 0))
-                if sign == 1 and kc_lower > 0 and price < kc_lower:
+                if (sign == 1 and kc_lower > 0 and price < kc_lower
+                        and trigger != 'BEARISH_INSTANT_BREAKOUT'):
                     reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
                 elif sign == -1 and kc_upper > 0 and price > kc_upper:
                     reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
@@ -1024,9 +1067,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     state.update(ma5_evidence)
 
             doji_trigger = confirmed_doji_reversal(position, snapshot)
-            if (doji_trigger is not None and reason != HARD_REASON
-                    and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
-                                        'OPPOSITE_KC_BAND_BREACH')):
+            if doji_trigger is not None:
                 reason, trigger = ABNORMAL_REASON, doji_trigger
 
             if (is_channel_swing and reason != HARD_REASON
@@ -1048,6 +1089,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                                        'BEARISH_INSTANT_BREAKOUT',
                                         'KC_OUTER_PIVOT',
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                                         'MA5_TRUE_PEAK_REVERSAL',
@@ -1062,6 +1104,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 soft_exit_blocked = False
                 peak_exemptions = (
                     'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                    'BEARISH_INSTANT_BREAKOUT',
                     'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     'MATURE_REVERSAL_PINBAR', 'MATURE_REVERSAL_DOJI', 'MATURE_REVERSAL_PINBAR_DOJI',
                     'EXIT_PEAK_PULLBACK_PRESSURE',
@@ -1108,9 +1151,33 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         pass
                     reason, trigger = None, None
 
+        outer_hold_reason = kc_outer_hold_reason(position, snapshot)
+        emergency_triggers = {
+            'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+            'OPPOSITE_KC_BAND_BREACH', 'BEARISH_INSTANT_BREAKOUT',
+            'EXIT_DOJI_BEARISH_CONFIRMATION', 'EXIT_DOJI_BULLISH_CONFIRMATION',
+        }
+        if outer_hold_reason and reason != HARD_REASON and trigger not in emergency_triggers:
+            reason = trigger = None
+            state.update(
+                soft_exit_blocked=True,
+                trend_hold_reason=outer_hold_reason,
+                kc_outer_hold_lock=outer_hold_reason,
+            )
+            if state.get('pending') in (ABNORMAL_REASON, PEAK_REASON):
+                pending_trigger = state.get('trigger')
+                if pending_trigger not in emergency_triggers:
+                    for key in ('pending', 'trigger', 'trigger_bar_ms',
+                                'trigger_confirmed_ms', 'trigger_open',
+                                'trigger_atr', 'trigger_price'):
+                        state.pop(key, None)
+        else:
+            state.pop('kc_outer_hold_lock', None)
+
         if (reason is not None and reason != HARD_REASON and not pending_at_start
                 and trigger not in (
                     'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                    'BEARISH_INSTANT_BREAKOUT',
                     'OPPOSITE_KC_BAND_BREACH',
                     'EXIT_DOJI_BEARISH_CONFIRMATION',
                     'EXIT_DOJI_BULLISH_CONFIRMATION',
