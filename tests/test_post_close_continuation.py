@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from core.engine import TradingEngine
+from core.services import entry_contract
 from core.services.entry_contract import (
     evaluate_continuation_entry,
     evaluate_entry_contract,
@@ -139,6 +140,27 @@ def test_successful_short_close_allows_next_live_bearish_ma5_reclaim():
     assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"
     assert decision["reason"] == "POST_CLOSE_BEARISH_CONTINUATION"
     assert decision["post_close_continuation_close_id"] == close_id
+    assert decision["exit_bar_id"] == decision["confirmation_bar_id"]
+
+
+def test_pipeline_decision_includes_structured_entry_metadata(monkeypatch):
+    frame = live_frame()
+    frame.loc[frame.index[-1], "is_closed"] = True
+    account = SimpleNamespace(trades=[])
+    monkeypatch.setattr(entry_contract, "evaluate_golden_cross_fast_lane", lambda *args: None)
+    monkeypatch.setattr(entry_contract, "evaluate_bearish_instant_breakout", lambda *args, **kwargs: None)
+    monkeypatch.setattr(entry_contract, "evaluate_continuation_entry", lambda *args, **kwargs: None)
+    monkeypatch.setattr(entry_contract, "detect_raw_triggers", lambda *args: ("LONG", "TRIGGER_A_KC_BREAKOUT"))
+    monkeypatch.setattr(entry_contract, "check_entry_gates", lambda *args: (True, "GATE_PASSED_TEST"))
+    monkeypatch.setattr(entry_contract, "excessive_upper_shadow_problem", lambda *args: None)
+
+    decision = evaluate_entry_contract(
+        frame, symbol="CAP/USDT", account=account,
+    )
+
+    assert decision is not None
+    assert decision["close_price"] == float(frame.iloc[-1]["close"])
+    assert decision["pair_confirmation_bar_id"] is None
     assert decision["exit_bar_id"] == decision["confirmation_bar_id"]
 
 

@@ -1,5 +1,12 @@
 # Doji Reversal and Post-Close Continuation
 
+### [2026-10-10 13:23:32 UTC+8] - Modification Phase: Generic entry decision metadata
+- **Author**: shudgai999 / Copilot
+- **Target Files & Lines**: `core/services/entry_contract.py` (`evaluate_entry_contract` pipeline-confirmed decision); `tests/test_post_close_continuation.py` (`test_pipeline_decision_includes_structured_entry_metadata`).
+- **Modification Description**: Populate `close_price` from the latest completed candle and explicitly set `pair_confirmation_bar_id` to `None` for the generic pipeline entry decision. This completes the decision shape required by structured submission and prevents runtime `KeyError` after the earlier `exit_bar_id` fix.
+- **Trigger Reason & Requirement**: Runtime logs showed generic CAP/USDT entry candidates failing during execution with `KeyError: 'close_price'`; code inspection also found the immediately following required `pair_confirmation_bar_id` absent.
+- **Verification & Test Status**: `tests/test_post_close_continuation.py tests/test_net_roe_profit_lock.py`: 32 passed, including the new generic decision metadata regression test. A separate legacy scanner-to-fill test remains blocked by its fixture's missing entry data (`ma5` / enough gate data) and is not counted as passing.
+
 ### [2026-10-10 12:33:26 UTC+8] - Modification Phase: Exit confirmation and LONG continuation
 - **Author**: shudgai999 / Copilot
 - **Target Files & Lines**: `core/services/exits/peak_trailing_exit.py` (`confirmed_doji_reversal`, `doji_reversal_evidence`, `migrate_peak_state`, exit arbitration); `core/services/entry_contract.py` (`evaluate_post_close_long_continuation`); `core/engine.py` (`_try_profit_reentry_locked`); related tests.
