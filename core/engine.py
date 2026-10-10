@@ -1206,83 +1206,13 @@ class TradingEngine:
                 self.account.log(f'即時成交出口串流錯誤: {exc}', 'WARNING')
                 await asyncio.sleep(.1)
 
-    async def _try_reverse_on_breakout(self, symbol, price, quote_ms=None):
-        """Close a confirmed opposite impulse, then revalidate one receipt-backed entry."""
-        from core.services.impulse_breakout import impulse_entry, reverse_receipt, REASONS
-        from core.services.candle_data import log_entry_gate
-        if not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS:
-            return False
-        now = time.time() * 1000
-        try:
-            stamp = now if quote_ms is None else float(quote_ms)
-            price = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(price) or price <= 0:
-            return False
-        if not math.isfinite(stamp) or not 0 <= now-stamp <= 5000:
-            return False
-        frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
-        if frame is None or frame.empty or float(frame.iloc[-1]['timestamp']) != math.floor(stamp/60000)*60000:
-            return False
-        impulse = impulse_entry(frame, price, symbol, account=self.account)
-        if impulse is None:
-            return False
-        locks = getattr(self, '_breakout_reverse_locks', None)
-        if locks is None:
-            locks = self._breakout_reverse_locks = {}
-        lock = locks.setdefault(symbol, asyncio.Lock())
-        if lock.locked():
-            return True
-        async with lock:
-            position = self.account.positions.get(symbol)
-            if position:
-                if (position.get('side') == impulse['side']
-                        or str(position.get('entry_mode', '')).upper() != 'CHANNEL_SWING'):
-                    return False
-                from core.services.exits.realtime_profit_exit import cached_tick_indicators
-                from core.services.exits.peak_trailing_exit import trend_continuation_hold
-                hold_snapshot, _ = cached_tick_indicators(frame, price, stamp)
-                if trend_continuation_hold(position['side'], price, hold_snapshot):
-                    return False
-                source = impulse['strict_gate_evidence']
-                if (not source['intrabar']
-                        and source['source_bar_ms']+60000 <= float(position['open_timestamp'])*1000):
-                    return False
-                pending = dict(side=impulse['side'], live_bar_ms=source['live_bar_ms'])
-                meta = self.account.position_meta.setdefault(symbol, {})
-                if position.get('reverse_breakout_pending') != pending or meta.get('reverse_breakout_pending') != pending:
-                    position['reverse_breakout_pending'] = pending
-                    meta['reverse_breakout_pending'] = dict(pending)
-                    self.account.save_state()
-                closed = await self.account.close_position(symbol, float(price), REASONS[impulse['side']], is_manual=True)
-                if not closed or symbol in self.account.positions:
-                    log_entry_gate(self, symbol, impulse['side'], 'REVERSE', 'WAIT_CONFIRMED_REVERSE_CLOSE', impulse['confirmation_bar_id'])
-                    return True
-            receipt = reverse_receipt(self.account, symbol, impulse)
-            if receipt is None:
-                return False
-            # Never reuse the pre-close quote as order authorization.
-            fresh = await self._fresh_channel_entry_snapshot(symbol, impulse['side'], impulse['confirmation_bar_id'], code=impulse['type'])
-            if fresh is None:
-                return True
-            decision = fresh['decision']
-            if decision.get('reverse_close_trade_id') != receipt['id']:
-                return True
-            signal = dict(side=decision['side'], score=100, entry_mode='CHANNEL_SWING',
-                          signal_code=decision['type'], candidate_bar_id=decision['confirmation_bar_id'])
-            await self._place_structured_entry(symbol, signal, fresh['price'])
-            return True
-
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Arbitrate confirmed reversals before ordinary realtime exits."""
+        """Abnormal live bodies and hard stops; no REST or candle-close wait."""
         from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-        if await self._try_reverse_on_breakout(symbol, price, quote_ms):
-            return True
         return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
-        """Ticker and aggTrade share reversal and realtime exit arbitration."""
+        """Ticker shares the same lock-free decision path as aggTrade."""
         return await self._instant_quote_exit(symbol, price, quote_ms)
 
     async def _ticker_loop(self):
@@ -1869,16 +1799,13 @@ class TradingEngine:
             return False
         bar = decision['confirmation_bar_id']
         log_entry_gate(self, symbol, side, 'ENTRY_SEQUENCE', decision['entry_phase'], bar,
-                       first_bar=decision['breakout_bar_id'], exit_bar=decision.get('exit_bar_id'))
+                       first_bar=decision['breakout_bar_id'], exit_bar=decision['exit_bar_id'])
         used = getattr(self,'_closed_entry_fills',None)
         if used is None:
             used = self._closed_entry_fills = set()
         identity = (symbol,side,bar)
-        from core.services.impulse_breakout import reverse_receipt
-        receipt = reverse_receipt(self.account, symbol, decision) if decision.get('reverse_close_trade_id') else None
-        reverse_authorized = receipt is not None and receipt['id'] == decision.get('reverse_close_trade_id')
-        if not reverse_authorized and (any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades)):
+        if any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
 
@@ -1905,15 +1832,20 @@ class TradingEngine:
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
-        if not self._abnormal_market_entry_allowed(
+        is_instant_reverse = decision['type'] == 'BEARISH_INSTANT_BREAKOUT'
+        if (not is_instant_reverse and not self._abnormal_market_entry_allowed(
                 symbol, side, price, float(decision['entry_atr']),
-                float(live['open']), candle_high, candle_low, price):
+                float(live['open']), candle_high, candle_low, price)):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
                 'BLOCKED_ABNORMAL_MARKET_ENTRY', bar,
             )
             return False
-        if not quote_beyond_side_outer_rail(snapshot['frame'], side, price):
+        is_priority_entry = decision['type'] in (
+            'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+        )
+        if (not is_priority_entry
+                and not quote_beyond_side_outer_rail(snapshot['frame'], side, price)):
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
                 'BLOCKED_QUOTE_NOT_OUTSIDE_KC_RAIL', bar,
@@ -2000,9 +1932,6 @@ class TradingEngine:
             recent = getattr(self.account, 'logs', [])[log_count:]
             detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')
             log_entry_gate(self, symbol, side, 'EXECUTION', detail, bar)
-        if opened and reverse_authorized and self.account.positions.get(symbol, {}).get('side') == side:
-            receipt['reverse_entry_consumed'] = True
-            self.account.save_state()
         if opened:
             used.add(identity)
             # Keep bounded in-memory dedupe; persisted fills remain authoritative.
@@ -2105,6 +2034,11 @@ class TradingEngine:
         from core.services.entry_contract import evaluate_entry_contract
         observed = evaluate_entry_contract(frame, price, v8_reason,
                                            account=self.account, symbol=symbol)
+        is_priority_entry = bool(
+            observed and observed.get('type') in (
+                'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+            ) and observed.get('side') == side
+        )
         if (observed and observed['side'] == side and observed['entry_phase'] in (
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')
                 and observed.get('live_opening_context') not in (
@@ -2123,12 +2057,13 @@ class TradingEngine:
             return False
             
         import time
-        if getattr(self, '_market_crash_entries_paused', lambda x: False)(time.time()):
+        if (not is_priority_entry
+                and getattr(self, '_market_crash_entries_paused', lambda x: False)(time.time())):
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} BTC_FLASH_CRASH_COOLDOWN ACTIVE', 'WARNING')
             return False
 
         cooldown_until = getattr(self, '_market_crash_entry_cooldown_until', 0.0)
-        if cooldown_until > 0 and frame is not None and not frame.empty:
+        if not is_priority_entry and cooldown_until > 0 and frame is not None and not frame.empty:
             try:
                 closed = frame[frame['is_closed'] == True] if 'is_closed' in frame.columns else frame.iloc[:-1]
                 if not closed.empty:
@@ -2561,6 +2496,47 @@ class TradingEngine:
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
             return
+        if daily_halt:
+            return
+        reentry_side = ticket.get('old_side', ticket.get('side'))
+        if reentry_side in ('LONG', 'SHORT'):
+            from core.services.closed_breakout_entry import matched_reentry_close
+            from core.services.entry_contract import evaluate_continuation_entry
+            matched_close_ms = matched_reentry_close(self.account, symbol, ticket)
+            decision = evaluate_continuation_entry(
+                frame, price, code='TRIGGER_C_CONTINUATION',
+                symbol=symbol, account=self.account,
+            )
+            if (decision is not None
+                    and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
+                    and matched_close_ms
+                    and float(decision['post_close_continuation_close_id'])
+                        == float(matched_close_ms)
+                    and decision['side'] == ticket['side'] == reentry_side):
+                signal = {
+                    'side': reentry_side,
+                    'score': 100,
+                    'entry_mode': 'CHANNEL_SWING',
+                    'action': 'ENTER_MARKET',
+                    'reason': (
+                        'Channel Swing PROFIT_REENTRY '
+                        + decision['reason'] + ' ' + ticket['token']
+                    ),
+                    'signal_code': decision['type'],
+                    'signal_id': decision['pending_signal_id'],
+                    'candidate_bar_id': decision['confirmation_bar_id'],
+                    'profit_profile': 'TREND_EXTENSION',
+                    'atr': decision['entry_atr'],
+                }
+                if await self._place_structured_entry(symbol, signal, price):
+                    self.account.channel_profit_reentries.pop(symbol, None)
+                    getattr(self, '_channel_swing_peak_exit_info', {}).pop(symbol, None)
+                    self.account.save_state()
+                    self.account.log(
+                        f'✅ [獲利保護重開] {symbol} {reentry_side} 平倉後同向延續入口已開倉',
+                        'SUCCESS',
+                    )
+                    return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
         # [EMERGENCY FAIL-CLOSED]
