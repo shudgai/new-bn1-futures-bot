@@ -20,7 +20,7 @@ def test_kc_expansion_blocked_by_flat_ma15():
     data[-2]['ma5'] = 100
     data[-1]['ma15'] = 99.88
     data[-2]['ma15'] = 99.94
-    data[-3]['ma15'] = 100
+    data[-3]['ma15'] = 102
     data.append({'timestamp': 22000, 'open': 100, 'high': 110, 'low': 90, 'close': 105, 'is_closed': False})
     
     frame = pd.DataFrame(data)
@@ -53,7 +53,7 @@ def test_extreme_kc_expansion():
     data[-2]['ma5'] = 100
     data[-1]['ma15'] = 98
     data[-2]['ma15'] = 100
-    data[-3]['ma15'] = 100
+    data[-3]['ma15'] = 102
     data.append({'timestamp': 22000, 'open': 100, 'high': 110, 'low': 90, 'close': 105, 'is_closed': False})
     
     frame = pd.DataFrame(data)
@@ -86,7 +86,7 @@ def test_kc_expansion_allowed_initial_steep_ma15():
     data[-2]['ma5'] = 100
     data[-1]['ma15'] = 95
     data[-2]['ma15'] = 100
-    data[-3]['ma15'] = 100
+    data[-3]['ma15'] = 102
     
     data.append({'timestamp': 22000, 'open': 100, 'high': 110, 'low': 90, 'close': 105, 'is_closed': False})
     

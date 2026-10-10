@@ -1452,6 +1452,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 if live_close > kc_basis and ma5 > ma15:
                     return reject('BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT')
                     
+                # --- GATE-STRICT-MA15-DECLINE: Strict MA15 falling requirement ---
+                if len(closed_bars) >= 3:
+                    ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
+                    # 嚴格要求最近 2 根的 MA15 必須呈現實質向下跌勢
+                    if ma15 >= prev_ma15 or prev_ma15 >= ma15_2_ago:
+                        return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
+                elif ma15 >= prev_ma15:
+                    return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
+                    
                 if kc_dir in ('LONG', None):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
                 
@@ -1461,6 +1470,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         and ma5 <= ma15):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
             elif side == 'LONG':
+                # --- GATE-STRICT-MA15-INCLINE: Strict MA15 rising requirement ---
+                if len(closed_bars) >= 3:
+                    ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
+                    # 嚴格要求最近 2 根的 MA15 必須呈現實質向上漲勢
+                    if ma15 <= prev_ma15 or prev_ma15 <= ma15_2_ago:
+                        return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
+                elif ma15 <= prev_ma15:
+                    return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
+                    
                 if kc_dir in ('SHORT', None):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
                     
