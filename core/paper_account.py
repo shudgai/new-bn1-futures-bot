@@ -522,7 +522,24 @@ class PaperAccount:
             self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
             return False
 
-        if entry_context and 'snapshot' in entry_context:
+        entry_context = dict(entry_context or {})
+        is_manual = (
+            entry_context.get('is_manual') in [True, 'true', 'TRUE']
+            or entry_context.get('manual_entry') in [True, 'true', 'TRUE']
+            or entry_context.get('source') == 'MANUAL'
+            or reason == 'MANUAL'
+        )
+        if is_manual:
+            # A manual fill is still managed under the bot's normal position
+            # lifecycle. Normalize here so alternate API callers cannot create
+            # an unmanaged/legacy-mode position by omitting these fields.
+            entry_context.update({
+                'entry_mode': 'CHANNEL_SWING',
+                'manual_entry': True,
+                'managed_by_bot': True,
+            })
+
+        if not is_manual and 'snapshot' in entry_context:
             snapshot = entry_context['snapshot']
             if 'candles' in snapshot and len(snapshot['candles']) > 0:
                 current_bar = snapshot['candles'][-1]
@@ -558,13 +575,14 @@ class PaperAccount:
                         raise RuntimeError("大週期向下嚴禁開多！")
 
 
-        from core.services.entry_firewall import validate_account_entry
-        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+        if is_manual:
+            # 手動訂單不需要自動策略訊號碼或行情 provider；持倉、金額、
+            # 餘額、數量精度等帳戶與交易所安全檢查仍在下方照常執行。
+            entry_decision = {}
+        else:
+            from core.services.entry_firewall import validate_account_entry
+            entry_decision = await validate_account_entry(self, symbol, side, entry_context)
         structural_stop = entry_decision.get('initial_sl')
-        if entry_context is None:
-            entry_context = {}
-
-        is_manual = entry_context.get('is_manual') in [True, 'true', 'TRUE'] or entry_context.get('manual_entry') in [True, 'true', 'TRUE'] or entry_context.get('source') == 'MANUAL' or reason == 'MANUAL'
         
         # The shared account firewall above owns strategy validation. Repeating
         # a different strategy here caused runtime crashes and conflicting gates.

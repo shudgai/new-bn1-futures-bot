@@ -157,6 +157,15 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 upper_shadow = live_high - max(live_open, quote)
                 if upper_shadow / candle_range >= 0.45 and (live_high - live_open) / live_open > 0.005:
                     return 'PEAK_REJECTION_EXIT', False
+                    
+                # 3. 大嘴巴見頂防護 (Wide Mouth Rejection)
+                live_bandwidth = (upper - lower) / mid
+                if live_bandwidth > 0.015: # 假設 1.5% 以上為擴口
+                    # 一旦盤中出現反向陰棒(quote < live_open)或站回上軌之內(quote < upper)
+                    if quote < live_open or quote < upper:
+                        # 確保這是一個獲利的單子，避免過早停損
+                        if profit_cushion > 0.5 * atr:
+                            return 'EXIT_LONG_WIDE_MOUTH_REJECTION', state_updated
             elif side == 'SHORT':
                 # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
                 if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:

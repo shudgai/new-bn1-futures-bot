@@ -1935,7 +1935,9 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
                 return False
             direction_problem = (
-                None if decision['type'] == 'CLIMAX_REVERSAL_FLIP'
+                None if decision['type'] in (
+                    'CLIMAX_REVERSAL_FLIP', 'KC_REALTIME_RAIL_BREACH_SHORT',
+                )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )
             if direction_problem:

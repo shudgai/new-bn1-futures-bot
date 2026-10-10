@@ -113,6 +113,37 @@ def is_true_climax_valley(frame):
     return bool(evidence and evidence['reason'] == 'CLIMAX_REVERSAL_EXIT_BOTTOM')
 
 
+def doji_reversal_exit_reason(bars, side):
+    """Return the bar-close reversal exit for two consecutive completed 1m bars."""
+    if side not in ('LONG', 'SHORT') or not isinstance(bars, (list, tuple)) or len(bars) < 2:
+        return None
+    previous, current = bars[-2:]
+    try:
+        def value(bar, short, long):
+            return float(bar.get(short, bar.get(long)))
+
+        prev_ms = value(previous, 'ms', 'timestamp')
+        curr_ms = value(current, 'ms', 'timestamp')
+        po, ph, pl, pc = (value(previous, short, long) for short, long in
+                          (('o', 'open'), ('h', 'high'), ('l', 'low'), ('c', 'close')))
+        co, cc = (value(current, short, long) for short, long in
+                  (('o', 'open'), ('c', 'close')))
+        values = (prev_ms, curr_ms, po, ph, pl, pc, co, cc)
+        if (not all(math.isfinite(item) for item in values)
+                or any(item <= 0 for item in values)
+                or curr_ms - prev_ms != 60_000
+                or ph < max(po, pc) or pl > min(po, pc) or ph <= pl):
+            return None
+        doji_body_ratio = abs(pc - po) / (ph - pl + 1e-9)
+        if doji_body_ratio > 0.35:
+            return None
+        if (side == 'LONG' and cc < co) or (side == 'SHORT' and cc > co):
+            return 'EXIT_DOJI_REVERSAL_CONFIRMED'
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
 def evaluate_trend_exit_and_take_profit(position, closed, atr):
     """Retired candle-only adapter; no live quote means no exit authority."""
     return dict(should_exit=False, action='HOLD', reason='WAIT_LIVE_QUOTE')

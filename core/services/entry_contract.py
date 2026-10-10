@@ -1469,6 +1469,39 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         and ma15_slope > slope_threshold 
                         and ma5 >= ma15):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
+                    
+            # --- GATE-KC-MOUTH-MA15: KC Expansion & True Trend Gate ---
+            if len(closed_bars) >= 20:
+                hist_20 = closed_bars.tail(20)
+                base_bw_sum = 0
+                for _, r in hist_20.iterrows():
+                    b_kc_m = float(r.get('kc_middle', 0))
+                    b_kc_u = float(r.get('kc_upper', 0))
+                    b_kc_l = float(r.get('kc_lower', 0))
+                    if b_kc_m > 0:
+                        base_bw_sum += (b_kc_u - b_kc_l) / b_kc_m
+                base_bandwidth = base_bw_sum / 20.0
+                
+                live_kc_m = float(last_closed.get('kc_middle', 0))
+                live_kc_u = float(last_closed.get('kc_upper', 0))
+                live_kc_l = float(last_closed.get('kc_lower', 0))
+                kc_bandwidth = (live_kc_u - live_kc_l) / (live_kc_m + 1e-9)
+                
+                ma15_3_ago = float(closed_bars.iloc[-3].get('ma15', 0))
+                ma15_real_slope = (ma15 - ma15_3_ago) / 2.0
+                min_slope = 0.01 * atr
+                
+                if kc_bandwidth > 2.2 * base_bandwidth:
+                    return reject('BLOCKED_BY_EXTREME_KC_EXPANSION')
+                
+                if kc_bandwidth > 1.6 * base_bandwidth:
+                    if abs(ma15_real_slope) <= min_slope:
+                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
+                    
+                    if side == 'LONG' and ma15_real_slope <= min_slope:
+                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
+                    if side == 'SHORT' and ma15_real_slope >= -min_slope:
+                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
         # -------------------------------------------------------------
 
         # --- GATE-CANDLE-BODY-STRENGTH: Weak-Body Hard Reject Gate ---
