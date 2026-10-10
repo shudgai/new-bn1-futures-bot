@@ -34,6 +34,7 @@ GOLDEN_CROSS_FAST_LONG_CODE = "KC_GOLDEN_CROSS_FAST_LONG"
 MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
 CLIMAX_REVERSAL_FLIP_CODE = "CLIMAX_REVERSAL_FLIP"
+REALTIME_RAIL_BREACH_SHORT_CODE = "KC_REALTIME_RAIL_BREACH_SHORT"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
@@ -42,7 +43,8 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", BEARISH_INSTANT_BREAKOUT_CODE, "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
 ENTRY_CODES = (KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES
                | NEW_TRIGGER_CODES | frozenset((GOLDEN_CROSS_FAST_LONG_CODE,
-                                                 CLIMAX_REVERSAL_FLIP_CODE)))
+                                                 CLIMAX_REVERSAL_FLIP_CODE,
+                                                 REALTIME_RAIL_BREACH_SHORT_CODE)))
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -59,6 +61,8 @@ ENTRY_EVIDENCE_KEYS = (
     "post_close_continuation_bar_id", "post_close_bars_after_close",
     "post_close_strong_impulse",
     "climax_flip_evidence", "climax_flip_close_id",
+    "realtime_body_atr", "realtime_distance_atr",
+    "realtime_lower_shadow_ratio", "previous_lower_shadow_ratio",
 )
 
 
@@ -876,6 +880,93 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
         return None
 
 
+def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
+    """Authorize a live SHORT at the first qualified KC lower-rail breach.
+
+    A crossed rail is handled here immediately: it either produces the
+    real-time candidate or a specific hard rejection, never a delayed fallback
+    candidate from another short-entry route on the same quote.
+    """
+    try:
+        if (frame is None or frame.empty or 'is_closed' not in frame.columns
+                or bool(frame.iloc[-1]['is_closed'])):
+            return None
+        live = frame.iloc[-1]
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        previous = closed.iloc[-1]
+        quote = float(quote)
+        opening = float(live['open'])
+        lower = float(live['kc_lower'])
+        middle = float(live['kc_middle'])
+        previous_middle = float(previous['kc_middle'])
+        atr = float(previous['atr'])
+        raw_close = float(live['close'])
+        values = (quote, opening, lower, middle, previous_middle, atr, raw_close)
+        if not all(math.isfinite(value) and value > 0 for value in values) or atr <= 0:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_DATA')
+        if quote >= lower:
+            return None
+
+        distance_atr = (lower - quote) / atr
+        if distance_atr >= 1.5:
+            return dict(action='WAIT', reason='BLOCKED_BY_EXTENDED_BREAKOUT')
+
+        def lower_shadow_ratio(bar_open, bar_close, bar_high, bar_low):
+            span = bar_high - bar_low
+            if (not all(math.isfinite(value) and value > 0
+                        for value in (bar_open, bar_close, bar_high, bar_low))
+                    or span <= 0 or bar_high < max(bar_open, bar_close)
+                    or bar_low > min(bar_open, bar_close)):
+                return None
+            return max(0.0, min(bar_open, bar_close) - bar_low) / span
+
+        prior_wick = lower_shadow_ratio(*(
+            float(previous[key]) for key in ('open', 'close', 'high', 'low')
+        ))
+        live_high = max(float(live['high']), opening, quote)
+        live_low = min(float(live['low']), opening, quote)
+        live_wick = lower_shadow_ratio(opening, quote, live_high, live_low)
+        if prior_wick is None or live_wick is None:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_CANDLE')
+        if prior_wick > 0.50 or live_wick > 0.50:
+            return dict(action='WAIT', reason='BLOCKED_BY_BOTTOM_SHADOW')
+
+        body_atr = (opening - quote) / atr
+        if quote >= opening:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_NOT_BEARISH')
+        if body_atr < 0.30:
+            return dict(action='WAIT', reason='WAIT_REALTIME_SHORT_BODY_BELOW_0_3_ATR')
+        live_ma3 = float(live['ma3']) + (quote - raw_close) / 3.0
+        live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
+        if not all(math.isfinite(value) and value > 0 for value in (live_ma3, live_ma5)):
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_MA')
+        if middle >= previous_middle:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_KC_NOT_FALLING')
+        if live_ma3 > live_ma5:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_MA_ORDER')
+
+        stamp = float(live['timestamp'])
+        if not math.isfinite(stamp) or stamp <= 0:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_TIMESTAMP')
+        signal_id = f'{symbol}:{REALTIME_RAIL_BREACH_SHORT_CODE}:{int(stamp)}'
+        return dict(
+            action='ENTER', side='SHORT', type=REALTIME_RAIL_BREACH_SHORT_CODE,
+            reason='REALTIME_KC_LOWER_RAIL_BREACH', price=quote,
+            entry_atr=atr, confirmation_bar_id=stamp, close_price=quote,
+            intrabar=True, entry_phase='REALTIME_RAIL_BREACH',
+            breakout_bar_id=stamp, pair_confirmation_bar_id=None,
+            third_bar_id=stamp, pending_signal_id=signal_id,
+            live_opening_context='REALTIME_LOWER_RAIL_BREACH',
+            realtime_body_atr=body_atr, realtime_distance_atr=distance_atr,
+            realtime_lower_shadow_ratio=live_wick,
+            previous_lower_shadow_ratio=prior_wick,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_DATA')
+
+
 def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=None):
     """Require a closed rail break, a closed same-color confirmation, and a live third bar."""
     try:
@@ -1331,6 +1422,24 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
+        # --- GATE-CANDLE-BODY-STRENGTH: Weak-Body Hard Reject Gate ---
+        live = frame.iloc[-1]
+        opening = float(live['open'])
+        quote_f = float(quote)
+        high = max(float(live['high']), quote_f)
+        low = min(float(live['low']), quote_f)
+        closed_bars = closed_entry_candles(frame)
+        if not closed_bars.empty:
+            atr = float(closed_bars.iloc[-1]['atr'])
+            body = abs(quote_f - opening)
+            body_ratio = body / (high - low + 1e-9)
+            
+            if body_ratio < 0.50:
+                return reject('BLOCKED_BY_WEAK_BODY_RATIO')
+            if body < 0.35 * atr:
+                return reject('BLOCKED_BY_INSUFFICIENT_BODY_ATR')
+        # -------------------------------------------------------------
+
         climax_flip = bool(
             decision.get('type') == CLIMAX_REVERSAL_FLIP_CODE
             and decision.get('entry_phase') == 'EXTREME_CLIMAX_FLIP'
@@ -1338,11 +1447,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             and int(decision.get('reverse_close_id') or 0)
                 == int(decision['climax_flip_evidence'].get('close_id') or -1)
         )
-        if not climax_flip and decision.get('side') == 'SHORT':
+        realtime_short = bool(
+            decision.get('type') == REALTIME_RAIL_BREACH_SHORT_CODE
+            and decision.get('entry_phase') == 'REALTIME_RAIL_BREACH'
+        )
+        if not (climax_flip or realtime_short) and decision.get('side') == 'SHORT':
             short_gate_problem = short_hard_preentry_problem(frame, quote)
             if short_gate_problem:
                 return reject(short_gate_problem)
-        if not climax_flip:
+        if not (climax_flip or realtime_short):
             gate_problem = three_bar_rail_gate_problem(
                 frame, quote, decision.get('side'),
             )
@@ -1351,7 +1464,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             problem = entry_direction_problem(frame, quote, decision.get('side'))
             if problem:
                 return reject(problem)
-        if not climax_flip and decision.get('side') == 'SHORT':
+        if not (climax_flip or realtime_short) and decision.get('side') == 'SHORT':
             problem = anti_bottom_short_problem(
                 frame, quote, account=account, symbol=symbol,
                 allow_confirmed_rail_break=(
@@ -1387,6 +1500,39 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             if climax_entry is None:
                 return reject('BLOCKED_CLIMAX_FLIP_NO_MATCHED_EXTREME_REVERSAL_CLOSE')
             return authorize(climax_entry, quote)
+
+        # Highest-priority forming-candle route: enter on the first qualifying
+        # live lower-rail breach, before the pending/three-bar and delayed
+        # breakout paths. A crossed rail with a failing momentum/extension/wick
+        # check is a hard rejection for this quote, not permission to fall
+        # through to a later short route.
+        short_route_codes = (
+            None, REALTIME_RAIL_BREACH_SHORT_CODE, 'TRIGGER_A_KC_BREAKOUT',
+            'TRIGGER_B_MA_CROSS', 'TRIGGER_C_CONTINUATION',
+            BEARISH_INSTANT_BREAKOUT_CODE, 'RE_ENTRY_SHORT',
+            'KC_LIVE_BODY_BREAKOUT_SHORT',
+            'KC_2BAR_CONFIRM_SHORT', 'KC_OUTSIDE_SHORT',
+        )
+        if code in short_route_codes:
+            realtime_short = evaluate_realtime_short_rail_breach(
+                frame, quote, symbol=symbol,
+            )
+            if realtime_short is not None:
+                if realtime_short.get('action') != 'ENTER':
+                    return reject(realtime_short['reason'])
+                if account is not None and symbol in getattr(account, 'positions', {}):
+                    return reject('BLOCKED_BY_POSITION_GATE')
+                if any(
+                    trade.get('symbol') == symbol
+                    and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                    and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                        == realtime_short['pending_signal_id']
+                    for trade in getattr(account, 'trades', [])
+                ):
+                    return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+                return authorize(realtime_short, quote)
+            if code == REALTIME_RAIL_BREACH_SHORT_CODE:
+                return reject('BLOCKED_REALTIME_SHORT_RAIL_NOT_BREACHED')
         # The authorized outer-rail route is based on two completed candles.
         # Do not require a third live candle to have a directional body: the
         # live quote only has to remain beyond the confirmed outer rail.
