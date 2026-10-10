@@ -1425,9 +1425,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             prev_closed = closed_bars.iloc[-2]
             
             atr = float(last_closed.get('atr', 0))
-            slope_threshold = 0.005 * atr
+            # [2026-10-10] 下調 slope_threshold 從 0.005 至 0.003 ATR，避免盤整剛啟動時無法達成
+            slope_threshold = 0.003 * atr
             
             kc_basis = float(last_closed.get('kc_middle', 0))
+            kc_upper = float(last_closed.get('kc_upper', 0))
+            kc_lower = float(last_closed.get('kc_lower', 0))
             prev_kc_basis = float(prev_closed.get('kc_middle', 0))
             kc_slope = kc_basis - prev_kc_basis
             
@@ -1452,37 +1455,52 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 if live_close > kc_basis and ma5 > ma15:
                     return reject('BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT')
                     
+                is_breakout_short = live_close < kc_lower
+                
                 # --- GATE-STRICT-MA15-DECLINE: Strict MA15 falling requirement ---
                 if len(closed_bars) >= 3:
                     ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
-                    # 嚴格要求最近 2 根的 MA15 必須呈現實質向下跌勢
-                    if ma15 >= prev_ma15 or prev_ma15 >= ma15_2_ago:
-                        return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
+                    if is_breakout_short:
+                        # 破軌首根放行優先：只要求當下向下彎頭，允許歷史走平
+                        if ma15 >= prev_ma15:
+                            return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
+                    else:
+                        # 嚴格要求最近 2 根的 MA15 必須呈現實質向下跌勢
+                        if ma15 >= prev_ma15 or prev_ma15 >= ma15_2_ago:
+                            return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
                 elif ma15 >= prev_ma15:
                     return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
                     
-                if kc_dir in ('LONG', None):
+                if not is_breakout_short and kc_dir in ('LONG', None):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
                 
-                if not (kc_slope < -slope_threshold
+                if not is_breakout_short and not (kc_slope < -slope_threshold
                         and ma5_slope < -slope_threshold 
                         and ma15_slope < -slope_threshold 
                         and ma5 <= ma15):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
             elif side == 'LONG':
+                live_close = float(quote)
+                is_breakout_long = live_close > kc_upper
+                
                 # --- GATE-STRICT-MA15-INCLINE: Strict MA15 rising requirement ---
                 if len(closed_bars) >= 3:
                     ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
-                    # 嚴格要求最近 2 根的 MA15 必須呈現實質向上漲勢
-                    if ma15 <= prev_ma15 or prev_ma15 <= ma15_2_ago:
-                        return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
+                    if is_breakout_long:
+                        # 破軌首根放行優先：只要求當下向上彎頭，允許歷史走平
+                        if ma15 <= prev_ma15:
+                            return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
+                    else:
+                        # 嚴格要求最近 2 根的 MA15 必須呈現實質向上漲勢
+                        if ma15 <= prev_ma15 or prev_ma15 <= ma15_2_ago:
+                            return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
                 elif ma15 <= prev_ma15:
                     return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
                     
-                if kc_dir in ('SHORT', None):
+                if not is_breakout_long and kc_dir in ('SHORT', None):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
                     
-                if not (kc_slope > slope_threshold
+                if not is_breakout_long and not (kc_slope > slope_threshold
                         and ma5_slope > slope_threshold 
                         and ma15_slope > slope_threshold 
                         and ma5 >= ma15):
