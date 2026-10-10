@@ -17,7 +17,9 @@ STATE_KEY = 'peak_trailing_state'
 PEAK_REASON = 'EXIT_REALTIME_PEAK_TRAILING'
 HARD_REASON = 'EXIT_INITIAL_ATR_HARD_STOP'
 NET_ROE_LOCK_TRIGGER = 'NET_ROE_STAGED_GIVEBACK'
-NET_ROE_LOCK_STEPS = ((5.0, 2.0), (8.0, 2.5), (11.0, 3.0))
+NET_ROE_LOCK_FIRST_PCT = 8.0
+NET_ROE_LOCK_STEP_PCT = 4.0
+NET_ROE_LOCK_GIVEBACK_PCT = 2.0
 LIVE_MA5_BREAKDOWN_TRIGGER = 'LIVE_MA5_BREAKDOWN_EXIT'
 LIVE_FLASH_DUMP_TRIGGER = 'LIVE_FLASH_DUMP_EXIT'
 LIVE_MA5_BREAKDOWN_ATR = 0.25
@@ -485,14 +487,20 @@ def estimated_display_net_pnl(entry, price, qty, sign, fee, slippage):
 
 
 def net_roe_lock_floor(peak_net_roe_pct):
-    """Return the staged giveback floor for the highest observed net ROE%."""
-    if peak_net_roe_pct >= 14.0 or math.isclose(peak_net_roe_pct, 14.0, rel_tol=1e-12):
-        return peak_net_roe_pct * 0.75
-    for threshold, giveback in reversed(NET_ROE_LOCK_STEPS):
-        if peak_net_roe_pct >= threshold or math.isclose(
-                peak_net_roe_pct, threshold, rel_tol=1e-12):
-            return peak_net_roe_pct - giveback
-    return None
+    """Arm at 8% net ROE, then raise the floor 4pp per stage with 2pp giveback."""
+    try:
+        peak = float(peak_net_roe_pct)
+        if not math.isfinite(peak):
+            return None
+        progress = peak - NET_ROE_LOCK_FIRST_PCT
+        if progress < 0 and not math.isclose(progress, 0.0, rel_tol=1e-12, abs_tol=1e-12):
+            return None
+        stage = max(0, math.floor(max(0.0, progress) / NET_ROE_LOCK_STEP_PCT + 1e-12))
+        return (NET_ROE_LOCK_FIRST_PCT
+                + stage * NET_ROE_LOCK_STEP_PCT
+                - NET_ROE_LOCK_GIVEBACK_PCT)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def ma_trend_confirms_position(position, snapshot):
@@ -1322,6 +1330,17 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if (is_channel_swing and reason != HARD_REASON
                     and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
                 reason, trigger = None, None
+
+            # A Channel Swing three-point pullback may close only after its
+            # net-ROE profit lock has armed (first activation: 8% peak ROE).
+            # Otherwise a pivot must not flatten an unprotected position.
+            if (is_channel_swing and trigger == 'THREE_POINT_PIVOT'
+                    and not state.get('net_roe_lock_armed', False)):
+                reason, trigger = None, None
+                for key in ('pending', 'trigger', 'trigger_bar_ms',
+                            'trigger_confirmed_ms', 'trigger_open',
+                            'trigger_atr', 'trigger_price'):
+                    state.pop(key, None)
 
             # No profit protection: if position currently has no net profit, do not prematurely exit on soft/reversal signals
             if (reason and reason != HARD_REASON
