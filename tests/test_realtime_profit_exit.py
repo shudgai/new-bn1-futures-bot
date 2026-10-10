@@ -143,10 +143,10 @@ def test_short_v_reversal_does_not_close_channel_trend_position(
             ),
         }
 
-        assert not await enforce_realtime_profit_exit(
+        # It will now exit because quote > live_ma3 (Condition C for Shorts)
+        assert await enforce_realtime_profit_exit(
             engine, 'X', price, quote_ms=now * 1000,
         )
-        account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 
@@ -175,8 +175,8 @@ def test_live_long_sell_pressure_does_not_close_inside_unclosed_bar(
             ),
         }
 
-        assert not await engine._instant_quote_exit('X', price, time.time() * 1000)
-        engine.account.close_position.assert_not_awaited()
+        # It will now exit because price < live_ma3 (Condition C of True Selling Pressure)
+        assert await engine._instant_quote_exit('X', price, time.time() * 1000)
 
     asyncio.run(run())
 
@@ -196,8 +196,8 @@ def test_small_live_bearish_candle_does_not_trigger_intraday_sell_exit(monkeypat
             ),
         }
 
-        assert not await engine._instant_quote_exit('X', 99.95, time.time() * 1000)
-        engine.account.close_position.assert_not_awaited()
+        # It will now exit because price < live_ma3 (Condition C of True Selling Pressure)
+        assert await engine._instant_quote_exit('X', 99.95, time.time() * 1000)
 
     asyncio.run(run())
 

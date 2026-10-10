@@ -112,6 +112,28 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                         return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
                     if side == 'SHORT' and quote > live_open:
                         return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
+
+        # TRUE SELLING / BUYING PRESSURE EXIT (Intra-bar)
+        live_open = float(snapshot.get('live_open') or 0.)
+        live_high = float(snapshot.get('live_high') or 0.)
+        live_low = float(snapshot.get('live_low') or 0.)
+        live_kc_upper = float(snapshot.get('live_kc_upper') or 0.)
+        live_kc_lower = float(snapshot.get('live_kc_lower') or 0.)
+        live_ma3 = float(snapshot.get('live_ma3') or 0.)
+        if not is_early_hold_period and live_high > 0 and live_low > 0 and live_ma3 > 0 and live_kc_upper > 0 and live_kc_lower > 0:
+            if side == 'LONG':
+                cond_a = live_high >= live_kc_upper
+                cond_b = (live_high - quote) / (live_high - live_low + 1e-9) >= 0.45
+                cond_c = quote < live_ma3
+                if (cond_a and cond_b) or cond_c:
+                    return 'REALTIME_TRUE_SELLING_PRESSURE_EXIT', False
+            elif side == 'SHORT':
+                cond_a = live_low <= live_kc_lower
+                cond_b = (quote - live_low) / (live_high - live_low + 1e-9) >= 0.45
+                cond_c = quote > live_ma3
+                if (cond_a and cond_b) or cond_c:
+                    return 'REALTIME_TRUE_BUYING_PRESSURE_EXIT', False
+
         if not is_early_hold_period and math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
             return 'GLOBAL_KC_MIDDLE_CROSS', False
 
@@ -359,6 +381,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     if (entry_m != 'CHANNEL_SWING'
                             or gate_trigger == 'REALTIME_DOJI_REVERSAL_TRIGGERED'
                             or gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
+                            or gate_trigger == 'REALTIME_TRUE_SELLING_PRESSURE_EXIT'
+                            or gate_trigger == 'REALTIME_TRUE_BUYING_PRESSURE_EXIT'
                             or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
                         account.log(
                             f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
@@ -374,7 +398,9 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     # This keeps doji, deceleration, live V-reversal and CK-side
                     # heuristics from closing a trend trade mid-wave.
                     if (gate_trigger in ('REALTIME_DOJI_REVERSAL_TRIGGERED',
-                                         'ONE_MINUTE_CLOSED_MA5_TREND_GUARD')
+                                         'ONE_MINUTE_CLOSED_MA5_TREND_GUARD',
+                                         'REALTIME_TRUE_SELLING_PRESSURE_EXIT',
+                                         'REALTIME_TRUE_BUYING_PRESSURE_EXIT')
                             or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
                         pass
                     else:
