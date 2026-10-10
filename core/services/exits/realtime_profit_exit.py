@@ -78,7 +78,7 @@ def _tiered_net_roe_floor(peak_net_roe_pct):
 
 
 def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, fee, slippage):
-    """Evaluate 1m KC baseline, closed-MA5 guard, then the net-ROE ratchet."""
+    """Evaluate closed doji reversal, KC baseline, MA5 guard, then net-ROE."""
     if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
         return None, False
     side = position.get('side')
@@ -88,12 +88,25 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if not sign or not math.isfinite(quote) or quote <= 0:
             return None, False
-        if math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
-            return 'GLOBAL_KC_MIDDLE_CROSS', False
-
         history = snapshot.get('history_5')
         closed_ms = float(snapshot.get('closed_bar_ms') or 0.)
         live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+        if (isinstance(history, list) and history
+                and live_bar_ms > 0 and closed_ms == live_bar_ms - 60000
+                and float(history[-1].get('ms') or 0.) == closed_ms):
+            prev_bar = history[-1]
+            po, ph, pl, pc = (float(prev_bar.get(k) or 0.) for k in ('o', 'h', 'l', 'c'))
+            live_open = float(snapshot.get('live_open') or 0.)
+            if po > 0 and ph > 0 and pl > 0 and pc > 0 and ph > pl and live_open > 0:
+                doji_body_ratio = abs(pc - po) / (ph - pl + 1e-9)
+                if doji_body_ratio <= 0.35:
+                    if side == 'LONG' and quote < live_open:
+                        return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
+                    if side == 'SHORT' and quote > live_open:
+                        return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
+        if math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
+            return 'GLOBAL_KC_MIDDLE_CROSS', False
+
         if isinstance(history, list) and history:
             bar = history[-1]
             bar_ms = float(bar.get('ms') or 0.)
@@ -336,6 +349,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     account.save_state()
                 if gate_trigger:
                     if (entry_m != 'CHANNEL_SWING'
+                            or gate_trigger == 'REALTIME_DOJI_REVERSAL_TRIGGERED'
                             or gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
                             or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
                         account.log(
@@ -351,7 +365,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     # MA5 reclaim/break or the existing net-ROE profit lock.
                     # This keeps doji, deceleration, live V-reversal and CK-side
                     # heuristics from closing a trend trade mid-wave.
-                    if (gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
+                    if (gate_trigger in ('REALTIME_DOJI_REVERSAL_TRIGGERED',
+                                         'ONE_MINUTE_CLOSED_MA5_TREND_GUARD')
                             or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
                         pass
                     else:

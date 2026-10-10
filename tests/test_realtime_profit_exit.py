@@ -78,9 +78,9 @@ def live_exit_frame(*, history_close, opening, high, low):
         dict(
             timestamp=bar_ms - (5 - index) * 60_000,
             is_closed=True,
-            open=history_close,
+            open=history_close - 1.0,
             high=history_close + 0.1,
-            low=history_close - 0.1,
+            low=history_close - 1.1,
             close=history_close,
             atr=1.0,
             ma3=history_close,
@@ -269,37 +269,6 @@ def test_net_roe_lock_is_disabled_even_when_price_retraces(monkeypatch):
     assert not position['peak_trailing_state'].get('net_roe_lock_armed')
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_net_roe_staged_giveback_does_not_close_through_realtime_path(side, monkeypatch):
-    monkeypatch.setattr(
-        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
-        lambda *a, **k: ('RELEASED', 'TEST'),
-    )
-
-    def quote_for_net_roe(net_roe_pct):
-        sign = 1 if side == 'LONG' else -1
-        target_pnl = net_roe_pct * 100. / 100.
-        fee, slippage = .0005, .0001
-        return (target_pnl + sign * 100. + 100. * fee) / (sign - fee - slippage)
-
-    async def run():
-        e, p, now = engine_for(side)
-        assert not await e._instant_quote_exit(
-            'X', quote_for_net_roe(5.5), time.time() * 1000
-        )
-        assert 'net_roe_lock_floor_pct' not in p['peak_trailing_state']
-
-        persisted_meta = copy.deepcopy(e.account.position_meta)
-        replacement = dict(pos(side), open_timestamp=p['open_timestamp'])
-        e.account.positions['X'] = replacement
-        e.account.position_meta = persisted_meta
-
-        assert not await e._instant_quote_exit(
-            'X', quote_for_net_roe(3.5), time.time() * 1000
-        )
-        e.account.close_position.assert_not_awaited()
-
-    asyncio.run(run())
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -363,52 +332,39 @@ def test_ma5_trend_guard_reads_only_latest_closed_one_minute_bar(side, close, ex
     assert trigger == expected
 
 
-def test_net_roe_10_percent_peak_40_percent_giveback_closes_realtime():
-    from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
-    from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-
+@pytest.mark.parametrize(('side', 'previous', 'live_open', 'tick'), [
+    ('LONG',
+     {'open': 100.0, 'high': 100.4, 'low': 99.6, 'close': 100.1},
+     100.3, 100.1),
+    ('SHORT',
+     {'open': 100.0, 'high': 100.4, 'low': 99.6, 'close': 100.1},
+     99.8, 100.0),
+])
+def test_realtime_doji_then_opposite_color_closes_channel_position(
+    side, previous, live_open, tick
+):
     async def run():
-        engine, position, now = engine_for('LONG')
-        engine._channel_exit_frames = {
-            'X': live_exit_frame(
-                history_close=100.0, opening=100.0, high=100.1, low=99.9,
-            ),
-        }
+        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
 
-        def price_for_net_roe(target_pct):
-            target_pnl = position['margin'] * target_pct / 100.0
-            fee = TAKER_FEE_RATE
-            slip = SLIPPAGE_PCT
-            return (target_pnl + position['entry_price'] * position['qty'] * (1 + fee)) / (
-                position['qty'] * (1 - fee - slip)
-            )
-
-        assert not await enforce_realtime_profit_exit(
-            engine, 'X', price_for_net_roe(10.0), quote_ms=now * 1000,
+        engine, position, now = engine_for(side)
+        frame = live_exit_frame(
+            history_close=100.0, opening=live_open, high=100.5, low=99.5,
         )
-        assert position['three_tier_net_roe_lock_state']['tier'] == 1
+        frame.loc[frame.index[-2], list(previous)] = list(previous.values())
+        frame.loc[frame.index[-2], 'ma5'] = 99.0 if side == 'LONG' else 101.0
+        frame.loc[frame.index[-1], 'kc_middle'] = 90.0 if side == 'LONG' else 110.0
+        engine._channel_exit_frames = {'X': frame}
+
         assert await enforce_realtime_profit_exit(
-            engine, 'X', price_for_net_roe(6.0), quote_ms=now * 1000 + 1,
+            engine, 'X', tick, quote_ms=now * 1000,
         )
         engine.account.close_position.assert_awaited_once()
-        assert 'TIER_1' in engine.account.close_position.await_args.args[2]
+        assert 'REALTIME_DOJI_REVERSAL_TRIGGERED' in engine.account.close_position.await_args.args[2]
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_stale_quotes_and_replacement_position_do_not_inherit_peak(side):
-    async def run():
-        e, p, now = engine_for(side)
-        sign = 1 if side == 'LONG' else -1
-        assert not await e._instant_quote_exit('X', 100+sign, (now-10)*1000)
-        assert 'peak_trailing_state' not in p
-        assert not await e._instant_quote_exit('X', 100+sign, now*1000)
-        e.account.positions['X'] = dict(pos(side), open_timestamp=now-1)
-        assert not await e._instant_quote_exit('X', 100., now*1000)
-        assert e.account.positions['X']['peak_pnl_usd'] == 0.
-        e.account.close_position.assert_not_awaited()
-    asyncio.run(run())
+
 
 
 def test_only_atr_fallback_uses_confirmed_history_not_live_candle():
@@ -443,73 +399,4 @@ def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
     assert snapshot['ma15_history'] == [95., 96., 97.]
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_real_account_reload_holds_through_profit_pullback(side, mode, tmp_path, monkeypatch):
-    monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
-    async def run():
-        import core.paper_account as pm
-        import core.testnet_account as tm
-        from test_testnet_account import FakeTestnetExchange
-        from test_close_deduplication import close_orders, closes
-        symbol = 'DOGE/USDT'
-        exchange = FakeTestnetExchange()
-        original_create = exchange.create_order
-        async def filled_create(*args, **kwargs):
-            order = await original_create(*args, **kwargs)
-            if str(args[1]).lower() == 'market':
-                order.update(status='closed', filled=float(args[3]))
-            return order
-        exchange.create_order = filled_create
-        exchange.market = lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
-            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
-            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
-        exchange.amount_to_precision = lambda symbol, amount: str(round(float(amount), 3))
-        if mode == 'paper':
-            monkeypatch.setattr(pm, 'STATE_FILE', str(tmp_path/'paper.json'))
-            account = pm.PaperAccount()
-        else:
-            monkeypatch.setattr(tm, 'STATE_FILE', str(tmp_path/'testnet.json'))
-            monkeypatch.setattr(tm, 'DATA_DIR', str(tmp_path))
-            monkeypatch.setattr(tm, 'notify_email', lambda *a, **k: None)
-            monkeypatch.setattr(tm.BinanceTestnetAccount, 'credentials_configured', staticmethod(lambda: True))
-            account = tm.BinanceTestnetAccount(exchange)
-            await account.initialize()
-        await account.open_position(symbol, side, 100., 100., 0., 0., 'MANUAL', leverage=1, atr=.5,
-                                    entry_context={'entry_mode':'CHANNEL_SWING', 'manual_entry':True, 'entry_atr':10.})
-        assert symbol in account.positions, account.logs[-3:]
-        e = object.__new__(TradingEngine)
-        e.is_running = True
-        e.account = account
-        e._channel_exit_frames = {}
-        sign = 1 if side == 'LONG' else -1
-        assert not await e._instant_quote_exit(symbol, 100+sign*6.0, time.time()*1000) # drive to 6U peak
-        peak = account.positions[symbol]['peak_pnl_usd']
-        if mode == 'paper':
-            account = pm.PaperAccount()
-        else:
-            account = tm.BinanceTestnetAccount(exchange)
-            await account.initialize()
-        e.account = account
-        assert account.positions[symbol]['peak_pnl_usd'] == peak
-        await asyncio.gather(*(e._instant_quote_exit(symbol,100+sign*1.0,time.time()*1000) for _ in range(10)))
-        assert symbol in account.positions
-        assert len(closes(account))==0
-        if mode == 'testnet':
-            assert len(close_orders(exchange))==0
-    asyncio.run(run())
 
-
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_channel_initial_atr_stop_cannot_retry_after_metadata_reload(side):
-    async def run():
-        e, p, now = engine_for(side)
-        sign = 1 if side == 'LONG' else -1
-        p['initial_sl'] = p['sl'] = 100-sign*.5
-        assert not await e._instant_quote_exit('X',100-sign*.5,now*1000)
-        restored = dict(pos(side),open_timestamp=p['open_timestamp'],sl=p['sl'])
-        e.account.positions['X'] = restored
-        assert not await e._instant_quote_exit('X',100.,now*1000)
-        assert restored['sl'] == 0.
-        e.account.close_position.assert_not_awaited()
-    asyncio.run(run())

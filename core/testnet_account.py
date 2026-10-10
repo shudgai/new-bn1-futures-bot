@@ -2180,7 +2180,21 @@ class BinanceTestnetAccount:
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
-        is_manual = entry_context is not None and entry_context.get("manual_entry") is True
+        entry_context = dict(entry_context or {})
+        is_manual = (
+            entry_context.get("is_manual") in [True, "true", "TRUE"]
+            or entry_context.get("manual_entry") in [True, "true", "TRUE"]
+            or entry_context.get("source") == "MANUAL"
+            or reason == "MANUAL"
+        )
+        if is_manual:
+            # Manual fills enter the same bot-managed Channel Swing lifecycle
+            # as positions opened by strategy signals.
+            entry_context.update({
+                "entry_mode": "CHANNEL_SWING",
+                "manual_entry": True,
+                "managed_by_bot": True,
+            })
         if not is_manual:
             if (
                 symbol in self.positions
@@ -2189,7 +2203,7 @@ class BinanceTestnetAccount:
             ):
                 return False
 
-        if entry_context and 'snapshot' in entry_context:
+        if not is_manual and 'snapshot' in entry_context:
             snapshot = entry_context['snapshot']
             if 'candles' in snapshot and len(snapshot['candles']) > 0:
                 current_bar = snapshot['candles'][-1]
@@ -2225,8 +2239,13 @@ class BinanceTestnetAccount:
                         raise RuntimeError("大週期向下嚴禁開多！")
 
 
-        from core.services.entry_firewall import validate_account_entry
-        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+        if is_manual:
+            # 手動開倉略過自動策略訊號/firewall；後續帳戶、餘額、數量與
+            # 交易所保護檢查仍照常執行，持倉會交由 Channel Swing 管理。
+            entry_decision = {}
+        else:
+            from core.services.entry_firewall import validate_account_entry
+            entry_decision = await validate_account_entry(self, symbol, side, entry_context)
         structural_stop = entry_decision.get('initial_sl')
 
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
@@ -2335,7 +2354,7 @@ class BinanceTestnetAccount:
             import ccxt
             is_definitive = False
             msg = str(exc)
-            if isinstance(exc, (ccxt.InsufficientFunds, ccxt.MarginCall)):
+            if isinstance(exc, (ccxt.InsufficientFunds,)):
                 is_definitive = True
             elif isinstance(exc, ccxt.InvalidOrder):
                 if "-1013" in msg and ("MIN_NOTIONAL" in msg or "LOT_SIZE" in msg):
