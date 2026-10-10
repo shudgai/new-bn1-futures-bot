@@ -38,12 +38,16 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'WATERFALL_DROP',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
+    'EXIT_DOJI_BEARISH_CONFIRMATION',
+    'EXIT_DOJI_BULLISH_CONFIRMATION',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
     'OPPOSITE_KC_BAND_BREACH',
+    'EXIT_DOJI_BEARISH_CONFIRMATION',
+    'EXIT_DOJI_BULLISH_CONFIRMATION',
 })
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
     'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
@@ -71,6 +75,73 @@ def position_identity(position):
     if result[0] not in ('LONG', 'SHORT') or not all(positive(v) for v in result[1:]):
         raise ValueError('Invalid peak-trailing identity')
     return result
+
+
+def confirmed_doji_reversal(position, snapshot):
+    """Confirm a closed weak candle followed by an adverse close through MA5."""
+    try:
+        bars = snapshot.get('history_5', [])
+        if len(bars) < 2:
+            return None
+        doji, reversal = bars[-2:]
+        quote_ms = float(snapshot['quote_ms'])
+        live_bar_ms = math.floor(quote_ms / 60000) * 60000
+        doji_ms, reversal_ms = float(doji['ms']), float(reversal['ms'])
+        if (doji_ms <= float(position['open_timestamp']) * 1000
+                or reversal_ms != doji_ms + 60000
+                or reversal_ms != float(snapshot.get('snapshot_bar_id', 0))
+                or live_bar_ms != reversal_ms + 60000):
+            return None
+        for bar in (doji, reversal):
+            values = [float(bar[key]) for key in ('o', 'h', 'l', 'c')]
+            opening, high, low, close = values
+            if (not all(math.isfinite(value) and value > 0 for value in values)
+                    or not low <= min(opening, close) <= max(opening, close) <= high):
+                return None
+
+        doji_span = float(doji['h']) - float(doji['l'])
+        doji_body = abs(float(doji['c']) - float(doji['o']))
+        doji_ratio = doji_body / doji_span if doji_span > 0 else float('inf')
+        if (doji_span <= 0
+                or (doji_ratio > DOJI_BODY_RATIO
+                    and not math.isclose(doji_ratio, DOJI_BODY_RATIO, rel_tol=1e-12))):
+            return None
+
+        sign = 1 if position['side'] == 'LONG' else -1
+        reversal_open = float(reversal['o'])
+        reversal_close = float(reversal['c'])
+        ma5 = float(reversal.get('ma5') or 0.)
+        if (sign * (reversal_close - reversal_open) >= 0
+                or not positive(ma5)
+                or sign * (reversal_close - ma5) >= 0):
+            return None
+        return ('EXIT_DOJI_BEARISH_CONFIRMATION' if sign > 0
+                else 'EXIT_DOJI_BULLISH_CONFIRMATION')
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def lower_shadow_support_hold(position, snapshot, price):
+    """Hold LONGs during a lower-wick rejection that closes above support."""
+    try:
+        if position.get('side') != 'LONG' or not isinstance(snapshot, dict):
+            return False
+        opening = float(snapshot.get('live_open') or 0.)
+        low = float(snapshot.get('live_low') or 0.)
+        close = float(price)
+        stamp = float(snapshot.get('quote_ms') or 0.)
+        live_bar = float(snapshot.get('live_bar_ms') or 0.)
+        ma15 = float(snapshot.get('ma15') or 0.)
+        middle = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
+        if (not all(positive(value) for value in (opening, low, close, stamp, live_bar, ma15, middle))
+                or live_bar != math.floor(stamp / 60000) * 60000
+                or low > min(opening, close)):
+            return False
+        body = abs(close - opening)
+        lower_shadow = min(opening, close) - low
+        return lower_shadow > body and close > ma15 and close > middle
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
 
 
 def live_body_breakout_position_side(position, meta=None):
@@ -681,6 +752,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         previous = position.get(STATE_KEY) or {}
         if previous.get('identity') == ident and stamp < previous.get('last_ms', 0):
             return None
+        pending_at_start = previous.get('pending') in (
+            ABNORMAL_REASON, HARD_REASON, PEAK_REASON,
+        )
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
@@ -949,6 +1023,12 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
                     state.update(ma5_evidence)
 
+            doji_trigger = confirmed_doji_reversal(position, snapshot)
+            if (doji_trigger is not None and reason != HARD_REASON
+                    and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                                        'OPPOSITE_KC_BAND_BREACH')):
+                reason, trigger = ABNORMAL_REASON, doji_trigger
+
             if (is_channel_swing and reason != HARD_REASON
                     and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
                 reason, trigger = None, None
@@ -972,7 +1052,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                                         'MA5_TRUE_PEAK_REVERSAL',
                                         'CHANNEL_PEAK_PULLBACK_REVERSAL',
-                                        'KC_CHANNEL_RETURN')):
+                                        'KC_CHANNEL_RETURN',
+                                        'EXIT_DOJI_BEARISH_CONFIRMATION',
+                                        'EXIT_DOJI_BULLISH_CONFIRMATION')):
                 if net <= 0:
                     reason, trigger = None, None
 
@@ -986,7 +1068,9 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
                     'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                     'MA5_TRUE_PEAK_REVERSAL',
-                    'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN'
+                    'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN',
+                    'EXIT_DOJI_BEARISH_CONFIRMATION',
+                    'EXIT_DOJI_BULLISH_CONFIRMATION',
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
@@ -1023,6 +1107,16 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     except Exception:
                         pass
                     reason, trigger = None, None
+
+        if (reason is not None and reason != HARD_REASON and not pending_at_start
+                and trigger not in (
+                    'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                    'OPPOSITE_KC_BAND_BREACH',
+                    'EXIT_DOJI_BEARISH_CONFIRMATION',
+                    'EXIT_DOJI_BULLISH_CONFIRMATION',
+                )
+                and lower_shadow_support_hold(position, snapshot, price)):
+            reason, trigger = None, None
 
         if reason:
             try:

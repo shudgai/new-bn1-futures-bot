@@ -110,6 +110,7 @@ def cached_tick_indicators(frame, price, stamp):
             live_high=max(float(live.get('high') or 0.), float(price)),
             live_low=min(float(live.get('low') or 0.), float(price)),
             live_kc_upper=float(live.get('kc_upper') or 0.),
+            live_kc_middle=float(live.get('kc_middle') or last.get('kc_middle') or 0.),
             live_kc_lower=float(live.get('kc_lower') or 0.),
             last_open=float(last.get('open') or 0.),
             last_high=float(last.get('high') or 0.),
