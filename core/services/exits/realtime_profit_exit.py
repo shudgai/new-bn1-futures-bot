@@ -170,10 +170,12 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
                 if quote < live_open and quote < mid and (live_open - quote) / live_open > 0.005:
                     return 'CATASTROPHIC_DUMP_EXIT', False
-                # 條件 A: 高檔爆出長上影線 (見頂真賣壓，上影線 >= 45%)
-                upper_shadow = live_high - max(live_open, quote)
-                if upper_shadow / candle_range >= 0.45 and (live_high - live_open) / live_open > 0.005:
-                    return 'PEAK_REJECTION_EXIT', False
+                # 條件 A: 高檔實時回踩平倉 (見頂真賣壓，盤中即時偵測)
+                # 若突破上軌或累積漲幅 > 1.5 ATR，且實時從高點回落超過當根波幅的 35%
+                upper_retrace = live_high - quote
+                is_high_peak = (live_high > upper) or ((live_high - entry) > 1.5 * atr)
+                if is_high_peak and candle_range > 0.2 * atr and (upper_retrace / candle_range >= 0.35):
+                    return 'LIVE_PEAK_REJECTION_EXIT', False
                     
                 # 3. 大嘴巴見頂防護 (Wide Mouth Rejection)
                 live_bandwidth = (upper - lower) / (mid + 1e-9)
@@ -200,10 +202,12 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
                 if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
                     return 'CATASTROPHIC_PUMP_EXIT', False
-                # 條件 A: 低檔爆出長下影線 (見底真買盤，下影線 >= 45%)
-                lower_shadow = min(live_open, quote) - live_low
-                if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
-                    return 'TROUGH_REJECTION_EXIT', False
+                # 條件 A: 低檔實時回抽平倉 (見底真買盤，盤中即時偵測)
+                # 若跌破下軌或累積跌幅 > 1.5 ATR，且實時從低點回抽超過當根波幅的 35%
+                lower_bounce = quote - live_low
+                is_deep_trough = (live_low < lower) or ((entry - live_low) > 1.5 * atr)
+                if is_deep_trough and candle_range > 0.2 * atr and (lower_bounce / candle_range >= 0.35):
+                    return 'LIVE_BOTTOM_REJECTION_EXIT', False
                     
                 # 3. 空單結構徹底破壞平倉 (Exit Short on Invalidation)
                 closed_close = float(snapshot.get('last_close') or 0.)

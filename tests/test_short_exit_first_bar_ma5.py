@@ -53,9 +53,9 @@ def test_trough_rejection_exit_confirmed():
         'atr': 4.0, # 2.5 * ATR = 10
         
         # live bar: green and near high
-        'live_open': 88.0,
-        'live_low': 87.0,
-        'live_high': 90.0,
+        'live_open': 94.0,
+        'live_low': 94.0,
+        'live_high': 98.0,
         
         # the key for rule 1 not to trigger:
         'last_close': 88.0,
@@ -74,7 +74,7 @@ def test_trough_rejection_exit_confirmed():
         ]
     }
     
-    reason, updated = _evaluate_realtime_core_exit_gates(position, meta, 89.5, 300000, snapshot, 0.001, 0.001)
+    reason, updated = _evaluate_realtime_core_exit_gates(position, meta, 97.5, 300000, snapshot, 0.001, 0.001)
     
     assert reason == 'EXIT_SHORT_TROUGH_REVERSAL_CONFIRMED'
 
@@ -145,3 +145,38 @@ def test_trend_following_ignores_ma5_invalidation():
     # Should NOT be EXIT_SHORT_ON_MA5_INVALIDATION because we're in trend following and last_close (97.5) < mid (100)
     assert reason != 'EXIT_SHORT_ON_MA5_INVALIDATION'
     assert reason != 'EXIT_SHORT_ON_TREND_INVALIDATION'
+
+def test_live_bottom_rejection_exit():
+    position = {
+        'side': 'SHORT',
+        'entry_price': 100,
+        'qty': 1,
+        'margin': 10,
+        'open_timestamp': 0.0
+    }
+    meta = {}
+    snapshot = {
+        'live_bar_ms': 2000,
+        'closed_bar_ms': 1000,
+        'live_kc_lower': 90,
+        'live_kc_upper': 110,
+        'live_kc_middle': 100,
+        'atr': 2.0,
+        
+        # live bar drops heavily and bounces back
+        'live_open': 95,
+        'live_high': 95,
+        'live_low': 89, # < lower (90)
+        'last_close': 95.5,
+        'ma5': 96.0,
+        
+        'history_5': [
+            {'kc_middle': 100, 'atr': 2.0, 'o': 100, 'c': 100, 'h': 100, 'l': 100},
+            {'kc_middle': 100, 'atr': 2.0, 'o': 100, 'c': 100, 'h': 100, 'l': 100}
+        ]
+    }
+    
+    # bounce 35% of (95 - 89 = 6). 6 * 0.35 = 2.1. So quote > 91.1
+    reason, updated = _evaluate_realtime_core_exit_gates(position, meta, 92.0, 300000, snapshot, 0.0, 0.0)
+    
+    assert reason == 'LIVE_BOTTOM_REJECTION_EXIT'
