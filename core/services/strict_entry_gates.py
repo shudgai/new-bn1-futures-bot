@@ -76,8 +76,11 @@ def validate_strict_entry(frame, quote, side, *, entry_mode='BREAKOUT'):
             return reject('BLOCKED_STRICT_OPPOSITE_GAP')
         if entry_mode != 'PULLBACK' and body_atr < 0.5:
             return reject('BLOCKED_STRICT_BODY_BELOW_HALF_ATR')
-        if entry_mode != 'PULLBACK' and distance > 3.:
-            return reject('BLOCKED_STRICT_DISTANCE_ABOVE_3_ATR')
+        # Anti-Chasing Gate: Prevent entering late in a move if price is already heavily extended
+        if entry_mode != 'PULLBACK' and distance > 1.5:
+            return reject('BLOCKED_BY_EXTENDED_BREAKOUT')
+
+
         if sign * (live_ma5 - float(previous['ma5'])) <= 0:
             return reject('BLOCKED_STRICT_MA5_DIRECTION')
         if width <= 0.25 * max_width:

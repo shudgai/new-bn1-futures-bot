@@ -88,6 +88,14 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if not sign or not math.isfinite(quote) or quote <= 0:
             return None, False
+        
+        # Min Hold Bars: Do not allow soft structural exits in the first 1-2 bars
+        # (This prevents intraday jitters from instantly closing a new position, 
+        # unless it hits the hard stop-loss handled elsewhere).
+        open_ms = float(position.get('open_timestamp') or 0.0) * 1000.0
+        time_held_ms = stamp - open_ms
+        is_early_hold_period = (time_held_ms < 120000)
+
         history = snapshot.get('history_5')
         closed_ms = float(snapshot.get('closed_bar_ms') or 0.)
         live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
@@ -99,12 +107,12 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
             live_open = float(snapshot.get('live_open') or 0.)
             if po > 0 and ph > 0 and pl > 0 and pc > 0 and ph > pl and live_open > 0:
                 doji_body_ratio = abs(pc - po) / (ph - pl + 1e-9)
-                if doji_body_ratio <= 0.35:
+                if doji_body_ratio <= 0.35 and not is_early_hold_period:
                     if side == 'LONG' and quote < live_open:
                         return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
                     if side == 'SHORT' and quote > live_open:
                         return 'REALTIME_DOJI_REVERSAL_TRIGGERED', False
-        if math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
+        if not is_early_hold_period and math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
             return 'GLOBAL_KC_MIDDLE_CROSS', False
 
         if isinstance(history, list) and history:

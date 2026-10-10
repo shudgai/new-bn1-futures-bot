@@ -308,6 +308,7 @@ def test_net_roe_tier_floors():
 ])
 def test_kc_middle_baseline_closes_independent_of_roe(side, price, expected):
     position = pos(side)
+    position['open_timestamp'] = 0.0
     trigger, _ = _evaluate_realtime_core_exit_gates(
         position, {}, price, 120000.,
         {'reason': None, 'live_kc_middle': 100.0}, .0005, .0001,
