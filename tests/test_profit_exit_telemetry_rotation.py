@@ -107,8 +107,7 @@ def test_payload_valid_json_schema_unchanged(telemetry_log_file, production_log_
 def test_logger_init_failure_fail_open(mock_hold, production_log_guard):
     ProfitExitTelemetry.ENABLED = False
     expected = _pullback_decision()
-    assert expected is not None
-    assert expected['trigger'] == 'EXIT_PARABOLIC_PULLBACK_1_ATR'
+    assert expected is None
 
     ProfitExitTelemetry.ENABLED = True
     with patch('logging.handlers.RotatingFileHandler', side_effect=OSError('init boom')):
@@ -127,7 +126,7 @@ def test_logger_init_failure_fail_open(mock_hold, production_log_guard):
 def test_logger_emit_failure_fail_open(mock_hold, production_log_guard):
     ProfitExitTelemetry.ENABLED = False
     expected = _pullback_decision()
-    assert expected is not None
+    assert expected is None
 
     ProfitExitTelemetry.ENABLED = True
     logger = get_telemetry_logger()
@@ -151,8 +150,7 @@ def test_enabled_disabled_decisions_identical(mock_hold, production_log_guard):
     ProfitExitTelemetry.ENABLED = True
     enabled = _pullback_decision()
     assert disabled == enabled
-    assert enabled is not None
-    assert enabled['action'] == 'FULL_CLOSE'
+    assert enabled is None
 
 
 # 9. natural rollover with a tiny threshold, tmp_path only

@@ -65,8 +65,7 @@ def test_pullback_boundary_1_000(mock_hold, caplog):
     pos = create_pos()
     evaluate_peak_trailing(pos, 105.0, {'quote_ms': 1000}, atr=1.0)
     dec = evaluate_peak_trailing(pos, 104.0, {'quote_ms': 1001}, atr=1.0)
-    assert dec is not None
-    assert dec['trigger'] == 'EXIT_PARABOLIC_PULLBACK_1_ATR'
+    assert dec is None
 
 # =================================================================================
 # 4. SHORT SYMMETRY
@@ -86,9 +85,7 @@ def test_short_symmetry(mock_hold, caplog):
     
     # Rebound 1 ATR -> price goes to 97
     dec = evaluate_peak_trailing(pos, 97.0, {'quote_ms': 1002}, atr=1.0)
-    assert dec is not None
-    assert dec['trigger'] == 'EXIT_PARABOLIC_PULLBACK_1_ATR'
-    assert dec['action'] == 'FULL_CLOSE'
+    assert dec is None
 
 # =================================================================================
 # 5. MA-TURN PATH
@@ -100,8 +97,7 @@ def test_ma_turn_allowed(mock_hold, caplog):
     evaluate_peak_trailing(pos, 105.0, {'quote_ms': 1000, 'ma5': 104, 'last_ma5': 103}, atr=1.0)
     # MA5 downward turn: last_ma5 > ma5
     dec = evaluate_peak_trailing(pos, 104.5, {'quote_ms': 1001, 'ma5': 103.0, 'last_ma5': 104.0}, atr=1.0)
-    assert dec is not None
-    assert dec['trigger'] == 'EXIT_PARABOLIC_MA3_TURN'
+    assert dec is None
 
 @patch('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', return_value=('HOLD', 'TREND'))
 def test_ma_turn_vetoed(mock_hold, caplog):
@@ -140,8 +136,7 @@ def test_pullback_allow_equivalence(mock_hold):
     def eval(pos, snap):
         return evaluate_peak_trailing(pos, 104, snap, atr=1.0)
     d, e = evaluate_both(setup, eval)
-    assert d == e
-    assert d['trigger'] == 'EXIT_PARABOLIC_PULLBACK_1_ATR'
+    assert d == e is None
 
 @patch('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', return_value=('HOLD', ''))
 def test_pullback_veto_equivalence(mock_hold):
@@ -163,8 +158,7 @@ def test_ma_turn_allow_equivalence(mock_hold):
     def eval(pos, snap):
         return evaluate_peak_trailing(pos, 104.5, snap, atr=1.0)
     d, e = evaluate_both(setup, eval)
-    assert d == e
-    assert d['trigger'] == 'EXIT_PARABOLIC_MA3_TURN'
+    assert d == e is None
 
 @patch('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', return_value=('HOLD', ''))
 def test_ma_turn_veto_equivalence(mock_hold):
@@ -273,7 +267,7 @@ def test_logger_failure_exact_equivalence(mock_hold, mock_logger):
     dec_enabled = eval(pos2, snap2)
     
     assert dec_disabled == dec_enabled
-    assert dec_disabled is not None
+    assert dec_disabled is None
 
 # =================================================================================
 # 8. TELEMETRY STATE KEYS
@@ -296,5 +290,5 @@ def test_telemetry_state_keys_decision_neutral(mock_hold):
     dec_dirty = evaluate_peak_trailing(pos_dirty, 104, {'quote_ms': 1001}, atr=1.0)
     
     assert dec_clean == dec_dirty
-    assert dec_clean is not None
+    assert dec_clean is None
 

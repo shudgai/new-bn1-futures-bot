@@ -1,6 +1,6 @@
 import copy
 import pytest
-from core.services.exits.peak_trailing_exit import evaluate_peak_trailing, STATE_KEY
+from core.services.exits.peak_trailing_exit import evaluate_peak_trailing, STATE_KEY, migrate_peak_state
 
 
 def position(side):
@@ -19,28 +19,13 @@ def tick(p, roe, stamp, fee=.0005, slip=.0001):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize(
-    ('peak', 'floor'),
-    [(5.0, 3.5), (9.0, 7.5), (13.0, 11.5), (17.0, 15.5), (21.0, 19.5)],
-)
-def test_ui_net_roe_staged_giveback_boundaries(side, peak, floor):
+@pytest.mark.parametrize('roe', [5.0, 9.0, 13.0, 21.0])
+def test_ui_net_roe_profit_lock_is_disabled(side, roe):
     p = position(side)
-    assert tick(p, (peak - .0001) / 100, 61000) is None
-    if peak == 5.0:
-        assert not p[STATE_KEY].get('net_roe_lock_armed')
-    else:
-        assert p[STATE_KEY].get('net_roe_lock_armed')
-    assert p[STATE_KEY]['net_roe_peak_pct'] == pytest.approx(peak - .0001)
-    assert tick(p, peak / 100, 62000) is None
-    assert p[STATE_KEY]['net_roe_lock_armed']
-    assert p[STATE_KEY]['net_roe_peak_pct'] == pytest.approx(peak)
-    assert p[STATE_KEY]['net_roe_lock_floor_pct'] == pytest.approx(floor)
-    assert tick(p, (floor + .0001) / 100, 63000) is None
-    result = tick(p, floor / 100, 64000)
-    assert result['trigger'] == 'NET_ROE_STAGED_GIVEBACK'
-    # Restart restoration and close-failure retry keep the authorized exit.
-    restored = copy.deepcopy(p)
-    assert tick(restored, peak / 100, 65000)['trigger'] == result['trigger']
+    assert tick(p, roe / 100, 61000) is None
+    assert tick(p, (roe - 2.) / 100, 62000) is None
+    assert not p[STATE_KEY].get('net_roe_lock_armed')
+    assert 'net_roe_lock_floor_pct' not in p[STATE_KEY]
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -53,11 +38,17 @@ def test_unarmed_pullback_and_stale_quote_cannot_close(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_armed_state_survives_restart_before_giveback(side):
+def test_legacy_armed_state_is_cleared_on_restart(side):
     p = position(side)
-    tick(p, .09, 62000)
+    p[STATE_KEY] = dict(identity=['LONG', 60., 100., 1.], pending='EXIT_REALTIME_PEAK_TRAILING',
+                        trigger='NET_ROE_STAGED_GIVEBACK', net_roe_peak_pct=9.,
+                        net_roe_lock_armed=True, net_roe_lock_floor_pct=7.5)
+    meta = {STATE_KEY: copy.deepcopy(p[STATE_KEY])}
+    migrate_peak_state(p, meta)
     restored = copy.deepcopy(p)
-    assert tick(restored, .075, 63000)['trigger'] == 'NET_ROE_STAGED_GIVEBACK'
+    assert tick(restored, .075, 63000) is None
+    assert not restored[STATE_KEY].get('pending')
+    assert not meta[STATE_KEY].get('net_roe_lock_armed')
 
 
 @pytest.mark.parametrize('margin', [0., None, float('nan')])

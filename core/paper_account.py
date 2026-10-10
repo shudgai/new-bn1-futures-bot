@@ -530,26 +530,30 @@ class PaperAccount:
                 kc_upper = current_bar['kc_upper']
                 kc_lower = current_bar['kc_lower']
                 kc_middle = current_bar.get('kc_middle', (kc_upper + kc_lower) / 2)
+                climax_flip = (
+                    entry_context.get('entry_signal_code') == 'CLIMAX_REVERSAL_FLIP'
+                    and entry_context.get('entry_phase') == 'EXTREME_CLIMAX_FLIP'
+                )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
-                if side == 'LONG' and price <= kc_upper:
+                if not climax_flip and side == 'LONG' and price <= kc_upper:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌強制拒單！執行價({price}) <= 上軌({kc_upper})", 'CRITICAL')
                     raise RuntimeError(f"嚴禁通道內開多！執行價({price}) <= 上軌({kc_upper})")
-                if side == 'SHORT' and price >= kc_lower:
+                if not climax_flip and side == 'SHORT' and price >= kc_lower:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破下軌強制拒單！執行價({price}) >= 下軌({kc_lower})", 'CRITICAL')
                     raise RuntimeError(f"嚴禁通道內開空！執行價({price}) >= 下軌({kc_lower})")
-                if side == 'SHORT' and price >= kc_middle:
+                if not climax_flip and side == 'SHORT' and price >= kc_middle:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})", 'CRITICAL')
                     raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})")
                 if len(snapshot['candles']) >= 2:
                     prev_bar = snapshot['candles'][-2]
                     ck_up = (current_bar['kc_middle'] > prev_bar['kc_middle']
                              and current_bar['kc_upper'] >= prev_bar['kc_upper'])
-                    if side == 'SHORT' and ck_up:
+                    if not climax_flip and side == 'SHORT' and ck_up:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↑CK 向上趨勢，嚴禁逆勢開空！", 'CRITICAL')
                         raise RuntimeError("大週期向上嚴禁開空！")
                     ck_down = (current_bar['kc_middle'] < prev_bar['kc_middle']
                                and current_bar['kc_lower'] <= prev_bar['kc_lower'])
-                    if side == 'LONG' and ck_down:
+                    if not climax_flip and side == 'LONG' and ck_down:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↓CK 向下趨勢，嚴禁逆勢開多！", 'CRITICAL')
                         raise RuntimeError("大週期向下嚴禁開多！")
 

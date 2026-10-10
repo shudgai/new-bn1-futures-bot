@@ -99,7 +99,7 @@ def test_first_live_breakout_stays_open_until_quote_enters_kc(side, price):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_first_live_breakout_keeps_confirmed_pivot_exit(side, monkeypatch):
+def test_first_live_breakout_holds_through_confirmed_pivot(side, monkeypatch):
     held = live_breakout_position(side)
     snapshot = channel_snapshot()
     monkeypatch.setattr(
@@ -115,8 +115,8 @@ def test_first_live_breakout_keeps_confirmed_pivot_exit(side, monkeypatch):
         held, 98., snapshot, fee=0., slippage=0.
     )
 
-    assert result["trigger"] == "THREE_POINT_PIVOT"
-    assert held["peak_trailing_state"]["pending"] == ABNORMAL_REASON
+    assert result is None
+    assert not held["peak_trailing_state"].get("pending")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -256,6 +256,7 @@ def test_impulse_reversal_blocks_entry_for_rest_of_same_candle(side):
         "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE",
         "WAIT_LIVE_BODY_BREAKOUT",
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
+        "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
     )
     assert not account.breakout_qualification
 
@@ -280,4 +281,5 @@ def test_next_candle_requires_observed_pullback_then_resume(side):
         "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE",
         "WAIT_LIVE_BODY_BREAKOUT",
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
+        "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
     )

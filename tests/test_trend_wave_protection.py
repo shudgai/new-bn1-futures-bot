@@ -136,7 +136,7 @@ def test_account_poll_cannot_close_channel_position_on_doji_or_deceleration(monk
             save_state=Mock(), log=Mock(),
         )
         monkeypatch.setattr(
-            'core.services.exits.entry_atr_protection.migrate_peak_state',
+            'core.services.exits.peak_trailing_exit.migrate_peak_state',
             lambda *_a, **_k: None,
         )
         monkeypatch.setattr(
@@ -239,7 +239,7 @@ def _post_close_impulse_frame(bars_after_close=3):
 
 
 @pytest.mark.parametrize('bars_after_close', [1, 3])
-def test_strong_post_close_impulse_reentry_is_scoped_three_bar_exception(
+def test_strong_post_close_impulse_cannot_bypass_three_bar_rail_gate(
     monkeypatch, bars_after_close,
 ):
     from core.services.entry_contract import evaluate_entry_contract
@@ -254,16 +254,13 @@ def test_strong_post_close_impulse_reentry_is_scoped_three_bar_exception(
     )
     frame, account, quote = _post_close_impulse_frame(bars_after_close)
 
+    diagnostics = {}
     decision = evaluate_entry_contract(
         frame, quote, code='TRIGGER_C_CONTINUATION',
-        account=account, symbol='CAP/USDT',
+        account=account, symbol='CAP/USDT', diagnostics=diagnostics,
     )
-
-    assert decision is not None
-    assert decision['side'] == 'SHORT'
-    assert decision['reason'] == 'POST_CLOSE_STRONG_BEARISH_IMPULSE'
-    assert decision['post_close_bars_after_close'] == bars_after_close
-    assert decision['post_close_strong_impulse'] is True
+    assert decision is None
+    assert diagnostics['reason'] == 'BLOCKED_INSIDE_KC_BANDS'
 
 
 def test_ordinary_continuation_remains_subject_to_three_bar_gate(monkeypatch):
@@ -287,6 +284,10 @@ def test_ordinary_continuation_remains_subject_to_three_bar_gate(monkeypatch):
         ),
     )
     monkeypatch.setattr(
+        'core.services.entry_contract.short_hard_preentry_problem',
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
         'core.services.entry_contract.three_bar_rail_gate_problem',
         lambda *_a, **_k: 'BLOCKED_THREE_BAR_SHORT_NOT_BROKEN_LOWER_RAIL',
     )
@@ -307,7 +308,7 @@ def test_strong_post_close_impulse_four_bars_later_is_rejected():
     frame, account, quote = _post_close_impulse_frame()
     # Shift the close so the otherwise identical completed impulse is four bars later.
     latest_closed_ms = float(frame.iloc[-2]['timestamp'])
-    close_floor = latest_closed_ms - bars_after_close * 60_000
+    close_floor = latest_closed_ms - 4 * 60_000
     account.trades[0]['id'] = close_floor + 10_000
     assert evaluate_post_close_continuation(
         frame, quote, 'CAP/USDT', account,

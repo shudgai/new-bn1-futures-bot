@@ -90,26 +90,47 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         strict_strategy.set_state(symbol, PositionState.IDLE)
         if not exit_only:
             bar_id = float(frame.iloc[-1]['timestamp'])
-            close_trade = next((
+            close_candidates = [
                 trade for trade in getattr(engine.account, 'trades', [])
-                if trade.get('symbol') == symbol and trade.get('action') == 'CLOSE_LONG'
+                if trade.get('symbol') == symbol
+                and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
                 and trade.get('status') == 'CLOSED'
-            ), None)
+            ]
+            close_trade = max(
+                close_candidates, key=lambda trade: float(trade.get('id') or 0.),
+            ) if close_candidates else None
             if close_trade:
                 close_id = float(close_trade.get('id') or 0.)
                 close_reason = str(close_trade.get('reason') or '')
                 same_bar_close = math.isfinite(close_id) and bar_id <= close_id < bar_id + 60000
-                instant_reverse_close = any(trigger in close_reason for trigger in (
+                climax_flip = (
+                    same_bar_close
+                    and (
+                        (close_trade.get('action') == 'CLOSE_LONG'
+                         and 'CLIMAX_REVERSAL_EXIT_TOP' in close_reason)
+                        or (close_trade.get('action') == 'CLOSE_SHORT'
+                            and 'CLIMAX_REVERSAL_EXIT_BOTTOM' in close_reason)
+                    )
+                )
+                instant_reverse_close = (
+                    close_trade.get('action') == 'CLOSE_LONG'
+                    and any(trigger in close_reason for trigger in (
                     'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
                     'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
-                ))
-                if same_bar_close and instant_reverse_close:
+                    ))
+                )
+                if climax_flip or (same_bar_close and instant_reverse_close):
                     from core.services.entry_contract import (
                         BEARISH_INSTANT_BREAKOUT_CODE,
+                        CLIMAX_REVERSAL_FLIP_CODE,
                         evaluate_entry_contract,
                     )
+                    entry_code = (
+                        CLIMAX_REVERSAL_FLIP_CODE if climax_flip
+                        else BEARISH_INSTANT_BREAKOUT_CODE
+                    )
                     decision = evaluate_entry_contract(
-                        frame, quote, BEARISH_INSTANT_BREAKOUT_CODE,
+                        frame, quote, entry_code,
                         account=engine.account, symbol=symbol,
                     )
                     if decision is not None:

@@ -1858,6 +1858,7 @@ class TradingEngine:
         candle_low = min(float(live['low']), price)
         abnormal_guard_exempt = decision['type'] in (
             'BEARISH_INSTANT_BREAKOUT', 'TRIGGER_C_CONTINUATION',
+            'CLIMAX_REVERSAL_FLIP',
         )
         if (not abnormal_guard_exempt and not self._abnormal_market_entry_allowed(
                 symbol, side, price, float(decision['entry_atr']),
@@ -1869,6 +1870,7 @@ class TradingEngine:
             return False
         is_priority_entry = decision['type'] in (
             'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+            'CLIMAX_REVERSAL_FLIP',
         )
         if (not is_priority_entry
                 and not quote_beyond_side_outer_rail(snapshot['frame'], side, price)):
@@ -1884,7 +1886,10 @@ class TradingEngine:
         sign = 1 if side == 'LONG' else -1
         from core.services.candle_data import entry_frame_evidence
         context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=decision['type'],
-                       channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
+                       channel_confirmation_bar_id=bar,entry_atr=atr,
+                       initial_sl=decision.get('initial_sl'),
+                       entry_phase=decision.get('entry_phase'),
+                       profit_profile='TREND_EXTENSION',
                        wave_regime='TREND',
                        signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
                        candidate_bar_id=signal.get('candidate_bar_id'),
@@ -1929,7 +1934,10 @@ class TradingEngine:
             if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
                 log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
                 return False
-            direction_problem = entry_direction_problem(snapshot['frame'], price, side)
+            direction_problem = (
+                None if decision['type'] == 'CLIMAX_REVERSAL_FLIP'
+                else entry_direction_problem(snapshot['frame'], price, side)
+            )
             if direction_problem:
                 log_entry_gate(self, symbol, side, 'EXECUTION', direction_problem, bar)
                 return False
@@ -2069,6 +2077,7 @@ class TradingEngine:
         is_priority_entry = bool(
             observed and observed.get('type') in (
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+                'CLIMAX_REVERSAL_FLIP',
             ) and observed.get('side') == side
         )
         if (observed and observed['side'] == side and observed['entry_phase'] in (

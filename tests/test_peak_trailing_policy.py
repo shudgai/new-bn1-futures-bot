@@ -89,9 +89,10 @@ def test_doji_priority_over_soft_exits(side):
     p[STATE_KEY].pop('trigger', None)
     snap['atr'] = 2.0
     decision2 = evaluate_peak_trailing(p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.)
-    assert decision2['trigger'] == (
-        LIVE_FLASH_DUMP_TRIGGER if side == 'LONG' else NET_ROE_LOCK_TRIGGER
-    )
+    if side == 'LONG':
+        assert decision2['trigger'] == LIVE_FLASH_DUMP_TRIGGER
+    else:
+        assert decision2 is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
@@ -214,8 +215,7 @@ def test_runner_and_ticker_hold_through_pullback_without_closed_candles_or_rest(
         
         await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
 
-        assert a.close_position.await_count == 1
-        assert 'NET_ROE_STAGED_GIVEBACK' in a.close_position.await_args.args[2]
+        assert a.close_position.await_count == 0
         e.fetch_klines.assert_not_called();lock.release()
     asyncio.run(run())
 

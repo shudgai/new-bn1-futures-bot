@@ -23,6 +23,9 @@ from core.services.kc_pending_entry import (
     evaluate_kc_pending_entry,
 )
 from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
+from core.services.exits.dual_track_exit_service import (
+    detect_climax_reversal, is_true_climax_peak, is_true_climax_valley,
+)
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
@@ -30,6 +33,7 @@ GOLDEN_CROSS_FAST_LONG_CODE = "KC_GOLDEN_CROSS_FAST_LONG"
 # Backwards-compatible public name used by entry calibration callers.
 MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
+CLIMAX_REVERSAL_FLIP_CODE = "CLIMAX_REVERSAL_FLIP"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
@@ -37,7 +41,8 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", BEARISH_INSTANT_BREAKOUT_CODE, "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
 ENTRY_CODES = (KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES
-               | NEW_TRIGGER_CODES | frozenset((GOLDEN_CROSS_FAST_LONG_CODE,)))
+               | NEW_TRIGGER_CODES | frozenset((GOLDEN_CROSS_FAST_LONG_CODE,
+                                                 CLIMAX_REVERSAL_FLIP_CODE)))
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -53,6 +58,7 @@ ENTRY_EVIDENCE_KEYS = (
     "post_close_continuation_close_id",
     "post_close_continuation_bar_id", "post_close_bars_after_close",
     "post_close_strong_impulse",
+    "climax_flip_evidence", "climax_flip_close_id",
 )
 
 
@@ -260,6 +266,109 @@ def entry_direction_problem(frame, quote, side):
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_BY_INVALID_CONTINUATION_DATA'
+
+
+def short_hard_preentry_problem(frame, quote):
+    """Hard reject shorts without a completed close and live quote below KC lower."""
+    try:
+        if frame is None or frame.empty:
+            return 'BLOCKED_INSIDE_KC_BANDS'
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return 'BLOCKED_INSIDE_KC_BANDS'
+
+        # With a live trigger candle, Bar 1 is the completed candle before
+        # Bar 2. A current quote back inside the lower rail also invalidates it.
+        bar1 = closed.iloc[-2]
+        latest = frame.iloc[-1]
+        bar1_close = float(bar1['close'])
+        bar1_lower = float(bar1['kc_lower'])
+        live_lower = float(latest['kc_lower'])
+        quote = float(quote)
+        if not all(math.isfinite(value) and value > 0 for value in
+                   (bar1_close, bar1_lower, live_lower, quote)):
+            return 'BLOCKED_INSIDE_KC_BANDS'
+        if bar1_close >= bar1_lower or quote >= live_lower:
+            return 'BLOCKED_INSIDE_KC_BANDS'
+
+        # A completed Bar 1 close below KC lower is a confirmed directional
+        # breakout. Flat/entangled MAs only describe inside-band chop and must
+        # never veto this already-confirmed rail-break path.
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_INVALID_SHORT_RAIL_DATA'
+
+
+def evaluate_climax_flip_entry(frame, quote, symbol, account):
+    """Build a one-shot opposite entry from a same-minute, matched climax close."""
+    try:
+        if (frame is None or frame.empty or account is None
+                or symbol in getattr(account, 'positions', {})
+                or 'is_closed' not in frame.columns
+                or bool(frame.iloc[-1]['is_closed'])):
+            return None
+        closed = closed_entry_candles(frame)
+        if len(closed) < 6:
+            return None
+        closes = [trade for trade in getattr(account, 'trades', [])
+                  if trade.get('symbol') == symbol
+                  and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
+                  and trade.get('status') == 'CLOSED']
+        if not closes:
+            return None
+        close_trade = max(closes, key=lambda trade: float(trade.get('id') or 0.))
+        old_side = 'LONG' if close_trade['action'] == 'CLOSE_LONG' else 'SHORT'
+        true_climax = (
+            is_true_climax_peak(frame) if old_side == 'LONG'
+            else is_true_climax_valley(frame)
+        )
+        if not true_climax:
+            return None
+        climax = detect_climax_reversal(frame, old_side)
+        expected_reason = (
+            'CLIMAX_REVERSAL_EXIT_TOP' if old_side == 'LONG'
+            else 'CLIMAX_REVERSAL_EXIT_BOTTOM'
+        )
+        reason = str(close_trade.get('reason') or '')
+        if not climax or expected_reason not in reason or climax['reason'] != expected_reason:
+            return None
+        live_stamp = float(frame.iloc[-1]['timestamp'])
+        close_id = float(close_trade.get('id') or 0.)
+        if not (math.isfinite(live_stamp) and math.isfinite(close_id)
+                and live_stamp <= close_id < live_stamp + 60000
+                and float(closed.iloc[-1]['timestamp']) + 60000 == live_stamp):
+            return None
+        quote = float(quote)
+        stop = float(climax['initial_sl'])
+        if (not math.isfinite(quote) or quote <= 0
+                or (climax['side'] == 'SHORT' and quote >= stop)
+                or (climax['side'] == 'LONG' and quote <= stop)):
+            return None
+        flip_close_id = int(close_id)
+        pending_id = f'{symbol}:{CLIMAX_REVERSAL_FLIP_CODE}:{flip_close_id}:{climax["side"]}'
+        if any(
+            trade.get('symbol') == symbol
+            and trade.get('action') == 'OPEN_' + climax['side']
+            and (trade.get('entry_snapshot') or {}).get('climax_flip_close_id') == flip_close_id
+            for trade in getattr(account, 'trades', [])
+        ):
+            return None
+        evidence = dict(climax)
+        evidence.update(close_id=flip_close_id, close_action=close_trade['action'])
+        return dict(
+            action='ENTER', side=climax['side'], type=CLIMAX_REVERSAL_FLIP_CODE,
+            reason=expected_reason + '_FLIP_GATE_PASSED', price=quote,
+            entry_atr=climax['atr'], confirmation_bar_id=live_stamp,
+            breakout_bar_id=climax['reversal_bar_id'],
+            pair_confirmation_bar_id=float(closed.iloc[-2]['timestamp']),
+            close_price=float(closed.iloc[-1]['close']),
+            entry_phase='EXTREME_CLIMAX_FLIP', pending_signal_id=pending_id,
+            initial_sl=stop, reverse_close_id=flip_close_id,
+            climax_flip_close_id=flip_close_id,
+            climax_flip_evidence=evidence,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def evaluate_post_close_continuation(frame, quote, symbol, account, diagnostics=None):
@@ -1222,28 +1331,32 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
-        post_close_impulse = bool(
-            decision.get('post_close_strong_impulse')
-            and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
-            and decision.get('type') == 'TRIGGER_C_CONTINUATION'
-            and decision.get('reason') in (
-                'POST_CLOSE_STRONG_BEARISH_IMPULSE',
-                'POST_CLOSE_STRONG_BULLISH_IMPULSE',
-            )
-            and 1 <= int(decision.get('post_close_bars_after_close') or 0) <= 3
+        climax_flip = bool(
+            decision.get('type') == CLIMAX_REVERSAL_FLIP_CODE
+            and decision.get('entry_phase') == 'EXTREME_CLIMAX_FLIP'
+            and isinstance(decision.get('climax_flip_evidence'), dict)
+            and int(decision.get('reverse_close_id') or 0)
+                == int(decision['climax_flip_evidence'].get('close_id') or -1)
         )
-        if not post_close_impulse:
+        if not climax_flip and decision.get('side') == 'SHORT':
+            short_gate_problem = short_hard_preentry_problem(frame, quote)
+            if short_gate_problem:
+                return reject(short_gate_problem)
+        if not climax_flip:
             gate_problem = three_bar_rail_gate_problem(
                 frame, quote, decision.get('side'),
             )
             if gate_problem:
                 return reject(gate_problem)
-        problem = entry_direction_problem(frame, quote, decision.get('side'))
-        if problem:
-            return reject(problem)
-        if decision.get('side') == 'SHORT':
+            problem = entry_direction_problem(frame, quote, decision.get('side'))
+            if problem:
+                return reject(problem)
+        if not climax_flip and decision.get('side') == 'SHORT':
             problem = anti_bottom_short_problem(
                 frame, quote, account=account, symbol=symbol,
+                allow_confirmed_rail_break=(
+                    three_bar_rail_gate_problem(frame, quote, 'SHORT') is None
+                ),
             )
             if problem:
                 return reject(problem)
@@ -1267,6 +1380,13 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject('WAIT_ENOUGH_CLOSED_CANDLES')
 
         quote = price if price is not None else float(frame.iloc[-1].close)
+        if code == CLIMAX_REVERSAL_FLIP_CODE:
+            climax_entry = evaluate_climax_flip_entry(
+                frame, quote, symbol, account,
+            )
+            if climax_entry is None:
+                return reject('BLOCKED_CLIMAX_FLIP_NO_MATCHED_EXTREME_REVERSAL_CLOSE')
+            return authorize(climax_entry, quote)
         # The authorized outer-rail route is based on two completed candles.
         # Do not require a third live candle to have a directional body: the
         # live quote only has to remain beyond the confirmed outer rail.
@@ -1293,6 +1413,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 if side == 'SHORT':
                     anti_bottom_problem = anti_bottom_short_problem(
                         frame, quote, account=account, symbol=symbol,
+                        allow_confirmed_rail_break=(
+                            three_bar_rail_gate_problem(frame, quote, 'SHORT') is None
+                        ),
                     )
                     if anti_bottom_problem:
                         return reject(anti_bottom_problem)

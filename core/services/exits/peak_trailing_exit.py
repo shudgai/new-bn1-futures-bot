@@ -455,7 +455,13 @@ def continuation_failed_exit(position, snapshot):
 
 def channel_initial_stop_disabled(position: dict, meta: dict | None = None) -> bool:
     meta = meta or {}
-    return str(position.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING'
+    is_channel_swing = str(
+        position.get('entry_mode') or meta.get('entry_mode') or ''
+    ).upper() == 'CHANNEL_SWING'
+    is_climax_flip = (
+        position.get('entry_phase') or meta.get('entry_phase')
+    ) == 'EXTREME_CLIMAX_FLIP'
+    return is_channel_swing and not is_climax_flip
 
 
 def migrate_peak_state(position, meta=None):

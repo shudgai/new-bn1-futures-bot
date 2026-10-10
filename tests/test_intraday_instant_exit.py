@@ -10,6 +10,12 @@ import pytest
 from core.engine import TradingEngine
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
+
+
+@pytest.fixture(autouse=True)
+def disable_exit_telemetry(monkeypatch):
+    monkeypatch.setattr(ProfitExitTelemetry, 'ENABLED', False)
 
 
 def pos(side='SHORT'):
@@ -24,12 +30,12 @@ def observe(p, price, stamp=61000, mid=0., atr=0.):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_armed_twenty_percent_net_peak_boundary(side):
+def test_missing_exit_snapshot_does_not_authorize_peak_giveback_close(side):
     p=pos(side); sign=1 if side=='LONG' else -1
     assert observe(p,100+sign*7.9) is None
     assert observe(p,100+sign*6.5,62000) is None
-    assert observe(p,100+sign*6.,63000)=='EXIT_REALTIME_PEAK_TRAILING'
-    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100)=='EXIT_REALTIME_PEAK_TRAILING'
+    assert observe(p,100+sign*6.,63000) is None
+    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100) is None
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -66,11 +72,11 @@ def test_restart_preserves_peak_and_pending():
     p=pos()
     observe(p,86.)
     restarted=copy.deepcopy(p)
-    assert observe(restarted,89.51,62000)=='EXIT_REALTIME_PEAK_TRAILING'
-    assert observe(copy.deepcopy(restarted),80.,63000)=='EXIT_REALTIME_PEAK_TRAILING'
+    assert observe(restarted,89.51,62000) is None
+    assert observe(copy.deepcopy(restarted),80.,63000) is None
 
 
-def test_fast_path_ignores_scan_lock_and_rest_retries_after_restart():
+def test_fast_path_with_incomplete_frame_does_not_fabricate_exit():
     async def run():
         now=time.time(); bar=int(now//60)*60000
         p=pos();p['open_timestamp']=now-120;p['entry_atr']=.5
@@ -84,15 +90,12 @@ def test_fast_path_ignores_scan_lock_and_rest_retries_after_restart():
         engine._channel_exit_frames={'X':pd.DataFrame([dict(
             timestamp=bar-60000,is_closed=True,kc_middle=100.,atr=1.)])}
         assert not await engine._instant_quote_exit('X',99.,now*1000)
-        assert await engine._instant_quote_exit('X',99.3,now*1000)
-        assert account.close_position.await_count==1
-        assert account.position_meta['X']['peak_trailing_state']['pending']
-        # Restore persisted state into a reloaded position; no frame required for retry.
-        account.positions['X']=dict(pos(),open_timestamp=now-120)
+        assert not await engine._instant_quote_exit('X',99.3,now*1000)
+        assert account.close_position.await_count==0
+        # An incomplete cached candle cannot create a pending close authority.
         engine._channel_exit_frames={}
-        assert await engine._instant_quote_exit('X',99.,now*1000)
-        assert account.close_position.await_count==2
-        assert account.close_position.await_args.args[1]==99.
+        assert not await engine._instant_quote_exit('X',99.,now*1000)
+        assert account.close_position.await_count==0
         engine.fetch_klines.assert_not_called()
         lock.release()
     asyncio.run(run())

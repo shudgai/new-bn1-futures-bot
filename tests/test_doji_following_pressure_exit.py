@@ -10,7 +10,7 @@ import pytest
 
 from core.services.exits.peak_trailing_exit import (
     ABNORMAL_REASON, DOJI_TRIGGER, HARD_REASON, POLICY, STATE_KEY,
-    evaluate_peak_trailing, migrate_peak_state,
+    doji_reversal_evidence, evaluate_peak_trailing, migrate_peak_state,
 )
 from core.services.exits.realtime_profit_exit import cached_tick_indicators, enforce_realtime_profit_exit
 from core.services.exits.profit_exit_telemetry import ProfitExitTelemetry
@@ -29,7 +29,8 @@ def sample(side='LONG', bar=180000):
                         peak_price=100+sign*2.5, atr=1., peak_net_pnl=2.)
     snap = dict(quote_ms=bar+1000, live_bar_ms=bar, closed_bar_ms=bar-60000,
                 live_open=102.5, live_high=102.6, live_low=102., atr=1.,
-                last_open=102.25, last_close=102.5, last_high=103., last_low=102.)
+                last_open=102.25, last_close=102.5, last_high=103., last_low=102.,
+                last_kc_upper=103.1, last_kc_lower=96.9)
     if side == 'SHORT':
         old=snap.copy()
         for a,b in [('live_open','live_open'),('live_high','live_low'),('live_low','live_high'),
@@ -47,7 +48,7 @@ def strong_trend(monkeypatch):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('body,allowed',[(0.,False),(.01,False),(.1999,False),(.20,True),(.5,True),(.7,True)])
+@pytest.mark.parametrize('body,allowed',[(0.,False),(.01,False),(.1499,False),(.15,True),(.5,True),(.7,True)])
 def test_next_body_atr_boundary(side,body,allowed):
     p,s,price=sample(side);sign=1 if side=='LONG' else -1
     result=evaluate_peak_trailing(p,s['live_open']-sign*body,s)
@@ -59,10 +60,66 @@ def test_next_body_atr_boundary(side,body,allowed):
         assert not p[STATE_KEY].get('pending')
 
 
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_topping_shape_requires_near_outer_rail_and_accepts_wick_or_small_body(side):
+    p,s,price=sample(side)
+    sign=1 if side=='LONG' else -1
+    evidence=doji_reversal_evidence(
+        s,price,sign,p['entry_price'],p['open_timestamp']*1000,2.5,
+        symbol='LOBSTER/USDT',channel_swing=True)
+    assert evidence['topping_signal'] is True
+
+    far_from_rail=s.copy()
+    if side=='LONG':
+        far_from_rail['last_kc_upper']=104.
+    else:
+        far_from_rail['last_kc_lower']=96.
+    assert doji_reversal_evidence(
+        far_from_rail,price,sign,p['entry_price'],p['open_timestamp']*1000,
+        2.5,symbol='LOBSTER/USDT',channel_swing=True) is None
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_long_rejection_wick_qualifies_with_body_above_35_percent(side):
+    p,s,price=sample(side)
+    sign=1 if side=='LONG' else -1
+    if side=='LONG':
+        s.update(last_open=102.,last_close=102.8,last_high=103.6,last_low=101.8,
+                 last_kc_upper=103.8,last_kc_lower=96.2)
+    else:
+        s.update(last_open=98.,last_close=97.2,last_high=98.2,last_low=96.4,
+                 last_kc_upper=103.8,last_kc_lower=96.2)
+    evidence=doji_reversal_evidence(
+        s,price,sign,p['entry_price'],p['open_timestamp']*1000,2.5,
+        symbol='LOBSTER/USDT',channel_swing=True)
+    assert evidence is not None
+    assert evidence['doji_body_ratio'] > .35
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_breaking_previous_extreme_confirms_before_015_atr(side):
+    p,s,_=sample(side)
+    sign=1 if side=='LONG' else -1
+    if side=='LONG':
+        s.update(last_open=102.5,last_close=102.5,last_high=103.,last_low=102.45,
+                 live_low=102.4)
+        price=102.44
+    else:
+        s.update(last_open=97.5,last_close=97.5,last_high=97.55,last_low=97.,
+                 live_high=97.6)
+        price=97.56
+    evidence=doji_reversal_evidence(
+        s,price,sign,p['entry_price'],p['open_timestamp']*1000,2.5,
+        symbol='LOBSTER/USDT',channel_swing=True)
+    assert evidence is not None
+    assert evidence['reversal_body_atr'] < .15
+    assert evidence['trigger_price'] == price
+
+
 @pytest.mark.parametrize('symbol',['SUI/USDT','龙虾/USDT'])
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('is_local_extreme',[True,False])
-def test_pivot_only_symbols_close_only_after_doji_at_local_extreme(
+def test_channel_symbols_do_not_require_the_doji_to_be_a_new_local_extreme(
     symbol, side, is_local_extreme
 ):
     p,s,price=sample(side)
@@ -81,22 +138,26 @@ def test_pivot_only_symbols_close_only_after_doji_at_local_extreme(
 
     result=evaluate_peak_trailing(p,price,s)
 
-    assert bool(result) is is_local_extreme
-    if result:
-        assert result['trigger']==DOJI_TRIGGER
-    else:
-        assert not p[STATE_KEY].get('pending')
+    assert result['trigger']==DOJI_TRIGGER
+    assert p[STATE_KEY]['topping_signal'] is True
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('fault',['prior_not_doji','prior_flat_range','current_doji','same_color',
+@pytest.mark.parametrize('fault',['prior_not_topping','prior_flat_range','below_reversal_threshold','same_color',
     'old_closed','old_live','bad_atr','missing_high',
     'invalid_ohlc','nan_prior','doji_is_current'])
-def test_doji_alone_and_invalid_sequence_never_close(side,fault):
+def test_doji_alone_and_invalid_sequence_never_close(side,fault,monkeypatch):
     p,s,price=sample(side);sign=1 if side=='LONG' else -1
-    if fault=='prior_not_doji':s['last_open']-=sign*.001
+    import core.services.exits.peak_trailing_exit as exits
+    monkeypatch.setattr(exits, "evaluate_symmetric_dual_track_exit", lambda *a, **k: None)
+    monkeypatch.setattr(exits, "evaluate_tiered_ratchet_exit", lambda *a, **k: None)
+    if fault=='prior_not_topping':
+        if side=='LONG':
+            s.update(last_open=102.,last_close=102.9,last_high=103.,last_low=102.)
+        else:
+            s.update(last_open=98.,last_close=97.1,last_high=98.,last_low=97.)
     elif fault=='prior_flat_range':s.update(last_high=s['last_close'],last_low=s['last_close'],last_open=s['last_close'])
-    elif fault=='current_doji':s.update(live_high=s['live_open']+1.,live_low=s['live_open']-1.) # body/range exactly 25%
+    elif fault=='below_reversal_threshold':price=s['live_open']-sign*.149
     elif fault=='same_color':price=s['live_open']+sign*.1
     elif fault=='old_closed':s['closed_bar_ms']-=60000
     elif fault=='old_live':s['live_bar_ms']-=60000
@@ -104,9 +165,7 @@ def test_doji_alone_and_invalid_sequence_never_close(side,fault):
     elif fault=='missing_high':s.pop('live_high')
     elif fault=='invalid_ohlc':s['last_high']=s['last_low']-.1
     elif fault=='nan_prior':s['last_close']=float('nan')
-    elif fault=='doji_is_current':
-        s['last_open']-=sign*.2
-        s.update(live_high=104.,live_low=96.)
+    elif fault=='doji_is_current':p['open_timestamp']=(s['live_bar_ms']-30000)/1000
     assert evaluate_peak_trailing(p,price,s) is None
     assert not p[STATE_KEY].get('pending')
 
@@ -131,7 +190,7 @@ def test_valid_pending_survives_retry_but_obsolete_doji_pending_is_revoked(side)
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_waterfall_and_hard_stop_have_priority(side):
     p,s,price=sample(side);sign=1 if side=='LONG' else -1
-    assert evaluate_peak_trailing(p,s['live_open']-sign*1.3,s)['trigger']=='WATERFALL_DROP'
+    assert evaluate_peak_trailing(p,s['live_open']-sign*2.0,s)['trigger']=='WATERFALL_DROP'
     p,s,price=sample(side)
     p['entry_mode']='TREND'
     assert evaluate_peak_trailing(p,100-sign*2.,s)['type']==HARD_REASON
@@ -141,17 +200,25 @@ def test_waterfall_and_hard_stop_have_priority(side):
 def test_tick_uses_closed_doji_then_live_body_and_retries_without_rest(side):
     now=time.time();bar=int(now//60)*60000
     p,s,price=sample(side,bar)
+    p['open_timestamp']=(bar-80000)/1000
+    p[STATE_KEY]['identity']=[side,p['open_timestamp'],100.,1.]
     symbol='SUI/USDT'
     p['symbol']=symbol
     closed=dict(timestamp=bar-60000,is_closed=True,open=s['last_open'],close=s['last_close'],
-                high=s['last_high'],low=s['last_low'],atr=1.)
+                high=s['last_high'],low=s['last_low'],atr=1.,
+                kc_upper=103.1 if side=='LONG' else 101.,
+                kc_lower=99. if side=='LONG' else 96.9,
+                kc_middle=100.)
     earlier=dict(closed,timestamp=bar-120000)
     if side=='LONG':
         earlier['high']=s['last_high']-.1
     else:
         earlier['low']=s['last_low']+.1
     live=dict(timestamp=bar,is_closed=False,open=s['live_open'],close=s['live_open'],
-              high=s['live_high'],low=s['live_low'],atr=999.)
+              high=s['live_high'],low=s['live_low'],atr=999.,
+              kc_upper=103.1 if side=='LONG' else 103.,
+              kc_lower=97. if side=='LONG' else 96.9,
+              kc_middle=100.)
     frame=pd.DataFrame([earlier,closed,live])
     snap,atr=cached_tick_indicators(frame,price,now*1000)
     assert atr==1. and snap['closed_bar_ms']==bar-60000
@@ -166,7 +233,7 @@ def test_tick_uses_closed_doji_then_live_body_and_retries_without_rest(side):
         account.close_position.assert_not_awaited()
         assert await enforce_realtime_profit_exit(engine,symbol,price,now*1000+1)
         assert DOJI_TRIGGER in account.close_position.await_args.args[2]
-        assert account.position_meta[symbol][STATE_KEY]['doji_rule_version']==3
+        assert account.position_meta[symbol][STATE_KEY]['doji_rule_version']==4
         engine._channel_exit_frames={}
         assert await enforce_realtime_profit_exit(engine,symbol,price,now*1000+2)
         assert account.close_position.await_count==2

@@ -112,37 +112,32 @@ def close_account(
     ), close_id
 
 
-def test_successful_long_close_allows_next_live_bullish_ma5_reclaim():
+def test_post_close_long_reclaim_without_completed_rail_break_is_rejected():
     frame = live_frame()
-    account, close_id = close_account(frame)
+    account, _ = close_account(frame)
+    diagnostics = {}
 
     decision = evaluate_entry_contract(
-        frame, 103.1, account=account, symbol="CAP/USDT",
+        frame, 103.1, account=account, symbol="CAP/USDT", diagnostics=diagnostics,
     )
 
-    assert decision is not None
-    assert decision["type"] == "TRIGGER_C_CONTINUATION"
-    assert decision["side"] == "LONG"
-    assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"
-    assert decision["post_close_continuation_close_id"] == close_id
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_THREE_BAR_LONG_NOT_BROKEN_UPPER_RAIL"
 
 
-def test_successful_short_close_allows_next_live_bearish_ma5_reclaim():
+def test_post_close_short_reclaim_without_completed_rail_break_is_rejected():
     frame = short_live_frame()
-    account, close_id = close_account(
+    account, _ = close_account(
         frame, side="SHORT", symbol="龙虾/USDT",
     )
+    diagnostics = {}
 
     decision = evaluate_entry_contract(
-        frame, 97.0, account=account, symbol="龙虾/USDT",
+        frame, 97.0, account=account, symbol="龙虾/USDT", diagnostics=diagnostics,
     )
 
-    assert decision is not None
-    assert decision["type"] == "TRIGGER_C_CONTINUATION"
-    assert decision["side"] == "SHORT"
-    assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"
-    assert decision["reason"] == "POST_CLOSE_BEARISH_CONTINUATION"
-    assert decision["post_close_continuation_close_id"] == close_id
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_INSIDE_KC_BANDS"
 
 
 @pytest.mark.parametrize(
@@ -227,6 +222,7 @@ def test_regular_breakout_candidate_is_checked_by_shared_firewall(
     monkeypatch.setattr(entry_contract, "evaluate_bearish_instant_breakout", lambda *_a, **_k: None)
     monkeypatch.setattr(entry_contract, "evaluate_continuation_entry", lambda *_a, **_k: None)
     monkeypatch.setattr(entry_contract, "detect_raw_triggers", lambda *_a, **_k: ("LONG", "TRIGGER_A_KC_BREAKOUT"))
+    monkeypatch.setattr(entry_contract, "three_bar_rail_gate_problem", lambda *_a, **_k: None)
     monkeypatch.setattr(entry_contract, "evaluate_three_bar_outer_breakout", lambda *_a, **_k: dict(
         action="ENTER", side="LONG", type="TRIGGER_A_KC_BREAKOUT",
         entry_phase="KC_THREE_BAR_BREAKOUT",
@@ -239,52 +235,29 @@ def test_regular_breakout_candidate_is_checked_by_shared_firewall(
     assert diagnostics["reason"] == expected
 
 
-def test_short_post_close_continuation_passes_fresh_account_revalidation():
+def test_short_post_close_continuation_without_rail_break_is_rejected_before_revalidation():
     async def run():
         frame = short_live_frame()
         frame.attrs["entry_finality_verified"] = True
         account, _ = close_account(frame, side="SHORT")
         account.entry_frame_provider = AsyncMock(return_value=frame)
         decision = evaluate_entry_contract(
-            frame, 97.0, account=account, symbol="CAP/USDT",
+            frame, 97.0, account=account, symbol="CAP/USDT", diagnostics={},
         )
-        assert decision is not None
-        signal_id = decision["pending_signal_id"]
-        bar_id = decision["confirmation_bar_id"]
-        context = {
-            "entry_signal_code": "TRIGGER_C_CONTINUATION",
-            "signal_id": signal_id,
-            "candidate_bar_id": bar_id,
-            "channel_confirmation_bar_id": bar_id,
-            "entry_snapshot": {
-                "symbol": "CAP/USDT",
-                "side": "SHORT",
-                "signal_code": "TRIGGER_C_CONTINUATION",
-                "signal_id": signal_id,
-                "candidate_bar_id": bar_id,
-                "closed_bar": bar_id,
-                "pending_signal_id": signal_id,
-            },
-        }
-
-        validated = await validate_account_entry(
-            account, "CAP/USDT", "SHORT", context,
-        )
-
-        assert validated["side"] == "SHORT"
-        assert validated["type"] == "TRIGGER_C_CONTINUATION"
-        account.entry_frame_provider.assert_awaited_once_with("CAP/USDT")
+        assert decision is None
+        account.entry_frame_provider.assert_not_awaited()
 
     asyncio.run(run())
 
 
-def test_lobster_runner_sends_post_short_close_continuation_candidate():
+def test_lobster_runner_does_not_send_post_short_close_without_rail_break():
     async def run():
         from core.services.symbol_runner import process_single_symbol_runner
 
         symbol = "龙虾/USDT"
         frame = short_live_frame()
         account, _ = close_account(frame, side="SHORT", symbol=symbol)
+        account.log = Mock()
         engine = SimpleNamespace(
             account=account,
             strategy=SimpleNamespace(),
@@ -297,11 +270,7 @@ def test_lobster_runner_sends_post_short_close_continuation_candidate():
             exit_frame=frame, exit_quote=97.0,
         )
 
-        engine._execute_confirmed_channel_break.assert_awaited_once()
-        args = engine._execute_confirmed_channel_break.await_args
-        assert args.args[0] == symbol
-        assert args.args[3] == "SHORT"
-        assert args.kwargs["v8_reason"] == "TRIGGER_C_CONTINUATION"
+        engine._execute_confirmed_channel_break.assert_not_awaited()
 
     asyncio.run(run())
 

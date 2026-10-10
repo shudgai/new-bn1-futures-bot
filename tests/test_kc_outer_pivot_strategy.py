@@ -65,51 +65,44 @@ def snapshot(side, bars=None, **overrides):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_position_exits_on_latest_confirmed_three_point_pivot(side):
+def test_channel_position_holds_on_confirmed_pivot_and_later_quote(side):
     position_data = position(side)
     result = evaluate_peak_trailing(
         position_data, 101., snapshot(side), fee=0., slippage=0.
     )
 
-    assert result is not None
-    assert result["type"] == ABNORMAL_REASON
-    assert result["trigger"] == "THREE_POINT_PIVOT"
-    assert position_data["peak_trailing_state"]["pending"] == ABNORMAL_REASON
-
+    assert result is None
+    assert not position_data['peak_trailing_state'].get('pending')
     retry = evaluate_peak_trailing(
-        position_data, 101., {"quote_ms": 360_000.}, fee=0., slippage=0.
+        position_data, 101., {'quote_ms': 360_000.}, fee=0., slippage=0.
     )
-    assert retry["trigger"] == "THREE_POINT_PIVOT"
+    assert retry is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_use_the_same_three_point_pivot_gate(side, symbol):
+def test_sui_and_lobster_hold_instead_of_pivot_pullback_close(side, symbol):
     position_data = position(side, symbol=symbol)
     result = evaluate_peak_trailing(
         position_data, 101., snapshot(side), fee=0., slippage=0.
     )
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_exit_when_entry_bar_pivot_is_confirmed(side, symbol):
+def test_sui_and_lobster_reject_entry_bar_pivot_even_after_confirmation(side, symbol):
     position_data = position(side, symbol=symbol)
     position_data["open_timestamp"] = 195.
     result = three_point_pivot_exit(position_data, snapshot(side))
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
-    assert result["trigger_bar_ms"] == 180_000.
-    assert result["trigger_confirmed_ms"] == 240_000.
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_do_not_lose_entry_bar_pivot_after_next_candle(side, symbol):
+def test_sui_and_lobster_do_not_replay_entry_bar_pivot_after_next_candle(side, symbol):
     position_data = position(side, symbol=symbol)
     position_data["open_timestamp"] = 195.
     bars = pivot_history(side) + [
@@ -122,15 +115,12 @@ def test_sui_and_lobster_do_not_lose_entry_bar_pivot_after_next_candle(side, sym
         position_data, snapshot(side, bars, quote_ms=360_000.)
     )
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
-    assert result["trigger_bar_ms"] == 180_000.
-    assert result["trigger_confirmed_ms"] == 240_000.
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_recover_entry_bar_pivot_for_open_position(side, symbol):
+def test_sui_and_lobster_do_not_recover_pre_entry_pivot_after_restart(side, symbol):
     position_data = position(side, symbol=symbol)
     position_data["open_timestamp"] = 195.
     bars = pivot_history(side)
@@ -150,10 +140,7 @@ def test_sui_and_lobster_recover_entry_bar_pivot_for_open_position(side, symbol)
         position_data, snapshot(side, bars, quote_ms=900_000.)
     )
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
-    assert result["trigger_bar_ms"] == 180_000.
-    assert result["trigger_confirmed_ms"] == 240_000.
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -166,7 +153,7 @@ def test_other_symbols_do_not_reuse_a_pivot_formed_before_entry(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_pivot_is_not_vetoed_by_continuing_ma_trend(side):
+def test_confirmed_pivot_is_not_a_channel_exit_even_with_confirmed_trend(side):
     result = evaluate_peak_trailing(
         position(side),
         101.,
@@ -179,12 +166,11 @@ def test_confirmed_pivot_is_not_vetoed_by_continuing_ma_trend(side):
         slippage=0.,
     )
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_three_point_pivot_does_not_require_kc_outer_rail(side):
+def test_channel_holds_on_pivot_regardless_of_outer_rail(side):
     bars = pivot_history(side)
     bars[1].update(kc_upper=bars[1]["h"] + 1., kc_lower=bars[1]["l"] - 1.)
 
@@ -192,8 +178,7 @@ def test_three_point_pivot_does_not_require_kc_outer_rail(side):
         position(side), 101., snapshot(side, bars), fee=0., slippage=0.
     )
 
-    assert result is not None
-    assert result["trigger"] == "THREE_POINT_PIVOT"
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -305,3 +290,16 @@ def test_invalid_ohlc_cannot_create_a_pivot_exit(side):
     )
 
     assert result is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
+def test_entry_bar_pivot_cannot_exit_after_minimum_hold_expires(side, symbol):
+    position_data = position(side, symbol=symbol)
+    position_data["open_timestamp"] = 195.
+    result = evaluate_peak_trailing(
+        position_data, 101., snapshot(side, quote_ms=330_000.),
+        fee=0., slippage=0.,
+    )
+    assert result is None
+    assert not position_data["peak_trailing_state"].get("pending")

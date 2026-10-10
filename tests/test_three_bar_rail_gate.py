@@ -11,12 +11,16 @@ def bars(side="LONG"):
         dict(timestamp=60000, open=100., close=102. if side == "LONG" else 98.,
              high=102.2 if side == "LONG" else 100.2,
              low=99.8 if side == "LONG" else 97.8,
-             kc_upper=101., kc_lower=99., atr=1., ma3=100., ma5=100., is_closed=True),
+             kc_upper=101., kc_lower=99., atr=1.,
+             ma3=100. if side == "LONG" else 97.5,
+             ma5=100. if side == "LONG" else 99., is_closed=True),
         dict(timestamp=120000, open=102. if side == "LONG" else 98.,
              close=103. if side == "LONG" else 97.,
              high=103.2 if side == "LONG" else 98.2,
              low=101.8 if side == "LONG" else 96.8,
-             kc_upper=101., kc_lower=99., atr=1., ma3=101., ma5=101., is_closed=True),
+             kc_upper=101., kc_lower=99., atr=1.,
+             ma3=101. if side == "LONG" else 96.8,
+             ma5=101. if side == "LONG" else 98., is_closed=True),
         dict(timestamp=180000, open=103. if side == "LONG" else 97.,
              close=103.5 if side == "LONG" else 96.5,
              high=103.6 if side == "LONG" else 97.1,
@@ -146,6 +150,90 @@ def test_entry_contract_rejects_pending_candidate_at_shared_authority(
     )
     assert decision is None
     assert diagnostics["reason"] == expected
+
+
+def test_cap_sideways_inside_kc_short_is_hard_rejected_at_contract_preflight(monkeypatch):
+    frame = bars("SHORT")
+    # CAP bottom-range candles: both completed closes are between the KC rails,
+    # while MA3/MA5 are tangled and flat. The rail rejection takes precedence.
+    frame.loc[0, ["open", "close", "high", "low"]] = (98.8, 99.2, 99.4, 98.6)
+    frame.loc[1, ["open", "close", "high", "low"]] = (99.1, 98.9, 99.3, 98.7)
+    frame.loc[1, ["ma3", "ma5"]] = (98.95, 99.0)
+    frame.loc[0, "ma5"] = 99.0
+    frame.loc[2, ["open", "close", "high", "low"]] = (98.9, 98.95, 99.0, 98.8)
+    frame.loc[2, ["ma3", "ma5"]] = (98.95, 99.0)
+
+    monkeypatch.setattr(entry_contract, "evaluate_kc_pending_entry", lambda *a, **k: {
+        "action": "ENTER", "side": "SHORT", "type": "KC_PENDING_TEST",
+        "pending_signal_id": "CAP:sideways-no-rail-break",
+    })
+    monkeypatch.setattr(entry_contract, "entry_direction_problem", lambda *a: None)
+    monkeypatch.setattr(entry_contract, "entry_trend_alignment_ready", lambda *a: True)
+    monkeypatch.setattr(entry_contract, "anti_bottom_short_problem", lambda *a, **k: None)
+    diagnostics = {}
+
+    decision = entry_contract.evaluate_entry_contract(
+        frame, 98.95, symbol="CAP/USDT", diagnostics=diagnostics,
+    )
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_INSIDE_KC_BANDS"
+
+
+def test_fast_lane_short_cannot_bypass_cap_rail_preflight(monkeypatch):
+    frame = bars("SHORT")
+    frame.loc[0, "close"] = 99.2
+    diagnostics = {}
+    monkeypatch.setattr(entry_contract, "evaluate_kc_pending_entry", lambda *a, **k: {})
+    monkeypatch.setattr(entry_contract, "evaluate_golden_cross_fast_lane", lambda *a, **k: None)
+    monkeypatch.setattr(entry_contract, "evaluate_three_bar_outer_breakout", lambda *a, **k: {
+        "action": "ENTER", "side": "SHORT", "type": "TRIGGER_A_KC_BREAKOUT",
+        "entry_phase": "KC_THREE_BAR_BREAKOUT",
+    })
+    monkeypatch.setattr(entry_contract, "check_entry_gates", lambda *a, **k: (True, "PASSED"))
+    monkeypatch.setattr(entry_contract, "excessive_upper_shadow_problem", lambda *a, **k: None)
+
+    decision = entry_contract.evaluate_entry_contract(
+        frame, 96.5, code="TRIGGER_A_KC_BREAKOUT",
+        symbol="CAP/USDT", diagnostics=diagnostics,
+    )
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_INSIDE_KC_BANDS"
+
+
+def test_short_flat_ma_entanglement_does_not_block_confirmed_rail_break():
+    frame = bars("SHORT")
+    frame.loc[1, ["ma3", "ma5"]] = (97.0, 97.0)
+    frame.loc[0, "ma5"] = 97.0
+    assert entry_contract.short_hard_preentry_problem(frame, 96.5) is None
+
+
+def test_confirmed_short_rail_pattern_allows_flat_mas_and_normal_bar2_lower_wick(
+    monkeypatch,
+):
+    frame = bars("SHORT")
+    frame.loc[1, ["ma3", "ma5", "low"]] = (97.0, 97.0, 96.0)
+    frame.loc[0, "ma5"] = 97.0
+    quote = float(frame.iloc[-1]["close"])
+    pending = {
+        "action": "ENTER", "side": "SHORT", "type": "KC_PENDING_TEST",
+        "pending_signal_id": "LOBSTER:flat-ma-wick-breakout",
+    }
+    wick_gate_calls = []
+    monkeypatch.setattr(entry_contract, "evaluate_kc_pending_entry", lambda *a, **k: pending)
+    monkeypatch.setattr(entry_contract, "entry_direction_problem", lambda *a: None)
+    monkeypatch.setattr(entry_contract, "entry_trend_alignment_ready", lambda *a: True)
+    monkeypatch.setattr(entry_contract, "entry_consolidation_problem", lambda *a, **k: None)
+    monkeypatch.setattr(
+        entry_contract, "anti_bottom_short_problem",
+        lambda *a, **k: (wick_gate_calls.append(k) or None),
+    )
+
+    decision = entry_contract.evaluate_entry_contract(
+        frame, quote, symbol="LOBSTER/USDT",
+    )
+    assert decision is pending
+    assert wick_gate_calls
+    assert all(call["allow_confirmed_rail_break"] for call in wick_gate_calls)
 
 
 @pytest.mark.parametrize("symbol", ["CAP/USDT", "LOBSTER/USDT"])

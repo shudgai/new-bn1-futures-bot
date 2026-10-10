@@ -17,7 +17,7 @@ from core.services.strategies.outer_strategy import ck_direction
 from core.services.strict_entry_gates import validate_strict_entry
 from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 
-ANTI_BOTTOM_SHORT_STRETCH_ATR = 0.20
+ANTI_BOTTOM_SHORT_STRETCH_ATR = 3.0
 ANTI_BOTTOM_SHORT_PULLBACK_ATR = 0.20
 ANTI_BOTTOM_SHORT_POST_CLOSE_REBOUND_ATR = 0.50
 ANTI_BOTTOM_SHORT_WICK_BODY_RATIO = 1.50
@@ -207,7 +207,10 @@ def short_kc_trend_problem(frame):
         return 'BLOCKED_SHORT_KC_TREND_NOT_DOWN'
 
 
-def anti_bottom_short_problem(frame, price=None, *, account=None, symbol=''):
+def anti_bottom_short_problem(
+    frame, price=None, *, account=None, symbol='',
+    allow_confirmed_rail_break=False,
+):
     """Block exhausted shorts until a measured rebound is rejected near structure."""
     try:
         if frame is None or frame.empty:
@@ -266,7 +269,8 @@ def anti_bottom_short_problem(frame, price=None, *, account=None, symbol=''):
                 and bar_open < bar_ma3 < bar_close
                 and body >= ANTI_BOTTOM_SHORT_BOUNCE_BODY_ATR * bar_atr
             )
-            if long_lower_wick or strong_ma3_reclaim:
+            if ((long_lower_wick and not allow_confirmed_rail_break)
+                    or strong_ma3_reclaim):
                 return 'BLOCKED_SHORT_EXHAUSTION_COOLDOWN'
 
         if close < lower:
@@ -295,12 +299,13 @@ def anti_bottom_short_problem(frame, price=None, *, account=None, symbol=''):
             rejection = red_close and any(close < target for target in targets) and (
                 same_bar_rejection or prior_pullback
             )
-            if not rejection:
+            if not rejection and not allow_confirmed_rail_break:
                 return 'BLOCKED_SHORT_WAIT_PULLBACK_REJECTION'
 
         signal_body = abs(close - opening)
         signal_lower_wick = min(opening, close) - low
-        if signal_lower_wick > ANTI_BOTTOM_SHORT_WICK_BODY_RATIO * signal_body:
+        if (signal_lower_wick > ANTI_BOTTOM_SHORT_WICK_BODY_RATIO * signal_body
+                and not allow_confirmed_rail_break):
             return 'BLOCKED_SHORT_EXHAUSTION_COOLDOWN'
 
         # A matched recent short close must first see a real 0.5 ATR rebound
@@ -343,8 +348,16 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     c = closed.iloc[-1]
 
     if side == 'SHORT':
+        rail_break_confirmed = (
+            three_bar_rail_gate_problem(
+                frame,
+                price if price is not None else float(frame.iloc[-1]['close']),
+                'SHORT',
+            ) is None
+        )
         problem = anti_bottom_short_problem(
             frame, price, account=account, symbol=symbol,
+            allow_confirmed_rail_break=rail_break_confirmed,
         )
         if problem:
             return wait(problem)

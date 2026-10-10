@@ -32,7 +32,13 @@ def live_body_frame(side="SHORT"):
         })
     rows[-1].update(
         open=100.0, close=89.0, high=100.2, low=88.8,
-        ma5=100.0, ma15=102.0, ma3=99.9,
+        ma5=100.0, ma15=102.0, ma3=99.7,
+    )
+    # The shared contract requires a completed rail break followed by a
+    # bearish confirmation candle before evaluating this live short trigger.
+    rows[-2].update(
+        open=90.0, close=89.2, high=90.2, low=89.0,
+        ma5=100.5, ma3=100.0,
     )
     rows.append({
         'timestamp': live_timestamp,
@@ -319,7 +325,7 @@ def test_final_safety_gates(engine):
     engine._fresh_channel_entry_snapshot.assert_not_awaited()
 
 
-def test_no_double_order(engine):
+def test_no_double_order(engine, monkeypatch):
     sym = 'SYM'
     frame = live_body_frame()
     decision = evaluate_entry_contract(
@@ -333,7 +339,8 @@ def test_no_double_order(engine):
     })
     diagnostics = {}
     assert evaluate_entry_contract(
-        frame, 89.4, account=engine.account, symbol=sym,
+        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT',
+        account=engine.account, symbol=sym,
         diagnostics=diagnostics,
     ) is None
     assert diagnostics['reason'] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'

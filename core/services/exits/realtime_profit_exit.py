@@ -312,6 +312,21 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is not None and not frame.empty:
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
+                if entry_m == 'CHANNEL_SWING':
+                    from core.services.exits.dual_track_exit_service import detect_climax_reversal
+                    climax = detect_climax_reversal(frame, position.get('side'))
+                    if climax:
+                        account.log(
+                            f"REALTIME_EXIT symbol={symbol} reason={climax['reason']} "
+                            f"bar={climax['reversal_bar_id']} price={price} "
+                            f"extension_atr={climax['extension_atr']:.3f} "
+                            f"body_atr={climax['body_atr']:.3f}", 'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price, 'Channel Swing ' + climax['reason'],
+                            is_manual=True,
+                        )
+                        return True
                 from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
                 gate_trigger, state_changed = _evaluate_realtime_core_exit_gates(
                     position, meta, price, stamp, snapshot,

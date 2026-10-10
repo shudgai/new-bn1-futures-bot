@@ -7,8 +7,19 @@ from test_breakout_only_entry import breakout_frame
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_closed_two_bar_breakout_is_the_only_live_confirmation(side):
     frame = breakout_frame(side)
-
-    decision = evaluate_entry_contract(frame, float(frame.iloc[-1]["close"]))
+    live = frame.iloc[-1]
+    rail = "kc_upper" if side == "LONG" else "kc_lower"
+    sign = 1 if side == "LONG" else -1
+    # Keep the quote outside the current rail and give the short fixture a
+    # same-bar pullback rejection required by the anti-bottom guard.
+    if side == "SHORT":
+        quote = float(live[rail]) - 0.15
+        frame.loc[frame.index[-1], ["high", "low"]] = [
+            float(live[rail]) + 0.1, quote - 0.01,
+        ]
+    else:
+        quote = float(live[rail]) + 0.05
+    decision = evaluate_entry_contract(frame, quote)
 
     assert decision is not None
     assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"

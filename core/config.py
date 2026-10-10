@@ -978,7 +978,9 @@ PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT"
 # 與 ENABLE_TRAILING_STOP（移動停利）並行：兩套都啟用時同時運作，
 # 止損取「對持倉更有利（更高/更低）」的那個值。
 # ---------------------------------------------------------------------------
-ENABLE_FIXED_PROFIT_LOCK_PCT = os.getenv("ENABLE_FIXED_PROFIT_LOCK_PCT", "true").lower() == "true"
+# Owner policy: no profit locking or retracement-based profit exits. Keep the
+# setting hard-disabled so an old .env cannot silently re-enable pullback exits.
+ENABLE_FIXED_PROFIT_LOCK_PCT = False
 # 觸發門檻：無槓桿利潤達到此值（小數，0.005=0.5%）時啟動鎖利
 FIXED_PROFIT_LOCK_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_TRIGGER_PCT", "0.006")))
 # 鎖利地板：止損移動後保證至少鎖住此比例（無槓桿）的利潤

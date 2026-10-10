@@ -94,13 +94,18 @@ async def enforce_atr_protection(account, symbol, price):
         return False
     if entry_mode == "CHANNEL_SWING":
         trigger = decision.get("trigger") if decision else None
+        climax_structural_stop = (
+            (position.get("entry_phase") or meta.get("entry_phase"))
+            == "EXTREME_CLIMAX_FLIP"
+            and trigger == "INITIAL_ATR"
+        )
         if trigger not in {
             "EXIT_PROFIT_LOCK_FLOOR",
             "NET_ROE_STAGED_GIVEBACK",
             "NET_ROE_THREE_TIER_GIVEBACK_TIER_1",
             "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
             "NET_ROE_THREE_TIER_GIVEBACK_TIER_3",
-        }:
+        } and not climax_structural_stop:
             account.log(
                 f"TREND_EXIT_GATE symbol={symbol} side={position.get('side')} "
                 f"rule=STRUCTURE_OR_NET_ROE_ONLY reason=HOLD_NON_LOCK_ACCOUNT_POLL "
@@ -114,16 +119,23 @@ async def enforce_atr_protection(account, symbol, price):
         else CHANNEL_SWING_EXIT_TRIGGERS
     )
     trigger = decision.get("trigger") if decision else None
+    climax_structural_stop = (
+        (position.get("entry_phase") or meta.get("entry_phase"))
+        == "EXTREME_CLIMAX_FLIP"
+        and trigger == "INITIAL_ATR"
+    )
     if (entry_mode == "CHANNEL_SWING"
             and channel_strategy_exit_grace_active(position, meta)
-            and trigger not in allowed_triggers):
+            and trigger not in allowed_triggers
+            and not climax_structural_stop):
         if clear_channel_strategy_exit_pending(position, meta):
             meta.update({key: copy.deepcopy(position[key])
                          for key in STATE_KEYS if key in position})
             account.save_state()
         return False
     if (entry_mode == "CHANNEL_SWING"
-            and decision.get("trigger") not in allowed_triggers):
+            and decision.get("trigger") not in allowed_triggers
+            and not climax_structural_stop):
         state = position.get("peak_trailing_state", {})
         meta_state = meta.get("peak_trailing_state", {})
         pending_keys = ("pending", "trigger", "trigger_bar_ms", "trigger_open",
