@@ -524,8 +524,34 @@ def ma_momentum_reason(frame, side, quote=None):
     return None
 
 
+def kc_band_expansion_reason(frame, side):
+    """Every automatic entry requires a wider band and a directional target rail."""
+    try:
+        if side not in ('LONG', 'SHORT') or len(frame) < 2:
+            return 'BLOCKED_BY_INVALID_KC_BAND'
+        curr, prev = frame.iloc[-1], frame.iloc[-2]
+        upper, lower, old_upper, old_lower = map(float,
+            (curr['kc_upper'], curr['kc_lower'], prev['kc_upper'], prev['kc_lower']))
+        if (not all(np.isfinite(v) and v > 0 for v in (upper,lower,old_upper,old_lower))
+                or upper <= lower or old_upper <= old_lower
+                or float(curr['timestamp'])-float(prev['timestamp']) != 60000):
+            return 'BLOCKED_BY_INVALID_KC_BAND'
+        if upper-lower <= old_upper-old_lower:
+            return 'BLOCKED_BY_KC_BAND_CONTRACTING'
+        if side == 'LONG' and upper <= old_upper:
+            return 'BLOCKED_BY_KC_UPPER_FLAT'
+        if side == 'SHORT' and lower >= old_lower:
+            return 'BLOCKED_BY_KC_LOWER_FLAT'
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return 'BLOCKED_BY_INVALID_KC_BAND'
+    return None
+
+
 def check_entry_gates(account, symbol, closed_frame, side, trigger_type, *, live_frame=None, quote=None):
     """Account prerequisites; live strict gates run for every trigger below."""
+    expansion = kc_band_expansion_reason(closed_frame if live_frame is None else live_frame, side)
+    if expansion:
+        return False, expansion
     momentum = ma_momentum_reason(closed_frame if live_frame is None else live_frame, side, quote)
     if momentum:
         return False, momentum
@@ -559,6 +585,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         continuation = evaluate_second_third(frame, quote, account, symbol)
         if continuation is not None and (code is None or code == continuation['type']):
+            expansion = kc_band_expansion_reason(frame, continuation['side'])
+            if expansion:
+                return reject(expansion)
             momentum = ma_momentum_reason(frame, continuation['side'], quote)
             if momentum:
                 return reject(momentum)
@@ -575,6 +604,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if impulse is not None and (code is None or code == impulse['type']):
             if symbol in getattr(account, 'positions', {}):
                 return reject('BLOCKED_BY_POSITION_GATE')
+            expansion = kc_band_expansion_reason(frame, impulse['side'])
+            if expansion:
+                return reject(expansion)
             momentum = ma_momentum_reason(frame, impulse['side'], quote)
             if momentum:
                 return reject(momentum)
