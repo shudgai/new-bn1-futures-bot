@@ -96,22 +96,30 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         time_held_ms = stamp - open_ms
         is_early_hold_period = (time_held_ms < 120000)
 
-        # 2. Catastrophic Dump / Pump (大瀑布/崩盤緊急避險)
-        # 徹底拔除「微幅跌破就出場」的延遲邏輯，只在實質跌破關鍵大支撐/阻力時才避險
+        # 2. 谷底與波峰真實反轉避險 (Catastrophic Dump / Pump & Shadow Rejection)
+        # 徹底拔除「微幅跌破就出場」的延遲邏輯，只在實質跌破關鍵大支撐/阻力，或出現爆量長影線時才避險
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         live_open = float(snapshot.get('live_open') or 0.)
+        live_high = float(snapshot.get('live_high') or 0.)
+        live_low = float(snapshot.get('live_low') or 0.)
         if not is_early_hold_period and mid > 0 and live_open > 0:
+            candle_range = live_high - live_low + 1e-9
             if side == 'LONG':
-                # 實體長黑K且實質跌破中軌
-                if quote < live_open and quote < mid:
-                    # 判斷是否為「長」黑K (簡單抓一個較大實體，例如跌幅 > 0.5%)
-                    if (live_open - quote) / live_open > 0.005:
-                        return 'CATASTROPHIC_DUMP_EXIT', False
+                # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
+                if quote < live_open and quote < mid and (live_open - quote) / live_open > 0.005:
+                    return 'CATASTROPHIC_DUMP_EXIT', False
+                # 條件 A: 高檔爆出長上影線 (見頂真賣壓，上影線 >= 45%)
+                upper_shadow = live_high - max(live_open, quote)
+                if upper_shadow / candle_range >= 0.45 and (live_high - live_open) / live_open > 0.005:
+                    return 'PEAK_REJECTION_EXIT', False
             elif side == 'SHORT':
-                # 實體長紅K且實質突破中軌
-                if quote > live_open and quote > mid:
-                    if (quote - live_open) / live_open > 0.005:
-                        return 'CATASTROPHIC_PUMP_EXIT', False
+                # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
+                if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
+                    return 'CATASTROPHIC_PUMP_EXIT', False
+                # 條件 A: 低檔爆出長下影線 (見底真買盤，下影線 >= 45%)
+                lower_shadow = min(live_open, quote) - live_low
+                if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
+                    return 'TROUGH_REJECTION_EXIT', False
 
         entry = float(position.get('entry_price') or 0.)
         qty = float(position.get('qty') or 0.)
@@ -377,20 +385,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             meta['trend_exit_last_audit_bar'] = snapshot.get('snapshot_bar_id')
                             account.save_state()
                         return False
-                if entry_m == 'CHANNEL_SWING':
-                    from core.services.exits.peak_trailing_exit import v_reversal_short_exit_trigger
-                    trigger = v_reversal_short_exit_trigger(position, price, snapshot)
-                    if trigger:
-                        account.log(
-                            f'REALTIME_EXIT symbol={symbol} reason=V_REVERSAL_SHORT_FAST_CUT '
-                            f'trigger={trigger} quote_ms={stamp} price={price} atr={atr}',
-                            'WARNING',
-                        )
-                        await account.close_position(
-                            symbol, price, 'Channel Swing V_REVERSAL_SHORT_FAST_CUT ' + trigger,
-                            is_manual=True,
-                        )
-                        return True
         except (KeyError, TypeError, ValueError, OverflowError, IndexError):
             pass
 
@@ -448,7 +442,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         allowed_triggers = (
             PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
             if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
-            else CHANNEL_SWING_EXIT_TRIGGERS
+            else (frozenset() if entry_m == 'CHANNEL_SWING' else CHANNEL_SWING_EXIT_TRIGGERS)
         )
         if (entry_m == 'CHANNEL_SWING'
                 and channel_strategy_exit_grace_active(position, meta, stamp / 1000)

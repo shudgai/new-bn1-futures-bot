@@ -54,7 +54,6 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'WATERFALL_DROP',
     'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
-    'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
     CONSECUTIVE_DOJI_STALL_TRIGGER,
@@ -66,7 +65,6 @@ PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'WATERFALL_DROP',
     'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
-    'OPPOSITE_KC_BAND_BREACH',
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
     CONSECUTIVE_DOJI_STALL_TRIGGER,
@@ -1332,12 +1330,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if isinstance(snapshot, dict) and 'kc_lower' in snapshot and 'kc_upper' in snapshot:
                 kc_lower = float(snapshot.get('kc_lower', 0))
                 kc_upper = float(snapshot.get('kc_upper', 0))
-                if (sign == 1 and kc_lower > 0 and price < kc_lower
-                        and trigger != 'BEARISH_INSTANT_BREAKOUT'):
-                    reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
-                elif sign == -1 and kc_upper > 0 and price > kc_upper:
-                    reason, trigger = ABNORMAL_REASON, 'OPPOSITE_KC_BAND_BREACH'
-
+                # OPPOSITE_KC_BAND_BREACH check has been removed per user request
             pivot_only_symbol = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
             if is_channel_swing:
                 abnormal_evidence = two_closed_adverse_abnormal_exit(position, snapshot)
@@ -1371,7 +1364,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     and reason != HARD_REASON
                     and trigger not in (
                         'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
-                        'OPPOSITE_KC_BAND_BREACH',
                     )):
                 reason, trigger = ABNORMAL_REASON, doji_stall_trigger
 
@@ -1491,7 +1483,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         outer_hold_reason = kc_outer_hold_reason(position, snapshot)
         emergency_triggers = {
             'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
-            'OPPOSITE_KC_BAND_BREACH', 'BEARISH_INSTANT_BREAKOUT',
             CONTINUATION_FAILED_TRIGGER, NET_ROE_LOCK_TRIGGER,
             CONSECUTIVE_DOJI_STALL_TRIGGER,
             'EXIT_PROFIT_LOCK_FLOOR',
@@ -1537,7 +1528,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 and trigger not in (
                     'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                     'BEARISH_INSTANT_BREAKOUT',
-                    'OPPOSITE_KC_BAND_BREACH',
                     CONTINUATION_FAILED_TRIGGER,
                     CONSECUTIVE_DOJI_STALL_TRIGGER,
                     NET_ROE_LOCK_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
