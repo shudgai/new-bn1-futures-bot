@@ -1418,13 +1418,50 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
+        closed_bars = closed_entry_candles(frame)
+        # --- GATE-TREND-ALIGNMENT: Trend Alignment Hard Gate ---
+        if len(closed_bars) >= 2:
+            last_closed = closed_bars.iloc[-1]
+            prev_closed = closed_bars.iloc[-2]
+            
+            atr = float(last_closed.get('atr', 0))
+            slope_threshold = 0.005 * atr
+            
+            kc_basis = float(last_closed.get('kc_middle', 0))
+            prev_kc_basis = float(prev_closed.get('kc_middle', 0))
+            kc_slope = kc_basis - prev_kc_basis
+            
+            ma5 = float(last_closed.get('ma5', 0))
+            prev_ma5 = float(prev_closed.get('ma5', 0))
+            ma5_slope = ma5 - prev_ma5
+            
+            ma15 = float(last_closed.get('ma15', 0))
+            prev_ma15 = float(prev_closed.get('ma15', 0))
+            ma15_slope = ma15 - prev_ma15
+            
+            kc_dir = ck_direction(frame)
+            side = decision.get('side')
+            
+            if side == 'SHORT':
+                if not (kc_slope < -slope_threshold and kc_dir != 'LONG' 
+                        and ma5_slope < -slope_threshold 
+                        and ma15_slope < -slope_threshold 
+                        and ma5 <= ma15):
+                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
+            elif side == 'LONG':
+                if not (kc_slope > slope_threshold and kc_dir != 'SHORT' 
+                        and ma5_slope > slope_threshold 
+                        and ma15_slope > slope_threshold 
+                        and ma5 >= ma15):
+                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
+        # -------------------------------------------------------------
+
         # --- GATE-CANDLE-BODY-STRENGTH: Weak-Body Hard Reject Gate ---
         live = frame.iloc[-1]
         opening = float(live['open'])
         quote_f = float(quote)
         high = max(float(live['high']), quote_f)
         low = min(float(live['low']), quote_f)
-        closed_bars = closed_entry_candles(frame)
         if not closed_bars.empty:
             atr = float(closed_bars.iloc[-1]['atr'])
             body = abs(quote_f - opening)
