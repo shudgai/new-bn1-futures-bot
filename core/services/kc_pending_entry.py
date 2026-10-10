@@ -107,6 +107,17 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if sign * (float(second.close) - float(second[key])) <= 0:
                 continue
 
+            # The confirmed candle itself must align with the short trend.
+            # The live candle's color is intentionally not part of this gate.
+            previous_ma5 = float(first['ma5'])
+            confirmation_ma5 = float(second['ma5'])
+            if not all(math.isfinite(value) and value > 0
+                       for value in (previous_ma5, confirmation_ma5)):
+                continue
+            if (sign * (confirmation_ma5 - previous_ma5) <= 0
+                    or sign * (float(second.close) - confirmation_ma5) <= 0):
+                continue
+
             # Every body >= 20%
             f_span = float(first.high) - float(first.low)
             f_body = abs(float(first.close) - float(first.open))
@@ -128,8 +139,14 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if not math.isfinite(price) or price <= 0:
                 return wait('WAIT_VALID_QUOTE')
 
-            # Live price must be strictly outside
+            # The latest quote must remain beyond the latest available rail,
+            # including the forming candle's updated outer band.
             s_edge = float(second[key])
+            if live is not None:
+                live_edge = float(getattr(live, key))
+                if not math.isfinite(live_edge) or live_edge <= 0:
+                    return wait('WAIT_VALID_KC_PENDING_DATA')
+                s_edge = live_edge
             distance = sign * (price - s_edge) / s_atr if s_atr > 0 else 0.
             if distance <= 0:
                 return wait(

@@ -1663,15 +1663,34 @@ class TradingEngine:
         getattr(self, '_entry_gate_diagnostics', {}).pop((symbol, side, 'ENTRY_REVALIDATION'), None)
         frame = await self._entry_boundary_frame(symbol)
         if frame is None or frame.empty:
+            log_entry_gate(
+                self, symbol, side, 'ENTRY_REVALIDATION',
+                'BLOCKED_REVALIDATION_FRAME_UNAVAILABLE', candidate_bar_id,
+            )
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
         diagnostics = {}
         decision = evaluate_entry_contract(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
         if not decision:
-            log_entry_gate(self, symbol, side, 'ENTRY_REVALIDATION', diagnostics['reason'], candidate_bar_id)
-        if not decision or decision['side'] != side:
+            log_entry_gate(
+                self, symbol, side, 'ENTRY_REVALIDATION',
+                diagnostics.get('reason', 'BLOCKED_REVALIDATION_NO_DECISION'),
+                candidate_bar_id,
+            )
+            return None
+        if decision.get('side') != side:
+            log_entry_gate(
+                self, symbol, side, 'ENTRY_REVALIDATION',
+                'BLOCKED_REVALIDATED_SIDE_MISMATCH', candidate_bar_id,
+                evaluated_side=decision.get('side'),
+            )
             return None
         if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
+            log_entry_gate(
+                self, symbol, side, 'ENTRY_REVALIDATION',
+                'BLOCKED_CANDIDATE_BAR_CHANGED', candidate_bar_id,
+                revalidated_bar_id=decision.get('confirmation_bar_id'),
+            )
             return None
         return dict(frame=frame, price=price, decision=decision,
                     signal_code=decision['type'])
@@ -1799,7 +1818,12 @@ class TradingEngine:
             return False
         bar = decision['confirmation_bar_id']
         log_entry_gate(self, symbol, side, 'ENTRY_SEQUENCE', decision['entry_phase'], bar,
-                       first_bar=decision['breakout_bar_id'], exit_bar=decision['exit_bar_id'])
+                       first_bar=decision['breakout_bar_id'],
+                       exit_bar=decision.get('exit_bar_id'),
+                       candidate_reason=decision.get('reason'),
+                       post_close_bars=decision.get('post_close_bars_after_close'),
+                       post_close_three_bar_exception=bool(
+                           decision.get('post_close_strong_impulse')))
         used = getattr(self,'_closed_entry_fills',None)
         if used is None:
             used = self._closed_entry_fills = set()
@@ -1897,11 +1921,17 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
             
-            from core.services.entry_contract import evaluate_entry_contract
+            from core.services.entry_contract import (
+                entry_direction_problem, evaluate_entry_contract,
+            )
             # Revalidate the live entry contract, without expected-profit or reward/risk vetoes.
             diagnostics = {}
             if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
                 log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
+                return False
+            direction_problem = entry_direction_problem(snapshot['frame'], price, side)
+            if direction_problem:
+                log_entry_gate(self, symbol, side, 'EXECUTION', direction_problem, bar)
                 return False
 
             context['entry_snapshot']['quote_price'] = price

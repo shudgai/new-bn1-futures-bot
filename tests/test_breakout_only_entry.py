@@ -13,6 +13,7 @@ from core.services.entry_contract import (
     entry_consolidation_problem,
     quote_beyond_side_outer_rail,
 )
+from core.services import entry_contract
 from core.services.entry_firewall import validate_account_entry
 
 
@@ -21,16 +22,16 @@ def breakout_frame(side="LONG"):
     rows = [
         dict(open=100.0, close=100.2, high=100.3, low=99.9,
              kc_upper=101.0, kc_middle=100.0, kc_lower=99.0,
-             ma5=99.5, ma15=99.0, atr=1.0),
+             ma3=99.5, ma5=99.5, ma15=99.0, atr=1.0),
         dict(open=100.8, close=101.4, high=101.5, low=100.7,
              kc_upper=101.0, kc_middle=100.1, kc_lower=99.1,
-             ma5=100.2, ma15=99.5, atr=1.0),
+             ma3=100.2, ma5=100.2, ma15=99.5, atr=1.0),
         dict(open=101.3, close=101.6, high=101.7, low=101.2,
              kc_upper=101.3, kc_middle=100.2, kc_lower=99.2,
-             ma5=100.5, ma15=99.8, atr=1.0),
+             ma3=100.5, ma5=100.5, ma15=99.8, atr=1.0),
         dict(open=101.5, close=101.7, high=101.8, low=101.4,
              kc_upper=101.4, kc_middle=100.3, kc_lower=99.3,
-             ma5=100.7, ma15=100.0, atr=1.0),
+             ma3=100.7, ma5=100.7, ma15=100.0, atr=1.0),
     ]
     for index, row in enumerate(rows):
         row.update(timestamp=stamp - (3 - index) * 60_000,
@@ -43,6 +44,7 @@ def breakout_frame(side="LONG"):
             ("high", "low"), ("low", "high"),
             ("kc_upper", "kc_lower"), ("kc_lower", "kc_upper"),
             ("kc_middle", "kc_middle"), ("ma5", "ma5"), ("ma15", "ma15"),
+            ("ma3", "ma3"),
         ):
             frame[target] = 200.0 - source[original]
     frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
@@ -141,6 +143,268 @@ def test_confirmed_two_candle_breakout_is_general_entry(side):
     assert decision["side"] == side
     assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
     assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
+
+
+def test_long_reversal_below_kc_middle_is_blocked(monkeypatch):
+    frame = breakout_frame("LONG")
+    quote = float(frame.iloc[-1]["kc_middle"]) - 0.01
+    candidate = dict(action="ENTER", side="LONG", type="KC_SECOND_THIRD_LONG")
+    monkeypatch.setattr(entry_contract, "evaluate_second_third", lambda *args: candidate)
+    diagnostics = {}
+
+    decision = evaluate_entry_contract(
+        frame, quote, symbol="CAP/USDT", diagnostics=diagnostics
+    )
+
+    assert decision is None or decision["type"] != "OPEN_LONG_MOMENTUM_SQUEEZE"
+    assert diagnostics["reason"] == "BLOCKED_BELOW_KC_MID"
+
+
+def test_short_single_closed_breakout_cannot_use_tiny_live_body():
+    frame = breakout_frame("SHORT")
+    frame.loc[1, "kc_lower"] = 98.0
+    decision = evaluate_entry_contract(
+        frame, float(frame.iloc[-1]["close"]), symbol="CAP/USDT"
+    )
+
+    assert decision is None
+
+
+def test_kc_momentum_override_resolves_flat_slope():
+    from core.services.strategies.outer_strategy import ck_direction, resolve_kc_direction
+
+    assert resolve_kc_direction(0.0, 98.0, 100.0, 99.0, 100.0, 2.0) == "DOWN"
+    assert resolve_kc_direction(0.0, 102.0, 100.0, 101.0, 100.0, 2.0) == "UP"
+    assert resolve_kc_direction(0.0, 100.2, 100.0, 99.0, 100.0, 2.0) == "UNKNOWN"
+
+    frame = breakout_frame("SHORT")
+    frame.loc[[1, 2], ["kc_lower", "kc_middle", "kc_upper"]] = [99., 100., 101.]
+    frame.loc[2, ["close", "ma5", "ma15", "atr"]] = [99.4, 99., 100., 2.]
+    assert ck_direction(frame) == "SHORT"
+
+
+def test_intrabar_midline_entry_threshold_and_position_gate():
+    from core.services.entry_contract import evaluate_intrabar_breakout_entry
+
+    assert evaluate_intrabar_breakout_entry(None, 99.2, 101.0, 100.0, 2.0) == (
+        "OPEN_SHORT_INTRABAR_PENETRATION"
+    )
+    assert evaluate_intrabar_breakout_entry(None, 100.8, 99.0, 100.0, 2.0) == (
+        "OPEN_LONG_INTRABAR_PENETRATION"
+    )
+    assert evaluate_intrabar_breakout_entry(None, 99.5, 101.0, 100.0, 2.0) is None
+    assert evaluate_intrabar_breakout_entry("LONG", 99.0, 101.0, 100.0, 2.0) is None
+
+
+def test_intrabar_midline_entry_revalidates_width_without_direction_cooldown(monkeypatch):
+    from core.services import entry_contract
+
+    frame = breakout_frame("LONG")
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "kc_lower", "kc_middle", "kc_upper"]] = [
+        100.5, 101.8, 99.4, 99.1, 100.3, 101.5,
+    ]
+    diagnostics = {}
+    monkeypatch.setattr(
+        entry_contract, "post_profit_lock_reason",
+        lambda *args: "BLOCKED_BY_POST_PROFIT_COOLDOWN",
+    )
+
+    decision = evaluate_entry_contract(
+        frame, 99.5, symbol="CAP/USDT", diagnostics=diagnostics
+    )
+
+    assert decision is not None
+    assert decision["side"] == "SHORT"
+    assert decision["type"] == "OPEN_SHORT_INTRABAR_PENETRATION"
+    assert decision["entry_phase"] == "KC_MIDLINE_INTRABAR"
+
+
+def test_intrabar_midline_entry_retains_post_profit_peak_gate(monkeypatch):
+    from core.services import entry_contract
+
+    frame = breakout_frame("LONG")
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "kc_lower", "kc_middle", "kc_upper"]] = [
+        100.5, 101.8, 99.4, 99.1, 100.3, 101.5,
+    ]
+    monkeypatch.setattr(
+        entry_contract, "post_profit_lock_reason",
+        lambda *args: "BLOCKED_BY_PEAK_EXHAUSTION_GATE",
+    )
+    diagnostics = {}
+
+    decision = evaluate_entry_contract(
+        frame, 99.5, symbol="CAP/USDT", diagnostics=diagnostics
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_BY_PEAK_EXHAUSTION_GATE"
+
+
+def test_intrabar_midline_entry_passes_account_revalidation():
+    frame = breakout_frame("LONG")
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "close", "kc_lower", "kc_middle", "kc_upper"]] = [
+        100.5, 101.8, 99.4, 99.5, 99.1, 100.3, 101.5,
+    ]
+    decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
+    assert decision and decision["type"] == "OPEN_SHORT_INTRABAR_PENETRATION"
+    account = SimpleNamespace(
+        positions={}, trades=[], last_closed_at={},
+        entry_frame_provider=AsyncMock(return_value=frame),
+    )
+    context = dict(
+        entry_signal_code=decision["type"],
+        channel_confirmation_bar_id=decision["confirmation_bar_id"],
+    )
+
+    validated = asyncio.run(
+        validate_account_entry(account, "CAP/USDT", "SHORT", context)
+    )
+
+    assert validated["pending_signal_id"] == decision["pending_signal_id"]
+
+
+def band_walk_frame():
+    frame = with_chop_history(breakout_frame("LONG"))
+    for index in range(6):
+        lower = 99.0 + index * 0.03
+        middle = 100.0 + index * 0.10
+        upper = 101.0 + index * 0.13
+        close = 100.5 + index * 0.12
+        frame.loc[index, ["open", "high", "low", "close", "kc_lower", "kc_middle",
+                          "kc_upper", "ma5", "ma15", "atr"]] = [
+            close - 0.1, close + 0.15, close - 0.15, close,
+            lower, middle, upper, 100.0 + index * 0.2,
+            99.2 + index * 0.15, 1.0,
+        ]
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "close", "kc_lower", "kc_middle",
+                     "kc_upper", "ma5", "ma15", "atr"]] = [
+        102.05, 102.40, 102.00, 102.35, 99.10, 100.60, 102.10,
+        101.10, 100.0, 1.0,
+    ]
+    return frame
+
+
+def test_band_walking_entry_accepts_healthy_green_body_outside_upper_rail():
+    frame = band_walk_frame()
+    diagnostics = {}
+    decision = evaluate_entry_contract(
+        frame, 102.35, symbol="LOBSTER/USDT", diagnostics=diagnostics
+    )
+
+    assert decision is not None, diagnostics
+    assert decision["side"] == "LONG"
+    assert decision["type"] == "KC_BAND_WALK_LONG"
+    assert decision["entry_phase"] == "KC_BAND_WALK_ENTRY"
+
+
+def post_pressure_reentry_frame(live_open, quote):
+    frame = breakout_frame("LONG")
+    reclaim_setup = live_open < 101.
+    rows = [
+        (99.0, 100.0, 101.0, 100.1, 99.8, 100.4, 100.0, 99.7),
+        (99.1, 100.1, 101.1, 100.2, 100.0, 100.6, 100.2, 99.9),
+        (99.2, 100.3, 101.3, 100.4,
+         100.8 if reclaim_setup else 101.3, 102.0,
+         99.8 if reclaim_setup else 100.8, 100.9),
+        (99.3, 100.4, 101.5, 100.6, live_open, max(live_open, quote), min(live_open, quote), quote),
+    ]
+    for index, values in enumerate(rows):
+        lower, middle, upper, ma5, opening, high, low, close = values
+        frame.loc[index, ["kc_lower", "kc_middle", "kc_upper", "ma5", "open", "high", "low", "close"]] = [
+            lower, middle, upper, ma5, opening, high, low, close,
+        ]
+    return frame
+
+
+@pytest.mark.parametrize(
+    ("live_open", "quote", "expected_path"),
+    [(100.5, 100.7, "MA5_RECLAIM"), (101.8, 102.1, "RED_HIGH_BREAK")],
+)
+def test_sell_pressure_close_allows_fresh_long_continuation_reentry(
+    live_open, quote, expected_path
+):
+    from core.services.entry_contract import evaluate_entry_contract
+
+    frame = post_pressure_reentry_frame(live_open, quote)
+    exit_id = float(frame.iloc[-3]["timestamp"]) + 30000.
+    account = SimpleNamespace(
+        positions={},
+        trades=[dict(
+            symbol="CAP/USDT", action="CLOSE_LONG", side="LONG", status="CLOSED",
+            id=exit_id, reason="Channel Swing LONG_EXIT_OVERBOUGHT_EXTREME_RATCHET",
+            last_profit_exit_side="LONG", last_profit_exit_timestamp=exit_id,
+            last_profit_exit_peak_price=105.5,
+        )],
+    )
+
+    diagnostics = {}
+    decision = evaluate_entry_contract(
+        frame, quote, account=account, symbol="CAP/USDT", diagnostics=diagnostics
+    )
+
+    assert decision is not None, diagnostics
+    assert decision["type"] == "RE_ENTRY_LONG_KC_CONTINUATION"
+    assert decision["entry_phase"] == "RE_ENTRY_BYPASS"
+    assert decision["reentry_path"] == expected_path
+
+
+def test_non_pressure_close_does_not_create_long_reentry_bypass():
+    from core.services.entry_contract import evaluate_entry_contract
+
+    frame = post_pressure_reentry_frame(100.5, 100.7)
+    exit_id = float(frame.iloc[-3]["timestamp"]) + 30000.
+    account = SimpleNamespace(positions={}, trades=[dict(
+        symbol="CAP/USDT", action="CLOSE_LONG", side="LONG", status="CLOSED",
+        id=exit_id, reason="manual close",
+    )])
+
+    assert evaluate_entry_contract(frame, 100.7, account=account, symbol="CAP/USDT") is None
+
+
+def test_short_close_current_bar_squeeze_bypasses_structure_and_cooldown():
+    from core.services.entry_contract import evaluate_entry_contract
+
+    frame = breakout_frame("LONG")
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "close", "kc_lower", "kc_middle", "kc_upper"]] = [
+        100.0, 101.5, 99.9, 100.2, 99.0, 100.2, 101.4,
+    ]
+    live_ms = float(frame.loc[live, "timestamp"])
+    account = SimpleNamespace(positions={}, trades=[dict(
+        symbol="CAP/USDT", action="CLOSE_SHORT", side="SHORT", status="CLOSED",
+        id=live_ms + 100., reason="confirmed short close",
+    )])
+
+    decision = evaluate_entry_contract(
+        frame, 101.3, account=account, symbol="CAP/USDT"
+    )
+
+    assert decision is not None
+    assert decision["side"] == "LONG"
+    assert decision["type"] == "OPEN_LONG_MOMENTUM_SQUEEZE"
+    assert decision["entry_phase"] == "REVERSAL_SQUEEZE_BYPASS"
+
+
+def test_old_short_close_cannot_authorize_current_bar_squeeze():
+    from core.services.entry_contract import evaluate_entry_contract
+
+    frame = breakout_frame("LONG")
+    live = frame.index[-1]
+    frame.loc[live, ["open", "high", "low", "close", "kc_lower", "kc_middle", "kc_upper"]] = [
+        100.0, 101.5, 99.9, 100.2, 99.0, 100.2, 101.4,
+    ]
+    live_ms = float(frame.loc[live, "timestamp"])
+    account = SimpleNamespace(positions={}, trades=[dict(
+        symbol="CAP/USDT", action="CLOSE_SHORT", side="SHORT", status="CLOSED",
+        id=live_ms - 60000., reason="confirmed short close",
+    )])
+
+    decision = evaluate_entry_contract(frame, 101.3, account=account, symbol="CAP/USDT")
+    assert decision is None or decision["type"] != "OPEN_LONG_MOMENTUM_SQUEEZE"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

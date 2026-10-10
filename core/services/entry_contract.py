@@ -22,6 +22,7 @@ from core.services.kc_pending_entry import (
     KC_PENDING_CODES,
     evaluate_kc_pending_entry,
 )
+from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
@@ -50,6 +51,8 @@ ENTRY_EVIDENCE_KEYS = (
     "reverse_close_id", "live_body_atr", "continuation_entry_bar_id",
     "continuation_entry_bar_low", "continuation_entry_bar_high",
     "post_close_continuation_close_id",
+    "post_close_continuation_bar_id", "post_close_bars_after_close",
+    "post_close_strong_impulse",
 )
 
 
@@ -294,9 +297,94 @@ def evaluate_post_close_continuation(frame, quote, symbol, account, diagnostics=
         stamp = float(live['timestamp'])
         previous_stamp = float(previous['timestamp'])
         quote = float(quote)
-        if (not all(math.isfinite(value) and value > 0
-                    for value in (close_id, stamp, previous_stamp, quote))
-                or stamp != math.floor(close_id / 60000.0) * 60000.0 + 60000.0
+        if not all(math.isfinite(value) and value > 0
+                   for value in (close_id, stamp, previous_stamp, quote)):
+            return None
+
+        # Strong same-side impulse follow-up is scoped to the first three
+        # fully completed minutes after a confirmed close.  This specific
+        # close-linked route is exempt from Three-Bar only; it still requires
+        # a directional impulse, structure/volume confirmation, falling KC +
+        # MA5, and a fresh quote that remains beyond both MA5 and the rail.
+        close_bar_start = math.floor(close_id / 60000.0) * 60000.0
+        post_close_bars = closed.loc[closed['timestamp'] > close_bar_start]
+        if (not post_close_bars.empty
+                and stamp == float(post_close_bars.iloc[-1]['timestamp']) + 60000.0):
+            impulse = post_close_bars.iloc[-1]
+            impulse_stamp = float(impulse['timestamp'])
+            bars_after_close = int(round((impulse_stamp - close_bar_start) / 60000.0))
+            prior = closed.loc[closed['timestamp'] < impulse_stamp]
+            if 1 <= bars_after_close <= 3 and len(prior) >= 5:
+                prior_bar = prior.iloc[-1]
+                try:
+                    impulse_open = float(impulse['open'])
+                    impulse_close = float(impulse['close'])
+                    impulse_atr = float(prior_bar['atr'])
+                    ma5_slope = float(impulse['ma5']) - float(prior_bar['ma5'])
+                    kc_slope = float(impulse['kc_middle']) - float(prior_bar['kc_middle'])
+                    direction_matches = (
+                        impulse_close < impulse_open if side == 'SHORT'
+                        else impulse_close > impulse_open
+                    )
+                    body_atr = abs(impulse_close - impulse_open) / impulse_atr
+                    broke_structure = (
+                        impulse_close < float(prior_bar['low']) if side == 'SHORT'
+                        else impulse_close > float(prior_bar['high'])
+                    )
+                    volume_expansion = False
+                    if 'volume' in closed.columns:
+                        impulse_volume = float(impulse['volume'])
+                        reference_volume = [float(value) for value in prior.tail(5)['volume']]
+                        volume_expansion = (
+                            len(reference_volume) == 5
+                            and impulse_volume >= 1.5 * (sum(reference_volume) / 5.0)
+                        )
+                    trend_aligned = (
+                        ma5_slope < 0 and kc_slope < 0 if side == 'SHORT'
+                        else ma5_slope > 0 and kc_slope > 0
+                    )
+                    qualifies = (
+                        direction_matches and impulse_atr > 0 and body_atr >= 0.5
+                        and (broke_structure or volume_expansion) and trend_aligned
+                    )
+                except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                    qualifies = False
+                if qualifies:
+                    quote_ma5 = float(live['ma5']) + (quote - float(live['close'])) / 5.0
+                    quote_rail = float(live[
+                        'kc_lower' if side == 'SHORT' else 'kc_upper'
+                    ])
+                    remains_aligned = (
+                        quote < quote_ma5 and quote < quote_rail if side == 'SHORT'
+                        else quote > quote_ma5 and quote > quote_rail
+                    )
+                    if remains_aligned:
+                        signal_id = (
+                            f'{symbol}:POST_CLOSE_STRONG_CONTINUATION:{int(impulse_stamp)}:'
+                            f'{int(close_id)}:{side}'
+                        )
+                        return dict(
+                            action='ENTER', side=side, type='TRIGGER_C_CONTINUATION',
+                            reason=('POST_CLOSE_STRONG_BEARISH_IMPULSE'
+                                    if side == 'SHORT'
+                                    else 'POST_CLOSE_STRONG_BULLISH_IMPULSE'),
+                            price=quote, entry_atr=impulse_atr,
+                            confirmation_bar_id=stamp, close_price=impulse_close,
+                            intrabar=True, entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
+                            breakout_bar_id=impulse_stamp,
+                            pair_confirmation_bar_id=float(prior_bar['timestamp']),
+                            third_bar_id=stamp, pending_signal_id=signal_id,
+                            post_close_continuation_close_id=close_id,
+                            post_close_continuation_bar_id=impulse_stamp,
+                            post_close_bars_after_close=bars_after_close,
+                            post_close_strong_impulse=True,
+                            continuation_entry_bar_id=stamp,
+                            continuation_entry_bar_low=min(float(live['low']), quote),
+                            continuation_entry_bar_high=max(float(live['high']), quote),
+                            live_opening_context='POST_CLOSE_STRONG_IMPULSE',
+                        )
+
+        if (stamp != math.floor(close_id / 60000.0) * 60000.0 + 60000.0
                 or previous_stamp != stamp - 60000.0):
             return None
 
@@ -1045,12 +1133,26 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         return False, "BLOCKED_BY_POSITION_GATE"
 
     # ================= 破軌專屬防護 (FRESH & QUALITY GATE) =================
+    extended_relaxed_for_trend = False
     if trigger_type == "TRIGGER_A_KC_BREAKOUT":
         # FRESH_BREAKOUT_GATE: 防止高位連拉盲目追高
-        if side == "LONG" and prev['close'] > prev['kc_upper'] and prev['open'] > prev['kc_upper']:
+        strong_directional_trend = (
+            side == 'SHORT'
+            and float(curr['kc_middle']) < float(prev['kc_middle'])
+            and float(curr['ma5']) < float(prev['ma5'])
+        ) or (
+            side == 'LONG'
+            and float(curr['kc_middle']) > float(prev['kc_middle'])
+            and float(curr['ma5']) > float(prev['ma5'])
+        )
+        extended = (
+            side == "LONG" and prev['close'] > prev['kc_upper'] and prev['open'] > prev['kc_upper']
+        ) or (
+            side == "SHORT" and prev['close'] < prev['kc_lower'] and prev['open'] < prev['kc_lower']
+        )
+        if extended and not strong_directional_trend:
             return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
-        if side == "SHORT" and prev['close'] < prev['kc_lower'] and prev['open'] < prev['kc_lower']:
-            return False, "BLOCKED_BY_EXTENDED_BREAKOUT_GATE"
+        extended_relaxed_for_trend = extended and strong_directional_trend
 
         # CANDLE_QUALITY_GATE: 防止急漲急跌插針假突破
         candle_range = curr['high'] - curr['low'] + 1e-6
@@ -1075,7 +1177,10 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         if is_doji_candle(curr): return False, "BLOCKED_BY_DOJI_GATE"
         if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
         if side == "LONG" and curr['close'] < curr['open']: return False, "BLOCKED_BY_RED_CANDLE_GATE"
-        return True, "GATE_PASSED_FAST_LANE"
+        return True, (
+            "GATE_PASSED_FAST_LANE_EXTENDED_TREND"
+            if extended_relaxed_for_trend else "GATE_PASSED_FAST_LANE"
+        )
 
     # ================= 常規進場檢查 (MA_CROSS) =================
     tolerance = curr['atr'] * 0.05
@@ -1117,6 +1222,22 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
+        post_close_impulse = bool(
+            decision.get('post_close_strong_impulse')
+            and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
+            and decision.get('type') == 'TRIGGER_C_CONTINUATION'
+            and decision.get('reason') in (
+                'POST_CLOSE_STRONG_BEARISH_IMPULSE',
+                'POST_CLOSE_STRONG_BULLISH_IMPULSE',
+            )
+            and 1 <= int(decision.get('post_close_bars_after_close') or 0) <= 3
+        )
+        if not post_close_impulse:
+            gate_problem = three_bar_rail_gate_problem(
+                frame, quote, decision.get('side'),
+            )
+            if gate_problem:
+                return reject(gate_problem)
         problem = entry_direction_problem(frame, quote, decision.get('side'))
         if problem:
             return reject(problem)
@@ -1183,10 +1304,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     for trade in getattr(account, 'trades', [])
                 ):
                     return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
-                if diagnostics is not None:
-                    diagnostics.clear()
-                    diagnostics.update(pending)
-                return pending
+                return authorize(pending, quote)
 
         # Evaluate a forming-bar KC break before the closed-candle signal path.
         # The helper already checks the raw open, live quote, prior closed ATR,
@@ -1344,7 +1462,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             if diagnostics is not None:
                 diagnostics.clear()
                 diagnostics.update(continuation)
-            return continuation
+            return authorize(continuation, quote)
         if code == 'TRIGGER_C_CONTINUATION':
             try:
                 live = frame.iloc[-1]

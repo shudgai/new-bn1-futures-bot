@@ -15,6 +15,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import ck_direction
 from core.services.strict_entry_gates import validate_strict_entry
+from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 
 ANTI_BOTTOM_SHORT_STRETCH_ATR = 0.20
 ANTI_BOTTOM_SHORT_PULLBACK_ATR = 0.20
@@ -583,6 +584,10 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     gate_passed, gate_reason, gate_evidence = validate_strict_entry(frame, live_price, side, entry_mode='BREAKOUT')
     if not gate_passed:
         return wait(f"BLOCKED_BY_STRICT_GATE ({gate_reason})")
+
+    rail_problem = three_bar_rail_gate_problem(frame, live_price, side)
+    if rail_problem:
+        return wait(rail_problem)
 
     return True, code, dict(
         action='ENTER', side=side, reason=code, rule=rule,

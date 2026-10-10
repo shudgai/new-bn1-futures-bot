@@ -24,6 +24,9 @@ LIVE_MA5_BREAKDOWN_TRIGGER = 'LIVE_MA5_BREAKDOWN_EXIT'
 LIVE_FLASH_DUMP_TRIGGER = 'LIVE_FLASH_DUMP_EXIT'
 LIVE_MA5_BREAKDOWN_ATR = 0.25
 LIVE_FLASH_DUMP_ATR = 0.60
+V_REVERSAL_SHORT_BODY_ATR = 0.50
+V_REVERSAL_SHORT_MA_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_GREEN_MA_RECLAIM'
+V_REVERSAL_SHORT_KC_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_KC_LOWER_RECLAIM'
 CONSECUTIVE_DOJI_STALL_TRIGGER = 'EXIT_CONSECUTIVE_DOJI_STALL'
 CONSECUTIVE_DOJI_STALL_BARS = 3
 DOJI_STALL_BODY_ATR = 0.25
@@ -48,7 +51,6 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
-    'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
     'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
@@ -56,13 +58,11 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
     CONSECUTIVE_DOJI_STALL_TRIGGER,
-    NET_ROE_LOCK_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
     CONTINUATION_FAILED_TRIGGER,
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
-    'THREE_POINT_PIVOT',
     'WATERFALL_DROP',
     'BEARISH_INSTANT_BREAKOUT',
     'TWO_CLOSED_ADVERSE_ABNORMAL',
@@ -70,7 +70,6 @@ PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION',
     CONSECUTIVE_DOJI_STALL_TRIGGER,
-    NET_ROE_LOCK_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
     CONTINUATION_FAILED_TRIGGER,
@@ -80,8 +79,12 @@ PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
 })
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PEAK_PULLBACK_PRESSURE',
+    'EXIT_PARABOLIC_PULLBACK_1_ATR',
     'CHANNEL_PEAK_PULLBACK_REVERSAL',
     'KC_CHANNEL_RETURN',
+    'THREE_POINT_PIVOT',
+    'EXIT_PROFIT_LOCK_FLOOR',
+    NET_ROE_LOCK_TRIGGER,
 })
 
 PROFIT_FLOOR_ENABLED = False
@@ -121,6 +124,34 @@ def live_intraday_sell_pressure_trigger(position, price, snapshot):
         return None
 
 
+def v_reversal_short_exit_trigger(position, price, snapshot):
+    """Fast-cut SHORT on a strong live green reclaim or a return inside KC lower."""
+    try:
+        if position.get('side') != 'SHORT' or not isinstance(snapshot, dict):
+            return None
+        quote = float(price)
+        opening = float(snapshot.get('live_open') or 0.)
+        atr = float(snapshot.get('atr') or 0.)
+        live_low = float(snapshot.get('live_low') or 0.)
+        lower = float(snapshot.get('live_kc_lower') or 0.)
+        live_ma3 = float(snapshot.get('live_ma3') or 0.)
+        live_ma5 = float(snapshot.get('live_ma5') or 0.)
+        last_close = float(snapshot.get('last_close') or 0.)
+        if not all(positive(value) for value in
+                   (quote, opening, atr, live_low, lower, last_close)):
+            return None
+        if quote > lower and (live_low < lower or last_close < lower):
+            return V_REVERSAL_SHORT_KC_RECLAIM_TRIGGER
+        body = quote - opening
+        reclaimed = any(
+            positive(ma) and quote > ma and (opening < ma or last_close < ma)
+            for ma in (live_ma3, live_ma5)
+        )
+        if body >= V_REVERSAL_SHORT_BODY_ATR * atr and reclaimed:
+            return V_REVERSAL_SHORT_MA_RECLAIM_TRIGGER
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
 def position_identity(position):
     result = [position['side'], float(position['open_timestamp']),
               float(position['entry_price']), abs(float(position.get('qty', position.get('quantity', 0))))]
@@ -540,6 +571,27 @@ def migrate_peak_state(position, meta=None):
                 state.pop(key, None)
         if STATE_KEY in meta:
             meta[STATE_KEY] = copy.deepcopy(state)
+    # Profit locks and retracement exits are retired. Remove persisted retries
+    # as well as arming fields so an old position cannot close on a later tick.
+    retired_profit_triggers = DISABLED_CHANNEL_PULLBACK_TRIGGERS
+    if state.get('trigger') in retired_profit_triggers:
+        for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
+                    'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
+            state.pop(key, None)
+    for source in (position, meta):
+        for key in ('net_roe_peak_pct', 'net_roe_lock_armed',
+                    'net_roe_lock_floor_pct', 'profit_floor_armed',
+                    'profit_floor_price', 'frozen_lock_arm_atr',
+                    'frozen_trailing_distance_atr'):
+            source.pop(key, None)
+    for key in ('net_roe_peak_pct', 'net_roe_lock_armed',
+                'net_roe_lock_floor_pct', 'profit_floor_armed',
+                'profit_floor_price', 'frozen_lock_arm_atr',
+                'frozen_trailing_distance_atr'):
+        state.pop(key, None)
+    for source in (position, meta):
+        if STATE_KEY in source:
+            source[STATE_KEY] = copy.deepcopy(state)
     for source in (position, meta):
         for key in RETIRED_KEYS:
             source.pop(key, None)
@@ -559,20 +611,8 @@ def estimated_display_net_pnl(entry, price, qty, sign, fee, slippage):
 
 
 def net_roe_lock_floor(peak_net_roe_pct):
-    """Arm at 8% net ROE, then raise the floor 4pp per stage with 2pp giveback."""
-    try:
-        peak = float(peak_net_roe_pct)
-        if not math.isfinite(peak):
-            return None
-        progress = peak - NET_ROE_LOCK_FIRST_PCT
-        if progress < 0 and not math.isclose(progress, 0.0, rel_tol=1e-12, abs_tol=1e-12):
-            return None
-        stage = max(0, math.floor(max(0.0, progress) / NET_ROE_LOCK_STEP_PCT + 1e-12))
-        return (NET_ROE_LOCK_FIRST_PCT
-                + stage * NET_ROE_LOCK_STEP_PCT
-                - NET_ROE_LOCK_GIVEBACK_PCT)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    """Retired: profit lock floors are disabled by current user policy."""
+    return None
 
 
 def ma_trend_confirms_position(position, snapshot):
@@ -1095,26 +1135,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         is_channel_swing = channel_initial_stop_disabled(position)
         ladder_reason, ladder_trigger = None, None
-        # Track the same fee/slippage-adjusted Net ROE% that the UI displays.
-        margin = position.get('margin')
-        if positive(margin):
-            net_roe_pct = (
-                estimated_display_net_pnl(entry, price, qty, sign, fee, slippage)
-                / float(margin) * 100.0
-            )
-            if math.isfinite(net_roe_pct) and is_channel_swing:
-                peak_net_roe_pct = max(
-                    float(state.get('net_roe_peak_pct', net_roe_pct)),
-                    net_roe_pct,
-                )
-                state['net_roe_peak_pct'] = peak_net_roe_pct
-                lock_floor_pct = net_roe_lock_floor(peak_net_roe_pct)
-                state['net_roe_lock_armed'] = lock_floor_pct is not None
-                if lock_floor_pct is not None:
-                    state['net_roe_lock_floor_pct'] = lock_floor_pct
-                    if (net_roe_pct < lock_floor_pct
-                            or math.isclose(net_roe_pct, lock_floor_pct, rel_tol=1e-12)):
-                        ladder_reason, ladder_trigger = PEAK_REASON, NET_ROE_LOCK_TRIGGER
+        # Net ROE staged lock is retired; pullbacks must not authorize a close.
 
         # 暴漲逃頂機制 (Parabolic Reversal Exit): 無視 CK 是否衰退
         parabolic_reason, parabolic_trigger = None, None
@@ -1187,23 +1208,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         drawdown_atr = (state['peak_price'] - price) / scale if (scale > 0 and sign == 1) else (price - state['peak_price']) / scale if scale > 0 else 0.
 
         is_straight_rocket = (trend_status == 'HOLD' and peak_gain_atr >= 2.0) or (peak_gain_atr >= 3.0)
-        if (not is_channel_swing and net > 0 and is_straight_rocket
-                and (state.get('profit_floor_armed', False)
-                     or state.get('net_roe_lock_armed', False))):
-            # 方案 2 寬鬆大波段階梯回踩門檻（利潤越高，回踩門檻越小）
-            if peak_gain_atr >= 3.0:
-                pullback_limit_atr = 0.35
-            else:
-                pullback_limit_atr = 0.40
-
-            # 1. 價格從最高點回踩達動態階梯門檻
-            if drawdown_atr >= pullback_limit_atr:
-                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PEAK_PULLBACK_PRESSURE'
-        elif (not is_channel_swing and peak_gain_atr >= 3.0
-              and (state.get('profit_floor_armed', False)
-                   or state.get('net_roe_lock_armed', False))):
-            if drawdown_atr >= 1.0:
-                parabolic_reason, parabolic_trigger = PEAK_REASON, 'EXIT_PARABOLIC_PULLBACK_1_ATR'
+        # Historical profit-floor and parabolic pullback exits stay disabled.
 
         reached = lambda v, limit: v >= limit or math.isclose(v,limit,rel_tol=1e-12)
 
@@ -1279,13 +1284,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
             # Model T Profit Floor Hit Evaluation
             floor_reason, floor_trigger = None, None
-            if (not is_channel_swing and state.get('profit_floor_armed', False)
-                    and 'profit_floor_price' in state):
-                floor = state['profit_floor_price']
-                if sign == 1 and price <= floor:
-                    floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_PROFIT_LOCK_FLOOR'
-                elif sign == -1 and price >= floor:
-                    floor_reason, floor_trigger = ABNORMAL_REASON, 'EXIT_PROFIT_LOCK_FLOOR'
 
             # Floor overrides soft exits (Doji / MA15 / Ladder)
             if floor_reason:
@@ -1341,19 +1339,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         and trigger not in ('WATERFALL_DROP', CONTINUATION_FAILED_TRIGGER)):
                     reason, trigger = ABNORMAL_REASON, abnormal_evidence['trigger']
                     state.update(abnormal_evidence)
-                pivot_evidence = three_point_pivot_exit(position, snapshot)
-                if (pivot_evidence is not None
-                        and channel_pivot_trend_confirmed(position, snapshot)
-                        and reason != HARD_REASON
-                        and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL')):
-                    reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
-                    state.update(pivot_evidence)
             elif not pivot_only_symbol:
-                pivot_evidence = three_point_pivot_exit(position, snapshot)
-                if (pivot_evidence is not None and reason != HARD_REASON
-                        and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
-                    reason, trigger = ABNORMAL_REASON, pivot_evidence['trigger']
-                    state.update(pivot_evidence)
                 ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
                 ma5_snapshot['quote_price'] = price
                 ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
@@ -1415,8 +1401,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             # A Channel Swing three-point pullback may close only after its
             # net-ROE profit lock has armed (first activation: 8% peak ROE).
             # Otherwise a pivot must not flatten an unprotected position.
-            if (is_channel_swing and trigger == 'THREE_POINT_PIVOT'
-                    and not state.get('net_roe_lock_armed', False)):
+            if trigger in DISABLED_CHANNEL_PULLBACK_TRIGGERS:
                 reason, trigger = None, None
                 for key in ('pending', 'trigger', 'trigger_bar_ms',
                             'trigger_confirmed_ms', 'trigger_open',

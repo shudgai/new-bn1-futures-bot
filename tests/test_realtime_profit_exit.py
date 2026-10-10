@@ -9,6 +9,9 @@ import pytest
 
 from core.engine import TradingEngine
 from core.services.exits.realtime_profit_exit import cached_tick_indicators
+from core.services.exits.realtime_profit_exit import (
+    _evaluate_realtime_core_exit_gates, _tiered_net_roe_floor,
+)
 from core.services.exits.peak_trailing_exit import (
     LIVE_FLASH_DUMP_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
@@ -80,6 +83,7 @@ def live_exit_frame(*, history_close, opening, high, low):
             low=history_close - 0.1,
             close=history_close,
             atr=1.0,
+            ma3=history_close,
             ma5=history_close,
             ma15=history_close,
             kc_upper=history_close + 1.0,
@@ -96,6 +100,7 @@ def live_exit_frame(*, history_close, opening, high, low):
         low=low,
         close=opening,
         atr=1000.0,
+        ma3=opening,
         ma5=opening,
         ma15=history_close,
         kc_upper=history_close + 1.0,
@@ -108,13 +113,52 @@ def live_exit_frame(*, history_close, opening, high, low):
 
 
 @pytest.mark.parametrize(
+    ('history_close', 'opening', 'high', 'low', 'price'),
+    [
+        (99.0, 99.0, 100.1, 98.5, 100.0),
+        (97.9, 99.0, 99.1, 96.8, 98.1),
+    ],
+)
+def test_short_v_reversal_does_not_close_channel_trend_position(
+    history_close, opening, high, low, price,
+):
+    async def run():
+        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+
+        now = time.time()
+        bar_ms = int(now // 60) * 60_000
+        position = pos('SHORT')
+        position.update(open_timestamp=now - 120, entry_atr=1.0)
+        account = SimpleNamespace(
+            positions={'X': position}, position_meta={}, save_state=Mock(),
+            close_position=AsyncMock(return_value=True), log=Mock(),
+        )
+        engine = object.__new__(TradingEngine)
+        engine.account = account
+        engine.is_running = True
+        engine._channel_exit_frames = {
+            'X': live_exit_frame(
+                history_close=history_close, opening=opening,
+                high=high, low=low,
+            ),
+        }
+
+        assert not await enforce_realtime_profit_exit(
+            engine, 'X', price, quote_ms=now * 1000,
+        )
+        account.close_position.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
     ('history_close', 'opening', 'high', 'low', 'price', 'expected_trigger'),
     [
         (100.0, 100.0, 100.1, 99.5, 99.5, LIVE_MA5_BREAKDOWN_TRIGGER),
         (98.0, 100.0, 101.0, 99.3, 99.3, LIVE_FLASH_DUMP_TRIGGER),
     ],
 )
-def test_live_long_sell_pressure_closes_inside_unclosed_bar(
+def test_live_long_sell_pressure_does_not_close_inside_unclosed_bar(
     history_close, opening, high, low, price, expected_trigger, monkeypatch,
 ):
     monkeypatch.setattr(
@@ -131,9 +175,8 @@ def test_live_long_sell_pressure_closes_inside_unclosed_bar(
             ),
         }
 
-        assert await engine._instant_quote_exit('X', price, time.time() * 1000)
-        engine.account.close_position.assert_awaited_once()
-        assert expected_trigger in engine.account.close_position.await_args.args[2]
+        assert not await engine._instant_quote_exit('X', price, time.time() * 1000)
+        engine.account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 
@@ -159,7 +202,7 @@ def test_small_live_bearish_candle_does_not_trigger_intraday_sell_exit(monkeypat
     asyncio.run(run())
 
 
-def test_three_closed_doji_stall_closes_short_on_first_following_quote(monkeypatch):
+def test_three_closed_doji_stall_does_not_close_channel_short(monkeypatch):
     monkeypatch.setattr(
         'core.services.exits.profit_exit_telemetry.ProfitExitTelemetry.log_event',
         Mock(),
@@ -180,14 +223,13 @@ def test_three_closed_doji_stall_closes_short_on_first_following_quote(monkeypat
             ),
         }
 
-        assert await engine._instant_quote_exit('X', 98.0, now * 1000)
-        engine.account.close_position.assert_awaited_once()
-        assert CONSECUTIVE_DOJI_STALL_TRIGGER in engine.account.close_position.await_args.args[2]
+        assert not await engine._instant_quote_exit('X', 98.0, now * 1000)
+        engine.account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 
 
-def test_net_roe_lock_floor_overrides_kc_outer_and_lower_shadow_holds(monkeypatch):
+def test_net_roe_lock_is_disabled_even_when_price_retraces(monkeypatch):
     monkeypatch.setattr(
         'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
         lambda *a, **k: ('RELEASED', 'TEST'),
@@ -223,13 +265,12 @@ def test_net_roe_lock_floor_overrides_kc_outer_and_lower_shadow_holds(monkeypatc
     decision = evaluate_peak_trailing(
         position, quote_for_net_roe(3.5), snapshot, fee=0.0005, slippage=0.0001,
     )
-
-    assert decision is not None
-    assert decision['trigger'] == NET_ROE_LOCK_TRIGGER
+    assert decision is None
+    assert not position['peak_trailing_state'].get('net_roe_lock_armed')
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_net_roe_staged_giveback_closes_through_realtime_path(side, monkeypatch):
+def test_net_roe_staged_giveback_does_not_close_through_realtime_path(side, monkeypatch):
     monkeypatch.setattr(
         'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
         lambda *a, **k: ('RELEASED', 'TEST'),
@@ -246,25 +287,23 @@ def test_net_roe_staged_giveback_closes_through_realtime_path(side, monkeypatch)
         assert not await e._instant_quote_exit(
             'X', quote_for_net_roe(5.5), time.time() * 1000
         )
-        assert p['peak_trailing_state']['net_roe_lock_floor_pct'] == pytest.approx(3.5)
+        assert 'net_roe_lock_floor_pct' not in p['peak_trailing_state']
 
         persisted_meta = copy.deepcopy(e.account.position_meta)
         replacement = dict(pos(side), open_timestamp=p['open_timestamp'])
         e.account.positions['X'] = replacement
         e.account.position_meta = persisted_meta
 
-        assert await e._instant_quote_exit(
+        assert not await e._instant_quote_exit(
             'X', quote_for_net_roe(3.5), time.time() * 1000
         )
-        e.account.close_position.assert_awaited_once()
-        args = e.account.close_position.await_args.args
-        assert 'NET_ROE_STAGED_GIVEBACK' in args[2]
+        e.account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_tiered_profit_pullback_requests_close_after_reload(side, monkeypatch):
+def test_tiered_profit_pullback_does_not_close_after_reload(side, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         e, p, now = engine_for(side)
@@ -277,12 +316,83 @@ def test_tiered_profit_pullback_requests_close_after_reload(side, monkeypatch):
         persisted = copy.deepcopy(e.account.position_meta)
         e.account.positions['X'] = dict(pos(side), open_timestamp=p['open_timestamp'])
         e.account.position_meta = persisted
-        assert await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*1.0, now*1000), .5)
-        e.account.close_position.assert_awaited_once()
+        assert not await asyncio.wait_for(e._instant_quote_exit('X', 100+sign*1.0, now*1000), .5)
+        e.account.close_position.assert_not_awaited()
         assert p.get('entry_mode') == 'CHANNEL_SWING'
         assert 'X' in e.account.positions
         e.fetch_klines.assert_not_called()
         lock.release()
+    asyncio.run(run())
+
+
+def test_net_roe_tier_floors():
+    assert _tiered_net_roe_floor(10.0) == (6.0, 1)
+    assert _tiered_net_roe_floor(14.99) == (pytest.approx(8.994), 1)
+    assert _tiered_net_roe_floor(15.0) == (12.0, 2)
+    assert _tiered_net_roe_floor(19.99) == (pytest.approx(15.992), 2)
+    assert _tiered_net_roe_floor(20.0) == (17.0, 3)
+
+
+@pytest.mark.parametrize(('side', 'price', 'expected'), [
+    ('LONG', 99.0, 'GLOBAL_KC_MIDDLE_CROSS'),
+    ('SHORT', 101.0, 'GLOBAL_KC_MIDDLE_CROSS'),
+])
+def test_kc_middle_baseline_closes_independent_of_roe(side, price, expected):
+    position = pos(side)
+    trigger, _ = _evaluate_realtime_core_exit_gates(
+        position, {}, price, 120000.,
+        {'reason': None, 'live_kc_middle': 100.0}, .0005, .0001,
+    )
+    assert trigger == expected
+
+
+@pytest.mark.parametrize(('side', 'close', 'expected'), [
+    ('LONG', 99.0, 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'),
+    ('SHORT', 101.0, 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'),
+])
+def test_ma5_trend_guard_reads_only_latest_closed_one_minute_bar(side, close, expected):
+    position = pos(side)
+    trigger, _ = _evaluate_realtime_core_exit_gates(
+        position, {}, 101.0 if side == 'LONG' else 99.0, 120000.,
+        {
+            'reason': None, 'live_kc_middle': 90. if side == 'LONG' else 110.,
+            'live_bar_ms': 120000., 'closed_bar_ms': 60000.,
+            'history_5': [{'ms': 60000., 'c': close, 'ma5': 100.}],
+        }, .0005, .0001,
+    )
+    assert trigger == expected
+
+
+def test_net_roe_10_percent_peak_40_percent_giveback_closes_realtime():
+    from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+    from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
+
+    async def run():
+        engine, position, now = engine_for('LONG')
+        engine._channel_exit_frames = {
+            'X': live_exit_frame(
+                history_close=100.0, opening=100.0, high=100.1, low=99.9,
+            ),
+        }
+
+        def price_for_net_roe(target_pct):
+            target_pnl = position['margin'] * target_pct / 100.0
+            fee = TAKER_FEE_RATE
+            slip = SLIPPAGE_PCT
+            return (target_pnl + position['entry_price'] * position['qty'] * (1 + fee)) / (
+                position['qty'] * (1 - fee - slip)
+            )
+
+        assert not await enforce_realtime_profit_exit(
+            engine, 'X', price_for_net_roe(10.0), quote_ms=now * 1000,
+        )
+        assert position['three_tier_net_roe_lock_state']['tier'] == 1
+        assert await enforce_realtime_profit_exit(
+            engine, 'X', price_for_net_roe(6.0), quote_ms=now * 1000 + 1,
+        )
+        engine.account.close_position.assert_awaited_once()
+        assert 'TIER_1' in engine.account.close_position.await_args.args[2]
+
     asyncio.run(run())
 
 
@@ -335,7 +445,7 @@ def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_real_account_reload_closes_tiered_profit_once(side, mode, tmp_path, monkeypatch):
+def test_real_account_reload_holds_through_profit_pullback(side, mode, tmp_path, monkeypatch):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
     async def run():
         import core.paper_account as pm
@@ -383,10 +493,10 @@ def test_real_account_reload_closes_tiered_profit_once(side, mode, tmp_path, mon
         e.account = account
         assert account.positions[symbol]['peak_pnl_usd'] == peak
         await asyncio.gather(*(e._instant_quote_exit(symbol,100+sign*1.0,time.time()*1000) for _ in range(10)))
-        assert symbol not in account.positions
-        assert len(closes(account))==1
+        assert symbol in account.positions
+        assert len(closes(account))==0
         if mode == 'testnet':
-            assert len(close_orders(exchange))==1
+            assert len(close_orders(exchange))==0
     asyncio.run(run())
 
 

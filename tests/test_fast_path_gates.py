@@ -13,17 +13,42 @@ from core.paper_account import PaperAccount
 
 def live_body_frame(side="SHORT"):
     live_timestamp = int(time.time() // 60) * 60_000
-    rows = [
-        {'timestamp': live_timestamp - 120_000, 'is_closed': True,
-         'open': 100.0, 'close': 100.1, 'high': 100.2, 'low': 99.9,
-         'kc_lower': 90.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'atr': 1.0},
-        {'timestamp': live_timestamp - 60_000, 'is_closed': True,
-         'open': 100.0, 'close': 100.1, 'high': 100.2, 'low': 99.9,
-         'kc_lower': 90.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'atr': 1.0},
-        {'timestamp': live_timestamp, 'is_closed': False,
-         'open': 100.0, 'close': 89.0, 'high': 100.0, 'low': 89.0,
-         'kc_lower': 90.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'atr': 1.0},
-    ]
+    rows = []
+    for index in range(12):
+        rows.append({
+            'timestamp': live_timestamp - (12 - index) * 60_000,
+            'is_closed': True,
+            'open': 100.0,
+            'close': 100.1,
+            'high': 100.2,
+            'low': 99.9,
+            'kc_lower': 90.3 - 0.1 * index,
+            'kc_middle': 100.3 - 0.1 * index,
+            'kc_upper': 110.0,
+            'ma5': 101.1 - 0.1 * index,
+            'ma15': 102.0,
+            'ma3': 101.2 - 0.1 * index,
+            'atr': 1.0,
+        })
+    rows[-1].update(
+        open=100.0, close=89.0, high=100.2, low=88.8,
+        ma5=100.0, ma15=102.0, ma3=99.9,
+    )
+    rows.append({
+        'timestamp': live_timestamp,
+        'is_closed': False,
+        'open': 90.5,
+        'close': 89.9,
+        'high': 90.6,
+        'low': 89.8,
+        'kc_lower': 89.5,
+        'kc_middle': 99.0,
+        'kc_upper': 110.0,
+        'ma5': 96.0,
+        'ma15': 103.0,
+        'ma3': 99.5,
+        'atr': 1.0,
+    })
     if side == "LONG":
         for row in rows:
             row['open'], row['close'] = 200.0 - row['open'], 200.0 - row['close']
@@ -46,13 +71,22 @@ def engine():
     eng.tick_buffers = {}
     return eng
 
-def test_range_veto_ordering(engine):
+def test_range_veto_ordering(engine, monkeypatch):
     symbol = 'LOBSTER/USDT'
     frame = live_body_frame()
-    frame.loc[2, 'low'] = 70.0
-    quote = 89.0
+    frame.loc[frame.index[-1], 'low'] = 70.0
+    quote = 89.4
+    monkeypatch.setattr(
+        'core.services.entry_contract.anti_bottom_short_problem',
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        'core.services.entry_contract.anti_bottom_short_problem',
+        lambda *_args, **_kwargs: None,
+    )
     decision = evaluate_entry_contract(
-        frame, quote, account=engine.account, symbol=symbol,
+        frame, quote, code='KC_LIVE_BODY_BREAKOUT_SHORT',
+        account=engine.account, symbol=symbol,
     )
     assert decision is not None
 
@@ -98,34 +132,41 @@ def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
     symbol = 'LOBSTER/USDT'
     quote = 102.0 if side == 'LONG' else 98.0
     stamp = int(time.time() // 60) * 60_000
-    frame = pd.DataFrame([dict(
-        timestamp=stamp,
-        is_closed=True,
-        open=quote - 0.1 if side == 'LONG' else quote + 0.1,
-        high=quote + 0.2,
-        low=quote - 0.2,
-        close=quote,
-        ma3=quote,
-        ma5=quote,
-        ma15=quote,
-        atr=1.0,
-        kc_upper=quote + 1.0,
-        kc_middle=quote,
-        kc_lower=quote - 1.0,
-    )])
+    previous_ma5 = quote - 1.0 if side == 'LONG' else quote + 1.0
+    frame = pd.DataFrame([
+        dict(
+            timestamp=stamp - 60_000,
+            is_closed=True,
+            open=quote, high=quote + 0.2, low=quote - 0.2, close=quote,
+            ma3=quote, ma5=previous_ma5, ma15=quote,
+            atr=1.0, kc_upper=quote + 1.0, kc_middle=quote,
+            kc_lower=quote - 1.0,
+        ),
+        dict(
+            timestamp=stamp,
+            is_closed=False,
+            open=quote - 0.2 if side == 'LONG' else quote + 0.2,
+            high=quote + 0.2, low=quote - 0.2, close=quote,
+            ma3=quote, ma5=quote - 0.1 if side == 'LONG' else quote + 0.1,
+            ma15=quote, atr=1.0,
+            kc_upper=quote + 1.0, kc_middle=quote, kc_lower=quote - 1.0,
+        ),
+    ])
+    frame.attrs['timeframe_ms'] = 60_000
     decision = dict(
         type=entry_code,
         side=side,
         reason='POST_CLOSE_CONTINUATION',
         confirmation_bar_id=float(stamp),
         breakout_bar_id=float(stamp),
-        exit_bar_id=float(stamp),
         close_price=quote,
         pair_confirmation_bar_id=None,
         entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
         entry_atr=1.0,
         pending_signal_id=f'{symbol}:{entry_code}:{stamp}:{side}',
     )
+    if entry_code != 'TRIGGER_A_KC_BREAKOUT':
+        decision['exit_bar_id'] = float(stamp)
     engine.account.pending_limit_orders = {}
     engine.account.daily_loss_limit_hit.return_value = (False, 0.0)
     engine.account.trades = []
@@ -171,37 +212,86 @@ def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
         engine.account.open_position.assert_not_awaited()
 
 
-def test_post_exit_firewall():
+@pytest.mark.parametrize(
+    ('case', 'expected_reason'),
+    [
+        ('empty_frame', 'BLOCKED_REVALIDATION_FRAME_UNAVAILABLE'),
+        ('side_mismatch', 'BLOCKED_REVALIDATED_SIDE_MISMATCH'),
+        ('bar_mismatch', 'BLOCKED_CANDIDATE_BAR_CHANGED'),
+    ],
+)
+def test_fresh_snapshot_failures_record_specific_reason(
+    engine, case, expected_reason, monkeypatch,
+):
+    frame = None if case == 'empty_frame' else live_body_frame()
+    candidate = {
+        'side': 'SHORT' if case == 'side_mismatch' else 'LONG',
+        'confirmation_bar_id': 2000 if case == 'bar_mismatch' else 1000,
+        'type': 'TRIGGER_A_KC_BREAKOUT',
+    }
+    engine._entry_boundary_frame = AsyncMock(return_value=frame)
+    monkeypatch.setattr(
+        'core.services.entry_contract.evaluate_entry_contract',
+        lambda *_args, **_kwargs: candidate,
+    )
+
+    result = asyncio.run(engine._fresh_channel_entry_snapshot(
+        'LOBSTER/USDT', 'LONG', candidate_bar_id=1000,
+    ))
+
+    assert result is None
+    assert engine._entry_gate_diagnostics[
+        ('LOBSTER/USDT', 'LONG', 'ENTRY_REVALIDATION')
+    ][1] == expected_reason
+
+
+def test_last_closed_at_does_not_create_a_trigger_without_price_action():
     frame = live_body_frame()
+    frame.loc[frame.index[-1], ['open', 'close', 'high', 'low']] = [
+        100.0, 100.0, 100.2, 99.8,
+    ]
+    frame.loc[frame.index[-2], ['open', 'close', 'high', 'low']] = [
+        100.0, 100.1, 100.2, 99.9,
+    ]
     account = SimpleNamespace(
         positions={},
         last_closed_at={'LOBSTER/USDT': frame.iloc[-1].timestamp / 1000.0},
     )
     diagnostics = {}
     decision = evaluate_entry_contract(
-        frame, 89.0, account=account, symbol='LOBSTER/USDT',
+        frame, 100.0, account=account, symbol='LOBSTER/USDT',
         diagnostics=diagnostics,
     )
     assert decision is None
-    assert diagnostics.get('reason') == 'WAIT_POST_EXIT_NEW_FORMATION'
+    assert diagnostics.get('reason') == 'WAIT_DUAL_TRACK_TRIGGER'
 
 
-def test_post_exit_firewall_allowed():
+def test_older_last_closed_at_does_not_create_a_trigger_without_price_action():
     frame = live_body_frame()
+    frame.loc[frame.index[-1], ['open', 'close', 'high', 'low']] = [
+        100.0, 100.0, 100.2, 99.8,
+    ]
+    frame.loc[frame.index[-2], ['open', 'close', 'high', 'low']] = [
+        100.0, 100.1, 100.2, 99.9,
+    ]
+    diagnostics = {}
     account = SimpleNamespace(
         positions={},
         last_closed_at={'LOBSTER/USDT': frame.iloc[-1].timestamp / 1000.0 - 60.0},
     )
     decision = evaluate_entry_contract(
-        frame, 89.0, account=account, symbol='LOBSTER/USDT',
-        diagnostics={},
+        frame, 100.0, account=account, symbol='LOBSTER/USDT',
+        diagnostics=diagnostics,
     )
-    assert decision is not None
+    assert decision is None
+    assert diagnostics.get('reason') == 'WAIT_DUAL_TRACK_TRIGGER'
 
 
 def test_final_safety_gates(engine):
     frame = live_body_frame()
-    decision = evaluate_entry_contract(frame, 89.0, symbol='SYM')
+    decision = evaluate_entry_contract(
+        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT', symbol='SYM',
+    )
     assert decision is not None
     sym = 'SYM'
     signal = {
@@ -216,16 +306,16 @@ def test_final_safety_gates(engine):
           patch('core.engine.MAX_SLOTS', 1),
           patch('core.config.is_entry_disabled', return_value=False)):
         engine.account.positions = {'OTHER': {}}
-        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.0)) is False
+        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.4)) is False
         engine.account.positions = {}
         engine.account.pending_limit_orders = {sym: {}}
-        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.0)) is False
+        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.4)) is False
         engine.account.pending_limit_orders = {}
         engine.account.positions = {sym: {'side': 'SHORT'}}
-        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.0)) is False
+        assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.4)) is False
         engine.account.positions = {}
         with patch('core.config.is_entry_disabled', return_value=True):
-            assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.0)) is False
+            assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.4)) is False
     engine._fresh_channel_entry_snapshot.assert_not_awaited()
 
 
@@ -233,7 +323,8 @@ def test_no_double_order(engine):
     sym = 'SYM'
     frame = live_body_frame()
     decision = evaluate_entry_contract(
-        frame, 89.0, account=engine.account, symbol=sym,
+        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT',
+        account=engine.account, symbol=sym,
     )
     assert decision is not None
     engine.account.trades.append({
@@ -242,7 +333,7 @@ def test_no_double_order(engine):
     })
     diagnostics = {}
     assert evaluate_entry_contract(
-        frame, 89.0, account=engine.account, symbol=sym,
+        frame, 89.4, account=engine.account, symbol=sym,
         diagnostics=diagnostics,
     ) is None
     assert diagnostics['reason'] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'

@@ -10,7 +10,9 @@ from core.engine import TradingEngine
 from core.services.entry_contract import (
     evaluate_continuation_entry,
     evaluate_entry_contract,
+    entry_direction_problem,
 )
+from core.services import entry_contract
 from core.services.entry_firewall import validate_account_entry
 
 
@@ -58,29 +60,31 @@ def short_live_frame():
         rows.append({
             "timestamp": stamp - offset,
             "open": 100.0,
-            "high": 101.0,
-            "low": 99.0,
+            "high": 100.2,
+            "low": 99.8,
             "close": 99.9,
             "atr": 1.0,
+            "ma3": 100.0,
             "ma5": 100.0,
             "ma15": 100.2,
-            "kc_lower": 97.0,
-            "kc_middle": 100.0,
-            "kc_upper": 103.0,
+            "kc_lower": 97.2 - (180_000 - offset) / 600_000,
+            "kc_middle": 100.0 - (180_000 - offset) / 600_000,
+            "kc_upper": 103.0 - (180_000 - offset) / 600_000,
             "is_closed": True,
         })
     rows.append({
         "timestamp": stamp,
         "open": 97.5,
         "high": 97.6,
-        "low": 96.8,
+        "low": 96.3,
         "close": 97.0,
         "atr": 1.0,
+        "ma3": 97.4,
         "ma5": 97.4,
         "ma15": 97.2,
-        "kc_lower": 96.0,
-        "kc_middle": 99.0,
-        "kc_upper": 102.0,
+        "kc_lower": 96.9,
+        "kc_middle": 99.7,
+        "kc_upper": 102.7,
         "is_closed": False,
     })
     frame = pd.DataFrame(rows)
@@ -102,6 +106,7 @@ def close_account(
             "action": f"CLOSE_{side}",
             "side": side,
             "status": status,
+            "price": 97.1 if side == "SHORT" else 103.0,
             "reason": "Channel Swing PROFIT_PROTECTION test",
         }],
     ), close_id
@@ -143,10 +148,10 @@ def test_successful_short_close_allows_next_live_bearish_ma5_reclaim():
 @pytest.mark.parametrize(
     ("side", "quote", "prior_ma5", "current_ma5", "expected_reason"),
     [
-        ("LONG", 103.1, 102.7, 102.6, "BLOCKED_BY_BEARISH_OR_FALLING_MA5"),
-        ("LONG", 103.1, 102.66, 102.6, "BLOCKED_BY_BEARISH_OR_FALLING_MA5"),
-        ("LONG", 102.4, 100.0, 102.6, "BLOCKED_BY_BEARISH_OR_FALLING_MA5"),
-        ("LONG", 102.7, 100.0, 102.8, "BLOCKED_BY_BEARISH_OR_FALLING_MA5"),
+        ("LONG", 103.1, 102.7, 102.6, "BLOCKED_BY_MA5_DOWNWARD_SLOPE"),
+        ("LONG", 103.1, 102.66, 102.6, "BLOCKED_BY_MA5_DOWNWARD_SLOPE"),
+        ("LONG", 102.4, 100.0, 102.6, "BLOCKED_BY_BEARISH_CANDLE"),
+        ("LONG", 102.7, 100.0, 102.8, "BLOCKED_BY_BEARISH_CANDLE"),
         ("SHORT", 97.1, 97.3, 97.4, "BLOCKED_BY_MA5_UPWARD_SLOPE"),
         ("SHORT", 97.1, 97.42, 97.4, "BLOCKED_BY_MA5_UPWARD_SLOPE"),
         ("SHORT", 97.6, 100.0, 97.4, "BLOCKED_BY_BULLISH_CANDLE"),
@@ -168,6 +173,70 @@ def test_post_close_continuation_hard_blocks_wrong_ma5_or_candle(
 
     assert decision is None
     assert diagnostics["reason"] == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("side", "opening", "close", "ma5", "previous_ma5", "expected"),
+    [
+        ("LONG", 100, 102, 101, 100, None),
+        ("LONG", 100, 102, 101, 101, "BLOCKED_BY_MA5_DOWNWARD_SLOPE"),
+        ("LONG", 100, 102, 101, 102, "BLOCKED_BY_MA5_DOWNWARD_SLOPE"),
+        ("LONG", 102, 101, 100, 99, "BLOCKED_BY_BEARISH_CANDLE"),
+        ("LONG", 100, 101, 101, 99, "BLOCKED_BY_BEARISH_CANDLE"),
+        ("SHORT", 102, 100, 101, 102, None),
+        ("SHORT", 102, 100, 101, 101, "BLOCKED_BY_MA5_UPWARD_SLOPE"),
+        ("SHORT", 98, 99, 100, 101, "BLOCKED_BY_BULLISH_CANDLE"),
+    ],
+)
+def test_hard_direction_firewall_is_shared_and_strict(
+    side, opening, close, ma5, previous_ma5, expected,
+):
+    stamp = int(time.time() // 60) * 60_000
+    frame = pd.DataFrame([
+        dict(timestamp=stamp - 60_000, is_closed=True, open=100, high=103,
+             low=98, close=100, ma5=previous_ma5, atr=1),
+        dict(timestamp=stamp, is_closed=True, open=opening, high=max(opening, close),
+             low=min(opening, close), close=close, ma5=ma5, atr=1),
+    ])
+    frame.attrs["timeframe_ms"] = 60_000
+
+    assert entry_direction_problem(frame, close, side) == expected
+
+
+@pytest.mark.parametrize(
+    ("opening", "close", "ma5", "previous_ma5", "expected"),
+    [
+        (100, 102, 101, 101, "BLOCKED_BY_MA5_DOWNWARD_SLOPE"),
+        (102, 101, 100, 99, "BLOCKED_BY_BEARISH_CANDLE"),
+    ],
+)
+def test_regular_breakout_candidate_is_checked_by_shared_firewall(
+    monkeypatch, opening, close, ma5, previous_ma5, expected,
+):
+    stamp = int(time.time() // 60) * 60_000
+    frame = pd.DataFrame([
+        dict(timestamp=stamp - 120_000, is_closed=True, open=99, high=100,
+             low=98, close=99.5, ma5=98, atr=1),
+        dict(timestamp=stamp - 60_000, is_closed=True, open=99, high=101,
+             low=98, close=100, ma5=previous_ma5, atr=1),
+        dict(timestamp=stamp, is_closed=False, open=opening, high=max(opening, close),
+             low=min(opening, close), close=close, ma5=ma5, atr=1),
+    ])
+    frame.attrs["timeframe_ms"] = 60_000
+    monkeypatch.setattr(entry_contract, "evaluate_golden_cross_fast_lane", lambda *_a, **_k: None)
+    monkeypatch.setattr(entry_contract, "evaluate_bearish_instant_breakout", lambda *_a, **_k: None)
+    monkeypatch.setattr(entry_contract, "evaluate_continuation_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(entry_contract, "detect_raw_triggers", lambda *_a, **_k: ("LONG", "TRIGGER_A_KC_BREAKOUT"))
+    monkeypatch.setattr(entry_contract, "evaluate_three_bar_outer_breakout", lambda *_a, **_k: dict(
+        action="ENTER", side="LONG", type="TRIGGER_A_KC_BREAKOUT",
+        entry_phase="KC_THREE_BAR_BREAKOUT",
+    ))
+    monkeypatch.setattr(entry_contract, "check_entry_gates", lambda *_a, **_k: (True, "PASSED"))
+    monkeypatch.setattr(entry_contract, "excessive_upper_shadow_problem", lambda *_a, **_k: None)
+    diagnostics = {}
+
+    assert evaluate_entry_contract(frame, diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == expected
 
 
 def test_short_post_close_continuation_passes_fresh_account_revalidation():

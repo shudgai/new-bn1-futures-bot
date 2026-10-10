@@ -26,10 +26,6 @@ async def validate_account_entry(account, symbol, side, context):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
     
-    is_manual = context.get('is_manual') in [True, 'true', 'TRUE'] or context.get('source') == 'MANUAL' or context.get('manual_entry') in [True, 'true', 'TRUE']
-    if is_manual:
-        return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
-        
     code = context.get('entry_signal_code')
     if code not in ENTRY_CODES:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')

@@ -8,6 +8,7 @@ from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
     PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
+    estimated_display_net_pnl,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.entry_atr_protection import (
@@ -15,6 +16,135 @@ from core.services.exits.entry_atr_protection import (
     clear_channel_strategy_exit_pending,
 )
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
+
+PROFIT_LOCK_STATE_KEY = 'three_tier_net_roe_lock_state'
+PROFIT_LOCK_TRIGGER = 'NET_ROE_THREE_TIER_GIVEBACK'
+
+
+def _closed_ma5_reclaim(position, snapshot):
+    """A channel position exits on structure only after a completed 1m MA5 break."""
+    history = snapshot.get('history_5') if isinstance(snapshot, dict) else None
+    if not isinstance(history, list) or not history:
+        return False
+    bar = history[-1]
+    try:
+        close = float(bar.get('c') or 0.)
+        ma5 = float(bar.get('ma5') or 0.)
+        return close > ma5 if position.get('side') == 'SHORT' else close < ma5
+    except (TypeError, ValueError):
+        return False
+
+
+def _same_color_ma5_pressure(position, snapshot):
+    """Detect three consecutive directional bodies with a monotone MA5 slope."""
+    history = snapshot.get('history_5') if isinstance(snapshot, dict) else None
+    if not isinstance(history, list) or len(history) < 3:
+        return False
+    bars = history[-3:]
+    try:
+        short = position.get('side') == 'SHORT'
+        directional_bodies = all(
+            float(bar.get('c') or 0.) < float(bar.get('o') or 0.)
+            if short else
+            float(bar.get('c') or 0.) > float(bar.get('o') or 0.)
+            for bar in bars
+        )
+        ma5 = [float(bar.get('ma5') or 0.) for bar in bars]
+        monotone_ma5 = all(
+            right < left for left, right in zip(ma5, ma5[1:])
+        ) if short else all(
+            right > left for left, right in zip(ma5, ma5[1:])
+        )
+        return directional_bodies and monotone_ma5 and all(value > 0 for value in ma5)
+    except (TypeError, ValueError):
+        return False
+
+
+def _profit_lock_identity(position):
+    side, opened, entry, qty = position_identity(position)
+    return f'{side}|{opened:.9f}|{entry:.12g}|{qty:.12g}'
+
+
+def _tiered_net_roe_floor(peak_net_roe_pct):
+    peak = float(peak_net_roe_pct)
+    reached = lambda value, edge: value >= edge or math.isclose(value, edge, rel_tol=1e-12)
+    if reached(peak, 20.0):
+        return peak * 0.85, 3
+    if reached(peak, 15.0):
+        return max(peak * 0.80, 12.0), 2
+    if reached(peak, 10.0):
+        return max(peak * 0.60, 6.0), 1
+    return None, 0
+
+
+def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, fee, slippage):
+    """Evaluate 1m KC baseline, closed-MA5 guard, then the net-ROE ratchet."""
+    if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
+        return None, False
+    side = position.get('side')
+    sign = 1 if side == 'LONG' else -1 if side == 'SHORT' else 0
+    try:
+        quote = float(price)
+        mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
+        if not sign or not math.isfinite(quote) or quote <= 0:
+            return None, False
+        if math.isfinite(mid) and mid > 0 and ((sign > 0 and quote < mid) or (sign < 0 and quote > mid)):
+            return 'GLOBAL_KC_MIDDLE_CROSS', False
+
+        history = snapshot.get('history_5')
+        closed_ms = float(snapshot.get('closed_bar_ms') or 0.)
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+        if isinstance(history, list) and history:
+            bar = history[-1]
+            bar_ms = float(bar.get('ms') or 0.)
+            close = float(bar.get('c') or 0.)
+            ma5 = float(bar.get('ma5') or 0.)
+            if (bar_ms == closed_ms and live_bar_ms > 0
+                    and closed_ms == live_bar_ms - 60000
+                    and bar_ms > 0 and close > 0 and ma5 > 0
+                    and math.isfinite(close) and math.isfinite(ma5)
+                    and ((sign > 0 and close < ma5) or (sign < 0 and close > ma5))):
+                return 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD', False
+
+        entry = float(position.get('entry_price') or 0.)
+        qty = float(position.get('qty') or 0.)
+        margin = float(position.get('margin') or 0.)
+        if margin <= 0:
+            leverage = float(position.get('leverage') or 0.)
+            if leverage > 0:
+                margin = entry * qty / leverage
+        if not all(math.isfinite(value) and value > 0 for value in (entry, qty, margin)):
+            return None, False
+        net_pnl = estimated_display_net_pnl(entry, quote, qty, sign, fee, slippage)
+        current_roe = net_pnl / margin * 100.0
+        if not math.isfinite(current_roe):
+            return None, False
+
+        identity = _profit_lock_identity(position)
+        state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
+        if state.get('identity') != identity:
+            state = {'identity': identity, 'peak_net_roe_pct': current_roe,
+                     'last_ms': stamp, 'tier': 0, 'floor_net_roe_pct': None}
+        elif stamp < float(state.get('last_ms') or 0.):
+            return None, False
+        else:
+            state = copy.deepcopy(state)
+            state['peak_net_roe_pct'] = max(
+                current_roe, float(state.get('peak_net_roe_pct', current_roe)),
+            )
+            state['last_ms'] = stamp
+        floor, tier = _tiered_net_roe_floor(state['peak_net_roe_pct'])
+        state.update(tier=tier, floor_net_roe_pct=floor,
+                     current_net_roe_pct=current_roe)
+        position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
+        meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
+        if floor is not None and (
+                current_roe <= floor
+                or math.isclose(current_roe, floor, rel_tol=1e-12)):
+            return f'{PROFIT_LOCK_TRIGGER}_TIER_{tier}', True
+        return None, True
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, False
 
 
 def cached_tick_indicators(frame, price, stamp):
@@ -103,6 +233,7 @@ def cached_tick_indicators(frame, price, stamp):
     live_ms = float(live.get('timestamp', 0))
 
     if live_ms == bar and not bool(live.get('is_closed', True)) and last_ms == bar - 60000:
+        raw_close = float(live.get('close') or 0.)
         snapshot.update(
             live_bar_ms=bar,
             closed_bar_ms=last_ms,
@@ -111,6 +242,7 @@ def cached_tick_indicators(frame, price, stamp):
             live_high=max(float(live.get('high') or 0.), float(price)),
             live_low=min(float(live.get('low') or 0.), float(price)),
             live_price=float(price),
+            live_ma3=(float(last.get('ma3') or 0.) + (float(price) - float(last.get('close') or 0.)) / 3.0),
             live_kc_upper=float(live.get('kc_upper') or 0.),
             live_kc_middle=float(live.get('kc_middle') or last.get('kc_middle') or 0.),
             live_kc_lower=float(live.get('kc_lower') or 0.),
@@ -175,6 +307,80 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             return False
         if await enforce_hard_stop(account, symbol, price):
             return True
+
+        try:
+            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+            if frame is not None and not frame.empty:
+                snapshot, atr = cached_tick_indicators(frame, price, stamp)
+                from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+                gate_trigger, state_changed = _evaluate_realtime_core_exit_gates(
+                    position, meta, price, stamp, snapshot,
+                    TAKER_FEE_RATE, SLIPPAGE_PCT,
+                )
+                if state_changed:
+                    account.save_state()
+                if gate_trigger:
+                    if (entry_m != 'CHANNEL_SWING'
+                            or gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
+                            or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
+                        account.log(
+                            f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
+                            f'quote_ms={stamp} price={price}', 'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price, f'Channel Swing {gate_trigger}', is_manual=True,
+                        )
+                        return True
+                if entry_m == 'CHANNEL_SWING':
+                    # Strategy exits are deliberately limited to a completed 1m
+                    # MA5 reclaim/break or the existing net-ROE profit lock.
+                    # This keeps doji, deceleration, live V-reversal and CK-side
+                    # heuristics from closing a trend trade mid-wave.
+                    if (gate_trigger == 'ONE_MINUTE_CLOSED_MA5_TREND_GUARD'
+                            or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
+                        pass
+                    else:
+                        guard = (
+                            'HOLD_SAME_COLOR_MA5_PRESSURE'
+                            if _same_color_ma5_pressure(position, snapshot)
+                            else 'HOLD_WAIT_CLOSED_MA5_OR_NET_ROE_LOCK'
+                        )
+                        if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
+                            account.log(
+                                f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '
+                                f'rule=STRUCTURE_OR_NET_ROE_ONLY reason={guard} '
+                                f'closed_bar={snapshot.get("snapshot_bar_id")}', 'INFO',
+                            )
+                            meta['trend_exit_last_audit_bar'] = snapshot.get('snapshot_bar_id')
+                            account.save_state()
+                        return False
+                if entry_m == 'CHANNEL_SWING':
+                    from core.services.exits.peak_trailing_exit import v_reversal_short_exit_trigger
+                    trigger = v_reversal_short_exit_trigger(position, price, snapshot)
+                    if trigger:
+                        account.log(
+                            f'REALTIME_EXIT symbol={symbol} reason=V_REVERSAL_SHORT_FAST_CUT '
+                            f'trigger={trigger} quote_ms={stamp} price={price} atr={atr}',
+                            'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price, 'Channel Swing V_REVERSAL_SHORT_FAST_CUT ' + trigger,
+                            is_manual=True,
+                        )
+                        return True
+        except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+            pass
+
+        # Account hard stops ran before this section.  With a missing or
+        # invalid 1m snapshot, wait for structure data to recover instead of
+        # falling through to legacy CK, doji, or peak-trailing strategy exits.
+        if entry_m == 'CHANNEL_SWING':
+            account.log(
+                f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '
+                'rule=STRUCTURE_OR_NET_ROE_ONLY reason=HOLD_EXIT_SNAPSHOT_UNAVAILABLE',
+                'INFO',
+            )
+            return False
             
         try:
             from core.services.entry_contract import ck_direction

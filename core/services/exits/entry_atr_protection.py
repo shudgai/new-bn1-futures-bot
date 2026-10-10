@@ -92,6 +92,22 @@ async def enforce_atr_protection(account, symbol, price):
         account.save_state()
     if not reason:
         return False
+    if entry_mode == "CHANNEL_SWING":
+        trigger = decision.get("trigger") if decision else None
+        if trigger not in {
+            "EXIT_PROFIT_LOCK_FLOOR",
+            "NET_ROE_STAGED_GIVEBACK",
+            "NET_ROE_THREE_TIER_GIVEBACK_TIER_1",
+            "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
+            "NET_ROE_THREE_TIER_GIVEBACK_TIER_3",
+        }:
+            account.log(
+                f"TREND_EXIT_GATE symbol={symbol} side={position.get('side')} "
+                f"rule=STRUCTURE_OR_NET_ROE_ONLY reason=HOLD_NON_LOCK_ACCOUNT_POLL "
+                f"trigger={trigger}",
+                "INFO",
+            )
+            return False
     allowed_triggers = (
         PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
         if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
