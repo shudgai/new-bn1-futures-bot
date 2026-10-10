@@ -1442,14 +1442,29 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             kc_dir = ck_direction(frame)
             side = decision.get('side')
             
+            # --- GATE-MA-OVERLAP: Consolidation Chop Filter ---
+            if atr > 0 and abs(ma5 - ma15) / atr < 0.20:
+                return reject('BLOCKED_BY_MA_OVERLAP_CONSOLIDATION')
+                
             if side == 'SHORT':
-                if not (kc_slope < -slope_threshold and kc_dir != 'LONG' 
+                # --- GATE-ANTI-TOP-FADING: No shorting strong bullish breakouts ---
+                live_close = float(quote)
+                if live_close > kc_basis and ma5 > ma15:
+                    return reject('BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT')
+                    
+                if kc_dir in ('LONG', None):
+                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
+                
+                if not (kc_slope < -slope_threshold
                         and ma5_slope < -slope_threshold 
                         and ma15_slope < -slope_threshold 
                         and ma5 <= ma15):
                     return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
             elif side == 'LONG':
-                if not (kc_slope > slope_threshold and kc_dir != 'SHORT' 
+                if kc_dir in ('SHORT', None):
+                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
+                    
+                if not (kc_slope > slope_threshold
                         and ma5_slope > slope_threshold 
                         and ma15_slope > slope_threshold 
                         and ma5 >= ma15):

@@ -166,11 +166,11 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
                     return 'TROUGH_REJECTION_EXIT', False
                     
-                # 3. 空單止盈/出場嚴格前移準則 (Exit Short on First MA5 Break)
+                # 3. 空單結構徹底破壞平倉 (Exit Short on MA5 Invalidation)
                 closed_close = float(snapshot.get('last_close') or 0.)
                 closed_ma5 = float(snapshot.get('ma5') or 0.)
-                if closed_close > closed_ma5 > 0:
-                    return 'EXIT_SHORT_ON_FIRST_BAR_ABOVE_MA5', state_updated
+                if closed_close > closed_ma5 > 0 or quote >= upper:
+                    return 'EXIT_SHORT_ON_MA5_INVALIDATION', state_updated
                     
                 # 4. 雙底探針/止跌反陽保護
                 history = snapshot.get('history_5') or []
@@ -201,6 +201,10 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         if not math.isfinite(current_roe):
             return None, state_updated
 
+        # --- HARD_STOP_LOSS / 緊急防爆 ---
+        if side == 'SHORT' and (current_roe <= -2.0 or (quote - entry) >= 1.5 * atr):
+            return 'HARD_STOP_LOSS', state_updated
+            
         identity = _profit_lock_identity(position)
         state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
         if state.get('identity') != identity:
