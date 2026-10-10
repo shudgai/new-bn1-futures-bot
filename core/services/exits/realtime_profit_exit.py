@@ -165,6 +165,28 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 lower_shadow = min(live_open, quote) - live_low
                 if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
                     return 'TROUGH_REJECTION_EXIT', False
+                    
+                # 3. 空單止盈/出場嚴格前移準則 (Exit Short on First MA5 Break)
+                closed_close = float(snapshot.get('last_close') or 0.)
+                closed_ma5 = float(snapshot.get('ma5') or 0.)
+                if closed_close > closed_ma5 > 0:
+                    return 'EXIT_SHORT_ON_FIRST_BAR_ABOVE_MA5', state_updated
+                    
+                # 4. 雙底探針/止跌反陽保護
+                history = snapshot.get('history_5') or []
+                if len(history) >= 1 and atr > 0:
+                    prev_b = history[-1]
+                    prev_o, prev_c, prev_l, prev_h = prev_b['o'], prev_b['c'], prev_b['l'], prev_b['h']
+                    prev_range = prev_h - prev_l + 1e-9
+                    prev_lower_shadow = min(prev_o, prev_c) - prev_l
+                    lowest_point = min(live_low, prev_l)
+                    
+                    if (entry - lowest_point) >= 2.5 * atr:
+                        # 底部收出止跌十字/長下影線 (下影線 >= 45%)
+                        if prev_lower_shadow / prev_range >= 0.45:
+                            # 緊接著出現「反向綠K且收在當棒高檔」
+                            if quote > live_open and (quote - live_low) / candle_range >= 0.70:
+                                return 'EXIT_SHORT_TROUGH_REVERSAL_CONFIRMED', state_updated
 
         qty = float(position.get('qty') or 0.)
         margin = float(position.get('margin') or 0.)
