@@ -147,6 +147,23 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         live_open = float(snapshot.get('live_open') or 0.)
         live_high = float(snapshot.get('live_high') or 0.)
         live_low = float(snapshot.get('live_low') or 0.)
+        history_5 = snapshot.get('history_5') or []
+        is_trend_following = False
+        is_counter_trend = False
+        
+        if len(history_5) >= 2:
+            last_closed = history_5[-1]
+            prev_closed = history_5[-2]
+            kc_slope = float(last_closed.get('kc_middle', 0)) - float(prev_closed.get('kc_middle', 0))
+            slope_threshold = 0.005 * float(last_closed.get('atr', atr))
+            
+            if side == 'SHORT':
+                is_trend_following = (kc_slope < -slope_threshold)
+                is_counter_trend = not is_trend_following
+            elif side == 'LONG':
+                is_trend_following = (kc_slope > slope_threshold)
+                is_counter_trend = not is_trend_following
+
         if not is_early_hold_period and mid > 0 and live_open > 0:
             candle_range = live_high - live_low + 1e-9
             if side == 'LONG':
@@ -159,13 +176,26 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                     return 'PEAK_REJECTION_EXIT', False
                     
                 # 3. 大嘴巴見頂防護 (Wide Mouth Rejection)
-                live_bandwidth = (upper - lower) / mid
+                live_bandwidth = (upper - lower) / (mid + 1e-9)
                 if live_bandwidth > 0.015: # 假設 1.5% 以上為擴口
                     # 一旦盤中出現反向陰棒(quote < live_open)或站回上軌之內(quote < upper)
                     if quote < live_open or quote < upper:
                         # 確保這是一個獲利的單子，避免過早停損
                         if profit_cushion > 0.5 * atr:
                             return 'EXIT_LONG_WIDE_MOUTH_REJECTION', state_updated
+                            
+                # 4. 多單結構徹底破壞平倉 (Exit Long on Invalidation)
+                closed_close = float(snapshot.get('last_close') or 0.)
+                closed_ma5 = float(snapshot.get('ma5') or 0.)
+                
+                if is_trend_following:
+                    # 順勢多單：放寬容忍度，跌破中軌或碰到下軌才平倉 (過濾短線回踩)
+                    if (closed_close < mid and mid > 0) or quote <= lower:
+                        return 'EXIT_LONG_ON_TREND_INVALIDATION', state_updated
+                else:
+                    # 逆勢/盤整多單：嚴格防守，跌破 MA5 或碰到下軌即平倉
+                    if (closed_close < closed_ma5 and closed_ma5 > 0) or quote <= lower:
+                        return 'EXIT_LONG_ON_MA5_INVALIDATION', state_updated
             elif side == 'SHORT':
                 # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
                 if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
@@ -175,11 +205,18 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 if lower_shadow / candle_range >= 0.45 and (live_open - live_low) / live_open > 0.005:
                     return 'TROUGH_REJECTION_EXIT', False
                     
-                # 3. 空單結構徹底破壞平倉 (Exit Short on MA5 Invalidation)
+                # 3. 空單結構徹底破壞平倉 (Exit Short on Invalidation)
                 closed_close = float(snapshot.get('last_close') or 0.)
                 closed_ma5 = float(snapshot.get('ma5') or 0.)
-                if closed_close > closed_ma5 > 0 or quote >= upper:
-                    return 'EXIT_SHORT_ON_MA5_INVALIDATION', state_updated
+                
+                if is_trend_following:
+                    # 順勢空單：放寬容忍度，僅在站上 KC 中軌或碰到上軌時平倉 (過濾短線回踩)
+                    if closed_close > mid > 0 or quote >= upper:
+                        return 'EXIT_SHORT_ON_TREND_INVALIDATION', state_updated
+                else:
+                    # 逆勢/盤整空單：嚴格防守，站上 MA5 或碰到上軌即平倉
+                    if closed_close > closed_ma5 > 0 or quote >= upper:
+                        return 'EXIT_SHORT_ON_MA5_INVALIDATION', state_updated
                     
                 # 4. 雙底探針/止跌反陽保護
                 history = snapshot.get('history_5') or []
