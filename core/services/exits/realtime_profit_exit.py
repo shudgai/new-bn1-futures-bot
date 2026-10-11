@@ -382,6 +382,11 @@ def cached_tick_indicators(frame, price, stamp):
 
     live = frame.iloc[-1]
     live_ms = float(live.get('timestamp', 0))
+    snapshot['current_bar_is_closed'] = (
+        live.get('is_closed') is True
+        or (type(live.get('is_closed')).__name__ == 'bool_'
+            and bool(live.get('is_closed')))
+    )
 
     if live_ms == bar and not bool(live.get('is_closed', True)) and last_ms == bar - 60000:
         raw_close = float(live.get('close') or 0.)
@@ -473,7 +478,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     )
                     from core.services.exits.dual_track_exit_service import detect_climax_reversal
                     climax = (
-                        None if short_upper_wick_hold
+                        None if (
+                            short_upper_wick_hold
+                            or (side == 'SHORT' and not snapshot.get('current_bar_is_closed'))
+                        )
                         else detect_climax_reversal(frame, side)
                     )
                     if climax:
@@ -535,8 +543,25 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     account.save_state()
                 if gate_trigger:
                     from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                    lock_details = {}
+                    if (gate_trigger == PROFIT_LOCK_TRIGGER
+                            or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
+                        lock_state = (
+                            position.get(PROFIT_LOCK_STATE_KEY)
+                            or meta.get(PROFIT_LOCK_STATE_KEY)
+                            or {}
+                        )
+                        peak_net_roe = float(lock_state.get('peak_net_roe_pct') or 0.0)
+                        current_net_roe = float(lock_state.get('current_net_roe_pct') or 0.0)
+                        lock_details = {
+                            'peak_roe': peak_net_roe / 100.0,
+                            'giveback_ratio': (
+                                (peak_net_roe - current_net_roe) / peak_net_roe
+                                if peak_net_roe > 0 else 0.0
+                            ),
+                        }
                     is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
-                        position, frame, price, gate_trigger,
+                        position, frame, price, gate_trigger, details=lock_details,
                     )
                     if is_allowed:
                         account.log(
@@ -553,10 +578,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'gate_reason={valid_reason}', 'INFO',
                         )
                 if entry_m == 'CHANNEL_SWING':
-                    # Strategy exits are deliberately limited to a completed 1m
-                    # MA5 reclaim/break or the existing net-ROE profit lock.
-                    # This keeps doji, deceleration, live V-reversal and CK-side
-                    # heuristics from closing a trend trade mid-wave.
+                    # On a forming SHORT bar, the holding gate admits only a
+                    # verified V-reversal or ratchet; structure exits wait for close.
                     if (gate_trigger in (
                                 'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT',
                                 'PEAK_REJECTION_EXIT', 'TROUGH_REJECTION_EXIT',

@@ -74,7 +74,7 @@ def test_0459_short_pullback_triggers_fractal_valley():
         # B2: 04:58 暴跌至谷底 (Low = 95.0, 最低點形成分形谷底)
         {'timestamp': 2000, 'open': 101.8, 'high': 102.0, 'low': 95.0, 'close': 96.0, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 99.0, 'ma15': 101.0},
         # B3: 04:59 strong bullish body confirms above the prior midpoint, MA5, and KC middle.
-        {'timestamp': 3000, 'open': 96.0, 'high': 99.2, 'low': 95.8, 'close': 99.2, 'atr': atr, 'kc_middle': 98.8, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 98.6, 'ma15': 100.5},
+        {'timestamp': 3000, 'open': 96.0, 'high': 99.2, 'low': 95.8, 'close': 99.2, 'is_closed': True, 'atr': atr, 'kc_middle': 98.8, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 98.6, 'ma15': 100.5},
     ]
     df = pd.DataFrame(bars)
 
@@ -93,6 +93,79 @@ def test_0459_short_pullback_triggers_fractal_valley():
         position, df, quote, exit_reason, exit_info,
     )
     assert allowed is True
+
+
+def test_short_intrabar_small_green_bounce_waits_for_bar_close():
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    frame = pd.DataFrame([
+        {'timestamp': 1000, 'open': 100.0, 'high': 100.3, 'low': 99.5, 'close': 99.8, 'atr': 1.0, 'kc_middle': 100.0, 'ma5': 99.8, 'is_closed': True},
+        {'timestamp': 2000, 'open': 99.8, 'high': 100.0, 'low': 98.5, 'close': 98.7, 'atr': 1.0, 'kc_middle': 99.8, 'ma5': 99.4, 'is_closed': True},
+        {'timestamp': 3000, 'open': 97.4, 'high': 98.1, 'low': 97.3, 'close': 97.6, 'atr': 1.0, 'kc_middle': 98.0, 'ma5': 97.8, 'is_closed': False},
+    ])
+    position = {
+        'side': 'SHORT', 'entry_price': 100.0, 'lowest_price': 97.0,
+        'symbol': 'LOBSTER/USDT',
+    }
+
+    exit_reason, _ = HoldingProtectionExitGate.evaluate(position, frame, 97.6)
+    peak_valley_reason, _ = PeakValleyExit.evaluate(position, frame, 97.6)
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, 97.6, 'EXIT_SHORT_ON_FRACTAL_VALLEY',
+        details={'atr': 1.0},
+    )
+
+    assert exit_reason is None
+    assert peak_valley_reason is None
+    assert allowed is False
+    assert reason == HoldingProtectionExitGate.WAIT_CLOSE_REJECT_REASON
+
+
+def test_short_intrabar_extreme_v_reversal_can_exit():
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    frame = pd.DataFrame([
+        {'timestamp': 1000, 'open': 100.0, 'high': 100.3, 'low': 99.5, 'close': 99.8, 'atr': 1.0, 'kc_middle': 99.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 99.8, 'high': 100.0, 'low': 98.5, 'close': 98.7, 'atr': 1.0, 'kc_middle': 98.0, 'is_closed': True},
+        {'timestamp': 3000, 'open': 97.4, 'high': 98.1, 'low': 95.0, 'close': 97.3, 'atr': 1.0, 'kc_middle': 96.0, 'is_closed': False},
+    ])
+    position = {
+        'side': 'SHORT', 'entry_price': 100.0, 'lowest_price': 97.0,
+        'symbol': 'LOBSTER/USDT',
+    }
+
+    reason, details = HoldingProtectionExitGate.evaluate(position, frame, 97.3)
+    allowed, validated_reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, 97.3, 'EXIT_BY_EXTREME_WATERFALL', details,
+    )
+
+    assert reason == 'EXIT_BY_EXTREME_WATERFALL'
+    assert details['bar_pump'] >= 1.2 * details['atr']
+    assert allowed is True
+    assert validated_reason == 'EXIT_BY_EXTREME_WATERFALL'
+
+
+def test_short_closed_red_long_upper_wick_doji_does_not_exit_valley():
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    frame = pd.DataFrame([
+        {'timestamp': 1000, 'open': 101.0, 'high': 101.5, 'low': 100.0, 'close': 100.5, 'atr': 1.0, 'kc_middle': 100.0, 'ma5': 100.5, 'is_closed': True},
+        {'timestamp': 2000, 'open': 100.5, 'high': 101.0, 'low': 95.0, 'close': 96.0, 'atr': 1.0, 'kc_middle': 99.0, 'ma5': 98.0, 'is_closed': True},
+        {'timestamp': 3000, 'open': 96.0, 'high': 97.0, 'low': 95.1, 'close': 95.9, 'atr': 1.0, 'kc_middle': 98.0, 'ma5': 96.2, 'is_closed': True},
+    ])
+    position = {
+        'side': 'SHORT', 'entry_price': 102.0, 'lowest_price': 95.0,
+        'symbol': 'LOBSTER/USDT',
+    }
+
+    exit_reason, _ = HoldingProtectionExitGate.evaluate(position, frame, 95.9)
+    allowed, _, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, 95.9, 'EXIT_SHORT_ON_FRACTAL_VALLEY',
+        details={'atr': 1.0},
+    )
+
+    assert exit_reason is None
+    assert allowed is False
 
 
 def test_0618_long_peak_triggers_fractal_peak():
@@ -293,7 +366,7 @@ def test_waterfall_short_breakout_reaches_engine_submission_without_volatility_v
     assert 'BLOCKED_ABNORMAL_MARKET_ENTRY' not in logged
 
 
-def test_pipeline_authorization_gets_three_second_revalidation_grace(monkeypatch):
+def test_pipeline_authorization_survives_two_second_revalidation_grace(monkeypatch):
     symbol = 'LOBSTER/USDT'
     stamp = int(time.time() // 60) * 60_000
     frame = pd.DataFrame([
@@ -378,6 +451,14 @@ def test_pipeline_authorization_gets_three_second_revalidation_grace(monkeypatch
         'core.services.pre_entry_space_shadow.record_pre_entry_space_shadow',
         lambda **_kwargs: None,
     )
+    monotonic_calls = 0
+
+    def two_second_revalidation_clock():
+        nonlocal monotonic_calls
+        monotonic_calls += 1
+        return 100.0 if monotonic_calls == 1 else 102.0
+
+    monkeypatch.setattr('core.engine.time.monotonic', two_second_revalidation_clock)
     from core.services.entry_firewall import validate_account_entry
 
     async def open_with_firewall(**kwargs):
@@ -588,7 +669,7 @@ def test_short_upper_wick_at_04_atr_suppresses_all_peak_valley_exits():
     bars = [
         {'timestamp': 1000, 'open': 97.0, 'high': 97.2, 'low': 96.5, 'close': 96.8, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 97.0, 'ma15': 97.5},
         {'timestamp': 2000, 'open': 97.0, 'high': 97.2, 'low': 96.0, 'close': 96.5, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.8, 'ma15': 97.3},
-        {'timestamp': 3000, 'open': 96.0, 'high': 96.4, 'low': 95.0, 'close': 95.9, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.5, 'ma15': 97.0},
+        {'timestamp': 3000, 'open': 96.0, 'high': 96.4, 'low': 95.0, 'close': 95.9, 'is_closed': True, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.5, 'ma15': 97.0},
     ]
     position = {'side': 'SHORT', 'entry_price': 101.5}
 
@@ -623,7 +704,7 @@ def test_short_lower_wick_rejection_exits_profitable_short():
     bars = [
         {'timestamp': 1000, 'open': 97.0, 'high': 97.2, 'low': 96.5, 'close': 96.8, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 97.0, 'ma15': 97.5},
         {'timestamp': 2000, 'open': 97.0, 'high': 97.2, 'low': 96.0, 'close': 96.5, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.8, 'ma15': 97.3},
-        {'timestamp': 3000, 'open': 96.0, 'high': 96.3, 'low': 95.0, 'close': 96.1, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.5, 'ma15': 97.0},
+        {'timestamp': 3000, 'open': 96.0, 'high': 96.6, 'low': 94.8, 'close': 96.5, 'is_closed': True, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 96.4, 'ma15': 97.0},
     ]
     position = {'side': 'SHORT', 'entry_price': 101.5}
 
@@ -884,7 +965,7 @@ def test_exit_gate_case_b_short_upper_wick_pullback_blocked():
     allowed, reason, _ = HoldingProtectionExitGate.validate_exit(position, df, quote, candidate_reason, details=details)
 
     assert allowed is False
-    assert reason == HoldingProtectionExitGate.REJECT_REASON
+    assert reason == HoldingProtectionExitGate.WAIT_CLOSE_REJECT_REASON
 
 
 def test_exit_gate_case_c_short_ratchet_profit_lock_triggers():
@@ -894,7 +975,7 @@ def test_exit_gate_case_c_short_ratchet_profit_lock_triggers():
     bars = [
         {'timestamp': 1000, 'open': 100.0, 'high': 100.2, 'low': 97.0, 'close': 97.5, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 102.0, 'kc_lower': 98.0, 'ma5': 98.5, 'ma15': 100.2},
         {'timestamp': 2000, 'open': 97.5, 'high': 97.6, 'low': 95.0, 'close': 95.2, 'atr': atr, 'kc_middle': 99.0, 'kc_upper': 101.0, 'kc_lower': 97.0, 'ma5': 97.0, 'ma15': 99.5},
-        {'timestamp': 3000, 'open': 95.2, 'high': 96.6, 'low': 95.0, 'close': 96.5, 'atr': atr, 'kc_middle': 98.5, 'kc_upper': 100.5, 'kc_lower': 96.5, 'ma5': 96.2, 'ma15': 99.0},
+        {'timestamp': 3000, 'open': 95.2, 'high': 96.6, 'low': 95.0, 'close': 96.5, 'is_closed': False, 'atr': atr, 'kc_middle': 98.5, 'kc_upper': 100.5, 'kc_lower': 96.5, 'ma5': 96.2, 'ma15': 99.0},
     ]
     df = pd.DataFrame(bars)
     # entry_price = 100.0, lowest_price = 95.0 -> 波段峰值 ROE = (100 - 95) / 100 = 5.0% (>= 3.5%)

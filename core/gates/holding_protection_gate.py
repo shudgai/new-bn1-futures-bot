@@ -1,7 +1,7 @@
 """Holding Protection Exit Gate: Protects active positions from premature pullback exits.
 
 Enforces an explicit exit whitelist:
-1. EXIT_BY_EXTREME_WATERFALL: Extreme vertical adverse bar >= 1.2*ATR breaching opposite KC rail.
+1. EXIT_BY_EXTREME_WATERFALL: Extreme adverse move >= 1.2*ATR through the relevant KC boundary.
 2. EXIT_BY_CIRCUIT_BREAKER_HARD_SL: Hard Stop Loss or market circuit breaker.
 3. EXIT_BY_RATCHET_PROFIT_LOCK: Peak ROE >= 3.5%, giveback > 25% from peak (locking 75% profit).
 4. EXIT_BY_VERIFIED_FRACTAL_PEAK / EXIT_BY_VERIFIED_FRACTAL_VALLEY:
@@ -37,39 +37,44 @@ def is_fractal_valley(bars: pd.DataFrame) -> bool:
     return l2 < l1 and l2 <= l3
 
 
+def _current_bar_is_closed(frame):
+    if frame is None or frame.empty:
+        return False
+    value = frame.iloc[-1].get('is_closed', False)
+    return value is True or (type(value).__name__ == 'bool_' and bool(value))
+
+
 def _short_reversal_body_evidence(frame, quote, atr):
-    if frame is None or len(frame) < 2 or not math.isfinite(atr) or atr <= 0:
+    if frame is None or frame.empty or not math.isfinite(atr) or atr <= 0:
         return None
     try:
         live = frame.iloc[-1]
-        previous = frame.iloc[-2]
         opening = float(live['open'])
-        raw_close = float(live['close'])
-        closed = bool(live.get('is_closed', False))
-        effective = raw_close if closed else float(quote)
-        high = max(float(live['high']), effective)
-        low = min(float(live['low']), effective)
+        effective = float(live['close'])
+        high = float(live['high'])
+        low = float(live['low'])
         body = effective - opening
         candle_range = high - low
         upper_wick = high - max(opening, effective)
         ma5 = float(live['ma5'])
-        if not closed:
-            ma5 += (effective - raw_close) / 5.0
+        previous_mid = None
+        if len(frame) > 1:
+            previous = frame.iloc[-2]
+            previous_mid = (
+                float(previous['open']) + float(previous['close'])
+            ) / 2.0
         middle = float(live.get('kc_middle', live.get('kc_basis', 0.0)))
-        previous_mid = (
-            float(previous['open']) + float(previous['close'])
-        ) / 2.0
-        values = (opening, raw_close, effective, high, low, body, candle_range,
-                  upper_wick, ma5, middle, previous_mid)
+        values = (opening, effective, high, low, body, candle_range,
+                  upper_wick, ma5, middle)
         if (not all(math.isfinite(value) for value in values)
-                or min(opening, raw_close, effective, high, low, ma5, middle, previous_mid) <= 0
-                or candle_range <= 0):
+                or min(opening, effective, high, low, ma5) <= 0
+                or candle_range <= 0 or high < max(opening, effective)
+                or low > min(opening, effective)
+                or not _current_bar_is_closed(frame)):
             return None
         body_ratio = body / candle_range
-        body_threshold_failed = body <= 0.35 * atr if not closed else body < 0.35 * atr
-        if (upper_wick >= 0.4 * atr or body_threshold_failed
-                or body_ratio < 0.60 or effective <= previous_mid
-                or effective <= ma5 or effective <= middle):
+        if (body <= 0 or body < 0.35 * atr or upper_wick >= 0.4 * atr
+                or effective <= ma5):
             return None
         return {
             'effective_price': effective, 'prev_mid': previous_mid,
@@ -85,6 +90,10 @@ class HoldingProtectionExitGate:
     """Gatekeeper ensuring position is never closed on normal pullbacks."""
 
     REJECT_REASON = "REJECT_EXIT: BLOCKED_BY_HOLDING_PROTECTION_GATE (Normal Pullback Breathing)"
+    WAIT_CLOSE_REJECT_REASON = (
+        "REJECT_EXIT: BLOCKED_BY_HOLDING_PROTECTION_GATE "
+        "(Wait Bar Close Confirmation)"
+    )
 
     WHITELIST_CODES = {
         'EXIT_BY_EXTREME_WATERFALL',
@@ -122,12 +131,14 @@ class HoldingProtectionExitGate:
         curr = frame.iloc[-1] if has_frame else {}
         prev = frame.iloc[-2] if (frame is not None and len(frame) > 1) else {}
         atr = float(prev.get('atr', curr.get('atr', 0.0))) if has_frame else 0.0
+        candle_closed = _current_bar_is_closed(frame)
 
         # ── 1. 極端異常：大瀑布反轉 / 極速反撲 (EXIT_BY_EXTREME_WATERFALL) ──
         if frame is not None and len(frame) >= 1 and atr > 0:
             curr_open = float(curr.get('open', quote))
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
+            kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
 
             if side == 'LONG':
                 # 多單持倉：垂直暴跌單棒跌幅 >= 1.2 * ATR 且實體跌穿 KC 下軌
@@ -138,11 +149,15 @@ class HoldingProtectionExitGate:
                         'quote': quote, 'side': side,
                     }
             elif side == 'SHORT':
-                # 空單持倉：垂直暴漲單棒漲幅 >= 1.2 * ATR 且實體漲穿 KC 上軌
-                bar_pump = quote - curr_open
-                if bar_pump >= 1.2 * atr and kc_upper > 0 and quote > kc_upper:
+                # Short live exits require a true V-reversal from the bar low
+                # through KC middle, not a large move measured from its open.
+                live_low = min(float(curr.get('low', quote)), quote)
+                bar_pump = quote - live_low
+                if (not candle_closed and bar_pump >= 1.2 * atr and kc_middle > 0
+                        and live_low < kc_middle < quote):
                     return 'EXIT_BY_EXTREME_WATERFALL', {
-                        'bar_pump': bar_pump, 'atr': atr, 'kc_upper': kc_upper,
+                        'bar_pump': bar_pump, 'atr': atr, 'kc_middle': kc_middle,
+                        'live_low': live_low,
                         'quote': quote, 'side': side,
                     }
 
@@ -188,7 +203,6 @@ class HoldingProtectionExitGate:
                     # 必須為收線實體跌破前棒實體中點（非影線虛破）
                     curr_open = float(curr.get('open', quote))
                     curr_close = float(curr.get('close', quote))
-                    candle_closed = bool(curr.get('is_closed', False))
                     effective_price = curr_close if candle_closed else quote
 
                     # 多單遭遇長下影線下探回升，嚴禁平倉
@@ -207,8 +221,33 @@ class HoldingProtectionExitGate:
                 peak_roe = (entry_price - lowest_price) / entry_price
                 peak_gain_atr = (entry_price - lowest_price) / atr if atr > 0 else 0.0
                 has_meaningful_profit = (peak_roe >= 0.03) or (peak_gain_atr >= 0.5)
+                if not candle_closed and atr > 0:
+                    live_open = float(curr.get('open', quote))
+                    live_high = max(float(curr.get('high', quote)), quote)
+                    live_upper_wick = live_high - max(live_open, quote)
+                    if live_upper_wick >= 0.4 * atr:
+                        return None, {
+                            'upper_wick_hold': True, 'upper_wick': live_upper_wick,
+                            'atr': atr, 'quote': quote,
+                        }
+                if candle_closed and has_meaningful_profit:
+                    live = frame.iloc[-1]
+                    curr_open = float(live.get('open', quote))
+                    curr_close = float(live.get('close', quote))
+                    curr_low = float(live.get('low', quote))
+                    body = abs(curr_close - curr_open)
+                    lower_wick = min(curr_open, curr_close) - curr_low
+                    if (atr > 0 and lower_wick >= 0.5 * atr
+                            and _short_reversal_body_evidence(frame, quote, atr) is not None
+                            and lower_wick > 2.0 * body):
+                        return 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
+                            'lower_wick': lower_wick, 'body': body, 'atr': atr,
+                            'quote': quote, 'valley_roe': peak_roe,
+                            'peak_gain_atr': peak_gain_atr,
+                        }
 
-                if has_meaningful_profit and is_fractal_valley(frame):
+                if (has_meaningful_profit and _current_bar_is_closed(frame)
+                        and is_fractal_valley(frame)):
                     body_evidence = _short_reversal_body_evidence(frame, quote, atr)
                     if body_evidence is not None:
                         body_evidence.update(
@@ -217,11 +256,8 @@ class HoldingProtectionExitGate:
                         )
                         return 'EXIT_BY_VERIFIED_FRACTAL_VALLEY', body_evidence
                     live = frame.iloc[-1]
-                    effective = (
-                        float(live.get('close', quote))
-                        if bool(live.get('is_closed', False)) else float(quote)
-                    )
-                    upper_wick = max(float(live.get('high', effective)), effective) - max(
+                    effective = float(live.get('close', quote))
+                    upper_wick = float(live.get('high', effective)) - max(
                         float(live.get('open', effective)), effective,
                     )
                     if atr > 0 and upper_wick >= 0.4 * atr:
@@ -252,11 +288,15 @@ class HoldingProtectionExitGate:
             print(auth_msg, flush=True)
             return True, code, details
 
-        def _reject():
-            reject_msg = f"[HOLDING_PROTECTION] Rejected exit for {symbol}: Normal Pullback Breathing"
+        def _reject(wait_for_close=False):
+            reason = (
+                cls.WAIT_CLOSE_REJECT_REASON if wait_for_close
+                else cls.REJECT_REASON
+            )
+            reject_msg = f"[HOLDING_PROTECTION] Rejected exit for {symbol}: {reason}"
             logger.info(reject_msg)
             print(reject_msg, flush=True)
-            return False, cls.REJECT_REASON, details
+            return False, reason, details
 
         # ── 1. 硬止損 / 市場熔斷 (WHITELIST SCENARIO 2) ──
         if any(marker in clean_reason.upper() for marker in (
@@ -264,6 +304,60 @@ class HoldingProtectionExitGate:
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL'
         )):
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        # On a forming SHORT candle, ordinary structure/reversal candidates
+        # must wait for close; only a verified V-reversal or ratchet may pass.
+        if side == 'SHORT' and frame is not None and not frame.empty and not _current_bar_is_closed(frame):
+            if clean_reason in (
+                'EXIT_BY_EXTREME_WATERFALL',
+                'CATASTROPHIC_DUMP_EXIT',
+                'CATASTROPHIC_PUMP_EXIT',
+            ):
+                try:
+                    live = frame.iloc[-1]
+                    previous = frame.iloc[-2] if len(frame) > 1 else live
+                    atr = float(previous.get('atr', live.get('atr', 0.0)))
+                    low = min(float(live.get('low', quote)), float(quote))
+                    middle = float(live.get('kc_middle', live.get('kc_basis', 0.0)))
+                    if (math.isfinite(atr) and math.isfinite(low)
+                            and math.isfinite(middle) and atr > 0 and middle > 0
+                            and float(quote) - low >= 1.2 * atr
+                            and low < middle < float(quote)):
+                        return _auth('EXIT_BY_EXTREME_WATERFALL')
+                except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+                    pass
+                return _reject(wait_for_close=True)
+
+            if clean_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK' or clean_reason.startswith('PROFIT_LOCK'):
+                try:
+                    peak_roe = float(details.get('peak_roe'))
+                    giveback = float(details.get('giveback_ratio'))
+                    if (math.isfinite(peak_roe) and math.isfinite(giveback)
+                            and peak_roe >= 0.035 and giveback >= 0.25):
+                        return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                try:
+                    entry = float((position or {}).get('entry_price') or 0.0)
+                    prior_low = float(
+                        (position or {}).get('lowest_price')
+                        or (position or {}).get('trough_price')
+                        or entry
+                    )
+                    live_quote = float(quote)
+                    low = min(prior_low, live_quote)
+                    peak_gain = entry - low
+                    peak_roe = peak_gain / entry if entry > 0 else 0.0
+                    giveback = (live_quote - low) / peak_gain if peak_gain > 0 else 0.0
+                    if (all(math.isfinite(value) for value in
+                            (entry, prior_low, live_quote, peak_roe, giveback))
+                            and entry > 0 and peak_roe >= 0.035 and giveback >= 0.25):
+                        return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                return _reject(wait_for_close=True)
+
+            return _reject(wait_for_close=True)
 
         # ── 2. 極端異常大瀑布 (WHITELIST SCENARIO 1) ──
         if clean_reason in ('EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT'):
@@ -295,6 +389,9 @@ class HoldingProtectionExitGate:
                     or (side == 'SHORT'
                         and float(details.get('upper_wick') or 0.0) >= 0.4 * atr)
                     or (peak_roe < 0.03 and peak_gain_atr < 0.5)):
+                return _reject()
+            if (side == 'SHORT'
+                    and _short_reversal_body_evidence(frame, quote, atr) is None):
                 return _reject()
             return _auth(clean_reason)
 

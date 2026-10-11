@@ -114,31 +114,46 @@ class PeakValleyExit:
                 return None, {}
 
             curr_o = float(curr.get('open', quote))
-            live_low = min(curr_low, quote)
-            live_body = abs(quote - curr_o)
-            live_high = max(curr_high, quote)
-            upper_wick = live_high - max(curr_o, quote)
-            if math.isfinite(atr) and atr > 0 and upper_wick >= 0.4 * atr:
+            closed_value = curr.get('is_closed', False)
+            candle_closed = (
+                closed_value is True
+                or (type(closed_value).__name__ == 'bool_' and bool(closed_value))
+            )
+            reversal_price = float(curr.get('close', quote)) if candle_closed else quote
+            candle_low = float(curr.get('low', reversal_price))
+            candle_high = float(curr.get('high', reversal_price))
+            if not candle_closed:
+                candle_low = min(candle_low, reversal_price)
+                candle_high = max(candle_high, reversal_price)
+            body = abs(reversal_price - curr_o)
+            upper_wick = candle_high - max(curr_o, reversal_price)
+            if (math.isfinite(atr) and atr > 0 and upper_wick >= 0.4 * atr):
                 return None, {
                     'upper_wick_hold': True, 'upper_wick': upper_wick,
-                    'body': live_body, 'atr': atr, 'quote': quote,
+                    'body': body, 'atr': atr, 'quote': quote,
                 }
-            lower_wick = min(curr_o, quote) - live_low
-            if (math.isfinite(atr) and atr > 0 and lower_wick >= 0.5 * atr
-                    and lower_wick > 2.0 * live_body):
+            lower_wick = min(curr_o, reversal_price) - candle_low
+            reversal_ma5 = float(curr.get('ma5', 0.0))
+            strong_closed_reversal = (
+                candle_closed and reversal_price > curr_o
+                and math.isfinite(atr) and atr > 0
+                and reversal_price - curr_o >= 0.35 * atr
+                and math.isfinite(reversal_ma5) and reversal_ma5 > 0
+                and reversal_price > reversal_ma5
+                and upper_wick < 0.4 * atr
+            )
+            if (candle_closed and math.isfinite(atr) and atr > 0
+                    and strong_closed_reversal
+                    and lower_wick >= 0.5 * atr and lower_wick > 2.0 * body):
                 return 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
-                    'lower_wick': lower_wick, 'body': live_body, 'atr': atr,
+                    'lower_wick': lower_wick, 'body': body, 'atr': atr,
                     'quote': quote, 'valley_roe': peak_roe_short,
                     'peak_gain_atr': peak_gain_atr_short,
                     'upper_wick': upper_wick,
                 }
 
-            # A. A confirmed valley needs a strong bullish body, not a wick-only quote spike.
-            fractal_bottom = is_fractal_valley(frame)
-            candle_closed = bool(curr.get('is_closed', False))
-            reversal_price = float(curr.get('close', quote)) if candle_closed else quote
-            candle_high = max(float(curr.get('high', reversal_price)), reversal_price)
-            candle_low = min(float(curr.get('low', reversal_price)), reversal_price)
+            # A valley reversal is confirmed only by the completed candle body.
+            fractal_bottom = candle_closed and is_fractal_valley(frame)
             reversal_ma5 = float(curr.get('ma5', 0.0))
             reversal_body = reversal_price - curr_o
             candle_range = candle_high - candle_low
@@ -147,22 +162,12 @@ class PeakValleyExit:
                 and candle_low <= min(curr_o, reversal_price)
             )
             body_ratio = reversal_body / candle_range if valid_body_geometry else 0.0
-            closed_body_reversal = (
-                candle_closed and reversal_body >= 0.35 * atr
-                and reversal_price > prev_mid
-            )
-            live_body_reversal = (
-                not candle_closed and math.isfinite(atr) and atr > 0
-                and reversal_body > 0.35 * atr and reversal_price > prev_mid
-            )
-            above_reversal_levels = (
-                math.isfinite(reversal_ma5) and reversal_ma5 > 0
-                and math.isfinite(kc_mid) and kc_mid > 0
-                and reversal_price > reversal_ma5 and reversal_price > kc_mid
-            )
-
-            if (fractal_bottom and (closed_body_reversal or live_body_reversal)
-                    and body_ratio >= 0.60 and above_reversal_levels):
+            if (fractal_bottom and valid_body_geometry
+                    and math.isfinite(atr) and atr > 0
+                    and reversal_body >= 0.35 * atr
+                    and math.isfinite(reversal_ma5) and reversal_ma5 > 0
+                    and reversal_price > curr_o and reversal_price > reversal_ma5
+                    and upper_wick < 0.4 * atr):
                 info = {
                     'fractal_bottom': True, 'quote': quote,
                     'valley_roe': peak_roe_short, 'body_ratio': body_ratio,
