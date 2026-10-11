@@ -233,10 +233,11 @@ class EntryGatePipeline:
                 if lower_slope_value is not None and math.isfinite(float(lower_slope_value))
                 else float(current['kc_lower']) - previous_lower
             )
+            if not allow_unknown_direction and channel_state not in known_directions:
+                return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
             if (not allow_unknown_direction and not allow_flat_lines and (
-                    channel_state not in known_directions
-                    or (abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
-                        and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)
+                    abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
+                    and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
             )):
                 return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
 

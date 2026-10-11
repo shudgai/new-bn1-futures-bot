@@ -64,22 +64,39 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
-    from core.gates.pipeline import FLAT_LINE_BREAKOUT_TYPES, pipeline
-    regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
-    if regime_problem:
-        raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
+    from core.gates.pipeline import FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES, pipeline
     is_outer_rail_breakout = (
         code in FLAT_LINE_BREAKOUT_TYPES
         or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
     )
-    try:
-        chop_problem = pipeline.chop_lockout_problem(
-            frame, quote, allow_flat_lines=is_outer_rail_breakout,
-        )
-    except TypeError:
-        chop_problem = pipeline.chop_lockout_problem(frame, quote)
-    if chop_problem:
-        raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
+    is_flip_or_shadow = (
+        code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
+                 'CLIMAX_REVERSAL_FLIP', 'AUTHORIZED_SHADOW_RETEST_ENTRY',
+                 'SHADOW_RETEST_ENTRY',
+                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                 'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                 'AUTHORIZED_TOP_REVERSAL_SHORT')
+    )
+    is_verified_live_breakout = (
+        pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'
+        else pipeline.has_strong_bearish_breakout(frame, quote)
+    )
+    is_exempt_from_regime = bool(is_flip_or_shadow or is_verified_live_breakout)
+    regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
+    if regime_problem and not is_exempt_from_regime:
+        raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
+    if not is_flip_or_shadow:
+        try:
+            chop_problem = pipeline.chop_lockout_problem(
+                frame, quote, allow_flat_lines=is_outer_rail_breakout,
+            )
+        except TypeError:
+            chop_problem = pipeline.chop_lockout_problem(frame, quote)
+        if chop_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
     grace = context.get('pipeline_ttl_grace')
     if grace is not None:
         from core.gates.pipeline import PIPELINE_ENTRY_TYPES

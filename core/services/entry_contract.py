@@ -241,7 +241,7 @@ def evaluate_live_ma5_direction(frame, quote, side):
 
 
 def continuation_direction_problem(side, opening, close, ma5, previous_ma5):
-    """Enforce candle color, close position, and strict MA5 slope for continuation entries."""
+    """Enforce live MA5 side and strict slope; candle color is not a veto."""
     try:
         values = tuple(float(value) for value in (opening, close, ma5, previous_ma5))
         if side not in ('LONG', 'SHORT') or not all(
@@ -252,13 +252,13 @@ def continuation_direction_problem(side, opening, close, ma5, previous_ma5):
         if side == 'LONG':
             if ma5 <= previous_ma5:
                 return 'BLOCKED_BY_MA5_DOWNWARD_SLOPE'
-            if close <= opening or close <= ma5:
-                return 'BLOCKED_BY_BEARISH_CANDLE'
+            if close <= ma5:
+                return 'BLOCKED_BY_PRICE_BELOW_MA5'
         else:
             if ma5 >= previous_ma5:
                 return 'BLOCKED_BY_MA5_UPWARD_SLOPE'
-            if close >= opening or close >= ma5:
-                return 'BLOCKED_BY_BULLISH_CANDLE'
+            if close >= ma5:
+                return 'BLOCKED_BY_PRICE_ABOVE_MA5'
         return None
     except (TypeError, ValueError, OverflowError):
         return 'BLOCKED_BY_INVALID_CONTINUATION_DATA'
@@ -1613,12 +1613,20 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
         slope_flip_exempt = decision_type in (
             CLIMAX_REVERSAL_FLIP_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
         )
+        is_strong_breakout = (
+            (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
+            or (side == 'SHORT' and pipeline.has_strong_bearish_breakout(frame, quote))
+        )
         if slope_atr is None:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
         if not slope_flip_exempt:
-            slope_problem = live_ma5_slope_problem(frame, quote, side)
-            if slope_problem:
-                return False, slope_problem
+            if is_strong_breakout:
+                if (side == 'LONG' and ma5_slope < 0) or (side == 'SHORT' and ma5_slope > 0):
+                    return False, "BLOCKED_BY_MA5_SLOPE_DOWN" if side == "LONG" else "BLOCKED_BY_MA5_SLOPE_UP"
+            else:
+                slope_problem = live_ma5_slope_problem(frame, quote, side)
+                if slope_problem:
+                    return False, slope_problem
 
         kc_upper = float(curr.get('kc_upper', 0.0))
         kc_lower = float(curr.get('kc_lower', 0.0))
@@ -1747,7 +1755,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                      CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
                      'SHADOW_RETEST_ENTRY',
                      'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
-                     'AUTHORIZED_BY_MIDLINE_BREAK_LONG')
+                     'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                     'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                     'AUTHORIZED_TOP_REVERSAL_SHORT')
         )
         regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
         if regime_problem and not verified_live_breakout and not is_flip_or_shadow and not is_midline_breakout:

@@ -2217,14 +2217,28 @@ class BinanceTestnetAccount:
                 kc_upper = current_bar['kc_upper']
                 kc_lower = current_bar['kc_lower']
                 kc_middle = current_bar.get('kc_middle', (kc_upper + kc_lower) / 2)
+                code = entry_context.get('entry_signal_code')
                 climax_flip = (
-                    entry_context.get('entry_signal_code') == 'CLIMAX_REVERSAL_FLIP'
+                    code == 'CLIMAX_REVERSAL_FLIP'
                     and entry_context.get('entry_phase') == 'EXTREME_CLIMAX_FLIP'
                 )
-                top_waterfall_flip = entry_context.get('entry_signal_code') in (
+                top_waterfall_flip = code in (
                     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                 ) and entry_context.get('entry_phase') == 'KC_TOP_WATERFALL_FLIP'
-                direction_override = climax_flip or top_waterfall_flip
+                direction_override = bool(
+                    climax_flip or top_waterfall_flip or code in (
+                        'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                        'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                        'AUTHORIZED_SHADOW_RETEST_ENTRY',
+                        'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+                        'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+                        'TRIGGER_C_CONTINUATION',
+                        'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                        'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                        'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                        'AUTHORIZED_TOP_REVERSAL_SHORT',
+                    )
+                )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
                 if not direction_override and side == 'LONG' and price <= kc_upper:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌強制拒單！執行價({price}) <= 上軌({kc_upper})", 'CRITICAL')

@@ -2191,6 +2191,16 @@ class TradingEngine:
                 None if pipeline_ttl_grace or decision['type'] in (
                     'CLIMAX_REVERSAL_FLIP', 'KC_REALTIME_RAIL_BREACH_SHORT',
                     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
+                    'AUTHORIZED_SHADOW_RETEST_ENTRY',
+                    'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                    'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                    'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+                    'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+                    'TRIGGER_C_CONTINUATION',
+                    'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                    'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                    'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                    'AUTHORIZED_TOP_REVERSAL_SHORT',
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )
