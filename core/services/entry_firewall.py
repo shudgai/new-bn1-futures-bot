@@ -79,27 +79,54 @@ async def validate_account_entry(account, symbol, side, context):
             quote_age = time.time() - quote_timestamp
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             raise ValueError('[FORBIDDEN_ENTRY] TTL grace evidence is invalid')
+        failures = []
+        if code not in PIPELINE_ENTRY_TYPES:
+            failures.append('UNSUPPORTED_ENTRY_TYPE')
         if (
-            code not in PIPELINE_ENTRY_TYPES
-            or not isinstance(authorized_decision, dict)
+            not isinstance(authorized_decision, dict)
             or not authorized_decision.get('_is_authorized')
             or authorized_decision.get('type') != code
             or authorized_decision.get('side') != side
+        ):
+            failures.append('AUTHORIZATION_MISMATCH')
+        if (
+            not isinstance(authorized_decision, dict)
             or authorized_decision.get('pending_signal_id') != grace.get('pending_signal_id')
             or grace.get('pending_signal_id') != context.get('signal_id')
-            or not all(math.isfinite(value) for value in (
-                elapsed, authorized_price, atr, quote_timestamp, quote,
-                current_bar, stamp, quote_age, adverse_move,
-            ))
-            or not 0 <= elapsed <= 3
-            or authorized_price <= 0
-            or atr <= 0
-            or quote <= 0
-            or current_bar <= 0
-            or not 0 <= quote_age <= 30
-            or adverse_move / atr > 0.8
         ):
-            raise ValueError('[FORBIDDEN_ENTRY] TTL grace expired or market safety check failed')
+            failures.append('SIGNAL_ID_MISMATCH')
+        values = (
+            elapsed, authorized_price, atr, quote_timestamp, quote,
+            current_bar, stamp, quote_age, adverse_move,
+        )
+        if not all(math.isfinite(value) for value in values):
+            failures.append('NONFINITE_EVIDENCE')
+        if not math.isfinite(elapsed) or not 0 <= elapsed <= 3:
+            failures.append('AUTHORIZATION_TTL_EXPIRED')
+        if not math.isfinite(authorized_price) or authorized_price <= 0:
+            failures.append('INVALID_AUTHORIZED_PRICE')
+        if not math.isfinite(atr) or atr <= 0:
+            failures.append('INVALID_ATR')
+        if not math.isfinite(quote) or quote <= 0:
+            failures.append('INVALID_QUOTE')
+        if not math.isfinite(current_bar) or current_bar <= 0:
+            failures.append('INVALID_CURRENT_BAR')
+        if not math.isfinite(quote_age) or not 0 <= quote_age <= 30:
+            failures.append('STALE_QUOTE')
+        adverse_atr = adverse_move / atr if math.isfinite(atr) and atr > 0 else math.inf
+        if not math.isfinite(adverse_atr) or adverse_atr > 0.8:
+            failures.append('ADVERSE_SLIPPAGE_LIMIT')
+        if failures:
+            metrics = (
+                f'elapsed_seconds={elapsed:.3f} quote_age_seconds={quote_age:.3f} '
+                f'adverse_slippage_atr={adverse_atr:.3f} current_bar={current_bar} '
+                f'authorized_bar={stamp}'
+            )
+            raise ValueError(
+                '[FORBIDDEN_ENTRY] TTL grace rejected: '
+                + ','.join(dict.fromkeys(failures))
+                + f'; {metrics}'
+            )
         decision = dict(authorized_decision)
         decision['price'] = quote
         decision['close_price'] = quote
