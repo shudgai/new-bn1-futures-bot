@@ -187,14 +187,15 @@ def _short_reversal_body_evidence(frame, quote, atr):
                 or not _current_bar_is_closed(frame)):
             return None
         body_ratio = body / candle_range
-        if (body <= 0 or body < 0.35 * atr or upper_wick >= 0.4 * atr
+        reversal = closed_peak_valley_reversal_evidence(frame, 'SHORT', atr)
+        if (reversal is None or body <= 0 or upper_wick >= 0.4 * atr
                 or effective <= ma5):
             return None
         return {
             'effective_price': effective, 'prev_mid': previous_mid,
             'ma5': ma5, 'kc_middle': middle, 'atr': atr,
             'body': body, 'body_ratio': body_ratio,
-            'upper_wick': upper_wick,
+            'upper_wick': upper_wick, **reversal,
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -220,12 +221,13 @@ def _long_reversal_body_evidence(frame, quote, atr):
                 or low > min(opening, effective)
                 or not _current_bar_is_closed(frame)):
             return None
-        if body < 0.35 * atr or lower_wick >= 0.4 * atr or effective >= ma5:
+        reversal = closed_peak_valley_reversal_evidence(frame, 'LONG', atr)
+        if reversal is None or lower_wick >= 0.4 * atr or effective >= ma5:
             return None
         return {
             'effective_price': effective, 'ma5': ma5, 'atr': atr,
             'body': body, 'body_ratio': body / candle_range,
-            'lower_wick': lower_wick,
+            'lower_wick': lower_wick, **reversal,
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -249,18 +251,30 @@ def closed_peak_valley_reversal_evidence(frame, side, atr):
         body = abs(close - opening)
         if side == 'LONG':
             reversed_body = close < opening
-            structural_break = close < ma5 or close < previous_mid
+            structural_break = close < ma5 and close < previous_mid
         else:
             reversed_body = close > opening
-            structural_break = close > ma5 or close > previous_mid
+            structural_break = close > ma5 and close > previous_mid
         # Dojis and weak opposite bodies remain observation signals.  Exit on
-        # this bar only when the reversal body itself is decisive.
+        # this bar only when the body breaks both structures. A 0.35-0.75 ATR
+        # reversal also needs volume expansion; this filters ordinary retests.
         if not (reversed_body and body >= 0.35 * atr and structural_break):
+            return None
+        volume_ratio = None
+        if 'volume' in frame.columns and len(frame) >= 7:
+            prior_volumes = [float(value) for value in frame['volume'].iloc[-6:-1]]
+            current_volume = float(current['volume'])
+            baseline = sum(prior_volumes) / len(prior_volumes)
+            if (all(math.isfinite(value) and value >= 0 for value in prior_volumes)
+                    and math.isfinite(current_volume) and baseline > 0):
+                volume_ratio = current_volume / baseline
+        if body < 0.75 * atr and (volume_ratio is None or volume_ratio < 1.2):
             return None
         return {
             'open': opening, 'close': close, 'ma5': ma5,
             'previous_midpoint': previous_mid, 'atr': atr,
             'body': body, 'is_doji': body <= 0.1 * atr,
+            'volume_ratio': volume_ratio,
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -834,9 +848,18 @@ class HoldingProtectionExitGate:
                 else 'LONG'
             )
             evidence = exhaustion_reversal_evidence(frame, side)
-            if side != expected_side or evidence is None:
+            try:
+                atr = float(frame.iloc[-2].get('atr', frame.iloc[-1].get('atr', 0.0)))
+            except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+                atr = 0.0
+            structural_reversal = closed_peak_valley_reversal_evidence(
+                frame, side, atr,
+            )
+            if (side != expected_side or evidence is None
+                    or structural_reversal is None):
                 return _reject()
             details.update(evidence)
+            details.update(structural_reversal)
             return _auth(clean_reason)
 
         if clean_reason in (
