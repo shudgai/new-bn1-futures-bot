@@ -621,7 +621,7 @@ class HoldingProtectionExitGate:
             if pressure is not None:
                 ratchet.update(
                     highest_price=highest_price, lowest_price=lowest_price,
-                    entry_price=entry_price, quote=quote, side=side,
+                    entry_price=entry_price,
                     **pressure,
                 )
                 return 'EXIT_BY_RATCHET_PROFIT_LOCK', ratchet
@@ -715,6 +715,14 @@ class HoldingProtectionExitGate:
         import logging
         logger = logging.getLogger("uvicorn.error")
         symbol = (position or {}).get('symbol', 'UNKNOWN')
+        frame_atr = 0.0
+        try:
+            if frame is not None and len(frame) > 0:
+                live = frame.iloc[-1]
+                previous = frame.iloc[-2] if len(frame) > 1 else live
+                frame_atr = float(previous.get('atr', live.get('atr', 0.0)))
+        except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+            frame_atr = 0.0
 
         def _auth(code):
             auth_msg = f"[HOLDING_PROTECTION] Authorized exit for {symbol}: {code}"
@@ -790,7 +798,9 @@ class HoldingProtectionExitGate:
 
         if clean_reason in ('EXIT_LONG_ON_SELLING_PRESSURE', 'EXIT_SHORT_ON_BUYING_PRESSURE'):
             expected_side = 'LONG' if clean_reason == 'EXIT_LONG_ON_SELLING_PRESSURE' else 'SHORT'
-            evidence = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
+            evidence = intrabar_adverse_pressure_evidence(
+                frame, side, quote, frame_atr,
+            )
             if side != expected_side or evidence is None:
                 return _reject(wait_for_close=not candle_closed)
             details.update(evidence)

@@ -112,9 +112,9 @@ def test_same_color_or_weak_intrabar_retrace_is_not_a_peak_valley_exit(side, quo
 def test_closed_strong_reversal_is_confirmed_but_doji_and_weak_body_wait(side):
     strong = frame_for(side, closed=True, quote=0.0)
     if side == 'LONG':
-        strong.loc[2, ['open', 'close', 'high', 'low', 'ma5']] = [110., 109.5, 110.2, 109.4, 109.8]
+        strong.loc[2, ['open', 'close', 'high', 'low', 'ma5']] = [110., 109.2, 110.2, 109.0, 109.5]
     else:
-        strong.loc[2, ['open', 'close', 'high', 'low', 'ma5']] = [90., 90.5, 90.6, 89.8, 90.2]
+        strong.loc[2, ['open', 'close', 'high', 'low', 'ma5']] = [90., 90.8, 91.0, 89.8, 90.5]
     assert closed_peak_valley_reversal_evidence(strong, side, 1.0) is not None
 
     weak = strong.copy()
@@ -133,8 +133,8 @@ def test_closed_strong_reversal_is_confirmed_but_doji_and_weak_body_wait(side):
 
 
 @pytest.mark.parametrize('side,quote,expected', [
-    ('LONG', 107.0, 'EXIT_LONG_ON_FRACTAL_PEAK'),
-    ('SHORT', 93.0, 'EXIT_SHORT_ON_FRACTAL_VALLEY'),
+    ('LONG', 107.0, 'EXIT_LONG_ON_SELLING_PRESSURE'),
+    ('SHORT', 93.0, 'EXIT_SHORT_ON_BUYING_PRESSURE'),
 ])
 def test_peak_valley_exit_emits_live_candidate_without_waiting_for_bar_close(side, quote, expected):
     position = {
@@ -143,7 +143,7 @@ def test_peak_valley_exit_emits_live_candidate_without_waiting_for_bar_close(sid
     }
     result, details = PeakValleyExit.evaluate(position, frame_for(side, quote=quote), quote)
     assert result == expected
-    assert details['intrabar_pivot_confirmation'] is True
+    assert details['pressure_confirmation'] == 'LARGE_BODY'
 
 
 def test_confirmed_live_peak_closes_at_current_quote_without_waiting_for_next_bar(monkeypatch):
@@ -193,7 +193,7 @@ def test_confirmed_live_peak_closes_at_current_quote_without_waiting_for_next_ba
             engine, 'X', 107.0, time.time() * 1000,
         )
         account.close_position.assert_awaited_once_with(
-            'X', 107.0, 'Channel Swing EXIT_BY_VERIFIED_FRACTAL_PEAK',
+            'X', 107.0, 'Channel Swing EXIT_LONG_ON_SELLING_PRESSURE',
             is_manual=True,
         )
 
