@@ -122,6 +122,27 @@ def test_strong_bullish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch)
     assert pipeline.market_regime_problem("CAP/USDT", frame, 106.0) == "BLOCKED_BY_AI_CHOP_REGIME"
 
 
+def test_strong_bearish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch):
+    frame = pd.DataFrame([
+        {
+            "open": 106.0, "high": 107.0, "low": 104.0, "close": 105.0,
+            "kc_lower": 102.0, "ma5": 105.0, "atr": 2.0, "is_closed": True,
+        },
+        {
+            "open": 104.0, "high": 104.2, "low": 100.0, "close": 102.0,
+            "kc_lower": 101.0, "ma5": 104.0, "atr": 2.0, "is_closed": False,
+        },
+    ])
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
+
+    assert pipeline.has_strong_bearish_breakout(frame, 100.0)
+    assert pipeline.market_regime_problem("龙虾/USDT", frame, 100.0) is None
+    assert pipeline.market_regime_problem("龙虾/USDT", frame, 101.5) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "UNKNOWN")
+    assert pipeline.market_regime_problem("龙虾/USDT", frame, 100.0) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+
 def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
     from tests.channel_test_frames import closed_outer_entry_frame
 

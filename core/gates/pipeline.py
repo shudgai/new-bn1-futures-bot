@@ -75,6 +75,32 @@ class EntryGatePipeline:
             return False
 
     @staticmethod
+    def has_strong_bearish_breakout(frame: pd.DataFrame, quote: float) -> bool:
+        """Fresh bearish KC expansion may override only an explicit AI CHOPPY state."""
+        try:
+            if frame is None or len(frame) < 2:
+                return False
+            live, previous = frame.iloc[-1], frame.iloc[-2]
+            price = float(quote)
+            opening = float(live['open'])
+            lower = float(live['kc_lower'])
+            live_close = float(live['close'])
+            atr = float(previous['atr'])
+            current_ma5 = float(live['ma5'])
+            previous_ma5 = float(previous['ma5'])
+            if not bool(live.get('is_closed', True)):
+                current_ma5 += (price - live_close) / 5.0
+            values = (price, opening, lower, atr, current_ma5, previous_ma5, live_close)
+            return (
+                all(math.isfinite(value) and value > 0 for value in values)
+                and atr > 0 and price < lower
+                and opening - price >= 0.5 * atr
+                and current_ma5 - previous_ma5 < 0
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
+    @staticmethod
     def has_explosive_bullish_kc_breakout(frame: pd.DataFrame, quote: float) -> bool:
         """Require SpatialBrain expansion plus a live, solid close above KC upper."""
         try:
@@ -101,6 +127,33 @@ class EntryGatePipeline:
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
 
+    @staticmethod
+    def has_explosive_bearish_kc_breakout(frame: pd.DataFrame, quote: float) -> bool:
+        """Require SpatialBrain expansion plus a live, solid close below KC lower."""
+        try:
+            if frame is None or len(frame) < 3:
+                return False
+            if SpatialBrain.analyze(frame, quote).state != 'EXPLOSIVE_EXPANSION':
+                return False
+            live = frame.iloc[-1]
+            closed = closed_entry_candles(frame)
+            if closed.empty:
+                return False
+            price = float(quote)
+            opening = float(live['open'])
+            lower = float(live['kc_lower'])
+            live_close = float(live['close'])
+            atr = float(closed.iloc[-1]['atr'])
+            effective_close = live_close if bool(live.get('is_closed', True)) else price
+            values = (price, opening, lower, effective_close, atr)
+            return (
+                all(math.isfinite(value) and value > 0 for value in values)
+                and atr > 0 and price < lower
+                and opening - effective_close >= 0.5 * atr
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
     def market_regime_problem(self, symbol: Optional[str], frame=None,
                               quote: Optional[float] = None) -> Optional[str]:
         if not callable(self.market_regime_provider):
@@ -117,7 +170,8 @@ class EntryGatePipeline:
         if regime == 'TRENDING':
             return None
         if (regime == 'CHOPPY' and frame is not None and quote is not None
-                and self.has_strong_bullish_breakout(frame, quote)):
+                and (self.has_strong_bullish_breakout(frame, quote)
+                     or self.has_strong_bearish_breakout(frame, quote))):
             return None
         return 'BLOCKED_BY_AI_CHOP_REGIME'
 
@@ -167,7 +221,10 @@ class EntryGatePipeline:
             if (channel_state not in known_directions
                     or (abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
                         and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)):
-                if not EntryGatePipeline.has_explosive_bullish_kc_breakout(frame, quote):
+                if not (
+                    EntryGatePipeline.has_explosive_bullish_kc_breakout(frame, quote)
+                    or EntryGatePipeline.has_explosive_bearish_kc_breakout(frame, quote)
+                ):
                     return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
 
             ma5 = float(live['ma5'])

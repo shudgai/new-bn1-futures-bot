@@ -1663,6 +1663,34 @@ def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
     assert auth_result['side'] == 'LONG'
 
 
+def test_explosive_bearish_breakout_bypasses_unknown_direction_lockout():
+    """A solid expansion below KC lower bypasses unknown KC direction for shorts."""
+    rows = []
+    start = 1_700_000_000_000
+    for index in range(9):
+        rows.append({
+            'timestamp': start + index * 60_000,
+            'open': 100.0, 'high': 101.0, 'low': 99.0, 'close': 100.0,
+            'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
+            'kc_lower': 99.0, 'ma5': 102.0, 'ma15': 100.0,
+            'is_closed': True,
+        })
+    rows.append({
+        'timestamp': start + 9 * 60_000,
+        'open': 100.0, 'high': 100.2, 'low': 97.8, 'close': 98.0,
+        'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 101.5,
+        'kc_lower': 98.5, 'ma5': 102.0, 'ma15': 100.0,
+        'channel_state': 'KC方向不明', 'kc_upper_slope': 0.0,
+        'kc_lower_slope': 0.0, 'is_closed': False,
+    })
+    frame = pd.DataFrame(rows)
+    frame.attrs['timeframe_ms'] = 60_000
+
+    assert pipeline.has_explosive_bearish_kc_breakout(frame, 98.0)
+    assert pipeline.chop_lockout_problem(frame, 98.0) is None
+    assert pipeline.chop_lockout_problem(frame, 99.0) == 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
+
+
 def test_top_waterfall_dump_flip_to_short():
     """驗證在高位遭遇超長實體陰線摜破 MA5 時，能正確執行平多並同棒觸發開空 (Top Waterfall Flip)。"""
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
