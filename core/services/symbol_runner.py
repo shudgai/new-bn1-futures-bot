@@ -85,15 +85,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if not position:
         if exit_only:
             return [], []
-        from core.gates.pipeline import pipeline
+        from core.services.entry_contract import evaluate_entry_contract
         from core.services.candle_data import log_entry_gate
         diagnostics = {}
-        entry = pipeline.authorize(
-            None, frame, quote, symbol=symbol, account=engine.account,
+        entry = evaluate_entry_contract(
+            frame, quote, account=engine.account, symbol=symbol,
             diagnostics=diagnostics,
         )
         if entry:
-            auth_log = f"[AUTHORIZED_BY_PIPELINE] Symbol: {symbol} | Type: {entry['type']} | Side: {entry['side']} | Price: {quote}"
+            auth_log = f"[AUTHORIZED_BY_ENTRY_CONTRACT] Symbol: {symbol} | Type: {entry['type']} | Side: {entry['side']} | Price: {quote}"
             logger.info(auth_log)
             print(auth_log, flush=True)
             await engine._execute_confirmed_channel_break(

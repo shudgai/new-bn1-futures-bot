@@ -16,24 +16,31 @@ from core.services import entry_contract
 from core.services.entry_firewall import validate_account_entry
 
 
-def live_frame(*, upper=103.0, ma15=102.4):
+def live_frame(*, upper=103.0, ma15=102.2, confirmed_breakout=True):
     stamp = int(time.time() // 60) * 60_000
     rows = []
-    for offset in (180_000, 120_000, 60_000):
+    for index, offset in enumerate((360_000, 300_000, 240_000, 180_000, 120_000, 60_000)):
         rows.append({
             "timestamp": stamp - offset,
             "open": 100.0,
             "high": 101.0,
             "low": 99.0,
             "close": 100.1,
+            "volume": 10.0,
             "atr": 1.0,
-            "ma5": 100.0,
-            "ma15": 100.2,
-            "kc_lower": 98.0,
-            "kc_middle": 100.0,
-            "kc_upper": upper,
+            "ma5": 100.4 + 0.1 * index,
+            "ma15": 99.5 + 0.1 * index,
+            "kc_lower": 96.0 + 0.2 * index,
+            "kc_middle": 99.0 + 0.2 * index,
+            "kc_upper": 102.0 + 0.2 * index,
             "is_closed": True,
         })
+    rows[-1].update(
+        open=102.5 if confirmed_breakout else 100.0,
+        high=103.4 if confirmed_breakout else 101.0,
+        low=102.4 if confirmed_breakout else 99.0,
+        close=103.3 if confirmed_breakout else 100.1,
+    )
     rows.append({
         "timestamp": stamp,
         "open": 102.5,
@@ -46,6 +53,9 @@ def live_frame(*, upper=103.0, ma15=102.4):
         "kc_lower": 99.0,
         "kc_middle": 101.0,
         "kc_upper": upper,
+        "channel_state": "UP",
+        "kc_upper_slope": 0.2,
+        "kc_lower_slope": 0.2,
         "is_closed": False,
     })
     frame = pd.DataFrame(rows)
@@ -53,25 +63,32 @@ def live_frame(*, upper=103.0, ma15=102.4):
     return frame
 
 
-def short_live_frame():
+def short_live_frame(*, confirmed_breakout=True):
     stamp = int(time.time() // 60) * 60_000
     rows = []
-    for offset in (180_000, 120_000, 60_000):
+    for index, offset in enumerate((360_000, 300_000, 240_000, 180_000, 120_000, 60_000)):
         rows.append({
             "timestamp": stamp - offset,
             "open": 100.0,
             "high": 100.2,
             "low": 99.8,
             "close": 99.9,
+            "volume": 10.0,
             "atr": 1.0,
-            "ma3": 100.0,
-            "ma5": 100.0,
-            "ma15": 100.2,
-            "kc_lower": 97.2 - (180_000 - offset) / 600_000,
-            "kc_middle": 100.0 - (180_000 - offset) / 600_000,
-            "kc_upper": 103.0 - (180_000 - offset) / 600_000,
+            "ma3": 100.0 - 0.2 * index,
+            "ma5": 100.5 - 0.2 * index,
+            "ma15": 101.0 - 0.1 * index,
+            "kc_lower": 97.0 - 0.2 * index,
+            "kc_middle": 100.0 - 0.2 * index,
+            "kc_upper": 103.0 - 0.2 * index,
             "is_closed": True,
         })
+    rows[-1].update(
+        open=97.0 if confirmed_breakout else 100.0,
+        high=97.2 if confirmed_breakout else 100.2,
+        low=95.7 if confirmed_breakout else 99.8,
+        close=95.8 if confirmed_breakout else 99.9,
+    )
     rows.append({
         "timestamp": stamp,
         "open": 97.5,
@@ -81,10 +98,13 @@ def short_live_frame():
         "atr": 1.0,
         "ma3": 97.4,
         "ma5": 97.4,
-        "ma15": 97.2,
+        "ma15": 97.8,
         "kc_lower": 96.9,
         "kc_middle": 99.7,
         "kc_upper": 102.7,
+        "channel_state": "DOWN",
+        "kc_upper_slope": -0.2,
+        "kc_lower_slope": -0.2,
         "is_closed": False,
     })
     frame = pd.DataFrame(rows)
@@ -113,7 +133,7 @@ def close_account(
 
 
 def test_post_close_long_reclaim_without_completed_rail_break_is_rejected():
-    frame = live_frame()
+    frame = live_frame(confirmed_breakout=False)
     account, _ = close_account(frame)
     diagnostics = {}
 
@@ -122,11 +142,11 @@ def test_post_close_long_reclaim_without_completed_rail_break_is_rejected():
     )
 
     assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_THREE_BAR_LONG_NOT_BROKEN_UPPER_RAIL"
+    assert diagnostics["reason"] == "BLOCKED_CONTINUATION_NOT_CLOSED_CONFIRMATION"
 
 
 def test_post_close_short_reclaim_without_completed_rail_break_is_rejected():
-    frame = short_live_frame()
+    frame = short_live_frame(confirmed_breakout=False)
     account, _ = close_account(
         frame, side="SHORT", symbol="龙虾/USDT",
     )
@@ -137,7 +157,7 @@ def test_post_close_short_reclaim_without_completed_rail_break_is_rejected():
     )
 
     assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_INSIDE_KC_BANDS"
+    assert diagnostics["reason"] == "BLOCKED_CONTINUATION_NOT_CLOSED_CONFIRMATION"
 
 
 @pytest.mark.parametrize(

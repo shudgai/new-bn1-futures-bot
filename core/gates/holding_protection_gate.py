@@ -43,6 +43,83 @@ def _current_bar_is_closed(frame):
     return value is True or (type(value).__name__ == 'bool_' and bool(value))
 
 
+def exhaustion_reversal_evidence(frame, side):
+    """Detect a closed reversal body after recent weak candles or rejection wicks."""
+    if (frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT')
+            or not _current_bar_is_closed(frame)):
+        return None
+    try:
+        current = frame.iloc[-1]
+        previous = frame.iloc[-2]
+        opening, close, high, low, ma5, atr = (
+            tuple(float(current[key]) for key in ('open', 'close', 'high', 'low', 'ma5'))
+            + (float(previous['atr']),)
+        )
+        current_values = (opening, close, high, low, ma5, atr)
+        if (not all(math.isfinite(value) and value > 0 for value in current_values)
+                or low > min(opening, close) or high < max(opening, close)
+                or atr <= 0):
+            return None
+
+        precursors = []
+        for offset in (2, 3):
+            if len(frame) < offset:
+                continue
+            candle = frame.iloc[-offset]
+            if 'is_closed' in frame.columns:
+                value = candle.get('is_closed', False)
+                if not (value is True or (
+                    type(value).__name__ == 'bool_' and bool(value)
+                )):
+                    continue
+            candle_open, candle_close, candle_high, candle_low = (
+                float(candle[key]) for key in ('open', 'close', 'high', 'low')
+            )
+            candle_atr = float(candle.get('atr', atr))
+            values = (candle_open, candle_close, candle_high, candle_low, candle_atr)
+            if (not all(math.isfinite(value) and value > 0 for value in values)
+                    or candle_low > min(candle_open, candle_close)
+                    or candle_high < max(candle_open, candle_close)
+                    or candle_atr <= 0):
+                continue
+            body = abs(candle_close - candle_open)
+            rejection_wick = (
+                min(candle_open, candle_close) - candle_low
+                if side == 'SHORT'
+                else candle_high - max(candle_open, candle_close)
+            )
+            if body < 0.25 * candle_atr or rejection_wick >= 0.35 * candle_atr:
+                precursors.append({
+                    'bar_id': candle.get('timestamp'),
+                    'high': candle_high,
+                    'low': candle_low,
+                    'body': body,
+                    'rejection_wick': rejection_wick,
+                    'atr': candle_atr,
+                })
+
+        if not precursors:
+            return None
+        body = abs(close - opening)
+        if side == 'SHORT':
+            reversal = close > opening and close > ma5 and (
+                body >= 0.3 * atr or any(close > candle['high'] for candle in precursors)
+            )
+        else:
+            reversal = close < opening and close < ma5 and (
+                body >= 0.3 * atr or any(close < candle['low'] for candle in precursors)
+            )
+        if not reversal:
+            return None
+        return {
+            'atr': atr, 'open': opening, 'close': close, 'ma5': ma5,
+            'body': body, 'precursor_bars': [item['bar_id'] for item in precursors],
+            'precursor_evidence': precursors,
+        }
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def _short_reversal_body_evidence(frame, quote, atr):
     if frame is None or frame.empty or not math.isfinite(atr) or atr <= 0:
         return None
@@ -191,6 +268,7 @@ class HoldingProtectionExitGate:
     """Gatekeeper ensuring position is never closed on normal pullbacks."""
 
     REJECT_REASON = "REJECT_EXIT: BLOCKED_BY_HOLDING_PROTECTION_GATE (Normal Pullback Breathing)"
+    REJECT_HEALTHY_PULLBACK = "REJECT_EXIT: BLOCKED_BY_HEALTHY_PULLBACK"
     WAIT_CLOSE_REJECT_REASON = (
         "REJECT_EXIT: BLOCKED_BY_HOLDING_PROTECTION_GATE "
         "(Wait Bar Close Confirmation)"
@@ -200,8 +278,11 @@ class HoldingProtectionExitGate:
         'EXIT_BY_EXTREME_WATERFALL',
         'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         'EXIT_BY_RATCHET_PROFIT_LOCK',
+        'EXIT_LONG_ON_REAL_TOP_DUMP',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
+        'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
+        'EXIT_LONG_ON_EXHAUSTION_REVERSAL',
         # Aliases
         'EXIT_LONG_ON_FRACTAL_PEAK',
         'EXIT_SHORT_ON_FRACTAL_VALLEY',
@@ -263,6 +344,29 @@ class HoldingProtectionExitGate:
                         'kc_middle': kc_middle, 'live_low': live_low,
                         'quote': quote, 'side': side,
                     }
+
+        exhaustion = exhaustion_reversal_evidence(frame, side)
+        if exhaustion is not None:
+            exhaustion['quote'] = quote
+            return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
+
+        # ── 2. 真實大賣壓當根收線立斬 (EXIT_LONG_ON_REAL_TOP_DUMP) ──
+        if side == 'LONG' and candle_closed and frame is not None and len(frame) >= 2 and atr > 0:
+            try:
+                c_open = float(curr.get('open', quote))
+                c_close = float(curr.get('close', quote))
+                c_ma5 = float(curr.get('ma5', quote))
+                c_ma15 = float(curr.get('ma15', quote))
+                entry_p = float(position.get('entry_price', 0.0))
+                # 價格脫離 MA15 後的高位，當根為實體陰線 (Open - Close >= 0.35 * ATR) 且實體跌破 MA5 (Close < ma5)
+                is_above_ma15_context = c_open > c_ma15 or entry_p < c_open
+                if is_above_ma15_context and (c_open - c_close) >= 0.35 * atr and c_close < c_ma5:
+                    return 'EXIT_LONG_ON_REAL_TOP_DUMP', {
+                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
+                        'atr': atr, 'quote': quote, 'side': side,
+                    }
+            except Exception:
+                pass
 
         # ── 3. 階梯鎖利：以淨 ROE 峰值計算保護底線 ──
         ratchet = _ratchet_lock_details(position, quote)
@@ -435,6 +539,20 @@ class HoldingProtectionExitGate:
             return _reject()
 
         if clean_reason in (
+            'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
+            'EXIT_LONG_ON_EXHAUSTION_REVERSAL',
+        ):
+            expected_side = (
+                'SHORT' if clean_reason == 'EXIT_SHORT_ON_EXHAUSTION_REVERSAL'
+                else 'LONG'
+            )
+            evidence = exhaustion_reversal_evidence(frame, side)
+            if side != expected_side or evidence is None:
+                return _reject()
+            details.update(evidence)
+            return _auth(clean_reason)
+
+        if clean_reason in (
             'EXIT_LONG_ON_UPPER_WICK_REJECTION',
             'EXIT_SHORT_ON_LOWER_WICK_REJECTION',
         ):
@@ -500,5 +618,57 @@ class HoldingProtectionExitGate:
 
             return _auth(authorized_code)
 
-        # ── 5. 其餘常規回踩（MA 回碰、影線抖動、未達標轉向等）一律一票否決 ──
+        # ── 5. 真實大賣壓當根收線立斬 ──
+        if clean_reason == 'EXIT_LONG_ON_REAL_TOP_DUMP':
+            if side != 'LONG':
+                return _reject()
+            if frame is not None and len(frame) >= 2:
+                try:
+                    c = frame.iloc[-1]
+                    p = frame.iloc[-2]
+                    a = float(p.get('atr', c.get('atr', 0.0)))
+                    o_p = float(c.get('open', quote))
+                    cl_p = float(c.get('close', quote))
+                    ma5_val = float(c.get('ma5', quote))
+                    if a > 0 and (o_p - cl_p) >= 0.35 * a and cl_p < ma5_val:
+                        return _auth('EXIT_LONG_ON_REAL_TOP_DUMP')
+                except Exception:
+                    pass
+            return _auth('EXIT_LONG_ON_REAL_TOP_DUMP')
+
+        # ── 6. 健康回踩強制續抱檢驗 (Pullback Immunity) ──
+        if frame is not None and len(frame) >= 2:
+            try:
+                curr_bar = frame.iloc[-1]
+                prev_bar = frame.iloc[-2]
+                curr_kc_mid = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
+                prev_kc_mid = float(prev_bar.get('kc_middle', prev_bar.get('kc_basis', 0.0)))
+                curr_ma15 = float(curr_bar.get('ma15', 0.0))
+                prev_ma15 = float(prev_bar.get('ma15', 0.0))
+                ma15_slope = curr_ma15 - prev_ma15
+                kc_up = curr_kc_mid > prev_kc_mid
+                kc_down = curr_kc_mid < prev_kc_mid
+
+                if side == 'LONG':
+                    trend_up = kc_up or ma15_slope > 0
+                    above_support = quote >= curr_kc_mid or quote >= curr_ma15
+                    if trend_up and above_support:
+                        reason = cls.REJECT_HEALTHY_PULLBACK
+                        reject_msg = f"[HOLDING_PROTECTION] Rejected exit for {symbol}: {reason}"
+                        logger.info(reject_msg)
+                        print(reject_msg, flush=True)
+                        return False, reason, details
+                elif side == 'SHORT':
+                    trend_down = kc_down or ma15_slope < 0
+                    below_resistance = quote <= curr_kc_mid or quote <= curr_ma15
+                    if trend_down and below_resistance:
+                        reason = cls.REJECT_HEALTHY_PULLBACK
+                        reject_msg = f"[HOLDING_PROTECTION] Rejected exit for {symbol}: {reason}"
+                        logger.info(reject_msg)
+                        print(reject_msg, flush=True)
+                        return False, reason, details
+            except Exception:
+                pass
+
+        # ── 7. 其餘常規回踩（MA 回碰、影線抖動、未達標轉向等）一律一票否決 ──
         return _reject()

@@ -1242,6 +1242,7 @@ class SymbolRotation:
             "changes": self.last_changes,
             "reason": self.last_reason,
             "ai": self.ai.status(),
+            "market_regimes": self.ai.market_regime_status(),
             "top_metrics": self.last_metrics[:12],
             "direction_map": self.direction_map,
             "entry_scan_symbols": self.entry_scan_symbols,

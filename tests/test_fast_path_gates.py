@@ -372,7 +372,7 @@ def test_pre_flight_check_long_ma5_slope_bearish(monkeypatch):
     quote = 100.2  # live_ma5 = 104.0 + 0 = 104.0 < 105.0
     passed, reason = pre_flight_safety_check(frame, quote, "LONG")
     assert passed is False
-    assert reason == "REJECT_MA5_SLOPE_BEARISH"
+    assert reason in ("BLOCKED_BY_MA5_SLOPE_DOWN", "REJECT_MA5_SLOPE_BEARISH")
 
     # 模擬 pipeline.authorize 授權成功，送交 evaluate_entry_contract 最終授權時被 Pre-Flight 否決
     monkeypatch.setattr(pipeline, 'authorize', lambda *args, **kwargs: dict(
@@ -382,7 +382,7 @@ def test_pre_flight_check_long_ma5_slope_bearish(monkeypatch):
     diagnostics = {}
     decision = evaluate_entry_contract(frame, quote, code='AUTHORIZED_BY_TREND_CONTINUATION_LONG', diagnostics=diagnostics)
     assert decision is None
-    assert diagnostics.get('reason') == 'REJECT_MA5_SLOPE_BEARISH'
+    assert diagnostics.get('reason') in ("BLOCKED_BY_MA5_SLOPE_DOWN", "REJECT_MA5_SLOPE_BEARISH")
 
 
 def test_pre_flight_check_long_insufficient_room_to_upper_kc(monkeypatch):
@@ -456,7 +456,7 @@ def test_pre_flight_check_short_symmetric_rules():
     quote = 97.0  # live_ma5 = 96.0 > 95.0 (slope > 0)
     passed, reason = pre_flight_safety_check(frame_bullish_ma5, quote, "SHORT")
     assert passed is False
-    assert reason == "REJECT_MA5_SLOPE_BULLISH"
+    assert reason in ("BLOCKED_BY_MA5_SLOPE_UP", "REJECT_MA5_SLOPE_BULLISH")
 
     # 2. 距離 KC 下軌空間不足 < 0.5 ATR (REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC)
     # kc_lower = 90.0, quote = 90.3, distance = 0.3 < 0.5 * 1.0

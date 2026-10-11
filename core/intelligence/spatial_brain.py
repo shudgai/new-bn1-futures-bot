@@ -141,8 +141,8 @@ class SpatialBrain:
         # - OVEREXTENDED_EXHAUSTION: 只有已連續 3 根在軌外運行，且帶寬 > 2.2 倍基準時才力竭封鎖；剛突破時嚴禁判定力竭
         elif consecutive_outside >= 3 and baseline_bw > 0 and prev_bandwidth > 2.2 * baseline_bw:
             state = 'OVEREXTENDED_EXHAUSTION'
-        # - EXPLOSIVE_EXPANSION: 通道剛張嘴且 MA15 明確翹起
-        elif prev_bandwidth > baseline_bw * 1.1 and abs(ma15_slope) > 0.05 * atr:
+        # - EXPLOSIVE_EXPANSION: 通道剛張嘴 (帶寬 > 基準帶寬 * 1.1)
+        elif (bandwidth > baseline_bw * 1.1) or (prev_bandwidth > baseline_bw * 1.1):
             state = 'EXPLOSIVE_EXPANSION'
         else:
             state = 'NORMAL_TREND'

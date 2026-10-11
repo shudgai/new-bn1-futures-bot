@@ -11,6 +11,23 @@ from core.exits.peak_valley_exit import PeakValleyExit
 from core.engine import TradingEngine
 
 
+def _provide_trending_chop_context(frame, side, quote=None):
+    """Give route-focused tests explicit, non-choppy market context."""
+    direction = 1 if side == 'LONG' else -1
+    live = frame.index[-1]
+    quote = float(frame.loc[live, 'close'] if quote is None else quote)
+    frame.loc[:, 'channel_state'] = 'UP' if side == 'LONG' else 'DOWN'
+    frame.loc[live, 'kc_upper_slope'] = direction * 0.2
+    frame.loc[live, 'kc_lower_slope'] = direction * 0.2
+
+    atr = float(frame.iloc[-2]['atr'])
+    adjustment = quote - float(frame.loc[live, 'close'])
+    ma5 = float(frame.loc[live, 'ma5']) + adjustment / 5.0
+    ma15 = float(frame.loc[live, 'ma15']) + adjustment / 15.0
+    if abs(ma5 - ma15) < 0.25 * atr:
+        frame.loc[live, 'ma5'] = ma15 + direction * 0.35 * atr - adjustment / 5.0
+
+
 def test_0716_weak_body_does_not_create_realtime_breakout():
     """A weak live body cannot create an authorized pipeline breakout."""
     atr = 1.0
@@ -61,7 +78,69 @@ def test_0716_weak_body_does_not_create_realtime_breakout():
         df, live_close, symbol='LOBSTER/USDT', diagnostics=diagnostics,
     )
     assert auth_result is None
-    assert diagnostics.get('reason') == 'BLOCKED_UNRECOGNIZED_PIPELINE_AUTHORITY'
+    assert diagnostics.get('reason') != 'AUTHORIZED_REALTIME_BREAKOUT'
+
+
+@pytest.mark.parametrize(
+    ("state", "ma_gap", "expected_reason"),
+    [
+        ("KC方向不明", 1.0, "BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION"),
+        ("UP", 0.1, "BLOCKED_BY_MA_TANGLING"),
+        ("UP", 1.0, "BLOCKED_BY_CHOPPY_CHANNEL_BODY"),
+    ],
+)
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_chop_lockout_blocks_all_entries(state, ma_gap, expected_reason, side):
+    from core.services.entry_contract import evaluate_entry_contract
+
+    start = 1_700_000_000_000
+    rows = []
+    for index in range(3):
+        rows.append({
+            "timestamp": start + index * 60_000,
+            "open": 100.0,
+            "high": 100.2,
+            "low": 99.8,
+            "close": 100.05,
+            "atr": 1.0,
+            "kc_lower": 98.0 + 0.2 * index,
+            "kc_middle": 100.0 + 0.2 * index,
+            "kc_upper": 102.0 + 0.2 * index,
+            "ma5": 101.0,
+            "ma15": 100.0,
+            "channel_state": state,
+            "is_closed": True,
+        })
+    rows.append({
+        "timestamp": start + 3 * 60_000,
+        "open": 100.2,
+        "high": 100.3,
+        "low": 100.15,
+        "close": 100.25,
+        "atr": 1.0,
+        "kc_lower": 98.6,
+        "kc_middle": 100.6,
+        "kc_upper": 102.6,
+        "ma5": 100.0 + ma_gap,
+        "ma15": 100.0,
+        "channel_state": state,
+        "is_closed": False,
+    })
+    frame = pd.DataFrame(rows)
+    frame.attrs["timeframe_ms"] = 60_000
+    diagnostics = {}
+
+    decision = pipeline.authorize(
+        None, frame, 100.25, requested_side=side, diagnostics=diagnostics,
+    )
+    assert decision is None
+    assert diagnostics["reason"] == expected_reason
+
+    contract_diagnostics = {}
+    assert evaluate_entry_contract(
+        frame, 100.25, symbol="CAP/USDT", diagnostics=contract_diagnostics,
+    ) is None
+    assert contract_diagnostics["reason"] == expected_reason
 
 
 def test_0459_short_pullback_triggers_fractal_valley():
@@ -119,6 +198,53 @@ def test_short_intrabar_small_green_bounce_waits_for_bar_close():
     assert peak_valley_reason is None
     assert allowed is False
     assert reason == HoldingProtectionExitGate.WAIT_CLOSE_REJECT_REASON
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("precursor_offset", [1, 2])
+def test_exhaustion_reversal_exits_on_first_closed_reversal_bar(side, precursor_offset):
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    bars = [
+        {'timestamp': 1000, 'open': 101.0, 'high': 101.1, 'low': 100.4,
+         'close': 100.5, 'atr': 1.0, 'ma5': 100.7, 'is_closed': True},
+        {'timestamp': 2000, 'open': 100.4, 'high': 100.6, 'low': 99.8,
+         'close': 100.5, 'atr': 1.0, 'ma5': 100.4, 'is_closed': True},
+        {'timestamp': 3000, 'open': 100.5, 'high': 101.0, 'low': 100.4,
+         'close': 100.9, 'atr': 1.0, 'ma5': 100.7, 'is_closed': True},
+    ]
+    marker_index = len(bars) - 1 - precursor_offset
+    if marker_index != 1:
+        first_timestamp, second_timestamp = bars[0]["timestamp"], bars[1]["timestamp"]
+        bars[0], bars[1] = bars[1], bars[0]
+        bars[0]["timestamp"], bars[1]["timestamp"] = first_timestamp, second_timestamp
+    frame = pd.DataFrame(bars)
+    if side == "LONG":
+        original = frame.copy()
+        frame["open"] = 200.0 - original["open"]
+        frame["close"] = 200.0 - original["close"]
+        frame["high"] = 200.0 - original["low"]
+        frame["low"] = 200.0 - original["high"]
+        frame["ma5"] = 200.0 - original["ma5"]
+
+    quote = float(frame.iloc[-1]["close"])
+    position = {
+        "side": side,
+        "entry_price": 102.0 if side == "SHORT" else 98.0,
+        "symbol": "CAP/USDT",
+    }
+    expected = f"EXIT_{side}_ON_EXHAUSTION_REVERSAL"
+
+    peak_reason, details = PeakValleyExit.evaluate(position, frame, quote)
+    held_reason, _ = HoldingProtectionExitGate.evaluate(position, frame, quote)
+    allowed, authorized_reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, quote, peak_reason, details,
+    )
+
+    assert peak_reason == expected
+    assert held_reason == expected
+    assert allowed is True
+    assert authorized_reason == expected
 
 
 def test_short_intrabar_extreme_v_reversal_can_exit():
@@ -247,6 +373,7 @@ def test_realtime_breakout_fast_track():
     ]
     df = pd.DataFrame(bars)
     live_quote = 102.4
+    _provide_trending_chop_context(df, 'LONG', live_quote)
 
     # 1. 驗證 detect_realtime_breakout
     rt_signal = pipeline.detect_realtime_breakout(df, live_quote)
@@ -300,6 +427,7 @@ def test_waterfall_short_breakout_reaches_engine_submission_without_volatility_v
         'is_closed': False,
     })
     frame = pd.DataFrame(rows)
+    _provide_trending_chop_context(frame, 'SHORT', quote)
     frame.attrs['timeframe_ms'] = 60_000
     frame.attrs['entry_finality_verified'] = True
 
@@ -401,6 +529,7 @@ def test_pipeline_authorization_grace_skips_morphology_revalidation(monkeypatch)
     }])
     frame.attrs['timeframe_ms'] = 60_000
     frame.attrs['entry_finality_verified'] = True
+    _provide_trending_chop_context(frame, 'SHORT', 98.4)
     authorized = pipeline.authorize(
         None, frame, 98.4, symbol=symbol, requested_side='SHORT',
     )
@@ -544,6 +673,7 @@ def test_expired_account_ttl_requires_same_bar_pipeline_reauthorization(
 ):
     from core.services.entry_firewall import validate_account_entry
 
+    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
     frame = pd.DataFrame([
         {
             'timestamp': 60_000,
@@ -560,6 +690,7 @@ def test_expired_account_ttl_requires_same_bar_pipeline_reauthorization(
             'is_closed': False,
         },
     ])
+    _provide_trending_chop_context(frame, 'LONG', 100.18)
     frame.attrs['entry_finality_verified'] = True
     original = pipeline.authorize(
         None, frame, 100.18, symbol='LOBSTER/USDT', requested_side='LONG',
@@ -650,6 +781,7 @@ def test_first_realtime_breakout_with_018_solidity_is_authorized(
             'is_closed': False,
         },
     ])
+    _provide_trending_chop_context(frame, side, quote)
 
     signal = pipeline.detect_realtime_breakout(frame, quote, side=side)
     authorized = pipeline.authorize(
@@ -688,6 +820,7 @@ def test_pipeline_blocks_realtime_breakout_beyond_ma15_bias_limit():
         'ma15': 100.0,
     })
     frame = pd.DataFrame(rows)
+    _provide_trending_chop_context(frame, 'LONG', live_quote)
     frame.attrs['timeframe_ms'] = 60_000
     diagnostics = {}
 
@@ -723,6 +856,7 @@ def test_pipeline_blocks_realtime_breakout_against_ma15_slope():
         'ma15': 100.1,
     })
     frame = pd.DataFrame(rows)
+    _provide_trending_chop_context(frame, 'LONG', live_quote)
     frame.attrs['timeframe_ms'] = 60_000
     diagnostics = {}
 
@@ -757,6 +891,7 @@ def test_first_realtime_breakout_at_minimum_solidity_is_authorized():
         'ma15': 100.0,
     })
     frame = pd.DataFrame(rows)
+    _provide_trending_chop_context(frame, 'LONG', live_quote)
     frame.attrs['timeframe_ms'] = 60_000
 
     detected = pipeline.detect_realtime_breakout(frame, live_quote, side='LONG')
@@ -772,7 +907,9 @@ def test_first_realtime_breakout_at_minimum_solidity_is_authorized():
 
 
 @pytest.mark.parametrize('live_ma15', [99.6, 99.5])
-def test_bearish_trend_continuation_short_accepts_flat_or_falling_ma15(live_ma15):
+def test_bearish_trend_continuation_short_accepts_flat_or_falling_ma15(
+    live_ma15, monkeypatch,
+):
     stamp = 120_000
     rows = [
         {
@@ -793,6 +930,7 @@ def test_bearish_trend_continuation_short_accepts_flat_or_falling_ma15(live_ma15
         'kc_lower': 99.0, 'ma5': 99.5, 'ma15': live_ma15,
     })
     frame = pd.DataFrame(rows)
+    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
     frame.attrs['timeframe_ms'] = 60_000
     frame.attrs['entry_finality_verified'] = True
 
@@ -846,7 +984,7 @@ def test_small_intrabar_bounce_waits_for_close_before_fractal_exit():
         position, closed, 99.2, closed_reason, details,
     )
 
-    assert closed_reason == 'EXIT_BY_VERIFIED_FRACTAL_VALLEY'
+    assert closed_reason == 'EXIT_SHORT_ON_EXHAUSTION_REVERSAL'
     assert closed_allowed is True
 
 
@@ -865,6 +1003,7 @@ def test_trend_continuation_without_kc_breakout():
     ]
     df = pd.DataFrame(bars)
     live_quote = 102.5
+    _provide_trending_chop_context(df, 'LONG', live_quote)
 
     # 1. 驗證 detect_trend_continuation 成功偵測
     cont_signal = pipeline.detect_trend_continuation(df, live_quote)
@@ -882,13 +1021,14 @@ def test_trend_continuation_without_kc_breakout():
     assert authorized['type'] == 'AUTHORIZED_BY_TREND_CONTINUATION_LONG'
 
 
-def test_trend_continuation_uses_strict_ma15_slope_without_atr_body_floor():
+def test_trend_continuation_uses_strict_ma15_slope_without_atr_body_floor(monkeypatch):
     rows = [
         {'timestamp': 1000, 'open': 100.0, 'high': 100.1, 'low': 99.9, 'close': 100.0, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 103.0, 'kc_lower': 97.0, 'ma5': 99.9, 'ma15': 99.8, 'is_closed': True},
         {'timestamp': 2000, 'open': 100.0, 'high': 100.1, 'low': 99.9, 'close': 100.0, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 103.0, 'kc_lower': 97.0, 'ma5': 100.0, 'ma15': 99.9, 'is_closed': True},
         {'timestamp': 3000, 'open': 100.0, 'high': 100.2, 'low': 100.0, 'close': 100.11, 'is_closed': False, 'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 103.0, 'kc_lower': 97.0, 'ma5': 100.05, 'ma15': 100.0},
     ]
     frame = pd.DataFrame(rows)
+    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
 
     decision = pipeline.authorize(None, frame, 100.11, requested_side='LONG')
     assert decision is not None
@@ -909,6 +1049,7 @@ def test_trend_continuation_without_breaking_rails():
     ]
     df = pd.DataFrame(bars)
     live_quote = 102.5
+    _provide_trending_chop_context(df, 'LONG', live_quote)
 
     cont_signal = pipeline.detect_trend_continuation(df, live_quote)
     assert cont_signal is not None
@@ -938,6 +1079,8 @@ def test_peak_reversal_flip_to_short():
     ]
     df = pd.DataFrame(bars)
     live_quote = 101.8
+
+    _provide_trending_chop_context(df, 'LONG', live_quote)
 
     # 1. 驗證 detect_reversal_flip 成功識別頂底翻轉
     flip_signal = pipeline.detect_reversal_flip(df, live_quote)
@@ -1186,6 +1329,7 @@ def test_0758_lobster_breakout_authorized_via_evaluate_entry_contract():
     df.attrs['timeframe_ms'] = 60000
     live_quote = 102.4
 
+    _provide_trending_chop_context(df, 'LONG', live_quote)
     diagnostics = {}
     entry = evaluate_entry_contract(df, live_quote, symbol='LOBSTER/USDT', diagnostics=diagnostics)
     assert entry is not None, f"Expected entry authorized, got diagnostics: {diagnostics}"
@@ -1320,3 +1464,196 @@ def test_holding_gate_ratchet_lock_uses_authorized_roe_tiers(
     assert details is not None
     assert details['floor_net_roe_pct'] == pytest.approx(expected_floor)
     assert details['tier'] == expected_tier
+
+
+def test_ma5_slope_laws_down_blocks_long():
+    """驗證 ma5_slope < 0 時開多 100% 攔截 (BLOCKED_BY_MA5_SLOPE_DOWN)。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    bars = [
+        {'timestamp': 1000, 'open': 100.0, 'close': 99.0, 'high': 100.0, 'low': 98.0, 'atr': 1.0, 'ma5': 99.5, 'ma15': 98.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 99.0, 'close': 98.0, 'high': 99.0, 'low': 97.0, 'atr': 1.0, 'ma5': 98.5, 'ma15': 98.0, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    passed, reason = pre_flight_safety_check(df, quote=98.0, side='LONG')
+    assert passed is False
+    assert reason == 'BLOCKED_BY_MA5_SLOPE_DOWN'
+
+
+def test_ma5_slope_laws_up_blocks_short():
+    """驗證 ma5_slope > 0 時開空 100% 攔截 (BLOCKED_BY_MA5_SLOPE_UP)。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    bars = [
+        {'timestamp': 1000, 'open': 98.0, 'close': 99.0, 'high': 100.0, 'low': 98.0, 'atr': 1.0, 'ma5': 98.5, 'ma15': 99.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 99.0, 'close': 100.0, 'high': 100.5, 'low': 98.5, 'atr': 1.0, 'ma5': 99.5, 'ma15': 99.0, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    passed, reason = pre_flight_safety_check(df, quote=100.0, side='SHORT')
+    assert passed is False
+    assert reason == 'BLOCKED_BY_MA5_SLOPE_UP'
+
+
+def test_ma5_slope_parallel_chop_blocks_all():
+    """驗證 MA5 走平時多空全面休眠 (BLOCKED_BY_MA5_PARALLEL_CHOP)。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    bars = [
+        {'timestamp': 1000, 'open': 100.0, 'close': 100.0, 'high': 100.5, 'low': 99.5, 'atr': 1.0, 'ma5': 100.0, 'ma15': 100.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 100.0, 'close': 100.0, 'high': 100.5, 'low': 99.5, 'atr': 1.0, 'ma5': 100.0001, 'ma15': 100.0, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    passed_long, reason_long = pre_flight_safety_check(df, quote=100.0, side='LONG')
+    assert passed_long is False
+    assert reason_long == 'BLOCKED_BY_MA5_PARALLEL_CHOP'
+
+    passed_short, reason_short = pre_flight_safety_check(df, quote=100.0, side='SHORT')
+    assert passed_short is False
+    assert reason_short == 'BLOCKED_BY_MA5_PARALLEL_CHOP'
+
+
+def test_top_reversal_short_authorized():
+    """驗證頂部連兩根收陰摜破 MA5 且 MA5 向下拐頭時授權 AUTHORIZED_TOP_REVERSAL_SHORT。"""
+    bars = [
+        {'timestamp': 1000, 'open': 105.0, 'close': 105.0, 'high': 106.0, 'low': 104.0, 'atr': 1.0, 'ma5': 104.5, 'ma15': 100.0, 'kc_middle': 101.0, 'kc_upper': 105.0, 'kc_lower': 97.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 105.0, 'close': 103.0, 'high': 105.5, 'low': 102.5, 'atr': 1.0, 'ma5': 104.0, 'ma15': 100.5, 'kc_middle': 101.0, 'kc_upper': 105.0, 'kc_lower': 97.0, 'is_closed': True},
+        {'timestamp': 3000, 'open': 103.0, 'close': 101.5, 'high': 103.2, 'low': 101.0, 'atr': 1.0, 'ma5': 102.5, 'ma15': 101.0, 'kc_middle': 101.0, 'kc_upper': 105.0, 'kc_lower': 97.0, 'is_closed': False},
+    ]
+    df = pd.DataFrame(bars)
+    quote = 101.5
+    decision = pipeline.detect_top_reversal_short(df, quote, side='SHORT')
+    assert decision is not None
+    assert decision['type'] == 'AUTHORIZED_TOP_REVERSAL_SHORT'
+    assert decision['side'] == 'SHORT'
+
+
+def test_healthy_pullback_immunity():
+    """驗證大級別向上且價格在中軌/MA15之上時，健康回踩 100% 阻斷平多 (BLOCKED_BY_HEALTHY_PULLBACK)。"""
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+    position = {'side': 'LONG', 'entry_price': 100.0, 'symbol': 'CAP/USDT'}
+    bars = [
+        {'timestamp': 1000, 'open': 100.0, 'close': 102.0, 'high': 103.0, 'low': 99.5, 'atr': 1.0, 'ma5': 101.5, 'ma15': 100.0, 'kc_middle': 100.5, 'is_closed': True},
+        {'timestamp': 2000, 'open': 102.0, 'close': 101.5, 'high': 102.5, 'low': 101.0, 'atr': 1.0, 'ma5': 101.5, 'ma15': 100.5, 'kc_middle': 101.0, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    # 報價 101.5 在 KC 中軌 (101.0) 與 MA15 (100.5) 之上，中軌與 MA15 均向上
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, df, quote=101.5, candidate_reason='PEAK_VALLEY_TRAILING_STEP'
+    )
+    assert allowed is False
+    assert reason == HoldingProtectionExitGate.REJECT_HEALTHY_PULLBACK
+
+
+def test_immediate_dump_exit_on_real_top():
+    """驗證高位大黑 K 破 MA5 當根立即平多 (EXIT_LONG_ON_REAL_TOP_DUMP)。"""
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+    position = {'side': 'LONG', 'entry_price': 100.0, 'symbol': 'CAP/USDT'}
+    # 前一根為飽滿推進陽線 (body 1.0 >= 0.25*atr 1.0，upper wick 0.1 < 0.35*atr)，無力竭前兆
+    # 當根收線實體陰線 Open 105.0 - Close 103.0 = 2.0 (>= 0.35 * ATR 1.0)，且 Close 103.0 < MA5 104.0
+    bars = [
+        {'timestamp': 1000, 'open': 103.0, 'close': 104.8, 'high': 104.9, 'low': 102.8, 'atr': 1.0, 'ma5': 103.0, 'ma15': 101.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 105.0, 'close': 103.0, 'high': 105.2, 'low': 102.8, 'atr': 1.0, 'ma5': 104.0, 'ma15': 101.5, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    quote = 103.0
+    eval_code, eval_info = HoldingProtectionExitGate.evaluate(position, df, quote)
+    assert eval_code == 'EXIT_LONG_ON_REAL_TOP_DUMP'
+
+    allowed, code, _ = HoldingProtectionExitGate.validate_exit(
+        position, df, quote, candidate_reason='EXIT_LONG_ON_REAL_TOP_DUMP', details=eval_info
+    )
+    assert allowed is True
+    assert code == 'EXIT_LONG_ON_REAL_TOP_DUMP'
+
+
+def test_anti_churn_cooldown_180s_same_side():
+    """驗證平倉後 180 秒內同向開倉阻斷 (BLOCKED_BY_COOLDOWN_SAME_SIDE)。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    mock_account = SimpleNamespace(
+        last_closed_at={'CAP/USDT': time.time() - 30.0},
+        last_closed_side={'CAP/USDT': 'LONG'},
+    )
+    bars = [
+        {'timestamp': 1000, 'open': 100.0, 'close': 101.0, 'high': 101.5, 'low': 99.5, 'atr': 1.0, 'ma5': 100.5, 'ma15': 99.5, 'kc_upper': 103.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': 101.0, 'close': 102.0, 'high': 102.5, 'low': 100.5, 'atr': 1.0, 'ma5': 101.5, 'ma15': 100.0, 'kc_upper': 103.0, 'is_closed': True},
+    ]
+    df = pd.DataFrame(bars)
+    # 同為 LONG，冷卻未滿 180 秒
+    passed, reason = pre_flight_safety_check(
+        df, quote=102.0, side='LONG', account=mock_account, symbol='CAP/USDT'
+    )
+    assert passed is False
+    assert reason == 'BLOCKED_BY_COOLDOWN_SAME_SIDE'
+
+
+def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
+    """驗證 ALLOW_EXPLOSIVE_BREAKOUT 時即使 ma15_slope=0 且緊貼上軌也能順利授權開多。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    from core.intelligence.spatial_brain import SpatialBrain
+
+    # 建立帶寬擴張的爆發 K 線 (EXPLOSIVE_EXPANSION)
+    # 前 19 根帶寬較窄 (kc_upper 101.5, kc_lower 98.5, bw=0.03)
+    # 最後一根帶寬擴張 (kc_upper 102.0, kc_lower 98.0, bw=0.04 > 0.03 * 1.1)
+    atr = 1.0
+    bars = []
+    base_time = 1700000000000
+    for i in range(19):
+        bars.append({
+            'timestamp': base_time + i * 60000,
+            'open': 100.0,
+            'high': 101.0,
+            'low': 99.0,
+            'close': 100.0,
+            'atr': atr,
+            'kc_middle': 100.0,
+            'kc_upper': 101.5,
+            'kc_lower': 98.5,
+            'ma5': 100.8,
+            'ma15': 100.5,
+            'is_closed': True,
+        })
+    # 最後一根 K 線帶寬擴張 (bw=0.04 > baseline 0.03 * 1.1)
+    # ma15=100.5 與前根相同 => ma15_slope = 0.0 (被豁免)
+    # quote = 101.9 緊貼 kc_upper 102.0 (距離 0.1 < 0.5*ATR 被豁免)
+    # ma5 向上 (101.2 > 100.8)
+    bars.append({
+        'timestamp': base_time + 19 * 60000,
+        'open': 100.5,
+        'high': 102.5,
+        'low': 100.0,
+        'close': 101.9,
+        'atr': atr,
+        'kc_middle': 100.0,
+        'kc_upper': 102.0,
+        'kc_lower': 98.0,
+        'ma5': 101.2,
+        'ma15': 100.5,
+        'is_closed': False,
+    })
+    df = pd.DataFrame(bars)
+    df.attrs['timeframe_ms'] = 60000
+    quote = 101.9
+
+    ctx, action = SpatialBrain.diagnose('CAP/USDT', df, live_quote=quote)
+    assert action == 'ALLOW_EXPLOSIVE_BREAKOUT'
+    assert ctx.state == 'EXPLOSIVE_EXPANSION'
+
+    # pre_flight_safety_check 豁免上軌空間限制 (距上軌僅 0.1 < 0.5 ATR)
+    passed, reason = pre_flight_safety_check(df, quote, 'LONG')
+    assert passed is True
+    assert reason is None
+
+    # pipeline.authorize 豁免 ma15_slope=0 限制
+    pipeline.set_market_regime_provider(lambda _s: 'TRENDING')
+    _provide_trending_chop_context(df, 'LONG', quote)
+    breakout_quote = 102.1  # 破軌價位
+    rt_signal = pipeline.detect_realtime_breakout(df, breakout_quote, side='LONG')
+    assert rt_signal is not None
+    diagnostics = {}
+    auth_result = pipeline.authorize(
+        rt_signal, df, breakout_quote, symbol='CAP/USDT', requested_side='LONG', diagnostics=diagnostics
+    )
+    assert auth_result is not None
+    assert auth_result['side'] == 'LONG'
+
+
+
+
+

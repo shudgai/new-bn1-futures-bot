@@ -1,8 +1,13 @@
 import asyncio
 import json
+import math
+import time
 import urllib.error
 import urllib.request
 from typing import Callable, Dict, List, Optional
+
+
+MARKET_REGIME_MAX_AGE_SECONDS = 180
 
 
 class LocalAIAdvisor:
@@ -27,6 +32,7 @@ class LocalAIAdvisor:
         self.last_history_error = ""
         self.last_history_model = ""
         self.last_history_summary = ""
+        self._market_regimes: Dict[str, dict] = {}
 
     def _request(self, payload: dict) -> dict:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -52,6 +58,146 @@ class LocalAIAdvisor:
                 raise
             parsed, _ = json.JSONDecoder().raw_decode(content[start:])
             return parsed
+
+    def set_market_regime_unavailable(self, symbol: str, error: str) -> None:
+        self._market_regimes[symbol] = {
+            "state": "UNKNOWN",
+            "status": "unavailable",
+            "updated_at": time.time(),
+            "error": str(error)[:300],
+            "model": "",
+        }
+
+    async def analyze_market_regime(self, symbol: str, candles) -> dict:
+        """Classify one symbol's 30 completed 1-minute candles; never place orders."""
+        self.set_market_regime_unavailable(symbol, "analysis_pending")
+        if not self.enabled:
+            self.set_market_regime_unavailable(symbol, "advisor_disabled")
+            return self.market_regime_status()[symbol]
+
+        if candles is None or len(candles) != 30:
+            self.set_market_regime_unavailable(symbol, "expected_30_completed_candles")
+            return self.market_regime_status()[symbol]
+
+        compact_candles = []
+        try:
+            for candle in candles:
+                if isinstance(candle, dict):
+                    item = candle
+                else:
+                    item = candle.to_dict()
+                closed = item.get("is_closed", True)
+                if not (closed is True or (
+                    type(closed).__name__ == "bool_" and bool(closed)
+                )):
+                    raise ValueError("market_regime_requires_completed_candles")
+                values = {
+                    key: float(item[key])
+                    for key in ("open", "high", "low", "close", "volume")
+                }
+                timestamp = float(item["timestamp"])
+                if (not math.isfinite(timestamp)
+                        or not all(math.isfinite(value) for value in values.values())
+                        or min(values["open"], values["high"], values["low"], values["close"]) <= 0
+                        or values["volume"] < 0
+                        or values["high"] < max(values["open"], values["close"])
+                        or values["low"] > min(values["open"], values["close"])
+                        or values["high"] <= values["low"]):
+                    raise ValueError("invalid_completed_candle")
+                compact_candles.append({
+                    "timestamp": int(timestamp),
+                    **{key: round(value, 12) for key, value in values.items()},
+                })
+            stamps = [item["timestamp"] for item in compact_candles]
+            if any(second - first != 60_000 for first, second in zip(stamps, stamps[1:])):
+                raise ValueError("completed_candles_must_be_contiguous_1m")
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            self.set_market_regime_unavailable(symbol, f"{type(exc).__name__}: {exc}")
+            return self.market_regime_status()[symbol]
+
+        payload = {
+            "model": "local",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the supplied single-symbol sequence of completed 1-minute "
+                        "candles as exactly CHOPPY or TRENDING. Use directional progress, "
+                        "overlap and consistency in these candles only. Do not predict price, "
+                        "recommend a trade, choose a side, or infer missing data. Return one "
+                        "JSON object with regime and a brief reason."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "classify_market_regime",
+                            "symbol": symbol,
+                            "timeframe": "1m",
+                            "candles": compact_candles,
+                            "schema": {
+                                "regime": "CHOPPY or TRENDING",
+                                "reason": "brief explanation",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 256,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self.request_fn, payload),
+                timeout=self.timeout + 2.0,
+            )
+            message = response["choices"][0]["message"]
+            content = message.get("content") or message.get("reasoning_content", "")
+            parsed = self._extract_json(content)
+            state = parsed.get("regime")
+            if state not in ("CHOPPY", "TRENDING"):
+                raise ValueError("AI returned an unsupported market regime")
+            self._market_regimes[symbol] = {
+                "state": state,
+                "status": "ok",
+                "updated_at": time.time(),
+                "error": "",
+                "model": str(response.get("model", "")),
+                "reason": str(parsed.get("reason", ""))[:300],
+            }
+        except (
+            asyncio.TimeoutError,
+            urllib.error.URLError,
+            AttributeError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            self.set_market_regime_unavailable(symbol, f"{type(exc).__name__}: {exc}")
+        return dict(self._market_regimes[symbol])
+
+    def market_regime_for(self, symbol: str) -> str:
+        """Return only a fresh, successfully classified regime; otherwise fail closed."""
+        result = self._market_regimes.get(symbol)
+        if not result or result.get("status") != "ok":
+            return "UNKNOWN"
+        age = time.time() - float(result.get("updated_at", 0.0))
+        if age < 0 or age > MARKET_REGIME_MAX_AGE_SECONDS:
+            return "UNKNOWN"
+        return result["state"]
+
+    def market_regime_status(self) -> Dict[str, dict]:
+        return {symbol: dict(result) for symbol, result in self._market_regimes.items()}
+
+    def clear_market_regimes(self) -> None:
+        self._market_regimes.clear()
 
     async def rank_symbols(self, metrics: List[dict]) -> List[str]:
         if not self.enabled:

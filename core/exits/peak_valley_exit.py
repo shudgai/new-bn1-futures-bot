@@ -3,6 +3,7 @@ import math
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
+from core.gates.holding_protection_gate import exhaustion_reversal_evidence
 
 
 def is_fractal_peak(bars: pd.DataFrame) -> bool:
@@ -34,7 +35,7 @@ class PeakValleyExit:
         entry_price = float(position.get('entry_price', 0.0))
         meta = position.get('metadata') or {}
 
-        if frame is None or len(frame) < 3:
+        if frame is None or len(frame) < 2:
             return None, {}
 
         # Spatial perception for MA3 slope and bandwidth
@@ -52,6 +53,11 @@ class PeakValleyExit:
         
         kc_mid = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
         atr = float(prev.get('atr', curr.get('atr', 0.0)))
+
+        exhaustion = exhaustion_reversal_evidence(frame, side)
+        if exhaustion is not None:
+            exhaustion['quote'] = quote
+            return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
 
         # 0. PROFIT GATE: 必須已有顯著利潤，嚴禁開倉未拉開利潤就秒平！
         # 多單最高浮盈 (Peak ROE) 須達至少 3.0% 或最高價距開倉價 >= 0.5 * ATR

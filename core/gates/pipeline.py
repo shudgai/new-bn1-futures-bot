@@ -1,6 +1,6 @@
 """Entry Gate Pipeline: Unified authorization funnel for all trading entries."""
 import math
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
@@ -8,12 +8,17 @@ from core.intelligence.spatial_brain import SpatialBrain
 from core.gates.chop_filter_gate import ChopFilterGate
 from core.gates.candle_solidity_gate import CandleSolidityGate
 from core.gates.mouth_expansion_gate import MouthExpansionGate
+from core.services.strategies.outer_strategy import ck_direction
 
 MAX_MA15_ENTRY_BIAS_ATR = 1.8
+CHOP_KC_SLOPE_EPSILON_ATR = 0.10
+CHOP_MA_TANGLE_ATR = 0.25
+CHOP_MIN_CHANNEL_BODY_ATR = 0.40
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
     'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+    'AUTHORIZED_TOP_REVERSAL_SHORT',
     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
     'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
@@ -28,14 +33,103 @@ class EntryGatePipeline:
     """
 
     def __init__(self):
+        self.market_regime_provider: Optional[Callable[[str], str]] = None
         self.gates = [
             ('CANDLE_SOLIDITY', CandleSolidityGate.evaluate),
             ('CHOP_FILTER', ChopFilterGate.evaluate),
             ('MOUTH_EXPANSION', MouthExpansionGate.evaluate),
         ]
 
+    def set_market_regime_provider(
+        self, provider: Optional[Callable[[str], str]],
+    ) -> None:
+        self.market_regime_provider = provider
+
+    def market_regime_problem(self, symbol: Optional[str]) -> Optional[str]:
+        if not callable(self.market_regime_provider):
+            return 'BLOCKED_BY_AI_CHOP_REGIME'
+        try:
+            regime = self.market_regime_provider(symbol or "")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "AI market-regime lookup failed for %s: %s: %s",
+                symbol, type(exc).__name__, exc,
+            )
+            return 'BLOCKED_BY_AI_CHOP_REGIME'
+        return None if regime == 'TRENDING' else 'BLOCKED_BY_AI_CHOP_REGIME'
+
     @staticmethod
-    def _ma15_bias_problem(frame: pd.DataFrame, quote: float, side: str) -> Optional[str]:
+    def chop_lockout_problem(frame: pd.DataFrame, quote: float) -> Optional[str]:
+        """Fail closed on unknown/flat KC, tangled MAs, or weak in-channel candles."""
+        try:
+            if frame is None or frame.empty:
+                return 'BLOCKED_BY_CHOP_GATE_DATA'
+            closed = closed_entry_candles(frame)
+            if len(closed) < 2:
+                return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
+            live = frame.iloc[-1]
+            current = closed.iloc[-1]
+            previous = closed.iloc[-2]
+            atr = float(current['atr'])
+            upper, lower, middle = (
+                float(live[key]) for key in ('kc_upper', 'kc_lower', 'kc_middle')
+            )
+            previous_upper, previous_lower = (
+                float(previous[key]) for key in ('kc_upper', 'kc_lower')
+            )
+            quote = float(quote)
+            values = (atr, upper, lower, middle, previous_upper, previous_lower, quote)
+            if (not all(math.isfinite(value) and value > 0 for value in values)
+                    or atr <= 0 or not lower < middle < upper):
+                return 'BLOCKED_BY_CHOP_GATE_DATA'
+
+            channel_state = live.get('channel_state', current.get('channel_state'))
+            if not isinstance(channel_state, str) or not channel_state.strip():
+                channel_state = ck_direction(closed, has_forming_bar=False)
+            channel_state = str(channel_state).strip()
+            known_directions = ('LONG', 'SHORT', 'UP', 'DOWN')
+
+            upper_slope_value = live.get('kc_upper_slope', current.get('kc_upper_slope'))
+            lower_slope_value = live.get('kc_lower_slope', current.get('kc_lower_slope'))
+            upper_slope = (
+                float(upper_slope_value)
+                if upper_slope_value is not None and math.isfinite(float(upper_slope_value))
+                else float(current['kc_upper']) - previous_upper
+            )
+            lower_slope = (
+                float(lower_slope_value)
+                if lower_slope_value is not None and math.isfinite(float(lower_slope_value))
+                else float(current['kc_lower']) - previous_lower
+            )
+            if (channel_state not in known_directions
+                    or (abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
+                        and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)):
+                return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
+
+            ma5 = float(live['ma5'])
+            ma15 = float(live['ma15'])
+            if not bool(live.get('is_closed', True)):
+                adjustment = quote - float(live['close'])
+                ma5 += adjustment / 5.0
+                ma15 += adjustment / 15.0
+            if (not all(math.isfinite(value) and value > 0 for value in (ma5, ma15))
+                    or abs(ma5 - ma15) < CHOP_MA_TANGLE_ATR * atr):
+                return 'BLOCKED_BY_MA_TANGLING'
+
+            opening = float(live['open'])
+            close = float(live['close']) if bool(live.get('is_closed', True)) else quote
+            if not math.isfinite(opening) or opening <= 0:
+                return 'BLOCKED_BY_CHOP_GATE_DATA'
+            if lower <= quote <= upper and abs(close - opening) <= CHOP_MIN_CHANNEL_BODY_ATR * atr:
+                return 'BLOCKED_BY_CHOPPY_CHANNEL_BODY'
+            return None
+        except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return 'BLOCKED_BY_CHOP_GATE_DATA'
+
+    @staticmethod
+    def _ma15_bias_problem(frame: pd.DataFrame, quote: float, side: str,
+                           allow_flat_slope: bool = False) -> Optional[str]:
         """Require trend-side MA alignment and reject entries stretched from MA15."""
         try:
             if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
@@ -304,6 +398,61 @@ class EntryGatePipeline:
         return None
 
     @staticmethod
+    def detect_top_reversal_short(frame: pd.DataFrame, quote: float,
+                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """情境 3：頂部破位開空放行（Top Reversal Short - 順勢捕捉主跌浪）。
+        
+        當價格處於高位，若連續 2 根收陰摜破 MA5，且 MA5 順利由平轉為向下拐頭 (ma5_slope < 0)：
+        - 豁免大級別多頭限制，授權開空 (AUTHORIZED_TOP_REVERSAL_SHORT)。
+        """
+        if frame is None or len(frame) < 3 or (side is not None and side != 'SHORT'):
+            return None
+        try:
+            curr = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            prev2 = frame.iloc[-3]
+            quote = float(quote)
+            
+            c_open = float(curr['open'])
+            c_close = quote
+            p_open = float(prev['open'])
+            p_close = float(prev['close'])
+            p2_open = float(prev2['open'])
+            p2_close = float(prev2['close'])
+            
+            # 連續 2 根收陰 (當前與上一根，或過去兩根)
+            is_two_bearish = (c_close < c_open and p_close < p_open) or (p_close < p_open and p2_close < p2_open)
+            if not is_two_bearish:
+                return None
+                
+            raw_close = float(curr['close'])
+            live_ma5 = float(curr['ma5']) + (quote - raw_close) / 5.0
+            prev_ma5 = float(prev['ma5'])
+            ma5_slope = live_ma5 - prev_ma5
+            
+            if ma5_slope >= 0:
+                return None
+                
+            # 摜破 MA5
+            if quote >= live_ma5 and p_close >= prev_ma5:
+                return None
+                
+            return {
+                'type': 'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'side': 'SHORT',
+                'price': quote,
+                'is_reversal_flip': True,
+                'override_cooldown': True,
+                'confirmation_bar_id': float(curr.get('timestamp', 0)),
+                'breakout_bar_id': float(curr.get('timestamp', 0)),
+                'pending_signal_id': f"TOP_REVERSAL:SHORT:{curr.get('timestamp', 0)}",
+                'entry_phase': 'KC_TOP_REVERSAL_SHORT',
+                'reason': 'AUTHORIZED_TOP_REVERSAL_SHORT',
+            }
+        except Exception:
+            return None
+
+    @staticmethod
     def detect_peak_flip_short(frame: pd.DataFrame, quote: float, account,
                                symbol: Optional[str]) -> Optional[Dict[str, Any]]:
         """Authorize a fresh bearish body only after a confirmed long close."""
@@ -394,6 +543,16 @@ class EntryGatePipeline:
                   requested_side: Optional[str] = None,
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        regime_problem = self.market_regime_problem(symbol)
+        if regime_problem:
+            if diagnostics is not None:
+                diagnostics['reason'] = regime_problem
+            return None
+        chop_problem = self.chop_lockout_problem(frame, quote)
+        if chop_problem:
+            if diagnostics is not None:
+                diagnostics['reason'] = chop_problem
+            return None
         if decision is None:
             # A qualifying first-bar outer-rail break is the fastest route and
             # takes precedence over slower continuation/reversal candidates.
@@ -416,9 +575,16 @@ class EntryGatePipeline:
                         if flip_decision is not None:
                             decision = flip_decision
                         else:
-                            if diagnostics is not None:
-                                diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
-                            return None
+                            top_reversal = (
+                                self.detect_top_reversal_short(frame, quote, side=requested_side)
+                                if requested_side in (None, 'SHORT') else None
+                            )
+                            if top_reversal is not None:
+                                decision = top_reversal
+                            else:
+                                if diagnostics is not None:
+                                    diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
+                                return None
         else:
             supplied_type = decision.get('type')
             side = decision.get('side')
@@ -430,6 +596,8 @@ class EntryGatePipeline:
                 refreshed = self.detect_realtime_breakout(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_BY_PEAK_FLIP_SHORT':
                 refreshed = self.detect_peak_flip_short(frame, quote, account, symbol)
+            elif supplied_type == 'AUTHORIZED_TOP_REVERSAL_SHORT':
+                refreshed = self.detect_top_reversal_short(frame, quote, side=side)
             elif supplied_type in (
                 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
@@ -450,7 +618,52 @@ class EntryGatePipeline:
                 diagnostics['reason'] = 'INVALID_SIDE'
             return None
 
-        ma_bias_problem = self._ma15_bias_problem(frame, quote, side)
+        # ── 最頂層進場門控：MA5 幾何生死鐵律（一票否決權） ──
+        if frame is not None and len(frame) >= 2:
+            try:
+                curr_b = frame.iloc[-1]
+                prev_b = frame.iloc[-2]
+                raw_cl = float(curr_b.get('close', quote))
+                is_cl = bool(curr_b.get('is_closed', False))
+                curr_m5 = float(curr_b.get('ma5', raw_cl))
+                prev_m5 = float(prev_b.get('ma5', curr_m5))
+                live_m5 = curr_m5 if is_cl else curr_m5 + (float(quote) - raw_cl) / 5.0
+                m5_slope = live_m5 - prev_m5
+                
+                atr_val = float(prev_b.get('atr', curr_b.get('atr', 1.0)))
+                if atr_val <= 0:
+                    atr_val = 1.0
+                close_ref = float(quote) if float(quote) > 0 else 1.0
+                chop_threshold = 0.05 * (atr_val / close_ref)
+                
+                # 3. MA5 走平，100% 全面休眠禁止開倉（平行不開倉）
+                if abs(m5_slope) < chop_threshold:
+                    if diagnostics is not None:
+                        diagnostics['reason'] = 'BLOCKED_BY_MA5_PARALLEL_CHOP'
+                    return None
+                    
+                # 1. MA5 向下，100% 絕對禁止開多（向下不開多）
+                if side == 'LONG' and m5_slope < 0:
+                    if diagnostics is not None:
+                        diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_DOWN'
+                    return None
+                    
+                # 2. MA5 向上，100% 絕對禁止開空（向上不開空）
+                if side == 'SHORT' and m5_slope > 0:
+                    if diagnostics is not None:
+                        diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_UP'
+                    return None
+            except Exception:
+                pass
+
+        # 1. Spatial Brain Perception
+        context = SpatialBrain.analyze(frame, quote)
+        is_explosive_breakout = (context.state == 'EXPLOSIVE_EXPANSION')
+
+        # ── 爆發突破（EXPLOSIVE_BREAKOUT）：100% 豁免 ma15_slope 走平阻斷 ──
+        ma_bias_problem = self._ma15_bias_problem(
+            frame, quote, side, allow_flat_slope=is_explosive_breakout
+        )
         if ma_bias_problem:
             if diagnostics is not None:
                 diagnostics['reason'] = ma_bias_problem
@@ -458,7 +671,8 @@ class EntryGatePipeline:
 
         # 檢查是否為即時破軌、順勢延續或反手翻轉
         is_rt_breakout = bool(
-            decision.get('is_breakout')
+            is_explosive_breakout
+            or decision.get('is_breakout')
             or decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
             or decision.get('reason') == 'AUTHORIZED_REALTIME_BREAKOUT'
         )
@@ -476,9 +690,6 @@ class EntryGatePipeline:
             )
             or decision.get('reason') in ('AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT', 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG')
         )
-
-        # 1. Spatial Brain Perception
-        context = SpatialBrain.analyze(frame, quote)
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:

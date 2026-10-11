@@ -1509,25 +1509,46 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
 
     return True, "GATE_PASSED_STANDARD"
 
-def pre_flight_safety_check(frame, quote, side, decision_type=None):
-    """強制開倉前安全審核門閥（Pre-Flight Check）。
+def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None, symbol=None):
+    """最頂層進場門控：MA5 幾何生死鐵律、冷卻與安全審核（Pre-Flight Check）。
     
-    任一不符即一票否決：
-    一、開多前安全審核（LONG）：
-        1. 【均線斜率審核】：MA5 斜率必須 > 0（ma5_slope > 0）。
-           若 MA5 下彎或走平，代表上方有短期壓制，100% 拒絕開多（REJECT_MA5_SLOPE_BEARISH）！
-        2. 【獲利空間審核】：即時價格與 KC 上軌距離必須 >= 0.5 * ATR。
-           若價格已貼近或高於上軌且無量能爆發，判定為撞牆阻力，禁止開多（REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC）！
-        3. 【逆勢長陰不接刀】：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多（REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5）！
-        
-    二、開空前安全審核（SHORT）：
-        1. 【均線斜率審核】：MA5 斜率必須 < 0（ma5_slope < 0）。
-           若 MA5 上翹或走平，100% 拒絕開空（REJECT_MA5_SLOPE_BULLISH）！
-        2. 【獲利空間審核】：即時價格與 KC 下軌距離必須 >= 0.5 * ATR。
-           若價格已貼近或低於下軌且無量能爆發，判定為撞牆阻力，禁止開空（REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC）！
-        3. 【逆勢長陽不接刀】：若前一根或當前為實體陽線且價格站上 MA5，嚴禁追空（REJECT_BOUNCE_BULLISH_ABOVE_MA5）！
+    一票否決權：
+    一、MA5 幾何生死鐵律：
+        1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】：
+           - 若 ma5_slope < 0（或 MA5 現值 < 前一根 MA5）：
+             * 嚴禁發送任何 BUY/LONG 訂單！回傳 BLOCKED_BY_MA5_SLOPE_DOWN。
+        2. 【MA5 向上，100% 絕對禁止開空（向上不開空）】：
+           - 若 ma5_slope > 0（或 MA5 現值 > 前一根 MA5）：
+             * 嚴禁發送任何 SELL/SHORT 訂單！回傳 BLOCKED_BY_MA5_SLOPE_UP。
+        3. 【MA5 走平，100% 全面休眠禁止開倉（平行不開倉）】：
+           - 斜率閾值：若 abs(ma5_slope) < 0.05 * (ATR / Close)：
+             * 多單與空單一律全面禁止開倉！回傳 BLOCKED_BY_MA5_PARALLEL_CHOP。
+    二、防反覆開平刷單冷卻（Anti-Churn Cooldown）：
+        1. 平多後 180 秒內，同幣種嚴禁再度開多；平空後 180 秒內，同幣種嚴禁再度開空。
+           - 回傳 BLOCKED_BY_COOLDOWN_SAME_SIDE。
+        2. 禁止同根 K 棒反手（同一根 K 棒內同時觸發平倉 + 反向開倉，非明確 flip 訊號時阻斷）。
+           - 回傳 BLOCKED_SAME_BAR_REVERSAL。
     """
     try:
+        import time
+        if account is not None and symbol:
+            last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
+            last_side = str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper()
+            now_ts = time.time()
+            # 1. 平倉後冷卻防抖：180 秒內同向嚴禁再度開倉
+            if now_ts - last_closed_ts < 180.0 and last_side == side:
+                return False, "BLOCKED_BY_COOLDOWN_SAME_SIDE"
+            # 2. 禁止同根 K 棒反手：60 秒內同根平倉又反向開倉（非 authorized flip 訊號）
+            is_flip = decision_type in (
+                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                'CLIMAX_REVERSAL_FLIP',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+            )
+            if not is_flip and now_ts - last_closed_ts < 60.0 and last_side and last_side != side:
+                return False, "BLOCKED_SAME_BAR_REVERSAL"
+
         if frame is None or len(frame) < 2:
             return True, None
         curr = frame.iloc[-1]
@@ -1547,16 +1568,19 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None):
             
         ma5_slope = live_ma5 - prev_ma5
         
-        # 2. 獲利空間審核所需的 ATR 與軌道
+        # 2. ATR 與平行斜率閾值
         atr = float(prev.get('atr', curr.get('atr', 1.0)))
         if atr <= 0:
             atr = 1.0
-            
+        close_ref = quote if quote > 0 else 1.0
+        chop_threshold = 0.05 * (atr / close_ref)
+        
+        # 3. MA5 走平，100% 全面休眠禁止開倉（平行不開倉）
+        if abs(ma5_slope) < chop_threshold:
+            return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
+
         kc_upper = float(curr.get('kc_upper', 0.0))
         kc_lower = float(curr.get('kc_lower', 0.0))
-        
-        # 是否為已確認的外軌量能爆發/突破訊號（例如即時大實體破軌且價格已遠離外軌爆發）
-        # 若非爆發性突破（通道內推進），則必須有足夠上漲/下跌空間
         open_p = float(curr.get('open', live_close))
         curr_is_bearish = quote < open_p or live_close < open_p
         curr_is_bullish = quote > open_p or live_close > open_p
@@ -1566,33 +1590,41 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None):
         prev_is_bearish = prev_close < prev_open
         prev_is_bullish = prev_close > prev_open
         
+        from core.intelligence.spatial_brain import SpatialBrain
+        spatial_ctx = SpatialBrain.analyze(frame, quote)
+        is_explosive = (spatial_ctx.state == 'EXPLOSIVE_EXPANSION')
+
         if side == "LONG":
-            # 1. 均線斜率審核：MA5 斜率必須 > 0
-            if ma5_slope <= 0:
-                return False, "REJECT_MA5_SLOPE_BEARISH"
+            # 1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】
+            if ma5_slope < 0:
+                return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
+            if ma5_slope == 0:
+                return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
-            # 2. 獲利空間審核：即時價格與 KC 上軌距離必須 >= 0.5 * ATR。
-            # 若價格已貼近或高於上軌且無量能爆發，判定為撞牆阻力，禁止開多
-            # 量能爆發定義：實體大陽線 (>= 0.5 ATR) 且 quote > kc_upper
-            is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
-            if not is_volume_breakout:
-                if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
-                    return False, "REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC"
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT 100% 豁免上軌空間限制
+            if not is_explosive:
+                is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
+                if not is_volume_breakout:
+                    if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
+                        return False, "REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC"
                     
             # 3. 逆勢長陰不接刀：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多！
             if (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
                 
         elif side == "SHORT":
-            # 1. 均線斜率審核：MA5 斜率必須 < 0
-            if ma5_slope >= 0:
-                return False, "REJECT_MA5_SLOPE_BEARISH" if ma5_slope == 0 else "REJECT_MA5_SLOPE_BULLISH"
+            # 1. 【MA5 向上，100% 絕對禁止開空（向上不開空）】
+            if ma5_slope > 0:
+                return False, "BLOCKED_BY_MA5_SLOPE_UP"
+            if ma5_slope == 0:
+                return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
-            # 2. 獲利空間審核：即時價格與 KC 下軌距離必須 >= 0.5 * ATR。
-            is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
-            if not is_volume_breakout:
-                if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
-                    return False, "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT 100% 豁免下軌空間限制
+            if not is_explosive:
+                is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
+                if not is_volume_breakout:
+                    if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
+                        return False, "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
                     
             # 3. 陽線回抽且價格站上 MA5 時嚴禁追空！
             if (curr_is_bullish or prev_is_bullish) and quote > live_ma5:
@@ -1613,7 +1645,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
     def authorize(decision, quote):
         # 強制 Pre-Flight 安全門閥審核
         passed, pre_flight_reason = pre_flight_safety_check(
-            frame, quote, decision.get('side'), decision_type=decision.get('type')
+            frame, quote, decision.get('side'), decision_type=decision.get('type'),
+            account=account, symbol=symbol,
         )
         if not passed:
             return reject(pre_flight_reason)
@@ -1677,7 +1710,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
                 # 經過強制 Pre-Flight 審核
                 passed, pre_flight_reason = pre_flight_safety_check(
-                    frame, quote, decision.get('side'), decision_type=decision.get('type')
+                    frame, quote, decision.get('side'), decision_type=decision.get('type'),
+                    account=account, symbol=symbol,
                 )
                 if not passed:
                     return reject(pre_flight_reason)

@@ -24,6 +24,10 @@ async def validate_account_entry(account, symbol, side, context):
     from core.config import is_entry_disabled
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
+    from core.gates.pipeline import pipeline
+    regime_problem = pipeline.market_regime_problem(symbol)
+    if regime_problem:
+        raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
     context = context if isinstance(context, dict) else {}
     
     code = context.get('entry_signal_code')
@@ -59,6 +63,10 @@ async def validate_account_entry(account, symbol, side, context):
         
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+    quote = float(frame.iloc[-1]['close'])
+    chop_problem = pipeline.chop_lockout_problem(frame, quote)
+    if chop_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
     grace = context.get('pipeline_ttl_grace')
     if grace is not None:
         from core.gates.pipeline import PIPELINE_ENTRY_TYPES
@@ -77,6 +85,51 @@ async def validate_account_entry(account, symbol, side, context):
                 else max(0.0, quote - authorized_price)
             )
             quote_age = time.time() - quote_timestamp
+            if (
+                elapsed > 3
+                and code in PIPELINE_ENTRY_TYPES
+                and isinstance(authorized_decision, dict)
+                and authorized_decision.get('_is_authorized')
+                and authorized_decision.get('type') == code
+                and authorized_decision.get('side') == side
+                and authorized_decision.get('pending_signal_id') == grace.get('pending_signal_id')
+                and grace.get('pending_signal_id') == context.get('signal_id')
+                and current_bar == stamp
+                and all(math.isfinite(value) for value in (
+                    authorized_price, atr, quote, current_bar, stamp,
+                    quote_age, adverse_move,
+                ))
+                and authorized_price > 0
+                and atr > 0
+                and quote > 0
+                and 0 <= quote_age <= 30
+                and adverse_move / atr <= 0.8
+            ):
+                from core.gates.pipeline import pipeline
+                refreshed_at = time.monotonic()
+                refreshed = pipeline.authorize(
+                    authorized_decision, frame, quote, symbol=symbol,
+                    requested_side=side,
+                )
+                if (
+                    refreshed is not None
+                    and refreshed.get('_is_authorized')
+                    and refreshed.get('type') == code
+                    and refreshed.get('side') == side
+                    and refreshed.get('pending_signal_id') == grace.get('pending_signal_id')
+                    and refreshed.get('confirmation_bar_id') == stamp
+                ):
+                    authorized_decision = refreshed
+                    authorized_price = quote
+                    atr = float(refreshed['entry_atr'])
+                    stamp = float(refreshed['confirmation_bar_id'])
+                    elapsed = time.monotonic() - refreshed_at
+                    adverse_move = 0.0
+                    import logging
+                    logging.getLogger('uvicorn.error').info(
+                        '[ENTRY_FIREWALL] Refreshed same-bar pipeline authorization '
+                        f'for {symbol} {side}: {code}'
+                    )
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             raise ValueError('[FORBIDDEN_ENTRY] TTL grace evidence is invalid')
         failures = []

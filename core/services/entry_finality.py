@@ -29,17 +29,33 @@ def settled_pair(first, second, server_ms):
 
 
 async def fetch_settled_entry_frame(engine, symbol):
-    first = await engine.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
-    server_ms = float(await engine.exchange.fetch_time())
-    await asyncio.sleep(READ_INTERVAL_SECONDS)
-    second = await engine.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
-    if not settled_pair(first, second, server_ms):
-        return None
-    # Recheck after the second REST read, which may cross a minute boundary.
-    completed_ms = float(await engine.exchange.fetch_time())
-    if completed_ms < server_ms or not settled_pair(first, second, completed_ms):
-        return None
-    second = second.copy()
-    second.attrs['entry_finality_verified'] = True
-    second.attrs['entry_finality_server_ms'] = completed_ms
-    return second
+    # A pair can straddle a candle boundary, or the first server-time sample
+    # can precede the 3s settlement threshold even though the second sample is
+    # already settled. Retry a fresh pair once, measuring settlement after the
+    # two independent candle reads. Never relabel an unsettled candle.
+    for attempt in range(2):
+        try:
+            first = await engine.fetch_klines(
+                symbol, timeframe='1m', limit=200, keep_live=True,
+            )
+            await asyncio.sleep(READ_INTERVAL_SECONDS)
+            second = await engine.fetch_klines(
+                symbol, timeframe='1m', limit=200, keep_live=True,
+            )
+            server_ms = float(await engine.exchange.fetch_time())
+            if not settled_pair(first, second, server_ms):
+                continue
+            # Recheck after the second REST read, which may cross a minute
+            # boundary. If so, retry instead of rejecting this scan outright.
+            completed_ms = float(await engine.exchange.fetch_time())
+            if (completed_ms < server_ms
+                    or not settled_pair(first, second, completed_ms)):
+                continue
+            second = second.copy()
+            second.attrs['entry_finality_verified'] = True
+            second.attrs['entry_finality_server_ms'] = completed_ms
+            return second
+        except Exception:
+            if attempt == 1:
+                return None
+    return None

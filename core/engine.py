@@ -217,6 +217,7 @@ class TradingEngine:
         self.task: asyncio.Task = None
         self.rotation_task: asyncio.Task = None
         self.analysis_task: asyncio.Task = None
+        self.market_regime_task: asyncio.Task = None
         self.trend_cache_task: asyncio.Task = None
         self.analysis_event = asyncio.Event()
         self.rotation_event = asyncio.Event()
@@ -557,6 +558,9 @@ class TradingEngine:
         if self.is_running:
             return
         await self.account.initialize()
+        self.symbol_rotation.ai.clear_market_regimes()
+        from core.gates.pipeline import pipeline
+        pipeline.set_market_regime_provider(self.symbol_rotation.ai.market_regime_for)
         from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
         migrate_account_peak_exits(self.account)
         self.account.log('ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
@@ -588,6 +592,7 @@ class TradingEngine:
             self.account.log(f"⏸️ [自動幣種輪替] 已停用，鎖定預設 {len(config.DEFAULT_SYMBOLS)} 個幣種交易", "INFO")
         # 歷史分析是第三條完全獨立的工作，不等待主交易或幣種輪替。
         self.analysis_task = asyncio.create_task(self._analysis_loop())
+        self.market_regime_task = asyncio.create_task(self._market_regime_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
         self.fixed_stop_task = asyncio.create_task(self._fixed_stop_loss_loop())
@@ -611,7 +616,7 @@ class TradingEngine:
         self.is_running = False
         task_names = [
             "task", "rotation_task", "analysis_task", "trend_cache_task",
-            "trigger_task", "fixed_stop_task", "trend_follow_task",
+            "market_regime_task", "trigger_task", "fixed_stop_task", "trend_follow_task",
             "trailing_sl_task", "instant_exit_task",
         ]
         if close_exchanges:
@@ -625,7 +630,6 @@ class TradingEngine:
                 setattr(self, name, None)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
         # UI 的停止只是暫停交易任務，不能關閉 ccxt；否則按下再次啟動後，
         # fetch_klines 會一直得到 "instance was closed by the user"。
         if close_exchanges:
@@ -634,6 +638,56 @@ class TradingEngine:
             await self.execution_exchange.close()
         if was_running:
             self.account.log("⏹️ 量化交易機器人已停止")
+
+    async def _market_regime_loop(self):
+        """Refresh per-symbol Local AI market regimes outside the trade loop."""
+        advisor = self.symbol_rotation.ai
+        next_refresh = time.monotonic()
+        while self.is_running:
+            cycle_started = time.monotonic()
+            symbols = list(dict.fromkeys((
+                *DEFAULT_SYMBOLS,
+                *(getattr(self.symbol_rotation, "entry_scan_symbols", None) or []),
+            )))
+            for symbol in symbols:
+                try:
+                    frame = await self.fetch_klines(
+                        symbol, timeframe="1m", limit=31, keep_live=False,
+                    )
+                    closed = closed_entry_candles(frame)
+                    if len(closed) < 30:
+                        advisor.set_market_regime_unavailable(
+                            symbol, f"insufficient_completed_candles:{len(closed)}",
+                        )
+                        self.account.log(
+                            f"AI_MARKET_REGIME symbol={symbol} state=UNKNOWN "
+                            f"reason=INSUFFICIENT_COMPLETED_CANDLES count={len(closed)}",
+                            "WARNING",
+                        )
+                        continue
+                    result = await advisor.analyze_market_regime(
+                        symbol, closed.tail(30).to_dict("records"),
+                    )
+                    self.account.log(
+                        f"AI_MARKET_REGIME symbol={symbol} state={result['state']} "
+                        f"status={result['status']} model={result['model']} "
+                        f"reason={result['error'] or result.get('reason', '')}",
+                        "INFO" if result["state"] == "TRENDING" else "WARNING",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    advisor.set_market_regime_unavailable(
+                        symbol, f"{type(exc).__name__}: {exc}",
+                    )
+                    self.account.log(
+                        f"AI_MARKET_REGIME symbol={symbol} state=UNKNOWN "
+                        f"reason={type(exc).__name__}: {exc}",
+                        "WARNING",
+                    )
+
+            next_refresh = max(next_refresh + 180.0, cycle_started + 180.0)
+            await asyncio.sleep(max(0.0, next_refresh - time.monotonic()))
 
     def request_trade_analysis(self) -> None:
         """分析請求只設旗標，絕不阻塞交易與風控路徑。"""

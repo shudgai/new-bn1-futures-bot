@@ -27,6 +27,8 @@ SMALL_PATTERN_BODY_MAX_RANGE_RATIO = 0.50
 LIVE_PATTERN_BODY_MIN_ATR = 0.50
 LIVE_PATTERN_BODY_MIN_RANGE_RATIO = 0.50
 LIVE_PATTERN_MAX_DISTANCE_ATR = 3.0
+MAX_BREAKOUT_DISTANCE_ATR = 3.0
+MIN_BREAKOUT_BODY_ATR = 0.5
 
 # Bounded LRU cache for invalidated signals.
 # Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
@@ -76,10 +78,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     Live quote (K3) must be strictly outside the rail.
     """
     wait = lambda reason, **evidence: dict(action='WAIT', reason=reason, **evidence)
-    if len(closed) < 2:
+    if len(closed) < 3:
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
-    first, second = closed.iloc[-2], closed.iloc[-1]
+    reference, first, second = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
     
     try:
         for row in (first, second):
@@ -121,7 +123,11 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             # Every body >= 20%
             f_span = float(first.high) - float(first.low)
             f_body = abs(float(first.close) - float(first.open))
-            if f_span <= 0 or (f_body / f_span) < 0.20:
+            reference_atr = float(reference['atr'])
+            if (f_span <= 0 or not math.isfinite(reference_atr)
+                    or reference_atr <= 0
+                    or (f_body / f_span) < 0.20
+                    or f_body < MIN_BREAKOUT_BODY_ATR * reference_atr):
                 continue
 
             s_span = float(second.high) - float(second.low)
@@ -157,6 +163,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                     pair_confirmation_bar_id=float(second.timestamp),
                     pending_signal_id=f'{side}:{int(first.timestamp)}:{int(second.timestamp)}',
                 )
+            if distance > MAX_BREAKOUT_DISTANCE_ATR:
+                return wait('BLOCKED_BY_EXTENDED_BREAKOUT', side=side,
+                            kc_distance_atr=distance,
+                            kc_max_distance_atr=MAX_BREAKOUT_DISTANCE_ATR)
                 
             stamp_val = (
                 float(second.timestamp) + 60000

@@ -206,6 +206,7 @@ class BinanceTestnetAccount:
         # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
+        self.last_closed_side: Dict[str, str] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
         self.pullback_outcome_stats: Dict[str, int] = {}
@@ -497,6 +498,9 @@ class BinanceTestnetAccount:
             self.last_closed_at = {
                 str(k): float(v) for k, v in data.get("last_closed_at", {}).items()
             }
+            self.last_closed_side = {
+                str(k): str(v) for k, v in data.get("last_closed_side", {}).items()
+            }
             self.pullback_outcome_stats = {
                 str(k): int(v) for k, v in data.get("pullback_outcome_stats", {}).items()
             }
@@ -550,6 +554,7 @@ class BinanceTestnetAccount:
             "daily_start_realized_pnl": self.daily_start_realized_pnl,
             "daily_halt_logged": self.daily_halt_logged,
             "last_closed_at": last_closed_at,
+            "last_closed_side": {k: self.last_closed_side[k] for k in last_closed_at if k in self.last_closed_side},
             "pullback_outcome_stats": self.pullback_outcome_stats,
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
@@ -1019,6 +1024,7 @@ class BinanceTestnetAccount:
             return
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = time.time()
+        self.last_closed_side[symbol] = position.get("side", "")
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
@@ -2993,6 +2999,7 @@ class BinanceTestnetAccount:
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now
         position = dict(self.positions[symbol])
+        self.last_closed_side[symbol] = position.get("side", "")
         try:
             # ✅ A. 極速執行：HARD_STOP 優先送出市價平倉單，跳過撤單等待；一般平倉照舊先撤單
             close_side = "sell" if position["side"] == "LONG" else "buy"
