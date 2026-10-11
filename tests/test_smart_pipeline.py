@@ -1635,6 +1635,15 @@ def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
     assert action == 'ALLOW_EXPLOSIVE_BREAKOUT'
     assert ctx.state == 'EXPLOSIVE_EXPANSION'
 
+    # Even with flat/unknown KC direction, a solid live body beyond the upper
+    # rail must bypass only the unknown-direction lockout.
+    breakout_quote = 102.1
+    df.loc[df.index[-1], 'channel_state'] = 'KC方向不明'
+    df.loc[df.index[-1], 'kc_upper_slope'] = 0.0
+    df.loc[df.index[-1], 'kc_lower_slope'] = 0.0
+    assert pipeline.has_explosive_bullish_kc_breakout(df, breakout_quote)
+    assert pipeline.chop_lockout_problem(df, breakout_quote) is None
+
     # pre_flight_safety_check 豁免上軌空間限制 (距上軌僅 0.1 < 0.5 ATR)
     passed, reason = pre_flight_safety_check(df, quote, 'LONG')
     assert passed is True
@@ -1643,7 +1652,7 @@ def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
     # pipeline.authorize 豁免 ma15_slope=0 限制
     pipeline.set_market_regime_provider(lambda _s: 'TRENDING')
     _provide_trending_chop_context(df, 'LONG', quote)
-    breakout_quote = 102.1  # 破軌價位
+    # restore an explicit upward context for the full authorization route.
     rt_signal = pipeline.detect_realtime_breakout(df, breakout_quote, side='LONG')
     assert rt_signal is not None
     diagnostics = {}

@@ -54,11 +54,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         import logging
         logger = logging.getLogger("uvicorn.error")
         spatial_ctx, spatial_act = SpatialBrain.diagnose(symbol, frame, quote)
+        from core.gates.pipeline import EntryGatePipeline
+        breakout_override = EntryGatePipeline.has_explosive_bullish_kc_breakout(frame, quote)
         spatial_log = (
             f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | "
             f"Context: state={spatial_ctx.state}, bw_ratio={spatial_ctx.bandwidth_ratio:.2f}, "
             f"chop={spatial_ctx.chop_index:.2f}, solidity={spatial_ctx.solidity_ratio:.2f}, "
-            f"ma15_slope={spatial_ctx.ma15_slope:.4f} | Action: {spatial_act}"
+            f"ma15_slope={spatial_ctx.ma15_slope:.4f} | Action: {spatial_act} | "
+            f"choppy_unknown_override={breakout_override}"
         )
         logger.info(spatial_log)
         print(spatial_log, flush=True)
