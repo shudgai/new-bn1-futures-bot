@@ -5,6 +5,7 @@ Only the immediately following forming candle can authorize entry.
 """
 import math
 from collections import OrderedDict
+from core.services.ma5_entry_slope import MIN_MA5_SLOPE_ATR
 
 KC_PENDING_CODES = frozenset(('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
 KC_REALTIME_PATTERN_CODES = frozenset((
@@ -21,7 +22,6 @@ STRONG_BREAKOUT_MAX_ATR = 2.0
 MAX_PULLBACK_BODY_ATR = 0.5
 MIN_ENTRY_BODY_ATR = 0.5
 MAX_ADVERSE_ATR = 0.50
-MIN_MA5_SLOPE_ATR = 0.01
 SMALL_PATTERN_BODY_MAX_ATR = 0.35
 SMALL_PATTERN_BODY_MAX_RANGE_RATIO = 0.50
 LIVE_PATTERN_BODY_MIN_ATR = 1.0
@@ -137,7 +137,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if not all(math.isfinite(value) and value > 0
                        for value in (previous_ma5, confirmation_ma5)):
                 continue
-            if (sign * (confirmation_ma5 - previous_ma5) <= 0
+            required_slope = MIN_MA5_SLOPE_ATR * float(reference['atr'])
+            confirmation_slope = sign * (confirmation_ma5 - previous_ma5)
+            if ((confirmation_slope < required_slope
+                 and not math.isclose(confirmation_slope, required_slope, rel_tol=1e-12))
                     or sign * (float(second.close) - confirmation_ma5) <= 0):
                 continue
 

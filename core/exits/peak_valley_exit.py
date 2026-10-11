@@ -5,6 +5,7 @@ import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
 from core.gates.holding_protection_gate import (
     closed_peak_valley_reversal_evidence,
+    intrabar_peak_valley_reversal_evidence,
     intrabar_adverse_pressure_evidence,
 )
 
@@ -57,15 +58,6 @@ class PeakValleyExit:
         kc_mid = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
         atr = float(prev.get('atr', curr.get('atr', 0.0)))
 
-        if side in ('LONG', 'SHORT') and math.isfinite(atr) and atr > 0:
-            pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
-            if pressure is not None:
-                reason = (
-                    'EXIT_LONG_ON_SELLING_PRESSURE'
-                    if side == 'LONG' else 'EXIT_SHORT_ON_BUYING_PRESSURE'
-                )
-                return reason, pressure
-
         # 0. PROFIT GATE: 必須已有顯著利潤，嚴禁開倉未拉開利潤就秒平！
         # 多單最高浮盈 (Peak ROE) 須達至少 3.0% 或最高價距開倉價 >= 0.5 * ATR
         # 空單最高浮盈 (Valley ROE) 須達至少 3.0% 或最低價距開倉價 >= 0.5 * ATR
@@ -90,6 +82,65 @@ class PeakValleyExit:
             or (type(curr.get('is_closed', False)).__name__ == 'bool_'
                 and bool(curr.get('is_closed', False)))
         )
+
+        # Classify a confirmed peak/valley before the generic pressure exit.
+        # The same strong reversal can satisfy both; preserve the structural
+        # reason when a pivot has actually formed.
+        if side in ('LONG', 'SHORT') and math.isfinite(atr) and atr > 0:
+            favorable_price = highest_price if side == 'LONG' else lowest_price
+            favorable_move = (
+                favorable_price - entry_price if side == 'LONG'
+                else entry_price - favorable_price
+            )
+            meaningful_profit = (
+                ((highest_price - entry_price) / entry_price >= 0.03
+                 or favorable_move >= 0.5 * atr) if side == 'LONG'
+                else ((entry_price - lowest_price) / entry_price >= 0.03
+                      or favorable_move >= 0.5 * atr)
+            )
+            if meaningful_profit and current_bar_closed:
+                reversal = closed_peak_valley_reversal_evidence(frame, side, atr)
+                if reversal is not None:
+                    reason = ('EXIT_LONG_ON_FRACTAL_PEAK' if side == 'LONG'
+                              else 'EXIT_SHORT_ON_FRACTAL_VALLEY')
+                    return reason, {
+                        **reversal,
+                        'fractal_top': side == 'LONG',
+                        'fractal_bottom': side == 'SHORT',
+                        'closed_reversal_confirmation': True,
+                        'peak_gain_atr': favorable_move / atr,
+                        'peak_roe': ((highest_price - entry_price) / entry_price
+                                     if side == 'LONG' else 0.0),
+                        'valley_roe': ((entry_price - lowest_price) / entry_price
+                                       if side == 'SHORT' else 0.0),
+                        'quote': quote,
+                    }
+            elif meaningful_profit and not current_bar_closed:
+                pivot_price = (
+                    max(highest_price, float(curr.get('high', quote)), quote)
+                    if side == 'LONG'
+                    else min(lowest_price, float(curr.get('low', quote)), quote)
+                )
+                evidence = intrabar_peak_valley_reversal_evidence(
+                    position, frame, side, quote, atr, pivot_price, favorable_move,
+                )
+                if evidence is not None:
+                    reason = ('EXIT_LONG_ON_FRACTAL_PEAK' if side == 'LONG'
+                              else 'EXIT_SHORT_ON_FRACTAL_VALLEY')
+                    return reason, {
+                        **evidence,
+                        'intrabar_pivot_confirmation': True,
+                        'peak_gain_atr': favorable_move / atr,
+                        'quote': quote,
+                    }
+
+            pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
+            if pressure is not None:
+                reason = (
+                    'EXIT_LONG_ON_SELLING_PRESSURE'
+                    if side == 'LONG' else 'EXIT_SHORT_ON_BUYING_PRESSURE'
+                )
+                return reason, pressure
 
         # 1. LONG PEAK EXIT
         if side == 'LONG':

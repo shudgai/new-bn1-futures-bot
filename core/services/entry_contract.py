@@ -24,6 +24,7 @@ from core.services.kc_pending_entry import (
     KC_PENDING_CODES,
     evaluate_kc_pending_entry,
 )
+from core.services.ma5_entry_slope import live_ma5_slope_problem, live_ma5_slope_atr
 from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 from core.services.exits.dual_track_exit_service import (
     detect_climax_reversal, is_true_climax_peak, is_true_climax_valley,
@@ -63,11 +64,12 @@ LEGACY_ROUTE_CODES = frozenset((
     BEARISH_INSTANT_BREAKOUT_CODE,
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
+    CLIMAX_REVERSAL_FLIP_CODE,
     "RE_ENTRY_LONG",
     "RE_ENTRY_SHORT",
 ))
 ENTRY_CODES = KC_PENDING_CODES | PIPELINE_ENTRY_TYPES | LEGACY_ROUTE_CODES
-CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
+CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT", "CAP/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -214,19 +216,19 @@ def evaluate_golden_cross_fast_lane(frame, quote, symbol=""):
 
 
 def evaluate_live_ma5_direction(frame, quote, side):
-    """Require the quote-adjusted MA5 to move strictly in the entry direction."""
+    """Require a quote-adjusted MA5 slope of at least 0.05 ATR in entry direction."""
     try:
+        if live_ma5_slope_problem(frame, quote, side) is not None:
+            return None
         if side not in ("LONG", "SHORT") or frame is None or len(frame) < 2:
             return None
-        previous, latest = frame.iloc[-2], frame.iloc[-1]
+        previous = frame.iloc[-2]
         previous_ma5 = float(previous["ma5"])
-        latest_ma5 = float(latest["ma5"])
-        latest_close = float(latest["close"])
-        quote = float(quote)
-        values = (previous_ma5, latest_ma5, latest_close, quote)
-        if not all(math.isfinite(value) and value > 0 for value in values):
+        slope_atr = live_ma5_slope_atr(frame, quote)
+        atr = float(previous["atr"])
+        if not math.isfinite(previous_ma5) or previous_ma5 <= 0 or slope_atr is None:
             return None
-        live_ma5 = latest_ma5 + (quote - latest_close) / 5.0
+        live_ma5 = previous_ma5 + slope_atr * atr
         if not math.isfinite(live_ma5):
             return None
         if (side == "LONG" and live_ma5 <= previous_ma5) or (
@@ -1193,7 +1195,8 @@ def entry_trend_alignment_ready(frame, side):
         return False
 
 
-def entry_consolidation_problem(frame, quote, *, allow_directional_breakout=False):
+def entry_consolidation_problem(frame, quote, *, allow_directional_breakout=False,
+                               side=None):
     """Reject MA overlap, jointly flat MA15/KC, or unconfirmed MA5 oscillation."""
     try:
         closed = closed_entry_candles(frame)
@@ -1222,6 +1225,25 @@ def entry_consolidation_problem(frame, quote, *, allow_directional_breakout=Fals
         if not all(math.isfinite(value) and value > 0
                    for value in ma5_values + ma15_values + kc_values):
             return "WAIT_CONSOLIDATION_GATE_DATA"
+
+        # Repeated MA5/MA15 crosses are a chop regime. A fresh cross alone is
+        # insufficient: require three completed MA5 steps to persist in the
+        # requested direction and MA5 to remain on that side of MA15.
+        spreads = [left - right for left, right in zip(ma5_values, ma15_values)]
+        cross_count = sum(
+            (left <= 0 < right) or (left >= 0 > right)
+            for left, right in zip(spreads, spreads[1:])
+        )
+        if cross_count >= 2:
+            changes = [right - left for left, right in zip(ma5_values, ma5_values[1:])]
+            sign = 1 if side == "LONG" else -1 if side == "SHORT" else 0
+            aligned = (
+                sign != 0 and sign * spreads[-1] > 0
+                and len(changes) >= 3
+                and all(sign * change > 0 for change in changes[-3:])
+            )
+            if not aligned:
+                return "BLOCKED_MA5_MA15_CROSS_CHOP"
 
         if (abs(ma15_values[-1] - ma15_values[0]) <= CHOP_FLAT_MOVE_ATR * atr
                 and abs(kc_values[-1] - kc_values[0]) <= CHOP_FLAT_MOVE_ATR * atr):
@@ -1532,7 +1554,7 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
            - 若 ma5_slope > 0（或 MA5 現值 > 前一根 MA5）：
              * 嚴禁發送任何 SELL/SHORT 訂單！回傳 BLOCKED_BY_MA5_SLOPE_UP。
         3. 【MA5 走平，100% 全面休眠禁止開倉（平行不開倉）】：
-           - 斜率閾值：若 abs(ma5_slope) < 0.05 * (ATR / Close)：
+           - 斜率閾值：MA5 單根變化未達前一根已收線 ATR 的 0.05 倍：
              * 多單與空單一律全面禁止開倉！回傳 BLOCKED_BY_MA5_PARALLEL_CHOP。
     二、防反覆開平刷單冷卻（Anti-Churn Cooldown）：
         1. 平多後 180 秒內，同幣種嚴禁再度開多；平空後 180 秒內，同幣種嚴禁再度開空。
@@ -1563,7 +1585,7 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
                 return False, "BLOCKED_SAME_BAR_REVERSAL"
 
         if frame is None or len(frame) < 2:
-            return True, None
+            return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
         curr = frame.iloc[-1]
         prev = frame.iloc[-2]
         quote = float(quote)
@@ -1581,26 +1603,20 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             
         ma5_slope = live_ma5 - prev_ma5
         
-        # 2. ATR 與平行斜率閾值
+        # 2. ATR normalized MA5 slope threshold; only head-chop flips may be shallow.
         atr = float(prev.get('atr', curr.get('atr', 1.0)))
         if atr <= 0:
             atr = 1.0
-        close_ref = quote if quote > 0 else 1.0
-        chop_threshold = 0.05 * (atr / close_ref)
-        strong_breakout = (
-            (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
-            or (side == 'SHORT' and pipeline.has_strong_bearish_breakout(frame, quote))
+        slope_atr = live_ma5_slope_atr(frame, quote)
+        slope_flip_exempt = decision_type in (
+            CLIMAX_REVERSAL_FLIP_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
         )
-        breakout_flat_exempt = (
-            decision_type in FLAT_LINE_BREAKOUT_TYPES
-            or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
-        )
-        
-        # A qualified >=0.5 ATR outer-rail break may enter while MA5 is flat;
-        # directional MA5 opposition is still rejected below.
-        if (abs(ma5_slope) < chop_threshold
-                and not strong_breakout and not breakout_flat_exempt):
-            return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
+        if slope_atr is None:
+            return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
+        if not slope_flip_exempt:
+            slope_problem = live_ma5_slope_problem(frame, quote, side)
+            if slope_problem:
+                return False, slope_problem
 
         kc_upper = float(curr.get('kc_upper', 0.0))
         kc_lower = float(curr.get('kc_lower', 0.0))
@@ -1624,8 +1640,6 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             if not is_shadow_retest:
                 if ma5_slope < 0:
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
-                if ma5_slope == 0 and not (strong_breakout or breakout_flat_exempt):
-                    return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest 100% 豁免上軌空間限制
             if not is_explosive and not is_shadow_retest:
@@ -1643,8 +1657,6 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             # 1. 【MA5 向上，100% 絕對禁止開空（向上不開空）】
             if ma5_slope > 0:
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
-            if ma5_slope == 0 and not (strong_breakout or breakout_flat_exempt):
-                return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip 100% 豁免下軌空間限制
             if not is_explosive and not is_flip:
@@ -1659,7 +1671,7 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
                 
         return True, None
     except Exception:
-        return True, None
+        return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
 
 
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
@@ -1715,19 +1727,34 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
 
+        live_breakout = pipeline.detect_realtime_breakout(frame, quote)
+        verified_live_breakout = bool(
+            live_breakout and live_breakout.get('ma5_direction_aligned') is True
+        )
+        is_flip_or_shadow = (
+            code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
+                     CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
+                     'SHADOW_RETEST_ENTRY')
+        )
         regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
-        if regime_problem:
+        if regime_problem and not verified_live_breakout and not is_flip_or_shadow:
             return reject(regime_problem)
 
         is_outer_rail_breakout = (
             code in FLAT_LINE_BREAKOUT_TYPES
-            or pipeline.detect_realtime_breakout(frame, quote) is not None
+            or code == CLIMAX_REVERSAL_FLIP_CODE
+            or verified_live_breakout
         )
-        chop_problem = pipeline.chop_lockout_problem(
-            frame, quote, allow_flat_lines=is_outer_rail_breakout,
-        )
-        if chop_problem:
-            return reject(chop_problem)
+        if code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE):
+            try:
+                chop_problem = pipeline.chop_lockout_problem(
+                    frame, quote, allow_flat_lines=is_outer_rail_breakout,
+                    allow_unknown_direction=verified_live_breakout,
+                )
+            except TypeError:
+                chop_problem = pipeline.chop_lockout_problem(frame, quote)
+            if chop_problem:
+                return reject(chop_problem)
 
         if code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
             decision = pipeline.detect_top_waterfall_flip_short(
@@ -1743,6 +1770,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 reason = (diagnostics or {}).get('reason', 'BLOCKED_TOP_WATERFALL_PIPELINE')
                 return reject(reason)
             return authorize(pipeline_decision, quote)
+
+        if code == CLIMAX_REVERSAL_FLIP_CODE:
+            decision = evaluate_climax_flip_entry(frame, quote, symbol, account)
+            if decision is None:
+                return reject('BLOCKED_CLIMAX_FLIP_NO_MATCHED_EXTREME_REVERSAL_CLOSE')
+            return authorize(decision, quote)
 
         if code in ('AUTHORIZED_SHADOW_RETEST_ENTRY', 'SHADOW_RETEST_ENTRY'):
             decision = pipeline.detect_shadow_retest_long(
@@ -1839,7 +1872,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
             if symbol in CHOP_FILTER_SYMBOLS:
                 consolidation_problem = entry_consolidation_problem(
-                    frame, quote, allow_directional_breakout=True,
+                    frame, quote, allow_directional_breakout=True, side=side,
                 )
                 if consolidation_problem:
                     return reject(consolidation_problem)

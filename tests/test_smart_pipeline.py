@@ -409,21 +409,30 @@ def test_meaningful_profit_authorizes_peak_exit():
     assert exit_info.get('peak_roe') >= 0.045
 
 
-def test_realtime_breakout_fast_track():
+def test_realtime_breakout_fast_track(monkeypatch):
     """6. 盤中即時破軌快車道：Price > KC_Upper 且實體飽滿，斷言在收線前即回傳 AUTHORIZED_REALTIME_BREAKOUT。"""
     atr = 1.0
     bars = [
-        {'timestamp': 1000, 'open': 100.0, 'high': 100.5, 'low': 99.8, 'close': 100.4, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 101.5, 'kc_lower': 98.5, 'ma5': 100.2, 'ma15': 100.8, 'is_closed': True},
-        {'timestamp': 2000, 'open': 100.4, 'high': 100.8, 'low': 100.2, 'close': 100.7, 'atr': atr, 'kc_middle': 100.2, 'kc_upper': 101.6, 'kc_lower': 98.6, 'ma5': 100.4, 'ma15': 100.9, 'is_closed': True},
+        *[
+            {'timestamp': timestamp, 'open': 100.0, 'high': 100.5, 'low': 99.8,
+             'close': 100.2, 'atr': atr, 'kc_middle': 99.9,
+             'kc_upper': 101.4, 'kc_lower': 98.4, 'ma5': 100.0,
+             'ma15': 100.6, 'volume': 100, 'is_closed': True}
+            for timestamp in (-3000, -2000, -1000, 0)
+        ],
+        {'timestamp': 1000, 'open': 100.0, 'high': 100.5, 'low': 99.8, 'close': 100.4, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 101.5, 'kc_lower': 98.5, 'ma5': 100.2, 'ma15': 100.8, 'volume': 100, 'is_closed': True},
+        {'timestamp': 2000, 'open': 100.4, 'high': 100.8, 'low': 100.2, 'close': 100.7, 'atr': atr, 'kc_middle': 100.2, 'kc_upper': 101.6, 'kc_lower': 98.6, 'ma5': 100.4, 'ma15': 100.9, 'volume': 100, 'is_closed': True},
         # 當前盤中進行中的 K 棒 (尚未收線)：open=100.7, low=100.6, high=102.5, live quote=102.4
         # KC_upper = 101.8. Quote 102.4 > 101.8
         # (Price - Open) = 102.4 - 100.7 = 1.7 >= 0.35 * 1.0
         # (Price - Open) / (Price - Low) = 1.7 / (102.4 - 100.6) = 1.7 / 1.8 = 94.4% >= 60%
-        {'timestamp': 3000, 'open': 100.7, 'high': 102.5, 'low': 100.6, 'close': 102.4, 'is_closed': False, 'atr': atr, 'kc_middle': 100.5, 'kc_upper': 101.8, 'kc_lower': 98.8, 'ma5': 101.2, 'ma15': 101.0},
+        {'timestamp': 3000, 'open': 100.7, 'high': 102.5, 'low': 100.6, 'close': 102.4, 'is_closed': False, 'atr': atr, 'kc_middle': 100.5, 'kc_upper': 101.8, 'kc_lower': 98.8, 'ma5': 100.8, 'ma15': 101.0, 'volume': 150, 'channel_state': 'UNKNOWN'},
     ]
     df = pd.DataFrame(bars)
     live_quote = 102.4
+    monkeypatch.setattr(pipeline, 'market_regime_provider', lambda _symbol: 'UNKNOWN')
     _provide_trending_chop_context(df, 'LONG', live_quote)
+    df.loc[df.index[-1], 'channel_state'] = 'UNKNOWN'
 
     # 1. 驗證 detect_realtime_breakout
     rt_signal = pipeline.detect_realtime_breakout(df, live_quote)
@@ -439,6 +448,61 @@ def test_realtime_breakout_fast_track():
     assert authorized['_is_authorized'] is True
     assert authorized['side'] == 'LONG'
     assert authorized['type'] == 'AUTHORIZED_REALTIME_BREAKOUT'
+
+
+def short_realtime_breakout_frame():
+    rows = []
+    for index in range(6):
+        rows.append({
+            'timestamp': 1_700_000_000_000 + index * 60_000,
+            'open': 100.0, 'high': 100.5, 'low': 99.5, 'close': 100.2,
+            'atr': 1.0, 'kc_middle': 100.1, 'kc_upper': 101.1,
+            'kc_lower': 99.1, 'ma5': 100.0 - index * 0.1,
+            'ma15': 100.0, 'volume': 100.0, 'is_closed': True,
+        })
+    rows[-1].update(open=99.8, close=100.2, kc_middle=100.1)
+    rows.append({
+        'timestamp': 1_700_000_360_000, 'open': 100.4, 'high': 100.5,
+        'low': 98.4, 'close': 100.0, 'atr': 1.0, 'kc_middle': 100.0,
+        'kc_upper': 101.0, 'kc_lower': 99.0, 'ma5': 99.3,
+        'ma15': 99.6, 'volume': 150.0, 'is_closed': False,
+    })
+    return pd.DataFrame(rows)
+
+
+def test_short_realtime_breakout_is_allowed_only_near_the_start_from_midline():
+    frame = short_realtime_breakout_frame()
+    quote = 98.6
+    decision = pipeline.detect_realtime_breakout(frame, quote, side='SHORT')
+    assert decision is not None
+    assert decision['side'] == 'SHORT'
+    assert decision['short_breakout_early'] is True
+
+
+def test_short_realtime_breakout_rejects_lower_wick_at_35_percent():
+    frame = short_realtime_breakout_frame()
+    frame.loc[frame.index[-1], 'low'] = 97.5
+    assert pipeline.detect_realtime_breakout(
+        frame, 98.6, side='SHORT',
+    ) is None
+
+
+def test_short_realtime_breakout_rejects_three_consecutive_down_bars():
+    frame = short_realtime_breakout_frame()
+    frame.loc[frame.index[-2], ['open', 'close']] = [100.5, 100.2]
+    frame.loc[frame.index[-3], ['open', 'close']] = [100.5, 100.2]
+    assert pipeline.short_breakout_failure_problem(
+        frame, 98.6, 100.4, 1.0,
+    ) == 'BLOCKED_SHORT_BREAKOUT_LATE_SELL'
+
+
+def test_short_realtime_breakout_rejects_extension_from_both_moving_averages():
+    frame = short_realtime_breakout_frame()
+    frame.loc[frame.index[-1], ['ma5', 'ma15']] = [102.0, 102.2]
+    frame.loc[frame.index[-2], ['ma5', 'ma15']] = [102.1, 102.3]
+    assert pipeline.short_breakout_failure_problem(
+        frame, 98.6, 100.4, 1.0,
+    ) == 'BLOCKED_SHORT_BREAKOUT_EXTENDED_FROM_MA'
 
 
 def test_waterfall_short_breakout_reaches_engine_submission_without_volatility_veto(monkeypatch):
@@ -1543,7 +1607,7 @@ def test_ma5_slope_laws_up_blocks_short():
 
 
 def test_ma5_slope_parallel_chop_blocks_all():
-    """驗證 MA5 走平時多空全面休眠 (BLOCKED_BY_MA5_PARALLEL_CHOP)。"""
+    """驗證 MA5 方向斜度未達 0.05 ATR 時多空均拒絕開倉。"""
     from core.services.entry_contract import pre_flight_safety_check
     bars = [
         {'timestamp': 1000, 'open': 100.0, 'close': 100.0, 'high': 100.5, 'low': 99.5, 'atr': 1.0, 'ma5': 100.0, 'ma15': 100.0, 'is_closed': True},
@@ -1552,11 +1616,11 @@ def test_ma5_slope_parallel_chop_blocks_all():
     df = pd.DataFrame(bars)
     passed_long, reason_long = pre_flight_safety_check(df, quote=100.0, side='LONG')
     assert passed_long is False
-    assert reason_long == 'BLOCKED_BY_MA5_PARALLEL_CHOP'
+    assert reason_long == 'BLOCKED_BY_MA5_SLOPE_INSUFFICIENT'
 
     passed_short, reason_short = pre_flight_safety_check(df, quote=100.0, side='SHORT')
     assert passed_short is False
-    assert reason_short == 'BLOCKED_BY_MA5_PARALLEL_CHOP'
+    assert reason_short == 'BLOCKED_BY_MA5_SLOPE_UP'
 
 
 def test_top_reversal_short_authorized():

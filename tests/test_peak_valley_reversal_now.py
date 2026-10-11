@@ -133,17 +133,17 @@ def test_closed_strong_reversal_is_confirmed_but_doji_and_weak_body_wait(side):
 
 
 @pytest.mark.parametrize('side,quote,expected', [
-    ('LONG', 107.0, 'EXIT_LONG_ON_SELLING_PRESSURE'),
-    ('SHORT', 93.0, 'EXIT_SHORT_ON_BUYING_PRESSURE'),
+    ('LONG', 107.0, 'EXIT_LONG_ON_FRACTAL_PEAK'),
+    ('SHORT', 93.0, 'EXIT_SHORT_ON_FRACTAL_VALLEY'),
 ])
-def test_peak_valley_exit_emits_live_candidate_without_waiting_for_bar_close(side, quote, expected):
+def test_confirmed_live_peak_valley_precedes_generic_pressure_reason(side, quote, expected):
     position = {
         'side': side, 'entry_price': 100.0,
         'highest_price': 110.0, 'lowest_price': 90.0,
     }
     result, details = PeakValleyExit.evaluate(position, frame_for(side, quote=quote), quote)
     assert result == expected
-    assert details['pressure_confirmation'] == 'LARGE_BODY'
+    assert details['intrabar_pivot_confirmation'] is True
 
 
 def test_confirmed_live_peak_closes_at_current_quote_without_waiting_for_next_bar(monkeypatch):
@@ -193,7 +193,7 @@ def test_confirmed_live_peak_closes_at_current_quote_without_waiting_for_next_ba
             engine, 'X', 107.0, time.time() * 1000,
         )
         account.close_position.assert_awaited_once_with(
-            'X', 107.0, 'Channel Swing EXIT_LONG_ON_SELLING_PRESSURE',
+            'X', 107.0, 'Channel Swing EXIT_BY_VERIFIED_FRACTAL_PEAK',
             is_manual=True,
         )
 

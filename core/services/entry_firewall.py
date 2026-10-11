@@ -72,9 +72,12 @@ async def validate_account_entry(account, symbol, side, context):
         code in FLAT_LINE_BREAKOUT_TYPES
         or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
     )
-    chop_problem = pipeline.chop_lockout_problem(
-        frame, quote, allow_flat_lines=is_outer_rail_breakout,
-    )
+    try:
+        chop_problem = pipeline.chop_lockout_problem(
+            frame, quote, allow_flat_lines=is_outer_rail_breakout,
+        )
+    except TypeError:
+        chop_problem = pipeline.chop_lockout_problem(frame, quote)
     if chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
     grace = context.get('pipeline_ttl_grace')

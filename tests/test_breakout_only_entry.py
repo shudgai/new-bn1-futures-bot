@@ -602,6 +602,42 @@ def test_consolidation_gate_detects_flat_or_oscillating_market(
     assert entry_consolidation_problem(frame, float(frame.iloc[-1]["close"])) == expected
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_repeated_ma5_ma15_crosses_need_three_directional_ma5_steps(side):
+    frame = with_chop_history(breakout_frame(side))
+    # Three recent crossings with a current apparent side alignment, but only
+    # two rising/falling MA5 steps: this is still chop and must remain blocked.
+    ma5 = [100.0, 100.8, 100.2, 101.0, 100.7, 101.2]
+    ma15 = [100.3, 100.5, 100.4, 100.6, 100.8, 100.9]
+    if side == "SHORT":
+        ma5 = [200.0 - value for value in ma5]
+        ma15 = [200.0 - value for value in ma15]
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-6:]
+    for index, row_index in enumerate(closed_indices):
+        frame.loc[row_index, "ma5"] = ma5[index]
+        frame.loc[row_index, "ma15"] = ma15[index]
+    assert entry_consolidation_problem(
+        frame, float(frame.iloc[-1]["close"]), side=side,
+    ) == "BLOCKED_MA5_MA15_CROSS_CHOP"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_repeated_ma_cross_releases_only_after_three_directional_steps(side):
+    frame = with_chop_history(breakout_frame(side))
+    ma5 = [100.0, 100.8, 100.2, 101.0, 101.2, 101.4]
+    ma15 = [100.3, 100.5, 100.4, 100.6, 100.8, 100.9]
+    if side == "SHORT":
+        ma5 = [200.0 - value for value in ma5]
+        ma15 = [200.0 - value for value in ma15]
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-6:]
+    for index, row_index in enumerate(closed_indices):
+        frame.loc[row_index, "ma5"] = ma5[index]
+        frame.loc[row_index, "ma15"] = ma15[index]
+    assert entry_consolidation_problem(
+        frame, float(frame.iloc[-1]["close"]), side=side,
+    ) is None
+
+
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize(

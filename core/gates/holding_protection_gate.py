@@ -43,6 +43,24 @@ def _current_bar_is_closed(frame):
     return value is True or (type(value).__name__ == 'bool_' and bool(value))
 
 
+def _body_breaks_kc_middle(frame, side, price=None):
+    """A pullback is protected while its real body stays on the held side of KC mid."""
+    if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
+        return False
+    try:
+        current = frame.iloc[-1]
+        opening = float(current['open'])
+        end = float(current['close']) if price is None else float(price)
+        middle = float(current.get('kc_middle', current.get('kc_basis', 0.0)))
+        if not all(math.isfinite(value) and value > 0
+                   for value in (opening, end, middle)):
+            return False
+        # A long's body must reach below mid; a short's body must reach above.
+        return min(opening, end) < middle if side == 'LONG' else max(opening, end) > middle
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def top_engulfing_flip_evidence(frame):
     """Validate a closed, extended bearish engulfing candle for long-to-short flip."""
     if frame is None or len(frame) < 2 or not _current_bar_is_closed(frame):
@@ -252,13 +270,34 @@ def closed_peak_valley_reversal_evidence(frame, side, atr):
         if side == 'LONG':
             reversed_body = close < opening
             structural_break = close < ma5 and close < previous_mid
+            main_rail_broken = min(opening, close) < float(
+                current.get('kc_middle', current.get('kc_basis', float('nan')))
+            )
+            confirmed_pivot = False
+            if len(frame) >= 3:
+                before = frame.iloc[-3]
+                confirmed_pivot = (
+                    float(previous['high']) > float(before['high'])
+                    and float(previous['high']) > high
+                )
         else:
             reversed_body = close > opening
             structural_break = close > ma5 and close > previous_mid
+            main_rail_broken = max(opening, close) > float(
+                current.get('kc_middle', current.get('kc_basis', float('nan')))
+            )
+            confirmed_pivot = False
+            if len(frame) >= 3:
+                before = frame.iloc[-3]
+                confirmed_pivot = (
+                    float(previous['low']) < float(before['low'])
+                    and float(previous['low']) < low
+                )
         # Dojis and weak opposite bodies remain observation signals.  Exit on
         # this bar only when the body breaks both structures. A 0.35-0.75 ATR
         # reversal also needs volume expansion; this filters ordinary retests.
-        if not (reversed_body and body >= 0.35 * atr and structural_break):
+        if not (reversed_body and body >= 0.35 * atr and structural_break
+                and (main_rail_broken or confirmed_pivot)):
             return None
         volume_ratio = None
         if 'volume' in frame.columns and len(frame) >= 7:
@@ -275,6 +314,8 @@ def closed_peak_valley_reversal_evidence(frame, side, atr):
             'previous_midpoint': previous_mid, 'atr': atr,
             'body': body, 'is_doji': body <= 0.1 * atr,
             'volume_ratio': volume_ratio,
+            'main_rail_body_breached': bool(main_rail_broken),
+            'confirmed_fractal_pivot': bool(confirmed_pivot),
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -293,6 +334,8 @@ def intrabar_adverse_pressure_evidence(frame, side, quote, atr):
         previous_mid = (float(previous['open']) + float(previous['close'])) / 2.0
         price = float(quote)
         body = opening - price if side == 'LONG' else price - opening
+        if not _body_breaks_kc_middle(frame, side, price):
+            return None
         if side == 'LONG':
             structure_broken = price < ma5 and price < previous_mid
         else:
@@ -739,6 +782,44 @@ class HoldingProtectionExitGate:
             logger.info(reject_msg)
             print(reject_msg, flush=True)
             return False, reason, details
+
+        if clean_reason == 'EXIT_SHORT_FAILED_KC_BREAKOUT':
+            try:
+                entry_snapshot = (
+                    (position or {}).get('entry_snapshot') or {}
+                )
+                entry_bar_ms = float(entry_snapshot.get('entry_bar_id') or 0.)
+                entry_bar_open = float(entry_snapshot.get('entry_bar_open') or 0.)
+                current = frame.iloc[-1]
+                previous = frame.iloc[-2]
+                current_ms = float(current.get('timestamp') or 0.)
+                previous_ms = float(previous.get('timestamp') or 0.)
+                live_open = float(current.get('open') or 0.)
+                current_quote = float(quote)
+                if (
+                    side == 'SHORT'
+                    and str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'
+                    and entry_snapshot.get('signal_code') == 'AUTHORIZED_REALTIME_BREAKOUT'
+                    and math.isfinite(entry_bar_ms) and entry_bar_ms > 0
+                    and math.isfinite(entry_bar_open) and entry_bar_open > 0
+                    and math.isfinite(current_ms) and current_ms == entry_bar_ms + 60000
+                    and previous_ms == entry_bar_ms
+                    and not _current_bar_is_closed(frame)
+                    and live_open > 0 and current_quote > live_open
+                    and current_quote > entry_bar_open
+                ):
+                    details.update(
+                        entry_bar_id=entry_bar_ms,
+                        entry_bar_open=entry_bar_open,
+                        live_bar_id=current_ms,
+                        live_open=live_open,
+                        quote=current_quote,
+                    )
+                    return _auth(clean_reason)
+                return _reject(wait_for_close=not _current_bar_is_closed(frame))
+            except (AttributeError, KeyError, TypeError, ValueError,
+                    OverflowError, IndexError):
+                return _reject()
 
         # ── 1. 硬止損 / 市場熔斷 (WHITELIST SCENARIO 2) ──
         if any(marker in clean_reason.upper() for marker in (

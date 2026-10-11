@@ -19,6 +19,37 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 PROFIT_LOCK_STATE_KEY = 'three_tier_net_roe_lock_state'
 PROFIT_LOCK_TRIGGER = 'NET_ROE_THREE_TIER_GIVEBACK'
+SHORT_FALSE_BREAKOUT_TRIGGER = 'EXIT_SHORT_FAILED_KC_BREAKOUT'
+
+
+def short_false_breakout_exit(position, meta, price, snapshot):
+    """Cut a live short on the first green bar reclaiming its breakout open."""
+    try:
+        entry_snapshot = (
+            position.get('entry_snapshot') or meta.get('entry_snapshot') or {}
+        )
+        if (position.get('side') != 'SHORT'
+                or str(position.get('entry_mode') or meta.get('entry_mode') or '').upper()
+                != 'CHANNEL_SWING'
+                or entry_snapshot.get('signal_code') != 'AUTHORIZED_REALTIME_BREAKOUT'
+                or not isinstance(snapshot, dict)):
+            return False
+        entry_bar_ms = float(entry_snapshot.get('entry_bar_id') or 0.)
+        entry_bar_open = float(entry_snapshot.get('entry_bar_open') or 0.)
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+        closed_bar_ms = float(snapshot.get('closed_bar_ms') or 0.)
+        live_open = float(snapshot.get('live_open') or 0.)
+        quote = float(price)
+        values = (entry_bar_ms, entry_bar_open, live_bar_ms,
+                  closed_bar_ms, live_open, quote)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or live_bar_ms != entry_bar_ms + 60000
+                or closed_bar_ms != entry_bar_ms
+                or quote <= live_open or quote <= entry_bar_open):
+            return False
+        return True
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
 
 
 def _closed_ma5_reclaim(position, snapshot):
@@ -88,6 +119,8 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if not sign or not math.isfinite(quote) or quote <= 0:
             return None, False
+        if short_false_breakout_exit(position, meta, quote, snapshot):
+            return SHORT_FALSE_BREAKOUT_TRIGGER, False
         open_ms = float(position.get('open_timestamp') or 0.0) * 1000.0
         time_held_ms = stamp - open_ms
         is_early_hold_period = (time_held_ms < 120000)
@@ -647,6 +680,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                            'WATERFALL_DROP', 'BEARISH_INSTANT_BREAKOUT',
                            'EXIT_DOJI_BEARISH_CONFIRMATION',
                            'EXIT_DOJI_BULLISH_CONFIRMATION',
+                           SHORT_FALSE_BREAKOUT_TRIGGER,
                            'MA5_TURN_REVERSAL',
                            'MA5_TRUE_PEAK_REVERSAL',
                            'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN')

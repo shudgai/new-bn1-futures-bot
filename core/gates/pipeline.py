@@ -186,7 +186,8 @@ class EntryGatePipeline:
 
     @staticmethod
     def chop_lockout_problem(frame: pd.DataFrame, quote: float, *,
-                             allow_flat_lines: bool = False) -> Optional[str]:
+                             allow_flat_lines: bool = False,
+                             allow_unknown_direction: bool = False) -> Optional[str]:
         """Fail closed on unknown/flat KC, tangled MAs, or weak in-channel candles."""
         try:
             if frame is None or frame.empty:
@@ -228,7 +229,7 @@ class EntryGatePipeline:
                 if lower_slope_value is not None and math.isfinite(float(lower_slope_value))
                 else float(current['kc_lower']) - previous_lower
             )
-            if (not allow_flat_lines and (
+            if (not allow_unknown_direction and not allow_flat_lines and (
                     channel_state not in known_directions
                     or (abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
                         and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)
@@ -275,7 +276,8 @@ class EntryGatePipeline:
 
     @staticmethod
     def _ma15_bias_problem(frame: pd.DataFrame, quote: float, side: str,
-                           allow_flat_slope: bool = False) -> Optional[str]:
+                           allow_flat_slope: bool = False,
+                           allow_directional_breakout: bool = False) -> Optional[str]:
         """Require trend-side MA alignment and reject entries stretched from MA15."""
         try:
             if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
@@ -301,13 +303,67 @@ class EntryGatePipeline:
                 return 'BLOCKED_EXTREME_MA_BIAS'
 
             ma15_slope = latest_ma15 - previous_ma15
-            if side == 'LONG' and (quote <= ma15 or ma15_slope < 0):
+            if (not allow_directional_breakout and side == 'LONG'
+                    and (quote <= ma15 or ma15_slope < 0)):
                 return 'BLOCKED_MA_BIAS_DIRECTION'
-            if side == 'SHORT' and (quote >= ma15 or ma15_slope > 0):
+            if (not allow_directional_breakout and side == 'SHORT'
+                    and (quote >= ma15 or ma15_slope > 0)):
                 return 'BLOCKED_MA_BIAS_DIRECTION'
             return None
         except (KeyError, TypeError, ValueError, IndexError, OverflowError):
             return 'BLOCKED_MA_BIAS_DATA'
+
+    @staticmethod
+    def short_breakout_failure_problem(frame: pd.DataFrame, quote: float,
+                                       opening: float, atr: float) -> Optional[str]:
+        """Reject late short breaks and lower-wick absorption at the KC floor."""
+        try:
+            closed = closed_entry_candles(frame)
+            if len(closed) < 2 or frame is None or frame.empty:
+                return 'BLOCKED_SHORT_BREAKOUT_HISTORY'
+            live = frame.iloc[-1]
+            quote, opening, atr = float(quote), float(opening), float(atr)
+            high = max(float(live['high']), quote)
+            low = min(float(live['low']), quote)
+            span = high - low
+            lower_wick = min(opening, quote) - low
+            if span <= 0 or lower_wick / span >= 0.35:
+                return 'BLOCKED_SHORT_BREAKOUT_LOWER_WICK'
+
+            # Count consecutive bearish bodies through the forming quote.
+            down_bars = 1 if quote < opening else 0
+            for _, candle in closed.iloc[::-1].iterrows():
+                if float(candle['close']) < float(candle['open']):
+                    down_bars += 1
+                else:
+                    break
+            if down_bars == 0 or down_bars > 2:
+                return 'BLOCKED_SHORT_BREAKOUT_LATE_SELL'
+
+            if down_bars == 1:
+                first_open = opening
+                first_middle = float(live['kc_middle'])
+            else:
+                first = closed.iloc[-(down_bars - 1)]
+                first_open = float(first['open'])
+                first_middle = float(first['kc_middle'])
+            prior = closed.iloc[-1]
+            prior_close = float(prior['close'])
+            prior_middle = float(prior['kc_middle'])
+            if first_open < first_middle and prior_close < prior_middle:
+                return 'BLOCKED_SHORT_BREAKOUT_NOT_FROM_KC_MIDDLE'
+
+            live_close = float(live['close'])
+            ma5 = float(live['ma5']) + (quote - live_close) / 5.0
+            ma15 = float(live['ma15']) + (quote - live_close) / 15.0
+            nearest_ma_distance_atr = min(ma5 - quote, ma15 - quote) / atr
+            if (not math.isfinite(nearest_ma_distance_atr)
+                    or nearest_ma_distance_atr < 0
+                    or nearest_ma_distance_atr > 1.5):
+                return 'BLOCKED_SHORT_BREAKOUT_EXTENDED_FROM_MA'
+            return None
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return 'BLOCKED_SHORT_BREAKOUT_HISTORY'
 
     @staticmethod
     def detect_realtime_breakout(frame: pd.DataFrame, quote: float,
@@ -367,13 +423,13 @@ class EntryGatePipeline:
                 # small candles cannot authorize an entry.
                 if (body_long >= 1.0 * atr and body_long / candle_range >= 0.55
                         and distance_atr <= 3.0 and volume_ratio >= 1.2
-                        and ma5 > ma15 and ma5 > previous_ma5):
+                        and ma5 > previous_ma5):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'LONG',
                         'price': quote,
                         'realtime_body_atr': body_long / atr,
-                        'ma5_ma15_aligned': True,
+                        'ma5_direction_aligned': True,
                         'realtime_body_ratio': body_long / candle_range,
                         'realtime_distance_atr': distance_atr,
                         'realtime_volume_ratio': volume_ratio,
@@ -391,15 +447,19 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
+                short_breakout_problem = EntryGatePipeline.short_breakout_failure_problem(
+                    frame, quote, open_p, atr,
+                )
                 if (body_short >= 1.0 * atr and body_short / candle_range >= 0.55
                         and distance_atr <= 3.0 and volume_ratio >= 1.2
-                        and ma5 < ma15 and ma5 < previous_ma5):
+                        and ma5 < previous_ma5 and short_breakout_problem is None):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'SHORT',
                         'price': quote,
                         'realtime_body_atr': body_short / atr,
-                        'ma5_ma15_aligned': True,
+                        'ma5_direction_aligned': True,
+                        'short_breakout_early': True,
                         'realtime_body_ratio': body_short / candle_range,
                         'realtime_distance_atr': distance_atr,
                         'realtime_volume_ratio': volume_ratio,
@@ -584,6 +644,7 @@ class EntryGatePipeline:
             'pending_signal_id': f"SHADOW_RETEST:LONG:{bar_id}",
             'entry_phase': 'KC_SHADOW_RETEST_ENTRY',
             'reason': 'AUTHORIZED_SHADOW_RETEST_ENTRY',
+            'ma5_direction_aligned': True,
             'lower_shadow': lower_shadow,
             'atr': atr,
         }
@@ -866,11 +927,29 @@ class EntryGatePipeline:
                   requested_side: Optional[str] = None,
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        # Detect a fully qualified live breakout first. Its direction is
+        # established by the real-time MA5 slope and rail/body conditions;
+        # an aggregate UI/AI "unknown direction" label must not veto it.
+        if decision is None:
+            decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
+        is_verified_live_breakout = bool(
+            decision and (
+                (decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
+                 and decision.get('ma5_direction_aligned') is True)
+                or decision.get('type') in (
+                    'AUTHORIZED_SHADOW_RETEST_ENTRY',
+                    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                    'TOP_WATERFALL_FLIP',
+                    'CLIMAX_REVERSAL_FLIP',
+                )
+            )
+        )
         regime_problem = self.market_regime_problem(symbol, frame, quote)
         if regime_problem:
-            if diagnostics is not None:
+            if not is_verified_live_breakout and diagnostics is not None:
                 diagnostics['reason'] = regime_problem
-            return None
+            if not is_verified_live_breakout:
+                return None
         if decision is None:
             # Determine the live outer-rail breakout before the common chop
             # check so that only this verified entry family gets its explicit
@@ -881,13 +960,24 @@ class EntryGatePipeline:
             decision
             and (decision.get('type') in breakout_types or decision.get('is_breakout'))
         )
-        chop_problem = self.chop_lockout_problem(
-            frame, quote, allow_flat_lines=is_outer_rail_breakout,
+        is_shadow_entry = bool(
+            decision and (
+                decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
+                or decision.get('is_shadow_retest') is True
+            )
         )
-        if chop_problem:
-            if diagnostics is not None:
-                diagnostics['reason'] = chop_problem
-            return None
+        if not is_shadow_entry:
+            try:
+                chop_problem = self.chop_lockout_problem(
+                    frame, quote, allow_flat_lines=is_outer_rail_breakout,
+                    allow_unknown_direction=is_verified_live_breakout,
+                )
+            except TypeError:
+                chop_problem = self.chop_lockout_problem(frame, quote)
+            if chop_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = chop_problem
+                return None
         if decision is None:
             # A qualifying first-bar outer-rail break is the fastest route and
             # takes precedence over slower continuation/reversal candidates.
@@ -971,54 +1061,48 @@ class EntryGatePipeline:
                 diagnostics['reason'] = 'INVALID_SIDE'
             return None
 
+        is_flip = bool(
+            decision.get('type') in (
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
+                'CLIMAX_REVERSAL_FLIP',
+            ) or decision.get('is_reversal_flip') is True
+        )
+        if not is_flip and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT'):
+            from core.services.entry_contract import entry_consolidation_problem
+            cross_chop_problem = entry_consolidation_problem(
+                frame, quote, allow_directional_breakout=True, side=side,
+            )
+            if cross_chop_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = cross_chop_problem
+                return None
+
         # ── 最頂層進場門控：MA5 幾何生死鐵律（一票否決權） ──
         if frame is not None and len(frame) >= 2:
             try:
-                curr_b = frame.iloc[-1]
-                prev_b = frame.iloc[-2]
-                raw_cl = float(curr_b.get('close', quote))
-                is_cl = bool(curr_b.get('is_closed', False))
-                curr_m5 = float(curr_b.get('ma5', raw_cl))
-                prev_m5 = float(prev_b.get('ma5', curr_m5))
-                live_m5 = curr_m5 if is_cl else curr_m5 + (float(quote) - raw_cl) / 5.0
-                m5_slope = live_m5 - prev_m5
-                
-                atr_val = float(prev_b.get('atr', curr_b.get('atr', 1.0)))
-                if atr_val <= 0:
-                    atr_val = 1.0
-                close_ref = float(quote) if float(quote) > 0 else 1.0
-                chop_threshold = 0.05 * (atr_val / close_ref)
-                strong_breakout = (
-                    (side == 'LONG' and self.has_strong_bullish_breakout(frame, quote))
-                    or (side == 'SHORT' and self.has_strong_bearish_breakout(frame, quote))
+                from core.services.ma5_entry_slope import live_ma5_slope_problem
+                is_head_chop_flip = decision.get('type') in (
+                    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                    'TOP_WATERFALL_FLIP',
+                    'CLIMAX_REVERSAL_FLIP',
                 )
-                breakout_flat_exempt = bool(
-                    is_outer_rail_breakout or strong_breakout
-                )
-                
                 is_shadow_entry = (decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
-
-                # Qualified >=0.5 ATR outer-rail breakouts may start before MA5
-                # turns; an MA5 slope against the entry direction remains blocked.
-                if (abs(m5_slope) < chop_threshold
-                        and not is_shadow_entry and not breakout_flat_exempt):
+                slope_problem = live_ma5_slope_problem(frame, quote, side)
+                if slope_problem and not is_shadow_entry and not (
+                    is_head_chop_flip and slope_problem == 'BLOCKED_BY_MA5_SLOPE_INSUFFICIENT'
+                ):
                     if diagnostics is not None:
-                        diagnostics['reason'] = 'BLOCKED_BY_MA5_PARALLEL_CHOP'
-                    return None
-                    
-                # 1. MA5 向下，100% 絕對禁止開多（向下不開多）
-                if side == 'LONG' and m5_slope < 0 and not is_shadow_entry:
-                    if diagnostics is not None:
-                        diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_DOWN'
-                    return None
-                    
-                # 2. MA5 向上，100% 絕對禁止開空（向上不開空）
-                if side == 'SHORT' and m5_slope > 0:
-                    if diagnostics is not None:
-                        diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_UP'
+                        diagnostics['reason'] = slope_problem
                     return None
             except Exception:
-                pass
+                if diagnostics is not None:
+                    diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_INVALID'
+                return None
+        else:
+            if diagnostics is not None:
+                diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_INVALID'
+            return None
 
         # 1. Spatial Brain Perception
         context = SpatialBrain.analyze(frame, quote)
@@ -1033,7 +1117,8 @@ class EntryGatePipeline:
         if not is_top_waterfall_flip:
             ma_bias_problem = self._ma15_bias_problem(
                 frame, quote, side,
-                allow_flat_slope=(is_explosive_breakout or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
+                allow_flat_slope=(is_explosive_breakout or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'),
+                allow_directional_breakout=(decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'),
             )
             if ma_bias_problem:
                 if diagnostics is not None:

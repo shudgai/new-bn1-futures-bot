@@ -343,6 +343,8 @@ class PureTrendStrategyV2:
             res["initial_sl"] = sl_price
             return res
 
+        held_resistance_short = (current_price <= kc_middle_curr)
+
         # Report the first failed condition
         if current_price > kc_middle_curr:
             checks = [(ck_is_up, "CK方向未向上"),
@@ -530,7 +532,7 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
         if stamp != float(closed.iloc[-1]['timestamp']) + 60000:
             return None
         # Keep live simple moving averages consistent with the latest quote.
-        for key, period in (('ma3', 3), ('ma15', 15)):
+        for key, period in (('ma3', 3), ('ma5', 5), ('ma15', 15)):
             row[key] = float(row[key]) + (quote - original_price) / period
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -557,6 +559,12 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
     if not decision or (code is not None and decision['type'] != code):
         if diagnostics is not None:
             diagnostics["reason"] = strategy.entry_rejection
+        return None
+    from core.services.ma5_entry_slope import live_ma5_slope_problem
+    slope_problem = live_ma5_slope_problem(frame, quote, decision['side'])
+    if slope_problem:
+        if diagnostics is not None:
+            diagnostics['reason'] = slope_problem
         return None
     continuation = strategy.outside_continuation_side(closed) == decision['side']
     # Handle continuation states and cooldowns

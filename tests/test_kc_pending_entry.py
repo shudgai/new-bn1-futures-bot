@@ -7,7 +7,21 @@ from test_breakout_only_entry import breakout_frame
 
 def closed_bars(side):
     frame = breakout_frame(side)
-    return frame[frame["is_closed"]].reset_index(drop=True), frame.iloc[-1]
+    closed = frame[frame["is_closed"]].reset_index(drop=True)
+    first_stamp = float(closed.iloc[0]["timestamp"])
+    prefix = []
+    for offset in range(4, 0, -1):
+        row = closed.iloc[0].copy()
+        row["timestamp"] = first_stamp - offset * 60_000
+        row["open"] = row["close"] = 100.0
+        row["high"], row["low"] = 100.2, 99.8
+        row["ma5"], row["ma15"] = 99.5, 99.0
+        row["kc_upper"], row["kc_middle"], row["kc_lower"] = 101.0, 100.0, 99.0
+        row["volume"], row["is_closed"] = 100.0, True
+        prefix.append(row)
+    closed["volume"] = [100.0, 130.0, 110.0]
+    closed = pd.concat([pd.DataFrame(prefix), closed], ignore_index=True)
+    return closed, frame.iloc[-1]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

@@ -3,6 +3,7 @@ import math
 
 from core import config
 from core.services.candle_data import closed_entry_candles
+from core.services.ma5_entry_slope import live_ma5_slope_problem
 
 POLICY = 'strict_entry_gates_20261009_v1'
 
@@ -81,8 +82,9 @@ def validate_strict_entry(frame, quote, side, *, entry_mode='BREAKOUT'):
             return reject('BLOCKED_BY_EXTENDED_BREAKOUT')
 
 
-        if sign * (live_ma5 - float(previous['ma5'])) <= 0:
-            return reject('BLOCKED_STRICT_MA5_DIRECTION')
+        slope_problem = live_ma5_slope_problem(frame, quote, side)
+        if slope_problem:
+            return reject(slope_problem)
         if width <= 0.25 * max_width:
             return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
         if abs(live_ma5-live_ma15) < 0.25 * width:

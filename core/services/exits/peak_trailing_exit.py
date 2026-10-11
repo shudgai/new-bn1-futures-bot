@@ -27,6 +27,7 @@ LIVE_FLASH_DUMP_ATR = 0.60
 V_REVERSAL_SHORT_BODY_ATR = 0.50
 V_REVERSAL_SHORT_MA_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_GREEN_MA_RECLAIM'
 V_REVERSAL_SHORT_KC_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_KC_LOWER_RECLAIM'
+SHORT_FALSE_BREAKOUT_TRIGGER = 'EXIT_SHORT_FAILED_KC_BREAKOUT'
 CONSECUTIVE_DOJI_STALL_TRIGGER = 'EXIT_CONSECUTIVE_DOJI_STALL'
 CONSECUTIVE_DOJI_STALL_BARS = 3
 DOJI_STALL_BODY_ATR = 0.25
@@ -60,6 +61,7 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
     CONTINUATION_FAILED_TRIGGER,
+    SHORT_FALSE_BREAKOUT_TRIGGER,
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     'WATERFALL_DROP',
@@ -71,6 +73,7 @@ PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
     LIVE_MA5_BREAKDOWN_TRIGGER,
     LIVE_FLASH_DUMP_TRIGGER,
     CONTINUATION_FAILED_TRIGGER,
+    SHORT_FALSE_BREAKOUT_TRIGGER,
 })
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
     'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
@@ -97,7 +100,7 @@ def positive(value):
 
 
 def live_intraday_sell_pressure_trigger(position, price, snapshot):
-    """Authorize a LONG close from adverse live-tick evidence, without candle finality."""
+    """Authorize a LONG close only after live selling pressure breaks KC mid."""
     try:
         if position.get('side') != 'LONG' or not isinstance(snapshot, dict):
             return None
@@ -106,8 +109,10 @@ def live_intraday_sell_pressure_trigger(position, price, snapshot):
         live_ma5 = float(snapshot.get('live_ma5') or 0.)
         live_open = float(snapshot.get('live_open') or 0.)
         live_high = float(snapshot.get('live_high') or 0.)
+        middle = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if (not all(positive(value) for value in (quote, atr, live_open, live_high))
-                or live_high < max(live_open, quote)):
+                or not positive(middle) or live_high < max(live_open, quote)
+                or min(live_open, quote) >= middle):
             return None
 
         bearish_body = live_open - quote

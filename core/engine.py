@@ -2099,6 +2099,24 @@ class TradingEngine:
                        signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
                        candidate_bar_id=signal.get('candidate_bar_id'),
                        evidence=entry_frame_evidence(snapshot['frame'])))
+        if (side == 'SHORT'
+                and decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'):
+            try:
+                breakout_bar_id = float(decision['breakout_bar_id'])
+                entry_frame = snapshot.get('frame')
+                matching_bar = entry_frame.loc[
+                    entry_frame['timestamp'].astype(float) == breakout_bar_id
+                ].iloc[-1]
+                entry_bar_open = float(matching_bar['open'])
+                if math.isfinite(entry_bar_open) and entry_bar_open > 0:
+                    context['entry_snapshot'].update(
+                        entry_bar_id=breakout_bar_id,
+                        entry_bar_open=entry_bar_open,
+                    )
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+                # Without the exact signal-bar open the quick failed-break
+                # exit must fail closed rather than use fill price as a proxy.
+                pass
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
         pipeline_decision = signal.get('_pipeline_authorized_decision')
         from core.gates.pipeline import PIPELINE_ENTRY_TYPES
