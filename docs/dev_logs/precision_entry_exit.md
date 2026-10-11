@@ -1,0 +1,8 @@
+# Precision entry and holding-protection gates
+
+### [2026-10-11 11:35:00 UTC+8] - Modification Phase: Continuation entry and live order validation
+- **Author**: shudgai999 / Copilot
+- **Target Files & Lines**: `core/gates/pipeline.py` (`detect_trend_continuation`, `detect_realtime_breakout`, `_ma15_bias_problem`); `core/gates/holding_protection_gate.py` (`HoldingProtectionExitGate`); `core/engine.py` (`_fresh_channel_entry_snapshot`, existing authorized TTL grace); `core/services/exits/realtime_profit_exit.py` (`_tiered_net_roe_floor`, existing 2%/4%/7% ratchet); `tests/test_smart_pipeline.py`; `tests/test_realtime_profit_exit.py`.
+- **Modification Description**: Preserved the authorized 0.15 ATR live breakout and MA15 bias guard; enabled bearish continuation with MA5 at or below MA15, non-rising MA15, quote below MA5, and a bearish live body without adding a candle-solidity floor. The existing authorized pipeline TTL path skips duplicate morphology checks while retaining quote, slippage, account, capital, and order-safety checks. Confirmed intrabar exits remain limited to extreme midline reversals or the ROE ratchet; other exits wait for candle close.
+- **Trigger Reason & Requirement**: User reported missed early long/short entries and requested an explicit anti-chase MA15 limit, a live bearish continuation path, first-breakout submission, and candle-close holding protection.
+- **Verification & Test Status**: `tests/test_smart_pipeline.py` and `tests/test_realtime_profit_exit.py`: 67 passed. Targeted fast-path account-safety tests: 6 passed. Diagnostics and `git diff --check` passed. No live order was submitted. Deployment/restart remains blocked by the independent, unimplemented WAIT production gates.

@@ -3,12 +3,11 @@
 Enforces an explicit exit whitelist:
 1. EXIT_BY_EXTREME_WATERFALL: Extreme adverse move >= 1.2*ATR through the relevant KC boundary.
 2. EXIT_BY_CIRCUIT_BREAKER_HARD_SL: Hard Stop Loss or market circuit breaker.
-3. EXIT_BY_RATCHET_PROFIT_LOCK: Peak ROE >= 3.5%, giveback > 25% from peak (locking 75% profit).
+3. EXIT_BY_RATCHET_PROFIT_LOCK: Net ROE ratchets at 2%, 4%, and 7% peak thresholds.
 4. EXIT_BY_VERIFIED_FRACTAL_PEAK / EXIT_BY_VERIFIED_FRACTAL_VALLEY:
    Preconditioned on meaningful profit (ROE >= 3.0% or gain >= 0.5*ATR),
    3-bar fractal peak/valley with confirmed body break of previous midpoint.
-5. Directional wick rejection: profitable LONG upper-wick exhaustion or SHORT
-   lower-wick exhaustion, each >= 0.5*ATR and > 2x the real body.
+5. Closed-bar directional reversal evidence for peak/valley exits.
 
 All normal breathing / pullbacks (MA touch, upper/lower wick breathing, minor momentum turns)
 are strictly REJECTED.

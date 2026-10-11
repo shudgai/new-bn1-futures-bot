@@ -165,9 +165,9 @@ class EntryGatePipeline:
           * 【全面取消破 KC 軌道要求】！
           * 只要 1M 實體站上 MA5（Close > MA5 且陽線 Close > Open，實體佔比 >= 50%）：
           * 直接授權開多！(AUTHORIZED_BY_TREND_CONTINUATION_LONG)
-        - 當 MA5 < MA15 且 MA5 斜率向下 (ma5 <= prev_ma5)：
+        - 當 MA5 <= MA15 且 MA15 斜率非正：
           * 【全面取消破 KC 軌道要求】！
-          * 只要 1M 實體壓在 MA5 下（Close < MA5 且陰線 Close < Open，實體佔比 >= 50%）：
+          * 只要即時價格壓在 MA5 下且當根為陰線實體：
           * 直接授權開空！(AUTHORIZED_BY_TREND_CONTINUATION_SHORT)
         """
         if frame is None or len(frame) < 2:
@@ -181,25 +181,28 @@ class EntryGatePipeline:
             open_p = float(curr['open'])
             high_p = max(float(curr['high']), quote)
             low_p = min(float(curr['low']), quote)
-            ma5 = float(curr['ma5'])
-            ma15 = float(curr['ma15'])
+            live_close = float(curr['close'])
+            ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
+            ma15 = float(curr['ma15']) + (quote - live_close) / 15.0
             prev_ma15 = float(prev['ma15'])
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if not all(math.isfinite(value) and value > 0
-                   for value in (quote, open_p, high_p, low_p, ma5, ma15, prev_ma15)):
+                   for value in (
+                       quote, open_p, high_p, low_p, live_close,
+                       ma5, ma15, prev_ma15,
+                   )):
             return None
         candle_range = high_p - low_p
         if candle_range <= 0 or high_p < max(open_p, quote) or low_p > min(open_p, quote):
             return None
         body = abs(quote - open_p)
         solidity_ratio = body / candle_range
-        if solidity_ratio < 0.45:
-            return None
 
         # ── 1. 做多順勢延續 ──
         if side is None or side == 'LONG':
-            if ma5 > ma15 and ma15 > prev_ma15 and quote > ma5 and quote > open_p:
+            if (solidity_ratio >= 0.45 and ma5 > ma15
+                    and ma15 > prev_ma15 and quote > ma5 and quote > open_p):
                 return {
                     'type': 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                     'side': 'LONG',
@@ -215,7 +218,8 @@ class EntryGatePipeline:
 
         # ── 2. 做空順勢延續 ──
         if side is None or side == 'SHORT':
-            if ma5 < ma15 and ma15 < prev_ma15 and quote < ma5 and quote < open_p:
+            if (ma5 <= ma15 and ma15 <= prev_ma15
+                    and quote < ma5 and quote < open_p):
                 return {
                     'type': 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
                     'side': 'SHORT',

@@ -387,16 +387,16 @@ def test_pipeline_authorization_grace_skips_morphology_revalidation(monkeypatch)
         for index in range(3)
     ] + [{
         'timestamp': stamp,
-        'open': 100.0,
-        'high': 100.0,
-        'low': 98.4,
+        'open': 98.55,
+        'high': 98.7,
+        'low': 98.3,
         'close': 98.4,
         'atr': 1.0,
         'kc_middle': 100.0,
         'kc_upper': 102.0,
         'kc_lower': 98.5,
-        'ma5': 100.0,
-        'ma15': 100.0,
+        'ma5': 98.6,
+        'ma15': 98.8,
         'is_closed': False,
     }])
     frame.attrs['timeframe_ms'] = 60_000
@@ -769,6 +769,41 @@ def test_first_realtime_breakout_at_minimum_solidity_is_authorized():
     assert detected['realtime_body_atr'] == pytest.approx(0.15)
     assert authorized is not None
     assert authorized['_is_authorized'] is True
+
+
+@pytest.mark.parametrize('live_ma15', [99.6, 99.5])
+def test_bearish_trend_continuation_short_accepts_flat_or_falling_ma15(live_ma15):
+    stamp = 120_000
+    rows = [
+        {
+            'timestamp': stamp + index * 60_000,
+            'is_closed': True,
+            'open': 100.0, 'high': 100.2, 'low': 99.8, 'close': 100.0,
+            'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
+            'kc_lower': 99.0, 'ma5': 99.7, 'ma15': 99.6,
+        }
+        for index in range(5)
+    ]
+    quote = 99.2
+    rows.append({
+        'timestamp': stamp + 5 * 60_000,
+        'is_closed': False,
+        'open': 99.35, 'high': 99.4, 'low': 98.9, 'close': quote,
+        'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
+        'kc_lower': 99.0, 'ma5': 99.5, 'ma15': live_ma15,
+    })
+    frame = pd.DataFrame(rows)
+    frame.attrs['timeframe_ms'] = 60_000
+    frame.attrs['entry_finality_verified'] = True
+
+    decision = pipeline.authorize(
+        None, frame, quote, symbol='CAP/USDT', requested_side='SHORT',
+    )
+
+    assert decision is not None
+    assert decision['type'] == 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT'
+    assert decision['side'] == 'SHORT'
+    assert decision['_is_authorized'] is True
 
 
 def test_small_intrabar_bounce_waits_for_close_before_fractal_exit():
