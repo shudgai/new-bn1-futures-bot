@@ -2171,6 +2171,7 @@ class TradingEngine:
             direction_problem = (
                 None if pipeline_ttl_grace or decision['type'] in (
                     'CLIMAX_REVERSAL_FLIP', 'KC_REALTIME_RAIL_BREACH_SHORT',
+                    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )
@@ -2332,8 +2333,6 @@ class TradingEngine:
                 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
-                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
-                'TOP_WATERFALL_FLIP',
             ) or bool(observed.get('override_cooldown'))) and observed.get('side') == side
         )
         if (observed['side'] == side and observed['entry_phase'] in (

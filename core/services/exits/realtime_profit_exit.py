@@ -500,10 +500,17 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'quote_ms={stamp} price={price} details={prot_details}',
                             'WARNING',
                         )
-                        await account.close_position(
-                            symbol, price, f'Channel Swing {prot_exit}',
-                            is_manual=True,
-                        )
+                        if prot_details.get('authorized_action') == 'ACTION_FLIP_LONG_TO_SHORT':
+                            from core.services.order_execution import OrderExecutionService
+                            await OrderExecutionService.execute_top_engulfing_flip(
+                                engine, symbol, frame, price, position,
+                                prot_exit, prot_details,
+                            )
+                        else:
+                            await account.close_position(
+                                symbol, price, f'Channel Swing {prot_exit}',
+                                is_manual=True,
+                            )
                         return True
 
                     from core.exits.peak_valley_exit import PeakValleyExit

@@ -43,6 +43,44 @@ def _current_bar_is_closed(frame):
     return value is True or (type(value).__name__ == 'bool_' and bool(value))
 
 
+def top_engulfing_flip_evidence(frame):
+    """Validate a closed, extended bearish engulfing candle for long-to-short flip."""
+    if frame is None or len(frame) < 2 or not _current_bar_is_closed(frame):
+        return None
+    try:
+        current, previous = frame.iloc[-1], frame.iloc[-2]
+        opening, close, ma5, ma15 = (
+            float(current[key]) for key in ('open', 'close', 'ma5', 'ma15')
+        )
+        atr = float(previous['atr'])
+        previous_open = float(previous['open'])
+        previous_close = float(previous['close'])
+        previous_low = float(previous['low'])
+        values = (opening, close, ma5, ma15, atr, previous_open,
+                  previous_close, previous_low)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or atr <= 0 or previous_close <= previous_open):
+            return None
+        body = opening - close
+        if (close - ma15 <= 1.2 * atr or body < 0.4 * atr
+                or close >= ma5 or opening < previous_close
+                or close >= previous_open):
+            return None
+        return {
+            'open': opening,
+            'close': close,
+            'ma5': ma5,
+            'ma15': ma15,
+            'previous_close': previous_close,
+            'previous_low': previous_low,
+            'atr': atr,
+            'body_atr': body / atr,
+            'extension_atr': (close - ma15) / atr,
+        }
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def exhaustion_reversal_evidence(frame, side):
     """Detect a closed reversal body after recent weak candles or rejection wicks."""
     if (frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT')
@@ -347,23 +385,15 @@ class HoldingProtectionExitGate:
                     }
 
         # ── 1.1 頂部斷頭鍘特例 (Top Waterfall Flip) 授權「平多 + 秒反手開空」──
-        if side == 'LONG' and candle_closed and frame is not None and len(frame) >= 2 and atr > 0:
-            try:
-                c_open = float(curr.get('open', quote))
-                c_close = float(curr.get('close', quote))
-                c_ma5 = float(curr.get('ma5', quote))
-                p_low = float(prev.get('low', c_close))
-                # 1. 當根為強勢實體陰線（Open - Close >= 0.45 * ATR）
-                # 2. 收盤價強勢貫穿跌破 MA5，並吞噬前棒低點 (Close < MA5 且 Close < prev_low)
-                if (c_open - c_close) >= 0.45 * atr and c_close < c_ma5 and c_close < p_low:
-                    position['flip_enter_short'] = True
-                    return 'EXIT_LONG_ON_TOP_WATERFALL_DUMP', {
-                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
-                        'prev_low': p_low, 'atr': atr, 'quote': quote, 'side': side,
-                        'flip_enter_short': True, 'authorized_action': 'FLIP_ENTER_SHORT',
-                    }
-            except Exception:
-                pass
+        if side == 'LONG' and candle_closed:
+            evidence = top_engulfing_flip_evidence(frame)
+            if evidence is not None:
+                position['flip_enter_short'] = True
+                return 'EXIT_LONG_ON_TOP_WATERFALL_DUMP', {
+                    **evidence, 'quote': quote, 'side': side,
+                    'flip_enter_short': True,
+                    'authorized_action': 'ACTION_FLIP_LONG_TO_SHORT',
+                }
 
         exhaustion = exhaustion_reversal_evidence(frame, side)
         if exhaustion is not None:
@@ -651,10 +681,16 @@ class HoldingProtectionExitGate:
                     o_p = float(c.get('open', quote))
                     cl_p = float(c.get('close', quote))
                     ma5_val = float(c.get('ma5', quote))
-                    p_l = float(p.get('low', cl_p))
                     if clean_reason == 'EXIT_LONG_ON_TOP_WATERFALL_DUMP':
-                        if a > 0 and (o_p - cl_p) >= 0.45 * a and cl_p < ma5_val and cl_p < p_l:
+                        evidence = top_engulfing_flip_evidence(frame)
+                        if evidence is not None:
+                            details.update(evidence)
+                            details.update(
+                                flip_enter_short=True,
+                                authorized_action='ACTION_FLIP_LONG_TO_SHORT',
+                            )
                             return _auth('EXIT_LONG_ON_TOP_WATERFALL_DUMP')
+                        return _reject()
                     elif a > 0 and (o_p - cl_p) >= 0.35 * a and cl_p < ma5_val:
                         return _auth('EXIT_LONG_ON_REAL_TOP_DUMP')
                 except Exception:

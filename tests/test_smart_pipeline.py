@@ -1672,7 +1672,7 @@ def test_top_waterfall_dump_flip_to_short():
         {
             'timestamp': now_ms - 60000, 'open': 103.0, 'close': 104.8, 'high': 105.2,
             'low': 102.8, 'atr': atr, 'kc_middle': 102.0, 'kc_upper': 106.0, 'kc_lower': 98.0,
-            'ma5': 103.5, 'ma15': 101.0, 'is_closed': True,
+            'ma5': 103.5, 'ma15': 99.0, 'is_closed': True,
         },
         # 當根 B2: 頂部斷頭鍘極端大陰線貫穿跌破 MA5 並吞噬前棒低點 (102.8)
         # Open 105.0 - Close 102.0 = 3.0 (>= 0.45 * ATR 1.0)
@@ -1680,7 +1680,7 @@ def test_top_waterfall_dump_flip_to_short():
         {
             'timestamp': now_ms, 'open': 105.0, 'close': 102.0, 'high': 105.1,
             'low': 101.8, 'atr': atr, 'kc_middle': 102.2, 'kc_upper': 106.2, 'kc_lower': 98.2,
-            'ma5': 103.0, 'ma15': 101.5, 'is_closed': True,
+            'ma5': 103.0, 'ma15': 100.0, 'is_closed': True,
         },
     ]
     df = pd.DataFrame(bars)
@@ -1691,7 +1691,7 @@ def test_top_waterfall_dump_flip_to_short():
     eval_code, eval_info = HoldingProtectionExitGate.evaluate(position, df, quote)
     assert eval_code == 'EXIT_LONG_ON_TOP_WATERFALL_DUMP'
     assert eval_info.get('flip_enter_short') is True
-    assert eval_info.get('authorized_action') == 'FLIP_ENTER_SHORT'
+    assert eval_info.get('authorized_action') == 'ACTION_FLIP_LONG_TO_SHORT'
     assert position.get('flip_enter_short') is True
 
     allowed, valid_code, _ = HoldingProtectionExitGate.validate_exit(
@@ -1726,7 +1726,70 @@ def test_top_waterfall_dump_flip_to_short():
     assert entry_decision['side'] == 'SHORT'
     assert entry_decision['type'] == TOP_WATERFALL_FLIP_CODE
     assert entry_decision['is_reversal_flip'] is True
-    assert entry_decision['override_cooldown'] is True
+
+    # 4. 原子協調器須確認先平多成功，再在相同 lock 內提交受授權的開空。
+    async def verify_atomic_order():
+        from core.services.order_execution import OrderExecutionService
+
+        events = []
+
+        class FakeAccount:
+            def __init__(self, close_success=True):
+                self.positions = {'CAP/USDT': position}
+                self.last_closed_at = {}
+                self.last_closed_side = {}
+                self.trades = []
+                self.close_success = close_success
+
+            def log(self, message, _level='INFO'):
+                events.append(('LOG', message))
+
+            async def close_position(self, symbol, _price, reason, is_manual=False):
+                assert is_manual is True
+                events.append(('CLOSE', reason))
+                if not self.close_success:
+                    return False
+                self.positions.pop(symbol)
+                self.last_closed_at[symbol] = time.time()
+                self.last_closed_side[symbol] = 'LONG'
+                return True
+
+        class FakeEngine:
+            def __init__(self, close_success=True):
+                self.account = FakeAccount(close_success)
+
+            async def _execute_confirmed_channel_break(
+                self, symbol, frame, price, side, daily_halt=False,
+                v8_reason=None, candidate_bar_id=None,
+            ):
+                assert daily_halt is False
+                assert candidate_bar_id == now_ms
+                events.append(('OPEN', side, v8_reason))
+                self.account.positions[symbol] = {'side': side}
+                return True
+
+        fake_engine = FakeEngine()
+        assert await OrderExecutionService.execute_top_engulfing_flip(
+            fake_engine, 'CAP/USDT', df, quote,
+            fake_engine.account.positions['CAP/USDT'],
+            eval_code, eval_info,
+        ) is True
+        assert [event[0] for event in events if event[0] in ('CLOSE', 'OPEN')] == [
+            'CLOSE', 'OPEN',
+        ]
+        assert events[-2][1:] == ('SHORT', TOP_WATERFALL_FLIP_CODE)
+        assert fake_engine.account.positions['CAP/USDT']['side'] == 'SHORT'
+
+        failed_close_engine = FakeEngine(close_success=False)
+        events.clear()
+        assert await OrderExecutionService.execute_top_engulfing_flip(
+            failed_close_engine, 'CAP/USDT', df, quote,
+            failed_close_engine.account.positions['CAP/USDT'],
+            eval_code, eval_info,
+        ) is False
+        assert not any(event[0] == 'OPEN' for event in events)
+
+    asyncio.run(verify_atomic_order())
 
 
 

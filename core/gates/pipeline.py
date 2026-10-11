@@ -476,7 +476,6 @@ class EntryGatePipeline:
                 'side': 'SHORT',
                 'price': quote,
                 'is_reversal_flip': True,
-                'override_cooldown': True,
                 'confirmation_bar_id': float(curr.get('timestamp', 0)),
                 'breakout_bar_id': float(curr.get('timestamp', 0)),
                 'pending_signal_id': f"TOP_REVERSAL:SHORT:{curr.get('timestamp', 0)}",
@@ -518,15 +517,20 @@ class EntryGatePipeline:
             if atr <= 0:
                 return None
                 
-            p_low = float(prev.get('low', c_close))
+            p_open = float(prev.get('open', c_close))
+            p_close = float(prev.get('close', c_close))
             curr_ma5 = float(curr.get('ma5', raw_close))
+            curr_ma15 = float(curr.get('ma15', raw_close))
             live_ma5 = curr_ma5
             
             # 條件 1: 當根為強勢實體陰線 (Open - Close >= 0.45 * ATR)
-            is_strong_bearish = (c_open - c_close) >= 0.45 * atr
+            is_strong_bearish = (c_open - c_close) >= 0.4 * atr
             
             # 條件 2: 收盤價強勢貫穿跌破 MA5，並吞噬前棒低點
-            pierces_ma5_and_engulfs_low = (c_close < live_ma5) and (c_close < p_low)
+            pierces_ma5_and_engulfs_low = (
+                p_close > p_open and c_close - curr_ma15 > 1.2 * atr
+                and c_close < live_ma5 and c_open >= p_close and c_close < p_open
+            )
             
             if not (is_strong_bearish and pierces_ma5_and_engulfs_low):
                 return None

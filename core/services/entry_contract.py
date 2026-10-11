@@ -1710,6 +1710,21 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             if not is_flip_candidate:
                 return reject(chop_problem)
 
+        if code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
+            decision = pipeline.detect_top_waterfall_flip_short(
+                frame, quote, side='SHORT',
+            )
+            if decision is None:
+                return reject('BLOCKED_TOP_WATERFALL_FLIP_EVIDENCE')
+            pipeline_decision = pipeline.authorize(
+                decision, frame, quote, symbol=symbol, account=account,
+                requested_side='SHORT', diagnostics=diagnostics,
+            )
+            if pipeline_decision is None:
+                reason = (diagnostics or {}).get('reason', 'BLOCKED_TOP_WATERFALL_PIPELINE')
+                return reject(reason)
+            return authorize(pipeline_decision, quote)
+
         # Restore the currently supported pipeline fast-paths before forcing the
         # legacy 2-bar KC gate. This keeps the Channel Swing breakouts strict while
         # re-enabling the legitimate realtime/continuation/reversal autorizations.
