@@ -68,19 +68,17 @@ def _profit_lock_identity(position):
 def _tiered_net_roe_floor(peak_net_roe_pct):
     peak = float(peak_net_roe_pct)
     reached = lambda value, edge: value >= edge or math.isclose(value, edge, rel_tol=1e-12)
-    if reached(peak, 20.0):
-        return peak * 0.75, 4
-    if reached(peak, 15.0):
+    if reached(peak, 7.0):
         return peak * 0.75, 3
-    if reached(peak, 10.0):
-        return peak * 0.75, 2
-    if reached(peak, 5.0):
-        return 0.1, 1
+    if reached(peak, 4.0):
+        return 2.5, 2
+    if reached(peak, 2.0):
+        return 0.0, 1
     return None, 0
 
 
 def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, fee, slippage):
-    """Evaluate closed doji reversal, KC baseline, MA5 guard, then net-ROE."""
+    """Evaluate completed-bar structure and the net-ROE ratchet lock."""
     if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
         return None, False
     side = position.get('side')
@@ -289,9 +287,7 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                      current_net_roe_pct=current_roe)
         position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
         meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
-        if floor is not None and (
-                current_roe <= floor
-                or math.isclose(current_roe, floor, rel_tol=1e-12)):
+        if floor is not None and current_roe < floor:
             return f'{PROFIT_LOCK_TRIGGER}_TIER_{tier}', True
         return None, True
     except (KeyError, TypeError, ValueError, OverflowError):
@@ -480,7 +476,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     climax = (
                         None if (
                             short_upper_wick_hold
-                            or (side == 'SHORT' and not snapshot.get('current_bar_is_closed'))
+                            or not snapshot.get('current_bar_is_closed')
                         )
                         else detect_climax_reversal(frame, side)
                     )

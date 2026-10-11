@@ -86,6 +86,108 @@ def _short_reversal_body_evidence(frame, quote, atr):
         return None
 
 
+def _long_reversal_body_evidence(frame, quote, atr):
+    if frame is None or frame.empty or not math.isfinite(atr) or atr <= 0:
+        return None
+    try:
+        live = frame.iloc[-1]
+        opening = float(live['open'])
+        effective = float(live['close'])
+        high = float(live['high'])
+        low = float(live['low'])
+        body = opening - effective
+        candle_range = high - low
+        lower_wick = min(opening, effective) - low
+        ma5 = float(live['ma5'])
+        values = (opening, effective, high, low, body, candle_range, lower_wick, ma5)
+        if (not all(math.isfinite(value) for value in values)
+                or min(opening, effective, high, low, ma5) <= 0
+                or candle_range <= 0 or high < max(opening, effective)
+                or low > min(opening, effective)
+                or not _current_bar_is_closed(frame)):
+            return None
+        if body < 0.35 * atr or lower_wick >= 0.4 * atr or effective >= ma5:
+            return None
+        return {
+            'effective_price': effective, 'ma5': ma5, 'atr': atr,
+            'body': body, 'body_ratio': body / candle_range,
+            'lower_wick': lower_wick,
+        }
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def _net_roe_pct(position, price, side):
+    try:
+        entry = float(position.get('entry_price') or 0.)
+        qty = abs(float(position.get('qty', position.get('quantity', 0.)) or 0.))
+        margin = float(position.get('margin') or 0.)
+        if margin <= 0:
+            leverage = float(position.get('leverage') or 0.)
+            if leverage > 0:
+                margin = entry * qty / leverage
+        if not all(math.isfinite(value) and value > 0
+                   for value in (entry, qty, margin, float(price))):
+            return None
+        from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+        from core.services.exits.peak_trailing_exit import estimated_display_net_pnl
+
+        sign = 1 if side == 'LONG' else -1
+        net_pnl = estimated_display_net_pnl(
+            entry, float(price), qty, sign, TAKER_FEE_RATE, SLIPPAGE_PCT,
+        )
+        return net_pnl / margin * 100.0
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _ratchet_lock_details(position, quote):
+    side = str((position or {}).get('side', '')).upper()
+    if side not in ('LONG', 'SHORT'):
+        return None
+    try:
+        entry = float(position.get('entry_price') or 0.)
+        favorable = (
+            max(float(position.get('highest_price') or entry), float(quote))
+            if side == 'LONG'
+            else min(float(position.get('lowest_price') or entry), float(quote))
+        )
+        peak_roe = _net_roe_pct(position, favorable, side)
+        current_roe = _net_roe_pct(position, quote, side)
+        if peak_roe is None or current_roe is None:
+            return None
+        saved_state = position.get('three_tier_net_roe_lock_state')
+        if isinstance(saved_state, dict):
+            saved_peak = float(saved_state.get('peak_net_roe_pct') or peak_roe)
+            if math.isfinite(saved_peak):
+                peak_roe = max(peak_roe, saved_peak)
+        reached = lambda threshold: (
+            peak_roe >= threshold
+            or math.isclose(peak_roe, threshold, rel_tol=1e-12)
+        )
+        if reached(7.0):
+            floor, tier = peak_roe * 0.75, 3
+        elif reached(4.0):
+            floor, tier = 2.5, 2
+        elif reached(2.0):
+            floor, tier = 0.0, 1
+        else:
+            return None
+        if current_roe >= floor:
+            return None
+        return {
+            'peak_net_roe_pct': peak_roe,
+            'current_net_roe_pct': current_roe,
+            'floor_net_roe_pct': floor,
+            'tier': tier,
+            'peak_roe': peak_roe / 100.0,
+            'giveback_ratio': max(0.0, (peak_roe - current_roe) / peak_roe)
+            if peak_roe > 0 else 0.0,
+        }
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class HoldingProtectionExitGate:
     """Gatekeeper ensuring position is never closed on normal pullbacks."""
 
@@ -141,55 +243,50 @@ class HoldingProtectionExitGate:
             kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
 
             if side == 'LONG':
-                # 多單持倉：垂直暴跌單棒跌幅 >= 1.2 * ATR 且實體跌穿 KC 下軌
-                bar_drop = curr_open - quote
-                if bar_drop >= 1.2 * atr and kc_lower > 0 and quote < kc_lower:
+                live_high = max(float(curr.get('high', quote)), quote)
+                live_low = min(float(curr.get('low', quote)), quote)
+                candle_range = live_high - live_low
+                if (not candle_closed and candle_range >= 1.2 * atr
+                        and kc_middle > 0 and quote < kc_middle <= live_high):
                     return 'EXIT_BY_EXTREME_WATERFALL', {
-                        'bar_drop': bar_drop, 'atr': atr, 'kc_lower': kc_lower,
+                        'candle_range': candle_range, 'atr': atr,
+                        'kc_middle': kc_middle,
                         'quote': quote, 'side': side,
                     }
             elif side == 'SHORT':
-                # Short live exits require a true V-reversal from the bar low
-                # through KC middle, not a large move measured from its open.
+                live_high = max(float(curr.get('high', quote)), quote)
                 live_low = min(float(curr.get('low', quote)), quote)
-                bar_pump = quote - live_low
-                if (not candle_closed and bar_pump >= 1.2 * atr and kc_middle > 0
-                        and live_low < kc_middle < quote):
+                candle_range = live_high - live_low
+                if (not candle_closed and candle_range >= 1.2 * atr
+                        and kc_middle > 0 and live_low <= kc_middle < quote):
                     return 'EXIT_BY_EXTREME_WATERFALL', {
-                        'bar_pump': bar_pump, 'atr': atr, 'kc_middle': kc_middle,
-                        'live_low': live_low,
+                        'candle_range': candle_range, 'atr': atr,
+                        'kc_middle': kc_middle, 'live_low': live_low,
                         'quote': quote, 'side': side,
                     }
 
-        # ── 3. 階梯鎖利：利潤回吐鎖利 (EXIT_BY_RATCHET_PROFIT_LOCK) ──
-        # 浮盈拉開後（峰值 ROE >= 3.5%），從最高浮盈回吐超過 25% 觸發鎖利平倉
-        if side == 'LONG':
-            peak_roe = (highest_price - entry_price) / entry_price
-            if peak_roe >= 0.035:
-                peak_gain = highest_price - entry_price
-                giveback_amount = highest_price - quote
-                giveback_ratio = giveback_amount / peak_gain if peak_gain > 0 else 0.0
-                if giveback_ratio >= 0.25:
-                    return 'EXIT_BY_RATCHET_PROFIT_LOCK', {
-                        'peak_roe': peak_roe, 'giveback_ratio': giveback_ratio,
-                        'highest_price': highest_price, 'entry_price': entry_price,
-                        'quote': quote, 'side': side,
-                    }
-        elif side == 'SHORT':
-            peak_roe = (entry_price - lowest_price) / entry_price
-            if peak_roe >= 0.035:
-                peak_gain = entry_price - lowest_price
-                giveback_amount = quote - lowest_price
-                giveback_ratio = giveback_amount / peak_gain if peak_gain > 0 else 0.0
-                if giveback_ratio >= 0.25:
-                    return 'EXIT_BY_RATCHET_PROFIT_LOCK', {
-                        'peak_roe': peak_roe, 'giveback_ratio': giveback_ratio,
-                        'lowest_price': lowest_price, 'entry_price': entry_price,
-                        'quote': quote, 'side': side,
-                    }
+        # ── 3. 階梯鎖利：以淨 ROE 峰值計算保護底線 ──
+        ratchet = _ratchet_lock_details(position, quote)
+        if ratchet is not None:
+            ratchet.update(
+                highest_price=highest_price, lowest_price=lowest_price,
+                entry_price=entry_price, quote=quote, side=side,
+            )
+            return 'EXIT_BY_RATCHET_PROFIT_LOCK', ratchet
 
         # ── 4. 結構確認：真實波段峰頂 / 谷底生成 (EXIT_BY_VERIFIED_FRACTAL_PEAK / VALLEY) ──
-        if frame is not None and len(frame) >= 3:
+        if (not candle_closed and side == 'SHORT' and atr > 0
+                and frame is not None and len(frame) > 0):
+            live_open = float(curr.get('open', quote))
+            live_high = max(float(curr.get('high', quote)), quote)
+            upper_wick = live_high - max(live_open, quote)
+            if upper_wick >= 0.4 * atr:
+                return None, {
+                    'upper_wick_hold': True, 'upper_wick': upper_wick,
+                    'atr': atr, 'quote': quote,
+                }
+
+        if candle_closed and frame is not None and len(frame) >= 3:
             prev_open = float(prev.get('open', 0.0))
             prev_close = float(prev.get('close', 0.0))
             prev_mid = (prev_open + prev_close) / 2.0
@@ -211,7 +308,8 @@ class HoldingProtectionExitGate:
                     if atr > 0 and lower_wick >= 0.4 * atr:
                         return None, {'lower_wick_hold': True}
 
-                    if effective_price < prev_mid:
+                    if (effective_price < prev_mid
+                            and _long_reversal_body_evidence(frame, quote, atr) is not None):
                         return 'EXIT_BY_VERIFIED_FRACTAL_PEAK', {
                             'peak_roe': peak_roe, 'prev_mid': prev_mid,
                             'effective_price': effective_price, 'quote': quote,
@@ -221,15 +319,6 @@ class HoldingProtectionExitGate:
                 peak_roe = (entry_price - lowest_price) / entry_price
                 peak_gain_atr = (entry_price - lowest_price) / atr if atr > 0 else 0.0
                 has_meaningful_profit = (peak_roe >= 0.03) or (peak_gain_atr >= 0.5)
-                if not candle_closed and atr > 0:
-                    live_open = float(curr.get('open', quote))
-                    live_high = max(float(curr.get('high', quote)), quote)
-                    live_upper_wick = live_high - max(live_open, quote)
-                    if live_upper_wick >= 0.4 * atr:
-                        return None, {
-                            'upper_wick_hold': True, 'upper_wick': live_upper_wick,
-                            'atr': atr, 'quote': quote,
-                        }
                 if candle_closed and has_meaningful_profit:
                     live = frame.iloc[-1]
                     curr_open = float(live.get('open', quote))
@@ -237,15 +326,6 @@ class HoldingProtectionExitGate:
                     curr_low = float(live.get('low', quote))
                     body = abs(curr_close - curr_open)
                     lower_wick = min(curr_open, curr_close) - curr_low
-                    if (atr > 0 and lower_wick >= 0.5 * atr
-                            and _short_reversal_body_evidence(frame, quote, atr) is not None
-                            and lower_wick > 2.0 * body):
-                        return 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
-                            'lower_wick': lower_wick, 'body': body, 'atr': atr,
-                            'quote': quote, 'valley_roe': peak_roe,
-                            'peak_gain_atr': peak_gain_atr,
-                        }
-
                 if (has_meaningful_profit and _current_bar_is_closed(frame)
                         and is_fractal_valley(frame)):
                     body_evidence = _short_reversal_body_evidence(frame, quote, atr)
@@ -305,9 +385,9 @@ class HoldingProtectionExitGate:
         )):
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
-        # On a forming SHORT candle, ordinary structure/reversal candidates
-        # must wait for close; only a verified V-reversal or ratchet may pass.
-        if side == 'SHORT' and frame is not None and not frame.empty and not _current_bar_is_closed(frame):
+        # Every intrabar strategy exit waits for candle finality except the
+        # verified extreme V-reversal and the ROE ratchet lock.
+        if frame is not None and not frame.empty and not _current_bar_is_closed(frame):
             if clean_reason in (
                 'EXIT_BY_EXTREME_WATERFALL',
                 'CATASTROPHIC_DUMP_EXIT',
@@ -317,44 +397,28 @@ class HoldingProtectionExitGate:
                     live = frame.iloc[-1]
                     previous = frame.iloc[-2] if len(frame) > 1 else live
                     atr = float(previous.get('atr', live.get('atr', 0.0)))
+                    opening = float(live.get('open', quote))
+                    high = max(float(live.get('high', quote)), float(quote))
                     low = min(float(live.get('low', quote)), float(quote))
                     middle = float(live.get('kc_middle', live.get('kc_basis', 0.0)))
-                    if (math.isfinite(atr) and math.isfinite(low)
-                            and math.isfinite(middle) and atr > 0 and middle > 0
-                            and float(quote) - low >= 1.2 * atr
-                            and low < middle < float(quote)):
+                    candle_range = high - low
+                    if side == 'LONG':
+                        extreme = float(quote) < middle <= high
+                    else:
+                        extreme = low <= middle < float(quote)
+                    if (math.isfinite(atr) and math.isfinite(middle)
+                            and math.isfinite(candle_range) and atr > 0 and middle > 0
+                            and candle_range >= 1.2 * atr and extreme):
                         return _auth('EXIT_BY_EXTREME_WATERFALL')
                 except (KeyError, TypeError, ValueError, OverflowError, IndexError):
                     pass
                 return _reject(wait_for_close=True)
 
             if clean_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK' or clean_reason.startswith('PROFIT_LOCK'):
-                try:
-                    peak_roe = float(details.get('peak_roe'))
-                    giveback = float(details.get('giveback_ratio'))
-                    if (math.isfinite(peak_roe) and math.isfinite(giveback)
-                            and peak_roe >= 0.035 and giveback >= 0.25):
-                        return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
-                except (TypeError, ValueError, OverflowError):
-                    pass
-                try:
-                    entry = float((position or {}).get('entry_price') or 0.0)
-                    prior_low = float(
-                        (position or {}).get('lowest_price')
-                        or (position or {}).get('trough_price')
-                        or entry
-                    )
-                    live_quote = float(quote)
-                    low = min(prior_low, live_quote)
-                    peak_gain = entry - low
-                    peak_roe = peak_gain / entry if entry > 0 else 0.0
-                    giveback = (live_quote - low) / peak_gain if peak_gain > 0 else 0.0
-                    if (all(math.isfinite(value) for value in
-                            (entry, prior_low, live_quote, peak_roe, giveback))
-                            and entry > 0 and peak_roe >= 0.035 and giveback >= 0.25):
-                        return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
-                except (TypeError, ValueError, OverflowError):
-                    pass
+                lock = _ratchet_lock_details(position, quote)
+                if lock is not None:
+                    details.update(lock)
+                    return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
                 return _reject(wait_for_close=True)
 
             return _reject(wait_for_close=True)
@@ -365,7 +429,11 @@ class HoldingProtectionExitGate:
 
         # ── 3. 階梯鎖利回吐 (WHITELIST SCENARIO 3) ──
         if clean_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK' or clean_reason.startswith('PROFIT_LOCK'):
-            return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+            lock = _ratchet_lock_details(position, quote)
+            if lock is not None:
+                details.update(lock)
+                return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+            return _reject()
 
         if clean_reason in (
             'EXIT_LONG_ON_UPPER_WICK_REJECTION',
@@ -393,6 +461,9 @@ class HoldingProtectionExitGate:
             if (side == 'SHORT'
                     and _short_reversal_body_evidence(frame, quote, atr) is None):
                 return _reject()
+            if (side == 'LONG'
+                    and _long_reversal_body_evidence(frame, quote, atr) is None):
+                return _reject()
             return _auth(clean_reason)
 
         # ── 4. 真實分形頂底 (WHITELIST SCENARIO 4) ──
@@ -411,6 +482,8 @@ class HoldingProtectionExitGate:
                     return _reject()
                 # 多單下影線防護
                 if details.get('lower_wick_hold'):
+                    return _reject()
+                if _long_reversal_body_evidence(frame, quote, float(details.get('atr') or 0.0)) is None:
                     return _reject()
                 authorized_code = 'EXIT_BY_VERIFIED_FRACTAL_PEAK'
             else:

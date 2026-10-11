@@ -3,15 +3,13 @@ import math
 from typing import Optional, Dict, Any
 import pandas as pd
 
-from core.intelligence.spatial_brain import (
-    REALTIME_BREAKOUT_MIN_SOLIDITY,
-    SpatialBrain,
-)
+from core.services.candle_data import closed_entry_candles
+from core.intelligence.spatial_brain import SpatialBrain
 from core.gates.chop_filter_gate import ChopFilterGate
 from core.gates.candle_solidity_gate import CandleSolidityGate
 from core.gates.mouth_expansion_gate import MouthExpansionGate
 
-REALTIME_BREAKOUT_MAX_DISTANCE_ATR = 3.5
+MAX_MA15_ENTRY_BIAS_ATR = 1.8
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
@@ -37,12 +35,47 @@ class EntryGatePipeline:
         ]
 
     @staticmethod
+    def _ma15_bias_problem(frame: pd.DataFrame, quote: float, side: str) -> Optional[str]:
+        """Require trend-side MA alignment and reject entries stretched from MA15."""
+        try:
+            if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
+                return 'BLOCKED_MA_BIAS_DATA'
+            closed = closed_entry_candles(frame)
+            if len(closed) < 1 or len(frame) < 2:
+                return 'BLOCKED_MA_BIAS_DATA'
+            live = frame.iloc[-1]
+            previous = frame.iloc[-2]
+            quote = float(quote)
+            live_close = float(live['close'])
+            delta = quote - live_close
+            ma15 = float(live['ma15']) + delta / 15.0
+            latest_ma15 = ma15
+            previous_ma15 = float(previous['ma15'])
+            atr = float(closed.iloc[-1]['atr'])
+            values = (quote, ma15, latest_ma15, previous_ma15, atr)
+            if (not all(math.isfinite(value) and value > 0 for value in values)
+                    or atr <= 0):
+                return 'BLOCKED_MA_BIAS_DATA'
+
+            if abs(quote - ma15) > MAX_MA15_ENTRY_BIAS_ATR * atr:
+                return 'BLOCKED_EXTREME_MA_BIAS'
+
+            ma15_slope = latest_ma15 - previous_ma15
+            if side == 'LONG' and (quote <= ma15 or ma15_slope < 0):
+                return 'BLOCKED_MA_BIAS_DIRECTION'
+            if side == 'SHORT' and (quote >= ma15 or ma15_slope > 0):
+                return 'BLOCKED_MA_BIAS_DIRECTION'
+            return None
+        except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return 'BLOCKED_MA_BIAS_DATA'
+
+    @staticmethod
     def detect_realtime_breakout(frame: pd.DataFrame, quote: float,
                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """盤中 Tick 級破軌即時開倉（無需等收線）。
         
-        做多：即時價格突破上軌，且順向實體至少 0.15 ATR、佔當根振幅至少 15%。
-        做空：即時價格跌破下軌，且順向實體至少 0.15 ATR、佔當根振幅至少 15%。
+        做多：即時價格突破上軌，且順向實體至少 0.15 ATR。
+        做空：即時價格跌破下軌，且順向實體至少 0.15 ATR。
         """
         if frame is None or len(frame) < 2:
             return None
@@ -68,15 +101,21 @@ class EntryGatePipeline:
         candle_range = high_p - low_p
         if candle_range <= 0:
             return None
+        try:
+            live_close = float(curr['close'])
+            ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
+            ma15 = float(curr['ma15']) + (quote - live_close) / 15.0
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not all(math.isfinite(value) and value > 0 for value in (ma5, ma15)):
+            return None
 
         # Check Long
         if (side is None or side == 'LONG') and kc_upper > 0:
             if quote > kc_upper:
                 body_long = quote - open_p
                 distance_atr = (quote - kc_upper) / atr
-                if (body_long >= 0.15 * atr
-                        and body_long / candle_range >= REALTIME_BREAKOUT_MIN_SOLIDITY
-                        and distance_atr <= REALTIME_BREAKOUT_MAX_DISTANCE_ATR):
+                if body_long >= 0.15 * atr and ma5 >= ma15:
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'LONG',
@@ -98,9 +137,7 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
-                if (body_short >= 0.15 * atr
-                        and body_short / candle_range >= REALTIME_BREAKOUT_MIN_SOLIDITY
-                        and distance_atr <= REALTIME_BREAKOUT_MAX_DISTANCE_ATR):
+                if body_short >= 0.15 * atr and ma5 <= ma15:
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'SHORT',
@@ -354,24 +391,23 @@ class EntryGatePipeline:
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         if decision is None:
-            peak_flip = (
-                self.detect_peak_flip_short(frame, quote, account, symbol)
-                if requested_side in (None, 'SHORT') else None
-            )
-            if peak_flip is not None:
-                decision = peak_flip
+            # A qualifying first-bar outer-rail break is the fastest route and
+            # takes precedence over slower continuation/reversal candidates.
+            rt_decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
+            if rt_decision is not None:
+                decision = rt_decision
             else:
-                # 優先 1：即時破軌快車道 (Tick 級大實體噴出)
-                rt_decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
-                if rt_decision is not None:
-                    decision = rt_decision
+                peak_flip = (
+                    self.detect_peak_flip_short(frame, quote, account, symbol)
+                    if requested_side in (None, 'SHORT') else None
+                )
+                if peak_flip is not None:
+                    decision = peak_flip
                 else:
-                    # 優先 2：順勢延續開倉，避免一般轉折標記遮蔽已成立的順勢入口
                     cont_decision = self.detect_trend_continuation(frame, quote, side=requested_side)
                     if cont_decision is not None:
                         decision = cont_decision
                     else:
-                        # 優先 3：一般頂底轉折翻轉
                         flip_decision = self.detect_reversal_flip(frame, quote, side=requested_side)
                         if flip_decision is not None:
                             decision = flip_decision
@@ -408,6 +444,12 @@ class EntryGatePipeline:
         if side not in ('LONG', 'SHORT'):
             if diagnostics is not None:
                 diagnostics['reason'] = 'INVALID_SIDE'
+            return None
+
+        ma_bias_problem = self._ma15_bias_problem(frame, quote, side)
+        if ma_bias_problem:
+            if diagnostics is not None:
+                diagnostics['reason'] = ma_bias_problem
             return None
 
         # 檢查是否為即時破軌、順勢延續或反手翻轉

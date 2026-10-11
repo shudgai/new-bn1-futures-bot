@@ -1666,11 +1666,41 @@ class TradingEngine:
             )
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+        authorized_entry = kwargs.get('authorized_entry')
+        grace_decision = self._pipeline_authorization_grace_decision(
+            authorized_entry, symbol, side, price,
+        )
+        if (grace_decision is not None
+                and grace_decision.get('type') == kwargs.get('code')
+                and (candidate_bar_id is None
+                     or grace_decision.get('confirmation_bar_id') == candidate_bar_id)):
+            try:
+                same_live_bar = (
+                    float(frame.iloc[-1]['timestamp'])
+                    == float(grace_decision['confirmation_bar_id'])
+                    and not bool(frame.iloc[-1].get('is_closed', True))
+                )
+            except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+                same_live_bar = False
+            if same_live_bar:
+                log_entry_gate(
+                    self, symbol, side, 'ENTRY_REVALIDATION',
+                    'PIPELINE_AUTH_TTL_GRACE', candidate_bar_id,
+                    signal_id=grace_decision['pending_signal_id'],
+                    elapsed_seconds=grace_decision['_pipeline_grace_elapsed'],
+                    adverse_slippage_atr=grace_decision['_pipeline_grace_adverse_atr'],
+                    morphology_revalidation='SKIPPED',
+                )
+                return dict(
+                    frame=frame, price=price, decision=grace_decision,
+                    signal_code=grace_decision['type'],
+                    pipeline_ttl_grace=True,
+                )
         diagnostics = {}
         decision = evaluate_entry_contract(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
         if not decision:
             grace_decision = self._pipeline_authorization_grace_decision(
-                kwargs.get('authorized_entry'), symbol, side, price,
+                authorized_entry, symbol, side, price,
             )
             try:
                 same_live_bar = (
@@ -1831,7 +1861,18 @@ class TradingEngine:
             frame.loc[frame.index[-1], 'low'] = min(float(frame.iloc[-1]['low']), quote)
             if 'close_price_spike_filtered' in frame.columns:
                 frame.loc[frame.index[-1], 'close_price_spike_filtered'] = quote
-        return self.strategy.compute_indicators(frame)
+        finality = {
+            key: frame.attrs[key]
+            for key in ('entry_finality_verified', 'entry_finality_server_ms',
+                        'timeframe_ms', 'snapshot_ms')
+            if key in frame.attrs
+        }
+        enriched = self.strategy.compute_indicators(frame)
+        # Some indicator adapters return a fresh DataFrame and drop attrs.
+        # Preserve the independently verified candle-finality evidence for
+        # the account firewall's second validation.
+        enriched.attrs.update(finality)
+        return enriched
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)
@@ -2005,11 +2046,13 @@ class TradingEngine:
                        evidence=entry_frame_evidence(snapshot['frame'])))
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
         pipeline_decision = signal.get('_pipeline_authorized_decision')
+        from core.gates.pipeline import PIPELINE_ENTRY_TYPES
         if (
             signal.get('_pipeline_authorized_intrabar')
             and signal.get('_is_authorized')
             and isinstance(pipeline_decision, dict)
             and pipeline_decision.get('_is_authorized')
+            and pipeline_decision.get('type') in PIPELINE_ENTRY_TYPES
             and pipeline_decision.get('side') == side
             and pipeline_decision.get('type') == signal.get('signal_code')
             and pipeline_decision.get('pending_signal_id')
