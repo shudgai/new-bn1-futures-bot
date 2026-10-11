@@ -24,7 +24,7 @@ MAX_ADVERSE_ATR = 0.50
 MIN_MA5_SLOPE_ATR = 0.01
 SMALL_PATTERN_BODY_MAX_ATR = 0.35
 SMALL_PATTERN_BODY_MAX_RANGE_RATIO = 0.50
-LIVE_PATTERN_BODY_MIN_ATR = 0.50
+LIVE_PATTERN_BODY_MIN_ATR = 1.0
 LIVE_PATTERN_BODY_MIN_RANGE_RATIO = 0.50
 LIVE_PATTERN_MAX_DISTANCE_ATR = 3.0
 MAX_BREAKOUT_DISTANCE_ATR = 3.0
@@ -232,10 +232,13 @@ def evaluate_kc_live_pattern_entry(closed, quote, live, code=None, symbol: str =
         opened = float(getattr(live, 'open'))
         upper = float(getattr(live, 'kc_upper'))
         lower = float(getattr(live, 'kc_lower'))
+        live_close = float(getattr(live, 'close'))
+        ma5 = float(getattr(live, 'ma5')) + (quote - live_close) / 5.0
+        ma15 = float(getattr(live, 'ma15')) + (quote - live_close) / 15.0
         atr = float(closed.iloc[-1]['atr'])
         high = max(float(getattr(live, 'high')), opened, quote)
         low = min(float(getattr(live, 'low')), opened, quote)
-        values = (quote, live_stamp, opened, upper, lower, atr, high, low)
+        values = (quote, live_stamp, opened, upper, lower, ma5, ma15, atr, high, low)
         if (not all(math.isfinite(value) and value > 0 for value in values)
                 or lower >= upper or high <= low or atr <= 0):
             return wait('WAIT_VALID_LIVE_PATTERN_DATA')
@@ -276,8 +279,9 @@ def evaluate_kc_live_pattern_entry(closed, quote, live, code=None, symbol: str =
                 live_range = high - low
                 opens_inside = lower <= opened <= upper
                 outside = quote > upper if sign == 1 else quote < lower
+                ma_aligned = ma5 > ma15 if sign == 1 else ma5 < ma15
                 distance_atr = sign * (quote - rail) / atr
-                if (opens_inside and outside
+                if (opens_inside and outside and ma_aligned
                         and live_body >= LIVE_PATTERN_BODY_MIN_ATR * atr
                         and live_body / live_range >= LIVE_PATTERN_BODY_MIN_RANGE_RATIO
                         and 0 < distance_atr <= LIVE_PATTERN_MAX_DISTANCE_ATR):

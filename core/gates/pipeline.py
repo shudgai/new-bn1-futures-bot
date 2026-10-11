@@ -362,14 +362,18 @@ class EntryGatePipeline:
                 body_long = quote - open_p
                 distance_atr = (quote - kc_upper) / atr
                 # Use the live MA5 slope, not a delayed MA5/MA15 crossover.
-                if (body_long >= 0.5 * atr and body_long / candle_range >= 0.55
+                # A live rail touch is not enough: require a genuinely large
+                # directional body and MA5/MA15 alignment so alternating
+                # small candles cannot authorize an entry.
+                if (body_long >= 1.0 * atr and body_long / candle_range >= 0.55
                         and distance_atr <= 3.0 and volume_ratio >= 1.2
-                        and ma5 > previous_ma5):
+                        and ma5 > ma15 and ma5 > previous_ma5):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'LONG',
                         'price': quote,
                         'realtime_body_atr': body_long / atr,
+                        'ma5_ma15_aligned': True,
                         'realtime_body_ratio': body_long / candle_range,
                         'realtime_distance_atr': distance_atr,
                         'realtime_volume_ratio': volume_ratio,
@@ -387,14 +391,15 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
-                if (body_short >= 0.5 * atr and body_short / candle_range >= 0.55
+                if (body_short >= 1.0 * atr and body_short / candle_range >= 0.55
                         and distance_atr <= 3.0 and volume_ratio >= 1.2
-                        and ma5 < previous_ma5):
+                        and ma5 < ma15 and ma5 < previous_ma5):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'SHORT',
                         'price': quote,
                         'realtime_body_atr': body_short / atr,
+                        'ma5_ma15_aligned': True,
                         'realtime_body_ratio': body_short / candle_range,
                         'realtime_distance_atr': distance_atr,
                         'realtime_volume_ratio': volume_ratio,
