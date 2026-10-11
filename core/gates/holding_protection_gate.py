@@ -354,7 +354,6 @@ class HoldingProtectionExitGate:
         'EXIT_BY_RATCHET_PROFIT_LOCK',
         'EXIT_LONG_ON_REAL_TOP_DUMP',
         'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
-        'EXIT_LONG_ON_PULLBACK_CONFIRMED',
         'EXIT_LONG_ON_IMMEDIATE_OPPOSITE',
         'EXIT_BY_KC_MIDDLE_BREAK',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
@@ -463,10 +462,6 @@ class HoldingProtectionExitGate:
                 p_open = float(prev.get('open', 0.0))
                 p_close = float(prev.get('close', 0.0))
                 prev_is_red = p_close < p_open
-                prev2_is_red = (
-                    len(frame) >= 3 and
-                    float(frame.iloc[-3].get('close', 0.0)) < float(frame.iloc[-3].get('open', 0.0))
-                )
 
                 # 3. 【無回踩直接反向立斬（Immediate Opposite Dump Exit）】
                 # 若第一根紅 K 出現後，下一根完全無回踩、直接連續開出反向長黑（Open - Close >= 0.35 * ATR 且 Close < ma5）
@@ -475,15 +470,6 @@ class HoldingProtectionExitGate:
                         'open': c_open, 'close': c_close, 'ma5': c_ma5,
                         'atr': atr, 'quote': quote, 'side': side,
                         'dump_body_atr': (c_open - c_close) / atr,
-                        'bars_held': bars_held,
-                    }
-
-                # 2. 【紅 K 停滯回踩平倉（Pullback Confirmation Exit）】
-                # 多頭大陽線衝高後出現第一根收陰，隨後出現回抽 MA5 乏力，或回踩 MA5 收盤確認跌破 (Close < ma5)
-                if (prev_is_red or prev2_is_red) and c_close < c_ma5:
-                    return 'EXIT_LONG_ON_PULLBACK_CONFIRMED', {
-                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
-                        'atr': atr, 'quote': quote, 'side': side,
                         'bars_held': bars_held,
                     }
 
@@ -781,9 +767,8 @@ class HoldingProtectionExitGate:
                     pass
             return _auth(clean_reason)
 
-        # ── 5.1 破軌多單頂部平倉 GATE (Pullback Confirmation & Immediate Opposite Dump) ──
+        # ── 5.1 破軌多單頂部平倉 GATE (Immediate Opposite Dump only) ──
         if clean_reason in (
-            'EXIT_LONG_ON_PULLBACK_CONFIRMED',
             'EXIT_LONG_ON_IMMEDIATE_OPPOSITE',
         ):
             if side != 'LONG':
@@ -799,10 +784,6 @@ class HoldingProtectionExitGate:
                     p_open = float(p.get('open', 0.0))
                     p_close = float(p.get('close', 0.0))
                     p_is_red = p_close < p_open
-                    p2_is_red = (
-                        len(frame) >= 3 and
-                        float(frame.iloc[-3].get('close', 0.0)) < float(frame.iloc[-3].get('open', 0.0))
-                    )
                     if clean_reason == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE':
                         if a > 0 and p_is_red and (c_open - c_close) >= 0.35 * a and c_close < c_ma5:
                             details.update({
@@ -810,14 +791,6 @@ class HoldingProtectionExitGate:
                                 'ma5': c_ma5, 'atr': a,
                             })
                             return _auth('EXIT_LONG_ON_IMMEDIATE_OPPOSITE')
-                        return _reject()
-                    elif clean_reason == 'EXIT_LONG_ON_PULLBACK_CONFIRMED':
-                        if (p_is_red or p2_is_red) and c_close < c_ma5:
-                            details.update({
-                                'bars_held': bars_held, 'open': c_open, 'close': c_close,
-                                'ma5': c_ma5, 'atr': a,
-                            })
-                            return _auth('EXIT_LONG_ON_PULLBACK_CONFIRMED')
                         return _reject()
                 except Exception:
                     pass

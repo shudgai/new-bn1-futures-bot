@@ -167,71 +167,21 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         if mid > 0 and live_open > 0:
             candle_range = live_high - live_low + 1e-9
             if side == 'LONG':
-                # 1. [第一順位硬性執行] 多單結構徹底破壞平倉 (Exit Long on First MA5 Breach)
-                # 嚴格規定：首根實體跌破 MA5 當根收線立即平多，第一順位無條件執行
-                closed_close = float(snapshot.get('last_close') or 0.)
-                closed_ma5 = float(snapshot.get('ma5') or 0.)
-                if closed_close < closed_ma5 and closed_ma5 > 0:
-                    return 'EXIT_LONG_ON_MA5_CLOSE_BREACH', state_updated
-                elif quote <= lower:
+                # 一般 MA5 回踩不授權平倉；反側 KC 外軌破位仍立即退出。
+                if quote <= lower:
                     return 'EXIT_LONG_ON_KC_LOWER_BREACH', state_updated
 
                 # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
                 if quote < live_open and quote < mid and (live_open - quote) / live_open > 0.005:
                     return 'CATASTROPHIC_DUMP_EXIT', False
-                # 條件 A: 高檔實時回踩平倉 (見頂真賣壓，盤中即時偵測)
-                # 若突破上軌或累積漲幅 > 1.5 ATR，且實時從高點回落超過當根波幅的 35%
-                if (atr > 0 and upper_wick >= 0.5 * atr
-                        and upper_wick > 2.0 * live_body
-                        and profit_cushion >= 0.5 * atr):
-                    return 'LIVE_PEAK_REJECTION_EXIT', False
-                    
-                # 3. 大嘴巴見頂防護 (Wide Mouth Rejection)
-                live_bandwidth = (upper - lower) / (mid + 1e-9)
-                if live_bandwidth > 0.015: # 假設 1.5% 以上為擴口
-                    # 一旦盤中出現反向陰棒(quote < live_open)或站回上軌之內(quote < upper)
-                    if quote < live_open or quote < upper:
-                        # 確保這是一個獲利的單子，避免過早停損
-                        if profit_cushion > 0.5 * atr:
-                            return 'EXIT_LONG_WIDE_MOUTH_REJECTION', state_updated
             elif side == 'SHORT' and not short_upper_wick_hold:
-                # 1. [第一順位硬性執行] 空單結構徹底破壞平倉 (Exit Short on First MA5 Breach)
-                # 嚴格規定：空單遇陽線站上 MA5 立即秒平，第一順位無條件執行
-                closed_close = float(snapshot.get('last_close') or 0.)
-                closed_ma5 = float(snapshot.get('ma5') or 0.)
-                if closed_close > closed_ma5 and closed_ma5 > 0:
-                    return 'EXIT_SHORT_ON_MA5_CLOSE_BREACH', state_updated
-                elif quote >= upper:
+                # 一般 MA5 回抽不授權平倉；反側 KC 外軌破位仍立即退出。
+                if quote >= upper:
                     return 'EXIT_SHORT_ON_KC_UPPER_BREACH', state_updated
 
                 # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
                 if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
                     return 'CATASTROPHIC_PUMP_EXIT', False
-                # 條件 A: 低檔實時回抽平倉 (見底真買盤，盤中即時偵測)
-                # 若跌破下軌或累積跌幅 > 1.5 ATR，且實時從低點回抽超過當根波幅的 35%
-                if (atr > 0 and lower_wick >= 0.5 * atr
-                        and lower_wick > 2.0 * live_body
-                        and profit_cushion >= 0.5 * atr):
-                    return 'LIVE_BOTTOM_REJECTION_EXIT', False
-                    
-                # 04:59 回踩當棒即時平空（Intra-bar Pullback Exit - Zero Lag）
-                history = snapshot.get('history_5') or []
-                if len(history) >= 1 and atr > 0:
-                    prev_b = history[-1]
-                    prev_o, prev_c, prev_l, prev_h = prev_b['o'], prev_b['c'], prev_b['l'], prev_b['h']
-                    prev_drop = prev_o - prev_c
-                    prev_range = prev_h - prev_l + 1e-9
-                    prev_lower_shadow = min(prev_o, prev_c) - prev_l
-                    
-                    # 暴跌後（前棒實體跌幅 >= 2.0*ATR 或極端下影線）
-                    is_massive_drop = (prev_drop >= 2.0 * atr) or (prev_range >= 1.5 * atr and (prev_lower_shadow / prev_range) >= 0.5)
-                    if is_massive_drop:
-                        # 當前棒出現向上回踩：站上開盤價，或回彈幅度 >= 0.5 * 前棒實體
-                        if (lower_wick >= 0.5 * atr
-                                and lower_wick > 2.0 * live_body):
-                            return 'REALTIME_SHORT_PULLBACK_EXIT', False
-
-
                 # 4. 雙底探針/止跌反陽保護
                 history = snapshot.get('history_5') or []
                 if len(history) >= 1 and atr > 0:
