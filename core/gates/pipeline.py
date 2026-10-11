@@ -319,9 +319,11 @@ class EntryGatePipeline:
             live_close = float(curr['close'])
             ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
             ma15 = float(curr['ma15']) + (quote - live_close) / 15.0
+            previous_ma5 = float(prev['ma5'])
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
-        if not all(math.isfinite(value) and value > 0 for value in (ma5, ma15)):
+        if not all(math.isfinite(value) and value > 0
+                   for value in (ma5, ma15, previous_ma5)):
             return None
 
         # Check Long
@@ -329,7 +331,8 @@ class EntryGatePipeline:
             if quote > kc_upper:
                 body_long = quote - open_p
                 distance_atr = (quote - kc_upper) / atr
-                if body_long >= 0.15 * atr and ma5 >= ma15:
+                # Use the live MA5 slope, not a delayed MA5/MA15 crossover.
+                if body_long >= 0.15 * atr and ma5 > previous_ma5:
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'LONG',
@@ -351,7 +354,7 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
-                if body_short >= 0.15 * atr and ma5 <= ma15:
+                if body_short >= 0.15 * atr and ma5 < previous_ma5:
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'SHORT',
