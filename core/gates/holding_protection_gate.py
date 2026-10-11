@@ -279,6 +279,7 @@ class HoldingProtectionExitGate:
         'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         'EXIT_BY_RATCHET_PROFIT_LOCK',
         'EXIT_LONG_ON_REAL_TOP_DUMP',
+        'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
         'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
@@ -345,6 +346,25 @@ class HoldingProtectionExitGate:
                         'quote': quote, 'side': side,
                     }
 
+        # ── 1.1 頂部斷頭鍘特例 (Top Waterfall Flip) 授權「平多 + 秒反手開空」──
+        if side == 'LONG' and candle_closed and frame is not None and len(frame) >= 2 and atr > 0:
+            try:
+                c_open = float(curr.get('open', quote))
+                c_close = float(curr.get('close', quote))
+                c_ma5 = float(curr.get('ma5', quote))
+                p_low = float(prev.get('low', c_close))
+                # 1. 當根為強勢實體陰線（Open - Close >= 0.45 * ATR）
+                # 2. 收盤價強勢貫穿跌破 MA5，並吞噬前棒低點 (Close < MA5 且 Close < prev_low)
+                if (c_open - c_close) >= 0.45 * atr and c_close < c_ma5 and c_close < p_low:
+                    position['flip_enter_short'] = True
+                    return 'EXIT_LONG_ON_TOP_WATERFALL_DUMP', {
+                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
+                        'prev_low': p_low, 'atr': atr, 'quote': quote, 'side': side,
+                        'flip_enter_short': True, 'authorized_action': 'FLIP_ENTER_SHORT',
+                    }
+            except Exception:
+                pass
+
         exhaustion = exhaustion_reversal_evidence(frame, side)
         if exhaustion is not None:
             exhaustion['quote'] = quote
@@ -358,8 +378,9 @@ class HoldingProtectionExitGate:
                 c_ma5 = float(curr.get('ma5', quote))
                 c_ma15 = float(curr.get('ma15', quote))
                 entry_p = float(position.get('entry_price', 0.0))
-                # 價格脫離 MA15 後的高位，當根為實體陰線 (Open - Close >= 0.35 * ATR) 且實體跌破 MA5 (Close < ma5)
                 is_above_ma15_context = c_open > c_ma15 or entry_p < c_open
+
+                # 價格脫離 MA15 後的高位，當根為實體陰線 (Open - Close >= 0.35 * ATR) 且實體跌破 MA5 (Close < ma5)
                 if is_above_ma15_context and (c_open - c_close) >= 0.35 * atr and c_close < c_ma5:
                     return 'EXIT_LONG_ON_REAL_TOP_DUMP', {
                         'open': c_open, 'close': c_close, 'ma5': c_ma5,
@@ -618,8 +639,8 @@ class HoldingProtectionExitGate:
 
             return _auth(authorized_code)
 
-        # ── 5. 真實大賣壓當根收線立斬 ──
-        if clean_reason == 'EXIT_LONG_ON_REAL_TOP_DUMP':
+        # ── 5. 真實大賣壓當根收線立斬 / 頂部斷頭鍘特例 ──
+        if clean_reason in ('EXIT_LONG_ON_REAL_TOP_DUMP', 'EXIT_LONG_ON_TOP_WATERFALL_DUMP'):
             if side != 'LONG':
                 return _reject()
             if frame is not None and len(frame) >= 2:
@@ -630,11 +651,15 @@ class HoldingProtectionExitGate:
                     o_p = float(c.get('open', quote))
                     cl_p = float(c.get('close', quote))
                     ma5_val = float(c.get('ma5', quote))
-                    if a > 0 and (o_p - cl_p) >= 0.35 * a and cl_p < ma5_val:
+                    p_l = float(p.get('low', cl_p))
+                    if clean_reason == 'EXIT_LONG_ON_TOP_WATERFALL_DUMP':
+                        if a > 0 and (o_p - cl_p) >= 0.45 * a and cl_p < ma5_val and cl_p < p_l:
+                            return _auth('EXIT_LONG_ON_TOP_WATERFALL_DUMP')
+                    elif a > 0 and (o_p - cl_p) >= 0.35 * a and cl_p < ma5_val:
                         return _auth('EXIT_LONG_ON_REAL_TOP_DUMP')
                 except Exception:
                     pass
-            return _auth('EXIT_LONG_ON_REAL_TOP_DUMP')
+            return _auth(clean_reason)
 
         # ── 6. 健康回踩強制續抱檢驗 (Pullback Immunity) ──
         if frame is not None and len(frame) >= 2:

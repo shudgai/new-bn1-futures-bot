@@ -24,14 +24,14 @@ async def validate_account_entry(account, symbol, side, context):
     from core.config import is_entry_disabled
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
-    from core.gates.pipeline import pipeline
-    regime_problem = pipeline.market_regime_problem(symbol)
-    if regime_problem:
-        raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
     context = context if isinstance(context, dict) else {}
     
     code = context.get('entry_signal_code')
     if code not in ENTRY_CODES:
+        from core.gates.pipeline import pipeline
+        regime_problem = pipeline.market_regime_problem(symbol)
+        if regime_problem:
+            raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
         raise ValueError('[FORBIDDEN_ENTRY] 缺少合法入口白名單訊號，禁止送單')
         
     # Retain identity checks, but a forming candle must be revalidated.
@@ -64,6 +64,10 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
+    from core.gates.pipeline import pipeline
+    regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
+    if regime_problem:
+        raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
     chop_problem = pipeline.chop_lockout_problem(frame, quote)
     if chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)

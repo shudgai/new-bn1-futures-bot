@@ -34,13 +34,18 @@ GOLDEN_CROSS_FAST_LONG_CODE = "KC_GOLDEN_CROSS_FAST_LONG"
 MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
 CLIMAX_REVERSAL_FLIP_CODE = "CLIMAX_REVERSAL_FLIP"
+TOP_WATERFALL_FLIP_CODE = "AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT"
 REALTIME_RAIL_BREACH_SHORT_CODE = "KC_REALTIME_RAIL_BREACH_SHORT"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
 # Continuation is independently revalidated from the current expanding KC candle.
-NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", BEARISH_INSTANT_BREAKOUT_CODE, "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
+NEW_TRIGGER_CODES = frozenset((
+    "TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION",
+    BEARISH_INSTANT_BREAKOUT_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
+    "RE_ENTRY_LONG", "RE_ENTRY_SHORT",
+))
 # Support the currently authorized pipeline entry types alongside the strict
 # confirmed two-bar outer-rail breakout route and the live-qualification routes
 # that still share the same contract entry funnel. The whitelist must remain
@@ -52,6 +57,8 @@ LEGACY_ROUTE_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT",
     "TRIGGER_C_CONTINUATION",
     BEARISH_INSTANT_BREAKOUT_CODE,
+    TOP_WATERFALL_FLIP_CODE,
+    "TOP_WATERFALL_FLIP",
     "RE_ENTRY_LONG",
     "RE_ENTRY_SHORT",
 ))
@@ -1531,6 +1538,15 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
     """
     try:
         import time
+        is_flip = decision_type in (
+            'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+            'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+            'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+            'CLIMAX_REVERSAL_FLIP',
+            'AUTHORIZED_TOP_REVERSAL_SHORT',
+            'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+            'TOP_WATERFALL_FLIP',
+        )
         if account is not None and symbol:
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
             last_side = str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper()
@@ -1539,13 +1555,6 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             if now_ts - last_closed_ts < 180.0 and last_side == side:
                 return False, "BLOCKED_BY_COOLDOWN_SAME_SIDE"
             # 2. 禁止同根 K 棒反手：60 秒內同根平倉又反向開倉（非 authorized flip 訊號）
-            is_flip = decision_type in (
-                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
-                'CLIMAX_REVERSAL_FLIP',
-                'AUTHORIZED_TOP_REVERSAL_SHORT',
-            )
             if not is_flip and now_ts - last_closed_ts < 60.0 and last_side and last_side != side:
                 return False, "BLOCKED_SAME_BAR_REVERSAL"
 
@@ -1619,8 +1628,8 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             if ma5_slope == 0:
                 return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT 100% 豁免下軌空間限制
-            if not is_explosive:
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip 100% 豁免下軌空間限制
+            if not is_explosive and not is_flip:
                 is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
@@ -1653,7 +1662,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if not decision.get('_is_authorized'):
             route = decision.get('type')
-            if code is not None and route is not None and route != code:
+            if code is not None and route is not None and route != code and not (
+                code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+                and route in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+            ):
                 return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
             # KC pending and the currently authorized live/continuation/reversal
             # routes pass through this shared contract only when the requested route
@@ -1685,13 +1697,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
 
-        regime_problem = pipeline.market_regime_problem(symbol)
+        regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
         if regime_problem:
             return reject(regime_problem)
 
         chop_problem = pipeline.chop_lockout_problem(frame, quote)
         if chop_problem:
-            return reject(chop_problem)
+            is_flip_candidate = (
+                code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+                or pipeline.detect_top_waterfall_flip_short(frame, quote) is not None
+            )
+            if not is_flip_candidate:
+                return reject(chop_problem)
 
         # Restore the currently supported pipeline fast-paths before forcing the
         # legacy 2-bar KC gate. This keeps the Channel Swing breakouts strict while
@@ -1706,7 +1723,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 diagnostics=diagnostics,
             )
             if decision is not None:
-                if code is not None and decision.get('type') != code:
+                if code is not None and decision.get('type') != code and not (
+                    code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+                    and decision.get('type') in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+                ):
                     return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
                 # 經過強制 Pre-Flight 審核
                 passed, pre_flight_reason = pre_flight_safety_check(

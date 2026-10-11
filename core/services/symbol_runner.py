@@ -134,21 +134,29 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                             and 'CLIMAX_REVERSAL_EXIT_BOTTOM' in close_reason)
                     )
                 )
+                top_waterfall_flip = (
+                    same_bar_close
+                    and close_trade.get('action') == 'CLOSE_LONG'
+                    and any(token in close_reason for token in ('TOP_WATERFALL_DUMP', 'REAL_TOP_DUMP'))
+                )
                 instant_reverse_close = (
                     close_trade.get('action') == 'CLOSE_LONG'
                     and any(trigger in close_reason for trigger in (
                     'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
                     'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+                    'TOP_WATERFALL_DUMP', 'REAL_TOP_DUMP',
                     ))
                 )
-                if climax_flip or (same_bar_close and instant_reverse_close):
+                if climax_flip or top_waterfall_flip or (same_bar_close and instant_reverse_close):
                     from core.services.entry_contract import (
                         BEARISH_INSTANT_BREAKOUT_CODE,
                         CLIMAX_REVERSAL_FLIP_CODE,
+                        TOP_WATERFALL_FLIP_CODE,
                         evaluate_entry_contract,
                     )
                     entry_code = (
-                        CLIMAX_REVERSAL_FLIP_CODE if climax_flip
+                        TOP_WATERFALL_FLIP_CODE if top_waterfall_flip
+                        else CLIMAX_REVERSAL_FLIP_CODE if climax_flip
                         else BEARISH_INSTANT_BREAKOUT_CODE
                     )
                     decision = evaluate_entry_contract(

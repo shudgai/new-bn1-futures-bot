@@ -101,6 +101,80 @@ def test_entry_pipeline_blocks_choppy_or_missing_ai_regime(monkeypatch, code):
     assert pipeline.market_regime_problem("CAP/USDT") == "BLOCKED_BY_AI_CHOP_REGIME"
 
 
+def test_strong_bullish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch):
+    frame = pd.DataFrame([
+        {
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+            "kc_upper": 104.0, "ma5": 100.0, "atr": 2.0, "is_closed": True,
+        },
+        {
+            "open": 104.0, "high": 106.5, "low": 103.8, "close": 105.0,
+            "kc_upper": 105.0, "ma5": 101.0, "atr": 2.0, "is_closed": False,
+        },
+    ])
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
+
+    assert pipeline.has_strong_bullish_breakout(frame, 106.0)
+    assert pipeline.market_regime_problem("CAP/USDT", frame, 106.0) is None
+    assert pipeline.market_regime_problem("CAP/USDT", frame, 104.9) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "UNKNOWN")
+    assert pipeline.market_regime_problem("CAP/USDT", frame, 106.0) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+
+def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
+    from tests.channel_test_frames import closed_outer_entry_frame
+
+    frame = closed_outer_entry_frame("LONG", rows=20)
+    frame["ma5"] = frame["close"].rolling(5).mean().bfill()
+    latest_bar = int(time.time() * 1000 // 60_000 * 60_000)
+    frame["timestamp"] = [latest_bar - (len(frame) - 1 - index) * 60_000
+                          for index in range(len(frame))]
+    frame["is_closed"] = True
+    frame["channel_state"] = "LONG"
+    frame["kc_upper_slope"] = 0.5
+    frame["kc_lower_slope"] = 0.5
+    frame.loc[18, ["open", "close", "high", "low", "kc_upper", "kc_middle",
+                    "kc_lower", "atr", "ma5", "ma15"]] = [
+        103.0, 103.5, 103.7, 102.9, 105.0, 103.0, 101.0, 2.0, 103.0, 102.2,
+    ]
+    frame.loc[19, ["open", "close", "high", "low", "kc_upper", "kc_middle",
+                    "kc_lower", "atr", "ma5", "ma15", "is_closed"]] = [
+        104.0, 106.0, 106.2, 103.9, 105.0, 103.0, 101.0, 2.0, 104.0, 103.0, False,
+    ]
+    frame.loc[19, "kc_upper_slope"] = 0.5
+    frame.loc[19, "kc_lower_slope"] = 0.5
+    frame.attrs["timeframe_ms"] = 60_000
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
+
+    diagnostics = {}
+    assert pipeline.chop_lockout_problem(frame, 106.0) is None
+    decision = pipeline.authorize(
+        None, frame, 106.0, symbol="CAP/USDT", diagnostics=diagnostics,
+    )
+
+    assert decision is not None, diagnostics
+    assert decision["type"] == "AUTHORIZED_REALTIME_BREAKOUT"
+    assert decision["side"] == "LONG"
+
+    async def verify_final_firewall():
+        frame.attrs["entry_finality_verified"] = True
+        account = SimpleNamespace(
+            entry_frame_provider=lambda _symbol: asyncio.sleep(0, result=frame),
+        )
+        await validate_account_entry(
+            account,
+            "CAP/USDT",
+            "LONG",
+            {
+                "entry_signal_code": "AUTHORIZED_REALTIME_BREAKOUT",
+                "channel_confirmation_bar_id": float(frame.iloc[-1]["timestamp"]),
+            },
+        )
+
+    asyncio.run(verify_final_firewall())
+
+
 def test_account_firewall_blocks_choppy_ai_even_for_pipeline_ttl_grace(monkeypatch):
     async def check():
         monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")

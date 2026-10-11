@@ -22,6 +22,8 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
     'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+    'TOP_WATERFALL_FLIP',
 ))
 
 
@@ -45,7 +47,34 @@ class EntryGatePipeline:
     ) -> None:
         self.market_regime_provider = provider
 
-    def market_regime_problem(self, symbol: Optional[str]) -> Optional[str]:
+    @staticmethod
+    def has_strong_bullish_breakout(frame: pd.DataFrame, quote: float) -> bool:
+        """Fresh bullish KC expansion may override only an explicit AI CHOPPY state."""
+        try:
+            if frame is None or len(frame) < 2:
+                return False
+            live, previous = frame.iloc[-1], frame.iloc[-2]
+            price = float(quote)
+            opening = float(live['open'])
+            upper = float(live['kc_upper'])
+            live_close = float(live['close'])
+            atr = float(previous['atr'])
+            current_ma5 = float(live['ma5'])
+            previous_ma5 = float(previous['ma5'])
+            if not bool(live.get('is_closed', True)):
+                current_ma5 += (price - live_close) / 5.0
+            values = (price, opening, upper, atr, current_ma5, previous_ma5, live_close)
+            return (
+                all(math.isfinite(value) and value > 0 for value in values)
+                and atr > 0 and price > upper
+                and price - opening >= 0.5 * atr
+                and current_ma5 - previous_ma5 > 0
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
+    def market_regime_problem(self, symbol: Optional[str], frame=None,
+                              quote: Optional[float] = None) -> Optional[str]:
         if not callable(self.market_regime_provider):
             return 'BLOCKED_BY_AI_CHOP_REGIME'
         try:
@@ -57,7 +86,12 @@ class EntryGatePipeline:
                 symbol, type(exc).__name__, exc,
             )
             return 'BLOCKED_BY_AI_CHOP_REGIME'
-        return None if regime == 'TRENDING' else 'BLOCKED_BY_AI_CHOP_REGIME'
+        if regime == 'TRENDING':
+            return None
+        if (regime == 'CHOPPY' and frame is not None and quote is not None
+                and self.has_strong_bullish_breakout(frame, quote)):
+            return None
+        return 'BLOCKED_BY_AI_CHOP_REGIME'
 
     @staticmethod
     def chop_lockout_problem(frame: pd.DataFrame, quote: float) -> Optional[str]:
@@ -453,6 +487,66 @@ class EntryGatePipeline:
             return None
 
     @staticmethod
+    def detect_top_waterfall_flip_short(frame: pd.DataFrame, quote: float,
+                                        side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """頂部斷頭鍘特例：授權「平多 + 秒反手開空」（Top Waterfall Flip）。
+        
+        在持有多單的高位環境下，若出現極端見頂殺盤：
+        1. 【觸發條件】：
+           - 當根為強勢實體陰線（Open - Close >= 0.45 * ATR）。
+           - 收盤價強勢貫穿跌破 MA5，並吞噬前棒低點。
+        2. 【執行授權】：
+           - 授權 FLIP_ENTER_SHORT！
+           - 【豁免】「禁止同根反手」限制，且【豁免】大級別「KC向上禁止開空」限制！
+           - 允許在該根收線瞬間完成【平多 + 立即開空】，順勢咬住高位主跌浪！
+        """
+        if frame is None or len(frame) < 2 or (side is not None and side != 'SHORT'):
+            return None
+        try:
+            curr = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            quote = float(quote)
+            
+            c_open = float(curr.get('open', quote))
+            raw_close = float(curr.get('close', quote))
+            is_closed = bool(curr.get('is_closed', False))
+            if not is_closed:
+                return None
+            c_close = raw_close
+            
+            atr = float(prev.get('atr', curr.get('atr', 0.0)))
+            if atr <= 0:
+                return None
+                
+            p_low = float(prev.get('low', c_close))
+            curr_ma5 = float(curr.get('ma5', raw_close))
+            live_ma5 = curr_ma5
+            
+            # 條件 1: 當根為強勢實體陰線 (Open - Close >= 0.45 * ATR)
+            is_strong_bearish = (c_open - c_close) >= 0.45 * atr
+            
+            # 條件 2: 收盤價強勢貫穿跌破 MA5，並吞噬前棒低點
+            pierces_ma5_and_engulfs_low = (c_close < live_ma5) and (c_close < p_low)
+            
+            if not (is_strong_bearish and pierces_ma5_and_engulfs_low):
+                return None
+                
+            return {
+                'type': 'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'side': 'SHORT',
+                'price': quote,
+                'is_reversal_flip': True,
+                'override_cooldown': True,
+                'confirmation_bar_id': float(curr.get('timestamp', 0)),
+                'breakout_bar_id': float(curr.get('timestamp', 0)),
+                'pending_signal_id': f"TOP_WATERFALL_FLIP:SHORT:{curr.get('timestamp', 0)}",
+                'entry_phase': 'KC_TOP_WATERFALL_FLIP',
+                'reason': 'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+            }
+        except Exception:
+            return None
+
+    @staticmethod
     def detect_peak_flip_short(frame: pd.DataFrame, quote: float, account,
                                symbol: Optional[str]) -> Optional[Dict[str, Any]]:
         """Authorize a fresh bearish body only after a confirmed long close."""
@@ -543,16 +637,23 @@ class EntryGatePipeline:
                   requested_side: Optional[str] = None,
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        regime_problem = self.market_regime_problem(symbol)
+        regime_problem = self.market_regime_problem(symbol, frame, quote)
         if regime_problem:
             if diagnostics is not None:
                 diagnostics['reason'] = regime_problem
             return None
         chop_problem = self.chop_lockout_problem(frame, quote)
         if chop_problem:
-            if diagnostics is not None:
-                diagnostics['reason'] = chop_problem
-            return None
+            is_flip_candidate = (
+                (decision is not None and (decision.get('is_reversal_flip') or decision.get('type') in (
+                    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
+                )))
+                or (decision is None and self.detect_top_waterfall_flip_short(frame, quote, side=requested_side) is not None)
+            )
+            if not is_flip_candidate:
+                if diagnostics is not None:
+                    diagnostics['reason'] = chop_problem
+                return None
         if decision is None:
             # A qualifying first-bar outer-rail break is the fastest route and
             # takes precedence over slower continuation/reversal candidates.
@@ -560,31 +661,38 @@ class EntryGatePipeline:
             if rt_decision is not None:
                 decision = rt_decision
             else:
-                peak_flip = (
-                    self.detect_peak_flip_short(frame, quote, account, symbol)
+                waterfall_flip = (
+                    self.detect_top_waterfall_flip_short(frame, quote, side=requested_side)
                     if requested_side in (None, 'SHORT') else None
                 )
-                if peak_flip is not None:
-                    decision = peak_flip
+                if waterfall_flip is not None:
+                    decision = waterfall_flip
                 else:
-                    cont_decision = self.detect_trend_continuation(frame, quote, side=requested_side)
-                    if cont_decision is not None:
-                        decision = cont_decision
+                    peak_flip = (
+                        self.detect_peak_flip_short(frame, quote, account, symbol)
+                        if requested_side in (None, 'SHORT') else None
+                    )
+                    if peak_flip is not None:
+                        decision = peak_flip
                     else:
-                        flip_decision = self.detect_reversal_flip(frame, quote, side=requested_side)
-                        if flip_decision is not None:
-                            decision = flip_decision
+                        cont_decision = self.detect_trend_continuation(frame, quote, side=requested_side)
+                        if cont_decision is not None:
+                            decision = cont_decision
                         else:
-                            top_reversal = (
-                                self.detect_top_reversal_short(frame, quote, side=requested_side)
-                                if requested_side in (None, 'SHORT') else None
-                            )
-                            if top_reversal is not None:
-                                decision = top_reversal
+                            flip_decision = self.detect_reversal_flip(frame, quote, side=requested_side)
+                            if flip_decision is not None:
+                                decision = flip_decision
                             else:
-                                if diagnostics is not None:
-                                    diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
-                                return None
+                                top_reversal = (
+                                    self.detect_top_reversal_short(frame, quote, side=requested_side)
+                                    if requested_side in (None, 'SHORT') else None
+                                )
+                                if top_reversal is not None:
+                                    decision = top_reversal
+                                else:
+                                    if diagnostics is not None:
+                                        diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
+                                    return None
         else:
             supplied_type = decision.get('type')
             side = decision.get('side')
@@ -594,6 +702,8 @@ class EntryGatePipeline:
                 return None
             if supplied_type == 'AUTHORIZED_REALTIME_BREAKOUT':
                 refreshed = self.detect_realtime_breakout(frame, quote, side=side)
+            elif supplied_type in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
+                refreshed = self.detect_top_waterfall_flip_short(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_BY_PEAK_FLIP_SHORT':
                 refreshed = self.detect_peak_flip_short(frame, quote, account, symbol)
             elif supplied_type == 'AUTHORIZED_TOP_REVERSAL_SHORT':
@@ -661,13 +771,19 @@ class EntryGatePipeline:
         is_explosive_breakout = (context.state == 'EXPLOSIVE_EXPANSION')
 
         # ── 爆發突破（EXPLOSIVE_BREAKOUT）：100% 豁免 ma15_slope 走平阻斷 ──
-        ma_bias_problem = self._ma15_bias_problem(
-            frame, quote, side, allow_flat_slope=is_explosive_breakout
+        # ── 頂部斷頭鍘特例 (Top Waterfall Flip)：100% 豁免大級別「KC/MA 向上禁止開空」限制 ──
+        is_top_waterfall_flip = (
+            decision.get('type') in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
+            or decision.get('reason') in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
         )
-        if ma_bias_problem:
-            if diagnostics is not None:
-                diagnostics['reason'] = ma_bias_problem
-            return None
+        if not is_top_waterfall_flip:
+            ma_bias_problem = self._ma15_bias_problem(
+                frame, quote, side, allow_flat_slope=is_explosive_breakout
+            )
+            if ma_bias_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = ma_bias_problem
+                return None
 
         # 檢查是否為即時破軌、順勢延續或反手翻轉
         is_rt_breakout = bool(
@@ -687,8 +803,17 @@ class EntryGatePipeline:
                 'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
             )
-            or decision.get('reason') in ('AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT', 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG')
+            or decision.get('reason') in (
+                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
+            )
         )
 
         # 2. Iterate through gates
