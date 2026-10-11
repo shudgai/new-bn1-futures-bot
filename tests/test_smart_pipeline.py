@@ -2124,6 +2124,145 @@ def test_shadow_retest_entry_long():
     assert contract_decision['side'] == 'LONG'
 
 
+def test_midline_break_short_authorized():
+    """驗證妖幣提早進場：跌破中軌即可開空，免等破軌（此時大級別 MA15 仍在上升，順勢延續無法觸發）。"""
+    from core.services.entry_contract import evaluate_entry_contract
+    now_ms = 1700000000000
+    atr = 1.0
+    bars = [
+        {
+            'timestamp': now_ms - 120000, 'open': 102.0, 'close': 102.5, 'high': 103.0,
+            'low': 101.5, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 102.0, 'ma15': 100.5, 'channel_state': 'KC向下', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms - 60000, 'open': 102.5, 'close': 100.2, 'high': 102.6,
+            'low': 99.8, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 101.0, 'ma15': 100.8, 'channel_state': 'KC向下', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms, 'open': 100.1, 'close': 99.2, 'high': 100.2,
+            'low': 99.0, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 99.8, 'ma15': 101.0, 'channel_state': 'KC向下', 'is_closed': True,
+        },
+    ]
+    df = pd.DataFrame(bars)
+    df.attrs['timeframe_ms'] = 60000
+    quote = 99.2
+
+    # 1. 識別 detect_midline_break_short
+    detected = pipeline.detect_midline_break_short(df, quote, side='SHORT')
+    assert detected is not None
+    assert detected['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT'
+    assert detected['side'] == 'SHORT'
+
+    # 2. pipeline.authorize 放行
+    diagnostics = {}
+    mock_account = SimpleNamespace(
+        last_closed_at={},
+        last_closed_side={},
+        positions={},
+        trades=[],
+        log=lambda *a, **k: None,
+    )
+    authorized = pipeline.authorize(
+        detected, df, quote, symbol='LOBSTER/USDT', account=mock_account,
+        requested_side='SHORT', diagnostics=diagnostics,
+    )
+    assert authorized is not None
+    assert authorized['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT'
+
+    # 3. evaluate_entry_contract 簽約
+    contract_decision = evaluate_entry_contract(
+        df, quote, code='AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+        account=mock_account, symbol='LOBSTER/USDT', diagnostics=diagnostics,
+    )
+    assert contract_decision is not None
+    assert contract_decision['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT'
+    assert contract_decision['side'] == 'SHORT'
+
+    # 4. evaluate_entry_contract 在未指定 code 時也能自動識別反轉/中軌突破開空
+    auto_decision = evaluate_entry_contract(
+        df, quote, code=None,
+        account=mock_account, symbol='LOBSTER/USDT', diagnostics=diagnostics,
+    )
+    assert auto_decision is not None
+    assert auto_decision['type'] in (
+        'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+        'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+    )
+
+
+def test_midline_break_long_authorized():
+    """驗證妖幣提早進場：突破中軌即可開多，免等破軌（此時大級別 MA15 仍在下降，順勢延續無法觸發）。"""
+    from core.services.entry_contract import evaluate_entry_contract
+    now_ms = 1700000000000
+    atr = 1.0
+    bars = [
+        {
+            'timestamp': now_ms - 120000, 'open': 98.0, 'close': 97.5, 'high': 98.5,
+            'low': 97.0, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 98.0, 'ma15': 100.5, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms - 60000, 'open': 97.5, 'close': 99.8, 'high': 100.2,
+            'low': 97.4, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 99.0, 'ma15': 100.2, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms, 'open': 99.9, 'close': 100.8, 'high': 101.0,
+            'low': 99.8, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 104.0, 'kc_lower': 96.0,
+            'ma5': 100.4, 'ma15': 100.0, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+    ]
+    df = pd.DataFrame(bars)
+    df.attrs['timeframe_ms'] = 60000
+    quote = 100.8
+
+    # 1. 識別 detect_midline_break_long
+    detected = pipeline.detect_midline_break_long(df, quote, side='LONG')
+    assert detected is not None
+    assert detected['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'
+    assert detected['side'] == 'LONG'
+
+    # 2. pipeline.authorize 放行
+    diagnostics = {}
+    mock_account = SimpleNamespace(
+        last_closed_at={},
+        last_closed_side={},
+        positions={},
+        trades=[],
+        log=lambda *a, **k: None,
+    )
+    authorized = pipeline.authorize(
+        detected, df, quote, symbol='LOBSTER/USDT', account=mock_account,
+        requested_side='LONG', diagnostics=diagnostics,
+    )
+    assert authorized is not None
+    assert authorized['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'
+
+    # 3. evaluate_entry_contract 簽約
+    contract_decision = evaluate_entry_contract(
+        df, quote, code='AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+        account=mock_account, symbol='LOBSTER/USDT', diagnostics=diagnostics,
+    )
+    assert contract_decision is not None
+    assert contract_decision['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'
+    assert contract_decision['side'] == 'LONG'
+
+    # 4. evaluate_entry_contract 在未指定 code 時也能自動識別反轉/中軌突破開多
+    auto_decision = evaluate_entry_contract(
+        df, quote, code=None,
+        account=mock_account, symbol='LOBSTER/USDT', diagnostics=diagnostics,
+    )
+    assert auto_decision is not None
+    assert auto_decision['type'] in (
+        'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+        'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+    )
+
+
+
 
 
 

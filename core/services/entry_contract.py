@@ -1572,6 +1572,8 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             'AUTHORIZED_TOP_REVERSAL_SHORT',
             'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
             'TOP_WATERFALL_FLIP',
+            'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+            'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
         )
         if account is not None and symbol:
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
@@ -1634,6 +1636,10 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
         is_explosive = (spatial_ctx.state == 'EXPLOSIVE_EXPANSION')
 
         is_shadow_retest = (decision_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
+        is_midline_break = decision_type in (
+            'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+            'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+        )
 
         if side == "LONG":
             # 1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】
@@ -1641,16 +1647,16 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
                 if ma5_slope < 0:
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest 100% 豁免上軌空間限制
-            if not is_explosive and not is_shadow_retest:
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest / is_midline_break 100% 豁免上軌空間限制
+            if not is_explosive and not is_shadow_retest and not is_midline_break:
                 is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
                         return False, "REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC"
                     
             # 3. 逆勢長陰不接刀：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多！
-            # 均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY) 豁免「紅 K 一票否決」，認定為多頭踩線蓄勢
-            if not is_shadow_retest and (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
+            # 均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY) 與中軌突破豁免「紅 K 一票否決」
+            if not is_shadow_retest and not is_midline_break and (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
                 
         elif side == "SHORT":
@@ -1658,15 +1664,15 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             if ma5_slope > 0:
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip 100% 豁免下軌空間限制
-            if not is_explosive and not is_flip:
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break 100% 豁免下軌空間限制
+            if not is_explosive and not is_flip and not is_midline_break:
                 is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
                         return False, "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
                     
             # 3. 陽線回抽且價格站上 MA5 時嚴禁追空！
-            if (curr_is_bullish or prev_is_bullish) and quote > live_ma5:
+            if not is_midline_break and (curr_is_bullish or prev_is_bullish) and quote > live_ma5:
                 return False, "REJECT_BOUNCE_BULLISH_ABOVE_MA5"
                 
         return True, None
@@ -1731,30 +1737,57 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         verified_live_breakout = bool(
             live_breakout and live_breakout.get('ma5_direction_aligned') is True
         )
+        midline_break = (
+            pipeline.detect_midline_break_short(frame, quote)
+            or pipeline.detect_midline_break_long(frame, quote)
+        )
+        is_midline_breakout = bool(midline_break is not None)
         is_flip_or_shadow = (
             code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                      CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
-                     'SHADOW_RETEST_ENTRY')
+                     'SHADOW_RETEST_ENTRY',
+                     'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                     'AUTHORIZED_BY_MIDLINE_BREAK_LONG')
         )
         regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
-        if regime_problem and not verified_live_breakout and not is_flip_or_shadow:
+        if regime_problem and not verified_live_breakout and not is_flip_or_shadow and not is_midline_breakout:
             return reject(regime_problem)
 
         is_outer_rail_breakout = (
             code in FLAT_LINE_BREAKOUT_TYPES
             or code == CLIMAX_REVERSAL_FLIP_CODE
             or verified_live_breakout
+            or is_midline_breakout
         )
-        if code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE):
+        if code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
+                        'AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'):
             try:
                 chop_problem = pipeline.chop_lockout_problem(
                     frame, quote, allow_flat_lines=is_outer_rail_breakout,
-                    allow_unknown_direction=verified_live_breakout,
+                    allow_unknown_direction=(verified_live_breakout or is_midline_breakout),
                 )
             except TypeError:
                 chop_problem = pipeline.chop_lockout_problem(frame, quote)
             if chop_problem:
                 return reject(chop_problem)
+
+        if code in ('AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'):
+            side = 'SHORT' if code == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT' else 'LONG'
+            decision = (
+                pipeline.detect_midline_break_short(frame, quote, side='SHORT')
+                if side == 'SHORT'
+                else pipeline.detect_midline_break_long(frame, quote, side='LONG')
+            )
+            if decision is None:
+                return reject('BLOCKED_MIDLINE_BREAK_EVIDENCE')
+            pipeline_decision = pipeline.authorize(
+                decision, frame, quote, symbol=symbol, account=account,
+                requested_side=side, diagnostics=diagnostics,
+            )
+            if pipeline_decision is None:
+                reason = (diagnostics or {}).get('reason', 'BLOCKED_MIDLINE_BREAK_PIPELINE')
+                return reject(reason)
+            return authorize(pipeline_decision, quote)
 
         if code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
             decision = pipeline.detect_top_waterfall_flip_short(

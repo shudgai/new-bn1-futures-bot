@@ -19,8 +19,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("RedEyeBacktest")
 
 
-async def fetch_dataset(symbol: str, limit: int = 700) -> pd.DataFrame:
-    df = await engine.fetch_klines(symbol, timeframe="1m", limit=limit, keep_live=True)
+async def fetch_dataset(symbol: str, limit: int = 1000) -> pd.DataFrame:
+    since_ms = 1791633600000  # 2026-10-10 20:00:00 Taipei (12:00:00 UTC)
+    try:
+        clean_symbol = symbol.replace('龙虾', 'LOBSTER')
+        ohlcv = await engine.exchange.fetch_ohlcv(clean_symbol, timeframe="1m", since=since_ms, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    except Exception:
+        df = await engine.fetch_klines(symbol, timeframe="1m", limit=limit, keep_live=True)
     if df.empty:
         raise ValueError(f"Failed to fetch klines for {symbol}")
     

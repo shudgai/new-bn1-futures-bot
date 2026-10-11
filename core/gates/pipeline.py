@@ -22,6 +22,8 @@ FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
     'KC_GOLDEN_CROSS_FAST_LONG', 'KC_REALTIME_RAIL_BREACH_SHORT',
     'TRIGGER_A_KC_BREAKOUT',
+    'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+    'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
 ))
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
@@ -34,6 +36,8 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
     'TOP_WATERFALL_FLIP',
+    'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+    'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
 ))
 
 
@@ -772,6 +776,106 @@ class EntryGatePipeline:
             return None
 
     @staticmethod
+    def detect_midline_break_short(frame: pd.DataFrame, quote: float,
+                                   side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """情境 4：通道內中軌下破開空（妖幣提前發動放寬入場）。
+        
+        當價格自高位下殺並跌穿 KC 中軌，且 MA5 明確順向下彎：
+        - 報價跌破 KC 中軌 (quote < kc_middle) 且跌破 MA5；
+        - MA5 呈現順向下彎 (live_ma5 < prev_ma5)；
+        - 當根為陰線實體 (quote < open_p) 或連續陰線；
+        - 放寬妖幣提早進場，絕不等跌破 KC 下軌。
+        """
+        if frame is None or len(frame) < 2 or (side is not None and side != 'SHORT'):
+            return None
+        try:
+            curr = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            quote = float(quote)
+            open_p = float(curr['open'])
+            live_close = float(curr['close'])
+            kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
+            if kc_middle <= 0 or quote >= kc_middle:
+                return None
+            live_ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
+            prev_ma5 = float(prev['ma5'])
+            ma5_slope = live_ma5 - prev_ma5
+            if ma5_slope >= 0:
+                return None
+            if quote >= live_ma5:
+                return None
+            # 要求當根為陰線實體或前根為陰線跌破
+            is_bearish = (quote < open_p) or (float(prev['close']) < float(prev['open']))
+            if not is_bearish:
+                return None
+            bar_id = float(curr.get('timestamp', 0))
+            return {
+                'type': 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                'side': 'SHORT',
+                'price': quote,
+                'is_midline_break': True,
+                'is_reversal_flip': True,
+                'override_cooldown': True,
+                'confirmation_bar_id': bar_id,
+                'breakout_bar_id': bar_id,
+                'pending_signal_id': f"MIDLINE_BREAK:SHORT:{int(bar_id)}",
+                'entry_phase': 'KC_MIDLINE_BREAK_SHORT',
+                'reason': 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def detect_midline_break_long(frame: pd.DataFrame, quote: float,
+                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """情境 4：通道內中軌上穿開多（妖幣提前發動放寬入場）。
+        
+        當價格自低位反彈並突破 KC 中軌，且 MA5 明確順向上揚：
+        - 報價站上 KC 中軌 (quote > kc_middle) 且站上 MA5；
+        - MA5 呈現順向上揚 (live_ma5 > prev_ma5)；
+        - 當根為陽線實體 (quote > open_p) 或前根為陽線突破；
+        - 放寬妖幣提早進場，絕不等突破 KC 上軌。
+        """
+        if frame is None or len(frame) < 2 or (side is not None and side != 'LONG'):
+            return None
+        try:
+            curr = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            quote = float(quote)
+            open_p = float(curr['open'])
+            live_close = float(curr['close'])
+            kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
+            if kc_middle <= 0 or quote <= kc_middle:
+                return None
+            live_ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
+            prev_ma5 = float(prev['ma5'])
+            ma5_slope = live_ma5 - prev_ma5
+            if ma5_slope <= 0:
+                return None
+            if quote <= live_ma5:
+                return None
+            # 要求當根為陽線實體或前根為陽線
+            is_bullish = (quote > open_p) or (float(prev['close']) > float(prev['open']))
+            if not is_bullish:
+                return None
+            bar_id = float(curr.get('timestamp', 0))
+            return {
+                'type': 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                'side': 'LONG',
+                'price': quote,
+                'is_midline_break': True,
+                'is_reversal_flip': True,
+                'override_cooldown': True,
+                'confirmation_bar_id': bar_id,
+                'breakout_bar_id': bar_id,
+                'pending_signal_id': f"MIDLINE_BREAK:LONG:{int(bar_id)}",
+                'entry_phase': 'KC_MIDLINE_BREAK_LONG',
+                'reason': 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+            }
+        except Exception:
+            return None
+
+    @staticmethod
     def detect_top_waterfall_flip_short(frame: pd.DataFrame, quote: float,
                                         side: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """頂部斷頭鍘特例：授權「平多 + 秒反手開空」（Top Waterfall Flip）。
@@ -930,17 +1034,31 @@ class EntryGatePipeline:
         # Detect a fully qualified live breakout first. Its direction is
         # established by the real-time MA5 slope and rail/body conditions;
         # an aggregate UI/AI "unknown direction" label must not veto it.
-        if decision is None:
-            decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
+        candidate = decision
+        if candidate is None:
+            candidate = self.detect_realtime_breakout(frame, quote, side=requested_side)
+        if candidate is None:
+            mid_short = (
+                self.detect_midline_break_short(frame, quote, side=requested_side)
+                if requested_side in (None, 'SHORT') else None
+            )
+            mid_long = (
+                self.detect_midline_break_long(frame, quote, side=requested_side)
+                if requested_side in (None, 'LONG') else None
+            )
+            candidate = mid_short or mid_long
+
         is_verified_live_breakout = bool(
-            decision and (
-                (decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
-                 and decision.get('ma5_direction_aligned') is True)
-                or decision.get('type') in (
+            candidate and (
+                (candidate.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
+                 and candidate.get('ma5_direction_aligned') is True)
+                or candidate.get('type') in (
                     'AUTHORIZED_SHADOW_RETEST_ENTRY',
                     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
                     'TOP_WATERFALL_FLIP',
                     'CLIMAX_REVERSAL_FLIP',
+                    'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                    'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
                 )
             )
         )
@@ -957,13 +1075,13 @@ class EntryGatePipeline:
             decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
         breakout_types = FLAT_LINE_BREAKOUT_TYPES
         is_outer_rail_breakout = bool(
-            decision
-            and (decision.get('type') in breakout_types or decision.get('is_breakout'))
+            (decision or candidate)
+            and ((decision or candidate).get('type') in breakout_types or (decision or candidate).get('is_breakout'))
         )
         is_shadow_entry = bool(
-            decision and (
-                decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
-                or decision.get('is_shadow_retest') is True
+            (decision or candidate) and (
+                (decision or candidate).get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
+                or (decision or candidate).get('is_shadow_retest') is True
             )
         )
         if not is_shadow_entry:
@@ -1021,9 +1139,21 @@ class EntryGatePipeline:
                                     if top_reversal is not None:
                                         decision = top_reversal
                                     else:
-                                        if diagnostics is not None:
-                                            diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
-                                        return None
+                                        mid_short = (
+                                            self.detect_midline_break_short(frame, quote, side=requested_side)
+                                            if requested_side in (None, 'SHORT') else None
+                                        )
+                                        mid_long = (
+                                            self.detect_midline_break_long(frame, quote, side=requested_side)
+                                            if requested_side in (None, 'LONG') else None
+                                        )
+                                        midline_break = mid_short or mid_long
+                                        if midline_break is not None:
+                                            decision = midline_break
+                                        else:
+                                            if diagnostics is not None:
+                                                diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
+                                            return None
         else:
             supplied_type = decision.get('type')
             side = decision.get('side')
@@ -1033,6 +1163,10 @@ class EntryGatePipeline:
                 return None
             if supplied_type == 'AUTHORIZED_REALTIME_BREAKOUT':
                 refreshed = self.detect_realtime_breakout(frame, quote, side=side)
+            elif supplied_type == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT':
+                refreshed = self.detect_midline_break_short(frame, quote, side=side)
+            elif supplied_type == 'AUTHORIZED_BY_MIDLINE_BREAK_LONG':
+                refreshed = self.detect_midline_break_long(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY':
                 refreshed = self.detect_shadow_retest_long(frame, quote, side=side)
             elif supplied_type in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
@@ -1114,11 +1248,39 @@ class EntryGatePipeline:
             decision.get('type') in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
             or decision.get('reason') in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
         )
+        is_midline_break = bool(
+            decision.get('is_midline_break')
+            or decision.get('type') in ('AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG')
+            or decision.get('reason') in ('AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG')
+        )
+        is_reversal_flip = bool(
+            decision.get('is_reversal_flip')
+            or is_midline_break
+            or decision.get('type') in (
+                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
+                'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+            )
+            or decision.get('reason') in (
+                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
+                'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+            )
+        )
         if not is_top_waterfall_flip:
             ma_bias_problem = self._ma15_bias_problem(
                 frame, quote, side,
                 allow_flat_slope=(is_explosive_breakout or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'),
-                allow_directional_breakout=(decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'),
+                allow_directional_breakout=(decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT' or is_midline_break or is_reversal_flip),
             )
             if ma_bias_problem:
                 if diagnostics is not None:
@@ -1142,38 +1304,20 @@ class EntryGatePipeline:
             or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
             or decision.get('reason') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
         )
-        is_reversal_flip = bool(
-            decision.get('is_reversal_flip')
-            or decision.get('type') in (
-                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
-                'AUTHORIZED_TOP_REVERSAL_SHORT',
-                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
-                'TOP_WATERFALL_FLIP',
-            )
-            or decision.get('reason') in (
-                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
-                'AUTHORIZED_TOP_REVERSAL_SHORT',
-                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
-                'TOP_WATERFALL_FLIP',
-            )
-        )
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:
-            if (is_trend_continuation or is_shadow_retest) and name == 'CANDLE_SOLIDITY':
+            if (is_trend_continuation or is_shadow_retest or is_midline_break) and name == 'CANDLE_SOLIDITY':
                 continue
             # Realtime breakouts already pass impulse, solidity, volume,
             # distance, and MA5 direction checks in detect_realtime_breakout.
             if is_rt_breakout and name == 'CANDLE_SOLIDITY':
                 continue
             # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest) and name == 'MOUTH_EXPANSION':
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break) and name == 'MOUTH_EXPANSION':
                 continue
             # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 CHOP_FILTER（順勢已由均線確認，反手為單棒吞噬）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest) and name == 'CHOP_FILTER':
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break) and name == 'CHOP_FILTER':
                 continue
             passed, reason = gate_func(frame, quote, side, context=context)
             if not passed:
@@ -1192,8 +1336,8 @@ class EntryGatePipeline:
                     )
                 return None
 
-        # 3. Anti-trend hard structure check (反手翻轉與順勢延續豁免舊趨勢排列)
-        if not (is_reversal_flip or is_trend_continuation or is_rt_breakout):
+        # 3. Anti-trend hard structure check (反手翻轉、順勢延續與中軌提前突破豁免舊趨勢排列)
+        if not (is_reversal_flip or is_trend_continuation or is_rt_breakout or is_midline_break):
             curr = frame.iloc[-1]
             ma5 = float(curr.get('ma5', quote))
             ma15 = float(curr.get('ma15', quote))
