@@ -69,7 +69,7 @@ class EntryGatePipeline:
                 all(math.isfinite(value) and value > 0 for value in values)
                 and atr > 0 and price > upper
                 and price - opening >= 0.5 * atr
-                and current_ma5 - previous_ma5 > 0
+                and current_ma5 - previous_ma5 >= 0
             )
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
@@ -95,7 +95,7 @@ class EntryGatePipeline:
                 all(math.isfinite(value) and value > 0 for value in values)
                 and atr > 0 and price < lower
                 and opening - price >= 0.5 * atr
-                and current_ma5 - previous_ma5 < 0
+                and current_ma5 - previous_ma5 <= 0
             )
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
@@ -943,11 +943,17 @@ class EntryGatePipeline:
                     atr_val = 1.0
                 close_ref = float(quote) if float(quote) > 0 else 1.0
                 chop_threshold = 0.05 * (atr_val / close_ref)
+                strong_breakout = (
+                    (side == 'LONG' and self.has_strong_bullish_breakout(frame, quote))
+                    or (side == 'SHORT' and self.has_strong_bearish_breakout(frame, quote))
+                )
                 
                 is_shadow_entry = (decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
 
-                # 3. MA5 走平，100% 全面休眠禁止開倉（平行不開倉）
-                if abs(m5_slope) < chop_threshold and not is_shadow_entry:
+                # Qualified >=0.5 ATR outer-rail breakouts may start before MA5
+                # turns; an MA5 slope against the entry direction remains blocked.
+                if (abs(m5_slope) < chop_threshold
+                        and not is_shadow_entry and not strong_breakout):
                     if diagnostics is not None:
                         diagnostics['reason'] = 'BLOCKED_BY_MA5_PARALLEL_CHOP'
                     return None

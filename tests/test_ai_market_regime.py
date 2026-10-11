@@ -108,8 +108,8 @@ def test_strong_bullish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch)
             "kc_upper": 104.0, "ma5": 100.0, "atr": 2.0, "is_closed": True,
         },
         {
-            "open": 104.0, "high": 106.5, "low": 103.8, "close": 105.0,
-            "kc_upper": 105.0, "ma5": 101.0, "atr": 2.0, "is_closed": False,
+            "open": 104.0, "high": 106.5, "low": 103.8, "close": 106.0,
+            "kc_upper": 105.0, "ma5": 100.0, "atr": 2.0, "is_closed": False,
         },
     ])
     monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
@@ -126,10 +126,10 @@ def test_strong_bearish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch)
     frame = pd.DataFrame([
         {
             "open": 106.0, "high": 107.0, "low": 104.0, "close": 105.0,
-            "kc_lower": 102.0, "ma5": 105.0, "atr": 2.0, "is_closed": True,
+            "kc_lower": 102.0, "ma5": 104.0, "atr": 2.0, "is_closed": True,
         },
         {
-            "open": 104.0, "high": 104.2, "low": 100.0, "close": 102.0,
+            "open": 104.0, "high": 104.2, "low": 100.0, "close": 100.0,
             "kc_lower": 101.0, "ma5": 104.0, "atr": 2.0, "is_closed": False,
         },
     ])
@@ -141,6 +141,43 @@ def test_strong_bearish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch)
 
     monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "UNKNOWN")
     assert pipeline.market_regime_problem("龙虾/USDT", frame, 100.0) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_strong_breakout_may_start_with_flat_ma5_but_not_against_it(side):
+    from core.services.entry_contract import pre_flight_safety_check
+
+    if side == "LONG":
+        rows = [
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+             "atr": 2.0, "ma5": 100.0, "ma15": 99.0,
+             "kc_upper": 104.0, "kc_lower": 96.0, "is_closed": True},
+            {"open": 104.0, "high": 106.5, "low": 103.8, "close": 106.0,
+             "atr": 2.0, "ma5": 100.0, "ma15": 99.0,
+             "kc_upper": 105.0, "kc_lower": 97.0, "is_closed": False},
+        ]
+        quote = 106.0
+        adverse_prev_ma5 = 100.1
+    else:
+        rows = [
+            {"open": 106.0, "high": 107.0, "low": 104.0, "close": 105.0,
+             "atr": 2.0, "ma5": 100.0, "ma15": 101.0,
+             "kc_upper": 110.0, "kc_lower": 102.0, "is_closed": True},
+            {"open": 100.0, "high": 100.2, "low": 97.5, "close": 98.0,
+             "atr": 2.0, "ma5": 100.0, "ma15": 101.0,
+             "kc_upper": 109.0, "kc_lower": 99.0, "is_closed": False},
+        ]
+        quote = 98.0
+        adverse_prev_ma5 = 99.9
+
+    frame = pd.DataFrame(rows)
+    passed, reason = pre_flight_safety_check(frame, quote, side)
+    assert passed is True, reason
+
+    frame.iloc[-2, frame.columns.get_loc("ma5")] = adverse_prev_ma5
+    passed, reason = pre_flight_safety_check(frame, quote, side)
+    assert passed is False
+    assert reason in ("BLOCKED_BY_MA5_SLOPE_DOWN", "BLOCKED_BY_MA5_SLOPE_UP")
 
 
 def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
@@ -157,11 +194,11 @@ def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
     frame["kc_lower_slope"] = 0.5
     frame.loc[18, ["open", "close", "high", "low", "kc_upper", "kc_middle",
                     "kc_lower", "atr", "ma5", "ma15"]] = [
-        103.0, 103.5, 103.7, 102.9, 105.0, 103.0, 101.0, 2.0, 103.0, 102.2,
+        103.0, 103.5, 103.7, 102.9, 105.0, 103.0, 101.0, 2.0, 103.5, 102.2,
     ]
     frame.loc[19, ["open", "close", "high", "low", "kc_upper", "kc_middle",
                     "kc_lower", "atr", "ma5", "ma15", "is_closed"]] = [
-        104.0, 106.0, 106.2, 103.9, 105.0, 103.0, 101.0, 2.0, 104.0, 103.0, False,
+        104.0, 106.0, 106.2, 103.9, 105.0, 103.0, 101.0, 2.0, 103.5, 103.0, False,
     ]
     frame.loc[19, "kc_upper_slope"] = 0.5
     frame.loc[19, "kc_lower_slope"] = 0.5
