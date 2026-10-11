@@ -31,10 +31,10 @@ def test_0716_weak_body_does_not_create_realtime_breakout():
             'ma15': base_price,
             'is_closed': True,
         })
-    # 07:16 微弱小陰線：Open = 97.9, Close = 97.75 (實體 0.15 < 0.35 * ATR)
-    # High = 98.2, Low = 97.6 (長度 0.6, 實體佔比 0.15 / 0.6 = 25% < 55%)
+    # The candle clears the solidity-ratio threshold but misses the 0.15 ATR
+    # minimum body size, so it must not qualify as a realtime breakout.
     live_open = 97.9
-    live_close = 97.75
+    live_close = 97.76
     live_high = 98.2
     live_low = 97.6
     bars.append({
@@ -426,7 +426,19 @@ def test_pipeline_authorization_survives_two_second_revalidation_grace(monkeypat
     engine._channel_entry_quote_times = {symbol: time.time()}
     engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *_args: 2)
     engine._execution_price_is_safe = AsyncMock(return_value=True)
-    engine._entry_boundary_frame = AsyncMock(return_value=frame)
+    frame_reads = 0
+
+    async def boundary_frame_with_next_bar_timestamp(_symbol):
+        nonlocal frame_reads
+        frame_reads += 1
+        fresh = frame.copy()
+        if frame_reads > 1:
+            # The account firewall gets a fresh frame just after the bar rolls.
+            fresh.loc[fresh.index[-1], 'timestamp'] += 60_000
+        fresh.attrs.update(frame.attrs)
+        return fresh
+
+    engine._entry_boundary_frame = boundary_frame_with_next_bar_timestamp
     calls = 0
 
     def evaluate_with_transient_revalidation_failure(*_args, diagnostics=None, **_kwargs):
@@ -543,7 +555,50 @@ def test_realtime_breakout_uses_full_candle_solidity_and_3_5_atr_limit():
 
     frame.loc[2, 'high'] = 104.0
     wick_dominated = pipeline.detect_realtime_breakout(frame, 102.4, side='LONG')
-    assert wick_dominated is None
+    assert wick_dominated is not None
+    assert wick_dominated['realtime_body_ratio'] >= 0.15
+
+
+@pytest.mark.parametrize(
+    ('side', 'open_price', 'high', 'low', 'quote', 'upper', 'lower'),
+    [
+        ('LONG', 100.0, 101.0, 100.0, 100.18, 100.10, 99.0),
+        ('SHORT', 100.0, 100.0, 99.0, 99.82, 101.0, 99.90),
+    ],
+)
+def test_first_realtime_breakout_with_018_solidity_is_authorized(
+    side, open_price, high, low, quote, upper, lower,
+):
+    frame = pd.DataFrame([
+        {
+            'timestamp': 60_000,
+            'open': 100.0, 'high': 100.2, 'low': 99.8, 'close': 100.0,
+            'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
+            'kc_lower': 99.0, 'ma5': 100.0, 'ma15': 100.0,
+            'is_closed': True,
+        },
+        {
+            'timestamp': 120_000,
+            'open': open_price, 'high': high, 'low': low, 'close': quote,
+            'atr': 1.0, 'kc_middle': 100.0, 'kc_upper': upper,
+            'kc_lower': lower, 'ma5': 100.0, 'ma15': 100.0,
+            'is_closed': False,
+        },
+    ])
+
+    signal = pipeline.detect_realtime_breakout(frame, quote, side=side)
+    authorized = pipeline.authorize(
+        None, frame, quote, symbol='LOBSTER/USDT', requested_side=side,
+    )
+
+    assert abs(quote - open_price) / (high - low) == pytest.approx(0.18)
+    assert signal is not None
+    assert signal['type'] == 'AUTHORIZED_REALTIME_BREAKOUT'
+    assert signal['side'] == side
+    assert authorized is not None
+    assert authorized['_is_authorized'] is True
+    assert authorized['type'] == 'AUTHORIZED_REALTIME_BREAKOUT'
+    assert authorized['side'] == side
 
 
 def test_trend_continuation_without_kc_breakout():

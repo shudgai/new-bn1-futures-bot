@@ -3,7 +3,10 @@ import math
 from typing import Optional, Dict, Any
 import pandas as pd
 
-from core.intelligence.spatial_brain import SpatialBrain
+from core.intelligence.spatial_brain import (
+    REALTIME_BREAKOUT_MIN_SOLIDITY,
+    SpatialBrain,
+)
 from core.gates.chop_filter_gate import ChopFilterGate
 from core.gates.candle_solidity_gate import CandleSolidityGate
 from core.gates.mouth_expansion_gate import MouthExpansionGate
@@ -38,8 +41,8 @@ class EntryGatePipeline:
                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """盤中 Tick 級破軌即時開倉（無需等收線）。
         
-        做多：Price > KC_Upper 且 (Price - Open) >= 0.35 * ATR 且 (Price - Open) / (Price - Low + 1e-9) >= 0.60
-        做空：Price < KC_Lower 且 (Open - Price) >= 0.35 * ATR 且 (Open - Price) / (High - Price + 1e-9) >= 0.60
+        做多：即時價格突破上軌，且順向實體至少 0.15 ATR、佔當根振幅至少 15%。
+        做空：即時價格跌破下軌，且順向實體至少 0.15 ATR、佔當根振幅至少 15%。
         """
         if frame is None or len(frame) < 2:
             return None
@@ -71,7 +74,8 @@ class EntryGatePipeline:
             if quote > kc_upper:
                 body_long = quote - open_p
                 distance_atr = (quote - kc_upper) / atr
-                if (body_long >= 0.35 * atr and body_long / candle_range >= 0.60
+                if (body_long >= 0.15 * atr
+                        and body_long / candle_range >= REALTIME_BREAKOUT_MIN_SOLIDITY
                         and distance_atr <= REALTIME_BREAKOUT_MAX_DISTANCE_ATR):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
@@ -94,7 +98,8 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
-                if (body_short >= 0.35 * atr and body_short / candle_range >= 0.60
+                if (body_short >= 0.15 * atr
+                        and body_short / candle_range >= REALTIME_BREAKOUT_MIN_SOLIDITY
                         and distance_atr <= REALTIME_BREAKOUT_MAX_DISTANCE_ATR):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
@@ -433,6 +438,10 @@ class EntryGatePipeline:
         for name, gate_func in self.gates:
             if is_trend_continuation and name == 'CANDLE_SOLIDITY':
                 continue
+            # Realtime breakouts already pass the dedicated 15% solidity and
+            # 0.15 ATR body checks in detect_realtime_breakout.
+            if is_rt_breakout and name == 'CANDLE_SOLIDITY':
+                continue
             # 快車道、順勢延續與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
             if (is_rt_breakout or is_trend_continuation or is_reversal_flip) and name == 'MOUTH_EXPANSION':
                 continue
@@ -512,6 +521,11 @@ class EntryGatePipeline:
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
         decision.setdefault('entry_phase', 'PIPELINE_ENTRY')
+        decision.setdefault(
+            'intrabar',
+            decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
+            or not bool(live.get('is_closed', True)),
+        )
         decision['close_price'] = float(quote)
         decision.setdefault(
             'pending_signal_id',

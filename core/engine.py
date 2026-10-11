@@ -2004,6 +2004,27 @@ class TradingEngine:
                        candidate_bar_id=signal.get('candidate_bar_id'),
                        evidence=entry_frame_evidence(snapshot['frame'])))
         context['entry_snapshot'].update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
+        pipeline_decision = signal.get('_pipeline_authorized_decision')
+        if (
+            signal.get('_pipeline_authorized_intrabar')
+            and signal.get('_is_authorized')
+            and isinstance(pipeline_decision, dict)
+            and pipeline_decision.get('_is_authorized')
+            and pipeline_decision.get('side') == side
+            and pipeline_decision.get('type') == signal.get('signal_code')
+            and pipeline_decision.get('pending_signal_id')
+            == signal.get('_pipeline_pending_signal_id')
+        ):
+            context['pipeline_ttl_grace'] = {
+                'authorized_at_monotonic': signal['_pipeline_authorized_at'],
+                'authorized_price': signal['_pipeline_authorized_price'],
+                'entry_atr': signal['_pipeline_authorized_atr'],
+                'pending_signal_id': signal['_pipeline_pending_signal_id'],
+                'decision': dict(pipeline_decision),
+                'quote_timestamp': getattr(
+                    self, '_channel_entry_quote_times', {},
+                ).get(symbol),
+            }
         submit_lock = getattr(self, '_account_entry_submit_lock', None)
         if submit_lock is None:
             submit_lock = self._account_entry_submit_lock = asyncio.Lock()
@@ -2262,6 +2283,11 @@ class TradingEngine:
                       qualification_signal_id=qualification_signal_id,
                       size_fraction=size_fraction,
                       _is_authorized=observed.get('_is_authorized', False),
+                      _pipeline_authorized_intrabar=(
+                          bool(observed.get('intrabar'))
+                          or observed.get('entry_phase') == 'KC_LIVE_OUTER_BREAKOUT'
+                          or not bool(frame.iloc[-1].get('is_closed', True))
+                      ),
                       _pipeline_authorized_at=time.monotonic(),
                       _pipeline_authorized_price=float(price),
                       _pipeline_authorized_atr=float(observed['entry_atr']),

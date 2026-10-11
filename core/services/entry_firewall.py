@@ -95,7 +95,7 @@ async def validate_account_entry(account, symbol, side, context):
             or authorized_price <= 0
             or atr <= 0
             or quote <= 0
-            or current_bar != stamp
+            or current_bar <= 0
             or not 0 <= quote_age <= 30
             or adverse_move / atr > 0.8
         ):

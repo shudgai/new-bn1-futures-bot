@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 import pandas as pd
 
+REALTIME_BREAKOUT_MIN_SOLIDITY = 0.15
+
 
 @dataclass
 class SpatialContext:
