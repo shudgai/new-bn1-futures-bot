@@ -302,6 +302,42 @@ def _ratchet_lock_details(position, quote):
         return None
 
 
+def _calculate_bars_held(position: Dict[str, Any], frame: Optional[pd.DataFrame]) -> int:
+    """Calculate the number of bars a position has been held."""
+    if not position:
+        return 999
+    if 'bars_held' in position and position['bars_held'] is not None:
+        try:
+            return int(position['bars_held'])
+        except (ValueError, TypeError):
+            pass
+    open_ts = position.get('open_timestamp')
+    if open_ts is not None and frame is not None and not frame.empty:
+        try:
+            curr_bar = frame.iloc[-1]
+            curr_ts = float(curr_bar.get('timestamp') or 0.0)
+            open_sec = float(open_ts)
+            open_ms = open_sec * 1000.0 if open_sec < 1e11 else open_sec
+            tf_ms = float(getattr(frame, 'attrs', {}).get('timeframe_ms', 60000) or 60000)
+            if curr_ts > 0 and open_ms > 0 and tf_ms > 0:
+                diff_ms = max(0.0, curr_ts - open_ms)
+                return max(1, int(diff_ms // tf_ms) + 1)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    open_bar_id = position.get('open_bar_id') or position.get('entry_bar_id') or position.get('candidate_bar_id')
+    if open_bar_id is not None and frame is not None and not frame.empty:
+        try:
+            curr_bar = frame.iloc[-1]
+            curr_ts = float(curr_bar.get('timestamp') or 0.0)
+            tf_ms = float(getattr(frame, 'attrs', {}).get('timeframe_ms', 60000) or 60000)
+            if curr_ts > 0 and float(open_bar_id) > 0 and tf_ms > 0:
+                diff_ms = max(0.0, curr_ts - float(open_bar_id))
+                return max(1, int(diff_ms // tf_ms) + 1)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return 999
+
+
 class HoldingProtectionExitGate:
     """Gatekeeper ensuring position is never closed on normal pullbacks."""
 
@@ -318,6 +354,9 @@ class HoldingProtectionExitGate:
         'EXIT_BY_RATCHET_PROFIT_LOCK',
         'EXIT_LONG_ON_REAL_TOP_DUMP',
         'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
+        'EXIT_LONG_ON_PULLBACK_CONFIRMED',
+        'EXIT_LONG_ON_IMMEDIATE_OPPOSITE',
+        'EXIT_BY_KC_MIDDLE_BREAK',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
         'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
@@ -354,7 +393,21 @@ class HoldingProtectionExitGate:
         atr = float(prev.get('atr', curr.get('atr', 0.0))) if has_frame else 0.0
         candle_closed = _current_bar_is_closed(frame)
 
-        # ── 1. 極端異常：大瀑布反轉 / 極速反撲 (EXIT_BY_EXTREME_WATERFALL) ──
+        # ── 1. 破軌多單進場保護期 (Grace Period: bars_held <= 2) ──
+        # 開倉後前 2 根 K 棒僅在跌破開倉停損底線（Stop Loss）時出場，避免被微幅盤中影線早洗。
+        bars_held = _calculate_bars_held(position, frame)
+        if side == 'LONG' and bars_held <= 2:
+            sl = float(position.get('sl') or position.get('initial_sl') or 0.0)
+            if sl <= 0 and atr > 0:
+                sl = entry_price - 1.5 * atr
+            if sl > 0 and quote <= sl:
+                return 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL', {
+                    'stop_loss': sl, 'quote': quote, 'bars_held': bars_held,
+                    'side': side, 'reason': 'STOP_LOSS_HIT_IN_GRACE_PERIOD',
+                }
+            return None, {'in_grace_period': True, 'bars_held': bars_held}
+
+        # ── 1.1 極端異常：大瀑布反轉 / 極速反撲 (EXIT_BY_EXTREME_WATERFALL) ──
         if frame is not None and len(frame) >= 1 and atr > 0:
             curr_open = float(curr.get('open', quote))
             kc_upper = float(curr.get('kc_upper', 0.0))
@@ -384,7 +437,7 @@ class HoldingProtectionExitGate:
                         'quote': quote, 'side': side,
                     }
 
-        # ── 1.1 頂部斷頭鍘特例 (Top Waterfall Flip) 授權「平多 + 秒反手開空」──
+        # ── 1.2 頂部斷頭鍘特例 (Top Waterfall Flip) 授權「平多 + 秒反手開空」──
         if side == 'LONG' and candle_closed:
             evidence = top_engulfing_flip_evidence(frame)
             if evidence is not None:
@@ -400,17 +453,43 @@ class HoldingProtectionExitGate:
             exhaustion['quote'] = quote
             return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
 
-        # ── 2. 真實大賣壓當根收線立斬 (EXIT_LONG_ON_REAL_TOP_DUMP) ──
+        # ── 1.3 破軌多單頂部平倉 GATE (Post-Breakout Exit Gate) ──
         if side == 'LONG' and candle_closed and frame is not None and len(frame) >= 2 and atr > 0:
             try:
                 c_open = float(curr.get('open', quote))
                 c_close = float(curr.get('close', quote))
                 c_ma5 = float(curr.get('ma5', quote))
                 c_ma15 = float(curr.get('ma15', quote))
+                p_open = float(prev.get('open', 0.0))
+                p_close = float(prev.get('close', 0.0))
+                prev_is_red = p_close < p_open
+                prev2_is_red = (
+                    len(frame) >= 3 and
+                    float(frame.iloc[-3].get('close', 0.0)) < float(frame.iloc[-3].get('open', 0.0))
+                )
+
+                # 3. 【無回踩直接反向立斬（Immediate Opposite Dump Exit）】
+                # 若第一根紅 K 出現後，下一根完全無回踩、直接連續開出反向長黑（Open - Close >= 0.35 * ATR 且 Close < ma5）
+                if prev_is_red and (c_open - c_close) >= 0.35 * atr and c_close < c_ma5:
+                    return 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE', {
+                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
+                        'atr': atr, 'quote': quote, 'side': side,
+                        'dump_body_atr': (c_open - c_close) / atr,
+                        'bars_held': bars_held,
+                    }
+
+                # 2. 【紅 K 停滯回踩平倉（Pullback Confirmation Exit）】
+                # 多頭大陽線衝高後出現第一根收陰，隨後出現回抽 MA5 乏力，或回踩 MA5 收盤確認跌破 (Close < ma5)
+                if (prev_is_red or prev2_is_red) and c_close < c_ma5:
+                    return 'EXIT_LONG_ON_PULLBACK_CONFIRMED', {
+                        'open': c_open, 'close': c_close, 'ma5': c_ma5,
+                        'atr': atr, 'quote': quote, 'side': side,
+                        'bars_held': bars_held,
+                    }
+
+                # 原有：真實大賣壓當根收線立斬 (EXIT_LONG_ON_REAL_TOP_DUMP)
                 entry_p = float(position.get('entry_price', 0.0))
                 is_above_ma15_context = c_open > c_ma15 or entry_p < c_open
-
-                # 價格脫離 MA15 後的高位，當根為實體陰線 (Open - Close >= 0.35 * ATR) 且實體跌破 MA5 (Close < ma5)
                 if is_above_ma15_context and (c_open - c_close) >= 0.35 * atr and c_close < c_ma5:
                     return 'EXIT_LONG_ON_REAL_TOP_DUMP', {
                         'open': c_open, 'close': c_close, 'ma5': c_ma5,
@@ -538,6 +617,11 @@ class HoldingProtectionExitGate:
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL'
         )):
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        # ── 1.5 進場保護期 (Grace Period: bars_held <= 2) ──
+        bars_held = _calculate_bars_held(position, frame)
+        if side == 'LONG' and bars_held <= 2:
+            return _reject()
 
         # Every intrabar strategy exit waits for candle finality except the
         # verified extreme V-reversal and the ROE ratchet lock.
@@ -696,6 +780,65 @@ class HoldingProtectionExitGate:
                 except Exception:
                     pass
             return _auth(clean_reason)
+
+        # ── 5.1 破軌多單頂部平倉 GATE (Pullback Confirmation & Immediate Opposite Dump) ──
+        if clean_reason in (
+            'EXIT_LONG_ON_PULLBACK_CONFIRMED',
+            'EXIT_LONG_ON_IMMEDIATE_OPPOSITE',
+        ):
+            if side != 'LONG':
+                return _reject()
+            if frame is not None and len(frame) >= 2:
+                try:
+                    c = frame.iloc[-1]
+                    p = frame.iloc[-2]
+                    a = float(p.get('atr', c.get('atr', 0.0)))
+                    c_open = float(c.get('open', quote))
+                    c_close = float(c.get('close', quote))
+                    c_ma5 = float(c.get('ma5', quote))
+                    p_open = float(p.get('open', 0.0))
+                    p_close = float(p.get('close', 0.0))
+                    p_is_red = p_close < p_open
+                    p2_is_red = (
+                        len(frame) >= 3 and
+                        float(frame.iloc[-3].get('close', 0.0)) < float(frame.iloc[-3].get('open', 0.0))
+                    )
+                    if clean_reason == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE':
+                        if a > 0 and p_is_red and (c_open - c_close) >= 0.35 * a and c_close < c_ma5:
+                            details.update({
+                                'bars_held': bars_held, 'open': c_open, 'close': c_close,
+                                'ma5': c_ma5, 'atr': a,
+                            })
+                            return _auth('EXIT_LONG_ON_IMMEDIATE_OPPOSITE')
+                        return _reject()
+                    elif clean_reason == 'EXIT_LONG_ON_PULLBACK_CONFIRMED':
+                        if (p_is_red or p2_is_red) and c_close < c_ma5:
+                            details.update({
+                                'bars_held': bars_held, 'open': c_open, 'close': c_close,
+                                'ma5': c_ma5, 'atr': a,
+                            })
+                            return _auth('EXIT_LONG_ON_PULLBACK_CONFIRMED')
+                        return _reject()
+                except Exception:
+                    pass
+            return _auth(clean_reason)
+
+        # ── 5.2 常規趨勢 KC 中軌破位平倉 ──
+        if clean_reason in (
+            'EXIT_BY_KC_MIDDLE_BREAK', 'KC_MIDDLE_EXIT', 'KC_MIDDLE_BREAK', 'EXIT_ON_KC_MIDDLE_BREAK'
+        ):
+            if frame is not None and not frame.empty:
+                c = frame.iloc[-1]
+                kc_mid = float(c.get('kc_middle', c.get('kc_basis', 0.0)))
+                c_close = float(c.get('close', quote))
+                if side == 'LONG' and c_close < kc_mid and kc_mid > 0:
+                    details.update({'bars_held': bars_held, 'kc_middle': kc_mid, 'close': c_close})
+                    return _auth('EXIT_BY_KC_MIDDLE_BREAK')
+                elif side == 'SHORT' and c_close > kc_mid and kc_mid > 0:
+                    details.update({'bars_held': bars_held, 'kc_middle': kc_mid, 'close': c_close})
+                    return _auth('EXIT_BY_KC_MIDDLE_BREAK')
+                return _reject()
+            return _auth('EXIT_BY_KC_MIDDLE_BREAK')
 
         # ── 6. 健康回踩強制續抱檢驗 (Pullback Immunity) ──
         if frame is not None and len(frame) >= 2:

@@ -35,6 +35,8 @@ MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
 CLIMAX_REVERSAL_FLIP_CODE = "CLIMAX_REVERSAL_FLIP"
 TOP_WATERFALL_FLIP_CODE = "AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT"
+SHADOW_RETEST_ENTRY_CODE = "AUTHORIZED_SHADOW_RETEST_ENTRY"
+AUTHORIZED_SHADOW_RETEST_ENTRY_CODE = "AUTHORIZED_SHADOW_RETEST_ENTRY"
 REALTIME_RAIL_BREACH_SHORT_CODE = "KC_REALTIME_RAIL_BREACH_SHORT"
 CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
@@ -1603,22 +1605,26 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
         spatial_ctx = SpatialBrain.analyze(frame, quote)
         is_explosive = (spatial_ctx.state == 'EXPLOSIVE_EXPANSION')
 
+        is_shadow_retest = (decision_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
+
         if side == "LONG":
             # 1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】
-            if ma5_slope < 0:
-                return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
-            if ma5_slope == 0:
-                return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
+            if not is_shadow_retest:
+                if ma5_slope < 0:
+                    return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
+                if ma5_slope == 0:
+                    return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT 100% 豁免上軌空間限制
-            if not is_explosive:
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest 100% 豁免上軌空間限制
+            if not is_explosive and not is_shadow_retest:
                 is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
                         return False, "REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC"
                     
             # 3. 逆勢長陰不接刀：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多！
-            if (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
+            # 均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY) 豁免「紅 K 一票否決」，認定為多頭踩線蓄勢
+            if not is_shadow_retest and (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
                 
         elif side == "SHORT":
@@ -1707,7 +1713,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
                 or pipeline.detect_top_waterfall_flip_short(frame, quote) is not None
             )
-            if not is_flip_candidate:
+            is_shadow_candidate = (
+                code in ('AUTHORIZED_SHADOW_RETEST_ENTRY', 'SHADOW_RETEST_ENTRY')
+                or pipeline.detect_shadow_retest_long(frame, quote) is not None
+            )
+            if not is_flip_candidate and not is_shadow_candidate:
                 return reject(chop_problem)
 
         if code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
@@ -1722,6 +1732,21 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             )
             if pipeline_decision is None:
                 reason = (diagnostics or {}).get('reason', 'BLOCKED_TOP_WATERFALL_PIPELINE')
+                return reject(reason)
+            return authorize(pipeline_decision, quote)
+
+        if code in ('AUTHORIZED_SHADOW_RETEST_ENTRY', 'SHADOW_RETEST_ENTRY'):
+            decision = pipeline.detect_shadow_retest_long(
+                frame, quote, side='LONG',
+            )
+            if decision is None:
+                return reject('BLOCKED_SHADOW_RETEST_EVIDENCE')
+            pipeline_decision = pipeline.authorize(
+                decision, frame, quote, symbol=symbol, account=account,
+                requested_side='LONG', diagnostics=diagnostics,
+            )
+            if pipeline_decision is None:
+                reason = (diagnostics or {}).get('reason', 'BLOCKED_SHADOW_RETEST_PIPELINE')
                 return reject(reason)
             return authorize(pipeline_decision, quote)
 

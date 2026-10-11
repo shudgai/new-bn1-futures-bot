@@ -18,6 +18,7 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
     'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+    'AUTHORIZED_SHADOW_RETEST_ENTRY',
     'AUTHORIZED_TOP_REVERSAL_SHORT',
     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
@@ -392,6 +393,101 @@ class EntryGatePipeline:
         return None
 
     @staticmethod
+    def detect_shadow_retest_long(frame: pd.DataFrame, quote: float,
+                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """均線下影線回踩蓄勢開多 (Shadow Retest Entry).
+        
+        當大級別為多頭環境（channel_state == "KC向上" 或 ma15_slope > 0 且 ma5 > ma15）：
+        1. 【下影線回踩判定（有影子）】：
+           - K 棒低點觸及或回踩 MA5 / MA15 / KC 中軌；
+           - 帶有明確下影線：lower_shadow >= 0.35 * (High - Low) 或 lower_shadow >= 0.25 * ATR；
+           - 收盤價站穩在 MA15 與 KC 中軌之上。
+        2. 【豁免與進場授權】：
+           - 即使當根收盤微幅偏紅（Close < Open），只要滿足上述下影線支撐：
+             * 豁免「紅 K 一票否決」，認定為「多頭踩線蓄勢」！
+             * 授權 AUTHORIZED_SHADOW_RETEST_ENTRY，允許在踩線確認或次根轉陽瞬間提前開多。
+        """
+        if side not in (None, 'LONG') or frame is None or len(frame) < 2:
+            return None
+
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+
+        try:
+            quote = float(quote)
+            open_p = float(curr['open'])
+            high_p = max(float(curr['high']), quote)
+            low_p = min(float(curr['low']), quote)
+            live_close = float(curr['close'])
+            effective_close = live_close if bool(curr.get('is_closed', True)) else quote
+            
+            atr = float(prev.get('atr', curr.get('atr', 0.0)))
+            if atr <= 0:
+                atr = float(curr.get('atr', 1.0))
+
+            ma5 = float(curr.get('ma5', live_close))
+            ma15 = float(curr.get('ma15', live_close))
+            prev_ma15 = float(prev.get('ma15', ma15))
+            ma15_slope = ma15 - prev_ma15
+
+            kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
+            channel_state = str(curr.get('channel_state', '')).strip()
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+        if not all(math.isfinite(v) and v > 0 for v in (quote, open_p, high_p, low_p, effective_close, atr)):
+            return None
+
+        # ── 1. 大級別多頭環境判定 ──
+        # channel_state == "KC向上" 或 "UP" 或 (ma15_slope > 0 且 ma5 > ma15)
+        is_kc_up = (channel_state in ('KC向上', 'UP', 'BULLISH', 'LONG'))
+        is_ma_bullish = (ma15_slope > 0 and ma5 > ma15)
+        if not (is_kc_up or is_ma_bullish):
+            return None
+
+        # ── 2. 下影線回踩判定 ──
+        support_lines = [line for line in (ma5, ma15, kc_middle) if line > 0]
+        if not support_lines:
+            return None
+        touched_support = (
+            low_p <= max(support_lines) * 1.002
+            or any(abs(low_p - line) <= 0.20 * atr for line in support_lines)
+        )
+        if not touched_support:
+            return None
+
+        # 帶有明確下影線：lower_shadow >= 0.35 * (High - Low) 或 lower_shadow >= 0.25 * ATR
+        candle_range = high_p - low_p
+        lower_shadow = min(open_p, effective_close) - low_p
+        has_lower_shadow = (
+            (candle_range > 0 and lower_shadow >= 0.35 * candle_range)
+            or (atr > 0 and lower_shadow >= 0.25 * atr)
+        )
+        if not has_lower_shadow:
+            return None
+
+        # 收盤價站穩在 MA15 與 KC 中軌之上
+        if effective_close < ma15 or (kc_middle > 0 and effective_close < kc_middle):
+            return None
+
+        bar_id = float(curr.get('timestamp', 0))
+        return {
+            'type': 'AUTHORIZED_SHADOW_RETEST_ENTRY',
+            'side': 'LONG',
+            'price': quote,
+            'is_shadow_retest': True,
+            'is_breakout': True,
+            'override_cooldown': True,
+            'confirmation_bar_id': bar_id,
+            'breakout_bar_id': bar_id,
+            'pending_signal_id': f"SHADOW_RETEST:LONG:{bar_id}",
+            'entry_phase': 'KC_SHADOW_RETEST_ENTRY',
+            'reason': 'AUTHORIZED_SHADOW_RETEST_ENTRY',
+            'lower_shadow': lower_shadow,
+            'atr': atr,
+        }
+
+    @staticmethod
     def detect_reversal_flip(frame: pd.DataFrame, quote: float,
                              side: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """情境 2：頂底轉折與反手（Reversal Flip - 帶量吞噬秒換向）。
@@ -682,7 +778,11 @@ class EntryGatePipeline:
                 )))
                 or (decision is None and self.detect_top_waterfall_flip_short(frame, quote, side=requested_side) is not None)
             )
-            if not is_flip_candidate:
+            is_shadow_candidate = (
+                (decision is not None and (decision.get('is_shadow_retest') or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'))
+                or (decision is None and self.detect_shadow_retest_long(frame, quote, side=requested_side) is not None)
+            )
+            if not is_flip_candidate and not is_shadow_candidate:
                 if diagnostics is not None:
                     diagnostics['reason'] = chop_problem
                 return None
@@ -711,20 +811,27 @@ class EntryGatePipeline:
                         if cont_decision is not None:
                             decision = cont_decision
                         else:
-                            flip_decision = self.detect_reversal_flip(frame, quote, side=requested_side)
-                            if flip_decision is not None:
-                                decision = flip_decision
+                            shadow_retest = (
+                                self.detect_shadow_retest_long(frame, quote, side=requested_side)
+                                if requested_side in (None, 'LONG') else None
+                            )
+                            if shadow_retest is not None:
+                                decision = shadow_retest
                             else:
-                                top_reversal = (
-                                    self.detect_top_reversal_short(frame, quote, side=requested_side)
-                                    if requested_side in (None, 'SHORT') else None
-                                )
-                                if top_reversal is not None:
-                                    decision = top_reversal
+                                flip_decision = self.detect_reversal_flip(frame, quote, side=requested_side)
+                                if flip_decision is not None:
+                                    decision = flip_decision
                                 else:
-                                    if diagnostics is not None:
-                                        diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
-                                    return None
+                                    top_reversal = (
+                                        self.detect_top_reversal_short(frame, quote, side=requested_side)
+                                        if requested_side in (None, 'SHORT') else None
+                                    )
+                                    if top_reversal is not None:
+                                        decision = top_reversal
+                                    else:
+                                        if diagnostics is not None:
+                                            diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
+                                        return None
         else:
             supplied_type = decision.get('type')
             side = decision.get('side')
@@ -734,6 +841,8 @@ class EntryGatePipeline:
                 return None
             if supplied_type == 'AUTHORIZED_REALTIME_BREAKOUT':
                 refreshed = self.detect_realtime_breakout(frame, quote, side=side)
+            elif supplied_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY':
+                refreshed = self.detect_shadow_retest_long(frame, quote, side=side)
             elif supplied_type in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
                 refreshed = self.detect_top_waterfall_flip_short(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_BY_PEAK_FLIP_SHORT':
@@ -778,14 +887,16 @@ class EntryGatePipeline:
                 close_ref = float(quote) if float(quote) > 0 else 1.0
                 chop_threshold = 0.05 * (atr_val / close_ref)
                 
+                is_shadow_entry = (decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
+
                 # 3. MA5 走平，100% 全面休眠禁止開倉（平行不開倉）
-                if abs(m5_slope) < chop_threshold:
+                if abs(m5_slope) < chop_threshold and not is_shadow_entry:
                     if diagnostics is not None:
                         diagnostics['reason'] = 'BLOCKED_BY_MA5_PARALLEL_CHOP'
                     return None
                     
                 # 1. MA5 向下，100% 絕對禁止開多（向下不開多）
-                if side == 'LONG' and m5_slope < 0:
+                if side == 'LONG' and m5_slope < 0 and not is_shadow_entry:
                     if diagnostics is not None:
                         diagnostics['reason'] = 'BLOCKED_BY_MA5_SLOPE_DOWN'
                     return None
@@ -810,7 +921,8 @@ class EntryGatePipeline:
         )
         if not is_top_waterfall_flip:
             ma_bias_problem = self._ma15_bias_problem(
-                frame, quote, side, allow_flat_slope=is_explosive_breakout
+                frame, quote, side,
+                allow_flat_slope=(is_explosive_breakout or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
             )
             if ma_bias_problem:
                 if diagnostics is not None:
@@ -828,6 +940,11 @@ class EntryGatePipeline:
             decision.get('is_trend_continuation')
             or decision.get('type') in ('AUTHORIZED_BY_TREND_CONTINUATION_LONG', 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT')
             or decision.get('reason') in ('AUTHORIZED_BY_TREND_CONTINUATION_LONG', 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT')
+        )
+        is_shadow_retest = bool(
+            decision.get('is_shadow_retest')
+            or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
+            or decision.get('reason') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
         )
         is_reversal_flip = bool(
             decision.get('is_reversal_flip')
@@ -850,17 +967,17 @@ class EntryGatePipeline:
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:
-            if is_trend_continuation and name == 'CANDLE_SOLIDITY':
+            if (is_trend_continuation or is_shadow_retest) and name == 'CANDLE_SOLIDITY':
                 continue
             # Realtime breakouts already pass the dedicated 15% solidity and
             # 0.15 ATR body checks in detect_realtime_breakout.
             if is_rt_breakout and name == 'CANDLE_SOLIDITY':
                 continue
-            # 快車道、順勢延續與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip) and name == 'MOUTH_EXPANSION':
+            # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest) and name == 'MOUTH_EXPANSION':
                 continue
-            # 快車道、順勢延續與反手翻轉全面豁免 CHOP_FILTER（順勢已由均線確認，反手為單棒吞噬）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip) and name == 'CHOP_FILTER':
+            # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 CHOP_FILTER（順勢已由均線確認，反手為單棒吞噬）
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest) and name == 'CHOP_FILTER':
                 continue
             passed, reason = gate_func(frame, quote, side, context=context)
             if not passed:

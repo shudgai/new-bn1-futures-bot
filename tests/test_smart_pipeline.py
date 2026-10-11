@@ -1801,6 +1801,187 @@ def test_top_waterfall_dump_flip_to_short():
     asyncio.run(verify_atomic_order())
 
 
+def test_post_breakout_exit_gate_pullback_and_immediate_dump():
+    """驗證破軌多單頂部平倉 GATE：進場保護期、紅 K 停滯回踩平倉、無回踩連續大黑 K 立即平倉。"""
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    atr = 1.0
+    now_ms = 1700000000000
+
+    # 1. 進場保護期 (Grace Period: bars_held <= 2)
+    pos_grace = {
+        'side': 'LONG',
+        'entry_price': 100.0,
+        'sl': 98.0,
+        'bars_held': 1,
+        'symbol': 'CAP/USDT',
+    }
+    # 稍微回落至 99.5，未破 SL 98.0
+    bars_grace = [
+        {
+            'timestamp': now_ms - 60000, 'open': 100.0, 'close': 101.0, 'high': 101.5,
+            'low': 99.8, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 102.5, 'kc_lower': 97.5,
+            'ma5': 100.5, 'ma15': 99.0, 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms, 'open': 101.0, 'close': 99.5, 'high': 101.2,
+            'low': 99.2, 'atr': atr, 'kc_middle': 100.0, 'kc_upper': 102.5, 'kc_lower': 97.5,
+            'ma5': 100.2, 'ma15': 99.0, 'is_closed': True,
+        },
+    ]
+    df_grace = pd.DataFrame(bars_grace)
+    df_grace.attrs['timeframe_ms'] = 60000
+
+    code, info = HoldingProtectionExitGate.evaluate(pos_grace, df_grace, 99.5)
+    assert code is None
+    assert info.get('in_grace_period') is True
+
+    # 若在保護期內跌破 SL (例如跌至 97.8 <= 98.0)，觸發硬止損出場
+    code_sl, info_sl = HoldingProtectionExitGate.evaluate(pos_grace, df_grace, 97.8)
+    assert code_sl == 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL'
+
+    # 2. 紅 K 停滯回踩平倉 (EXIT_LONG_ON_PULLBACK_CONFIRMED)
+    # 前一根為衝高後的第一根紅 K，當根回踩 MA5 收盤確認跌破 MA5 (Close 103.8 < MA5 104.0)
+    pos_held = {
+        'side': 'LONG',
+        'entry_price': 100.0,
+        'bars_held': 4,
+        'symbol': 'CAP/USDT',
+    }
+    bars_pullback = [
+        # B1: 大陽線衝高 (無長上影線)
+        {
+            'timestamp': now_ms - 120000, 'open': 101.0, 'close': 105.0, 'high': 105.0,
+            'low': 100.8, 'atr': atr, 'kc_middle': 101.5, 'kc_upper': 105.5, 'kc_lower': 97.5,
+            'ma5': 103.5, 'ma15': 100.0, 'is_closed': True,
+        },
+        # B2: 第一根收陰 (Open 105.0, Close 104.2, Red K, body=0.8, wick=0.1)
+        {
+            'timestamp': now_ms - 60000, 'open': 105.0, 'close': 104.2, 'high': 105.1,
+            'low': 104.0, 'atr': atr, 'kc_middle': 102.0, 'kc_upper': 105.8, 'kc_lower': 98.2,
+            'ma5': 104.1, 'ma15': 100.5, 'is_closed': True,
+        },
+        # B3: 回抽乏力且收盤跌破 MA5 (Open 104.0, Close 103.8 < MA5 104.0, 實體 0.2 < 0.35 ATR)
+        {
+            'timestamp': now_ms, 'open': 104.0, 'close': 103.8, 'high': 104.1,
+            'low': 103.6, 'atr': atr, 'kc_middle': 102.2, 'kc_upper': 106.0, 'kc_lower': 98.4,
+            'ma5': 104.0, 'ma15': 101.0, 'is_closed': True,
+        },
+    ]
+    df_pb = pd.DataFrame(bars_pullback)
+    df_pb.attrs['timeframe_ms'] = 60000
+    pb_code, pb_info = HoldingProtectionExitGate.evaluate(pos_held, df_pb, 103.8)
+    assert pb_code == 'EXIT_LONG_ON_PULLBACK_CONFIRMED'
+    allowed_pb, valid_pb_code, _ = HoldingProtectionExitGate.validate_exit(
+        pos_held, df_pb, 103.8, candidate_reason='EXIT_LONG_ON_PULLBACK_CONFIRMED', details=pb_info
+    )
+    assert allowed_pb is True
+    assert valid_pb_code == 'EXIT_LONG_ON_PULLBACK_CONFIRMED'
+
+    # 3. 無回踩直接反向立斬 (EXIT_LONG_ON_IMMEDIATE_OPPOSITE)
+    # 第一根紅 K 出現後，下一根直接開出反向長黑 (Open - Close >= 0.35 * ATR 且 Close < MA5)
+    bars_dump = [
+        # B1: 大陽線衝高
+        {
+            'timestamp': now_ms - 120000, 'open': 101.0, 'close': 105.0, 'high': 105.0,
+            'low': 100.8, 'atr': atr, 'kc_middle': 101.5, 'kc_upper': 105.5, 'kc_lower': 97.5,
+            'ma5': 103.5, 'ma15': 100.0, 'is_closed': True,
+        },
+        # B2: 第一根收陰
+        {
+            'timestamp': now_ms - 60000, 'open': 105.0, 'close': 104.2, 'high': 105.1,
+            'low': 104.0, 'atr': atr, 'kc_middle': 102.0, 'kc_upper': 105.8, 'kc_lower': 98.2,
+            'ma5': 104.1, 'ma15': 100.5, 'is_closed': True,
+        },
+        # B3: 無回踩連續大黑 K (Open 104.2, Close 103.4, Open - Close = 0.8 >= 0.35 * 1.0, Close < MA5 103.9)
+        {
+            'timestamp': now_ms, 'open': 104.2, 'close': 103.4, 'high': 104.3,
+            'low': 103.2, 'atr': atr, 'kc_middle': 102.2, 'kc_upper': 106.0, 'kc_lower': 98.4,
+            'ma5': 103.9, 'ma15': 101.0, 'is_closed': True,
+        },
+    ]
+    df_dump = pd.DataFrame(bars_dump)
+    df_dump.attrs['timeframe_ms'] = 60000
+    dump_code, dump_info = HoldingProtectionExitGate.evaluate(pos_held, df_dump, 103.4)
+    assert dump_code == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE'
+    allowed_dump, valid_dump_code, _ = HoldingProtectionExitGate.validate_exit(
+        pos_held, df_dump, 103.4, candidate_reason='EXIT_LONG_ON_IMMEDIATE_OPPOSITE', details=dump_info
+    )
+    assert allowed_dump is True
+    assert valid_dump_code == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE'
+
+
+def test_shadow_retest_entry_long():
+    """驗證均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY)。"""
+    from core.services.entry_contract import (
+        AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
+        evaluate_entry_contract,
+    )
+
+    atr = 1.0
+    now_ms = 1700000000000
+
+    # 構造多頭環境：KC向上，均線多頭發散 (MA5 > MA15 且 MA15 向上)
+    # 當根為小紅 K 回踩 MA15，但帶有長下影線 (踩線有撐) 站穩在 MA15 與 KC 中軌之上
+    # High: 102.0, Low: 100.1, Open: 101.5, Close: 101.2 (微幅偏紅 Close < Open)
+    # MA15: 100.2, MA5: 101.3, KC middle: 99.5
+    # Low 100.1 觸及 MA15 100.2
+    # lower_shadow = min(101.5, 101.2) - 100.1 = 1.1 >= 0.35 * (102.0 - 100.1 = 1.9) = 0.665
+    # Close 101.2 > MA15 100.2 且 > KC middle 99.5
+    bars = [
+        {
+            'timestamp': now_ms - 120000, 'open': 99.5, 'close': 100.8, 'high': 101.0,
+            'low': 99.2, 'atr': atr, 'kc_middle': 99.0, 'kc_upper': 103.0, 'kc_lower': 95.0,
+            'ma5': 100.5, 'ma15': 99.8, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms - 60000, 'open': 100.8, 'close': 101.8, 'high': 102.2,
+            'low': 100.5, 'atr': atr, 'kc_middle': 99.2, 'kc_upper': 103.2, 'kc_lower': 95.2,
+            'ma5': 101.0, 'ma15': 100.0, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+        {
+            'timestamp': now_ms, 'open': 101.5, 'close': 101.2, 'high': 102.0,
+            'low': 100.1, 'atr': atr, 'kc_middle': 99.5, 'kc_upper': 103.5, 'kc_lower': 95.5,
+            'ma5': 101.3, 'ma15': 100.2, 'channel_state': 'KC向上', 'is_closed': True,
+        },
+    ]
+    df = pd.DataFrame(bars)
+    df.attrs['timeframe_ms'] = 60000
+    quote = 101.2
+
+    # 1. 驗證 pipeline.detect_shadow_retest_long 識別成功
+    detected = pipeline.detect_shadow_retest_long(df, quote, side='LONG')
+    assert detected is not None
+    assert detected['type'] == AUTHORIZED_SHADOW_RETEST_ENTRY_CODE
+    assert detected['side'] == 'LONG'
+    assert detected['is_shadow_retest'] is True
+
+    # 2. 驗證 pipeline.authorize 豁免「紅 K 一票否決」與「實體佔比/破軌限制」成功放行
+    diagnostics = {}
+    mock_account = SimpleNamespace(
+        last_closed_at={},
+        last_closed_side={},
+        positions={},
+        trades=[],
+        log=lambda *a, **k: None,
+    )
+    authorized = pipeline.authorize(
+        detected, df, quote, symbol='LOBSTER/USDT', account=mock_account,
+        requested_side='LONG', diagnostics=diagnostics
+    )
+    assert authorized is not None
+    assert authorized['type'] == AUTHORIZED_SHADOW_RETEST_ENTRY_CODE
+
+    # 3. 驗證 evaluate_entry_contract 成功簽約授權開多
+    contract_decision = evaluate_entry_contract(
+        df, quote, code=AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
+        account=mock_account, symbol='LOBSTER/USDT', diagnostics=diagnostics
+    )
+    assert contract_decision is not None
+    assert contract_decision['type'] == AUTHORIZED_SHADOW_RETEST_ENTRY_CODE
+    assert contract_decision['side'] == 'LONG'
+
+
 
 
 

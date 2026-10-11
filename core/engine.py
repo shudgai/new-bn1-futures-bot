@@ -1807,6 +1807,7 @@ class TradingEngine:
             'AUTHORIZED_REALTIME_BREAKOUT',
             'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
             'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+            'AUTHORIZED_SHADOW_RETEST_ENTRY',
             'AUTHORIZED_BY_PEAK_FLIP_SHORT',
             'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
             'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
@@ -2331,6 +2332,7 @@ class TradingEngine:
                 'AUTHORIZED_REALTIME_BREAKOUT',
                 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+                'AUTHORIZED_SHADOW_RETEST_ENTRY',
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
             ) or bool(observed.get('override_cooldown'))) and observed.get('side') == side
