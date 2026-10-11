@@ -426,65 +426,6 @@
                     </div>
                 </div>
 
-                <!-- TRADE HISTORY TABLE -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>📜 近期交易明細 (Trade History)</span>
-                        <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
-                            <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
-                                <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
-                                <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
-                            </select>
-                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
-                        </div>
-                    </div>
-                    <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>時間</th>
-                                    <th>幣種</th>
-                                    <th>動作</th>
-                                    <th>狀態</th>
-                                    <th>價格</th>
-                                    <th>數量（合約基礎單位）</th>
-                                    <th>名義價值 (USDT)</th>
-                                    <th>保證金 (USDT)</th>
-                                    <th>手續費 (USDT)</th>
-                                    <th>淨損益 (扣手續費)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="t in bot.trades" :key="t.id"
-                                    :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
-                                    <td>{{ t.time }}</td>
-                                    <td><b>{{ t.symbol }}</b></td>
-                                    <td :style="{
-                                        color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
-                                               (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
-                                    }">{{ formatTradeAction(t.action) }}</td>
-                                    <td :style="{
-                                        color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
-                                               t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
-                                               'var(--muted)',
-                                        fontSize: '11px'
-                                    }">{{ t.status }}</td>
-                                    <td>{{ t.price }}</td>
-                                    <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
-                                    <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
-                                    <td>{{ t.amount }}</td>
-                                    <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
-                                    <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
-                                        {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-
-
                 <!-- VOLATILITY STATS TABLE -->
                 <div class="card">
                     <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
@@ -568,6 +509,64 @@
 
             </div>
 
+            <!-- TRADE HISTORY TABLE -->
+            <div class="card full-width col-12" style="min-width:0;">
+                <div class="card-title">
+                    <span>📜 近期交易明細 (Trade History)</span>
+                    <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
+                        <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
+                            <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
+                            <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
+                        </select>
+                        <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
+                    </div>
+                </div>
+                <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>時間</th>
+                                <th>幣種</th>
+                                <th>動作</th>
+                                <th>狀態</th>
+                                <th>價格</th>
+                                <th>數量（合約基礎單位）</th>
+                                <th>名義價值 (USDT)</th>
+                                <th>保證金 (USDT)</th>
+                                <th>手續費 (USDT)</th>
+                                <th>淨損益 (扣手續費)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="t in bot.trades" :key="t.id"
+                                :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
+                                <td>{{ t.time }}</td>
+                                <td><b>{{ t.symbol }}</b></td>
+                                <td :style="{
+                                    color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
+                                           (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
+                                }">{{ formatTradeAction(t.action) }}</td>
+                                <td :style="{
+                                    color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
+                                           t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
+                                           'var(--muted)',
+                                    fontSize: '11px'
+                                }">{{ t.status }}</td>
+                                <td>{{ t.price }}</td>
+                                <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
+                                <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
+                                <td>{{ t.amount }}</td>
+                                <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
+                                <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
+                                    {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+
             <!-- SYSTEM LOG CONSOLE (MOVED TO BOTTOM, FULL WIDTH) -->
             <div class="card system-log-card full-width">
                 <div class="card-title">💻 系統日誌 (System Logs)</div>
@@ -589,7 +588,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯防禦(即時回吐鎖利+MA5破位+中軌底線)</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯鎖利（強逆向確認＋MA5／中軌結構破壞）</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -599,7 +598,7 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌：連續上升為牛市、連續下降為熊市，其餘為猴市；資料不足顯示待更新">
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="即時 K 價格站上／跌破 KC 中軌，或觸及同側外軌時優先顯示方向；否則參考最近三根已收線中軌">
                                 {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                         </span>
@@ -973,7 +972,7 @@
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
                     state.entryBlock = (json.cache || {}).source === 'stale' ? null : (json.entry_block || null);
-                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
+                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getChartCkTrend(json.data);
                     const candles = [];
                     const ma5 = [];
                     const ma15 = [];
@@ -1211,7 +1210,21 @@
                 }
             },
 
-                getClosedCkTrend(data) {
+                getChartCkTrend(data) {
+                    if (!Array.isArray(data) || data.length === 0) return 'wait';
+                    const liveBar = data[data.length - 1];
+                    if (liveBar && liveBar.is_live === true) {
+                        const price = Number(liveBar.close);
+                        const middle = Number(liveBar.kc_middle);
+                        const upper = Number(liveBar.kc_upper);
+                        const lower = Number(liveBar.kc_lower);
+                        if ([price, middle, upper, lower].every(Number.isFinite)
+                                && price > 0 && lower > 0 && lower < middle && middle < upper) {
+                            // 方向標籤優先反映最新報價相對 KC 的位置；這只影響顯示，不作為交易授權。
+                            if (price > middle || Number(liveBar.high) >= upper) return 'bull';
+                            if (price < middle || Number(liveBar.low) <= lower) return 'bear';
+                        }
+                    }
                     const values = data.filter(bar => bar.is_live === false).slice(-3).map(bar => Number(bar.kc_middle));
                     if (values.length !== 3 || values.some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
                     const [first, second, third] = values;

@@ -3,7 +3,10 @@ import math
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
-from core.gates.holding_protection_gate import exhaustion_reversal_evidence
+from core.gates.holding_protection_gate import (
+    closed_peak_valley_reversal_evidence,
+    intrabar_adverse_pressure_evidence,
+)
 
 
 def is_fractal_peak(bars: pd.DataFrame) -> bool:
@@ -54,10 +57,14 @@ class PeakValleyExit:
         kc_mid = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
         atr = float(prev.get('atr', curr.get('atr', 0.0)))
 
-        exhaustion = exhaustion_reversal_evidence(frame, side)
-        if exhaustion is not None:
-            exhaustion['quote'] = quote
-            return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
+        if side in ('LONG', 'SHORT') and math.isfinite(atr) and atr > 0:
+            pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
+            if pressure is not None:
+                reason = (
+                    'EXIT_LONG_ON_SELLING_PRESSURE'
+                    if side == 'LONG' else 'EXIT_SHORT_ON_BUYING_PRESSURE'
+                )
+                return reason, pressure
 
         # 0. PROFIT GATE: 必須已有顯著利潤，嚴禁開倉未拉開利潤就秒平！
         # 多單最高浮盈 (Peak ROE) 須達至少 3.0% 或最高價距開倉價 >= 0.5 * ATR
@@ -78,6 +85,11 @@ class PeakValleyExit:
         peak_roe_short = (entry_price - lowest_price) / entry_price if entry_price > 0 else 0.0
         peak_gain_atr_short = (entry_price - lowest_price) / atr if atr > 0 else 0.0
         has_meaningful_profit_short = (peak_roe_short >= 0.03) or (peak_gain_atr_short >= 0.5)
+        current_bar_closed = (
+            curr.get('is_closed', False) is True
+            or (type(curr.get('is_closed', False)).__name__ == 'bool_'
+                and bool(curr.get('is_closed', False)))
+        )
 
         # 1. LONG PEAK EXIT
         if side == 'LONG':
@@ -89,7 +101,7 @@ class PeakValleyExit:
             live_high = max(curr_high, quote)
             live_body = abs(quote - curr_o)
             upper_wick = live_high - max(curr_o, quote)
-            if (math.isfinite(atr) and atr > 0 and upper_wick >= 0.5 * atr
+            if (current_bar_closed and math.isfinite(atr) and atr > 0 and upper_wick >= 0.5 * atr
                     and upper_wick > 2.0 * live_body):
                 return 'EXIT_LONG_ON_UPPER_WICK_REJECTION', {
                     'upper_wick': upper_wick, 'body': live_body, 'atr': atr,
@@ -99,19 +111,54 @@ class PeakValleyExit:
 
             # A. 3-Bar 分形見頂且即時價格跌破前棒實體中點/低點，或當根衝頂後盤中跌破中點
             fractal_top = is_fractal_peak(frame)
-            curr_h = float(curr.get('high', quote))
-            curr_rise = curr_h - curr_o
-            is_intrabar_peak = (curr_rise >= 1.5 * atr) and (quote <= (curr_o + curr_h) / 2.0 or (curr_h - quote) >= 0.35 * curr_rise)
-            
-            if (fractal_top and (quote < prev_mid or quote < prev_low)) or is_intrabar_peak:
-                return 'EXIT_LONG_ON_FRACTAL_PEAK', {'fractal_top': True, 'quote': quote, 'peak_roe': peak_roe_long}
+            curr_h = max(float(curr.get('high', quote)), quote)
+            pivot_price = max(highest_price, curr_h)
+            favorable_move = pivot_price - entry_price
+            retracement = pivot_price - quote
+            decisive_reversal_body = curr_o - quote >= 0.35 * atr
+            is_intrabar_peak = (
+                favorable_move >= 0.5 * atr
+                and decisive_reversal_body
+                and retracement >= max(0.35 * atr, 0.2 * favorable_move)
+            )
 
-            # B. 多單浮盈時 MA3 微斜率首度轉平/下勾 (Slope_MA3 <= 0)，或大陰線貫穿跌破中軌
-            is_in_profit = (quote > entry_price)
+            if is_intrabar_peak:
+                return 'EXIT_LONG_ON_FRACTAL_PEAK', {
+                    'intrabar_pivot_confirmation': True,
+                    'pivot_price': pivot_price, 'favorable_move': favorable_move,
+                    'atr': atr, 'peak_roe': peak_roe_long,
+                    'peak_gain_atr': peak_gain_atr_long, 'quote': quote,
+                }
+            
+            if (fractal_top and curr_o - quote >= 0.35 * atr
+                    and (quote < prev_mid or quote < prev_low)):
+                pivot_price = float(prev.get('high', curr_h))
+                return 'EXIT_LONG_ON_FRACTAL_PEAK', {
+                    'fractal_top': True, 'intrabar_pivot_confirmation': True,
+                    'pivot_price': pivot_price,
+                    'favorable_move': pivot_price - entry_price,
+                    'atr': atr, 'peak_gain_atr': peak_gain_atr_long,
+                    'peak_roe': peak_roe_long, 'quote': quote,
+                }
+
+            if current_bar_closed:
+                reversal = closed_peak_valley_reversal_evidence(frame, side, atr)
+                if reversal is not None:
+                    return 'EXIT_LONG_ON_FRACTAL_PEAK', {
+                        **reversal, 'closed_reversal_confirmation': True,
+                        'peak_roe': peak_roe_long,
+                        'peak_gain_atr': peak_gain_atr_long,
+                    }
+
+            # A small MA3 flattening is ordinary pullback noise, not a peak.
+            # Keep only the independent large-body structural reversal below.
             is_peak_reversal = (curr_o - quote >= 0.35 * atr and quote < kc_mid)
-            if (is_in_profit and ma3_slope <= 0) or is_peak_reversal:
-                reason = 'EXIT_LONG_ON_FRACTAL_PEAK' if is_peak_reversal else 'EXIT_LONG_ON_MA3_BEND_DOWN'
-                return reason, {'ma3_slope': ma3_slope, 'quote': quote, 'peak_roe': peak_roe_long}
+            if is_peak_reversal:
+                return 'EXIT_LONG_ON_FRACTAL_PEAK', {
+                    'ma3_slope': ma3_slope, 'quote': quote,
+                    'peak_roe': peak_roe_long, 'peak_gain_atr': peak_gain_atr_long,
+                    'atr': atr,
+                }
 
         # 2. SHORT VALLEY EXIT
         elif side == 'SHORT':
@@ -120,11 +167,7 @@ class PeakValleyExit:
                 return None, {}
 
             curr_o = float(curr.get('open', quote))
-            closed_value = curr.get('is_closed', False)
-            candle_closed = (
-                closed_value is True
-                or (type(closed_value).__name__ == 'bool_' and bool(closed_value))
-            )
+            candle_closed = current_bar_closed
             reversal_price = float(curr.get('close', quote)) if candle_closed else quote
             candle_low = float(curr.get('low', reversal_price))
             candle_high = float(curr.get('high', reversal_price))
@@ -133,6 +176,20 @@ class PeakValleyExit:
                 candle_high = max(candle_high, reversal_price)
             body = abs(reversal_price - curr_o)
             upper_wick = candle_high - max(curr_o, reversal_price)
+            pivot_price = min(lowest_price, candle_low)
+            favorable_move = entry_price - pivot_price
+            upward_retracement = quote - pivot_price
+            decisive_reversal_body = quote - curr_o >= 0.35 * atr
+            if (not candle_closed and atr > 0 and favorable_move >= 0.5 * atr
+                    and decisive_reversal_body
+                    and upward_retracement >= max(0.35 * atr, 0.2 * favorable_move)):
+                return 'EXIT_SHORT_ON_FRACTAL_VALLEY', {
+                    'intrabar_pivot_confirmation': True,
+                    'pivot_price': pivot_price,
+                    'favorable_move': favorable_move,
+                    'atr': atr, 'valley_roe': peak_roe_short,
+                    'peak_gain_atr': peak_gain_atr_short, 'quote': quote,
+                }
             if (math.isfinite(atr) and atr > 0 and upper_wick >= 0.4 * atr):
                 return None, {
                     'upper_wick_hold': True, 'upper_wick': upper_wick,
@@ -157,6 +214,16 @@ class PeakValleyExit:
                     'peak_gain_atr': peak_gain_atr_short,
                     'upper_wick': upper_wick,
                 }
+
+            if candle_closed:
+                reversal = closed_peak_valley_reversal_evidence(frame, side, atr)
+                if reversal is not None:
+                    return 'EXIT_SHORT_ON_FRACTAL_VALLEY', {
+                        **reversal, 'closed_reversal_confirmation': True,
+                        'valley_roe': peak_roe_short,
+                        'peak_gain_atr': peak_gain_atr_short,
+                        'quote': quote,
+                    }
 
             # A valley reversal is confirmed only by the completed candle body.
             fractal_bottom = candle_closed and is_fractal_valley(frame)

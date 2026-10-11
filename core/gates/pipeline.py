@@ -14,6 +14,15 @@ MAX_MA15_ENTRY_BIAS_ATR = 1.8
 CHOP_KC_SLOPE_EPSILON_ATR = 0.10
 CHOP_MA_TANGLE_ATR = 0.25
 CHOP_MIN_CHANNEL_BODY_ATR = 0.40
+FLAT_LINE_BREAKOUT_TYPES = frozenset((
+    'AUTHORIZED_REALTIME_BREAKOUT',
+    'CLOSED_BODY_BREAKOUT_LONG', 'CLOSED_BODY_BREAKOUT_SHORT',
+    'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+    'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+    'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
+    'KC_GOLDEN_CROSS_FAST_LONG', 'KC_REALTIME_RAIL_BREACH_SHORT',
+    'TRIGGER_A_KC_BREAKOUT',
+))
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
@@ -176,7 +185,8 @@ class EntryGatePipeline:
         return 'BLOCKED_BY_AI_CHOP_REGIME'
 
     @staticmethod
-    def chop_lockout_problem(frame: pd.DataFrame, quote: float) -> Optional[str]:
+    def chop_lockout_problem(frame: pd.DataFrame, quote: float, *,
+                             allow_flat_lines: bool = False) -> Optional[str]:
         """Fail closed on unknown/flat KC, tangled MAs, or weak in-channel candles."""
         try:
             if frame is None or frame.empty:
@@ -218,14 +228,12 @@ class EntryGatePipeline:
                 if lower_slope_value is not None and math.isfinite(float(lower_slope_value))
                 else float(current['kc_lower']) - previous_lower
             )
-            if (channel_state not in known_directions
+            if (not allow_flat_lines and (
+                    channel_state not in known_directions
                     or (abs(upper_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr
-                        and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)):
-                if not (
-                    EntryGatePipeline.has_explosive_bullish_kc_breakout(frame, quote)
-                    or EntryGatePipeline.has_explosive_bearish_kc_breakout(frame, quote)
-                ):
-                    return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
+                        and abs(lower_slope) <= CHOP_KC_SLOPE_EPSILON_ATR * atr)
+            )):
+                return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
 
             ma5 = float(live['ma5'])
             ma15 = float(live['ma15'])
@@ -243,6 +251,24 @@ class EntryGatePipeline:
                 return 'BLOCKED_BY_CHOP_GATE_DATA'
             if lower <= quote <= upper and abs(close - opening) <= CHOP_MIN_CHANNEL_BODY_ATR * atr:
                 return 'BLOCKED_BY_CHOPPY_CHANNEL_BODY'
+
+            # A trend label or breakout impulse must not hide a flat entry
+            # structure. All three KC rails and both moving averages need
+            # meaningful movement on the latest completed 1m candle.
+            flat_threshold = CHOP_KC_SLOPE_EPSILON_ATR * atr
+            line_pairs = (
+                ('KC_UPPER', 'kc_upper'),
+                ('KC_MIDDLE', 'kc_middle'),
+                ('KC_LOWER', 'kc_lower'),
+                ('MA5', 'ma5'),
+                ('MA15', 'ma15'),
+            )
+            for line_name, key in line_pairs:
+                line_slope = float(current[key]) - float(previous[key])
+                if not math.isfinite(line_slope):
+                    return 'BLOCKED_BY_CHOP_GATE_DATA'
+                if abs(line_slope) <= flat_threshold and not allow_flat_lines:
+                    return f'BLOCKED_BY_FLAT_ENTRY_LINE_{line_name}'
             return None
         except (KeyError, TypeError, ValueError, IndexError, OverflowError):
             return 'BLOCKED_BY_CHOP_GATE_DATA'
@@ -286,12 +312,8 @@ class EntryGatePipeline:
     @staticmethod
     def detect_realtime_breakout(frame: pd.DataFrame, quote: float,
                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """盤中 Tick 級破軌即時開倉（無需等收線）。
-        
-        做多：即時價格突破上軌，且順向實體至少 0.15 ATR。
-        做空：即時價格跌破下軌，且順向實體至少 0.15 ATR。
-        """
-        if frame is None or len(frame) < 2:
+        """Return a live breakout only when impulse, participation and trend agree."""
+        if frame is None or len(frame) < 7:
             return None
 
         curr = frame.iloc[-1]
@@ -305,6 +327,8 @@ class EntryGatePipeline:
             atr = float(prev.get('atr', curr.get('atr', 0.0)))
             kc_upper = float(curr['kc_upper'])
             kc_lower = float(curr['kc_lower'])
+            current_volume = float(curr['volume'])
+            reference_volumes = [float(value) for value in frame['volume'].iloc[-6:-1]]
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if (not all(math.isfinite(value) and value > 0
@@ -312,6 +336,12 @@ class EntryGatePipeline:
                 or atr <= 0 or kc_lower >= kc_upper
                 or high_p < max(open_p, quote) or low_p > min(open_p, quote)):
             return None
+        reference_volume = sum(reference_volumes) / len(reference_volumes)
+        if (not all(math.isfinite(value) and value >= 0 for value in reference_volumes)
+                or not math.isfinite(current_volume) or current_volume < 0
+                or reference_volume <= 0):
+            return None
+        volume_ratio = current_volume / reference_volume
         candle_range = high_p - low_p
         if candle_range <= 0:
             return None
@@ -332,7 +362,9 @@ class EntryGatePipeline:
                 body_long = quote - open_p
                 distance_atr = (quote - kc_upper) / atr
                 # Use the live MA5 slope, not a delayed MA5/MA15 crossover.
-                if body_long >= 0.15 * atr and ma5 > previous_ma5:
+                if (body_long >= 0.5 * atr and body_long / candle_range >= 0.55
+                        and distance_atr <= 3.0 and volume_ratio >= 1.2
+                        and ma5 > previous_ma5):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'LONG',
@@ -340,6 +372,7 @@ class EntryGatePipeline:
                         'realtime_body_atr': body_long / atr,
                         'realtime_body_ratio': body_long / candle_range,
                         'realtime_distance_atr': distance_atr,
+                        'realtime_volume_ratio': volume_ratio,
                         'is_breakout': True,
                         'override_cooldown': True,
                         'confirmation_bar_id': float(curr.get('timestamp', 0)),
@@ -354,7 +387,9 @@ class EntryGatePipeline:
             if quote < kc_lower:
                 body_short = open_p - quote
                 distance_atr = (kc_lower - quote) / atr
-                if body_short >= 0.15 * atr and ma5 < previous_ma5:
+                if (body_short >= 0.5 * atr and body_short / candle_range >= 0.55
+                        and distance_atr <= 3.0 and volume_ratio >= 1.2
+                        and ma5 < previous_ma5):
                     return {
                         'type': 'AUTHORIZED_REALTIME_BREAKOUT',
                         'side': 'SHORT',
@@ -362,6 +397,7 @@ class EntryGatePipeline:
                         'realtime_body_atr': body_short / atr,
                         'realtime_body_ratio': body_short / candle_range,
                         'realtime_distance_atr': distance_atr,
+                        'realtime_volume_ratio': volume_ratio,
                         'is_breakout': True,
                         'override_cooldown': True,
                         'confirmation_bar_id': float(curr.get('timestamp', 0)),
@@ -830,22 +866,23 @@ class EntryGatePipeline:
             if diagnostics is not None:
                 diagnostics['reason'] = regime_problem
             return None
-        chop_problem = self.chop_lockout_problem(frame, quote)
+        if decision is None:
+            # Determine the live outer-rail breakout before the common chop
+            # check so that only this verified entry family gets its explicit
+            # flat-line exemption.
+            decision = self.detect_realtime_breakout(frame, quote, side=requested_side)
+        breakout_types = FLAT_LINE_BREAKOUT_TYPES
+        is_outer_rail_breakout = bool(
+            decision
+            and (decision.get('type') in breakout_types or decision.get('is_breakout'))
+        )
+        chop_problem = self.chop_lockout_problem(
+            frame, quote, allow_flat_lines=is_outer_rail_breakout,
+        )
         if chop_problem:
-            is_flip_candidate = (
-                (decision is not None and (decision.get('is_reversal_flip') or decision.get('type') in (
-                    'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
-                )))
-                or (decision is None and self.detect_top_waterfall_flip_short(frame, quote, side=requested_side) is not None)
-            )
-            is_shadow_candidate = (
-                (decision is not None and (decision.get('is_shadow_retest') or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'))
-                or (decision is None and self.detect_shadow_retest_long(frame, quote, side=requested_side) is not None)
-            )
-            if not is_flip_candidate and not is_shadow_candidate:
-                if diagnostics is not None:
-                    diagnostics['reason'] = chop_problem
-                return None
+            if diagnostics is not None:
+                diagnostics['reason'] = chop_problem
+            return None
         if decision is None:
             # A qualifying first-bar outer-rail break is the fastest route and
             # takes precedence over slower continuation/reversal candidates.
@@ -950,13 +987,16 @@ class EntryGatePipeline:
                     (side == 'LONG' and self.has_strong_bullish_breakout(frame, quote))
                     or (side == 'SHORT' and self.has_strong_bearish_breakout(frame, quote))
                 )
+                breakout_flat_exempt = bool(
+                    is_outer_rail_breakout or strong_breakout
+                )
                 
                 is_shadow_entry = (decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
 
                 # Qualified >=0.5 ATR outer-rail breakouts may start before MA5
                 # turns; an MA5 slope against the entry direction remains blocked.
                 if (abs(m5_slope) < chop_threshold
-                        and not is_shadow_entry and not strong_breakout):
+                        and not is_shadow_entry and not breakout_flat_exempt):
                     if diagnostics is not None:
                         diagnostics['reason'] = 'BLOCKED_BY_MA5_PARALLEL_CHOP'
                     return None
@@ -1035,8 +1075,8 @@ class EntryGatePipeline:
         for name, gate_func in self.gates:
             if (is_trend_continuation or is_shadow_retest) and name == 'CANDLE_SOLIDITY':
                 continue
-            # Realtime breakouts already pass the dedicated 15% solidity and
-            # 0.15 ATR body checks in detect_realtime_breakout.
+            # Realtime breakouts already pass impulse, solidity, volume,
+            # distance, and MA5 direction checks in detect_realtime_breakout.
             if is_rt_breakout and name == 'CANDLE_SOLIDITY':
                 continue
             # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）

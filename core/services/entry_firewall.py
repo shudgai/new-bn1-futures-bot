@@ -64,11 +64,17 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
-    from core.gates.pipeline import pipeline
+    from core.gates.pipeline import FLAT_LINE_BREAKOUT_TYPES, pipeline
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
-    chop_problem = pipeline.chop_lockout_problem(frame, quote)
+    is_outer_rail_breakout = (
+        code in FLAT_LINE_BREAKOUT_TYPES
+        or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
+    )
+    chop_problem = pipeline.chop_lockout_problem(
+        frame, quote, allow_flat_lines=is_outer_rail_breakout,
+    )
     if chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
     grace = context.get('pipeline_ttl_grace')

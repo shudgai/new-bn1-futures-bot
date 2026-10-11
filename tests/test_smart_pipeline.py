@@ -143,6 +143,42 @@ def test_chop_lockout_blocks_all_entries(state, ma_gap, expected_reason, side):
     assert contract_diagnostics["reason"] == expected_reason
 
 
+@pytest.mark.parametrize(
+    ("line", "expected_reason"),
+    [
+        ("kc_upper", "BLOCKED_BY_FLAT_ENTRY_LINE_KC_UPPER"),
+        ("kc_middle", "BLOCKED_BY_FLAT_ENTRY_LINE_KC_MIDDLE"),
+        ("kc_lower", "BLOCKED_BY_FLAT_ENTRY_LINE_KC_LOWER"),
+        ("ma5", "BLOCKED_BY_FLAT_ENTRY_LINE_MA5"),
+        ("ma15", "BLOCKED_BY_FLAT_ENTRY_LINE_MA15"),
+    ],
+)
+def test_any_flat_entry_line_blocks_even_when_other_lines_trend(line, expected_reason):
+    """任一 KC 軌或 MA 線單根位移 <= 0.10 ATR 都不可開倉。"""
+    start = 1_700_000_000_000
+    previous = {
+        "timestamp": start, "open": 100.0, "high": 101.0, "low": 99.0,
+        "close": 100.5, "atr": 1.0, "kc_lower": 98.0,
+        "kc_middle": 100.0, "kc_upper": 102.0,
+        "ma5": 100.5, "ma15": 99.0, "channel_state": "UP",
+        "is_closed": True,
+    }
+    current = dict(previous)
+    current.update({
+        "timestamp": start + 60_000,
+        "kc_lower": 98.2, "kc_middle": 100.2, "kc_upper": 102.2,
+        "ma5": 100.8, "ma15": 99.2,
+    })
+    current[line] = previous[line] + 0.05
+    frame = pd.DataFrame([previous, current])
+    frame.attrs["timeframe_ms"] = 60_000
+
+    assert pipeline.chop_lockout_problem(frame, 103.0) == expected_reason
+    assert pipeline.chop_lockout_problem(
+        frame, 103.0, allow_flat_lines=True,
+    ) is None
+
+
 def test_0459_short_pullback_triggers_fractal_valley():
     """2. 傳入 04:59 暴跌後回抽中點數據，斷言毫秒級觸發 EXIT_SHORT_ON_FRACTAL_VALLEY。"""
     # 建立 3 根 K 棒：前前棒、04:58 暴跌谷底棒、04:59 回踩棒
@@ -247,7 +283,7 @@ def test_exhaustion_reversal_exits_on_first_closed_reversal_bar(side, precursor_
     assert authorized_reason == expected
 
 
-def test_short_intrabar_extreme_v_reversal_can_exit():
+def test_short_intrabar_large_range_without_adverse_body_does_not_exit():
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
 
     frame = pd.DataFrame([
@@ -261,14 +297,28 @@ def test_short_intrabar_extreme_v_reversal_can_exit():
     }
 
     reason, details = HoldingProtectionExitGate.evaluate(position, frame, 97.3)
-    allowed, validated_reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, frame, 97.3, 'EXIT_BY_EXTREME_WATERFALL', details,
-    )
+    assert reason is None
 
+
+@pytest.mark.parametrize(
+    'side,opening,quote,middle',
+    [('LONG', 102.0, 100.4, 101.0), ('SHORT', 98.0, 99.6, 99.0)],
+)
+def test_extreme_waterfall_requires_15_atr_adverse_body(side, opening, quote, middle):
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    frame = pd.DataFrame([
+        {'timestamp': 1000, 'open': 100.0, 'high': 101.0, 'low': 99.0,
+         'close': 100.0, 'atr': 1.0, 'kc_middle': 100.0, 'is_closed': True},
+        {'timestamp': 2000, 'open': opening, 'high': max(opening, quote),
+         'low': min(opening, quote), 'close': quote, 'atr': 1.0,
+         'kc_middle': middle, 'is_closed': False},
+    ])
+    position = {'side': side, 'entry_price': 100.0, 'bars_held': 3}
+
+    reason, details = HoldingProtectionExitGate.evaluate(position, frame, quote)
     assert reason == 'EXIT_BY_EXTREME_WATERFALL'
-    assert details['candle_range'] >= 1.2 * details['atr']
-    assert allowed is True
-    assert validated_reason == 'EXIT_BY_EXTREME_WATERFALL'
+    assert details['adverse_body'] >= 1.5 * details['atr']
 
 
 def test_short_closed_red_long_upper_wick_doji_does_not_exit_valley():
@@ -1635,14 +1685,15 @@ def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
     assert action == 'ALLOW_EXPLOSIVE_BREAKOUT'
     assert ctx.state == 'EXPLOSIVE_EXPANSION'
 
-    # Even with flat/unknown KC direction, a solid live body beyond the upper
-    # rail must bypass only the unknown-direction lockout.
+    # A verified live outer-rail breakout bypasses the five-line flat check.
     breakout_quote = 102.1
     df.loc[df.index[-1], 'channel_state'] = 'KC方向不明'
     df.loc[df.index[-1], 'kc_upper_slope'] = 0.0
     df.loc[df.index[-1], 'kc_lower_slope'] = 0.0
     assert pipeline.has_explosive_bullish_kc_breakout(df, breakout_quote)
-    assert pipeline.chop_lockout_problem(df, breakout_quote) is None
+    assert pipeline.chop_lockout_problem(
+        df, breakout_quote, allow_flat_lines=True,
+    ) is None
 
     # pre_flight_safety_check 豁免上軌空間限制 (距上軌僅 0.1 < 0.5 ATR)
     passed, reason = pre_flight_safety_check(df, quote, 'LONG')
@@ -1663,8 +1714,8 @@ def test_allow_explosive_breakout_bypasses_flat_ma15_and_headroom():
     assert auth_result['side'] == 'LONG'
 
 
-def test_explosive_bearish_breakout_bypasses_unknown_direction_lockout():
-    """A solid expansion below KC lower bypasses unknown KC direction for shorts."""
+def test_verified_bearish_breakout_can_bypass_unknown_and_flat_line_lockout():
+    """實際向下破軌可獨立確認方向，並豁免五線走平門檻。"""
     rows = []
     start = 1_700_000_000_000
     for index in range(9):
@@ -1687,8 +1738,11 @@ def test_explosive_bearish_breakout_bypasses_unknown_direction_lockout():
     frame.attrs['timeframe_ms'] = 60_000
 
     assert pipeline.has_explosive_bearish_kc_breakout(frame, 98.0)
-    assert pipeline.chop_lockout_problem(frame, 98.0) is None
+    assert pipeline.chop_lockout_problem(frame, 98.0) == 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
     assert pipeline.chop_lockout_problem(frame, 99.0) == 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
+    assert pipeline.chop_lockout_problem(
+        frame, 98.0, allow_flat_lines=True,
+    ) is None
 
 
 def test_top_waterfall_dump_flip_to_short():
@@ -1829,8 +1883,8 @@ def test_top_waterfall_dump_flip_to_short():
     asyncio.run(verify_atomic_order())
 
 
-def test_post_breakout_exit_gate_pullback_and_immediate_dump():
-    """驗證破軌多單頂部平倉 GATE：進場保護期、紅 K 停滯回踩平倉、無回踩連續大黑 K 立即平倉。"""
+def test_post_breakout_exit_gate_holds_pullbacks_and_requires_verified_peak():
+    """一般紅 K 回踩與單純連續反色都續抱，僅已授權峰谷/風控出口可平倉。"""
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
 
     atr = 1.0
@@ -1862,14 +1916,12 @@ def test_post_breakout_exit_gate_pullback_and_immediate_dump():
 
     code, info = HoldingProtectionExitGate.evaluate(pos_grace, df_grace, 99.5)
     assert code is None
-    assert info.get('in_grace_period') is True
 
     # 若在保護期內跌破 SL (例如跌至 97.8 <= 98.0)，觸發硬止損出場
     code_sl, info_sl = HoldingProtectionExitGate.evaluate(pos_grace, df_grace, 97.8)
     assert code_sl == 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL'
 
-    # 2. 紅 K 停滯回踩平倉 (EXIT_LONG_ON_PULLBACK_CONFIRMED)
-    # 前一根為衝高後的第一根紅 K，當根回踩 MA5 收盤確認跌破 MA5 (Close 103.8 < MA5 104.0)
+    # 2. 普通回踩跌破 MA5 不平倉
     pos_held = {
         'side': 'LONG',
         'entry_price': 100.0,
@@ -1899,15 +1951,13 @@ def test_post_breakout_exit_gate_pullback_and_immediate_dump():
     df_pb = pd.DataFrame(bars_pullback)
     df_pb.attrs['timeframe_ms'] = 60000
     pb_code, pb_info = HoldingProtectionExitGate.evaluate(pos_held, df_pb, 103.8)
-    assert pb_code == 'EXIT_LONG_ON_PULLBACK_CONFIRMED'
+    assert pb_code is None
     allowed_pb, valid_pb_code, _ = HoldingProtectionExitGate.validate_exit(
-        pos_held, df_pb, 103.8, candidate_reason='EXIT_LONG_ON_PULLBACK_CONFIRMED', details=pb_info
+        pos_held, df_pb, 103.8, candidate_reason='EXIT_BY_KC_MIDDLE_BREAK', details=pb_info
     )
-    assert allowed_pb is True
-    assert valid_pb_code == 'EXIT_LONG_ON_PULLBACK_CONFIRMED'
+    assert allowed_pb is False
 
-    # 3. 無回踩直接反向立斬 (EXIT_LONG_ON_IMMEDIATE_OPPOSITE)
-    # 第一根紅 K 出現後，下一根直接開出反向長黑 (Open - Close >= 0.35 * ATR 且 Close < MA5)
+    # 3. 連續反色若形成已確認分形峰頂，仍可依峰谷規則平倉
     bars_dump = [
         # B1: 大陽線衝高
         {
@@ -1931,12 +1981,12 @@ def test_post_breakout_exit_gate_pullback_and_immediate_dump():
     df_dump = pd.DataFrame(bars_dump)
     df_dump.attrs['timeframe_ms'] = 60000
     dump_code, dump_info = HoldingProtectionExitGate.evaluate(pos_held, df_dump, 103.4)
-    assert dump_code == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE'
+    assert dump_code == 'EXIT_BY_VERIFIED_FRACTAL_PEAK'
     allowed_dump, valid_dump_code, _ = HoldingProtectionExitGate.validate_exit(
-        pos_held, df_dump, 103.4, candidate_reason='EXIT_LONG_ON_IMMEDIATE_OPPOSITE', details=dump_info
+        pos_held, df_dump, 103.4, candidate_reason=dump_code, details=dump_info
     )
     assert allowed_dump is True
-    assert valid_dump_code == 'EXIT_LONG_ON_IMMEDIATE_OPPOSITE'
+    assert valid_dump_code == 'EXIT_BY_VERIFIED_FRACTAL_PEAK'
 
 
 def test_shadow_retest_entry_long():

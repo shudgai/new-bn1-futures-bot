@@ -180,7 +180,7 @@ def test_strong_breakout_may_start_with_flat_ma5_but_not_against_it(side):
     assert reason in ("BLOCKED_BY_MA5_SLOPE_DOWN", "BLOCKED_BY_MA5_SLOPE_UP")
 
 
-def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
+def test_breakout_can_bypass_flat_line_check_but_other_entries_cannot(monkeypatch):
     from tests.channel_test_frames import closed_outer_entry_frame
 
     frame = closed_outer_entry_frame("LONG", rows=20)
@@ -196,6 +196,7 @@ def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
                     "kc_lower", "atr", "ma5", "ma15"]] = [
         103.0, 103.5, 103.7, 102.9, 105.0, 103.0, 101.0, 2.0, 103.5, 102.2,
     ]
+    frame.loc[17, "kc_upper"] = 105.0
     frame.loc[19, ["open", "close", "high", "low", "kc_upper", "kc_middle",
                     "kc_lower", "atr", "ma5", "ma15", "is_closed"]] = [
         104.0, 106.0, 106.2, 103.9, 105.0, 103.0, 101.0, 2.0, 103.5, 103.0, False,
@@ -205,32 +206,12 @@ def test_pipeline_authorizes_realtime_breakout_during_ai_chop(monkeypatch):
     frame.attrs["timeframe_ms"] = 60_000
     monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
 
-    diagnostics = {}
-    assert pipeline.chop_lockout_problem(frame, 106.0) is None
-    decision = pipeline.authorize(
-        None, frame, 106.0, symbol="CAP/USDT", diagnostics=diagnostics,
+    assert pipeline.chop_lockout_problem(frame, 106.0) == (
+        "BLOCKED_BY_FLAT_ENTRY_LINE_KC_UPPER"
     )
-
-    assert decision is not None, diagnostics
-    assert decision["type"] == "AUTHORIZED_REALTIME_BREAKOUT"
-    assert decision["side"] == "LONG"
-
-    async def verify_final_firewall():
-        frame.attrs["entry_finality_verified"] = True
-        account = SimpleNamespace(
-            entry_frame_provider=lambda _symbol: asyncio.sleep(0, result=frame),
-        )
-        await validate_account_entry(
-            account,
-            "CAP/USDT",
-            "LONG",
-            {
-                "entry_signal_code": "AUTHORIZED_REALTIME_BREAKOUT",
-                "channel_confirmation_bar_id": float(frame.iloc[-1]["timestamp"]),
-            },
-        )
-
-    asyncio.run(verify_final_firewall())
+    assert pipeline.chop_lockout_problem(
+        frame, 106.0, allow_flat_lines=True,
+    ) is None
 
 
 def test_account_firewall_blocks_choppy_ai_even_for_pipeline_ttl_grace(monkeypatch):

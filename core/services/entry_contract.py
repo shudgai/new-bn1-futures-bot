@@ -3,7 +3,9 @@ import math
 
 import numpy as np
 
-from core.gates.pipeline import PIPELINE_ENTRY_TYPES, pipeline
+from core.gates.pipeline import (
+    FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES, pipeline,
+)
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.unified_entry_strategy import anti_bottom_short_problem
 from core.services.strategies.outer_strategy import (
@@ -1589,10 +1591,15 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
             or (side == 'SHORT' and pipeline.has_strong_bearish_breakout(frame, quote))
         )
+        breakout_flat_exempt = (
+            decision_type in FLAT_LINE_BREAKOUT_TYPES
+            or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
+        )
         
         # A qualified >=0.5 ATR outer-rail break may enter while MA5 is flat;
         # directional MA5 opposition is still rejected below.
-        if abs(ma5_slope) < chop_threshold and not strong_breakout:
+        if (abs(ma5_slope) < chop_threshold
+                and not strong_breakout and not breakout_flat_exempt):
             return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
 
         kc_upper = float(curr.get('kc_upper', 0.0))
@@ -1617,7 +1624,7 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             if not is_shadow_retest:
                 if ma5_slope < 0:
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
-                if ma5_slope == 0 and not strong_breakout:
+                if ma5_slope == 0 and not (strong_breakout or breakout_flat_exempt):
                     return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest 100% 豁免上軌空間限制
@@ -1636,7 +1643,7 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             # 1. 【MA5 向上，100% 絕對禁止開空（向上不開空）】
             if ma5_slope > 0:
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
-            if ma5_slope == 0 and not strong_breakout:
+            if ma5_slope == 0 and not (strong_breakout or breakout_flat_exempt):
                 return False, "BLOCKED_BY_MA5_PARALLEL_CHOP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip 100% 豁免下軌空間限制
@@ -1712,18 +1719,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if regime_problem:
             return reject(regime_problem)
 
-        chop_problem = pipeline.chop_lockout_problem(frame, quote)
+        is_outer_rail_breakout = (
+            code in FLAT_LINE_BREAKOUT_TYPES
+            or pipeline.detect_realtime_breakout(frame, quote) is not None
+        )
+        chop_problem = pipeline.chop_lockout_problem(
+            frame, quote, allow_flat_lines=is_outer_rail_breakout,
+        )
         if chop_problem:
-            is_flip_candidate = (
-                code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP')
-                or pipeline.detect_top_waterfall_flip_short(frame, quote) is not None
-            )
-            is_shadow_candidate = (
-                code in ('AUTHORIZED_SHADOW_RETEST_ENTRY', 'SHADOW_RETEST_ENTRY')
-                or pipeline.detect_shadow_retest_long(frame, quote) is not None
-            )
-            if not is_flip_candidate and not is_shadow_candidate:
-                return reject(chop_problem)
+            return reject(chop_problem)
 
         if code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
             decision = pipeline.detect_top_waterfall_flip_short(

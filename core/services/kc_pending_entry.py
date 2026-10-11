@@ -78,7 +78,7 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     Live quote (K3) must be strictly outside the rail.
     """
     wait = lambda reason, **evidence: dict(action='WAIT', reason=reason, **evidence)
-    if len(closed) < 3:
+    if len(closed) < 7:
         return wait('WAIT_VALID_CLOSE_HISTORY')
         
     reference, first, second = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
@@ -91,6 +91,22 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 
         if float(second.timestamp) - float(first.timestamp) != 60000:
             return wait('WAIT_VALID_KC_PENDING_DATA')
+
+        if 'volume' not in closed.columns:
+            return wait('WAIT_VALID_BREAKOUT_VOLUME')
+        baseline_volumes = [float(value) for value in closed['volume'].iloc[-7:-2]]
+        first_volume = float(first['volume'])
+        second_volume = float(second['volume'])
+        if (len(baseline_volumes) != 5
+                or not all(math.isfinite(value) and value >= 0 for value in baseline_volumes)
+                or not all(math.isfinite(value) and value >= 0
+                           for value in (first_volume, second_volume))):
+            return wait('WAIT_VALID_BREAKOUT_VOLUME')
+        baseline_volume = sum(baseline_volumes) / 5.0
+        if baseline_volume <= 0:
+            return wait('WAIT_VALID_BREAKOUT_VOLUME')
+        volume_expansion = first_volume / baseline_volume
+        confirmation_volume = second_volume / baseline_volume
 
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
             # Rule 1 & 4 - 必須在軌道內側或碰軌
@@ -107,6 +123,11 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if sign * (float(first.close) - float(first[key])) <= 0:
                 continue
             if sign * (float(second.close) - float(second[key])) <= 0:
+                continue
+
+            # Require participation on the impulse bar and retained activity
+            # on confirmation; geometry alone is not an entry authorization.
+            if volume_expansion < 1.2 or confirmation_volume < 0.8:
                 continue
 
             # The confirmed candle itself must align with the short trend.
@@ -181,6 +202,8 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                         entry_phase='KC_2BAR_CLOSED_CONFIRM',
                         breakout_bar_id=float(first.timestamp),
                         pair_confirmation_bar_id=float(second.timestamp),
+                        breakout_volume_ratio=volume_expansion,
+                        confirmation_volume_ratio=confirmation_volume,
                         third_bar_id=stamp_val,
                         pending_signal_id=f'{side}:{int(first.timestamp)}:{int(second.timestamp)}',
                         pending_second_bar_id=float(second.timestamp),

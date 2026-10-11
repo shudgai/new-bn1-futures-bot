@@ -34,6 +34,29 @@ def test_unarmed_small_peak_does_not_exit(side):
     assert p['peak_price'] == pytest.approx(100 + sign * .4)
 
 
+@pytest.mark.parametrize(
+    'side,opening,quote,middle',
+    [('LONG', 100.0, 99.4, 99.5), ('SHORT', 100.0, 100.6, 100.5)],
+)
+def test_sub_15_atr_retrace_through_middle_is_not_catastrophic(side, opening, quote, middle):
+    position = pos(side)
+    snapshot = {
+        'reason': None, 'live_kc_middle': middle,
+        'live_kc_upper': 105.0, 'live_kc_lower': 95.0,
+        'live_open': opening, 'live_high': max(opening, quote) + 0.1,
+        'live_low': min(opening, quote) - 0.1, 'atr': 1.0,
+        'live_bar_ms': 180000.0, 'closed_bar_ms': 120000.0,
+        'history_5': [],
+    }
+
+    trigger, _ = _evaluate_realtime_core_exit_gates(
+        position, {'lifecycle_stage': 3}, quote, 180001.0,
+        snapshot, 0.0, 0.0,
+    )
+
+    assert trigger is None
+
+
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_retired_outer_ma3_cross_has_no_exit_authority(side):
     p = pos(side)

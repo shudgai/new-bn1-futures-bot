@@ -121,18 +121,11 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         if lifecycle_stage == 1:
             pass
         
-        if lifecycle_stage == 2:
-            if live_bar_ms > entry_bar_ms and closed_bar_ms == entry_bar_ms:
-                closed_open = float(snapshot.get('last_open') or 0.)
-                closed_close = float(snapshot.get('last_close') or 0.)
-                if closed_open > 0 and closed_close > 0:
-                    if side == 'SHORT' and closed_close > closed_open:
-                        return 'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT', state_updated
-                    elif side == 'LONG' and closed_close < closed_open:
-                        return 'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT', state_updated
-                lifecycle_stage = 3
-                meta['lifecycle_stage'] = 3
-                state_updated = True
+        if lifecycle_stage == 2 and live_bar_ms > entry_bar_ms:
+            # A single adverse close after entry is ordinary pullback noise.
+            lifecycle_stage = 3
+            meta['lifecycle_stage'] = 3
+            state_updated = True
 
         # 2. 谷底與波峰真實反轉避險 (Catastrophic Dump / Pump & Shadow Rejection)
         # 徹底拔除「微幅跌破就出場」的延遲邏輯，只在實質跌破關鍵大支撐/阻力，或出現爆量長影線時才避險
@@ -171,16 +164,16 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 if quote <= lower:
                     return 'EXIT_LONG_ON_KC_LOWER_BREACH', state_updated
 
-                # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
-                if quote < live_open and quote < mid and (live_open - quote) / live_open > 0.005:
+                # 大瀑布只看逆向實體幅度，不以長影線或 0.5% 小回踩觸發。
+                if quote < live_open and live_open - quote >= 1.5 * atr and quote < mid:
                     return 'CATASTROPHIC_DUMP_EXIT', False
             elif side == 'SHORT' and not short_upper_wick_hold:
                 # 一般 MA5 回抽不授權平倉；反側 KC 外軌破位仍立即退出。
                 if quote >= upper:
                     return 'EXIT_SHORT_ON_KC_UPPER_BREACH', state_updated
 
-                # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
-                if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
+                # 大拉升與大瀑布使用相同的 1.5 ATR 逆向實體門檻。
+                if quote > live_open and quote - live_open >= 1.5 * atr and quote > mid:
                     return 'CATASTROPHIC_PUMP_EXIT', False
                 # 4. 雙底探針/止跌反陽保護
                 history = snapshot.get('history_5') or []
