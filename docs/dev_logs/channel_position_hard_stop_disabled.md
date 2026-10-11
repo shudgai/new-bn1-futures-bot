@@ -1,0 +1,7 @@
+# Retire Channel Swing position hard stops
+
+User explicitly requested that positions run without hard-stop closes. Channel Swing now bypasses both PRICE_LOSS and MARGIN_LOSS evaluation in the shared hard-stop service and its strategy interface. Persisted channel_hard_stop_pending is removed from position and metadata and the cleanup is saved, preventing restored retries from closing positions. Account tick updates, realtime quote exits, and paper/testnet callers share this behavior. Initial ATR stop was already disabled for Channel Swing and remains disabled.
+
+The UI net ROE 5% activation / 1 percentage point giveback protection remains active. Existing pivot, waterfall, adverse abnormal candle, opposite band and CK correction exits remain active. Independent account circuit breakers and manual closes remain unchanged. This is a position hard-stop policy change, not a profit-protection-only exit policy.
+
+Verification: 136 passed across tests/test_channel_position_hard_stop_disabled.py, test_channel_initial_atr_stop_disabled.py, test_net_roe_profit_lock.py, test_kc_outer_pivot_strategy.py, test_channel_exit_grace.py, and test_realtime_profit_exit.py. Covers long/short extreme loss, pending-stop cleanup, metadata-only entry mode, preserved other-strategy loss evaluation, net ROE protection, account reload and concurrent quote deduplication. Four previous tests requiring Channel Swing hard-stop close/retry were updated for the user's changed policy.

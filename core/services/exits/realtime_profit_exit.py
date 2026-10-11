@@ -119,14 +119,9 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                 meta['lifecycle_stage'] = 2
                 state_updated = True
 
+        # [2026-10-11] 禁用開倉未拉開利潤就秒平 (LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT)，初動期部位保留呼吸空間
         if lifecycle_stage == 1:
-            if live_bar_ms == entry_bar_ms and entry > 0:
-                if side == 'SHORT':
-                    if quote >= entry or (lower > 0 and quote >= lower):
-                        return 'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT', state_updated
-                elif side == 'LONG':
-                    if quote <= entry or (upper > 0 and quote <= upper):
-                        return 'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT', state_updated
+            pass
         
         if lifecycle_stage == 2:
             if live_bar_ms > entry_bar_ms and closed_bar_ms == entry_bar_ms:
@@ -147,6 +142,12 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         live_open = float(snapshot.get('live_open') or 0.)
         live_high = float(snapshot.get('live_high') or 0.)
         live_low = float(snapshot.get('live_low') or 0.)
+        live_body = abs(quote - live_open)
+        upper_wick = live_high - max(live_open, quote)
+        lower_wick = min(live_open, quote) - live_low
+        short_upper_wick_hold = (
+            side == 'SHORT' and atr > 0 and upper_wick >= 0.4 * atr
+        )
         history_5 = snapshot.get('history_5') or []
         is_trend_following = False
         is_counter_trend = False
@@ -168,14 +169,23 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         if mid > 0 and live_open > 0:
             candle_range = live_high - live_low + 1e-9
             if side == 'LONG':
+                # 1. [第一順位硬性執行] 多單結構徹底破壞平倉 (Exit Long on First MA5 Breach)
+                # 嚴格規定：首根實體跌破 MA5 當根收線立即平多，第一順位無條件執行
+                closed_close = float(snapshot.get('last_close') or 0.)
+                closed_ma5 = float(snapshot.get('ma5') or 0.)
+                if closed_close < closed_ma5 and closed_ma5 > 0:
+                    return 'EXIT_LONG_ON_MA5_CLOSE_BREACH', state_updated
+                elif quote <= lower:
+                    return 'EXIT_LONG_ON_KC_LOWER_BREACH', state_updated
+
                 # 條件 B: 實體長黑K且實質跌破中軌 (大瀑布)
                 if quote < live_open and quote < mid and (live_open - quote) / live_open > 0.005:
                     return 'CATASTROPHIC_DUMP_EXIT', False
                 # 條件 A: 高檔實時回踩平倉 (見頂真賣壓，盤中即時偵測)
                 # 若突破上軌或累積漲幅 > 1.5 ATR，且實時從高點回落超過當根波幅的 35%
-                upper_retrace = live_high - quote
-                is_high_peak = (live_high > upper) or ((live_high - entry) > 1.5 * atr)
-                if is_high_peak and candle_range > 0.2 * atr and (upper_retrace / candle_range >= 0.35):
+                if (atr > 0 and upper_wick >= 0.5 * atr
+                        and upper_wick > 2.0 * live_body
+                        and profit_cushion >= 0.5 * atr):
                     return 'LIVE_PEAK_REJECTION_EXIT', False
                     
                 # 3. 大嘴巴見頂防護 (Wide Mouth Rejection)
@@ -186,25 +196,24 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                         # 確保這是一個獲利的單子，避免過早停損
                         if profit_cushion > 0.5 * atr:
                             return 'EXIT_LONG_WIDE_MOUTH_REJECTION', state_updated
-                            
-                # 4. 多單結構徹底破壞平倉 (Exit Long on First MA5 Breach)
-                # 嚴格規定：首根實體跌破 MA5 當根收線立即平多，不再區分順勢或逆勢
+            elif side == 'SHORT' and not short_upper_wick_hold:
+                # 1. [第一順位硬性執行] 空單結構徹底破壞平倉 (Exit Short on First MA5 Breach)
+                # 嚴格規定：空單遇陽線站上 MA5 立即秒平，第一順位無條件執行
                 closed_close = float(snapshot.get('last_close') or 0.)
                 closed_ma5 = float(snapshot.get('ma5') or 0.)
-                
-                if closed_close < closed_ma5 and closed_ma5 > 0:
-                    return 'EXIT_LONG_ON_MA5_CLOSE_BREACH', state_updated
-                elif quote <= lower:
-                    return 'EXIT_LONG_ON_KC_LOWER_BREACH', state_updated
-            elif side == 'SHORT':
+                if closed_close > closed_ma5 and closed_ma5 > 0:
+                    return 'EXIT_SHORT_ON_MA5_CLOSE_BREACH', state_updated
+                elif quote >= upper:
+                    return 'EXIT_SHORT_ON_KC_UPPER_BREACH', state_updated
+
                 # 條件 B: 實體長紅K且實質突破中軌 (大拉升)
                 if quote > live_open and quote > mid and (quote - live_open) / live_open > 0.005:
                     return 'CATASTROPHIC_PUMP_EXIT', False
                 # 條件 A: 低檔實時回抽平倉 (見底真買盤，盤中即時偵測)
                 # 若跌破下軌或累積跌幅 > 1.5 ATR，且實時從低點回抽超過當根波幅的 35%
-                lower_bounce = quote - live_low
-                is_deep_trough = (live_low < lower) or ((entry - live_low) > 1.5 * atr)
-                if is_deep_trough and candle_range > 0.2 * atr and (lower_bounce / candle_range >= 0.35):
+                if (atr > 0 and lower_wick >= 0.5 * atr
+                        and lower_wick > 2.0 * live_body
+                        and profit_cushion >= 0.5 * atr):
                     return 'LIVE_BOTTOM_REJECTION_EXIT', False
                     
                 # 04:59 回踩當棒即時平空（Intra-bar Pullback Exit - Zero Lag）
@@ -220,22 +229,11 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                     is_massive_drop = (prev_drop >= 2.0 * atr) or (prev_range >= 1.5 * atr and (prev_lower_shadow / prev_range) >= 0.5)
                     if is_massive_drop:
                         # 當前棒出現向上回踩：站上開盤價，或回彈幅度 >= 0.5 * 前棒實體
-                        if quote > live_open or (quote - live_low) >= 0.5 * max(prev_drop, 1e-9):
+                        if (lower_wick >= 0.5 * atr
+                                and lower_wick > 2.0 * live_body):
                             return 'REALTIME_SHORT_PULLBACK_EXIT', False
-                            
-                # 3. 空單結構徹底破壞平倉 (Exit Short on Invalidation)
-                closed_close = float(snapshot.get('last_close') or 0.)
-                closed_ma5 = float(snapshot.get('ma5') or 0.)
-                
-                if is_trend_following:
-                    # 順勢空單：放寬容忍度，僅在站上 KC 中軌或碰到上軌時平倉 (過濾短線回踩)
-                    if closed_close > mid > 0 or quote >= upper:
-                        return 'EXIT_SHORT_ON_TREND_INVALIDATION', state_updated
-                else:
-                    # 逆勢/盤整空單：嚴格防守，站上 MA5 或碰到上軌即平倉
-                    if closed_close > closed_ma5 > 0 or quote >= upper:
-                        return 'EXIT_SHORT_ON_MA5_INVALIDATION', state_updated
-                    
+
+
                 # 4. 雙底探針/止跌反陽保護
                 history = snapshot.get('history_5') or []
                 if len(history) >= 1 and atr > 0:
@@ -249,7 +247,11 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                         # 底部收出止跌十字/長下影線 (下影線 >= 45%)
                         if prev_lower_shadow / prev_range >= 0.45:
                             # 緊接著出現「反向綠K且收在當棒高檔」
-                            if quote > live_open and (quote - live_low) / candle_range >= 0.70:
+                            live_ma5 = float(snapshot.get('live_ma5') or snapshot.get('ma5') or 0.)
+                            if (quote - live_open >= 0.35 * atr
+                                    and quote > live_ma5
+                                    and live_body / candle_range >= 0.60
+                                    and (quote - live_low) / candle_range >= 0.70):
                                 return 'EXIT_SHORT_TROUGH_REVERSAL_CONFIRMED', state_updated
 
         qty = float(position.get('qty') or 0.)
@@ -462,8 +464,18 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             if frame is not None and not frame.empty:
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
                 if entry_m == 'CHANNEL_SWING':
+                    side = position.get('side')
+                    live_open = float(snapshot.get('live_open') or 0.)
+                    live_high = float(snapshot.get('live_high') or 0.)
+                    upper_wick = live_high - max(live_open, price)
+                    short_upper_wick_hold = (
+                        side == 'SHORT' and atr > 0 and upper_wick >= 0.4 * atr
+                    )
                     from core.services.exits.dual_track_exit_service import detect_climax_reversal
-                    climax = detect_climax_reversal(frame, position.get('side'))
+                    climax = (
+                        None if short_upper_wick_hold
+                        else detect_climax_reversal(frame, side)
+                    )
                     if climax:
                         account.log(
                             f"REALTIME_EXIT symbol={symbol} reason={climax['reason']} "
@@ -476,6 +488,44 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             is_manual=True,
                         )
                         return True
+                    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                    prot_exit, prot_details = HoldingProtectionExitGate.evaluate(position, frame, price)
+                    if prot_exit:
+                        account.log(
+                            f'HOLDING_PROTECTION_EXIT symbol={symbol} reason={prot_exit} '
+                            f'quote_ms={stamp} price={price} details={prot_details}',
+                            'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price, f'Channel Swing {prot_exit}',
+                            is_manual=True,
+                        )
+                        return True
+
+                    from core.exits.peak_valley_exit import PeakValleyExit
+                    peak_exit, peak_details = PeakValleyExit.evaluate(
+                        position, frame, price,
+                    )
+                    if peak_exit:
+                        is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
+                            position, frame, price, peak_exit, peak_details,
+                        )
+                        if is_allowed:
+                            account.log(
+                                f'REALTIME_EXIT symbol={symbol} reason={valid_reason} '
+                                f'quote_ms={stamp} price={price} details={valid_details}',
+                                'WARNING',
+                            )
+                            await account.close_position(
+                                symbol, price, f'Channel Swing {valid_reason}',
+                                is_manual=True,
+                            )
+                            return True
+                        else:
+                            account.log(
+                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={peak_exit} '
+                                f'gate_reason={valid_reason}', 'INFO',
+                            )
                 from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
                 gate_trigger, state_changed = _evaluate_realtime_core_exit_gates(
                     position, meta, price, stamp, snapshot,
@@ -484,22 +534,24 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 if state_changed:
                     account.save_state()
                 if gate_trigger:
-                    if (entry_m != 'CHANNEL_SWING'
-                            or gate_trigger in (
-                                'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT',
-                                'PEAK_REJECTION_EXIT', 'TROUGH_REJECTION_EXIT',
-                                'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT',
-                                'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT',
-                            )
-                            or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
+                    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                    is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
+                        position, frame, price, gate_trigger,
+                    )
+                    if is_allowed:
                         account.log(
-                            f'REALTIME_EXIT symbol={symbol} reason={gate_trigger} '
+                            f'REALTIME_EXIT symbol={symbol} reason={valid_reason} '
                             f'quote_ms={stamp} price={price}', 'WARNING',
                         )
                         await account.close_position(
-                            symbol, price, f'Channel Swing {gate_trigger}', is_manual=True,
+                            symbol, price, f'Channel Swing {valid_reason}', is_manual=True,
                         )
                         return True
+                    else:
+                        account.log(
+                            f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={gate_trigger} '
+                            f'gate_reason={valid_reason}', 'INFO',
+                        )
                 if entry_m == 'CHANNEL_SWING':
                     # Strategy exits are deliberately limited to a completed 1m
                     # MA5 reclaim/break or the existing net-ROE profit lock.
@@ -635,5 +687,14 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             symbol, price, 'Channel Swing ' + reason + trigger_detail, is_manual=True
         )
         return True
-    except (KeyError,TypeError,ValueError,OverflowError):
-        return False
+    except Exception as e:
+        import traceback
+        account.log(f'CRITICAL_EXIT_EVALUATION_ERROR {symbol}: {e}\n{traceback.format_exc()}', 'ERROR')
+        # 防裝死：發生非預期例外時，執行保守緊急平倉
+        try:
+            await account.close_position(
+                symbol, price, f'Channel Swing FAIL_SAFE_EMERGENCY_EXIT ({type(e).__name__})', is_manual=True
+            )
+            return True
+        except Exception:
+            return False

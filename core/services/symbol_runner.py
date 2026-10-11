@@ -47,7 +47,24 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                   
     if not math.isfinite(quote) or quote <= 0:
         return [], []
-        
+
+    # ── [SPATIAL_DIAGNOSTIC] 前導空間感知與微結構診斷 ──
+    try:
+        from core.intelligence.spatial_brain import SpatialBrain
+        import logging
+        logger = logging.getLogger("uvicorn.error")
+        spatial_ctx, spatial_act = SpatialBrain.diagnose(symbol, frame, quote)
+        spatial_log = (
+            f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | "
+            f"Context: state={spatial_ctx.state}, bw_ratio={spatial_ctx.bandwidth_ratio:.2f}, "
+            f"chop={spatial_ctx.chop_index:.2f}, solidity={spatial_ctx.solidity_ratio:.2f}, "
+            f"ma15_slope={spatial_ctx.ma15_slope:.4f} | Action: {spatial_act}"
+        )
+        logger.info(spatial_log)
+        print(spatial_log, flush=True)
+    except Exception as e:
+        pass
+
     if daily_halt and not position:
         return [], []
 
@@ -68,12 +85,17 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if not position:
         if exit_only:
             return [], []
-        from core.services.entry_contract import evaluate_entry_contract
+        from core.gates.pipeline import pipeline
         from core.services.candle_data import log_entry_gate
         diagnostics = {}
-        entry = evaluate_entry_contract(frame, quote, account=engine.account,
-                                        symbol=symbol, diagnostics=diagnostics)
+        entry = pipeline.authorize(
+            None, frame, quote, symbol=symbol, account=engine.account,
+            diagnostics=diagnostics,
+        )
         if entry:
+            auth_log = f"[AUTHORIZED_BY_PIPELINE] Symbol: {symbol} | Type: {entry['type']} | Side: {entry['side']} | Price: {quote}"
+            logger.info(auth_log)
+            print(auth_log, flush=True)
             await engine._execute_confirmed_channel_break(
                 symbol, frame, quote, entry['side'], daily_halt,
                 v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'],

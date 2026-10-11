@@ -3,8 +3,8 @@ import math
 
 import numpy as np
 
+from core.gates.pipeline import PIPELINE_ENTRY_TYPES
 from core.services.candle_data import closed_entry_candles
-from core.services.strict_entry_gates import validate_strict_entry
 from core.services.strategies.unified_entry_strategy import anti_bottom_short_problem
 from core.services.strategies.outer_strategy import (
     LIVE_BREAKOUT_BODY_ATR,
@@ -41,10 +41,7 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 ))
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset(("TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION", BEARISH_INSTANT_BREAKOUT_CODE, "RE_ENTRY_LONG", "RE_ENTRY_SHORT"))
-ENTRY_CODES = (KC_PENDING_CODES | LIVE_BODY_BREAKOUT_CODES | CONTINUATION_CODES
-               | NEW_TRIGGER_CODES | frozenset((GOLDEN_CROSS_FAST_LONG_CODE,
-                                                 CLIMAX_REVERSAL_FLIP_CODE,
-                                                 REALTIME_RAIL_BREACH_SHORT_CODE)))
+ENTRY_CODES = PIPELINE_ENTRY_TYPES
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT"))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -55,7 +52,8 @@ ENTRY_EVIDENCE_KEYS = (
     "pair_confirmation_bar_id", "third_bar_id", "live_pattern_start_bar_id",
     "live_pattern_pullback_bars", "live_pattern_body_atr", "kc_distance_atr",
     "kc_max_distance_atr", "qualification_signal_id", "live_opening_context",
-    "reverse_close_id", "live_body_atr", "continuation_entry_bar_id",
+    "reverse_close_id", "reverse_close_reason", "reverse_body_atr",
+    "reverse_body_ratio", "live_body_atr", "continuation_entry_bar_id",
     "continuation_entry_bar_low", "continuation_entry_bar_high",
     "post_close_continuation_close_id",
     "post_close_continuation_bar_id", "post_close_bars_after_close",
@@ -936,8 +934,26 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         body_atr = (opening - quote) / atr
         if quote >= opening:
             return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_NOT_BEARISH')
-        if body_atr < 0.30:
-            return dict(action='WAIT', reason='WAIT_REALTIME_SHORT_BODY_BELOW_0_3_ATR')
+            
+        # [2026-10-10] 嚴格校驗破軌開空資格
+        candle_range = live_high - live_low + 1e-9
+        body = opening - quote
+        body_ratio = body / candle_range
+        
+        is_strong_breakout = (body_atr >= 0.4 and body_ratio >= 0.6)
+        
+        # 檢查常規破軌：連續兩根已收線陰線實體收在 KC 下軌外
+        has_two_consecutive_closed_breakouts = False
+        if len(closed) >= 2:
+            bar1 = closed.iloc[-2]
+            bar2 = closed.iloc[-1]
+            if float(bar1['close']) < float(bar1['open']) and float(bar2['close']) < float(bar2['open']):
+                if float(bar1['close']) < float(bar1['kc_lower']) and float(bar2['close']) < float(bar2['kc_lower']):
+                    has_two_consecutive_closed_breakouts = True
+                    
+        if not is_strong_breakout and not has_two_consecutive_closed_breakouts:
+            return dict(action='WAIT', reason='BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION')
+
         live_ma3 = float(live['ma3']) + (quote - raw_close) / 3.0
         live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
         if not all(math.isfinite(value) and value > 0 for value in (live_ma3, live_ma5)):
@@ -1418,182 +1434,29 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
-        closed_bars = closed_entry_candles(frame)
-        # --- GATE-TREND-ALIGNMENT: Trend Alignment Hard Gate ---
-        if len(closed_bars) >= 2:
-            last_closed = closed_bars.iloc[-1]
-            prev_closed = closed_bars.iloc[-2]
-            
-            atr = float(last_closed.get('atr', 0))
-            # [2026-10-10] 下調 slope_threshold 從 0.005 至 0.003 ATR，避免盤整剛啟動時無法達成
-            slope_threshold = 0.003 * atr
-            
-            kc_basis = float(last_closed.get('kc_middle', 0))
-            kc_upper = float(last_closed.get('kc_upper', 0))
-            kc_lower = float(last_closed.get('kc_lower', 0))
-            prev_kc_basis = float(prev_closed.get('kc_middle', 0))
-            kc_slope = kc_basis - prev_kc_basis
-            
-            ma5 = float(last_closed.get('ma5', 0))
-            prev_ma5 = float(prev_closed.get('ma5', 0))
-            ma5_slope = ma5 - prev_ma5
-            
-            ma15 = float(last_closed.get('ma15', 0))
-            prev_ma15 = float(prev_closed.get('ma15', 0))
-            ma15_slope = ma15 - prev_ma15
-            
-            kc_dir = ck_direction(frame)
-            side = decision.get('side')
-            
-            # --- GATE-MA-OVERLAP: Consolidation Chop Filter ---
-            if atr > 0 and abs(ma5 - ma15) / atr < 0.20:
-                return reject('BLOCKED_BY_MA_OVERLAP_CONSOLIDATION')
-                
-            if side == 'SHORT':
-                # --- GATE-ANTI-TOP-FADING: No shorting strong bullish breakouts ---
-                live_close = float(quote)
-                if live_close > kc_basis and ma5 > ma15:
-                    return reject('BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT')
-                    
-                is_breakout_short = live_close < kc_lower
-                
-                # --- GATE-STRICT-MA15-DECLINE: Strict MA15 falling requirement ---
-                if len(closed_bars) >= 3:
-                    ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
-                    if is_breakout_short:
-                        # 破軌首根放行優先：只要求當下向下彎頭，允許歷史走平
-                        if ma15 >= prev_ma15:
-                            return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
-                    else:
-                        # 嚴格要求最近 2 根的 MA15 必須呈現實質向下跌勢
-                        if ma15 >= prev_ma15 or prev_ma15 >= ma15_2_ago:
-                            return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
-                elif ma15 >= prev_ma15:
-                    return reject('BLOCKED_BY_MA15_NOT_DECLINING_SHORT')
-                    
-                if not is_breakout_short and kc_dir in ('LONG', None):
-                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
-                
-                if not is_breakout_short and not (kc_slope < -slope_threshold
-                        and ma5_slope < -slope_threshold 
-                        and ma15_slope < -slope_threshold 
-                        and ma5 <= ma15):
-                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_SHORT')
-            elif side == 'LONG':
-                live_close = float(quote)
-                is_breakout_long = live_close > kc_upper
-                
-                # --- GATE-STRICT-MA15-INCLINE: Strict MA15 rising requirement ---
-                if len(closed_bars) >= 3:
-                    ma15_2_ago = float(closed_bars.iloc[-3].get('ma15', 0))
-                    if is_breakout_long:
-                        # 破軌首根放行優先：只要求當下向上彎頭，允許歷史走平
-                        if ma15 <= prev_ma15:
-                            return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
-                    else:
-                        # 嚴格要求最近 2 根的 MA15 必須呈現實質向上漲勢
-                        if ma15 <= prev_ma15 or prev_ma15 <= ma15_2_ago:
-                            return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
-                elif ma15 <= prev_ma15:
-                    return reject('BLOCKED_BY_MA15_NOT_RISING_LONG')
-                    
-                if not is_breakout_long and kc_dir in ('SHORT', None):
-                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
-                    
-                if not is_breakout_long and not (kc_slope > slope_threshold
-                        and ma5_slope > slope_threshold 
-                        and ma15_slope > slope_threshold 
-                        and ma5 >= ma15):
-                    return reject('BLOCKED_BY_TREND_MISALIGNMENT_LONG')
-                    
-            # --- GATE-KC-MOUTH-MA15: KC Expansion & True Trend Gate ---
-            if len(closed_bars) >= 20:
-                hist_20 = closed_bars.tail(20)
-                base_bw_sum = 0
-                for _, r in hist_20.iterrows():
-                    b_kc_m = float(r.get('kc_middle', 0))
-                    b_kc_u = float(r.get('kc_upper', 0))
-                    b_kc_l = float(r.get('kc_lower', 0))
-                    if b_kc_m > 0:
-                        base_bw_sum += (b_kc_u - b_kc_l) / b_kc_m
-                base_bandwidth = base_bw_sum / 20.0
-                
-                live_kc_m = float(last_closed.get('kc_middle', 0))
-                live_kc_u = float(last_closed.get('kc_upper', 0))
-                live_kc_l = float(last_closed.get('kc_lower', 0))
-                kc_bandwidth = (live_kc_u - live_kc_l) / (live_kc_m + 1e-9)
-                
-                ma15_3_ago = float(closed_bars.iloc[-3].get('ma15', 0))
-                ma15_real_slope = (ma15 - ma15_3_ago) / 2.0
-                min_slope = 0.01 * atr
-                
-                if kc_bandwidth > 2.2 * base_bandwidth:
-                    return reject('BLOCKED_BY_EXTREME_KC_EXPANSION')
-                
-                if kc_bandwidth > 1.6 * base_bandwidth:
-                    if abs(ma15_real_slope) <= min_slope:
-                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
-                    
-                    if side == 'LONG' and ma15_real_slope <= min_slope:
-                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
-                    if side == 'SHORT' and ma15_real_slope >= -min_slope:
-                        return reject('BLOCKED_BY_FLAT_MA15_DURING_KC_EXPANSION')
-        # -------------------------------------------------------------
-
-        # --- GATE-CANDLE-BODY-STRENGTH: Weak-Body Hard Reject Gate ---
-        live = frame.iloc[-1]
-        opening = float(live['open'])
-        quote_f = float(quote)
-        high = max(float(live['high']), quote_f)
-        low = min(float(live['low']), quote_f)
-        if not closed_bars.empty:
-            atr = float(closed_bars.iloc[-1]['atr'])
-            body = abs(quote_f - opening)
-            body_ratio = body / (high - low + 1e-9)
-            
-            if body_ratio < 0.50:
-                return reject('BLOCKED_BY_WEAK_BODY_RATIO')
-            if body < 0.35 * atr:
-                return reject('BLOCKED_BY_INSUFFICIENT_BODY_ATR')
-        # -------------------------------------------------------------
-
-        climax_flip = bool(
-            decision.get('type') == CLIMAX_REVERSAL_FLIP_CODE
-            and decision.get('entry_phase') == 'EXTREME_CLIMAX_FLIP'
-            and isinstance(decision.get('climax_flip_evidence'), dict)
-            and int(decision.get('reverse_close_id') or 0)
-                == int(decision['climax_flip_evidence'].get('close_id') or -1)
-        )
-        realtime_short = bool(
-            decision.get('type') == REALTIME_RAIL_BREACH_SHORT_CODE
-            and decision.get('entry_phase') == 'REALTIME_RAIL_BREACH'
-        )
-        if not (climax_flip or realtime_short) and decision.get('side') == 'SHORT':
-            short_gate_problem = short_hard_preentry_problem(frame, quote)
-            if short_gate_problem:
-                return reject(short_gate_problem)
-        if not (climax_flip or realtime_short):
-            gate_problem = three_bar_rail_gate_problem(
-                frame, quote, decision.get('side'),
+        from core.gates.pipeline import pipeline
+        if not decision.get('_is_authorized'):
+            pipeline_auth = pipeline.authorize(
+                decision, frame, quote, symbol=symbol, account=account,
+                diagnostics=diagnostics,
             )
-            if gate_problem:
-                return reject(gate_problem)
-            problem = entry_direction_problem(frame, quote, decision.get('side'))
-            if problem:
-                return reject(problem)
-        if not (climax_flip or realtime_short) and decision.get('side') == 'SHORT':
-            problem = anti_bottom_short_problem(
-                frame, quote, account=account, symbol=symbol,
-                allow_confirmed_rail_break=(
-                    three_bar_rail_gate_problem(frame, quote, 'SHORT') is None
-                ),
-            )
-            if problem:
-                return reject(problem)
+            if pipeline_auth is None:
+                reason = diagnostics.get('reason', 'BLOCKED_BY_PIPELINE') if diagnostics else 'BLOCKED_BY_PIPELINE'
+                return reject(reason)
+            decision = pipeline_auth
+            decision['_is_authorized'] = True
+
+        if decision.get('type') in PIPELINE_ENTRY_TYPES:
+            if diagnostics is not None:
+                diagnostics.clear()
+                diagnostics.update(decision)
+            return decision
+
         if diagnostics is not None:
             diagnostics.clear()
             diagnostics.update(decision)
         return decision
+
 
     reject("WAIT_VALID_ENTRY_DATA")
     if code is not None and code not in ENTRY_CODES:
@@ -1610,6 +1473,32 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject('WAIT_ENOUGH_CLOSED_CANDLES')
 
         quote = price if price is not None else float(frame.iloc[-1].close)
+
+        # ──【Pipeline 單一審查窗口 (100% Single Authorization Funnel)】──
+        if code is None or code in PIPELINE_ENTRY_TYPES:
+            from core.gates.pipeline import pipeline
+            pipeline_decision = pipeline.authorize(
+                decision=None, frame=frame, quote=quote,
+                symbol=symbol, account=account, diagnostics=diagnostics,
+            )
+            if pipeline_decision is not None:
+                if code is not None and pipeline_decision.get('type') != code:
+                    return reject('BLOCKED_PIPELINE_SIGNAL_CHANGED')
+                if account is not None and symbol in getattr(account, 'positions', {}):
+                    return reject('BLOCKED_BY_POSITION_GATE')
+                if any(
+                    trade.get('symbol') == symbol
+                    and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                    and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                        == pipeline_decision['pending_signal_id']
+                    for trade in getattr(account, 'trades', [])
+                ):
+                    return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+                return authorize(pipeline_decision, quote)
+            elif code in PIPELINE_ENTRY_TYPES:
+                reason = diagnostics.get('reason', 'WAIT_PIPELINE_TRIGGER') if diagnostics else 'WAIT_PIPELINE_TRIGGER'
+                return reject(reason)
+
         if code == CLIMAX_REVERSAL_FLIP_CODE:
             climax_entry = evaluate_climax_flip_entry(
                 frame, quote, symbol, account,
@@ -1797,7 +1686,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return authorize(general_breakout, quote)
 
         if code == 'TRIGGER_A_KC_BREAKOUT':
-            return reject('WAIT_THREE_BAR_BREAKOUT_CONFIRMATION')
+            return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
 
         if (forming_bar and code in (None, 'TRIGGER_C_CONTINUATION')):
             post_close = evaluate_post_close_continuation(
@@ -1873,7 +1762,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         side, trigger_type = detect_raw_triggers(closed, account, symbol)
         if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")
         if trigger_type == 'TRIGGER_A_KC_BREAKOUT':
-            return reject('WAIT_THREE_BAR_BREAKOUT_CONFIRMATION')
+            return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
         if trigger_type in ('RE_ENTRY_LONG', 'RE_ENTRY_SHORT'):
             return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
 
@@ -1924,11 +1813,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         if shadow_problem:
             return reject(shadow_problem)
-
-        gate_passed, gate_reason, gate_evidence = validate_strict_entry(frame, quote, side, entry_mode='BREAKOUT')
-        if not gate_passed:
-            return reject(f"BLOCKED_BY_STRICT_GATE ({gate_reason})")
-        decision['strict_gate_evidence'] = gate_evidence
 
         return authorize(decision, quote)
 

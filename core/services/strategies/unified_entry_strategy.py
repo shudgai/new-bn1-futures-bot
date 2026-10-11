@@ -14,7 +14,6 @@ import math
 from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import ck_direction
-from core.services.strict_entry_gates import validate_strict_entry
 from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 
 ANTI_BOTTOM_SHORT_STRETCH_ATR = 3.0
@@ -593,11 +592,6 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     except Exception as e:
         return wait("WAIT_VALID_LIVE_BAR3")
 
-    # === 強制掛載嚴格 Gate 防線 ===
-    gate_passed, gate_reason, gate_evidence = validate_strict_entry(frame, live_price, side, entry_mode='BREAKOUT')
-    if not gate_passed:
-        return wait(f"BLOCKED_BY_STRICT_GATE ({gate_reason})")
-
     rail_problem = three_bar_rail_gate_problem(frame, live_price, side)
     if rail_problem:
         return wait(rail_problem)
@@ -608,36 +602,25 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
         confirmation_bar_id=float(c.timestamp), close_price=float(c.close),
         pending_signal_id=pending_signal_id, candidate_bar_id=candidate_bar_id,
         intrabar=True,
-        strict_gate_evidence=gate_evidence
     )
 
 
 def check_streamlined_entry_signal(df, side, live_price, position_status, **kwargs):
     if position_status != 'NO_POSITION':
         return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
-        
-    # 【第一道硬門檻：通道內部一律封鎖開倉 (Live Price Check)】
-    if df is not None and not df.empty:
-        try:
-            curr = df.iloc[-1]
-            kc_upper = float(curr.kc_upper)
-            kc_lower = float(curr.kc_lower)
-            
-            if live_price <= kc_upper and live_price >= kc_lower:
-                return False, f"REJECT_LIVE_PRICE_INSIDE_CHANNEL (Price={live_price})", {'action': 'WAIT'}
-                
-            if side == 'LONG' and live_price <= kc_upper:
-                return False, f"REJECT_LONG_PRICE_NOT_ABOVE_UPPER (Price={live_price} <= {kc_upper})", {'action': 'WAIT'}
-                
-            if side == 'SHORT' and live_price >= kc_lower:
-                return False, f"REJECT_SHORT_PRICE_NOT_BELOW_LOWER (Price={live_price} >= {kc_lower})", {'action': 'WAIT'}
-        except Exception:
-            pass
-            
-    return evaluate_closed_entry(
-        df, side, price=live_price, after_close=kwargs.get('after_close', False),
-        account=kwargs.get('account'), symbol=kwargs.get('symbol', ''),
+
+    from core.gates.pipeline import pipeline
+    diagnostics = {}
+    decision = pipeline.authorize(
+        None, df, live_price, symbol=kwargs.get('symbol', ''),
+        requested_side=side, account=kwargs.get('account'),
+        diagnostics=diagnostics,
     )
+    if decision is None:
+        return False, diagnostics.get('reason', 'WAIT_PIPELINE_TRIGGER'), {'action': 'WAIT'}
+    if decision.get('side') != side:
+        return False, 'BLOCKED_PIPELINE_SIDE_MISMATCH', {'action': 'WAIT'}
+    return True, decision['type'], {'action': 'ENTER', **decision}
 
 
 def check_ma_cross_entry(df, live_price=None):
@@ -649,14 +632,22 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
-            
+
         engine = kwargs.get('engine')
         if engine is not None:
-            # 1. Block new entries during ACTIVE BTC flash crash cooldown
+            from core.gates.pipeline import pipeline
+            peak_flip = pipeline.authorize(
+                None, frame, price, symbol=kwargs.get('symbol', ''),
+                requested_side=side, account=engine.account,
+            )
+            if (peak_flip is not None
+                    and peak_flip.get('type') == 'AUTHORIZED_BY_PEAK_FLIP_SHORT'
+                    and peak_flip.get('side') == side):
+                return True, peak_flip['type'], peak_flip
+
             if getattr(engine, '_market_crash_entries_paused', lambda x: False)(None):
                 return False, "BTC_FLASH_CRASH_COOLDOWN", {'action': 'WAIT'}
-                
-            # 2. Block STALE candidates formed during or before the cooldown
+
             cooldown_until = getattr(engine, '_market_crash_entry_cooldown_until', 0.0)
             if cooldown_until > 0 and frame is not None and not frame.empty:
                 try:
@@ -665,70 +656,22 @@ class UnifiedEntryStrategy(IEntryStrategy):
                     closed = frame[:-1] if not after_close else frame
                     if not closed.empty:
                         conf_ts = float(closed.iloc[-1].get('timestamp', 0))
-                        # If the confirmation bar's timestamp (open time) is before the cooldown expired, it's stale.
-                        # cooldown_until is in seconds, timestamp in milliseconds.
                         if conf_ts > 0 and conf_ts <= cooldown_until * 1000:
                             return False, "STALE_CRASH_SIGNAL_REJECTED", {'action': 'WAIT'}
                 except Exception:
                     pass
-            
-        # 【第一道硬門檻：通道內部一律封鎖開倉 (Live Price Check)】
-        if frame is not None and not frame.empty:
-            try:
-                curr = frame.iloc[-1]
-                kc_upper = float(curr.kc_upper)
-                kc_lower = float(curr.kc_lower)
-                
-                # 判斷通道是否極度收斂 (剩餘25%以下)
-                if len(frame) >= 20:
-                    try:
-                        past_20 = frame.iloc[-21:-1] if not kwargs.get('after_close', False) else frame.iloc[-20:]
-                        if not past_20.empty:
-                            past_widths = past_20['kc_upper'].astype(float) - past_20['kc_lower'].astype(float)
-                            max_width = float(past_widths.max())
-                            curr_width = kc_upper - kc_lower
-                            if max_width > 0 and curr_width <= max_width * 0.25:
-                                return False, f"REJECT_CHANNEL_TOO_NARROW (width {curr_width:.4f} <= 25% of max {max_width:.4f})", {'action': 'WAIT'}
-                    except Exception as e:
-                        pass
-                        
-                # 判斷 MA5 和 MA15，或 MA5 和 KC 外軌的距離是否太近 (< 25% 通道寬度)
-                ma3 = float(curr.ma3)
-                ma15 = float(curr.ma15)
-                curr_width = kc_upper - kc_lower
-                if curr_width > 0:
-                    dist_ma5_ma15 = abs(ma3 - ma15)
-                    if dist_ma5_ma15 < curr_width * 0.25:
-                        return False, f"REJECT_MA5_MA15_TOO_CLOSE (dist {dist_ma5_ma15:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
-                        
-                    if side == 'LONG':
-                        dist_ma5_kc = abs(ma3 - kc_upper)
-                        if dist_ma5_kc < curr_width * 0.25:
-                            return False, f"REJECT_MA5_KC_TOO_CLOSE (dist {dist_ma5_kc:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
-                    elif side == 'SHORT':
-                        dist_ma5_kc = abs(ma3 - kc_lower)
-                        if dist_ma5_kc < curr_width * 0.25:
-                            return False, f"REJECT_MA5_KC_TOO_CLOSE (dist {dist_ma5_kc:.4f} < 25% of width {curr_width:.4f})", {'action': 'WAIT'}
-                
-                
-                # 嚴禁在通道內部開倉 (Price <= KC_Upper and Price >= KC_Lower)
-                if price <= kc_upper and price >= kc_lower:
-                    return False, f"REJECT_LIVE_PRICE_INSIDE_CHANNEL (Price={price})", {'action': 'WAIT'}
-                    
-                # 延續開多的邊界要求: 必須運行在 KC 上軌外側
-                if side == 'LONG' and price <= kc_upper:
-                    return False, f"REJECT_LONG_PRICE_NOT_ABOVE_UPPER (Price={price} <= {kc_upper})", {'action': 'WAIT'}
-                    
-                if side == 'SHORT' and price >= kc_lower:
-                    return False, f"REJECT_SHORT_PRICE_NOT_BELOW_LOWER (Price={price} >= {kc_lower})", {'action': 'WAIT'}
-            except Exception:
-                pass
-                
-        engine = kwargs.get('engine')
-        after_close = (had_close(engine.account, kwargs.get('symbol', ''))
-                       if engine is not None else kwargs.get('after_close', False))
-        return evaluate_closed_entry(
-            frame, side, price=price, after_close=after_close,
-            account=getattr(engine, 'account', None) if engine is not None else None,
-            symbol=kwargs.get('symbol', ''),
+
+        from core.gates.pipeline import pipeline
+        diagnostics = {}
+        decision = pipeline.authorize(
+            None, frame, price, symbol=kwargs.get('symbol', ''),
+            requested_side=side,
+            account=getattr(engine, 'account', None),
+            diagnostics=diagnostics,
         )
+        if decision is None:
+            reason = diagnostics.get('reason', 'WAIT_PIPELINE_TRIGGER')
+            return False, reason, {'action': 'WAIT'}
+        if decision.get('side') != side:
+            return False, 'BLOCKED_PIPELINE_SIDE_MISMATCH', {'action': 'WAIT'}
+        return True, decision['type'], decision

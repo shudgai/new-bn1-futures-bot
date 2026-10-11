@@ -460,8 +460,9 @@ class EntryV2Strategy:
     def _fresh_context(self, st: _SymbolState, bar_id: int) -> bool:
         if bar_id <= st.startup_watermark_bar_id:
             return False
-        if st.last_exit_bar_id is not None and bar_id <= st.last_exit_bar_id:
-            return False
+        # [2026-10-10] 移除同根平倉後鎖定，允許即時反手或重新進場 (Flip)
+        # if st.last_exit_bar_id is not None and bar_id <= st.last_exit_bar_id:
+        #     return False
         return True
 
     def _emit(self, symbol, st, bar, ctx, recovered: bool) -> Optional[EntryV2Candidate]:

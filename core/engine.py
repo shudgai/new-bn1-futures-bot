@@ -95,15 +95,12 @@ from core.config import (
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CHANNEL_WATERFALL_BODY_ATR,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
-    PIVOT_STRONG_BODY_ATR_MULT,
     TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
-    ABNORMAL_MARKET_GUARD_ENABLED, ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR,
-    ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT, ABNORMAL_MARKET_ADVERSE_MOVE_PCT,
     CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO,
     CHANNEL_SWING_TURN_LOOKBACK_BARS,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
     BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
-    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC, RAPID_DROP_COOLDOWN_SEC,
+    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -1672,6 +1669,30 @@ class TradingEngine:
         diagnostics = {}
         decision = evaluate_entry_contract(frame, price, kwargs.get('code'), account=self.account, symbol=symbol, diagnostics=diagnostics)
         if not decision:
+            grace_decision = self._pipeline_authorization_grace_decision(
+                kwargs.get('authorized_entry'), symbol, side, price,
+            )
+            try:
+                same_live_bar = (
+                    grace_decision is not None
+                    and float(frame.iloc[-1]['timestamp'])
+                    == float(grace_decision['confirmation_bar_id'])
+                )
+            except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+                same_live_bar = False
+            if grace_decision is not None and same_live_bar:
+                log_entry_gate(
+                    self, symbol, side, 'ENTRY_REVALIDATION',
+                    'PIPELINE_AUTH_TTL_GRACE', candidate_bar_id,
+                    signal_id=grace_decision['pending_signal_id'],
+                    elapsed_seconds=grace_decision['_pipeline_grace_elapsed'],
+                    adverse_slippage_atr=grace_decision['_pipeline_grace_adverse_atr'],
+                )
+                return dict(
+                    frame=frame, price=price, decision=grace_decision,
+                    signal_code=grace_decision['type'],
+                    pipeline_ttl_grace=True,
+                )
             log_entry_gate(
                 self, symbol, side, 'ENTRY_REVALIDATION',
                 diagnostics.get('reason', 'BLOCKED_REVALIDATION_NO_DECISION'),
@@ -1694,6 +1715,66 @@ class TradingEngine:
             return None
         return dict(frame=frame, price=price, decision=decision,
                     signal_code=decision['type'])
+
+    def _pipeline_authorization_grace_decision(
+        self, signal, symbol, side, price,
+    ):
+        allowed_types = {
+            'AUTHORIZED_REALTIME_BREAKOUT',
+            'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+            'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+            'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+            'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+            'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+        }
+        if not isinstance(signal, dict):
+            return None
+        decision = signal.get('_pipeline_authorized_decision')
+        if not isinstance(decision, dict) or not decision.get('_is_authorized'):
+            return None
+        if decision.get('type') not in allowed_types or decision.get('side') != side:
+            return None
+        if decision.get('pending_signal_id') != signal.get('_pipeline_pending_signal_id'):
+            return None
+        try:
+            elapsed = time.monotonic() - float(signal['_pipeline_authorized_at'])
+            quote = float(price)
+            authorized_price = float(signal['_pipeline_authorized_price'])
+            atr = float(signal['_pipeline_authorized_atr'])
+            authorized_bar = float(decision['confirmation_bar_id'])
+            candidate_bar = float(signal['candidate_bar_id'])
+            quote_timestamp = float(
+                getattr(self, '_channel_entry_quote_times', {}).get(symbol),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        quote_age = time.time() - quote_timestamp
+        if (
+            not all(math.isfinite(value) for value in (
+                elapsed, quote, authorized_price, atr, quote_timestamp, quote_age,
+            ))
+            or not 0 <= elapsed <= 3
+            or quote <= 0
+            or authorized_price <= 0
+            or atr <= 0
+            or authorized_bar != candidate_bar
+            or not 0 <= quote_age <= 30
+        ):
+            return None
+        adverse_move = (
+            max(0.0, authorized_price - quote)
+            if side == 'LONG'
+            else max(0.0, quote - authorized_price)
+        )
+        adverse_atr = adverse_move / atr
+        if adverse_atr > 0.8:
+            return None
+        refreshed = dict(decision)
+        refreshed['price'] = quote
+        refreshed['close_price'] = quote
+        refreshed['_pipeline_grace_elapsed'] = elapsed
+        refreshed['_pipeline_grace_adverse_atr'] = adverse_atr
+        return refreshed
 
 
     def _channel_candle_entry_blocked(self, symbol, now=None):
@@ -1757,6 +1838,8 @@ class TradingEngine:
         if locks is None:
             locks = self._channel_entry_locks = {}
         async with locks.setdefault(symbol,asyncio.Lock()):
+            if not signal.get('_is_authorized'):
+                raise Exception("CRITICAL: Bypass of authorize() detected! Entry signal did not pass through evaluate_entry_contract's single funnel.")
             side, bar = signal.get('side'), signal.get('candidate_bar_id')
             log_entry_gate(self, symbol, side, 'EXECUTION', 'VALIDATING', bar)
             try:
@@ -1805,7 +1888,10 @@ class TradingEngine:
         if not await self._execution_price_is_safe(symbol,side):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', signal.get('candidate_bar_id'))
             return False
-        snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'), code=signal.get('signal_code'))
+        snapshot = await self._fresh_channel_entry_snapshot(
+            symbol, side, signal.get('candidate_bar_id'),
+            code=signal.get('signal_code'), authorized_entry=signal,
+        )
         if snapshot is None:
             failure = getattr(self, '_entry_gate_diagnostics', {}).get((symbol, side, 'ENTRY_REVALIDATION'))
             reason = (failure[1] if failure and failure[0] == signal.get('candidate_bar_id')
@@ -1856,21 +1942,36 @@ class TradingEngine:
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
-        abnormal_guard_exempt = decision['type'] in (
-            'BEARISH_INSTANT_BREAKOUT', 'TRIGGER_C_CONTINUATION',
-            'CLIMAX_REVERSAL_FLIP',
-        )
-        if (not abnormal_guard_exempt and not self._abnormal_market_entry_allowed(
+        if not self._abnormal_market_entry_allowed(
                 symbol, side, price, float(decision['entry_atr']),
-                float(live['open']), candle_high, candle_low, price)):
+                float(live['open']), candle_high, candle_low, price):
+            quote_timestamp = getattr(self, '_channel_entry_quote_times', {}).get(symbol)
+            try:
+                quote_age = time.time() - float(quote_timestamp)
+            except (TypeError, ValueError, OverflowError):
+                quote_age = None
+            reason = (
+                'BLOCKED_STALE_QUOTE'
+                if quote_timestamp is not None and quote_age is not None
+                else 'BLOCKED_QUOTE_TIMESTAMP_UNAVAILABLE'
+            )
             log_entry_gate(
                 self, symbol, side, 'EXECUTION',
-                'BLOCKED_ABNORMAL_MARKET_ENTRY', bar,
+                reason, bar,
+                price=price,
+                quote_timestamp=quote_timestamp,
+                quote_age_seconds=quote_age,
             )
             return False
-        is_priority_entry = decision['type'] in (
-            'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
-            'CLIMAX_REVERSAL_FLIP',
+        is_priority_entry = (
+            str(decision.get('type', '')).startswith('AUTHORIZED_')
+            or decision.get('is_trend_continuation')
+            or decision.get('is_reversal_flip')
+            or decision.get('override_cooldown')
+            or decision['type'] in (
+                'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+                'CLIMAX_REVERSAL_FLIP',
+            )
         )
         if (not is_priority_entry
                 and not quote_beyond_side_outer_rail(snapshot['frame'], side, price)):
@@ -1931,11 +2032,26 @@ class TradingEngine:
             )
             # Revalidate the live entry contract, without expected-profit or reward/risk vetoes.
             diagnostics = {}
-            if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
-                log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
-                return False
+            pipeline_ttl_grace = bool(snapshot.get('pipeline_ttl_grace'))
+            if not pipeline_ttl_grace:
+                if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
+                    grace_decision = self._pipeline_authorization_grace_decision(
+                        signal, symbol, side, price,
+                    )
+                    if grace_decision is None:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', diagnostics['reason'], bar)
+                        return False
+                    decision = grace_decision
+                    pipeline_ttl_grace = True
+                    log_entry_gate(
+                        self, symbol, side, 'EXECUTION',
+                        'PIPELINE_AUTH_TTL_GRACE', bar,
+                        signal_id=decision['pending_signal_id'],
+                        elapsed_seconds=decision['_pipeline_grace_elapsed'],
+                        adverse_slippage_atr=decision['_pipeline_grace_adverse_atr'],
+                    )
             direction_problem = (
-                None if decision['type'] in (
+                None if pipeline_ttl_grace or decision['type'] in (
                     'CLIMAX_REVERSAL_FLIP', 'KC_REALTIME_RAIL_BREACH_SHORT',
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
@@ -1945,6 +2061,17 @@ class TradingEngine:
                 return False
 
             context['entry_snapshot']['quote_price'] = price
+            if pipeline_ttl_grace:
+                context['pipeline_ttl_grace'] = {
+                    'authorized_at_monotonic': signal['_pipeline_authorized_at'],
+                    'authorized_price': signal['_pipeline_authorized_price'],
+                    'entry_atr': signal['_pipeline_authorized_atr'],
+                    'pending_signal_id': signal['_pipeline_pending_signal_id'],
+                    'decision': dict(signal['_pipeline_authorized_decision']),
+                    'quote_timestamp': getattr(
+                        self, '_channel_entry_quote_times', {},
+                    ).get(symbol),
+                }
             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=decision['type'], margin=amount, leverage=leverage)
             
             try:
@@ -2076,13 +2203,20 @@ class TradingEngine:
         from core.services.entry_contract import evaluate_entry_contract
         observed = evaluate_entry_contract(frame, price, v8_reason,
                                            account=self.account, symbol=symbol)
+        if observed is None:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} {v8_reason} blocked by evaluate_entry_contract', 'WARNING')
+            return False
+
         is_priority_entry = bool(
-            observed and observed.get('type') in (
+            (observed.get('type') in (
+                'AUTHORIZED_REALTIME_BREAKOUT',
+                'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+                'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
-            ) and observed.get('side') == side
+            ) or bool(observed.get('override_cooldown'))) and observed.get('side') == side
         )
-        if (observed and observed['side'] == side and observed['entry_phase'] in (
+        if (observed['side'] == side and observed['entry_phase'] in (
                 'KC_LIVE_OUTER_BREAKOUT', 'KC_2BAR_CLOSED_CONFIRM')
                 and observed.get('live_opening_context') not in (
                     'SAME_SIDE_OUTER', 'CLOSED_OUTER_FORMATION')):
@@ -2126,7 +2260,13 @@ class TradingEngine:
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=candidate_bar_id,
                       qualification_signal_id=qualification_signal_id,
-                      size_fraction=size_fraction)
+                      size_fraction=size_fraction,
+                      _is_authorized=observed.get('_is_authorized', False),
+                      _pipeline_authorized_at=time.monotonic(),
+                      _pipeline_authorized_price=float(price),
+                      _pipeline_authorized_atr=float(observed['entry_atr']),
+                      _pipeline_pending_signal_id=observed['pending_signal_id'],
+                      _pipeline_authorized_decision=dict(observed))
         return await self._place_structured_entry(symbol,signal,price)
 
 
@@ -2280,77 +2420,21 @@ class TradingEngine:
         candle_open: float, candle_high: float, candle_low: float,
         candle_close: float,
     ) -> bool:
-        """阻止異常拉砸期間的新倉；絕不觸發既有持倉的平倉。"""
-        now = time.time()
-        cooldowns = getattr(self.account, "_rapid_drop_cooldown", {})
-        cooldown_at = float(cooldowns.get(symbol) or 0.0) if isinstance(cooldowns, dict) else 0.0
-        cooldown_active = bool(
-            cooldown_at > 0.0
-            and now - cooldown_at < RAPID_DROP_COOLDOWN_SEC
-        )
-        if not ABNORMAL_MARKET_GUARD_ENABLED:
-            return True
-        values = (price, atr, candle_open, candle_high, candle_low, candle_close)
-        if not all(math.isfinite(float(value or 0.0)) for value in values):
-            return True
-        if price <= 0 or atr <= 0 or candle_high < candle_low or candle_open <= 0:
-            return True
+        """Allow valid market moves unless the quote itself is stale or invalid."""
+        try:
+            price = float(price)
+            quote_timestamps = getattr(self, "_channel_entry_quote_times", {})
+            if not isinstance(quote_timestamps, dict):
+                return False
+            quote_timestamp = float(quote_timestamps.get(symbol))
+        except (TypeError, ValueError, OverflowError):
+            return False
 
-        range_pct = (candle_high - candle_low) / price
-        range_atr = (candle_high - candle_low) / atr
-        signed_move_pct = (candle_close - candle_open) / candle_open
-        body_atr = abs(candle_close - candle_open) / atr
-        requested = str(side or "").upper()
-        excessive_range = (
-            (ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR > 0
-             and range_atr >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR)
-            or (ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT > 0
-                and range_pct >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT)
-        )
-        adverse_impulse = (
-            (requested == "LONG" and signed_move_pct <= -ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
-            or (requested == "SHORT" and signed_move_pct >= ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
-        )
-        # A large body aligned with a qualified entry is momentum, not a reason
-        # to force a late entry. Opposite-side large bodies remain protected.
-        direction_aligned_impulse = bool(
-            (requested == "LONG" and signed_move_pct > 0.0)
-            or (requested == "SHORT" and signed_move_pct < 0.0)
-        )
-        strong_live_candle = (
-            PIVOT_STRONG_BODY_ATR_MULT > 0
-            and body_atr >= PIVOT_STRONG_BODY_ATR_MULT
-            and not direction_aligned_impulse
-        )
-        if not excessive_range and not adverse_impulse and not strong_live_candle:
-            # A fresh qualified signal is evaluated against the current candle.
-            # A prior 300-second cooldown must not blindly lock a now-calm entry.
-            if cooldown_active and isinstance(cooldowns, dict):
-                cooldowns.pop(symbol, None)
-                self.account.log(
-                    f"[Crash cooldown released] {symbol} current candle is calm; allow {str(side).upper()} entry",
-                    "SUCCESS",
-                )
-            return True
+        if not math.isfinite(price) or price <= 0 or not math.isfinite(quote_timestamp):
+            return False
 
-        reasons = []
-        if excessive_range:
-            reasons.append(f"K線振幅 {range_atr:.1f} ATR / {range_pct:.2%}")
-        if adverse_impulse:
-            reasons.append(f"逆向單根變動 {signed_move_pct:.2%}")
-        if strong_live_candle:
-            candle_color = "紅／下跌" if candle_close < candle_open else "綠／上漲"
-            reasons.append(f"{candle_color}長實體K {body_atr:.2f} ATR")
-        cooldowns = getattr(self.account, "_rapid_drop_cooldown", None)
-        if isinstance(cooldowns, dict):
-            cooldowns[symbol] = time.time()
-        self.account.log(
-            f"🛡️ {symbol} 異常拉砸／流動性風險，暫停新開{requested}："
-            + "；".join(reasons)
-            + f"；進入{RAPID_DROP_COOLDOWN_SEC:.0f}秒冷卻",
-            "WARNING",
-        )
-        return False
+        quote_age = time.time() - quote_timestamp
+        return 0 <= quote_age <= 30
 
 
     def _release_resolved_abnormal_exit(self, symbol, frame, price):
@@ -2544,9 +2628,9 @@ class TradingEngine:
         reentry_side = ticket.get('old_side', ticket.get('side'))
         if reentry_side in ('LONG', 'SHORT'):
             from core.services.closed_breakout_entry import matched_reentry_close
-            from core.services.entry_contract import evaluate_continuation_entry
+            from core.services.entry_contract import evaluate_entry_contract
             matched_close_ms = matched_reentry_close(self.account, symbol, ticket)
-            decision = evaluate_continuation_entry(
+            decision = evaluate_entry_contract(
                 frame, price, code='TRIGGER_C_CONTINUATION',
                 symbol=symbol, account=self.account,
             )
@@ -2570,6 +2654,7 @@ class TradingEngine:
                     'candidate_bar_id': decision['confirmation_bar_id'],
                     'profit_profile': 'TREND_EXTENSION',
                     'atr': decision['entry_atr'],
+                    '_is_authorized': decision.get('_is_authorized', False),
                 }
                 if await self._place_structured_entry(symbol, signal, price):
                     self.account.channel_profit_reentries.pop(symbol, None)

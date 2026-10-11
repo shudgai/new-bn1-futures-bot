@@ -1,0 +1,7 @@
+# Restore confirmed pivot exits without net ROE profit locking
+
+Latest user policy explicitly removes 5% activation / 1 percentage point profit giveback and restores holding to peak/trough exits. Removed net ROE lock generation, retired its saved pending trigger via migration and removed stored net_roe_lock_* fields. Restored THREE_POINT_PIVOT generation and normal/SUI/lobster whitelists. Long exits use confirmed peaks, shorts confirmed troughs, with existing channel trend confirmation and minimum hold. Pivot candle must begin strictly after actual fill and its confirmation must be the latest closed candle; entry-candle/pre-entry replay remains forbidden. Authorized pivot close failures retain retries.
+
+Current second/third non-doji outside entries remain unchanged. Position hard stops remain disabled. Existing waterfall/adverse abnormal candle/opposite band/CK correction exits remain active. No historical trade edits.
+
+Validation:174 passed across test_pivot_without_profit_lock, second/third entries, strict gate, metadata/margin, position hard-stop retirement, initial ATR retirement, exit grace and realtime account reload tests. Tests verify no percentage lock generation or restored pending lock retry, post-entry pivot exit without 5% activation, valid pivot retry, and rejection of entry-candle pivots. Prior tests expecting percentage giveback closes at the account boundary were updated to hold without a pivot. Earlier policy-specific net-ROE and pivot-disabled test files encode superseded behavior and were not counted in this targeted validation.

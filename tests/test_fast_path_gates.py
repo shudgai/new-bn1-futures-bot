@@ -77,63 +77,34 @@ def engine():
     eng.tick_buffers = {}
     return eng
 
-def test_range_veto_ordering(engine, monkeypatch):
-    symbol = 'LOBSTER/USDT'
-    frame = live_body_frame()
-    frame.loc[frame.index[-1], 'low'] = 70.0
-    quote = 89.4
-    monkeypatch.setattr(
-        'core.services.entry_contract.anti_bottom_short_problem',
-        lambda *_args, **_kwargs: None,
+def test_abnormal_market_entry_guard_only_rejects_invalid_price_or_stale_quote(engine):
+    engine._channel_entry_quote_times = {'LOBSTER/USDT': time.time()}
+    assert engine._abnormal_market_entry_allowed(
+        'LOBSTER/USDT', 'SHORT', 80.0, 1.0, 100.0, 101.0, 79.0, 80.0,
     )
-    monkeypatch.setattr(
-        'core.services.entry_contract.anti_bottom_short_problem',
-        lambda *_args, **_kwargs: None,
+    assert not engine._abnormal_market_entry_allowed(
+        'LOBSTER/USDT', 'SHORT', 0.0, 1.0, 100.0, 101.0, 79.0, 80.0,
     )
-    decision = evaluate_entry_contract(
-        frame, quote, code='KC_LIVE_BODY_BREAKOUT_SHORT',
-        account=engine.account, symbol=symbol,
+    engine._channel_entry_quote_times['LOBSTER/USDT'] = time.time() - 31
+    assert not engine._abnormal_market_entry_allowed(
+        'LOBSTER/USDT', 'SHORT', 80.0, 1.0, 100.0, 101.0, 79.0, 80.0,
     )
-    assert decision is not None
-
-    engine.account.pending_limit_orders = {}
-    engine.account.daily_loss_limit_hit.return_value = (False, 0.0)
-    engine.account.get_wallet_balance.return_value = 1000.0
-    engine.account.get_available_balance.return_value = 1000.0
-    engine.account.log = MagicMock()
-    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
-    engine.tickers = {symbol: quote}
-    engine._execution_price_is_safe = AsyncMock(return_value=True)
-    engine._fresh_channel_entry_snapshot = AsyncMock(return_value={
-        'frame': frame, 'price': quote, 'decision': decision,
-    })
-    engine._full_wallet_entry_margin = MagicMock(return_value=100.0)
-    signal = {
-        'side': 'SHORT', 'score': 100, 'entry_mode': 'CHANNEL_SWING',
-        'signal_code': decision['type'],
-        'candidate_bar_id': decision['confirmation_bar_id'],
-    }
-    with (patch('core.engine.DEFAULT_SYMBOLS', {symbol}),
-          patch('core.config.is_entry_disabled', return_value=False),
-          patch('core.engine.MAX_SLOTS', 1),
-          patch('core.engine.ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR', 5.0)):
-        result = asyncio.run(engine._place_structured_entry_locked(
-            symbol, signal, quote,
-        ))
-    assert result is False
-    assert 'BLOCKED_ABNORMAL_MARKET_ENTRY' in repr(engine.account.log.call_args)
+    engine._channel_entry_quote_times.clear()
+    assert not engine._abnormal_market_entry_allowed(
+        'LOBSTER/USDT', 'SHORT', 80.0, 1.0, 100.0, 101.0, 79.0, 80.0,
+    )
 
 
 @pytest.mark.parametrize(
-    ('side', 'entry_code', 'is_exempt'),
+    ('side', 'entry_code'),
     [
-        ('LONG', 'TRIGGER_C_CONTINUATION', True),
-        ('SHORT', 'TRIGGER_C_CONTINUATION', True),
-        ('LONG', 'TRIGGER_A_KC_BREAKOUT', False),
+        ('LONG', 'AUTHORIZED_REALTIME_BREAKOUT'),
+        ('SHORT', 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT'),
+        ('SHORT', 'AUTHORIZED_BY_PEAK_FLIP_SHORT'),
     ],
 )
-def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
-    engine, side, entry_code, is_exempt, monkeypatch,
+def test_valid_market_data_reaches_account_gate_for_all_entry_types(
+    engine, side, entry_code, monkeypatch,
 ):
     symbol = 'LOBSTER/USDT'
     quote = 102.0 if side == 'LONG' else 98.0
@@ -171,8 +142,7 @@ def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
         entry_atr=1.0,
         pending_signal_id=f'{symbol}:{entry_code}:{stamp}:{side}',
     )
-    if entry_code != 'TRIGGER_A_KC_BREAKOUT':
-        decision['exit_bar_id'] = float(stamp)
+    decision['exit_bar_id'] = float(stamp)
     engine.account.pending_limit_orders = {}
     engine.account.daily_loss_limit_hit.return_value = (False, 0.0)
     engine.account.trades = []
@@ -182,10 +152,13 @@ def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
     engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *_: 2)
     engine.tickers = {symbol: quote}
     engine._execution_price_is_safe = AsyncMock(return_value=True)
+    engine._channel_entry_quote_times = {symbol: time.time()}
     engine._fresh_channel_entry_snapshot = AsyncMock(return_value={
         'frame': frame, 'price': quote, 'decision': decision,
     })
-    engine._abnormal_market_entry_allowed = Mock(return_value=False)
+    engine._abnormal_market_entry_allowed = Mock(return_value=True)
+    frame.loc[frame.index[-1], 'high'] = quote + 8.0
+    frame.loc[frame.index[-1], 'low'] = quote - 8.0
     signal = dict(
         side=side,
         score=100,
@@ -208,14 +181,9 @@ def test_trigger_c_continuation_skips_only_abnormal_market_entry_gate(
         engine._place_structured_entry_locked(symbol, signal, quote),
     )
 
-    if is_exempt:
-        assert result is True
-        engine._abnormal_market_entry_allowed.assert_not_called()
-        engine.account.open_position.assert_awaited_once()
-    else:
-        assert result is False
-        engine._abnormal_market_entry_allowed.assert_called_once()
-        engine.account.open_position.assert_not_awaited()
+    assert result is True
+    engine._abnormal_market_entry_allowed.assert_called_once()
+    engine.account.open_position.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

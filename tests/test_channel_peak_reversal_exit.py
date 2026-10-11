@@ -257,6 +257,7 @@ def test_impulse_reversal_blocks_entry_for_rest_of_same_candle(side):
         "WAIT_LIVE_BODY_BREAKOUT",
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
+        "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
     )
     assert not account.breakout_qualification
 
@@ -282,4 +283,5 @@ def test_next_candle_requires_observed_pullback_then_resume(side):
         "WAIT_LIVE_BODY_BREAKOUT",
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
+        "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
     )

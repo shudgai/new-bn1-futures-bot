@@ -47,6 +47,104 @@ def test_retired_outer_ma3_cross_has_no_exit_authority(side):
     assert strategy.check_intraday_instant_exit(p, 100+sign*9.8, snap, 10.) is None
 
 
+def test_short_upper_wick_suppresses_realtime_reversal_exits():
+    position = pos('SHORT')
+    position.update(entry_price=101.5, open_timestamp=60.)
+    snapshot = {
+        'reason': None, 'live_kc_middle': 100., 'live_kc_upper': 105.,
+        'live_kc_lower': 95., 'live_open': 100., 'live_high': 101.,
+        'live_low': 99.8, 'atr': 1., 'live_bar_ms': 180000.,
+        'closed_bar_ms': 120000., 'last_open': 99., 'last_close': 100.1,
+        'ma5': 100., 'history_5': [],
+    }
+
+    trigger, _ = _evaluate_realtime_core_exit_gates(
+        position, {'lifecycle_stage': 3}, 99.8, 180001., snapshot, 0., 0.,
+    )
+
+    assert trigger is None
+
+
+def test_short_lower_wick_rejection_triggers_realtime_exit():
+    position = pos('SHORT')
+    position.update(entry_price=101.5, open_timestamp=60.)
+    snapshot = {
+        'reason': None, 'live_kc_middle': 100., 'live_kc_upper': 105.,
+        'live_kc_lower': 95., 'live_open': 100., 'live_high': 100.2,
+        'live_low': 99., 'atr': 1., 'live_bar_ms': 180000.,
+        'closed_bar_ms': 120000., 'last_open': 100., 'last_close': 99.,
+        'ma5': 100., 'history_5': [],
+    }
+
+    trigger, _ = _evaluate_realtime_core_exit_gates(
+        position, {'lifecycle_stage': 3}, 100.1, 180001., snapshot, 0., 0.,
+    )
+
+    assert trigger == 'LIVE_BOTTOM_REJECTION_EXIT'
+
+
+def test_peak_valley_wick_exit_is_wired_into_realtime_execution(monkeypatch):
+    from core.services.exits import realtime_profit_exit
+    from core.exits.peak_valley_exit import PeakValleyExit
+
+    async def run():
+        position = pos('SHORT')
+        position.update(open_timestamp=time.time() - 120, entry_atr=1.)
+        account = SimpleNamespace(
+            positions={'X': position}, position_meta={}, save_state=Mock(),
+            close_position=AsyncMock(return_value=True), log=Mock(),
+        )
+        engine = object.__new__(TradingEngine)
+        engine.account = account
+        engine.is_running = True
+        engine._channel_exit_frames = {'X': pd.DataFrame([{'placeholder': 1}])}
+        snapshot = {
+            'reason': None, 'live_open': 100., 'live_high': 100.2,
+            'live_low': 99.8, 'atr': 1., 'live_bar_ms': 180000.,
+            'closed_bar_ms': 120000., 'history_5': [],
+        }
+        monkeypatch.setattr(
+            realtime_profit_exit, 'enforce_hard_stop',
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(
+            realtime_profit_exit, 'cached_tick_indicators',
+            lambda *args: (snapshot, 1.),
+        )
+        monkeypatch.setattr(
+            'core.services.exits.dual_track_exit_service.detect_climax_reversal',
+            lambda *args: None,
+        )
+        monkeypatch.setattr(
+            PeakValleyExit, 'evaluate',
+            staticmethod(lambda *args: (
+                'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
+                    'lower_wick': 1., 'upper_wick': 0.1,
+                    'body': 0.1, 'atr': 1., 'valley_roe': 0.04,
+                    'peak_gain_atr': 0.5,
+                },
+            )),
+        )
+        monkeypatch.setattr(
+            'core.gates.holding_protection_gate.HoldingProtectionExitGate.validate_exit',
+            classmethod(lambda cls, *args: (
+                True, 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', args[-1],
+            )),
+        )
+
+        closed = await realtime_profit_exit.enforce_realtime_profit_exit(
+            engine, 'X', 100.,
+        )
+
+        assert closed is True
+        account.close_position.assert_awaited_once_with(
+            'X', 100., 'Channel Swing EXIT_SHORT_ON_LOWER_WICK_REJECTION',
+            is_manual=True,
+        )
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_no_outer_cross_without_observed_outer_tick(side):
     p = pos(side)
@@ -331,6 +429,3 @@ def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
 
     assert snapshot['ma5_history'] == [98., 99., 100.]
     assert snapshot['ma15_history'] == [95., 96., 97.]
-
-
-

@@ -178,15 +178,20 @@ class DualTrackExitStrategy(IExitStrategy):
 
     def evaluate_exit(self, position, frame=None, current_price=None, **kwargs):
         import time
+        import logging
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
-        climax = detect_climax_reversal(frame, position.get('side'))
-        if climax:
-            return climax['reason']
-        if current_price is None:
-            return None
-        result = evaluate_peak_trailing(position, current_price, kwargs.get('quote_ms', time.time()*1000),
-                                        fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
-        return result['type'] if result else None
+        try:
+            climax = detect_climax_reversal(frame, position.get('side'))
+            if climax:
+                return climax['reason']
+            if current_price is None:
+                return None
+            result = evaluate_peak_trailing(position, current_price, kwargs.get('quote_ms', time.time()*1000),
+                                            fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
+            return result['type'] if result else None
+        except Exception as e:
+            logging.getLogger(__name__).error(f"FAIL_SAFE_EXIT_ERROR in DualTrackExitStrategy: {e}", exc_info=True)
+            return "FAIL_SAFE_EMERGENCY_EXIT"
 
     def handle_post_exit_cleanup(self, position, exit_reason):
         position.pop(STATE_KEY, None)
