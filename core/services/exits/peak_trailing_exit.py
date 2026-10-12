@@ -5,7 +5,7 @@ import sys
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 
-POLICY = 'profit_lock_verified_pivot_only_v4'
+POLICY = 'profit_lock_verified_pivot_only_v5'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
@@ -22,7 +22,11 @@ NET_ROE_LOCK_STEP_PCT = 4.0
 NET_ROE_LOCK_GIVEBACK_PCT = 1.5
 LIVE_MA5_BREAKDOWN_TRIGGER = 'LIVE_MA5_BREAKDOWN_EXIT'
 LIVE_FLASH_DUMP_TRIGGER = 'LIVE_FLASH_DUMP_EXIT'
-LIVE_FLASH_DUMP_ATR = 0.60
+EMERGENCY_DUMP_CUT_TRIGGER = 'EMERGENCY_STOP_DUMP_CUT'
+LIVE_FLASH_DUMP_ATR = 0.80
+EMERGENCY_DUMP_BODY_ATR = 0.70
+EMERGENCY_DUMP_ENGULF_RATIO = 0.75
+LIVE_UPPER_WICK_BODY_RATIO = 1.50
 V_REVERSAL_SHORT_BODY_ATR = 0.50
 V_REVERSAL_SHORT_MA_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_GREEN_MA_RECLAIM'
 V_REVERSAL_SHORT_KC_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_KC_LOWER_RECLAIM'
@@ -32,6 +36,11 @@ CONSECUTIVE_DOJI_STALL_BARS = 3
 DOJI_STALL_BODY_ATR = 0.25
 DOJI_STALL_BODY_RANGE_RATIO = 0.30
 CONTINUATION_FAILED_TRIGGER = 'EXIT_CONTINUATION_FAILED'
+CHANNEL_MOMENTUM_STALL_TRIGGER = 'EXIT_CHANNEL_MOMENTUM_STALL'
+CHANNEL_MOMENTUM_STALL_BARS = 3
+CHANNEL_MOMENTUM_STALL_BODY_ATR = 0.30
+CHANNEL_MOMENTUM_STALL_FLAT_MA5_ATR = 0.02
+MA5_REVERSAL_RULE_VERSION = 2
 RETIRED_KEYS = (
     'instant_exit_state', 'closed_exit_state', 'doji_reversal_state',
     'three_stage_exit_state', 'chandelier_state', 'channel_profit_protection',
@@ -55,6 +64,9 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
     'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
     'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+    'MA5_TRUE_PEAK_REVERSAL',
+    CHANNEL_MOMENTUM_STALL_TRIGGER,
+    EMERGENCY_DUMP_CUT_TRIGGER,
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
@@ -84,11 +96,15 @@ def channel_swing_exit_allowed(reason=None, trigger=None):
         'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
         'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
         'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+        'MA5_TRUE_PEAK_REVERSAL',
+        CHANNEL_MOMENTUM_STALL_TRIGGER,
     }
     for value in (reason, trigger):
         if not isinstance(value, str):
             continue
         if value in allowed_pivots:
+            return True
+        if value == EMERGENCY_DUMP_CUT_TRIGGER:
             return True
     return False
 
@@ -99,8 +115,92 @@ def positive(value):
         return False
 
 
+def emergency_long_dump_cut_trigger(position, price, snapshot):
+    """Detect severe LONG selling pressure or a completed bearish MA5 break."""
+    try:
+        if (position.get('side') != 'LONG' or not isinstance(snapshot, dict)
+                or snapshot.get('reason') is not None):
+            return None
+
+        quote = float(price)
+        quote_ms = float(snapshot['quote_ms'])
+        if (not positive(quote) or not positive(quote_ms)):
+            return None
+        history = snapshot.get('history_5')
+        if not isinstance(history, (list, tuple)) or len(history) < 2:
+            return None
+
+        def candle_values(candle):
+            return tuple(float(candle[key]) for key in ('ms', 'o', 'h', 'l', 'c'))
+
+        def valid_candle(candle):
+            ms, opening, high, low, close = candle_values(candle)
+            return (
+                all(math.isfinite(value) and value > 0
+                    for value in (ms, opening, high, low, close))
+                and high >= max(opening, close)
+                and low <= min(opening, close)
+                and high > low
+            )
+
+        is_closed = snapshot.get('current_bar_is_closed') is True
+        if (not is_closed and type(snapshot.get('current_bar_is_closed')).__name__ == 'bool_'):
+            is_closed = bool(snapshot['current_bar_is_closed'])
+
+        if is_closed:
+            previous_bar, current_bar = history[-2:]
+            if not valid_candle(previous_bar) or not valid_candle(current_bar):
+                return None
+            previous_ms, previous_open, _, _, previous_close = candle_values(previous_bar)
+            current_ms, current_open, _, _, current_close = candle_values(current_bar)
+            current_minute = math.floor(quote_ms / 60000.) * 60000.
+            if (current_ms - previous_ms != 60000.
+                    or current_minute - current_ms != 60000.
+                    or snapshot.get('snapshot_bar_id') != current_ms):
+                return None
+            reference_atr = float(previous_bar.get('atr') or 0.)
+            ma5 = float(current_bar.get('ma5') or 0.)
+            if (current_close < current_open and positive(ma5)
+                    and current_close < ma5):
+                return EMERGENCY_DUMP_CUT_TRIGGER
+            body_end = current_close
+        else:
+            previous_bar = history[-1]
+            if not valid_candle(previous_bar):
+                return None
+            previous_ms, previous_open, _, _, previous_close = candle_values(previous_bar)
+            live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+            closed_bar_ms = float(snapshot.get('closed_bar_ms') or 0.)
+            live_open = float(snapshot.get('live_open') or 0.)
+            if (live_bar_ms != math.floor(quote_ms / 60000.) * 60000.
+                    or closed_bar_ms != live_bar_ms - 60000.
+                    or previous_ms != closed_bar_ms
+                    or not positive(live_open)):
+                return None
+            reference_atr = float(snapshot.get('atr') or 0.)
+            current_open = live_open
+            body_end = quote
+
+        previous_body = previous_close - previous_open
+        current_body = current_open - body_end
+        if (previous_body <= 0. or current_body <= 0.
+                or not positive(reference_atr)):
+            return None
+        covered_body = max(
+            0.,
+            min(previous_close, current_open) - max(previous_open, body_end),
+        )
+        minimum_body = EMERGENCY_DUMP_BODY_ATR * reference_atr
+        if (current_body >= minimum_body
+                and covered_body / previous_body >= EMERGENCY_DUMP_ENGULF_RATIO):
+            return EMERGENCY_DUMP_CUT_TRIGGER
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError, IndexError):
+        return None
+
+
 def live_intraday_sell_pressure_trigger(position, price, snapshot):
-    """Authorize a LONG close only after live selling pressure breaks KC mid."""
+    """Authorize intrabar LONG exits only for a large dump or extreme upper wick."""
     try:
         if position.get('side') != 'LONG' or not isinstance(snapshot, dict):
             return None
@@ -108,15 +208,22 @@ def live_intraday_sell_pressure_trigger(position, price, snapshot):
         atr = float(snapshot.get('atr') or 0.)
         live_open = float(snapshot.get('live_open') or 0.)
         live_high = float(snapshot.get('live_high') or 0.)
-        middle = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if (not all(positive(value) for value in (quote, atr, live_open, live_high))
-                or not positive(middle) or live_high < max(live_open, quote)
-                or min(live_open, quote) >= middle):
+                or live_high < max(live_open, quote)):
             return None
 
         bearish_body = live_open - quote
-        if (bearish_body >= LIVE_FLASH_DUMP_ATR * atr
-                and live_high - quote >= LIVE_FLASH_DUMP_ATR * atr):
+        dump_threshold = LIVE_FLASH_DUMP_ATR * atr
+        if (bearish_body >= dump_threshold
+                or math.isclose(bearish_body, dump_threshold, rel_tol=1e-12)):
+            return LIVE_FLASH_DUMP_TRIGGER
+        real_body = abs(quote - live_open)
+        high_retracement = live_high - quote
+        wick_threshold = LIVE_UPPER_WICK_BODY_RATIO * real_body
+        if (real_body > 0. and (
+                high_retracement >= wick_threshold
+                or math.isclose(high_retracement, wick_threshold, rel_tol=1e-12)
+        )):
             return LIVE_FLASH_DUMP_TRIGGER
         return None
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
@@ -534,6 +641,7 @@ def migrate_peak_state(position, meta=None):
         if not position.get('entry_mode'):
             position['entry_mode'] = 'CHANNEL_SWING'
         if (state.get('trigger') == 'MA5_TRUE_PEAK_REVERSAL'
+                and state.get('ma5_reversal_rule_version') != MA5_REVERSAL_RULE_VERSION
                 and not state.get('ma5_reversal_outside_seen')):
             for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                         'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
@@ -768,15 +876,8 @@ def three_point_pivot_exit(position, snapshot):
         return None
 
 
-def live_ma5_reversal_exit(position, snapshot, sign, state=None):
-    """Exit on an observed MA5 reversal after extending beyond the held-side rail.
-
-    The previous implementation waited for live MA5 to cross the prior
-    candle's MA5. That anchor can be far behind the actual intrabar extreme,
-    so it often authorized the close only after most of the move had retraced.
-    Keep the best MA5 observed while this position is open and act on the
-    first adverse MA5 update that is also confirmed by an adverse price tick.
-    """
+def live_ma5_reversal_exit(position, snapshot, sign, state=None, atr=0.):
+    """Require a confirmed MA5 close until profit protection has armed."""
     try:
         if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
             return None
@@ -786,67 +887,161 @@ def live_ma5_reversal_exit(position, snapshot, sign, state=None):
         snapshot_bar_id = float(snapshot['snapshot_bar_id'])
         closed_ma5 = float(snapshot['closed_ma5'])
         live_ma5 = float(snapshot['live_ma5'])
-        rail_key = 'live_kc_upper' if sign == 1 else 'live_kc_lower'
-        live_rail = float(snapshot[rail_key])
         bar_ms = math.floor(quote_ms / 60000) * 60000
+        quote_price = snapshot.get('quote_price', snapshot.get('price'))
+        closed_price = float(snapshot['last_close'])
+        entry_price = float(position['entry_price'])
+        opened_ms = float(position['open_timestamp']) * 1000.
+        reference_atr = float(atr or position.get('entry_atr') or snapshot.get('atr') or 0.)
         if (not all(positive(value) for value in
                     (quote_ms, live_bar_ms, closed_bar_ms, snapshot_bar_id,
-                     closed_ma5, live_ma5, live_rail))
+                     closed_ma5, live_ma5, closed_price, entry_price,
+                     opened_ms, reference_atr))
                 or live_bar_ms != bar_ms
                 or closed_bar_ms != bar_ms - 60000
                 or snapshot_bar_id != closed_bar_ms
                 or quote_ms < closed_bar_ms
-                or quote_ms - closed_bar_ms > 120000):
+                or quote_ms - closed_bar_ms > 120000
+                or snapshot.get('closed_bar_is_closed') is not True
+                or sign not in (-1, 1)
+                or quote_price is None
+                or not positive(quote_price)):
             return None
         state = state if isinstance(state, dict) else {}
-        previous_ma5 = state.get('ma5_reversal_last_value')
-        previous_price = state.get('ma5_reversal_last_price')
-        peak = state.get('ma5_reversal_extreme')
-        favorable_seen = bool(state.get('ma5_reversal_favorable_seen', False))
-        outside_seen = bool(state.get('ma5_reversal_outside_seen', False))
+        peak_price = float(state.get('peak_price') or entry_price)
+        peak_gain = sign * (peak_price - entry_price)
+        lock_armed = bool(state.get('ma5_profit_lock_armed', False))
+        if (not lock_armed and peak_gain > 0.5 * reference_atr
+                and not math.isclose(
+                    peak_gain, 0.5 * reference_atr,
+                    rel_tol=1e-12, abs_tol=0.0,
+                )):
+            lock_armed = True
+        state['ma5_profit_lock_armed'] = lock_armed
 
-        # Seed from the current quote only. Never infer an unobserved intrabar
-        # peak from candle highs/lows or from data preceding position entry.
-        if not positive(peak):
-            peak = live_ma5
-        if previous_ma5 is not None and positive(previous_ma5):
-            if sign * (live_ma5 - float(previous_ma5)) > 0:
-                favorable_seen = True
+        age_seconds = quote_ms / 1000. - opened_ms / 1000.
+        first_full_bar_ms = math.ceil(opened_ms / 60000.) * 60000.
+        has_full_post_entry_bar = closed_bar_ms >= first_full_bar_ms
+        if age_seconds < 90. or not has_full_post_entry_bar:
+            return None
 
-        if sign * (live_ma5 - float(peak)) > 0:
-            peak = live_ma5
-        if sign * (live_ma5 - live_rail) > 0:
-            outside_seen = True
-
-        ma5_reversed = sign * (live_ma5 - float(peak)) < 0
-        # The exit decision receives the authoritative latest quote separately;
-        # the caller attaches it here without reconstructing tick order from OHLC.
-        quote_price = snapshot.get('quote_price', snapshot.get('price'))
-        price_reversed = (
-            quote_price is not None and positive(quote_price)
-            and previous_price is not None and positive(previous_price)
-            and sign * (float(quote_price) - float(previous_price)) < 0
+        ma5_history = snapshot.get('ma5_history')
+        strong_slope = False
+        if (isinstance(ma5_history, (list, tuple))
+                and len(ma5_history) >= 3
+                and all(positive(value) for value in ma5_history[-3:])):
+            slope_values = [float(value) for value in ma5_history[-3:-1]]
+            slope_values.append(live_ma5)
+            strong_slope = all(
+                sign * (right - left) > 0
+                for left, right in zip(slope_values, slope_values[1:])
+            )
+        if not lock_armed and strong_slope:
+            return None
+        breached = sign * (closed_price - closed_ma5) < 0
+        trigger_type = (
+            'CLOSED_MA5_PROFIT_LOCK' if lock_armed else 'CLOSED_MA5_BREACH'
         )
-
-        state.update(
-            ma5_reversal_extreme=float(peak),
-            ma5_reversal_last_value=live_ma5,
-            ma5_reversal_favorable_seen=favorable_seen,
-            ma5_reversal_outside_seen=outside_seen,
-        )
-        if quote_price is not None and positive(quote_price):
-            state['ma5_reversal_last_price'] = float(quote_price)
-        if not (outside_seen and favorable_seen and ma5_reversed and price_reversed):
+        if not breached:
             return None
         return {
             'trigger': 'MA5_TRUE_PEAK_REVERSAL',
-            'trigger_bar_ms': live_bar_ms,
+            'ma5_reversal_rule_version': MA5_REVERSAL_RULE_VERSION,
+            'trigger_type': trigger_type,
+            'trigger_bar_ms': closed_bar_ms if not lock_armed else live_bar_ms,
             'trigger_price': float(quote_price),
             'closed_ma5': closed_ma5,
             'live_ma5': live_ma5,
-            'ma5_reversal_extreme': float(peak),
+            'ma5_profit_lock_armed': lock_armed,
         }
     except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def channel_momentum_stall_exit(position, snapshot, state, price, sign):
+    """Exit after three weak, non-extending closed bars and a flat/adverse MA5."""
+    try:
+        if not isinstance(snapshot, dict) or sign not in (-1, 1):
+            return None
+        history = snapshot.get('history_outer_pivots')
+        if not isinstance(history, (list, tuple)) or len(history) < CHANNEL_MOMENTUM_STALL_BARS + 1:
+            return None
+        closed_bar_ms = float(snapshot.get('closed_bar_ms') or 0.)
+        snapshot_bar_id = float(snapshot.get('snapshot_bar_id') or 0.)
+        quote_ms = float(snapshot.get('quote_ms') or 0.)
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+        opened_ms = float(position.get('open_timestamp') or 0.) * 1000.
+        entry = float(position.get('entry_price') or 0.)
+        quote = float(price)
+        bars = list(history[-(CHANNEL_MOMENTUM_STALL_BARS + 1):])
+        if (not all(positive(value) for value in (
+                    closed_bar_ms, snapshot_bar_id, quote_ms, live_bar_ms,
+                    opened_ms, entry, quote))
+                or closed_bar_ms != snapshot_bar_id
+                or quote_ms < closed_bar_ms
+                or quote_ms - closed_bar_ms > 120000
+                or live_bar_ms != math.floor(quote_ms / 60000.) * 60000.
+                or closed_bar_ms != live_bar_ms - 60000
+                or len(bars) != CHANNEL_MOMENTUM_STALL_BARS + 1):
+            return None
+
+        parsed = []
+        for bar in bars:
+            ms, opening, high, low, close, ma5, atr = (
+                float(bar[key]) for key in ('ms', 'o', 'h', 'l', 'c', 'ma5', 'atr')
+            )
+            if (not all(positive(value) for value in
+                        (ms, opening, high, low, close, ma5, atr))
+                    or high < max(opening, close)
+                    or low > min(opening, close)):
+                return None
+            parsed.append((ms, opening, high, low, close, ma5, atr))
+
+        recent = parsed[-CHANNEL_MOMENTUM_STALL_BARS:]
+        first_full_bar_ms = (math.floor(opened_ms / 60000.) + 1) * 60000.
+        if (recent[-1][0] != closed_bar_ms
+                or recent[0][0] < first_full_bar_ms
+                or any(right[0] - left[0] != 60000
+                       for left, right in zip(recent, recent[1:]))):
+            return None
+
+        peak_price = float(state.get('peak_price') or entry)
+        prior_peak = parsed[0][2] if sign > 0 else parsed[0][3]
+        for bar in recent:
+            _, opening, high, low, close, _, atr = bar
+            body = abs(close - opening)
+            if body >= CHANNEL_MOMENTUM_STALL_BODY_ATR * atr:
+                return None
+            if sign > 0:
+                if high > peak_price or high > prior_peak:
+                    return None
+                prior_peak = max(prior_peak, high)
+            else:
+                if low < peak_price or low < prior_peak:
+                    return None
+                prior_peak = min(prior_peak, low)
+
+        if (sign > 0 and quote > max(bar[2] for bar in recent)
+                or sign < 0 and quote < min(bar[3] for bar in recent)):
+            return None
+
+        ma5_delta = recent[-1][5] - recent[-2][5]
+        ma5_atr_limit = CHANNEL_MOMENTUM_STALL_FLAT_MA5_ATR * recent[-1][6]
+        adverse_slope = sign * ma5_delta < 0
+        flat_slope = (
+            abs(ma5_delta) < ma5_atr_limit
+            and not math.isclose(abs(ma5_delta), ma5_atr_limit, rel_tol=1e-12, abs_tol=0.0)
+        )
+        if not adverse_slope and not flat_slope:
+            return None
+        return {
+            'trigger': CHANNEL_MOMENTUM_STALL_TRIGGER,
+            'trigger_bar_ms': closed_bar_ms,
+            'trigger_atr': recent[-1][6],
+            'trigger_price': quote,
+            'momentum_stall_bars': [bar[0] for bar in recent],
+        }
+    except (KeyError, TypeError, ValueError, OverflowError, IndexError):
         return None
 
 
@@ -1305,7 +1500,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         if (positive(lower) and positive(upper) and lower < upper
                                 and positive(middle) and positive(ma5)
                                 and lower <= live_open <= upper
-                                and live_open - price >= 0.5 * float(prior_atr)
+                                and live_open - price >= LIVE_FLASH_DUMP_ATR * float(prior_atr)
                                 and price < lower and price < middle and price < ma5):
                             reason, trigger = ABNORMAL_REASON, 'BEARISH_INSTANT_BREAKOUT'
                             state.update(trigger_bar_ms=bar, trigger_open=live_open,
@@ -1322,10 +1517,13 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         and trigger not in ('WATERFALL_DROP', CONTINUATION_FAILED_TRIGGER)):
                     reason, trigger = ABNORMAL_REASON, abnormal_evidence['trigger']
                     state.update(abnormal_evidence)
-            elif not pivot_only_symbol:
+
+            if is_channel_swing or not pivot_only_symbol:
                 ma5_snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
                 ma5_snapshot['quote_price'] = price
-                ma5_evidence = live_ma5_reversal_exit(position, ma5_snapshot, sign, state)
+                ma5_evidence = live_ma5_reversal_exit(
+                    position, ma5_snapshot, sign, state, atr=scale,
+                )
                 if (ma5_evidence is not None and reason != HARD_REASON
                         and trigger not in ('WATERFALL_DROP', 'CHANNEL_PEAK_PULLBACK_REVERSAL')):
                     reason, trigger = ABNORMAL_REASON, ma5_evidence['trigger']
@@ -1365,6 +1563,18 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 )
 
             if (is_channel_swing and reason != HARD_REASON
+                    and trigger not in (
+                        'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
+                        LIVE_FLASH_DUMP_TRIGGER,
+                    )):
+                stall_evidence = channel_momentum_stall_exit(
+                    position, snapshot, state, price, sign,
+                )
+                if stall_evidence is not None:
+                    reason, trigger = ABNORMAL_REASON, stall_evidence['trigger']
+                    state.update(stall_evidence)
+
+            if (is_channel_swing and reason != HARD_REASON
                     and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
                 reason, trigger = None, None
 
@@ -1397,6 +1607,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                         'KC_OUTER_PIVOT',
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                                         'MA5_TRUE_PEAK_REVERSAL',
+                                        CHANNEL_MOMENTUM_STALL_TRIGGER,
                                         'CHANNEL_PEAK_PULLBACK_REVERSAL',
                                         'KC_CHANNEL_RETURN',
                                         CONTINUATION_FAILED_TRIGGER,
@@ -1422,6 +1633,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'EXIT_PARABOLIC_PULLBACK_1_ATR', 'KC_OUTER_PIVOT',
                     'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                     'MA5_TRUE_PEAK_REVERSAL',
+                    CHANNEL_MOMENTUM_STALL_TRIGGER,
                     'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN',
                     'EXIT_DOJI_BEARISH_CONFIRMATION',
                     'EXIT_DOJI_BULLISH_CONFIRMATION',
@@ -1470,6 +1682,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             CONSECUTIVE_DOJI_STALL_TRIGGER,
             'EXIT_PROFIT_LOCK_FLOOR',
             LIVE_FLASH_DUMP_TRIGGER,
+            CHANNEL_MOMENTUM_STALL_TRIGGER,
         }
         if outer_hold_reason and reason != HARD_REASON and trigger not in emergency_triggers:
             reason = trigger = None
@@ -1513,6 +1726,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'BEARISH_INSTANT_BREAKOUT',
                     CONTINUATION_FAILED_TRIGGER,
                     CONSECUTIVE_DOJI_STALL_TRIGGER,
+                    CHANNEL_MOMENTUM_STALL_TRIGGER,
                     NET_ROE_LOCK_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
                     LIVE_FLASH_DUMP_TRIGGER,
                 )

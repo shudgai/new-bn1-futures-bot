@@ -15,9 +15,12 @@ from core.services.exits.realtime_profit_exit import (
 from core.services.exits.peak_trailing_exit import (
     LIVE_FLASH_DUMP_TRIGGER,
     LIVE_MA5_BREAKDOWN_TRIGGER,
+    EMERGENCY_DUMP_CUT_TRIGGER,
     NET_ROE_LOCK_TRIGGER,
     CONSECUTIVE_DOJI_STALL_TRIGGER,
     evaluate_peak_trailing,
+    emergency_long_dump_cut_trigger,
+    channel_swing_exit_allowed,
 )
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.symbol_runner import process_single_symbol_runner
@@ -476,3 +479,99 @@ def test_cached_tick_indicators_exposes_only_three_closed_ma_values():
 
     assert snapshot['ma5_history'] == [98., 99., 100.]
     assert snapshot['ma15_history'] == [95., 96., 97.]
+
+
+def _dump_cut_live_snapshot():
+    return {
+        'reason': None,
+        'quote_ms': 180001.,
+        'live_bar_ms': 180000.,
+        'closed_bar_ms': 120000.,
+        'current_bar_is_closed': False,
+        'atr': 1.,
+        'live_open': 101.,
+        'history_5': [
+            {'ms': 60000., 'o': 99., 'h': 100.1, 'l': 98.9, 'c': 100.,
+             'ma5': 99.5, 'atr': 1.},
+            {'ms': 120000., 'o': 100., 'h': 101.2, 'l': 99.8, 'c': 101.,
+             'ma5': 100., 'atr': 1.},
+        ],
+    }
+
+
+def test_live_bearish_engulfing_dump_is_an_emergency_exit():
+    position = {
+        'side': 'LONG', 'entry_price': 100., 'open_timestamp': 60.,
+        'qty': 1., 'margin': 100., 'entry_mode': 'CHANNEL_SWING',
+    }
+    snapshot = _dump_cut_live_snapshot()
+    quote = 100.2
+
+    assert emergency_long_dump_cut_trigger(position, quote, snapshot) == (
+        EMERGENCY_DUMP_CUT_TRIGGER
+    )
+    assert channel_swing_exit_allowed(trigger=EMERGENCY_DUMP_CUT_TRIGGER)
+    assert _evaluate_realtime_core_exit_gates(
+        position, {}, quote, 180001., snapshot, 0., 0.,
+    ) == (EMERGENCY_DUMP_CUT_TRIGGER, False)
+
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+    allowed, _, _ = HoldingProtectionExitGate.validate_exit(
+        position, None, quote, EMERGENCY_DUMP_CUT_TRIGGER, channel_swing=True,
+    )
+    assert allowed
+
+
+def test_live_dump_requires_body_size_and_engulf_coverage():
+    position = {'side': 'LONG'}
+    snapshot = _dump_cut_live_snapshot()
+
+    assert emergency_long_dump_cut_trigger(position, 100.3, snapshot) is None
+    assert emergency_long_dump_cut_trigger(position, 100.2, {
+        **snapshot,
+        'history_5': [
+            snapshot['history_5'][0],
+            {**snapshot['history_5'][-1], 'o': 100., 'c': 100.6,
+             'h': 100.7},
+        ],
+    }) is None
+
+
+def test_closed_bearish_ma5_break_exits_even_below_dump_threshold():
+    position = {'side': 'LONG'}
+    snapshot = {
+        'reason': None,
+        'quote_ms': 180001.,
+        'current_bar_is_closed': True,
+        'snapshot_bar_id': 120000.,
+        'history_5': [
+            {'ms': 60000., 'o': 99., 'h': 100.1, 'l': 98.9, 'c': 100.,
+             'ma5': 99.5, 'atr': 1.},
+            {'ms': 120000., 'o': 101., 'h': 101.1, 'l': 99.4, 'c': 99.8,
+             'ma5': 100., 'atr': 1.},
+        ],
+    }
+
+    assert emergency_long_dump_cut_trigger(position, 99.8, snapshot) == (
+        EMERGENCY_DUMP_CUT_TRIGGER
+    )
+
+
+def test_closed_ma5_break_requires_a_bearish_candle_and_live_dip_does_not_exit():
+    position = {'side': 'LONG'}
+    closed_snapshot = {
+        'reason': None,
+        'quote_ms': 180001.,
+        'current_bar_is_closed': True,
+        'snapshot_bar_id': 120000.,
+        'history_5': [
+            {'ms': 60000., 'o': 99., 'h': 100.1, 'l': 98.9, 'c': 100.,
+             'ma5': 99.5, 'atr': 1.},
+            {'ms': 120000., 'o': 99.6, 'h': 100.1, 'l': 99.4, 'c': 99.8,
+             'ma5': 100., 'atr': 1.},
+        ],
+    }
+    assert emergency_long_dump_cut_trigger(position, 99.8, closed_snapshot) is None
+    assert emergency_long_dump_cut_trigger(
+        position, 100.4, _dump_cut_live_snapshot(),
+    ) is None

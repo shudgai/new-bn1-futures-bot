@@ -12,7 +12,8 @@ from core.services.exits.peak_trailing_exit import (
     STATE_KEY, RETIRED_KEYS, PEAK_REASON, HARD_REASON,
     evaluate_peak_trailing, estimated_net_pnl,
     live_intraday_sell_pressure_trigger, LIVE_MA5_BREAKDOWN_TRIGGER,
-    migrate_peak_state,
+    channel_momentum_stall_exit, channel_swing_exit_allowed,
+    CHANNEL_MOMENTUM_STALL_TRIGGER, migrate_peak_state,
 )
 from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
 from core.services.exits.entry_atr_protection import enforce_atr_protection
@@ -60,6 +61,77 @@ def test_legacy_live_ma5_pending_exit_is_cleared_during_migration():
     assert 'trigger' not in state
     assert 'pending' not in meta[STATE_KEY]
     assert 'trigger' not in meta[STATE_KEY]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_channel_momentum_stall_requires_three_weak_non_extending_bars(side):
+    sign = 1 if side == "LONG" else -1
+    baseline = (
+        {"ms": 120000, "o": 103.0, "h": 105.0, "l": 102.8, "c": 103.1,
+         "ma5": 103.1, "atr": 1.0}
+        if sign > 0 else
+        {"ms": 120000, "o": 97.0, "h": 97.2, "l": 95.0, "c": 96.9,
+         "ma5": 96.9, "atr": 1.0}
+    )
+    history = [baseline]
+    for ms, extreme, ma5 in (
+        (180000, 104.5 if sign > 0 else 95.5, 103.0 if sign > 0 else 97.0),
+        (240000, 104.2 if sign > 0 else 95.8, 102.99 if sign > 0 else 97.01),
+        (300000, 104.1 if sign > 0 else 95.9, 102.99 if sign > 0 else 97.02),
+    ):
+        history.append({
+            "ms": ms, "o": 103.0 if sign > 0 else 97.0,
+            "h": extreme if sign > 0 else 97.2,
+            "l": 102.8 if sign > 0 else extreme,
+            "c": 103.1 if sign > 0 else 96.9,
+            "ma5": ma5, "atr": 1.0,
+        })
+    snapshot = {
+        "quote_ms": 361000, "live_bar_ms": 360000,
+        "closed_bar_ms": 300000, "snapshot_bar_id": 300000,
+        "history_outer_pivots": history,
+    }
+    position_data = position(side)
+    state = {"peak_price": 105.0 if sign > 0 else 95.0}
+
+    evidence = channel_momentum_stall_exit(
+        position_data, snapshot, state, 103.5 if sign > 0 else 96.5, sign,
+    )
+
+    assert evidence is not None
+    assert evidence["trigger"] == CHANNEL_MOMENTUM_STALL_TRIGGER
+    assert len(evidence["momentum_stall_bars"]) == 3
+    assert channel_swing_exit_allowed(trigger=evidence["trigger"])
+
+
+def test_channel_momentum_stall_does_not_exit_on_large_body_or_new_extreme():
+    position_data = position("LONG")
+    state = {"peak_price": 105.0}
+    history = [
+        {"ms": 120000, "o": 103.0, "h": 105.0, "l": 102.8, "c": 103.1,
+         "ma5": 103.1, "atr": 1.0},
+        {"ms": 180000, "o": 103.0, "h": 104.5, "l": 102.8, "c": 103.1,
+         "ma5": 103.0, "atr": 1.0},
+        {"ms": 240000, "o": 103.0, "h": 104.2, "l": 102.8, "c": 103.1,
+         "ma5": 102.99, "atr": 1.0},
+        {"ms": 300000, "o": 103.0, "h": 104.1, "l": 102.8, "c": 103.4,
+         "ma5": 102.99, "atr": 1.0},
+    ]
+    snapshot = {
+        "quote_ms": 361000, "live_bar_ms": 360000,
+        "closed_bar_ms": 300000, "snapshot_bar_id": 300000,
+        "history_outer_pivots": history,
+    }
+
+    assert channel_momentum_stall_exit(
+        position_data, snapshot, state, 103.5, 1,
+    ) is None
+
+    history[-1]["c"] = 103.1
+    history[-1]["h"] = 105.1
+    assert channel_momentum_stall_exit(
+        position_data, snapshot, state, 103.5, 1,
+    ) is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

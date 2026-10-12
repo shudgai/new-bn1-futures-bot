@@ -7,7 +7,8 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
-    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS,
+    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, EMERGENCY_DUMP_CUT_TRIGGER,
+    emergency_long_dump_cut_trigger,
     estimated_display_net_pnl,
 )
 from core.services.exits.hard_stop_service import enforce_hard_stop
@@ -119,6 +120,9 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         mid = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
         if not sign or not math.isfinite(quote) or quote <= 0:
             return None, False
+        emergency_dump = emergency_long_dump_cut_trigger(position, quote, snapshot)
+        if emergency_dump is not None:
+            return EMERGENCY_DUMP_CUT_TRIGGER, False
         if short_false_breakout_exit(position, meta, quote, snapshot):
             return SHORT_FALSE_BREAKOUT_TRIGGER, False
         open_ms = float(position.get('open_timestamp') or 0.0) * 1000.0
@@ -335,6 +339,7 @@ def cached_tick_indicators(frame, price, stamp):
     snapshot.update(
         snapshot_bar_id=last_ms,
         live_bar_id=bar,
+        closed_bar_is_closed=True,
         ma3=float(last.get('ma3', 0.)),
         ma5=float(last.get('ma5', last.get('ma3', 0.))),
         ma15=float(last.get('ma15', 0.)),
@@ -671,7 +676,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                    'net_roe_peak_pct','net_roe_lock_armed','net_roe_lock_floor_pct',
                    'ma5_reversal_extreme','ma5_reversal_last_value',
                    'ma5_reversal_last_price','ma5_reversal_favorable_seen',
-                   'ma5_reversal_outside_seen'))
+                   'ma5_reversal_outside_seen','ma5_profit_lock_armed',
+                   'ma5_reversal_rule_version','momentum_stall_bars'))
         for key in STATE_KEYS:
             if key in position:
                 meta[key] = copy.deepcopy(position[key])
