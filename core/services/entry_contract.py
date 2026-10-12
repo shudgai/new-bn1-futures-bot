@@ -46,6 +46,7 @@ DEATH_CROSS_FAST_SHORT_CODE = "KC_DEATH_CROSS_FAST_SHORT"
 # Backwards-compatible public name used by entry calibration callers.
 MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
+BULLISH_INSTANT_BREAKOUT_CODE = "BULLISH_INSTANT_BREAKOUT"
 CLIMAX_REVERSAL_FLIP_CODE = "CLIMAX_REVERSAL_FLIP"
 TOP_WATERFALL_FLIP_CODE = "AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT"
 SHADOW_RETEST_ENTRY_CODE = "AUTHORIZED_SHADOW_RETEST_ENTRY"
@@ -58,7 +59,8 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION",
-    BEARISH_INSTANT_BREAKOUT_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
+    BEARISH_INSTANT_BREAKOUT_CODE, BULLISH_INSTANT_BREAKOUT_CODE,
+    TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
     "RE_ENTRY_LONG", "RE_ENTRY_SHORT",
 ))
 # Support the currently authorized pipeline entry types alongside the strict
@@ -73,6 +75,7 @@ LEGACY_ROUTE_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT",
     "TRIGGER_C_CONTINUATION",
     BEARISH_INSTANT_BREAKOUT_CODE,
+    BULLISH_INSTANT_BREAKOUT_CODE,
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
     CLIMAX_REVERSAL_FLIP_CODE,
@@ -1152,8 +1155,9 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
         return None
 
 
-def evaluate_bearish_instant_breakout(frame, quote, symbol: str = '', account=None):
-    """Authorize a same-candle SHORT only after a confirmed LONG waterfall close."""
+def evaluate_instant_reverse_breakout(frame, quote, symbol: str = '', account=None,
+                                      closed_side: str = 'LONG'):
+    """Authorize an opposite entry only against a matched, same-candle sharp close."""
     try:
         if (frame is None or frame.empty or account is None
                 or symbol in getattr(account, 'positions', {})
@@ -1170,19 +1174,31 @@ def evaluate_bearish_instant_breakout(frame, quote, symbol: str = '', account=No
                 or not math.isfinite(quote) or quote <= 0):
             return None
 
+        close_action = 'CLOSE_LONG' if closed_side == 'LONG' else 'CLOSE_SHORT'
+        side = 'SHORT' if closed_side == 'LONG' else 'LONG'
+        code = BEARISH_INSTANT_BREAKOUT_CODE if side == 'SHORT' else BULLISH_INSTANT_BREAKOUT_CODE
         close_trade = next((
-            trade for trade in getattr(account, 'trades', [])
-            if trade.get('symbol') == symbol and trade.get('action') == 'CLOSE_LONG'
+            trade for trade in sorted(
+                getattr(account, 'trades', []),
+                key=lambda item: float(item.get('id') or 0.0), reverse=True,
+            )
+            if trade.get('symbol') == symbol and trade.get('action') == close_action
         ), None)
         if not close_trade or close_trade.get('status') != 'CLOSED':
             return None
         close_id = float(close_trade.get('id') or 0.)
         close_reason = str(close_trade.get('reason') or '')
+        close_triggers = (
+            ('BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
+             'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+             'REAL_TOP_DUMP', 'CLIMAX_REVERSAL_EXIT_TOP')
+            if closed_side == 'LONG' else
+            ('BULLISH_INSTANT_BREAKOUT', 'WATERFALL_RISE',
+             'EXIT_DOJI_BULLISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+             'REAL_BOTTOM_PUMP', 'CLIMAX_REVERSAL_EXIT_BOTTOM')
+        )
         if (not math.isfinite(close_id) or not stamp <= close_id < stamp + 60000
-                or not any(trigger in close_reason for trigger in (
-                    'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
-                    'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
-                ))):
+                or not any(trigger in close_reason for trigger in close_triggers)):
             return None
 
         opening = float(live['open'])
@@ -1194,32 +1210,45 @@ def evaluate_bearish_instant_breakout(frame, quote, symbol: str = '', account=No
         ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
         atr = float(previous['atr'])
         values = (opening, raw_close, high, low, upper, lower, middle, ma5, atr)
+        directional_body = opening - quote if side == 'SHORT' else quote - opening
+        beyond_rail = quote < lower if side == 'SHORT' else quote > upper
+        beyond_middle = quote < middle if side == 'SHORT' else quote > middle
+        beyond_ma5 = quote < ma5 if side == 'SHORT' else quote > ma5
         if (not all(math.isfinite(value) and value > 0 for value in values)
                 or lower >= upper or low > min(opening, quote)
                 or high < max(opening, quote)
                 or not lower <= opening <= upper
-                or opening - quote < 0.5 * atr
-                or quote >= lower or quote >= middle or quote >= ma5):
+                or directional_body < 0.5 * atr
+                or not (beyond_rail and beyond_middle and beyond_ma5)):
             return None
 
         signal_id = (
-            f'{symbol}:{BEARISH_INSTANT_BREAKOUT_CODE}:'
-            f'{int(stamp)}:{int(close_id)}:SHORT'
+            f'{symbol}:{code}:{int(stamp)}:{int(close_id)}:{side}'
         )
         return dict(
-            action='ENTER', side='SHORT', type=BEARISH_INSTANT_BREAKOUT_CODE,
-            reason='LONG_WATERFALL_CLOSED_THEN_BEARISH_KC_BREAKOUT',
+            action='ENTER', side=side, type=code,
+            reason=f'{closed_side}_SHARP_REVERSAL_CLOSE_THEN_{side}_KC_BREAKOUT',
             price=quote, entry_atr=atr, confirmation_bar_id=stamp,
             breakout_bar_id=stamp, pair_confirmation_bar_id=previous_stamp,
             close_price=quote, intrabar=True,
-            entry_phase='ATOMIC_BEARISH_REVERSE',
+            entry_phase=f'ATOMIC_{side}_REVERSE',
             pending_signal_id=signal_id,
             reverse_close_id=int(close_id),
-            kc_confirmation_edge=lower,
-            live_body_atr=(opening - quote) / atr,
+            kc_confirmation_edge=lower if side == 'SHORT' else upper,
+            live_body_atr=directional_body / atr,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
+
+
+def evaluate_bearish_instant_breakout(frame, quote, symbol: str = '', account=None):
+    """Backward-compatible name for the long-close to short reversal gate."""
+    return evaluate_instant_reverse_breakout(frame, quote, symbol, account, 'LONG')
+
+
+def evaluate_bullish_instant_breakout(frame, quote, symbol: str = '', account=None):
+    """Authorize the symmetric short-close to long reversal gate."""
+    return evaluate_instant_reverse_breakout(frame, quote, symbol, account, 'SHORT')
 
 
 DOJI_BODY_RATIO = 0.10
@@ -2031,6 +2060,8 @@ def pre_flight_safety_check(
             'AUTHORIZED_TOP_REVERSAL_SHORT',
             'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
             'TOP_WATERFALL_FLIP',
+            BEARISH_INSTANT_BREAKOUT_CODE,
+            BULLISH_INSTANT_BREAKOUT_CODE,
         )
         if account is not None and symbol:
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
@@ -2046,12 +2077,18 @@ def pre_flight_safety_check(
             )
             if same_bar_problem:
                 return False, same_bar_problem
-            opposite_cooldown_problem = opposite_side_close_cooldown_problem(
-                account, symbol, frame, side,
+            opposite_cooldown_problem = (
+                None if decision_type in (
+                    BEARISH_INSTANT_BREAKOUT_CODE,
+                    BULLISH_INSTANT_BREAKOUT_CODE,
+                ) else opposite_side_close_cooldown_problem(
+                    account, symbol, frame, side,
+                )
             )
             if opposite_cooldown_problem:
                 return False, opposite_cooldown_problem
-            if side == 'SHORT' and is_flip and last_side == 'LONG':
+            if (side == 'SHORT' and is_flip and last_side == 'LONG'
+                    and decision_type != BEARISH_INSTANT_BREAKOUT_CODE):
                 from core.services.strategies.outer_strategy import kc_bearish_midline_turn
                 if not kc_bearish_midline_turn(frame, quote):
                     return False, 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
@@ -2253,7 +2290,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
         if (decision.get('type') not in FLAT_LINE_BREAKOUT_TYPES
-                and not is_post_close_continuation):
+                and not is_post_close_continuation
+                and decision.get('type') not in (
+                    BEARISH_INSTANT_BREAKOUT_CODE,
+                    BULLISH_INSTANT_BREAKOUT_CODE,
+                )):
             return reject('BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT')
         strategy_type = entry_strategy_type(decision.get('entry_phase'))
         if strategy_type is not None:
@@ -2266,12 +2307,17 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         market_structure_problem = entry_market_structure_problem(
             frame, quote, decision.get('side'),
             entry_phase=decision.get('entry_phase'),
+            strategy_type=decision.get('strategy_type'),
         )
         if market_structure_problem:
             return reject(market_structure_problem)
 
         cross_chop_problem = (
             None if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
+            or decision.get('type') in (
+                BEARISH_INSTANT_BREAKOUT_CODE,
+                BULLISH_INSTANT_BREAKOUT_CODE,
+            )
             else ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=decision.get('side'),
@@ -2326,6 +2372,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
+        is_instant_reverse = code in (
+            BEARISH_INSTANT_BREAKOUT_CODE,
+            BULLISH_INSTANT_BREAKOUT_CODE,
+        )
         closed = closed_entry_candles(frame)
         pending = None
         if code is None or code in KC_PENDING_CODES:
@@ -2363,7 +2413,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             else None
         )
         cross_chop_problem = (
-            None if confirmed_pending_breakout else
+            None if confirmed_pending_breakout or is_instant_reverse else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(
@@ -2430,6 +2480,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                      'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                      'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                      'AUTHORIZED_TOP_REVERSAL_SHORT')
+            or is_instant_reverse
         )
         regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
         if regime_problem and not verified_live_breakout and not is_flip_or_shadow and not is_midline_breakout:
@@ -2768,8 +2819,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             ):
                 return reject(post_close_diagnostics['reason'])
 
-        if code == BEARISH_INSTANT_BREAKOUT_CODE:
-            return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
+        if code in (BEARISH_INSTANT_BREAKOUT_CODE, BULLISH_INSTANT_BREAKOUT_CODE):
+            reverse_side = 'LONG' if code == BULLISH_INSTANT_BREAKOUT_CODE else 'SHORT'
+            closed_side = 'SHORT' if reverse_side == 'LONG' else 'LONG'
+            decision = evaluate_instant_reverse_breakout(
+                frame, quote, symbol, account, closed_side=closed_side,
+            )
+            if decision is None:
+                return reject('BLOCKED_INSTANT_REVERSE_WITHOUT_MATCHED_SHARP_CLOSE')
+            if decision.get('side') != reverse_side:
+                return reject('BLOCKED_INSTANT_REVERSE_SIDE_MISMATCH')
+            decision['strategy_type'] = 'BREAKOUT'
+            return authorize(decision, quote)
 
         if code in ('KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT'):
             return reject('BLOCKED_LIVE_BODY_BREAKOUT_NOT_QUALIFIED')

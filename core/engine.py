@@ -2135,6 +2135,7 @@ class TradingEngine:
             or decision.get('override_cooldown')
             or decision['type'] in (
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+                'BULLISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
                 'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
                 'KC_GOLDEN_CROSS_FAST_LONG',
@@ -2454,6 +2455,7 @@ class TradingEngine:
                 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
                 'AUTHORIZED_SHADOW_RETEST_ENTRY',
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
+                'BULLISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
             ) or bool(observed.get('override_cooldown'))) and observed.get('side') == side
         )

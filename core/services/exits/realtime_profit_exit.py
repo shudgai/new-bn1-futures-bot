@@ -694,6 +694,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         )
         if (entry_m == 'CHANNEL_SWING'
                 and channel_strategy_exit_grace_active(position, meta, stamp / 1000)
+                and trigger not in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
                 and trigger not in allowed_triggers):
             if clear_channel_strategy_exit_pending(position, meta):
                 for key in STATE_KEYS:
@@ -729,6 +730,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                            'LIVE_FLASH_DUMP_EXIT',
                            'THREE_POINT_PIVOT', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                            'WATERFALL_DROP', 'BEARISH_INSTANT_BREAKOUT',
+                           'BULLISH_INSTANT_BREAKOUT',
                            'EXIT_DOJI_BEARISH_CONFIRMATION',
                            'EXIT_DOJI_BULLISH_CONFIRMATION',
                            SHORT_FALSE_BREAKOUT_TRIGGER,

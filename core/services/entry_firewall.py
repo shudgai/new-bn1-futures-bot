@@ -93,7 +93,8 @@ async def validate_account_entry(account, symbol, side, context):
                 '[FORBIDDEN_ENTRY] BLOCKED_FAST_CROSS_MA15_SLOPE_OR_EVIDENCE'
             )
     cross_chop_problem = (
-        None if code in KC_PENDING_CODES else
+        None if code in KC_PENDING_CODES
+        or code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT') else
         ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
             side=side,
@@ -124,8 +125,11 @@ async def validate_account_entry(account, symbol, side, context):
     )
     if same_bar_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
-    opposite_cooldown_problem = opposite_side_close_cooldown_problem(
-        account, symbol, frame, side,
+    opposite_cooldown_problem = (
+        None if code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
+        else opposite_side_close_cooldown_problem(
+            account, symbol, frame, side,
+        )
     )
     if opposite_cooldown_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + opposite_cooldown_problem)
@@ -176,6 +180,7 @@ async def validate_account_entry(account, symbol, side, context):
                  'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                  'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                  'AUTHORIZED_TOP_REVERSAL_SHORT')
+        or code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
     )
     is_verified_live_breakout = (
         pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'

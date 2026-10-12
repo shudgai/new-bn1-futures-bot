@@ -150,15 +150,41 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     and close_trade.get('action') == 'CLOSE_LONG'
                     and 'REAL_TOP_DUMP' in close_reason
                 )
-                instant_reverse_close = (
-                    close_trade.get('action') == 'CLOSE_LONG'
-                    and any(trigger in close_reason for trigger in (
-                    'BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
-                    'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
-                    'REAL_TOP_DUMP',
-                    ))
+                reverse_triggers = (
+                    ('BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
+                     'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+                     'REAL_TOP_DUMP', 'CLIMAX_REVERSAL_EXIT_TOP')
+                    if close_trade.get('action') == 'CLOSE_LONG' else
+                    ('BULLISH_INSTANT_BREAKOUT', 'WATERFALL_RISE',
+                     'EXIT_DOJI_BULLISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
+                     'REAL_BOTTOM_PUMP', 'CLIMAX_REVERSAL_EXIT_BOTTOM')
                 )
-                if climax_flip or top_waterfall_flip or (same_bar_close and instant_reverse_close):
+                instant_reverse_close = (
+                    close_trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
+                    and any(trigger in close_reason for trigger in reverse_triggers)
+                )
+                if same_bar_close and instant_reverse_close:
+                    from core.services.entry_contract import (
+                        BEARISH_INSTANT_BREAKOUT_CODE,
+                        BULLISH_INSTANT_BREAKOUT_CODE,
+                        evaluate_entry_contract,
+                    )
+                    entry_code = (
+                        BEARISH_INSTANT_BREAKOUT_CODE
+                        if close_trade.get('action') == 'CLOSE_LONG'
+                        else BULLISH_INSTANT_BREAKOUT_CODE
+                    )
+                    decision = evaluate_entry_contract(
+                        frame, quote, entry_code,
+                        account=engine.account, symbol=symbol,
+                    )
+                    if decision is not None:
+                        await engine._execute_confirmed_channel_break(
+                            symbol, frame, quote, decision['side'], daily_halt,
+                            v8_reason=decision['type'],
+                            candidate_bar_id=decision['confirmation_bar_id'],
+                        )
+                elif climax_flip or top_waterfall_flip:
                     from core.services.entry_contract import (
                         BEARISH_INSTANT_BREAKOUT_CODE,
                         CLIMAX_REVERSAL_FLIP_CODE,

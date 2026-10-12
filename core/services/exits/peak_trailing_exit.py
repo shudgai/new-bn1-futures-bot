@@ -68,6 +68,8 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'MA5_TRUE_PEAK_REVERSAL',
     CHANNEL_MOMENTUM_STALL_TRIGGER,
     EMERGENCY_DUMP_CUT_TRIGGER,
+    'BEARISH_INSTANT_BREAKOUT',
+    'BULLISH_INSTANT_BREAKOUT',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
@@ -1504,6 +1506,19 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                             reason, trigger = ABNORMAL_REASON, 'BEARISH_INSTANT_BREAKOUT'
                             state.update(trigger_bar_ms=bar, trigger_open=live_open,
                                          trigger_atr=float(prior_atr), trigger_price=price)
+                    elif is_channel_swing and sign == -1:
+                        lower = float(snapshot.get('kc_lower') or 0.)
+                        upper = float(snapshot.get('kc_upper') or 0.)
+                        middle = float(snapshot.get('kc_middle') or 0.)
+                        ma5 = float(snapshot.get('ma5') or 0.)
+                        if (positive(lower) and positive(upper) and lower < upper
+                                and positive(middle) and positive(ma5)
+                                and lower <= live_open <= upper
+                                and price - live_open >= LIVE_FLASH_DUMP_ATR * float(prior_atr)
+                                and price > upper and price > middle and price > ma5):
+                            reason, trigger = ABNORMAL_REASON, 'BULLISH_INSTANT_BREAKOUT'
+                            state.update(trigger_bar_ms=bar, trigger_open=live_open,
+                                         trigger_atr=float(prior_atr), trigger_price=price)
 
             if isinstance(snapshot, dict) and 'kc_lower' in snapshot and 'kc_upper' in snapshot:
                 kc_lower = float(snapshot.get('kc_lower', 0))
@@ -1627,6 +1642,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             if (reason and reason != HARD_REASON
                     and trigger not in ('WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                                         'BEARISH_INSTANT_BREAKOUT',
+                                        'BULLISH_INSTANT_BREAKOUT',
                                         'KC_OUTER_PIVOT',
                                         'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
                                         'MA5_TRUE_PEAK_REVERSAL',
@@ -1647,6 +1663,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 peak_exemptions = (
                     'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                     'BEARISH_INSTANT_BREAKOUT',
+                    'BULLISH_INSTANT_BREAKOUT',
                     'EXIT_PROFIT_LOCK_FLOOR', DOJI_TRIGGER,
                     NET_ROE_LOCK_TRIGGER,
                     CONSECUTIVE_DOJI_STALL_TRIGGER,
@@ -1747,6 +1764,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 and trigger not in (
                     'WATERFALL_DROP', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                     'BEARISH_INSTANT_BREAKOUT',
+                    'BULLISH_INSTANT_BREAKOUT',
                     CONTINUATION_FAILED_TRIGGER,
                     CONSECUTIVE_DOJI_STALL_TRIGGER,
                     CHANNEL_MOMENTUM_STALL_TRIGGER,
