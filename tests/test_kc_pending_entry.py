@@ -19,7 +19,10 @@ def closed_bars(side):
         row["kc_upper"], row["kc_middle"], row["kc_lower"] = 101.0, 100.0, 99.0
         row["volume"], row["is_closed"] = 100.0, True
         prefix.append(row)
-    closed["volume"] = [100.0, 130.0, 110.0]
+    # Volume is diagnostic only for the currently authorized two-bar route.
+    # Give the final three rows representative values without assigning a
+    # three-element list to the full history frame.
+    closed.loc[closed.index[-3:], "volume"] = [100.0, 130.0, 110.0]
     closed = pd.concat([pd.DataFrame(prefix), closed], ignore_index=True)
     return closed, frame.iloc[-1]
 

@@ -439,6 +439,7 @@ def strict_kc_entry_problem(
         width = upper - lower
         bandwidth = width / middle
         if (bandwidth < MIN_KC_BANDWIDTH_PCT
+                and strategy_type != STRATEGY_TYPE_BREAKOUT
                 and not math.isclose(
                     bandwidth, MIN_KC_BANDWIDTH_PCT,
                     rel_tol=1e-12, abs_tol=0.0,
@@ -448,10 +449,9 @@ def strict_kc_entry_problem(
                 )):
             return 'BLOCKED_KC_SQUEEZE'
         if (side in ('LONG', 'SHORT')
-                and (strategy_type != STRATEGY_TYPE_BREAKOUT or side == 'SHORT')
-                and not (
-                    strategy_type == STRATEGY_TYPE_TREND_CONTINUATION
-                    and side == 'LONG'
+                and strategy_type not in (
+                    STRATEGY_TYPE_BREAKOUT,
+                    STRATEGY_TYPE_TREND_CONTINUATION,
                 )):
             remaining = (
                 (upper - quote) / width
@@ -638,6 +638,14 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
         if kc_problem:
             return kc_problem
         current = frame.iloc[-1]
+        if entry_phase == 'KC_2BAR_CLOSED_CONFIRM':
+            rail = float(current['kc_upper'] if side == 'LONG' else current['kc_lower'])
+            quote = float(quote)
+            if (not math.isfinite(rail) or rail <= 0 or not math.isfinite(quote)
+                    or (side == 'LONG' and quote <= rail)
+                    or (side == 'SHORT' and quote >= rail)):
+                return 'BLOCKED_CONFIRMED_BREAKOUT_QUOTE_INSIDE_RAIL'
+            return None
         if entry_phase == 'KC_TOP_PLUNGE_SHORT':
             if side != 'SHORT':
                 return 'BLOCKED_INVALID_TOP_PLUNGE_SIDE'
@@ -2376,7 +2384,12 @@ class EntryGatePipeline:
                 'CLIMAX_REVERSAL_FLIP',
             ) or decision.get('is_reversal_flip') is True
         )
-        if (not is_flip and not decision.get('is_midline_break')
+        is_confirmed_rail_breakout = (
+            decision.get('type') in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
+            and decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
+        )
+        if (not is_flip and not is_confirmed_rail_breakout
+                and not decision.get('is_midline_break')
                 and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')):
             from core.services.entry_contract import entry_consolidation_problem
             cross_chop_problem = entry_consolidation_problem(

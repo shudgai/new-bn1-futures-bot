@@ -5,8 +5,6 @@ Only the immediately following forming candle can authorize entry.
 """
 import math
 from collections import OrderedDict
-from core.services.ma5_entry_slope import MIN_MA5_SLOPE_ATR
-
 KC_PENDING_CODES = frozenset(('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT'))
 KC_REALTIME_PATTERN_CODES = frozenset((
     'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
@@ -28,7 +26,6 @@ LIVE_PATTERN_BODY_MIN_ATR = 1.0
 LIVE_PATTERN_BODY_MIN_RANGE_RATIO = 0.50
 LIVE_PATTERN_MAX_DISTANCE_ATR = 3.0
 MAX_BREAKOUT_DISTANCE_ATR = 3.0
-MIN_BREAKOUT_BODY_ATR = 0.5
 
 # Bounded LRU cache for invalidated signals.
 # Key: (symbol, side, signal_id, candidate_bar_id) — composite, globally unique.
@@ -78,10 +75,10 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
     Live quote (K3) must be strictly outside the rail.
     """
     wait = lambda reason, **evidence: dict(action='WAIT', reason=reason, **evidence)
-    if len(closed) < 7:
+    if len(closed) < 2:
         return wait('WAIT_VALID_CLOSE_HISTORY')
-        
-    reference, first, second = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
+
+    first, second = closed.iloc[-2], closed.iloc[-1]
     
     try:
         for row in (first, second):
@@ -91,22 +88,6 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 
         if float(second.timestamp) - float(first.timestamp) != 60000:
             return wait('WAIT_VALID_KC_PENDING_DATA')
-
-        if 'volume' not in closed.columns:
-            return wait('WAIT_VALID_BREAKOUT_VOLUME')
-        baseline_volumes = [float(value) for value in closed['volume'].iloc[-7:-2]]
-        first_volume = float(first['volume'])
-        second_volume = float(second['volume'])
-        if (len(baseline_volumes) != 5
-                or not all(math.isfinite(value) and value >= 0 for value in baseline_volumes)
-                or not all(math.isfinite(value) and value >= 0
-                           for value in (first_volume, second_volume))):
-            return wait('WAIT_VALID_BREAKOUT_VOLUME')
-        baseline_volume = sum(baseline_volumes) / 5.0
-        if baseline_volume <= 0:
-            return wait('WAIT_VALID_BREAKOUT_VOLUME')
-        volume_expansion = first_volume / baseline_volume
-        confirmation_volume = second_volume / baseline_volume
 
         for side, sign, key in (('LONG', 1, 'kc_upper'), ('SHORT', -1, 'kc_lower')):
             # Rule 1 & 4 - 必須在軌道內側或碰軌
@@ -125,33 +106,21 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if sign * (float(second.close) - float(second[key])) <= 0:
                 continue
 
-            # Require participation on the impulse bar and retained activity
-            # on confirmation; geometry alone is not an entry authorization.
-            if volume_expansion < 1.2 or confirmation_volume < 0.8:
-                continue
-
-            # The confirmed candle itself must align with the short trend.
-            # The live candle's color is intentionally not part of this gate.
+            # Require directional MA5 slope on the confirmed pair; magnitude
+            # and quote position relative to MA5 are handled by their own gates.
             previous_ma5 = float(first['ma5'])
             confirmation_ma5 = float(second['ma5'])
             if not all(math.isfinite(value) and value > 0
                        for value in (previous_ma5, confirmation_ma5)):
                 continue
-            required_slope = MIN_MA5_SLOPE_ATR * float(reference['atr'])
             confirmation_slope = sign * (confirmation_ma5 - previous_ma5)
-            if ((confirmation_slope < required_slope
-                 and not math.isclose(confirmation_slope, required_slope, rel_tol=1e-12))
-                    or sign * (float(second.close) - confirmation_ma5) <= 0):
+            if confirmation_slope <= 0:
                 continue
 
             # Every body >= 20%
             f_span = float(first.high) - float(first.low)
             f_body = abs(float(first.close) - float(first.open))
-            reference_atr = float(reference['atr'])
-            if (f_span <= 0 or not math.isfinite(reference_atr)
-                    or reference_atr <= 0
-                    or (f_body / f_span) < 0.20
-                    or f_body < MIN_BREAKOUT_BODY_ATR * reference_atr):
+            if f_span <= 0 or (f_body / f_span) < 0.20:
                 continue
 
             s_span = float(second.high) - float(second.low)
@@ -205,8 +174,6 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                         entry_phase='KC_2BAR_CLOSED_CONFIRM',
                         breakout_bar_id=float(first.timestamp),
                         pair_confirmation_bar_id=float(second.timestamp),
-                        breakout_volume_ratio=volume_expansion,
-                        confirmation_volume_ratio=confirmation_volume,
                         third_bar_id=stamp_val,
                         pending_signal_id=f'{side}:{int(first.timestamp)}:{int(second.timestamp)}',
                         pending_second_bar_id=float(second.timestamp),

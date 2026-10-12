@@ -2,7 +2,10 @@
 import math
 import time
 
-from core.services.entry_contract import ENTRY_CODES, ENTRY_EVIDENCE_KEYS, evaluate_entry_contract
+from core.services.entry_contract import (
+    ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
+    evaluate_entry_contract,
+)
 
 
 class EntryFirewall:
@@ -89,15 +92,21 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError(
                 '[FORBIDDEN_ENTRY] BLOCKED_FAST_CROSS_MA15_SLOPE_OR_EVIDENCE'
             )
-    cross_chop_problem = ma5_ma15_cross_chop_problem(
-        frame, quote, symbol=symbol, log_result=True,
-        side=side,
+    cross_chop_problem = (
+        None if code in KC_PENDING_CODES else
+        ma5_ma15_cross_chop_problem(
+            frame, quote, symbol=symbol, log_result=True,
+            side=side,
+        )
     )
     if cross_chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + cross_chop_problem)
     kc_problem = strict_kc_entry_problem(
         frame, quote, side,
-        strategy_type=entry_strategy_type(context.get('entry_phase')),
+        strategy_type=(
+            'BREAKOUT' if code in KC_PENDING_CODES
+            else entry_strategy_type(context.get('entry_phase'))
+        ),
     )
     if kc_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + kc_problem)
@@ -173,13 +182,14 @@ async def validate_account_entry(account, symbol, side, context):
         else pipeline.has_strong_bearish_breakout(frame, quote)
     )
     is_exempt_from_regime = bool(
-        is_flip_or_shadow or is_verified_live_breakout or verified_midline_entry
+        code in KC_PENDING_CODES or is_flip_or_shadow
+        or is_verified_live_breakout or verified_midline_entry
         or verified_fast_cross is not None
     )
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem and not is_exempt_from_regime:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
-    if (not is_flip_or_shadow and not verified_midline_entry
+    if (code not in KC_PENDING_CODES and not is_flip_or_shadow and not verified_midline_entry
             and verified_fast_cross is None):
         try:
             chop_problem = pipeline.chop_lockout_problem(

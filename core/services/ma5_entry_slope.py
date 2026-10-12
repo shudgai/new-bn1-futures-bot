@@ -2,7 +2,8 @@
 import math
 from typing import Optional
 
-MIN_MA5_SLOPE_ATR = 0.05
+# Entry authorization requires directional slope, not a minimum ATR magnitude.
+MIN_MA5_SLOPE_ATR = 0.0
 
 
 def live_ma5_slope_atr(frame, quote):
@@ -27,7 +28,7 @@ def live_ma5_slope_atr(frame, quote):
 
 
 def live_ma5_slope_problem(frame, quote, side):
-    """Return a diagnostic block reason unless MA5 slope is strong and aligned."""
+    """Return a diagnostic block reason unless MA5 slope is strictly aligned."""
     slope = live_ma5_slope_atr(frame, quote)
     if side not in ("LONG", "SHORT") or slope is None:
         return "BLOCKED_BY_MA5_SLOPE_INVALID"
@@ -54,17 +55,16 @@ def live_ma5_entry_direction_problem(frame, quote, side) -> Optional[str]:
         if not all(math.isfinite(value) and value > 0 for value in values):
             return "BLOCKED_BY_MA5_SLOPE_INVALID"
 
-        live_ma5 = current_ma5 + (quote - close) / 5.0
+        live_ma5 = (
+            current_ma5 if bool(current.get("is_closed", False))
+            else current_ma5 + (quote - close) / 5.0
+        )
         if not math.isfinite(live_ma5) or live_ma5 <= 0:
             return "BLOCKED_BY_MA5_SLOPE_INVALID"
 
-        if side == "LONG" and (
-            live_ma5 <= previous_ma5 or quote < live_ma5
-        ):
+        if side == "LONG" and live_ma5 <= previous_ma5:
             return "BLOCKED_BY_MA5_WEAK_SLOPE"
-        if side == "SHORT" and (
-            live_ma5 >= previous_ma5 or quote > live_ma5
-        ):
+        if side == "SHORT" and live_ma5 >= previous_ma5:
             return "BLOCKED_BY_MA5_STRONG_SLOPE"
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

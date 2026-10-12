@@ -312,6 +312,13 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
                 decision.get("breakout_bar_id"),
                 decision.get("confirmation_bar_id"),
             )
+        elif phase == "KC_2BAR_CLOSED_CONFIRM":
+            # Only the two closed candles authorize a confirmed rail breakout.
+            # The live candle is checked by quote-vs-rail gates, not its shape.
+            bar_ids = (
+                decision.get("breakout_bar_id"),
+                decision.get("pair_confirmation_bar_id"),
+            )
         elif decision and decision.get("intrabar"):
             bar_ids = (decision.get("confirmation_bar_id"),)
         elif decision and decision.get("breakout_bar_id") is not None:
@@ -1594,19 +1601,25 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
 def entry_trend_alignment_ready(frame, side):
     """Require closed KC, MA3, MA5 and MA15 trends to agree with the entry side."""
     try:
-        if side not in ("LONG", "SHORT") or ck_direction(frame) != side:
+        if side not in ("LONG", "SHORT"):
             return False
         closed = closed_entry_candles(frame)
-        if len(closed) < 3 or not {"ma3", "ma5", "ma15"}.issubset(closed.columns):
+        if len(closed) < 3 or not {
+            "ma3", "ma5", "ma15", "kc_middle",
+        }.issubset(closed.columns):
             return False
         recent = closed.tail(3)
         sign = 1 if side == 'LONG' else -1
         ma3 = [float(value) for value in recent['ma3']]
         ma15 = [float(value) for value in recent['ma15']]
-        if not all(math.isfinite(value) and value > 0 for value in ma3 + ma15):
+        kc_middle = [float(value) for value in recent['kc_middle']]
+        if not all(math.isfinite(value) and value > 0
+                   for value in ma3 + ma15 + kc_middle):
             return False
         return (
-            ma5_ma15_trend_confirmed(recent["ma5"], recent["ma15"], side)
+            all(sign * (right - left) > 0
+                for left, right in zip(kc_middle, kc_middle[1:]))
+            and ma5_ma15_trend_confirmed(recent["ma5"], recent["ma15"], side)
             and all(sign * (right - left) > 0
                     for left, right in zip(ma3, ma3[1:]))
             and sign * (ma3[-1] - ma15[-1]) > 0
@@ -2132,6 +2145,10 @@ def pre_flight_safety_check(
             or entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
         is_trend_continuation = entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY'
+        is_confirmed_rail_breakout = (
+            decision_type in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
+            and entry_phase == 'KC_2BAR_CLOSED_CONFIRM'
+        )
         is_strong_breakout = (
             (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
             or (side == 'SHORT' and pipeline.has_strong_bearish_breakout(frame, quote))
@@ -2181,7 +2198,8 @@ def pre_flight_safety_check(
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest / is_midline_break 100% 豁免上軌空間限制
-            if not is_explosive and not is_shadow_retest and not is_midline_break:
+            if (not is_explosive and not is_shadow_retest and not is_midline_break
+                    and not is_confirmed_rail_breakout):
                 is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
@@ -2189,7 +2207,9 @@ def pre_flight_safety_check(
                     
             # 3. 逆勢長陰不接刀：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多！
             # 均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY) 與中軌突破豁免「紅 K 一票否決」
-            if not is_shadow_retest and not is_midline_break and (curr_is_bearish or prev_is_bearish) and quote < live_ma5:
+            if (not is_confirmed_rail_breakout and not is_shadow_retest
+                    and not is_midline_break and (curr_is_bearish or prev_is_bearish)
+                    and quote < live_ma5):
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
                 
         elif side == "SHORT":
@@ -2198,14 +2218,16 @@ def pre_flight_safety_check(
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break 100% 豁免下軌空間限制
-            if not is_explosive and not is_flip and not is_midline_break:
+            if (not is_explosive and not is_flip and not is_midline_break
+                    and not is_confirmed_rail_breakout):
                 is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
                         return False, "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
                     
             # 3. 陽線回抽且價格站上 MA5 時嚴禁追空！
-            if not is_midline_break and (curr_is_bullish or prev_is_bullish) and quote > live_ma5:
+            if (not is_confirmed_rail_breakout and not is_midline_break
+                    and (curr_is_bullish or prev_is_bullish) and quote > live_ma5):
                 return False, "REJECT_BOUNCE_BULLISH_ABOVE_MA5"
                 
         return True, None
@@ -2248,9 +2270,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if market_structure_problem:
             return reject(market_structure_problem)
 
-        cross_chop_problem = ma5_ma15_cross_chop_problem(
-            frame, quote, symbol=symbol, log_result=True,
-            side=decision.get('side'),
+        cross_chop_problem = (
+            None if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
+            else ma5_ma15_cross_chop_problem(
+                frame, quote, symbol=symbol, log_result=True,
+                side=decision.get('side'),
+            )
         )
         if cross_chop_problem:
             return reject(cross_chop_problem)
@@ -2301,6 +2326,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
+        closed = closed_entry_candles(frame)
+        pending = None
+        if code is None or code in KC_PENDING_CODES:
+            pending = evaluate_kc_pending_entry(
+                closed, quote,
+                code=code if code in KC_PENDING_CODES else None,
+                symbol=symbol,
+                live=frame.iloc[-1] if forming_bar else None,
+            )
+        confirmed_pending_breakout = bool(
+            pending and pending.get('action') == 'ENTER'
+        )
         post_close_diagnostics = {}
         post_close_candidate = (
             evaluate_post_close_continuation(
@@ -2325,22 +2362,30 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             and live_death_cross is not None
             else None
         )
-        cross_chop_problem = ma5_ma15_cross_chop_problem(
-            frame, quote, symbol=symbol, log_result=True,
-            side=(
-                active_fast_cross.get('side')
-                if active_fast_cross is not None
-                else 'LONG' if code == GOLDEN_CROSS_FAST_LONG_CODE
-                else 'SHORT' if code == DEATH_CROSS_FAST_SHORT_CODE
-                else None
-            ),
+        cross_chop_problem = (
+            None if confirmed_pending_breakout else
+            ma5_ma15_cross_chop_problem(
+                frame, quote, symbol=symbol, log_result=True,
+                side=(
+                    active_fast_cross.get('side')
+                    if active_fast_cross is not None
+                    else 'LONG' if code == GOLDEN_CROSS_FAST_LONG_CODE
+                    else 'SHORT' if code == DEATH_CROSS_FAST_SHORT_CODE
+                    else None
+                ),
+            )
         )
         if cross_chop_problem:
             return reject(cross_chop_problem)
         kc_problem = strict_kc_entry_problem(
             frame, quote,
-            side=post_close_candidate.get('side') if post_close_candidate else None,
+            side=(
+                pending.get('side') if confirmed_pending_breakout
+                else post_close_candidate.get('side') if post_close_candidate
+                else None
+            ),
             strategy_type=(
+                'BREAKOUT' if confirmed_pending_breakout else
                 entry_strategy_type(post_close_candidate.get('entry_phase'))
                 if post_close_candidate else None
             ),
@@ -2361,6 +2406,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or active_fast_cross is not None
             or momentum_burst is not None
             or post_close_candidate is not None
+            or confirmed_pending_breakout
         )
         midline_break = (
             pipeline.detect_midline_break_short(frame, quote)
@@ -2394,8 +2440,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or code == CLIMAX_REVERSAL_FLIP_CODE
             or verified_live_breakout
             or is_midline_breakout
+            or confirmed_pending_breakout
         )
-        if (active_fast_cross is None
+        if (not confirmed_pending_breakout and active_fast_cross is None
                 and code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
                                  'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                                  'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
@@ -2529,7 +2576,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject(pre_flight_reason)
                 return authorize(decision, quote)
 
-        closed = closed_entry_candles(frame)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
         minimum_closed = 2 if forming_bar else 3
         if len(closed) < minimum_closed:
@@ -2544,10 +2590,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # The authorized outer-rail route is based on two completed candles.
         # Do not require a third live candle to have a directional body: the
         # live quote only has to remain beyond the confirmed outer rail.
-        pending = evaluate_kc_pending_entry(
-            closed, quote, code=code, symbol=symbol,
-            live=(frame.iloc[-1] if not bool(frame.iloc[-1].get('is_closed', True)) else None),
-        )
+        if pending is None:
+            pending = evaluate_kc_pending_entry(
+                closed, quote, code=code, symbol=symbol,
+                live=(frame.iloc[-1] if not bool(frame.iloc[-1].get('is_closed', True)) else None),
+            )
         if pending.get('action') == 'ENTER':
             side = pending['side']
             direction_problem = entry_direction_problem(closed, quote, side)
@@ -2580,7 +2627,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject('BLOCKED_STRICT_MA_SPACING')
             except (KeyError, TypeError, ValueError, IndexError, OverflowError):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-            if symbol in CHOP_FILTER_SYMBOLS:
+            if symbol in CHOP_FILTER_SYMBOLS and not confirmed_pending_breakout:
                 consolidation_problem = entry_consolidation_problem(
                     frame, quote, allow_directional_breakout=True, side=side,
                 )
