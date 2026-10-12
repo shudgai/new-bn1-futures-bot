@@ -2615,6 +2615,63 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return reject(reason)
             return authorize(pipeline_decision, quote)
 
+        # A qualified forming-bar rail break is time-sensitive. Evaluate it
+        # before the generic pipeline can return a slower closed-bar candidate.
+        live_breakout = live_body_candidate
+        if (not bool(frame.iloc[-1].get('is_closed', True))
+                and code in (None, 'KC_LIVE_BODY_BREAKOUT_LONG',
+                             'KC_LIVE_BODY_BREAKOUT_SHORT')):
+            requested_side = (
+                'LONG' if code == 'KC_LIVE_BODY_BREAKOUT_LONG' else
+                'SHORT' if code == 'KC_LIVE_BODY_BREAKOUT_SHORT' else None
+            )
+            if live_breakout is None:
+                live_breakout = evaluate_live_body_breakout(
+                    frame, quote, symbol=symbol, requested_side=requested_side,
+                )
+            if live_breakout is not None:
+                side = live_breakout['side']
+                if not entry_trend_alignment_ready(frame, side):
+                    return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
+                direction_problem = entry_direction_problem(closed, quote, side)
+                if direction_problem:
+                    return reject(direction_problem)
+                if not live_ma3_direction_ready(frame, quote, side):
+                    return reject('BLOCKED_BY_LIVE_MA3_DIRECTION')
+                ma5_direction = evaluate_live_ma5_direction(frame, quote, side)
+                fast_lane_problem = (
+                    'BLOCKED_STRICT_MA5_DIRECTION'
+                    if ma5_direction is None else None
+                )
+                if fast_lane_problem is None:
+                    live = frame.iloc[-1]
+                    live_ma5 = ma5_direction[1]
+                    live_ma15 = float(live['ma15']) + (float(quote) - float(live['close'])) / 15.0
+                    upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+                    width = upper - lower
+                    max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
+                    edge = upper if side == 'LONG' else lower
+                    if (not all(math.isfinite(value) and value > 0 for value in
+                                (live_ma5, live_ma15, upper, lower, width, max_width))
+                            or width <= 0 or width <= 0.25 * max_width):
+                        fast_lane_problem = 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'
+                    elif (abs(live_ma5-live_ma15) < 0.25 * width
+                          or abs(live_ma5-edge) < 0.25 * width):
+                        fast_lane_problem = 'BLOCKED_STRICT_MA_SPACING'
+                if fast_lane_problem:
+                    return reject(fast_lane_problem)
+                if account is not None and symbol in getattr(account, 'positions', {}):
+                    return reject('BLOCKED_BY_POSITION_GATE')
+                if any(
+                    trade.get('symbol') == symbol
+                    and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                    and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                        == live_breakout['pending_signal_id']
+                    for trade in getattr(account, 'trades', [])
+                ):
+                    return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+                return authorize(live_breakout, quote)
+
         # Restore the currently supported pipeline fast-paths before forcing the
         # legacy 2-bar KC gate. This keeps the Channel Swing breakouts strict while
         # re-enabling the legitimate realtime/continuation/reversal autorizations.
@@ -2723,57 +2780,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if code is not None and code in KC_PENDING_CODES and pending.get('action') != 'ENTER':
             return reject(pending.get('reason', 'WAIT_NEW_KC_BREAKOUT'))
 
-        # Evaluate a forming-bar KC break before the closed-candle signal path.
-        # The helper already checks the raw open, live quote, prior closed ATR,
-        # same-side rail and the 3 ATR chase limit. This was previously never
-        # called by the shared contract, so valid intrabar breakouts could not
-        # reach either scan or send-time revalidation.
-        live_breakout = live_body_candidate
-        if (not bool(frame.iloc[-1].get('is_closed', True))
-                and code in (None, 'KC_LIVE_BODY_BREAKOUT_LONG',
-                             'KC_LIVE_BODY_BREAKOUT_SHORT')):
-            requested_side = (
-                'LONG' if code == 'KC_LIVE_BODY_BREAKOUT_LONG' else
-                'SHORT' if code == 'KC_LIVE_BODY_BREAKOUT_SHORT' else None
-            )
-            if live_breakout is None:
-                live_breakout = evaluate_live_body_breakout(
-                    frame, quote, symbol=symbol, requested_side=requested_side,
-                )
-            if live_breakout is not None:
-                side = live_breakout['side']
-                ma5_direction = evaluate_live_ma5_direction(frame, quote, side)
-                fast_lane_problem = (
-                    'BLOCKED_STRICT_MA5_DIRECTION'
-                    if ma5_direction is None else None
-                )
-                if fast_lane_problem is None:
-                    live = frame.iloc[-1]
-                    live_ma5 = ma5_direction[1]
-                    live_ma15 = float(live['ma15']) + (float(quote) - float(live['close'])) / 15.0
-                    upper, lower = float(live['kc_upper']), float(live['kc_lower'])
-                    width = upper - lower
-                    max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
-                    edge = upper if side == 'LONG' else lower
-                    if (not all(math.isfinite(value) and value > 0 for value in
-                                (live_ma5, live_ma15, upper, lower, width, max_width))
-                            or width <= 0 or width <= 0.25 * max_width):
-                        fast_lane_problem = 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'
-                    elif (abs(live_ma5-live_ma15) < 0.25 * width
-                          or abs(live_ma5-edge) < 0.25 * width):
-                        fast_lane_problem = 'BLOCKED_STRICT_MA_SPACING'
-                if fast_lane_problem is None:
-                    if account is not None and symbol in getattr(account, 'positions', {}):
-                        return reject('BLOCKED_BY_POSITION_GATE')
-                    if any(
-                        trade.get('symbol') == symbol
-                        and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                        and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
-                            == live_breakout['pending_signal_id']
-                        for trade in getattr(account, 'trades', [])
-                    ):
-                        return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
-                    return authorize(live_breakout, quote)
         if (forming_bar and code in (
                 None, 'TRIGGER_A_KC_BREAKOUT', 'KC_LIVE_BODY_BREAKOUT_LONG',
                 'KC_LIVE_BODY_BREAKOUT_SHORT', GOLDEN_CROSS_FAST_LONG_CODE,
