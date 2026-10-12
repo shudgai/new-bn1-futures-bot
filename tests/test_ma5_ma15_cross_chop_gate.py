@@ -53,23 +53,38 @@ def frame_with_spreads(spreads, *, atr=0.1, live=False):
     return result
 
 
-def test_chop_guard_counts_crosses_in_last_eight_bars():
+def test_chop_guard_blocks_three_crosses_in_last_ten_closed_bars():
     frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5],
         atr=0.1,
     )
 
     assert ma5_ma15_cross_chop_problem(frame, 100.0) == CROSS_BLOCK
 
 
-def test_chop_guard_includes_quote_adjusted_live_cross():
+def test_chop_guard_does_not_count_an_unclosed_live_cross():
     frame = frame_with_spreads(
-        [0.5, 0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, 0.1, 0.1],
+        [0.5, 0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, 0.1, 0.1, 0.1],
         atr=0.1,
         live=True,
     )
 
-    assert ma5_ma15_cross_chop_problem(frame, 98.0) == CROSS_BLOCK
+    assert ma5_ma15_cross_chop_problem(frame, 98.0) is None
+
+
+def test_chop_guard_allows_exactly_two_crosses():
+    frame = frame_with_spreads(
+        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        atr=0.1,
+    )
+
+    assert ma5_ma15_cross_chop_problem(frame, 100.0) is None
+
+
+def test_chop_guard_fails_closed_without_ten_closed_one_minute_bars():
+    frame = frame_with_spreads([0.5] * 9, atr=0.1)
+
+    assert ma5_ma15_cross_chop_problem(frame, 100.0) == "BLOCKED_INVALID_MA_CROSS_HISTORY"
 
 
 @pytest.mark.parametrize(
@@ -104,7 +119,7 @@ def test_chop_guard_logs_metrics_and_decision(caplog):
 
 def test_pipeline_rejects_chop_before_candidate_fast_lanes():
     frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5],
         atr=0.1,
     )
     diagnostics = {}
@@ -127,7 +142,7 @@ def test_pipeline_rejects_chop_before_candidate_fast_lanes():
 
 def test_entry_contract_rejects_chop_before_midline_and_flip_exceptions():
     frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5],
         atr=0.1,
     )
     diagnostics = {}
@@ -147,7 +162,7 @@ def test_entry_contract_rejects_chop_before_midline_and_flip_exceptions():
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_entry_firewall_rejects_chop_on_fresh_quote(side):
     frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5],
         atr=0.1,
     )
     frame.attrs["entry_finality_verified"] = True
@@ -170,7 +185,7 @@ def test_account_entry_firewall_rejects_chop_on_fresh_quote(side):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_unified_entry_strategy_does_not_bypass_chop_gate(side):
     frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5],
         atr=0.1,
     )
 

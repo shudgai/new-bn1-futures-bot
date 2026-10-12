@@ -64,21 +64,53 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
-    is_death_cross_fast = code == 'KC_DEATH_CROSS_FAST_SHORT'
+    from core.services.entry_contract import (
+        evaluate_death_cross_fast_lane,
+        evaluate_golden_cross_fast_lane,
+    )
+    verified_fast_cross = (
+        evaluate_golden_cross_fast_lane(frame, quote, symbol)
+        if code == 'KC_GOLDEN_CROSS_FAST_LONG' and side == 'LONG'
+        else evaluate_death_cross_fast_lane(frame, quote, symbol)
+        if code == 'KC_DEATH_CROSS_FAST_SHORT' and side == 'SHORT'
+        else None
+    )
     from core.gates.pipeline import (
+        DEATH_CROSS_FAST_SHORT_CODE, GOLDEN_CROSS_FAST_LONG_CODE,
+        MOMENTUM_BURST_CODES, entry_strategy_type,
+        fast_cross_evidence, fast_cross_ma15_slope_problem,
         ma5_ma15_cross_chop_problem, strict_kc_entry_problem,
     )
+    if code in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE):
+        slope_problem = fast_cross_ma15_slope_problem(frame, quote, side)
+        if slope_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + slope_problem)
+        if fast_cross_evidence(frame, quote, side) is None:
+            raise ValueError(
+                '[FORBIDDEN_ENTRY] BLOCKED_FAST_CROSS_MA15_SLOPE_OR_EVIDENCE'
+            )
     cross_chop_problem = ma5_ma15_cross_chop_problem(
         frame, quote, symbol=symbol, log_result=True,
+        allow_single_cross_gap=verified_fast_cross is not None,
+        side=side,
     )
     if cross_chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + cross_chop_problem)
-    kc_problem = strict_kc_entry_problem(frame, quote, side)
+    kc_problem = strict_kc_entry_problem(
+        frame, quote, side,
+        strategy_type=entry_strategy_type(context.get('entry_phase')),
+    )
     if kc_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + kc_problem)
     from core.services.entry_contract import (
         opposite_side_close_cooldown_problem, same_bar_close_entry_problem,
+        same_side_anti_churn_problem,
     )
+    churn_problem = same_side_anti_churn_problem(
+        account, symbol, frame, side, quote,
+    )
+    if churn_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + churn_problem)
     same_bar_problem = same_bar_close_entry_problem(
         account, symbol, frame, side,
     )
@@ -115,7 +147,9 @@ async def validate_account_entry(account, symbol, side, context):
         or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
     )
     midline_detector = (
-        pipeline.detect_midline_break_long if side == 'LONG'
+        pipeline.detect_momentum_burst
+        if code in MOMENTUM_BURST_CODES
+        else pipeline.detect_midline_break_long if side == 'LONG'
         else pipeline.detect_midline_break_short
     )
     verified_midline_entry = midline_detector(
@@ -141,15 +175,18 @@ async def validate_account_entry(account, symbol, side, context):
     )
     is_exempt_from_regime = bool(
         is_flip_or_shadow or is_verified_live_breakout or verified_midline_entry
-        or is_death_cross_fast
+        or verified_fast_cross is not None
     )
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem and not is_exempt_from_regime:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
-    if not is_flip_or_shadow and not verified_midline_entry:
+    if (not is_flip_or_shadow and not verified_midline_entry
+            and verified_fast_cross is None):
         try:
             chop_problem = pipeline.chop_lockout_problem(
                 frame, quote, allow_flat_lines=is_outer_rail_breakout,
+                signal_code=code,
+                allow_ma_tangle=verified_fast_cross is not None,
             )
         except TypeError:
             chop_problem = pipeline.chop_lockout_problem(frame, quote)

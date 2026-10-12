@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from core.services import entry_contract
 from core.services.entry_firewall import validate_account_entry
@@ -47,6 +48,33 @@ def death_cross_frame(quote=99.7):
     return pd.DataFrame(rows)
 
 
+def fast_cross_frame(side, *, narrow_gap=False):
+    frame = death_cross_frame()
+    quote = 99.7
+    if side == "LONG":
+        source = frame.copy()
+        for target, original in (
+            ("open", "open"),
+            ("close", "close"),
+            ("high", "low"),
+            ("low", "high"),
+            ("kc_upper", "kc_lower"),
+            ("kc_lower", "kc_upper"),
+            ("kc_middle", "kc_middle"),
+            ("ma5", "ma5"),
+            ("ma15", "ma15"),
+        ):
+            frame[target] = 200.0 - source[original]
+        quote = 200.0 - quote
+    if narrow_gap:
+        live = frame.index[-1]
+        if side == "LONG":
+            frame.loc[live, ["ma5", "ma15"]] = [99.705, 99.7]
+        else:
+            frame.loc[live, ["ma5", "ma15"]] = [100.895, 100.9]
+    return frame, quote
+
+
 def test_death_cross_fast_lane_requires_live_cross_and_25_percent_lower_room():
     frame = death_cross_frame()
     decision = entry_contract.evaluate_death_cross_fast_lane(
@@ -62,6 +90,67 @@ def test_death_cross_fast_lane_requires_live_cross_and_25_percent_lower_room():
     assert entry_contract.evaluate_death_cross_fast_lane(
         frame, 99.7, "LOBSTER/USDT",
     ) is None
+
+
+def test_golden_cross_fast_lane_is_mirrored_above_middle():
+    frame, quote = fast_cross_frame("LONG")
+    decision = entry_contract.evaluate_golden_cross_fast_lane(
+        frame, quote, "LOBSTER/USDT",
+    )
+
+    assert decision is not None
+    assert decision["side"] == "LONG"
+    assert decision["entry_phase"] == "MA_GOLDEN_CROSS_FAST_LANE"
+    assert decision["body_atr"] >= 0.4
+    assert decision["upper_rail_space_ratio"] >= 0.25
+
+
+@pytest.mark.parametrize(
+    ("side", "code"),
+    [
+        ("LONG", entry_contract.GOLDEN_CROSS_FAST_LONG_CODE),
+        ("SHORT", entry_contract.DEATH_CROSS_FAST_SHORT_CODE),
+    ],
+)
+def test_fresh_fast_cross_gets_only_single_cross_gap_exemption(side, code):
+    frame, quote = fast_cross_frame(side, narrow_gap=True)
+    diagnostics = {}
+
+    decision = entry_contract.evaluate_entry_contract(
+        frame, quote, code, symbol="LOBSTER/USDT", diagnostics=diagnostics,
+    )
+
+    assert decision is not None, diagnostics
+    assert decision["type"] == code
+
+
+@pytest.mark.parametrize(
+    ("side", "code"),
+    [
+        ("LONG", entry_contract.GOLDEN_CROSS_FAST_LONG_CODE),
+        ("SHORT", entry_contract.DEATH_CROSS_FAST_SHORT_CODE),
+    ],
+)
+def test_fast_cross_never_exempts_repeated_whipsaw(side, code):
+    frame, quote = fast_cross_frame(side, narrow_gap=True)
+    spreads = (
+        ((-5, -0.2), (-4, 0.2), (-3, -0.2), (-2, -0.2))
+        if side == "LONG"
+        else ((-5, -0.2), (-4, 0.2), (-3, -0.2), (-2, -0.7))
+    )
+    for offset, spread in spreads:
+        ma15 = float(frame.iloc[offset]["ma15"])
+        frame.loc[frame.index[offset], "ma5"] = ma15 + (
+            spread if side == "LONG" else -spread
+        )
+    diagnostics = {}
+
+    decision = entry_contract.evaluate_entry_contract(
+        frame, quote, code, symbol="LOBSTER/USDT", diagnostics=diagnostics,
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_MA5_MA15_CROSS_CHOP"
 
     frame = death_cross_frame()
     frame.loc[frame.index[-1], "is_closed"] = True
@@ -163,3 +252,33 @@ def test_entry_firewall_revalidates_live_death_cross(monkeypatch):
     asyncio.run(validate_account_entry(
         account, "LOBSTER/USDT", "SHORT", context,
     ))
+
+
+def test_entry_firewall_revalidates_live_golden_cross():
+    frame, quote = fast_cross_frame("LONG", narrow_gap=True)
+    current_bar = (time.time() * 1000 // 60_000) * 60_000
+    frame["timestamp"] += current_bar - float(frame.iloc[-1]["timestamp"])
+    frame.loc[frame.index[-1], "close"] = quote
+    frame.attrs["entry_finality_verified"] = True
+
+    async def provide_frame(_symbol):
+        return frame
+
+    account = SimpleNamespace(
+        entry_frame_provider=provide_frame,
+        positions={},
+        last_closed_at={},
+        last_closed_side={},
+        trades=[],
+    )
+    context = {
+        "entry_signal_code": entry_contract.GOLDEN_CROSS_FAST_LONG_CODE,
+        "entry_phase": "MA_GOLDEN_CROSS_FAST_LANE",
+        "channel_confirmation_bar_id": float(frame.iloc[-1]["timestamp"]),
+    }
+
+    decision = asyncio.run(validate_account_entry(
+        account, "LOBSTER/USDT", "LONG", context,
+    ))
+
+    assert decision["type"] == entry_contract.GOLDEN_CROSS_FAST_LONG_CODE

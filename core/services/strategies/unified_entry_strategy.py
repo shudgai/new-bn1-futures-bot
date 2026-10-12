@@ -346,7 +346,7 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     from core.gates.pipeline import ma5_ma15_cross_chop_problem
     quote = price if price is not None else float(frame.iloc[-1]['close'])
     cross_chop_problem = ma5_ma15_cross_chop_problem(
-        frame, quote, symbol=symbol, log_result=True,
+        frame, quote, symbol=symbol, log_result=True, side=side,
     )
     if cross_chop_problem:
         return wait(cross_chop_problem)
@@ -643,6 +643,7 @@ class UnifiedEntryStrategy(IEntryStrategy):
         from core.gates.pipeline import ma5_ma15_cross_chop_problem
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, price, symbol=kwargs.get('symbol', ''), log_result=True,
+            side=side,
         )
         if cross_chop_problem:
             return False, cross_chop_problem, {'action': 'WAIT'}

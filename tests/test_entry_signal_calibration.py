@@ -72,28 +72,40 @@ def golden_cross_frame():
     live = frame.index[-1]
     frame.loc[closed, ["ma5", "ma15"]] = [100.0, 100.2]
     frame.loc[live, [
-        "open", "high", "low", "close", "kc_upper", "kc_middle",
+        "open", "high", "low", "close", "kc_lower", "kc_upper", "kc_middle",
         "ma5", "ma15",
-    ]] = [102.6, 103.1, 102.5, 102.8, 103.0, 100.8, 102.6, 102.4]
+    ]] = [100.8, 101.4, 100.7, 100.9, 98.6, 103.0, 100.8, 100.15, 100.2]
     return frame
 
 
 def test_live_ma5_ma15_cross_is_a_qualified_fast_lane():
     frame = golden_cross_frame()
 
-    decision = evaluate_golden_cross_fast_lane(frame, 103.1, "CAP/USDT")
+    decision = evaluate_golden_cross_fast_lane(frame, 101.3, "CAP/USDT")
 
     assert decision is not None
     assert decision["type"] == MA_CROSS_FAST_LONG_CODE
-    assert decision["entry_phase"] == "MA_CROSS_FAST_LANE"
+    assert decision["entry_phase"] == "MA_GOLDEN_CROSS_FAST_LANE"
+    assert decision["upper_rail_space_ratio"] >= 0.25
 
 
 def test_live_fast_lane_rejects_incomplete_body_with_excessive_upper_wick():
     frame = golden_cross_frame()
-    frame.loc[frame.index[-1], "high"] = 104.0
+    frame.loc[frame.index[-1], "high"] = 102.0
 
     assert evaluate_golden_cross_fast_lane(
-        frame, 103.2, "CAP/USDT",
+        frame, 101.3, "CAP/USDT",
+    ) is None
+
+
+def test_golden_cross_fast_lane_uses_kc_middle_and_keeps_upper_room():
+    frame = golden_cross_frame()
+
+    assert evaluate_golden_cross_fast_lane(
+        frame, 100.8, "CAP/USDT",
+    ) is None
+    assert evaluate_golden_cross_fast_lane(
+        frame, 101.91, "CAP/USDT",
     ) is None
 
 
@@ -144,7 +156,6 @@ def test_two_closed_bar_breakout_runs_before_continuation_fallback(monkeypatch):
     monkeypatch.setattr(
         entry_contract, "check_entry_gates", lambda *_args, **_kwargs: (True, "OK"),
     )
-
     decision = evaluate_entry_contract(
         frame, float(frame.iloc[-1]["close"]), symbol="CAP/USDT",
     )

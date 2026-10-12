@@ -568,6 +568,10 @@ class PaperAccount:
                     climax_flip or top_waterfall_flip or code in (
                         'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                         'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                        'KC_GOLDEN_CROSS_FAST_LONG',
+                        'KC_DEATH_CROSS_FAST_SHORT',
+                        'KC_MOMENTUM_BURST_LONG',
+                        'KC_MOMENTUM_BURST_SHORT',
                         'AUTHORIZED_SHADOW_RETEST_ENTRY',
                         'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                         'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',

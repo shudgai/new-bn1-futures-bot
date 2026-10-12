@@ -2137,6 +2137,10 @@ class TradingEngine:
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
                 'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+                'KC_GOLDEN_CROSS_FAST_LONG',
+                'KC_DEATH_CROSS_FAST_SHORT',
+                'KC_MOMENTUM_BURST_LONG',
+                'KC_MOMENTUM_BURST_SHORT',
             )
         )
         if (not is_priority_entry
@@ -2285,7 +2289,10 @@ class TradingEngine:
                     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                     'AUTHORIZED_TOP_REVERSAL_SHORT',
                     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+                    'KC_GOLDEN_CROSS_FAST_LONG',
                     'KC_DEATH_CROSS_FAST_SHORT',
+                    'KC_MOMENTUM_BURST_LONG',
+                    'KC_MOMENTUM_BURST_SHORT',
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )

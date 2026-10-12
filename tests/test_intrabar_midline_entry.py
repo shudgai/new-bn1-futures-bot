@@ -6,6 +6,8 @@ import pytest
 
 from core.gates.pipeline import (
     EntryGatePipeline,
+    MOMENTUM_BURST_LONG_CODE,
+    MOMENTUM_BURST_SHORT_CODE,
     entry_market_structure_problem,
     ma5_ma15_cross_chop_problem,
     pipeline,
@@ -135,17 +137,42 @@ def make_bearish_ma_midline_frame(*, quote=100.05):
     return frame, quote
 
 
+def make_momentum_burst_frame(side, *, quote=None):
+    frame, short_quote = make_bearish_ma_midline_frame(
+        quote=100.05 if quote is None and side == 'SHORT' else quote or 100.05,
+    )
+    if side == 'SHORT':
+        return frame, short_quote
+    source = frame.copy()
+    for target, original in (
+        ('open', 'open'),
+        ('close', 'close'),
+        ('high', 'low'),
+        ('low', 'high'),
+        ('kc_upper', 'kc_lower'),
+        ('kc_lower', 'kc_upper'),
+        ('kc_middle', 'kc_middle'),
+        ('ma5', 'ma5'),
+        ('ma15', 'ma15'),
+    ):
+        frame[target] = 200.0 - source[original]
+    long_quote = 200.0 - short_quote
+    frame.loc[frame.index[-1], 'close'] = 200.0 - float(source.iloc[-1]['close'])
+    return frame, long_quote
+
+
 def test_large_bearish_body_crossing_both_mas_enters_before_midline_break():
     frame, quote = make_bearish_ma_midline_frame()
 
-    decision = EntryGatePipeline.detect_midline_break_short(
+    decision = EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     )
 
     assert decision is not None
-    assert decision['type'] == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT'
-    assert decision['entry_phase'] == 'KC_BEARISH_MA_MIDLINE_LAUNCH'
+    assert decision['type'] == MOMENTUM_BURST_SHORT_CODE
+    assert decision['entry_phase'] == 'KC_MOMENTUM_BURST_SHORT'
     assert decision['body_atr'] >= 0.5
+    assert decision['body_ratio'] >= 0.6
     assert decision['midline_distance_atr'] == pytest.approx(0.05)
     assert decision['lower_rail_space_ratio'] >= 0.25
 
@@ -153,7 +180,7 @@ def test_large_bearish_body_crossing_both_mas_enters_before_midline_break():
 def test_bearish_ma_midline_launch_rejects_more_than_point_one_atr_distance():
     frame, quote = make_bearish_ma_midline_frame(quote=100.1001)
 
-    assert EntryGatePipeline.detect_midline_break_short(
+    assert EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     ) is None
 
@@ -161,7 +188,7 @@ def test_bearish_ma_midline_launch_rejects_more_than_point_one_atr_distance():
 def test_bearish_ma_midline_launch_allows_exact_point_one_atr_distance():
     frame, quote = make_bearish_ma_midline_frame(quote=100.1)
 
-    decision = EntryGatePipeline.detect_midline_break_short(
+    decision = EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     )
 
@@ -185,16 +212,16 @@ def test_bearish_ma_midline_launch_keeps_strict_common_entry_gates(fault):
             99.75, 100.0, 100.25,
         ]
     else:
-        frame.loc[live, 'kc_lower'] = 99.1
+        frame.loc[live, 'kc_lower'] = 99.85
 
-    assert EntryGatePipeline.detect_midline_break_short(
+    assert EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     ) is None
 
 
 def test_bearish_ma_midline_launch_keeps_three_bar_opposite_close_cooldown():
     frame, quote = make_bearish_ma_midline_frame()
-    decision = EntryGatePipeline.detect_midline_break_short(
+    decision = EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     )
 
@@ -217,17 +244,111 @@ def test_bearish_ma_midline_launch_passes_contract_and_pipeline():
     diagnostics = {}
 
     decision = evaluate_entry_contract(
-        frame, quote, code='AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+        frame, quote, code=MOMENTUM_BURST_SHORT_CODE,
         symbol='CAP/USDT', diagnostics=diagnostics,
     )
 
     assert decision is not None, diagnostics
-    assert decision['entry_phase'] == 'KC_BEARISH_MA_MIDLINE_LAUNCH'
+    assert decision['entry_phase'] == 'KC_MOMENTUM_BURST_SHORT'
     refreshed = pipeline.authorize(
         decision, frame, quote, symbol='CAP/USDT', requested_side='SHORT',
     )
     assert refreshed is not None
     assert refreshed['pending_signal_id'] == decision['pending_signal_id']
+
+
+@pytest.mark.parametrize(
+    ('side', 'code'),
+    [('LONG', MOMENTUM_BURST_LONG_CODE),
+     ('SHORT', MOMENTUM_BURST_SHORT_CODE)],
+)
+def test_momentum_burst_is_symmetric(side, code):
+    frame, quote = make_momentum_burst_frame(side)
+
+    decision = EntryGatePipeline.detect_momentum_burst(
+        frame, quote, side=side,
+    )
+
+    assert decision is not None
+    assert decision['type'] == code
+    assert decision['side'] == side
+    assert decision['body_atr'] >= 0.5
+    assert decision['body_ratio'] >= 0.6
+    assert (
+        decision['upper_rail_space_ratio'] >= 0.25
+        if side == 'LONG'
+        else decision['lower_rail_space_ratio'] >= 0.25
+    )
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_momentum_burst_requires_fifty_percent_body(side):
+    frame, quote = make_momentum_burst_frame(side)
+    live = frame.index[-1]
+    if side == 'LONG':
+        frame.loc[live, 'high'] = quote + 1.1
+    else:
+        frame.loc[live, 'low'] = quote - 1.1
+
+    assert EntryGatePipeline.detect_momentum_burst(
+        frame, quote, side=side,
+    ) is None
+
+
+def test_momentum_burst_allows_exact_fifty_percent_body_and_one_x_wick():
+    frame, quote = make_momentum_burst_frame('LONG')
+    live = frame.index[-1]
+    opening = float(frame.loc[live, 'open'])
+    body = quote - opening
+    frame.loc[live, ['open', 'close', 'low', 'high']] = [
+        opening,
+        quote,
+        opening,
+        quote + body,
+    ]
+    decision = EntryGatePipeline.detect_momentum_burst(frame, quote, side='LONG')
+    assert decision is not None
+    assert decision['body_ratio'] == pytest.approx(0.5, abs=1e-9)
+    assert decision['upper_rail_space_ratio'] >= 0.15
+
+
+@pytest.mark.parametrize(
+    ('side', 'code'),
+    [('LONG', MOMENTUM_BURST_LONG_CODE),
+     ('SHORT', MOMENTUM_BURST_SHORT_CODE)],
+)
+def test_momentum_burst_passes_account_firewall_revalidation(side, code):
+    frame, quote = make_momentum_burst_frame(side)
+    live = frame.index[-1]
+    adjustment = quote - float(frame.loc[live, 'close'])
+    frame.loc[live, 'ma5'] = float(frame.loc[live, 'ma5']) + adjustment / 5.0
+    frame.loc[live, 'ma15'] = float(frame.loc[live, 'ma15']) + adjustment / 15.0
+    frame.loc[live, 'close'] = quote
+    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
+    frame['timestamp'] += current_bar - int(frame.iloc[-1]['timestamp'])
+    frame.attrs['entry_finality_verified'] = True
+
+    class Account:
+        positions = {}
+        trades = []
+        last_closed_at = {}
+        last_closed_side = {}
+
+        async def entry_frame_provider(self, symbol):
+            return frame
+
+    context = {
+        'entry_signal_code': code,
+        'entry_phase': f'KC_MOMENTUM_BURST_{side}',
+        'channel_confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
+    }
+
+    decision = asyncio.run(validate_account_entry(
+        Account(), 'CAP/USDT', side, context,
+    ))
+
+    assert decision['type'] == code
+    assert decision['side'] == side
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -369,7 +490,7 @@ def test_launch_phase_cannot_claim_retest_exemption(side):
     ) == 'BLOCKED_MIDLINE_RETEST_EVIDENCE'
 
 
-@pytest.mark.parametrize(('side', 'quote'), [('LONG', 102.05), ('SHORT', 97.95)])
+@pytest.mark.parametrize(('side', 'quote'), [('LONG', 103.50), ('SHORT', 96.50)])
 def test_midline_entry_rejects_less_than_quarter_channel_room(side, quote):
     frame, _ = make_frame(side, quote=quote)
     detector = (

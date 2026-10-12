@@ -18,18 +18,46 @@ CHOP_KC_SLOPE_EPSILON_ATR = 0.10
 CHOP_MA_TANGLE_ATR = 0.25
 CHOP_MIN_CHANNEL_BODY_ATR = 0.40
 MA_GAP_CHOP_LOOKBACK = 10
-MA_CROSS_CHOP_LOOKBACK = 8
-MA_CROSS_CHOP_MIN_CROSSES = 2
+MA_CROSS_CHOP_LOOKBACK = 10
+MA_CROSS_CHOP_MIN_CROSSES = 3
 MA_CROSS_CHOP_GAP_PCT = 0.0008
 MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
-BEARISH_MA_MIDLINE_BODY_ATR = 0.50
-BEARISH_MA_MIDLINE_MAX_DISTANCE_ATR = 0.10
+MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM = 0.15
+HIGH_MOMENTUM_BODY_ATR = 0.70
+FAST_CROSS_BODY_ATR = 0.40
+FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO = 1.0
+FAST_CROSS_MIN_MA15_SLOPE_ATR = 0.03
+GOLDEN_CROSS_FAST_LONG_CODE = 'KC_GOLDEN_CROSS_FAST_LONG'
+DEATH_CROSS_FAST_SHORT_CODE = 'KC_DEATH_CROSS_FAST_SHORT'
+MOMENTUM_BURST_BODY_ATR = 0.50
+MOMENTUM_BURST_BODY_RATIO = 0.50
+MOMENTUM_BURST_MAX_DIRECTIONAL_WICK_RATIO = 1.0
+MOMENTUM_BURST_MAX_MIDLINE_DISTANCE_ATR = 0.10
+MOMENTUM_BURST_LONG_CODE = 'KC_MOMENTUM_BURST_LONG'
+MOMENTUM_BURST_SHORT_CODE = 'KC_MOMENTUM_BURST_SHORT'
+MOMENTUM_BURST_CODES = frozenset((
+    MOMENTUM_BURST_LONG_CODE,
+    MOMENTUM_BURST_SHORT_CODE,
+))
+STRATEGY_TYPE_BREAKOUT = 'BREAKOUT'
+STRATEGY_TYPE_TREND_CONTINUATION = 'TREND_CONTINUATION'
+BREAKOUT_ENTRY_PHASES = frozenset((
+    'IMPULSE_BREAKOUT',
+    'KC_2BAR_BREAKOUT',
+    'KC_2BAR_CLOSED_CONFIRM',
+    'KC_LIVE_OUTER_BREAKOUT',
+    'KC_LIVE_PATTERN_BREAKOUT',
+    'KC_THREE_BAR_BREAKOUT',
+))
 _MA_CROSS_CHOP_LOGGED = {}
 FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TOP_PLUNGE_SHORT',
+    'KC_GOLDEN_CROSS_FAST_LONG',
     'KC_DEATH_CROSS_FAST_SHORT',
+    MOMENTUM_BURST_LONG_CODE,
+    MOMENTUM_BURST_SHORT_CODE,
     'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
     'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
     'CLOSED_BODY_BREAKOUT_LONG', 'CLOSED_BODY_BREAKOUT_SHORT',
@@ -54,6 +82,8 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'TOP_WATERFALL_FLIP',
     'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
     'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+    MOMENTUM_BURST_LONG_CODE,
+    MOMENTUM_BURST_SHORT_CODE,
     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
 ))
 
@@ -61,6 +91,8 @@ PIPELINE_ENTRY_TYPES = frozenset((
 def ma5_ma15_cross_chop_problem(
     frame: pd.DataFrame, quote: Optional[float] = None, *,
     symbol: str = '', log_result: bool = False,
+    allow_single_cross_gap: bool = False,
+    side: Optional[str] = None,
 ) -> Optional[str]:
     """Block entries when recent MA5/MA15 evidence is tangled or compressed."""
     cross_count = None
@@ -77,11 +109,34 @@ def ma5_ma15_cross_chop_problem(
         )
         closed = closed_entry_candles(frame)
         required = {'ma5', 'ma15'}
-        min_closed = MA_GAP_CHOP_LOOKBACK - 1 if has_live else MA_GAP_CHOP_LOOKBACK
-        if (len(closed) < min_closed
+        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60000))
+        if (not math.isfinite(timeframe_ms) or timeframe_ms != 60000
+                or len(closed) < MA_CROSS_CHOP_LOOKBACK
                 or not required.issubset(closed.columns)
                 or not {'ma5', 'ma15', 'close'}.issubset(frame.columns)):
             raise ValueError('insufficient MA history')
+
+        cross_history = closed.tail(MA_CROSS_CHOP_LOOKBACK)
+        cross_stamps = [float(value) for value in cross_history['timestamp']]
+        if (not all(math.isfinite(value) and value > 0 for value in cross_stamps)
+                or any(right - left != timeframe_ms
+                       for left, right in zip(cross_stamps, cross_stamps[1:]))):
+            raise ValueError('invalid one-minute MA history')
+        cross_spreads = [
+            float(row.ma5) - float(row.ma15)
+            for row in cross_history.itertuples()
+        ]
+        if not all(math.isfinite(value) for value in cross_spreads):
+            raise ValueError('invalid MA spread')
+
+        cross_count = 0
+        prior_sign = 0
+        for spread in cross_spreads:
+            current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
+            if current_sign and prior_sign and current_sign != prior_sign:
+                cross_count += 1
+            if current_sign:
+                prior_sign = current_sign
 
         history_size = MA_GAP_CHOP_LOOKBACK - 1 if has_live else MA_GAP_CHOP_LOOKBACK
         history = closed.tail(history_size)
@@ -116,18 +171,16 @@ def ma5_ma15_cross_chop_problem(
             raise ValueError('invalid MA gap history')
         gap_pct = min(gap_pcts)
 
-        cross_count = 0
-        prior_sign = 0
-        for spread in spreads[-MA_CROSS_CHOP_LOOKBACK:]:
-            current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
-            if current_sign and prior_sign and current_sign != prior_sign:
-                cross_count += 1
-            if current_sign:
-                prior_sign = current_sign
-
         if cross_count >= MA_CROSS_CHOP_MIN_CROSSES:
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
-        elif (gap_pct < MA_CROSS_CHOP_GAP_PCT
+        elif (not allow_single_cross_gap
+              and not (
+                  side == 'LONG'
+                  and _recent_bullish_cross_gap_exemption(
+                      frame, current_quote,
+                  )
+              )
+              and gap_pct < MA_CROSS_CHOP_GAP_PCT
               and not math.isclose(
                   gap_pct, MA_CROSS_CHOP_GAP_PCT,
                   rel_tol=1e-12, abs_tol=0.0,
@@ -163,10 +216,259 @@ def ma5_ma15_cross_chop_problem(
     return problem
 
 
-def strict_kc_entry_problem(
-    frame: pd.DataFrame, quote: float, side: Optional[str] = None,
+def _recent_bullish_cross_gap_exemption(
+    frame: pd.DataFrame, quote: float,
+) -> bool:
+    """Allow only the initial two bars of a rising MA5 golden cross past gap veto."""
+    try:
+        if frame is None or len(frame) < 4:
+            return False
+        live = frame.iloc[-1]
+        has_live = not bool(live.get('is_closed', True))
+        closed = closed_entry_candles(frame)
+        if len(closed) < 3:
+            return False
+
+        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000))
+        live_stamp = float(live['timestamp'])
+        recent_closed = closed.tail(3)
+        stamps = [float(value) for value in recent_closed['timestamp']]
+        if has_live:
+            if live_stamp - stamps[-1] != timeframe_ms:
+                return False
+            stamps.append(live_stamp)
+        if any(
+            later - earlier != timeframe_ms
+            for earlier, later in zip(stamps, stamps[1:])
+        ):
+            return False
+
+        ma5_values = [float(value) for value in recent_closed['ma5']]
+        ma15_values = [float(value) for value in recent_closed['ma15']]
+        if has_live:
+            live_close = float(live['close'])
+            adjustment = float(quote) - live_close
+            ma5_values.append(float(live['ma5']) + adjustment / 5.0)
+            ma15_values.append(float(live['ma15']) + adjustment / 15.0)
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (*ma5_values, *ma15_values))
+                or len(ma5_values) < 2
+                or ma5_values[-1] <= ma5_values[-2]
+                or ma5_values[-1] <= ma15_values[-1]):
+            return False
+
+        spreads = [
+            ma5_value - ma15_value
+            for ma5_value, ma15_value in zip(ma5_values, ma15_values)
+        ]
+        recent_spreads = spreads[-3:]
+        return any(
+            previous <= 0 < current
+            for previous, current in zip(recent_spreads, recent_spreads[1:])
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
+def fast_cross_evidence(
+    frame: pd.DataFrame, quote: float, side: str,
+) -> Optional[Dict[str, float]]:
+    """Return symmetric evidence for a fresh, directional MA5/MA15 fast cross."""
+    try:
+        if (side not in ('LONG', 'SHORT') or frame is None or len(frame) < 2
+                or 'is_closed' not in frame.columns
+                or bool(frame.iloc[-1]['is_closed'])):
+            return None
+        closed = closed_entry_candles(frame)
+        if len(closed) < 12:
+            return None
+        previous = closed.iloc[-1]
+        live = frame.iloc[-1]
+        stamp = float(live['timestamp'])
+        previous_stamp = float(previous['timestamp'])
+        opening = float(live['open'])
+        quote = float(quote)
+        raw_close = float(live['close'])
+        high = max(float(live['high']), opening, quote)
+        low = min(float(live['low']), opening, quote)
+        upper = float(live['kc_upper'])
+        middle = float(live['kc_middle'])
+        lower = float(live['kc_lower'])
+        atr = float(previous['atr'])
+        previous_ma5 = float(previous['ma5'])
+        previous_ma15 = float(previous['ma15'])
+        live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
+        live_ma15 = float(live['ma15']) + (quote - raw_close) / 15.0
+        width = upper - lower
+        values = (
+            stamp, previous_stamp, opening, quote, raw_close, high, low,
+            upper, middle, lower, atr, previous_ma5, previous_ma15,
+            live_ma5, live_ma15, width,
+        )
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or stamp != previous_stamp + 60_000
+                or low > min(opening, quote)
+                or high < max(opening, quote)
+                or not lower < middle < upper
+                or width <= 0):
+            return None
+        if fast_cross_ma15_slope_problem(frame, quote, side):
+            return None
+
+        if side == 'LONG':
+            body = quote - opening
+            directional_wick = high - max(opening, quote)
+            crossed = (
+                previous_ma5 <= previous_ma15
+                and live_ma5 > live_ma15
+                and live_ma5 > previous_ma5
+            )
+            position_ready = quote > middle
+            room = (upper - quote) / width
+        else:
+            body = opening - quote
+            directional_wick = min(opening, quote) - low
+            crossed = (
+                previous_ma5 >= previous_ma15
+                and live_ma5 < live_ma15
+                and live_ma5 < previous_ma5
+            )
+            position_ready = quote < middle
+            room = (quote - lower) / width
+
+        body_ready = (
+            body > FAST_CROSS_BODY_ATR * atr
+            or math.isclose(
+                body, FAST_CROSS_BODY_ATR * atr,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+        min_space = (
+            MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+            if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
+            else MIN_DIRECTIONAL_KC_SPACE
+        )
+        room_ready = (
+            room > min_space
+            or math.isclose(
+                room, min_space,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+        wick_ready = (
+            directional_wick < FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body
+            or math.isclose(
+                directional_wick,
+                FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+        if not (crossed and position_ready and body_ready and room_ready and wick_ready):
+            return None
+
+        return {
+            'stamp': stamp,
+            'previous_stamp': previous_stamp,
+            'opening': opening,
+            'quote': quote,
+            'atr': atr,
+            'middle': middle,
+            'upper': upper,
+            'lower': lower,
+            'live_ma5': live_ma5,
+            'live_ma15': live_ma15,
+            'previous_ma5': previous_ma5,
+            'previous_ma15': previous_ma15,
+            'ma15_slope_atr': (live_ma15 - previous_ma15) / atr,
+            'body_atr': body / atr,
+            'directional_space_ratio': room,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def is_ma_tangling(
+    frame: pd.DataFrame,
+    quote: float,
+    *,
+    signal_code: Optional[str] = None,
+    allow_ma_tangle: bool = False,
+) -> bool:
+    """Return True if MA5/MA15 are tangled or compressed, with fast cross exemption."""
+    if allow_ma_tangle:
+        return False
+    try:
+        if frame is None or frame.empty:
+            return True
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return True
+        live = frame.iloc[-1]
+        current = closed.iloc[-1]
+        atr = float(current['atr'])
+        ma5 = float(live['ma5'])
+        ma15 = float(live['ma15'])
+        quote = float(quote)
+        if not bool(live.get('is_closed', True)):
+            adjustment = quote - float(live['close'])
+            ma5 += adjustment / 5.0
+            ma15 += adjustment / 15.0
+        if not all(math.isfinite(value) and value > 0 for value in (ma5, ma15)):
+            return True
+
+        # 若剛觸發有效金叉/死叉且具備動能實體，給予 1~2 根 K 線的交叉豁免
+        if signal_code in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE):
+            opening = float(live['open'])
+            closing = float(live['close']) if bool(live.get('is_closed', True)) else quote
+            candle_body = abs(closing - opening)
+            side = 'LONG' if signal_code == GOLDEN_CROSS_FAST_LONG_CODE else 'SHORT'
+            is_valid_cross_momentum = fast_cross_evidence(frame, quote, side) is not None
+            if (candle_body >= 0.4 * atr or math.isclose(candle_body, 0.4 * atr, rel_tol=1e-12, abs_tol=0.0)) and is_valid_cross_momentum:
+                return False  # 豁免 tangling 攔截
+
+        return abs(ma5 - ma15) < CHOP_MA_TANGLE_ATR * atr
+    except Exception:
+        return True
+
+
+def fast_cross_ma15_slope_problem(
+    frame: pd.DataFrame, quote: float, side: str,
 ) -> Optional[str]:
-    """Apply the global KC squeeze and directional room vetoes."""
+    """Reject a fast MA cross when live MA15 movement is flat relative to ATR."""
+    try:
+        if (side not in ('LONG', 'SHORT') or frame is None or frame.empty
+                or bool(frame.iloc[-1].get('is_closed', True))):
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
+        live = frame.iloc[-1]
+        previous = closed.iloc[-1]
+        quote = float(quote)
+        raw_close = float(live['close'])
+        previous_ma15 = float(previous['ma15'])
+        live_ma15 = float(live['ma15']) + (quote - raw_close) / 15.0
+        atr = float(previous['atr'])
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (quote, raw_close, previous_ma15, live_ma15, atr))):
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
+        slope_atr = abs(live_ma15 - previous_ma15) / atr
+        if (slope_atr < FAST_CROSS_MIN_MA15_SLOPE_ATR
+                and not math.isclose(
+                    slope_atr, FAST_CROSS_MIN_MA15_SLOPE_ATR,
+                    rel_tol=1e-12, abs_tol=0.0,
+                )):
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_FLAT'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
+
+
+def strict_kc_entry_problem(
+    frame: pd.DataFrame, quote: float, side: Optional[str] = None, *,
+    strategy_type: Optional[str] = None,
+) -> Optional[str]:
+    """Apply KC validity/squeeze checks and applicable directional room vetoes."""
     try:
         if frame is None or frame.empty:
             return 'BLOCKED_INVALID_KC_ENTRY_SPACE'
@@ -185,17 +487,42 @@ def strict_kc_entry_problem(
                 and not math.isclose(
                     bandwidth, MIN_KC_BANDWIDTH_PCT,
                     rel_tol=1e-12, abs_tol=0.0,
+                )
+                and not _has_directional_squeeze_expansion(
+                    frame, quote, side,
                 )):
             return 'BLOCKED_KC_SQUEEZE'
-        if side in ('LONG', 'SHORT'):
+        if (side in ('LONG', 'SHORT')
+                and (strategy_type != STRATEGY_TYPE_BREAKOUT or side == 'SHORT')
+                and not (
+                    strategy_type == STRATEGY_TYPE_TREND_CONTINUATION
+                    and side == 'LONG'
+                )):
             remaining = (
                 (upper - quote) / width
                 if side == 'LONG'
                 else (quote - lower) / width
             )
-            if (remaining < MIN_DIRECTIONAL_KC_SPACE
+            # 動能強勁（實體 >= 0.7 ATR）時，通道留白門檻放寬至 15%
+            min_space = MIN_DIRECTIONAL_KC_SPACE
+            try:
+                opening = float(current['open'])
+                atr = float(current.get('atr', float('nan')))
+                if not math.isfinite(atr) or atr <= 0:
+                    closed = closed_entry_candles(frame)
+                    if not closed.empty:
+                        atr = float(closed.iloc[-1].get('atr', float('nan')))
+                body = abs(quote - opening)
+                if (math.isfinite(atr) and atr > 0
+                        and (body > HIGH_MOMENTUM_BODY_ATR * atr
+                             or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0))):
+                    min_space = MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+            except Exception:
+                min_space = MIN_DIRECTIONAL_KC_SPACE
+
+            if (remaining < min_space
                     and not math.isclose(
-                        remaining, MIN_DIRECTIONAL_KC_SPACE,
+                        remaining, min_space,
                         rel_tol=1e-12, abs_tol=0.0,
                     )):
                 return (
@@ -208,6 +535,97 @@ def strict_kc_entry_problem(
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_INVALID_KC_ENTRY_SPACE'
+
+
+def _has_directional_squeeze_expansion(
+    frame: pd.DataFrame, quote: float, side: Optional[str],
+) -> bool:
+    """Pass a squeeze only for a shaped impulse with strict MA5 alignment."""
+    try:
+        if frame is None or len(frame) < 2:
+            return False
+        current, previous = frame.iloc[-1], frame.iloc[-2]
+        quote = float(quote)
+        opening = float(current['open'])
+        raw_close = float(current['close'])
+        high = max(float(current['high']), opening, quote)
+        low = min(float(current['low']), opening, quote)
+        upper = float(current['kc_upper'])
+        lower = float(current['kc_lower'])
+        atr = float(previous['atr'])
+        if side not in ('LONG', 'SHORT'):
+            side = 'LONG' if quote > opening else 'SHORT' if quote < opening else None
+        if (side not in ('LONG', 'SHORT')
+                or not all(math.isfinite(value) and value > 0 for value in (
+                    quote, opening, raw_close, high, low, upper, lower, atr,
+                ))
+                or lower >= upper or atr <= 0
+                or low > min(opening, quote)
+                or high < max(opening, quote)):
+            return False
+
+        live_ma5 = float(current['ma5'])
+        if not bool(current.get('is_closed', True)):
+            live_ma5 += (quote - raw_close) / 5.0
+        previous_ma5 = float(previous['ma5'])
+        if not all(math.isfinite(value) and value > 0
+                   for value in (live_ma5, previous_ma5)):
+            return False
+
+        body = quote - opening if side == 'LONG' else opening - quote
+        ma5_directional = (
+            live_ma5 > previous_ma5
+            if side == 'LONG'
+            else live_ma5 < previous_ma5
+        )
+        directional_wick = (
+            high - max(opening, quote)
+            if side == 'LONG'
+            else min(opening, quote) - low
+        )
+        candle_range = high - low
+        body_shape_valid = (
+            candle_range > 0
+            and body > 0
+            and body / candle_range >= MOMENTUM_BURST_BODY_RATIO
+            and directional_wick <= MOMENTUM_BURST_MAX_DIRECTIONAL_WICK_RATIO * body
+        )
+        if not ma5_directional or not body_shape_valid:
+            return False
+
+        strong_body = (
+            body > HIGH_MOMENTUM_BODY_ATR * atr
+            or math.isclose(
+                body, HIGH_MOMENTUM_BODY_ATR * atr,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+        rail_break = (
+            quote > upper and lower <= opening <= upper
+            and body >= MOMENTUM_BURST_BODY_ATR * atr
+            if side == 'LONG'
+            else quote < lower and lower <= opening <= upper
+            and body >= MOMENTUM_BURST_BODY_ATR * atr
+        )
+        return strong_body or rail_break
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
+def entry_strategy_type(
+    entry_phase: Optional[str] = None,
+    strategy_type: Optional[str] = None,
+) -> Optional[str]:
+    """Classify breakout and authorized post-close continuation phases."""
+    if strategy_type == STRATEGY_TYPE_BREAKOUT:
+        return STRATEGY_TYPE_BREAKOUT
+    if entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY':
+        return STRATEGY_TYPE_TREND_CONTINUATION
+    return (
+        STRATEGY_TYPE_BREAKOUT
+        if entry_phase in BREAKOUT_ENTRY_PHASES
+        else None
+    )
 
 
 def long_large_bearish_candle_problem(frame: pd.DataFrame, quote: float) -> Optional[str]:
@@ -252,12 +670,16 @@ def long_large_bearish_candle_problem(frame: pd.DataFrame, quote: float) -> Opti
 
 def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                                    side: str,
-                                   entry_phase: Optional[str] = None) -> Optional[str]:
-    """Require a fresh KC-mid launch, non-countertrend alignment, and 25% room."""
+                                   entry_phase: Optional[str] = None,
+                                   strategy_type: Optional[str] = None) -> Optional[str]:
+    """Require valid KC structure and the room rule for the selected entry phase."""
     try:
         if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
-        kc_problem = strict_kc_entry_problem(frame, quote, side)
+        resolved_strategy_type = strategy_type or entry_strategy_type(entry_phase)
+        kc_problem = strict_kc_entry_problem(
+            frame, quote, side, strategy_type=resolved_strategy_type,
+        )
         if kc_problem:
             return kc_problem
         current = frame.iloc[-1]
@@ -268,39 +690,30 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
             if plunge_decision is None:
                 return 'BLOCKED_INVALID_TOP_PLUNGE_STRUCTURE'
             return None
-        if entry_phase == 'MA_DEATH_CROSS_FAST_LANE':
-            closed = closed_entry_candles(frame)
-            if (len(closed) < 1 or bool(current.get('is_closed', True))
-                    or side != 'SHORT'):
-                return 'BLOCKED_INVALID_DEATH_CROSS_STRUCTURE'
-            previous = closed.iloc[-1]
-            previous_stamp = float(previous['timestamp'])
-            current_stamp = float(current['timestamp'])
-            previous_ma5 = float(previous['ma5'])
-            previous_ma15 = float(previous['ma15'])
-            live_close = float(current['close'])
-            live_ma5 = float(current['ma5']) + (float(quote) - live_close) / 5.0
-            live_ma15 = float(current['ma15']) + (float(quote) - live_close) / 15.0
-            upper, middle, lower = (
-                float(current[key]) for key in
-                ('kc_upper', 'kc_middle', 'kc_lower')
+        fast_cross_side = {
+            'MA_GOLDEN_CROSS_FAST_LANE': 'LONG',
+            'MA_DEATH_CROSS_FAST_LANE': 'SHORT',
+        }.get(entry_phase)
+        if fast_cross_side is not None:
+            if side != fast_cross_side:
+                return 'BLOCKED_INVALID_FAST_CROSS_STRUCTURE'
+            slope_problem = fast_cross_ma15_slope_problem(frame, quote, side)
+            if slope_problem:
+                return slope_problem
+            if fast_cross_evidence(frame, quote, side) is None:
+                return 'BLOCKED_INVALID_FAST_CROSS_STRUCTURE'
+            return None
+        momentum_side = {
+            'KC_MOMENTUM_BURST_LONG': 'LONG',
+            'KC_MOMENTUM_BURST_SHORT': 'SHORT',
+        }.get(entry_phase)
+        if momentum_side is not None:
+            evidence = EntryGatePipeline.detect_momentum_burst(
+                frame, quote, side=side,
             )
-            quote = float(quote)
-            width = upper - lower
-            values = (
-                previous_stamp, current_stamp, previous_ma5, previous_ma15,
-                live_ma5, live_ma15, upper, middle, lower, quote, width,
-            )
-            if (not all(math.isfinite(value) and value > 0 for value in values)
-                    or current_stamp != previous_stamp + 60_000
-                    or not lower < middle < upper or width <= 0
-                    or previous_ma5 < previous_ma15
-                    or live_ma5 >= live_ma15
-                    or live_ma5 >= previous_ma5
-                    or quote >= middle):
-                return 'BLOCKED_INVALID_DEATH_CROSS_STRUCTURE'
-            if (quote - lower) / width < 0.25:
-                return 'INSUFFICIENT_LOWER_SPACE'
+            if (side != momentum_side or evidence is None
+                    or evidence.get('entry_phase') != entry_phase):
+                return 'BLOCKED_INVALID_MOMENTUM_BURST_STRUCTURE'
             return None
         values = tuple(float(current[key]) for key in (
             'open', 'close', 'kc_upper', 'kc_middle', 'kc_lower', 'ma5', 'ma15',
@@ -309,6 +722,8 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                 or not values[4] < values[3] < values[2]):
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
         opening, close, upper, middle, lower, ma5, ma15, quote = values
+        if entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY':
+            return None if side == 'LONG' else 'BLOCKED_INVALID_ENTRY_STRUCTURE'
         forming = not bool(current.get('is_closed', True))
         if not forming:
             return 'KC_MIDLINE_ENTRY_REQUIRES_LIVE_CANDLE'
@@ -317,9 +732,25 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
         ma15 += adjustment / 15.0
 
         width = upper - lower
+        min_space = MIN_DIRECTIONAL_KC_SPACE
+        try:
+            atr = float(current.get('atr', float('nan')))
+            if not math.isfinite(atr) or atr <= 0:
+                closed = closed_entry_candles(frame)
+                if not closed.empty:
+                    atr = float(closed.iloc[-1].get('atr', float('nan')))
+            body = abs(quote - opening)
+            if (math.isfinite(atr) and atr > 0
+                    and (body > HIGH_MOMENTUM_BODY_ATR * atr
+                         or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0))):
+                min_space = MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+        except Exception:
+            min_space = MIN_DIRECTIONAL_KC_SPACE
+
         if side == 'LONG':
             remaining = (upper - quote) / width
-            if remaining < 0.25:
+            if (remaining < min_space
+                    and not math.isclose(remaining, min_space, rel_tol=1e-12, abs_tol=0.0)):
                 return 'INSUFFICIENT_UPPER_SPACE'
             if quote < middle and ma5 < ma15:
                 return 'BEAR_TREND_NO_LONG'
@@ -333,7 +764,8 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                 return 'LONG_NOT_CONFIRMED_ABOVE_KC_MIDDLE'
         else:
             remaining = (quote - lower) / width
-            if remaining < 0.25:
+            if (remaining < min_space
+                    and not math.isclose(remaining, min_space, rel_tol=1e-12, abs_tol=0.0)):
                 return 'INSUFFICIENT_LOWER_SPACE'
             if (entry_phase != 'KC_BEARISH_MA_MIDLINE_LAUNCH'
                     and quote > middle and ma5 > ma15):
@@ -504,7 +936,9 @@ class EntryGatePipeline:
     @staticmethod
     def chop_lockout_problem(frame: pd.DataFrame, quote: float, *,
                              allow_flat_lines: bool = False,
-                             allow_unknown_direction: bool = False) -> Optional[str]:
+                             allow_unknown_direction: bool = False,
+                             allow_ma_tangle: bool = False,
+                             signal_code: Optional[str] = None) -> Optional[str]:
         """Fail closed on unknown/flat KC, tangled MAs, or weak in-channel candles."""
         try:
             if frame is None or frame.empty:
@@ -554,14 +988,11 @@ class EntryGatePipeline:
             )):
                 return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
 
-            ma5 = float(live['ma5'])
-            ma15 = float(live['ma15'])
-            if not bool(live.get('is_closed', True)):
-                adjustment = quote - float(live['close'])
-                ma5 += adjustment / 5.0
-                ma15 += adjustment / 15.0
-            if (not all(math.isfinite(value) and value > 0 for value in (ma5, ma15))
-                    or abs(ma5 - ma15) < CHOP_MA_TANGLE_ATR * atr):
+            if is_ma_tangling(
+                frame, quote,
+                signal_code=signal_code,
+                allow_ma_tangle=allow_ma_tangle,
+            ):
                 return 'BLOCKED_BY_MA_TANGLING'
 
             opening = float(live['open'])
@@ -1170,7 +1601,9 @@ class EntryGatePipeline:
         try:
             closed = closed_entry_candles(frame)
             if (len(closed) < 10 or bool(frame.iloc[-1]['is_closed'])
-                    or ma5_ma15_cross_chop_problem(frame) is not None):
+                    or ma5_ma15_cross_chop_problem(
+                        frame, side=side,
+                    ) is not None):
                 return None
 
             live = frame.iloc[-1]
@@ -1215,8 +1648,15 @@ class EntryGatePipeline:
                 crossed_now = opening >= middle and quote < middle
 
             channel_width = upper - lower
+            body = abs(quote - opening)
+            min_midline_space = (
+                MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+                if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
+                else MIN_DIRECTIONAL_KC_SPACE
+            )
             if (channel_width <= 0 or quote <= lower or quote >= upper
-                    or remaining_space < 0.25 * channel_width):
+                    or (remaining_space < min_midline_space * channel_width
+                        and not math.isclose(remaining_space, min_midline_space * channel_width, rel_tol=1e-12, abs_tol=0.0))):
                 return None
 
             def volume_confirmed(candle, history):
@@ -1309,11 +1749,12 @@ class EntryGatePipeline:
             return None
 
     @staticmethod
-    def _detect_bearish_ma_midline_short(
-        frame: pd.DataFrame, quote: float,
+    def detect_momentum_burst(
+        frame: pd.DataFrame, quote: float, side: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Authorize a live large bearish body before it loses the KC-mid launch."""
+        """Detect a mirrored live body crossing MA5/MA15 near KC middle."""
         if (frame is None or len(frame) < 2
+                or side not in ('LONG', 'SHORT')
                 or 'is_closed' not in frame.columns
                 or bool(frame.iloc[-1]['is_closed'])):
             return None
@@ -1336,48 +1777,74 @@ class EntryGatePipeline:
             atr = float(previous['atr'])
             live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
             live_ma15 = float(live['ma15']) + (quote - raw_close) / 15.0
+            previous_ma5 = float(previous['ma5'])
             live_bar_id = float(live['timestamp'])
             previous_bar_id = float(previous['timestamp'])
             values = (
                 quote, opening, raw_close, high, low, middle, upper, lower,
-                atr, live_ma5, live_ma15, live_bar_id, previous_bar_id,
+                atr, live_ma5, live_ma15, previous_ma5,
+                live_bar_id, previous_bar_id,
             )
             if (not all(math.isfinite(value) and value > 0 for value in values)
                     or live_bar_id != previous_bar_id + 60_000
                     or low > min(opening, quote)
                     or high < max(opening, quote)
                     or not lower < middle < upper
-                    or ma5_ma15_cross_chop_problem(frame, quote) is not None
-                    or strict_kc_entry_problem(frame, quote, 'SHORT') is not None):
+                    or ma5_ma15_cross_chop_problem(
+                        frame, quote, side=side,
+                    ) is not None
+                    or strict_kc_entry_problem(frame, quote, side) is not None):
                 return None
 
-            body = opening - quote
+            body = quote - opening if side == 'LONG' else opening - quote
             candle_range = high - low
-            midpoint_distance = quote - middle
+            midpoint_distance = (
+                middle - quote if side == 'LONG' else quote - middle
+            )
             crossed_both_mas = (
-                opening >= max(live_ma5, live_ma15)
+                opening <= min(live_ma5, live_ma15)
+                and quote > max(live_ma5, live_ma15)
+                if side == 'LONG'
+                else opening >= max(live_ma5, live_ma15)
                 and quote < min(live_ma5, live_ma15)
             )
-            if (body < BEARISH_MA_MIDLINE_BODY_ATR * atr
+            ma5_turned = (
+                live_ma5 > previous_ma5
+                if side == 'LONG'
+                else live_ma5 < previous_ma5
+            )
+            directional_wick = (
+                high - max(opening, quote)
+                if side == 'LONG'
+                else min(opening, quote) - low
+            )
+            if (body < MOMENTUM_BURST_BODY_ATR * atr
                     or candle_range <= 0
-                    or body / candle_range < 0.50
+                    or body / candle_range < MOMENTUM_BURST_BODY_RATIO
+                    or directional_wick > MOMENTUM_BURST_MAX_DIRECTIONAL_WICK_RATIO * body
                     or not crossed_both_mas
-                    or midpoint_distance > BEARISH_MA_MIDLINE_MAX_DISTANCE_ATR * atr):
+                    or not ma5_turned
+                    or midpoint_distance
+                        > MOMENTUM_BURST_MAX_MIDLINE_DISTANCE_ATR * atr):
                 return None
 
+            code = (
+                MOMENTUM_BURST_LONG_CODE
+                if side == 'LONG'
+                else MOMENTUM_BURST_SHORT_CODE
+            )
+            phase = f'KC_MOMENTUM_BURST_{side}'
             return {
-                'type': 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
-                'side': 'SHORT',
+                'type': code,
+                'side': side,
                 'price': quote,
                 'is_midline_break': True,
-                'is_bearish_ma_midline_launch': True,
+                'is_momentum_burst': True,
                 'confirmation_bar_id': live_bar_id,
                 'breakout_bar_id': live_bar_id,
                 'pair_confirmation_bar_id': previous_bar_id,
-                'pending_signal_id': (
-                    f'MIDLINE:SHORT:BEARISH_MA:{int(live_bar_id)}'
-                ),
-                'entry_phase': 'KC_BEARISH_MA_MIDLINE_LAUNCH',
+                'pending_signal_id': f'{code}:{int(live_bar_id)}',
+                'entry_phase': phase,
                 'intrabar': True,
                 'midline': middle,
                 'midline_distance_atr': midpoint_distance / atr,
@@ -1388,7 +1855,7 @@ class EntryGatePipeline:
                 'upper_rail_space_ratio': (upper - quote) / (upper - lower),
                 'lower_rail_space_ratio': (quote - lower) / (upper - lower),
                 'volume_confirmed': False,
-                'reason': 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                'reason': code,
             }
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return None
@@ -1398,10 +1865,7 @@ class EntryGatePipeline:
                                    side: Optional[str] = None) -> Optional[Dict[str, Any]]:
         if side not in (None, 'SHORT'):
             return None
-        return (
-            EntryGatePipeline._detect_bearish_ma_midline_short(frame, quote)
-            or EntryGatePipeline._detect_midline_entry(frame, quote, 'SHORT')
-        )
+        return EntryGatePipeline._detect_midline_entry(frame, quote, 'SHORT')
 
     @staticmethod
     def detect_midline_break_long(frame: pd.DataFrame, quote: float,
@@ -1557,20 +2021,50 @@ class EntryGatePipeline:
                   requested_side: Optional[str] = None,
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        candidate_type = (
+            decision.get('type') if isinstance(decision, dict)
+            else None
+        )
+        is_fast_cross = candidate_type in (
+            GOLDEN_CROSS_FAST_LONG_CODE,
+            DEATH_CROSS_FAST_SHORT_CODE,
+        )
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
+            allow_single_cross_gap=is_fast_cross,
+            side=(
+                decision.get('side') if isinstance(decision, dict)
+                else requested_side
+            ),
         )
         if cross_chop_problem:
             if diagnostics is not None:
                 diagnostics['reason'] = cross_chop_problem
             return None
-        kc_problem = strict_kc_entry_problem(frame, quote)
+        if is_fast_cross:
+            slope_problem = fast_cross_ma15_slope_problem(
+                frame, quote, decision.get('side'),
+            )
+            if slope_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = slope_problem
+                return None
+        strategy_type = (
+            entry_strategy_type(decision.get('entry_phase'))
+            if isinstance(decision, dict) else None
+        )
+        kc_problem = strict_kc_entry_problem(
+            frame, quote,
+            side=(decision.get('side') if isinstance(decision, dict) else requested_side),
+            strategy_type=strategy_type,
+        )
         if kc_problem:
             if diagnostics is not None:
                 diagnostics['reason'] = kc_problem
             return None
         if account is not None and symbol:
             from core.services.entry_contract import (
+                same_side_anti_churn_problem,
                 opposite_side_close_cooldown_problem,
                 same_bar_close_entry_problem,
             )
@@ -1578,6 +2072,13 @@ class EntryGatePipeline:
                 decision.get('side') if isinstance(decision, dict) else requested_side
             )
             if requested_close_side in ('LONG', 'SHORT'):
+                churn_problem = same_side_anti_churn_problem(
+                    account, symbol, frame, requested_close_side, quote,
+                )
+                if churn_problem:
+                    if diagnostics is not None:
+                        diagnostics['reason'] = churn_problem
+                    return None
                 close_problem = same_bar_close_entry_problem(
                     account, symbol, frame, requested_close_side,
                 )
@@ -1597,6 +2098,16 @@ class EntryGatePipeline:
         # an aggregate UI/AI "unknown direction" label must not veto it.
         candidate = decision
         if candidate is None:
+            momentum_long = (
+                self.detect_momentum_burst(frame, quote, side='LONG')
+                if requested_side in (None, 'LONG') else None
+            )
+            momentum_short = (
+                self.detect_momentum_burst(frame, quote, side='SHORT')
+                if requested_side in (None, 'SHORT') else None
+            )
+            candidate = momentum_long or momentum_short
+        if candidate is None:
             mid_short = (
                 self.detect_midline_break_short(frame, quote, side=requested_side)
                 if requested_side in (None, 'SHORT') else None
@@ -1614,6 +2125,25 @@ class EntryGatePipeline:
                 and candidate.get('is_midline_break') is True):
             decision = candidate
 
+        candidate_type = (
+            (decision or candidate).get('type')
+            if (decision or candidate) is not None
+            else None
+        )
+        is_fast_cross = candidate_type in (
+            GOLDEN_CROSS_FAST_LONG_CODE,
+            DEATH_CROSS_FAST_SHORT_CODE,
+        )
+        if is_fast_cross:
+            slope_problem = fast_cross_ma15_slope_problem(
+                frame, quote,
+                decision.get('side') if decision else requested_side,
+            )
+            if slope_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = slope_problem
+                return None
+
         is_verified_live_breakout = bool(
             candidate and (
                 (candidate.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
@@ -1627,6 +2157,10 @@ class EntryGatePipeline:
                     # live launch/retest, volume, direction and space gates pass.
                     'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                     'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                    MOMENTUM_BURST_LONG_CODE,
+                    MOMENTUM_BURST_SHORT_CODE,
+                    GOLDEN_CROSS_FAST_LONG_CODE,
+                    DEATH_CROSS_FAST_SHORT_CODE,
                 )
             )
         )
@@ -1657,6 +2191,10 @@ class EntryGatePipeline:
             and (decision or candidate).get('type') in (
                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                MOMENTUM_BURST_LONG_CODE,
+                MOMENTUM_BURST_SHORT_CODE,
+                GOLDEN_CROSS_FAST_LONG_CODE,
+                DEATH_CROSS_FAST_SHORT_CODE,
             )
         )
         if not is_shadow_entry and not is_midline_candidate:
@@ -1664,6 +2202,8 @@ class EntryGatePipeline:
                 chop_problem = self.chop_lockout_problem(
                     frame, quote, allow_flat_lines=is_outer_rail_breakout,
                     allow_unknown_direction=is_verified_live_breakout,
+                    allow_ma_tangle=is_fast_cross,
+                    signal_code=candidate_type,
                 )
             except TypeError:
                 chop_problem = self.chop_lockout_problem(frame, quote)
@@ -1732,9 +2272,25 @@ class EntryGatePipeline:
                                         if midline_break is not None:
                                             decision = midline_break
                                         else:
-                                            if diagnostics is not None:
-                                                diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
-                                            return None
+                                            momentum_long = (
+                                                self.detect_momentum_burst(
+                                                    frame, quote, side='LONG',
+                                                )
+                                                if requested_side in (None, 'LONG')
+                                                else None
+                                            )
+                                            momentum_short = (
+                                                self.detect_momentum_burst(
+                                                    frame, quote, side='SHORT',
+                                                )
+                                                if requested_side in (None, 'SHORT')
+                                                else None
+                                            )
+                                            decision = momentum_long or momentum_short
+                                            if decision is None:
+                                                if diagnostics is not None:
+                                                    diagnostics['reason'] = 'WAIT_PIPELINE_TRIGGER'
+                                                return None
         else:
             supplied_type = decision.get('type')
             side = decision.get('side')
@@ -1750,6 +2306,8 @@ class EntryGatePipeline:
                 refreshed = self.detect_midline_break_short(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_BY_MIDLINE_BREAK_LONG':
                 refreshed = self.detect_midline_break_long(frame, quote, side=side)
+            elif supplied_type in MOMENTUM_BURST_CODES:
+                refreshed = self.detect_momentum_burst(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY':
                 refreshed = self.detect_shadow_retest_long(frame, quote, side=side)
             elif supplied_type in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP'):
@@ -1774,6 +2332,7 @@ class EntryGatePipeline:
 
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
+            side=decision.get('side'),
         )
         if cross_chop_problem:
             if diagnostics is not None:
@@ -1784,6 +2343,10 @@ class EntryGatePipeline:
             if diagnostics is not None:
                 diagnostics['reason'] = 'BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT'
             return None
+
+        strategy_type = entry_strategy_type(decision.get('entry_phase'))
+        if strategy_type is not None:
+            decision['strategy_type'] = strategy_type
 
         side = decision.get('side')
         if side not in ('LONG', 'SHORT'):
@@ -1799,9 +2362,17 @@ class EntryGatePipeline:
             return None
         if account is not None and symbol:
             from core.services.entry_contract import (
+                same_side_anti_churn_problem,
                 opposite_side_close_cooldown_problem,
                 same_bar_close_entry_problem,
             )
+            churn_problem = same_side_anti_churn_problem(
+                account, symbol, frame, side, quote,
+            )
+            if churn_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = churn_problem
+                return None
             close_problem = same_bar_close_entry_problem(account, symbol, frame, side)
             if close_problem:
                 if diagnostics is not None:
@@ -1826,10 +2397,14 @@ class EntryGatePipeline:
             or decision.get('type') in (
                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                MOMENTUM_BURST_LONG_CODE,
+                MOMENTUM_BURST_SHORT_CODE,
             )
             or decision.get('reason') in (
                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                MOMENTUM_BURST_LONG_CODE,
+                MOMENTUM_BURST_SHORT_CODE,
             )
         )
         is_flip = bool(
@@ -1898,6 +2473,8 @@ class EntryGatePipeline:
                 'TOP_WATERFALL_FLIP',
                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                MOMENTUM_BURST_LONG_CODE,
+                MOMENTUM_BURST_SHORT_CODE,
             )
             or decision.get('reason') in (
                 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
@@ -1907,6 +2484,8 @@ class EntryGatePipeline:
                 'TOP_WATERFALL_FLIP',
                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+                MOMENTUM_BURST_LONG_CODE,
+                MOMENTUM_BURST_SHORT_CODE,
             )
         )
         if not is_top_waterfall_flip:

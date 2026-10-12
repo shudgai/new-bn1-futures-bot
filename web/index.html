@@ -588,7 +588,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·三層階梯鎖利（強逆向確認＋MA5／中軌結構破壞）</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·階梯鎖利＋KC中軌收盤結構確認</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -1212,22 +1212,15 @@
 
                 getChartCkTrend(data) {
                     if (!Array.isArray(data) || data.length === 0) return 'wait';
-                    const liveBar = data[data.length - 1];
-                    if (liveBar && liveBar.is_live === true) {
-                        const price = Number(liveBar.close);
-                        const middle = Number(liveBar.kc_middle);
-                        const upper = Number(liveBar.kc_upper);
-                        const lower = Number(liveBar.kc_lower);
-                        if ([price, middle, upper, lower].every(Number.isFinite)
-                                && price > 0 && lower > 0 && lower < middle && middle < upper) {
-                            // 方向標籤優先反映最新報價相對 KC 的位置；這只影響顯示，不作為交易授權。
-                            if (price > middle || Number(liveBar.high) >= upper) return 'bull';
-                            if (price < middle || Number(liveBar.low) <= lower) return 'bear';
-                        }
-                    }
-                    const values = data.filter(bar => bar.is_live === false).slice(-3).map(bar => Number(bar.kc_middle));
-                    if (values.length !== 3 || values.some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
-                    const [first, second, third] = values;
+                    const closed = data.filter(bar => bar.is_live === false).slice(-3);
+                    if (closed.length !== 3) return 'wait';
+                    const thirdBar = closed[2];
+                    const [first, second, third] = closed.map(bar => Number(bar.kc_middle));
+                    const ma5 = Number(thirdBar.ma5);
+                    const ma15 = Number(thirdBar.ma15);
+                    if ([first, second, third].some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
+                    if (third < second && ma5 < ma15) return 'bear';
+                    if (third > second && ma5 > ma15) return 'bull';
                     if (first < second && second < third) return 'bull';
                     if (first > second && second > third) return 'bear';
                     return 'range';
