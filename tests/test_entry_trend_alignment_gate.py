@@ -2,6 +2,23 @@ import pytest
 import pandas as pd
 from core.services.entry_contract import evaluate_entry_contract
 
+
+def with_chop_history(data):
+    first = data[0].copy()
+    data[-1].setdefault('atr', 10)
+    data[-1].setdefault('ma15', first['ma15'])
+    data[-1].setdefault('ma5', first['ma5'])
+    for key in ('kc_lower', 'kc_middle', 'kc_upper'):
+        data[-1].setdefault(key, data[-2][key])
+    padding = []
+    for offset in range(7, 0, -1):
+        row = first.copy()
+        row['timestamp'] = first['timestamp'] - offset * 60000
+        row['is_closed'] = True
+        padding.append(row)
+    return pd.DataFrame(padding + data)
+
+
 def test_trend_alignment_gate_blocks_short_when_kc_up():
     """
     Simulates the CAP/USDT scenario where KC is UP (or flat), MA15 is flat,
@@ -22,7 +39,8 @@ def test_trend_alignment_gate_blocks_short_when_kc_up():
         # Bar 3 (live forming)
         {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 90, 'is_closed': False}
     ]
-    frame = pd.DataFrame(data)
+    data[-1].update(ma5=103, ma15=100, atr=10)
+    frame = with_chop_history(data)
 
     decision = {
         'side': 'SHORT',
@@ -57,7 +75,8 @@ def test_trend_alignment_gate_passes_when_aligned():
         # Bar 3 (live forming)
         {'timestamp': 3000, 'open': 88, 'high': 90, 'low': 80, 'close': 80, 'is_closed': False}
     ]
-    frame = pd.DataFrame(data)
+    data[-1].update(ma5=95, ma15=100, atr=10)
+    frame = with_chop_history(data)
 
     decision = {
         'side': 'SHORT',
@@ -88,7 +107,8 @@ def test_ma_overlap_consolidation():
          'ma5': 101, 'ma15': 100, 'is_closed': True}, 
         {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 90, 'is_closed': False}
     ]
-    frame = pd.DataFrame(data)
+    data[-1].update(ma5=101, ma15=100, atr=10)
+    frame = with_chop_history(data)
     decision = {'side': 'SHORT', 'type': 'TRIGGER_A_KC_BREAKOUT'}
     diagnostics = {}
     
@@ -113,7 +133,8 @@ def test_anti_top_fading_gate():
          'ma5': 105, 'ma15': 100, 'is_closed': True}, 
         {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 108, 'is_closed': False}
     ]
-    frame = pd.DataFrame(data)
+    data[-1].update(ma5=105, ma15=100, atr=10)
+    frame = with_chop_history(data)
     decision = {'side': 'SHORT', 'type': 'TRIGGER_A_KC_BREAKOUT'}
     diagnostics = {}
     
@@ -124,4 +145,3 @@ def test_anti_top_fading_gate():
     
     assert result is None
     assert diagnostics.get('reason') == 'BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT'
-

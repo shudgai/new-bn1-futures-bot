@@ -2,11 +2,12 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pandas as pd
 import pytest
 
 from core.engine import TradingEngine
 from core.services.entry_contract import evaluate_continuation_entry
-from test_breakout_only_entry import breakout_frame
+from test_breakout_only_entry import breakout_frame, live_outer_frame
 
 
 @pytest.mark.parametrize(
@@ -57,8 +58,21 @@ def test_long_continuation_requires_rising_known_kc_and_closed_confirmation(
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_valid_breakout_is_remembered_when_order_is_blocked(side):
-    frame = breakout_frame(side)
+def test_valid_breakout_is_remembered_but_never_authorizes_late_chase(side):
+    frame = live_outer_frame(side)
+    frame['volume'] = 100.0
+    quote = float(frame.iloc[-1]['close'])
+    # The live candle must meet the authorized 0.5 ATR body minimum; add the
+    # complete closed-bar history required by the shared entry contract.
+    first = frame.iloc[0].copy()
+    prefix = []
+    for offset in range(20, 0, -1):
+        row = first.copy()
+        row['timestamp'] = float(first['timestamp']) - offset * 60_000
+        row['is_closed'] = True
+        prefix.append(row)
+    frame = pd.concat([pd.DataFrame(prefix), frame], ignore_index=True)
+    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
     quote = float(frame.iloc[-1]['close'])
     from core.services.entry_contract import evaluate_entry_contract
     entry = evaluate_entry_contract(frame, quote, symbol='SYM')
@@ -77,37 +91,13 @@ def test_valid_breakout_is_remembered_when_order_is_blocked(side):
     qual = account.breakout_qualification['SYM']
     assert qual['side'] == side
     assert qual['breakout_bar_id'] == entry['confirmation_bar_id']
-    # A qualification becomes eligible on a later candle, not the signal candle.
+    # The signal candle cannot immediately turn its own qualification into a
+    # continuation entry. The active entry contract accepts outer breakouts only.
     assert evaluate_continuation_entry(frame, quote, symbol='SYM', account=account) is None
-    frame.loc[frame.index[-1], 'is_closed'] = True
-    frame.loc[frame.index[-1] + 1] = dict(
-        timestamp=float(frame.iloc[-1]['timestamp']) + 60_000.,
-        open=101.7, close=102., high=102.1, low=101.6,
-        kc_upper=101.5, kc_middle=100.4, kc_lower=99.4,
-        ma5=100.9, ma15=100.1, atr=1., is_closed=False,
-    )
-    if side == 'SHORT':
-        row = frame.iloc[-1].copy()
-        frame.loc[frame.index[-1], ['open', 'close', 'high', 'low',
-                                    'kc_upper', 'kc_middle', 'kc_lower',
-                                    'ma5', 'ma15']] = [
-            200. - row['open'], 200. - row['close'], 200. - row['low'],
-            200. - row['high'], 200. - row['kc_lower'],
-            200. - row['kc_middle'], 200. - row['kc_upper'],
-            200. - row['ma5'], 200. - row['ma15'],
-        ]
-    quote = 102.3 if side == 'LONG' else 97.7
-    below_threshold_quote = 102.1 if side == 'LONG' else 97.9
-    assert evaluate_continuation_entry(
-        frame, below_threshold_quote, symbol='SYM', account=account
-    ) is None
-    decision = evaluate_continuation_entry(frame, quote, symbol='SYM', account=account)
-    assert decision is not None
-    assert decision['qualification_signal_id'] == qual['pending_signal_id']
-    edge = frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower']
-    assert evaluate_continuation_entry(frame, edge, symbol='SYM', account=account) is None
-    account.breakout_qualification['SYM']['side'] = 'SHORT' if side == 'LONG' else 'LONG'
-    assert evaluate_continuation_entry(frame, quote, symbol='SYM', account=account) is None
+    diagnostics = {}
+    assert evaluate_entry_contract(
+        frame, quote, symbol='SYM', account=account, diagnostics=diagnostics,
+    ) is not None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

@@ -441,61 +441,74 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             if frame is not None and not frame.empty:
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
                 if entry_m == 'CHANNEL_SWING':
-                    side = position.get('side')
-                    live_open = float(snapshot.get('live_open') or 0.)
-                    live_high = float(snapshot.get('live_high') or 0.)
-                    upper_wick = live_high - max(live_open, price)
-                    short_upper_wick_hold = (
-                        side == 'SHORT' and atr > 0 and upper_wick >= 0.4 * atr
+                    from core.gates.holding_protection_gate import (
+                        CHANNEL_PEAK_EXIT_STATE_KEY,
+                        INTRABAR_SPIKE_STATE_KEY,
+                        HoldingProtectionExitGate,
                     )
-                    from core.services.exits.dual_track_exit_service import detect_climax_reversal
-                    climax = (
-                        None if (
-                            short_upper_wick_hold
-                            or not snapshot.get('current_bar_is_closed')
+                    from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
+                    if INTRABAR_SPIKE_STATE_KEY in meta:
+                        position[INTRABAR_SPIKE_STATE_KEY] = meta[INTRABAR_SPIKE_STATE_KEY]
+                    if CHANNEL_PEAK_EXIT_STATE_KEY in meta:
+                        position[CHANNEL_PEAK_EXIT_STATE_KEY] = copy.deepcopy(
+                            meta[CHANNEL_PEAK_EXIT_STATE_KEY]
                         )
-                        else detect_climax_reversal(frame, side)
+                    prior_spike_state = position.get(INTRABAR_SPIKE_STATE_KEY)
+                    prior_peak_state = copy.deepcopy(
+                        position.get(CHANNEL_PEAK_EXIT_STATE_KEY)
                     )
-                    if climax:
-                        account.log(
-                            f"REALTIME_EXIT symbol={symbol} reason={climax['reason']} "
-                            f"bar={climax['reversal_bar_id']} price={price} "
-                            f"extension_atr={climax['extension_atr']:.3f} "
-                            f"body_atr={climax['body_atr']:.3f}", 'WARNING',
-                        )
-                        await account.close_position(
-                            symbol, price, 'Channel Swing ' + climax['reason'],
-                            is_manual=True,
-                        )
-                        return True
-                    from core.gates.holding_protection_gate import HoldingProtectionExitGate
-                    prot_exit, prot_details = HoldingProtectionExitGate.evaluate(position, frame, price)
-                    if prot_exit:
-                        account.log(
-                            f'HOLDING_PROTECTION_EXIT symbol={symbol} reason={prot_exit} '
-                            f'quote_ms={stamp} price={price} details={prot_details}',
-                            'WARNING',
-                        )
-                        if prot_details.get('authorized_action') == 'ACTION_FLIP_LONG_TO_SHORT':
-                            from core.services.order_execution import OrderExecutionService
-                            await OrderExecutionService.execute_top_engulfing_flip(
-                                engine, symbol, frame, price, position,
-                                prot_exit, prot_details,
+                    prot_exit, prot_details = HoldingProtectionExitGate.evaluate(
+                        position, frame, price, True,
+                    )
+                    current_spike_state = position.get(INTRABAR_SPIKE_STATE_KEY)
+                    current_peak_state = position.get(CHANNEL_PEAK_EXIT_STATE_KEY)
+                    if (current_spike_state != prior_spike_state
+                            or meta.get(INTRABAR_SPIKE_STATE_KEY) != current_spike_state):
+                        if current_spike_state is not None:
+                            meta[INTRABAR_SPIKE_STATE_KEY] = current_spike_state
+                        account.save_state()
+                    if current_peak_state != prior_peak_state:
+                        if current_peak_state is not None:
+                            meta[CHANNEL_PEAK_EXIT_STATE_KEY] = copy.deepcopy(
+                                current_peak_state
                             )
-                        else:
+                        account.save_state()
+                    if prot_exit and channel_swing_exit_allowed(prot_exit):
+                        is_allowed, valid_reason, valid_details = (
+                            HoldingProtectionExitGate.validate_exit(
+                                position, frame, price, prot_exit, prot_details,
+                                channel_swing=True,
+                            )
+                        )
+                        if is_allowed:
+                            account.log(
+                                f'HOLDING_PROTECTION_EXIT symbol={symbol} reason={valid_reason} '
+                                f'quote_ms={stamp} price={price} details={valid_details}',
+                                'WARNING',
+                            )
                             await account.close_position(
-                                symbol, price, f'Channel Swing {prot_exit}',
+                                symbol, price, f'Channel Swing {valid_reason}',
                                 is_manual=True,
                             )
-                        return True
+                            return True
+                        account.log(
+                            f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={prot_exit} '
+                            f'gate_reason={valid_reason}', 'INFO',
+                        )
+                    if prot_exit:
+                        account.log(
+                            f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={prot_exit} '
+                            'gate_reason=EXIT_NOT_IN_CHANNEL_ALLOWLIST', 'INFO',
+                        )
 
                     from core.exits.peak_valley_exit import PeakValleyExit
                     peak_exit, peak_details = PeakValleyExit.evaluate(
                         position, frame, price,
                     )
-                    if peak_exit:
+                    if peak_exit and channel_swing_exit_allowed(peak_exit):
                         is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
                             position, frame, price, peak_exit, peak_details,
+                            channel_swing=True,
                         )
                         if is_allowed:
                             account.log(
@@ -513,6 +526,11 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                                 f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={peak_exit} '
                                 f'gate_reason={valid_reason}', 'INFO',
                             )
+                    elif peak_exit:
+                        account.log(
+                            f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={peak_exit} '
+                            'gate_reason=EXIT_NOT_IN_CHANNEL_ALLOWLIST', 'INFO',
+                        )
                 from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
                 gate_trigger, state_changed = _evaluate_realtime_core_exit_gates(
                     position, meta, price, stamp, snapshot,
@@ -522,6 +540,14 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     account.save_state()
                 if gate_trigger:
                     from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                    from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
+                    if (entry_m == 'CHANNEL_SWING'
+                            and not channel_swing_exit_allowed(gate_trigger)):
+                        account.log(
+                            f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={gate_trigger} '
+                            'gate_reason=EXIT_NOT_IN_CHANNEL_ALLOWLIST', 'INFO',
+                        )
+                        return False
                     lock_details = {}
                     if (gate_trigger == PROFIT_LOCK_TRIGGER
                             or gate_trigger.startswith(PROFIT_LOCK_TRIGGER)):
@@ -557,21 +583,40 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'gate_reason={valid_reason}', 'INFO',
                         )
                 if entry_m == 'CHANNEL_SWING':
-                    # On a forming SHORT bar, the holding gate admits only a
-                    # verified V-reversal or ratchet; structure exits wait for close.
-                    if (gate_trigger in (
-                                'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT',
-                                'PEAK_REJECTION_EXIT', 'TROUGH_REJECTION_EXIT',
-                                'LIFECYCLE_STAGE1_INSTANT_RETRACE_EXIT',
-                                'LIFECYCLE_STAGE2_ADVERSE_CLOSE_EXIT',
-                            )
-                            or (gate_trigger and gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
+                    from core.services.exits.confirmed_structure_exit import (
+                        evaluate_confirmed_structure_exit,
+                    )
+                    structure_exit, structure_state_changed = (
+                        evaluate_confirmed_structure_exit(
+                            position, meta, snapshot, stamp, price,
+                        )
+                    )
+                    if structure_state_changed:
+                        account.save_state()
+                    if structure_exit:
+                        account.log(
+                            f'REALTIME_EXIT symbol={symbol} '
+                            f'reason={structure_exit["type"]} '
+                            f'trigger_bar_ms={structure_exit["trigger_bar_ms"]} '
+                            f'closed_price={structure_exit["trigger_close"]} '
+                            f'structure_line={structure_exit["line"]} '
+                            f'execution_price={price}',
+                            'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price,
+                            f'Channel Swing {structure_exit["type"]}',
+                            is_manual=True,
+                        )
+                        return True
+                if entry_m == 'CHANNEL_SWING':
+                    if channel_swing_exit_allowed(gate_trigger):
                         pass
                     else:
                         guard = (
                             'HOLD_SAME_COLOR_MA5_PRESSURE'
                             if _same_color_ma5_pressure(position, snapshot)
-                            else 'HOLD_WAIT_CLOSED_MA5_OR_NET_ROE_LOCK'
+                            else 'HOLD_WAIT_CLOSED_KC_MIDLINE_OR_NET_ROE_LOCK'
                         )
                         if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
                             account.log(
@@ -675,7 +720,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                            'NET_ROE_STAGED_GIVEBACK',
                            'EXIT_CONTINUATION_FAILED',
                            'EXIT_CONSECUTIVE_DOJI_STALL',
-                           'LIVE_MA5_BREAKDOWN_EXIT', 'LIVE_FLASH_DUMP_EXIT',
+                           'LIVE_FLASH_DUMP_EXIT',
                            'THREE_POINT_PIVOT', 'TWO_CLOSED_ADVERSE_ABNORMAL',
                            'WATERFALL_DROP', 'BEARISH_INSTANT_BREAKOUT',
                            'EXIT_DOJI_BEARISH_CONFIRMATION',
@@ -693,11 +738,14 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     except Exception as e:
         import traceback
         account.log(f'CRITICAL_EXIT_EVALUATION_ERROR {symbol}: {e}\n{traceback.format_exc()}', 'ERROR')
-        # 防裝死：發生非預期例外時，執行保守緊急平倉
-        try:
-            await account.close_position(
-                symbol, price, f'Channel Swing FAIL_SAFE_EMERGENCY_EXIT ({type(e).__name__})', is_manual=True
-            )
-            return True
-        except Exception:
-            return False
+        if entry_m != 'CHANNEL_SWING':
+            try:
+                await account.close_position(
+                    symbol, price,
+                    f'Channel Swing FAIL_SAFE_EMERGENCY_EXIT ({type(e).__name__})',
+                    is_manual=True,
+                )
+                return True
+            except Exception:
+                return False
+        return False

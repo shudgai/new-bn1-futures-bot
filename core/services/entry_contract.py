@@ -4,7 +4,9 @@ import math
 import numpy as np
 
 from core.gates.pipeline import (
-    FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES, pipeline,
+    FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES,
+    entry_market_structure_problem, long_large_bearish_candle_problem,
+    ma5_ma15_cross_chop_problem, pipeline, strict_kc_entry_problem,
 )
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.unified_entry_strategy import anti_bottom_short_problem
@@ -33,6 +35,7 @@ from core.services.exits.dual_track_exit_service import (
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
 GOLDEN_CROSS_FAST_LONG_CODE = "KC_GOLDEN_CROSS_FAST_LONG"
+DEATH_CROSS_FAST_SHORT_CODE = "KC_DEATH_CROSS_FAST_SHORT"
 # Backwards-compatible public name used by entry calibration callers.
 MA_CROSS_FAST_LONG_CODE = GOLDEN_CROSS_FAST_LONG_CODE
 BEARISH_INSTANT_BREAKOUT_CODE = "BEARISH_INSTANT_BREAKOUT"
@@ -59,6 +62,7 @@ LEGACY_ROUTE_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG",
     "KC_LIVE_BODY_BREAKOUT_SHORT",
     GOLDEN_CROSS_FAST_LONG_CODE,
+    DEATH_CROSS_FAST_SHORT_CODE,
     "TRIGGER_A_KC_BREAKOUT",
     "TRIGGER_C_CONTINUATION",
     BEARISH_INSTANT_BREAKOUT_CODE,
@@ -108,6 +112,79 @@ def quote_beyond_side_outer_rail(frame, side, quote):
         return False
 
 
+def same_bar_close_entry_problem(account, symbol, frame, side):
+    """Block same-side re-entry only when close time maps to the current candle."""
+    try:
+        if account is None or not symbol or side not in ('LONG', 'SHORT'):
+            return None
+        last_closed_at = getattr(account, 'last_closed_at', {})
+        if symbol not in last_closed_at:
+            return None
+        closed_at = float(last_closed_at[symbol])
+        if closed_at <= 0:
+            return None
+        if not math.isfinite(closed_at):
+            return 'BLOCKED_INVALID_LAST_CLOSE_TIMESTAMP'
+        last_side = str(
+            getattr(account, 'last_closed_side', {}).get(symbol, ''),
+        ).upper()
+        if last_side and last_side != side:
+            return None
+        if frame is None or frame.empty:
+            return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+        bar_timestamp = float(frame.iloc[-1]['timestamp'])
+        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60000))
+        if (not math.isfinite(bar_timestamp) or bar_timestamp <= 0
+                or not math.isfinite(timeframe_ms) or timeframe_ms <= 0):
+            return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+        bar_start = math.floor(bar_timestamp / timeframe_ms) * timeframe_ms / 1000.0
+        if bar_start <= closed_at < bar_start + timeframe_ms / 1000.0:
+            return 'BLOCKED_SAME_BAR_REENTRY'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+
+
+def opposite_side_close_cooldown_problem(
+    account, symbol, frame, side, cooldown_bars=3,
+):
+    """Block opposite-side entries until three full bar identities have elapsed."""
+    try:
+        if (account is None or not symbol or side not in ('LONG', 'SHORT')
+                or cooldown_bars < 1):
+            return None
+        last_closed_at = getattr(account, 'last_closed_at', {})
+        if symbol not in last_closed_at:
+            return None
+        last_side = str(
+            getattr(account, 'last_closed_side', {}).get(symbol, ''),
+        ).upper()
+        if not last_side or last_side == side:
+            return None
+        if last_side not in ('LONG', 'SHORT'):
+            return 'BLOCKED_INVALID_LAST_CLOSE_SIDE'
+        closed_at = float(last_closed_at[symbol])
+        if not math.isfinite(closed_at) or closed_at <= 0:
+            return 'BLOCKED_INVALID_LAST_CLOSE_TIMESTAMP'
+        if frame is None or frame.empty:
+            return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60000))
+        current_timestamp = float(frame.iloc[-1]['timestamp'])
+        if (not math.isfinite(timeframe_ms) or timeframe_ms <= 0
+                or not math.isfinite(current_timestamp) or current_timestamp <= 0):
+            return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+        close_bar_id = math.floor(closed_at * 1000.0 / timeframe_ms)
+        current_bar_id = math.floor(current_timestamp / timeframe_ms)
+        bars_since_close = current_bar_id - close_bar_id
+        if bars_since_close < 0:
+            return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+        if bars_since_close < cooldown_bars:
+            return 'BLOCKED_OPPOSITE_SIDE_COOLDOWN'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_CURRENT_BAR_ID_INVALID'
+
+
 def excessive_upper_shadow_problem(frame, quote, side, trigger_type=None):
     """Reject LONG entries whose latest completed candle has an excessive wick."""
     if side != "LONG":
@@ -154,6 +231,80 @@ def excessive_upper_shadow_problem(frame, quote, side, trigger_type=None):
                 max_wick_body_ratio = 1.0
         if upper_wick > max_wick_body_ratio * body:
             return "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return "BLOCKED_INVALID_ENTRY_CANDLE"
+
+
+def entry_candle_shape_problem(frame, quote=None, decision=None):
+    """Validate candle shape only for bars that authorize the current entry."""
+    try:
+        if frame is None or frame.empty:
+            return "BLOCKED_INVALID_ENTRY_CANDLE"
+        live = frame.iloc[-1]
+        phase = decision.get("entry_phase") if decision else None
+        if phase == "KC_MIDLINE_RETEST":
+            bar_ids = (
+                decision.get("breakout_bar_id"),
+                decision.get("confirmation_bar_id"),
+            )
+        elif decision and decision.get("intrabar"):
+            bar_ids = (decision.get("confirmation_bar_id"),)
+        elif decision and decision.get("breakout_bar_id") is not None:
+            bar_ids = (
+                decision.get("breakout_bar_id"),
+                decision.get("pair_confirmation_bar_id"),
+            )
+        else:
+            bar_ids = (live.get("timestamp"),)
+
+        timestamps = frame["timestamp"]
+        candles = []
+        for bar_id in dict.fromkeys(bar_ids):
+            if bar_id is None:
+                return "BLOCKED_INVALID_ENTRY_CANDLE"
+            matches = frame.loc[timestamps == bar_id]
+            if matches.empty:
+                return "BLOCKED_INVALID_ENTRY_CANDLE"
+            candles.append(matches.iloc[-1])
+
+        for candle in candles:
+            try:
+                is_live = (
+                    candle.name == live.name
+                    and not bool(live.get("is_closed", False))
+                )
+            except (TypeError, ValueError):
+                is_live = False
+            opening = float(candle["open"])
+            raw_close = float(candle["close"])
+            raw_high = float(candle["high"])
+            raw_low = float(candle["low"])
+            if (not all(math.isfinite(value) and value > 0
+                        for value in (opening, raw_close, raw_high, raw_low))
+                    or raw_low > min(opening, raw_close)
+                    or raw_high < max(opening, raw_close)
+                    or raw_high <= raw_low):
+                return "BLOCKED_INVALID_ENTRY_CANDLE"
+            close = float(quote) if is_live and quote is not None else raw_close
+            high = max(raw_high, opening, close)
+            low = min(raw_low, opening, close)
+            body = abs(close - opening)
+            if body <= 0:
+                return (
+                    "BLOCKED_LIVE_LONG_WICK_OR_DOJI"
+                    if is_live else "BLOCKED_ENTRY_WICK_OR_DOJI"
+                )
+            upper_wick = high - max(opening, close)
+            lower_wick = min(opening, close) - low
+            if any(
+                wick >= body or math.isclose(wick, body, rel_tol=1e-12, abs_tol=0.0)
+                for wick in (upper_wick, lower_wick)
+            ):
+                return (
+                    "BLOCKED_LIVE_LONG_WICK_OR_DOJI"
+                    if is_live else "BLOCKED_ENTRY_WICK_OR_DOJI"
+                )
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return "BLOCKED_INVALID_ENTRY_CANDLE"
@@ -211,6 +362,64 @@ def evaluate_golden_cross_fast_lane(frame, quote, symbol=""):
             close_price=quote, intrabar=True, entry_phase="MA_CROSS_FAST_LANE",
             pending_signal_id=f"{symbol}:{GOLDEN_CROSS_FAST_LONG_CODE}:{int(stamp)}",
         )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def evaluate_death_cross_fast_lane(frame, quote, symbol=""):
+    """Authorize a fresh live SHORT death cross while price remains below KC mid."""
+    try:
+        if (frame is None or len(frame) < 2 or "is_closed" not in frame
+                or bool(frame.iloc[-1]["is_closed"])):
+            return None
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        previous = closed.iloc[-1]
+        live = frame.iloc[-1]
+        stamp = float(live["timestamp"])
+        previous_stamp = float(previous["timestamp"])
+        quote = float(quote)
+        close = float(live["close"])
+        middle = float(live["kc_middle"])
+        lower = float(live["kc_lower"])
+        upper = float(live["kc_upper"])
+        previous_ma5 = float(previous["ma5"])
+        previous_ma15 = float(previous["ma15"])
+        live_ma5 = float(live["ma5"]) + (quote - close) / 5.0
+        live_ma15 = float(live["ma15"]) + (quote - close) / 15.0
+        width = upper - lower
+        values = (
+            stamp, previous_stamp, quote, middle, lower, upper,
+            previous_ma5, previous_ma15, live_ma5, live_ma15, width,
+        )
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or stamp != previous_stamp + 60_000
+                or width <= 0
+                or previous_ma5 < previous_ma15
+                or live_ma5 >= live_ma15
+                or live_ma5 >= previous_ma5
+                or quote >= middle
+                or (quote - lower) / width < 0.25):
+            return None
+        return {
+            "action": "ENTER",
+            "side": "SHORT",
+            "type": DEATH_CROSS_FAST_SHORT_CODE,
+            "reason": "LIVE_MA5_MA15_DEATH_CROSS_BELOW_KC_MIDDLE",
+            "price": quote,
+            "entry_atr": float(previous["atr"]),
+            "confirmation_bar_id": stamp,
+            "breakout_bar_id": stamp,
+            "pair_confirmation_bar_id": previous_stamp,
+            "exit_bar_id": stamp,
+            "close_price": quote,
+            "intrabar": True,
+            "entry_phase": "MA_DEATH_CROSS_FAST_LANE",
+            "pending_signal_id": (
+                f"{symbol}:{DEATH_CROSS_FAST_SHORT_CODE}:{int(stamp)}"
+            ),
+        }
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
 
@@ -652,6 +861,21 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
             return None
         if account is not None and symbol in getattr(account, 'positions', {}):
             return None
+        live = frame.iloc[-1]
+        quote = float(quote)
+        opening = float(live['open'])
+        upper = float(live['kc_upper'])
+        lower = float(live['kc_lower'])
+        if (quote > opening and quote <= upper) or (quote < opening and quote >= lower):
+            if diagnostics is not None:
+                diagnostics['reason'] = 'BLOCKED_CONTINUATION_QUOTE_RETURNED_INSIDE_KC'
+            return None
+        qualification = getattr(account, 'breakout_qualification', {}).get(symbol)
+        if (isinstance(qualification, dict)
+                and qualification.get('side') in ('LONG', 'SHORT')
+                and float(live.get('timestamp') or 0.)
+                <= float(qualification.get('breakout_bar_id') or 0.)):
+            return None
         post_close = evaluate_post_close_continuation(
             frame, quote, symbol, account, diagnostics=diagnostics,
         )
@@ -660,7 +884,6 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
         closed = closed_entry_candles(frame)
         if closed.empty or float(frame.iloc[-1]['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
             return None
-        live = frame.iloc[-1]
         previous = closed.iloc[-1]
         stamp, previous_stamp = float(live['timestamp']), float(previous['timestamp'])
         quote = float(quote)
@@ -688,6 +911,8 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
             side = 'SHORT'
         else:
             return None
+        # A continuation is still a same-side outer-rail entry. Never authorize
+        # it after the live quote has pulled back inside the channel.
         current_bar = live.to_dict()
         current_bar.update(close=quote, high=high, low=low, ma5=ma5)
         gate_reason = continuation_entry_problem(
@@ -1513,13 +1738,18 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     # ================= 常規進場檢查 (MA_CROSS) =================
     tolerance = curr['atr'] * 0.05
     is_golden_cross_fast = trigger_type == GOLDEN_CROSS_FAST_LONG_CODE
-    is_ma_cross = trigger_type == "TRIGGER_B_MA_CROSS" or is_golden_cross_fast
+    is_death_cross_fast = trigger_type == DEATH_CROSS_FAST_SHORT_CODE
+    is_ma_cross = (
+        trigger_type == "TRIGGER_B_MA_CROSS"
+        or is_golden_cross_fast
+        or is_death_cross_fast
+    )
     if side == "LONG":
         if not is_ma_cross and curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
         if curr['ma5'] < curr['ma15'] and not is_golden_cross_fast: return False, "BLOCKED_BY_MA_DIVERGENCE"
     elif side == "SHORT":
         if not is_ma_cross and curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
-        if curr['ma5'] > curr['ma15']: return False, "BLOCKED_BY_MA_DIVERGENCE"
+        if curr['ma5'] > curr['ma15'] and not is_death_cross_fast: return False, "BLOCKED_BY_MA_DIVERGENCE"
 
     if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < 1.2: return False, "BLOCKED_BY_VOLATILITY_GATE"
 
@@ -1528,21 +1758,22 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     if (abs(curr['ma15'] - past_k['ma15']) / atr_norm < 0.10 and abs(curr['kc_middle'] - past_k['kc_middle']) / atr_norm < 0.10):
         return False, "BLOCKED_BY_FLAT_MARKET_GATE"
 
-    from core.services.strategies.outer_strategy import count_ma_crosses
-    # NOTE: Since count_ma_crosses was explicitly defined previously, we just use it directly
     if count_ma_crosses(closed_frame.iloc[-8:]) >= 4: return False, "BLOCKED_BY_WHIPSAW_CHOP_GATE"
 
     is_trend_bypassed = is_ma_cross
     if not is_trend_bypassed and not entry_trend_alignment_ready(closed_frame, side):
         return False, "BLOCKED_BY_TREND_GATE"
 
-    if is_doji_candle(curr) and not is_golden_cross_fast: return False, "BLOCKED_BY_DOJI_GATE"
+    if is_doji_candle(curr) and not (is_golden_cross_fast or is_death_cross_fast): return False, "BLOCKED_BY_DOJI_GATE"
     if side == "LONG" and curr['close'] < curr['open'] and not is_golden_cross_fast: return False, "BLOCKED_BY_RED_CANDLE_GATE"
-    if side == "SHORT" and curr['close'] > curr['open']: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
+    if side == "SHORT" and curr['close'] > curr['open'] and not is_death_cross_fast: return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
 
     return True, "GATE_PASSED_STANDARD"
 
-def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None, symbol=None):
+def pre_flight_safety_check(
+    frame, quote, side, decision_type=None, account=None, symbol=None,
+    entry_phase=None,
+):
     """最頂層進場門控：MA5 幾何生死鐵律、冷卻與安全審核（Pre-Flight Check）。
     
     一票否決權：
@@ -1559,8 +1790,9 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
     二、防反覆開平刷單冷卻（Anti-Churn Cooldown）：
         1. 平多後 180 秒內，同幣種嚴禁再度開多；平空後 180 秒內，同幣種嚴禁再度開空。
            - 回傳 BLOCKED_BY_COOLDOWN_SAME_SIDE。
-        2. 禁止同根 K 棒反手（同一根 K 棒內同時觸發平倉 + 反向開倉，非明確 flip 訊號時阻斷）。
-           - 回傳 BLOCKED_SAME_BAR_REVERSAL。
+        2. 同一根 K 棒禁止同方向平倉後重開；以平倉成交時間與 K 棒時間戳精確比對。
+           - 回傳 BLOCKED_SAME_BAR_REENTRY。
+        3. 多單平倉後的空單反手，須由當根實體直接跌破 KC 中軌且 KC 轉空確認。
     """
     try:
         import time
@@ -1572,25 +1804,42 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
             'AUTHORIZED_TOP_REVERSAL_SHORT',
             'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
             'TOP_WATERFALL_FLIP',
-            'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
-            'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
         )
         if account is not None and symbol:
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
             last_side = str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper()
             now_ts = time.time()
+            same_bar_problem = same_bar_close_entry_problem(
+                account, symbol, frame, side,
+            )
+            if same_bar_problem:
+                return False, same_bar_problem
+            opposite_cooldown_problem = opposite_side_close_cooldown_problem(
+                account, symbol, frame, side,
+            )
+            if opposite_cooldown_problem:
+                return False, opposite_cooldown_problem
+            if side == 'SHORT' and is_flip and last_side == 'LONG':
+                from core.services.strategies.outer_strategy import kc_bearish_midline_turn
+                if not kc_bearish_midline_turn(frame, quote):
+                    return False, 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
             # 1. 平倉後冷卻防抖：180 秒內同向嚴禁再度開倉
             if now_ts - last_closed_ts < 180.0 and last_side == side:
                 return False, "BLOCKED_BY_COOLDOWN_SAME_SIDE"
-            # 2. 禁止同根 K 棒反手：60 秒內同根平倉又反向開倉（非 authorized flip 訊號）
-            if not is_flip and now_ts - last_closed_ts < 60.0 and last_side and last_side != side:
-                return False, "BLOCKED_SAME_BAR_REVERSAL"
-
         if frame is None or len(frame) < 2:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
+        if side == 'LONG':
+            bearish_candle_problem = long_large_bearish_candle_problem(frame, quote)
+            if bearish_candle_problem:
+                return False, bearish_candle_problem
         curr = frame.iloc[-1]
         prev = frame.iloc[-2]
         quote = float(quote)
+        market_structure_problem = entry_market_structure_problem(
+            frame, quote, side, entry_phase=entry_phase,
+        )
+        if market_structure_problem:
+            return False, market_structure_problem
         
         # 1. 計算即時 MA5 斜率
         live_close = float(curr.get('close', quote))
@@ -1613,13 +1862,25 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
         slope_flip_exempt = decision_type in (
             CLIMAX_REVERSAL_FLIP_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
         )
+        is_midline_break = decision_type in (
+            'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+            'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
+            DEATH_CROSS_FAST_SHORT_CODE,
+        )
         is_strong_breakout = (
             (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
             or (side == 'SHORT' and pipeline.has_strong_bearish_breakout(frame, quote))
         )
         if slope_atr is None:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
-        if not slope_flip_exempt:
+        if is_midline_break:
+            if ((side == 'LONG' and ma5_slope <= 0)
+                    or (side == 'SHORT' and ma5_slope >= 0)):
+                return False, (
+                    "BLOCKED_BY_MA5_SLOPE_DOWN" if side == 'LONG'
+                    else "BLOCKED_BY_MA5_SLOPE_UP"
+                )
+        elif not slope_flip_exempt:
             if is_strong_breakout:
                 if (side == 'LONG' and ma5_slope < 0) or (side == 'SHORT' and ma5_slope > 0):
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN" if side == "LONG" else "BLOCKED_BY_MA5_SLOPE_UP"
@@ -1644,10 +1905,6 @@ def pre_flight_safety_check(frame, quote, side, decision_type=None, account=None
         is_explosive = (spatial_ctx.state == 'EXPLOSIVE_EXPANSION')
 
         is_shadow_retest = (decision_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
-        is_midline_break = decision_type in (
-            'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
-            'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
-        )
 
         if side == "LONG":
             # 1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】
@@ -1696,10 +1953,31 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
+        if decision.get('type') not in FLAT_LINE_BREAKOUT_TYPES:
+            return reject('BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT')
+
+        shape_problem = entry_candle_shape_problem(frame, quote, decision)
+        if shape_problem:
+            return reject(shape_problem)
+
+        market_structure_problem = entry_market_structure_problem(
+            frame, quote, decision.get('side'),
+            entry_phase=decision.get('entry_phase'),
+        )
+        if market_structure_problem:
+            return reject(market_structure_problem)
+
+        cross_chop_problem = ma5_ma15_cross_chop_problem(
+            frame, quote, symbol=symbol, log_result=True,
+        )
+        if cross_chop_problem:
+            return reject(cross_chop_problem)
+
         # 強制 Pre-Flight 安全門閥審核
         passed, pre_flight_reason = pre_flight_safety_check(
             frame, quote, decision.get('side'), decision_type=decision.get('type'),
             account=account, symbol=symbol,
+            entry_phase=decision.get('entry_phase'),
         )
         if not passed:
             return reject(pre_flight_reason)
@@ -1715,7 +1993,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             # routes pass through this shared contract only when the requested route
             # matches the exact decision type. Common legacy fast lanes remain
             # fail-closed unless revalidated by the same code path.
-            if route not in KC_PENDING_CODES | LEGACY_ROUTE_CODES:
+            if route not in KC_PENDING_CODES | LEGACY_ROUTE_CODES | PIPELINE_ENTRY_TYPES:
                 return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
             decision['_is_authorized'] = True
 
@@ -1740,16 +2018,35 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return None
 
         quote = price if price is not None else float(frame.iloc[-1].close)
-
+        cross_chop_problem = ma5_ma15_cross_chop_problem(
+            frame, quote, symbol=symbol, log_result=True,
+        )
+        if cross_chop_problem:
+            return reject(cross_chop_problem)
+        kc_problem = strict_kc_entry_problem(frame, quote)
+        if kc_problem:
+            return reject(kc_problem)
+        live_death_cross = evaluate_death_cross_fast_lane(
+            frame, quote, symbol,
+        )
+        if code == DEATH_CROSS_FAST_SHORT_CODE and live_death_cross is None:
+            return reject('BLOCKED_DEATH_CROSS_FAST_LANE_NOT_QUALIFIED')
+        active_death_cross = (
+            live_death_cross
+            if code in (None, DEATH_CROSS_FAST_SHORT_CODE) else None
+        )
         live_breakout = pipeline.detect_realtime_breakout(frame, quote)
         verified_live_breakout = bool(
-            live_breakout and live_breakout.get('ma5_direction_aligned') is True
+            (live_breakout and live_breakout.get('ma5_direction_aligned') is True)
+            or active_death_cross is not None
         )
         midline_break = (
             pipeline.detect_midline_break_short(frame, quote)
             or pipeline.detect_midline_break_long(frame, quote)
         )
-        is_midline_breakout = bool(midline_break is not None)
+        is_midline_breakout = bool(
+            midline_break is not None or active_death_cross is not None
+        )
         is_flip_or_shadow = (
             code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                      CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
@@ -1771,8 +2068,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or verified_live_breakout
             or is_midline_breakout
         )
-        if code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
-                        'AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'):
+        if (active_death_cross is None
+                and code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
+                                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
+                                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG')):
             try:
                 chop_problem = pipeline.chop_lockout_problem(
                     frame, quote, allow_flat_lines=is_outer_rail_breakout,
@@ -1782,6 +2081,23 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 chop_problem = pipeline.chop_lockout_problem(frame, quote)
             if chop_problem:
                 return reject(chop_problem)
+
+        if active_death_cross is not None:
+            closed = closed_entry_candles(frame)
+            passed, gate_reason = check_entry_gates(
+                account, symbol, closed, 'SHORT', DEATH_CROSS_FAST_SHORT_CODE,
+            )
+            if not passed:
+                return reject(gate_reason)
+            if any(
+                trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                    == active_death_cross['pending_signal_id']
+                for trade in getattr(account, 'trades', [])
+            ):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            return authorize(active_death_cross, quote)
 
         if code in ('AUTHORIZED_BY_MIDLINE_BREAK_SHORT', 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'):
             side = 'SHORT' if code == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT' else 'LONG'
@@ -1859,10 +2175,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 passed, pre_flight_reason = pre_flight_safety_check(
                     frame, quote, decision.get('side'), decision_type=decision.get('type'),
                     account=account, symbol=symbol,
+                    entry_phase=decision.get('entry_phase'),
                 )
                 if not passed:
                     return reject(pre_flight_reason)
-                return decision
+                return authorize(decision, quote)
 
         closed = closed_entry_candles(frame)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))

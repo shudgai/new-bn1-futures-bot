@@ -1,4 +1,4 @@
-"""Loss-stop evaluation; Channel Swing position loss exits are retired."""
+"""Account-level loss-stop evaluation for open positions."""
 import math
 from typing import Dict, Any, Optional
 import pandas as pd
@@ -7,10 +7,6 @@ from core.interfaces.exit_interface import IExitStrategy
 
 
 def hard_stop_reason(position, price):
-    # Channel Swing position loss stops are disabled by explicit user policy.
-    # Account-level circuit breakers are independent of this position exit.
-    if str(position.get("entry_mode") or "").upper() == "CHANNEL_SWING":
-        return None
     pending = position.get("channel_hard_stop_pending")
     if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
         return pending
@@ -40,12 +36,24 @@ async def enforce_hard_stop(account, symbol, price):
     meta = account.position_meta.get(symbol, {})
     if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
         return False
-    # Retire previously persisted loss-stop retries as well as new triggers.
-    changed = False
-    for source in (position, meta):
-        changed = source.pop("channel_hard_stop_pending", None) is not None or changed
-    if changed:
-        account.save_state()
+    pending = position.get("channel_hard_stop_pending") or meta.get("channel_hard_stop_pending")
+    if pending in ("MARGIN_LOSS", "PRICE_LOSS"):
+        position["channel_hard_stop_pending"] = pending
+        reason = pending
+    else:
+        reason = hard_stop_reason(position, price)
+    if reason is None:
+        return False
+
+    position["channel_hard_stop_pending"] = reason
+    meta["channel_hard_stop_pending"] = reason
+    account.save_state()
+    closed = await account.close_position(
+        symbol, price, f"ACCOUNT_HARD_STOP_{reason}", is_manual=True,
+    )
+    if closed:
+        return True
+
     return False
 
 

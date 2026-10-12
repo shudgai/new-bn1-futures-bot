@@ -5,3 +5,7 @@ User explicitly requested that positions run without hard-stop closes. Channel S
 The UI net ROE 5% activation / 1 percentage point giveback protection remains active. Existing pivot, waterfall, adverse abnormal candle, opposite band and CK correction exits remain active. Independent account circuit breakers and manual closes remain unchanged. This is a position hard-stop policy change, not a profit-protection-only exit policy.
 
 Verification: 136 passed across tests/test_channel_position_hard_stop_disabled.py, test_channel_initial_atr_stop_disabled.py, test_net_roe_profit_lock.py, test_kc_outer_pivot_strategy.py, test_channel_exit_grace.py, and test_realtime_profit_exit.py. Covers long/short extreme loss, pending-stop cleanup, metadata-only entry mode, preserved other-strategy loss evaluation, net ROE protection, account reload and concurrent quote deduplication. Four previous tests requiring Channel Swing hard-stop close/retry were updated for the user's changed policy.
+
+## Superseding owner authorization — 2026-10-12
+
+The prior Channel Swing hard-stop disable policy is superseded. Account-level margin-loss and price-loss hard stops are active again, including persistent retry after an unsuccessful close. Exchange-native initial ATR STOP_MARKET orders remain disabled, as separately confirmed by the user. Strategy exits are restricted to the current profit ratchet and verified peak/valley signals; other strategy close paths are blocked.

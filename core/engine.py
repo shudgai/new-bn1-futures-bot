@@ -1712,14 +1712,63 @@ class TradingEngine:
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
         from core.services.entry_contract import evaluate_entry_contract
         getattr(self, '_entry_gate_diagnostics', {}).pop((symbol, side, 'ENTRY_REVALIDATION'), None)
+        code = kwargs.get('code')
+        is_live_outer = code in (
+            'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+            'AUTHORIZED_REALTIME_BREAKOUT',
+            'KC_REALTIME_RAIL_BREACH_SHORT',
+            'CLOSED_BODY_BREAKOUT_LONG', 'CLOSED_BODY_BREAKOUT_SHORT',
+            'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+            'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
+            'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+        )
+
+        def remember_failed_live_signal(reason):
+            if not is_live_outer:
+                return
+            state = getattr(self.account, 'failed_breakout_revalidation', None)
+            if not isinstance(state, dict):
+                state = self.account.failed_breakout_revalidation = {}
+            state[symbol] = {
+                'side': side,
+                'bar_id': candidate_bar_id,
+                'signal_id': (kwargs.get('authorized_entry') or {}).get('pending_signal_id'),
+                'reason': reason,
+            }
+            try:
+                self.account.save_state()
+            except Exception:
+                pass
+
         frame = await self._entry_boundary_frame(symbol)
         if frame is None or frame.empty:
+            remember_failed_live_signal('BLOCKED_REVALIDATION_FRAME_UNAVAILABLE')
             log_entry_gate(
                 self, symbol, side, 'ENTRY_REVALIDATION',
                 'BLOCKED_REVALIDATION_FRAME_UNAVAILABLE', candidate_bar_id,
             )
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+        failed = getattr(self.account, 'failed_breakout_revalidation', {}).get(symbol)
+        if is_live_outer and isinstance(failed, dict) and failed.get('side') == side:
+            from core.services.entry_contract import quote_beyond_side_outer_rail
+            try:
+                still_outside = quote_beyond_side_outer_rail(frame, side, price)
+            except Exception:
+                still_outside = True
+            if still_outside:
+                log_entry_gate(
+                    self, symbol, side, 'ENTRY_REVALIDATION',
+                    'BLOCKED_FAILED_BREAKOUT_NO_LATE_CHASE', candidate_bar_id,
+                    failed_bar_id=failed.get('bar_id'), failed_reason=failed.get('reason'),
+                )
+                return None
+            # A return inside the channel starts a genuinely new breakout cycle.
+            self.account.failed_breakout_revalidation.pop(symbol, None)
+            try:
+                self.account.save_state()
+            except Exception:
+                pass
         authorized_entry = kwargs.get('authorized_entry')
         grace_decision = self._pipeline_authorization_grace_decision(
             authorized_entry, symbol, side, price,
@@ -1777,6 +1826,8 @@ class TradingEngine:
                     signal_code=grace_decision['type'],
                     pipeline_ttl_grace=True,
                 )
+            remember_failed_live_signal(
+                diagnostics.get('reason') or 'BLOCKED_REVALIDATION_SIGNAL_INVALIDATED')
             log_entry_gate(
                 self, symbol, side, 'ENTRY_REVALIDATION',
                 diagnostics.get('reason', 'BLOCKED_REVALIDATION_NO_DECISION'),
@@ -1811,6 +1862,7 @@ class TradingEngine:
             'AUTHORIZED_BY_PEAK_FLIP_SHORT',
             'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
             'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
+            'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
         }
         if not isinstance(signal, dict):
             return None
@@ -2035,6 +2087,23 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
+        from core.config import (
+            NET_PROFIT_GUARANTEE_BUFFER, SLIPPAGE_PCT, TAKER_FEE_RATE,
+        )
+        from core.services.entry_room_service import entry_room
+        profit_room = entry_room(
+            snapshot['frame'], price, side, TAKER_FEE_RATE,
+            SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER,
+        )
+        if not profit_room.get('allowed'):
+            log_entry_gate(
+                self, symbol, side, 'EXECUTION',
+                profit_room.get('reason', 'KC_PROFIT_ROOM_UNAVAILABLE'), bar,
+                target=profit_room.get('target'),
+                net_room_pct=profit_room.get('net_room_pct'),
+                minimum_net_pct=NET_PROFIT_GUARANTEE_BUFFER * 100,
+            )
+            return False
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
@@ -2067,6 +2136,7 @@ class TradingEngine:
             or decision['type'] in (
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
+                'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
             )
         )
         if (not is_priority_entry
@@ -2163,6 +2233,19 @@ class TradingEngine:
             if not math.isfinite(price) or price <= 0:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
+            profit_room = entry_room(
+                snapshot['frame'], price, side, TAKER_FEE_RATE,
+                SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER,
+            )
+            if not profit_room.get('allowed'):
+                log_entry_gate(
+                    self, symbol, side, 'EXECUTION',
+                    profit_room.get('reason', 'KC_PROFIT_ROOM_UNAVAILABLE'), bar,
+                    target=profit_room.get('target'),
+                    net_room_pct=profit_room.get('net_room_pct'),
+                    minimum_net_pct=NET_PROFIT_GUARANTEE_BUFFER * 100,
+                )
+                return False
             
             from core.services.entry_contract import (
                 entry_direction_problem, evaluate_entry_contract,
@@ -2201,6 +2284,8 @@ class TradingEngine:
                     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                     'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                     'AUTHORIZED_TOP_REVERSAL_SHORT',
+                    'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+                    'KC_DEATH_CROSS_FAST_SHORT',
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )

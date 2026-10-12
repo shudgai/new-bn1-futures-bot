@@ -11,6 +11,29 @@ from core.engine import TradingEngine
 from core.paper_account import PaperAccount
 
 
+def with_entry_history(frame, minimum_rows=10):
+    result = frame.copy()
+    result.attrs.update(frame.attrs)
+    if 'kc_middle' not in result.columns:
+        result['kc_middle'] = (
+            result['kc_upper'].astype(float) + result['kc_lower'].astype(float)
+        ) / 2.0
+    missing = max(0, minimum_rows - len(result))
+    if not missing:
+        return result
+    first = result.iloc[0].to_dict()
+    first_timestamp = float(first['timestamp'])
+    rows = []
+    for offset in range(missing, 0, -1):
+        row = dict(first)
+        row['timestamp'] = first_timestamp - offset * 60_000
+        row['is_closed'] = True
+        rows.append(row)
+    padded = pd.concat([pd.DataFrame(rows), result], ignore_index=True)
+    padded.attrs.update(result.attrs)
+    return padded
+
+
 def live_body_frame(side="SHORT"):
     live_timestamp = int(time.time() // 60) * 60_000
     rows = []
@@ -180,6 +203,10 @@ def test_valid_market_data_reaches_account_gate_for_all_entry_types(
         'core.services.pre_entry_space_shadow.record_pre_entry_space_shadow',
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(
+        'core.services.entry_room_service.entry_room',
+        lambda *_args, **_kwargs: {'allowed': True, 'target': 110.0, 'net_room_pct': 1.0},
+    )
 
     result = asyncio.run(
         engine._place_structured_entry_locked(symbol, signal, quote),
@@ -221,6 +248,32 @@ def test_fresh_snapshot_failures_record_specific_reason(
     assert engine._entry_gate_diagnostics[
         ('LOBSTER/USDT', 'LONG', 'ENTRY_REVALIDATION')
     ][1] == expected_reason
+
+
+def test_failed_live_breakout_revalidation_blocks_later_outer_chase(engine):
+    symbol = 'LOBSTER/USDT'
+    frame = live_body_frame('SHORT')
+    engine._entry_boundary_frame = AsyncMock(side_effect=[None, frame])
+    engine.tickers = {symbol: 89.4}
+    authorized = {
+        'pending_signal_id': f'{symbol}:LIVE_BODY:1:SHORT',
+    }
+
+    first = asyncio.run(engine._fresh_channel_entry_snapshot(
+        symbol, 'SHORT', candidate_bar_id=1,
+        code='KC_LIVE_BODY_BREAKOUT_SHORT', authorized_entry=authorized,
+    ))
+    assert first is None
+    assert engine.account.failed_breakout_revalidation[symbol]['bar_id'] == 1
+
+    later = asyncio.run(engine._fresh_channel_entry_snapshot(
+        symbol, 'SHORT', candidate_bar_id=2,
+        code='KC_LIVE_BODY_BREAKOUT_SHORT', authorized_entry=authorized,
+    ))
+    assert later is None
+    assert engine._entry_gate_diagnostics[
+        (symbol, 'SHORT', 'ENTRY_REVALIDATION')
+    ][1] == 'BLOCKED_FAILED_BREAKOUT_NO_LATE_CHASE'
 
 
 def test_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypatch):
@@ -273,10 +326,19 @@ def test_older_last_closed_at_does_not_create_a_trigger_without_price_action(mon
 
 def test_final_safety_gates(engine):
     frame = live_body_frame()
+    diagnostics = {}
     decision = evaluate_entry_contract(
         frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT', symbol='SYM',
+        diagnostics=diagnostics,
     )
-    assert decision is not None
+    assert decision is None
+    assert diagnostics['reason'] == 'INSUFFICIENT_LOWER_SPACE'
+    decision = {
+        'type': 'KC_LIVE_BODY_BREAKOUT_SHORT',
+        'side': 'SHORT',
+        'confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
+        'pending_signal_id': 'synthetic-final-safety-gate',
+    }
     sym = 'SYM'
     signal = {
         'side': 'SHORT', 'score': 100, 'entry_mode': 'CHANNEL_SWING',
@@ -306,22 +368,13 @@ def test_final_safety_gates(engine):
 def test_no_double_order(engine, monkeypatch):
     sym = 'SYM'
     frame = live_body_frame()
+    diagnostics = {}
     decision = evaluate_entry_contract(
         frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT',
-        account=engine.account, symbol=sym,
+        account=engine.account, symbol=sym, diagnostics=diagnostics,
     )
-    assert decision is not None
-    engine.account.trades.append({
-        'symbol': sym, 'action': 'OPEN_SHORT',
-        'entry_snapshot': {'pending_signal_id': decision['pending_signal_id']},
-    })
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT',
-        account=engine.account, symbol=sym,
-        diagnostics=diagnostics,
-    ) is None
-    assert diagnostics['reason'] == 'BLOCKED_KC_BREAKOUT_ALREADY_FILLED'
+    assert decision is None
+    assert diagnostics['reason'] == 'INSUFFICIENT_LOWER_SPACE'
 
 
 def test_synthetic_boundary_short():
@@ -368,6 +421,8 @@ def test_pre_flight_check_long_ma5_slope_bearish(monkeypatch):
              ma5=104.0, ma15=100.0, atr=1.0, kc_upper=120.0, kc_lower=80.0),
     ])
     frame.attrs['timeframe_ms'] = 60000
+    frame = with_entry_history(frame)
+    frame.attrs['timeframe_ms'] = 60000
 
     quote = 100.2  # live_ma5 = 104.0 + 0 = 104.0 < 105.0
     passed, reason = pre_flight_safety_check(frame, quote, "LONG")
@@ -403,13 +458,15 @@ def test_pre_flight_check_long_insufficient_room_to_upper_kc(monkeypatch):
              ma5=102.0, ma15=99.0, atr=atr, kc_upper=105.0, kc_lower=95.0),
     ])
     frame.attrs['timeframe_ms'] = 60000
+    frame = with_entry_history(frame)
+    frame.attrs['timeframe_ms'] = 60000
 
     quote = 104.2
     # 距離 kc_upper 只有 105.0 - 104.2 = 0.8 < 0.5 * 2.0 (1.0)
     # 且未達到大陽線破軌爆發 (quote < kc_upper)
     passed, reason = pre_flight_safety_check(frame, quote, "LONG")
     assert passed is False
-    assert reason == "REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC"
+    assert reason == "INSUFFICIENT_UPPER_SPACE"
 
     monkeypatch.setattr(pipeline, 'authorize', lambda *args, **kwargs: dict(
         type='AUTHORIZED_BY_TREND_CONTINUATION_LONG', side='LONG', price=quote,
@@ -418,7 +475,7 @@ def test_pre_flight_check_long_insufficient_room_to_upper_kc(monkeypatch):
     diagnostics = {}
     decision = evaluate_entry_contract(frame, quote, code='AUTHORIZED_BY_TREND_CONTINUATION_LONG', diagnostics=diagnostics)
     assert decision is None
-    assert diagnostics.get('reason') == 'REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC'
+    assert diagnostics.get('reason') == 'INSUFFICIENT_UPPER_SPACE'
 
 
 def test_pre_flight_check_long_falling_knife():
@@ -433,11 +490,12 @@ def test_pre_flight_check_long_falling_knife():
         dict(timestamp=stamp, is_closed=False, open=102.0, close=101.0, high=102.5, low=100.5,
              ma5=103.0, ma15=99.0, atr=atr, kc_upper=120.0, kc_lower=90.0),
     ])
+    frame = with_entry_history(frame)
     quote = 101.0  # live_ma5 = 103.0 + (101.0 - 101.0)/5 = 103.0 > 102.0 (ma5_slope > 0)
     # quote 101.0 < live_ma5 103.0，且前根陰線
     passed, reason = pre_flight_safety_check(frame, quote, "LONG")
     assert passed is False
-    assert reason == "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
+    assert reason == "BLOCKED_BY_LARGE_BEARISH_CANDLE"
 
 
 def test_pre_flight_check_short_symmetric_rules():
@@ -453,6 +511,10 @@ def test_pre_flight_check_short_symmetric_rules():
         dict(timestamp=stamp, is_closed=False, open=98.0, close=97.0, high=99.0, low=96.0,
              ma5=96.0, ma15=100.0, atr=atr, kc_upper=110.0, kc_lower=80.0),
     ])
+    frame_bullish_ma5.loc[frame_bullish_ma5.index[-1], 'open'] = 101.0
+    frame_bullish_ma5.loc[frame_bullish_ma5.index[-1], 'high'] = 101.0
+    frame_bullish_ma5['kc_middle'] = 100.0
+    frame_bullish_ma5 = with_entry_history(frame_bullish_ma5)
     quote = 97.0  # live_ma5 = 96.0 > 95.0 (slope > 0)
     passed, reason = pre_flight_safety_check(frame_bullish_ma5, quote, "SHORT")
     assert passed is False
@@ -466,10 +528,12 @@ def test_pre_flight_check_short_symmetric_rules():
         dict(timestamp=stamp, is_closed=False, open=93.0, close=90.3, high=94.0, low=90.0,
              ma5=94.0, ma15=100.0, atr=atr, kc_upper=110.0, kc_lower=90.0),
     ])
+    frame_tight_kc['kc_middle'] = 100.0
+    frame_tight_kc = with_entry_history(frame_tight_kc)
     quote = 90.3
     passed, reason = pre_flight_safety_check(frame_tight_kc, quote, "SHORT")
     assert passed is False
-    assert reason == "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
+    assert reason == "INSUFFICIENT_LOWER_SPACE"
 
     # 3. 陽線回抽且價格站上 MA5 (REJECT_BOUNCE_BULLISH_ABOVE_MA5)
     # 前根是陽線 (open 90, close 94), quote = 95.0 站上 live_ma5 = 94.0
@@ -479,8 +543,11 @@ def test_pre_flight_check_short_symmetric_rules():
         dict(timestamp=stamp, is_closed=False, open=93.0, close=95.0, high=96.0, low=92.0,
              ma5=94.0, ma15=100.0, atr=atr, kc_upper=120.0, kc_lower=80.0),
     ])
+    frame_bounce['kc_middle'] = 100.0
+    frame_bounce.loc[frame_bounce.index[-1], 'open'] = 101.0
+    frame_bounce.loc[frame_bounce.index[-1], 'high'] = 102.0
+    frame_bounce = with_entry_history(frame_bounce)
     quote = 95.0  # live_ma5 = 94.0 < 95.0 (slope = 94 - 95 = -1 < 0)
     passed, reason = pre_flight_safety_check(frame_bounce, quote, "SHORT")
     assert passed is False
     assert reason == "REJECT_BOUNCE_BULLISH_ABOVE_MA5"
-

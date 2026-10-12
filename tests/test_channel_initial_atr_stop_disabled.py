@@ -109,23 +109,21 @@ def test_new_channel_position_keeps_atr_without_stop(side, initializer):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('loss_gate', ['MARGIN_LOSS', 'PRICE_LOSS'])
-def test_channel_loss_limits_no_longer_close_or_retry(side, loss_gate, monkeypatch):
+def test_channel_account_loss_limits_close(side, loss_gate, monkeypatch):
     monkeypatch.setattr(config, 'MAX_POSITION_MARGIN_LOSS_RATIO', .01 if loss_gate == 'MARGIN_LOSS' else 0.)
     monkeypatch.setattr(config, 'MAX_ACCEPTABLE_LOSS_PCT', -.02)
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     account = SimpleNamespace(positions={'X': p}, position_meta={},
-                              save_state=Mock(), close_position=AsyncMock(return_value=False))
+                              save_state=Mock(), close_position=AsyncMock(return_value=True))
     price = 100-sign*(1.1 if loss_gate == 'MARGIN_LOSS' else 2.1)
 
     async def run():
-        assert not await enforce_hard_stop(account, 'X', price)
-        assert not await enforce_hard_stop(account, 'X', 100.)
+        assert await enforce_hard_stop(account, 'X', price)
 
     asyncio.run(run())
 
-    assert 'channel_hard_stop_pending' not in p
-    account.close_position.assert_not_awaited()
+    account.close_position.assert_awaited_once()
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -144,7 +142,7 @@ def test_account_update_ignores_old_atr_stop(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_waterfall_candidate_remains_in_the_exit_evaluator(side):
+def test_waterfall_candidate_has_no_channel_exit_authority(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     snapshot = dict(quote_ms=61000, live_bar_ms=60000, closed_bar_ms=0,
@@ -152,22 +150,17 @@ def test_waterfall_candidate_remains_in_the_exit_evaluator(side):
 
     result = evaluate_peak_trailing(p, 100-sign*1.6, snapshot, fee=0., slippage=0.)
 
-    assert result['reason'] == ABNORMAL_REASON
-    assert result['trigger'] == 'WATERFALL_DROP'
-    meta = {STATE_KEY: copy.deepcopy(p[STATE_KEY])}
-    p.pop(STATE_KEY)
-    state = migrate_peak_state(p, meta)
-    assert state['pending'] == ABNORMAL_REASON
-    assert state['trigger'] == 'WATERFALL_DROP'
+    assert result is None
+    assert not p[STATE_KEY].get('pending')
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_account_adapter_closes_for_waterfall_candidate(side, monkeypatch):
+def test_account_adapter_blocks_waterfall_candidate(side, monkeypatch):
     p = position(side)
     p['open_timestamp'] = time.time() - 120
     p[STATE_KEY] = {'pending': ABNORMAL_REASON, 'trigger': 'WATERFALL_DROP'}
     account = SimpleNamespace(positions={'X': p}, position_meta={},
-                              save_state=Mock(), close_position=AsyncMock())
+                              save_state=Mock(), close_position=AsyncMock(), log=Mock())
     monkeypatch.setattr(
         'core.services.exits.peak_trailing_exit.evaluate_peak_trailing',
         lambda *args, **kwargs: {
@@ -177,10 +170,29 @@ def test_account_adapter_closes_for_waterfall_candidate(side, monkeypatch):
 
     result = asyncio.run(enforce_atr_protection(account, 'X', 101.))
 
+    assert not result
+    account.close_position.assert_not_awaited()
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('trigger', ['THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL'])
+def test_account_adapter_closes_for_verified_peak_candidate(trigger, side, monkeypatch):
+    p = position(side)
+    p['open_timestamp'] = time.time() - 120
+    account = SimpleNamespace(positions={'X': p}, position_meta={},
+                              save_state=Mock(), close_position=AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        'core.services.exits.peak_trailing_exit.evaluate_peak_trailing',
+        lambda *args, **kwargs: {
+            'type': 'EXIT_VERIFIED_PEAK', 'trigger': trigger,
+        },
+    )
+
+    result = asyncio.run(enforce_atr_protection(account, 'X', 101.))
+
     assert result
-    account.close_position.assert_awaited_once()
-    assert account.close_position.await_args.args[2] == (
-        "Channel Swing " + ABNORMAL_REASON
+    account.close_position.assert_awaited_once_with(
+        'X', 101., 'Channel Swing EXIT_VERIFIED_PEAK', is_manual=True,
     )
 
 

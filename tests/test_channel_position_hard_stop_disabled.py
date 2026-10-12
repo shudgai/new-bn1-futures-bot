@@ -8,32 +8,48 @@ from core import config
 
 @pytest.mark.parametrize('side,price', [('LONG', 1.), ('SHORT', 1000.)])
 @pytest.mark.parametrize('pending', [None, 'MARGIN_LOSS', 'PRICE_LOSS'])
-def test_channel_loss_does_not_authorize_close_and_retires_retry(side, price, pending):
+def test_channel_account_hard_stop_closes_or_retries(side, price, pending, monkeypatch):
+    monkeypatch.setattr(config, 'MAX_POSITION_MARGIN_LOSS_RATIO', .05)
+    monkeypatch.setattr(config, 'MAX_ACCEPTABLE_LOSS_PCT', -.02)
     p = dict(side=side, entry_mode='CHANNEL_SWING', entry_price=100., qty=1., margin=10., leverage=10.)
     meta = dict(entry_mode='CHANNEL_SWING')
     if pending:
         p['channel_hard_stop_pending'] = meta['channel_hard_stop_pending'] = pending
     a = SimpleNamespace(positions={'X':p}, position_meta={'X':meta},
-                        save_state=Mock(), close_position=AsyncMock())
-    assert hard_stop_reason(p, price) is None
-    assert HardStopExitStrategy().evaluate_exit(p, None, price) is None
-    assert not asyncio.run(enforce_hard_stop(a, 'X', price))
-    a.close_position.assert_not_awaited()
-    assert 'channel_hard_stop_pending' not in p
-    assert 'channel_hard_stop_pending' not in meta
-    assert a.save_state.call_count == bool(pending)
+                        save_state=Mock(), close_position=AsyncMock(return_value=True))
+    expected = pending or hard_stop_reason(p, price)
+    assert expected in ('MARGIN_LOSS', 'PRICE_LOSS')
+    assert hard_stop_reason(p, price) == expected
+    assert HardStopExitStrategy().evaluate_exit(p, None, price) == f'HARD_STOP_{expected}'
+    assert asyncio.run(enforce_hard_stop(a, 'X', price))
+    a.close_position.assert_awaited_once_with(
+        'X', price, f'ACCOUNT_HARD_STOP_{expected}', is_manual=True,
+    )
 
 
-def test_metadata_only_mode_also_retires_pending():
+def test_metadata_only_mode_retries_pending_account_hard_stop():
     p = dict(channel_hard_stop_pending='MARGIN_LOSS')
     a = SimpleNamespace(positions={'X':p}, position_meta={'X':dict(entry_mode='CHANNEL_SWING')},
-                        save_state=Mock(), close_position=AsyncMock())
-    assert not asyncio.run(enforce_hard_stop(a, 'X', 1.))
-    a.close_position.assert_not_awaited()
-    a.save_state.assert_called_once()
+                        save_state=Mock(), close_position=AsyncMock(return_value=True))
+    assert asyncio.run(enforce_hard_stop(a, 'X', 1.))
+    a.close_position.assert_awaited_once_with(
+        'X', 1., 'ACCOUNT_HARD_STOP_MARGIN_LOSS', is_manual=True,
+    )
 
 
 def test_other_strategy_loss_policy_is_preserved(monkeypatch):
     monkeypatch.setattr(config, 'MAX_POSITION_MARGIN_LOSS_RATIO', .05)
     p = dict(side='LONG', entry_mode='OTHER', entry_price=100., qty=1., margin=10., leverage=10.)
     assert hard_stop_reason(p, 90.) == 'MARGIN_LOSS'
+
+
+def test_channel_hard_stop_failure_persists_retry():
+    p = dict(side='LONG', entry_mode='CHANNEL_SWING', entry_price=100.,
+             qty=1., margin=10., leverage=10.)
+    meta = dict(entry_mode='CHANNEL_SWING')
+    a = SimpleNamespace(positions={'X': p}, position_meta={'X': meta},
+                        save_state=Mock(), close_position=AsyncMock(return_value=False))
+    assert not asyncio.run(enforce_hard_stop(a, 'X', 90.))
+    assert p['channel_hard_stop_pending'] == 'MARGIN_LOSS'
+    assert meta['channel_hard_stop_pending'] == 'MARGIN_LOSS'
+    a.save_state.assert_called_once()

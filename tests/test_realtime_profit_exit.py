@@ -103,10 +103,10 @@ def test_short_lower_wick_rejection_triggers_realtime_exit():
         position, {'lifecycle_stage': 3}, 100.1, 180001., snapshot, 0., 0.,
     )
 
-    assert trigger == 'LIVE_BOTTOM_REJECTION_EXIT'
+    assert trigger is None
 
 
-def test_peak_valley_wick_exit_is_wired_into_realtime_execution(monkeypatch):
+def test_legacy_peak_valley_exit_is_blocked_for_channel_swing(monkeypatch):
     from core.services.exits import realtime_profit_exit
     from core.exits.peak_valley_exit import PeakValleyExit
 
@@ -141,7 +141,7 @@ def test_peak_valley_wick_exit_is_wired_into_realtime_execution(monkeypatch):
         monkeypatch.setattr(
             PeakValleyExit, 'evaluate',
             staticmethod(lambda *args: (
-                'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
+                'EXIT_SHORT_ON_FRACTAL_VALLEY', {
                     'lower_wick': 1., 'upper_wick': 0.1,
                     'body': 0.1, 'atr': 1., 'valley_roe': 0.04,
                     'peak_gain_atr': 0.5,
@@ -151,7 +151,7 @@ def test_peak_valley_wick_exit_is_wired_into_realtime_execution(monkeypatch):
         monkeypatch.setattr(
             'core.gates.holding_protection_gate.HoldingProtectionExitGate.validate_exit',
             classmethod(lambda cls, *args: (
-                True, 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', args[-1],
+                True, 'EXIT_SHORT_ON_FRACTAL_VALLEY', args[-1],
             )),
         )
 
@@ -159,11 +159,34 @@ def test_peak_valley_wick_exit_is_wired_into_realtime_execution(monkeypatch):
             engine, 'X', 100.,
         )
 
-        assert closed is True
-        account.close_position.assert_awaited_once_with(
-            'X', 100., 'Channel Swing EXIT_SHORT_ON_LOWER_WICK_REJECTION',
-            is_manual=True,
+        assert closed is False
+        account.close_position.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_channel_exit_evaluation_error_does_not_force_close(monkeypatch):
+    from core.services.exits import realtime_profit_exit
+
+    async def run():
+        position = pos('LONG')
+        position.update(open_timestamp=time.time() - 120, entry_mode='CHANNEL_SWING')
+        account = SimpleNamespace(
+            positions={'X': position}, position_meta={}, save_state=Mock(),
+            close_position=AsyncMock(return_value=True), log=Mock(),
         )
+        engine = SimpleNamespace(account=account, is_running=True)
+        monkeypatch.setattr(
+            realtime_profit_exit, 'position_identity',
+            Mock(side_effect=ValueError('invalid position identity')),
+        )
+
+        closed = await realtime_profit_exit.enforce_realtime_profit_exit(
+            engine, 'X', 100.,
+        )
+
+        assert closed is False
+        account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 

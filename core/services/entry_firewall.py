@@ -64,17 +64,72 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
+    is_death_cross_fast = code == 'KC_DEATH_CROSS_FAST_SHORT'
+    from core.gates.pipeline import (
+        ma5_ma15_cross_chop_problem, strict_kc_entry_problem,
+    )
+    cross_chop_problem = ma5_ma15_cross_chop_problem(
+        frame, quote, symbol=symbol, log_result=True,
+    )
+    if cross_chop_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + cross_chop_problem)
+    kc_problem = strict_kc_entry_problem(frame, quote, side)
+    if kc_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + kc_problem)
+    from core.services.entry_contract import (
+        opposite_side_close_cooldown_problem, same_bar_close_entry_problem,
+    )
+    same_bar_problem = same_bar_close_entry_problem(
+        account, symbol, frame, side,
+    )
+    if same_bar_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
+    opposite_cooldown_problem = opposite_side_close_cooldown_problem(
+        account, symbol, frame, side,
+    )
+    if opposite_cooldown_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + opposite_cooldown_problem)
+    from core.gates.pipeline import long_large_bearish_candle_problem
+    if side == 'LONG':
+        bearish_candle_problem = long_large_bearish_candle_problem(frame, quote)
+        if bearish_candle_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + bearish_candle_problem)
+    if (side == 'SHORT'
+            and code in (
+                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
+                'TOP_WATERFALL_FLIP',
+                'AUTHORIZED_TOP_REVERSAL_SHORT',
+                'CLIMAX_REVERSAL_FLIP',
+            )
+            and str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper() == 'LONG'):
+        from core.services.strategies.outer_strategy import kc_bearish_midline_turn
+        if not kc_bearish_midline_turn(frame, quote):
+            raise ValueError(
+                '[FORBIDDEN_ENTRY] BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
+            )
     from core.gates.pipeline import FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES, pipeline
     is_outer_rail_breakout = (
         code in FLAT_LINE_BREAKOUT_TYPES
         or pipeline.detect_realtime_breakout(frame, quote, side=side) is not None
     )
+    midline_detector = (
+        pipeline.detect_midline_break_long if side == 'LONG'
+        else pipeline.detect_midline_break_short
+    )
+    verified_midline_entry = midline_detector(
+        frame, quote, side=side,
+    )
+    verified_midline_entry = bool(
+        verified_midline_entry
+        and verified_midline_entry.get('type') == code
+        and verified_midline_entry.get('side') == side
+    )
     is_flip_or_shadow = (
         code in ('AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                  'CLIMAX_REVERSAL_FLIP', 'AUTHORIZED_SHADOW_RETEST_ENTRY',
                  'SHADOW_RETEST_ENTRY',
-                 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
-                 'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
                  'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
                  'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                  'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
@@ -84,11 +139,14 @@ async def validate_account_entry(account, symbol, side, context):
         pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'
         else pipeline.has_strong_bearish_breakout(frame, quote)
     )
-    is_exempt_from_regime = bool(is_flip_or_shadow or is_verified_live_breakout)
+    is_exempt_from_regime = bool(
+        is_flip_or_shadow or is_verified_live_breakout or verified_midline_entry
+        or is_death_cross_fast
+    )
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem and not is_exempt_from_regime:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
-    if not is_flip_or_shadow:
+    if not is_flip_or_shadow and not verified_midline_entry:
         try:
             chop_problem = pipeline.chop_lockout_problem(
                 frame, quote, allow_flat_lines=is_outer_rail_breakout,
@@ -218,6 +276,13 @@ async def validate_account_entry(account, symbol, side, context):
         decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
         if decision is None or decision['side'] != side:
             raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+    from core.gates.pipeline import entry_market_structure_problem
+    market_structure_problem = entry_market_structure_problem(
+        frame, float(frame.iloc[-1]['close']), side,
+        entry_phase=decision.get('entry_phase'),
+    )
+    if market_structure_problem:
+        raise ValueError('[FORBIDDEN_ENTRY] ' + market_structure_problem)
     expected_id = snapshot.get('pending_signal_id') if snapshot else None
     if expected_id is not None and expected_id != decision.get('pending_signal_id'):
         raise ValueError('[FORBIDDEN_ENTRY] 原始突破訊號已改變')

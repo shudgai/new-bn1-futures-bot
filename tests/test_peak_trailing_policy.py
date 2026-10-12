@@ -9,10 +9,9 @@ import pytest
 
 from core.engine import TradingEngine
 from core.services.exits.peak_trailing_exit import (
-    STATE_KEY, RETIRED_KEYS, PEAK_REASON, HARD_REASON, ABNORMAL_REASON,
-    CONSECUTIVE_DOJI_STALL_TRIGGER, NET_ROE_LOCK_TRIGGER,
-    LIVE_FLASH_DUMP_TRIGGER,
+    STATE_KEY, RETIRED_KEYS, PEAK_REASON, HARD_REASON,
     evaluate_peak_trailing, estimated_net_pnl,
+    live_intraday_sell_pressure_trigger, LIVE_MA5_BREAKDOWN_TRIGGER,
     migrate_peak_state,
 )
 from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
@@ -32,6 +31,37 @@ def price_for_net(p, net, fee=.001, slip=.002):
     execution = (net/p['qty']+p['entry_price']*(sign+fee))/(sign-fee)
     return execution/(1-sign*slip)
 
+
+def test_live_ma5_breakdown_no_longer_authorizes_exit():
+    position_data = position('LONG')
+    snapshot = {
+        'atr': 1.0,
+        'live_open': 100.0,
+        'live_high': 100.1,
+        'live_kc_middle': 99.0,
+        'live_ma5': 100.0,
+    }
+
+    assert live_intraday_sell_pressure_trigger(position_data, 99.7, snapshot) is None
+
+
+def test_legacy_live_ma5_pending_exit_is_cleared_during_migration():
+    position_data = position('LONG')
+    position_data[STATE_KEY] = {
+        'pending': 'EXIT_ADVERSE_ABNORMAL_BODY',
+        'trigger': LIVE_MA5_BREAKDOWN_TRIGGER,
+        'trigger_bar_ms': 60_000,
+    }
+    meta = {STATE_KEY: copy.deepcopy(position_data[STATE_KEY])}
+
+    state = migrate_peak_state(position_data, meta)
+
+    assert 'pending' not in state
+    assert 'trigger' not in state
+    assert 'pending' not in meta[STATE_KEY]
+    assert 'trigger' not in meta[STATE_KEY]
+
+
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_dynamic_peak_pullback_threshold(monkeypatch, side):
     monkeypatch.setattr('core.services.exits.trend_hold_evaluator.evaluate_trend_hold', lambda *a, **k: ('RELEASED', 'TEST'))
@@ -42,8 +72,7 @@ def test_dynamic_peak_pullback_threshold(monkeypatch, side):
     assert observe(p, 3.64, 63000) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_waterfall_priority_over_soft_exits(side):
-    # Dynamic pullback candidate + Waterfall on the same tick => Waterfall wins.
+def test_waterfall_has_no_channel_strategy_exit_authority(side):
     p = position(side, qty=1., margin=40.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
@@ -55,12 +84,10 @@ def test_waterfall_priority_over_soft_exits(side):
     
     # Price drops to 100+sign*2.0 (2U locked). Waterfall body = 2.0 >= 1.5 ATR threshold.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision['type'] == ABNORMAL_REASON
-    assert decision['trigger'] == 'WATERFALL_DROP'
+    assert decision is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_doji_priority_over_soft_exits(side):
-    # Waterfall overrides Doji; otherwise valid Doji evidence overrides pullback.
+def test_doji_and_waterfall_have_no_channel_strategy_exit_authority(side):
     p = position(side, qty=1., margin=40.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
@@ -81,21 +108,14 @@ def test_doji_priority_over_soft_exits(side):
                 
     # This adverse body qualifies as a Waterfall.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    # Waterfall also hits here because body=2.0 > 1.5 ATR. Waterfall wins!
-    assert decision['trigger'] == 'WATERFALL_DROP'
-    
-    # The 5% net-ROE lock exits before a soft doji hold can veto it.
-    p[STATE_KEY].pop('pending', None)
-    p[STATE_KEY].pop('trigger', None)
+    assert decision is None
+
     snap['atr'] = 2.0
     decision2 = evaluate_peak_trailing(p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.)
-    if side == 'LONG':
-        assert decision2['trigger'] == LIVE_FLASH_DUMP_TRIGGER
-    else:
-        assert decision2 is None
+    assert decision2 is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
+def test_waterfall_does_not_replace_account_hard_stop(side):
     p = position(side, atr=1.0, margin=40.)
     sign = 1 if side == 'LONG' else -1
     
@@ -104,11 +124,10 @@ def test_waterfall_remains_authorized_without_strategy_atr_stop(side):
     
     # Drop below initial stop (100 - sign*1.5)
     decision = evaluate_peak_trailing(p, 100-sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision['type'] == ABNORMAL_REASON
-    assert decision['trigger'] == 'WATERFALL_DROP'
+    assert decision is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_channel_swing_ignores_pullback_and_retains_waterfall(side):
+def test_channel_swing_ignores_pullback_and_waterfall(side):
     p = position(side, qty=1., margin=200.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
@@ -128,7 +147,7 @@ def test_channel_swing_ignores_pullback_and_retains_waterfall(side):
 
     snap.update(live_open=100+sign*3.0, atr=1.0)
     decision = evaluate_peak_trailing(p, 100., snap, 1.0, fee=0., slippage=0.)
-    assert decision['trigger'] == 'WATERFALL_DROP'
+    assert decision is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_legacy_flags_purged_but_verified_peak_retained(side):
@@ -264,7 +283,7 @@ def test_latest_rule_has_no_tp1_partial_or_independent_ma_middle_exit(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_three_consecutive_closed_doji_exit_even_when_trend_hold_is_active(
+def test_three_consecutive_closed_doji_does_not_exit_channel_swing(
     side, monkeypatch,
 ):
     monkeypatch.setattr(
@@ -301,10 +320,8 @@ def test_three_consecutive_closed_doji_exit_even_when_trend_hold_is_active(
         current_position, 100., snapshot, .02, fee=0., slippage=0.,
     )
 
-    assert decision['type'] == ABNORMAL_REASON
-    assert decision['trigger'] == CONSECUTIVE_DOJI_STALL_TRIGGER
-    assert current_position[STATE_KEY]['pending'] == ABNORMAL_REASON
-    assert current_position[STATE_KEY]['trigger'] == CONSECUTIVE_DOJI_STALL_TRIGGER
+    assert decision is None
+    assert not current_position[STATE_KEY].get('pending')
 
 
 def test_consecutive_doji_stall_requires_three_contiguous_post_entry_bars(

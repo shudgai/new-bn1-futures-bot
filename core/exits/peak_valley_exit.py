@@ -5,6 +5,7 @@ import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
 from core.gates.holding_protection_gate import (
     closed_peak_valley_reversal_evidence,
+    confirmed_short_bottom_evidence,
     intrabar_peak_valley_reversal_evidence,
     intrabar_adverse_pressure_evidence,
 )
@@ -213,96 +214,8 @@ class PeakValleyExit:
 
         # 2. SHORT VALLEY EXIT
         elif side == 'SHORT':
-            # 若部位從未達到底谷利潤門檻，100% 禁用底谷轉折平倉
-            if not has_meaningful_profit_short:
-                return None, {}
-
-            curr_o = float(curr.get('open', quote))
-            candle_closed = current_bar_closed
-            reversal_price = float(curr.get('close', quote)) if candle_closed else quote
-            candle_low = float(curr.get('low', reversal_price))
-            candle_high = float(curr.get('high', reversal_price))
-            if not candle_closed:
-                candle_low = min(candle_low, reversal_price)
-                candle_high = max(candle_high, reversal_price)
-            body = abs(reversal_price - curr_o)
-            upper_wick = candle_high - max(curr_o, reversal_price)
-            pivot_price = min(lowest_price, candle_low)
-            favorable_move = entry_price - pivot_price
-            upward_retracement = quote - pivot_price
-            decisive_reversal_body = quote - curr_o >= 0.35 * atr
-            if (not candle_closed and atr > 0 and favorable_move >= 0.5 * atr
-                    and decisive_reversal_body
-                    and upward_retracement >= max(0.35 * atr, 0.2 * favorable_move)):
-                return 'EXIT_SHORT_ON_FRACTAL_VALLEY', {
-                    'intrabar_pivot_confirmation': True,
-                    'pivot_price': pivot_price,
-                    'favorable_move': favorable_move,
-                    'atr': atr, 'valley_roe': peak_roe_short,
-                    'peak_gain_atr': peak_gain_atr_short, 'quote': quote,
-                }
-            if (math.isfinite(atr) and atr > 0 and upper_wick >= 0.4 * atr):
-                return None, {
-                    'upper_wick_hold': True, 'upper_wick': upper_wick,
-                    'body': body, 'atr': atr, 'quote': quote,
-                }
-            lower_wick = min(curr_o, reversal_price) - candle_low
-            reversal_ma5 = float(curr.get('ma5', 0.0))
-            strong_closed_reversal = (
-                candle_closed and reversal_price > curr_o
-                and math.isfinite(atr) and atr > 0
-                and reversal_price - curr_o >= 0.35 * atr
-                and math.isfinite(reversal_ma5) and reversal_ma5 > 0
-                and reversal_price > reversal_ma5
-                and upper_wick < 0.4 * atr
-            )
-            if (candle_closed and math.isfinite(atr) and atr > 0
-                    and strong_closed_reversal
-                    and lower_wick >= 0.5 * atr and lower_wick > 2.0 * body):
-                return 'EXIT_SHORT_ON_LOWER_WICK_REJECTION', {
-                    'lower_wick': lower_wick, 'body': body, 'atr': atr,
-                    'quote': quote, 'valley_roe': peak_roe_short,
-                    'peak_gain_atr': peak_gain_atr_short,
-                    'upper_wick': upper_wick,
-                }
-
-            if candle_closed:
-                reversal = closed_peak_valley_reversal_evidence(frame, side, atr)
-                if reversal is not None:
-                    return 'EXIT_SHORT_ON_FRACTAL_VALLEY', {
-                        **reversal, 'closed_reversal_confirmation': True,
-                        'valley_roe': peak_roe_short,
-                        'peak_gain_atr': peak_gain_atr_short,
-                        'quote': quote,
-                    }
-
-            # A valley reversal is confirmed only by the completed candle body.
-            fractal_bottom = candle_closed and is_fractal_valley(frame)
-            reversal_ma5 = float(curr.get('ma5', 0.0))
-            reversal_body = reversal_price - curr_o
-            candle_range = candle_high - candle_low
-            valid_body_geometry = (
-                candle_range > 0 and candle_high >= max(curr_o, reversal_price)
-                and candle_low <= min(curr_o, reversal_price)
-            )
-            body_ratio = reversal_body / candle_range if valid_body_geometry else 0.0
-            if (fractal_bottom and valid_body_geometry
-                    and math.isfinite(atr) and atr > 0
-                    and reversal_body >= 0.35 * atr
-                    and math.isfinite(reversal_ma5) and reversal_ma5 > 0
-                    and reversal_price > curr_o and reversal_price > reversal_ma5
-                    and upper_wick < 0.4 * atr):
-                info = {
-                    'fractal_bottom': True, 'quote': quote,
-                    'valley_roe': peak_roe_short, 'body_ratio': body_ratio,
-                    'prev_mid': prev_mid, 'ma5': reversal_ma5,
-                    'kc_middle': kc_mid, 'atr': atr,
-                    'body': reversal_body,
-                    'upper_wick': candle_high - max(curr_o, reversal_price),
-                    'peak_gain_atr': peak_gain_atr_short,
-                }
-                info['flip_to_long_authorized'] = True
-                info['clear_cooldown'] = True
-                return 'EXIT_SHORT_ON_FRACTAL_VALLEY', info
+            bottom = confirmed_short_bottom_evidence(frame)
+            if bottom is not None:
+                return 'EXIT_SHORT_ON_CONFIRMED_TROUGH', bottom
 
         return None, {}

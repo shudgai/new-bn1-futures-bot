@@ -38,6 +38,32 @@ On 2026-10-11, a three-second monotonic TTL grace was added for an already-autho
 
 The same evidence is independently checked by the account entry firewall immediately before exposure is opened. A missing/expired grace proof, changed signal identity, invalid price, stale timestamp, or excessive adverse movement fails closed. Rejections identify the failed condition and report elapsed TTL, quote age, adverse slippage in ATR, and current/authorized bar IDs to distinguish timing failures from market-safety failures. Unit/integration coverage verifies grace succeeds through engine `ACCOUNT_SUBMIT` and account-firewall validation across a candle timestamp transition, and fails beyond the TTL, slippage, or quote-age boundaries.
 
+## Bearish MA-midline launch and short lower-break hold
+
+The SHORT midline route now recognizes a forming bearish body before a delayed
+death-cross or follow-up consolidation candle. The live body must be at least
+0.50 previous-candle ATR and at least 50% of its observed range, open above both
+quote-adjusted MA5 and MA15, trade below both averages, and reach the KC middle
+or remain no more than 0.10 ATR above it. The shared MA-tangle, KC-squeeze,
+25% lower-rail room, close cooldown, account, and final-submit checks remain
+mandatory. This route retains the existing midline signal code and uses a
+distinct `KC_BEARISH_MA_MIDLINE_LAUNCH` phase for exact revalidation.
+
+A strong bearish body that breaks below KC lower no longer authorizes a SHORT
+strategy exit while it is still extending. Short-side strategy exits unlock
+only after price rebounds at least 35% of the observed open-to-trough excursion,
+or after a completed bullish candle closes back above KC lower. The guard tracks
+the most recent qualifying lower-rail break in the available frame and updates
+the trough when a newer low appears. Account hard stops and circuit-breaker
+exits bypass this hold guard.
+
+### [2026-10-12 13:24:07 UTC+8] - Modification Phase: Strict chop, squeeze, room, and anti-flip gates
+- **Author**: Copilot AI Assistant
+- **Target Files & Lines**: `core/gates/pipeline.py` (`ma5_ma15_cross_chop_problem`, `strict_kc_entry_problem`, `EntryGatePipeline.authorize`); `core/services/entry_contract.py` (`opposite_side_close_cooldown_problem`, `pre_flight_safety_check`, `evaluate_entry_contract`); `core/services/entry_firewall.py` (`validate_account_entry`); `tests/test_ma5_ma15_cross_chop_gate.py`; `tests/test_strict_chop_squeeze_antiflip.py`
+- **Modification Description**: Added non-bypassable entry vetoes for any MA5/MA15 gap below 0.08% within the latest 10 candles, at least two MA5/MA15 crosses within the latest 8 candles, KC bandwidth below 0.6%, less than 25% same-side KC room, and opposite-side entries during the close candle and following two candle identities. Pipeline authorization, shared contract evaluation, pre-flight checks, and final account submission now revalidate the same rules. Exact 0.08%, 0.6%, and 25% boundaries remain allowed with floating-point boundary tolerance.
+- **Trigger Reason & Requirement**: CAP/USDT range-bound trading repeatedly chased the KC ceiling/floor and reopened the opposite side immediately after a close. The user explicitly required strict chop/squeeze, directional room, and three-bar anti-flip protection.
+- **Verification & Test Status**: 269 focused entry-contract/firewall/chop tests passed with 3 pre-existing deprecation warnings. CAP and fast-path compatibility selection reported 33 passed and 11 failed; those failures exercise superseded fixtures with fewer than 10 candles, historical close timestamps inconsistent with their candle time, or old outside-KC entry expectations now intentionally blocked by the 25% room veto. `tests/test_smart_pipeline.py` likewise contains old short-history and bypass expectations and is not represented as passing. No deployment, restart, or live order was performed.
+
 ## Intrabar short-exit and closed-bar confirmation
 
 For Channel Swing SHORT positions, a forming 1m candle cannot authorize ordinary wick, color, MA, climax, or fractal exits. The holding-protection gate admits only an independently verified ratchet lock (peak ROE at least 3.5% and at least 25% giveback) or an intrabar V-reversal whose rise from the live low is at least 1.2 ATR and whose quote crosses above KC middle. Account hard stops remain independently enforced. Fractal valley and short lower-wick exits require a completed candle; valley evidence must be bullish, close above MA5, have a body of at least 0.35 ATR, and have an upper wick below 0.4 ATR. Weak green ticks, bearish closes, dojis, and long upper wicks do not close a short.

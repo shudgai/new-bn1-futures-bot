@@ -2,6 +2,7 @@ import copy
 import asyncio
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 from core.services.entry_contract import evaluate_entry_contract
@@ -71,6 +72,44 @@ def test_channel_peak_reversal_pullback_does_not_close(side):
 
     assert result is None
     assert not held["peak_trailing_state"].get("pending")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_legacy_roe_ratchet_is_not_a_channel_swing_exit(side):
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+
+    held = position(side)
+    held.update(
+        open_timestamp=60.,
+        margin=100.,
+        highest_price=105. if side == "LONG" else 100.,
+        lowest_price=95. if side == "SHORT" else 100.,
+        three_tier_net_roe_lock_state={"peak_net_roe_pct": 5.},
+    )
+    if side == "LONG":
+        quote = 102.4
+        rows = [
+            dict(timestamp=120_000, close=103.4, kc_middle=102.8,
+                 atr=1., ma15=102.7, is_closed=True),
+            dict(timestamp=180_000, open=103., close=quote,
+                 ma15=102.5,
+                 kc_middle=102.2, is_closed=True),
+        ]
+    else:
+        quote = 97.6
+        rows = [
+            dict(timestamp=120_000, close=97., kc_middle=97.2,
+                 atr=1., ma15=97.3, is_closed=True),
+            dict(timestamp=180_000, open=97., close=quote,
+                 ma15=97.5,
+                 kc_middle=97.8, is_closed=True),
+        ]
+
+    allowed, _, _ = HoldingProtectionExitGate.validate_exit(
+        held, pd.DataFrame(rows), quote,
+        "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
+    )
+    assert allowed is False
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -258,6 +297,7 @@ def test_impulse_reversal_blocks_entry_for_rest_of_same_candle(side):
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
         "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
+        "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
     )
     assert not account.breakout_qualification
 
@@ -284,4 +324,5 @@ def test_next_candle_requires_observed_pullback_then_resume(side):
         "KC_PENDING_CANCELLED_INSIDE_RAIL",
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
         "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
+        "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
     )

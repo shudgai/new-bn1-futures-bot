@@ -95,9 +95,13 @@ def resolve_kc_direction(
                     (slope, price, middle, fast, slow, scale, threshold))
                 or min(price, middle, fast, slow, scale) <= 0 or threshold < 0):
             return 'UNKNOWN'
-        if fast < slow and price < middle - 0.25 * scale:
+        if slope < 0 and fast < slow:
             return 'DOWN'
-        if fast > slow and price > middle + 0.25 * scale:
+        if slope > 0 and fast > slow:
+            return 'UP'
+        if fast < slow and price < middle:
+            return 'DOWN'
+        if fast > slow and price > middle:
             return 'UP'
         if slope > threshold:
             return 'UP'
@@ -149,6 +153,40 @@ def ck_direction(frame, *, has_forming_bar=True):
         return direction
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return None
+
+
+def kc_bearish_midline_turn(frame, price=None):
+    """Require a real down-cross of KC middle after the channel turns bearish."""
+    try:
+        if frame is None or len(frame) < 2:
+            return False
+        current, previous = frame.iloc[-1], frame.iloc[-2]
+        opening = float(current['open'])
+        close = float(current['close']) if price is None else float(price)
+        middle = float(current.get('kc_middle', current.get('kc_basis', float('nan'))))
+        lower = float(current['kc_lower'])
+        previous_middle = float(previous.get(
+            'kc_middle', previous.get('kc_basis', float('nan')),
+        ))
+        previous_lower = float(previous['kc_lower'])
+        values = (opening, close, middle, lower, previous_middle, previous_lower)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or not lower < middle
+                or opening < middle or close >= middle
+                or middle >= previous_middle):
+            return False
+
+        raw_state = current.get('channel_state', '')
+        state = '' if pd.isna(raw_state) else str(raw_state).strip().upper()
+        if state in ('NAN', 'NONE'):
+            state = ''
+        if state in ('KC向上', 'UP', 'UPTREND', 'BULLISH', 'LONG'):
+            return False
+        if state:
+            return state in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
+        return lower < previous_lower
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
 
 
 def live_adverse_entry_safe(frame, price, side):

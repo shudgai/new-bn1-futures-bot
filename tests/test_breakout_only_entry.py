@@ -47,6 +47,15 @@ def breakout_frame(side="LONG"):
             ("ma3", "ma3"),
         ):
             frame[target] = 200.0 - source[original]
+    prefix = []
+    first = frame.iloc[0]
+    for offset in range(6, 0, -1):
+        row = first.copy()
+        row["timestamp"] = float(first["timestamp"]) - offset * 60_000
+        row["is_closed"] = True
+        prefix.append(row)
+    prefix_frame = pd.DataFrame(prefix, index=range(-6, 0))
+    frame = pd.concat([prefix_frame, frame])
     frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
     return frame
 
@@ -89,8 +98,8 @@ def sui_cross_frame(side="LONG"):
     if side == "SHORT":
         ma5 = [200.0 - value for value in ma5]
         ma15 = [200.0 - value for value in ma15]
-    frame["ma5"] = ma5
-    frame["ma15"] = ma15
+    frame.loc[[0, 1, 2, 3], "ma5"] = ma5
+    frame.loc[[0, 1, 2, 3], "ma15"] = ma15
     return frame
 
 
@@ -108,7 +117,8 @@ def with_chop_history(frame):
         row["kc_upper"] = float(first["kc_upper"]) - sign * offset * 0.05
         row["kc_lower"] = float(first["kc_lower"]) - sign * offset * 0.05
         prefix.append(row)
-    result = pd.concat([pd.DataFrame(prefix), frame], ignore_index=True)
+    prefix_frame = pd.DataFrame(prefix, index=range(-9, -6))
+    result = pd.concat([prefix_frame, frame])
     result.attrs.update(frame.attrs)
     return result
 
@@ -127,10 +137,11 @@ def consolidated_candidate_frame(side, kind):
         ma5 = [200.0 - value for value in ma5]
         ma15 = [200.0 - value for value in ma15]
         kc_middle = [200.0 - value for value in kc_middle]
-    for index in range(6):
-        frame.loc[index, "ma5"] = ma5[index]
-        frame.loc[index, "ma15"] = ma15[index]
-        frame.loc[index, "kc_middle"] = kc_middle[index]
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-6:]
+    for index, row_index in enumerate(closed_indices):
+        frame.loc[row_index, "ma5"] = ma5[index]
+        frame.loc[row_index, "ma15"] = ma15[index]
+        frame.loc[row_index, "kc_middle"] = kc_middle[index]
     return frame
 
 
@@ -268,12 +279,13 @@ def test_intrabar_midline_entry_passes_account_revalidation():
 
 def band_walk_frame():
     frame = with_chop_history(breakout_frame("LONG"))
-    for index in range(6):
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-6:]
+    for index, row_index in enumerate(closed_indices):
         lower = 99.0 + index * 0.03
         middle = 100.0 + index * 0.10
         upper = 101.0 + index * 0.13
         close = 100.5 + index * 0.12
-        frame.loc[index, ["open", "high", "low", "close", "kc_lower", "kc_middle",
+        frame.loc[row_index, ["open", "high", "low", "close", "kc_lower", "kc_middle",
                           "kc_upper", "ma5", "ma15", "atr"]] = [
             close - 0.1, close + 0.15, close - 0.15, close,
             lower, middle, upper, 100.0 + index * 0.2,
@@ -438,8 +450,9 @@ def test_sui_and_lobster_live_first_breakout_use_the_same_trend_gate(side, symbo
     if side == "SHORT":
         ma5 = [200.0 - value for value in ma5]
         ma15 = [200.0 - value for value in ma15]
-    frame["ma5"] = ma5
-    frame["ma15"] = ma15
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-7:]
+    frame.loc[closed_indices, "ma5"] = ma5
+    frame.loc[closed_indices, "ma15"] = ma15
     quote = float(frame.iloc[-1]["close"])
 
     decision = evaluate_entry_contract(frame, quote, symbol=symbol)
@@ -527,8 +540,8 @@ def test_sui_and_lobster_share_live_and_continuation_authorities(side, symbol, c
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize(("separation", "expected"), [(0.05, True), (0.15, False)])
-def test_lobster_blocks_entry_when_live_ma5_ma15_overlap(side, separation, expected):
+@pytest.mark.parametrize(("separation", "blocked"), [(0.05, True), (0.25, False)])
+def test_lobster_blocks_entry_when_live_ma5_ma15_gap_is_too_narrow(side, separation, blocked):
     frame = breakout_frame(side)
     if side == "LONG":
         ma5 = [100.0, 101.0, 102.0, 103.0]
@@ -536,8 +549,8 @@ def test_lobster_blocks_entry_when_live_ma5_ma15_overlap(side, separation, expec
     else:
         ma5 = [100.0, 99.0, 98.0, 97.0]
         ma15 = [100.0+separation, 99.0+separation, 98.0+separation, 97.0+separation]
-    frame["ma5"] = ma5
-    frame["ma15"] = ma15
+    frame.loc[[0, 1, 2, 3], "ma5"] = ma5
+    frame.loc[[0, 1, 2, 3], "ma15"] = ma15
     frame = with_chop_history(frame)
     diagnostics = {}
 
@@ -545,12 +558,11 @@ def test_lobster_blocks_entry_when_live_ma5_ma15_overlap(side, separation, expec
         frame, symbol="龙虾/USDT", diagnostics=diagnostics
     )
 
-    if expected:
+    if blocked:
         assert decision is None
-        assert diagnostics["reason"] == "BLOCKED_MA5_MA15_OVERLAP"
+        assert diagnostics["reason"] == "BLOCKED_MA5_MA15_GAP_TOO_NARROW"
     else:
-        assert decision is not None
-        assert decision["side"] == side
+        assert diagnostics.get("reason") != "BLOCKED_MA5_MA15_GAP_TOO_NARROW"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -558,8 +570,8 @@ def test_lobster_ma_overlap_boundary_is_inclusive(side):
     frame = breakout_frame(side)
     ma5 = [100.0, 101.0, 102.0, 103.0] if side == "LONG" else [100.0, 99.0, 98.0, 97.0]
     ma15 = [99.9, 100.9, 101.9, 103.0] if side == "LONG" else [100.1, 99.1, 98.1, 97.0]
-    frame["ma5"] = ma5
-    frame["ma15"] = ma15
+    frame.loc[[0, 1, 2, 3], "ma5"] = ma5
+    frame.loc[[0, 1, 2, 3], "ma15"] = ma15
     frame = with_chop_history(frame)
     # Match the live adjustment so the final separation is exactly 0.1 ATR.
     closed = frame.iloc[-2]
@@ -594,10 +606,11 @@ def test_consolidation_gate_detects_flat_or_oscillating_market(
     ma5, ma15, kc_middle, expected
 ):
     frame = with_chop_history(breakout_frame())
-    for index in range(6):
-        frame.loc[index, "ma5"] = ma5[index]
-        frame.loc[index, "ma15"] = ma15[index]
-        frame.loc[index, "kc_middle"] = kc_middle[index]
+    closed_indices = frame.index[frame["is_closed"].astype(bool)][-6:]
+    for index, row_index in enumerate(closed_indices):
+        frame.loc[row_index, "ma5"] = ma5[index]
+        frame.loc[row_index, "ma15"] = ma15[index]
+        frame.loc[row_index, "kc_middle"] = kc_middle[index]
 
     assert entry_consolidation_problem(frame, float(frame.iloc[-1]["close"])) == expected
 

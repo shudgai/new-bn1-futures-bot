@@ -211,6 +211,7 @@ class PaperAccount:
         self._rapid_drop_cooldown: Dict[str, float] = {}
         self.breakout_qualification: Dict[str, dict] = {}
         self.last_consumed_breakout_signal_id: Dict[str, str] = {}
+        self.failed_breakout_revalidation: Dict[str, dict] = {}
         self.d0_in_flight_state: Dict[str, dict] = {}
         self.d0_consumed_state: Dict[str, str] = {}
         self.d0_failed_state: Dict[str, str] = {}
@@ -313,6 +314,7 @@ class PaperAccount:
         self.entry_filter_last = data.get("entry_filter_last", {})
         self.breakout_qualification = data.get("breakout_qualification", {})
         self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
+        self.failed_breakout_revalidation = data.get("failed_breakout_revalidation", {})
         self.d0_in_flight_state = data.get("d0_in_flight_state", {})
         for sym, infl in list(self.d0_in_flight_state.items()):
             self.d0_quarantine_state[sym] = True
@@ -383,6 +385,7 @@ class PaperAccount:
             "entry_filter_last": self.entry_filter_last,
             "breakout_qualification": self.breakout_qualification,
             "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
+            "failed_breakout_revalidation": self.failed_breakout_revalidation,
             "d0_in_flight_state": self.d0_in_flight_state,
             "d0_consumed_state": self.d0_consumed_state,
             "d0_failed_state": self.d0_failed_state,
@@ -423,6 +426,7 @@ class PaperAccount:
         self.entry_filter_last = {}
         self.breakout_qualification = {}
         self.last_consumed_breakout_signal_id = {}
+        self.failed_breakout_revalidation = {}
         self.shadow_parameter_stats = {}
         self.shadow_parameter_last = {}
         self.takeover_shadow_events = []

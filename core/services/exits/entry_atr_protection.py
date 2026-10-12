@@ -3,9 +3,7 @@ import math
 import time
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
-from core.services.exits.peak_trailing_exit import (
-    CHANNEL_SWING_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
-)
+from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
 
 
 def valid_entry_atr(value):
@@ -94,48 +92,29 @@ async def enforce_atr_protection(account, symbol, price):
         return False
     if entry_mode == "CHANNEL_SWING":
         trigger = decision.get("trigger") if decision else None
-        climax_structural_stop = (
-            (position.get("entry_phase") or meta.get("entry_phase"))
-            == "EXTREME_CLIMAX_FLIP"
-            and trigger == "INITIAL_ATR"
-        )
-        if trigger not in {
-            "EXIT_PROFIT_LOCK_FLOOR",
-            "NET_ROE_STAGED_GIVEBACK",
-            "NET_ROE_THREE_TIER_GIVEBACK_TIER_1",
-            "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
-            "NET_ROE_THREE_TIER_GIVEBACK_TIER_3",
-        } and not climax_structural_stop:
+        if not channel_swing_exit_allowed(decision.get("type"), trigger):
+            if clear_channel_strategy_exit_pending(position, meta):
+                meta.update({key: copy.deepcopy(position[key])
+                             for key in STATE_KEYS if key in position})
+                account.save_state()
             account.log(
                 f"TREND_EXIT_GATE symbol={symbol} side={position.get('side')} "
-                f"rule=STRUCTURE_OR_NET_ROE_ONLY reason=HOLD_NON_LOCK_ACCOUNT_POLL "
+                f"rule=PROFIT_LOCK_OR_VERIFIED_PIVOT reason=HOLD_UNAUTHORIZED_ACCOUNT_POLL "
                 f"trigger={trigger}",
                 "INFO",
             )
             return False
-    allowed_triggers = (
-        PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-        if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
-        else CHANNEL_SWING_EXIT_TRIGGERS
-    )
     trigger = decision.get("trigger") if decision else None
-    climax_structural_stop = (
-        (position.get("entry_phase") or meta.get("entry_phase"))
-        == "EXTREME_CLIMAX_FLIP"
-        and trigger == "INITIAL_ATR"
-    )
     if (entry_mode == "CHANNEL_SWING"
             and channel_strategy_exit_grace_active(position, meta)
-            and trigger not in allowed_triggers
-            and not climax_structural_stop):
+            and not channel_swing_exit_allowed(reason, trigger)):
         if clear_channel_strategy_exit_pending(position, meta):
             meta.update({key: copy.deepcopy(position[key])
                          for key in STATE_KEYS if key in position})
             account.save_state()
         return False
     if (entry_mode == "CHANNEL_SWING"
-            and decision.get("trigger") not in allowed_triggers
-            and not climax_structural_stop):
+            and not channel_swing_exit_allowed(reason, decision.get("trigger"))):
         state = position.get("peak_trailing_state", {})
         meta_state = meta.get("peak_trailing_state", {})
         pending_keys = ("pending", "trigger", "trigger_bar_ms", "trigger_open",

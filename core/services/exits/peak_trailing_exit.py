@@ -5,7 +5,7 @@ import sys
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 
-POLICY = 'confirmed_pivot_abnormal_only_v3'
+POLICY = 'profit_lock_verified_pivot_only_v4'
 ABNORMAL_BODY_ATR = 1.2
 ABNORMAL_REASON = 'EXIT_ADVERSE_ABNORMAL_BODY'
 DOJI_TRIGGER = 'DOJI_REVERSAL_EXIT'
@@ -22,7 +22,6 @@ NET_ROE_LOCK_STEP_PCT = 4.0
 NET_ROE_LOCK_GIVEBACK_PCT = 1.5
 LIVE_MA5_BREAKDOWN_TRIGGER = 'LIVE_MA5_BREAKDOWN_EXIT'
 LIVE_FLASH_DUMP_TRIGGER = 'LIVE_FLASH_DUMP_EXIT'
-LIVE_MA5_BREAKDOWN_ATR = 0.25
 LIVE_FLASH_DUMP_ATR = 0.60
 V_REVERSAL_SHORT_BODY_ATR = 0.50
 V_REVERSAL_SHORT_MA_RECLAIM_TRIGGER = 'V_REVERSAL_SHORT_GREEN_MA_RECLAIM'
@@ -52,29 +51,12 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
-    'WATERFALL_DROP',
-    'BEARISH_INSTANT_BREAKOUT',
-    'TWO_CLOSED_ADVERSE_ABNORMAL',
-    'EXIT_DOJI_BEARISH_CONFIRMATION',
-    'EXIT_DOJI_BULLISH_CONFIRMATION',
-    CONSECUTIVE_DOJI_STALL_TRIGGER,
-    LIVE_MA5_BREAKDOWN_TRIGGER,
-    LIVE_FLASH_DUMP_TRIGGER,
-    CONTINUATION_FAILED_TRIGGER,
-    SHORT_FALSE_BREAKOUT_TRIGGER,
+    'EXIT_CHANNEL_PEAK_PROFIT_LOCK',
+    'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
+    'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+    'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
 })
-PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = frozenset({
-    'WATERFALL_DROP',
-    'BEARISH_INSTANT_BREAKOUT',
-    'TWO_CLOSED_ADVERSE_ABNORMAL',
-    'EXIT_DOJI_BEARISH_CONFIRMATION',
-    'EXIT_DOJI_BULLISH_CONFIRMATION',
-    CONSECUTIVE_DOJI_STALL_TRIGGER,
-    LIVE_MA5_BREAKDOWN_TRIGGER,
-    LIVE_FLASH_DUMP_TRIGGER,
-    CONTINUATION_FAILED_TRIGGER,
-    SHORT_FALSE_BREAKOUT_TRIGGER,
-})
+PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
     'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
 })
@@ -83,14 +65,32 @@ DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PARABOLIC_PULLBACK_1_ATR',
     'CHANNEL_PEAK_PULLBACK_REVERSAL',
     'KC_CHANNEL_RETURN',
-    'THREE_POINT_PIVOT',
     'EXIT_PROFIT_LOCK_FLOOR',
     NET_ROE_LOCK_TRIGGER,
+})
+RETIRED_EXIT_TRIGGERS = frozenset({
+    LIVE_MA5_BREAKDOWN_TRIGGER,
 })
 
 PROFIT_FLOOR_ENABLED = False
 LOCK_ARM_ATR = None
 TRAILING_DISTANCE_ATR = None
+
+
+def channel_swing_exit_allowed(reason=None, trigger=None):
+    """Allow only confirmed KC-midline and mature peak-reversal exits."""
+    allowed_pivots = {
+        'EXIT_CHANNEL_PEAK_PROFIT_LOCK',
+        'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
+        'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+        'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+    }
+    for value in (reason, trigger):
+        if not isinstance(value, str):
+            continue
+        if value in allowed_pivots:
+            return True
+    return False
 
 def positive(value):
     try:
@@ -106,7 +106,6 @@ def live_intraday_sell_pressure_trigger(position, price, snapshot):
             return None
         quote = float(price)
         atr = float(snapshot.get('atr') or 0.)
-        live_ma5 = float(snapshot.get('live_ma5') or 0.)
         live_open = float(snapshot.get('live_open') or 0.)
         live_high = float(snapshot.get('live_high') or 0.)
         middle = float(snapshot.get('live_kc_middle') or snapshot.get('kc_middle') or 0.)
@@ -119,9 +118,6 @@ def live_intraday_sell_pressure_trigger(position, price, snapshot):
         if (bearish_body >= LIVE_FLASH_DUMP_ATR * atr
                 and live_high - quote >= LIVE_FLASH_DUMP_ATR * atr):
             return LIVE_FLASH_DUMP_TRIGGER
-        if (positive(live_ma5)
-                and quote < live_ma5 - LIVE_MA5_BREAKDOWN_ATR * atr):
-            return LIVE_MA5_BREAKDOWN_TRIGGER
         return None
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -525,18 +521,6 @@ def migrate_peak_state(position, meta=None):
     if state.get('trigger') in ('EXIT_PEAK_MA_TURN_PRESSURE', 'EXIT_PARABOLIC_MA3_TURN'):
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open', 'trigger_atr', 'trigger_price'):
             state.pop(key, None)
-    if (position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
-            and state.get('trigger') in (
-                'MA5_TRUE_PEAK_REVERSAL', 'EXIT_PROFIT_LOCK_FLOOR',
-                'EXIT_PEAK_PULLBACK_PRESSURE',
-            )):
-        for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
-                    'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
-            state.pop(key, None)
-        for key in ('ma5_reversal_extreme', 'ma5_reversal_last_value',
-                    'ma5_reversal_favorable_seen', 'ma5_reversal_outside_seen',
-                    'ma5_reversal_last_price'):
-            state.pop(key, None)
     if channel_initial_stop_disabled(position, meta):
         if (state.get('pending') and state.get('trigger') != HARD_REASON
                 and state.get('trigger') not in CHANNEL_SWING_EXIT_TRIGGERS):
@@ -549,12 +533,6 @@ def migrate_peak_state(position, meta=None):
                 state.pop(key, None)
         if not position.get('entry_mode'):
             position['entry_mode'] = 'CHANNEL_SWING'
-        if live_body_breakout_position_side(position, meta) and state.get('trigger') in (
-                'THREE_POINT_PIVOT', 'MA5_TURN_REVERSAL',
-                'MA5_TRUE_PEAK_REVERSAL') and position.get('symbol') not in PIVOT_ONLY_CHANNEL_SYMBOLS:
-            for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
-                        'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
-                state.pop(key, None)
         if (state.get('trigger') == 'MA5_TRUE_PEAK_REVERSAL'
                 and not state.get('ma5_reversal_outside_seen')):
             for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
@@ -583,7 +561,8 @@ def migrate_peak_state(position, meta=None):
     # Profit locks and retracement exits are retired. Remove persisted retries
     # as well as arming fields so an old position cannot close on a later tick.
     retired_profit_triggers = DISABLED_CHANNEL_PULLBACK_TRIGGERS
-    if state.get('trigger') in retired_profit_triggers:
+    if (state.get('trigger') in retired_profit_triggers
+            or state.get('trigger') in RETIRED_EXIT_TRIGGERS):
         for key in ('pending', 'trigger', 'trigger_bar_ms', 'trigger_open',
                     'trigger_atr', 'trigger_price', 'trigger_confirmed_ms'):
             state.pop(key, None)
@@ -731,7 +710,7 @@ def three_point_pivot_exit(position, snapshot):
                 or snapshot_bar_id > quote_ms):
             return None
         entry_bar_ms = math.floor(opened_ms / 60000) * 60000
-        allow_entry_bar_pivot = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+        allow_entry_bar_pivot = False
         if (not positive(quote_ms) or quote_ms < snapshot_bar_id
                 or quote_ms - snapshot_bar_id > 300000):
             return None
@@ -1425,7 +1404,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                                         NET_ROE_LOCK_TRIGGER,
                                         'EXIT_DOJI_BEARISH_CONFIRMATION',
                                         'EXIT_DOJI_BULLISH_CONFIRMATION',
-                                        LIVE_MA5_BREAKDOWN_TRIGGER,
                                         LIVE_FLASH_DUMP_TRIGGER)):
                 if net <= 0:
                     reason, trigger = None, None
@@ -1447,7 +1425,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     'CHANNEL_PEAK_PULLBACK_REVERSAL', 'KC_CHANNEL_RETURN',
                     'EXIT_DOJI_BEARISH_CONFIRMATION',
                     'EXIT_DOJI_BULLISH_CONFIRMATION',
-                    LIVE_MA5_BREAKDOWN_TRIGGER, LIVE_FLASH_DUMP_TRIGGER,
+                    LIVE_FLASH_DUMP_TRIGGER,
                 )
                 if reason != HARD_REASON and trigger not in peak_exemptions:
                     if trend_status in ('HOLD', 'WARNING', 'UNKNOWN'):
@@ -1491,7 +1469,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
             CONTINUATION_FAILED_TRIGGER, NET_ROE_LOCK_TRIGGER,
             CONSECUTIVE_DOJI_STALL_TRIGGER,
             'EXIT_PROFIT_LOCK_FLOOR',
-            LIVE_MA5_BREAKDOWN_TRIGGER, LIVE_FLASH_DUMP_TRIGGER,
+            LIVE_FLASH_DUMP_TRIGGER,
         }
         if outer_hold_reason and reason != HARD_REASON and trigger not in emergency_triggers:
             reason = trigger = None
@@ -1536,7 +1514,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                     CONTINUATION_FAILED_TRIGGER,
                     CONSECUTIVE_DOJI_STALL_TRIGGER,
                     NET_ROE_LOCK_TRIGGER, 'EXIT_PROFIT_LOCK_FLOOR',
-                    LIVE_MA5_BREAKDOWN_TRIGGER, LIVE_FLASH_DUMP_TRIGGER,
+                    LIVE_FLASH_DUMP_TRIGGER,
                 )
                 and lower_shadow_support_hold(position, snapshot, price)):
             reason, trigger = None, None

@@ -58,7 +58,7 @@ def test_intrabar_confirmed_peak_or_valley_is_authorized_immediately(side, quote
     position = {
         'side': side, 'entry_price': 100.0,
         'highest_price': 110.0, 'lowest_price': 90.0,
-        'bars_held': 1, 'qty': 1.0,
+        'bars_held': 1, 'qty': 1.0, 'entry_mode': 'CHANNEL_SWING',
     }
     frame = frame_for(side, quote=quote)
     details = intrabar_peak_valley_reversal_evidence(
@@ -75,8 +75,9 @@ def test_intrabar_confirmed_peak_or_valley_is_authorized_immediately(side, quote
         {'intrabar_pivot_confirmation': True, 'atr': 1.0,
          'pivot_price': pivot, 'favorable_move': 10.0,
          'peak_roe': 0.1, 'valley_roe': 0.1, 'peak_gain_atr': 10.0},
+        channel_swing=True,
     )
-    assert allowed
+    assert not allowed
     assert details['retrace_atr'] >= 0.35
 
 
@@ -189,12 +190,9 @@ def test_confirmed_live_peak_closes_at_current_quote_without_waiting_for_next_ba
             lambda *_args: None,
         )
 
-        assert await realtime_profit_exit.enforce_realtime_profit_exit(
+        assert not await realtime_profit_exit.enforce_realtime_profit_exit(
             engine, 'X', 107.0, time.time() * 1000,
         )
-        account.close_position.assert_awaited_once_with(
-            'X', 107.0, 'Channel Swing EXIT_BY_VERIFIED_FRACTAL_PEAK',
-            is_manual=True,
-        )
+        account.close_position.assert_not_awaited()
 
     asyncio.run(scenario())

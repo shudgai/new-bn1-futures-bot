@@ -4,10 +4,11 @@ Enforces an explicit exit whitelist:
 1. EXIT_BY_EXTREME_WATERFALL: An adverse body >= 1.5*ATR that crosses KC middle.
 2. EXIT_BY_CIRCUIT_BREAKER_HARD_SL: Hard Stop Loss or market circuit breaker.
 3. EXIT_BY_RATCHET_PROFIT_LOCK: Net ROE ratchets at 2%, 4%, and 7% peak thresholds.
-4. EXIT_BY_VERIFIED_FRACTAL_PEAK / EXIT_BY_VERIFIED_FRACTAL_VALLEY:
-   Preconditioned on meaningful profit (ROE >= 3.0% or gain >= 0.5*ATR),
-   3-bar fractal peak/valley with confirmed body break of previous midpoint.
-5. Closed-bar directional reversal evidence for peak/valley exits.
+4. Fractal pullback exits require peak gain >3*ATR, or >2*ATR while
+   the established favorable extreme still qualifies as a strong trend.
+5. INTRABAR_SPIKE_REBOUND_EXIT closes on a live extreme-KC spike and rebound.
+6. Independent buying/selling-pressure exits are rejected. Pressure evidence
+   may still corroborate a ratchet profit lock.
 
 All normal breathing / pullbacks (MA touch, upper/lower wick breathing, minor momentum turns)
 are strictly REJECTED.
@@ -16,6 +17,36 @@ import math
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
+
+
+def _fractal_pullback_exit_authorized(position, frame, side, quote, atr, favorable_move):
+    """Allow a fractal pullback only after the approved exceptional extension."""
+    try:
+        atr, favorable_move = float(atr), float(favorable_move)
+        if (frame is None or len(frame) < 2 or atr <= 0
+                or not math.isfinite(atr) or not math.isfinite(favorable_move)):
+            return False
+        gain_atr = favorable_move / atr
+        if gain_atr > 3.0:
+            return True
+        if gain_atr <= 2.0:
+            return False
+        current, previous = frame.iloc[-1], frame.iloc[-2]
+        ma5, ma15 = float(current['ma5']), float(current['ma15'])
+        prior_ma5, prior_ma15 = float(previous['ma5']), float(previous['ma15'])
+        middle = float(current.get('kc_middle', current.get('kc_basis', 0.0)))
+        # Judge trend strength at the established favorable extreme; the
+        # pullback quote itself is expected to have turned against MA5.
+        price = (float(position.get('entry_price', 0.0)) + favorable_move
+                 if side == 'LONG'
+                 else float(position.get('entry_price', 0.0)) - favorable_move)
+        if side == 'LONG':
+            return (ma5 > ma15 and ma5 > prior_ma5 and ma15 >= prior_ma15
+                    and price > middle and price >= ma5)
+        return (ma5 < ma15 and ma5 < prior_ma5 and ma15 <= prior_ma15
+                and price < middle and price <= ma5)
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
 
 
 def is_fractal_peak(bars: pd.DataFrame) -> bool:
@@ -36,11 +67,590 @@ def is_fractal_valley(bars: pd.DataFrame) -> bool:
     return l2 < l1 and l2 <= l3
 
 
+INTRABAR_SPIKE_REBOUND_EXIT = 'EXIT_BY_INTRABAR_SPIKE_REBOUND'
+INTRABAR_SPIKE_STATE_KEY = 'intrabar_spike_rebound_state'
+CHANNEL_PEAK_EXIT_STATE_KEY = 'channel_peak_profit_exit_state'
+CHANNEL_PEAK_PROFIT_EXIT = 'EXIT_CHANNEL_PEAK_PROFIT_LOCK'
+CHANNEL_PEAK_WICK_EXIT = 'EXIT_CHANNEL_PEAK_WICK_REVERSAL'
+CHANNEL_MIDLINE_EXIT = {
+    'LONG': 'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+    'SHORT': 'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+}
+SHORT_LOWER_BREAK_BODY_ATR = 0.50
+SHORT_LOWER_BREAK_REBOUND_RATIO = 0.35
+
+
+def short_lower_break_exit_confirmation(frame, quote, position=None):
+    """Describe whether a strong short-side lower-rail break may be exited."""
+    inactive = {
+        'active': False,
+        'confirmed': False,
+        'confirmation': None,
+    }
+    if frame is None or len(frame) < 2:
+        return inactive
+    try:
+        quote = float(quote)
+        if not math.isfinite(quote) or quote <= 0:
+            return inactive
+        trigger_floor_ms = None
+        if isinstance(position, dict):
+            opened_at = (
+                position.get('open_timestamp')
+                or position.get('entry_timestamp')
+                or position.get('open_bar_id')
+                or position.get('entry_bar_id')
+                or position.get('candidate_bar_id')
+            )
+            if opened_at is not None:
+                opened_at = float(opened_at)
+                if math.isfinite(opened_at) and opened_at > 0:
+                    opened_ms = opened_at * 1000.0 if opened_at < 1e11 else opened_at
+                    timeframe_ms = float(
+                        frame.attrs.get('timeframe_ms', 60_000) or 60_000
+                    )
+                    if math.isfinite(timeframe_ms) and timeframe_ms > 0:
+                        trigger_floor_ms = (
+                            math.floor(opened_ms / timeframe_ms) * timeframe_ms
+                        )
+
+        trigger_index = None
+        trigger_open = None
+        trigger_atr = None
+        for index in range(len(frame) - 1, 0, -1):
+            candle = frame.iloc[index]
+            previous = frame.iloc[index - 1]
+            opening = float(candle['open'])
+            close = float(candle['close'])
+            low = float(candle['low'])
+            lower = float(candle['kc_lower'])
+            atr = float(previous.get('atr', candle.get('atr', 0.0)))
+            timestamp = float(candle.get('timestamp', 0.0))
+            if trigger_floor_ms is not None and timestamp < trigger_floor_ms:
+                continue
+            is_current = index == len(frame) - 1
+            effective_low = min(low, quote) if is_current else low
+            candle_closed = bool(candle.get('is_closed', False))
+            completed_body_break = (
+                candle_closed and close < opening
+                and opening - close >= SHORT_LOWER_BREAK_BODY_ATR * atr
+                and close < lower
+            )
+            live_body_break = (
+                is_current and not candle_closed
+                and opening - effective_low >= SHORT_LOWER_BREAK_BODY_ATR * atr
+                and effective_low < lower
+            )
+            if (all(math.isfinite(value) and value > 0 for value in
+                    (opening, close, effective_low, lower, atr))
+                    and (completed_body_break or live_body_break)):
+                trigger_index = index
+                trigger_open = opening
+                trigger_atr = atr
+                break
+
+        if trigger_index is None:
+            return inactive
+
+        trough = quote
+        bullish_reclaim = None
+        for index in range(trigger_index, len(frame)):
+            candle = frame.iloc[index]
+            low = float(candle['low'])
+            trough = min(trough, low)
+            if bool(candle.get('is_closed', False)):
+                opening = float(candle['open'])
+                close = float(candle['close'])
+                lower = float(candle['kc_lower'])
+                if close > opening and close > lower:
+                    bullish_reclaim = {
+                        'bar_id': candle.get('timestamp'),
+                        'open': opening,
+                        'close': close,
+                        'kc_lower': lower,
+                    }
+
+        excursion = trigger_open - trough
+        rebound = quote - trough
+        rebound_ratio = rebound / excursion if excursion > 0 else 0.0
+        rebound_confirmed = (
+            rebound_ratio > SHORT_LOWER_BREAK_REBOUND_RATIO
+            or math.isclose(
+                rebound_ratio, SHORT_LOWER_BREAK_REBOUND_RATIO,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+        confirmation = (
+            'BULLISH_CLOSE_RECLAIMED_KC_LOWER'
+            if bullish_reclaim is not None
+            else 'INTRABAR_REBOUND_35_PERCENT'
+            if rebound_confirmed
+            else None
+        )
+        return {
+            'active': True,
+            'confirmed': confirmation is not None,
+            'confirmation': confirmation,
+            'trigger_bar_id': frame.iloc[trigger_index].get('timestamp'),
+            'trigger_open': trigger_open,
+            'trigger_atr': trigger_atr,
+            'trough': trough,
+            'quote': quote,
+            'excursion': excursion,
+            'rebound': rebound,
+            'rebound_ratio': rebound_ratio,
+            'bullish_reclaim': bullish_reclaim,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return inactive
+
+
+def channel_swing_midline_exit_evidence(frame, side):
+    """Require an adverse completed candle body beyond the latest KC midline."""
+    if side not in ('LONG', 'SHORT'):
+        return None
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        current = closed.iloc[-1]
+        opening = float(current['open'])
+        close = float(current['close'])
+        middle = float(current.get(
+            'kc_middle', current.get('kc_basis', float('nan')),
+        ))
+        if not all(math.isfinite(value) and value > 0
+                   for value in (opening, close, middle)):
+            return None
+        if side == 'LONG':
+            valid = close < middle and close < opening
+        else:
+            valid = close > middle and close > opening
+        if not valid:
+            return None
+        return {
+            'side': side,
+            'crossed_level': 'kc_middle',
+            'open': opening,
+            'close': close,
+            'level': middle,
+            'bar_id': current.get('timestamp'),
+            'closed_reversal_confirmation': True,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def channel_peak_profit_exit_evidence(position, frame, quote):
+    """Track observed favorable extremes and authorize only a mature peak reversal."""
+    if (not position or frame is None or frame.empty
+            or position.get('side') not in ('LONG', 'SHORT')):
+        return None, False
+    try:
+        quote = float(quote)
+        entry = float(position.get('entry_price') or 0.0)
+        side = str(position['side']).upper()
+        opened_at = float(
+            position.get('open_timestamp') or position.get('entry_timestamp') or 0.0
+        )
+        if opened_at > 1e11:
+            opened_at /= 1000.0
+        identity = [side, opened_at, entry]
+        current = frame.iloc[-1]
+        previous = frame.iloc[-2] if len(frame) > 1 else current
+        atr = float(previous.get('atr', current.get('atr', 0.0)))
+        opening = float(current.get('open', 0.0))
+        high = max(float(current.get('high', quote)), quote)
+        low = min(float(current.get('low', quote)), quote)
+        close = float(current.get('close', quote))
+        upper = float(current.get('kc_upper', 0.0))
+        lower = float(current.get('kc_lower', 0.0))
+        values = (quote, entry, atr, opening, high, low, close)
+        if (not all(math.isfinite(value) for value in values)
+                or min(quote, entry, atr, opening) <= 0
+                or high < max(opening, close, quote)
+                or low > min(opening, close, quote)
+                or low > high):
+            return None, False
+
+        saved = position.get(CHANNEL_PEAK_EXIT_STATE_KEY)
+        if not isinstance(saved, dict) or saved.get('identity') != identity:
+            peak = entry
+            armed = False
+            state = {'identity': identity, 'peak_price': entry, 'armed': False}
+        else:
+            peak = float(saved.get('peak_price') or entry)
+            armed = bool(saved.get('armed'))
+            state = dict(saved)
+
+        peak = max(peak, quote) if side == 'LONG' else min(peak, quote)
+        favorable_move = peak - entry if side == 'LONG' else entry - peak
+        outer_reached = (
+            upper > 0 and quote > upper if side == 'LONG'
+            else lower > 0 and quote < lower
+        )
+        armed = armed or (
+            favorable_move >= 1.5 * atr and outer_reached
+        )
+        next_state = {
+            'identity': identity,
+            'peak_price': peak,
+            'armed': armed,
+        }
+        changed = next_state != saved
+        position[CHANNEL_PEAK_EXIT_STATE_KEY] = next_state
+
+        if not armed or favorable_move <= 0:
+            return None, changed
+
+        giveback = (peak - quote) / favorable_move if side == 'LONG' else (
+            quote - peak
+        ) / favorable_move
+
+        is_closed = _current_bar_is_closed(frame)
+        current_bar = frame.iloc[-1]
+        c_open = float(current_bar.get('open', opening))
+        c_close = float(current_bar.get('close', quote))
+        c_high = max(float(current_bar.get('high', quote)), quote)
+        c_low = min(float(current_bar.get('low', quote)), quote)
+        c_range = c_high - c_low
+
+        if side == 'SHORT':
+            # 【2026-10-12 嚴格規範】：跌破 KC 下軌後，必須「見到真反彈/抽腳」才平空（禁止長黑中途秒平）
+            # 必須等到出現以下「真見底信號」之一才允許執行：
+            # 1. 盤中創出最低價後，反彈回抽幅度 >= 35%（長下影線抽腳）
+            # 2. 出現實體陽線（綠 K）收盤，且收盤價重新站回 KC 下軌內部
+            signal1_rebound_35 = False
+            if c_range > 0:
+                rebound_from_low = quote - c_low
+                rebound_ratio = rebound_from_low / c_range
+                thrust_rebound = (
+                    (quote - c_low) / (c_open - c_low)
+                    if c_open > c_low else 0.0
+                )
+                if (rebound_ratio >= 0.35
+                        or thrust_rebound >= 0.35
+                        or math.isclose(rebound_ratio, 0.35, rel_tol=1e-12)):
+                    signal1_rebound_35 = True
+
+            signal2_green_reclaim = (
+                is_closed and c_close > c_open and c_close > lower
+            )
+
+            # 嚴禁在「實體大黑 K 正在向下貫穿下軌」的當根直接平空
+            if (giveback >= 0.35 or math.isclose(giveback, 0.35, rel_tol=1e-12)):
+                if signal1_rebound_35 or signal2_green_reclaim:
+                    return ({
+                        'reason': CHANNEL_PEAK_PROFIT_EXIT,
+                        'peak_price': peak,
+                        'entry_price': entry,
+                        'quote': quote,
+                        'atr': atr,
+                        'favorable_move': favorable_move,
+                        'giveback_ratio': giveback,
+                        'side': side,
+                        'signal1_rebound_35': signal1_rebound_35,
+                        'signal2_green_reclaim': signal2_green_reclaim,
+                    }, changed)
+                # 未出現真反彈抽腳 (signal1) 且未收出陽線回軌 (signal2)，嚴禁平空！
+                return None, changed
+
+        elif side == 'LONG':
+            # 突破 KC 上軌後的平多鎖利，必須等到出現以下「真見頂信號」之一才允許執行：
+            # 1. 盤中創出最高價後，回落幅度 >= 35%（長上影線受阻）
+            # 2. 出現實體陰線（紅 K）收盤，且收盤價重新跌回 KC 上軌內部
+            signal1_pullback_35 = False
+            if c_range > 0:
+                pullback_from_high = c_high - quote
+                pullback_ratio = pullback_from_high / c_range
+                thrust_pullback = (
+                    (c_high - quote) / (c_high - c_open)
+                    if c_high > c_open else 0.0
+                )
+                if (pullback_ratio >= 0.35
+                        or thrust_pullback >= 0.35
+                        or math.isclose(pullback_ratio, 0.35, rel_tol=1e-12)):
+                    signal1_pullback_35 = True
+
+            signal2_red_reclaim = (
+                is_closed and c_close < c_open and c_close < upper
+            )
+
+            # 嚴禁在「實體大陽 K 正在向上貫穿上軌」的當根直接平多
+            if (giveback >= 0.35 or math.isclose(giveback, 0.35, rel_tol=1e-12)):
+                if signal1_pullback_35 or signal2_red_reclaim:
+                    return ({
+                        'reason': CHANNEL_PEAK_PROFIT_EXIT,
+                        'peak_price': peak,
+                        'entry_price': entry,
+                        'quote': quote,
+                        'atr': atr,
+                        'favorable_move': favorable_move,
+                        'giveback_ratio': giveback,
+                        'side': side,
+                        'signal1_pullback_35': signal1_pullback_35,
+                        'signal2_red_reclaim': signal2_red_reclaim,
+                    }, changed)
+                return None, changed
+
+        candle_range = high - low
+        if is_closed and candle_range > 0:
+            upper_wick = high - max(opening, close)
+            lower_wick = min(opening, close) - low
+            bearish_rejection = (
+                side == 'LONG' and close < opening
+                and upper_wick / candle_range >= 0.60
+            )
+            bullish_rejection = (
+                side == 'SHORT' and close > opening
+                and lower_wick / candle_range >= 0.60
+            )
+            if bearish_rejection or bullish_rejection:
+                return ({
+                    'reason': CHANNEL_PEAK_WICK_EXIT,
+                    'peak_price': peak,
+                    'entry_price': entry,
+                    'quote': quote,
+                    'atr': atr,
+                    'favorable_move': favorable_move,
+                    'upper_wick': upper_wick,
+                    'lower_wick': lower_wick,
+                    'candle_range': candle_range,
+                    'side': side,
+                    'closed_reversal_confirmation': True,
+                }, changed)
+        return None, changed
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None, False
+
+
+def intrabar_spike_rebound_evidence(position, frame, side, quote):
+    """Track post-entry live-bar extremes and verify an extreme-KC rebound."""
+    if (not position or frame is None or frame.empty or side not in ('LONG', 'SHORT')
+            or _current_bar_is_closed(frame)):
+        return None
+    try:
+        quote = float(quote)
+        current = frame.iloc[-1]
+        opening = float(current['open'])
+        raw_high = float(current['high'])
+        raw_low = float(current['low'])
+        upper = float(current['kc_upper'])
+        lower = float(current['kc_lower'])
+        bar_id = float(current['timestamp'])
+        entry_price = float(position.get('entry_price') or 0.0)
+        opened_at = float(
+            position.get('open_timestamp')
+            or position.get('entry_timestamp')
+            or position.get('open_bar_id')
+            or 0.0
+        )
+        if opened_at > 0 and opened_at < 1e11:
+            opened_at *= 1000.0
+        values = (quote, opening, raw_high, raw_low, upper, lower, bar_id, entry_price)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or raw_low > min(opening, raw_high)
+                or raw_high < max(opening, raw_low)
+                or lower >= upper):
+            return None
+
+        identity = [side, opened_at, entry_price]
+        saved = position.get(INTRABAR_SPIKE_STATE_KEY)
+        same_bar_state = (
+            isinstance(saved, dict)
+            and saved.get('identity') == identity
+            and float(saved.get('bar_id') or 0.0) == bar_id
+        )
+        candle_started_after_entry = opened_at > 0 and opened_at < bar_id
+        if same_bar_state:
+            tracked_high = float(saved['high'])
+            tracked_low = float(saved['low'])
+        elif candle_started_after_entry:
+            tracked_high = raw_high
+            tracked_low = raw_low
+        else:
+            # OHLC may include movement from before a same-candle entry. Start
+            # from an observed post-entry quote instead of reconstructing it.
+            tracked_high = quote
+            tracked_low = quote
+
+        if candle_started_after_entry:
+            tracked_high = max(tracked_high, raw_high)
+            tracked_low = min(tracked_low, raw_low)
+        tracked_high = max(tracked_high, quote)
+        tracked_low = min(tracked_low, quote)
+        next_state = {
+            'identity': identity,
+            'bar_id': bar_id,
+            'high': tracked_high,
+            'low': tracked_low,
+        }
+        if next_state != saved:
+            position[INTRABAR_SPIKE_STATE_KEY] = next_state
+
+        candle_range = tracked_high - tracked_low
+        if candle_range <= 0:
+            return None
+        if side == 'SHORT':
+            if tracked_low >= lower:
+                return None
+            rebound_ratio = (quote - tracked_low) / candle_range
+            ratio_reached = (
+                rebound_ratio >= 0.35
+                or math.isclose(rebound_ratio, 0.35, rel_tol=1e-12)
+            )
+            if not ratio_reached:
+                return None
+            return {
+                'side': side, 'trigger': 'SPIKE_REBOUND_RATIO', 'quote': quote,
+                'curr_low': tracked_low, 'curr_high': tracked_high,
+                'kc_lower': lower, 'rebound_ratio': rebound_ratio,
+                'bar_id': bar_id,
+                'intrabar_confirmation': True,
+            }
+
+        if tracked_high <= upper:
+            return None
+        retracement_ratio = (tracked_high - quote) / candle_range
+        if (retracement_ratio < 0.35
+                or math.isclose(retracement_ratio, 0.35, rel_tol=1e-12)):
+            return None
+        return {
+            'side': side, 'trigger': 'SPIKE_RETRACEMENT_RATIO',
+            'quote': quote, 'curr_high': tracked_high, 'curr_low': tracked_low,
+            'kc_upper': upper, 'retracement_ratio': retracement_ratio,
+            'bar_id': bar_id, 'intrabar_confirmation': True,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def _current_bar_is_closed(frame):
     if frame is None or frame.empty:
         return False
     value = frame.iloc[-1].get('is_closed', False)
     return value is True or (type(value).__name__ == 'bool_' and bool(value))
+
+
+def _closed_bar_crossed_kc_middle(frame, side):
+    """Require a confirmed close across KC mid before a soft profit exit."""
+    if frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT'):
+        return False
+    if not _current_bar_is_closed(frame):
+        return False
+    try:
+        previous, current = frame.iloc[-2], frame.iloc[-1]
+        previous_close = float(previous['close'])
+        previous_middle = float(previous.get(
+            'kc_middle', previous.get('kc_basis', float('nan')),
+        ))
+        close = float(current['close'])
+        middle = float(current.get(
+            'kc_middle', current.get('kc_basis', float('nan')),
+        ))
+        values = (previous_close, previous_middle, close, middle)
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return False
+        if side == 'LONG':
+            return previous_close >= previous_middle and close < middle
+        return previous_close <= previous_middle and close > middle
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
+def confirmed_midline_reversal_evidence(frame, side, min_body_atr=0.5):
+    """A soft strategy exit requires a directional completed body beyond KC middle."""
+    if side not in ('LONG', 'SHORT'):
+        return None
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        current = closed.iloc[-1]
+        opening, close = float(current['open']), float(current['close'])
+        middle = float(current.get(
+            'kc_middle', current.get('kc_basis', float('nan')),
+        ))
+        if not all(math.isfinite(value) and value > 0
+                   for value in (opening, close, middle)):
+            return None
+
+        beyond_middle = close < middle if side == 'LONG' else close > middle
+        adverse_body = opening > close if side == 'LONG' else close > opening
+        if not beyond_middle or not adverse_body:
+            return None
+        atr = float(current.get('atr', float('nan')))
+        body = opening - close if side == 'LONG' else close - opening
+        return {
+            'side': side, 'crossed_level': 'kc_middle',
+            'close': close, 'level': middle, 'body': body,
+            'atr': atr, 'body_atr': body / atr if atr > 0 else None,
+            'bar_id': current.get('timestamp'),
+            'closed_reversal_confirmation': True,
+        }
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def confirmed_short_bottom_evidence(frame, volume_multiple=1.5):
+    """Confirm a short-covering trough by volume climax or two defended lows."""
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if len(closed) < 3:
+            return None
+        current = closed.iloc[-1]
+        opening, close = float(current['open']), float(current['close'])
+        high, low = float(current['high']), float(current['low'])
+        ma5 = float(current['ma5'])
+        atr = float(closed.iloc[-2]['atr'])
+        candle_range = high - low
+        if (not all(math.isfinite(value) and value > 0 for value in
+                    (opening, close, high, low, ma5, atr))
+                or candle_range <= 0 or atr <= 0
+                or high < max(opening, close) or low > min(opening, close)):
+            return None
+
+        lower_wick = min(opening, close) - low
+        wick_ratio = lower_wick / candle_range
+        if wick_ratio >= 0.45 and 'volume' in closed:
+            prior_volumes = pd.to_numeric(
+                closed['volume'].iloc[-21:-1], errors='coerce',
+            ).dropna()
+            volume = float(current['volume'])
+            baseline = float(prior_volumes.mean()) if len(prior_volumes) >= 5 else 0.0
+            volume_ratio = volume / baseline if baseline > 0 else 0.0
+            if math.isfinite(volume_ratio) and volume_ratio >= volume_multiple:
+                return {
+                    'kind': 'VOLUME_CLIMAX_LOWER_WICK', 'lower_wick': lower_wick,
+                    'wick_ratio': wick_ratio, 'volume_ratio': volume_ratio,
+                    'volume_multiple': volume_multiple,
+                    'close': close, 'ma5': ma5, 'bar_id': current.get('timestamp'),
+                }
+
+        if len(closed) >= 4:
+            lows = [float(value) for value in closed['low'].iloc[-3:]]
+            if (all(math.isfinite(value) and value > 0 for value in lows)
+                    and lows[1] >= lows[0] and lows[2] >= lows[1]
+                    and close > ma5):
+                return {
+                    'kind': 'TWO_DEFENDED_LOWS_MA5_RECLAIM',
+                    'lows': lows, 'close': close, 'ma5': ma5,
+                    'bar_id': current.get('timestamp'),
+                }
+        return None
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def _is_profit_lock_reason(reason):
+    return (
+        reason == 'EXIT_BY_RATCHET_PROFIT_LOCK'
+        or reason.startswith('PROFIT_LOCK')
+        or reason.startswith('NET_ROE_THREE_TIER_GIVEBACK')
+    )
 
 
 def _body_breaks_kc_middle(frame, side, price=None):
@@ -84,6 +694,8 @@ def top_engulfing_flip_evidence(frame):
                 or close >= ma5 or opening < previous_close
                 or close >= previous_open):
             return None
+        from core.services.strategies.outer_strategy import kc_bearish_midline_turn
+        flip_short_allowed = kc_bearish_midline_turn(frame, close)
         return {
             'open': opening,
             'close': close,
@@ -94,6 +706,7 @@ def top_engulfing_flip_evidence(frame):
             'atr': atr,
             'body_atr': body / atr,
             'extension_atr': (close - ma15) / atr,
+            'flip_short_allowed': flip_short_allowed,
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -379,6 +992,9 @@ def intrabar_peak_valley_reversal_evidence(position, frame, side, quote, atr,
     if entry <= 0:
         return None
     excursion = (pivot_price - entry) if side == 'LONG' else (entry - pivot_price)
+    if not _fractal_pullback_exit_authorized(
+            position, frame, side, quote, atr, favorable_move):
+        return None
     retracement = (pivot_price - quote) if side == 'LONG' else (quote - pivot_price)
     if (excursion < 0.5 * atr or favorable_move < 0.5 * atr
             or retracement < max(0.35 * atr, 0.2 * excursion)):
@@ -543,11 +1159,15 @@ class HoldingProtectionExitGate:
         "REJECT_EXIT: BLOCKED_BY_HOLDING_PROTECTION_GATE "
         "(Wait Bar Close Confirmation)"
     )
+    SHORT_BREAK_HOLD_REJECT_REASON = (
+        "REJECT_EXIT: SHORT_LOWER_BREAK_AWAITING_35PCT_REBOUND_OR_BULLISH_RECLAIM"
+    )
 
     WHITELIST_CODES = {
         'EXIT_BY_EXTREME_WATERFALL',
         'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         'EXIT_BY_RATCHET_PROFIT_LOCK',
+        INTRABAR_SPIKE_REBOUND_EXIT,
         'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
@@ -564,7 +1184,7 @@ class HoldingProtectionExitGate:
 
     @classmethod
     def evaluate(cls, position: Dict[str, Any], frame: Optional[pd.DataFrame],
-                 quote: float) -> Tuple[Optional[str], Dict[str, Any]]:
+                 quote: float, channel_swing: bool = False) -> Tuple[Optional[str], Dict[str, Any]]:
         """Directly evaluates active market data for the 4 whitelisted exit scenarios."""
         if not position or quote <= 0:
             return None, {}
@@ -572,6 +1192,18 @@ class HoldingProtectionExitGate:
         side = str(position.get('side', '')).upper()
         entry_price = float(position.get('entry_price', 0.0))
         if entry_price <= 0:
+            return None, {}
+
+        if (channel_swing
+                or str(position.get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
+            peak_evidence, _ = channel_peak_profit_exit_evidence(
+                position, frame, quote,
+            )
+            if peak_evidence is not None:
+                return peak_evidence['reason'], peak_evidence
+            midline_evidence = channel_swing_midline_exit_evidence(frame, side)
+            if midline_evidence is not None:
+                return CHANNEL_MIDLINE_EXIT[side], midline_evidence
             return None, {}
 
         highest_price = float(position.get('highest_price') or position.get('peak_price') or entry_price)
@@ -626,16 +1258,26 @@ class HoldingProtectionExitGate:
                         'quote': quote, 'side': side,
                     }
 
+        if side in ('LONG', 'SHORT'):
+            spike_rebound = intrabar_spike_rebound_evidence(
+                position, frame, side, quote,
+            )
+            if spike_rebound is not None:
+                return INTRABAR_SPIKE_REBOUND_EXIT, spike_rebound
+
         # ── 1.2 頂部斷頭鍘特例 (Top Waterfall Flip) 授權「平多 + 秒反手開空」──
         if side == 'LONG' and candle_closed:
             evidence = top_engulfing_flip_evidence(frame)
             if evidence is not None:
-                position['flip_enter_short'] = True
-                return 'EXIT_LONG_ON_TOP_WATERFALL_DUMP', {
-                    **evidence, 'quote': quote, 'side': side,
-                    'flip_enter_short': True,
-                    'authorized_action': 'ACTION_FLIP_LONG_TO_SHORT',
-                }
+                position.pop('flip_enter_short', None)
+                details = {**evidence, 'quote': quote, 'side': side}
+                if evidence['flip_short_allowed']:
+                    position['flip_enter_short'] = True
+                    details.update(
+                        flip_enter_short=True,
+                        authorized_action='ACTION_FLIP_LONG_TO_SHORT',
+                    )
+                return 'EXIT_LONG_ON_TOP_WATERFALL_DUMP', details
 
         exhaustion = exhaustion_reversal_evidence(frame, side)
         if exhaustion is not None:
@@ -669,6 +1311,15 @@ class HoldingProtectionExitGate:
                 )
                 return 'EXIT_BY_RATCHET_PROFIT_LOCK', ratchet
 
+        midline_reversal = confirmed_midline_reversal_evidence(frame, side)
+        if midline_reversal is not None:
+            return f'EXIT_{side}_ON_CONFIRMED_MIDLINE_BREAK', midline_reversal
+
+        if side == 'SHORT':
+            bottom = confirmed_short_bottom_evidence(frame)
+            if bottom is not None:
+                return 'EXIT_SHORT_ON_CONFIRMED_TROUGH', bottom
+
         # ── 4. 結構確認：真實波段峰頂 / 谷底生成 (EXIT_BY_VERIFIED_FRACTAL_PEAK / VALLEY) ──
         if (not candle_closed and side == 'SHORT' and atr > 0
                 and frame is not None and len(frame) > 0):
@@ -689,7 +1340,9 @@ class HoldingProtectionExitGate:
             if side == 'LONG':
                 peak_roe = (highest_price - entry_price) / entry_price
                 peak_gain_atr = (highest_price - entry_price) / atr if atr > 0 else 0.0
-                has_meaningful_profit = (peak_roe >= 0.03) or (peak_gain_atr >= 0.5)
+                has_meaningful_profit = _fractal_pullback_exit_authorized(
+                    position, frame, side, quote, atr, highest_price - entry_price,
+                )
 
                 if has_meaningful_profit and is_fractal_peak(frame):
                     # 必須為收線實體跌破前棒實體中點（非影線虛破）
@@ -715,7 +1368,9 @@ class HoldingProtectionExitGate:
             elif side == 'SHORT':
                 peak_roe = (entry_price - lowest_price) / entry_price
                 peak_gain_atr = (entry_price - lowest_price) / atr if atr > 0 else 0.0
-                has_meaningful_profit = (peak_roe >= 0.03) or (peak_gain_atr >= 0.5)
+                has_meaningful_profit = _fractal_pullback_exit_authorized(
+                    position, frame, side, quote, atr, entry_price - lowest_price,
+                )
                 if candle_closed and has_meaningful_profit:
                     live = frame.iloc[-1]
                     curr_open = float(live.get('open', quote))
@@ -745,7 +1400,8 @@ class HoldingProtectionExitGate:
     @classmethod
     def validate_exit(cls, position: Dict[str, Any], frame: Optional[pd.DataFrame],
                       quote: float, candidate_reason: str,
-                      details: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Dict[str, Any]]:
+                      details: Optional[Dict[str, Any]] = None,
+                      channel_swing: bool = False) -> Tuple[bool, str, Dict[str, Any]]:
         """Strict whitelist verification for any proposed exit reason.
         
         Returns:
@@ -754,6 +1410,7 @@ class HoldingProtectionExitGate:
         details = details or {}
         side = str((position or {}).get('side', '')).upper()
         clean_reason = str(candidate_reason or '').replace('Channel Swing ', '').strip()
+        candle_closed = _current_bar_is_closed(frame)
 
         import logging
         logger = logging.getLogger("uvicorn.error")
@@ -773,8 +1430,8 @@ class HoldingProtectionExitGate:
             print(auth_msg, flush=True)
             return True, code, details
 
-        def _reject(wait_for_close=False):
-            reason = (
+        def _reject(wait_for_close=False, reason=None):
+            reason = reason or (
                 cls.WAIT_CLOSE_REJECT_REASON if wait_for_close
                 else cls.REJECT_REASON
             )
@@ -782,6 +1439,51 @@ class HoldingProtectionExitGate:
             logger.info(reject_msg)
             print(reject_msg, flush=True)
             return False, reason, details
+
+        hard_exit = any(marker in clean_reason.upper() for marker in (
+            'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
+            'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
+        ))
+        if side == 'SHORT' and not hard_exit:
+            lower_break = short_lower_break_exit_confirmation(
+                frame, quote, position,
+            )
+            if lower_break['active'] and not lower_break['confirmed']:
+                details.update(short_lower_break_hold=lower_break)
+                return _reject(reason=cls.SHORT_BREAK_HOLD_REJECT_REASON)
+
+        if hard_exit:
+            return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        if (channel_swing
+                or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
+            if clean_reason in (CHANNEL_PEAK_PROFIT_EXIT, CHANNEL_PEAK_WICK_EXIT):
+                evidence, _ = channel_peak_profit_exit_evidence(
+                    position, frame, quote,
+                )
+                if evidence is None or evidence['reason'] != clean_reason:
+                    return _reject(
+                        wait_for_close=clean_reason == CHANNEL_PEAK_WICK_EXIT
+                        and not candle_closed,
+                    )
+                details.update(evidence)
+                return _auth(clean_reason)
+            if clean_reason == CHANNEL_MIDLINE_EXIT.get(side):
+                evidence = channel_swing_midline_exit_evidence(frame, side)
+                if evidence is None:
+                    return _reject(wait_for_close=not candle_closed)
+                details.update(evidence)
+                return _auth(clean_reason)
+            return _reject(wait_for_close=not candle_closed)
+
+        if clean_reason == INTRABAR_SPIKE_REBOUND_EXIT:
+            evidence = intrabar_spike_rebound_evidence(
+                position, frame, side, quote,
+            )
+            if evidence is None:
+                return _reject(wait_for_close=not candle_closed)
+            details.update(evidence)
+            return _auth(INTRABAR_SPIKE_REBOUND_EXIT)
 
         if clean_reason == 'EXIT_SHORT_FAILED_KC_BREAKOUT':
             try:
@@ -822,17 +1524,21 @@ class HoldingProtectionExitGate:
                 return _reject()
 
         # ── 1. 硬止損 / 市場熔斷 (WHITELIST SCENARIO 2) ──
-        if any(marker in clean_reason.upper() for marker in (
-            'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
-            'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL'
-        )):
-            return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+        midline_exempt_reasons = {
+            'EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT',
+            'CATASTROPHIC_PUMP_EXIT', INTRABAR_SPIKE_REBOUND_EXIT,
+        }
+        if (not _is_profit_lock_reason(clean_reason)
+                and clean_reason not in midline_exempt_reasons
+                and confirmed_midline_reversal_evidence(frame, side) is None):
+            return _reject(wait_for_close=not candle_closed)
 
         # ── 1.5 進場保護期 (Grace Period: bars_held <= 2) ──
         bars_held = _calculate_bars_held(position, frame)
         grace_allowed_exits = {
             'EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT',
             'CATASTROPHIC_PUMP_EXIT', 'EXIT_BY_RATCHET_PROFIT_LOCK',
+            INTRABAR_SPIKE_REBOUND_EXIT,
             'EXIT_BY_VERIFIED_FRACTAL_PEAK', 'EXIT_LONG_ON_FRACTAL_PEAK',
             'EXIT_BY_VERIFIED_FRACTAL_VALLEY', 'EXIT_SHORT_ON_FRACTAL_VALLEY',
             'EXIT_LONG_ON_UPPER_WICK_REJECTION',
@@ -841,23 +1547,16 @@ class HoldingProtectionExitGate:
         }
         if (side == 'LONG' and bars_held <= 2
                 and clean_reason not in grace_allowed_exits
-                and not clean_reason.startswith('PROFIT_LOCK')):
+                and not _is_profit_lock_reason(clean_reason)):
             return _reject()
 
         # Every intrabar strategy exit waits for candle finality except the
         # verified extreme V-reversal and the ROE ratchet lock.
         if frame is not None and not frame.empty and not _current_bar_is_closed(frame):
-            if clean_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK' or clean_reason.startswith('PROFIT_LOCK'):
+            if _is_profit_lock_reason(clean_reason):
                 lock = _ratchet_lock_details(position, quote)
-                try:
-                    live, previous = frame.iloc[-1], frame.iloc[-2]
-                    atr = float(previous.get('atr', live.get('atr', 0.0)))
-                except (TypeError, ValueError, IndexError, OverflowError):
-                    atr = 0.0
-                pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
-                if lock is not None and pressure is not None:
+                if lock is not None:
                     details.update(lock)
-                    details.update(pressure)
                     return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
                 return _reject(wait_for_close=True)
 
@@ -871,21 +1570,27 @@ class HoldingProtectionExitGate:
                 'EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT',
                 'CATASTROPHIC_PUMP_EXIT',
             )
+            intrabar_spike_rebound = (
+                clean_reason == INTRABAR_SPIKE_REBOUND_EXIT
+                and details.get('intrabar_confirmation') is True
+            )
             intrabar_pressure = clean_reason in (
                 'EXIT_LONG_ON_SELLING_PRESSURE', 'EXIT_SHORT_ON_BUYING_PRESSURE',
             )
-            if not intrabar_peak_valley and not intrabar_catastrophic and not intrabar_pressure:
+            closed_structure_exit = clean_reason in (
+                'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+                'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+                'EXIT_SHORT_ON_CONFIRMED_TROUGH',
+            )
+            if (not intrabar_peak_valley and not intrabar_catastrophic
+                    and not intrabar_pressure and not closed_structure_exit
+                    and not intrabar_spike_rebound):
                 return _reject(wait_for_close=True)
 
         if clean_reason in ('EXIT_LONG_ON_SELLING_PRESSURE', 'EXIT_SHORT_ON_BUYING_PRESSURE'):
-            expected_side = 'LONG' if clean_reason == 'EXIT_LONG_ON_SELLING_PRESSURE' else 'SHORT'
-            evidence = intrabar_adverse_pressure_evidence(
-                frame, side, quote, frame_atr,
-            )
-            if side != expected_side or evidence is None:
-                return _reject(wait_for_close=not candle_closed)
-            details.update(evidence)
-            return _auth(clean_reason)
+            # Pressure remains corroborating evidence for ratchet locks, but is
+            # never an independent strategy exit under the approved exit policy.
+            return _reject(wait_for_close=not candle_closed)
 
         # ── 2. 極端異常大瀑布：原因標籤不構成授權，重新驗證實體與中軌 ──
         if clean_reason in ('EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT'):
@@ -916,19 +1621,30 @@ class HoldingProtectionExitGate:
                 return _reject(wait_for_close=not candle_closed)
 
         # ── 3. 階梯鎖利回吐 (WHITELIST SCENARIO 3) ──
-        if clean_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK' or clean_reason.startswith('PROFIT_LOCK'):
+        if _is_profit_lock_reason(clean_reason):
             lock = _ratchet_lock_details(position, quote)
-            try:
-                live, previous = frame.iloc[-1], frame.iloc[-2]
-                atr = float(previous.get('atr', live.get('atr', 0.0)))
-            except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
-                atr = 0.0
-            pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
-            if lock is not None and pressure is not None:
+            if lock is not None:
                 details.update(lock)
-                details.update(pressure)
                 return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
             return _reject(wait_for_close=not candle_closed)
+
+        if clean_reason in (
+            'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+            'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+        ):
+            expected = 'LONG' if clean_reason.startswith('EXIT_LONG_') else 'SHORT'
+            evidence = confirmed_midline_reversal_evidence(frame, side)
+            if side != expected or evidence is None:
+                return _reject(wait_for_close=not candle_closed)
+            details.update(evidence)
+            return _auth(clean_reason)
+
+        if clean_reason == 'EXIT_SHORT_ON_CONFIRMED_TROUGH':
+            evidence = confirmed_short_bottom_evidence(frame)
+            if side != 'SHORT' or evidence is None:
+                return _reject(wait_for_close=not candle_closed)
+            details.update(evidence)
+            return _auth(clean_reason)
 
         if clean_reason in (
             'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
@@ -948,6 +1664,8 @@ class HoldingProtectionExitGate:
             )
             if (side != expected_side or evidence is None
                     or structural_reversal is None):
+                return _reject()
+            if side == 'SHORT' and confirmed_short_bottom_evidence(frame) is None:
                 return _reject()
             details.update(evidence)
             details.update(structural_reversal)
@@ -977,7 +1695,8 @@ class HoldingProtectionExitGate:
                     or (peak_roe < 0.03 and peak_gain_atr < 0.5)):
                 return _reject()
             if (side == 'SHORT'
-                    and _short_reversal_body_evidence(frame, quote, atr) is None):
+                    and (confirmed_short_bottom_evidence(frame) is None
+                         or _short_reversal_body_evidence(frame, quote, atr) is None)):
                 return _reject()
             if (side == 'LONG'
                     and _long_reversal_body_evidence(frame, quote, atr) is None):
@@ -995,15 +1714,24 @@ class HoldingProtectionExitGate:
             lowest_price = float((position or {}).get('lowest_price') or entry_price)
 
             if side == 'LONG':
+                reversal_evidence = confirmed_midline_reversal_evidence(
+                    frame, 'LONG',
+                )
+                if reversal_evidence is None:
+                    return _reject(wait_for_close=not candle_closed)
+                details.update(reversal_evidence)
                 peak_roe = (highest_price - entry_price) / entry_price if entry_price > 0 else 0.0
-                peak_gain_atr = float(details.get('peak_gain_atr') or 0.0)
-                if (peak_roe < 0.03 and details.get('peak_roe', 0.0) < 0.03
-                        and peak_gain_atr < 0.5):
+                atr = float(details.get('atr') or frame_atr or 0.0)
+                favorable_move = max(
+                    highest_price - entry_price,
+                    float(details.get('peak_gain_atr') or 0.0) * atr,
+                )
+                if not _fractal_pullback_exit_authorized(
+                        position, frame, side, quote, atr, favorable_move):
                     return _reject()
                 # 多單下影線防護
                 if details.get('lower_wick_hold'):
                     return _reject()
-                atr = float(details.get('atr') or 0.0)
                 if details.get('intrabar_pivot_confirmation'):
                     evidence = intrabar_peak_valley_reversal_evidence(
                         position, frame, side, float(quote), atr,
@@ -1022,30 +1750,10 @@ class HoldingProtectionExitGate:
                     return _reject()
                 authorized_code = 'EXIT_BY_VERIFIED_FRACTAL_PEAK'
             else:
-                peak_roe = (entry_price - lowest_price) / entry_price if entry_price > 0 else 0.0
-                peak_gain_atr = float(details.get('peak_gain_atr') or 0.0)
-                if (peak_roe < 0.03 and details.get('valley_roe', 0.0) < 0.03
-                        and peak_gain_atr < 0.5):
-                    return _reject()
-                atr = float(details.get('atr') or 0.0)
-                if details.get('intrabar_pivot_confirmation'):
-                    evidence = intrabar_peak_valley_reversal_evidence(
-                        position, frame, side, float(quote), atr,
-                        float(details.get('pivot_price') or 0.0),
-                        float(details.get('favorable_move') or 0.0),
-                    )
-                    if evidence is None:
-                        return _reject()
-                    details.update(evidence)
-                elif details.get('closed_reversal_confirmation'):
-                    evidence = closed_peak_valley_reversal_evidence(frame, side, atr)
-                    if evidence is None:
-                        return _reject()
-                    details.update(evidence)
-                else:
-                    body_evidence = _short_reversal_body_evidence(frame, quote, atr)
-                    if body_evidence is None:
-                        return _reject()
+                evidence = confirmed_short_bottom_evidence(frame)
+                if evidence is None:
+                    return _reject(wait_for_close=not candle_closed)
+                details.update(evidence)
                 authorized_code = 'EXIT_BY_VERIFIED_FRACTAL_VALLEY'
 
             return _auth(authorized_code)
@@ -1059,10 +1767,14 @@ class HoldingProtectionExitGate:
                     evidence = top_engulfing_flip_evidence(frame)
                     if evidence is not None:
                         details.update(evidence)
-                        details.update(
-                            flip_enter_short=True,
-                            authorized_action='ACTION_FLIP_LONG_TO_SHORT',
-                        )
+                        if evidence['flip_short_allowed']:
+                            details.update(
+                                flip_enter_short=True,
+                                authorized_action='ACTION_FLIP_LONG_TO_SHORT',
+                            )
+                        else:
+                            details.pop('flip_enter_short', None)
+                            details.pop('authorized_action', None)
                         return _auth('EXIT_LONG_ON_TOP_WATERFALL_DUMP')
                 except Exception:
                     pass

@@ -343,6 +343,13 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     closed = confirmed(frame)
     if closed is None or closed.empty:
         return wait("NOT_READY")
+    from core.gates.pipeline import ma5_ma15_cross_chop_problem
+    quote = price if price is not None else float(frame.iloc[-1]['close'])
+    cross_chop_problem = ma5_ma15_cross_chop_problem(
+        frame, quote, symbol=symbol, log_result=True,
+    )
+    if cross_chop_problem:
+        return wait(cross_chop_problem)
         
     c = closed.iloc[-1]
 
@@ -632,6 +639,13 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+
+        from core.gates.pipeline import ma5_ma15_cross_chop_problem
+        cross_chop_problem = ma5_ma15_cross_chop_problem(
+            frame, price, symbol=kwargs.get('symbol', ''), log_result=True,
+        )
+        if cross_chop_problem:
+            return False, cross_chop_problem, {'action': 'WAIT'}
 
         engine = kwargs.get('engine')
         if engine is not None:

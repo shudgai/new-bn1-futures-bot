@@ -7,13 +7,25 @@ import pandas as pd
 import pytest
 
 from core.services.entry_firewall import validate_entry_frame, validate_account_entry
+from core.gates.pipeline import entry_market_structure_problem
+from core.services.entry_contract import evaluate_entry_contract
 from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
+
+
+def live_midline_frame(side):
+    from test_intrabar_midline_entry import make_frame
+
+    result, quote = make_frame(side)
+    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
+    result['timestamp'] += current_bar - int(result.iloc[-1]['timestamp'])
+    result.attrs['entry_finality_verified'] = True
+    return result, quote
 
 
 def frame(rule='B', side='LONG'):
     stamp = int(time.time() // 60) * 60000 - 60000
     rows = [dict(timestamp=stamp - (2-i)*60000, open=100., close=100.2,
-                 high=104., low=96., atr=1., ma3=100., ma15=99.,
+                 high=104., low=96., atr=1., ma3=100., ma5=100.5, ma15=99.,
                  kc_upper=102., kc_lower=98., kc_middle=100., is_closed=True)
             for i in range(3)]
     if rule == 'B':
@@ -27,18 +39,31 @@ def frame(rule='B', side='LONG'):
     if side == 'SHORT':
         original = result.copy()
         for dest, source in [('open','open'),('close','close'),('high','low'),('low','high'),
-                             ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
+                             ('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),
                              ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
             result[dest] = 200 - original[source]
+    first = result.iloc[0]
+    padding = []
+    for offset in range(7, 0, -1):
+        row = first.copy()
+        row['timestamp'] = float(first['timestamp']) - offset * 60000
+        row['is_closed'] = True
+        padding.append(row)
+    result = pd.concat([pd.DataFrame(padding, index=range(-7, 0)), result])
     result.attrs['timeframe_ms'] = 60000
     return result
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('rule', ['B', 'E'])
-def test_exact_rules(side, rule):
-    f = frame(rule, side)
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_{rule}_{side}'
+def test_live_midline_launch_is_authorized_by_current_contract(side):
+    f, quote = live_midline_frame(side)
+    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
+
+    decision = evaluate_entry_contract(f, quote, code=code, symbol='CAP/USDT')
+
+    assert decision is not None
+    assert decision['type'] == code
+    assert decision['entry_phase'] == 'KC_MIDLINE_LAUNCH'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -100,17 +125,22 @@ def test_account_fails_closed(fault):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_actual_exchange_boundary(side):
     from core.testnet_account import BinanceTestnetAccount
-    f = frame('B', side)
+    f, quote = live_midline_frame(side)
     account = object.__new__(BinanceTestnetAccount)
     account.exchange = SimpleNamespace(create_order=AsyncMock(return_value={'id': 'ok'}))
     account.entry_frame_provider = AsyncMock(return_value=f)
     account.last_closed_at = {}
-    context = dict(entry_signal_code=f'CLOSED_B_{side}', channel_confirmation_bar_id=float(f.iloc[-1].timestamp))
+    context = dict(
+        entry_signal_code=f'AUTHORIZED_BY_MIDLINE_BREAK_{side}',
+        channel_confirmation_bar_id=float(f.iloc[-1].timestamp),
+    )
     exchange_side = 'buy' if side == 'LONG' else 'sell'
-    asyncio.run(account._send_order('TEST', 'market', exchange_side, 1, entry_context=context))
+    asyncio.run(account._send_order(
+        'TEST', 'market', exchange_side, 1, entry_context=context,
+    ))
     account.exchange.create_order.assert_awaited_once()
     account.exchange.create_order.reset_mock()
-    f.loc[2, 'close'] = f.loc[2, 'open']
+    f.loc[f.index[-1], 'close'] = f.loc[f.index[-1], 'open']
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
         asyncio.run(account._send_order('TEST', 'limit', exchange_side, 1, 100, entry_context=context))
     account.exchange.create_order.assert_not_awaited()
@@ -120,43 +150,56 @@ def test_actual_exchange_boundary(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_b_inclusive_atr_boundaries(side):
-    f = frame('B', side)
-    sign = 1 if side == 'LONG' else -1
-    f.loc[1, 'open'] = f.loc[1, 'close'] + sign * .6
-    f.loc[2, 'atr'] = 1.5
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_B_{side}'
+    f, quote = live_midline_frame(side)
+    middle = float(f.iloc[-1]['kc_middle'])
+    if side == 'LONG':
+        quote = middle + 0.1
+    else:
+        quote = middle - 0.1
+    assert entry_market_structure_problem(
+        f, quote, side, entry_phase='KC_MIDLINE_LAUNCH',
+    ) is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_e_exact_distance_boundary(side):
-    f = frame('E', side)
-    sign = 1 if side == 'LONG' else -1
-    f.loc[2, 'kc_middle'] = f.loc[2, 'close'] - sign * 2.2
-    assert evaluate_closed_entry(f, side)[1] == f'CLOSED_E_{side}'
-    f.loc[2, 'kc_middle'] -= sign * .00001
-    assert not evaluate_closed_entry(f, side)[0]
+    f, _ = live_midline_frame(side)
+    f.loc[f.index[-1], 'kc_upper'] = 102.0
+    f.loc[f.index[-1], 'kc_middle'] = 100.0
+    f.loc[f.index[-1], 'kc_lower'] = 98.0
+    quote = 101.0 if side == 'LONG' else 99.0
+
+    assert entry_market_structure_problem(
+        f, quote, side, entry_phase='KC_MIDLINE_LAUNCH',
+    ) is None
+    quote = 101.01 if side == 'LONG' else 98.99
+    assert entry_market_structure_problem(
+        f, quote, side, entry_phase='KC_MIDLINE_LAUNCH',
+    ) == ('INSUFFICIENT_UPPER_SPACE' if side == 'LONG'
+          else 'INSUFFICIENT_LOWER_SPACE')
 
 
 def test_successful_close_cannot_open_in_same_runner(monkeypatch):
     import core.services.symbol_runner as module
+    import core.services.exits.realtime_profit_exit as exit_module
     f = frame()
     account = SimpleNamespace(positions={'TEST': {'side': 'SHORT'}}, position_meta={},
                               save_state=lambda: None)
-    async def close(*args, **kwargs):
+    async def enforce_exit(engine, symbol, quote):
         account.positions.clear()
-        return True
-    account.close_position = close
+    monkeypatch.setattr(exit_module, 'enforce_realtime_profit_exit', enforce_exit)
     engine = SimpleNamespace(account=account, _take_over_manual_position=lambda *args: None,
                              _execute_confirmed_channel_break=AsyncMock())
-    monkeypatch.setattr(module.DualTrackExitStrategy, 'evaluate_exit', lambda *args: 'EXIT_TEST')
     asyncio.run(module.process_single_symbol_runner(engine, 'TEST', 0, None, False,
                                                     exit_frame=f, exit_quote=101.5))
     engine._execute_confirmed_channel_break.assert_not_awaited()
 
 
 def test_physical_gate_uses_latest_atr():
-    f = frame('B')
-    f.loc[2, 'atr'] = 1.5
-    assert evaluate_closed_entry(f, 'LONG')[1] == 'CLOSED_B_LONG'
+    f, quote = live_midline_frame('LONG')
+    code = 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'
+
+    assert validate_entry_frame(f, 'LONG', code)['entry_phase'] == 'KC_MIDLINE_LAUNCH'
+    f.loc[f.index[-1], 'close'] = f.loc[f.index[-1], 'open']
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
-        validate_entry_frame(f, 'LONG', 'CLOSED_B_LONG')
+        validate_entry_frame(f, 'LONG', code)
