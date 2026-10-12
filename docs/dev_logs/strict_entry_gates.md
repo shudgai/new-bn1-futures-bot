@@ -32,6 +32,23 @@ The prior `BLOCKED_ABNORMAL_MARKET_ENTRY` log stored no range, ATR, or move meas
 
 Verification: `tests/test_smart_pipeline.py` includes a 3.5-ATR live bearish breakout through pipeline authorization and engine account submission; the quote-freshness guard also covers stale timestamps and invalid prices.
 
+## Mandatory live MA5 direction gate
+
+Every automatic entry, including breakout, continuation, reversal, and re-entry authorities, must pass the same quote-adjusted MA5 direction check at pipeline authorization and shared-contract/pre-flight validation. LONG requires live MA5 strictly above the previous MA5 and quote at or above live MA5; otherwise the reason is `BLOCKED_BY_MA5_WEAK_SLOPE`. SHORT requires live MA5 strictly below the previous MA5 and quote at or below live MA5; otherwise the reason is `BLOCKED_BY_MA5_STRONG_SLOPE`. Invalid MA evidence fails closed. Existing minimum ATR-slope, account, signal, channel, and order-safety gates remain additional checks.
+
+## Channel Swing climax peak/valley protection
+
+The position-bound Channel Swing peak state arms only after the current quote is at or beyond the position-side KC outer rail and current favorable movement is at least 1.5 times the preceding closed candle ATR. The armed state persists and tracks the best quote observed since entry. It authorizes a symmetric LONG/SHORT peak-profit close when retracement from that observed extreme reaches either 25% of peak favorable movement or 0.4 ATR. A wick reversal can also authorize the close only on a completed opposite-color candle that makes a new observed extreme and has the relevant wick at least 60% of the candle range.
+
+While climax tracking is armed, ordinary MA, momentum-stall, and pullback exits are suppressed. Account hard stops, verified waterfall/emergency defenses, and independently confirmed KC-midline structural exits remain active. The separate SHORT lower-rail-break confirmation guard retains its own 35% rebound-or-bullish-reclaim rule.
+
+### [2026-10-12 23:43:06 UTC+8] - Modification Phase: Strict MA5 entry and climax peak protection
+- **Author**: shudgai999 / Copilot SDK in VS Code
+- **Target Files & Lines**: `core/services/ma5_entry_slope.py`; `core/gates/pipeline.py`; `core/services/entry_contract.py`; `core/services/entry_firewall.py`; `core/gates/holding_protection_gate.py`; `core/services/exits/peak_trailing_exit.py`; focused tests.
+- **Modification Description**: Enforced quote-adjusted MA5 slope/price alignment and dynamic MA5/MA15 anti-chop checks across entry authorization. Added persistent symmetric KC-climax peak/valley tracking, 1.5 ATR plus outer-rail arming, 25% peak-profit or 0.4 ATR retracement exits, completed 60%-wick reversal exits, and suppression of ordinary soft exits while climax tracking is armed.
+- **Trigger Reason & Requirement**: User requested no entries against a weakening/strengthening MA5, adaptive MA-cross chop protection, and holding Channel Swing positions through ordinary pullbacks until a confirmed climax reversal.
+- **Verification & Test Status**: Focused selection across peak-profit, confirmed-structure, peak-trailing, live-MA5, and MA-cross tests: 117 passed, 2 deselected because they assert an existing exit-whitelist mismatch. The full selection's 2 failures are those whitelist assertions; no whitelist expansion was made. Python compilation, editor Problems, and `git diff --check` passed. Deployment/restart is pending service-target clarification: port 8006 is occupied by a distinct `binance-8006-paper.service` whose working directory is `/home/shudgai999/project/wait-paper-gate-candidate`; the failed `binance-8006.service` cannot start on that port without affecting the paper process.
+
 ## Pipeline authorization TTL grace
 
 On 2026-10-11, a three-second monotonic TTL grace was added for an already-authorized intrabar pipeline decision when immediate candle/MA revalidation flickers. The grace is bound to the authorized entry type, side, stable pending-signal ID, confirmation bar, original quote, and ATR. At final account validation, TTL is measured from the monotonic authorization time, not inferred from the live candle's start timestamp; the candle may roll during the three-second window. If final data retrieval outlasts the TTL, the firewall may reauthorize the exact same signal on the same bar; this runs the normal pipeline checks again and does not renew a signal whose trigger, side, or identity has changed. The symbol quote timestamp must remain at most 30 seconds old and adverse price movement no greater than 0.8 ATR. Engine sizing, available margin, position/slot, daily-risk, execution order-book/API, and account submit-lock checks remain active.

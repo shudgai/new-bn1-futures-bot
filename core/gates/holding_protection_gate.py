@@ -72,6 +72,10 @@ INTRABAR_SPIKE_STATE_KEY = 'intrabar_spike_rebound_state'
 CHANNEL_PEAK_EXIT_STATE_KEY = 'channel_peak_profit_exit_state'
 CHANNEL_PEAK_PROFIT_EXIT = 'EXIT_CHANNEL_PEAK_PROFIT_LOCK'
 CHANNEL_PEAK_WICK_EXIT = 'EXIT_CHANNEL_PEAK_WICK_REVERSAL'
+CHANNEL_CLIMAX_ARM_ATR = 1.5
+CHANNEL_PEAK_GIVEBACK_RATIO = 0.25
+CHANNEL_PEAK_GIVEBACK_ATR = 0.4
+CHANNEL_PEAK_WICK_RATIO = 0.60
 CHANNEL_MIDLINE_EXIT = {
     'LONG': 'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
     'SHORT': 'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
@@ -242,8 +246,27 @@ def channel_swing_midline_exit_evidence(frame, side):
         return None
 
 
+def _last_closed_close_at_or_above_kc_middle(frame):
+    """Return whether the latest completed close still holds above KC middle."""
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return None
+        current = closed.iloc[-1]
+        close = float(current['close'])
+        middle = float(current.get(
+            'kc_middle', current.get('kc_basis', float('nan')),
+        ))
+        if not all(math.isfinite(value) and value > 0 for value in (close, middle)):
+            return None
+        return close >= middle
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def channel_peak_profit_exit_evidence(position, frame, quote):
-    """Track observed favorable extremes and authorize only a mature peak reversal."""
+    """Track KC-outside climax extremes and authorize confirmed reversals."""
     if (not position or frame is None or frame.empty
             or position.get('side') not in ('LONG', 'SHORT')):
         return None, False
@@ -284,14 +307,17 @@ def channel_peak_profit_exit_evidence(position, frame, quote):
             armed = bool(saved.get('armed'))
             state = dict(saved)
 
+        prior_peak = peak
+        new_extreme = quote > prior_peak if side == 'LONG' else quote < prior_peak
         peak = max(peak, quote) if side == 'LONG' else min(peak, quote)
         favorable_move = peak - entry if side == 'LONG' else entry - peak
+        current_favorable_move = quote - entry if side == 'LONG' else entry - quote
         outer_reached = (
-            upper > 0 and quote > upper if side == 'LONG'
-            else lower > 0 and quote < lower
+            math.isfinite(upper) and upper > 0 and quote >= upper if side == 'LONG'
+            else math.isfinite(lower) and lower > 0 and quote <= lower
         )
         armed = armed or (
-            favorable_move >= 1.5 * atr and outer_reached
+            current_favorable_move >= CHANNEL_CLIMAX_ARM_ATR * atr and outer_reached
         )
         next_state = {
             'identity': identity,
@@ -304,9 +330,22 @@ def channel_peak_profit_exit_evidence(position, frame, quote):
         if not armed or favorable_move <= 0:
             return None, changed
 
-        giveback = (peak - quote) / favorable_move if side == 'LONG' else (
+        retracement = peak - quote if side == 'LONG' else quote - peak
+        giveback = retracement / favorable_move if side == 'LONG' else (
             quote - peak
         ) / favorable_move
+        giveback_triggered = (
+            giveback >= CHANNEL_PEAK_GIVEBACK_RATIO
+            or math.isclose(
+                giveback, CHANNEL_PEAK_GIVEBACK_RATIO,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+            or retracement >= CHANNEL_PEAK_GIVEBACK_ATR * atr
+            or math.isclose(
+                retracement, CHANNEL_PEAK_GIVEBACK_ATR * atr,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
 
         is_closed = _current_bar_is_closed(frame)
         current_bar = frame.iloc[-1]
@@ -316,95 +355,35 @@ def channel_peak_profit_exit_evidence(position, frame, quote):
         c_low = min(float(current_bar.get('low', quote)), quote)
         c_range = c_high - c_low
 
-        if side == 'SHORT':
-            # 【2026-10-12 嚴格規範】：跌破 KC 下軌後，必須「見到真反彈/抽腳」才平空（禁止長黑中途秒平）
-            # 必須等到出現以下「真見底信號」之一才允許執行：
-            # 1. 盤中創出最低價後，反彈回抽幅度 >= 35%（長下影線抽腳）
-            # 2. 出現實體陽線（綠 K）收盤，且收盤價重新站回 KC 下軌內部
-            signal1_rebound_35 = False
-            if c_range > 0:
-                rebound_from_low = quote - c_low
-                rebound_ratio = rebound_from_low / c_range
-                thrust_rebound = (
-                    (quote - c_low) / (c_open - c_low)
-                    if c_open > c_low else 0.0
-                )
-                if (rebound_ratio >= 0.35
-                        or thrust_rebound >= 0.35
-                        or math.isclose(rebound_ratio, 0.35, rel_tol=1e-12)):
-                    signal1_rebound_35 = True
-
-            signal2_green_reclaim = (
-                is_closed and c_close > c_open and c_close > lower
-            )
-
-            # 嚴禁在「實體大黑 K 正在向下貫穿下軌」的當根直接平空
-            if (giveback >= 0.35 or math.isclose(giveback, 0.35, rel_tol=1e-12)):
-                if signal1_rebound_35 or signal2_green_reclaim:
-                    return ({
-                        'reason': CHANNEL_PEAK_PROFIT_EXIT,
-                        'peak_price': peak,
-                        'entry_price': entry,
-                        'quote': quote,
-                        'atr': atr,
-                        'favorable_move': favorable_move,
-                        'giveback_ratio': giveback,
-                        'side': side,
-                        'signal1_rebound_35': signal1_rebound_35,
-                        'signal2_green_reclaim': signal2_green_reclaim,
-                    }, changed)
-                # 未出現真反彈抽腳 (signal1) 且未收出陽線回軌 (signal2)，嚴禁平空！
-                return None, changed
-
-        elif side == 'LONG':
-            # 突破 KC 上軌後的平多鎖利，必須等到出現以下「真見頂信號」之一才允許執行：
-            # 1. 盤中創出最高價後，回落幅度 >= 35%（長上影線受阻）
-            # 2. 出現實體陰線（紅 K）收盤，且收盤價重新跌回 KC 上軌內部
-            signal1_pullback_35 = False
-            if c_range > 0:
-                pullback_from_high = c_high - quote
-                pullback_ratio = pullback_from_high / c_range
-                thrust_pullback = (
-                    (c_high - quote) / (c_high - c_open)
-                    if c_high > c_open else 0.0
-                )
-                if (pullback_ratio >= 0.35
-                        or thrust_pullback >= 0.35
-                        or math.isclose(pullback_ratio, 0.35, rel_tol=1e-12)):
-                    signal1_pullback_35 = True
-
-            signal2_red_reclaim = (
-                is_closed and c_close < c_open and c_close < upper
-            )
-
-            # 嚴禁在「實體大陽 K 正在向上貫穿上軌」的當根直接平多
-            if (giveback >= 0.35 or math.isclose(giveback, 0.35, rel_tol=1e-12)):
-                if signal1_pullback_35 or signal2_red_reclaim:
-                    return ({
-                        'reason': CHANNEL_PEAK_PROFIT_EXIT,
-                        'peak_price': peak,
-                        'entry_price': entry,
-                        'quote': quote,
-                        'atr': atr,
-                        'favorable_move': favorable_move,
-                        'giveback_ratio': giveback,
-                        'side': side,
-                        'signal1_pullback_35': signal1_pullback_35,
-                        'signal2_red_reclaim': signal2_red_reclaim,
-                    }, changed)
-                return None, changed
+        if giveback_triggered:
+            return ({
+                'reason': CHANNEL_PEAK_PROFIT_EXIT,
+                'peak_price': peak,
+                'entry_price': entry,
+                'quote': quote,
+                'atr': atr,
+                'favorable_move': favorable_move,
+                'retracement': retracement,
+                'retracement_atr': retracement / atr,
+                'giveback_ratio': giveback,
+                'side': side,
+                'peak_retracement_confirmed': True,
+            }, changed)
 
         candle_range = high - low
-        if is_closed and candle_range > 0:
+        new_candle_extreme = (
+            c_high > prior_peak if side == 'LONG' else c_low < prior_peak
+        )
+        if is_closed and new_candle_extreme and candle_range > 0:
             upper_wick = high - max(opening, close)
             lower_wick = min(opening, close) - low
             bearish_rejection = (
                 side == 'LONG' and close < opening
-                and upper_wick / candle_range >= 0.60
+                and upper_wick / candle_range >= CHANNEL_PEAK_WICK_RATIO
             )
             bullish_rejection = (
                 side == 'SHORT' and close > opening
-                and lower_wick / candle_range >= 0.60
+                and lower_wick / candle_range >= CHANNEL_PEAK_WICK_RATIO
             )
             if bearish_rejection or bullish_rejection:
                 return ({
@@ -1457,6 +1436,12 @@ class HoldingProtectionExitGate:
 
         if (channel_swing
                 or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
+            if (side == 'LONG'
+                    and clean_reason not in (
+                        CHANNEL_PEAK_PROFIT_EXIT, CHANNEL_PEAK_WICK_EXIT,
+                    )
+                    and _last_closed_close_at_or_above_kc_middle(frame) is True):
+                return _reject(reason=cls.REJECT_HEALTHY_PULLBACK)
             if clean_reason in (CHANNEL_PEAK_PROFIT_EXIT, CHANNEL_PEAK_WICK_EXIT):
                 evidence, _ = channel_peak_profit_exit_evidence(
                     position, frame, quote,

@@ -17,12 +17,10 @@ MAX_MA15_ENTRY_BIAS_ATR = 1.8
 CHOP_KC_SLOPE_EPSILON_ATR = 0.10
 CHOP_MA_TANGLE_ATR = 0.25
 CHOP_MIN_CHANNEL_BODY_ATR = 0.40
-MA_GAP_CHOP_LOOKBACK = 10
-MA_CROSS_CHOP_SHORT_LOOKBACK = 10
-MA_CROSS_CHOP_SHORT_MIN_CROSSES = 3
-MA_CROSS_CHOP_LOOKBACK = 20
-MA_CROSS_CHOP_MIN_CROSSES = 4
-MA_CROSS_CHOP_GAP_PCT = 0.0008
+MA_CROSS_CHOP_LOOKBACK = 6
+MA_CROSS_CHOP_MIN_CROSSES = 1
+MA_CROSS_CHOP_RECOVERY_GAP_PCT = 0.0015
+MA_GAP_CHOP_MIN_PCT = 0.0012
 MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
 MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM = 0.15
@@ -93,16 +91,16 @@ PIPELINE_ENTRY_TYPES = frozenset((
 def ma5_ma15_cross_chop_problem(
     frame: pd.DataFrame, quote: Optional[float] = None, *,
     symbol: str = '', log_result: bool = False,
-    allow_single_cross_gap: bool = False,
     side: Optional[str] = None,
 ) -> Optional[str]:
-    """Block entries when recent MA5/MA15 evidence is tangled or compressed."""
-    cross_count_short = None
+    """Block entries during MA entanglement, post-cross compression, or flat slopes."""
     cross_count = None
     gap_pct = None
+    ma5_slope_pct = None
+    ma15_slope_pct = None
     status = 'BLOCKED'
     try:
-        if frame is None or frame.empty:
+        if frame is None or frame.empty or side not in (None, 'LONG', 'SHORT'):
             raise ValueError('missing frame')
         live = frame.iloc[-1]
         live_closed = live.get('is_closed', False)
@@ -114,45 +112,32 @@ def ma5_ma15_cross_chop_problem(
         required = {'ma5', 'ma15'}
         timeframe_ms = float(frame.attrs.get('timeframe_ms', 60000))
         if (not math.isfinite(timeframe_ms) or timeframe_ms != 60000
-                or len(closed) < MA_CROSS_CHOP_SHORT_LOOKBACK
+                or len(closed) < MA_CROSS_CHOP_LOOKBACK
                 or not required.issubset(closed.columns)
                 or not {'ma5', 'ma15', 'close'}.issubset(frame.columns)):
             raise ValueError('insufficient MA history')
 
-        def count_crosses(history):
-            stamps = [float(value) for value in history['timestamp']]
-            if (not all(math.isfinite(value) and value > 0 for value in stamps)
-                    or any(right - left != timeframe_ms
-                           for left, right in zip(stamps, stamps[1:]))):
-                raise ValueError('invalid one-minute MA history')
-            spreads = [
-                float(row.ma5) - float(row.ma15)
-                for row in history.itertuples()
-            ]
-            if not all(math.isfinite(value) for value in spreads):
-                raise ValueError('invalid MA spread')
-            crosses = 0
-            prior_sign = 0
-            for spread in spreads:
-                current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
-                if current_sign and prior_sign and current_sign != prior_sign:
-                    crosses += 1
-                if current_sign:
-                    prior_sign = current_sign
-            return crosses
-
-        cross_count_short = count_crosses(
-            closed.tail(MA_CROSS_CHOP_SHORT_LOOKBACK)
-        )
-        if len(closed) >= MA_CROSS_CHOP_LOOKBACK:
-            cross_count = count_crosses(closed.tail(MA_CROSS_CHOP_LOOKBACK))
-
-        history_size = MA_GAP_CHOP_LOOKBACK - 1 if has_live else MA_GAP_CHOP_LOOKBACK
-        history = closed.tail(history_size)
+        cross_history = closed.tail(MA_CROSS_CHOP_LOOKBACK)
+        stamps = [float(value) for value in cross_history['timestamp']]
+        if (not all(math.isfinite(value) and value > 0 for value in stamps)
+                or any(right - left != timeframe_ms
+                       for left, right in zip(stamps, stamps[1:]))):
+            raise ValueError('invalid one-minute MA history')
         spreads = [
             float(row.ma5) - float(row.ma15)
-            for row in history.itertuples()
+            for row in cross_history.itertuples()
         ]
+        if not all(math.isfinite(value) for value in spreads):
+            raise ValueError('invalid MA spread')
+        cross_count = 0
+        prior_sign = 0
+        for spread in spreads:
+            current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
+            if current_sign and prior_sign and current_sign != prior_sign:
+                cross_count += 1
+            if current_sign:
+                prior_sign = current_sign
+
         current_quote = float(
             quote if quote is not None else live.get('close', float('nan'))
         )
@@ -168,35 +153,47 @@ def ma5_ma15_cross_chop_problem(
             raise ValueError('invalid MA evidence')
 
         if has_live:
-            live_ma5 += (current_quote - live_close) / 5.0
-            live_ma15 += (current_quote - live_close) / 15.0
-            spreads.append(live_ma5 - live_ma15)
-        gap_pcts = [
-            abs(spread) / float(row.ma15)
-            for spread, row in zip(spreads, frame.tail(len(spreads)).itertuples())
-        ]
-        if (len(gap_pcts) != MA_GAP_CHOP_LOOKBACK
-                or not all(math.isfinite(value) for value in gap_pcts)):
-            raise ValueError('invalid MA gap history')
-        gap_pct = min(gap_pcts)
+            live_stamp = float(live.get('timestamp', float('nan')))
+            if (not math.isfinite(live_stamp) or live_stamp <= 0
+                    or live_stamp != stamps[-1] + timeframe_ms):
+                raise ValueError('invalid live one-minute MA history')
+        live_ma5 += (current_quote - live_close) / 5.0
+        live_ma15 += (current_quote - live_close) / 15.0
+        previous_closed = closed.iloc[-2]
+        previous_ma5 = float(previous_closed['ma5'])
+        previous_ma15 = float(previous_closed['ma15'])
+        current_ma5 = live_ma5
+        current_ma15 = live_ma15
+        if not all(math.isfinite(value) and value > 0 for value in (
+            previous_ma5, previous_ma15, current_ma5, current_ma15,
+        )):
+            raise ValueError('invalid MA slope evidence')
 
-        if (cross_count_short >= MA_CROSS_CHOP_SHORT_MIN_CROSSES
-                or (cross_count is not None
-                    and cross_count >= MA_CROSS_CHOP_MIN_CROSSES)):
-            problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
-        elif (not allow_single_cross_gap
-              and not (
-                  side == 'LONG'
-                  and _recent_bullish_cross_gap_exemption(
-                      frame, current_quote,
-                  )
-              )
-              and gap_pct < MA_CROSS_CHOP_GAP_PCT
-              and not math.isclose(
-                  gap_pct, MA_CROSS_CHOP_GAP_PCT,
-                  rel_tol=1e-12, abs_tol=0.0,
-              )):
+        gap_pct = abs(current_ma5 - current_ma15) / current_quote
+        ma5_slope_pct = (current_ma5 - previous_ma5) / current_quote
+        ma15_slope_pct = (current_ma15 - previous_ma15) / current_quote
+
+        def below(value, threshold):
+            return value < threshold and not math.isclose(
+                value, threshold, rel_tol=1e-12, abs_tol=0.0,
+            )
+
+        recent_cross_compressed = (
+            cross_count >= MA_CROSS_CHOP_MIN_CROSSES
+            and below(gap_pct, MA_CROSS_CHOP_RECOVERY_GAP_PCT)
+        )
+        if below(gap_pct, MA_GAP_CHOP_MIN_PCT):
             problem = 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
+        elif recent_cross_compressed:
+            problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
+        elif side == 'LONG' and not (
+            current_ma5 > previous_ma5 and current_ma15 > previous_ma15
+        ):
+            problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
+        elif side == 'SHORT' and not (
+            current_ma5 < previous_ma5 and current_ma15 < previous_ma15
+        ):
+            problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
         else:
             problem = None
             status = 'PASSED'
@@ -210,75 +207,22 @@ def ma5_ma15_cross_chop_problem(
         except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
             pass
         log_key = (symbol or str(id(frame)), bar_id)
-        log_state = (status, cross_count_short, cross_count)
+        log_state = (status, cross_count, gap_pct, ma5_slope_pct, ma15_slope_pct)
         if _MA_CROSS_CHOP_LOGGED.get(log_key) != log_state:
             import logging
             logging.getLogger('EntryChopCheck').info(
-                '[ChopCheck] Cross10=%s/3, Cross20=%s/4, MAGap=%s%% -> '
-                'Status: %s symbol=%s bar=%s reason=%s',
-                cross_count_short if cross_count_short is not None else 'INVALID',
-                cross_count if cross_count is not None else 'N/A',
+                '[ChopCheck] Cross6=%s/1, MAGap=%s%%, MA5Slope=%s%%, '
+                'MA15Slope=%s%% -> Status: %s symbol=%s bar=%s reason=%s',
+                cross_count if cross_count is not None else 'INVALID',
                 f'{gap_pct * 100:.6f}' if gap_pct is not None else 'INVALID',
+                f'{ma5_slope_pct * 100:.6f}' if ma5_slope_pct is not None else 'INVALID',
+                f'{ma15_slope_pct * 100:.6f}' if ma15_slope_pct is not None else 'INVALID',
                 status, symbol or 'UNKNOWN', bar_id, problem or 'NONE',
             )
             _MA_CROSS_CHOP_LOGGED[log_key] = log_state
             if len(_MA_CROSS_CHOP_LOGGED) > 2048:
                 _MA_CROSS_CHOP_LOGGED.pop(next(iter(_MA_CROSS_CHOP_LOGGED)))
     return problem
-
-
-def _recent_bullish_cross_gap_exemption(
-    frame: pd.DataFrame, quote: float,
-) -> bool:
-    """Allow only the initial two bars of a rising MA5 golden cross past gap veto."""
-    try:
-        if frame is None or len(frame) < 4:
-            return False
-        live = frame.iloc[-1]
-        has_live = not bool(live.get('is_closed', True))
-        closed = closed_entry_candles(frame)
-        if len(closed) < 3:
-            return False
-
-        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000))
-        live_stamp = float(live['timestamp'])
-        recent_closed = closed.tail(3)
-        stamps = [float(value) for value in recent_closed['timestamp']]
-        if has_live:
-            if live_stamp - stamps[-1] != timeframe_ms:
-                return False
-            stamps.append(live_stamp)
-        if any(
-            later - earlier != timeframe_ms
-            for earlier, later in zip(stamps, stamps[1:])
-        ):
-            return False
-
-        ma5_values = [float(value) for value in recent_closed['ma5']]
-        ma15_values = [float(value) for value in recent_closed['ma15']]
-        if has_live:
-            live_close = float(live['close'])
-            adjustment = float(quote) - live_close
-            ma5_values.append(float(live['ma5']) + adjustment / 5.0)
-            ma15_values.append(float(live['ma15']) + adjustment / 15.0)
-        if (not all(math.isfinite(value) and value > 0
-                    for value in (*ma5_values, *ma15_values))
-                or len(ma5_values) < 2
-                or ma5_values[-1] <= ma5_values[-2]
-                or ma5_values[-1] <= ma15_values[-1]):
-            return False
-
-        spreads = [
-            ma5_value - ma15_value
-            for ma5_value, ma15_value in zip(ma5_values, ma15_values)
-        ]
-        recent_spreads = spreads[-3:]
-        return any(
-            previous <= 0 < current
-            for previous, current in zip(recent_spreads, recent_spreads[1:])
-        )
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        return False
 
 
 def fast_cross_evidence(
@@ -2042,7 +1986,6 @@ class EntryGatePipeline:
         )
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
-            allow_single_cross_gap=is_fast_cross,
             side=(
                 decision.get('side') if isinstance(decision, dict)
                 else requested_side
@@ -2363,6 +2306,14 @@ class EntryGatePipeline:
         if side not in ('LONG', 'SHORT'):
             if diagnostics is not None:
                 diagnostics['reason'] = 'INVALID_SIDE'
+            return None
+        from core.services.ma5_entry_slope import (
+            live_ma5_entry_direction_problem,
+        )
+        direction_problem = live_ma5_entry_direction_problem(frame, quote, side)
+        if direction_problem:
+            if diagnostics is not None:
+                diagnostics['reason'] = direction_problem
             return None
         market_structure_problem = entry_market_structure_problem(
             frame, quote, side, entry_phase=decision.get('entry_phase'),

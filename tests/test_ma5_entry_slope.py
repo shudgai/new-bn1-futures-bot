@@ -3,6 +3,7 @@ import pytest
 
 from core.services.ma5_entry_slope import (
     MIN_MA5_SLOPE_ATR,
+    live_ma5_entry_direction_problem,
     live_ma5_slope_atr,
     live_ma5_slope_problem,
 )
@@ -69,15 +70,20 @@ def test_strong_breakout_cannot_bypass_minimum_ma5_slope(monkeypatch):
     from core.gates.pipeline import pipeline
     from core.intelligence.spatial_brain import SpatialBrain
 
-    monkeypatch.setattr(pipeline, "has_strong_bullish_breakout", lambda *_: True)
+    monkeypatch.setattr(pipeline, "has_strong_bullish_breakout", lambda *_: False)
     monkeypatch.setattr(
         SpatialBrain, "analyze",
         lambda *_: SimpleNamespace(state="EXPLOSIVE_EXPANSION"),
     )
+    monkeypatch.setattr(
+        "core.services.entry_contract.entry_market_structure_problem",
+        lambda *_args, **_kwargs: None,
+    )
     frame = preflight_frame("LONG", MIN_MA5_SLOPE_ATR * 0.5)
+    frame.loc[frame.index[-1], "close"] = 100.1
 
     passed, reason = pre_flight_safety_check(
-        frame, 100.0, "LONG", decision_type="CLOSED_BODY_BREAKOUT_LONG",
+        frame, 100.1, "LONG", decision_type="CLOSED_BODY_BREAKOUT_LONG",
     )
 
     assert not passed
@@ -93,13 +99,17 @@ def test_waterfall_flip_can_enter_with_aligned_shallow_turn(monkeypatch):
         SpatialBrain, "analyze",
         lambda *_: SimpleNamespace(state="EXPLOSIVE_EXPANSION"),
     )
+    monkeypatch.setattr(
+        "core.services.entry_contract.entry_market_structure_problem",
+        lambda *_args, **_kwargs: None,
+    )
     frame = preflight_frame("SHORT", MIN_MA5_SLOPE_ATR * 0.5)
 
     passed, reason = pre_flight_safety_check(
-        frame, 100.0, "SHORT", decision_type="TOP_WATERFALL_FLIP",
+        frame, 99.8, "SHORT", decision_type="TOP_WATERFALL_FLIP",
     )
 
-    assert passed
+    assert passed, reason
     assert reason is None
 
 
@@ -155,3 +165,154 @@ def test_pure_trend_route_also_blocks_a_shallow_ma5_slope(monkeypatch, side):
 
     assert result is None
     assert diagnostics["reason"] == "BLOCKED_BY_MA5_SLOPE_INSUFFICIENT"
+
+
+@pytest.mark.parametrize(
+    "previous_ma5,current_ma5,quote,expected",
+    [
+        (100.0, 100.0, 100.0, "BLOCKED_BY_MA5_WEAK_SLOPE"),
+        (100.1, 100.0, 100.0, "BLOCKED_BY_MA5_WEAK_SLOPE"),
+        (99.9, 100.0, 99.9, "BLOCKED_BY_MA5_WEAK_SLOPE"),
+        (99.9, 100.0, 100.0, None),
+    ],
+)
+def test_live_ma5_direction_gate_requires_rising_line_and_price_above(
+    previous_ma5, current_ma5, quote, expected,
+):
+    frame = pd.DataFrame([
+        dict(ma5=previous_ma5, close=100.0, is_closed=True),
+        dict(ma5=current_ma5, close=100.0, is_closed=True),
+    ])
+
+    assert live_ma5_entry_direction_problem(frame, quote, "LONG") == expected
+
+
+@pytest.mark.parametrize(
+    "previous_ma5,current_ma5,quote,expected",
+    [
+        (100.0, 100.0, 100.0, "BLOCKED_BY_MA5_STRONG_SLOPE"),
+        (99.9, 100.0, 100.0, "BLOCKED_BY_MA5_STRONG_SLOPE"),
+        (100.1, 100.0, 100.1, "BLOCKED_BY_MA5_STRONG_SLOPE"),
+        (100.1, 100.0, 100.0, None),
+    ],
+)
+def test_live_ma5_direction_gate_requires_falling_line_and_price_below(
+    previous_ma5, current_ma5, quote, expected,
+):
+    frame = pd.DataFrame([
+        dict(ma5=previous_ma5, close=100.0, is_closed=True),
+        dict(ma5=current_ma5, close=100.0, is_closed=True),
+    ])
+
+    assert live_ma5_entry_direction_problem(frame, quote, "SHORT") == expected
+
+
+@pytest.mark.parametrize(
+    "side,previous_ma5,current_ma5,quote,expected",
+    [
+        ("LONG", 100.1, 100.0, 100.0, "BLOCKED_BY_MA5_WEAK_SLOPE"),
+        ("SHORT", 99.9, 100.0, 100.0, "BLOCKED_BY_MA5_STRONG_SLOPE"),
+    ],
+)
+def test_ma5_direction_gate_is_applied_by_pipeline_authorizer(
+    monkeypatch, side, previous_ma5, current_ma5, quote, expected,
+):
+    import importlib
+    from core.gates.pipeline import EntryGatePipeline
+
+    pipeline_module = importlib.import_module("core.gates.pipeline")
+    frame = pd.DataFrame([
+        dict(timestamp=(index + 1) * 60_000, open=100.0, close=100.0,
+             high=101.0, low=99.0, atr=1.0, ma5=100.2,
+             ma15=99.8, kc_upper=102.0, kc_middle=100.0, kc_lower=98.0,
+             is_closed=True)
+        for index in range(6)
+    ])
+    frame.loc[frame.index[-2], "ma5"] = previous_ma5
+    frame.loc[frame.index[-1], "ma5"] = current_ma5
+    frame.attrs["timeframe_ms"] = 60_000
+    monkeypatch.setattr(
+        pipeline_module, "ma5_ma15_cross_chop_problem", lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        pipeline_module, "strict_kc_entry_problem", lambda *_a, **_k: None,
+    )
+    gate = EntryGatePipeline()
+    monkeypatch.setattr(gate, "market_regime_problem", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        pipeline_module, "entry_market_structure_problem",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(gate, "chop_lockout_problem", lambda *_a, **_k: None)
+    if side == "LONG":
+        monkeypatch.setattr(
+            gate, "detect_midline_break_long",
+            lambda *_a, **_k: {
+                "type": "AUTHORIZED_BY_MIDLINE_BREAK_LONG",
+                "side": side,
+                "pending_signal_id": "test-long",
+            },
+        )
+    else:
+        monkeypatch.setattr(
+            gate, "detect_midline_break_short",
+            lambda *_a, **_k: {
+                "type": "AUTHORIZED_BY_MIDLINE_BREAK_SHORT",
+                "side": side,
+                "pending_signal_id": "test-short",
+            },
+        )
+
+    diagnostics = {}
+    decision_type = (
+        "AUTHORIZED_BY_MIDLINE_BREAK_LONG"
+        if side == "LONG" else "AUTHORIZED_BY_MIDLINE_BREAK_SHORT"
+    )
+    decision = gate.authorize(
+        {
+            "type": decision_type,
+            "side": side,
+            "pending_signal_id": f"test-{side.lower()}",
+        },
+        frame,
+        quote,
+        requested_side=side,
+        diagnostics=diagnostics,
+    )
+
+    assert decision is None
+    assert diagnostics["reason"] == expected
+
+
+@pytest.mark.parametrize(
+    "side,previous_ma5,current_ma5,quote,expected",
+    [
+        ("LONG", 100.1, 100.0, 100.0, "BLOCKED_BY_MA5_WEAK_SLOPE"),
+        ("SHORT", 99.9, 100.0, 100.0, "BLOCKED_BY_MA5_STRONG_SLOPE"),
+    ],
+)
+def test_entry_preflight_enforces_ma5_direction_for_all_routes(
+    monkeypatch, side, previous_ma5, current_ma5, quote, expected,
+):
+    from core.services import entry_contract
+
+    frame = pd.DataFrame([
+        dict(timestamp=60_000, open=100.0, close=100.0, high=101.0,
+             low=99.0, atr=1.0, ma5=previous_ma5, ma15=99.8,
+             kc_upper=102.0, kc_middle=100.0, kc_lower=98.0,
+             is_closed=True),
+        dict(timestamp=120_000, open=100.0, close=100.0, high=101.0,
+             low=99.0, atr=1.0, ma5=current_ma5, ma15=99.9,
+             kc_upper=102.0, kc_middle=100.0, kc_lower=98.0,
+             is_closed=True),
+    ])
+    monkeypatch.setattr(
+        entry_contract, "entry_market_structure_problem", lambda *_a, **_k: None,
+    )
+
+    passed, reason = entry_contract.pre_flight_safety_check(
+        frame, quote, side, decision_type="AUTHORIZED_REVERSAL_ROUTE",
+    )
+
+    assert passed is False
+    assert reason == expected

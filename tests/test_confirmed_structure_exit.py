@@ -106,7 +106,11 @@ def test_structure_exit_uses_bar_close_not_intrabar_quote():
     assert decision is None
 
 
-def test_structure_exit_waits_for_closed_kc_middle_breach():
+@pytest.mark.parametrize(
+    "close,middle",
+    [(7.5, 7.4), (7.4, 7.4)],
+)
+def test_structure_exit_waits_for_closed_kc_middle_breach(close, middle):
     position = _position("LONG")
     meta = {}
     history = [
@@ -114,9 +118,9 @@ def test_structure_exit_waits_for_closed_kc_middle_breach():
         _bar(120_000, 8, 13),
         _bar(180_000, 9, 12),
         _bar(240_000, 9, 11),
-        _bar(300_000, 7, 10, close=7.5),
+        _bar(300_000, 7, 10, close=close),
     ]
-    history[-1]["kc_middle"] = 7.4
+    history[-1]["kc_middle"] = middle
 
     decision, _ = evaluate_confirmed_structure_exit(
         position, meta, _snapshot(history, 360_100), 360_100, 7.4,

@@ -29,7 +29,11 @@ from core.services.kc_pending_entry import (
     KC_PENDING_CODES,
     evaluate_kc_pending_entry,
 )
-from core.services.ma5_entry_slope import live_ma5_slope_problem, live_ma5_slope_atr
+from core.services.ma5_entry_slope import (
+    live_ma5_entry_direction_problem,
+    live_ma5_slope_problem,
+    live_ma5_slope_atr,
+)
 from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 from core.services.exits.dual_track_exit_service import (
     detect_climax_reversal, is_true_climax_peak, is_true_climax_valley,
@@ -2000,6 +2004,11 @@ def pre_flight_safety_check(
         3. 多單平倉後的空單反手，須由當根實體直接跌破 KC 中軌且 KC 轉空確認。
     """
     try:
+        direction_problem = live_ma5_entry_direction_problem(
+            frame, quote, side,
+        )
+        if direction_problem:
+            return False, direction_problem
         import time
         is_flip = decision_type in (
             'AUTHORIZED_BY_PEAK_FLIP_SHORT',
@@ -2212,6 +2221,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         return None
 
     def authorize(decision, quote):
+        direction_problem = live_ma5_entry_direction_problem(
+            frame, quote, decision.get('side'),
+        )
+        if direction_problem:
+            return reject(direction_problem)
         is_post_close_continuation = (
             decision.get('type') == 'TRIGGER_C_CONTINUATION'
             and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
@@ -2236,10 +2250,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
-            allow_single_cross_gap=decision.get('type') in (
-                GOLDEN_CROSS_FAST_LONG_CODE,
-                DEATH_CROSS_FAST_SHORT_CODE,
-            ),
             side=decision.get('side'),
         )
         if cross_chop_problem:
@@ -2317,7 +2327,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         cross_chop_problem = ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
-            allow_single_cross_gap=active_fast_cross is not None,
             side=(
                 active_fast_cross.get('side')
                 if active_fast_cross is not None

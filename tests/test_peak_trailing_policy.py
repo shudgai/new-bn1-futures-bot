@@ -126,12 +126,44 @@ def test_channel_momentum_stall_does_not_exit_on_large_body_or_new_extreme():
     assert channel_momentum_stall_exit(
         position_data, snapshot, state, 103.5, 1,
     ) is None
-
     history[-1]["c"] = 103.1
     history[-1]["h"] = 105.1
     assert channel_momentum_stall_exit(
         position_data, snapshot, state, 103.5, 1,
     ) is None
+
+
+def test_climax_tracking_suppresses_channel_momentum_stall(monkeypatch):
+    from core.services.exits import peak_trailing_exit
+
+    monkeypatch.setattr(
+        'core.services.exits.trend_hold_evaluator.evaluate_trend_hold',
+        lambda *args, **kwargs: ('RELEASED', 'TEST'),
+    )
+    monkeypatch.setattr(
+        peak_trailing_exit,
+        'channel_momentum_stall_exit',
+        lambda *args, **kwargs: {'trigger': CHANNEL_MOMENTUM_STALL_TRIGGER},
+    )
+    p = position('LONG')
+    p['channel_peak_profit_exit_state'] = {
+        'identity': ['LONG', 60.0, 100.0],
+        'peak_price': 110.0,
+        'armed': True,
+    }
+    snapshot = {
+        'quote_ms': 61_000,
+        'live_bar_ms': 60_000,
+        'closed_bar_ms': 0,
+        'live_open': 100.0,
+        'atr': 1.0,
+        'kc_middle': 99.0,
+    }
+
+    result = evaluate_peak_trailing(p, 109.8, snapshot, atr=1.0, fee=0.0, slippage=0.0)
+
+    assert result is None
+    assert p[STATE_KEY].get('pending') is None
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

@@ -226,19 +226,19 @@ def _fresh_bullish_cross_frame(*, bars_since_cross: int) -> pd.DataFrame:
     return frame
 
 
-def test_fresh_bullish_cross_skips_gap_veto_for_two_bar_window_only() -> None:
+def test_fresh_bullish_cross_does_not_bypass_live_ma_gap_veto() -> None:
     fresh_frame = _fresh_bullish_cross_frame(bars_since_cross=0)
     assert ma5_ma15_cross_chop_problem(fresh_frame, 100.0) == (
         "BLOCKED_MA5_MA15_GAP_TOO_NARROW"
     )
     assert ma5_ma15_cross_chop_problem(
         fresh_frame, 100.0, side="LONG",
-    ) is None
+    ) == "BLOCKED_MA5_MA15_GAP_TOO_NARROW"
 
     one_bar_old_frame = _fresh_bullish_cross_frame(bars_since_cross=1)
     assert ma5_ma15_cross_chop_problem(
         one_bar_old_frame, 100.0, side="LONG",
-    ) is None
+    ) == "BLOCKED_MA5_MA15_GAP_TOO_NARROW"
 
     expired_frame = _fresh_bullish_cross_frame(bars_since_cross=2)
     assert ma5_ma15_cross_chop_problem(

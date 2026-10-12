@@ -91,7 +91,6 @@ async def validate_account_entry(account, symbol, side, context):
             )
     cross_chop_problem = ma5_ma15_cross_chop_problem(
         frame, quote, symbol=symbol, log_result=True,
-        allow_single_cross_gap=verified_fast_cross is not None,
         side=side,
     )
     if cross_chop_problem:

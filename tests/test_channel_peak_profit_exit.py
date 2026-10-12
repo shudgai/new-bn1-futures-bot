@@ -69,7 +69,7 @@ def test_channel_swing_ignores_intrabar_noise(side, quote):
     "side,quote",
     [("LONG", 103.2), ("SHORT", 96.8)],
 )
-def test_channel_swing_peak_lock_requires_35_percent_peak_profit_giveback(
+def test_channel_swing_peak_lock_uses_climax_giveback_threshold(
     side, quote,
 ):
     position = _position(side)
@@ -82,7 +82,25 @@ def test_channel_swing_peak_lock_requires_35_percent_peak_profit_giveback(
     )
 
     assert decision == CHANNEL_PEAK_PROFIT_EXIT
-    assert details["giveback_ratio"] >= 0.35
+    assert details["giveback_ratio"] >= 0.25
+
+
+def test_channel_swing_holds_on_small_pullback_inside_upper_band():
+    position = _position("LONG")
+    peak_frame = _frame("LONG", close=112.0, high=112.0, low=99.0)
+    peak_frame.loc[1, "kc_upper"] = 111.0
+    HoldingProtectionExitGate.evaluate(position, peak_frame, 112.0, True)
+
+    pullback_frame = _frame(
+        "LONG", close=111.5, is_closed=True, high=112.0, low=109.0,
+    )
+    pullback_frame.loc[1, "open"] = 111.0
+    pullback_frame.loc[1, "kc_upper"] = 111.0
+    decision, _ = HoldingProtectionExitGate.evaluate(
+        position, pullback_frame, 111.5, True,
+    )
+
+    assert decision is None
 
 
 @pytest.mark.parametrize(
@@ -106,6 +124,92 @@ def test_channel_swing_midline_exit_requires_adverse_closed_body(
         position, frame, quote, decision, channel_swing=True,
     )
     assert allowed
+
+
+@pytest.mark.parametrize("close", [100.0, 101.0])
+def test_channel_swing_blocks_long_exit_when_closed_body_holds_kc_midline(close):
+    frame = _frame("LONG", close=close, is_closed=True, high=105.0, low=99.0)
+    frame.loc[1, "open"] = close + 1.0
+    position = _position("LONG")
+
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position,
+        frame,
+        quote=99.0,
+        candidate_reason=CHANNEL_MIDLINE_EXIT["LONG"],
+        channel_swing=True,
+    )
+
+    assert allowed is False
+    assert reason == HoldingProtectionExitGate.REJECT_HEALTHY_PULLBACK
+
+
+def test_channel_swing_peak_exit_uses_observed_giveback_ratio():
+    position = _position("LONG")
+    frame = _frame("LONG", close=113.0, high=120.0, low=90.0)
+    frame.loc[1, "kc_upper"] = 110.0
+
+    HoldingProtectionExitGate.evaluate(position, frame, 120.0, True)
+    decision, details = HoldingProtectionExitGate.evaluate(
+        position, frame, 113.0, True,
+    )
+
+    assert decision == CHANNEL_PEAK_PROFIT_EXIT
+    assert details["giveback_ratio"] == pytest.approx(0.35)
+    assert details["peak_retracement_confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "side,peak,quote,expected_ratio,expected_atr",
+    [
+        ("LONG", 105.0, 104.2, 0.16, 0.4),
+        ("SHORT", 95.0, 95.8, 0.16, 0.4),
+        ("LONG", 120.0, 115.0, 0.25, 2.5),
+        ("SHORT", 80.0, 85.0, 0.25, 2.5),
+    ],
+)
+def test_channel_climax_exits_on_either_peak_giveback_limit(
+    side, peak, quote, expected_ratio, expected_atr,
+):
+    position = _position(side)
+    frame = _frame(
+        side, close=quote, high=max(110.0, peak, quote),
+        low=min(90.0, peak, quote),
+    )
+    if side == "LONG" and peak > 110.0:
+        frame.loc[1, "kc_upper"] = 110.0
+    if side == "SHORT" and peak < 90.0:
+        frame.loc[1, "kc_lower"] = 90.0
+
+    HoldingProtectionExitGate.evaluate(position, frame, peak, True)
+    decision, details = HoldingProtectionExitGate.evaluate(
+        position, frame, quote, True,
+    )
+
+    assert decision == CHANNEL_PEAK_PROFIT_EXIT
+    assert details["giveback_ratio"] == pytest.approx(expected_ratio)
+    assert details["retracement_atr"] == pytest.approx(expected_atr)
+
+
+@pytest.mark.parametrize(
+    "side,quote,outer_price",
+    [
+        ("LONG", 103.0, 104.0),
+        ("SHORT", 97.0, 96.0),
+    ],
+)
+def test_channel_climax_arms_only_after_profit_and_outer_rail(
+    side, quote, outer_price,
+):
+    position = _position(side)
+    frame = _frame(side, close=quote, high=105.0, low=95.0)
+
+    HoldingProtectionExitGate.evaluate(position, frame, quote, True)
+    assert position["channel_peak_profit_exit_state"]["armed"] is False
+
+    frame.loc[1, "close"] = outer_price
+    HoldingProtectionExitGate.evaluate(position, frame, outer_price, True)
+    assert position["channel_peak_profit_exit_state"]["armed"] is True
 
 
 @pytest.mark.parametrize(
@@ -208,8 +312,8 @@ def test_realtime_path_closes_only_after_channel_peak_giveback(monkeypatch):
 @pytest.mark.parametrize(
     "side,peak,quote,opening,high,low",
     [
-        ("LONG", 114.0, 109.7, 110.0, 115.0, 109.5),
-        ("SHORT", 86.0, 90.3, 90.0, 90.5, 85.0),
+        ("LONG", 114.0, 113.6, 113.7, 114.4, 113.4),
+        ("SHORT", 86.0, 86.4, 86.3, 86.6, 85.6),
     ],
 )
 def test_mature_channel_peak_can_exit_on_closed_reversal_wick(
@@ -259,15 +363,15 @@ def test_peak_wick_reversal_requires_six_tenths_of_closed_bar_range():
             "kc_lower": 88.0, "is_closed": True,
         },
         {
-            "timestamp": 120_000.0, "open": 110.0, "high": 115.0,
-            "low": 100.0, "close": 109.7, "atr": 2.0,
+            "timestamp": 120_000.0, "open": 114.5, "high": 115.0,
+            "low": 112.0, "close": 113.5, "atr": 2.0,
             "kc_upper": 112.0, "kc_middle": 100.0,
             "kc_lower": 88.0, "is_closed": True,
         },
     ])
 
     decision, _ = HoldingProtectionExitGate.evaluate(
-        position, closed, 109.7, True,
+        position, closed, 113.5, True,
     )
 
     assert decision is None

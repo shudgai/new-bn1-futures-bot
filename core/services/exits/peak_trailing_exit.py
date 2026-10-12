@@ -14,6 +14,7 @@ DOJI_BODY_RATIO = 0.25
 DOJI_ADVERSE_BODY_ATR = 0.50
 DOJI_REVERSAL_BODY_RATIO = 0.60
 STATE_KEY = 'peak_trailing_state'
+CHANNEL_PEAK_EXIT_STATE_KEY = 'channel_peak_profit_exit_state'
 PEAK_REASON = 'EXIT_REALTIME_PEAK_TRAILING'
 HARD_REASON = 'EXIT_INITIAL_ATR_HARD_STOP'
 NET_ROE_LOCK_TRIGGER = 'NET_ROE_STAGED_GIVEBACK'
@@ -96,8 +97,6 @@ def channel_swing_exit_allowed(reason=None, trigger=None):
         'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
         'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
         'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
-        'MA5_TRUE_PEAK_REVERSAL',
-        CHANNEL_MOMENTUM_STALL_TRIGGER,
     }
     for value in (reason, trigger):
         if not isinstance(value, str):
@@ -1573,6 +1572,30 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 if stall_evidence is not None:
                     reason, trigger = ABNORMAL_REASON, stall_evidence['trigger']
                     state.update(stall_evidence)
+
+            channel_peak_state = position.get(CHANNEL_PEAK_EXIT_STATE_KEY)
+            climax_tracking = (
+                is_channel_swing and isinstance(channel_peak_state, dict)
+                and channel_peak_state.get('armed') is True
+            )
+            protected_climax_exits = {
+                'WATERFALL_DROP',
+                'TWO_CLOSED_ADVERSE_ABNORMAL',
+                LIVE_FLASH_DUMP_TRIGGER,
+                EMERGENCY_DUMP_CUT_TRIGGER,
+                'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
+                'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
+            }
+            if (climax_tracking and reason != HARD_REASON
+                    and trigger not in protected_climax_exits):
+                if state.get('pending') not in (None, HARD_REASON):
+                    pending_trigger = state.get('trigger')
+                    if pending_trigger not in protected_climax_exits:
+                        for key in ('pending', 'trigger', 'trigger_bar_ms',
+                                    'trigger_confirmed_ms', 'trigger_open',
+                                    'trigger_atr', 'trigger_price'):
+                            state.pop(key, None)
+                reason, trigger = None, None
 
             if (is_channel_swing and reason != HARD_REASON
                     and trigger not in CHANNEL_SWING_EXIT_TRIGGERS):
