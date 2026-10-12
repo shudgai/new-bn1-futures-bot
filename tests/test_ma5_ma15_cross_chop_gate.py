@@ -62,6 +62,27 @@ def test_chop_guard_blocks_three_crosses_in_last_ten_closed_bars():
     assert ma5_ma15_cross_chop_problem(frame, 100.0) == CROSS_BLOCK
 
 
+def test_chop_guard_keeps_ten_bar_three_cross_veto_with_longer_history():
+    spreads = [0.5] * 10 + [0.5, -0.5, 0.5, -0.5] + [0.5] * 6
+    frame = frame_with_spreads(spreads, atr=0.1)
+
+    assert ma5_ma15_cross_chop_problem(frame, 100.0) == CROSS_BLOCK
+
+
+def test_chop_guard_blocks_four_crosses_over_twenty_when_last_ten_are_quiet():
+    spreads = [0.5, -0.5, 0.5, -0.5] + [0.5] * 6 + [-0.5] * 10
+    frame = frame_with_spreads(spreads, atr=0.1)
+
+    assert ma5_ma15_cross_chop_problem(frame, 100.0) == CROSS_BLOCK
+
+
+def test_chop_guard_allows_three_crosses_over_twenty_when_last_ten_are_quiet():
+    spreads = [0.5, -0.5, 0.5, -0.5] + [-0.5] * 16
+    frame = frame_with_spreads(spreads, atr=0.1)
+
+    assert ma5_ma15_cross_chop_problem(frame, 100.0) is None
+
+
 def test_chop_guard_does_not_count_an_unclosed_live_cross():
     frame = frame_with_spreads(
         [0.5, 0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, 0.1, 0.1, 0.1],
@@ -112,7 +133,7 @@ def test_chop_guard_logs_metrics_and_decision(caplog):
     ) is None
 
     assert (
-        "[ChopCheck] Lookback=10, CrossCount=0, MAGap=0.500000% -> "
+        "[ChopCheck] Cross10=0/3, Cross20=N/A/4, MAGap=0.500000% -> "
         "Status: PASSED symbol=CAP/USDT"
     ) in caplog.text
 

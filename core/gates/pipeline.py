@@ -18,8 +18,10 @@ CHOP_KC_SLOPE_EPSILON_ATR = 0.10
 CHOP_MA_TANGLE_ATR = 0.25
 CHOP_MIN_CHANNEL_BODY_ATR = 0.40
 MA_GAP_CHOP_LOOKBACK = 10
-MA_CROSS_CHOP_LOOKBACK = 10
-MA_CROSS_CHOP_MIN_CROSSES = 3
+MA_CROSS_CHOP_SHORT_LOOKBACK = 10
+MA_CROSS_CHOP_SHORT_MIN_CROSSES = 3
+MA_CROSS_CHOP_LOOKBACK = 20
+MA_CROSS_CHOP_MIN_CROSSES = 4
 MA_CROSS_CHOP_GAP_PCT = 0.0008
 MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
@@ -95,6 +97,7 @@ def ma5_ma15_cross_chop_problem(
     side: Optional[str] = None,
 ) -> Optional[str]:
     """Block entries when recent MA5/MA15 evidence is tangled or compressed."""
+    cross_count_short = None
     cross_count = None
     gap_pct = None
     status = 'BLOCKED'
@@ -111,32 +114,38 @@ def ma5_ma15_cross_chop_problem(
         required = {'ma5', 'ma15'}
         timeframe_ms = float(frame.attrs.get('timeframe_ms', 60000))
         if (not math.isfinite(timeframe_ms) or timeframe_ms != 60000
-                or len(closed) < MA_CROSS_CHOP_LOOKBACK
+                or len(closed) < MA_CROSS_CHOP_SHORT_LOOKBACK
                 or not required.issubset(closed.columns)
                 or not {'ma5', 'ma15', 'close'}.issubset(frame.columns)):
             raise ValueError('insufficient MA history')
 
-        cross_history = closed.tail(MA_CROSS_CHOP_LOOKBACK)
-        cross_stamps = [float(value) for value in cross_history['timestamp']]
-        if (not all(math.isfinite(value) and value > 0 for value in cross_stamps)
-                or any(right - left != timeframe_ms
-                       for left, right in zip(cross_stamps, cross_stamps[1:]))):
-            raise ValueError('invalid one-minute MA history')
-        cross_spreads = [
-            float(row.ma5) - float(row.ma15)
-            for row in cross_history.itertuples()
-        ]
-        if not all(math.isfinite(value) for value in cross_spreads):
-            raise ValueError('invalid MA spread')
+        def count_crosses(history):
+            stamps = [float(value) for value in history['timestamp']]
+            if (not all(math.isfinite(value) and value > 0 for value in stamps)
+                    or any(right - left != timeframe_ms
+                           for left, right in zip(stamps, stamps[1:]))):
+                raise ValueError('invalid one-minute MA history')
+            spreads = [
+                float(row.ma5) - float(row.ma15)
+                for row in history.itertuples()
+            ]
+            if not all(math.isfinite(value) for value in spreads):
+                raise ValueError('invalid MA spread')
+            crosses = 0
+            prior_sign = 0
+            for spread in spreads:
+                current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
+                if current_sign and prior_sign and current_sign != prior_sign:
+                    crosses += 1
+                if current_sign:
+                    prior_sign = current_sign
+            return crosses
 
-        cross_count = 0
-        prior_sign = 0
-        for spread in cross_spreads:
-            current_sign = 1 if spread > 0 else -1 if spread < 0 else 0
-            if current_sign and prior_sign and current_sign != prior_sign:
-                cross_count += 1
-            if current_sign:
-                prior_sign = current_sign
+        cross_count_short = count_crosses(
+            closed.tail(MA_CROSS_CHOP_SHORT_LOOKBACK)
+        )
+        if len(closed) >= MA_CROSS_CHOP_LOOKBACK:
+            cross_count = count_crosses(closed.tail(MA_CROSS_CHOP_LOOKBACK))
 
         history_size = MA_GAP_CHOP_LOOKBACK - 1 if has_live else MA_GAP_CHOP_LOOKBACK
         history = closed.tail(history_size)
@@ -171,7 +180,9 @@ def ma5_ma15_cross_chop_problem(
             raise ValueError('invalid MA gap history')
         gap_pct = min(gap_pcts)
 
-        if cross_count >= MA_CROSS_CHOP_MIN_CROSSES:
+        if (cross_count_short >= MA_CROSS_CHOP_SHORT_MIN_CROSSES
+                or (cross_count is not None
+                    and cross_count >= MA_CROSS_CHOP_MIN_CROSSES)):
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
         elif (not allow_single_cross_gap
               and not (
@@ -199,14 +210,14 @@ def ma5_ma15_cross_chop_problem(
         except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
             pass
         log_key = (symbol or str(id(frame)), bar_id)
-        log_state = (status, cross_count)
+        log_state = (status, cross_count_short, cross_count)
         if _MA_CROSS_CHOP_LOGGED.get(log_key) != log_state:
             import logging
             logging.getLogger('EntryChopCheck').info(
-                '[ChopCheck] Lookback=%d, CrossCount=%s, MAGap=%s%% -> '
+                '[ChopCheck] Cross10=%s/3, Cross20=%s/4, MAGap=%s%% -> '
                 'Status: %s symbol=%s bar=%s reason=%s',
-                MA_GAP_CHOP_LOOKBACK,
-                cross_count if cross_count is not None else 'INVALID',
+                cross_count_short if cross_count_short is not None else 'INVALID',
+                cross_count if cross_count is not None else 'N/A',
                 f'{gap_pct * 100:.6f}' if gap_pct is not None else 'INVALID',
                 status, symbol or 'UNKNOWN', bar_id, problem or 'NONE',
             )
