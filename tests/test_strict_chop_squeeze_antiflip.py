@@ -6,6 +6,7 @@ import pytest
 
 from core.gates.pipeline import (
     EntryGatePipeline,
+    STRATEGY_TYPE_BREAKOUT,
     ma5_ma15_cross_chop_problem,
     strict_kc_entry_problem,
 )
@@ -84,6 +85,7 @@ def test_directional_room_uses_strict_twenty_five_percent_boundary(
     side, quote, expected,
 ):
     frame = entry_frame([0.2] * 10, quote=quote)
+    frame.loc[frame.index[-1], "atr"] = 1.0
 
     assert strict_kc_entry_problem(frame, quote, side) == expected
 
@@ -159,6 +161,26 @@ def test_contract_rejects_squeeze_before_fast_lane_detection():
 
     assert decision is None
     assert diagnostics["reason"] == "BLOCKED_KC_SQUEEZE"
+
+
+def test_only_explicit_breakout_strategy_skips_directional_room():
+    frame = entry_frame([0.2] * 10)
+
+    assert strict_kc_entry_problem(
+        frame, 101.1, "LONG",
+    ) == "INSUFFICIENT_UPPER_SPACE"
+    assert strict_kc_entry_problem(
+        frame, 101.1, "LONG",
+        strategy_type=STRATEGY_TYPE_BREAKOUT,
+    ) is None
+
+    frame.loc[frame.index[-1], ["kc_lower", "kc_middle", "kc_upper"]] = [
+        99.75, 100.0, 100.25,
+    ]
+    assert strict_kc_entry_problem(
+        frame, 100.3, "LONG",
+        strategy_type=STRATEGY_TYPE_BREAKOUT,
+    ) == "BLOCKED_KC_SQUEEZE"
 
 
 def test_pipeline_rejects_opposite_side_entry_during_three_bar_cooldown():
