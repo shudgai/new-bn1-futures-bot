@@ -2087,23 +2087,6 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
-        from core.config import (
-            NET_PROFIT_GUARANTEE_BUFFER, SLIPPAGE_PCT, TAKER_FEE_RATE,
-        )
-        from core.services.entry_room_service import entry_room
-        profit_room = entry_room(
-            snapshot['frame'], price, side, TAKER_FEE_RATE,
-            SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER,
-        )
-        if not profit_room.get('allowed'):
-            log_entry_gate(
-                self, symbol, side, 'EXECUTION',
-                profit_room.get('reason', 'KC_PROFIT_ROOM_UNAVAILABLE'), bar,
-                target=profit_room.get('target'),
-                net_room_pct=profit_room.get('net_room_pct'),
-                minimum_net_pct=NET_PROFIT_GUARANTEE_BUFFER * 100,
-            )
-            return False
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
@@ -2238,20 +2221,6 @@ class TradingEngine:
             if not math.isfinite(price) or price <= 0:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
-            profit_room = entry_room(
-                snapshot['frame'], price, side, TAKER_FEE_RATE,
-                SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER,
-            )
-            if not profit_room.get('allowed'):
-                log_entry_gate(
-                    self, symbol, side, 'EXECUTION',
-                    profit_room.get('reason', 'KC_PROFIT_ROOM_UNAVAILABLE'), bar,
-                    target=profit_room.get('target'),
-                    net_room_pct=profit_room.get('net_room_pct'),
-                    minimum_net_pct=NET_PROFIT_GUARANTEE_BUFFER * 100,
-                )
-                return False
-            
             from core.services.entry_contract import (
                 entry_direction_problem, evaluate_entry_contract,
             )

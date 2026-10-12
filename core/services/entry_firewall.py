@@ -94,7 +94,10 @@ async def validate_account_entry(account, symbol, side, context):
             )
     cross_chop_problem = (
         None if code in KC_PENDING_CODES
-        or code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT') else
+        or code in (
+            'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
+            'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+        ) else
         ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
             side=side,
@@ -180,7 +183,10 @@ async def validate_account_entry(account, symbol, side, context):
                  'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                  'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                  'AUTHORIZED_TOP_REVERSAL_SHORT')
-        or code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
+        or code in (
+            'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
+            'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+        )
     )
     is_verified_live_breakout = (
         pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'

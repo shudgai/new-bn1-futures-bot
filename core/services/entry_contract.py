@@ -2314,6 +2314,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         cross_chop_problem = (
             None if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
+            or decision.get('entry_phase') == 'KC_LIVE_OUTER_BREAKOUT'
             or decision.get('type') in (
                 BEARISH_INSTANT_BREAKOUT_CODE,
                 BULLISH_INSTANT_BREAKOUT_CODE,
@@ -2372,6 +2373,16 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
+        live_body_candidate = None
+        if (forming_bar and code in (
+                None, 'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT')):
+            requested_side = (
+                'LONG' if code == 'KC_LIVE_BODY_BREAKOUT_LONG' else
+                'SHORT' if code == 'KC_LIVE_BODY_BREAKOUT_SHORT' else None
+            )
+            live_body_candidate = evaluate_live_body_breakout(
+                frame, quote, symbol=symbol, requested_side=requested_side,
+            )
         is_instant_reverse = code in (
             BEARISH_INSTANT_BREAKOUT_CODE,
             BULLISH_INSTANT_BREAKOUT_CODE,
@@ -2413,7 +2424,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             else None
         )
         cross_chop_problem = (
-            None if confirmed_pending_breakout or is_instant_reverse else
+            None if (confirmed_pending_breakout or is_instant_reverse
+                     or live_body_candidate is not None) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(
@@ -2431,11 +2443,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             frame, quote,
             side=(
                 pending.get('side') if confirmed_pending_breakout
+                else live_body_candidate.get('side') if live_body_candidate
                 else post_close_candidate.get('side') if post_close_candidate
                 else None
             ),
             strategy_type=(
-                'BREAKOUT' if confirmed_pending_breakout else
+                'BREAKOUT' if confirmed_pending_breakout or live_body_candidate else
                 entry_strategy_type(post_close_candidate.get('entry_phase'))
                 if post_close_candidate else None
             ),
@@ -2453,6 +2466,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         live_breakout = pipeline.detect_realtime_breakout(frame, quote)
         verified_live_breakout = bool(
             (live_breakout and live_breakout.get('ma5_direction_aligned') is True)
+            or live_body_candidate is not None
             or active_fast_cross is not None
             or momentum_burst is not None
             or post_close_candidate is not None
@@ -2488,12 +2502,14 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         is_outer_rail_breakout = (
             code in FLAT_LINE_BREAKOUT_TYPES
+            or live_body_candidate is not None
             or code == CLIMAX_REVERSAL_FLIP_CODE
             or verified_live_breakout
             or is_midline_breakout
             or confirmed_pending_breakout
         )
         if (not confirmed_pending_breakout and active_fast_cross is None
+                and live_body_candidate is None
                 and code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
                                  'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                                  'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
@@ -2712,7 +2728,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # same-side rail and the 3 ATR chase limit. This was previously never
         # called by the shared contract, so valid intrabar breakouts could not
         # reach either scan or send-time revalidation.
-        live_breakout = None
+        live_breakout = live_body_candidate
         if (not bool(frame.iloc[-1].get('is_closed', True))
                 and code in (None, 'KC_LIVE_BODY_BREAKOUT_LONG',
                              'KC_LIVE_BODY_BREAKOUT_SHORT')):
@@ -2720,9 +2736,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 'LONG' if code == 'KC_LIVE_BODY_BREAKOUT_LONG' else
                 'SHORT' if code == 'KC_LIVE_BODY_BREAKOUT_SHORT' else None
             )
-            live_breakout = evaluate_live_body_breakout(
-                frame, quote, symbol=symbol, requested_side=requested_side,
-            )
+            if live_breakout is None:
+                live_breakout = evaluate_live_body_breakout(
+                    frame, quote, symbol=symbol, requested_side=requested_side,
+                )
             if live_breakout is not None:
                 side = live_breakout['side']
                 ma5_direction = evaluate_live_ma5_direction(frame, quote, side)

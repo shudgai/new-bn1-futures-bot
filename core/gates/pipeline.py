@@ -45,6 +45,7 @@ STRATEGY_TYPE_TREND_CONTINUATION = 'TREND_CONTINUATION'
 BREAKOUT_ENTRY_PHASES = frozenset((
     'ATOMIC_LONG_REVERSE',
     'ATOMIC_SHORT_REVERSE',
+    'KC_LIVE_OUTER_BREAKOUT',
     'IMPULSE_BREAKOUT',
     'KC_2BAR_BREAKOUT',
     'KC_2BAR_CLOSED_CONFIRM',
@@ -647,6 +648,15 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                     or (side == 'LONG' and quote <= rail)
                     or (side == 'SHORT' and quote >= rail)):
                 return 'BLOCKED_CONFIRMED_BREAKOUT_QUOTE_INSIDE_RAIL'
+            return None
+        if entry_phase == 'KC_LIVE_OUTER_BREAKOUT':
+            if bool(current.get('is_closed', True)):
+                return 'BLOCKED_LIVE_BREAKOUT_REQUIRES_FORMING_CANDLE'
+            lower, upper = float(current['kc_lower']), float(current['kc_upper'])
+            opening, quote = float(current['open']), float(quote)
+            if (side == 'LONG' and (quote <= upper or opening < lower)
+                    or side == 'SHORT' and (quote >= lower or opening > upper)):
+                return 'BLOCKED_LIVE_BREAKOUT_RAIL_REVALIDATION'
             return None
         if entry_phase == 'KC_TOP_PLUNGE_SHORT':
             if side != 'SHORT':
