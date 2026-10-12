@@ -102,3 +102,18 @@ Each active entry symbol is analyzed independently in a background task using it
 - **Follow-up**: Closed-bar reversals now require the adverse body to break both MA5 and the previous candle midpoint; bodies below 0.75 ATR additionally require volume at least 1.2 times the preceding five-bar mean. Legacy fractal and exhaustion validators share this evidence so an ordinary MA5 retest cannot bypass the pullback guard.
 - **Trigger Reason & Requirement**: User clarified that live/ordinary breakouts are exempt from flat-line blocking, while other entries are blocked; user also requested investigating pullback closes and limiting ordinary closes to verified peak/valley reversals.
 - **Verification & Test Status**: Focused selection: 22 passed before adding the final sub-1.5 ATR realtime regression cases. `reports/second_bar_outside_v2/deployment_events.log` contains entry-gate events only, so it cannot establish the exact reason for any particular live close. No live orders submitted.
+
+### Symmetric MA fast-cross and momentum-burst entries
+
+- `KC_GOLDEN_CROSS_FAST_LONG` and `KC_DEATH_CROSS_FAST_SHORT` now share one evidence model. A fresh MA5/MA15 cross requires a directional live body of at least 0.40 previous-bar ATR, directional MA5 movement, price on the matching side of KC middle, and at least 25% channel room before the matching outer rail.
+- A qualified fresh fast cross may ignore only the sub-0.08% MA gap caused by that cross. Two or more MA5/MA15 crossings in the eight-bar window still fail closed. KC squeeze, directional room, close cooldown, account, and order-safety checks remain mandatory.
+- `KC_MOMENTUM_BURST_LONG` and `KC_MOMENTUM_BURST_SHORT` are mirrored intrabar authorities. The directional body must cross both MA5 and MA15, reach at least 0.50 previous-bar ATR and 50% of the observed candle range, and have a directional wick no longer than the body. MA5 must turn in the entry direction, and price must reach or approach KC middle within 0.10 ATR.
+- Directional KC room remains 25% for ordinary momentum. When the body reaches at least 0.70 ATR, the minimum room dynamically falls to 15%. Only phases explicitly classified as `strategy_type=BREAKOUT` may bypass the in-channel room check; fast-cross and momentum-burst entries do not use that exemption.
+- Pipeline, shared contract, final account firewall, engine, paper account, and testnet account use the same signal codes and revalidation rules. This source change does not deploy or restart the service.
+
+### [2026-10-12 16:31:14 UTC+8] - Isolate high-volatility gate regression tests
+- **Author**: shudgai999 / Copilot SDK in VS Code
+- **Target Files & Lines**: `tests/test_high_volatility_gates.py`; `tests/test_smart_pipeline.py` (move the focused cooldown regression out); `core/gates/pipeline.py` and `core/services/entry_contract.py` (verified, unchanged).
+- **Modification Description**: Added a dedicated test module covering the inclusive 50% Momentum Burst body with a 1.0x directional wick, dynamic 15% KC room at 0.70 ATR versus the standard 25% room below that threshold, and same-side 60-second profit / 180-second stop-loss cooldown behavior. Moved the earlier focused cooldown test out of the mixed pipeline suite.
+- **Trigger Reason & Requirement**: User requested an isolated, minimal regression patch for the three high-volatility entry rules.
+- **Verification & Test Status**: `pytest tests/test_high_volatility_gates.py -q` — 10 passed. Core gate logic was already in place and required no changes; no trading orders were submitted.
