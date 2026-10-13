@@ -2659,9 +2659,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
     def authorize(decision, quote):
         # Normalize the execution snapshot fields for every entry authority.
         # Meme breakout candidates provide `price` but older routes omit
-        # `close_price`; the engine requires it when building the final order
-        # context. Preserve both long and short candidates through this funnel.
+        # execution-context fields; normalize them here so the engine can
+        # build its final order context for either long or short entries.
         decision.setdefault('close_price', quote)
+        confirmation_bar_id = decision.get('confirmation_bar_id')
+        decision.setdefault('breakout_bar_id', confirmation_bar_id)
+        decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
         # 【均線相對位置的絕對限制】第一道開倉閘門底線
         passed, reason = validate_ma_alignment(frame, decision.get('side'), quote)
         if not passed:
