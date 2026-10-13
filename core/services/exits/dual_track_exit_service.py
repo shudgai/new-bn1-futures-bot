@@ -220,7 +220,7 @@ def is_candle_closed_dump_exit(frame, side: str, is_closed: bool = False) -> boo
 def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str, atr: float) -> bool:
     """衝高滯漲主動止盈/平倉（Momentum Stalling Exit）：
     進場後若連續 2 根 K 棒無法刷新進場點最高價，且出現上影線 >= 實體 0.8 倍的滯漲形態，
-    加上 MA5 斜率走平（|ΔMA5| < 0.02 ATR）：判定多頭推力枯竭，立即主動平倉！
+    加上 MA5 斜率走平下彎（curr_ma5 <= prev_ma5 或 |ΔMA5| < 0.02 ATR）：判定多頭推力枯竭，立即主動平倉！
     """
     if frame is None or len(frame) < 2 or atr <= 0 or not position:
         return False
@@ -230,8 +230,6 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
         curr_ma5 = float(curr.get('ma5', quote))
         prev_ma5 = float(prev.get('ma5', curr_ma5))
         slope_atr = abs(curr_ma5 - prev_ma5) / atr
-        if slope_atr >= 0.02:
-            return False
 
         open_p = float(curr.get('open', quote))
         high_p = max(float(curr.get('high', quote)), quote)
@@ -241,6 +239,9 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
         trough_p = float(position.get('lowest_price') or position.get('trough_price') or entry_p)
 
         if side == 'LONG':
+            ma5_flat_or_down = (curr_ma5 <= prev_ma5 or slope_atr < 0.02)
+            if not ma5_flat_or_down:
+                return False
             body = max(quote - open_p, 0.0)
             upper_wick = high_p - max(open_p, quote)
             stalling_pinbar = (upper_wick >= 0.8 * body and upper_wick >= 0.3 * atr)
@@ -248,6 +249,9 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
             if stalling_pinbar and not_refreshing_high:
                 return True
         elif side == 'SHORT':
+            ma5_flat_or_up = (curr_ma5 >= prev_ma5 or slope_atr < 0.02)
+            if not ma5_flat_or_up:
+                return False
             body = max(open_p - quote, 0.0)
             lower_wick = min(open_p, quote) - low_p
             stalling_pinbar = (lower_wick >= 0.8 * body and lower_wick >= 0.3 * atr)
@@ -255,6 +259,36 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
             if stalling_pinbar and not_refreshing_low:
                 return True
     except (TypeError, ValueError, IndexError):
+        pass
+    return False
+
+
+def is_healthy_ma15_pullback_protected(frame, side: str) -> bool:
+    """趨勢拉升中途（回踩保護）：
+    常規波段防守基準線移至 MA15：
+    在多頭趨勢（KC 向上 或 MA5 > MA15）中，價格盤中回踩 MA5 甚至貼近 MA15 視為正常回測蓄力。
+    只要 1m K 線收盤未實體摜破 MA15（close >= ma15 for LONG, close <= ma15 for SHORT），
+    強制鎖定「禁止平多」。
+    """
+    if frame is None or frame.empty:
+        return False
+    try:
+        last_candle = frame.iloc[-1]
+        close_p = float(last_candle.get('close', 0.0))
+        ma15_p = float(last_candle.get('ma15', 0.0))
+        ma5_p = float(last_candle.get('ma5', 0.0))
+        kc_trend = str(last_candle.get('kc_trend', '')).upper()
+        if close_p <= 0 or ma15_p <= 0:
+            return False
+        if side == 'LONG':
+            if (ma5_p >= ma15_p or 'UP' in kc_trend) and close_p >= ma15_p:
+                return True
+            return close_p >= ma15_p
+        elif side == 'SHORT':
+            if (ma5_p <= ma15_p or 'DOWN' in kc_trend) and close_p <= ma15_p:
+                return True
+            return close_p <= ma15_p
+    except (TypeError, ValueError):
         pass
     return False
 
@@ -281,41 +315,143 @@ def is_candle_closed_ma5_break(frame, side: str, is_closed: bool = False) -> boo
     return False
 
 
-def detect_extreme_bar_emergency_exit(frame, quote: float, side: str, atr: float) -> bool:
-    """4. 極端大陰棒反殺緊急避險（允許盤中即時砍倉）：
-    - 當根陰線實體 >= 0.8 ATR 且摜破 MA5
-    - 或出現長度 >= 1.5 倍實體之極端長影避雷針（且影線長度 >= 0.5 ATR）
-    其餘普通回調一律抱緊！
+def evaluate_doji_two_bar_confirmation(position: dict, frame, side: str, is_closed: bool = False, atr: float = 0.0) -> bool:
+    """二、 十字星出場必須「雙棒確認」（Two-Bar Top Confirmation）：
+    1. 嚴禁「單根十字星立即平倉」：
+       - 盤中或收線出現 Doji / 十字星時，當根僅作內部標記（awaiting_doji_confirmation = True），持倉強制繼續抱住。
+    2. 必須等「次根出現反現實體確認」才准平多：
+       - 只有在次根 1m K 線收線時（is_closed=True），同時滿足：
+         * 次根 K 棒收為「明確實體陰線（close < open for LONG, close > open for SHORT）」。
+         * 次根陰線收盤價「實體跌破前一根十字星的最低點（close < doji_low for LONG, close > doji_high for SHORT）」。
+       - 若次根 K 棒繼續收陽、收綠十字、或向上創新高，立即「作廢並清除」十字星警示，繼續順勢抱緊讓利潤奔跑！
+    """
+    if not position or frame is None or len(frame) < 2:
+        return False
+    try:
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+
+        def _is_doji_bar(bar):
+            o = float(bar.get('open', 0.0))
+            c = float(bar.get('close', 0.0))
+            h = float(bar.get('high', 0.0))
+            l = float(bar.get('low', 0.0))
+            span = h - l
+            body = abs(c - o)
+            if span <= 0:
+                return False
+            return (body / span <= 0.35) or (atr > 0 and body <= 0.25 * atr)
+
+        # 若已在等待次根確認
+        if position.get('awaiting_doji_confirmation'):
+            if not is_closed:
+                return False  # 盤中未收線，繼續抱住
+
+            curr_open = float(curr.get('open', 0.0))
+            curr_close = float(curr.get('close', 0.0))
+
+            if side == 'LONG':
+                doji_low = float(position.get('doji_low', curr_open))
+                if curr_close < curr_open and curr_close < doji_low:
+                    position.pop('awaiting_doji_confirmation', None)
+                    position.pop('doji_low', None)
+                    return True
+                else:
+                    position.pop('awaiting_doji_confirmation', None)
+                    position.pop('doji_low', None)
+                    return False
+            elif side == 'SHORT':
+                doji_high = float(position.get('doji_high', curr_open))
+                if curr_close > curr_open and curr_close > doji_high:
+                    position.pop('awaiting_doji_confirmation', None)
+                    position.pop('doji_high', None)
+                    return True
+                else:
+                    position.pop('awaiting_doji_confirmation', None)
+                    position.pop('doji_high', None)
+                    return False
+
+        # 若目前未在等待確認，檢查最新收線之 K 線是否為十字星
+        check_bar = curr if is_closed else prev
+        if _is_doji_bar(check_bar):
+            position['awaiting_doji_confirmation'] = True
+            if side == 'LONG':
+                position['doji_low'] = float(check_bar.get('low', 0.0))
+            else:
+                position['doji_high'] = float(check_bar.get('high', 0.0))
+            return False
+
+    except (TypeError, ValueError, IndexError):
+        pass
+    return False
+
+
+def detect_emergency_dump_exit(frame, quote: float, side: str, atr: float) -> bool:
+    """軌道二：突發大賣壓緊急避險（Emergency Dump Exit - 盤中即刻秒平，不等收線！）
+    觸發條件（滿足以下任一即刻生效）：
+      - 條件 A【實體大反殺】：當根 1m 盤中即時跌幅（Open - Price）>= 0.7 ATR，且盤中實體已吞沒前一根陽線實體 70% 以上。
+      - 條件 B【巨陰貫穿均線】：盤中價格直接垂直摜破 MA5，且當根實體下跌幅度 >= 0.8 ATR。
+      - 條件 C【天地針避雷針】：高點衝高後盤中劇烈回吐，上影線長度 >= 實體 1.5 倍以上（且上影線 >= 0.5 ATR）。
+    處置：
+      - 一旦偵測到軌道二的大賣壓特徵，豁免所有斜率保護與收線等待，在「當根盤中當下立即以市價平倉」，第一時間保住利潤！
     """
     if frame is None or frame.empty or atr <= 0 or quote <= 0:
         return False
     try:
         curr = frame.iloc[-1]
+        prev = frame.iloc[-2] if len(frame) >= 2 else curr
         open_p = float(curr.get('open', quote))
         high_p = max(float(curr.get('high', quote)), quote)
         low_p = min(float(curr.get('low', quote)), quote)
         ma5_p = float(curr.get('ma5', quote))
-        body = abs(quote - open_p)
+
+        prev_open = float(prev.get('open', open_p))
+        prev_close = float(prev.get('close', open_p))
 
         if side == 'LONG':
-            # 條件 A: 當根陰線實體 >= 0.8 ATR 且摜破 MA5
-            if quote < open_p and body >= 0.8 * atr and quote < ma5_p:
-                return True
-            # 條件 B: 極端長上影避雷針 (上影線 >= 1.5 倍實體 且 上影線 >= 0.5 ATR)
+            drop = open_p - quote
+            body = max(drop, 0.0)
             upper_wick = high_p - max(open_p, quote)
+            prev_bull_body = max(prev_close - prev_open, 0.0)
+
+            # 條件 A【實體大反殺】：跌幅 >= 0.7 ATR 且 吞沒前一根陽線實體 70% 以上
+            if drop >= 0.7 * atr and prev_bull_body > 0 and drop >= 0.70 * prev_bull_body:
+                return True
+
+            # 條件 B【巨陰貫穿均線】：盤中價格直接摜破 MA5，且當根下跌幅度 >= 0.8 ATR
+            if quote < ma5_p and drop >= 0.8 * atr:
+                return True
+
+            # 條件 C【天地針避雷針】：高點衝高後劇烈回吐，上影線 >= 1.5 倍實體 且 上影線 >= 0.5 ATR
             if upper_wick >= 0.5 * atr and upper_wick >= 1.5 * max(body, 1e-9):
                 return True
+
         elif side == 'SHORT':
-            # 條件 A: 當根陽線實體 >= 0.8 ATR 且摜破 MA5
-            if quote > open_p and body >= 0.8 * atr and quote > ma5_p:
-                return True
-            # 條件 B: 極端長下影避雷針 (下影線 >= 1.5 倍實體 且 下影線 >= 0.5 ATR)
+            rise = quote - open_p
+            body = max(rise, 0.0)
             lower_wick = min(open_p, quote) - low_p
+            prev_bear_body = max(prev_open - prev_close, 0.0)
+
+            # 條件 A【實體大反殺】：漲幅 >= 0.7 ATR 且 吞沒前一根陰線實體 70% 以上
+            if rise >= 0.7 * atr and prev_bear_body > 0 and rise >= 0.70 * prev_bear_body:
+                return True
+
+            # 條件 B【巨陽貫穿均線】：盤中價格直接摜破 MA5，且當根上漲幅度 >= 0.8 ATR
+            if quote > ma5_p and rise >= 0.8 * atr:
+                return True
+
+            # 條件 C【天地針避雷針】：低點探底後劇烈回吐，下影線 >= 1.5 倍實體 且 下影線 >= 0.5 ATR
             if lower_wick >= 0.5 * atr and lower_wick >= 1.5 * max(body, 1e-9):
                 return True
-    except (TypeError, ValueError):
+
+    except (TypeError, ValueError, IndexError):
         pass
     return False
+
+
+def detect_extreme_bar_emergency_exit(frame, quote: float, side: str, atr: float) -> bool:
+    """極端大陰棒反殺緊急避險（相容包裝）"""
+    return detect_emergency_dump_exit(frame, quote, side, atr)
 
 
 def observe_breakeven(position: dict, price: float) -> dict:
@@ -354,27 +490,57 @@ class DualTrackExitStrategy(IExitStrategy):
             if is_early_lifecycle_protected(position, current_price, atr):
                 return None
 
-            # 2. 極端大陰棒反殺緊急避險（允許盤中即時砍倉）
-            if detect_extreme_bar_emergency_exit(frame, current_price, side, atr):
-                return 'EMERGENCY_EXTREME_ADVERSE_BAR'
+            # 2. 軌道二：突發大賣壓緊急避險（Emergency Dump Exit - 盤中即刻秒平，不等收線！）
+            # 條件 A 大反殺吞沒、條件 B 巨陰摜破 MA5、條件 C 天地針
+            # 豁免所有斜率保護與收線等待，在當根盤中當下立即以市價平倉！
+            if detect_emergency_dump_exit(frame, current_price, side, atr):
+                return 'EMERGENCY_DUMP_EXIT'
 
-            # 3. 大實體破位果斷砍倉（Candle-Close Dump Exit）：
-            # 當遭遇實體陰線收盤確認跌破 MA5，於當根收線當下立即砍倉！
-            if is_closed and is_candle_closed_dump_exit(frame, side, is_closed=True):
-                return 'CANDLE_CLOSE_DUMP_EXIT'
+            # 3. 階梯利潤鎖定（Ratchet）：浮盈達 1.5 ATR 後，硬止損自動上推至保本位以上，鎖定贏面！
+            if atr > 0:
+                entry_p = float(position.get('entry_price', current_price))
+                if side == 'LONG':
+                    peak_p = max(float(position.get('highest_price') or position.get('peak_price') or entry_p), current_price)
+                    position['highest_price'] = peak_p
+                    if (peak_p - entry_p) >= 1.5 * atr:
+                        be_level = entry_p + 0.1 * atr
+                        if current_price <= be_level:
+                            return 'EXIT_BY_RATCHET_PROFIT_LOCK'
+                elif side == 'SHORT':
+                    trough_p = min(float(position.get('lowest_price') or position.get('trough_price') or entry_p), current_price)
+                    position['lowest_price'] = trough_p
+                    if (entry_p - trough_p) >= 1.5 * atr:
+                        be_level = entry_p - 0.1 * atr
+                        if current_price >= be_level:
+                            return 'EXIT_BY_RATCHET_PROFIT_LOCK'
 
-            # 4. 衝高滯漲主動平倉（Momentum Stalling Exit）：
-            # 滯漲形態 + MA5 走平，主動平倉不拖延！
+            # 4. 十字星出場必須「雙棒確認」（Two-Bar Top Confirmation）：
+            # 嚴禁單根十字星立即平倉！當根僅標記，次根收陰跌破十字星最低點才平倉；否則清除警示抱緊！
+            if evaluate_doji_two_bar_confirmation(position, frame, side, is_closed=is_closed, atr=atr):
+                return 'TWO_BAR_DOJI_REVERSAL_EXIT'
+
+            # 5. 衝高滯漲主動平倉（Momentum Stalling Exit）：
+            # 連續 2 根無法創新高 + 避雷針上影線 + MA5 斜率走平下彎
             if detect_momentum_stalling_exit(position, frame, current_price, side, atr):
                 return 'MOMENTUM_STALLING_EXIT'
 
-            # 5. MA5 斜率保護（MA Slope Shield - 回踩強制抱緊）：
+            # 6. MA5 斜率護航（MA Slope Shield - 回踩強制抱緊）：
             # 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
             # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。
             if is_ma5_slope_shield_active(frame, side, atr):
                 return None
 
-            # 6. 平倉必須收線確認（Candle-Close Only）：
+            # 7. 常規波段防守基準線移至 MA15（健康回踩強制抱緊）：
+            # 在多頭趨勢中，只要 1m K 線收盤未實體摜破 MA15，一律視為健康回測蓄力，強制禁止平多！
+            if is_healthy_ma15_pullback_protected(frame, side):
+                return None
+
+            # 8. 大實體破位果斷砍倉（Candle-Close Dump Exit）：
+            # 當遭遇實體陰線收盤確認跌破 MA15/MA5，於當根收線當下立即砍倉！
+            if is_closed and is_candle_closed_dump_exit(frame, side, is_closed=True):
+                return 'CANDLE_CLOSE_DUMP_EXIT'
+
+            # 9. 平倉必須收線確認（Candle-Close Only）：
             # 均線防守必須等 1m K 線收盤確認跌破 MA5 才執行離場。
             if is_closed and is_candle_closed_ma5_break(frame, side, is_closed=True):
                 return 'CONFIRMED_MA5_CLOSE_BREAK'
@@ -393,4 +559,7 @@ class DualTrackExitStrategy(IExitStrategy):
     def handle_post_exit_cleanup(self, position, exit_reason):
         position.pop(STATE_KEY, None)
         position.pop('has_broken_outer_band', None)
+        position.pop('awaiting_doji_confirmation', None)
+        position.pop('doji_low', None)
+        position.pop('doji_high', None)
         position['cooldown_mode'] = 'NONE'

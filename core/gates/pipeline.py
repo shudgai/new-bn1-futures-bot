@@ -390,6 +390,8 @@ def fast_cross_evidence(
                 and live_ma5 > live_ma15
                 and live_ma5 > previous_ma5
             )
+            # 當根 1m K 棒收線確認（close > ma5 且 close > open）
+            candle_confirmed = quote > live_ma5 and quote > opening
             position_ready = quote > middle
             room = (upper - quote) / width
         else:
@@ -400,38 +402,47 @@ def fast_cross_evidence(
                 and live_ma5 < live_ma15
                 and live_ma5 < previous_ma5
             )
+            # 當根 1m K 棒收線確認（close < ma5 且 close < open）
+            candle_confirmed = quote < live_ma5 and quote < opening
             position_ready = quote < middle
             room = (quote - lower) / width
 
-        body_ready = (
-            body > FAST_CROSS_BODY_ATR * atr
-            or math.isclose(
-                body, FAST_CROSS_BODY_ATR * atr,
-                rel_tol=1e-12, abs_tol=0.0,
+        wick_acceptable = (
+            directional_wick < 0.7 * max(body, 1e-9)
+            or math.isclose(directional_wick, 0.7 * max(body, 1e-9), rel_tol=1e-12, abs_tol=0.0)
+        )
+        if crossed and candle_confirmed and body >= 0.3 * atr and wick_acceptable:
+            pass
+        else:
+            body_ready = (
+                body > FAST_CROSS_BODY_ATR * atr
+                or math.isclose(
+                    body, FAST_CROSS_BODY_ATR * atr,
+                    rel_tol=1e-12, abs_tol=0.0,
+                )
             )
-        )
-        min_space = (
-            MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
-            if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
-            else MIN_DIRECTIONAL_KC_SPACE
-        )
-        room_ready = (
-            room > min_space
-            or math.isclose(
-                room, min_space,
-                rel_tol=1e-12, abs_tol=0.0,
+            min_space = (
+                MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+                if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
+                else MIN_DIRECTIONAL_KC_SPACE
             )
-        )
-        wick_ready = (
-            directional_wick < FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body
-            or math.isclose(
-                directional_wick,
-                FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body,
-                rel_tol=1e-12, abs_tol=0.0,
+            room_ready = (
+                room > min_space
+                or math.isclose(
+                    room, min_space,
+                    rel_tol=1e-12, abs_tol=0.0,
+                )
             )
-        )
-        if not (crossed and position_ready and body_ready and room_ready and wick_ready):
-            return None
+            wick_ready = (
+                directional_wick < FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body
+                or math.isclose(
+                    directional_wick,
+                    FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body,
+                    rel_tol=1e-12, abs_tol=0.0,
+                )
+            )
+            if not (crossed and position_ready and body_ready and room_ready and wick_ready):
+                return None
 
         return {
             'stamp': stamp,
@@ -2192,6 +2203,56 @@ class EntryGatePipeline:
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return None
 
+    @classmethod
+    def detect_fast_cross(
+        cls, frame: pd.DataFrame, quote: float, side: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Authorize a fresh live MA5/MA15 cross at the wave beginning."""
+        if side in (None, 'LONG'):
+            evidence = fast_cross_evidence(frame, quote, 'LONG', symbol=symbol)
+            if evidence is not None:
+                stamp = evidence['stamp']
+                return {
+                    'action': 'ENTER',
+                    'side': 'LONG',
+                    'type': GOLDEN_CROSS_FAST_LONG_CODE,
+                    'reason': 'LIVE_MA5_MA15_GOLDEN_CROSS',
+                    'price': quote,
+                    'entry_atr': evidence['atr'],
+                    'confirmation_bar_id': stamp,
+                    'breakout_bar_id': stamp,
+                    'exit_bar_id': stamp,
+                    'close_price': quote,
+                    'intrabar': True,
+                    'entry_phase': 'MA_GOLDEN_CROSS_FAST_LANE',
+                    'body_atr': evidence.get('body_atr', 0.5),
+                    'directional_space_ratio': evidence.get('directional_space_ratio', 0.5),
+                    'pending_signal_id': f"{symbol or 'SYM'}:{GOLDEN_CROSS_FAST_LONG_CODE}:{int(stamp)}",
+                }
+        if side in (None, 'SHORT'):
+            evidence = fast_cross_evidence(frame, quote, 'SHORT', symbol=symbol)
+            if evidence is not None:
+                stamp = evidence['stamp']
+                return {
+                    'action': 'ENTER',
+                    'side': 'SHORT',
+                    'type': DEATH_CROSS_FAST_SHORT_CODE,
+                    'reason': 'LIVE_MA5_MA15_DEATH_CROSS',
+                    'price': quote,
+                    'entry_atr': evidence['atr'],
+                    'confirmation_bar_id': stamp,
+                    'breakout_bar_id': stamp,
+                    'exit_bar_id': stamp,
+                    'close_price': quote,
+                    'intrabar': True,
+                    'entry_phase': 'MA_DEATH_CROSS_FAST_LANE',
+                    'body_atr': evidence.get('body_atr', 0.5),
+                    'directional_space_ratio': evidence.get('directional_space_ratio', 0.5),
+                    'pending_signal_id': f"{symbol or 'SYM'}:{DEATH_CROSS_FAST_SHORT_CODE}:{int(stamp)}",
+                }
+        return None
+
     def authorize(self, decision: Optional[Dict[str, Any]], frame: pd.DataFrame,
                   quote: float, symbol: Optional[str] = None,
                   requested_side: Optional[str] = None,
@@ -2297,6 +2358,8 @@ class EntryGatePipeline:
                 if requested_side in (None, 'LONG') else None
             )
             candidate = mid_short or mid_long
+        if candidate is None:
+            candidate = self.detect_fast_cross(frame, quote, side=requested_side, symbol=symbol)
         if candidate is None:
             candidate = self.detect_realtime_breakout(frame, quote, side=requested_side)
         if candidate is None and requested_side in (None, 'SHORT'):

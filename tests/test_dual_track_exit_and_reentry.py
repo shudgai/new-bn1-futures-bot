@@ -421,6 +421,160 @@ def test_live_breakout_long_strict_filters():
     assert reason is None
 
 
+def test_healthy_ma15_pullback_protection():
+    """趨勢拉升中途（回踩保護）：價格回踩 MA5 甚至貼近 MA15，只要 1m 收盤未實體摜破 MA15，一律視為健康回測，禁止平倉。"""
+    from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+    strategy = DualTrackExitStrategy()
+    position = {
+        'symbol': 'LOBSTER/USDT',
+        'side': 'LONG',
+        'entry_price': 0.0450,
+        'entry_atr': 0.0005,
+        'highest_price': 0.0460,
+    }
+    # 價格回踩跌破 MA5 (0.0454)，但收盤價 0.0453 依然高於 MA15 (0.0450)，實體 0.0002 = 0.4 ATR
+    frame = pd.DataFrame([
+        {'open': 0.0455, 'close': 0.0453, 'high': 0.0456, 'low': 0.0452,
+         'ma5': 0.0454, 'ma15': 0.0450, 'atr': 0.0005, 'is_closed': True},
+    ])
+    exit_decision = strategy.evaluate_exit(position, frame=frame, current_price=0.0453, is_closed=True)
+    # 驗證健康回踩保護生效，未觸發 MA5 平倉
+    assert exit_decision is None
 
 
+def test_ratchet_breakeven_profit_lock():
+    """階梯利潤鎖定（Ratchet）：浮盈達 1.5 ATR 後，硬止損自動上推至保本位以上，鎖定贏面，避免獲利回吐變虧損。"""
+    from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+    strategy = DualTrackExitStrategy()
+    atr = 0.0010
+    entry_p = 0.0500
+    position = {
+        'symbol': 'LOBSTER/USDT',
+        'side': 'LONG',
+        'entry_price': entry_p,
+        'entry_atr': atr,
+        'highest_price': entry_p + 1.8 * atr,  # 浮盈曾達 1.8 ATR (> 1.5 ATR)
+    }
+    frame = pd.DataFrame([
+        {'open': 0.0505, 'close': 0.0501, 'high': 0.0506, 'low': 0.0500,
+         'ma5': 0.0503, 'ma15': 0.0498, 'atr': atr, 'is_closed': True},
+    ])
+    # 當價格回落到保本位 (entry + 0.1 ATR = 0.0501)
+    exit_decision = strategy.evaluate_exit(position, frame=frame, current_price=0.0501, is_closed=True)
+    assert exit_decision == 'EXIT_BY_RATCHET_PROFIT_LOCK'
 
+
+def test_fast_cross_agile_entry():
+    """進場：MA5/MA15 交叉敏捷開倉，當 MA5 實質金叉 MA15 且當根收線確認 (close > ma5 且 close > open) 時立即觸發。"""
+    from core.gates.pipeline import EntryGatePipeline
+    atr = 0.0005
+    rows = []
+    # 構造 14 根歷史 K 線
+    for i in range(14):
+        rows.append({
+            'timestamp': 1000 + i * 60000,
+            'open': 0.0450, 'high': 0.0452, 'low': 0.0448, 'close': 0.0450,
+            'ma5': 0.0449 if i < 13 else 0.04495,  # 前根 ma5 <= ma15
+            'ma15': 0.0450,
+            'atr': atr, 'kc_upper': 0.0460, 'kc_middle': 0.0450, 'kc_lower': 0.0440,
+            'is_closed': True,
+        })
+    # 第 15 根即時 K 線：實質金叉，open 0.0449, quote 0.0453 (close > open 且 close > ma5 0.0451 > ma15 0.0450)
+    rows.append({
+        'timestamp': 1000 + 14 * 60000,
+        'open': 0.0449, 'high': 0.0454, 'low': 0.0448, 'close': 0.0453,
+        'ma5': 0.0451, 'ma15': 0.0450,
+        'atr': atr, 'kc_upper': 0.0460, 'kc_middle': 0.0450, 'kc_lower': 0.0440,
+        'is_closed': False,
+    })
+    df = pd.DataFrame(rows)
+    df.attrs['timeframe_ms'] = 60000
+    decision = EntryGatePipeline.detect_fast_cross(df, quote=0.0453, side='LONG', symbol='LOBSTER/USDT')
+    assert decision is not None
+    assert decision['type'] == 'KC_GOLDEN_CROSS_FAST_LONG'
+    assert decision['side'] == 'LONG'
+
+
+def test_doji_two_bar_confirmation_exit():
+    """十字星出場必須「雙棒確認」：單根十字星絕不平倉，僅內部標記；次根實體陰線跌破十字星最低點才平倉；次根收陽則作廢警示繼續抱緊。"""
+    from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+    strategy = DualTrackExitStrategy()
+    atr = 0.0010
+    entry_p = 0.0450
+    position = {
+        'symbol': 'LOBSTER/USDT',
+        'side': 'LONG',
+        'entry_price': entry_p,
+        'entry_atr': atr,
+        'highest_price': 0.0470,
+    }
+    # 棒 1：頂部收綠十字星（open 0.0470, close 0.0471, high 0.0475, low 0.0469）
+    doji_bar = {
+        'open': 0.0470, 'close': 0.0471, 'high': 0.0475, 'low': 0.0469,
+        'ma5': 0.0470, 'ma15': 0.0460, 'atr': atr, 'is_closed': True,
+    }
+    prev_bar = {
+        'open': 0.0465, 'close': 0.0470, 'high': 0.0471, 'low': 0.0464,
+        'ma5': 0.0468, 'ma15': 0.0458, 'atr': atr, 'is_closed': True,
+    }
+    frame_doji = pd.DataFrame([prev_bar, doji_bar])
+
+    # 1. 第一根十字星收線：嚴禁平倉，只標記 awaiting_doji_confirmation = True
+    exit_decision = strategy.evaluate_exit(position, frame=frame_doji, current_price=0.0471, is_closed=True)
+    assert exit_decision is None
+    assert position.get('awaiting_doji_confirmation') is True
+    assert position.get('doji_low') == 0.0469
+
+    # 2. 次根若繼續收陽（如 12:31 龍蝦繼續衝高）：作廢清除標記，繼續抱緊！
+    bullish_next_bar = {
+        'open': 0.0471, 'close': 0.0476, 'high': 0.0478, 'low': 0.0470,
+        'ma5': 0.0473, 'ma15': 0.0462, 'atr': atr, 'is_closed': True,
+    }
+    frame_bull = pd.DataFrame([doji_bar, bullish_next_bar])
+    exit_decision = strategy.evaluate_exit(position, frame=frame_bull, current_price=0.0476, is_closed=True)
+    assert exit_decision is None
+    assert position.get('awaiting_doji_confirmation') is None  # 已作廢清除
+
+    # 3. 重新標記十字星，若次根為「明確實體陰線且跌破 doji_low (0.0469)」：確認雙棒離場！
+    strategy.evaluate_exit(position, frame=frame_doji, current_price=0.0471, is_closed=True)
+    assert position.get('awaiting_doji_confirmation') is True
+
+    bearish_confirm_bar = {
+        'open': 0.0471, 'close': 0.0467, 'high': 0.0472, 'low': 0.0466,
+        'ma5': 0.0469, 'ma15': 0.0460, 'atr': atr, 'is_closed': True,
+    }
+    frame_bear = pd.DataFrame([doji_bar, bearish_confirm_bar])
+    exit_decision = strategy.evaluate_exit(position, frame=frame_bear, current_price=0.0467, is_closed=True)
+    assert exit_decision == 'TWO_BAR_DOJI_REVERSAL_EXIT'
+
+
+def test_emergency_dump_exit_intrabar():
+    """突發大賣壓緊急避險（Emergency Dump Exit）：盤中即刻秒平，不等收線！
+    條件 A: 跌幅 >= 0.7 ATR 且 吞沒前陽 70%
+    條件 B: 巨陰貫穿 MA5 且跌幅 >= 0.8 ATR
+    條件 C: 天地針上影線 >= 1.5 倍實體
+    """
+    from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+    strategy = DualTrackExitStrategy()
+    atr = 0.0010
+    position = {
+        'symbol': 'LOBSTER/USDT',
+        'side': 'LONG',
+        'entry_price': 0.0450,
+        'entry_atr': atr,
+        'highest_price': 0.0480,
+    }
+    # 前一根陽線實體 0.0008 (0.8 ATR)
+    prev_bar = {
+        'open': 0.0466, 'close': 0.0474, 'high': 0.0475, 'low': 0.0465,
+        'ma5': 0.0470, 'ma15': 0.0460, 'atr': atr, 'is_closed': True,
+    }
+
+    # 條件 A：盤中大反殺（Open 0.0474, Live Price 0.0466 -> drop 0.0008 = 0.8 ATR >= 0.7 ATR，吞沒 100% 前陽棒）
+    curr_dump_bar = {
+        'open': 0.0474, 'close': 0.0466, 'high': 0.0475, 'low': 0.0465,
+        'ma5': 0.0470, 'ma15': 0.0460, 'atr': atr, 'is_closed': False,  # 盤中未收線！
+    }
+    frame_dump = pd.DataFrame([prev_bar, curr_dump_bar])
+    exit_decision = strategy.evaluate_exit(position, frame=frame_dump, current_price=0.0466, is_closed=False)
+    assert exit_decision == 'EMERGENCY_DUMP_EXIT'

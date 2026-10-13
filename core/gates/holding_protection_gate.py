@@ -1098,6 +1098,10 @@ class HoldingProtectionExitGate:
         'EXIT_BY_EXTREME_WATERFALL',
         'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         'EXIT_BY_RATCHET_PROFIT_LOCK',
+        'EMERGENCY_DUMP_EXIT',
+        'TWO_BAR_DOJI_REVERSAL_EXIT',
+        'EMERGENCY_EXTREME_ADVERSE_BAR',
+        'CANDLE_CLOSE_MA15_BREAK',
         INTRABAR_SPIKE_REBOUND_EXIT,
         'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
@@ -1380,7 +1384,13 @@ class HoldingProtectionExitGate:
 
         if (clean_reason.startswith('HYBRID_DYNAMIC')
                 or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
-                or clean_reason in ('MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT', 'CONFIRMED_MA5_CLOSE_BREAK')):
+                or clean_reason in (
+                    'MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT',
+                    'CONFIRMED_MA5_CLOSE_BREAK', 'EXIT_BY_RATCHET_PROFIT_LOCK',
+                    'RATCHET_BREAKEVEN_LOCK', 'EMERGENCY_DUMP_EXIT',
+                    'TWO_BAR_DOJI_REVERSAL_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
+                    'CANDLE_CLOSE_MA15_BREAK',
+                )):
             return _auth(clean_reason)
 
         # One-vote veto: If latest candle closed in favorable KC half
@@ -1389,6 +1399,7 @@ class HoldingProtectionExitGate:
         if (
             not _is_profit_lock_reason(clean_reason)
             and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
+            and clean_reason not in ('EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR')
         ):
             last_closed_above = _last_closed_close_at_or_above_kc_middle(frame)
             if side == 'LONG' and last_closed_above is True:
@@ -1398,9 +1409,11 @@ class HoldingProtectionExitGate:
 
         # MA Slope Shield: 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
         # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。
+        # 軌道二大賣壓緊急避險豁免斜率保護！
         if (
             not hard_exit
             and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
+            and clean_reason not in ('EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR')
         ):
             from core.services.exits.dual_track_exit_service import is_ma5_slope_shield_active
             if is_ma5_slope_shield_active(frame, side, frame_atr):
