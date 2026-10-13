@@ -29,6 +29,11 @@ MEME_BREAKOUT_SYMBOLS = frozenset((
     'CAP/USDT', 'CAP/USDT:USDT', '龍蝦/USDT', '龙虾/USDT',
     'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
 ))
+
+
+def is_meme_breakout_symbol(symbol: Optional[str]) -> bool:
+    """Return whether a supported meme coin uses the shared relaxed entry gates."""
+    return str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
 MEME_BREAKOUT_BODY_ATR = 0.30
 FAST_CROSS_BODY_ATR = 0.40
 FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO = 1.0
@@ -423,8 +428,7 @@ def fast_cross_ma15_slope_problem(
 ) -> Optional[str]:
     """Reject a fast MA cross when live MA15 movement is flat relative to ATR."""
     try:
-        if (side == 'LONG'
-                and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')):
+        if side == 'LONG' and is_meme_breakout_symbol(symbol):
             return None
         if (side not in ('LONG', 'SHORT') or frame is None or frame.empty
                 or bool(frame.iloc[-1].get('is_closed', True))):
@@ -2075,12 +2079,12 @@ class EntryGatePipeline:
             GOLDEN_CROSS_FAST_LONG_CODE,
             DEATH_CROSS_FAST_SHORT_CODE,
         )
-        cap_golden_cross = bool(
+        meme_golden_cross = bool(
             is_fast_cross and symbol
-            and symbol.upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+            and is_meme_breakout_symbol(symbol)
             and (decision or candidate).get('side') == 'LONG'
         )
-        cross_chop_problem = None if cap_golden_cross else ma5_ma15_cross_chop_problem(
+        cross_chop_problem = None if meme_golden_cross else ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
             side=(
                 decision.get('side') if isinstance(decision, dict)
@@ -2482,18 +2486,6 @@ class EntryGatePipeline:
             decision.get('type') in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
             and decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
         )
-        if (not is_flip and not is_confirmed_rail_breakout
-                and not decision.get('is_midline_break')
-                and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')):
-            from core.services.entry_contract import entry_consolidation_problem
-            cross_chop_problem = entry_consolidation_problem(
-                frame, quote, allow_directional_breakout=True, side=side,
-            )
-            if cross_chop_problem:
-                if diagnostics is not None:
-                    diagnostics['reason'] = cross_chop_problem
-                return None
-
         # ── 最頂層進場門控：MA5 幾何生死鐵律（一票否決權） ──
         if frame is not None and len(frame) >= 2:
             try:

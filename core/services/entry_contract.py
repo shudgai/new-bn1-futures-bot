@@ -9,7 +9,8 @@ from core.gates.pipeline import (
     FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES,
     MOMENTUM_BURST_CODES, MOMENTUM_BURST_LONG_CODE,
     MOMENTUM_BURST_SHORT_CODE, entry_market_structure_problem,
-    entry_strategy_type, fast_cross_evidence, long_large_bearish_candle_problem,
+    entry_strategy_type, fast_cross_evidence, is_meme_breakout_symbol,
+    long_large_bearish_candle_problem,
     ma5_ma15_cross_chop_problem, pipeline, strict_kc_entry_problem,
 )
 from core.services.candle_data import closed_entry_candles
@@ -89,10 +90,9 @@ LEGACY_ROUTE_CODES = frozenset((
     "RE_ENTRY_SHORT",
 ))
 ENTRY_CODES = KC_PENDING_CODES | PIPELINE_ENTRY_TYPES | LEGACY_ROUTE_CODES
-CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT", "CAP/USDT"))
-MEME_BREAKOUT_SYMBOLS = frozenset((
-    "CAP/USDT", "CAP/USDT:USDT", "龙虾/USDT", "龍蝦/USDT",
-    "LOBSTER/USDT", "LOBSTER/USDT:USDT",
+CHOP_FILTER_SYMBOLS = frozenset((
+    "SUI/USDT", "龙虾/USDT", "龍蝦/USDT", "LOBSTER/USDT",
+    "LOBSTER/USDT:USDT", "CAP/USDT", "CAP/USDT:USDT",
 ))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -1477,7 +1477,7 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         live_wick = lower_shadow_ratio(opening, quote, live_high, live_low)
         if prior_wick is None or live_wick is None:
             return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_CANDLE')
-        meme_coin = str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+        meme_coin = is_meme_breakout_symbol(symbol)
         max_bottom_shadow = 0.70 if meme_coin else 0.50
         if prior_wick > max_bottom_shadow or live_wick > max_bottom_shadow:
             return dict(action='WAIT', reason='BLOCKED_BY_BOTTOM_SHADOW')
@@ -1981,7 +1981,7 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         return False, "BLOCKED_BY_POSITION_GATE"
 
     meme_realtime_breakout = (
-        str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+        is_meme_breakout_symbol(symbol)
         and trigger_type == REALTIME_RAIL_BREACH_SHORT_CODE
     )
 
@@ -2523,7 +2523,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                      or (
                          active_fast_cross is not None
                          and active_fast_cross.get('side') == 'LONG'
-                         and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+                         and is_meme_breakout_symbol(symbol)
                      )) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,

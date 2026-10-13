@@ -82,7 +82,8 @@ async def validate_account_entry(account, symbol, side, context):
         DEATH_CROSS_FAST_SHORT_CODE, GOLDEN_CROSS_FAST_LONG_CODE,
         MOMENTUM_BURST_CODES, entry_strategy_type,
         fast_cross_evidence, fast_cross_ma15_slope_problem,
-        ma5_ma15_cross_chop_problem, strict_kc_entry_problem,
+        is_meme_breakout_symbol, ma5_ma15_cross_chop_problem,
+        strict_kc_entry_problem,
     )
     if code in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE):
         slope_problem = fast_cross_ma15_slope_problem(
@@ -96,7 +97,7 @@ async def validate_account_entry(account, symbol, side, context):
             )
     cap_golden_cross = (
         code == GOLDEN_CROSS_FAST_LONG_CODE and side == 'LONG'
-        and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+        and is_meme_breakout_symbol(symbol)
     )
     cross_chop_problem = (
         None if cap_golden_cross or code in KC_PENDING_CODES
