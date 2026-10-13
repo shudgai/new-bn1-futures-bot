@@ -631,7 +631,45 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
 
 
 def check_ma_cross_entry(df, live_price=None):
-    # 徹底移除「金叉/死叉」內部偷跑開單邏輯
+    """引擎一：MA5 / MA15 交叉敏捷開倉（起跑點）：
+    當 MA5 向上金叉 MA15（做多）或向下死叉 MA15（做空），
+    且當根 1m K 棒收線確認順向站穩（多單 close > ma5 且 close > open，空單 close < ma5 且 close < open）時，
+    第一時間敏捷開倉，杜絕延遲追高。
+    """
+    if df is None or len(df) < 2:
+        return None
+    try:
+        closed = closed_entry_candles(df)
+        if len(closed) < 2:
+            return None
+        curr = closed.iloc[-1]
+        prev = closed.iloc[-2]
+
+        curr_ma5 = float(curr.get('ma5', 0.0))
+        prev_ma5 = float(prev.get('ma5', 0.0))
+        curr_ma15 = float(curr.get('ma15', 0.0))
+        prev_ma15 = float(prev.get('ma15', 0.0))
+        curr_close = float(curr['close'])
+        curr_open = float(curr['open'])
+
+        # 金叉做多
+        if prev_ma5 <= prev_ma15 and curr_ma5 > curr_ma15 and curr_close > curr_ma5 and curr_close > curr_open:
+            return {
+                'side': 'LONG',
+                'type': 'KC_GOLDEN_CROSS_FAST_LONG',
+                'reason': 'KC_GOLDEN_CROSS_FAST_LONG',
+                'bypass_spatial_check': True,
+            }
+        # 死叉做空
+        if prev_ma5 >= prev_ma15 and curr_ma5 < curr_ma15 and curr_close < curr_ma5 and curr_close < curr_open:
+            return {
+                'side': 'SHORT',
+                'type': 'KC_DEATH_CROSS_FAST_SHORT',
+                'reason': 'KC_DEATH_CROSS_FAST_SHORT',
+                'bypass_spatial_check': True,
+            }
+    except Exception:
+        pass
     return None
 
 

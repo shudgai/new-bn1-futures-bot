@@ -578,3 +578,43 @@ def test_emergency_dump_exit_intrabar():
     frame_dump = pd.DataFrame([prev_bar, curr_dump_bar])
     exit_decision = strategy.evaluate_exit(position, frame=frame_dump, current_price=0.0466, is_closed=False)
     assert exit_decision == 'EMERGENCY_DUMP_EXIT'
+
+
+def test_engine_1_ma_cross_agile_entry():
+    """引擎一：MA5/MA15 交叉敏捷開倉（起跑點）：當 MA5 向上金叉 MA15 且收陽站穩 MA5 即刻觸發。"""
+    from core.services.strategies.unified_entry_strategy import check_ma_cross_entry
+    df = pd.DataFrame([
+        {'open': 0.0440, 'close': 0.0442, 'ma5': 0.0441, 'ma15': 0.0445, 'is_closed': True},
+        {'open': 0.0443, 'close': 0.0450, 'ma5': 0.0448, 'ma15': 0.0446, 'is_closed': True},
+    ])
+    decision = check_ma_cross_entry(df)
+    assert decision is not None
+    assert decision['side'] == 'LONG'
+    assert decision['type'] == 'KC_GOLDEN_CROSS_FAST_LONG'
+    assert decision['bypass_spatial_check'] is True
+
+
+def test_engine_2_and_reentry_mechanisms():
+    """引擎二收線破軌與延續開倉（Re-entry）：機會 A 回踩 MA5/MA15 站穩收陽，機會 B 實體大陽線破前高。"""
+    from core.services.entry_contract import detect_raw_triggers, evaluate_reentry_triggers
+    atr = 0.0010
+    # 測試延續開倉機會 A：回踩 MA5 獲得支撐，收陽站回 MA5
+    closed_df_a = pd.DataFrame([
+        {'open': 0.0450, 'close': 0.0460, 'high': 0.0462, 'low': 0.0448, 'ma5': 0.0455, 'ma15': 0.0448, 'atr': atr, 'kc_middle': 0.0450, 'is_closed': True},
+        {'open': 0.0458, 'close': 0.0454, 'high': 0.0460, 'low': 0.0452, 'ma5': 0.0456, 'ma15': 0.0450, 'atr': atr, 'kc_middle': 0.0451, 'is_closed': True},
+        # 回踩 low 0.0455 (觸碰 ma5)，收盤 0.0462 (陽線且 > ma5 0.0458 > ma15 0.0452)
+        {'open': 0.0455, 'close': 0.0462, 'high': 0.0463, 'low': 0.0454, 'ma5': 0.0458, 'ma15': 0.0452, 'atr': atr, 'kc_middle': 0.0452, 'is_closed': True},
+    ])
+    side_a, trigger_a = evaluate_reentry_triggers(closed_df_a, last_exit_side='LONG')
+    assert side_a == 'LONG'
+    assert trigger_a == 'RE_ENTRY_LONG'
+
+    # 測試延續開倉機會 B：實體大陽線 (0.0008 = 0.8 ATR >= 0.6 ATR) 突破前高 0.0460
+    closed_df_b = pd.DataFrame([
+        {'open': 0.0450, 'close': 0.0455, 'high': 0.0458, 'low': 0.0448, 'ma5': 0.0452, 'ma15': 0.0448, 'atr': atr, 'kc_middle': 0.0450, 'is_closed': True},
+        {'open': 0.0455, 'close': 0.0458, 'high': 0.0460, 'low': 0.0452, 'ma5': 0.0454, 'ma15': 0.0450, 'atr': atr, 'kc_middle': 0.0451, 'is_closed': True},
+        {'open': 0.0457, 'close': 0.0465, 'high': 0.0466, 'low': 0.0456, 'ma5': 0.0458, 'ma15': 0.0452, 'atr': atr, 'kc_middle': 0.0452, 'is_closed': True},
+    ])
+    side_b, trigger_b = evaluate_reentry_triggers(closed_df_b, last_exit_side='LONG')
+    assert side_b == 'LONG'
+    assert trigger_b == 'RE_ENTRY_LONG'

@@ -1367,6 +1367,7 @@ def evaluate_closed_outer_body_breakout(frame, quote, symbol="", requested_side=
             pending_max_wait_bars=0, kc_confirmation_edge=edge,
             kc_distance_atr=distance,
             kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
+            bypass_spatial_check=True,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -1411,31 +1412,64 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             return None
         stamp = float(live["timestamp"])
         atr = float(frame.iloc[-2]["atr"])
+        closed_candles = closed_entry_candles(frame)
+
         if side == 'LONG':
             # 【即時破軌開多嚴格限制條件】
-            # 1. 破軌 K 棒實體必須 >= 0.6 ATR 的飽滿大陽線 (close > open)
+            # 1. 實質破軌深度：盤中最新價 > KC 上軌 + 0.15 ATR
+            if quote <= upper + 0.15 * atr:
+                return None
+            # 2. 實體門檻：盤中實體陽線漲幅（Price - Open）>= 0.6 ATR
             body = quote - opened
             if atr > 0 and body < 0.6 * atr:
                 return None
-            # 2. 排除假突破 / 上影線阻力形態（若上影線 >= 實體 0.7 倍，判定為假突破受阻）
+            # 3. 嚴格影線過濾：當前價位於高點區，上影線長度 <= 0.3 倍實體
             high_p = max(float(live.get("high", quote)), quote)
             upper_wick = high_p - quote
-            if upper_wick >= 0.7 * body:
+            if upper_wick > 0.3 * body:
                 return None
-            # 3. 禁止逆勢破軌（KC 趨勢強制對齊：kc_trend != 'DOWN'）
+            # 4. 趨勢強制對齊：kc_trend != 'DOWN'
             channel_state = str(live.get("channel_state", "")).strip().upper()
-            closed_candles = closed_entry_candles(frame)
             is_kc_down = (
                 channel_state in ("KC向下", "KC_TREND_DOWN", "DOWN", "DOWNTREND", "BEARISH", "SHORT")
                 or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get("kc_middle", 0.0)) < float(closed_candles.iloc[-2].get("kc_middle", 0.0)))
             )
             if is_kc_down:
                 return None
-            # 4. 棕色 MA15 斜率不得為負（MA15 必須走平或向上，禁止在均線向下壓制時開多）
-            prev_ma15 = float(closed_candles.iloc[-1].get("ma15", 0.0)) if len(closed_candles) >= 1 else 0.0
-            live_ma15 = float(live.get("ma15", prev_ma15)) + (quote - float(live.get("close", quote))) / 15.0
-            if prev_ma15 > 0 and live_ma15 < prev_ma15:
+            # 5. MA5 斜率向上（ΔMA5 > 0）
+            prev_ma5 = float(closed_candles.iloc[-1].get("ma5", 0.0)) if len(closed_candles) >= 1 else 0.0
+            live_ma5 = float(live.get("ma5", prev_ma5)) + (quote - float(live.get("close", quote))) / 5.0
+            if prev_ma5 > 0 and live_ma5 <= prev_ma5:
                 return None
+
+        elif side == 'SHORT':
+            # 【即時破軌開空嚴格限制條件】
+            # 1. 實質破軌深度：盤中最新價 < KC 下軌 - 0.15 ATR
+            if quote >= lower - 0.15 * atr:
+                return None
+            # 2. 實體門檻：盤中實體陰線跌幅（Open - Price）>= 0.6 ATR
+            body = opened - quote
+            if atr > 0 and body < 0.6 * atr:
+                return None
+            # 3. 嚴格影線過濾：當前價位於低點區，下影線長度 <= 0.3 倍實體
+            low_p = min(float(live.get("low", quote)), quote)
+            lower_wick = quote - low_p
+            if lower_wick > 0.3 * body:
+                return None
+            # 4. 趨勢強制對齊：kc_trend != 'UP'
+            channel_state = str(live.get("channel_state", "")).strip().upper()
+            is_kc_up = (
+                channel_state in ("KC向上", "KC_TREND_UP", "UP", "UPTREND", "BULLISH", "LONG")
+                or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get("kc_middle", 0.0)) > float(closed_candles.iloc[-2].get("kc_middle", 0.0)))
+            )
+            if is_kc_up:
+                return None
+            # 5. MA5 斜率向下（ΔMA5 < 0）
+            prev_ma5 = float(closed_candles.iloc[-1].get("ma5", 0.0)) if len(closed_candles) >= 1 else 0.0
+            live_ma5 = float(live.get("ma5", prev_ma5)) + (quote - float(live.get("close", quote))) / 5.0
+            if prev_ma5 > 0 and live_ma5 >= prev_ma5:
+                return None
+
         edge = upper if side == "LONG" else lower
         distance = (quote - edge) / atr if side == "LONG" else (edge - quote) / atr
         if (not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance)
@@ -1459,6 +1493,7 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             pending_max_wait_bars=0, kc_confirmation_edge=edge,
             kc_distance_atr=distance,
             kc_max_distance_atr=LIVE_BREAKOUT_MAX_DISTANCE_ATR,
+            bypass_spatial_check=True,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -1919,24 +1954,66 @@ def count_ma_crosses(frame):
     return crosses
 
 def evaluate_reentry_triggers(closed_frame, last_exit_side=None, bars_since_exit=None):
+    """延續開倉（Re-entry 擇時機制）：
+    平倉後趨勢未破壞時，符合以下結構即可再次進場：
+      * 機會 A（回踩支撐確認）：MA5 > MA15 且 MA15 向上，價格回踩 MA5 或 MA15 獲得支撐不破，隨後當根收陽且站回 MA5。
+      * 機會 B（結構新突破）：價格以帶動能之實體 K 線（>= 0.6 ATR）收盤突破前一波高點。
+    空單完全對稱。
+    """
     if len(closed_frame) < 3: return None, None
     if not last_exit_side: return None, "NO_HISTORY"
-    # 完全取消冷卻等待
-    
+
     curr = closed_frame.iloc[-1]
     prev = closed_frame.iloc[-2]
+    atr = float(curr.get('atr', 0.0))
 
-    # 多單：大趨勢確立 (KC向上)，且重新轉漲 (收紅K或突破前高) 即刻進場
     if last_exit_side == "LONG":
-        if curr['kc_middle'] >= prev['kc_middle']:
-            if (curr['close'] > curr['open']) or (curr['close'] > prev['high']):
-                return "LONG", "RE_ENTRY_LONG"
+        ma5_curr = float(curr.get('ma5', 0.0))
+        ma15_curr = float(curr.get('ma15', 0.0))
+        ma15_prev = float(prev.get('ma15', 0.0))
+        close_p = float(curr['close'])
+        open_p = float(curr['open'])
+        low_p = float(curr['low'])
+        prev_high = float(prev['high'])
+        body = close_p - open_p
 
-    # 空單：大趨勢確立 (KC向下)，且重新轉跌 (收黑K或跌破前低) 即刻進場
-    if last_exit_side == "SHORT":
-        if curr['kc_middle'] <= prev['kc_middle']:
-            if (curr['close'] < curr['open']) or (curr['close'] < prev['low']):
-                return "SHORT", "RE_ENTRY_SHORT"
+        # 機會 A（回踩支撐確認）：MA5 > MA15 且 MA15 向上，價格回踩 MA5 或 MA15 獲得支撐不破，隨後當根收陽且站回 MA5
+        pullback_support = (
+            ma5_curr > ma15_curr and ma15_curr >= ma15_prev and
+            (low_p <= ma5_curr or low_p <= ma15_curr) and
+            close_p >= ma15_curr and
+            close_p > open_p and close_p >= ma5_curr
+        )
+        # 機會 B（結構新突破）：價格以帶動能之實體 K 線（>= 0.6 ATR）收盤突破前一波高點
+        momentum_breakout = (
+            body >= 0.6 * atr and close_p > prev_high and close_p > open_p
+        )
+        if pullback_support or momentum_breakout:
+            return "LONG", "RE_ENTRY_LONG"
+
+    elif last_exit_side == "SHORT":
+        ma5_curr = float(curr.get('ma5', 0.0))
+        ma15_curr = float(curr.get('ma15', 0.0))
+        ma15_prev = float(prev.get('ma15', 0.0))
+        close_p = float(curr['close'])
+        open_p = float(curr['open'])
+        high_p = float(curr['high'])
+        prev_low = float(prev['low'])
+        body = open_p - close_p
+
+        # 機會 A（回抽阻力確認）：MA5 < MA15 且 MA15 向下，價格回抽 MA5 或 MA15 獲得阻力不破，隨後當根收陰且跌回 MA5
+        pullback_resistance = (
+            ma5_curr < ma15_curr and ma15_curr <= ma15_prev and
+            (high_p >= ma5_curr or high_p >= ma15_curr) and
+            close_p <= ma15_curr and
+            close_p < open_p and close_p <= ma5_curr
+        )
+        # 機會 B（結構新突破）：價格以帶動能之實體 K 線（>= 0.6 ATR）收盤跌破前一波低點
+        momentum_breakdown = (
+            body >= 0.6 * atr and close_p < prev_low and close_p < open_p
+        )
+        if pullback_resistance or momentum_breakdown:
+            return "SHORT", "RE_ENTRY_SHORT"
 
     return None, "NO_REENTRY_SIGNAL"
 
@@ -1957,30 +2034,40 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
 
     atr = float(curr['atr'])
 
-    # 情境 A: 軌內起爆衝擊 + 軌外標準破軌 (TRIGGER_A_KC_BREAKOUT)
-    classic_breakout_long = (curr['close'] > curr['kc_upper'] and curr['close'] > curr['open'])
-    impulsive_breakout_long = (
-        curr['open'] < curr['kc_upper'] and
-        curr['high'] >= curr['kc_upper'] and
-        curr['close'] > curr['kc_middle'] and
+    # 引擎二：一般 KC 收線破軌開倉（單邊爆發點）
+    # 多單：當根 1m 實體陽線收盤突破 KC 上軌（close > upper_band 且 close > open），實體 >= 0.5 ATR。限制：kc_trend != 'DOWN'，上影線 < 0.7 倍實體。
+    # 空單：當根 1m 實體陰線收盤跌破 KC 下軌（close < lower_band 且 close < open），實體 >= 0.5 ATR。限制：kc_trend != 'UP'，下影線 < 0.7 倍實體。
+    kc_up = curr['kc_middle'] >= prev['kc_middle']
+    kc_down = curr['kc_middle'] <= prev['kc_middle']
+    kc_trend = str(curr.get('kc_trend', '')).upper()
+
+    body_long = curr['close'] - curr['open']
+    upper_wick_long = curr['high'] - curr['close']
+    long_breakout = (
+        curr['close'] > curr['kc_upper'] and
         curr['close'] > curr['open'] and
-        (curr['close'] - curr['open']) >= atr * 0.5 and
-        (curr['high'] - curr['close']) <= (curr['close'] - curr['open']) * 0.8
+        body_long >= 0.5 * atr and
+        not ('DOWN' in kc_trend or not kc_up) and
+        upper_wick_long < 0.7 * max(body_long, 1e-9)
     )
-    long_breakout = classic_breakout_long or impulsive_breakout_long
 
-    classic_breakout_short = (curr['close'] < curr['kc_lower'] and curr['close'] < curr['open'])
-    impulsive_breakout_short = (
-        curr['open'] > curr['kc_lower'] and
-        curr['low'] <= curr['kc_lower'] and
-        curr['close'] < curr['kc_middle'] and
+    body_short = curr['open'] - curr['close']
+    lower_wick_short = curr['close'] - curr['low']
+    short_breakout = (
+        curr['close'] < curr['kc_lower'] and
         curr['close'] < curr['open'] and
-        (curr['open'] - curr['close']) >= atr * 0.5 and
-        (curr['close'] - curr['low']) <= (curr['open'] - curr['close']) * 0.8
+        body_short >= 0.5 * atr and
+        not ('UP' in kc_trend or not kc_down) and
+        lower_wick_short < 0.7 * max(body_short, 1e-9)
     )
-    short_breakout = classic_breakout_short or impulsive_breakout_short
 
-    # 情境 B: 軌外順勢追車 (TRIGGER_C_CONTINUATION)
+    # 引擎一：MA5 / MA15 交叉敏捷開倉（起跑點）
+    golden_cross = prev['ma5'] <= prev['ma15'] and curr['ma5'] > curr['ma15']
+    death_cross = prev['ma5'] >= prev['ma15'] and curr['ma5'] < curr['ma15']
+    long_ma_cross = golden_cross and curr['close'] > curr['ma5'] and curr['close'] > curr['open']
+    short_ma_cross = death_cross and curr['close'] < curr['ma5'] and curr['close'] < curr['open']
+
+    # 引擎三及順勢延續
     long_cont = (
         curr['close'] > curr['kc_upper'] and
         curr['close'] > curr['ma5'] and
@@ -1995,17 +2082,12 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
         curr['close'] < curr['open']
     )
 
-    golden_cross = prev['ma5'] <= prev['ma15'] and curr['ma5'] > curr['ma15']
-    death_cross = prev['ma5'] >= prev['ma15'] and curr['ma5'] < curr['ma15']
-    long_ma_cross = golden_cross and curr['close'] > curr['kc_middle'] and curr['close'] > curr['open']
-    short_ma_cross = death_cross and curr['close'] < curr['kc_middle'] and curr['close'] < curr['open']
-
     if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
     if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
-    if long_cont: return "LONG", "TRIGGER_C_CONTINUATION"
-    if short_cont: return "SHORT", "TRIGGER_C_CONTINUATION"
     if long_ma_cross: return "LONG", "TRIGGER_B_MA_CROSS"
     if short_ma_cross: return "SHORT", "TRIGGER_B_MA_CROSS"
+    if long_cont: return "LONG", "TRIGGER_C_CONTINUATION"
+    if short_cont: return "SHORT", "TRIGGER_C_CONTINUATION"
 
     return None, None
 

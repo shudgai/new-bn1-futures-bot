@@ -2770,20 +2770,25 @@ class EntryGatePipeline:
             or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
             or decision.get('reason') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'
         )
+        is_bypass_spatial = bool(
+            decision.get('bypass_spatial_check')
+            or is_rt_breakout
+            or decision.get('type') in (
+                'TRIGGER_A_KC_BREAKOUT', 'KC_LIVE_BODY_BREAKOUT_LONG',
+                'KC_LIVE_BODY_BREAKOUT_SHORT', 'KC_GOLDEN_CROSS_FAST_LONG',
+                'KC_DEATH_CROSS_FAST_SHORT', 'RE_ENTRY_LONG', 'RE_ENTRY_SHORT',
+            )
+        )
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:
-            if (is_trend_continuation or is_shadow_retest or is_midline_break) and name == 'CANDLE_SOLIDITY':
+            if (is_trend_continuation or is_shadow_retest or is_midline_break or is_bypass_spatial) and name == 'CANDLE_SOLIDITY':
                 continue
-            # Realtime breakouts already pass impulse, solidity, volume,
-            # distance, and MA5 direction checks in detect_realtime_breakout.
-            if is_rt_breakout and name == 'CANDLE_SOLIDITY':
+            # 快車道、破軌空間豁免、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break or is_bypass_spatial) and name == 'MOUTH_EXPANSION':
                 continue
-            # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break) and name == 'MOUTH_EXPANSION':
-                continue
-            # 快車道、順勢延續、下影線回踩與反手翻轉全面豁免 CHOP_FILTER（順勢已由均線確認，反手為單棒吞噬）
-            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break) and name == 'CHOP_FILTER':
+            # 快車道、破軌空間豁免、順勢延續、下影線回踩與反手翻轉全面豁免 CHOP_FILTER（順勢已由均線確認，反手為單棒吞噬）
+            if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break or is_bypass_spatial) and name == 'CHOP_FILTER':
                 continue
             passed, reason = gate_func(frame, quote, side, context=context)
             if not passed:

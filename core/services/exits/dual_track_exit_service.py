@@ -218,9 +218,9 @@ def is_candle_closed_dump_exit(frame, side: str, is_closed: bool = False) -> boo
 
 
 def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str, atr: float) -> bool:
-    """衝高滯漲主動止盈/平倉（Momentum Stalling Exit）：
-    進場後若連續 2 根 K 棒無法刷新進場點最高價，且出現上影線 >= 實體 0.8 倍的滯漲形態，
-    加上 MA5 斜率走平下彎（curr_ma5 <= prev_ma5 或 |ΔMA5| < 0.02 ATR）：判定多頭推力枯竭，立即主動平倉！
+    """高檔滯漲動能竭盡主動平倉（Momentum Stalling Exit）：
+    波段衝高後，若連續 2 根以上無法刷新高點、實體微弱（< 0.3 ATR）或長上影避雷針（上影 >= 0.8 實體），
+    且 MA5 斜率走平下彎（curr_ma5 <= prev_ma5 或 |ΔMA5| < 0.02 ATR）：於頂部走平區主動落袋保本，防止死等大瀑布。
     """
     if frame is None or len(frame) < 2 or atr <= 0 or not position:
         return False
@@ -234,6 +234,8 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
         open_p = float(curr.get('open', quote))
         high_p = max(float(curr.get('high', quote)), quote)
         low_p = min(float(curr.get('low', quote)), quote)
+        prev_high = float(prev.get('high', quote))
+        prev_low = float(prev.get('low', quote))
         entry_p = float(position.get('entry_price', quote))
         peak_p = float(position.get('highest_price') or position.get('peak_price') or entry_p)
         trough_p = float(position.get('lowest_price') or position.get('trough_price') or entry_p)
@@ -244,9 +246,9 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
                 return False
             body = max(quote - open_p, 0.0)
             upper_wick = high_p - max(open_p, quote)
-            stalling_pinbar = (upper_wick >= 0.8 * body and upper_wick >= 0.3 * atr)
-            not_refreshing_high = (high_p <= peak_p and quote < peak_p)
-            if stalling_pinbar and not_refreshing_high:
+            is_stalling = (body < 0.3 * atr) or (upper_wick >= 0.8 * body and upper_wick >= 0.3 * atr)
+            not_refreshing_high = (high_p <= peak_p and prev_high <= peak_p and quote < peak_p)
+            if is_stalling and not_refreshing_high:
                 return True
         elif side == 'SHORT':
             ma5_flat_or_up = (curr_ma5 >= prev_ma5 or slope_atr < 0.02)
@@ -254,9 +256,9 @@ def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str
                 return False
             body = max(open_p - quote, 0.0)
             lower_wick = min(open_p, quote) - low_p
-            stalling_pinbar = (lower_wick >= 0.8 * body and lower_wick >= 0.3 * atr)
-            not_refreshing_low = (low_p >= trough_p and quote > trough_p)
-            if stalling_pinbar and not_refreshing_low:
+            is_stalling = (body < 0.3 * atr) or (lower_wick >= 0.8 * body and lower_wick >= 0.3 * atr)
+            not_refreshing_low = (low_p >= trough_p and prev_low >= trough_p and quote > trough_p)
+            if is_stalling and not_refreshing_low:
                 return True
     except (TypeError, ValueError, IndexError):
         pass
