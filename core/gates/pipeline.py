@@ -168,6 +168,8 @@ PIPELINE_ENTRY_TYPES = frozenset((
     MOMENTUM_BURST_LONG_CODE,
     MOMENTUM_BURST_SHORT_CODE,
     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+    'KC_LIVE_BODY_BREAKOUT_LONG',
+    'KC_LIVE_BODY_BREAKOUT_SHORT',
 ))
 
 
@@ -285,7 +287,11 @@ def ma5_ma15_cross_chop_problem(
             cross_count >= MA_CROSS_CHOP_MIN_CROSSES
             and below(gap_pct, 0.0004 if meme_impulse else MA_CROSS_CHOP_RECOVERY_GAP_PCT)
         )
-        if below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT):
+        fresh_cross = (
+            (side == 'SHORT' and current_ma5 < current_ma15 and current_ma5 < previous_ma5 and previous_ma5 >= previous_ma15)
+            or (side == 'LONG' and current_ma5 > current_ma15 and current_ma5 > previous_ma5 and previous_ma5 <= previous_ma15)
+        )
+        if not fresh_cross and below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT):
             problem = 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
         elif recent_cross_compressed:
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'

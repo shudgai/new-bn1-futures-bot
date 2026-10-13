@@ -194,3 +194,55 @@ def test_holding_protection_veto_by_ma5_slope_shield():
     assert reason == "VETO_MA5_SLOPE_SHIELD_ACTIVE"
 
 
+def test_fresh_death_cross_gap_exemption():
+    """初生死叉（MA5 剛下穿 MA15 且斜率向下）時，Gap 豁免，不報 BLOCKED_MA5_MA15_GAP_TOO_NARROW。"""
+    from core.gates.pipeline import ma5_ma15_cross_chop_problem
+    rows = []
+    for i in range(15):
+        rows.append({
+            'timestamp': 1791860000000.0 + i * 60000,
+            'open': 0.0500, 'high': 0.0505, 'low': 0.0495, 'close': 0.0500,
+            'ma5': 0.0502 if i < 14 else 0.0498,  # 前根 0.0502 >= ma15 0.0500，最新根 0.0498 < ma15 0.0499 (死叉向下)
+            'ma15': 0.0500 if i < 14 else 0.0499,
+            'is_closed': i < 14,
+        })
+    df = pd.DataFrame(rows)
+    df.attrs['timeframe_ms'] = 60000
+    problem = ma5_ma15_cross_chop_problem(df, quote=0.0498, side='SHORT')
+    assert problem != 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
+
+
+def test_short_kc_live_body_breakout_space_exemption():
+    """當實體陰線跌破 KC 下軌且 KC_TREND_DOWN 時，豁免 25% 下軌空間限制。"""
+    from core.services.entry_contract import evaluate_entry_contract
+    # 建立 20 根 K 線，通道向下
+    rows = []
+    for i in range(21):
+        mid = 0.0500 - i * 0.0002
+        c = mid - 0.0005 if i == 20 else mid
+        rows.append({
+            'timestamp': 1791860000000.0 + i * 60000,
+            'open': c + 0.0003,
+            'high': c + 0.0004,
+            'low': c - 0.0001,
+            'close': c,
+            'kc_upper': mid + 0.0005,
+            'kc_middle': mid,
+            'kc_lower': mid - 0.0005,
+            'channel_state': 'KC向下',
+            'ma3': c - 0.0001,
+            'ma5': c + 0.0001,
+            'ma15': mid + 0.0001,
+            'atr': 0.0004,
+            'is_closed': i < 20,
+        })
+    df = pd.DataFrame(rows)
+    df.attrs['timeframe_ms'] = 60000
+    # 報價 0.0450 跌破 kc_lower (約 0.0455)，實體跌破下軌
+    diagnostics = {}
+    entry = evaluate_entry_contract(df, 0.0450, code='KC_LIVE_BODY_BREAKOUT_SHORT', diagnostics=diagnostics)
+    # 驗證未被 BLOCKED_STRICT_MA_SPACING 或 BLOCKED_STRICT_CHANNEL_CONVERGENCE 攔截
+    assert diagnostics.get('reason') not in ('BLOCKED_STRICT_MA_SPACING', 'BLOCKED_STRICT_CHANNEL_CONVERGENCE')
+
+
+

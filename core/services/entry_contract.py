@@ -2253,8 +2253,7 @@ def pre_flight_safety_check(
              and entry_phase == 'KC_2BAR_CLOSED_CONFIRM')
             or (decision_type == 'TRIGGER_A_KC_BREAKOUT'
                 and entry_phase == 'KC_THREE_BAR_BREAKOUT')
-            or (decision_type in LIVE_BODY_BREAKOUT_CODES
-                and entry_phase == 'KC_LIVE_OUTER_BREAKOUT')
+            or (decision_type in LIVE_BODY_BREAKOUT_CODES)
             or decision_type == REALTIME_RAIL_BREACH_SHORT_CODE
         )
         is_strong_breakout = (
@@ -2532,11 +2531,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             None if (confirmed_pending_breakout or is_instant_reverse
                      or live_body_candidate is not None
                      or live_pattern_candidate is not None
-                     or (
-                         active_fast_cross is not None
-                         and active_fast_cross.get('side') == 'LONG'
-                         and is_meme_breakout_symbol(symbol)
-                     )) else
+                     or active_fast_cross is not None) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(
@@ -2810,11 +2805,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     upper, lower = float(live['kc_upper']), float(live['kc_lower'])
                     width = upper - lower
                     max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
+                    is_kc_trend_down = bool(
+                        (len(closed) >= 2 and float(closed.iloc[-1].get('kc_middle', 0.0)) < float(closed.iloc[-2].get('kc_middle', 0.0)))
+                        or str(live.get('channel_state', '')).upper() in ('KC向下', 'KC_TREND_DOWN', 'TREND_DOWN')
+                    )
+                    is_short_kc_breakout = (
+                        side == 'SHORT' and is_kc_trend_down and quote < lower
+                    )
                     if (not all(math.isfinite(value) and value > 0 for value in
                                 (live_ma5, live_ma15, upper, lower, width, max_width))
-                            or width <= 0 or width <= 0.25 * max_width):
+                            or width <= 0 or (width <= 0.25 * max_width and not is_short_kc_breakout)):
                         fast_lane_problem = 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'
-                    if not consecutive_momentum:
+                    if not consecutive_momentum and not is_short_kc_breakout:
                         min_spacing = (0.10 if meme_impulse else 0.25) * width
                         if (fast_lane_problem is None
                                 and (abs(live_ma5 - live_ma15) < min_spacing
