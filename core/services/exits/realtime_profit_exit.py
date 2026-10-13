@@ -8,6 +8,7 @@ from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
     PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
+    is_pivot_only_channel_symbol,
     EMERGENCY_DUMP_CUT_TRIGGER,
     emergency_long_dump_cut_trigger,
     estimated_display_net_pnl,
@@ -664,7 +665,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger = decision.get('trigger', '')
         allowed_triggers = (
             PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-            if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
+            if is_pivot_only_channel_symbol(symbol)
             else (frozenset() if entry_m == 'CHANNEL_SWING' else CHANNEL_SWING_EXIT_TRIGGERS)
         )
         if (entry_m == 'CHANNEL_SWING'

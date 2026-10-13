@@ -11,6 +11,7 @@ from core.gates.pipeline import (
     entry_market_structure_problem,
     ma5_ma15_cross_chop_problem,
     pipeline,
+    strict_kc_entry_problem,
 )
 from core.services.entry_contract import evaluate_entry_contract
 from core.services.entry_firewall import validate_account_entry
@@ -35,6 +36,13 @@ def make_frame(side, *, phase='launch', quote=None):
             ma15=99.3 + index * 0.045,
             volume=100.0,
         ))
+
+    if side == 'SHORT':
+        # Build a genuinely bearish MA history for the mirrored short setup.
+        # The previous fixture supplied rising bullish MAs to both directions.
+        for index, row in enumerate(rows):
+            row['ma5'] = 100.04 - 0.01 * index
+            row['ma15'] = 100.19 - 0.01 * index
 
     last = rows[-1]
     if side == 'LONG':
@@ -152,12 +160,23 @@ def make_momentum_burst_frame(side, *, quote=None):
         ('kc_upper', 'kc_lower'),
         ('kc_lower', 'kc_upper'),
         ('kc_middle', 'kc_middle'),
-        ('ma5', 'ma5'),
-        ('ma15', 'ma15'),
+        ('ma5', 'ma15'),
+        ('ma15', 'ma5'),
     ):
         frame[target] = 200.0 - source[original]
     long_quote = 200.0 - short_quote
     frame.loc[frame.index[-1], 'close'] = 200.0 - float(source.iloc[-1]['close'])
+    frame.loc[frame.index[-1], 'ma5'] = (
+        float(frame.loc[frame.index[-2], 'ma5']) + 0.02
+    )
+    frame.loc[frame.index[-1], 'ma15'] = (
+        float(frame.loc[frame.index[-2], 'ma15']) + 0.01
+    )
+    frame.loc[frame.index[-1], 'open'] = min(
+        float(frame.loc[frame.index[-1], 'open']),
+        float(frame.loc[frame.index[-1], 'ma15']),
+        float(frame.loc[frame.index[-1], 'ma5']),
+    )
     return frame, long_quote
 
 
@@ -211,9 +230,12 @@ def test_bearish_ma_midline_launch_keeps_strict_common_entry_gates(fault):
         frame.loc[live, ['kc_lower', 'kc_middle', 'kc_upper']] = [
             99.75, 100.0, 100.25,
         ]
+        frame.loc[live, 'open'] = quote + 0.4
     else:
         frame.loc[live, 'kc_lower'] = 99.85
 
+    if fault == 'kc_squeeze':
+        assert strict_kc_entry_problem(frame, quote, 'SHORT') == 'BLOCKED_KC_SQUEEZE'
     assert EntryGatePipeline.detect_momentum_burst(
         frame, quote, side='SHORT',
     ) is None
@@ -595,8 +617,12 @@ def test_midline_launch_still_blocks_two_recent_ma_crosses():
     frame.loc[closed[-2], 'ma15'] = 99.8
     frame.loc[closed[-1], 'ma5'] = 99.9
     frame.loc[closed[-1], 'ma15'] = 99.95
+    frame.loc[frame.index[-1], 'ma5'] = 100.0
+    frame.loc[frame.index[-1], 'ma15'] = 99.86
 
-    assert ma5_ma15_cross_chop_problem(frame) == 'BLOCKED_MA5_MA15_CROSS_CHOP'
+    assert ma5_ma15_cross_chop_problem(
+        frame, side='LONG',
+    ) == 'BLOCKED_MA5_MA15_CROSS_CHOP'
     assert EntryGatePipeline.detect_midline_break_long(
         frame, quote, side='LONG',
     ) is None

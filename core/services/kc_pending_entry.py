@@ -138,18 +138,6 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             if not math.isfinite(price) or price <= 0:
                 return wait('WAIT_VALID_QUOTE')
 
-            # K1/K2 are the confirmed breakout pair. K3 may be flat or still
-            # moving with the breakout, but a live adverse body cancels entry.
-            if live is not None and not bool(getattr(live, 'is_closed', False)):
-                live_open = float(getattr(live, 'open'))
-                if (not math.isfinite(live_open) or live_open <= 0):
-                    return wait('WAIT_VALID_KC_PENDING_DATA')
-                if sign * (price - live_open) < 0:
-                    return wait(
-                        'BLOCKED_LIVE_OPPOSITE_BODY', side=side,
-                        type='KC_2BAR_CONFIRM_' + side,
-                    )
-
             # The latest quote must remain beyond the latest available rail,
             # including the forming candle's updated outer band.
             s_edge = float(second[key])
@@ -172,6 +160,18 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
                 return wait('BLOCKED_BY_EXTENDED_BREAKOUT', side=side,
                             kc_distance_atr=distance,
                             kc_max_distance_atr=MAX_BREAKOUT_DISTANCE_ATR)
+
+            # K1/K2 are the confirmed breakout pair. K3 may be flat or still
+            # moving with the breakout, but a live adverse body cancels entry.
+            if live is not None and not bool(getattr(live, 'is_closed', False)):
+                live_open = float(getattr(live, 'open'))
+                if (not math.isfinite(live_open) or live_open <= 0):
+                    return wait('WAIT_VALID_KC_PENDING_DATA')
+                if sign * (price - live_open) < 0:
+                    return wait(
+                        'BLOCKED_LIVE_OPPOSITE_BODY', side=side,
+                        type='KC_2BAR_CONFIRM_' + side,
+                    )
                 
             stamp_val = (
                 float(second.timestamp) + 60000

@@ -36,3 +36,34 @@ def test_meme_symbol_aliases_share_fast_cross_and_consolidation_policy(symbol):
     assert fast_cross_ma15_slope_problem(
         None, 1.0, 'LONG', symbol=symbol,
     ) is None
+
+
+@pytest.mark.parametrize('symbol', [
+    'CAP/USDT', 'CAP/USDT:USDT', 'cap/usdt',
+    '龙虾/USDT', '龙虾/USDT:USDT', '龍蝦/USDT', '龍蝦/USDT:USDT',
+    'LOBSTER/USDT', 'LOBSTER/USDT:USDT', 'lobster/usdt',
+    'SUI/USDT', 'SUI/USDT:USDT', 'sui/usdt',
+])
+def test_all_symbol_aliases_are_pivot_only_and_chop_protected(symbol):
+    from core.symbol_aliases import (
+        is_pivot_only_channel_symbol,
+        is_chop_filter_symbol,
+        PIVOT_ONLY_CHANNEL_SYMBOLS,
+    )
+    assert is_pivot_only_channel_symbol(symbol)
+    assert is_chop_filter_symbol(symbol)
+    # The upper-case normalized version is present in the shared frozen sets
+    assert symbol.strip().upper() in PIVOT_ONLY_CHANNEL_SYMBOLS
+
+
+@pytest.mark.parametrize('symbol', [
+    'CAP/USDT', 'CAP/USDT:USDT',
+    '龙虾/USDT', '龍蝦/USDT', 'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
+])
+def test_all_lobster_and_cap_aliases_share_pivot_exit_protection(symbol):
+    pos = position('LONG', symbol)
+    snap = snapshot('LONG')
+    # Under Channel Swing, peak trailing exit preserves position unless a 3-point pivot forms
+    decision = evaluate_peak_trailing(pos, 101.0, snap, fee=0.0, slippage=0.0)
+    assert decision is None
+

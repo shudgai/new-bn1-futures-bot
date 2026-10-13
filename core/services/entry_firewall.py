@@ -95,12 +95,12 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError(
                 '[FORBIDDEN_ENTRY] BLOCKED_FAST_CROSS_MA15_SLOPE_OR_EVIDENCE'
             )
-    cap_golden_cross = (
+    meme_golden_cross = (
         code == GOLDEN_CROSS_FAST_LONG_CODE and side == 'LONG'
         and is_meme_breakout_symbol(symbol)
     )
     cross_chop_problem = (
-        None if cap_golden_cross or code in KC_PENDING_CODES
+        None if meme_golden_cross or code in KC_PENDING_CODES
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
             'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',

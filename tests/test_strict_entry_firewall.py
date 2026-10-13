@@ -16,6 +16,11 @@ def live_midline_frame(side):
     from test_intrabar_midline_entry import make_frame
 
     result, quote = make_frame(side)
+    if side == 'SHORT':
+        # The original short fixture had rising MAs and MA5 above MA15. Use a
+        # bearish aligned history so the short launch itself is the only change.
+        result['ma5'] = [100.04 - 0.01 * index for index in range(len(result))]
+        result['ma15'] = [100.19 - 0.01 * index for index in range(len(result))]
     current_bar = int(time.time() * 1000 // 60_000 * 60_000)
     result['timestamp'] += current_bar - int(result.iloc[-1]['timestamp'])
     result.attrs['entry_finality_verified'] = True
@@ -167,12 +172,12 @@ def test_e_exact_distance_boundary(side):
     f.loc[f.index[-1], 'kc_upper'] = 102.0
     f.loc[f.index[-1], 'kc_middle'] = 100.0
     f.loc[f.index[-1], 'kc_lower'] = 98.0
-    quote = 101.0 if side == 'LONG' else 99.0
+    quote = 101.4 if side == 'LONG' else 98.6
 
     assert entry_market_structure_problem(
         f, quote, side, entry_phase='KC_MIDLINE_LAUNCH',
     ) is None
-    quote = 101.01 if side == 'LONG' else 98.99
+    quote = 101.41 if side == 'LONG' else 98.59
     assert entry_market_structure_problem(
         f, quote, side, entry_phase='KC_MIDLINE_LAUNCH',
     ) == ('INSUFFICIENT_UPPER_SPACE' if side == 'LONG'

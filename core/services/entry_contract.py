@@ -13,6 +13,10 @@ from core.gates.pipeline import (
     long_large_bearish_candle_problem,
     ma5_ma15_cross_chop_problem, pipeline, strict_kc_entry_problem,
 )
+from core.symbol_aliases import (  # noqa: F401
+    CHOP_FILTER_SYMBOLS,
+    is_chop_filter_symbol,
+)
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.unified_entry_strategy import anti_bottom_short_problem
 from core.services.strategies.outer_strategy import (
@@ -90,10 +94,6 @@ LEGACY_ROUTE_CODES = frozenset((
     "RE_ENTRY_SHORT",
 ))
 ENTRY_CODES = KC_PENDING_CODES | PIPELINE_ENTRY_TYPES | LEGACY_ROUTE_CODES
-CHOP_FILTER_SYMBOLS = frozenset((
-    "SUI/USDT", "龙虾/USDT", "龍蝦/USDT", "LOBSTER/USDT",
-    "LOBSTER/USDT:USDT", "CAP/USDT", "CAP/USDT:USDT",
-))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -2903,7 +2903,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject('BLOCKED_STRICT_MA_SPACING')
             except (KeyError, TypeError, ValueError, IndexError, OverflowError):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-            if symbol in CHOP_FILTER_SYMBOLS and not confirmed_pending_breakout:
+            if is_chop_filter_symbol(symbol) and not confirmed_pending_breakout:
                 consolidation_problem = entry_consolidation_problem(
                     frame, quote, allow_directional_breakout=True, side=side,
                 )

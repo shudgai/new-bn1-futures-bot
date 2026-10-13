@@ -12,6 +12,10 @@ from core.services.strategies.outer_strategy import (
     ck_direction,
     kc_bearish_midline_turn,
 )
+from core.symbol_aliases import (  # noqa: F401 - re-exported for callers
+    MEME_BREAKOUT_SYMBOLS,
+    is_meme_breakout_symbol,
+)
 
 MAX_MA15_ENTRY_BIAS_ATR = 1.8
 CHOP_KC_SLOPE_EPSILON_ATR = 0.10
@@ -25,15 +29,6 @@ MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
 MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM = 0.15
 HIGH_MOMENTUM_BODY_ATR = 0.70
-MEME_BREAKOUT_SYMBOLS = frozenset((
-    'CAP/USDT', 'CAP/USDT:USDT', '龍蝦/USDT', '龙虾/USDT',
-    'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
-))
-
-
-def is_meme_breakout_symbol(symbol: Optional[str]) -> bool:
-    """Return whether a supported meme coin uses the shared relaxed entry gates."""
-    return str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
 MEME_BREAKOUT_BODY_ATR = 0.30
 FAST_CROSS_BODY_ATR = 0.40
 FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO = 1.0
@@ -187,7 +182,7 @@ def ma5_ma15_cross_chop_problem(
         ma15_slope_pct = (current_ma15 - previous_ma15) / current_quote
 
         meme_impulse = False
-        if (str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+        if (is_meme_breakout_symbol(symbol)
                 and side in ('LONG', 'SHORT') and quote is not None):
             live = frame.iloc[-1]
             atr = float(closed.iloc[-1].get('atr', float('nan')))
@@ -936,7 +931,7 @@ class EntryGatePipeline:
     def has_meme_impulse_breakout(symbol: Optional[str], frame, quote) -> bool:
         """Recognize a lower-body, live KC break for the configured meme coins."""
         try:
-            if (str(symbol or '').upper() not in MEME_BREAKOUT_SYMBOLS
+            if (not is_meme_breakout_symbol(symbol)
                     or frame is None or len(frame) < 3):
                 return False
             if SpatialBrain.analyze(frame, quote).state != 'EXPLOSIVE_EXPANSION':
@@ -2254,7 +2249,7 @@ class EntryGatePipeline:
         )
         meme_breakout_override = (
             is_verified_live_breakout
-            and str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+            and is_meme_breakout_symbol(symbol)
             and self.has_meme_impulse_breakout(symbol, frame, quote)
         )
         if not is_shadow_entry and not is_midline_candidate and not meme_breakout_override:

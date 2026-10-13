@@ -4,6 +4,10 @@ import math
 import sys
 
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
+from core.symbol_aliases import (  # noqa: F401 - re-exported for callers
+    PIVOT_ONLY_CHANNEL_SYMBOLS,
+    is_pivot_only_channel_symbol,
+)
 
 POLICY = 'profit_lock_verified_pivot_only_v5'
 ABNORMAL_BODY_ATR = 1.2
@@ -65,10 +69,6 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'NET_ROE_THREE_TIER_GIVEBACK',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
-PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
-    'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
-    'CAP/USDT', 'CAP/USDT:USDT',
-})
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PEAK_PULLBACK_PRESSURE',
     'EXIT_PARABOLIC_PULLBACK_1_ATR',
@@ -1099,7 +1099,7 @@ def doji_reversal_evidence(
         ratio = abs(last_close - last_open) / span
         if ratio > DOJI_BODY_RATIO and not math.isclose(ratio, DOJI_BODY_RATIO, rel_tol=1e-12):
             return None
-        if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS:
+        if is_pivot_only_channel_symbol(symbol):
             history = snapshot.get('history_outer_pivots')
             if not isinstance(history, list) or len(history) < 2:
                 return None
@@ -1511,7 +1511,7 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 kc_lower = float(snapshot.get('kc_lower', 0))
                 kc_upper = float(snapshot.get('kc_upper', 0))
                 # OPPOSITE_KC_BAND_BREACH check has been removed per user request
-            pivot_only_symbol = position.get('symbol') in PIVOT_ONLY_CHANNEL_SYMBOLS
+            pivot_only_symbol = is_pivot_only_channel_symbol(position.get('symbol'))
             if is_channel_swing:
                 abnormal_evidence = two_closed_adverse_abnormal_exit(position, snapshot)
                 if (abnormal_evidence is not None and reason != HARD_REASON
