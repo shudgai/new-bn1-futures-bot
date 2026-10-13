@@ -1681,7 +1681,7 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         body = opening - quote
         body_ratio = body / candle_range
         
-        min_body_atr = 0.30 if meme_coin else 0.50
+        min_body_atr = 0.20 if meme_coin else 0.50
         min_body_ratio = (
             0.20 if distance_atr >= 0.15
             else 0.35 if meme_coin else 0.60

@@ -207,7 +207,6 @@ async def validate_account_entry(account, symbol, side, context):
         pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'
         else pipeline.has_strong_bearish_breakout(frame, quote)
     )
-    from core.gates.meme_coin_gate import MEME_ENTRY_CODES
     is_exempt_from_regime = bool(
         code in KC_PENDING_CODES or is_flip_or_shadow
         or is_verified_live_breakout or verified_midline_entry

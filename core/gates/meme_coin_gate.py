@@ -4,7 +4,7 @@
 
 【核心原則】：
 1. 初始破軌與極速捕捉：
-   - 妖幣啟動主升浪極快，大陽線爆出 KC 上軌（實體 >= 0.30 ATR，MA5 向上），極速捕捉進場。
+   - 妖幣啟動主升浪極快，大陽線爆出 KC 上軌（實體 >= 0.20 ATR，MA5 向上），極速捕捉進場。
 2. 錯過初次破軌的延續開倉（強制上車）：
    - 只要價格維持在 KC 上軌外狂奔，一旦短暫停頓且 MA5 依然昂揚向上，強制觸發延續進場（追隨強勢動能）。
 3. KC 外軌鎖定（不被洗盤震下車）：
@@ -19,6 +19,8 @@ from typing import Tuple, Optional, Dict, Any
 import math
 import pandas as pd
 from core.symbol_aliases import is_meme_breakout_symbol
+
+MEME_BREAKOUT_BODY_ATR = 0.20
 
 
 MEME_ENTRY_CODES = frozenset((
@@ -97,7 +99,7 @@ class MemeCoinGate:
                 # ── 2. 初始破軌極速捕捉（大陽線爆出 KC 上軌）──
                 body = quote - open_p
                 is_fresh_breakout = (
-                    quote > kc_upper and body >= 0.30 * atr
+                    quote > kc_upper and body >= MEME_BREAKOUT_BODY_ATR * atr
                     and open_p <= kc_upper
                 )
                 if is_fresh_breakout:
@@ -130,7 +132,7 @@ class MemeCoinGate:
                 body = open_p - quote
                 is_fresh_breakout = (
                     kc_lower > 0 and quote < kc_lower
-                    and body >= 0.30 * atr and open_p >= kc_lower
+                    and body >= MEME_BREAKOUT_BODY_ATR * atr and open_p >= kc_lower
                 )
                 if is_fresh_breakout:
                     return True, 'MEME_INITIAL_KC_BREAKOUT_SHORT', {
