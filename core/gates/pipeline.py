@@ -8,6 +8,7 @@ from core.intelligence.spatial_brain import SpatialBrain
 from core.gates.chop_filter_gate import ChopFilterGate
 from core.gates.candle_solidity_gate import CandleSolidityGate
 from core.gates.mouth_expansion_gate import MouthExpansionGate
+from core.gates.continuation_ma5_gate import ContinuationMa5Gate
 from core.services.strategies.outer_strategy import (
     ck_direction,
     kc_bearish_midline_turn,
@@ -139,6 +140,8 @@ _MA_CROSS_CHOP_LOGGED = {}
 FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TOP_PLUNGE_SHORT',
+    'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+    'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
     'KC_GOLDEN_CROSS_FAST_LONG',
     'KC_DEATH_CROSS_FAST_SHORT',
     MOMENTUM_BURST_LONG_CODE,
@@ -973,6 +976,7 @@ class EntryGatePipeline:
             ('CANDLE_SOLIDITY', CandleSolidityGate.evaluate),
             ('CHOP_FILTER', ChopFilterGate.evaluate),
             ('MOUTH_EXPANSION', MouthExpansionGate.evaluate),
+            ('CONTINUATION_MA5_FILTER', ContinuationMa5Gate.evaluate),
         ]
 
     def set_market_regime_provider(
@@ -1541,23 +1545,48 @@ class EntryGatePipeline:
 
     @staticmethod
     def detect_trend_continuation(frame: pd.DataFrame, quote: float,
-                                  side: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """情境 1：順勢延續（Trend Ride - 均線之上只做多，均線之下只做空）。
+                                  side: Optional[str] = None,
+                                  symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Gate 4：平倉後的「延續開倉」與「MA5 動能過濾」（以及破軌沒開倉後面延續開倉）。
         
-        - 當 MA5 > MA15 且 MA5 斜率向上 (ma5 >= prev_ma5)：
-          * 【全面取消破 KC 軌道要求】！
-          * 只要 1M 實體站上 MA5（Close > MA5 且陽線 Close > Open，實體佔比 >= 50%）：
-          * 直接授權開多！(AUTHORIZED_BY_TREND_CONTINUATION_LONG)
-        - 當 MA5 <= MA15 且 MA15 斜率非正：
-          * 【全面取消破 KC 軌道要求】！
-          * 只要即時價格壓在 MA5 下且當根為陰線實體：
-          * 直接授權開空！(AUTHORIZED_BY_TREND_CONTINUATION_SHORT)
+        1. MA5 逆勢過濾禁令：
+           - 禁開多單：若當前 MA5 斜率向下（或短線走弱下拐，ma5 <= prev_ma5），一律嚴禁開多單。
+           - 禁開空單：若當前 MA5 斜率向上（或短線走強上拐，ma5 >= prev_ma5），一律嚴禁開空單。
+        2. 延續開倉情境（Re-entry & Missed Breakout）：
+           - 在部位平倉出場後，或突破當下未開到倉：
+             * 多單：大趨勢未變（MA15 向上且 KC 中軌向上），MA5 絕對向上，價格站穩在 MA5 之上（或在 KC 上軌外順向推進）；
+             * 空單：大趨勢未變（MA15 向下且 KC 中軌向下），MA5 絕對向下，價格壓制在 MA5 之下（或在 KC 下軌外順向推進）；
+             * 價格退回通道內或跌破均線時一律拒絕！
+        3. 妖幣專用極速捕捉與延續開倉（強制上車）：
+           - 對於龍蝦、CAP 等妖幣標的，若價格維持在 KC 外軌狂奔且 MA5 向上，強制觸發延續上車！
         """
         if frame is None or len(frame) < 2:
             return None
 
         curr = frame.iloc[-1]
         prev = frame.iloc[-2]
+
+        # ── 0. 妖幣專屬：KC 破軌極速捕捉與延續開倉（強制上車）──
+        from core.gates.meme_coin_gate import MemeCoinGate
+        if symbol and MemeCoinGate.is_meme_coin(symbol):
+            meme_sides = [side] if side in ('LONG', 'SHORT') else ['LONG', 'SHORT']
+            for s in meme_sides:
+                meme_passed, meme_reason, meme_meta = MemeCoinGate.evaluate_meme_entry(
+                    frame, quote, s, symbol=symbol,
+                )
+                if meme_passed:
+                    return {
+                        'type': f'AUTHORIZED_BY_TREND_CONTINUATION_{s}',
+                        'side': s,
+                        'price': quote,
+                        'is_trend_continuation': True,
+                        'override_cooldown': True,
+                        'confirmation_bar_id': float(curr.get('timestamp', 0)),
+                        'breakout_bar_id': float(curr.get('timestamp', 0)),
+                        'pending_signal_id': f"MEME_CONT:{s}:{curr.get('timestamp', 0)}",
+                        'entry_phase': 'KC_CONTINUATION_ENTRY',
+                        'reason': meme_reason,
+                    }
 
         try:
             quote = float(quote)
@@ -1568,12 +1597,17 @@ class EntryGatePipeline:
             ma5 = float(curr['ma5']) + (quote - live_close) / 5.0
             ma15 = float(curr['ma15']) + (quote - live_close) / 15.0
             prev_ma15 = float(prev['ma15'])
+            prev_ma5 = float(prev['ma5'])
+            kc_upper = float(curr.get('kc_upper', 0.0))
+            kc_lower = float(curr.get('kc_lower', 0.0))
+            kc_mid = float(curr.get('kc_middle', 0.0))
+            prev_kc_mid = float(prev.get('kc_middle', 0.0))
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if not all(math.isfinite(value) and value > 0
                    for value in (
                        quote, open_p, high_p, low_p, live_close,
-                       ma5, ma15, prev_ma15,
+                       ma5, ma15, prev_ma15, prev_ma5,
                    )):
             return None
         candle_range = high_p - low_p
@@ -1582,39 +1616,61 @@ class EntryGatePipeline:
         body = abs(quote - open_p)
         solidity_ratio = body / candle_range
 
-        # ── 1. 做多順勢延續 ──
+        # ── 1. 做多順勢延續（Re-entry & Missed Breakout Continuation）──
         if side is None or side == 'LONG':
-            if (solidity_ratio >= 0.45 and ma5 > ma15
-                    and ma15 > prev_ma15 and quote > ma5 and quote > open_p):
-                return {
-                    'type': 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
-                    'side': 'LONG',
-                    'price': quote,
-                    'is_trend_continuation': True,
-                    'override_cooldown': True,
-                    'confirmation_bar_id': float(curr.get('timestamp', 0)),
-                    'breakout_bar_id': float(curr.get('timestamp', 0)),
-                    'pending_signal_id': f"TREND_CONT:LONG:{curr.get('timestamp', 0)}",
-                    'entry_phase': 'KC_CONTINUATION_ENTRY',
-                    'reason': 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
-                }
+            # 禁開多單：若當前 MA5 斜率向下或走平，一律嚴禁開多單
+            if ma5 > prev_ma5 and ma5 > ma15 and quote > ma5:
+                # 情境 A: 均線順勢延續 (陽線站上 MA5 且 MA15 向上)
+                is_trend_ride = (
+                    solidity_ratio >= 0.45 and ma15 > prev_ma15 and quote > open_p
+                )
+                # 情境 B: 破軌沒開倉或平倉後軌外順向延續
+                is_outer_continuation = (
+                    kc_upper > 0 and quote > kc_upper
+                    and (prev_kc_mid <= 0 or kc_mid >= prev_kc_mid)
+                    and (quote > open_p or (high_p - quote) <= 0.4 * body)
+                )
+                if is_trend_ride or is_outer_continuation:
+                    return {
+                        'type': 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+                        'side': 'LONG',
+                        'price': quote,
+                        'is_trend_continuation': True,
+                        'override_cooldown': True,
+                        'confirmation_bar_id': float(curr.get('timestamp', 0)),
+                        'breakout_bar_id': float(curr.get('timestamp', 0)),
+                        'pending_signal_id': f"TREND_CONT:LONG:{curr.get('timestamp', 0)}",
+                        'entry_phase': 'KC_CONTINUATION_ENTRY',
+                        'reason': 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+                    }
 
-        # ── 2. 做空順勢延續 ──
+        # ── 2. 做空順勢延續（Re-entry & Missed Breakout Continuation）──
         if side is None or side == 'SHORT':
-            if (ma5 <= ma15 and ma15 <= prev_ma15
-                    and quote < ma5 and quote < open_p):
-                return {
-                    'type': 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
-                    'side': 'SHORT',
-                    'price': quote,
-                    'is_trend_continuation': True,
-                    'override_cooldown': True,
-                    'confirmation_bar_id': float(curr.get('timestamp', 0)),
-                    'breakout_bar_id': float(curr.get('timestamp', 0)),
-                    'pending_signal_id': f"TREND_CONT:SHORT:{curr.get('timestamp', 0)}",
-                    'entry_phase': 'KC_CONTINUATION_ENTRY',
-                    'reason': 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
-                }
+            # 禁開空單：若當前 MA5 斜率向上或走平，一律嚴禁開空單
+            if ma5 < prev_ma5 and ma5 < ma15 and quote < ma5:
+                # 情境 A: 均線順勢延續 (陰線壓制 MA5 且 MA15 向下)
+                is_trend_ride = (
+                    ma15 <= prev_ma15 and quote < open_p
+                )
+                # 情境 B: 破軌沒開倉或平倉後軌外順向延續
+                is_outer_continuation = (
+                    kc_lower > 0 and quote < kc_lower
+                    and (prev_kc_mid <= 0 or kc_mid <= prev_kc_mid)
+                    and (quote < open_p or (quote - low_p) <= 0.4 * body)
+                )
+                if is_trend_ride or is_outer_continuation:
+                    return {
+                        'type': 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+                        'side': 'SHORT',
+                        'price': quote,
+                        'is_trend_continuation': True,
+                        'override_cooldown': True,
+                        'confirmation_bar_id': float(curr.get('timestamp', 0)),
+                        'breakout_bar_id': float(curr.get('timestamp', 0)),
+                        'pending_signal_id': f"TREND_CONT:SHORT:{curr.get('timestamp', 0)}",
+                        'entry_phase': 'KC_CONTINUATION_ENTRY',
+                        'reason': 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
+                    }
 
         return None
 
@@ -2592,7 +2648,9 @@ class EntryGatePipeline:
                     if peak_flip is not None:
                         decision = peak_flip
                     else:
-                        cont_decision = self.detect_trend_continuation(frame, quote, side=requested_side)
+                        cont_decision = self.detect_trend_continuation(
+                            frame, quote, side=requested_side, symbol=symbol,
+                        )
                         if cont_decision is not None:
                             decision = cont_decision
                         else:
@@ -2686,7 +2744,9 @@ class EntryGatePipeline:
                 'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
             ):
-                refreshed = self.detect_trend_continuation(frame, quote, side=side)
+                refreshed = self.detect_trend_continuation(
+                    frame, quote, side=side, symbol=symbol,
+                )
             else:
                 refreshed = self.detect_reversal_flip(frame, quote, side=side)
             if (refreshed is None or refreshed.get('type') != supplied_type

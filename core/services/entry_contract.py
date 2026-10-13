@@ -71,13 +71,15 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 LIVE_PATTERN_BREAKOUT_CODES = KC_REALTIME_PATTERN_CODES
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset((
-    "TRIGGER_A_KC_BREAKOUT", TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
+    "TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION",
+    TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
 ))
-# Automatic entries are intentionally limited to the general outer-rail
-# breakout and the atomic top-waterfall flip. The firewall imports this set,
-# so obsolete strategy codes are rejected both during scanning and at submit.
+# Automatic entries are limited to the general outer-rail breakout, its
+# qualified post-close continuation, and the atomic top-waterfall flip. The
+# firewall imports this set and revalidates continuation with the same rail gate.
 LEGACY_ROUTE_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT",
+    "TRIGGER_C_CONTINUATION",
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
 ))
@@ -1808,8 +1810,7 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
 
             (first_open, first_close, first_rail, first_lower, first_upper,
              first_high, first_low) = values[0]
-            (_, second_close, second_rail, _, _, second_high,
-             second_low) = values[1]
+            (_, _, _, _, _, second_high, second_low) = values[1]
             lower, upper = float(live["kc_lower"]), float(live["kc_upper"])
             high, low = max(float(live["high"]), quote), min(float(live["low"]), quote)
             if (not all(math.isfinite(value) and value > 0 for value in
@@ -1824,7 +1825,6 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
                 if side == "LONG" else
                 first_upper >= first_open >= first_rail > first_close
             )
-            second_outside = sign * (second_close - second_rail) > 0
             # The third candle may continue in the breakout direction, or be a
             # small counter candle that holds the first two candles' structure.
             # Counter-body size is capped at half the breakout candle's ATR.
@@ -1839,7 +1839,7 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
                 quote < max(first_high, second_high)
             )
             third_outside = sign * (quote - current_rail) > 0
-            if not (first_crossed and second_outside
+            if not (first_crossed
                     and (third_is_aligned or
                          (third_is_small_counter and third_holds_structure))
                     and third_outside):
@@ -2436,10 +2436,6 @@ def pre_flight_safety_check(
             frame, quote, side,
         )
         if direction_problem:
-            if direction_problem == "BLOCKED_BY_MA5_WEAK_SLOPE" and side == "LONG":
-                return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
-            if direction_problem == "BLOCKED_BY_MA5_STRONG_SLOPE" and side == "SHORT":
-                return False, "BLOCKED_BY_MA5_SLOPE_UP"
             return False, direction_problem
         if frame is None or len(frame) < 2:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
@@ -2684,6 +2680,24 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if strategy_type is not None:
             decision['strategy_type'] = strategy_type
 
+        # Ordinary KC breakouts and post-close re-entries share the same
+        # three-bar authorization at the final order boundary.
+        entry_phase = decision.get('entry_phase')
+        requires_three_bar_gate = (
+            entry_phase in (
+                'KC_2BAR_CLOSED_CONFIRM', 'KC_LIVE_OUTER_BREAKOUT',
+                'KC_LIVE_PATTERN_BREAKOUT', 'KC_THREE_BAR_BREAKOUT',
+                'POST_CLOSE_CONTINUATION_ENTRY', 'KC_CONTINUATION_ENTRY',
+            )
+            or str(decision.get('type', '')).startswith('CLOSED_TREND_BREAKOUT_')
+        )
+        if requires_three_bar_gate:
+            rail_problem = three_bar_rail_gate_problem(
+                frame, quote, decision.get('side'),
+            )
+            if rail_problem:
+                return reject(rail_problem)
+
         shape_problem = entry_candle_shape_problem(frame, quote, decision)
         if shape_problem:
             return reject(shape_problem)
@@ -2761,9 +2775,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
 
     reject("WAIT_VALID_ENTRY_DATA")
-    if code is not None and code not in ENTRY_CODES:
-        return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
-
     try:
         if frame is None or frame.empty or frame.attrs.get('timeframe_ms', 60000) != 60000:
             return None
@@ -2782,6 +2793,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             passed, reason = validate_ma_alignment(frame, known_side, quote)
             if not passed:
                 return reject(reason)
+
+        if code is not None and code not in ENTRY_CODES:
+            return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
 
         # The live scanner and final order firewall share this closed set of
         # entry authorities. Do not evaluate legacy, continuation, or reversal

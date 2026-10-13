@@ -344,7 +344,7 @@ ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "tr
 CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
 CONTINUOUS_PIVOT_ONLY = os.getenv("CONTINUOUS_PIVOT_ONLY", "false").lower() == "true"
 PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR = max(0.0, float(os.getenv("PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR", "0.35")))
-PIVOT_LONG_ONLY = os.getenv("PIVOT_LONG_ONLY", "true").lower() == "true"
+PIVOT_LONG_ONLY = os.getenv("PIVOT_LONG_ONLY", "false").lower() == "true"
 PIVOT_MIN_KC_WIDTH_PCT = max(0.0, float(os.getenv("PIVOT_MIN_KC_WIDTH_PCT", "0.01")))
 # 峰谷轉向開倉的幾何品質門檻，皆以 KC 全通道寬度計算。
 # 弧度過小或峰谷貼近 KC/MA15 時，只允許既有出場，不開反向新倉。

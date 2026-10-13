@@ -1476,12 +1476,12 @@ def test_0810_cap_reversal_flip_authorized_via_evaluate_entry_contract():
     )
 
 
-def test_three_bar_rail_gate_is_completely_bypassed():
-    """12. 驗收 three_bar_rail_gate 已完全除役 (Fail-Open)，絕不阻擋任何即時行情。"""
+def test_three_bar_rail_gate_fails_closed_when_evidence_is_missing():
+    """A missing three-bar sequence cannot pass the active breakout gate."""
     from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
     df = pd.DataFrame([{'open': 100, 'close': 101}])
-    assert three_bar_rail_gate_problem(df, 101.0, 'LONG') is None
-    assert three_bar_rail_gate_problem(df, 99.0, 'SHORT') is None
+    assert three_bar_rail_gate_problem(df, 101.0, 'LONG') == 'BLOCKED_THREE_BAR_NOT_READY'
+    assert three_bar_rail_gate_problem(df, 99.0, 'SHORT') == 'BLOCKED_THREE_BAR_NOT_READY'
 
 
 def test_exit_gate_case_a_long_pullback_to_ma5_blocked():

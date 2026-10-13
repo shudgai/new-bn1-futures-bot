@@ -1382,6 +1382,52 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        # 妖幣專用 KC 外軌鎖定：只要價格維持在 KC 外軌外且守穩 MA5，一律死抱利潤，拒絕被洗盤震下車！
+        from core.gates.meme_coin_gate import MemeCoinGate
+        if MemeCoinGate.is_meme_coin(symbol):
+            should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
+                frame, quote, side, symbol=symbol,
+            )
+            if should_hold and clean_reason not in (
+                'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
+                'EMERGENCY_EXTREME_ADVERSE_BAR',
+            ):
+                return _reject(reason=hold_reason)
+
+        # A completed LONG close above KC middle is a hard hold line for
+        # ordinary price-action exits. A lower wick at least as large as the
+        # body is independent buying-support evidence and also vetoes them.
+        # Hard stops, emergency dumps, and an armed profit lock keep priority.
+        if (side == 'LONG' and not _is_profit_lock_reason(clean_reason)
+                and clean_reason not in (
+                    'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
+                    'EMERGENCY_EXTREME_ADVERSE_BAR',
+                    'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
+                )):
+            try:
+                from core.services.candle_data import closed_entry_candles
+                closed = closed_entry_candles(frame)
+                if not closed.empty:
+                    last = closed.iloc[-1]
+                    close = float(last['close'])
+                    middle = float(last['kc_middle'])
+                    wick_bar = frame.iloc[-1] if frame is not None and not frame.empty else last
+                    opening = float(wick_bar['open'])
+                    wick_close = float(quote)
+                    if bool(wick_bar.get('is_closed', True)):
+                        wick_close = float(wick_bar['close'])
+                    low = min(float(wick_bar['low']), wick_close)
+                    # Keep the live wick current with the executable quote;
+                    # the close-vs-middle test above remains completed-bar only.
+                    body = abs(wick_close - opening)
+                    lower_wick = min(opening, wick_close) - low
+                    if close >= middle:
+                        return _reject(reason='VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION')
+                    if lower_wick >= body:
+                        return _reject(reason='VETO_LONG_LOWER_WICK_BUYING_SUPPORT')
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+                pass
+
         if (clean_reason.startswith('HYBRID_DYNAMIC')
                 or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
                 or clean_reason in (

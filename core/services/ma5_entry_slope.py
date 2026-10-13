@@ -62,9 +62,9 @@ def live_ma5_entry_direction_problem(frame, quote, side) -> Optional[str]:
         if not math.isfinite(live_ma5) or live_ma5 <= 0:
             return "BLOCKED_BY_MA5_SLOPE_INVALID"
 
-        if side == "LONG" and live_ma5 <= previous_ma5:
+        if side == "LONG" and (live_ma5 <= previous_ma5 or quote < live_ma5):
             return "BLOCKED_BY_MA5_WEAK_SLOPE"
-        if side == "SHORT" and live_ma5 >= previous_ma5:
+        if side == "SHORT" and (live_ma5 >= previous_ma5 or quote > live_ma5):
             return "BLOCKED_BY_MA5_STRONG_SLOPE"
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

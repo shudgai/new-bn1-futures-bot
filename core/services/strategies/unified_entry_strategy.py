@@ -717,11 +717,6 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
             
         live_price = float(price) if price is not None else float(live_bar.close)
         
-        if side == 'LONG' and live_price <= bar3_open:
-            return wait(f"WAIT_LONG_INTRABAR_COLOR (price {live_price} <= open {bar3_open})")
-        if side == 'SHORT' and live_price >= bar3_open:
-            return wait(f"WAIT_SHORT_INTRABAR_COLOR (price {live_price} >= open {bar3_open})")
-            
         pending_signal_id = f"{side}:{int(bar2_ms)}:{int(bar3_ms)}"
         candidate_bar_id = float(bar3_ms)
     except Exception as e:

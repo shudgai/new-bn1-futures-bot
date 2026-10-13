@@ -421,7 +421,7 @@ def detect_emergency_dump_exit(frame, quote: float, side: str, atr: float) -> bo
                 return True
 
             # 條件 B【巨陰貫穿均線】：盤中價格直接摜破 MA5，且當根下跌幅度 >= 0.8 ATR
-            if quote < ma5_p and drop >= 0.8 * atr:
+            if quote < ma5_p and drop >= 0.7 * atr:
                 return True
 
             # 條件 C【天地針避雷針】：高點衝高後劇烈回吐，上影線 >= 1.5 倍實體 且 上影線 >= 0.5 ATR
@@ -489,14 +489,15 @@ class DualTrackExitStrategy(IExitStrategy):
 
             # 1. 開倉初期生命週期保護（前 90 秒內）：
             # 只要未擊穿 1.2 ATR 硬停損線，嚴禁僅因盤中價格波動穿過 MA5 平倉
-            if is_early_lifecycle_protected(position, current_price, atr):
-                return None
-
             # 2. 軌道二：突發大賣壓緊急避險（Emergency Dump Exit - 盤中即刻秒平，不等收線！）
             # 條件 A 大反殺吞沒、條件 B 巨陰摜破 MA5、條件 C 天地針
             # 豁免所有斜率保護與收線等待，在當根盤中當下立即以市價平倉！
             if detect_emergency_dump_exit(frame, current_price, side, atr):
                 return 'EMERGENCY_DUMP_EXIT'
+
+            # Initial-position grace must not delay an authorized intrabar dump cut.
+            if is_early_lifecycle_protected(position, current_price, atr):
+                return None
 
             # 3. 階梯利潤鎖定（Ratchet）：浮盈達 1.5 ATR 後，硬止損自動上推至保本位以上，鎖定贏面！
             if atr > 0:

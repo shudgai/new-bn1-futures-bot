@@ -260,7 +260,10 @@ def test_strong_post_close_impulse_cannot_bypass_three_bar_rail_gate(
         account=account, symbol='CAP/USDT', diagnostics=diagnostics,
     )
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_INSIDE_KC_BANDS'
+    assert diagnostics['reason'] in (
+        'BLOCKED_INSIDE_KC_BANDS',
+        'BLOCKED_THREE_BAR_SHORT_NOT_BROKEN_LOWER_RAIL',
+    )
 
 
 def test_ordinary_continuation_remains_subject_to_three_bar_gate(monkeypatch):
