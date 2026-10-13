@@ -149,21 +149,116 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     return dict(should_exit=False, action='HOLD', reason='WAIT_LIVE_QUOTE')
 
 
-def observe_breakeven(position: dict, price: float) -> dict:
-    """Legacy helper to detect breakeven.
-
-    The current implementation delegates to ``DualTrackExitStrategy`` which
-    encapsulates the peak‑trailing logic.  If the strategy reports a result type
-    of ``"BREAKEVEN"`` we consider the breakeven condition met.
+def is_early_lifecycle_protected(position: dict, current_price: float, atr: float) -> bool:
+    """1. 開倉初期生命週期保護（持倉前 90 秒內）：
+    只要未擊穿硬停損線（1.2 ATR），嚴禁僅因盤中價格波動穿過 MA5 觸發平倉。
     """
-    # Use the existing strategy to evaluate the exit type.
+    try:
+        import time
+        open_ts = float(position.get('open_timestamp') or position.get('entry_timestamp') or 0.0)
+        if open_ts > 0 and open_ts < 1e11:
+            open_ts *= 1000.0
+        now_ms = time.time() * 1000.0
+        if open_ts > 0 and (now_ms - open_ts) < 90_000.0:
+            entry_p = float(position.get('entry_price', 0.0))
+            side = position.get('side')
+            loss = (entry_p - current_price) if side == 'LONG' else (current_price - entry_p)
+            hard_stop_atr = 1.2 * atr if atr > 0 else 0.0
+            if hard_stop_atr > 0 and loss >= hard_stop_atr:
+                return False  # 擊穿 1.2 ATR 硬停損，允許止損離場
+            return True  # 90 秒內且未擊穿 1.2 ATR，強制保護
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def is_ma5_slope_shield_active(frame, side: str, atr: float) -> bool:
+    """2. 強趨勢斜率盾牌（MA5 Slope Shield）：
+    若當前 MA5 斜率強勢順向（多單 MA5 斜率 > 0.04 ATR 向上，空單 < -0.04 ATR 向下），
+    代表主升浪動能強勁，價格盤中回踩觸碰 MA5 視為正常抖動，強制禁止觸發平倉。
+    """
+    try:
+        if frame is None or len(frame) < 2 or atr <= 0:
+            return False
+        curr_ma5 = float(frame.iloc[-1].get('ma5', 0.0))
+        prev_ma5 = float(frame.iloc[-2].get('ma5', 0.0))
+        if curr_ma5 <= 0 or prev_ma5 <= 0:
+            return False
+        slope_atr = (curr_ma5 - prev_ma5) / atr
+        if side == 'LONG' and slope_atr > 0.04:
+            return True
+        elif side == 'SHORT' and slope_atr < -0.04:
+            return True
+    except (TypeError, ValueError, IndexError):
+        pass
+    return False
+
+
+def is_candle_closed_ma5_break(frame, side: str, is_closed: bool = False) -> bool:
+    """3. 平倉必須收線確認（Candle-Close Only）：
+    一般均線防守必須等待當根 1m K 棒收盤確認跌破 MA5（is_closed=True 且 close < ma5 for LONG）才執行離場。
+    """
+    if not is_closed or frame is None or frame.empty:
+        return False
+    try:
+        last_candle = frame.iloc[-1]
+        close_p = float(last_candle.get('close', 0.0))
+        ma5_p = float(last_candle.get('ma5', 0.0))
+        if close_p <= 0 or ma5_p <= 0:
+            return False
+        if side == 'LONG':
+            return close_p < ma5_p
+        elif side == 'SHORT':
+            return close_p > ma5_p
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def detect_extreme_bar_emergency_exit(frame, quote: float, side: str, atr: float) -> bool:
+    """4. 極端大陰棒反殺緊急避險（允許盤中即時砍倉）：
+    - 當根陰線實體 >= 0.8 ATR 且摜破 MA5
+    - 或出現長度 >= 1.5 倍實體之極端長影避雷針（且影線長度 >= 0.5 ATR）
+    其餘普通回調一律抱緊！
+    """
+    if frame is None or frame.empty or atr <= 0 or quote <= 0:
+        return False
+    try:
+        curr = frame.iloc[-1]
+        open_p = float(curr.get('open', quote))
+        high_p = max(float(curr.get('high', quote)), quote)
+        low_p = min(float(curr.get('low', quote)), quote)
+        ma5_p = float(curr.get('ma5', quote))
+        body = abs(quote - open_p)
+
+        if side == 'LONG':
+            # 條件 A: 當根陰線實體 >= 0.8 ATR 且摜破 MA5
+            if quote < open_p and body >= 0.8 * atr and quote < ma5_p:
+                return True
+            # 條件 B: 極端長上影避雷針 (上影線 >= 1.5 倍實體 且 上影線 >= 0.5 ATR)
+            upper_wick = high_p - max(open_p, quote)
+            if upper_wick >= 0.5 * atr and upper_wick >= 1.5 * max(body, 1e-9):
+                return True
+        elif side == 'SHORT':
+            # 條件 A: 當根陽線實體 >= 0.8 ATR 且摜破 MA5
+            if quote > open_p and body >= 0.8 * atr and quote > ma5_p:
+                return True
+            # 條件 B: 極端長下影避雷針 (下影線 >= 1.5 倍實體 且 下影線 >= 0.5 ATR)
+            lower_wick = min(open_p, quote) - low_p
+            if lower_wick >= 0.5 * atr and lower_wick >= 1.5 * max(body, 1e-9):
+                return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def observe_breakeven(position: dict, price: float) -> dict:
+    """Legacy helper to detect breakeven."""
     strategy = DualTrackExitStrategy()
     result_type = strategy.evaluate_exit(position, current_price=price)
     if result_type == "BREAKEVEN":
         return {"should_exit": True, "action": "BREAKEVEN", "reason": "BREAKEVEN_REACHED"}
-    # No breakeven reached – keep holding.
     return {"should_exit": False, "action": "HOLD", "reason": "NO_BREAKEVEN"}
-
 
 
 class DualTrackExitStrategy(IExitStrategy):
@@ -176,16 +271,41 @@ class DualTrackExitStrategy(IExitStrategy):
         position.update(entry_atr=float(atr), sl=entry_price-sign*SL_INIT_MULT*atr,
                         stop_loss=entry_price-sign*SL_INIT_MULT*atr, tp=0.)
 
-    def evaluate_exit(self, position, frame=None, current_price=None, **kwargs):
+    def evaluate_exit(self, position, frame=None, current_price=None, is_closed=False, **kwargs):
         import time
         import logging
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
         try:
+            if not position or current_price is None:
+                return None
+            side = position.get('side')
+            atr = float(position.get('entry_atr') or 0.0)
+            if frame is not None and not frame.empty and atr <= 0:
+                atr = float(frame.iloc[-1].get('atr') or 0.0)
+
+            # 1. 開倉初期生命週期保護（前 90 秒內）：
+            # 只要未擊穿 1.2 ATR 硬停損線，嚴禁僅因盤中價格波動穿過 MA5 平倉
+            if is_early_lifecycle_protected(position, current_price, atr):
+                return None
+
+            # 2. 極端大陰棒反殺緊急避險（允許盤中即時砍倉）
+            if detect_extreme_bar_emergency_exit(frame, current_price, side, atr):
+                return 'EMERGENCY_EXTREME_ADVERSE_BAR'
+
+            # 3. 強趨勢斜率盾牌（MA5 Slope Shield）：
+            # 若當前 MA5 斜率強勢順向（多單 > 0.04 ATR 向上），禁止觸發平倉
+            if is_ma5_slope_shield_active(frame, side, atr):
+                return None
+
+            # 4. 平倉必須收線確認（Candle-Close Only）：
+            # 一般均線防守必須等待當根 1m K 棒收盤確認跌破 MA5
+            if is_closed and is_candle_closed_ma5_break(frame, side, is_closed=True):
+                return 'CONFIRMED_MA5_CLOSE_BREAK'
+
             climax = detect_climax_reversal(frame, position.get('side'))
             if climax:
                 return climax['reason']
-            if current_price is None:
-                return None
+
             result = evaluate_peak_trailing(position, current_price, kwargs.get('quote_ms', time.time()*1000),
                                             fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
             return result['type'] if result else None

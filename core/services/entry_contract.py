@@ -723,29 +723,41 @@ def _post_close_long_opportunity(closed, close_id):
             and signal_ma5 >= previous_ma5
             and signal_close > signal_ma5
         )
-        if trend_ready and len(eligible) >= 2:
-            pullback_bars = eligible.iloc[-3:-1].tail(2)
-            valid_pullback = True
-            touched_supports = []
-            for _, pullback in pullback_bars.iterrows():
-                pullback_open, pullback_high, pullback_low, pullback_close, ma5, ma15 = (
-                    float(pullback[key]) for key in
-                    ('open', 'high', 'low', 'close', 'ma5', 'ma15')
-                )
-                pullback_values = (
-                    pullback_open, pullback_high, pullback_low,
-                    pullback_close, ma5, ma15,
-                )
-                if (not all(math.isfinite(value) and value > 0 for value in pullback_values)
-                        or pullback_high < max(pullback_open, pullback_close)
-                        or pullback_low > min(pullback_open, pullback_close)
-                        or pullback_close < ma15):
-                    valid_pullback = False
-                    break
-                touched_supports.extend(
-                    level for level in (ma5, ma15) if pullback_low <= level
-                )
-            if valid_pullback and touched_supports:
+        if trend_ready:
+            # 延續開倉（Re-entry）擇機優化：
+            # 若多單平倉後多頭趨勢未變（MA5 > MA15 且斜率向上），允許在「回踩 MA5 獲得支撐並收陽線」時啟動順勢延續開倉
+            single_bar_pullback = (
+                signal_low <= signal_ma5
+                and signal_close >= signal_ma5
+                and signal_close > signal_open
+            )
+            valid_multi_pullback = False
+            if len(eligible) >= 2:
+                pullback_bars = eligible.iloc[-3:-1].tail(2)
+                valid_pullback = True
+                touched_supports = []
+                for _, pullback in pullback_bars.iterrows():
+                    pullback_open, pullback_high, pullback_low, pullback_close, ma5, ma15 = (
+                        float(pullback[key]) for key in
+                        ('open', 'high', 'low', 'close', 'ma5', 'ma15')
+                    )
+                    pullback_values = (
+                        pullback_open, pullback_high, pullback_low,
+                        pullback_close, ma5, ma15,
+                    )
+                    if (not all(math.isfinite(value) and value > 0 for value in pullback_values)
+                            or pullback_high < max(pullback_open, pullback_close)
+                            or pullback_low > min(pullback_open, pullback_close)
+                            or pullback_close < ma15):
+                        valid_pullback = False
+                        break
+                    touched_supports.extend(
+                        level for level in (ma5, ma15) if pullback_low <= level
+                    )
+                if valid_pullback and touched_supports:
+                    valid_multi_pullback = True
+
+            if single_bar_pullback or valid_multi_pullback:
                 return {
                     'kind': 'PULLBACK_SUPPORT',
                     'bar_id': signal_stamp,

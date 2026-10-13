@@ -1943,6 +1943,35 @@ class EntryGatePipeline:
                 if side == 'LONG'
                 else min(opening, quote) - low
             )
+            # ── 針對逆勢快車道進場的嚴格過濾 ──
+            previous_ma15 = float(previous.get('ma15', live_ma15))
+            channel_state = str(live.get('channel_state', '')).strip()
+            kc_middle_prev = float(previous.get('kc_middle', middle))
+            if side == 'SHORT':
+                # 1. 當 KC 方向為「向上（KC_TREND_UP）」時，嚴格禁止快車道逆向開空，除非價格已實體跌破 KC 中軌
+                is_kc_up = (
+                    channel_state in ('KC向上', 'UP', 'UPTREND', 'BULLISH', 'LONG')
+                    or middle > kc_middle_prev
+                )
+                closed_below_middle = quote < middle and opening <= middle
+                if is_kc_up and not closed_below_middle:
+                    return None
+
+                # 2. 強化 MA15 斜率與走平過濾：當 MA15 仍維持向上斜率時，禁止執行空單快車道進場
+                if live_ma15 >= previous_ma15:
+                    return None
+            elif side == 'LONG':
+                is_kc_down = (
+                    channel_state in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
+                    or middle < kc_middle_prev
+                )
+                closed_above_middle = quote > middle and opening >= middle
+                if is_kc_down and not closed_above_middle:
+                    return None
+
+                if live_ma15 <= previous_ma15:
+                    return None
+
             if (body < MOMENTUM_BURST_BODY_ATR * atr
                     or candle_range <= 0
                     or body / candle_range < MOMENTUM_BURST_BODY_RATIO
