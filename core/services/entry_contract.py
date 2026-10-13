@@ -2643,6 +2643,16 @@ def pre_flight_safety_check(
             if (not is_confirmed_rail_breakout and not is_midline_break
                     and (curr_is_bullish or prev_is_bullish) and quote > live_ma5):
                 return False, "REJECT_BOUNCE_BULLISH_ABOVE_MA5"
+
+            # 4. 【KC 通道趨勢強制對齊（KC 沒往下絕對禁止開空）】
+            channel_st = str(curr.get('channel_state', '')).strip().upper()
+            closed_candles = closed_entry_candles(frame)
+            is_kc_up = (
+                channel_st in ('KC向上', 'KC_TREND_UP', 'UP', 'UPTREND', 'BULLISH', 'LONG')
+                or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get('kc_middle', 0.0)) > float(closed_candles.iloc[-2].get('kc_middle', 0.0)))
+            )
+            if is_kc_up:
+                return False, "BLOCKED_BY_KC_TREND_UP"
                 
         return True, None
     except Exception:

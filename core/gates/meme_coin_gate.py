@@ -18,7 +18,7 @@
 from typing import Tuple, Optional, Dict, Any
 import math
 import pandas as pd
-from core.symbol_aliases import is_meme_breakout_symbol
+from core.symbol_aliases import is_cap_symbol, is_meme_breakout_symbol
 
 MEME_BREAKOUT_BODY_ATR = 0.20
 
@@ -66,6 +66,18 @@ class MemeCoinGate:
         return live_ma5, prev_ma5
 
     @classmethod
+    def calculate_kc_middle(cls, row: pd.Series) -> float:
+        """取得或推算 K 棒之 KC 中軌。"""
+        mid = float(row.get('kc_middle', row.get('ema_20', 0.0)))
+        if mid > 0 and math.isfinite(mid):
+            return mid
+        upper = float(row.get('kc_upper', 0.0))
+        lower = float(row.get('kc_lower', 0.0))
+        if upper > 0 and lower > 0 and upper > lower:
+            return (upper + lower) / 2.0
+        return 0.0
+
+    @classmethod
     def evaluate_meme_entry(
         cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
@@ -89,18 +101,48 @@ class MemeCoinGate:
             if atr <= 0:
                 atr = 1.0
 
-            # ── 1. 極短線動能防護（MA5 嚴格禁令）──
+            curr_kc_middle = cls.calculate_kc_middle(curr)
+            prev_kc_middle = cls.calculate_kc_middle(prev)
+            curr_kc_upper = kc_upper
+            prev_kc_upper = float(prev.get('kc_upper', 0.0))
+            curr_kc_lower = kc_lower
+            prev_kc_lower = float(prev.get('kc_lower', 0.0))
+
+            # CAP's live breakout must start with the raw candle open inside KC.
+            # This keeps both directions eligible while avoiding entries that
+            # begin after price has already gapped outside the channel.
+            cap_open_in_channel = kc_lower <= open_p <= kc_upper
+            if is_cap_symbol(symbol) and not cap_open_in_channel:
+                return False, 'BLOCKED_CAP_BREAKOUT_OPEN_OUTSIDE_CHANNEL', None
+
+            # ── 1. 極短線動能防護（MA5 嚴格禁令）與 KC 通道趨勢防護 ──
             if side == 'LONG':
                 if live_ma5 <= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
                 if quote <= live_ma5:
                     return False, 'BLOCKED_BY_PRICE_BELOW_MA5', None
 
+                # KC 沒往上不可開多（KC 中軌必須向上，上軌不可逆向）
+                if curr_kc_middle > 0 and prev_kc_middle > 0:
+                    if curr_kc_middle <= prev_kc_middle:
+                        return False, 'BLOCKED_BY_KC_NOT_UPWARD', None
+                if curr_kc_upper > 0 and prev_kc_upper > 0:
+                    if curr_kc_upper < prev_kc_upper:
+                        return False, 'BLOCKED_BY_KC_UPPER_DOWNWARD', None
+                if len(frame) >= 3:
+                    closed = frame.iloc[:-1] if not bool(curr.get('is_closed', False)) else frame
+                    if len(closed) >= 2:
+                        c_mid_now = cls.calculate_kc_middle(closed.iloc[-1])
+                        c_mid_prev = cls.calculate_kc_middle(closed.iloc[-2])
+                        if c_mid_now > 0 and c_mid_prev > 0 and c_mid_now < c_mid_prev:
+                            return False, 'BLOCKED_BY_KC_CLOSED_DOWNWARD', None
+
                 # ── 2. 初始破軌極速捕捉（大陽線爆出 KC 上軌）──
                 body = quote - open_p
                 is_fresh_breakout = (
                     quote > kc_upper and body >= MEME_BREAKOUT_BODY_ATR * atr
                     and open_p <= kc_upper
+                    and (not is_cap_symbol(symbol) or cap_open_in_channel)
                 )
                 if is_fresh_breakout:
                     return True, 'MEME_INITIAL_KC_BREAKOUT_LONG', {
@@ -128,11 +170,28 @@ class MemeCoinGate:
                 if quote >= live_ma5:
                     return False, 'BLOCKED_BY_PRICE_ABOVE_MA5', None
 
+                # KC 沒往下不可開空（KC 中軌必須向下，下軌不可逆向向上翹）
+                # 鐵律：即便只有 MA5 往下，KC 沒往下（走平或向上）一律嚴格禁止開空！
+                if curr_kc_middle > 0 and prev_kc_middle > 0:
+                    if curr_kc_middle >= prev_kc_middle:
+                        return False, 'BLOCKED_BY_KC_NOT_DOWNWARD', None
+                if curr_kc_lower > 0 and prev_kc_lower > 0:
+                    if curr_kc_lower > prev_kc_lower:
+                        return False, 'BLOCKED_BY_KC_LOWER_UPWARD', None
+                if len(frame) >= 3:
+                    closed = frame.iloc[:-1] if not bool(curr.get('is_closed', False)) else frame
+                    if len(closed) >= 2:
+                        c_mid_now = cls.calculate_kc_middle(closed.iloc[-1])
+                        c_mid_prev = cls.calculate_kc_middle(closed.iloc[-2])
+                        if c_mid_now > 0 and c_mid_prev > 0 and c_mid_now > c_mid_prev:
+                            return False, 'BLOCKED_BY_KC_CLOSED_UPWARD', None
+
                 # 初始破軌極速捕捉（大陰線摜破 KC 下軌）
                 body = open_p - quote
                 is_fresh_breakout = (
                     kc_lower > 0 and quote < kc_lower
                     and body >= MEME_BREAKOUT_BODY_ATR * atr and open_p >= kc_lower
+                    and (not is_cap_symbol(symbol) or cap_open_in_channel)
                 )
                 if is_fresh_breakout:
                     return True, 'MEME_INITIAL_KC_BREAKOUT_SHORT', {
@@ -259,7 +318,8 @@ class MemeCoinGate:
             quote = float(quote)
             open_p = float(curr.get('open', quote))
             live_ma5, prev_ma5 = cls.calculate_live_ma5(frame, quote)
-            kc_middle = float(curr.get('kc_middle', 0.0))
+            kc_middle = cls.calculate_kc_middle(curr)
+            prev_kc_middle = cls.calculate_kc_middle(prev)
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
 
@@ -274,6 +334,9 @@ class MemeCoinGate:
                 # MA5 必須絕對向上
                 if live_ma5 <= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
+                # KC 必須向上
+                if prev_kc_middle > 0 and kc_middle <= prev_kc_middle:
+                    return False, 'BLOCKED_BY_KC_NOT_UPWARD', None
                 # 價格站穩在中軌與 MA5 之上
                 if not (quote > live_ma5 and quote > kc_middle and quote >= open_p):
                     return False, 'BLOCKED_PRICE_NOT_ABOVE_MID_AND_MA5', None
@@ -297,6 +360,9 @@ class MemeCoinGate:
                     return False, 'ALREADY_BROKE_KC_OUTER_RAIL', None
                 if live_ma5 >= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
+                # KC 必須向下（KC 沒往下不可開空）
+                if prev_kc_middle > 0 and kc_middle >= prev_kc_middle:
+                    return False, 'BLOCKED_BY_KC_NOT_DOWNWARD', None
                 if not (quote < live_ma5 and quote < kc_middle and quote <= open_p):
                     return False, 'BLOCKED_PRICE_NOT_BELOW_MID_AND_MA5', None
 
@@ -335,11 +401,15 @@ class MemeCoinGate:
             quote = float(quote)
             open_p = float(curr.get('open', quote))
             live_ma5, prev_ma5 = cls.calculate_live_ma5(frame, quote)
+            curr_kc_middle = cls.calculate_kc_middle(curr)
+            prev_kc_middle = cls.calculate_kc_middle(prev)
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
 
             if side == 'LONG':
-                # 實體衝出 KC 上軌且 MA5 昂揚發散
+                # 實體衝出 KC 上軌且 MA5 與 KC 中軌雙雙昂揚向上
+                if (curr_kc_middle > 0 and prev_kc_middle > 0 and curr_kc_middle <= prev_kc_middle):
+                    return False, 'BLOCKED_BY_KC_NOT_UPWARD', None
                 if quote > kc_upper and quote > live_ma5 and live_ma5 > prev_ma5 and quote >= open_p:
                     return True, 'MEME_PYRAMID_ADDITION_LONG', {
                         'entry_type': 'MEME_PYRAMID_ADD',
@@ -349,6 +419,8 @@ class MemeCoinGate:
                     }
 
             elif side == 'SHORT':
+                if (curr_kc_middle > 0 and prev_kc_middle > 0 and curr_kc_middle >= prev_kc_middle):
+                    return False, 'BLOCKED_BY_KC_NOT_DOWNWARD', None
                 if kc_lower > 0 and quote < kc_lower and quote < live_ma5 and live_ma5 < prev_ma5 and quote <= open_p:
                     return True, 'MEME_PYRAMID_ADDITION_SHORT', {
                         'entry_type': 'MEME_PYRAMID_ADD',

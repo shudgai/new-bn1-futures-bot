@@ -58,7 +58,7 @@ class TestMemeCoinGate:
              'atr': 1.0, 'is_closed': False},
         ])
         passed, reason, meta = MemeCoinGate.evaluate_meme_entry(
-            df, quote=11.5, side='LONG', symbol='CAP/USDT'
+            df, quote=11.5, side='LONG', symbol='龍蝦/USDT'
         )
         assert passed is True
         assert reason == 'MEME_FORCED_CONTINUATION_ENTRY_LONG'
@@ -79,6 +79,39 @@ class TestMemeCoinGate:
         )
         assert passed is False
         assert reason == 'BLOCKED_BY_MA5_DOWNWARD_SLOPE'
+
+    def test_meme_kc_trend_veto_blocks_short_when_kc_not_downward(self):
+        # 核心防護：MA5 往下 (10.0 -> 9.7)，但 KC 沒往下（走平或往上 9.9 -> 10.0），一律嚴禁開空！
+        df = make_frame([
+            {'open': 10.0, 'close': 10.0, 'high': 10.2, 'low': 9.8,
+             'ma5': 10.0, 'ma15': 9.9, 'kc_middle': 9.9, 'kc_upper': 10.5, 'kc_lower': 9.3,
+             'atr': 1.0, 'is_closed': True},
+            {'open': 9.6, 'close': 9.2, 'high': 9.7, 'low': 9.1,
+             'ma5': 9.7, 'ma15': 9.9, 'kc_middle': 10.0, 'kc_upper': 10.7, 'kc_lower': 9.3,
+             'atr': 1.0, 'is_closed': False},
+        ])
+        passed, reason, meta = MemeCoinGate.evaluate_meme_entry(
+            df, quote=9.2, side='SHORT', symbol='龍蝦/USDT'
+        )
+        assert passed is False
+        assert reason == 'BLOCKED_BY_KC_NOT_DOWNWARD'
+
+    def test_meme_short_authorized_when_both_ma5_and_kc_downward(self):
+        # 雙重同向：MA5 往下 (10.0 -> 9.7) 且 KC 中軌明確向下 (10.0 -> 9.8)，下軌向下 (9.4 -> 9.2)，順利放行開空！
+        df = make_frame([
+            {'open': 10.0, 'close': 10.0, 'high': 10.2, 'low': 9.8,
+             'ma5': 10.0, 'ma15': 10.1, 'kc_middle': 10.0, 'kc_upper': 10.6, 'kc_lower': 9.4,
+             'atr': 1.0, 'is_closed': True},
+            {'open': 9.5, 'close': 9.0, 'high': 9.6, 'low': 8.9,
+             'ma5': 9.7, 'ma15': 10.0, 'kc_middle': 9.8, 'kc_upper': 10.4, 'kc_lower': 9.2,
+             'atr': 1.0, 'is_closed': False},
+        ])
+        passed, reason, meta = MemeCoinGate.evaluate_meme_entry(
+            df, quote=9.0, side='SHORT', symbol='龍蝦/USDT'
+        )
+        assert passed is True
+        assert reason == 'MEME_INITIAL_KC_BREAKOUT_SHORT'
+        assert meta['entry_type'] == 'MEME_INITIAL_BREAKOUT'
 
     def test_meme_outer_rail_holding_protection_against_shakeout(self):
         # KC 外軌鎖定：價格在 KC 上軌外狂奔，小陰線洗盤，只要在 KC 外軌外且守穩 MA5，一律死抱利潤！
@@ -281,7 +314,7 @@ class TestMemeCoinGate:
         df = make_frame(rows)
         diagnostics = {}
         decision = evaluate_entry_contract(
-            df, price=11.2, symbol='CAP/USDT', diagnostics=diagnostics
+            df, price=11.2, symbol='龍蝦/USDT', diagnostics=diagnostics
         )
         assert decision is not None, f"Contract blocked: {diagnostics.get('reason')}"
         code = decision['type']
@@ -289,11 +322,11 @@ class TestMemeCoinGate:
 
         # 1. 測試 pipeline.authorize
         pipe_diag = {}
-        authorized = pipeline.authorize(decision, df, 11.2, symbol='CAP/USDT', diagnostics=pipe_diag)
+        authorized = pipeline.authorize(decision, df, 11.2, symbol='龍蝦/USDT', diagnostics=pipe_diag)
         assert authorized is not None, f"Pipeline blocked: {pipe_diag.get('reason')}"
 
         # 2. 測試 EntryFirewall.verify_can_open
-        verified = EntryFirewall.verify_can_open(df, side, code, symbol='CAP/USDT')
+        verified = EntryFirewall.verify_can_open(df, side, code, symbol='龍蝦/USDT')
         assert verified is not None
         assert verified['side'] == side
         assert verified['type'] == code

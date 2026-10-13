@@ -38,6 +38,11 @@ def is_lobster_symbol(symbol: Optional[str]) -> bool:
     }
 
 
+def is_cap_symbol(symbol: Optional[str]) -> bool:
+    """Return whether a symbol is one of the CAP contract aliases."""
+    return normalize_symbol(symbol) in {'CAP/USDT', 'CAP/USDT:USDT'}
+
+
 def is_pivot_only_channel_symbol(symbol: Optional[str]) -> bool:
     """Return whether Channel Swing exits are restricted to pivot/ROE triggers."""
     return normalize_symbol(symbol) in PIVOT_ONLY_CHANNEL_SYMBOLS
