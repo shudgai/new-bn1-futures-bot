@@ -599,6 +599,17 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     if structure_state_changed:
                         account.save_state()
                     if structure_exit:
+                        from core.gates.holding_protection_gate import holding_chop_exit_problem
+                        chop_problem, chop_details = holding_chop_exit_problem(
+                            position, frame, structure_exit['type'], structure_exit,
+                        )
+                        if chop_problem:
+                            account.log(
+                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} '
+                                f'reason={structure_exit["type"]} gate_reason={chop_problem} '
+                                f'details={chop_details}', 'INFO',
+                            )
+                            return False
                         account.log(
                             f'REALTIME_EXIT symbol={symbol} '
                             f'reason={structure_exit["type"]} '

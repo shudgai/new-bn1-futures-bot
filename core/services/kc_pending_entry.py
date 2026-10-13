@@ -22,7 +22,7 @@ MIN_ENTRY_BODY_ATR = 0.5
 MAX_ADVERSE_ATR = 0.50
 SMALL_PATTERN_BODY_MAX_ATR = 0.35
 SMALL_PATTERN_BODY_MAX_RANGE_RATIO = 0.50
-LIVE_PATTERN_BODY_MIN_ATR = 1.0
+LIVE_PATTERN_BODY_MIN_ATR = 0.5
 LIVE_PATTERN_BODY_MIN_RANGE_RATIO = 0.50
 LIVE_PATTERN_MAX_DISTANCE_ATR = 3.0
 MAX_BREAKOUT_DISTANCE_ATR = 3.0
@@ -137,6 +137,18 @@ def evaluate_kc_pending_entry(closed, quote, code=None, symbol: str = '', *, liv
             price = float(quote)
             if not math.isfinite(price) or price <= 0:
                 return wait('WAIT_VALID_QUOTE')
+
+            # K1/K2 are the confirmed breakout pair. K3 may be flat or still
+            # moving with the breakout, but a live adverse body cancels entry.
+            if live is not None and not bool(getattr(live, 'is_closed', False)):
+                live_open = float(getattr(live, 'open'))
+                if (not math.isfinite(live_open) or live_open <= 0):
+                    return wait('WAIT_VALID_KC_PENDING_DATA')
+                if sign * (price - live_open) < 0:
+                    return wait(
+                        'BLOCKED_LIVE_OPPOSITE_BODY', side=side,
+                        type='KC_2BAR_CONFIRM_' + side,
+                    )
 
             # The latest quote must remain beyond the latest available rail,
             # including the forming candle's updated outer band.

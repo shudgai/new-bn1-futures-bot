@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 from core.gates.holding_protection_gate import (
     CHANNEL_MIDLINE_EXIT,
     CHANNEL_PEAK_PROFIT_EXIT,
+    HOLDING_THROUGH_CHOP_REJECT,
     HoldingProtectionExitGate,
 )
 
@@ -142,6 +143,72 @@ def test_channel_swing_blocks_long_exit_when_closed_body_holds_kc_midline(close)
 
     assert allowed is False
     assert reason == HoldingProtectionExitGate.REJECT_HEALTHY_PULLBACK
+
+
+@pytest.mark.parametrize("reason", [
+    "BLOCKED_BY_AI_CHOP_REGIME",
+    "BLOCKED_MA5_MA15_GAP_TOO_NARROW",
+    "BLOCKED_KC_SQUEEZE",
+])
+def test_entry_chop_vetoes_can_never_authorize_a_position_exit(reason):
+    allowed, reject_reason, _ = HoldingProtectionExitGate.validate_exit(
+        _position("LONG"), _frame("LONG", is_closed=True), 100.0, reason,
+        channel_swing=True,
+    )
+
+    assert allowed is False
+    assert reject_reason == HOLDING_THROUGH_CHOP_REJECT
+
+
+@pytest.mark.parametrize(
+    "side,close",
+    [("LONG", 100.0), ("SHORT", 100.0)],
+)
+def test_choppy_position_holds_profit_exit_while_close_remains_on_its_midline_side(
+    monkeypatch, side, close,
+):
+    from core.gates.pipeline import pipeline
+
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
+    frame = _frame(side, close=close, is_closed=True)
+    frame.loc[:, "kc_upper"] = 100.2
+    frame.loc[:, "kc_lower"] = 99.8
+    position = _position(side)
+    position["symbol"] = "TEST/USDT"
+
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, close, "EXIT_BY_RATCHET_PROFIT_LOCK",
+        channel_swing=True,
+    )
+
+    assert allowed is False
+    assert reason == HOLDING_THROUGH_CHOP_REJECT
+
+
+@pytest.mark.parametrize(
+    "side,opening,close",
+    [("LONG", 100.0, 99.0), ("SHORT", 100.0, 101.0)],
+)
+def test_choppy_position_allows_only_adverse_closed_body_through_kc_midline(
+    monkeypatch, side, opening, close,
+):
+    from core.gates.pipeline import pipeline
+
+    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
+    frame = _frame(side, close=close, is_closed=True)
+    frame.loc[1, "open"] = opening
+    frame.loc[:, "kc_upper"] = 100.2
+    frame.loc[:, "kc_lower"] = 99.8
+    position = _position(side)
+    position["symbol"] = "TEST/USDT"
+
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, close, CHANNEL_MIDLINE_EXIT[side],
+        channel_swing=True,
+    )
+
+    assert allowed is True
+    assert reason == CHANNEL_MIDLINE_EXIT[side]
 
 
 def test_channel_swing_peak_exit_uses_observed_giveback_ratio():

@@ -27,7 +27,9 @@ from core.services.strategies.outer_strategy import (
 )
 from core.services.kc_pending_entry import (
     KC_PENDING_CODES,
+    KC_REALTIME_PATTERN_CODES,
     evaluate_kc_pending_entry,
+    evaluate_kc_live_pattern_entry,
 )
 from core.services.ma5_entry_slope import (
     live_ma5_entry_direction_problem,
@@ -56,6 +58,7 @@ CONTINUATION_CODES = frozenset(('KC_OUTSIDE_LONG', 'KC_OUTSIDE_SHORT'))
 LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
+LIVE_PATTERN_BREAKOUT_CODES = KC_REALTIME_PATTERN_CODES
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION",
@@ -70,6 +73,8 @@ NEW_TRIGGER_CODES = frozenset((
 LEGACY_ROUTE_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG",
     "KC_LIVE_BODY_BREAKOUT_SHORT",
+    REALTIME_RAIL_BREACH_SHORT_CODE,
+    *KC_REALTIME_PATTERN_CODES,
     GOLDEN_CROSS_FAST_LONG_CODE,
     DEATH_CROSS_FAST_SHORT_CODE,
     "TRIGGER_A_KC_BREAKOUT",
@@ -1447,7 +1452,7 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
             return None
 
         distance_atr = (lower - quote) / atr
-        if distance_atr >= 1.5:
+        if distance_atr > 3.0:
             return dict(action='WAIT', reason='BLOCKED_BY_EXTENDED_BREAKOUT')
 
         def lower_shadow_ratio(bar_open, bar_close, bar_high, bar_low):
@@ -1479,18 +1484,8 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         body = opening - quote
         body_ratio = body / candle_range
         
-        is_strong_breakout = (body_atr >= 0.4 and body_ratio >= 0.6)
-        
-        # 檢查常規破軌：連續兩根已收線陰線實體收在 KC 下軌外
-        has_two_consecutive_closed_breakouts = False
-        if len(closed) >= 2:
-            bar1 = closed.iloc[-2]
-            bar2 = closed.iloc[-1]
-            if float(bar1['close']) < float(bar1['open']) and float(bar2['close']) < float(bar2['open']):
-                if float(bar1['close']) < float(bar1['kc_lower']) and float(bar2['close']) < float(bar2['kc_lower']):
-                    has_two_consecutive_closed_breakouts = True
-                    
-        if not is_strong_breakout and not has_two_consecutive_closed_breakouts:
+        is_strong_breakout = (body_atr >= 0.5 and body_ratio >= 0.6)
+        if not is_strong_breakout:
             return dict(action='WAIT', reason='BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION')
 
         live_ma3 = float(live['ma3']) + (quote - raw_close) / 3.0
@@ -1597,10 +1592,12 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
                 first_upper >= first_open >= first_rail > first_close
             )
             second_outside = sign * (second_close - second_rail) > 0
-            third_directional = sign * (quote - opening) > 0
+            # The third, still-forming candle need not extend the breakout.
+            # It may be flat, but an adverse body cancels this entry attempt.
+            third_not_opposite = sign * (quote - opening) >= 0
             third_outside = sign * (quote - current_rail) > 0
             if not (first_crossed and second_outside
-                    and third_directional and third_outside):
+                    and third_not_opposite and third_outside):
                 continue
 
             atr = float(first["atr"])
@@ -2183,8 +2180,9 @@ def pre_flight_safety_check(
         )
         is_trend_continuation = entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY'
         is_confirmed_rail_breakout = (
-            decision_type in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
-            and entry_phase == 'KC_2BAR_CLOSED_CONFIRM'
+            (decision_type in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
+             and entry_phase == 'KC_2BAR_CLOSED_CONFIRM')
+            or decision_type == REALTIME_RAIL_BREACH_SHORT_CODE
         )
         is_strong_breakout = (
             (side == 'LONG' and pipeline.has_strong_bullish_breakout(frame, quote))
@@ -2315,6 +2313,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         cross_chop_problem = (
             None if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
             or decision.get('entry_phase') == 'KC_LIVE_OUTER_BREAKOUT'
+            or decision.get('entry_phase') == 'KC_LIVE_PATTERN_BREAKOUT'
+            or decision.get('type') == REALTIME_RAIL_BREACH_SHORT_CODE
             or decision.get('type') in (
                 BEARISH_INSTANT_BREAKOUT_CODE,
                 BULLISH_INSTANT_BREAKOUT_CODE,
@@ -2373,6 +2373,39 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
+        closed = closed_entry_candles(frame)
+
+        # A live lower-rail breach is its own entry authority. It does not
+        # inherit the separate two-closed-bar breakout confirmation rule.
+        if forming_bar and code in (None, REALTIME_RAIL_BREACH_SHORT_CODE):
+            realtime_short = evaluate_realtime_short_rail_breach(
+                frame, quote, symbol=symbol,
+            )
+            if code == REALTIME_RAIL_BREACH_SHORT_CODE and realtime_short is None:
+                return reject('BLOCKED_REALTIME_SHORT_BREACH_NOT_QUALIFIED')
+            if realtime_short is not None:
+                if realtime_short.get('action') != 'ENTER':
+                    return reject(realtime_short.get('reason',
+                                                       'BLOCKED_REALTIME_SHORT_BREACH'))
+                if code is not None and code != realtime_short.get('type'):
+                    return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
+                passed, gate_reason = check_entry_gates(
+                    account, symbol, closed, 'SHORT',
+                    REALTIME_RAIL_BREACH_SHORT_CODE,
+                )
+                if not passed:
+                    return reject(gate_reason)
+                return authorize(realtime_short, quote)
+
+        live_pattern_candidate = None
+        if forming_bar and code in (None, *KC_REALTIME_PATTERN_CODES):
+            pattern = evaluate_kc_live_pattern_entry(
+                closed, quote, frame.iloc[-1],
+                code=code if code in KC_REALTIME_PATTERN_CODES else None,
+                symbol=symbol,
+            )
+            if pattern.get('action') == 'ENTER':
+                live_pattern_candidate = pattern
         live_body_candidate = None
         if (forming_bar and code in (
                 None, 'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT')):
@@ -2387,7 +2420,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             BEARISH_INSTANT_BREAKOUT_CODE,
             BULLISH_INSTANT_BREAKOUT_CODE,
         )
-        closed = closed_entry_candles(frame)
         pending = None
         if code is None or code in KC_PENDING_CODES:
             pending = evaluate_kc_pending_entry(
@@ -2425,7 +2457,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         cross_chop_problem = (
             None if (confirmed_pending_breakout or is_instant_reverse
-                     or live_body_candidate is not None) else
+                     or live_body_candidate is not None
+                     or live_pattern_candidate is not None) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(
@@ -2443,12 +2476,14 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             frame, quote,
             side=(
                 pending.get('side') if confirmed_pending_breakout
+                else live_pattern_candidate.get('side') if live_pattern_candidate
                 else live_body_candidate.get('side') if live_body_candidate
                 else post_close_candidate.get('side') if post_close_candidate
                 else None
             ),
             strategy_type=(
-                'BREAKOUT' if confirmed_pending_breakout or live_body_candidate else
+                'BREAKOUT' if (confirmed_pending_breakout or live_body_candidate
+                               or live_pattern_candidate) else
                 entry_strategy_type(post_close_candidate.get('entry_phase'))
                 if post_close_candidate else None
             ),
@@ -2467,6 +2502,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         verified_live_breakout = bool(
             (live_breakout and live_breakout.get('ma5_direction_aligned') is True)
             or live_body_candidate is not None
+            or live_pattern_candidate is not None
             or active_fast_cross is not None
             or momentum_burst is not None
             or post_close_candidate is not None
@@ -2503,6 +2539,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         is_outer_rail_breakout = (
             code in FLAT_LINE_BREAKOUT_TYPES
             or live_body_candidate is not None
+            or live_pattern_candidate is not None
             or code == CLIMAX_REVERSAL_FLIP_CODE
             or verified_live_breakout
             or is_midline_breakout
@@ -2510,6 +2547,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         if (not confirmed_pending_breakout and active_fast_cross is None
                 and live_body_candidate is None
+                and live_pattern_candidate is None
                 and code not in (CLIMAX_REVERSAL_FLIP_CODE, AUTHORIZED_SHADOW_RETEST_ENTRY_CODE,
                                  'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                                  'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
@@ -2617,6 +2655,44 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         # A qualified forming-bar rail break is time-sensitive. Evaluate it
         # before the generic pipeline can return a slower closed-bar candidate.
+        if live_pattern_candidate is not None:
+            side = live_pattern_candidate['side']
+            if not entry_trend_alignment_ready(frame, side):
+                return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
+            direction_problem = entry_direction_problem(frame, quote, side)
+            if direction_problem:
+                return reject(direction_problem)
+            if not live_ma3_direction_ready(frame, quote, side):
+                return reject('BLOCKED_BY_LIVE_MA3_DIRECTION')
+            ma5_direction = evaluate_live_ma5_direction(frame, quote, side)
+            if ma5_direction is None:
+                return reject('BLOCKED_STRICT_MA5_DIRECTION')
+            live = frame.iloc[-1]
+            live_ma5 = ma5_direction[1]
+            live_ma15 = float(live['ma15']) + (float(quote) - float(live['close'])) / 15.0
+            upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+            width = upper - lower
+            max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
+            edge = upper if side == 'LONG' else lower
+            if (not all(math.isfinite(value) and value > 0 for value in
+                        (live_ma5, live_ma15, upper, lower, width, max_width))
+                    or width <= 0 or width <= 0.25 * max_width):
+                return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
+            if (abs(live_ma5 - live_ma15) < 0.25 * width
+                    or abs(live_ma5 - edge) < 0.25 * width):
+                return reject('BLOCKED_STRICT_MA_SPACING')
+            if account is not None and symbol in getattr(account, 'positions', {}):
+                return reject('BLOCKED_BY_POSITION_GATE')
+            if any(
+                trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                    == live_pattern_candidate['pending_signal_id']
+                for trade in getattr(account, 'trades', [])
+            ):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            return authorize(live_pattern_candidate, quote)
+
         live_breakout = live_body_candidate
         if (not bool(frame.iloc[-1].get('is_closed', True))
                 and code in (None, 'KC_LIVE_BODY_BREAKOUT_LONG',

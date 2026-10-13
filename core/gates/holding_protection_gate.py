@@ -246,6 +246,101 @@ def channel_swing_midline_exit_evidence(frame, side):
         return None
 
 
+HOLDING_THROUGH_CHOP_REJECT = 'REJECT_EXIT: HOLDING_THROUGH_CHOP'
+_ENTRY_ONLY_CHOP_REASONS = frozenset((
+    'BLOCKED_BY_AI_CHOP_REGIME',
+    'BLOCKED_MA5_MA15_GAP_TOO_NARROW',
+    'BLOCKED_KC_SQUEEZE',
+))
+_CHOP_EXTREME_EXIT_REASONS = frozenset((
+    CHANNEL_PEAK_PROFIT_EXIT,
+    CHANNEL_PEAK_WICK_EXIT,
+    'EXIT_BY_VERIFIED_FRACTAL_PEAK',
+    'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
+    'EXIT_LONG_ON_FRACTAL_PEAK',
+    'EXIT_SHORT_ON_FRACTAL_VALLEY',
+    'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
+    'EXIT_SHORT_ON_CONFIRMED_TROUGH',
+    'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
+    'EXIT_LONG_ON_EXHAUSTION_REVERSAL',
+    INTRABAR_SPIKE_REBOUND_EXIT,
+))
+_CONFIRMED_STRUCTURE_EXIT = 'EXIT_CONFIRMED_3BAR_STRUCTURE_BREAK'
+
+
+def _is_choppy_or_squeezed_holding(position, frame):
+    """Inspect completed market structure only; this is an exit immunity gate."""
+    if frame is None or frame.empty:
+        return False, {}
+    side = str((position or {}).get('side', '')).upper()
+    symbol = str((position or {}).get('symbol') or '')
+    evidence = {}
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return False, evidence
+        current = closed.iloc[-1]
+        close = float(current['close'])
+        middle = float(current.get('kc_middle', current.get('kc_basis', float('nan'))))
+        upper, lower = float(current['kc_upper']), float(current['kc_lower'])
+        width = upper - lower
+        bandwidth = width / middle if middle > 0 else float('nan')
+        regime = 'UNKNOWN'
+        if side in ('LONG', 'SHORT'):
+            from core.services.exits.profit_protection_service import assess_market_regime
+            regime = assess_market_regime(frame, side, (position or {}).get('open_timestamp'))
+        ai_choppy = False
+        try:
+            from core.gates.pipeline import pipeline
+            provider = getattr(pipeline, 'market_regime_provider', None)
+            if callable(provider):
+                ai_choppy = str(provider(symbol)).upper() == 'CHOPPY'
+        except Exception:
+            ai_choppy = False
+        ma_gap_narrow = False
+        if {'ma5', 'ma15'}.issubset(closed.columns) and close > 0:
+            from core.gates.pipeline import MA_GAP_CHOP_MIN_PCT
+            ma_gap = abs(float(current['ma5']) - float(current['ma15'])) / close
+            ma_gap_narrow = math.isfinite(ma_gap) and ma_gap < MA_GAP_CHOP_MIN_PCT
+        from core.gates.pipeline import MIN_KC_BANDWIDTH_PCT
+        kc_squeezed = math.isfinite(bandwidth) and bandwidth < MIN_KC_BANDWIDTH_PCT
+        evidence = {
+            'market_regime': regime,
+            'ai_choppy': ai_choppy,
+            'ma_gap_narrow': ma_gap_narrow,
+            'kc_squeezed': kc_squeezed,
+            'closed_close': close,
+            'kc_middle': middle,
+        }
+        return regime == 'CHOPPY' or ai_choppy or ma_gap_narrow or kc_squeezed, evidence
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False, evidence
+
+
+def holding_chop_exit_problem(position, frame, candidate_reason, details=None):
+    """Veto non-stop, non-extreme exits during chop/squeeze unless KC midline broke."""
+    reason = str(candidate_reason or '').replace('Channel Swing ', '').strip()
+    if reason in _ENTRY_ONLY_CHOP_REASONS:
+        return HOLDING_THROUGH_CHOP_REJECT, {'entry_gate_reason': reason}
+    if any(marker in reason.upper() for marker in (
+            'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
+            'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL')):
+        return None, {}
+    choppy, regime_details = _is_choppy_or_squeezed_holding(position, frame)
+    if not choppy:
+        return None, regime_details
+    side = str((position or {}).get('side', '')).upper()
+    if reason in _CHOP_EXTREME_EXIT_REASONS:
+        return None, regime_details
+    if reason in (CHANNEL_MIDLINE_EXIT.get(side), _CONFIRMED_STRUCTURE_EXIT):
+        if channel_swing_midline_exit_evidence(frame, side) is not None:
+            return None, regime_details
+    if details is not None:
+        regime_details['candidate_details'] = details
+    return HOLDING_THROUGH_CHOP_REJECT, regime_details
+
+
 def _last_closed_close_at_or_above_kc_middle(frame):
     """Return whether the latest completed close still holds above KC middle."""
     try:
@@ -1433,6 +1528,13 @@ class HoldingProtectionExitGate:
 
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        chop_problem, chop_details = holding_chop_exit_problem(
+            position, frame, clean_reason, details,
+        )
+        if chop_problem:
+            details.update(chop_details)
+            return _reject(reason=chop_problem)
 
         if (channel_swing
                 or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'):

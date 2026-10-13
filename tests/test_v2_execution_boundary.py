@@ -13,10 +13,20 @@ from core.services.entry_firewall import validate_account_entry, validate_entry_
 
 def candles(side='LONG', live=True):
     stamp = int(time.time() // 60) * 60000
-    rows = [dict(timestamp=stamp-(5-i)*60000, open=100., close=100.2,
-                 high=100.4, low=99.8, ma3=100.2, ma15=100., atr=1.,
-                 kc_upper=101.4, kc_middle=100., kc_lower=98.6, is_closed=True)
-            for i in range(6)]
+    # Build a valid LONG trend once, then mirror every price/indicator for SHORT.
+    sign = 1
+    rows = []
+    for i in range(6):
+        middle = 100. + sign * 0.04 * i
+        ma3 = middle + sign * 0.8
+        ma15 = middle + 0.3
+        rows.append(dict(
+            timestamp=stamp-(5-i)*60000, open=middle, close=middle+sign*0.2,
+            high=middle+0.4, low=middle-0.2,
+            ma3=ma3, ma5=ma3, ma15=ma15, atr=1.,
+            kc_upper=middle+1.0, kc_middle=middle, kc_lower=middle-1.0,
+            is_closed=True,
+        ))
     rows[-3].update(open=100.8, close=101.3, high=101.6, low=100.7)
     rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4)
     rows[-1].update(open=101.5, close=101.8, high=101.9, low=101.4, is_closed=not live)
@@ -26,7 +36,7 @@ def candles(side='LONG', live=True):
     if side == 'SHORT':
         original = f.copy()
         for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
-                    ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
+                    ('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),
                     ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
             f[a] = 200-original[b]
     f.attrs['timeframe_ms'] = 60000

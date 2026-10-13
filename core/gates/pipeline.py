@@ -658,6 +658,15 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                     or side == 'SHORT' and (quote >= lower or opening > upper)):
                 return 'BLOCKED_LIVE_BREAKOUT_RAIL_REVALIDATION'
             return None
+        if entry_phase == 'KC_LIVE_PATTERN_BREAKOUT':
+            if bool(current.get('is_closed', True)):
+                return 'BLOCKED_LIVE_BREAKOUT_REQUIRES_FORMING_CANDLE'
+            lower, upper = float(current['kc_lower']), float(current['kc_upper'])
+            opening, quote = float(current['open']), float(quote)
+            if (side == 'LONG' and not (lower <= opening <= upper and quote > upper)
+                    or side == 'SHORT' and not (lower <= opening <= upper and quote < lower)):
+                return 'BLOCKED_LIVE_BREAKOUT_RAIL_REVALIDATION'
+            return None
         if entry_phase == 'KC_TOP_PLUNGE_SHORT':
             if side != 'SHORT':
                 return 'BLOCKED_INVALID_TOP_PLUNGE_SIDE'

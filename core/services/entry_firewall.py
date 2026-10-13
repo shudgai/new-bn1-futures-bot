@@ -97,6 +97,8 @@ async def validate_account_entry(account, symbol, side, context):
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
             'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+            'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+            'KC_REALTIME_RAIL_BREACH_SHORT',
         ) else
         ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
@@ -108,7 +110,10 @@ async def validate_account_entry(account, symbol, side, context):
     kc_problem = strict_kc_entry_problem(
         frame, quote, side,
         strategy_type=(
-            'BREAKOUT' if code in KC_PENDING_CODES
+            'BREAKOUT' if code in KC_PENDING_CODES or code in (
+                'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+            'KC_REALTIME_RAIL_BREACH_SHORT',
+            )
             else entry_strategy_type(context.get('entry_phase'))
         ),
     )
@@ -186,6 +191,7 @@ async def validate_account_entry(account, symbol, side, context):
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
             'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+            'KC_REALTIME_RAIL_BREACH_SHORT',
         )
     )
     is_verified_live_breakout = (

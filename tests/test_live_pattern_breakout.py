@@ -17,36 +17,55 @@ from core.services.entry_firewall import validate_account_entry
 def pattern_frame(side="SHORT", pullback_bars=2):
     base = int(time.time() // 60) * 60_000
     sign = 1 if side == "LONG" else -1
-    price = 100.0
     rows = []
+    # Give the strict shared contract a real three-bar trend and 20-bar
+    # channel-width history before the small setup candles.
+    price = 100.0 + sign * 0.03 * 23
+    for index in range(23):
+        middle = 100.0 + sign * 0.03 * index
+        opening = middle
+        close = middle + sign * 0.10
+        rows.append((
+            base - (23 - index + pullback_bars + 1) * 60_000,
+            opening, close, middle, index,
+        ))
     # Initial small push follows the eventual breakout direction.
     first_close = price + sign * 0.10
-    rows.append((price, first_close))
+    rows.append((base - (pullback_bars + 1) * 60_000, price, first_close,
+                 100.0 + sign * 0.03 * 23, 23))
     price = first_close
     # One to three small bars pull back against the breakout direction.
     for _ in range(pullback_bars):
         close = price - sign * 0.10
-        rows.append((price, close))
+        trend_index = 24 + _
+        rows.append((base - (pullback_bars - _) * 60_000, price, close,
+                     100.0 + sign * 0.03 * trend_index, trend_index))
         price = close
 
     frame_rows = []
-    for index, (opening, close) in enumerate(rows):
+    for index, (stamp, opening, close, middle, trend_index) in enumerate(rows):
+        ma3 = middle + sign * 0.7
+        ma5 = middle + sign * (0.2 + 0.01 * trend_index)
+        ma15 = middle - sign * 0.4
         frame_rows.append(dict(
-            timestamp=base - (len(rows) - index) * 60_000,
+            timestamp=stamp,
             open=opening, close=close,
             high=max(opening, close) + 0.10,
             low=min(opening, close) - 0.10,
-            kc_upper=101.0, kc_middle=100.0, kc_lower=99.0,
-            atr=1.0, ma3=100.0, ma5=100.0, ma15=100.0,
+            kc_upper=middle + 1.0, kc_middle=middle, kc_lower=middle - 1.0,
+            atr=1.0, ma3=ma3, ma5=ma5, ma15=ma15,
             is_closed=True,
         ))
     live_open = price
-    live_quote = (101.2 if side == "LONG" else 98.8)
+    live_middle = 100.0 + sign * 0.03 * (24 + pullback_bars)
+    live_quote = live_middle + sign * 1.2
     frame_rows.append(dict(
         timestamp=base, open=live_open, close=live_quote,
         high=max(live_open, live_quote), low=min(live_open, live_quote),
-        kc_upper=101.0, kc_middle=100.0, kc_lower=99.0,
-        atr=1.0, ma3=100.0, ma5=100.0, ma15=100.0,
+        kc_upper=live_middle + 1.0, kc_middle=live_middle, kc_lower=live_middle - 1.0,
+        atr=1.0, ma3=live_middle + sign * 0.7,
+        ma5=live_middle + sign * (0.2 + 0.01 * (24 + pullback_bars)),
+        ma15=live_middle - sign * 0.4,
         is_closed=False,
     ))
     frame = pd.DataFrame(frame_rows)
@@ -103,7 +122,10 @@ def test_live_pattern_breakout_fails_closed_on_invalid_shape_or_channel_price(si
         frame.loc[live, "open"] = 100.9 if side == "LONG" else 99.1
         quote = 101.1 if side == "LONG" else 98.9
     elif failure == "outside_open":
-        frame.loc[live, "open"] = 101.1 if side == "LONG" else 98.9
+        frame.loc[live, "open"] = (
+            frame.loc[live, "kc_upper"] + 0.1
+            if side == "LONG" else frame.loc[live, "kc_lower"] - 0.1
+        )
         quote = 102.0 if side == "LONG" else 98.0
     elif failure == "bad_pattern":
         row = frame.index[-2]
@@ -157,7 +179,7 @@ def test_scanner_sends_the_side_of_the_live_outer_rail_break(side):
     assert call.kwargs["v8_reason"] == f"KC_LIVE_PATTERN_BREAKOUT_{side}"
 
 
-def test_existing_qualified_outside_continuation_remains_available():
+def test_legacy_qualified_outside_signal_is_not_in_current_entry_whitelist():
     from test_breakout_only_entry import breakout_frame
 
     frame = breakout_frame("LONG")
@@ -185,12 +207,11 @@ def test_existing_qualified_outside_continuation_remains_available():
         )},
     )
 
+    diagnostics = {}
     decision = evaluate_entry_contract(
         frame, 102.0, code="KC_OUTSIDE_LONG",
-        account=account, symbol="龍蝦/USDT"
+        account=account, symbol="龍蝦/USDT", diagnostics=diagnostics,
     )
 
-    assert decision is not None
-    assert decision["side"] == "LONG"
-    assert decision["type"] == "KC_OUTSIDE_LONG"
-    assert decision["entry_phase"] == "KC_CONTINUATION_ENTRY"
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_OBSOLETE_ENTRY_SIGNAL"
