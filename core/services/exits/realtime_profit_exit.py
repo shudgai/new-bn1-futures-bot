@@ -423,6 +423,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     account = engine.account
     position = account.positions.get(symbol)
     entry_m = str((position or {}).get('entry_mode', '')).upper()
+    from core.symbol_aliases import is_lobster_symbol
+    lobster_hold = is_lobster_symbol(symbol)
     if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
     try:
@@ -445,7 +447,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
                 if entry_m == 'CHANNEL_SWING':
                     from core.gates.meme_coin_gate import MemeCoinGate
-                    if MemeCoinGate.is_meme_coin(symbol):
+                    if MemeCoinGate.is_meme_coin(symbol) and not lobster_hold:
                         side_m = str(position.get('side', '')).upper()
                         amb_fail, amb_fail_reason = MemeCoinGate.evaluate_ambush_failure_stop(
                             frame, price, side_m, symbol=symbol,
@@ -574,8 +576,17 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 if gate_trigger:
                     from core.gates.holding_protection_gate import HoldingProtectionExitGate
                     from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
+                    if (entry_m == 'CHANNEL_SWING' and lobster_hold
+                            and not (gate_trigger == 'HARD_STOP_LOSS'
+                                     or gate_trigger.startswith(PROFIT_LOCK_TRIGGER))):
+                        account.log(
+                            f'LOBSTER_PULLBACK_HOLD symbol={symbol} reason={gate_trigger} '
+                            f'price={price} rule=WAIT_FOR_10PCT_PEAK_ROE_GIVEBACK', 'INFO',
+                        )
+                        return False
                     if (entry_m == 'CHANNEL_SWING'
-                            and not channel_swing_exit_allowed(gate_trigger)):
+                            and not channel_swing_exit_allowed(gate_trigger)
+                            and not (lobster_hold and gate_trigger == 'HARD_STOP_LOSS')):
                         account.log(
                             f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={gate_trigger} '
                             'gate_reason=EXIT_NOT_IN_CHANNEL_ALLOWLIST', 'INFO',
@@ -616,6 +627,11 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'gate_reason={valid_reason}', 'INFO',
                         )
                 if entry_m == 'CHANNEL_SWING':
+                    # Lobster keeps running through every ordinary retracement.
+                    # Its only strategy exit is the staged net-ROE giveback,
+                    # which cannot arm until peak net ROE reaches 10%.
+                    if lobster_hold:
+                        return False
                     # 1. Hybrid Dynamic Exit (Stage 1 ATR trailing 1.3 ATR / 20% giveback, Stage 2 Ratchet 20%, KC Midline breach)
                     from core.services.exits.hybrid_dynamic_exit import evaluate_hybrid_dynamic_exit
                     hybrid_trigger, hybrid_state_changed, hybrid_diag = evaluate_hybrid_dynamic_exit(
