@@ -1378,6 +1378,22 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        if clean_reason.startswith('HYBRID_DYNAMIC') or clean_reason == 'KC_MIDLINE_CLOSE_BREACH':
+            return _auth(clean_reason)
+
+        # One-vote veto: If latest candle closed in favorable KC half
+        # (close >= kc_middle for LONG, close <= kc_middle for SHORT),
+        # ordinary pullback exits are strictly vetoed.
+        if (
+            not _is_profit_lock_reason(clean_reason)
+            and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
+        ):
+            last_closed_above = _last_closed_close_at_or_above_kc_middle(frame)
+            if side == 'LONG' and last_closed_above is True:
+                return _reject(reason="VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION")
+            elif side == 'SHORT' and last_closed_above is False:
+                return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
+
         if ((channel_swing
              or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING')
                 and _is_profit_lock_reason(clean_reason)):

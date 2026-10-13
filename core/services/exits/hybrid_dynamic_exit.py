@@ -144,6 +144,14 @@ def evaluate_hybrid_dynamic_exit(
         state_changed = True
 
     # ── Stage transitions ──
+    kc_upper = float(snapshot.get('live_kc_upper') or snapshot.get('kc_upper') or 0.0) if isinstance(snapshot, dict) else 0.0
+    kc_lower = float(snapshot.get('live_kc_lower') or snapshot.get('kc_lower') or 0.0) if isinstance(snapshot, dict) else 0.0
+    outer_breakout = (
+        (side == 'LONG' and kc_upper > 0 and price > kc_upper)
+        or (side == 'SHORT' and kc_lower > 0 and price < kc_lower)
+    )
+    gain_atr = ((price - entry) / atr if side == 'LONG' else (entry - price) / atr) if atr > 0 else 0.0
+
     # Stage 2: Net profit >= 4.0%
     if net_profit_pct >= HYBRID_STAGE2_MIN_NET_PROFIT_PCT or state.get('stage') == 2:
         if state.get('stage') != 2:
@@ -155,8 +163,12 @@ def evaluate_hybrid_dynamic_exit(
         if current_tier > old_tier:
             state['locked_tier'] = float(current_tier)
             state_changed = True
-    # Stage 1: 1.5% <= Net profit < 4.0%
-    elif state.get('stage') == 0 and net_profit_pct >= HYBRID_STAGE1_MIN_NET_PROFIT_PCT:
+    # Stage 1: Armed on KC outer rail breakout, favorable excursion >= 1.0 ATR, or net_profit >= 1.5%
+    elif state.get('stage') == 0 and (
+        outer_breakout
+        or gain_atr >= 1.0
+        or net_profit_pct >= HYBRID_STAGE1_MIN_NET_PROFIT_PCT
+    ):
         state['stage'] = 1
         state_changed = True
 
@@ -175,8 +187,8 @@ def evaluate_hybrid_dynamic_exit(
         'peak_low': state.get('peak_low'),
     }
 
-    # ── Protection Baseline 3: KC Midline Structural Breach ──
-    if current_stage >= 1 and check_kc_midline_breach(position, snapshot):
+    # ── Protection Baseline: KC Midline Structural Breach ──
+    if check_kc_midline_breach(position, snapshot):
         return HYBRID_MIDLINE_BREACH_TRIGGER, state_changed, diagnostics
 
     # ── Stage 2: Percentage Ratchet Take Profit ──
@@ -191,8 +203,12 @@ def evaluate_hybrid_dynamic_exit(
                 return HYBRID_DYNAMIC_RATCHET_TRIGGER, state_changed, diagnostics
         return None, state_changed, diagnostics
 
-    # ── Stage 1: ATR Dynamic Trailing Exit ──
+    # ── Stage 1: ATR Dynamic Trailing Exit (1.3 ATR or 20% profit giveback) ──
     if current_stage == 1:
+        peak_profit_pct = float(state.get('peak_net_profit_pct', 0.0))
+        if peak_profit_pct >= 1.5 and net_profit_pct <= peak_profit_pct * (1.0 - HYBRID_STAGE2_GIVEBACK_RATIO):
+            return HYBRID_DYNAMIC_RATCHET_TRIGGER, state_changed, diagnostics
+
         if atr > 0:
             if side == 'LONG':
                 peak_high = float(state.get('peak_high', price))

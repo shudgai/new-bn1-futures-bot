@@ -586,23 +586,69 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'gate_reason={valid_reason}', 'INFO',
                         )
                 if entry_m == 'CHANNEL_SWING':
-                    from core.services.exits.peak_trailing_exit import three_point_pivot_exit
-                    pivot = three_point_pivot_exit(position, snapshot)
-                    if pivot is not None:
+                    # 1. Hybrid Dynamic Exit (Stage 1 ATR trailing 1.3 ATR / 20% giveback, Stage 2 Ratchet 20%, KC Midline breach)
+                    from core.services.exits.hybrid_dynamic_exit import evaluate_hybrid_dynamic_exit
+                    hybrid_trigger, hybrid_state_changed, hybrid_diag = evaluate_hybrid_dynamic_exit(
+                        position, meta, price, stamp, snapshot,
+                        fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT,
+                    )
+                    if hybrid_state_changed:
+                        account.save_state()
+                    if hybrid_trigger:
                         account.log(
-                            f'REALTIME_EXIT symbol={symbol} reason=THREE_POINT_PIVOT '
-                            f'quote_ms={stamp} price={price} evidence={pivot}',
+                            f'REALTIME_EXIT symbol={symbol} reason={hybrid_trigger} '
+                            f'quote_ms={stamp} price={price} diag={hybrid_diag}',
                             'WARNING',
                         )
                         await account.close_position(
-                            symbol, price, 'Channel Swing THREE_POINT_PIVOT',
+                            symbol, price, f'Channel Swing {hybrid_trigger}',
                             is_manual=True,
                         )
                         return True
+
+                    # 2. Holding Protection Veto on THREE_POINT_PIVOT:
+                    # One-vote veto: If latest candle or price holds on favorable side of KC middle
+                    # (close >= kc_middle for LONG, close <= kc_middle for SHORT), all regular pullback/pivot exits are vetoed!
+                    from core.services.exits.peak_trailing_exit import three_point_pivot_exit
+                    pivot = three_point_pivot_exit(position, snapshot)
+                    if pivot is not None:
+                        from core.gates.holding_protection_gate import _last_closed_close_at_or_above_kc_middle
+                        closed_above_mid = _last_closed_close_at_or_above_kc_middle(frame)
+                        if closed_above_mid is None and isinstance(snapshot, dict):
+                            h5 = snapshot.get('history_5') or []
+                            if h5:
+                                last_c = float(h5[-1].get('c', 0.0))
+                                last_mid = float(h5[-1].get('kc_middle', 0.0))
+                                if last_c > 0 and last_mid > 0:
+                                    closed_above_mid = last_c >= last_mid
+                        side = position.get('side')
+                        if side == 'LONG' and closed_above_mid is True:
+                            account.log(
+                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason=THREE_POINT_PIVOT '
+                                f'gate_reason=CLOSE_ABOVE_KC_MIDDLE_VETO price={price}',
+                                'INFO',
+                            )
+                        elif side == 'SHORT' and closed_above_mid is False:
+                            account.log(
+                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason=THREE_POINT_PIVOT '
+                                f'gate_reason=CLOSE_BELOW_KC_MIDDLE_VETO price={price}',
+                                'INFO',
+                            )
+                        else:
+                            account.log(
+                                f'REALTIME_EXIT symbol={symbol} reason=THREE_POINT_PIVOT '
+                                f'quote_ms={stamp} price={price} evidence={pivot}',
+                                'WARNING',
+                            )
+                            await account.close_position(
+                                symbol, price, 'Channel Swing THREE_POINT_PIVOT',
+                                is_manual=True,
+                            )
+                            return True
                     if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
                         account.log(
                             f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '
-                            'rule=THREE_POINT_PIVOT_OR_NET_ROE_PROFIT_LOCK '
+                            'rule=HYBRID_DYNAMIC_OR_MIDLINE_BREACH_ONLY '
                             f'closed_bar={snapshot.get("snapshot_bar_id")}', 'INFO',
                         )
                         meta['trend_exit_last_audit_bar'] = snapshot.get('snapshot_bar_id')
