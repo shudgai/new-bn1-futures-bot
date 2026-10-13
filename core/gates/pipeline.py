@@ -28,6 +28,8 @@ MA_GAP_CHOP_MIN_PCT = 0.0012
 MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
 MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM = 0.15
+REALTIME_SHORT_MIN_RAIL_DISTANCE_ATR = 0.15
+REALTIME_SHORT_MIN_BODY_RATIO = 0.20
 HIGH_MOMENTUM_BODY_ATR = 0.70
 MEME_BREAKOUT_BODY_ATR = 0.30
 FAST_CROSS_BODY_ATR = 0.40
@@ -590,7 +592,9 @@ def strict_kc_entry_problem(
                 )
                 and not _has_directional_squeeze_expansion(
                     frame, quote, side,
-                )):
+                )
+                and not (side == 'SHORT'
+                         and is_live_short_lower_rail_breakout(frame, quote))):
             return 'BLOCKED_KC_SQUEEZE'
         if (side in ('LONG', 'SHORT')
                 and strategy_type not in (
@@ -634,6 +638,44 @@ def strict_kc_entry_problem(
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_INVALID_KC_ENTRY_SPACE'
+
+
+def is_live_short_lower_rail_breakout(frame: pd.DataFrame, quote: float) -> bool:
+    """Validate the narrow live short-break exception to CHOP/squeeze gates."""
+    try:
+        if (frame is None or len(frame) < 3 or 'is_closed' not in frame.columns
+                or bool(frame.iloc[-1]['is_closed'])):
+            return False
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return False
+        live, previous = frame.iloc[-1], closed.iloc[-1]
+        quote = float(quote)
+        opening, close = float(live['open']), float(live['close'])
+        upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+        atr = float(previous['atr'])
+        high = max(float(live['high']), opening, quote)
+        low = min(float(live['low']), opening, quote)
+        ma5 = float(live['ma5']) + (quote - close) / 5.0
+        previous_ma5 = float(previous['ma5'])
+        values = (quote, opening, close, upper, lower, atr, high, low, ma5, previous_ma5)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or not lower < upper or atr <= 0
+                or not lower <= opening <= upper
+                or quote >= lower or quote >= opening
+                or low > min(opening, quote) or high < max(opening, quote)):
+            return False
+        distance_atr = (lower - quote) / atr
+        body = opening - quote
+        candle_range = high - low
+        return (
+            REALTIME_SHORT_MIN_RAIL_DISTANCE_ATR <= distance_atr <= 3.0
+            and candle_range > 0
+            and body / candle_range >= REALTIME_SHORT_MIN_BODY_RATIO
+            and quote < ma5 < previous_ma5
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
 
 
 def _has_directional_squeeze_expansion(
@@ -720,6 +762,8 @@ def entry_strategy_type(
         return STRATEGY_TYPE_BREAKOUT
     if entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY':
         return STRATEGY_TYPE_TREND_CONTINUATION
+    if entry_phase == 'REALTIME_RAIL_BREACH':
+        return STRATEGY_TYPE_BREAKOUT
     return (
         STRATEGY_TYPE_BREAKOUT
         if entry_phase in BREAKOUT_ENTRY_PHASES
@@ -775,6 +819,11 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
     try:
         if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
+        if entry_phase == 'REALTIME_RAIL_BREACH':
+            if side != 'SHORT':
+                return 'BLOCKED_INVALID_REALTIME_RAIL_BREACH_SIDE'
+            return (None if is_live_short_lower_rail_breakout(frame, quote)
+                    else 'BLOCKED_REALTIME_SHORT_RAIL_REVALIDATION')
         resolved_strategy_type = strategy_type or entry_strategy_type(entry_phase)
         kc_problem = strict_kc_entry_problem(
             frame, quote, side, strategy_type=resolved_strategy_type,
@@ -1006,9 +1055,12 @@ class EntryGatePipeline:
                 return False
             bearish_impulse = quote < opening
             death_cross_below_ma5 = (
-                previous_ma5 >= previous_ma15 and ma5 < ma15 and quote < ma5
+                previous_ma5 >= previous_ma15
+                and ma5 < ma15
+                and ma5 < previous_ma5
+                and quote < ma5
             )
-            lower_rail_break = quote < lower
+            lower_rail_break = is_live_short_lower_rail_breakout(frame, quote)
             return bearish_impulse and (death_cross_below_ma5 or lower_rail_break)
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
