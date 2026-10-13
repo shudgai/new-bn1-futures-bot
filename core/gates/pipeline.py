@@ -45,6 +45,81 @@ MOMENTUM_BURST_CODES = frozenset((
     MOMENTUM_BURST_LONG_CODE,
     MOMENTUM_BURST_SHORT_CODE,
 ))
+CONSECUTIVE_MOMENTUM_BODY_ATR = 0.35
+
+
+def has_consecutive_momentum_breakout(
+    frame: pd.DataFrame,
+    quote: Optional[float] = None,
+    side: Optional[str] = None,
+) -> bool:
+    """Detect multi-bar consecutive same-color momentum breakout beyond KC outer bands."""
+    try:
+        if frame is None or frame.empty:
+            return False
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return False
+        atr = float(closed.iloc[-1].get('atr') or closed.iloc[-2].get('atr') or 0.0)
+        if not math.isfinite(atr) or atr <= 0:
+            return False
+        min_body = CONSECUTIVE_MOMENTUM_BODY_ATR * atr
+
+        # Check LONG
+        if side in (None, 'LONG'):
+            # Case 1: Prior closed bar breached KC upper and live bar continues with bullish momentum
+            prev = closed.iloc[-1]
+            prev_o, prev_c = float(prev['open']), float(prev['close'])
+            prev_u = float(prev['kc_upper'])
+            if prev_c > prev_u and (prev_c - prev_o >= min_body or math.isclose(prev_c - prev_o, min_body, rel_tol=1e-12)):
+                live = frame.iloc[-1]
+                if not bool(live.get('is_closed', True)):
+                    curr_p = float(quote if quote is not None else live['close'])
+                    curr_o = float(live['open'])
+                    curr_u = float(live['kc_upper'])
+                    if (curr_p > curr_u or curr_p > prev_u) and (curr_p - curr_o >= min_body or math.isclose(curr_p - curr_o, min_body, rel_tol=1e-12)):
+                        return True
+            # Case 2: Last two completed bars both closed above KC upper with strong bullish bodies
+            p1 = closed.iloc[-2]
+            p2 = closed.iloc[-1]
+            p1_o, p1_c, p1_u = float(p1['open']), float(p1['close']), float(p1['kc_upper'])
+            p2_o, p2_c, p2_u = float(p2['open']), float(p2['close']), float(p2['kc_upper'])
+            p1_ok = (p1_c > p1_u) and (p1_c - p1_o >= min_body or math.isclose(p1_c - p1_o, min_body, rel_tol=1e-12))
+            p2_ok = (p2_c > p2_u) and (p2_c - p2_o >= min_body or math.isclose(p2_c - p2_o, min_body, rel_tol=1e-12))
+            if p1_ok and p2_ok:
+                curr_p = float(quote if quote is not None else p2_c)
+                if curr_p >= p2_o:
+                    return True
+
+        # Check SHORT
+        if side in (None, 'SHORT'):
+            # Case 1: Prior closed bar breached KC lower and live bar continues with bearish momentum
+            prev = closed.iloc[-1]
+            prev_o, prev_c = float(prev['open']), float(prev['close'])
+            prev_l = float(prev['kc_lower'])
+            if prev_c < prev_l and (prev_o - prev_c >= min_body or math.isclose(prev_o - prev_c, min_body, rel_tol=1e-12)):
+                live = frame.iloc[-1]
+                if not bool(live.get('is_closed', True)):
+                    curr_p = float(quote if quote is not None else live['close'])
+                    curr_o = float(live['open'])
+                    curr_l = float(live['kc_lower'])
+                    if (curr_p < curr_l or curr_p < prev_l) and (curr_o - curr_p >= min_body or math.isclose(curr_o - curr_p, min_body, rel_tol=1e-12)):
+                        return True
+            # Case 2: Last two completed bars both closed below KC lower with strong bearish bodies
+            p1 = closed.iloc[-2]
+            p2 = closed.iloc[-1]
+            p1_o, p1_c, p1_l = float(p1['open']), float(p1['close']), float(p1['kc_lower'])
+            p2_o, p2_c, p2_l = float(p2['open']), float(p2['close']), float(p2['kc_lower'])
+            p1_ok = (p1_c < p1_l) and (p1_o - p1_c >= min_body or math.isclose(p1_o - p1_c, min_body, rel_tol=1e-12))
+            p2_ok = (p2_c < p2_l) and (p2_o - p2_c >= min_body or math.isclose(p2_o - p2_c, min_body, rel_tol=1e-12))
+            if p1_ok and p2_ok:
+                curr_p = float(quote if quote is not None else p2_c)
+                if curr_p <= p2_o:
+                    return True
+
+        return False
+    except Exception:
+        return False
 STRATEGY_TYPE_BREAKOUT = 'BREAKOUT'
 STRATEGY_TYPE_TREND_CONTINUATION = 'TREND_CONTINUATION'
 BREAKOUT_ENTRY_PHASES = frozenset((
@@ -954,9 +1029,14 @@ class EntryGatePipeline:
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
 
+    has_consecutive_momentum_breakout = staticmethod(has_consecutive_momentum_breakout)
+
     def market_regime_problem(self, symbol: Optional[str], frame=None,
                               quote: Optional[float] = None) -> Optional[str]:
         meme_impulse = self.has_meme_impulse_breakout(symbol, frame, quote)
+        consecutive_momentum = self.has_consecutive_momentum_breakout(frame, quote)
+        if consecutive_momentum:
+            return None
         if not callable(self.market_regime_provider):
             return None if meme_impulse else 'BLOCKED_BY_AI_CHOP_REGIME'
         try:
@@ -970,7 +1050,7 @@ class EntryGatePipeline:
             return 'BLOCKED_BY_AI_CHOP_REGIME'
         if regime == 'TRENDING':
             return None
-        if meme_impulse:
+        if meme_impulse or consecutive_momentum:
             return None
         if (regime == 'CHOPPY' and frame is not None and quote is not None
                 and (self.has_strong_bullish_breakout(frame, quote)

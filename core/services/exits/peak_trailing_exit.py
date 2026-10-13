@@ -67,6 +67,9 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'NET_ROE_THREE_TIER_GIVEBACK',
+    'HYBRID_DYNAMIC_ATR_TRAILING',
+    'HYBRID_DYNAMIC_RATCHET_GIVEBACK',
+    'KC_MIDLINE_CLOSE_BREACH',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
@@ -87,12 +90,14 @@ TRAILING_DISTANCE_ATR = None
 
 
 def channel_swing_exit_allowed(reason=None, trigger=None):
-    """Allow only a confirmed three-point pivot or the net-ROE profit lock."""
+    """Allow only a confirmed three-point pivot, net-ROE profit lock or hybrid dynamic exit."""
     for value in (reason, trigger):
         if not isinstance(value, str):
             continue
         if (value == 'THREE_POINT_PIVOT'
-                or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')):
+                or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')
+                or value.startswith('HYBRID_DYNAMIC')
+                or value == 'KC_MIDLINE_CLOSE_BREACH'):
             return True
     return False
 

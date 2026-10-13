@@ -9,8 +9,8 @@ from core.gates.pipeline import (
     FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES,
     MOMENTUM_BURST_CODES, MOMENTUM_BURST_LONG_CODE,
     MOMENTUM_BURST_SHORT_CODE, entry_market_structure_problem,
-    entry_strategy_type, fast_cross_evidence, is_meme_breakout_symbol,
-    long_large_bearish_candle_problem,
+    entry_strategy_type, fast_cross_evidence, has_consecutive_momentum_breakout,
+    is_meme_breakout_symbol, long_large_bearish_candle_problem,
     ma5_ma15_cross_chop_problem, pipeline, strict_kc_entry_problem,
 )
 from core.symbol_aliases import (  # noqa: F401
@@ -2745,10 +2745,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         (live_ma5, live_ma15, upper, lower, width, max_width))
                     or width <= 0 or width <= 0.25 * max_width):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-            min_spacing = (0.10 if meme_impulse else 0.25) * width
-            if (abs(live_ma5 - live_ma15) < min_spacing
-                    or abs(live_ma5 - edge) < min_spacing):
-                return reject('BLOCKED_STRICT_MA_SPACING')
+            consecutive_momentum = has_consecutive_momentum_breakout(frame, quote, side)
+            if not consecutive_momentum:
+                min_spacing = (0.10 if meme_impulse else 0.25) * width
+                if (abs(live_ma5 - live_ma15) < min_spacing
+                        or abs(live_ma5 - edge) < min_spacing):
+                    return reject('BLOCKED_STRICT_MA_SPACING')
             if account is not None and symbol in getattr(account, 'positions', {}):
                 return reject('BLOCKED_BY_POSITION_GATE')
             if any(
@@ -2776,7 +2778,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             if live_breakout is not None:
                 side = live_breakout['side']
                 meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
-                if not meme_impulse and not entry_trend_alignment_ready(frame, side):
+                consecutive_momentum = has_consecutive_momentum_breakout(frame, quote, side)
+                if not meme_impulse and not consecutive_momentum and not entry_trend_alignment_ready(frame, side):
                     return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
                 direction_problem = entry_direction_problem(closed, quote, side)
                 if direction_problem:
@@ -2799,12 +2802,13 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                                 (live_ma5, live_ma15, upper, lower, width, max_width))
                             or width <= 0 or width <= 0.25 * max_width):
                         fast_lane_problem = 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'
-                    min_spacing = (0.10 if meme_impulse else 0.25) * width
-                    if (fast_lane_problem is None
-                            and (abs(live_ma5 - live_ma15) < min_spacing
-                                 or abs(live_ma5 - (upper if side == 'LONG' else lower))
-                                 < min_spacing)):
-                        fast_lane_problem = 'BLOCKED_STRICT_MA_SPACING'
+                    if not consecutive_momentum:
+                        min_spacing = (0.10 if meme_impulse else 0.25) * width
+                        if (fast_lane_problem is None
+                                and (abs(live_ma5 - live_ma15) < min_spacing
+                                     or abs(live_ma5 - (upper if side == 'LONG' else lower))
+                                     < min_spacing)):
+                            fast_lane_problem = 'BLOCKED_STRICT_MA_SPACING'
                     # A live first-bar breakout is specifically the early
                     # entry path; requiring the slower spacing confirmation
                     # here would defer it to the later closed-bar route.
@@ -2872,6 +2876,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if pending.get('action') == 'ENTER':
             side = pending['side']
             meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
+            consecutive_momentum = has_consecutive_momentum_breakout(frame, quote, side)
             direction_problem = entry_direction_problem(closed, quote, side)
             if direction_problem:
                 return reject(direction_problem)
@@ -2879,7 +2884,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return reject('BLOCKED_BY_LIVE_MA3_DIRECTION')
             if evaluate_live_ma5_direction(frame, quote, side) is None:
                 return reject('BLOCKED_STRICT_MA5_DIRECTION')
-            if not meme_impulse and not entry_trend_alignment_ready(frame, side):
+            if not meme_impulse and not consecutive_momentum and not entry_trend_alignment_ready(frame, side):
                 return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
             if len(closed) < 20:
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
@@ -2897,10 +2902,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
                 if width <= 0.25 * max_width:
                     return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-                min_spacing = (0.10 if meme_impulse else 0.25) * width
-                if (abs(ma5 - ma15) < min_spacing
-                        or abs(ma5 - edge) < min_spacing):
-                    return reject('BLOCKED_STRICT_MA_SPACING')
+                if not consecutive_momentum:
+                    min_spacing = (0.10 if meme_impulse else 0.25) * width
+                    if (abs(ma5 - ma15) < min_spacing
+                            or abs(ma5 - edge) < min_spacing):
+                        return reject('BLOCKED_STRICT_MA_SPACING')
             except (KeyError, TypeError, ValueError, IndexError, OverflowError):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
             if is_chop_filter_symbol(symbol) and not confirmed_pending_breakout:
