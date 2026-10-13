@@ -2675,10 +2675,18 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         confirmation_bar_id = decision.get('confirmation_bar_id')
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
-        # 【均線相對位置的絕對限制】第一道開倉閘門底線
         passed, reason = validate_ma_alignment(frame, decision.get('side'), quote)
         if not passed:
             return reject(reason)
+
+        # ──【順勢交易鐵律】趨勢是空頭不要開多，趨勢是多頭不要開空──
+        from core.gates.meme_coin_gate import MemeCoinGate
+        market_trend = MemeCoinGate.get_market_trend(frame, quote)
+        side = decision.get('side')
+        if side == 'LONG' and market_trend == 'BEARISH':
+            return reject('BLOCKED_LONG_ON_BEARISH_TREND')
+        if side == 'SHORT' and market_trend == 'BULLISH':
+            return reject('BLOCKED_SHORT_ON_BULLISH_TREND')
         if decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES:
             top_problem = long_top_chase_problem(frame, quote)
             if top_problem:

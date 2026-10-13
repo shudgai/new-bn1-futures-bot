@@ -331,4 +331,47 @@ class TestMemeCoinGate:
         assert verified['side'] == side
         assert verified['type'] == code
 
+    def test_trend_veto_blocks_long_entry_when_trend_is_bearish(self):
+        """如果趨勢是空頭，嚴禁開多（一票否決）。"""
+        # 構造空頭趨勢：KC 中軌向下，MA15 向下，MA5 < MA15
+        df = make_frame([
+            {'open': 10.0, 'close': 9.5, 'high': 10.1, 'low': 9.4,
+             'ma5': 9.6, 'ma15': 10.2, 'kc_middle': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5,
+             'atr': 1.0, 'is_closed': True},
+            {'open': 9.5, 'close': 9.2, 'high': 9.6, 'low': 9.1,
+             'ma5': 9.4, 'ma15': 10.0, 'kc_middle': 9.8, 'kc_upper': 10.4, 'kc_lower': 9.2,
+             'atr': 1.0, 'is_closed': True},
+            # 盤中短暫假反彈，但整體趨勢依然是空頭
+            {'open': 9.2, 'close': 9.6, 'high': 10.5, 'low': 9.2,
+             'ma5': 9.5, 'ma15': 9.9, 'kc_middle': 9.7, 'kc_upper': 10.4, 'kc_lower': 9.0,
+             'atr': 1.0, 'is_closed': False},
+        ])
+        passed, reason, _ = MemeCoinGate.evaluate_meme_entry(
+            df, quote=10.5, side='LONG', symbol='龍蝦/USDT'
+        )
+        assert passed is False
+        assert reason in ('BLOCKED_LONG_ON_BEARISH_TREND', 'BLOCKED_BY_MA15_DOWNWARD_SLOPE', 'BLOCKED_BY_KC_NOT_UPWARD')
+
+    def test_trend_veto_blocks_short_entry_when_trend_is_bullish(self):
+        """如果趨勢是多頭，嚴禁開空（一票否決）。"""
+        # 構造多頭趨勢：KC 中軌向上，MA15 向上，MA5 > MA15
+        df = make_frame([
+            {'open': 10.0, 'close': 10.5, 'high': 10.6, 'low': 9.9,
+             'ma5': 10.4, 'ma15': 9.8, 'kc_middle': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5,
+             'atr': 1.0, 'is_closed': True},
+            {'open': 10.5, 'close': 10.8, 'high': 10.9, 'low': 10.4,
+             'ma5': 10.6, 'ma15': 10.0, 'kc_middle': 10.2, 'kc_upper': 10.8, 'kc_lower': 9.6,
+             'atr': 1.0, 'is_closed': True},
+            # 盤中短暫插針下探，但整體趨勢依然是多頭
+            {'open': 10.8, 'close': 10.4, 'high': 10.9, 'low': 9.4,
+             'ma5': 10.5, 'ma15': 10.1, 'kc_middle': 10.3, 'kc_upper': 10.9, 'kc_lower': 9.7,
+             'atr': 1.0, 'is_closed': False},
+        ])
+        passed, reason, _ = MemeCoinGate.evaluate_meme_entry(
+            df, quote=9.5, side='SHORT', symbol='龍蝦/USDT'
+        )
+        assert passed is False
+        assert reason in ('BLOCKED_SHORT_ON_BULLISH_TREND', 'BLOCKED_BY_MA15_UPWARD_SLOPE', 'BLOCKED_BY_KC_NOT_DOWNWARD')
+
+
 

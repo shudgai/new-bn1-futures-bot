@@ -78,6 +78,73 @@ class MemeCoinGate:
         return 0.0
 
     @classmethod
+    def get_market_trend(
+        cls, frame: pd.DataFrame, quote: Optional[float] = None,
+    ) -> str:
+        """判定市場主趨勢方向：
+        
+        Returns:
+            'BULLISH': 明確多頭趨勢（大趨勢向上、KC向上、MA15向上或多頭排列）
+            'BEARISH': 明確空頭趨勢（大趨勢向下、KC向下、MA15向下或空頭排列）
+            'NEUTRAL': 無單邊明確趨勢（震盪/未定）
+        """
+        if frame is None or len(frame) < 2:
+            return 'NEUTRAL'
+        try:
+            curr = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            p = float(quote) if quote is not None else float(curr.get('close', 0.0))
+            is_closed = bool(curr.get('is_closed', True))
+            raw_close = float(curr.get('close', p))
+            adj = (p - raw_close) if not is_closed else 0.0
+
+            curr_mid = cls.calculate_kc_middle(curr)
+            prev_mid = cls.calculate_kc_middle(prev)
+            kc_slope = curr_mid - prev_mid if (curr_mid > 0 and prev_mid > 0) else 0.0
+
+            live_ma5, _ = cls.calculate_live_ma5(frame, p)
+            curr_ma15 = float(curr.get('ma15', p)) + adj / 15.0 if 'ma15' in curr else p
+            prev_ma15 = float(prev.get('ma15', curr_ma15)) if 'ma15' in prev else curr_ma15
+            ma15_slope = curr_ma15 - prev_ma15 if (curr_ma15 > 0 and prev_ma15 > 0) else 0.0
+
+            is_bearish = False
+            is_bullish = False
+
+            if ma15_slope < 0 and live_ma5 <= curr_ma15:
+                is_bearish = True
+            elif kc_slope < 0 and ma15_slope < 0:
+                is_bearish = True
+            elif kc_slope < 0 and p < curr_mid and live_ma5 <= curr_ma15:
+                is_bearish = True
+
+            if ma15_slope > 0 and live_ma5 >= curr_ma15:
+                is_bullish = True
+            elif kc_slope > 0 and ma15_slope > 0:
+                is_bullish = True
+            elif kc_slope > 0 and p > curr_mid and live_ma5 >= curr_ma15:
+                is_bullish = True
+
+            if len(frame) >= 3:
+                try:
+                    from core.services.strategies.outer_strategy import ck_direction
+                    closed_df = frame.iloc[:-1] if not is_closed and len(frame) >= 3 else frame
+                    ck_dir = ck_direction(closed_df, has_forming_bar=False)
+                    if ck_dir in ('SHORT', 'DOWN'):
+                        is_bearish = True
+                    elif ck_dir in ('LONG', 'UP'):
+                        is_bullish = True
+                except Exception:
+                    pass
+
+            if is_bearish and not is_bullish:
+                return 'BEARISH'
+            if is_bullish and not is_bearish:
+                return 'BULLISH'
+            return 'NEUTRAL'
+        except Exception:
+            return 'NEUTRAL'
+
+    @classmethod
     def evaluate_meme_entry(
         cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
@@ -115,12 +182,25 @@ class MemeCoinGate:
             if is_cap_symbol(symbol) and not cap_open_in_channel:
                 return False, 'BLOCKED_CAP_BREAKOUT_OPEN_OUTSIDE_CHANNEL', None
 
+            # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
+            market_trend = cls.get_market_trend(frame, quote)
+            if side == 'LONG' and market_trend == 'BEARISH':
+                return False, 'BLOCKED_LONG_ON_BEARISH_TREND', None
+            if side == 'SHORT' and market_trend == 'BULLISH':
+                return False, 'BLOCKED_SHORT_ON_BULLISH_TREND', None
+
             # ── 1. 極短線動能防護（MA5 嚴格禁令）與 KC 通道趨勢防護 ──
             if side == 'LONG':
                 if live_ma5 <= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
                 if quote <= live_ma5:
                     return False, 'BLOCKED_BY_PRICE_BELOW_MA5', None
+
+                # MA15 斜率防護：MA15 往下不可開多
+                curr_ma15 = float(curr.get('ma15', quote))
+                prev_ma15 = float(prev.get('ma15', curr_ma15))
+                if curr_ma15 > 0 and prev_ma15 > 0 and curr_ma15 < prev_ma15:
+                    return False, 'BLOCKED_BY_MA15_DOWNWARD_SLOPE', None
 
                 # KC 沒往上不可開多（KC 中軌必須向上，上軌不可逆向）
                 if curr_kc_middle > 0 and prev_kc_middle > 0:
@@ -169,6 +249,12 @@ class MemeCoinGate:
                     return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
                 if quote >= live_ma5:
                     return False, 'BLOCKED_BY_PRICE_ABOVE_MA5', None
+
+                # MA15 斜率防護：MA15 往上不可開空
+                curr_ma15 = float(curr.get('ma15', quote))
+                prev_ma15 = float(prev.get('ma15', curr_ma15))
+                if curr_ma15 > 0 and prev_ma15 > 0 and curr_ma15 > prev_ma15:
+                    return False, 'BLOCKED_BY_MA15_UPWARD_SLOPE', None
 
                 # KC 沒往下不可開空（KC 中軌必須向下，下軌不可逆向向上翹）
                 # 鐵律：即便只有 MA5 往下，KC 沒往下（走平或向上）一律嚴格禁止開空！
@@ -327,6 +413,13 @@ class MemeCoinGate:
             if not (math.isfinite(live_ma5) and math.isfinite(prev_ma5) and math.isfinite(kc_middle) and kc_middle > 0):
                 return False, 'INVALID_MA_KC_DATA', None
 
+            # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
+            market_trend = cls.get_market_trend(frame, quote)
+            if side == 'LONG' and market_trend == 'BEARISH':
+                return False, 'BLOCKED_LONG_ON_BEARISH_TREND', None
+            if side == 'SHORT' and market_trend == 'BULLISH':
+                return False, 'BLOCKED_SHORT_ON_BULLISH_TREND', None
+
             # 檢驗是否在軌道內（尚未突破外軌，方為提前埋伏）
             if side == 'LONG':
                 # 尚未突破 KC 上軌
@@ -335,6 +428,11 @@ class MemeCoinGate:
                 # MA5 必須絕對向上
                 if live_ma5 <= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
+                # MA15 往下不可開多
+                curr_ma15 = float(curr.get('ma15', quote))
+                prev_ma15 = float(prev.get('ma15', curr_ma15))
+                if curr_ma15 > 0 and prev_ma15 > 0 and curr_ma15 < prev_ma15:
+                    return False, 'BLOCKED_BY_MA15_DOWNWARD_SLOPE', None
                 # KC 必須向上
                 if prev_kc_middle > 0 and kc_middle <= prev_kc_middle:
                     return False, 'BLOCKED_BY_KC_NOT_UPWARD', None
@@ -361,6 +459,11 @@ class MemeCoinGate:
                     return False, 'ALREADY_BROKE_KC_OUTER_RAIL', None
                 if live_ma5 >= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
+                # MA15 往上不可開空
+                curr_ma15 = float(curr.get('ma15', quote))
+                prev_ma15 = float(prev.get('ma15', curr_ma15))
+                if curr_ma15 > 0 and prev_ma15 > 0 and curr_ma15 > prev_ma15:
+                    return False, 'BLOCKED_BY_MA15_UPWARD_SLOPE', None
                 # KC 必須向下（KC 沒往下不可開空）
                 if prev_kc_middle > 0 and kc_middle >= prev_kc_middle:
                     return False, 'BLOCKED_BY_KC_NOT_DOWNWARD', None
@@ -406,6 +509,13 @@ class MemeCoinGate:
             prev_kc_middle = cls.calculate_kc_middle(prev)
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
+
+            # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
+            market_trend = cls.get_market_trend(frame, quote)
+            if side == 'LONG' and market_trend == 'BEARISH':
+                return False, 'BLOCKED_LONG_ON_BEARISH_TREND', None
+            if side == 'SHORT' and market_trend == 'BULLISH':
+                return False, 'BLOCKED_SHORT_ON_BULLISH_TREND', None
 
             if side == 'LONG':
                 # 實體衝出 KC 上軌且 MA5 與 KC 中軌雙雙昂揚向上
