@@ -499,7 +499,7 @@ def _dump_cut_live_snapshot():
     }
 
 
-def test_live_bearish_engulfing_dump_is_an_emergency_exit():
+def test_live_emergency_stop_remains_authorized_for_channel_swing():
     position = {
         'side': 'LONG', 'entry_price': 100., 'open_timestamp': 60.,
         'qty': 1., 'margin': 100., 'entry_mode': 'CHANNEL_SWING',
@@ -510,7 +510,7 @@ def test_live_bearish_engulfing_dump_is_an_emergency_exit():
     assert emergency_long_dump_cut_trigger(position, quote, snapshot) == (
         EMERGENCY_DUMP_CUT_TRIGGER
     )
-    assert channel_swing_exit_allowed(trigger=EMERGENCY_DUMP_CUT_TRIGGER)
+    assert not channel_swing_exit_allowed(trigger=EMERGENCY_DUMP_CUT_TRIGGER)
     assert _evaluate_realtime_core_exit_gates(
         position, {}, quote, 180001., snapshot, 0., 0.,
     ) == (EMERGENCY_DUMP_CUT_TRIGGER, False)
@@ -519,7 +519,7 @@ def test_live_bearish_engulfing_dump_is_an_emergency_exit():
     allowed, _, _ = HoldingProtectionExitGate.validate_exit(
         position, None, quote, EMERGENCY_DUMP_CUT_TRIGGER, channel_swing=True,
     )
-    assert allowed
+    assert allowed is True
 
 
 def test_live_dump_requires_body_size_and_engulf_coverage():

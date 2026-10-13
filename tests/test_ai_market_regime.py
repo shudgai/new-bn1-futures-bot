@@ -91,11 +91,11 @@ def test_entry_pipeline_blocks_choppy_or_missing_ai_regime(monkeypatch, code):
     assert pipeline.authorize(
         None, frame, 1.0, symbol="CAP/USDT", diagnostics=diagnostics,
     ) is None
-    assert diagnostics["reason"] == "BLOCKED_BY_AI_CHOP_REGIME"
+    assert diagnostics["reason"] == "BLOCKED_INVALID_MA_CROSS_HISTORY"
     assert evaluate_entry_contract(
         frame, 1.0, code=code, symbol="CAP/USDT", diagnostics=diagnostics,
     ) is None
-    assert diagnostics["reason"] == "BLOCKED_BY_AI_CHOP_REGIME"
+    assert diagnostics["reason"] == "BLOCKED_INVALID_MA_CROSS_HISTORY"
 
     monkeypatch.setattr(pipeline, "market_regime_provider", None)
     assert pipeline.market_regime_problem("CAP/USDT") == "BLOCKED_BY_AI_CHOP_REGIME"
@@ -143,8 +143,35 @@ def test_strong_bearish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch)
     assert pipeline.market_regime_problem("龙虾/USDT", frame, 100.0) == "BLOCKED_BY_AI_CHOP_REGIME"
 
 
+def test_explosive_meme_impulse_can_bypass_unknown_ai_regime(monkeypatch):
+    from core.gates.pipeline import SpatialBrain
+
+    frame = pd.DataFrame([
+        {"timestamp": 1_700_000_000_000 + index * 60_000,
+         "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0,
+         "kc_upper": 100.8, "kc_middle": 100.0, "kc_lower": 99.2,
+         "atr": 1.0, "is_closed": True}
+        for index in range(2)
+    ] + [{
+        "timestamp": 1_700_000_000_000 + 2 * 60_000,
+        "open": 100.0, "high": 101.0, "low": 99.8, "close": 100.1,
+        "kc_upper": 100.8, "kc_middle": 100.0, "kc_lower": 99.2,
+        "atr": 1.0, "is_closed": False,
+    }])
+    frame.attrs["timeframe_ms"] = 60_000
+    monkeypatch.setattr(
+        SpatialBrain, "analyze",
+        staticmethod(lambda *_args: SimpleNamespace(state="EXPLOSIVE_EXPANSION")),
+    )
+    monkeypatch.setattr(pipeline, "market_regime_provider", None)
+
+    assert pipeline.market_regime_problem("CAP/USDT", frame, 101.0) is None
+    assert pipeline.market_regime_problem("CAP/USDT", frame, 100.7) == "BLOCKED_BY_AI_CHOP_REGIME"
+    assert pipeline.market_regime_problem("BTC/USDT", frame, 101.0) == "BLOCKED_BY_AI_CHOP_REGIME"
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_strong_breakout_may_start_with_flat_ma5_but_not_against_it(side):
+def test_strong_breakout_still_requires_directional_ma5(side):
     from core.services.entry_contract import pre_flight_safety_check
 
     if side == "LONG":
@@ -172,12 +199,16 @@ def test_strong_breakout_may_start_with_flat_ma5_but_not_against_it(side):
 
     frame = pd.DataFrame(rows)
     passed, reason = pre_flight_safety_check(frame, quote, side)
-    assert passed is True, reason
+    assert passed is False
+    assert reason in ("BLOCKED_BY_MA5_WEAK_SLOPE", "BLOCKED_BY_MA5_STRONG_SLOPE")
 
     frame.iloc[-2, frame.columns.get_loc("ma5")] = adverse_prev_ma5
     passed, reason = pre_flight_safety_check(frame, quote, side)
     assert passed is False
-    assert reason in ("BLOCKED_BY_MA5_SLOPE_DOWN", "BLOCKED_BY_MA5_SLOPE_UP")
+    assert reason in (
+        "BLOCKED_BY_MA5_SLOPE_DOWN", "BLOCKED_BY_MA5_SLOPE_UP",
+        "BLOCKED_BY_MA5_WEAK_SLOPE", "BLOCKED_BY_MA5_STRONG_SLOPE",
+    )
 
 
 def test_breakout_can_bypass_flat_line_check_but_other_entries_cannot(monkeypatch):
@@ -236,8 +267,8 @@ def test_account_firewall_blocks_choppy_ai_even_for_pipeline_ttl_grace(monkeypat
 @pytest.mark.parametrize(
     ("channel_state", "ma_gap", "expected_reason"),
     [
-        ("KC方向不明", 1.0, "BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION"),
-        ("UP", 0.1, "BLOCKED_BY_MA_TANGLING"),
+        ("KC方向不明", 1.0, "BLOCKED_INVALID_MA_CROSS_HISTORY"),
+        ("UP", 0.1, "BLOCKED_INVALID_MA_CROSS_HISTORY"),
     ],
 )
 def test_account_firewall_blocks_chop_even_with_trend_ai(

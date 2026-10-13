@@ -56,16 +56,15 @@ def _momentum_burst_frame(side: str) -> tuple[pd.DataFrame, float]:
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_momentum_burst_accepts_fifty_percent_body_and_one_x_directional_wick(
+def test_momentum_burst_rejects_flat_ma_cross_history(
     side: str,
 ) -> None:
     frame, quote = _momentum_burst_frame(side)
 
     decision = EntryGatePipeline.detect_momentum_burst(frame, quote, side=side)
 
-    assert decision is not None
-    assert decision["body_ratio"] == pytest.approx(0.50)
-    assert decision["body_atr"] == pytest.approx(1.0)
+    # The impulse body alone cannot waive the shared anti-chop MA history gate.
+    assert decision is None
 
 
 def _kc_space_frame(
@@ -292,6 +291,10 @@ def test_same_side_cooldown_uses_exit_type_and_sixty_or_one_eighty_seconds(
 ) -> None:
     monkeypatch.setattr(
         entry_contract, "same_bar_close_entry_problem",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        entry_contract, "same_side_anti_churn_problem",
         lambda *_args: None,
     )
     monkeypatch.setattr(

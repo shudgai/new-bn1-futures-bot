@@ -1270,14 +1270,6 @@ class HoldingProtectionExitGate:
 
         if (channel_swing
                 or str(position.get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
-            peak_evidence, _ = channel_peak_profit_exit_evidence(
-                position, frame, quote,
-            )
-            if peak_evidence is not None:
-                return peak_evidence['reason'], peak_evidence
-            midline_evidence = channel_swing_midline_exit_evidence(frame, side)
-            if midline_evidence is not None:
-                return CHANNEL_MIDLINE_EXIT[side], midline_evidence
             return None, {}
 
         highest_price = float(position.get('highest_price') or position.get('peak_price') or entry_price)
@@ -1529,6 +1521,15 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        if ((channel_swing
+             or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING')
+                and _is_profit_lock_reason(clean_reason)):
+            lock = _ratchet_lock_details(position, quote)
+            if lock is not None:
+                details.update(lock)
+                return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+            return _reject(wait_for_close=not candle_closed)
+
         chop_problem, chop_details = holding_chop_exit_problem(
             position, frame, clean_reason, details,
         )
@@ -1538,29 +1539,6 @@ class HoldingProtectionExitGate:
 
         if (channel_swing
                 or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
-            if (side == 'LONG'
-                    and clean_reason not in (
-                        CHANNEL_PEAK_PROFIT_EXIT, CHANNEL_PEAK_WICK_EXIT,
-                    )
-                    and _last_closed_close_at_or_above_kc_middle(frame) is True):
-                return _reject(reason=cls.REJECT_HEALTHY_PULLBACK)
-            if clean_reason in (CHANNEL_PEAK_PROFIT_EXIT, CHANNEL_PEAK_WICK_EXIT):
-                evidence, _ = channel_peak_profit_exit_evidence(
-                    position, frame, quote,
-                )
-                if evidence is None or evidence['reason'] != clean_reason:
-                    return _reject(
-                        wait_for_close=clean_reason == CHANNEL_PEAK_WICK_EXIT
-                        and not candle_closed,
-                    )
-                details.update(evidence)
-                return _auth(clean_reason)
-            if clean_reason == CHANNEL_MIDLINE_EXIT.get(side):
-                evidence = channel_swing_midline_exit_evidence(frame, side)
-                if evidence is None:
-                    return _reject(wait_for_close=not candle_closed)
-                details.update(evidence)
-                return _auth(clean_reason)
             return _reject(wait_for_close=not candle_closed)
 
         if clean_reason == INTRABAR_SPIKE_REBOUND_EXIT:

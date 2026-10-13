@@ -82,6 +82,25 @@ def test_chop_guard_recalculates_live_gap_from_latest_quote():
     assert ma5_ma15_cross_chop_problem(frame, 100.2) is None
 
 
+def test_explosive_meme_breakout_uses_relaxed_gap_without_relaxing_other_symbols(monkeypatch):
+    from core.gates.pipeline import SpatialBrain
+
+    frame = frame_with_spreads([0.0] * 7, atr=0.1, live=True)
+    frame.loc[:, 'kc_upper'] = 100.25
+    frame.loc[:, 'kc_lower'] = 99.75
+    frame.loc[:, 'kc_middle'] = 100.0
+    monkeypatch.setattr(
+        SpatialBrain, 'analyze', staticmethod(lambda *_args: SimpleNamespace(state='EXPLOSIVE_EXPANSION')),
+    )
+
+    assert ma5_ma15_cross_chop_problem(
+        frame, 100.26, symbol='CAP/USDT', side='LONG',
+    ) is None
+    assert ma5_ma15_cross_chop_problem(
+        frame, 100.26, symbol='BTC/USDT', side='LONG',
+    ) == GAP_BLOCK
+
+
 def test_chop_guard_fails_closed_without_six_closed_one_minute_bars():
     frame = frame_with_spreads([0.5] * 5)
 

@@ -8,7 +8,9 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
-LIVE_BREAKOUT_BODY_ATR = 0.5
+# Earlier entry is permitted on a meaningful live outer-rail break. Keep a
+# minimum body so a quote tick or wick alone cannot trigger the fast lane.
+LIVE_BREAKOUT_BODY_ATR = 0.2
 LIVE_BREAKOUT_MAX_DISTANCE_ATR = 3.0
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}

@@ -85,15 +85,21 @@ async def validate_account_entry(account, symbol, side, context):
         ma5_ma15_cross_chop_problem, strict_kc_entry_problem,
     )
     if code in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE):
-        slope_problem = fast_cross_ma15_slope_problem(frame, quote, side)
+        slope_problem = fast_cross_ma15_slope_problem(
+            frame, quote, side, symbol=symbol,
+        )
         if slope_problem:
             raise ValueError('[FORBIDDEN_ENTRY] ' + slope_problem)
-        if fast_cross_evidence(frame, quote, side) is None:
+        if fast_cross_evidence(frame, quote, side, symbol=symbol) is None:
             raise ValueError(
                 '[FORBIDDEN_ENTRY] BLOCKED_FAST_CROSS_MA15_SLOPE_OR_EVIDENCE'
             )
+    cap_golden_cross = (
+        code == GOLDEN_CROSS_FAST_LONG_CODE and side == 'LONG'
+        and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+    )
     cross_chop_problem = (
-        None if code in KC_PENDING_CODES
+        None if cap_golden_cross or code in KC_PENDING_CODES
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
             'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',

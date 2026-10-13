@@ -75,7 +75,7 @@ def test_channel_peak_reversal_pullback_does_not_close(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_legacy_roe_ratchet_is_not_a_channel_swing_exit(side):
+def test_net_roe_ratchet_remains_an_authorized_profit_lock(side):
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
 
     held = position(side)
@@ -109,7 +109,7 @@ def test_legacy_roe_ratchet_is_not_a_channel_swing_exit(side):
         held, pd.DataFrame(rows), quote,
         "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
     )
-    assert allowed is False
+    assert allowed is True
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

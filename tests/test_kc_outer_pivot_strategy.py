@@ -205,7 +205,7 @@ def test_pivot_does_not_exit_before_confirmation_candle_is_closed(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_two_consecutive_closed_adverse_abnormal_bodies_exit(side):
+def test_two_consecutive_closed_adverse_abnormal_bodies_do_not_exit_channel_swing(side):
     bars = [
         dict(ms=120_000., o=100., h=101., l=99., c=100., atr=1.,
              kc_lower=90., kc_middle=100., kc_upper=110.),
@@ -227,8 +227,7 @@ def test_two_consecutive_closed_adverse_abnormal_bodies_exit(side):
         data, fee=0., slippage=0.,
     )
 
-    assert result is not None
-    assert result["trigger"] == "TWO_CLOSED_ADVERSE_ABNORMAL"
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

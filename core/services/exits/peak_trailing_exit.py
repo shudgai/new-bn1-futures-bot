@@ -61,19 +61,13 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
               'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
-    'EXIT_CHANNEL_PEAK_PROFIT_LOCK',
-    'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
-    'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
-    'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
-    'MA5_TRUE_PEAK_REVERSAL',
-    CHANNEL_MOMENTUM_STALL_TRIGGER,
-    EMERGENCY_DUMP_CUT_TRIGGER,
-    'BEARISH_INSTANT_BREAKOUT',
-    'BULLISH_INSTANT_BREAKOUT',
+    'THREE_POINT_PIVOT',
+    'NET_ROE_THREE_TIER_GIVEBACK',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset({
     'SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT',
+    'CAP/USDT', 'CAP/USDT:USDT',
 })
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
     'EXIT_PEAK_PULLBACK_PRESSURE',
@@ -93,19 +87,12 @@ TRAILING_DISTANCE_ATR = None
 
 
 def channel_swing_exit_allowed(reason=None, trigger=None):
-    """Allow only confirmed KC-midline and mature peak-reversal exits."""
-    allowed_pivots = {
-        'EXIT_CHANNEL_PEAK_PROFIT_LOCK',
-        'EXIT_CHANNEL_PEAK_WICK_REVERSAL',
-        'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
-        'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
-    }
+    """Allow only a confirmed three-point pivot or the net-ROE profit lock."""
     for value in (reason, trigger):
         if not isinstance(value, str):
             continue
-        if value in allowed_pivots:
-            return True
-        if value == EMERGENCY_DUMP_CUT_TRIGGER:
+        if (value == 'THREE_POINT_PIVOT'
+                or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')):
             return True
     return False
 

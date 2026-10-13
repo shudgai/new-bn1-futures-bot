@@ -7,7 +7,8 @@ from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (
     STATE_KEY, STATE_KEYS, RETIRED_KEYS, migrate_peak_state, position_identity, DOJI_TRIGGER,
     channel_initial_stop_disabled, CHANNEL_SWING_EXIT_TRIGGERS,
-    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, EMERGENCY_DUMP_CUT_TRIGGER,
+    PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS, PIVOT_ONLY_CHANNEL_SYMBOLS,
+    EMERGENCY_DUMP_CUT_TRIGGER,
     emergency_long_dump_cut_trigger,
     estimated_display_net_pnl,
 )
@@ -588,61 +589,28 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             f'gate_reason={valid_reason}', 'INFO',
                         )
                 if entry_m == 'CHANNEL_SWING':
-                    from core.services.exits.confirmed_structure_exit import (
-                        evaluate_confirmed_structure_exit,
-                    )
-                    structure_exit, structure_state_changed = (
-                        evaluate_confirmed_structure_exit(
-                            position, meta, snapshot, stamp, price,
-                        )
-                    )
-                    if structure_state_changed:
-                        account.save_state()
-                    if structure_exit:
-                        from core.gates.holding_protection_gate import holding_chop_exit_problem
-                        chop_problem, chop_details = holding_chop_exit_problem(
-                            position, frame, structure_exit['type'], structure_exit,
-                        )
-                        if chop_problem:
-                            account.log(
-                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} '
-                                f'reason={structure_exit["type"]} gate_reason={chop_problem} '
-                                f'details={chop_details}', 'INFO',
-                            )
-                            return False
+                    from core.services.exits.peak_trailing_exit import three_point_pivot_exit
+                    pivot = three_point_pivot_exit(position, snapshot)
+                    if pivot is not None:
                         account.log(
-                            f'REALTIME_EXIT symbol={symbol} '
-                            f'reason={structure_exit["type"]} '
-                            f'trigger_bar_ms={structure_exit["trigger_bar_ms"]} '
-                            f'closed_price={structure_exit["trigger_close"]} '
-                            f'structure_line={structure_exit["line"]} '
-                            f'execution_price={price}',
+                            f'REALTIME_EXIT symbol={symbol} reason=THREE_POINT_PIVOT '
+                            f'quote_ms={stamp} price={price} evidence={pivot}',
                             'WARNING',
                         )
                         await account.close_position(
-                            symbol, price,
-                            f'Channel Swing {structure_exit["type"]}',
+                            symbol, price, 'Channel Swing THREE_POINT_PIVOT',
                             is_manual=True,
                         )
                         return True
-                if entry_m == 'CHANNEL_SWING':
-                    if channel_swing_exit_allowed(gate_trigger):
-                        pass
-                    else:
-                        guard = (
-                            'HOLD_SAME_COLOR_MA5_PRESSURE'
-                            if _same_color_ma5_pressure(position, snapshot)
-                            else 'HOLD_WAIT_CLOSED_KC_MIDLINE_OR_NET_ROE_LOCK'
+                    if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
+                        account.log(
+                            f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '
+                            'rule=THREE_POINT_PIVOT_OR_NET_ROE_PROFIT_LOCK '
+                            f'closed_bar={snapshot.get("snapshot_bar_id")}', 'INFO',
                         )
-                        if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
-                            account.log(
-                                f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '
-                                f'rule=STRUCTURE_OR_NET_ROE_ONLY reason={guard} '
-                                f'closed_bar={snapshot.get("snapshot_bar_id")}', 'INFO',
-                            )
-                            meta['trend_exit_last_audit_bar'] = snapshot.get('snapshot_bar_id')
-                            account.save_state()
-                        return False
+                        meta['trend_exit_last_audit_bar'] = snapshot.get('snapshot_bar_id')
+                        account.save_state()
+                    return False
         except (KeyError, TypeError, ValueError, OverflowError, IndexError):
             pass
 
@@ -700,7 +668,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         trigger = decision.get('trigger', '')
         allowed_triggers = (
             PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS
-            if symbol in ('SUI/USDT', '龙虾/USDT', 'LOBSTER/USDT')
+            if symbol in PIVOT_ONLY_CHANNEL_SYMBOLS
             else (frozenset() if entry_m == 'CHANNEL_SWING' else CHANNEL_SWING_EXIT_TRIGGERS)
         )
         if (entry_m == 'CHANNEL_SWING'

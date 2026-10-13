@@ -3,6 +3,7 @@ import math
 import time
 
 import numpy as np
+from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
 from core.gates.pipeline import (
     FLAT_LINE_BREAKOUT_TYPES, PIPELINE_ENTRY_TYPES,
@@ -89,6 +90,10 @@ LEGACY_ROUTE_CODES = frozenset((
 ))
 ENTRY_CODES = KC_PENDING_CODES | PIPELINE_ENTRY_TYPES | LEGACY_ROUTE_CODES
 CHOP_FILTER_SYMBOLS = frozenset(("SUI/USDT", "龙虾/USDT", "LOBSTER/USDT", "CAP/USDT"))
+MEME_BREAKOUT_SYMBOLS = frozenset((
+    "CAP/USDT", "CAP/USDT:USDT", "龙虾/USDT", "龍蝦/USDT",
+    "LOBSTER/USDT", "LOBSTER/USDT:USDT",
+))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -392,7 +397,7 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
 def evaluate_golden_cross_fast_lane(frame, quote, symbol=""):
     """Authorize a fresh live LONG cross above KC middle with upper-rail room."""
     try:
-        evidence = fast_cross_evidence(frame, quote, 'LONG')
+        evidence = fast_cross_evidence(frame, quote, 'LONG', symbol=symbol)
         if evidence is None:
             return None
         stamp = evidence['stamp']
@@ -417,7 +422,7 @@ def evaluate_golden_cross_fast_lane(frame, quote, symbol=""):
 def evaluate_death_cross_fast_lane(frame, quote, symbol=""):
     """Authorize a fresh live SHORT cross below KC middle with lower-rail room."""
     try:
-        evidence = fast_cross_evidence(frame, quote, 'SHORT')
+        evidence = fast_cross_evidence(frame, quote, 'SHORT', symbol=symbol)
         if evidence is None:
             return None
         stamp = evidence['stamp']
@@ -1472,7 +1477,9 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         live_wick = lower_shadow_ratio(opening, quote, live_high, live_low)
         if prior_wick is None or live_wick is None:
             return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_CANDLE')
-        if prior_wick > 0.50 or live_wick > 0.50:
+        meme_coin = str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+        max_bottom_shadow = 0.70 if meme_coin else 0.50
+        if prior_wick > max_bottom_shadow or live_wick > max_bottom_shadow:
             return dict(action='WAIT', reason='BLOCKED_BY_BOTTOM_SHADOW')
 
         body_atr = (opening - quote) / atr
@@ -1484,7 +1491,11 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
         body = opening - quote
         body_ratio = body / candle_range
         
-        is_strong_breakout = (body_atr >= 0.5 and body_ratio >= 0.6)
+        min_body_atr = 0.30 if meme_coin else 0.50
+        min_body_ratio = 0.35 if meme_coin else 0.60
+        is_strong_breakout = (
+            body_atr >= min_body_atr and body_ratio >= min_body_ratio
+        )
         if not is_strong_breakout:
             return dict(action='WAIT', reason='BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION')
 
@@ -1496,6 +1507,14 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
             return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_KC_NOT_FALLING')
         if live_ma3 > live_ma5:
             return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_MA_ORDER')
+
+        rr = realtime_short_reward_risk(frame, quote, atr)
+        if rr is None:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_REWARD_RISK_UNAVAILABLE')
+        if rr['reward'] < rr['risk']:
+            return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_REWARD_BELOW_RISK',
+                        expected_net_reward=rr['reward'], expected_net_risk=rr['risk'],
+                        expected_reward_risk=rr['reward_risk'])
 
         stamp = float(live['timestamp'])
         if not math.isfinite(stamp) or stamp <= 0:
@@ -1512,9 +1531,37 @@ def evaluate_realtime_short_rail_breach(frame, quote, symbol=""):
             realtime_body_atr=body_atr, realtime_distance_atr=distance_atr,
             realtime_lower_shadow_ratio=live_wick,
             previous_lower_shadow_ratio=prior_wick,
+            expected_net_reward=rr['reward'], expected_net_risk=rr['risk'],
+            expected_reward_risk=rr['reward_risk'], structural_target=rr['target'],
+            estimated_stop=rr['stop'],
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return dict(action='WAIT', reason='BLOCKED_REALTIME_SHORT_INVALID_DATA')
+
+
+def realtime_short_reward_risk(frame, quote, atr):
+    """Estimate net reward to the nearest confirmed low versus a 1.5 ATR stop."""
+    try:
+        quote, atr = float(quote), float(atr)
+        if not math.isfinite(quote) or not math.isfinite(atr) or quote <= 0 or atr <= 0:
+            return None
+        from core.services.entry_room_service import entry_room
+        room = entry_room(frame, quote, 'SHORT', TAKER_FEE_RATE, SLIPPAGE_PCT, 0.0)
+        target = float(room.get('target')) if room.get('target') is not None else None
+        if target is None or not math.isfinite(target) or target <= 0 or target >= quote:
+            return None
+        entry_fill = quote * (1 + SLIPPAGE_PCT)
+        target_fill = target * (1 + SLIPPAGE_PCT)
+        stop = quote + 1.5 * atr
+        stop_fill = stop * (1 + SLIPPAGE_PCT)
+        reward = entry_fill - target_fill - (entry_fill + target_fill) * TAKER_FEE_RATE
+        risk = stop_fill - entry_fill + (entry_fill + stop_fill) * TAKER_FEE_RATE
+        if not all(math.isfinite(value) for value in (reward, risk)) or risk <= 0:
+            return None
+        return dict(reward=reward, risk=risk, target=target, stop=stop,
+                    reward_risk=reward / risk)
+    except (AttributeError, TypeError, ValueError, KeyError, OverflowError):
+        return None
 
 
 def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=None):
@@ -1933,6 +1980,11 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     if account is not None and symbol in getattr(account, "positions", {}):
         return False, "BLOCKED_BY_POSITION_GATE"
 
+    meme_realtime_breakout = (
+        str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+        and trigger_type == REALTIME_RAIL_BREACH_SHORT_CODE
+    )
+
     # ================= 破軌專屬防護 (FRESH & QUALITY GATE) =================
     extended_relaxed_for_trend = False
     if trigger_type == "TRIGGER_A_KC_BREAKOUT":
@@ -1990,6 +2042,7 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         or is_golden_cross_fast
         or is_death_cross_fast
         or is_momentum_burst
+        or meme_realtime_breakout
     )
     if side == "LONG":
         if not is_ma_cross and curr['kc_middle'] < prev['kc_middle'] - tolerance: return False, "BLOCKED_BY_BEARISH_KC_SLOPE"
@@ -1998,22 +2051,23 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         if not is_ma_cross and curr['kc_middle'] > prev['kc_middle'] + tolerance: return False, "BLOCKED_BY_BULLISH_KC_SLOPE"
         if curr['ma5'] > curr['ma15'] and not (is_death_cross_fast or is_momentum_burst): return False, "BLOCKED_BY_MA_DIVERGENCE"
 
-    if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < 1.2: return False, "BLOCKED_BY_VOLATILITY_GATE"
+    min_volatility_atr = 0.8 if meme_realtime_breakout else 1.2
+    if (curr['kc_upper'] - curr['kc_lower']) / curr['atr'] < min_volatility_atr: return False, "BLOCKED_BY_VOLATILITY_GATE"
 
     past_k = closed_frame.iloc[-4]
     atr_norm = curr['atr'] + 1e-6
-    if (abs(curr['ma15'] - past_k['ma15']) / atr_norm < 0.10 and abs(curr['kc_middle'] - past_k['kc_middle']) / atr_norm < 0.10):
+    if (not meme_realtime_breakout and abs(curr['ma15'] - past_k['ma15']) / atr_norm < 0.10 and abs(curr['kc_middle'] - past_k['kc_middle']) / atr_norm < 0.10):
         return False, "BLOCKED_BY_FLAT_MARKET_GATE"
 
-    if count_ma_crosses(closed_frame.iloc[-8:]) >= 4: return False, "BLOCKED_BY_WHIPSAW_CHOP_GATE"
+    if not meme_realtime_breakout and count_ma_crosses(closed_frame.iloc[-8:]) >= 4: return False, "BLOCKED_BY_WHIPSAW_CHOP_GATE"
 
     is_trend_bypassed = is_ma_cross
     if not is_trend_bypassed and not entry_trend_alignment_ready(closed_frame, side):
         return False, "BLOCKED_BY_TREND_GATE"
 
-    if is_doji_candle(curr) and not (is_golden_cross_fast or is_death_cross_fast or is_momentum_burst): return False, "BLOCKED_BY_DOJI_GATE"
+    if is_doji_candle(curr) and not (is_golden_cross_fast or is_death_cross_fast or is_momentum_burst or meme_realtime_breakout): return False, "BLOCKED_BY_DOJI_GATE"
     if side == "LONG" and curr['close'] < curr['open'] and not (is_golden_cross_fast or is_momentum_burst): return False, "BLOCKED_BY_RED_CANDLE_GATE"
-    if side == "SHORT" and curr['close'] > curr['open'] and not (is_death_cross_fast or is_momentum_burst): return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
+    if side == "SHORT" and curr['close'] > curr['open'] and not (is_death_cross_fast or is_momentum_burst or meme_realtime_breakout): return False, "BLOCKED_BY_GREEN_CANDLE_GATE"
 
     return True, "GATE_PASSED_STANDARD"
 
@@ -2043,11 +2097,6 @@ def pre_flight_safety_check(
         3. 多單平倉後的空單反手，須由當根實體直接跌破 KC 中軌且 KC 轉空確認。
     """
     try:
-        direction_problem = live_ma5_entry_direction_problem(
-            frame, quote, side,
-        )
-        if direction_problem:
-            return False, direction_problem
         import time
         is_flip = decision_type in (
             'AUTHORIZED_BY_PEAK_FLIP_SHORT',
@@ -2064,35 +2113,10 @@ def pre_flight_safety_check(
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
             last_side = str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper()
             now_ts = time.time()
-            churn_problem = same_side_anti_churn_problem(
-                account, symbol, frame, side, quote,
-            )
-            if churn_problem:
-                return False, churn_problem
-            same_bar_problem = same_bar_close_entry_problem(
-                account, symbol, frame, side,
-            )
-            if same_bar_problem:
-                return False, same_bar_problem
-            opposite_cooldown_problem = (
-                None if decision_type in (
-                    BEARISH_INSTANT_BREAKOUT_CODE,
-                    BULLISH_INSTANT_BREAKOUT_CODE,
-                ) else opposite_side_close_cooldown_problem(
-                    account, symbol, frame, side,
-                )
-            )
-            if opposite_cooldown_problem:
-                return False, opposite_cooldown_problem
-            if (side == 'SHORT' and is_flip and last_side == 'LONG'
-                    and decision_type != BEARISH_INSTANT_BREAKOUT_CODE):
-                from core.services.strategies.outer_strategy import kc_bearish_midline_turn
-                if not kc_bearish_midline_turn(frame, quote):
-                    return False, 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
-            # 1. 平倉後冷卻防抖：獲利平倉 60 秒，停損出場 180 秒
+            # Apply the timestamp cooldown before frame-dependent anti-churn
+            # checks so an active same-side cooldown has deterministic priority.
             cooldown_period = 180.0
             try:
-                # 檢查前一筆交易的平倉損益與理由
                 matching_closes = [
                     t for t in getattr(account, 'trades', [])
                     if t.get('symbol') == symbol
@@ -2123,6 +2147,39 @@ def pre_flight_safety_check(
 
             if now_ts - last_closed_ts < cooldown_period and last_side == side:
                 return False, "BLOCKED_BY_COOLDOWN_SAME_SIDE"
+            churn_problem = same_side_anti_churn_problem(
+                account, symbol, frame, side, quote,
+            )
+            if churn_problem:
+                return False, churn_problem
+            same_bar_problem = same_bar_close_entry_problem(
+                account, symbol, frame, side,
+            )
+            if same_bar_problem:
+                return False, same_bar_problem
+            opposite_cooldown_problem = (
+                None if decision_type in (
+                    BEARISH_INSTANT_BREAKOUT_CODE,
+                    BULLISH_INSTANT_BREAKOUT_CODE,
+                ) else opposite_side_close_cooldown_problem(
+                    account, symbol, frame, side,
+                )
+            )
+            if opposite_cooldown_problem:
+                return False, opposite_cooldown_problem
+            if (side == 'SHORT' and is_flip and last_side == 'LONG'
+                    and decision_type != BEARISH_INSTANT_BREAKOUT_CODE):
+                from core.services.strategies.outer_strategy import kc_bearish_midline_turn
+                if not kc_bearish_midline_turn(frame, quote):
+                    return False, 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
+        # Cooldown is a timestamp-only safety gate. Evaluate it before market
+        # data gates so an active cooldown is reported consistently even when
+        # the caller has no candle frame available yet.
+        direction_problem = live_ma5_entry_direction_problem(
+            frame, quote, side,
+        )
+        if direction_problem:
+            return False, direction_problem
         if frame is None or len(frame) < 2:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
         if side == 'LONG':
@@ -2182,6 +2239,10 @@ def pre_flight_safety_check(
         is_confirmed_rail_breakout = (
             (decision_type in ('KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT')
              and entry_phase == 'KC_2BAR_CLOSED_CONFIRM')
+            or (decision_type == 'TRIGGER_A_KC_BREAKOUT'
+                and entry_phase == 'KC_THREE_BAR_BREAKOUT')
+            or (decision_type in LIVE_BODY_BREAKOUT_CODES
+                and entry_phase == 'KC_LIVE_OUTER_BREAKOUT')
             or decision_type == REALTIME_RAIL_BREACH_SHORT_CODE
         )
         is_strong_breakout = (
@@ -2458,7 +2519,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         cross_chop_problem = (
             None if (confirmed_pending_breakout or is_instant_reverse
                      or live_body_candidate is not None
-                     or live_pattern_candidate is not None) else
+                     or live_pattern_candidate is not None
+                     or (
+                         active_fast_cross is not None
+                         and active_fast_cross.get('side') == 'LONG'
+                         and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+                     )) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(
@@ -2657,7 +2723,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # before the generic pipeline can return a slower closed-bar candidate.
         if live_pattern_candidate is not None:
             side = live_pattern_candidate['side']
-            if not entry_trend_alignment_ready(frame, side):
+            meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
+            if not meme_impulse and not entry_trend_alignment_ready(frame, side):
                 return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
             direction_problem = entry_direction_problem(frame, quote, side)
             if direction_problem:
@@ -2678,8 +2745,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         (live_ma5, live_ma15, upper, lower, width, max_width))
                     or width <= 0 or width <= 0.25 * max_width):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-            if (abs(live_ma5 - live_ma15) < 0.25 * width
-                    or abs(live_ma5 - edge) < 0.25 * width):
+            min_spacing = (0.10 if meme_impulse else 0.25) * width
+            if (abs(live_ma5 - live_ma15) < min_spacing
+                    or abs(live_ma5 - edge) < min_spacing):
                 return reject('BLOCKED_STRICT_MA_SPACING')
             if account is not None and symbol in getattr(account, 'positions', {}):
                 return reject('BLOCKED_BY_POSITION_GATE')
@@ -2707,7 +2775,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 )
             if live_breakout is not None:
                 side = live_breakout['side']
-                if not entry_trend_alignment_ready(frame, side):
+                meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
+                if not meme_impulse and not entry_trend_alignment_ready(frame, side):
                     return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
                 direction_problem = entry_direction_problem(closed, quote, side)
                 if direction_problem:
@@ -2726,14 +2795,19 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     upper, lower = float(live['kc_upper']), float(live['kc_lower'])
                     width = upper - lower
                     max_width = float((closed.tail(20)['kc_upper'] - closed.tail(20)['kc_lower']).max())
-                    edge = upper if side == 'LONG' else lower
                     if (not all(math.isfinite(value) and value > 0 for value in
                                 (live_ma5, live_ma15, upper, lower, width, max_width))
                             or width <= 0 or width <= 0.25 * max_width):
                         fast_lane_problem = 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'
-                    elif (abs(live_ma5-live_ma15) < 0.25 * width
-                          or abs(live_ma5-edge) < 0.25 * width):
+                    min_spacing = (0.10 if meme_impulse else 0.25) * width
+                    if (fast_lane_problem is None
+                            and (abs(live_ma5 - live_ma15) < min_spacing
+                                 or abs(live_ma5 - (upper if side == 'LONG' else lower))
+                                 < min_spacing)):
                         fast_lane_problem = 'BLOCKED_STRICT_MA_SPACING'
+                    # A live first-bar breakout is specifically the early
+                    # entry path; requiring the slower spacing confirmation
+                    # here would defer it to the later closed-bar route.
                 if fast_lane_problem:
                     return reject(fast_lane_problem)
                 if account is not None and symbol in getattr(account, 'positions', {}):
@@ -2797,6 +2871,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             )
         if pending.get('action') == 'ENTER':
             side = pending['side']
+            meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
             direction_problem = entry_direction_problem(closed, quote, side)
             if direction_problem:
                 return reject(direction_problem)
@@ -2804,7 +2879,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return reject('BLOCKED_BY_LIVE_MA3_DIRECTION')
             if evaluate_live_ma5_direction(frame, quote, side) is None:
                 return reject('BLOCKED_STRICT_MA5_DIRECTION')
-            if not entry_trend_alignment_ready(frame, side):
+            if not meme_impulse and not entry_trend_alignment_ready(frame, side):
                 return reject('BLOCKED_KC_MA5_MA15_TREND_MISMATCH')
             if len(closed) < 20:
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
@@ -2822,8 +2897,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
                 if width <= 0.25 * max_width:
                     return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')
-                if (abs(ma5 - ma15) < 0.25 * width
-                        or abs(ma5 - edge) < 0.25 * width):
+                min_spacing = (0.10 if meme_impulse else 0.25) * width
+                if (abs(ma5 - ma15) < min_spacing
+                        or abs(ma5 - edge) < min_spacing):
                     return reject('BLOCKED_STRICT_MA_SPACING')
             except (KeyError, TypeError, ValueError, IndexError, OverflowError):
                 return reject('BLOCKED_STRICT_CHANNEL_CONVERGENCE')

@@ -25,6 +25,11 @@ MIN_KC_BANDWIDTH_PCT = 0.006
 MIN_DIRECTIONAL_KC_SPACE = 0.25
 MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM = 0.15
 HIGH_MOMENTUM_BODY_ATR = 0.70
+MEME_BREAKOUT_SYMBOLS = frozenset((
+    'CAP/USDT', 'CAP/USDT:USDT', '龍蝦/USDT', '龙虾/USDT',
+    'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
+))
+MEME_BREAKOUT_BODY_ATR = 0.30
 FAST_CROSS_BODY_ATR = 0.40
 FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO = 1.0
 FAST_CROSS_MIN_MA15_SLOPE_ATR = 0.03
@@ -176,6 +181,26 @@ def ma5_ma15_cross_chop_problem(
         ma5_slope_pct = (current_ma5 - previous_ma5) / current_quote
         ma15_slope_pct = (current_ma15 - previous_ma15) / current_quote
 
+        meme_impulse = False
+        if (str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+                and side in ('LONG', 'SHORT') and quote is not None):
+            live = frame.iloc[-1]
+            atr = float(closed.iloc[-1].get('atr', float('nan')))
+            opening = float(live.get('open', float('nan')))
+            close = float(live.get('close', float('nan')))
+            upper = float(live.get('kc_upper', float('nan')))
+            lower = float(live.get('kc_lower', float('nan')))
+            effective_close = current_quote if has_live else close
+            signed_body = effective_close - opening if side == 'LONG' else opening - effective_close
+            meme_impulse = (
+                SpatialBrain.analyze(frame, current_quote).state == 'EXPLOSIVE_EXPANSION'
+                and all(math.isfinite(value) and value > 0 for value in
+                        (atr, opening, effective_close, upper, lower))
+                and ((side == 'LONG' and current_quote > upper)
+                     or (side == 'SHORT' and current_quote < lower))
+                and signed_body >= MEME_BREAKOUT_BODY_ATR * atr
+            )
+
         def below(value, threshold):
             return value < threshold and not math.isclose(
                 value, threshold, rel_tol=1e-12, abs_tol=0.0,
@@ -183,18 +208,20 @@ def ma5_ma15_cross_chop_problem(
 
         recent_cross_compressed = (
             cross_count >= MA_CROSS_CHOP_MIN_CROSSES
-            and below(gap_pct, MA_CROSS_CHOP_RECOVERY_GAP_PCT)
+            and below(gap_pct, 0.0004 if meme_impulse else MA_CROSS_CHOP_RECOVERY_GAP_PCT)
         )
-        if below(gap_pct, MA_GAP_CHOP_MIN_PCT):
+        if below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT):
             problem = 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
         elif recent_cross_compressed:
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
         elif side == 'LONG' and not (
-            current_ma5 > previous_ma5 and current_ma15 > previous_ma15
+            current_ma5 > previous_ma5
+            and (meme_impulse or current_ma15 > previous_ma15)
         ):
             problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
         elif side == 'SHORT' and not (
-            current_ma5 < previous_ma5 and current_ma15 < previous_ma15
+            current_ma5 < previous_ma5
+            and (meme_impulse or current_ma15 < previous_ma15)
         ):
             problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
         else:
@@ -229,7 +256,7 @@ def ma5_ma15_cross_chop_problem(
 
 
 def fast_cross_evidence(
-    frame: pd.DataFrame, quote: float, side: str,
+    frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
 ) -> Optional[Dict[str, float]]:
     """Return symmetric evidence for a fresh, directional MA5/MA15 fast cross."""
     try:
@@ -247,8 +274,8 @@ def fast_cross_evidence(
         opening = float(live['open'])
         quote = float(quote)
         raw_close = float(live['close'])
-        high = max(float(live['high']), opening, quote)
-        low = min(float(live['low']), opening, quote)
+        high = float(live['high'])
+        low = float(live['low'])
         upper = float(live['kc_upper'])
         middle = float(live['kc_middle'])
         lower = float(live['kc_lower'])
@@ -268,9 +295,11 @@ def fast_cross_evidence(
                 or low > min(opening, quote)
                 or high < max(opening, quote)
                 or not lower < middle < upper
+                or low > min(opening, quote)
+                or high < max(opening, quote)
                 or width <= 0):
             return None
-        if fast_cross_ma15_slope_problem(frame, quote, side):
+        if fast_cross_ma15_slope_problem(frame, quote, side, symbol=symbol):
             return None
 
         if side == 'LONG':
@@ -390,10 +419,13 @@ def is_ma_tangling(
 
 
 def fast_cross_ma15_slope_problem(
-    frame: pd.DataFrame, quote: float, side: str,
+    frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
 ) -> Optional[str]:
     """Reject a fast MA cross when live MA15 movement is flat relative to ATR."""
     try:
+        if (side == 'LONG'
+                and (symbol or '').upper() in ('CAP/USDT', 'CAP/USDT:USDT')):
+            return None
         if (side not in ('LONG', 'SHORT') or frame is None or frame.empty
                 or bool(frame.iloc[-1].get('is_closed', True))):
             return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
@@ -896,10 +928,38 @@ class EntryGatePipeline:
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return False
 
+    @staticmethod
+    def has_meme_impulse_breakout(symbol: Optional[str], frame, quote) -> bool:
+        """Recognize a lower-body, live KC break for the configured meme coins."""
+        try:
+            if (str(symbol or '').upper() not in MEME_BREAKOUT_SYMBOLS
+                    or frame is None or len(frame) < 3):
+                return False
+            if SpatialBrain.analyze(frame, quote).state != 'EXPLOSIVE_EXPANSION':
+                return False
+            live = frame.iloc[-1]
+            closed = closed_entry_candles(frame)
+            if closed.empty:
+                return False
+            price, opening = float(quote), float(live['open'])
+            upper, lower = float(live['kc_upper']), float(live['kc_lower'])
+            close = float(live['close'])
+            atr = float(closed.iloc[-1]['atr'])
+            effective_close = close if bool(live.get('is_closed', True)) else price
+            body = effective_close - opening
+            return (all(math.isfinite(v) and v > 0 for v in
+                        (price, opening, upper, lower, effective_close, atr))
+                    and atr > 0
+                    and ((price > upper and body >= MEME_BREAKOUT_BODY_ATR * atr)
+                         or (price < lower and -body >= MEME_BREAKOUT_BODY_ATR * atr)))
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
     def market_regime_problem(self, symbol: Optional[str], frame=None,
                               quote: Optional[float] = None) -> Optional[str]:
+        meme_impulse = self.has_meme_impulse_breakout(symbol, frame, quote)
         if not callable(self.market_regime_provider):
-            return 'BLOCKED_BY_AI_CHOP_REGIME'
+            return None if meme_impulse else 'BLOCKED_BY_AI_CHOP_REGIME'
         try:
             regime = self.market_regime_provider(symbol or "")
         except Exception as exc:
@@ -910,6 +970,8 @@ class EntryGatePipeline:
             )
             return 'BLOCKED_BY_AI_CHOP_REGIME'
         if regime == 'TRENDING':
+            return None
+        if meme_impulse:
             return None
         if (regime == 'CHOPPY' and frame is not None and quote is not None
                 and (self.has_strong_bullish_breakout(frame, quote)
@@ -2013,7 +2075,12 @@ class EntryGatePipeline:
             GOLDEN_CROSS_FAST_LONG_CODE,
             DEATH_CROSS_FAST_SHORT_CODE,
         )
-        cross_chop_problem = ma5_ma15_cross_chop_problem(
+        cap_golden_cross = bool(
+            is_fast_cross and symbol
+            and symbol.upper() in ('CAP/USDT', 'CAP/USDT:USDT')
+            and (decision or candidate).get('side') == 'LONG'
+        )
+        cross_chop_problem = None if cap_golden_cross else ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
             side=(
                 decision.get('side') if isinstance(decision, dict)
@@ -2026,7 +2093,7 @@ class EntryGatePipeline:
             return None
         if is_fast_cross:
             slope_problem = fast_cross_ma15_slope_problem(
-                frame, quote, decision.get('side'),
+                frame, quote, decision.get('side'), symbol=symbol,
             )
             if slope_problem:
                 if diagnostics is not None:
@@ -2121,6 +2188,7 @@ class EntryGatePipeline:
             slope_problem = fast_cross_ma15_slope_problem(
                 frame, quote,
                 decision.get('side') if decision else requested_side,
+                symbol=symbol,
             )
             if slope_problem:
                 if diagnostics is not None:
@@ -2180,7 +2248,12 @@ class EntryGatePipeline:
                 DEATH_CROSS_FAST_SHORT_CODE,
             )
         )
-        if not is_shadow_entry and not is_midline_candidate:
+        meme_breakout_override = (
+            is_verified_live_breakout
+            and str(symbol or '').upper() in MEME_BREAKOUT_SYMBOLS
+            and self.has_meme_impulse_breakout(symbol, frame, quote)
+        )
+        if not is_shadow_entry and not is_midline_candidate and not meme_breakout_override:
             try:
                 chop_problem = self.chop_lockout_problem(
                     frame, quote, allow_flat_lines=is_outer_rail_breakout,

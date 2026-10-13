@@ -151,7 +151,7 @@ def test_final_upper_shadow_guard_uses_completed_candle_only():
     ) == "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
 
 
-def test_two_closed_bar_breakout_runs_before_continuation_fallback(monkeypatch):
+def test_qualified_live_breakout_enters_before_closed_bar_fallback(monkeypatch):
     frame = three_bar_frame()
     monkeypatch.setattr(
         entry_contract, "check_entry_gates", lambda *_args, **_kwargs: (True, "OK"),
@@ -161,5 +161,5 @@ def test_two_closed_bar_breakout_runs_before_continuation_fallback(monkeypatch):
     )
 
     assert decision is not None
-    assert decision["type"] == "KC_2BAR_CONFIRM_LONG"
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
+    assert decision["type"] == "KC_LIVE_BODY_BREAKOUT_LONG"
+    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"

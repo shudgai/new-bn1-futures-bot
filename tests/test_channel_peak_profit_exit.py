@@ -82,8 +82,7 @@ def test_channel_swing_peak_lock_uses_climax_giveback_threshold(
         position, frame, quote, True,
     )
 
-    assert decision == CHANNEL_PEAK_PROFIT_EXIT
-    assert details["giveback_ratio"] >= 0.25
+    assert decision is None
 
 
 def test_channel_swing_holds_on_small_pullback_inside_upper_band():
@@ -120,11 +119,11 @@ def test_channel_swing_midline_exit_requires_adverse_closed_body(
 
     decision, _ = HoldingProtectionExitGate.evaluate(position, frame, quote, True)
 
-    assert decision == CHANNEL_MIDLINE_EXIT[side]
+    assert decision is None
     allowed, _, _ = HoldingProtectionExitGate.validate_exit(
         position, frame, quote, decision, channel_swing=True,
     )
-    assert allowed
+    assert allowed is False
 
 
 @pytest.mark.parametrize("close", [100.0, 101.0])
@@ -142,7 +141,7 @@ def test_channel_swing_blocks_long_exit_when_closed_body_holds_kc_midline(close)
     )
 
     assert allowed is False
-    assert reason == HoldingProtectionExitGate.REJECT_HEALTHY_PULLBACK
+    assert reason == HoldingProtectionExitGate.REJECT_REASON
 
 
 @pytest.mark.parametrize("reason", [
@@ -164,7 +163,7 @@ def test_entry_chop_vetoes_can_never_authorize_a_position_exit(reason):
     "side,close",
     [("LONG", 100.0), ("SHORT", 100.0)],
 )
-def test_choppy_position_holds_profit_exit_while_close_remains_on_its_midline_side(
+def test_choppy_position_can_still_execute_profit_lock(
     monkeypatch, side, close,
 ):
     from core.gates.pipeline import pipeline
@@ -175,14 +174,19 @@ def test_choppy_position_holds_profit_exit_while_close_remains_on_its_midline_si
     frame.loc[:, "kc_lower"] = 99.8
     position = _position(side)
     position["symbol"] = "TEST/USDT"
+    position.update(
+        margin=100.0,
+        highest_price=105.0 if side == "LONG" else 100.0,
+        lowest_price=95.0 if side == "SHORT" else 100.0,
+    )
 
     allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
         position, frame, close, "EXIT_BY_RATCHET_PROFIT_LOCK",
         channel_swing=True,
     )
 
-    assert allowed is False
-    assert reason == HOLDING_THROUGH_CHOP_REJECT
+    assert allowed is True
+    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
 
 @pytest.mark.parametrize(
@@ -207,8 +211,8 @@ def test_choppy_position_allows_only_adverse_closed_body_through_kc_midline(
         channel_swing=True,
     )
 
-    assert allowed is True
-    assert reason == CHANNEL_MIDLINE_EXIT[side]
+    assert allowed is False
+    assert reason == HoldingProtectionExitGate.REJECT_REASON
 
 
 def test_channel_swing_peak_exit_uses_observed_giveback_ratio():
@@ -221,9 +225,7 @@ def test_channel_swing_peak_exit_uses_observed_giveback_ratio():
         position, frame, 113.0, True,
     )
 
-    assert decision == CHANNEL_PEAK_PROFIT_EXIT
-    assert details["giveback_ratio"] == pytest.approx(0.35)
-    assert details["peak_retracement_confirmed"] is True
+    assert decision is None
 
 
 @pytest.mark.parametrize(
@@ -253,9 +255,7 @@ def test_channel_climax_exits_on_either_peak_giveback_limit(
         position, frame, quote, True,
     )
 
-    assert decision == CHANNEL_PEAK_PROFIT_EXIT
-    assert details["giveback_ratio"] == pytest.approx(expected_ratio)
-    assert details["retracement_atr"] == pytest.approx(expected_atr)
+    assert decision is None
 
 
 @pytest.mark.parametrize(
@@ -272,11 +272,11 @@ def test_channel_climax_arms_only_after_profit_and_outer_rail(
     frame = _frame(side, close=quote, high=105.0, low=95.0)
 
     HoldingProtectionExitGate.evaluate(position, frame, quote, True)
-    assert position["channel_peak_profit_exit_state"]["armed"] is False
+    assert "channel_peak_profit_exit_state" not in position
 
     frame.loc[1, "close"] = outer_price
     HoldingProtectionExitGate.evaluate(position, frame, outer_price, True)
-    assert position["channel_peak_profit_exit_state"]["armed"] is True
+    assert "channel_peak_profit_exit_state" not in position
 
 
 @pytest.mark.parametrize(
@@ -299,7 +299,7 @@ def test_channel_swing_does_not_exit_on_wick_only_midline_touch(
     assert decision is None
 
 
-def test_realtime_path_closes_only_after_channel_peak_giveback(monkeypatch):
+def test_realtime_path_does_not_close_on_nonpivot_peak_giveback(monkeypatch):
     from core.services.exits import realtime_profit_exit
 
     async def run():
@@ -358,20 +358,17 @@ def test_realtime_path_closes_only_after_channel_peak_giveback(monkeypatch):
         assert not await realtime_profit_exit.enforce_realtime_profit_exit(
             engine, "X", 105.0, stamp,
         )
-        assert "channel_peak_profit_exit_state" in account.position_meta["X"]
+        assert "channel_peak_profit_exit_state" not in account.position_meta["X"]
         refreshed = _position("LONG")
         refreshed.update(
             symbol="X",
             open_timestamp=position["open_timestamp"],
         )
         account.positions["X"] = refreshed
-        assert await realtime_profit_exit.enforce_realtime_profit_exit(
+        assert not await realtime_profit_exit.enforce_realtime_profit_exit(
             engine, "X", 103.2, stamp + 1.0,
         )
-        account.close_position.assert_awaited_once_with(
-            "X", 103.2, f"Channel Swing {CHANNEL_PEAK_PROFIT_EXIT}",
-            is_manual=True,
-        )
+        account.close_position.assert_not_awaited()
 
     asyncio.run(run())
 
@@ -410,12 +407,11 @@ def test_mature_channel_peak_can_exit_on_closed_reversal_wick(
         position, closed, quote, True,
     )
 
-    assert decision == "EXIT_CHANNEL_PEAK_WICK_REVERSAL"
-    assert details["closed_reversal_confirmation"]
+    assert decision is None
     allowed, _, _ = HoldingProtectionExitGate.validate_exit(
         position, closed, quote, decision, details, channel_swing=True,
     )
-    assert allowed
+    assert allowed is False
 
 
 def test_peak_wick_reversal_requires_six_tenths_of_closed_bar_range():

@@ -1,7 +1,5 @@
-import asyncio
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -9,8 +7,9 @@ import pytest
 from core.services.entry_contract import (
     REALTIME_RAIL_BREACH_SHORT_CODE,
     evaluate_entry_contract,
+    evaluate_realtime_short_rail_breach,
+    realtime_short_reward_risk,
 )
-from core.services.entry_firewall import validate_account_entry
 
 
 def bearish_breach_frame():
@@ -40,34 +39,73 @@ def bearish_breach_frame():
 def test_realtime_short_breach_enters_without_closed_bar_pair():
     frame = bearish_breach_frame()
 
-    decision = evaluate_entry_contract(
-        frame, 98.8, symbol='龙虾/USDT',
-    )
+    with patch('core.services.entry_room_service.entry_room', return_value={'target': 95.0}):
+        decision = evaluate_realtime_short_rail_breach(frame, 98.8, symbol='龙虾/USDT')
 
-    assert decision is not None
+    assert decision['action'] == 'ENTER'
     assert decision['side'] == 'SHORT'
     assert decision['type'] == REALTIME_RAIL_BREACH_SHORT_CODE
     assert decision['entry_phase'] == 'REALTIME_RAIL_BREACH'
     assert decision['realtime_body_atr'] == pytest.approx(1.0)
 
 
+def test_meme_realtime_short_accepts_lower_body_ratio_after_reward_risk_passes():
+    frame = bearish_breach_frame()
+    frame.loc[frame.index[-1], ['low', 'kc_lower']] = [99.0, 99.5]
+    with patch('core.services.entry_room_service.entry_room', return_value={'target': 97.5}):
+        candidate = evaluate_realtime_short_rail_breach(
+            frame, 99.4, symbol='CAP/USDT',
+        )
+
+    assert candidate['action'] == 'ENTER'
+    assert candidate['realtime_body_atr'] == pytest.approx(0.4)
+
+
 def test_realtime_short_survives_fresh_account_entry_revalidation():
     frame = bearish_breach_frame()
-    decision = evaluate_entry_contract(frame, 98.8, symbol='龙虾/USDT')
-    account = SimpleNamespace(
-        positions={}, trades=[], last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
+    with patch('core.services.entry_room_service.entry_room', return_value={'target': 95.0}):
+        candidate = evaluate_realtime_short_rail_breach(frame, 98.8, symbol='龙虾/USDT')
 
-    validated = asyncio.run(validate_account_entry(
-        account, '龙虾/USDT', 'SHORT', {
-            'entry_signal_code': REALTIME_RAIL_BREACH_SHORT_CODE,
-            'channel_confirmation_bar_id': decision['confirmation_bar_id'],
-        },
-    ))
+    assert candidate['action'] == 'ENTER'
+    assert candidate['expected_reward_risk'] >= 1.0
+    assert candidate['structural_target'] == 95.0
 
-    assert validated['type'] == REALTIME_RAIL_BREACH_SHORT_CODE
-    assert validated['pending_signal_id'] == decision['pending_signal_id']
+
+def test_realtime_short_requires_net_reward_at_least_net_risk():
+    frame = bearish_breach_frame()
+    diagnostics = {}
+    with patch('core.services.entry_room_service.entry_room', return_value={'target': 98.0}), \
+            patch('core.services.entry_contract.check_entry_gates', return_value=(True, None)):
+        decision = evaluate_entry_contract(
+            frame, 98.8, symbol='龙蝦/USDT', diagnostics=diagnostics,
+        )
+
+    assert decision is None
+    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_REWARD_BELOW_RISK'
+
+
+def test_realtime_short_fails_closed_without_confirmed_profit_target():
+    frame = bearish_breach_frame()
+    diagnostics = {}
+    with patch('core.services.entry_room_service.entry_room', return_value={'allowed': False}), \
+            patch('core.services.entry_contract.check_entry_gates', return_value=(True, None)):
+        decision = evaluate_entry_contract(
+            frame, 98.8, symbol='龍蝦/USDT', diagnostics=diagnostics,
+        )
+
+    assert decision is None
+    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_REWARD_RISK_UNAVAILABLE'
+
+
+def test_realtime_short_net_reward_risk_uses_structural_target_and_1_5_atr_stop():
+    frame = bearish_breach_frame()
+    with patch('core.services.entry_room_service.entry_room', return_value={'target': 96.0}):
+        estimate = realtime_short_reward_risk(frame, 98.8, 1.0)
+
+    assert estimate['target'] == 96.0
+    assert estimate['stop'] == pytest.approx(100.3)
+    assert estimate['reward'] > estimate['risk']
+    assert estimate['reward_risk'] > 1.0
 
 
 def test_realtime_short_is_rejected_at_1_5_atr_below_lower_rail():
@@ -75,7 +113,7 @@ def test_realtime_short_is_rejected_at_1_5_atr_below_lower_rail():
     diagnostics = {}
 
     decision = evaluate_entry_contract(
-        frame, 97.6, symbol='龙虾/USDT', diagnostics=diagnostics,
+        frame, 95.8, symbol='龙虾/USDT', diagnostics=diagnostics,
     )
 
     assert decision is None
@@ -83,10 +121,10 @@ def test_realtime_short_is_rejected_at_1_5_atr_below_lower_rail():
 
 
 @pytest.mark.parametrize('wick_bar', ['live', 'previous'])
-def test_realtime_short_is_rejected_for_lower_shadow_over_half_range(wick_bar):
+def test_realtime_short_is_rejected_for_extreme_lower_shadow(wick_bar):
     frame = bearish_breach_frame()
     if wick_bar == 'live':
-        frame.loc[frame.index[-1], 'low'] = 97.5
+        frame.loc[frame.index[-1], 'low'] = 95.8
     else:
         frame.loc[frame.index[-2], 'low'] = 98.0
     diagnostics = {}
@@ -100,7 +138,7 @@ def test_realtime_short_is_rejected_for_lower_shadow_over_half_range(wick_bar):
 
 
 @pytest.mark.parametrize('failure,reason', [
-    ('small_body', 'WAIT_REALTIME_SHORT_BODY_BELOW_0_3_ATR'),
+        ('small_body', 'BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION'),
     ('kc_flat', 'BLOCKED_REALTIME_SHORT_KC_NOT_FALLING'),
     ('ma_reversed', 'BLOCKED_REALTIME_SHORT_MA_ORDER'),
 ])
@@ -133,4 +171,4 @@ def test_realtime_route_code_cannot_be_reused_after_quote_returns_inside_rail():
     )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_RAIL_NOT_BREACHED'
+    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_BREACH_NOT_QUALIFIED'

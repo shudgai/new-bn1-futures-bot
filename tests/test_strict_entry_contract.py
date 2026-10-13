@@ -175,7 +175,7 @@ def test_engine_risk_and_failure_gates(monkeypatch, fault):
 def test_closed_pair_required(side, fault):
     f=candles(side); sign=1 if side=='LONG' else -1
     assert closed_pair_decision(f, side)['action'] == 'ENTER'
-    if fault=='under_half': f.loc[f.index[-3], 'open']=100+sign*1.01
+    if fault=='under_half': f.loc[f.index[-3], 'open']=100+sign*1.45
     if fault=='second_live':
         f=f.iloc[:-1].copy(); f.loc[f.index[-1],'is_closed']=False
     if fault=='second_opposite': f.loc[f.index[-2],'open']=100+sign*1.85
@@ -189,12 +189,12 @@ def test_closed_pair_required(side, fault):
     assert closed_pair_decision(f, side)['action'] == 'WAIT'
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_prior_closed_atr_and_exact_half(side):
+def test_pending_pair_requires_valid_prior_atr_but_not_half_atr_body(side):
     f=candles(side)
     assert closed_pair_decision(f, side)['action'] == 'ENTER'
     f.loc[f.index[-3], 'atr']=100.
     assert closed_pair_decision(f, side)['action'] == 'ENTER'
-    f.loc[f.index[-4], 'atr']=1.1
+    f.loc[f.index[-3], 'atr']=float('nan')
     assert closed_pair_decision(f, side)['action'] == 'WAIT'
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -247,7 +247,11 @@ def test_post_close_continuation_requires_closed_confirmation(monkeypatch,symbol
     assert symbol not in account.positions
     assert engine._entry_gate_diagnostics[
         (symbol, 'NONE', 'SIGNAL')
-    ][1] == 'BLOCKED_CONTINUATION_NOT_CLOSED_CONFIRMATION'
+    ][1] == (
+        'BLOCKED_POST_CLOSE_NO_LONG_OPPORTUNITY'
+        if side == 'LONG'
+        else 'BLOCKED_CONTINUATION_NOT_CLOSED_CONFIRMATION'
+    )
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_leading_indicator_warmup_does_not_block_valid_pair(side):
