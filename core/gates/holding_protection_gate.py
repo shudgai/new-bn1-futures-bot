@@ -1394,6 +1394,16 @@ class HoldingProtectionExitGate:
             elif side == 'SHORT' and last_closed_above is False:
                 return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
 
+        # MA Slope Shield: 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
+        # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。
+        if (
+            not hard_exit
+            and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
+        ):
+            from core.services.exits.dual_track_exit_service import is_ma5_slope_shield_active
+            if is_ma5_slope_shield_active(frame, side, frame_atr):
+                return _reject(reason="VETO_MA5_SLOPE_SHIELD_ACTIVE")
+
         if ((channel_swing
              or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING')
                 and _is_profit_lock_reason(clean_reason)):

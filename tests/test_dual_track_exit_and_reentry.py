@@ -35,21 +35,31 @@ def test_early_lifecycle_protection_under_90s():
 
 
 def test_ma5_slope_shield():
-    """強趨勢斜率盾牌：多單 MA5 斜率 > 0.04 ATR 向上，強制禁止平倉。"""
+    """強趨勢斜率盾牌：多單 MA5 斜率 > 0.03 ATR 向上，強制禁止平倉。"""
+    # 測試從使用者要求的 core.services.dual_track_exit_service 直接匯入
+    from core.services.dual_track_exit_service import is_ma5_slope_shield_active as alias_shield
     atr = 0.0002
-    # MA5 從 0.0428 升至 0.0430 (+0.0002 = 1.0 ATR > 0.04 ATR)
-    frame = pd.DataFrame([
-        {'ma5': 0.0428},
-        {'ma5': 0.0430},
+
+    # MA5 升 0.000007 (+0.035 ATR > 0.03 ATR) -> 觸發保護
+    strong_up_frame = pd.DataFrame([
+        {'ma5': 0.042993},
+        {'ma5': 0.043000},
     ])
-    assert is_ma5_slope_shield_active(frame, 'LONG', atr) is True
+    assert alias_shield(strong_up_frame, 'LONG', atr) is True
+
+    # MA5 升 0.000004 (+0.02 ATR <= 0.03 ATR) -> 未達 0.03 ATR 門檻，不觸發盾牌
+    mild_up_frame = pd.DataFrame([
+        {'ma5': 0.042996},
+        {'ma5': 0.043000},
+    ])
+    assert alias_shield(mild_up_frame, 'LONG', atr) is False
 
     # 平緩或走平 (斜率 0)
     flat_frame = pd.DataFrame([
         {'ma5': 0.0430},
         {'ma5': 0.0430},
     ])
-    assert is_ma5_slope_shield_active(flat_frame, 'LONG', atr) is False
+    assert alias_shield(flat_frame, 'LONG', atr) is False
 
 
 def test_candle_closed_only_ma5_break():
@@ -166,3 +176,21 @@ def test_momentum_burst_short_blocked_when_ma15_sloping_up():
     df.attrs['timeframe_ms'] = 60000
     burst = EntryGatePipeline.detect_momentum_burst(df, 0.0935, side='SHORT')
     assert burst is None
+
+
+def test_holding_protection_veto_by_ma5_slope_shield():
+    """HoldingProtectionExitGate 驗證：若 MA5 斜率強勢順向，一票否決回踩平多。"""
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+    position = {'symbol': '龙虾/USDT', 'side': 'LONG', 'entry_price': 0.0420}
+    atr = 0.0002
+    frame = pd.DataFrame([
+        {'ma5': 0.0428, 'atr': atr, 'kc_middle': 0.0435, 'close': 0.0428},
+        {'ma5': 0.0430, 'atr': atr, 'kc_middle': 0.0435, 'close': 0.0429},  # ma5 斜率 +0.0002 = 1.0 ATR > 0.03 ATR
+    ])
+    is_allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, quote=0.0429, candidate_reason='EXIT_LONG_ON_SELLING_PRESSURE',
+    )
+    assert is_allowed is False
+    assert reason == "VETO_MA5_SLOPE_SHIELD_ACTIVE"
+
+
