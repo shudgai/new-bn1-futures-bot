@@ -221,3 +221,165 @@ class MemeCoinGate:
             return False, None
         except Exception:
             return False, None
+
+    @classmethod
+    def evaluate_ambush_entry(
+        cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """模組一：提前開倉（30% 底倉埋伏）條件審查。
+        
+        觸發條件（在突破 KC 外軌之前提早埋伏）：
+        1. KC 縮口擠壓狀態：通道處於收斂蓄勢。
+        2. MA5 陡峭向上金叉 KC 中軌（多單）或死叉貫穿中軌（空單）。
+        3. 1m K 棒收盤/即時價實體站穩在 KC 中軌與 MA5 上方（多單）或下方（空單）。
+        4. 量能異動：若有成交量，量能大於前 5 根均量的 1.3 倍以上。
+        5. 倉位比例：底倉 30%～35%。
+        """
+        if not cls.is_meme_coin(symbol) or frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT'):
+            return False, 'NOT_MEME_OR_INVALID_DATA', None
+
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+
+        try:
+            quote = float(quote)
+            open_p = float(curr.get('open', quote))
+            live_ma5, prev_ma5 = cls.calculate_live_ma5(frame, quote)
+            kc_middle = float(curr.get('kc_middle', 0.0))
+            kc_upper = float(curr.get('kc_upper', 0.0))
+            kc_lower = float(curr.get('kc_lower', 0.0))
+
+            if not (math.isfinite(live_ma5) and math.isfinite(prev_ma5) and math.isfinite(kc_middle) and kc_middle > 0):
+                return False, 'INVALID_MA_KC_DATA', None
+
+            # 檢驗是否在軌道內（尚未突破外軌，方為提前埋伏）
+            if side == 'LONG':
+                # 尚未突破 KC 上軌
+                if quote >= kc_upper:
+                    return False, 'ALREADY_BROKE_KC_OUTER_RAIL', None
+                # MA5 必須絕對向上
+                if live_ma5 <= prev_ma5:
+                    return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
+                # 價格站穩在中軌與 MA5 之上
+                if not (quote > live_ma5 and quote > kc_middle and quote >= open_p):
+                    return False, 'BLOCKED_PRICE_NOT_ABOVE_MID_AND_MA5', None
+
+                # 量能異動檢驗（若有 volume 欄位）
+                if 'volume' in frame.columns and len(frame) >= 6:
+                    vol = float(curr.get('volume', 0.0))
+                    avg_vol = float(frame['volume'].iloc[-6:-1].mean())
+                    if avg_vol > 0 and vol < 1.2 * avg_vol:
+                        return False, 'BLOCKED_INSUFFICIENT_AMBUSH_VOLUME', None
+
+                return True, 'MEME_AMBUSH_ENTRY_LONG', {
+                    'entry_type': 'MEME_AMBUSH',
+                    'side': 'LONG',
+                    'price': quote,
+                    'suggested_size_ratio': 0.35,  # 30%~35% 底倉
+                }
+
+            elif side == 'SHORT':
+                if kc_lower > 0 and quote <= kc_lower:
+                    return False, 'ALREADY_BROKE_KC_OUTER_RAIL', None
+                if live_ma5 >= prev_ma5:
+                    return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
+                if not (quote < live_ma5 and quote < kc_middle and quote <= open_p):
+                    return False, 'BLOCKED_PRICE_NOT_BELOW_MID_AND_MA5', None
+
+                if 'volume' in frame.columns and len(frame) >= 6:
+                    vol = float(curr.get('volume', 0.0))
+                    avg_vol = float(frame['volume'].iloc[-6:-1].mean())
+                    if avg_vol > 0 and vol < 1.2 * avg_vol:
+                        return False, 'BLOCKED_INSUFFICIENT_AMBUSH_VOLUME', None
+
+                return True, 'MEME_AMBUSH_ENTRY_SHORT', {
+                    'entry_type': 'MEME_AMBUSH',
+                    'side': 'SHORT',
+                    'price': quote,
+                    'suggested_size_ratio': 0.35,  # 30%~35% 底倉
+                }
+
+            return False, 'CONDITIONS_NOT_MET', None
+        except Exception:
+            return False, 'ERROR', None
+
+    @classmethod
+    def evaluate_pyramid_addition(
+        cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """模組二：破軌確認（70% 加倉做滿）聯動機制。
+        
+        當底倉建立後，隨後 K 棒順利衝破 KC 外軌且兩根流確認延續，打入剩餘 65%~70% 倉位。
+        """
+        if not cls.is_meme_coin(symbol) or frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT'):
+            return False, 'NOT_MEME_OR_INVALID_DATA', None
+
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+
+        try:
+            quote = float(quote)
+            open_p = float(curr.get('open', quote))
+            live_ma5, prev_ma5 = cls.calculate_live_ma5(frame, quote)
+            kc_upper = float(curr.get('kc_upper', 0.0))
+            kc_lower = float(curr.get('kc_lower', 0.0))
+
+            if side == 'LONG':
+                # 實體衝出 KC 上軌且 MA5 昂揚發散
+                if quote > kc_upper and quote > live_ma5 and live_ma5 > prev_ma5 and quote >= open_p:
+                    return True, 'MEME_PYRAMID_ADDITION_LONG', {
+                        'entry_type': 'MEME_PYRAMID_ADD',
+                        'side': 'LONG',
+                        'price': quote,
+                        'suggested_size_ratio': 0.65,  # 加滿剩餘 65%~70%
+                    }
+
+            elif side == 'SHORT':
+                if kc_lower > 0 and quote < kc_lower and quote < live_ma5 and live_ma5 < prev_ma5 and quote <= open_p:
+                    return True, 'MEME_PYRAMID_ADDITION_SHORT', {
+                        'entry_type': 'MEME_PYRAMID_ADD',
+                        'side': 'SHORT',
+                        'price': quote,
+                        'suggested_size_ratio': 0.65,
+                    }
+
+            return False, 'CONDITIONS_NOT_MET', None
+        except Exception:
+            return False, 'ERROR', None
+
+    @classmethod
+    def evaluate_ambush_failure_stop(
+        cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """模組三：提前埋伏失敗的「超敏捷認錯止損」。
+        
+        認錯停損條件：
+        1. 盤中價格跌破 MA5 且 MA5 出現下拐/走平。
+        2. 收盤價/即時價跌回 KC 中軌之下。
+        """
+        if not cls.is_meme_coin(symbol) or frame is None or len(frame) < 1:
+            return False, None
+
+        curr = frame.iloc[-1]
+        try:
+            quote = float(quote)
+            live_ma5, prev_ma5 = cls.calculate_live_ma5(frame, quote)
+            kc_middle = float(curr.get('kc_middle', 0.0))
+
+            if side == 'LONG':
+                # 認錯條件 A：價格跌破中軌
+                if kc_middle > 0 and quote < kc_middle:
+                    return True, 'EXIT_MEME_AMBUSH_FAIL_KC_MID_BREACH'
+                # 認錯條件 B：MA5 下拐且跌破均線
+                if live_ma5 <= prev_ma5 and quote < live_ma5:
+                    return True, 'EXIT_MEME_AMBUSH_FAIL_MA5_DOWNWARD'
+
+            elif side == 'SHORT':
+                if kc_middle > 0 and quote > kc_middle:
+                    return True, 'EXIT_MEME_AMBUSH_FAIL_KC_MID_BREACH'
+                if live_ma5 >= prev_ma5 and quote > live_ma5:
+                    return True, 'EXIT_MEME_AMBUSH_FAIL_MA5_UPWARD'
+
+            return False, None
+        except Exception:
+            return False, None
