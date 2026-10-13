@@ -84,7 +84,7 @@ def test_net_roe_ratchet_remains_an_authorized_profit_lock(side):
         margin=100.,
         highest_price=105. if side == "LONG" else 100.,
         lowest_price=95. if side == "SHORT" else 100.,
-        three_tier_net_roe_lock_state={"peak_net_roe_pct": 5.},
+        three_tier_net_roe_lock_state={"peak_net_roe_pct": 14.},
     )
     if side == "LONG":
         quote = 102.4
@@ -107,7 +107,7 @@ def test_net_roe_ratchet_remains_an_authorized_profit_lock(side):
 
     allowed, _, _ = HoldingProtectionExitGate.validate_exit(
         held, pd.DataFrame(rows), quote,
-        "NET_ROE_THREE_TIER_GIVEBACK_TIER_2",
+        "NET_ROE_THREE_TIER_GIVEBACK_TIER_5",
     )
     assert allowed is True
 

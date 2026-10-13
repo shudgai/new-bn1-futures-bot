@@ -3,7 +3,8 @@
 Enforces an explicit exit whitelist:
 1. EXIT_BY_EXTREME_WATERFALL: An adverse body >= 1.5*ATR that crosses KC middle.
 2. EXIT_BY_CIRCUIT_BREAKER_HARD_SL: Hard Stop Loss or market circuit breaker.
-3. EXIT_BY_RATCHET_PROFIT_LOCK: Net ROE ratchets at 2%, 4%, and 7% peak thresholds.
+3. EXIT_BY_RATCHET_PROFIT_LOCK: net ROE activates at 10%, advances every 1 point,
+   and locks the reached step 2 points below its peak threshold.
 4. Fractal pullback exits require peak gain >3*ATR, or >2*ATR while
    the established favorable extreme still qualifies as a strong trend.
 5. INTRABAR_SPIKE_REBOUND_EXIT closes on a live extreme-KC spike and rebound.
@@ -17,6 +18,10 @@ import math
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
+from core.services.exits.net_roe_profit_lock import (
+    has_reached_net_roe_floor,
+    tiered_net_roe_floor,
+)
 
 
 def _fractal_pullback_exit_authorized(position, frame, side, quote, atr, favorable_move):
@@ -70,12 +75,9 @@ def is_fractal_valley(bars: pd.DataFrame) -> bool:
 INTRABAR_SPIKE_REBOUND_EXIT = 'EXIT_BY_INTRABAR_SPIKE_REBOUND'
 INTRABAR_SPIKE_STATE_KEY = 'intrabar_spike_rebound_state'
 CHANNEL_PEAK_EXIT_STATE_KEY = 'channel_peak_profit_exit_state'
+# Retained as a legacy reason for rejecting stale pending exits. It is no
+# longer generated; net-ROE ladder is the sole automatic profit lock.
 CHANNEL_PEAK_PROFIT_EXIT = 'EXIT_CHANNEL_PEAK_PROFIT_LOCK'
-CHANNEL_PEAK_WICK_EXIT = 'EXIT_CHANNEL_PEAK_WICK_REVERSAL'
-CHANNEL_CLIMAX_ARM_ATR = 1.5
-CHANNEL_PEAK_GIVEBACK_RATIO = 0.25
-CHANNEL_PEAK_GIVEBACK_ATR = 0.4
-CHANNEL_PEAK_WICK_RATIO = 0.60
 CHANNEL_MIDLINE_EXIT = {
     'LONG': 'EXIT_LONG_ON_CONFIRMED_MIDLINE_BREAK',
     'SHORT': 'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
@@ -253,8 +255,6 @@ _ENTRY_ONLY_CHOP_REASONS = frozenset((
     'BLOCKED_KC_SQUEEZE',
 ))
 _CHOP_EXTREME_EXIT_REASONS = frozenset((
-    CHANNEL_PEAK_PROFIT_EXIT,
-    CHANNEL_PEAK_WICK_EXIT,
     'EXIT_BY_VERIFIED_FRACTAL_PEAK',
     'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
     'EXIT_LONG_ON_FRACTAL_PEAK',
@@ -361,142 +361,8 @@ def _last_closed_close_at_or_above_kc_middle(frame):
 
 
 def channel_peak_profit_exit_evidence(position, frame, quote):
-    """Track KC-outside climax extremes and authorize confirmed reversals."""
-    if (not position or frame is None or frame.empty
-            or position.get('side') not in ('LONG', 'SHORT')):
-        return None, False
-    try:
-        quote = float(quote)
-        entry = float(position.get('entry_price') or 0.0)
-        side = str(position['side']).upper()
-        opened_at = float(
-            position.get('open_timestamp') or position.get('entry_timestamp') or 0.0
-        )
-        if opened_at > 1e11:
-            opened_at /= 1000.0
-        identity = [side, opened_at, entry]
-        current = frame.iloc[-1]
-        previous = frame.iloc[-2] if len(frame) > 1 else current
-        atr = float(previous.get('atr', current.get('atr', 0.0)))
-        opening = float(current.get('open', 0.0))
-        high = max(float(current.get('high', quote)), quote)
-        low = min(float(current.get('low', quote)), quote)
-        close = float(current.get('close', quote))
-        upper = float(current.get('kc_upper', 0.0))
-        lower = float(current.get('kc_lower', 0.0))
-        values = (quote, entry, atr, opening, high, low, close)
-        if (not all(math.isfinite(value) for value in values)
-                or min(quote, entry, atr, opening) <= 0
-                or high < max(opening, close, quote)
-                or low > min(opening, close, quote)
-                or low > high):
-            return None, False
-
-        saved = position.get(CHANNEL_PEAK_EXIT_STATE_KEY)
-        if not isinstance(saved, dict) or saved.get('identity') != identity:
-            peak = entry
-            armed = False
-            state = {'identity': identity, 'peak_price': entry, 'armed': False}
-        else:
-            peak = float(saved.get('peak_price') or entry)
-            armed = bool(saved.get('armed'))
-            state = dict(saved)
-
-        prior_peak = peak
-        new_extreme = quote > prior_peak if side == 'LONG' else quote < prior_peak
-        peak = max(peak, quote) if side == 'LONG' else min(peak, quote)
-        favorable_move = peak - entry if side == 'LONG' else entry - peak
-        current_favorable_move = quote - entry if side == 'LONG' else entry - quote
-        outer_reached = (
-            math.isfinite(upper) and upper > 0 and quote >= upper if side == 'LONG'
-            else math.isfinite(lower) and lower > 0 and quote <= lower
-        )
-        armed = armed or (
-            current_favorable_move >= CHANNEL_CLIMAX_ARM_ATR * atr and outer_reached
-        )
-        next_state = {
-            'identity': identity,
-            'peak_price': peak,
-            'armed': armed,
-        }
-        changed = next_state != saved
-        position[CHANNEL_PEAK_EXIT_STATE_KEY] = next_state
-
-        if not armed or favorable_move <= 0:
-            return None, changed
-
-        retracement = peak - quote if side == 'LONG' else quote - peak
-        giveback = retracement / favorable_move if side == 'LONG' else (
-            quote - peak
-        ) / favorable_move
-        giveback_triggered = (
-            giveback >= CHANNEL_PEAK_GIVEBACK_RATIO
-            or math.isclose(
-                giveback, CHANNEL_PEAK_GIVEBACK_RATIO,
-                rel_tol=1e-12, abs_tol=0.0,
-            )
-            or retracement >= CHANNEL_PEAK_GIVEBACK_ATR * atr
-            or math.isclose(
-                retracement, CHANNEL_PEAK_GIVEBACK_ATR * atr,
-                rel_tol=1e-12, abs_tol=0.0,
-            )
-        )
-
-        is_closed = _current_bar_is_closed(frame)
-        current_bar = frame.iloc[-1]
-        c_open = float(current_bar.get('open', opening))
-        c_close = float(current_bar.get('close', quote))
-        c_high = max(float(current_bar.get('high', quote)), quote)
-        c_low = min(float(current_bar.get('low', quote)), quote)
-        c_range = c_high - c_low
-
-        if giveback_triggered:
-            return ({
-                'reason': CHANNEL_PEAK_PROFIT_EXIT,
-                'peak_price': peak,
-                'entry_price': entry,
-                'quote': quote,
-                'atr': atr,
-                'favorable_move': favorable_move,
-                'retracement': retracement,
-                'retracement_atr': retracement / atr,
-                'giveback_ratio': giveback,
-                'side': side,
-                'peak_retracement_confirmed': True,
-            }, changed)
-
-        candle_range = high - low
-        new_candle_extreme = (
-            c_high > prior_peak if side == 'LONG' else c_low < prior_peak
-        )
-        if is_closed and new_candle_extreme and candle_range > 0:
-            upper_wick = high - max(opening, close)
-            lower_wick = min(opening, close) - low
-            bearish_rejection = (
-                side == 'LONG' and close < opening
-                and upper_wick / candle_range >= CHANNEL_PEAK_WICK_RATIO
-            )
-            bullish_rejection = (
-                side == 'SHORT' and close > opening
-                and lower_wick / candle_range >= CHANNEL_PEAK_WICK_RATIO
-            )
-            if bearish_rejection or bullish_rejection:
-                return ({
-                    'reason': CHANNEL_PEAK_WICK_EXIT,
-                    'peak_price': peak,
-                    'entry_price': entry,
-                    'quote': quote,
-                    'atr': atr,
-                    'favorable_move': favorable_move,
-                    'upper_wick': upper_wick,
-                    'lower_wick': lower_wick,
-                    'candle_range': candle_range,
-                    'side': side,
-                    'closed_reversal_confirmation': True,
-                }, changed)
-        return None, changed
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        return None, False
+    """Retired legacy ATR/giveback lock; net-ROE ladder is the sole profit lock."""
+    return None, False
 
 
 def intrabar_spike_rebound_evidence(position, frame, side, quote):
@@ -1161,19 +1027,10 @@ def _ratchet_lock_details(position, quote):
             saved_peak = float(saved_state.get('peak_net_roe_pct') or peak_roe)
             if math.isfinite(saved_peak):
                 peak_roe = max(peak_roe, saved_peak)
-        reached = lambda threshold: (
-            peak_roe >= threshold
-            or math.isclose(peak_roe, threshold, rel_tol=1e-12)
-        )
-        if reached(7.0):
-            floor, tier = peak_roe * 0.75, 3
-        elif reached(4.0):
-            floor, tier = 2.5, 2
-        elif reached(2.0):
-            floor, tier = 0.0, 1
-        else:
+        floor, tier = tiered_net_roe_floor(peak_roe)
+        if floor is None:
             return None
-        if current_roe >= floor:
+        if not has_reached_net_roe_floor(current_roe, floor):
             return None
         return {
             'peak_net_roe_pct': peak_roe,

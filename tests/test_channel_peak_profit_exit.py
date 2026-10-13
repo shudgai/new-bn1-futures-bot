@@ -10,6 +10,7 @@ from core.gates.holding_protection_gate import (
     CHANNEL_PEAK_PROFIT_EXIT,
     HOLDING_THROUGH_CHOP_REJECT,
     HoldingProtectionExitGate,
+    channel_peak_profit_exit_evidence,
 )
 
 
@@ -70,7 +71,7 @@ def test_channel_swing_ignores_intrabar_noise(side, quote):
     "side,quote",
     [("LONG", 103.2), ("SHORT", 96.8)],
 )
-def test_channel_swing_peak_lock_uses_climax_giveback_threshold(
+def test_legacy_channel_atr_peak_lock_is_retired(
     side, quote,
 ):
     position = _position(side)
@@ -78,11 +79,7 @@ def test_channel_swing_peak_lock_uses_climax_giveback_threshold(
     peak = 105.0 if side == "LONG" else 95.0
 
     HoldingProtectionExitGate.evaluate(position, frame, peak, True)
-    decision, details = HoldingProtectionExitGate.evaluate(
-        position, frame, quote, True,
-    )
-
-    assert decision is None
+    assert channel_peak_profit_exit_evidence(position, frame, quote) == (None, False)
 
 
 def test_channel_swing_holds_on_small_pullback_inside_upper_band():
@@ -176,8 +173,8 @@ def test_choppy_position_can_still_execute_profit_lock(
     position["symbol"] = "TEST/USDT"
     position.update(
         margin=100.0,
-        highest_price=105.0 if side == "LONG" else 100.0,
-        lowest_price=95.0 if side == "SHORT" else 100.0,
+        highest_price=115.0 if side == "LONG" else 100.0,
+        lowest_price=85.0 if side == "SHORT" else 100.0,
     )
 
     allowed, reason, _ = HoldingProtectionExitGate.validate_exit(

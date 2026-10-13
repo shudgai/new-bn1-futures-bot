@@ -17,6 +17,10 @@ from core.services.exits.entry_atr_protection import (
     channel_strategy_exit_grace_active,
     clear_channel_strategy_exit_pending,
 )
+from core.services.exits.net_roe_profit_lock import (
+    has_reached_net_roe_floor,
+    tiered_net_roe_floor,
+)
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 
 PROFIT_LOCK_STATE_KEY = 'three_tier_net_roe_lock_state'
@@ -99,15 +103,7 @@ def _profit_lock_identity(position):
 
 
 def _tiered_net_roe_floor(peak_net_roe_pct):
-    peak = float(peak_net_roe_pct)
-    reached = lambda value, edge: value >= edge or math.isclose(value, edge, rel_tol=1e-12)
-    if reached(peak, 7.0):
-        return peak * 0.75, 3
-    if reached(peak, 4.0):
-        return 2.5, 2
-    if reached(peak, 2.0):
-        return 0.0, 1
-    return None, 0
+    return tiered_net_roe_floor(peak_net_roe_pct)
 
 
 def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, fee, slippage):
@@ -268,7 +264,7 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                      current_net_roe_pct=current_roe)
         position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
         meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
-        if floor is not None and current_roe < floor:
+        if floor is not None and has_reached_net_roe_floor(current_roe, floor):
             return f'{PROFIT_LOCK_TRIGGER}_TIER_{tier}', True
         return None, True
     except (KeyError, TypeError, ValueError, OverflowError):
