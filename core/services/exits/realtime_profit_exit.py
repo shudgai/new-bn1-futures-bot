@@ -466,15 +466,26 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             frame, price, side_m, symbol=symbol,
                         )
                         if m_exit and m_exit_reason:
-                            account.log(
-                                f'MEME_EXIT symbol={symbol} reason={m_exit_reason} price={price}',
-                                'WARNING',
+                            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                            is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
+                                position, frame, price, m_exit_reason,
+                                channel_swing=True,
                             )
-                            await account.close_position(
-                                symbol, price, f'Channel Swing {m_exit_reason}',
-                                is_manual=True,
-                            )
-                            return True
+                            if is_allowed:
+                                account.log(
+                                    f'MEME_EXIT symbol={symbol} reason={valid_reason} price={price}',
+                                    'WARNING',
+                                )
+                                await account.close_position(
+                                    symbol, price, f'Channel Swing {valid_reason}',
+                                    is_manual=True,
+                                )
+                                return True
+                            else:
+                                account.log(
+                                    f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={m_exit_reason} '
+                                    f'gate_reason={valid_reason}', 'INFO',
+                                )
 
                     from core.gates.holding_protection_gate import (
                         CHANNEL_PEAK_EXIT_STATE_KEY,
@@ -641,16 +652,26 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     if hybrid_state_changed:
                         account.save_state()
                     if hybrid_trigger:
-                        account.log(
-                            f'REALTIME_EXIT symbol={symbol} reason={hybrid_trigger} '
-                            f'quote_ms={stamp} price={price} diag={hybrid_diag}',
-                            'WARNING',
+                        is_allowed, valid_reason, valid_details = HoldingProtectionExitGate.validate_exit(
+                            position, frame, price, hybrid_trigger,
+                            channel_swing=True,
                         )
-                        await account.close_position(
-                            symbol, price, f'Channel Swing {hybrid_trigger}',
-                            is_manual=True,
-                        )
-                        return True
+                        if is_allowed:
+                            account.log(
+                                f'REALTIME_EXIT symbol={symbol} reason={valid_reason} '
+                                f'quote_ms={stamp} price={price} diag={hybrid_diag}',
+                                'WARNING',
+                            )
+                            await account.close_position(
+                                symbol, price, f'Channel Swing {valid_reason}',
+                                is_manual=True,
+                            )
+                            return True
+                        else:
+                            account.log(
+                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason={hybrid_trigger} '
+                                f'gate_reason={valid_reason}', 'INFO',
+                            )
 
                     # 2. Holding Protection Veto on THREE_POINT_PIVOT:
                     # One-vote veto: If latest candle or price holds on favorable side of KC middle

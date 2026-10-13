@@ -264,6 +264,7 @@ class MemeCoinGate:
         出場條件（觸發平倉獲利了結）：
         1. 實體收盤/最新價明確砸回 KC 軌道內（多單 quote <= kc_upper，空單 quote >= kc_lower）
         2. 跌破 MA5 關鍵防守線（多單 quote < live_ma5，空單 quote > live_ma5）
+        註：最終平倉授權由 HoldingProtectionExitGate 嚴格把關『真峰谷成型』，未成真峰谷前絕不放行。
         """
         if not cls.is_meme_coin(symbol) or frame is None or len(frame) < 1:
             return False, None

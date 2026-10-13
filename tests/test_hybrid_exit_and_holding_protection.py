@@ -147,3 +147,67 @@ def test_hybrid_dynamic_kc_midline_close_breach():
         position, meta, 0.0424, 1791860120000.0, snapshot,
     )
     assert trigger == HYBRID_MIDLINE_BREACH_TRIGGER
+
+
+def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
+    """開倉後未成型真峰谷前，嚴禁平倉（否決階梯鎖利與普通回踩）。"""
+    position = {
+        'symbol': 'BTC/USDT',
+        'side': 'LONG',
+        'entry_price': 0.0430,
+        'qty': 1000.0,
+    }
+    # 兩根持續上漲 K 線，尚未形成 3 根 K 棒真峰頂
+    rows = [
+        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True},
+        {'open': 0.0434, 'high': 0.0438, 'low': 0.0433, 'close': 0.0436, 'kc_upper': 0.0500, 'is_closed': False},
+    ]
+    df = pd.DataFrame(rows)
+
+    # 嘗試以 EXIT_BY_RATCHET_PROFIT_LOCK 申請平倉
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, df, quote=0.0435, candidate_reason='EXIT_BY_RATCHET_PROFIT_LOCK'
+    )
+    assert allowed is False
+    assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
+
+
+def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():
+    """開倉後形成真峰頂（3-Bar Pivot）確認後，才允許平倉出場。"""
+    position = {
+        'symbol': 'BTC/USDT',
+        'side': 'LONG',
+        'entry_price': 0.0430,
+        'qty': 1000.0,
+    }
+    # 形成明確的真峰頂：中間 High (0.0442) 高於前後兩根 (0.0435, 0.0439)，且第 3 根收線確認
+    rows = [
+        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'open': 0.0440, 'high': 0.0439, 'low': 0.0431, 'close': 0.0432, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+    ]
+    df = pd.DataFrame(rows)
+
+    from core.gates.holding_protection_gate import has_confirmed_true_pivot
+    has_pivot, p_type, p_info = has_confirmed_true_pivot(position, df, quote=0.0432)
+    assert has_pivot is True
+    assert p_type == 'TRUE_PEAK_PIVOT_CONFIRMED'
+
+    # 真峰頂確認後，申請平倉
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, df, quote=0.0432, candidate_reason='THREE_POINT_PIVOT'
+    )
+    # 此時已越過真峰谷門檻
+    assert allowed is False  # close 0.0432 > middle 0.0420，觸發中軌上方有利側抱牢保護
+    assert reason == 'VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION'
+
+    # 若收盤確認砸破中軌 (close < middle)，真峰谷成型且中軌失守，才放行授權平倉
+    rows[-1]['close'] = 0.0418
+    rows[-1]['kc_middle'] = 0.0420
+    df_breach = pd.DataFrame(rows)
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, df_breach, quote=0.0418, candidate_reason='THREE_POINT_PIVOT'
+    )
+    assert allowed is True
+    assert reason == 'THREE_POINT_PIVOT'
+

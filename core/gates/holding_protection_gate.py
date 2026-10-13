@@ -72,6 +72,93 @@ def is_fractal_valley(bars: pd.DataFrame) -> bool:
     return l2 < l1 and l2 <= l3
 
 
+def has_confirmed_true_pivot(
+    position: Dict[str, Any],
+    frame: Optional[pd.DataFrame],
+    quote: float,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """檢驗持倉是否已經成型技術面確認的『真峰谷（True Peak/Valley Pivot）』。
+    
+    規則：開倉後，不要平倉，要到真峰谷才平倉。
+    多單（LONG）：
+      必須在已收線 K 線中形成頂部三點樞紐（中間 High 最高且兩側較低）或分形頂確認。
+    空單（SHORT）：
+      必須在已收線 K 線中形成底部三點樞紐（中間 Low 最低且兩側較高）或分形底確認。
+    """
+    if frame is None or len(frame) < 3:
+        return False, None, {}
+
+    side = str((position or {}).get('side', '')).upper()
+    if side not in ('LONG', 'SHORT'):
+        return False, None, {}
+
+    try:
+        last_bar = frame.iloc[-1]
+        is_live_closed = bool(last_bar.get('is_closed', False))
+        closed = frame if is_live_closed else frame.iloc[:-1]
+        if len(closed) < 3:
+            return False, None, {}
+
+        check_len = min(len(closed), 6)
+        sub = closed.iloc[-check_len:]
+
+        if side == 'LONG':
+            for i in range(len(sub) - 2):
+                b_before = sub.iloc[i]
+                b_pivot = sub.iloc[i + 1]
+                b_confirm = sub.iloc[i + 2]
+
+                h_before = float(b_before['high'])
+                h_pivot = float(b_pivot['high'])
+                h_confirm = float(b_confirm['high'])
+
+                if h_pivot > h_before and h_pivot > h_confirm:
+                    c_confirm = float(b_confirm['close'])
+                    return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
+                        'pivot_high': h_pivot,
+                        'confirm_close': c_confirm,
+                    }
+
+            if is_fractal_peak(closed):
+                last_c = float(closed.iloc[-1]['close'])
+                prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                if last_c < prev_mid:
+                    return True, 'TRUE_FRACTAL_PEAK_CONFIRMED', {
+                        'last_close': last_c,
+                        'prev_mid': prev_mid,
+                    }
+
+        elif side == 'SHORT':
+            for i in range(len(sub) - 2):
+                b_before = sub.iloc[i]
+                b_pivot = sub.iloc[i + 1]
+                b_confirm = sub.iloc[i + 2]
+
+                l_before = float(b_before['low'])
+                l_pivot = float(b_pivot['low'])
+                l_confirm = float(b_confirm['low'])
+
+                if l_pivot < l_before and l_pivot < l_confirm:
+                    c_confirm = float(b_confirm['close'])
+                    return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
+                        'pivot_low': l_pivot,
+                        'confirm_close': c_confirm,
+                    }
+
+            if is_fractal_valley(closed):
+                last_c = float(closed.iloc[-1]['close'])
+                prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                if last_c > prev_mid:
+                    return True, 'TRUE_FRACTAL_VALLEY_CONFIRMED', {
+                        'last_close': last_c,
+                        'prev_mid': prev_mid,
+                    }
+
+        return False, None, {}
+    except Exception:
+        return False, None, {}
+
+
 INTRABAR_SPIKE_REBOUND_EXIT = 'EXIT_BY_INTRABAR_SPIKE_REBOUND'
 INTRABAR_SPIKE_STATE_KEY = 'intrabar_spike_rebound_state'
 CHANNEL_PEAK_EXIT_STATE_KEY = 'channel_peak_profit_exit_state'
@@ -1227,16 +1314,19 @@ class HoldingProtectionExitGate:
                     return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
 
         # ── 3. 階梯鎖利：以淨 ROE 峰值計算保護底線 ──
+        # 鐵律：開倉後，不要平倉，要到真峰谷才平倉！未成型真峰谷前，禁止觸發階梯鎖利平倉！
         ratchet = _ratchet_lock_details(position, quote)
         if ratchet is not None:
             pressure = intrabar_adverse_pressure_evidence(frame, side, quote, atr)
             if pressure is not None:
-                ratchet.update(
-                    highest_price=highest_price, lowest_price=lowest_price,
-                    entry_price=entry_price,
-                    **pressure,
-                )
-                return 'EXIT_BY_RATCHET_PROFIT_LOCK', ratchet
+                has_pivot, _, _ = has_confirmed_true_pivot(position, frame, quote)
+                if has_pivot:
+                    ratchet.update(
+                        highest_price=highest_price, lowest_price=lowest_price,
+                        entry_price=entry_price,
+                        **pressure,
+                    )
+                    return 'EXIT_BY_RATCHET_PROFIT_LOCK', ratchet
 
         midline_reversal = confirmed_midline_reversal_evidence(frame, side)
         if midline_reversal is not None:
@@ -1394,6 +1484,25 @@ class HoldingProtectionExitGate:
             ):
                 return _reject(reason=hold_reason)
 
+        # ──【核心鐵律】開倉後，不要平倉，要到真峰谷才平倉──
+        # 除非觸發硬止損、極端大瀑布或反側外軌破軌等緊急安全風控；
+        # 其餘所有出場一律必須等待「真峰谷（Three-Point Pivot / True Fractal Peak or Valley）」成型確認！
+        # 若未形成真峰谷，100% 拒絕平倉，堅定抱牢！
+        is_safety_exit = any(s in clean_reason.upper() for s in (
+            'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
+            'EMERGENCY_STOP', 'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
+            'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
+            'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
+        ))
+        if not is_safety_exit:
+            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
+            is_pivot_candidate = any(p in clean_reason.upper() for p in (
+                'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
+            ))
+            if not has_pivot and not is_pivot_candidate:
+                # 尚未成型真峰谷，且 candidate_reason 亦非真峰谷 -> 絕對禁止提前平倉！
+                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+
         # A completed LONG close above KC middle is a hard hold line for
         # ordinary price-action exits. A lower wick at least as large as the
         # body is independent buying-support evidence and also vetoes them.
@@ -1428,17 +1537,6 @@ class HoldingProtectionExitGate:
             except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
                 pass
 
-        if (clean_reason.startswith('HYBRID_DYNAMIC')
-                or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
-                or clean_reason in (
-                    'MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT',
-                    'CONFIRMED_MA5_CLOSE_BREAK', 'EXIT_BY_RATCHET_PROFIT_LOCK',
-                    'RATCHET_BREAKEVEN_LOCK', 'EMERGENCY_DUMP_EXIT',
-                    'TWO_BAR_DOJI_REVERSAL_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
-                    'CANDLE_CLOSE_MA15_BREAK',
-                )):
-            return _auth(clean_reason)
-
         # One-vote veto: If latest candle closed in favorable KC half
         # (close >= kc_middle for LONG, close <= kc_middle for SHORT),
         # ordinary pullback exits are strictly vetoed.
@@ -1452,6 +1550,19 @@ class HoldingProtectionExitGate:
                 return _reject(reason="VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION")
             elif side == 'SHORT' and last_closed_above is False:
                 return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
+
+        if (clean_reason == 'THREE_POINT_PIVOT'
+                or clean_reason.startswith('HYBRID_DYNAMIC')
+                or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
+                or clean_reason.startswith('EXIT_MEME_')
+                or clean_reason in (
+                    'MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT',
+                    'CONFIRMED_MA5_CLOSE_BREAK', 'EXIT_BY_RATCHET_PROFIT_LOCK',
+                    'RATCHET_BREAKEVEN_LOCK', 'EMERGENCY_DUMP_EXIT',
+                    'TWO_BAR_DOJI_REVERSAL_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
+                    'CANDLE_CLOSE_MA15_BREAK',
+                )):
+            return _auth(clean_reason)
 
         # MA Slope Shield: 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
         # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。

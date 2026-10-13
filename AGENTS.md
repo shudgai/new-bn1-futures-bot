@@ -40,6 +40,20 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
+## 持倉防洗鐵律：開倉後，不要平倉，要到真峰谷才平倉（2026-10-13 最新授權）
+
+### 【核心戰術與認知】
+- **開倉後，絕對不提早平倉**：部位進場後必須具備足夠的呼吸與波段展開空間，嚴禁因 MA 盤中下拐/上拐、毛刺回踩、盤中插針洗盤、或過早的 Ratchet 階梯鎖利而提前平倉被洗下車。
+- **真峰谷確認標準（Three-Point Pivot / True Fractal Peak & Valley）**：
+  - **多單真峰頂（Peak）**：必須形成確定性的三點頂部樞紐（中間棒 High 嚴格高於前後兩棒 High，且第三棒已收線確認完成包夾），或分形頂已收線確認跌破前棒實體中點。
+  - **空單真谷底（Valley）**：必須形成確定性的三點底部樞紐（中間棒 Low 嚴格低於前後兩棒 Low，且第三棒已收線確認完成包夾），或分形底已收線確認突破前棒實體中點。
+- **全域一票否決（Veto）**：
+  - 凡持倉週期內尚未出現並收線確認真峰谷者，任何普通平倉請求（包含階梯鎖利 `EXIT_BY_RATCHET_PROFIT_LOCK`、普通回調 `EXIT_BY_PULLBACK`、MA5 跌破、實體收回軌道內等），由 `HoldingProtectionExitGate` 100% 觸發 `VETO_HOLDING_UNTIL_TRUE_PIVOT` 予以否決，堅決抱牢主升/主跌浪！
+- **極端安全風控例外**：
+  - 唯有單根反向爆量巨型瀑布（`EXIT_BY_EXTREME_WATERFALL` 實體 >= 1.5 ATR 且貫穿中軌）、反側 KC 外軌擊穿（`OPPOSITE_KC_BAND_BREACH`）或帳戶級硬止損（`CIRCUIT_BREAKER_HARD_SL` / `HARD_STOP_LOSS`）才允許緊急避險離場以保護本金安全。
+
+---
+
 ## 妖幣專用：兩根破軌極速進場與外軌鎖定交易手冊（2026-10-13 最新授權）
 
 ### 【策略背景與核心認知】
