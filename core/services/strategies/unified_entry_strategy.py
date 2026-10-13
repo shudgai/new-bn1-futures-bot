@@ -762,10 +762,20 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
 
 
 def check_ma_cross_entry(df, live_price=None):
-    """引擎一：MA5 / MA15 交叉敏捷開倉（起跑點）：
-    當 MA5 向上金叉 MA15（做多）或向下死叉 MA15（做空），
-    且當根 1m K 棒收線確認順向站穩（多單 close > ma5 且 close > open，空單 close < ma5 且 close < open）時，
-    第一時間敏捷開倉，杜絕延遲追高。
+    """引擎一：MA5 / MA15 交叉條件開倉（起跑點）：
+    【嚴格條件開倉鐵律，不是一交叉就開倉】：
+    必須同時滿足：
+    1. 順勢交易鐵律：空頭趨勢嚴禁開多（BLOCKED_LONG_ON_BEARISH_TREND），多頭趨勢嚴禁開空（BLOCKED_SHORT_ON_BULLISH_TREND）。
+    2. KC 中軌方向與位置：
+       - 多單：KC 中軌走平或向上（curr_kc_middle >= prev_kc_middle），且收盤價/最新價必須在 KC 中軌之上。
+       - 空單：KC 中軌走平或向下（curr_kc_middle <= prev_kc_middle），且收盤價/最新價必須在 KC 中軌之下。
+    3. 均線斜率與發散：
+       - 多單：MA5 明確向上發散（curr_ma5 > prev_ma5），且 MA15 同步向上或走平（curr_ma15 >= prev_ma15），嚴禁 MA15 向下拐頭！
+       - 空單：MA5 明確向下發散（curr_ma5 < prev_ma5），且 MA15 同步向下或走平（curr_ma15 <= prev_ma15），嚴禁 MA15 向上拐頭！
+    4. K 棒動能實體與收線確認：
+       - 多單：當根 1m K 棒收紅陽線（close > open），站穩 MA5 之上（close > ma5），實體具備動能，且無過長上影線壓制。
+       - 空單：當根 1m K 棒收黑陰線（close < open），壓制在 MA5 之下（close < ma5），實體具備動能，且無過長下影線支撐。
+    5. 均線相對位置對齊：通過 validate_ma_alignment 檢驗。
     """
     if df is None or len(df) < 2:
         return None
@@ -782,22 +792,86 @@ def check_ma_cross_entry(df, live_price=None):
         prev_ma15 = float(prev.get('ma15', 0.0))
         curr_close = float(curr['close'])
         curr_open = float(curr['open'])
-        wick_problem = wick_exhaustion_problem(curr, 'LONG')
+        p = float(live_price) if live_price is not None else curr_close
 
-        # 金叉做多
-        if prev_ma5 <= prev_ma15 and curr_ma5 > curr_ma15 and curr_close > curr_ma5 and curr_close > curr_open:
+        # 大趨勢判定（順勢鐵律：空頭不開多、多頭不開空）
+        from core.gates.meme_coin_gate import MemeCoinGate
+        market_trend = MemeCoinGate.get_market_trend(df, p)
+
+        # KC 中軌
+        curr_mid = MemeCoinGate.calculate_kc_middle(curr)
+        prev_mid = MemeCoinGate.calculate_kc_middle(prev)
+
+        # ATR 與實體
+        atr = float(curr.get('atr', 0.0))
+        if atr <= 0 and 'atr' in prev:
+            atr = float(prev.get('atr', 0.0))
+
+        # 金叉做多條件
+        is_golden_cross = (
+            (prev_ma5 <= prev_ma15 and curr_ma5 > curr_ma15)
+            and curr_ma5 > prev_ma5  # MA5 向上
+            and curr_ma15 >= prev_ma15 - 1e-6  # MA15 同步向上或走平，非下行
+            and curr_close > curr_ma5  # 收盤站穩 MA5 上方
+            and curr_close > curr_open  # 收紅陽線
+        )
+        if is_golden_cross:
+            # 條件 1: 順勢鐵律（空頭嚴禁開多）
+            if market_trend == 'BEARISH':
+                return None
+            # 條件 2: KC 中軌方向審查（多單中軌非下行）
+            if curr_mid > 0 and prev_mid > 0:
+                if curr_mid < prev_mid - 1e-6:
+                    return None
+            # 條件 3: 動能實體
+            if atr > 0:
+                body = curr_close - curr_open
+                if body < 0.3 * atr:
+                    return None
+            # 條件 4: 影線過濾
+            if 'high' in curr and 'low' in curr:
+                wick_problem = wick_exhaustion_problem(curr, 'LONG', quote=live_price)
+                if wick_problem is not None:
+                    return None
+            # 條件 5: 均線對齊
             passed, _ = validate_ma_alignment(df, 'LONG', live_price)
-            if passed and wick_problem is None:
+            if passed:
                 return {
                     'side': 'LONG',
                     'type': 'KC_GOLDEN_CROSS_FAST_LONG',
                     'reason': 'KC_GOLDEN_CROSS_FAST_LONG',
                     'bypass_spatial_check': True,
                 }
-        # 死叉做空
-        if prev_ma5 >= prev_ma15 and curr_ma5 < curr_ma15 and curr_close < curr_ma5 and curr_close < curr_open:
+
+        # 死叉做空條件
+        is_death_cross = (
+            (prev_ma5 >= prev_ma15 and curr_ma5 < curr_ma15)
+            and curr_ma5 < prev_ma5  # MA5 向下
+            and curr_ma15 <= prev_ma15 + 1e-6  # MA15 同步向下或走平，非上行
+            and curr_close < curr_ma5  # 收盤壓制 MA5 下方
+            and curr_close < curr_open  # 收黑陰線
+        )
+        if is_death_cross:
+            # 條件 1: 順勢鐵律（多頭嚴禁開空）
+            if market_trend == 'BULLISH':
+                return None
+            # 條件 2: KC 中軌方向審查（空單中軌非上行）
+            if curr_mid > 0 and prev_mid > 0:
+                if curr_mid > prev_mid + 1e-6:
+                    return None
+            # 條件 3: 動能實體
+            if atr > 0:
+                body = curr_open - curr_close
+                if body < 0.3 * atr:
+                    return None
+            # 條件 4: 影線過濾
+            if 'high' in curr and 'low' in curr:
+                wick_problem = wick_exhaustion_problem(curr, 'SHORT', quote=live_price)
+                if wick_problem is not None:
+                    return None
+            # 條件 5: 均線對齊
             passed, _ = validate_ma_alignment(df, 'SHORT', live_price)
-            if passed and wick_exhaustion_problem(curr, 'SHORT') is None:
+            if passed:
                 return {
                     'side': 'SHORT',
                     'type': 'KC_DEATH_CROSS_FAST_SHORT',

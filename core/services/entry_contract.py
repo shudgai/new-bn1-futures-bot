@@ -85,7 +85,9 @@ LEGACY_ROUTE_CODES = frozenset((
 ))
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 
-ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES
+ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES | frozenset((
+    GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -3096,8 +3098,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         cross_chop_problem = (
             None if (confirmed_pending_breakout or is_instant_reverse
                      or live_body_candidate is not None
-                     or live_pattern_candidate is not None
-                     or active_fast_cross is not None) else
+                     or live_pattern_candidate is not None) else
             ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=(

@@ -438,42 +438,49 @@ def fast_cross_evidence(
             position_ready = quote < middle
             room = (quote - lower) / width
 
-        wick_acceptable = (
-            directional_wick < 0.7 * max(body, 1e-9)
-            or math.isclose(directional_wick, 0.7 * max(body, 1e-9), rel_tol=1e-12, abs_tol=0.0)
-        )
-        if crossed and candle_confirmed and body >= 0.3 * atr and wick_acceptable:
-            pass
-        else:
-            body_ready = (
-                body > FAST_CROSS_BODY_ATR * atr
-                or math.isclose(
-                    body, FAST_CROSS_BODY_ATR * atr,
-                    rel_tol=1e-12, abs_tol=0.0,
-                )
-            )
-            min_space = (
-                MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
-                if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
-                else MIN_DIRECTIONAL_KC_SPACE
-            )
-            room_ready = (
-                room > min_space
-                or math.isclose(
-                    room, min_space,
-                    rel_tol=1e-12, abs_tol=0.0,
-                )
-            )
-            wick_ready = (
-                directional_wick < FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body
-                or math.isclose(
-                    directional_wick,
-                    FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body,
-                    rel_tol=1e-12, abs_tol=0.0,
-                )
-            )
-            if not (crossed and position_ready and body_ready and room_ready and wick_ready):
+        # 【MA5 / MA15 交叉條件開倉鐵律】：不是一交叉就開倉，必須具備多重條件
+        previous_middle = float(previous.get('kc_middle', middle)) if hasattr(previous, 'get') else middle
+
+        # 1. KC 中軌方向同步（多單中軌非下行，空單中軌非上行）
+        if side == 'LONG' and middle < previous_middle - 1e-6:
+            return None
+        if side == 'SHORT' and middle > previous_middle + 1e-6:
+            return None
+
+        # 2. 順勢鐵律：當行情歷史充足時，空頭趨勢嚴禁開多，多頭趨勢嚴禁開空
+        if len(frame) >= 20:
+            from core.gates.meme_coin_gate import MemeCoinGate
+            market_trend = MemeCoinGate.get_market_trend(frame, quote)
+            if side == 'LONG' and market_trend == 'BEARISH':
                 return None
+            if side == 'SHORT' and market_trend == 'BULLISH':
+                return None
+
+        # 3. 實體動能、通道空間與影線防護（絕不繞過空間與中軌位置檢查）
+        body_ready = (
+            body >= FAST_CROSS_BODY_ATR * atr
+            or math.isclose(body, FAST_CROSS_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)
+        )
+        min_space = (
+            MIN_DIRECTIONAL_KC_SPACE_HIGH_MOMENTUM
+            if (atr > 0 and (body > HIGH_MOMENTUM_BODY_ATR * atr or math.isclose(body, HIGH_MOMENTUM_BODY_ATR * atr, rel_tol=1e-12, abs_tol=0.0)))
+            else MIN_DIRECTIONAL_KC_SPACE
+        )
+        room_ready = (
+            room >= min_space
+            or math.isclose(room, min_space, rel_tol=1e-12, abs_tol=0.0)
+        )
+        wick_ready = (
+            directional_wick <= FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body
+            or math.isclose(
+                directional_wick,
+                FAST_CROSS_MAX_DIRECTIONAL_WICK_RATIO * body,
+                rel_tol=1e-12, abs_tol=0.0,
+            )
+        )
+
+        if not (crossed and candle_confirmed and position_ready and body_ready and room_ready and wick_ready):
+            return None
 
         return {
             'stamp': stamp,
@@ -2442,7 +2449,7 @@ class EntryGatePipeline:
             or (symbol and is_meme_breakout_symbol(symbol))
         )
         cross_chop_problem = (
-            None if is_meme_entry
+            None if (is_meme_entry and not is_fast_cross)
             else ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol or '', log_result=True,
                 side=(
