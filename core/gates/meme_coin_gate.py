@@ -21,6 +21,18 @@ import pandas as pd
 from core.symbol_aliases import is_meme_breakout_symbol
 
 
+MEME_ENTRY_CODES = frozenset((
+    "MEME_INITIAL_KC_BREAKOUT_LONG",
+    "MEME_INITIAL_KC_BREAKOUT_SHORT",
+    "MEME_FORCED_CONTINUATION_ENTRY_LONG",
+    "MEME_FORCED_CONTINUATION_ENTRY_SHORT",
+    "MEME_AMBUSH_ENTRY_LONG",
+    "MEME_AMBUSH_ENTRY_SHORT",
+    "MEME_PYRAMID_ADDITION_LONG",
+    "MEME_PYRAMID_ADDITION_SHORT",
+))
+
+
 class MemeCoinGate:
     """妖幣專用：KC 破軌暴利與延續補倉閘門。"""
 

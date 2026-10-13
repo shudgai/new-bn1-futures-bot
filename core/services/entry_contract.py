@@ -83,7 +83,9 @@ LEGACY_ROUTE_CODES = frozenset((
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
 ))
-ENTRY_CODES = NEW_TRIGGER_CODES
+from core.gates.meme_coin_gate import MEME_ENTRY_CODES
+
+ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -411,6 +413,13 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
     try:
         if frame is None or frame.empty:
             return "BLOCKED_INVALID_ENTRY_CANDLE"
+        if decision and (
+            decision.get("type") in MEME_ENTRY_CODES
+            or decision.get("entry_phase") in (
+                "MEME_BREAKOUT_ENTRY", "MEME_AMBUSH_ENTRY", "MEME_PYRAMID_ADDITION"
+            )
+        ):
+            return None
         live = frame.iloc[-1]
         phase = decision.get("entry_phase") if decision else None
         if phase == "KC_MIDLINE_RETEST":
@@ -428,10 +437,8 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
         elif decision and decision.get("intrabar"):
             bar_ids = (decision.get("confirmation_bar_id"),)
         elif decision and decision.get("breakout_bar_id") is not None:
-            bar_ids = (
-                decision.get("breakout_bar_id"),
-                decision.get("pair_confirmation_bar_id"),
-            )
+            pair_id = decision.get("pair_confirmation_bar_id")
+            bar_ids = (decision.get("breakout_bar_id"), pair_id) if pair_id is not None else (decision.get("breakout_bar_id"),)
         else:
             bar_ids = (live.get("timestamp"),)
 
@@ -2547,15 +2554,18 @@ def pre_flight_safety_check(
 
         is_shadow_retest = (decision_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
 
+        from core.gates.meme_coin_gate import MemeCoinGate
+        is_meme = (decision_type in MEME_ENTRY_CODES) or (bool(symbol) and MemeCoinGate.is_meme_coin(symbol))
+
         if side == "LONG":
             # 1. 【MA5 向下，100% 絕對禁止開多（向下不開多）】
             if not is_shadow_retest:
                 if ma5_slope < 0:
                     return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest / is_midline_break 100% 豁免上軌空間限制
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_shadow_retest / is_midline_break / is_meme 100% 豁免上軌空間限制
             if (not is_explosive and not is_shadow_retest and not is_midline_break
-                    and not is_confirmed_rail_breakout):
+                    and not is_confirmed_rail_breakout and not is_meme):
                 is_volume_breakout = (quote > kc_upper and (quote - open_p) >= 0.5 * atr)
                 if not is_volume_breakout:
                     if kc_upper > 0 and (kc_upper - quote) < 0.5 * atr:
@@ -2564,7 +2574,7 @@ def pre_flight_safety_check(
             # 3. 逆勢長陰不接刀：若前一根或當前為實體陰線且價格跌破 MA5，嚴禁在回落中抄底開多！
             # 均線下影線回踩蓄勢開多 (AUTHORIZED_SHADOW_RETEST_ENTRY) 與中軌突破豁免「紅 K 一票否決」
             if (not is_confirmed_rail_breakout and not is_shadow_retest
-                    and not is_midline_break and (curr_is_bearish or prev_is_bearish)
+                    and not is_midline_break and not is_meme and (curr_is_bearish or prev_is_bearish)
                     and quote < live_ma5):
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
 
@@ -2617,9 +2627,10 @@ def pre_flight_safety_check(
             if ma5_slope > 0:
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break / fast_cross / breakout 100% 豁免下軌空間限制
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break / fast_cross / breakout / is_meme 100% 豁免下軌空間限制
             is_exempt_space = (
                 is_explosive or is_flip or is_midline_break or is_confirmed_rail_breakout
+                or is_meme
                 or decision_type in (DEATH_CROSS_FAST_SHORT_CODE, 'TRIGGER_B_MA_CROSS', 'TRIGGER_A_KC_BREAKOUT', 'KC_LIVE_BODY_BREAKOUT_SHORT')
             )
             if not is_exempt_space:
@@ -2650,7 +2661,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         passed, reason = validate_ma_alignment(frame, decision.get('side'), quote)
         if not passed:
             return reject(reason)
-        if decision.get('side') == 'LONG':
+        if decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES:
             top_problem = long_top_chase_problem(frame, quote)
             if top_problem:
                 return reject(top_problem)
@@ -2711,9 +2722,12 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject(market_structure_problem)
 
         cross_chop_problem = (
-            None if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
-            or decision.get('entry_phase') == 'KC_LIVE_OUTER_BREAKOUT'
-            or decision.get('entry_phase') == 'KC_LIVE_PATTERN_BREAKOUT'
+            None if decision.get('entry_phase') in (
+                'KC_2BAR_CLOSED_CONFIRM', 'KC_LIVE_OUTER_BREAKOUT',
+                'KC_LIVE_PATTERN_BREAKOUT', 'MEME_BREAKOUT_ENTRY',
+                'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION',
+            )
+            or decision.get('type') in MEME_ENTRY_CODES
             or decision.get('type') == REALTIME_RAIL_BREACH_SHORT_CODE
             or decision.get('type') in (
                 BEARISH_INSTANT_BREAKOUT_CODE,
@@ -2796,6 +2810,109 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if code is not None and code not in ENTRY_CODES:
             return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+
+        # ── 妖幣專屬極速破軌、延續補倉與提前埋伏入口（Meme Coin Authority）──
+        from core.gates.meme_coin_gate import MemeCoinGate
+        if symbol and MemeCoinGate.is_meme_coin(symbol):
+            if code is None or code in MEME_ENTRY_CODES:
+                target_sides = ['LONG', 'SHORT']
+                if known_side:
+                    target_sides = [known_side]
+                elif code:
+                    if 'LONG' in code:
+                        target_sides = ['LONG']
+                    elif 'SHORT' in code:
+                        target_sides = ['SHORT']
+
+                has_pos = account is not None and symbol in getattr(account, 'positions', {})
+                pos_side = getattr(account, 'positions', {}).get(symbol, {}).get('side') if has_pos else None
+
+                # 1. 若已有底倉，審查「破軌加倉做滿 70%」
+                if has_pos and pos_side in target_sides:
+                    pyr_passed, pyr_reason, pyr_meta = MemeCoinGate.evaluate_pyramid_addition(
+                        frame, quote, pos_side, symbol=symbol,
+                    )
+                    if pyr_passed and (code is None or code == pyr_reason):
+                        cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
+                        decision = {
+                            'action': 'ENTER',
+                            'type': pyr_reason,
+                            'side': pos_side,
+                            'price': quote,
+                            'confirmation_bar_id': cand_bar_id,
+                            'breakout_bar_id': cand_bar_id,
+                            'pending_signal_id': f"{pyr_reason}:{pos_side}:{cand_bar_id}",
+                            'entry_phase': 'MEME_PYRAMID_ADDITION',
+                            'reason': pyr_reason,
+                            'entry_atr': float(closed.iloc[-1]['atr']) if len(closed) > 0 else 1.0,
+                            'size_fraction': (pyr_meta or {}).get('suggested_size_ratio', 0.65),
+                            '_is_authorized': True,
+                        }
+                        return authorize(decision, quote)
+
+                # 2. 若無持倉，優先審查「兩根流極速破軌與延續開倉（強制上車）」
+                if not has_pos:
+                    for s in target_sides:
+                        m_passed, m_reason, m_meta = MemeCoinGate.evaluate_meme_entry(
+                            frame, quote, s, symbol=symbol,
+                        )
+                        if m_passed and (code is None or code == m_reason):
+                            cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
+                            decision = {
+                                'action': 'ENTER',
+                                'type': m_reason,
+                                'side': s,
+                                'price': quote,
+                                'confirmation_bar_id': cand_bar_id,
+                                'breakout_bar_id': cand_bar_id,
+                                'pending_signal_id': f"{m_reason}:{s}:{cand_bar_id}",
+                                'entry_phase': 'MEME_BREAKOUT_ENTRY',
+                                'reason': m_reason,
+                                'entry_atr': float(closed.iloc[-1]['atr']) if len(closed) > 0 else 1.0,
+                                'size_fraction': 1.0,
+                                '_is_authorized': True,
+                            }
+                            passed_pf, pf_reason = pre_flight_safety_check(
+                                frame, quote, s, decision_type=m_reason,
+                                account=account, symbol=symbol,
+                                entry_phase='MEME_BREAKOUT_ENTRY',
+                            )
+                            if not passed_pf:
+                                return reject(pf_reason)
+                            return authorize(decision, quote)
+
+                    # 3. 若未觸發破軌，審查「提前埋伏 30% 底倉」
+                    for s in target_sides:
+                        amb_passed, amb_reason, amb_meta = MemeCoinGate.evaluate_ambush_entry(
+                            frame, quote, s, symbol=symbol,
+                        )
+                        if amb_passed and (code is None or code == amb_reason):
+                            cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
+                            decision = {
+                                'action': 'ENTER',
+                                'type': amb_reason,
+                                'side': s,
+                                'price': quote,
+                                'confirmation_bar_id': cand_bar_id,
+                                'breakout_bar_id': cand_bar_id,
+                                'pending_signal_id': f"{amb_reason}:{s}:{cand_bar_id}",
+                                'entry_phase': 'MEME_AMBUSH_ENTRY',
+                                'reason': amb_reason,
+                                'entry_atr': float(closed.iloc[-1]['atr']) if len(closed) > 0 else 1.0,
+                                'size_fraction': (amb_meta or {}).get('suggested_size_ratio', 0.35),
+                                '_is_authorized': True,
+                            }
+                            passed_pf, pf_reason = pre_flight_safety_check(
+                                frame, quote, s, decision_type=amb_reason,
+                                account=account, symbol=symbol,
+                                entry_phase='MEME_AMBUSH_ENTRY',
+                            )
+                            if not passed_pf:
+                                return reject(pf_reason)
+                            return authorize(decision, quote)
+
+                if code is not None and code in MEME_ENTRY_CODES:
+                    return reject("WAIT_MEME_ENTRY_CONDITIONS")
 
         # The live scanner and final order firewall share this closed set of
         # entry authorities. Do not evaluate legacy, continuation, or reversal

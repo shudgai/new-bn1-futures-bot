@@ -2,6 +2,7 @@
 import math
 import time
 
+from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
     evaluate_entry_contract,
@@ -10,18 +11,18 @@ from core.services.entry_contract import (
 
 class EntryFirewall:
     @classmethod
-    def verify_can_open(cls, frame, side, code):
+    def verify_can_open(cls, frame, side, code, symbol=None):
         """Only a supported, freshly validated contract authorizes automatic entry."""
         if code not in ENTRY_CODES:
             raise ValueError('[FORBIDDEN_ENTRY] 已停用的自動入口訊號')
-        decision = evaluate_entry_contract(frame, code=code)
+        decision = evaluate_entry_contract(frame, code=code, symbol=symbol)
         if decision is None or decision['side'] != side:
             raise ValueError('[FORBIDDEN_ENTRY] 最新行情不符合入口訊號')
         return decision
 
 
-def validate_entry_frame(frame, side, code):
-    return EntryFirewall.verify_can_open(frame, side, code)
+def validate_entry_frame(frame, side, code, symbol=None):
+    return EntryFirewall.verify_can_open(frame, side, code, symbol=symbol)
 
 async def validate_account_entry(account, symbol, side, context):
     from core.config import is_entry_disabled
@@ -101,6 +102,7 @@ async def validate_account_entry(account, symbol, side, context):
     )
     cross_chop_problem = (
         None if meme_golden_cross or code in KC_PENDING_CODES
+        or code in MEME_ENTRY_CODES
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
             'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
@@ -117,7 +119,7 @@ async def validate_account_entry(account, symbol, side, context):
     kc_problem = strict_kc_entry_problem(
         frame, quote, side,
         strategy_type=(
-            'BREAKOUT' if code in KC_PENDING_CODES or code in (
+            'BREAKOUT' if code in KC_PENDING_CODES or code in MEME_ENTRY_CODES or code in (
                 'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
             'KC_REALTIME_RAIL_BREACH_SHORT',
             )
@@ -205,16 +207,18 @@ async def validate_account_entry(account, symbol, side, context):
         pipeline.has_strong_bullish_breakout(frame, quote) if side == 'LONG'
         else pipeline.has_strong_bearish_breakout(frame, quote)
     )
+    from core.gates.meme_coin_gate import MEME_ENTRY_CODES
     is_exempt_from_regime = bool(
         code in KC_PENDING_CODES or is_flip_or_shadow
         or is_verified_live_breakout or verified_midline_entry
         or verified_fast_cross is not None
+        or code in MEME_ENTRY_CODES
     )
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem and not is_exempt_from_regime:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
     if (code not in KC_PENDING_CODES and not is_flip_or_shadow and not verified_midline_entry
-            and verified_fast_cross is None):
+            and verified_fast_cross is None and code not in MEME_ENTRY_CODES):
         try:
             chop_problem = pipeline.chop_lockout_problem(
                 frame, quote, allow_flat_lines=is_outer_rail_breakout,

@@ -97,7 +97,8 @@ def channel_swing_exit_allowed(reason=None, trigger=None):
         if (value == 'THREE_POINT_PIVOT'
                 or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')
                 or value.startswith('HYBRID_DYNAMIC')
-                or value == 'KC_MIDLINE_CLOSE_BREACH'):
+                or value == 'KC_MIDLINE_CLOSE_BREACH'
+                or value.startswith('EXIT_MEME_')):
             return True
     return False
 

@@ -135,6 +135,9 @@ BREAKOUT_ENTRY_PHASES = frozenset((
     'KC_LIVE_OUTER_BREAKOUT',
     'KC_LIVE_PATTERN_BREAKOUT',
     'KC_THREE_BAR_BREAKOUT',
+    'MEME_BREAKOUT_ENTRY',
+    'MEME_AMBUSH_ENTRY',
+    'MEME_PYRAMID_ADDITION',
 ))
 _MA_CROSS_CHOP_LOGGED = {}
 FLAT_LINE_BREAKOUT_TYPES = frozenset((
@@ -162,6 +165,9 @@ FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'TRIGGER_B_REENTRY_SUPPORT',
     'TRIGGER_B_REENTRY_BREAKOUT',
 ))
+from core.gates.meme_coin_gate import MEME_ENTRY_CODES
+FLAT_LINE_BREAKOUT_TYPES = FLAT_LINE_BREAKOUT_TYPES | MEME_ENTRY_CODES
+
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
     'AUTHORIZED_BY_TOP_PLUNGE_SHORT',
@@ -192,6 +198,7 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'RE_ENTRY_SHORT',
     'TRIGGER_B_REENTRY_SUPPORT',
     'TRIGGER_B_REENTRY_BREAKOUT',
+    *MEME_ENTRY_CODES,
 ))
 
 
@@ -822,6 +829,8 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
     try:
         if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
+        if entry_phase in ('MEME_BREAKOUT_ENTRY', 'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION'):
+            return None
         if entry_phase == 'REALTIME_RAIL_BREACH':
             if side != 'SHORT':
                 return 'BLOCKED_INVALID_REALTIME_RAIL_BREACH_SIDE'
@@ -2428,17 +2437,19 @@ class EntryGatePipeline:
             GOLDEN_CROSS_FAST_LONG_CODE,
             DEATH_CROSS_FAST_SHORT_CODE,
         )
-        meme_fast_cross = bool(
-            is_fast_cross and symbol
-            and is_meme_breakout_symbol(symbol)
-            and (decision or candidate).get('side') in ('LONG', 'SHORT')
+        is_meme_entry = bool(
+            candidate_type in MEME_ENTRY_CODES
+            or (symbol and is_meme_breakout_symbol(symbol))
         )
-        cross_chop_problem = None if meme_fast_cross else ma5_ma15_cross_chop_problem(
-            frame, quote, symbol=symbol or '', log_result=True,
-            side=(
-                decision.get('side') if isinstance(decision, dict)
-                else requested_side
-            ),
+        cross_chop_problem = (
+            None if is_meme_entry
+            else ma5_ma15_cross_chop_problem(
+                frame, quote, symbol=symbol or '', log_result=True,
+                side=(
+                    decision.get('side') if isinstance(decision, dict)
+                    else requested_side
+                ),
+            )
         )
         if cross_chop_problem:
             if diagnostics is not None:
@@ -2722,6 +2733,7 @@ class EntryGatePipeline:
                 'CLOSED_BODY_BREAKOUT_LONG', 'CLOSED_BODY_BREAKOUT_SHORT',
                 'RE_ENTRY_LONG', 'RE_ENTRY_SHORT',
                 'TRIGGER_B_REENTRY_SUPPORT', 'TRIGGER_B_REENTRY_BREAKOUT',
+                *MEME_ENTRY_CODES,
             ):
                 refreshed = decision
             elif supplied_type == 'AUTHORIZED_REALTIME_BREAKOUT':
@@ -2756,9 +2768,15 @@ class EntryGatePipeline:
                 return None
             decision = refreshed
 
-        cross_chop_problem = ma5_ma15_cross_chop_problem(
-            frame, quote, symbol=symbol or '', log_result=True,
-            side=decision.get('side'),
+        cross_chop_problem = (
+            None if (
+                decision.get('type') in MEME_ENTRY_CODES
+                or (symbol and is_meme_breakout_symbol(symbol))
+            )
+            else ma5_ma15_cross_chop_problem(
+                frame, quote, symbol=symbol or '', log_result=True,
+                side=decision.get('side'),
+            )
         )
         if cross_chop_problem:
             if diagnostics is not None:
@@ -2915,12 +2933,17 @@ class EntryGatePipeline:
                 MOMENTUM_BURST_SHORT_CODE,
             )
         )
+        is_meme_signal = bool(
+            decision.get('type') in MEME_ENTRY_CODES
+            or (symbol and is_meme_breakout_symbol(symbol))
+        )
         if not is_top_waterfall_flip:
             ma_bias_problem = self._ma15_bias_problem(
                 frame, quote, side,
-                allow_flat_slope=(is_explosive_breakout or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'),
+                allow_flat_slope=(is_explosive_breakout or is_meme_signal or decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY'),
                 allow_directional_breakout=(
-                    decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
+                    is_meme_signal
+                    or decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'
                     or is_midline_break
                     or (is_reversal_flip and not is_midline_break)
                 ),
@@ -2963,6 +2986,8 @@ class EntryGatePipeline:
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:
+            if is_meme_signal:
+                continue
             if ((is_trend_continuation or is_shadow_retest or is_midline_break
                  or (is_bypass_spatial and not is_live_short_rail_breakout))
                     and name == 'CANDLE_SOLIDITY'):
@@ -2990,8 +3015,8 @@ class EntryGatePipeline:
                     )
                 return None
 
-        # 3. Anti-trend hard structure check (反手翻轉、順勢延續與中軌提前突破豁免舊趨勢排列)
-        if not (is_reversal_flip or is_trend_continuation or is_rt_breakout or is_midline_break):
+        # 3. Anti-trend hard structure check (反手翻轉、順勢延續、妖幣與中軌提前突破豁免舊趨勢排列)
+        if not (is_reversal_flip or is_trend_continuation or is_rt_breakout or is_midline_break or is_meme_signal):
             curr = frame.iloc[-1]
             ma5 = float(curr.get('ma5', quote))
             ma15 = float(curr.get('ma15', quote))

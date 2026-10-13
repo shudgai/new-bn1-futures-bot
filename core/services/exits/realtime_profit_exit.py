@@ -444,6 +444,36 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             if frame is not None and not frame.empty:
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
                 if entry_m == 'CHANNEL_SWING':
+                    from core.gates.meme_coin_gate import MemeCoinGate
+                    if MemeCoinGate.is_meme_coin(symbol):
+                        side_m = str(position.get('side', '')).upper()
+                        amb_fail, amb_fail_reason = MemeCoinGate.evaluate_ambush_failure_stop(
+                            frame, price, side_m, symbol=symbol,
+                        )
+                        if amb_fail and amb_fail_reason:
+                            account.log(
+                                f'MEME_AMBUSH_FAIL_EXIT symbol={symbol} reason={amb_fail_reason} price={price}',
+                                'WARNING',
+                            )
+                            await account.close_position(
+                                symbol, price, f'Channel Swing {amb_fail_reason}',
+                                is_manual=True,
+                            )
+                            return True
+                        m_exit, m_exit_reason = MemeCoinGate.evaluate_meme_exit(
+                            frame, price, side_m, symbol=symbol,
+                        )
+                        if m_exit and m_exit_reason:
+                            account.log(
+                                f'MEME_EXIT symbol={symbol} reason={m_exit_reason} price={price}',
+                                'WARNING',
+                            )
+                            await account.close_position(
+                                symbol, price, f'Channel Swing {m_exit_reason}',
+                                is_manual=True,
+                            )
+                            return True
+
                     from core.gates.holding_protection_gate import (
                         CHANNEL_PEAK_EXIT_STATE_KEY,
                         INTRABAR_SPIKE_STATE_KEY,

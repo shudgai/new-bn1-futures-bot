@@ -49,6 +49,7 @@ from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
 from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
 from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 import asyncio
 import collections
 from collections import deque
@@ -2020,6 +2021,7 @@ class TradingEngine:
         from core.services.entry_contract import (
             ENTRY_CODES, ENTRY_EVIDENCE_KEYS, quote_beyond_side_outer_rail,
         )
+        from core.gates.meme_coin_gate import MEME_ENTRY_CODES
         if signal.get('signal_code') not in ENTRY_CODES:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'BLOCKED_OBSOLETE_ENTRY_SIGNAL', signal.get('candidate_bar_id'))
             return False
@@ -2131,6 +2133,7 @@ class TradingEngine:
                 'KC_DEATH_CROSS_FAST_SHORT',
                 'KC_MOMENTUM_BURST_LONG',
                 'KC_MOMENTUM_BURST_SHORT',
+                *MEME_ENTRY_CODES,
             )
         )
         if (not is_priority_entry
@@ -2220,6 +2223,9 @@ class TradingEngine:
                 return False
             amount = self._full_wallet_entry_margin(float(self.account.get_wallet_balance()),
                 float(self.account.get_available_balance()), leverage)
+            size_fraction = float(signal.get('size_fraction') or decision.get('size_fraction') or 1.0)
+            if 0.0 < size_fraction < 1.0:
+                amount = amount * size_fraction
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
                 return False
@@ -2269,6 +2275,7 @@ class TradingEngine:
                     'KC_DEATH_CROSS_FAST_SHORT',
                     'KC_MOMENTUM_BURST_LONG',
                     'KC_MOMENTUM_BURST_SHORT',
+                    *MEME_ENTRY_CODES,
                 )
                 else entry_direction_problem(snapshot['frame'], price, side)
             )
@@ -2432,6 +2439,7 @@ class TradingEngine:
                 'TRIGGER_C_CONTINUATION', 'BEARISH_INSTANT_BREAKOUT',
                 'BULLISH_INSTANT_BREAKOUT',
                 'CLIMAX_REVERSAL_FLIP',
+                *MEME_ENTRY_CODES,
             ) or bool(observed.get('override_cooldown'))) and observed.get('side') == side
         )
         if (observed['side'] == side and observed['entry_phase'] in (

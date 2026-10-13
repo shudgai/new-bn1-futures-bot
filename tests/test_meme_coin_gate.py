@@ -197,3 +197,105 @@ class TestMemeCoinGate:
         )
         assert should_stop is True
         assert reason == 'EXIT_MEME_AMBUSH_FAIL_KC_MID_BREACH'
+
+    def test_evaluate_entry_contract_authorizes_meme_ambush_successfully(self):
+        # 測試 evaluate_entry_contract 真正放行妖幣提前埋伏底倉（不再被三根慢速或空間檢查阻擋）
+        from core.services.entry_contract import evaluate_entry_contract
+        rows = [
+            {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
+             'ma5': 9.8, 'ma15': 9.7, 'kc_middle': 9.9, 'kc_upper': 10.8, 'kc_lower': 9.0,
+             'atr': 1.0, 'timestamp': 1000 + i * 60000, 'is_closed': True}
+            for i in range(12)
+        ]
+        # 當前 K 棒：在中軌與上軌之間蓄勢金叉向上
+        rows.append({
+            'open': 10.0, 'close': 10.3, 'high': 10.4, 'low': 9.9,
+            'ma5': 10.2, 'ma15': 9.9, 'kc_middle': 10.05, 'kc_upper': 10.8, 'kc_lower': 9.2,
+            'atr': 1.0, 'timestamp': 1000 + 12 * 60000, 'is_closed': False,
+        })
+        df = make_frame(rows)
+        diagnostics = {}
+        decision = evaluate_entry_contract(
+            df, price=10.3, symbol='CAP/USDT', diagnostics=diagnostics
+        )
+        assert decision is not None, f"Blocked: {diagnostics.get('reason')}"
+        assert decision['type'] == 'MEME_AMBUSH_ENTRY_LONG'
+        assert decision['side'] == 'LONG'
+        assert decision['size_fraction'] == 0.35
+        assert decision['_is_authorized'] is True
+
+    def test_evaluate_entry_contract_authorizes_meme_breakout_successfully(self):
+        # 測試 evaluate_entry_contract 真正放行妖幣兩根破軌極速捕捉（不再被三根慢速阻擋）
+        from core.services.entry_contract import evaluate_entry_contract
+        rows = [
+            {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
+             'ma5': 9.8, 'ma15': 9.7, 'kc_middle': 9.9, 'kc_upper': 10.5, 'kc_lower': 9.0,
+             'atr': 1.0, 'timestamp': 1000 + i * 60000, 'is_closed': True}
+            for i in range(11)
+        ]
+        # 前一根已突破 KC 上軌 (10.8 > 10.5)
+        rows.append({
+            'open': 10.0, 'close': 10.8, 'high': 11.0, 'low': 9.8,
+            'ma5': 10.2, 'ma15': 9.8, 'kc_middle': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.0,
+            'atr': 1.0, 'timestamp': 1000 + 11 * 60000, 'is_closed': True,
+        })
+        # 當前根持續在軌外 (11.2 > 10.6)，MA5 向上發散 (10.6 > 10.2)
+        rows.append({
+            'open': 10.8, 'close': 11.2, 'high': 11.5, 'low': 10.7,
+            'ma5': 10.6, 'ma15': 9.9, 'kc_middle': 10.1, 'kc_upper': 10.6, 'kc_lower': 9.0,
+            'atr': 1.0, 'timestamp': 1000 + 12 * 60000, 'is_closed': False,
+        })
+        df = make_frame(rows)
+        diagnostics = {}
+        decision = evaluate_entry_contract(
+            df, price=11.2, symbol='龍蝦/USDT', diagnostics=diagnostics
+        )
+        assert decision is not None, f"Blocked: {diagnostics.get('reason')}"
+        assert decision['type'] in ('MEME_INITIAL_KC_BREAKOUT_LONG', 'MEME_FORCED_CONTINUATION_ENTRY_LONG')
+        assert decision['side'] == 'LONG'
+        assert decision['size_fraction'] == 1.0
+        assert decision['_is_authorized'] is True
+
+    def test_full_pipeline_authorization_and_firewall_verification_for_meme(self):
+        # 測試完整鏈路：evaluate_entry_contract -> pipeline.authorize -> EntryFirewall.verify_can_open
+        from core.services.entry_contract import evaluate_entry_contract
+        from core.gates.pipeline import pipeline
+        from core.services.entry_firewall import EntryFirewall
+
+        rows = [
+            {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
+             'ma5': 9.8, 'ma15': 9.7, 'kc_middle': 9.9, 'kc_upper': 10.5, 'kc_lower': 9.0,
+             'atr': 1.0, 'timestamp': 1000 + i * 60000, 'is_closed': True}
+            for i in range(11)
+        ]
+        rows.append({
+            'open': 10.0, 'close': 10.8, 'high': 11.0, 'low': 9.8,
+            'ma5': 10.2, 'ma15': 9.8, 'kc_middle': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.0,
+            'atr': 1.0, 'timestamp': 1000 + 11 * 60000, 'is_closed': True,
+        })
+        rows.append({
+            'open': 10.8, 'close': 11.2, 'high': 11.5, 'low': 10.7,
+            'ma5': 10.6, 'ma15': 9.9, 'kc_middle': 10.1, 'kc_upper': 10.6, 'kc_lower': 9.0,
+            'atr': 1.0, 'timestamp': 1000 + 12 * 60000, 'is_closed': False,
+        })
+        df = make_frame(rows)
+        diagnostics = {}
+        decision = evaluate_entry_contract(
+            df, price=11.2, symbol='CAP/USDT', diagnostics=diagnostics
+        )
+        assert decision is not None, f"Contract blocked: {diagnostics.get('reason')}"
+        code = decision['type']
+        side = decision['side']
+
+        # 1. 測試 pipeline.authorize
+        pipe_diag = {}
+        authorized = pipeline.authorize(decision, df, 11.2, symbol='CAP/USDT', diagnostics=pipe_diag)
+        assert authorized is not None, f"Pipeline blocked: {pipe_diag.get('reason')}"
+
+        # 2. 測試 EntryFirewall.verify_can_open
+        verified = EntryFirewall.verify_can_open(df, side, code, symbol='CAP/USDT')
+        assert verified is not None
+        assert verified['side'] == side
+        assert verified['type'] == code
+
+
