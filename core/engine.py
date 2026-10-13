@@ -1750,7 +1750,13 @@ class TradingEngine:
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
         failed = getattr(self.account, 'failed_breakout_revalidation', {}).get(symbol)
-        if is_live_outer and isinstance(failed, dict) and failed.get('side') == side:
+        current_signal_id = (kwargs.get('authorized_entry') or {}).get('pending_signal_id')
+        failed_signal_id = (failed or {}).get('signal_id')
+        is_late_chase = (
+            failed.get('bar_id') == candidate_bar_id
+            or (failed_signal_id and current_signal_id == failed_signal_id)
+        ) if isinstance(failed, dict) else False
+        if is_live_outer and isinstance(failed, dict) and failed.get('side') == side and is_late_chase:
             from core.services.entry_contract import quote_beyond_side_outer_rail
             try:
                 still_outside = quote_beyond_side_outer_rail(frame, side, price)

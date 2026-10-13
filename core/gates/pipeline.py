@@ -150,6 +150,12 @@ FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'KC_REALTIME_RAIL_BREACH_SHORT',
     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
     'TRIGGER_A_KC_BREAKOUT',
+    'TRIGGER_B_MA_CROSS',
+    'TRIGGER_C_CONTINUATION',
+    'RE_ENTRY_LONG',
+    'RE_ENTRY_SHORT',
+    'TRIGGER_B_REENTRY_SUPPORT',
+    'TRIGGER_B_REENTRY_BREAKOUT',
 ))
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
@@ -170,6 +176,17 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
     'KC_LIVE_BODY_BREAKOUT_LONG',
     'KC_LIVE_BODY_BREAKOUT_SHORT',
+    'KC_GOLDEN_CROSS_FAST_LONG',
+    'KC_DEATH_CROSS_FAST_SHORT',
+    'TRIGGER_A_KC_BREAKOUT',
+    'TRIGGER_B_MA_CROSS',
+    'TRIGGER_C_CONTINUATION',
+    'CLOSED_BODY_BREAKOUT_LONG',
+    'CLOSED_BODY_BREAKOUT_SHORT',
+    'RE_ENTRY_LONG',
+    'RE_ENTRY_SHORT',
+    'TRIGGER_B_REENTRY_SUPPORT',
+    'TRIGGER_B_REENTRY_BREAKOUT',
 ))
 
 
@@ -385,10 +402,11 @@ def fast_cross_evidence(
         if side == 'LONG':
             body = quote - opening
             directional_wick = high - max(opening, quote)
+            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
+            prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
             crossed = (
-                previous_ma5 <= previous_ma15
-                and live_ma5 > live_ma15
-                and live_ma5 > previous_ma5
+                (previous_ma5 <= previous_ma15 and live_ma5 > live_ma15 and live_ma5 > previous_ma5)
+                or (prev2_ma5 <= prev2_ma15 and previous_ma5 > previous_ma15 and live_ma5 >= previous_ma5 and live_ma5 > live_ma15)
             )
             # 當根 1m K 棒收線確認（close > ma5 且 close > open）
             candle_confirmed = quote > live_ma5 and quote > opening
@@ -397,10 +415,11 @@ def fast_cross_evidence(
         else:
             body = opening - quote
             directional_wick = min(opening, quote) - low
+            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
+            prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
             crossed = (
-                previous_ma5 >= previous_ma15
-                and live_ma5 < live_ma15
-                and live_ma5 < previous_ma5
+                (previous_ma5 >= previous_ma15 and live_ma5 < live_ma15 and live_ma5 < previous_ma5)
+                or (prev2_ma5 >= prev2_ma15 and previous_ma5 < previous_ma15 and live_ma5 <= previous_ma5 and live_ma5 < live_ma15)
             )
             # 當根 1m K 棒收線確認（close < ma5 且 close < open）
             candle_confirmed = quote < live_ma5 and quote < opening
@@ -514,7 +533,7 @@ def fast_cross_ma15_slope_problem(
 ) -> Optional[str]:
     """Reject a fast MA cross when live MA15 movement is flat relative to ATR."""
     try:
-        if side == 'LONG' and is_meme_breakout_symbol(symbol):
+        if is_meme_breakout_symbol(symbol):
             return None
         if (side not in ('LONG', 'SHORT') or frame is None or frame.empty
                 or bool(frame.iloc[-1].get('is_closed', True))):
@@ -2364,8 +2383,7 @@ class EntryGatePipeline:
             candidate = self.detect_realtime_breakout(frame, quote, side=requested_side)
         if candidate is None and requested_side in (None, 'SHORT'):
             candidate = self.detect_downtrend_pullback_resume_short(frame, quote)
-        if (decision is None and candidate is not None
-                and candidate.get('is_midline_break') is True):
+        if decision is None and candidate is not None:
             decision = candidate
 
         candidate_type = (
@@ -2549,6 +2567,18 @@ class EntryGatePipeline:
                 return None
             if supplied_type == 'KC_DOWNTREND_PULLBACK_RESUME_SHORT':
                 refreshed = self.detect_downtrend_pullback_resume_short(frame, quote)
+            elif supplied_type in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE, 'TRIGGER_B_MA_CROSS'):
+                refreshed = self.detect_fast_cross(frame, quote, side=side, symbol=symbol) or decision
+            elif supplied_type in ('KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT'):
+                from core.services.entry_contract import evaluate_live_body_breakout
+                refreshed = evaluate_live_body_breakout(frame, quote, symbol=symbol, requested_side=side) or decision
+            elif supplied_type in (
+                'TRIGGER_A_KC_BREAKOUT', 'TRIGGER_C_CONTINUATION',
+                'CLOSED_BODY_BREAKOUT_LONG', 'CLOSED_BODY_BREAKOUT_SHORT',
+                'RE_ENTRY_LONG', 'RE_ENTRY_SHORT',
+                'TRIGGER_B_REENTRY_SUPPORT', 'TRIGGER_B_REENTRY_BREAKOUT',
+            ):
+                refreshed = decision
             elif supplied_type == 'AUTHORIZED_REALTIME_BREAKOUT':
                 refreshed = self.detect_realtime_breakout(frame, quote, side=side)
             elif supplied_type == 'AUTHORIZED_BY_MIDLINE_BREAK_SHORT':

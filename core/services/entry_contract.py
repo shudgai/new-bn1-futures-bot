@@ -2298,6 +2298,10 @@ def pre_flight_safety_check(
             frame, quote, side,
         )
         if direction_problem:
+            if direction_problem == "BLOCKED_BY_MA5_WEAK_SLOPE" and side == "LONG":
+                return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
+            if direction_problem == "BLOCKED_BY_MA5_STRONG_SLOPE" and side == "SHORT":
+                return False, "BLOCKED_BY_MA5_SLOPE_UP"
             return False, direction_problem
         if frame is None or len(frame) < 2:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
@@ -2380,10 +2384,11 @@ def pre_flight_safety_check(
                     else "BLOCKED_BY_MA5_SLOPE_UP"
                 )
         elif not slope_flip_exempt:
-            if is_strong_breakout:
-                if (side == 'LONG' and ma5_slope < 0) or (side == 'SHORT' and ma5_slope > 0):
-                    return False, "BLOCKED_BY_MA5_SLOPE_DOWN" if side == "LONG" else "BLOCKED_BY_MA5_SLOPE_UP"
-            else:
+            if side == 'LONG' and ma5_slope < 0:
+                return False, "BLOCKED_BY_MA5_SLOPE_DOWN"
+            if side == 'SHORT' and ma5_slope > 0:
+                return False, "BLOCKED_BY_MA5_SLOPE_UP"
+            if not is_strong_breakout:
                 slope_problem = live_ma5_slope_problem(frame, quote, side)
                 if slope_problem:
                     return False, slope_problem
@@ -2475,12 +2480,15 @@ def pre_flight_safety_check(
             if ma5_slope > 0:
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
                 
-            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break 100% 豁免下軌空間限制
-            if (not is_explosive and not is_flip and not is_midline_break
-                    and not is_confirmed_rail_breakout):
+            # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break / fast_cross / breakout 100% 豁免下軌空間限制
+            is_exempt_space = (
+                is_explosive or is_flip or is_midline_break or is_confirmed_rail_breakout
+                or decision_type in (DEATH_CROSS_FAST_SHORT_CODE, 'TRIGGER_B_MA_CROSS', 'TRIGGER_A_KC_BREAKOUT', 'KC_LIVE_BODY_BREAKOUT_SHORT')
+            )
+            if not is_exempt_space:
                 is_volume_breakout = (quote < kc_lower and (open_p - quote) >= 0.5 * atr)
                 if not is_volume_breakout:
-                    if kc_lower > 0 and (quote - kc_lower) < 0.5 * atr:
+                    if kc_lower > 0 and quote > kc_lower and (quote - kc_lower) < 0.5 * atr:
                         return False, "REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC"
                     
             # 3. 陽線回抽且價格站上 MA5 時嚴禁追空！
@@ -2541,6 +2549,17 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or decision.get('type') in (
                 BEARISH_INSTANT_BREAKOUT_CODE,
                 BULLISH_INSTANT_BREAKOUT_CODE,
+                GOLDEN_CROSS_FAST_LONG_CODE,
+                DEATH_CROSS_FAST_SHORT_CODE,
+                'TRIGGER_B_MA_CROSS',
+                'TRIGGER_A_KC_BREAKOUT',
+                'TRIGGER_C_CONTINUATION',
+                'KC_LIVE_BODY_BREAKOUT_LONG',
+                'KC_LIVE_BODY_BREAKOUT_SHORT',
+                'CLOSED_BODY_BREAKOUT_LONG',
+                'CLOSED_BODY_BREAKOUT_SHORT',
+                'RE_ENTRY_LONG',
+                'RE_ENTRY_SHORT',
             )
             else ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
@@ -3255,10 +3274,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         side, trigger_type = detect_raw_triggers(closed, account, symbol)
         if side is None: return reject("WAIT_DUAL_TRACK_TRIGGER")
-        if trigger_type == 'TRIGGER_A_KC_BREAKOUT':
-            return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
-        if trigger_type in ('RE_ENTRY_LONG', 'RE_ENTRY_SHORT'):
-            return reject('BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED')
 
         if (trigger_type == 'TRIGGER_C_CONTINUATION'
                 and not bool(frame.iloc[-1].get('is_closed', True))):
