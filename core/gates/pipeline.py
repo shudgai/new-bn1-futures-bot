@@ -288,8 +288,8 @@ def ma5_ma15_cross_chop_problem(
             and below(gap_pct, 0.0004 if meme_impulse else MA_CROSS_CHOP_RECOVERY_GAP_PCT)
         )
         fresh_cross = (
-            (side == 'SHORT' and current_ma5 < current_ma15 and current_ma5 < previous_ma5 and previous_ma5 >= previous_ma15)
-            or (side == 'LONG' and current_ma5 > current_ma15 and current_ma5 > previous_ma5 and previous_ma5 <= previous_ma15)
+            (side == 'SHORT' and current_ma5 < current_ma15 and current_ma5 < previous_ma5 and previous_ma5 > previous_ma15)
+            or (side == 'LONG' and current_ma5 > current_ma15 and current_ma5 > previous_ma5 and previous_ma5 < previous_ma15)
         )
         if not fresh_cross and below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT):
             problem = 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
@@ -342,8 +342,7 @@ def fast_cross_evidence(
     """Return symmetric evidence for a fresh, directional MA5/MA15 fast cross."""
     try:
         if (side not in ('LONG', 'SHORT') or frame is None or len(frame) < 2
-                or 'is_closed' not in frame.columns
-                or bool(frame.iloc[-1]['is_closed'])):
+                or 'is_closed' not in frame.columns):
             return None
         closed = closed_entry_candles(frame)
         if len(closed) < 12:
@@ -1916,19 +1915,33 @@ class EntryGatePipeline:
                 atr, live_ma5, live_ma15, previous_ma5,
                 live_bar_id, previous_bar_id,
             )
+            body = quote - opening if side == 'LONG' else opening - quote
+            candle_range = high - low
+            directional_wick = (
+                high - max(opening, quote)
+                if side == 'LONG'
+                else min(opening, quote) - low
+            )
+            is_v_reversal_long = (
+                side == 'LONG'
+                and body >= 0.7 * atr
+                and quote > middle
+                and live_ma5 > previous_ma5
+                and directional_wick <= 0.8 * body
+            )
+
             if (not all(math.isfinite(value) and value > 0 for value in values)
                     or live_bar_id != previous_bar_id + 60_000
                     or low > min(opening, quote)
                     or high < max(opening, quote)
-                    or not lower < middle < upper
-                    or ma5_ma15_cross_chop_problem(
-                        frame, quote, side=side,
-                    ) is not None
-                    or strict_kc_entry_problem(frame, quote, side) is not None):
+                    or not lower < middle < upper):
                 return None
 
-            body = quote - opening if side == 'LONG' else opening - quote
-            candle_range = high - low
+            if not is_v_reversal_long:
+                if (ma5_ma15_cross_chop_problem(frame, quote, side=side) is not None
+                        or strict_kc_entry_problem(frame, quote, side) is not None):
+                    return None
+
             midpoint_distance = (
                 middle - quote if side == 'LONG' else quote - middle
             )
@@ -1943,11 +1956,6 @@ class EntryGatePipeline:
                 live_ma5 > previous_ma5
                 if side == 'LONG'
                 else live_ma5 < previous_ma5
-            )
-            directional_wick = (
-                high - max(opening, quote)
-                if side == 'LONG'
-                else min(opening, quote) - low
             )
             # ── 針對逆勢快車道進場的嚴格過濾 ──
             previous_ma15 = float(previous.get('ma15', live_ma15))
@@ -1967,26 +1975,34 @@ class EntryGatePipeline:
                 if live_ma15 >= previous_ma15:
                     return None
             elif side == 'LONG':
-                is_kc_down = (
-                    channel_state in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
-                    or middle < kc_middle_prev
+                is_v_reversal_long = (
+                    body >= 0.7 * atr
+                    and quote > middle
+                    and live_ma5 > previous_ma5
+                    and directional_wick <= 0.8 * body
                 )
-                closed_above_middle = quote > middle and opening >= middle
-                if is_kc_down and not closed_above_middle:
-                    return None
+                if not is_v_reversal_long:
+                    is_kc_down = (
+                        channel_state in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
+                        or middle < kc_middle_prev
+                    )
+                    closed_above_middle = quote > middle and opening >= middle
+                    if is_kc_down and not closed_above_middle:
+                        return None
 
-                if live_ma15 <= previous_ma15:
-                    return None
+                    if live_ma15 <= previous_ma15:
+                        return None
 
-            if (body < MOMENTUM_BURST_BODY_ATR * atr
-                    or candle_range <= 0
-                    or body / candle_range < MOMENTUM_BURST_BODY_RATIO
-                    or directional_wick > MOMENTUM_BURST_MAX_DIRECTIONAL_WICK_RATIO * body
-                    or not crossed_both_mas
-                    or not ma5_turned
-                    or midpoint_distance
-                        > MOMENTUM_BURST_MAX_MIDLINE_DISTANCE_ATR * atr):
-                return None
+            if not (side == 'LONG' and is_v_reversal_long):
+                if (body < MOMENTUM_BURST_BODY_ATR * atr
+                        or candle_range <= 0
+                        or body / candle_range < MOMENTUM_BURST_BODY_RATIO
+                        or directional_wick > MOMENTUM_BURST_MAX_DIRECTIONAL_WICK_RATIO * body
+                        or not crossed_both_mas
+                        or not ma5_turned
+                        or midpoint_distance
+                            > MOMENTUM_BURST_MAX_MIDLINE_DISTANCE_ATR * atr):
+                    return None
 
             code = (
                 MOMENTUM_BURST_LONG_CODE

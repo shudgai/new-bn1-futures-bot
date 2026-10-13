@@ -245,4 +245,104 @@ def test_short_kc_live_body_breakout_space_exemption():
     assert diagnostics.get('reason') not in ('BLOCKED_STRICT_MA_SPACING', 'BLOCKED_STRICT_CHANNEL_CONVERGENCE')
 
 
+def test_momentum_stalling_exit():
+    """衝高滯漲主動止盈/平倉：連續無法刷新高、上影線 >= 實體 0.8 倍且 MA5 走平，主動平多。"""
+    from core.services.exits.dual_track_exit_service import detect_momentum_stalling_exit
+    position = {
+        'symbol': 'CAP/USDT',
+        'side': 'LONG',
+        'entry_price': 0.0940,
+        'highest_price': 0.0950,
+    }
+    atr = 0.0005
+    # 當前 K 線 open 0.0945, quote 0.0946, high 0.0949 (實體 0.0001, 上影線 0.0003 >= 0.8*body)
+    # MA5 從 0.09440 到 0.094405 (|ΔMA5| = 0.000005 / 0.0005 = 0.01 ATR < 0.02 ATR 走平)
+    frame = pd.DataFrame([
+        {'ma5': 0.09440, 'open': 0.0942, 'high': 0.0947, 'low': 0.0941, 'close': 0.0945},
+        {'ma5': 0.094405, 'open': 0.0945, 'high': 0.0949, 'low': 0.0944, 'close': 0.0946},
+    ])
+    assert detect_momentum_stalling_exit(position, frame, 0.0946, 'LONG', atr) is True
+
+
+def test_candle_closed_dump_exit():
+    """大實體破位果斷砍倉：實體陰線收盤確認跌破 MA5，當根收線立即平多。"""
+    from core.services.exits.dual_track_exit_service import is_candle_closed_dump_exit
+    # 實體陰線 open 0.0946, close 0.0940 < open 且 close 0.0940 < ma5 0.0944
+    frame = pd.DataFrame([
+        {'open': 0.0946, 'close': 0.0940, 'ma5': 0.0944},
+    ])
+    # 未收線 -> False
+    assert is_candle_closed_dump_exit(frame, 'LONG', is_closed=False) is False
+    # 收線確認 -> True
+    assert is_candle_closed_dump_exit(frame, 'LONG', is_closed=True) is True
+
+
+def test_anti_top_chase_pinbar():
+    """高檔避雷針防追高：價格高出 MA5 超過 0.6 ATR 且拉出上影線 >= 實體 0.8 倍，禁止追多。"""
+    from core.services.entry_contract import pre_flight_safety_check
+    atr = 0.0005
+    # quote 0.0950, ma5 0.0946 (差距 0.0004 = 0.8 ATR > 0.6 ATR)
+    # open 0.0947, high 0.0954 (實體 0.0003, 上影線 0.0004 >= 0.8*body)
+    frame = pd.DataFrame([
+        {'open': 0.0944, 'close': 0.0948, 'high': 0.0949, 'low': 0.0943, 'ma5': 0.0945, 'ma15': 0.0940,
+         'atr': atr, 'kc_upper': 0.0949, 'kc_middle': 0.0945, 'kc_lower': 0.0930, 'is_closed': True},
+        {'open': 0.0947, 'close': 0.0950, 'high': 0.0954, 'low': 0.0946, 'ma5': 0.0946, 'ma15': 0.0940,
+         'atr': atr, 'kc_upper': 0.0949, 'kc_middle': 0.0945, 'kc_lower': 0.0930, 'is_closed': False},
+    ])
+    passed, reason = pre_flight_safety_check(
+        frame, quote=0.0950, side='LONG',
+        decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == "BLOCKED_ANTI_TOP_CHASE_PINBAR"
+
+
+def test_v_reversal_momentum_burst_long():
+    """V 轉底部動能爆發搶跑：實體 >= 0.7 ATR 站回 KC 中軌上方立即搶跑進場。"""
+    from core.gates.pipeline import EntryGatePipeline
+    rows = []
+    for i in range(14):
+        mid = 0.0500 - i * 0.0002
+        c = mid - 0.0003
+        rows.append({
+            'timestamp': 1791860000000.0 + i * 60000,
+            'open': c - 0.0002,
+            'high': c + 0.0002,
+            'low': c - 0.0004,
+            'close': c,
+            'kc_upper': mid + 0.0005,
+            'kc_middle': mid,
+            'kc_lower': mid - 0.0005,
+            'channel_state': 'KC向下',
+            'ma5': 0.0469 if i == 13 else c,
+            'ma15': mid,
+            'atr': 0.0004,
+            'is_closed': True,
+        })
+    # 第 15 根 (即時 Forming Bar)：V 轉大陽線，open 0.0465 (中軌 0.0470 下方)，quote 0.0474 (中軌上方)
+    # 實體 0.0474 - 0.0465 = 0.0009 >= 0.7 * 0.0004 (0.00028)
+    rows.append({
+        'timestamp': 1791860000000.0 + 14 * 60000,
+        'open': 0.0465,
+        'high': 0.0475,
+        'low': 0.0464,
+        'close': 0.0474,
+        'kc_upper': 0.0475,
+        'kc_middle': 0.0470,
+        'kc_lower': 0.0465,
+        'channel_state': 'KC向下',
+        'ma5': 0.0471,
+        'ma15': 0.0470,
+        'atr': 0.0004,
+        'is_closed': False,
+    })
+    df = pd.DataFrame(rows)
+    df.attrs['timeframe_ms'] = 60000
+    burst = EntryGatePipeline.detect_momentum_burst(df, quote=0.0474, side='LONG')
+    assert burst is not None
+    assert burst['type'] == 'KC_MOMENTUM_BURST_LONG'
+
+
+
 

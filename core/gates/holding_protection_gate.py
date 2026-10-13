@@ -1378,7 +1378,9 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
-        if clean_reason.startswith('HYBRID_DYNAMIC') or clean_reason == 'KC_MIDLINE_CLOSE_BREACH':
+        if (clean_reason.startswith('HYBRID_DYNAMIC')
+                or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
+                or clean_reason in ('MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT', 'CONFIRMED_MA5_CLOSE_BREAK')):
             return _auth(clean_reason)
 
         # One-vote veto: If latest candle closed in favorable KC half

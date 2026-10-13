@@ -2318,6 +2318,15 @@ def pre_flight_safety_check(
                     and not is_midline_break and (curr_is_bearish or prev_is_bearish)
                     and quote < live_ma5):
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
+
+            # 4. 【高檔避雷針防追高限制（Anti-Top Chase）】：
+            # 若當前 1m K 棒已遠離均線（價格高出 MA5 超過 0.6 ATR），且拉出上影線 >= 實體 0.8 倍，禁止在高點盲目追多！
+            high_p = max(float(curr.get('high', quote)), quote)
+            body_p = max(quote - open_p, 0.0)
+            upper_wick_p = high_p - max(open_p, quote)
+            if atr > 0 and (quote - live_ma5) > 0.6 * atr:
+                if upper_wick_p >= 0.8 * body_p and upper_wick_p >= 0.3 * atr:
+                    return False, "BLOCKED_ANTI_TOP_CHASE_PINBAR"
                 
         elif side == "SHORT":
             # 1. 【MA5 向上，100% 絕對禁止開空（向上不開空）】

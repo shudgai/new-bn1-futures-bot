@@ -194,6 +194,71 @@ def is_ma5_slope_shield_active(frame, side: str, atr: float) -> bool:
     return False
 
 
+def is_candle_closed_dump_exit(frame, side: str, is_closed: bool = False) -> bool:
+    """大實體破位果斷砍倉（Candle-Close Dump Exit）：
+    當多單持倉遭遇實體陰線「收盤確認跌破 MA5（is_closed=True 且 close < ma5 且 close < open 明確下跌棒）」，
+    於當根收線當下立即市價平多，嚴禁拖延到次根低點才被動平倉！
+    """
+    if not is_closed or frame is None or frame.empty:
+        return False
+    try:
+        last = frame.iloc[-1]
+        close_p = float(last.get('close', 0.0))
+        open_p = float(last.get('open', 0.0))
+        ma5_p = float(last.get('ma5', 0.0))
+        if close_p <= 0 or ma5_p <= 0 or open_p <= 0:
+            return False
+        if side == 'LONG':
+            return close_p < ma5_p and close_p < open_p
+        elif side == 'SHORT':
+            return close_p > ma5_p and close_p > open_p
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def detect_momentum_stalling_exit(position: dict, frame, quote: float, side: str, atr: float) -> bool:
+    """衝高滯漲主動止盈/平倉（Momentum Stalling Exit）：
+    進場後若連續 2 根 K 棒無法刷新進場點最高價，且出現上影線 >= 實體 0.8 倍的滯漲形態，
+    加上 MA5 斜率走平（|ΔMA5| < 0.02 ATR）：判定多頭推力枯竭，立即主動平倉！
+    """
+    if frame is None or len(frame) < 2 or atr <= 0 or not position:
+        return False
+    try:
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+        curr_ma5 = float(curr.get('ma5', quote))
+        prev_ma5 = float(prev.get('ma5', curr_ma5))
+        slope_atr = abs(curr_ma5 - prev_ma5) / atr
+        if slope_atr >= 0.02:
+            return False
+
+        open_p = float(curr.get('open', quote))
+        high_p = max(float(curr.get('high', quote)), quote)
+        low_p = min(float(curr.get('low', quote)), quote)
+        entry_p = float(position.get('entry_price', quote))
+        peak_p = float(position.get('highest_price') or position.get('peak_price') or entry_p)
+        trough_p = float(position.get('lowest_price') or position.get('trough_price') or entry_p)
+
+        if side == 'LONG':
+            body = max(quote - open_p, 0.0)
+            upper_wick = high_p - max(open_p, quote)
+            stalling_pinbar = (upper_wick >= 0.8 * body and upper_wick >= 0.3 * atr)
+            not_refreshing_high = (high_p <= peak_p and quote < peak_p)
+            if stalling_pinbar and not_refreshing_high:
+                return True
+        elif side == 'SHORT':
+            body = max(open_p - quote, 0.0)
+            lower_wick = min(open_p, quote) - low_p
+            stalling_pinbar = (lower_wick >= 0.8 * body and lower_wick >= 0.3 * atr)
+            not_refreshing_low = (low_p >= trough_p and quote > trough_p)
+            if stalling_pinbar and not_refreshing_low:
+                return True
+    except (TypeError, ValueError, IndexError):
+        pass
+    return False
+
+
 def is_candle_closed_ma5_break(frame, side: str, is_closed: bool = False) -> bool:
     """2. 平倉必須收線確認（Candle-Close Only）：
     取消盤中跳價碰 MA5 即刻市價秒平的敏感邏輯。
@@ -293,15 +358,24 @@ class DualTrackExitStrategy(IExitStrategy):
             if detect_extreme_bar_emergency_exit(frame, current_price, side, atr):
                 return 'EMERGENCY_EXTREME_ADVERSE_BAR'
 
-            # 3. MA5 斜率保護（MA Slope Shield - 回踩強制抱緊）：
+            # 3. 大實體破位果斷砍倉（Candle-Close Dump Exit）：
+            # 當遭遇實體陰線收盤確認跌破 MA5，於當根收線當下立即砍倉！
+            if is_closed and is_candle_closed_dump_exit(frame, side, is_closed=True):
+                return 'CANDLE_CLOSE_DUMP_EXIT'
+
+            # 4. 衝高滯漲主動平倉（Momentum Stalling Exit）：
+            # 滯漲形態 + MA5 走平，主動平倉不拖延！
+            if detect_momentum_stalling_exit(position, frame, current_price, side, atr):
+                return 'MOMENTUM_STALLING_EXIT'
+
+            # 5. MA5 斜率保護（MA Slope Shield - 回踩強制抱緊）：
             # 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
             # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。
             if is_ma5_slope_shield_active(frame, side, atr):
                 return None
 
-            # 4. 平倉必須收線確認（Candle-Close Only）：
-            # 取消盤中跳價碰 MA5 即刻市價秒平的敏感邏輯。
-            # 均線防守必須等 1m K 線收盤確認跌破 MA5（is_closed=True 且 close < ma5）才執行離場。
+            # 6. 平倉必須收線確認（Candle-Close Only）：
+            # 均線防守必須等 1m K 線收盤確認跌破 MA5 才執行離場。
             if is_closed and is_candle_closed_ma5_break(frame, side, is_closed=True):
                 return 'CONFIRMED_MA5_CLOSE_BREAK'
 
