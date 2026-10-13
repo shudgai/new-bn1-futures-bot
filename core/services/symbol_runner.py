@@ -59,10 +59,16 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             EntryGatePipeline.has_explosive_bullish_kc_breakout(frame, quote)
             or EntryGatePipeline.has_explosive_bearish_kc_breakout(frame, quote)
         )
+        bearish_chop_breakout_override = (
+            EntryGatePipeline.has_bearish_chop_breakout_override(frame, quote)
+        )
         ai_chop_breakout_override = (
             EntryGatePipeline.has_strong_bullish_breakout(frame, quote)
             or EntryGatePipeline.has_strong_bearish_breakout(frame, quote)
+            or bearish_chop_breakout_override
         )
+        if spatial_ctx.state == 'CHOP_COMPRESSION' and ai_chop_breakout_override:
+            spatial_act = 'ALLOW_CHOP_BREAKOUT_OVERRIDE'
         spatial_log = (
             f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | "
             f"Context: state={spatial_ctx.state}, bw_ratio={spatial_ctx.bandwidth_ratio:.2f}, "

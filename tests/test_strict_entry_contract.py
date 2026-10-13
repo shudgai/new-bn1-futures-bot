@@ -277,13 +277,14 @@ def test_second_directional_wick_boundary(side,ratio):
     f.loc[f.index[-2],key]=(max(second.open,second.close)+body*ratio if side=='LONG'
                               else min(second.open,second.close)-body*ratio)
     decision = {
+        'side': side,
         'entry_phase': 'KC_MIDLINE_RETEST',
         'breakout_bar_id': float(f.iloc[-2].timestamp),
         'confirmation_bar_id': float(f.iloc[-1].timestamp),
     }
     assert (entry_candle_shape_problem(
         f, float(f.iloc[-1].close), decision,
-    ) is None) == (ratio < 1.)
+    ) is None) == (ratio <= .7)
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_prior_close_does_not_mislabel_new_breakout(side):
@@ -334,6 +335,7 @@ def test_doji_and_both_t_shapes_block_every_entry_candle(side,index,shape):
     else:
         f.loc[f.index[index],'low']=min(row.open,row.close)-2*body
     decision = {
+        'side': side,
         'entry_phase': 'KC_MIDLINE_RETEST',
         'breakout_bar_id': float(f.iloc[index].timestamp),
         'confirmation_bar_id': float(f.iloc[-1].timestamp),
@@ -398,12 +400,13 @@ def test_any_entry_wick_body_boundary(side, index, wick_side, ratio, price_scale
                   'atr', 'kc_upper', 'kc_middle', 'kc_lower']
     f[price_keys] *= price_scale
     decision = {
+        'side': side,
         'entry_phase': 'KC_MIDLINE_RETEST',
         'breakout_bar_id': float(f.iloc[index].timestamp),
         'confirmation_bar_id': float(f.iloc[-1].timestamp),
     }
     assert (entry_candle_shape_problem(f, float(f.iloc[-1].close), decision) is None) == (
-        ratio < 1.
+        (wick_side != ('upper' if side == 'LONG' else 'lower') or ratio <= .7)
     )
 
 
@@ -424,13 +427,16 @@ def test_recent_entry_wicks_are_blocked(side, index, wick_side):
     else:
         f.loc[f.index[index], 'low'] = min(row.open, row.close) - 1.2 * body
     decision = {
+        'side': side,
         'entry_phase': 'KC_MIDLINE_RETEST',
         'breakout_bar_id': float(f.iloc[index].timestamp),
         'confirmation_bar_id': float(f.iloc[-1].timestamp),
     }
-    assert entry_candle_shape_problem(
+    expected_wick_side = 'upper' if side == 'LONG' else 'lower'
+    result = entry_candle_shape_problem(
         f, float(f.iloc[-1]['close']), decision,
-    ) is not None
+    )
+    assert (result is None) == (wick_side != expected_wick_side)
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -443,17 +449,17 @@ def test_latest_quote_creates_long_wick_and_recovers_without_lock(side):
     quote = float(row.open) + sign * .0225
     live_decision = {
         'intrabar': True,
+        'side': side,
         'confirmation_bar_id': float(row.timestamp),
     }
     assert entry_candle_shape_problem(f, quote, live_decision) == (
-        'BLOCKED_LIVE_LONG_WICK_OR_DOJI'
+        'REJECT_ENTRY: DOMINATED_BY_WICKS'
     )
     assert evaluate_v2_frame(f, quote) is None
     assert evaluate_v2_frame(f, float(row.close))
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('wick_side', ['upper', 'lower'])
+@pytest.mark.parametrize('side,wick_side', [('LONG', 'upper'), ('SHORT', 'lower')])
 def test_account_rejects_long_wick_formed_after_signal(side, wick_side):
     f = candles(side)
     ctx = context(f, side)
@@ -468,8 +474,7 @@ def test_account_rejects_long_wick_formed_after_signal(side, wick_side):
         asyncio.run(validate_account_entry(account, 'TEST', side, ctx))
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('wick_side', ['upper', 'lower'])
+@pytest.mark.parametrize('side,wick_side', [('LONG', 'upper'), ('SHORT', 'lower')])
 def test_exchange_order_not_sent_when_fresh_frame_has_long_wick(
     monkeypatch, side, wick_side, testnet_state_file,
 ):
@@ -502,11 +507,17 @@ def test_scan_and_idle_strategy_reject_long_wick(side):
     from core.services.strategies.strict_state_machine import StrictStateMachineStrategy
     f = candles(side)
     row = f.iloc[-1]
-    f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * abs(row.close - row.open)
+    body = abs(row.close - row.open)
+    if side == 'LONG':
+        f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * body
+        expected_reason = 'REJECT_ENTRY: UPPER_WICK_RESISTANCE'
+    else:
+        f.loc[f.index[-1], 'low'] = min(row.open, row.close) - 1.2 * body
+        expected_reason = 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
     quote = float(row.close)
     strategy = StrictStateMachineStrategy()
     decision = strategy.evaluate_tick('TEST', f, quote)
-    assert decision == {'action': 'WAIT', 'reason': 'BLOCKED_LIVE_LONG_WICK_OR_DOJI'}
+    assert decision == {'action': 'WAIT', 'reason': expected_reason}
     account = SimpleNamespace(positions={}, log=lambda *args: None)
     engine = SimpleNamespace(account=account, tickers={'TEST': quote},
                              _execute_confirmed_channel_break=AsyncMock())

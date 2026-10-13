@@ -89,9 +89,102 @@ def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_lo
     return True, "PASSED"
 
 
+def validate_ma_alignment(frame, side: str, quote: float = None) -> tuple[bool, str]:
+    """【均線相對位置的絕對限制】開倉閘門第一道底線：
+    1. 多單（LONG）方向鐵律：
+       - 硬性門檻：必須滿足 MA5 > MA15（MA5 位於 MA15 上方，呈黃金交叉或多頭排列）。
+       - 收線確認：當根 1m K 線收盤價必須站穩在均線之上（close > ma5）。
+       - 一票否決：若 MA5 <= MA15 或 close <= ma5，嚴禁開多單。
+    2. 空單（SHORT）方向鐵律：
+       - 硬性門檻：必須滿足 MA5 < MA15（MA5 位於 MA15 下方，呈死亡交叉或空頭排列）。
+       - 收線確認：當根 1m K 線收盤價必須壓制在均線之下（close < ma5）。
+       - 一票否決：若 MA5 >= MA15 或 close >= ma5，嚴禁開空單。
+    """
+    if frame is None or len(frame) < 1 or side not in ('LONG', 'SHORT'):
+        return False, "REJECT: MA_ALIGNMENT_MISMATCH"
+    try:
+        curr = frame.iloc[-1]
+        is_forming = ('is_closed' in curr and not bool(curr['is_closed'])) or (
+            'is_closed' not in curr and quote is not None and quote != float(curr.get('close', quote))
+        )
+        if is_forming and quote is not None:
+            close = float(quote)
+            raw_close = float(curr.get('close', quote))
+            ma5 = (
+                float(curr['ma5']) + (close - raw_close) / 5.0
+                if 'ma5' in curr and math.isfinite(float(curr['ma5']))
+                else (float(frame['close'].tail(5).mean()) if len(frame) >= 5 else close)
+            )
+            ma15 = (
+                float(curr['ma15']) + (close - raw_close) / 15.0
+                if 'ma15' in curr and math.isfinite(float(curr['ma15']))
+                else (float(frame['close'].tail(15).mean()) if len(frame) >= 15 else close)
+            )
+        else:
+            close = float(curr['close']) if 'close' in curr else float(quote)
+            ma5 = (
+                float(curr['ma5'])
+                if 'ma5' in curr and math.isfinite(float(curr['ma5']))
+                else (float(frame['close'].tail(5).mean()) if len(frame) >= 5 else close)
+            )
+            ma15 = (
+                float(curr['ma15'])
+                if 'ma15' in curr and math.isfinite(float(curr['ma15']))
+                else (float(frame['close'].tail(15).mean()) if len(frame) >= 15 else close)
+            )
+
+        if not (math.isfinite(ma5) and math.isfinite(ma15) and math.isfinite(close)):
+            return False, "REJECT: MA_ALIGNMENT_MISMATCH"
+
+        if side == 'LONG':
+            if ma5 <= ma15 or close <= ma5:
+                return False, "REJECT: MA_ALIGNMENT_MISMATCH"
+        elif side == 'SHORT':
+            if ma5 >= ma15 or close >= ma5:
+                return False, "REJECT: MA_ALIGNMENT_MISMATCH"
+        return True, "PASSED"
+    except Exception:
+        return False, "REJECT: MA_ALIGNMENT_MISMATCH"
+
+
 def at_least(value, threshold):
     """Tolerate arithmetic rounding only at inclusive boundaries."""
     return value >= threshold or math.isclose(value, threshold, rel_tol=1e-12, abs_tol=0.)
+
+
+def wick_exhaustion_problem(candle, side, quote=None, min_body_ratio=0.35):
+    """Reject low-body candles and side-opposing wick resistance/support."""
+    if side not in (None, 'LONG', 'SHORT'):
+        return 'BLOCKED_INVALID_ENTRY_SIDE'
+    try:
+        opening = float(candle['open'] if hasattr(candle, '__getitem__') else candle.open)
+        raw_close = float(candle['close'] if hasattr(candle, '__getitem__') else candle.close)
+        high = float(candle['high'] if hasattr(candle, '__getitem__') else candle.high)
+        low = float(candle['low'] if hasattr(candle, '__getitem__') else candle.low)
+        close = float(quote) if quote is not None else raw_close
+        high, low = max(high, opening, close), min(low, opening, close)
+        if (not all(math.isfinite(value) and value > 0
+                    for value in (opening, close, high, low))
+                or high <= low or low > min(opening, close)
+                or high < max(opening, close)):
+            return 'BLOCKED_INVALID_ENTRY_CANDLE'
+        body = abs(close - opening)
+        body_ratio = body / (high - low + 1e-9)
+        if body_ratio < float(min_body_ratio):
+            return 'REJECT_ENTRY: DOMINATED_BY_WICKS'
+        if side == 'LONG':
+            upper_wick = high - max(opening, close)
+            threshold = 0.7 * body
+            if upper_wick > threshold and not math.isclose(upper_wick, threshold, rel_tol=1e-12, abs_tol=0.):
+                return 'REJECT_ENTRY: UPPER_WICK_RESISTANCE'
+        elif side == 'SHORT':
+            lower_wick = min(opening, close) - low
+            threshold = 0.7 * body
+            if lower_wick > threshold and not math.isclose(lower_wick, threshold, rel_tol=1e-12, abs_tol=0.):
+                return 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return 'BLOCKED_INVALID_ENTRY_CANDLE'
 
 
 def confirmed(frame):
@@ -175,6 +268,35 @@ def long_entry_trend_problem(closed):
     return None
 
 
+def short_entry_trend_problem(closed):
+    """Require a closed lower-rail break and sustained reversal evidence.
+
+    MA15: two negative changes; price: two closes strictly below their
+    midlines; CK: two negative changes of all three rails. Any one confirms.
+    This gate applies to every SHORT rule, mirroring LONG symmetrically.
+    """
+    try:
+        rows = closed.iloc[-3:]
+        keys = ['close', 'ma15', 'kc_upper', 'kc_middle', 'kc_lower']
+        if len(rows) != 3:
+            return 'BLOCKED_SHORT_INVALID_TREND_DATA'
+        values = rows[keys].astype(float)
+        if not all(math.isfinite(v) and v > 0 for v in values.to_numpy().flat):
+            return 'BLOCKED_SHORT_INVALID_TREND_DATA'
+        if not (values.kc_lower.lt(values.kc_middle) & values.kc_middle.lt(values.kc_upper)).all():
+            return 'BLOCKED_SHORT_INVALID_TREND_DATA'
+        if values.close.iloc[-1] >= values.kc_lower.iloc[-1]:
+            return 'BLOCKED_SHORT_CLOSE_NOT_BELOW_LOWER'
+        ma15_down = bool(values.ma15.diff().iloc[1:].lt(0).all())
+        two_below_middle = bool(values.close.iloc[-2:].lt(values.kc_middle.iloc[-2:]).all())
+        ck_down = bool(values[['kc_upper', 'kc_middle', 'kc_lower']].diff().iloc[1:].lt(0).to_numpy().all())
+        if not (ma15_down or two_below_middle or ck_down):
+            return 'BLOCKED_SHORT_REVERSAL_UNCONFIRMED'
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return 'BLOCKED_SHORT_INVALID_TREND_DATA'
+    return None
+
+
 def peak_trough_cross(closed, side):
     # Completely disabled PEAK_TROUGH_CROSS logic to prevent counter-trend tops/bottoms
     return None
@@ -242,12 +364,13 @@ def anti_bottom_short_problem(
                 or atr <= 0 or lower >= middle):
             return 'BLOCKED_SHORT_ANTI_BOTTOM_INVALID_DATA'
 
-        trend_problem = short_kc_trend_problem(frame)
-        if trend_problem:
-            return trend_problem
+        if not allow_confirmed_rail_break:
+            trend_problem = short_kc_trend_problem(frame)
+            if trend_problem:
+                return trend_problem
 
-        if close < lower - ANTI_BOTTOM_SHORT_STRETCH_ATR * atr:
-            return 'BLOCKED_SHORT_KC_LOWER_STRETCH'
+            if close < lower - ANTI_BOTTOM_SHORT_STRETCH_ATR * atr:
+                return 'BLOCKED_SHORT_KC_LOWER_STRETCH'
 
         # Do not sell directly into a recent rejection wick or a forceful
         # bullish reclaim through MA3. Three completed bars provide cooldown.
@@ -343,6 +466,12 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     closed = confirmed(frame)
     if closed is None or closed.empty:
         return wait("NOT_READY")
+
+    # 【均線相對位置的絕對限制】第一道開倉閘門底線
+    passed, reason = validate_ma_alignment(frame, side, price)
+    if not passed:
+        return wait(reason)
+
     from core.gates.pipeline import ma5_ma15_cross_chop_problem
     quote = price if price is not None else float(frame.iloc[-1]['close'])
     cross_chop_problem = ma5_ma15_cross_chop_problem(
@@ -352,6 +481,10 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
         return wait(cross_chop_problem)
         
     c = closed.iloc[-1]
+    for _, signal_bar in closed.tail(2).iterrows():
+        wick_problem = wick_exhaustion_problem(signal_bar, side)
+        if wick_problem:
+            return wait(wick_problem)
 
     if side == 'SHORT':
         rail_break_confirmed = (
@@ -423,14 +556,9 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
         if problem:
             return wait(problem)
     else:
-        # 嚴格的「趨勢全線向下共振」防護門檻 (所有空單必須通過)
-        kc_mid_falling = float(c.kc_middle) < float(c1.kc_middle)
-        ma15_falling = float(c.ma15) < float(c1.ma15)
-        close_below_mid = float(c.close) < float(c.kc_middle)
-        bearish_aligned = float(c.ma3) < float(c.ma15) and float(c.ma15) <= float(c.kc_middle)
-        
-        if not (kc_mid_falling and ma15_falling and close_below_mid and bearish_aligned):
-            return wait('BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE')
+        problem = short_entry_trend_problem(closed)
+        if problem:
+            return wait(problem)
 
     # Peak trough cross is completely removed
 
@@ -616,6 +744,14 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
     if position_status != 'NO_POSITION':
         return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
 
+    if df is None or df.empty:
+        return False, 'BLOCKED_INVALID_ENTRY_CANDLE', {'action': 'WAIT'}
+    live = df.iloc[-1]
+    live_quote = live_price if not bool(live.get('is_closed', True)) else None
+    wick_problem = wick_exhaustion_problem(live, side, quote=live_quote)
+    if wick_problem:
+        return False, wick_problem, {'action': 'WAIT', 'reason': wick_problem}
+
     from core.gates.pipeline import pipeline
     diagnostics = {}
     decision = pipeline.authorize(
@@ -651,23 +787,28 @@ def check_ma_cross_entry(df, live_price=None):
         prev_ma15 = float(prev.get('ma15', 0.0))
         curr_close = float(curr['close'])
         curr_open = float(curr['open'])
+        wick_problem = wick_exhaustion_problem(curr, 'LONG')
 
         # 金叉做多
         if prev_ma5 <= prev_ma15 and curr_ma5 > curr_ma15 and curr_close > curr_ma5 and curr_close > curr_open:
-            return {
-                'side': 'LONG',
-                'type': 'KC_GOLDEN_CROSS_FAST_LONG',
-                'reason': 'KC_GOLDEN_CROSS_FAST_LONG',
-                'bypass_spatial_check': True,
-            }
+            passed, _ = validate_ma_alignment(df, 'LONG', live_price)
+            if passed and wick_problem is None:
+                return {
+                    'side': 'LONG',
+                    'type': 'KC_GOLDEN_CROSS_FAST_LONG',
+                    'reason': 'KC_GOLDEN_CROSS_FAST_LONG',
+                    'bypass_spatial_check': True,
+                }
         # 死叉做空
         if prev_ma5 >= prev_ma15 and curr_ma5 < curr_ma15 and curr_close < curr_ma5 and curr_close < curr_open:
-            return {
-                'side': 'SHORT',
-                'type': 'KC_DEATH_CROSS_FAST_SHORT',
-                'reason': 'KC_DEATH_CROSS_FAST_SHORT',
-                'bypass_spatial_check': True,
-            }
+            passed, _ = validate_ma_alignment(df, 'SHORT', live_price)
+            if passed and wick_exhaustion_problem(curr, 'SHORT') is None:
+                return {
+                    'side': 'SHORT',
+                    'type': 'KC_DEATH_CROSS_FAST_SHORT',
+                    'reason': 'KC_DEATH_CROSS_FAST_SHORT',
+                    'bypass_spatial_check': True,
+                }
     except Exception:
         pass
     return None
@@ -677,6 +818,19 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+
+        # 【均線相對位置的絕對限制】第一道開倉閘門底線
+        passed, reason = validate_ma_alignment(frame, side, price)
+        if not passed:
+            return False, reason, {'action': 'WAIT', 'reason': reason}
+
+        if frame is None or frame.empty:
+            return False, 'BLOCKED_INVALID_ENTRY_CANDLE', {'action': 'WAIT'}
+        live = frame.iloc[-1]
+        live_quote = price if not bool(live.get('is_closed', True)) else None
+        wick_problem = wick_exhaustion_problem(live, side, quote=live_quote)
+        if wick_problem:
+            return False, wick_problem, {'action': 'WAIT', 'reason': wick_problem}
 
         from core.gates.pipeline import ma5_ma15_cross_chop_problem
         cross_chop_problem = ma5_ma15_cross_chop_problem(

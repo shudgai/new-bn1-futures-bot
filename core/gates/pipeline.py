@@ -848,7 +848,7 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
         opening, close, upper, middle, lower, ma5, ma15, quote = values
         if entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY':
-            return None if side == 'LONG' else 'BLOCKED_INVALID_ENTRY_STRUCTURE'
+            return None if side in ('LONG', 'SHORT') else 'BLOCKED_INVALID_ENTRY_STRUCTURE'
         forming = not bool(current.get('is_closed', True))
         if not forming:
             return 'KC_MIDLINE_ENTRY_REQUIRES_LIVE_CANDLE'
@@ -984,6 +984,36 @@ class EntryGatePipeline:
             return False
 
     @staticmethod
+    def has_bearish_chop_breakout_override(frame: pd.DataFrame, quote: float) -> bool:
+        """Recognize a live bearish MA cross or lower-rail break inside CHOP."""
+        try:
+            if frame is None or len(frame) < 2:
+                return False
+            live, previous = frame.iloc[-1], frame.iloc[-2]
+            quote = float(quote)
+            opening = float(live['open'])
+            close = float(live['close'])
+            lower = float(live['kc_lower'])
+            atr = float(previous['atr'])
+            adjustment = quote - close if not bool(live.get('is_closed', True)) else 0.0
+            ma5 = float(live['ma5']) + adjustment / 5.0
+            ma15 = float(live['ma15']) + adjustment / 15.0
+            previous_ma5 = float(previous['ma5'])
+            previous_ma15 = float(previous['ma15'])
+            values = (quote, opening, close, lower, atr, ma5, ma15,
+                      previous_ma5, previous_ma15)
+            if not all(math.isfinite(value) and value > 0 for value in values):
+                return False
+            bearish_impulse = quote < opening
+            death_cross_below_ma5 = (
+                previous_ma5 >= previous_ma15 and ma5 < ma15 and quote < ma5
+            )
+            lower_rail_break = quote < lower
+            return bearish_impulse and (death_cross_below_ma5 or lower_rail_break)
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
+    @staticmethod
     def has_explosive_bullish_kc_breakout(frame: pd.DataFrame, quote: float) -> bool:
         """Require SpatialBrain expansion plus a live, solid close above KC upper."""
         try:
@@ -1072,6 +1102,9 @@ class EntryGatePipeline:
         consecutive_momentum = self.has_consecutive_momentum_breakout(frame, quote)
         if consecutive_momentum:
             return None
+        if (frame is not None and quote is not None
+                and self.has_bearish_chop_breakout_override(frame, quote)):
+            return None
         if not callable(self.market_regime_provider):
             return None if meme_impulse else 'BLOCKED_BY_AI_CHOP_REGIME'
         try:
@@ -1103,6 +1136,8 @@ class EntryGatePipeline:
         try:
             if frame is None or frame.empty:
                 return 'BLOCKED_BY_CHOP_GATE_DATA'
+            if EntryGatePipeline.has_bearish_chop_breakout_override(frame, quote):
+                return None
             closed = closed_entry_candles(frame)
             if len(closed) < 2:
                 return 'BLOCKED_BY_CHOPPY_UNKNOWN_DIRECTION'
@@ -2285,12 +2320,12 @@ class EntryGatePipeline:
             GOLDEN_CROSS_FAST_LONG_CODE,
             DEATH_CROSS_FAST_SHORT_CODE,
         )
-        meme_golden_cross = bool(
+        meme_fast_cross = bool(
             is_fast_cross and symbol
             and is_meme_breakout_symbol(symbol)
-            and (decision or candidate).get('side') == 'LONG'
+            and (decision or candidate).get('side') in ('LONG', 'SHORT')
         )
-        cross_chop_problem = None if meme_golden_cross else ma5_ma15_cross_chop_problem(
+        cross_chop_problem = None if meme_fast_cross else ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol or '', log_result=True,
             side=(
                 decision.get('side') if isinstance(decision, dict)
@@ -2807,12 +2842,18 @@ class EntryGatePipeline:
                 'TRIGGER_A_KC_BREAKOUT', 'KC_LIVE_BODY_BREAKOUT_LONG',
                 'KC_LIVE_BODY_BREAKOUT_SHORT', 'KC_GOLDEN_CROSS_FAST_LONG',
                 'KC_DEATH_CROSS_FAST_SHORT', 'RE_ENTRY_LONG', 'RE_ENTRY_SHORT',
-            )
+            ) or decision.get('type') == 'KC_REALTIME_RAIL_BREACH_SHORT'
+        )
+        is_live_short_rail_breakout = (
+            decision.get('type') == 'KC_REALTIME_RAIL_BREACH_SHORT'
+            and self.has_bearish_chop_breakout_override(frame, quote)
         )
 
         # 2. Iterate through gates
         for name, gate_func in self.gates:
-            if (is_trend_continuation or is_shadow_retest or is_midline_break or is_bypass_spatial) and name == 'CANDLE_SOLIDITY':
+            if ((is_trend_continuation or is_shadow_retest or is_midline_break
+                 or (is_bypass_spatial and not is_live_short_rail_breakout))
+                    and name == 'CANDLE_SOLIDITY'):
                 continue
             # 快車道、破軌空間豁免、順勢延續、下影線回踩與反手翻轉全面豁免 MOUTH_EXPANSION（全面取消破 KC 軌道要求）
             if (is_rt_breakout or is_trend_continuation or is_reversal_flip or is_shadow_retest or is_midline_break or is_bypass_spatial) and name == 'MOUTH_EXPANSION':

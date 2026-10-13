@@ -49,16 +49,17 @@ def test_realtime_short_breach_enters_without_closed_bar_pair():
     assert decision['realtime_body_atr'] == pytest.approx(1.0)
 
 
-def test_meme_realtime_short_accepts_lower_body_ratio_after_reward_risk_passes():
+def test_meme_realtime_short_rejects_lower_wick_resistance():
     frame = bearish_breach_frame()
+    frame.loc[frame.index[-1], ['ma5', 'ma15']] = [99.4, 99.8]
     frame.loc[frame.index[-1], ['low', 'kc_lower']] = [99.0, 99.5]
     with patch('core.services.entry_room_service.entry_room', return_value={'target': 97.5}):
         candidate = evaluate_realtime_short_rail_breach(
             frame, 99.4, symbol='CAP/USDT',
         )
 
-    assert candidate['action'] == 'ENTER'
-    assert candidate['realtime_body_atr'] == pytest.approx(0.4)
+    assert candidate['action'] == 'WAIT'
+    assert candidate['reason'] == 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
 
 
 def test_realtime_short_survives_fresh_account_entry_revalidation():
@@ -134,11 +135,14 @@ def test_realtime_short_is_rejected_for_extreme_lower_shadow(wick_bar):
     )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_BY_BOTTOM_SHADOW'
+    assert diagnostics['reason'] == (
+        'REJECT_ENTRY: LOWER_WICK_SUPPORT'
+        if wick_bar == 'live' else 'REJECT_ENTRY: DOMINATED_BY_WICKS'
+    )
 
 
 @pytest.mark.parametrize('failure,reason', [
-        ('small_body', 'BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION'),
+    ('small_body', 'REJECT_ENTRY: DOMINATED_BY_WICKS'),
     ('kc_flat', 'BLOCKED_REALTIME_SHORT_KC_NOT_FALLING'),
     ('ma_reversed', 'BLOCKED_REALTIME_SHORT_MA_ORDER'),
 ])
