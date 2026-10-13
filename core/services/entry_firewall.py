@@ -226,7 +226,9 @@ async def validate_account_entry(account, symbol, side, context):
         if chop_problem:
             raise ValueError('[FORBIDDEN_ENTRY] ' + chop_problem)
     grace = context.get('pipeline_ttl_grace')
-    if grace is not None:
+    # The two remaining entry authorities are always recomputed from the fresh
+    # frame. A cached pipeline TTL decision must never bypass their contract.
+    if grace is not None and code not in ENTRY_CODES:
         from core.gates.pipeline import PIPELINE_ENTRY_TYPES
         try:
             elapsed = time.monotonic() - float(grace['authorized_at_monotonic'])

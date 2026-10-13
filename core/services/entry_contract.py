@@ -71,33 +71,17 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
 LIVE_PATTERN_BREAKOUT_CODES = KC_REALTIME_PATTERN_CODES
 # Continuation is independently revalidated from the current expanding KC candle.
 NEW_TRIGGER_CODES = frozenset((
-    "TRIGGER_A_KC_BREAKOUT", "TRIGGER_B_MA_CROSS", "TRIGGER_C_CONTINUATION",
-    BEARISH_INSTANT_BREAKOUT_CODE, BULLISH_INSTANT_BREAKOUT_CODE,
-    TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
-    "RE_ENTRY_LONG", "RE_ENTRY_SHORT",
+    "TRIGGER_A_KC_BREAKOUT", TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
 ))
-# Support the currently authorized pipeline entry types alongside the strict
-# confirmed two-bar outer-rail breakout route and the live-qualification routes
-# that still share the same contract entry funnel. The whitelist must remain
-# identical at scan time and final submission time.
+# Automatic entries are intentionally limited to the general outer-rail
+# breakout and the atomic top-waterfall flip. The firewall imports this set,
+# so obsolete strategy codes are rejected both during scanning and at submit.
 LEGACY_ROUTE_CODES = frozenset((
-    "KC_LIVE_BODY_BREAKOUT_LONG",
-    "KC_LIVE_BODY_BREAKOUT_SHORT",
-    REALTIME_RAIL_BREACH_SHORT_CODE,
-    *KC_REALTIME_PATTERN_CODES,
-    GOLDEN_CROSS_FAST_LONG_CODE,
-    DEATH_CROSS_FAST_SHORT_CODE,
     "TRIGGER_A_KC_BREAKOUT",
-    "TRIGGER_C_CONTINUATION",
-    BEARISH_INSTANT_BREAKOUT_CODE,
-    BULLISH_INSTANT_BREAKOUT_CODE,
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
-    CLIMAX_REVERSAL_FLIP_CODE,
-    "RE_ENTRY_LONG",
-    "RE_ENTRY_SHORT",
 ))
-ENTRY_CODES = KC_PENDING_CODES | PIPELINE_ENTRY_TYPES | LEGACY_ROUTE_CODES
+ENTRY_CODES = NEW_TRIGGER_CODES
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -1817,13 +1801,15 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
                     break
                 values.append((
                     candle_open, candle_close, candle_rail,
-                    candle_lower, candle_upper,
+                    candle_lower, candle_upper, high, low,
                 ))
             if len(values) != 2:
                 continue
 
-            first_open, first_close, first_rail, first_lower, first_upper = values[0]
-            _, second_close, second_rail, _, _ = values[1]
+            (first_open, first_close, first_rail, first_lower, first_upper,
+             first_high, first_low) = values[0]
+            (_, second_close, second_rail, _, _, second_high,
+             second_low) = values[1]
             lower, upper = float(live["kc_lower"]), float(live["kc_upper"])
             high, low = max(float(live["high"]), quote), min(float(live["low"]), quote)
             if (not all(math.isfinite(value) and value > 0 for value in
@@ -1839,12 +1825,24 @@ def evaluate_three_bar_outer_breakout(frame, quote, symbol="", requested_side=No
                 first_upper >= first_open >= first_rail > first_close
             )
             second_outside = sign * (second_close - second_rail) > 0
-            # The third, still-forming candle need not extend the breakout.
-            # It may be flat, but an adverse body cancels this entry attempt.
-            third_not_opposite = sign * (quote - opening) >= 0
+            # The third candle may continue in the breakout direction, or be a
+            # small counter candle that holds the first two candles' structure.
+            # Counter-body size is capped at half the breakout candle's ATR.
+            third_body = abs(quote - opening)
+            third_is_aligned = sign * (quote - opening) > 0
+            third_is_small_counter = (
+                sign * (quote - opening) < 0 and third_body <= 0.5 * float(first["atr"])
+            )
+            third_holds_structure = (
+                quote > min(first_low, second_low)
+                if side == "LONG" else
+                quote < max(first_high, second_high)
+            )
             third_outside = sign * (quote - current_rail) > 0
             if not (first_crossed and second_outside
-                    and third_not_opposite and third_outside):
+                    and (third_is_aligned or
+                         (third_is_small_counter and third_holds_structure))
+                    and third_outside):
                 continue
 
             atr = float(first["atr"])
@@ -2784,6 +2782,79 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             passed, reason = validate_ma_alignment(frame, known_side, quote)
             if not passed:
                 return reject(reason)
+
+        # The live scanner and final order firewall share this closed set of
+        # entry authorities. Do not evaluate legacy, continuation, or reversal
+        # candidates when no general breakout is present.
+        if code in (None, "TRIGGER_A_KC_BREAKOUT"):
+            if not forming_bar:
+                return reject("BLOCKED_GENERAL_BREAKOUT_REQUIRES_LIVE_THIRD_BAR")
+            candidate = evaluate_three_bar_outer_breakout(
+                frame, quote, symbol=symbol,
+            )
+            if candidate is None:
+                return reject("WAIT_GENERAL_THREE_BAR_OUTER_BREAKOUT")
+            side = candidate["side"]
+            passed, gate_reason = check_entry_gates(
+                account, symbol, closed, side, "TRIGGER_A_KC_BREAKOUT",
+            )
+            if not passed:
+                return reject(gate_reason)
+            duplicate = any(
+                trade.get("symbol") == symbol
+                and trade.get("action") in ("OPEN_LONG", "OPEN_SHORT")
+                and (trade.get("entry_snapshot") or {}).get("pending_signal_id")
+                    == candidate["pending_signal_id"]
+                for trade in getattr(account, "trades", [])
+            )
+            if duplicate:
+                return reject("BLOCKED_KC_BREAKOUT_ALREADY_FILLED")
+            shadow_problem = excessive_upper_shadow_problem(
+                frame, quote, side, trigger_type="TRIGGER_A_KC_BREAKOUT",
+            )
+            if shadow_problem:
+                return reject(shadow_problem)
+            return authorize(candidate, quote)
+
+        if code in (TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP"):
+            position = getattr(account, "positions", {}).get(symbol) if account else None
+            open_long = bool(
+                position and str(position.get("side", "")).upper() == "LONG"
+            )
+            closed_at = float(
+                getattr(account, "last_closed_at", {}).get(symbol, 0.0)
+                if account else 0.0
+            )
+            matched_waterfall_close = bool(
+                account
+                and not position
+                and str(getattr(account, "last_closed_side", {}).get(symbol, "")).upper() == "LONG"
+                and math.isfinite(closed_at)
+                and 0 <= time.time() - closed_at <= 30
+                and any(
+                    trade.get("symbol") == symbol
+                    and trade.get("action") == "CLOSE_LONG"
+                    and "EXIT_LONG_ON_TOP_WATERFALL_DUMP" in str(trade.get("reason", ""))
+                    for trade in reversed(getattr(account, "trades", []))
+                )
+            )
+            if not (open_long or matched_waterfall_close):
+                return reject("BLOCKED_TOP_WATERFALL_FLIP_REQUIRES_OPEN_LONG")
+            decision = pipeline.detect_top_waterfall_flip_short(
+                frame, quote, side="SHORT",
+            )
+            if decision is None:
+                return reject("BLOCKED_TOP_WATERFALL_FLIP_EVIDENCE")
+            pipeline_decision = pipeline.authorize(
+                decision, frame, quote, symbol=symbol, account=account,
+                requested_side="SHORT", diagnostics=diagnostics,
+            )
+            if pipeline_decision is None:
+                reason = (diagnostics or {}).get(
+                    "reason", "BLOCKED_TOP_WATERFALL_PIPELINE",
+                )
+                return reject(reason)
+            return authorize(pipeline_decision, quote)
 
         # A live lower-rail breach is its own entry authority. It does not
         # inherit the separate two-closed-bar breakout confirmation rule.
