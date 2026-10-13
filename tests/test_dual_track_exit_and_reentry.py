@@ -291,8 +291,8 @@ def test_anti_top_chase_pinbar():
     ])
     passed, reason = pre_flight_safety_check(
         frame, quote=0.0950, side='LONG',
-        decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
-        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+        decision_type='AUTHORIZED_BY_TREND_CONTINUATION_LONG',
+        entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
     )
     assert passed is False
     assert reason == "BLOCKED_ANTI_TOP_CHASE_PINBAR"
@@ -342,6 +342,84 @@ def test_v_reversal_momentum_burst_long():
     burst = EntryGatePipeline.detect_momentum_burst(df, quote=0.0474, side='LONG')
     assert burst is not None
     assert burst['type'] == 'KC_MOMENTUM_BURST_LONG'
+
+
+def test_live_breakout_long_strict_filters():
+    """驗證即時破軌開多的四大硬性過濾條件：
+    1. KC 趨勢強制對齊 (kc_trend != 'DOWN')
+    2. MA15 斜率不得為負 (ΔMA15 >= 0)
+    3. 破軌實體必須 >= 0.6 ATR
+    4. 排除假突破上影線阻力 (上影線 < 0.7 * 實體)
+    """
+    from core.services.entry_contract import pre_flight_safety_check
+
+    atr = 0.0005
+
+    def make_frame(channel_state='KC向上', ma15_prev=0.0450, ma15_curr=0.0451,
+                   open_p=0.0460, high_p=0.0465, quote=0.0464, kc_upper=0.0462):
+        rows = [
+            {
+                'timestamp': 1000, 'open': 0.0455, 'high': 0.0460, 'low': 0.0454, 'close': 0.0458,
+                'ma5': 0.0455, 'ma15': ma15_prev, 'atr': atr,
+                'kc_upper': kc_upper, 'kc_middle': 0.0455, 'kc_lower': 0.0448,
+                'channel_state': channel_state, 'is_closed': True,
+            },
+            {
+                'timestamp': 2000, 'open': open_p, 'high': high_p, 'low': 0.0459, 'close': quote,
+                'ma5': 0.0460, 'ma15': ma15_curr, 'atr': atr,
+                'kc_upper': kc_upper, 'kc_middle': 0.0456, 'kc_lower': 0.0448,
+                'channel_state': channel_state, 'is_closed': False,
+            },
+        ]
+        df = pd.DataFrame(rows)
+        df.attrs['timeframe_ms'] = 60000
+        return df
+
+    # 1. KC 向下時禁止開多
+    df_kc_down = make_frame(channel_state='KC向下', quote=0.0464, open_p=0.0460, high_p=0.0465)
+    passed, reason = pre_flight_safety_check(
+        df_kc_down, 0.0464, 'LONG', decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == 'BLOCKED_BY_KC_TREND_DOWN'
+
+    # 2. MA15 斜率向下時禁止開多
+    df_ma15_down = make_frame(channel_state='KC向上', ma15_prev=0.0455, ma15_curr=0.0450, quote=0.0464)
+    passed, reason = pre_flight_safety_check(
+        df_ma15_down, 0.0464, 'LONG', decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == 'BLOCKED_BY_MA15_SLOPE_DOWN'
+
+    # 3. 實體不足 0.6 ATR (0.0003) 禁止開多：例如 kc_upper 0.0461, open 0.0460, quote 0.0462 > kc_upper (實體 0.0002 < 0.0003)
+    df_small_body = make_frame(channel_state='KC向上', open_p=0.0460, quote=0.0462, high_p=0.04625, kc_upper=0.0461)
+    passed, reason = pre_flight_safety_check(
+        df_small_body, 0.0462, 'LONG', decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == 'BLOCKED_INSUFFICIENT_BREAKOUT_BODY'
+
+    # 4. 上影線 >= 0.7 * 實體（假突破碰軌受阻）：例如 open 0.0460, quote 0.0464 (實體 0.0004), high 0.0468 (上影線 0.0004 >= 0.7*body)
+    df_upper_wick = make_frame(channel_state='KC向上', open_p=0.0460, quote=0.0464, high_p=0.0468)
+    passed, reason = pre_flight_safety_check(
+        df_upper_wick, 0.0464, 'LONG', decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == 'BLOCKED_UPPER_WICK_RESISTANCE'
+
+    # 5. 全條件滿足時成功通過審核：KC 向上、MA15 走平/向上、實體 0.0004 >= 0.6 ATR、上影線 0.0001 < 0.7*body
+    df_perfect = make_frame(channel_state='KC向上', open_p=0.0460, quote=0.0464, high_p=0.0465)
+    passed, reason = pre_flight_safety_check(
+        df_perfect, 0.0464, 'LONG', decision_type='KC_LIVE_BODY_BREAKOUT_LONG',
+        entry_phase='KC_LIVE_OUTER_BREAKOUT',
+    )
+    assert passed is True
+    assert reason is None
+
 
 
 

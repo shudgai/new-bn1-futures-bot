@@ -1411,6 +1411,31 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             return None
         stamp = float(live["timestamp"])
         atr = float(frame.iloc[-2]["atr"])
+        if side == 'LONG':
+            # 【即時破軌開多嚴格限制條件】
+            # 1. 破軌 K 棒實體必須 >= 0.6 ATR 的飽滿大陽線 (close > open)
+            body = quote - opened
+            if atr > 0 and body < 0.6 * atr:
+                return None
+            # 2. 排除假突破 / 上影線阻力形態（若上影線 >= 實體 0.7 倍，判定為假突破受阻）
+            high_p = max(float(live.get("high", quote)), quote)
+            upper_wick = high_p - quote
+            if upper_wick >= 0.7 * body:
+                return None
+            # 3. 禁止逆勢破軌（KC 趨勢強制對齊：kc_trend != 'DOWN'）
+            channel_state = str(live.get("channel_state", "")).strip().upper()
+            closed_candles = closed_entry_candles(frame)
+            is_kc_down = (
+                channel_state in ("KC向下", "KC_TREND_DOWN", "DOWN", "DOWNTREND", "BEARISH", "SHORT")
+                or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get("kc_middle", 0.0)) < float(closed_candles.iloc[-2].get("kc_middle", 0.0)))
+            )
+            if is_kc_down:
+                return None
+            # 4. 棕色 MA15 斜率不得為負（MA15 必須走平或向上，禁止在均線向下壓制時開多）
+            prev_ma15 = float(closed_candles.iloc[-1].get("ma15", 0.0)) if len(closed_candles) >= 1 else 0.0
+            live_ma15 = float(live.get("ma15", prev_ma15)) + (quote - float(live.get("close", quote))) / 15.0
+            if prev_ma15 > 0 and live_ma15 < prev_ma15:
+                return None
         edge = upper if side == "LONG" else lower
         distance = (quote - edge) / atr if side == "LONG" else (edge - quote) / atr
         if (not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(distance)
@@ -2319,7 +2344,42 @@ def pre_flight_safety_check(
                     and quote < live_ma5):
                 return False, "REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5"
 
-            # 4. 【高檔避雷針防追高限制（Anti-Top Chase）】：
+            # 4. 【即時破軌開多嚴格限制條件（Live Body Breakout Strict Filter）】：
+            is_breakout_long = (
+                decision_type in LIVE_BODY_BREAKOUT_CODES
+                or decision_type in ('TRIGGER_A_KC_BREAKOUT', 'AUTHORIZED_REALTIME_BREAKOUT', 'KC_2BAR_CONFIRM_LONG')
+                or entry_phase in ('KC_LIVE_OUTER_BREAKOUT', 'KC_THREE_BAR_BREAKOUT')
+            )
+            if is_breakout_long:
+                # 1) 禁止逆勢破軌（KC 趨勢強制對齊：kc_trend != 'DOWN'）
+                channel_st = str(curr.get('channel_state', '')).strip().upper()
+                closed_candles = closed_entry_candles(frame)
+                is_kc_down = (
+                    channel_st in ('KC向下', 'KC_TREND_DOWN', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
+                    or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get('kc_middle', 0.0)) < float(closed_candles.iloc[-2].get('kc_middle', 0.0)))
+                )
+                if is_kc_down:
+                    return False, "BLOCKED_BY_KC_TREND_DOWN"
+
+                # 2) 棕色 MA15 斜率不得為負（MA15 必須走平或向上，禁止在均線向下壓制時開多）
+                prev_ma15_val = float(prev.get('ma15', 0.0))
+                curr_ma15_val = float(curr.get('ma15', prev_ma15_val))
+                live_ma15_val = curr_ma15_val if is_closed else curr_ma15_val + (quote - live_close) / 15.0
+                if prev_ma15_val > 0 and live_ma15_val < prev_ma15_val:
+                    return False, "BLOCKED_BY_MA15_SLOPE_DOWN"
+
+                # 3) 破軌 K 棒實體必須 >= 0.6 ATR 的飽滿大陽線
+                body_long = quote - open_p
+                if atr > 0 and body_long < 0.6 * atr:
+                    return False, "BLOCKED_INSUFFICIENT_BREAKOUT_BODY"
+
+                # 4) 排除假突破 / 上影線阻力形態（上影線 >= 實體 0.7 倍）
+                high_p = max(float(curr.get('high', quote)), quote)
+                upper_wick_p = high_p - quote
+                if upper_wick_p >= 0.7 * body_long:
+                    return False, "BLOCKED_UPPER_WICK_RESISTANCE"
+
+            # 5. 【高檔避雷針防追高限制（Anti-Top Chase）】：
             # 若當前 1m K 棒已遠離均線（價格高出 MA5 超過 0.6 ATR），且拉出上影線 >= 實體 0.8 倍，禁止在高點盲目追多！
             high_p = max(float(curr.get('high', quote)), quote)
             body_p = max(quote - open_p, 0.0)
@@ -2793,6 +2853,33 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 )
             if live_breakout is not None:
                 side = live_breakout['side']
+                if side == 'LONG':
+                    live_row = frame.iloc[-1]
+                    closed_candles = closed_entry_candles(frame)
+                    channel_st = str(live_row.get('channel_state', '')).strip().upper()
+                    is_kc_trend_down = (
+                        channel_st in ('KC向下', 'KC_TREND_DOWN', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT')
+                        or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get('kc_middle', 0.0)) < float(closed_candles.iloc[-2].get('kc_middle', 0.0)))
+                    )
+                    if is_kc_trend_down:
+                        return reject('BLOCKED_BY_KC_TREND_DOWN')
+
+                    prev_ma15 = float(closed_candles.iloc[-1].get('ma15', 0.0)) if len(closed_candles) >= 1 else 0.0
+                    live_ma15 = float(live_row.get('ma15', prev_ma15)) + (float(quote) - float(live_row.get('close', quote))) / 15.0
+                    if prev_ma15 > 0 and live_ma15 < prev_ma15:
+                        return reject('BLOCKED_BY_MA15_SLOPE_DOWN')
+
+                    open_price = float(live_row.get('open', quote))
+                    candle_atr = float(closed_candles.iloc[-1].get('atr', 0.0)) if len(closed_candles) >= 1 else 0.0
+                    body = quote - open_price
+                    if candle_atr > 0 and body < 0.6 * candle_atr:
+                        return reject('BLOCKED_INSUFFICIENT_BREAKOUT_BODY')
+
+                    high_price = max(float(live_row.get('high', quote)), quote)
+                    upper_wick = high_price - quote
+                    if upper_wick >= 0.7 * body:
+                        return reject('BLOCKED_UPPER_WICK_RESISTANCE')
+
                 meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
                 consecutive_momentum = has_consecutive_momentum_breakout(frame, quote, side)
                 if not meme_impulse and not consecutive_momentum and not entry_trend_alignment_ready(frame, side):
