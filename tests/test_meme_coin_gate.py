@@ -94,7 +94,7 @@ class TestMemeCoinGate:
             df, quote=9.2, side='SHORT', symbol='龍蝦/USDT'
         )
         assert passed is False
-        assert reason == 'BLOCKED_BY_KC_NOT_DOWNWARD'
+        assert reason in ('BLOCKED_BY_KC_NOT_DOWNWARD', 'VETO_CANNOT_SHORT_WHEN_KC_UP')
 
     def test_meme_short_authorized_when_both_ma5_and_kc_downward(self):
         # 雙重同向：MA5 往下 (10.0 -> 9.7) 且 KC 中軌明確向下 (10.0 -> 9.8)，下軌向下 (9.4 -> 9.2)，順利放行開空！
@@ -365,7 +365,7 @@ class TestMemeCoinGate:
             df, quote=10.5, side='LONG', symbol='龍蝦/USDT'
         )
         assert passed is False
-        assert reason in ('BLOCKED_LONG_ON_BEARISH_TREND', 'BLOCKED_BY_MA15_DOWNWARD_SLOPE', 'BLOCKED_BY_KC_NOT_UPWARD')
+        assert reason in ('BLOCKED_LONG_ON_BEARISH_TREND', 'BLOCKED_BY_MA15_DOWNWARD_SLOPE', 'BLOCKED_BY_KC_NOT_UPWARD', 'VETO_CANNOT_LONG_WHEN_KC_DOWN')
 
     def test_trend_veto_blocks_short_entry_when_trend_is_bullish(self):
         """如果趨勢是多頭，嚴禁開空（一票否決）。"""
@@ -386,7 +386,7 @@ class TestMemeCoinGate:
             df, quote=9.5, side='SHORT', symbol='龍蝦/USDT'
         )
         assert passed is False
-        assert reason in ('BLOCKED_SHORT_ON_BULLISH_TREND', 'BLOCKED_BY_MA15_UPWARD_SLOPE', 'BLOCKED_BY_KC_NOT_DOWNWARD')
+        assert reason in ('BLOCKED_SHORT_ON_BULLISH_TREND', 'BLOCKED_BY_MA15_UPWARD_SLOPE', 'BLOCKED_BY_KC_NOT_DOWNWARD', 'VETO_CANNOT_SHORT_WHEN_KC_UP')
 
 
 

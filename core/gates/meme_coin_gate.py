@@ -176,6 +176,16 @@ class MemeCoinGate:
             prev_kc_lower = float(prev.get('kc_lower', 0.0))
 
             # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
+            from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend, check_kc_flat_or_squeezing
+            kc_trend = resolve_kc_trend(frame)
+            if side == 'LONG' and kc_trend == 'DOWN':
+                return False, 'VETO_CANNOT_LONG_WHEN_KC_DOWN', None
+            if side == 'SHORT' and kc_trend == 'UP':
+                return False, 'VETO_CANNOT_SHORT_WHEN_KC_UP', None
+
+            if check_kc_flat_or_squeezing(frame, quote=quote):
+                return False, 'VETO_CHOPPY_MARKET_NO_ENTRY', None
+
             market_trend = cls.get_market_trend(frame, quote)
             if side == 'LONG' and market_trend == 'BEARISH':
                 return False, 'BLOCKED_LONG_ON_BEARISH_TREND', None

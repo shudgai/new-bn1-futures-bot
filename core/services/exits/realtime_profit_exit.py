@@ -283,6 +283,7 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         c_range = max(live_high - live_low, 1e-9)
         live_ma5 = float(snapshot.get('live_ma5') or snapshot.get('ma5') or 0.)
         live_ma15 = float(snapshot.get('live_ma15') or snapshot.get('ma15') or 0.)
+        channel_state = str(snapshot.get('channel_state', '')).strip().upper()
 
         # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
         # 浮盈曾達 >= 1.0 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price + 0.05%（空單 - 0.05%）
@@ -959,14 +960,4 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     except Exception as e:
         import traceback
         account.log(f'CRITICAL_EXIT_EVALUATION_ERROR {symbol}: {e}\n{traceback.format_exc()}', 'ERROR')
-        if entry_m != 'CHANNEL_SWING':
-            try:
-                await account.close_position(
-                    symbol, price,
-                    f'Channel Swing FAIL_SAFE_EMERGENCY_EXIT ({type(e).__name__})',
-                    is_manual=True,
-                )
-                return True
-            except Exception:
-                return False
         return False

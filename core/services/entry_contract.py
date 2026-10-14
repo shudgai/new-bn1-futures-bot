@@ -2442,6 +2442,19 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     if len(closed_frame) < 2: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
 
     # ══════════════════════════════════════════════════════════════════════
+    # 【鐵律一：逆向大趨勢一票否決（順勢原則）與通道扁平震盪過濾】
+    # ══════════════════════════════════════════════════════════════════════
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend, check_kc_flat_or_squeezing
+    kc_trend = resolve_kc_trend(closed_frame)
+    if side == 'LONG' and kc_trend == 'DOWN':
+        return False, "VETO_CANNOT_LONG_WHEN_KC_DOWN"
+    if side == 'SHORT' and kc_trend == 'UP':
+        return False, "VETO_CANNOT_SHORT_WHEN_KC_UP"
+
+    if check_kc_flat_or_squeezing(closed_frame):
+        return False, "VETO_CHOPPY_MARKET_NO_ENTRY"
+
+    # ══════════════════════════════════════════════════════════════════════
     # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
     # ══════════════════════════════════════════════════════════════════════
     from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate

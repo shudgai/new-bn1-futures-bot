@@ -1629,12 +1629,6 @@ class HoldingProtectionExitGate:
             'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
             'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
         ))
-        is_profit_lock = _is_profit_lock_reason(clean_reason)
-        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
-        is_pivot_candidate = any(p in clean_reason.upper() for p in (
-            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
-        ))
-        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
 
         # 妖幣專用 KC 外軌鎖定：只要價格維持在 KC 外軌外且守穩 MA5，一律死抱利潤，拒絕被洗盤震下車！
         from core.gates.meme_coin_gate import MemeCoinGate
@@ -1642,11 +1636,47 @@ class HoldingProtectionExitGate:
             should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
                 frame, quote, side, symbol=symbol,
             )
-            if should_hold and not is_true_pivot_confirmed and not is_profit_lock and clean_reason not in (
+            if should_hold and not hard_exit and clean_reason not in (
                 'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
                 'EMERGENCY_EXTREME_ADVERSE_BAR',
             ):
                 return _reject(reason=hold_reason)
+
+        is_profit_lock = _is_profit_lock_reason(clean_reason)
+        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
+        is_pivot_candidate = any(p in clean_reason.upper() for p in (
+            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
+        ))
+        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 【鐵律二：出場端防護：未達 10% 浮盈階段，非收盤不判定，未破中軌/MA15 絕不平倉】
+        # ══════════════════════════════════════════════════════════════════════
+        entry_p = float((position or {}).get('entry_price', 0.0))
+        if entry_p > 0:
+            current_profit_pct = (quote - entry_p) / entry_p if side == 'LONG' else (entry_p - quote) / entry_p
+        else:
+            current_profit_pct = 0.0
+
+        if not hard_exit and not is_safety_exit and not is_profit_lock and not is_true_pivot_confirmed and current_profit_pct < 0.10:
+            # 1. 嚴禁使用每秒跳動的即時價平倉，改以「K 棒收盤確認 (Confirmed Bar Close)」為基準
+            if not candle_closed:
+                return _reject(reason="VETO_HOLDING_UNTIL_BAR_CLOSED")
+
+            # 2. 只要多單收盤價仍高於 KC 中軌 / MA15，全部視為健康回踩，一律強制 VETO 否決平倉！
+            curr_bar = frame.iloc[-1] if frame is not None and len(frame) >= 1 else {}
+            bar_close_price = float(curr_bar.get('close', quote))
+            kc_middle_val = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
+            ma15_val = float(curr_bar.get('ma15', kc_middle_val))
+
+            if side == 'LONG':
+                protect_mid = min(kc_middle_val, ma15_val) if (kc_middle_val > 0 and ma15_val > 0) else (kc_middle_val or ma15_val)
+                if protect_mid > 0 and bar_close_price >= protect_mid:
+                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_ABOVE_MID: TREND_INTACT_ABOVE_MA15")
+            elif side == 'SHORT':
+                protect_mid = max(kc_middle_val, ma15_val) if (kc_middle_val > 0 and ma15_val > 0) else (kc_middle_val or ma15_val)
+                if protect_mid > 0 and bar_close_price <= protect_mid:
+                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_BELOW_MID: TREND_INTACT_BELOW_MA15")
 
         # ──【單邊趨勢全程護航閘門：Gate: StrictEntryAndImmunityGate & TrendHoldingImmunityGate】──
         # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查。
