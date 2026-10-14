@@ -1649,6 +1649,27 @@ class HoldingProtectionExitGate:
             ):
                 return _reject(reason=hold_reason)
 
+        # ──【單邊趨勢全程護航閘門：Gate: TrendHoldingImmunityGate】──
+        # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查。
+        # 凡趨勢結構未破壞者，一律一票否決平倉（REJECT_EXIT）
+        from core.gates.trend_holding_immunity_gate import TrendHoldingImmunityGate
+        if not hard_exit and not is_safety_exit and frame is not None and len(frame) >= 1:
+            curr_bar = frame.iloc[-1]
+            prev_bar = frame.iloc[-2] if len(frame) >= 2 else curr_bar
+            curr_c = float(curr_bar.get('close', quote))
+            curr_m5 = float(curr_bar.get('ma5', curr_c))
+            curr_m15 = float(curr_bar.get('ma15', curr_c))
+            prev_m15 = float(prev_bar.get('ma15', curr_m15))
+            m15_slope = curr_m15 - prev_m15
+            mid_val = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
+            can_pass, immunity_reason = TrendHoldingImmunityGate().can_exit(
+                side,
+                {'close': curr_c, 'open': float(curr_bar.get('open', quote)), 'high': float(curr_bar.get('high', quote)), 'low': float(curr_bar.get('low', quote))},
+                {'ma5': curr_m5, 'ma15': curr_m15, 'ma15_slope': m15_slope, 'kc_middle': mid_val}
+            )
+            if not can_pass:
+                return _reject(reason=immunity_reason)
+
         # ──【核心鐵律一：開倉後不要當根平倉】──
         # 在開倉當根：除非剛好是真峰谷，否則除了鎖利外都不平倉！
         is_same_bar = is_same_bar_as_entry(position, frame)

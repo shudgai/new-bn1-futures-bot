@@ -154,3 +154,35 @@ class TestTrendHoldingImmunityGate:
         exit_result = strategy.evaluate_exit(position, frame=df, current_price=99.0, is_closed=True)
         # 正常放行出場訊號
         assert exit_result is not None
+
+    def test_holding_protection_exit_gate_vetoes_when_trend_intact(self):
+        """HoldingProtectionExitGate 整合測試：當多單嘗試平倉但趨勢順向未破 MA15，Gate 100% 否決"""
+        from core.gates.holding_protection_gate import HoldingProtectionExitGate
+        position = {
+            'symbol': 'BTC/USDT',
+            'side': 'LONG',
+            'entry_price': 100.0,
+            'highest_price': 108.0,
+            'peak_price': 108.0,
+            'entry_atr': 2.0,
+            'entry_timestamp': 1000000.0,
+        }
+        df = pd.DataFrame([
+            {
+                'timestamp': 1000000.0, 'open': 103.0, 'high': 106.0, 'low': 102.0, 'close': 104.0,
+                'ma5': 104.0, 'ma15': 101.5, 'atr': 2.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'kc_lower': 90.0,
+                'is_closed': True,
+            },
+            {
+                'timestamp': 1060000.0, 'open': 104.0, 'high': 108.0, 'low': 103.5, 'close': 105.0,
+                'ma5': 105.0, 'ma15': 102.0, 'atr': 2.0, 'kc_middle': 100.5, 'kc_upper': 110.5, 'kc_lower': 90.5,
+                'is_closed': True,
+            },
+        ])
+        df.attrs['timeframe_ms'] = 60000
+        # 即使傳入峰頂平倉候選 EXIT_LONG_ON_FRACTAL_PEAK，但因 close 105 > ma15 102 且順向，Gate 一票否決
+        passed, reason, _ = HoldingProtectionExitGate.validate_exit(
+            position, df, quote=105.0, candidate_reason='EXIT_LONG_ON_FRACTAL_PEAK'
+        )
+        assert passed is False
+        assert "TREND_INTACT_ABOVE_MA15" in reason
