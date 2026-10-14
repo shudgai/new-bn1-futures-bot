@@ -122,3 +122,30 @@ def test_hard_breakeven_trigger():
     )
     assert can_exit is True
     assert reason == "EXIT_BY_HARD_BREAKEVEN_PROTECTION"
+
+
+def test_profit_lock_metrics_and_breakeven_population():
+    """5. 覆蓋鎖利與保本數據寫回：持倉在浮盈發展中正確計算並寫入 locked_profit_usdt 與 breakeven_price"""
+    position = {
+        'symbol': 'LOBSTER/USDT',
+        'side': 'LONG',
+        'entry_price': 100.0,
+        'qty': 10.0,
+        'atr': 2.0,
+        'peak_profit_atr': 1.5,
+        'peak_roe_pct': 0.085,
+    }
+
+    df_5m = make_candle_df([
+        {'open': 100.0, 'close': 102.5, 'high': 103.0, 'low': 99.8, 'ma5': 102.0, 'ma15': 101.0, 'kc_middle': 100.5, 'atr': 2.0, 'is_closed': True},
+    ])
+
+    can_exit, reason, _ = TrendHoldingAndExitManager.evaluate_exit(
+        position=position, df_5m=df_5m, quote=102.5
+    )
+    assert can_exit is False
+    assert position.get('breakeven_price') == 100.05
+    assert position.get('locked_profit_usdt') == pytest.approx(0.5, rel=1e-3)
+    assert position.get('channel_profit_protection', {}).get('armed') is True
+    assert position.get('channel_profit_protection', {}).get('status') == 'ARMED'
+

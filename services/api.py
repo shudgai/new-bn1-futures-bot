@@ -142,9 +142,19 @@ def positions_with_triggers():
         merged["atr_sl"] = float(merged.get("atr_sl") or meta.get("atr_sl") or 0.0)
 
 
-        # --- 動態利潤分層護航 (三段式) 對接 UI ---
-        active_stop_price = merged.get("active_stop_price") or meta.get("active_stop_price")
-        max_profit_atr = float(merged.get("max_profit_atr") or meta.get("max_profit_atr") or 0.0)
+        # --- 動態利潤分層護航 (三段式與保本鎖利) 對接 UI ---
+        active_stop_price = (
+            merged.get("active_stop_price")
+            or meta.get("active_stop_price")
+            or merged.get("breakeven_price")
+            or meta.get("breakeven_price")
+        )
+        max_profit_atr = float(
+            merged.get("max_profit_atr")
+            or merged.get("peak_profit_atr")
+            or meta.get("max_profit_atr")
+            or 0.0
+        )
         
         # 兼容舊版 v10_phase_trailing 邏輯，若新版已啟動，直接蓋過
         phase_state = (
@@ -183,16 +193,32 @@ def positions_with_triggers():
                 locked_gross = 0.0
             fee_cost = (entry + stop_p) * qty * TAKER_FEE_RATE + stop_p * qty * SLIPPAGE_PCT
             locked_net = locked_gross - fee_cost
-            merged["locked_profit_usdt"] = round(max(0.0, locked_net), 2)
+            merged["locked_profit_usdt"] = round(max(0.0, locked_net), 4)
             merged["locked_phase"]       = current_phase
             merged["stop_price"]         = stop_p
+            merged["breakeven_price"]     = stop_p
             merged["swing_extreme"]      = phase_state.get("swing_extreme")
+            merged["channel_profit_protection"] = {
+                "locked_net": round(max(0.0, locked_net), 4),
+                "breakeven_price": stop_p,
+                "armed": True,
+                "status": "ARMED",
+                "phase": current_phase,
+            }
         else:
             merged["ratchet_floor"]      = None
             merged["phase_info"]         = None
-            merged["locked_profit_usdt"] = 0.0
+            if "locked_profit_usdt" not in merged:
+                merged["locked_profit_usdt"] = 0.0
+            if "channel_profit_protection" not in merged or not merged.get("channel_profit_protection"):
+                merged["channel_profit_protection"] = {
+                    "locked_net": 0.0,
+                    "breakeven_price": None,
+                    "armed": False,
+                    "status": "WAIT_TRIGGER",
+                    "peak_profit_atr": round(max_profit_atr, 2),
+                }
             merged["locked_phase"]       = 0
-
 
         result.append(merged)
     return result

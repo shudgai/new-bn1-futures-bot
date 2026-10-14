@@ -72,25 +72,57 @@ class TrendHoldingAndExitManager:
         peak_profit_atr = max(peak_profit_atr, calc_peak_atr, curr_profit_atr)
         peak_roe_pct = max(peak_roe_pct, calc_peak_roe, curr_roe_pct)
 
+        position['peak_profit_atr'] = round(peak_profit_atr, 4)
+        position['peak_roe_pct'] = round(peak_roe_pct, 4)
+        position['highest_price'] = highest_p
+        position['lowest_price'] = lowest_p
+
         # ──【第一道出場：保本移損 (Hard Breakeven Exit)】──
         # 浮盈峰值曾達 >= 1.2 ATR（或淨 ROE >= 8.0%）後，回撤碰觸 entry_price ± 0.05% 即刻市價保本出場
         has_reached_breakeven_arm = (peak_profit_atr >= 1.2) or (peak_roe_pct >= 0.08)
+        be_threshold = 0.0005 # 0.05%
+        be_price = entry_p * (1.0 + be_threshold) if side == 'LONG' else entry_p * (1.0 - be_threshold)
+        qty = float(position.get('qty', 0.0))
+        locked_net = abs(be_price - entry_p) * qty
+
         if has_reached_breakeven_arm:
-            be_threshold = 0.0005 # 0.05%
-            if side == 'LONG' and p <= entry_p * (1.0 + be_threshold):
+            position['active_stop_price'] = be_price
+            position['breakeven_price'] = be_price
+            position['locked_profit_usdt'] = round(locked_net, 4)
+            position['locked_phase'] = 1
+            position['channel_profit_protection'] = {
+                'locked_net': round(locked_net, 4),
+                'breakeven_price': be_price,
+                'armed': True,
+                'status': 'ARMED',
+                'peak_profit_atr': round(peak_profit_atr, 2),
+                'peak_roe_pct': round(peak_roe_pct * 100, 2),
+            }
+            if side == 'LONG' and p <= be_price:
                 return True, "EXIT_BY_HARD_BREAKEVEN_PROTECTION", {
                     'peak_profit_atr': peak_profit_atr,
                     'peak_roe_pct': peak_roe_pct,
                     'entry_price': entry_p,
                     'trigger_price': p,
                 }
-            elif side == 'SHORT' and p >= entry_p * (1.0 - be_threshold):
+            elif side == 'SHORT' and p >= be_price:
                 return True, "EXIT_BY_HARD_BREAKEVEN_PROTECTION", {
                     'peak_profit_atr': peak_profit_atr,
                     'peak_roe_pct': peak_roe_pct,
                     'entry_price': entry_p,
                     'trigger_price': p,
                 }
+        else:
+            position['locked_profit_usdt'] = 0.0
+            position['locked_phase'] = 0
+            position['channel_profit_protection'] = {
+                'locked_net': 0.0,
+                'breakeven_price': None,
+                'armed': False,
+                'status': 'WAIT_TRIGGER',
+                'peak_profit_atr': round(peak_profit_atr, 2),
+                'peak_roe_pct': round(peak_roe_pct * 100, 2),
+            }
 
         # 取得 15M 指標
         if df_15m is not None and len(df_15m) >= 2:

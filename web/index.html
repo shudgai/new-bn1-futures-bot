@@ -406,6 +406,17 @@
                                         <span style="color: #ef4444; margin-right: 8px;">1.5 ATR SL: {{ pos.atr_sl ? formatPrice(pos.atr_sl) : '計算中...' }}</span>
                                         <span style="color: #22c55e;">2.0 ATR TP: {{ pos.atr_tp ? formatPrice(pos.atr_tp) : '計算中...' }}</span>
                                     </div>
+                                    <div style="margin-top: 5px; text-align: center;">
+                                        <span :class="['locked-profit-badge', getLockedProfitAmount(pos) === 0 ? 'zero' : '']" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center;" :title="getLockedProfitStatusTitle(pos)">
+                                            🔒 鎖利防線: 
+                                            <span v-if="getLockedProfitAmount(pos) > 0" style="color: #6ee7b7; font-weight: 800; margin-left: 4px;">
+                                                +{{ getLockedProfitAmount(pos).toFixed(4) }} USDT (防線: {{ formatPrice(pos.breakeven_price || (pos.channel_profit_protection && pos.channel_profit_protection.breakeven_price) || pos.sl) }})
+                                            </span>
+                                            <span v-else style="color: #94a3b8; margin-left: 4px;">
+                                                0.0000 USDT (待啟動: 1.2 ATR / 8% ROE)
+                                            </span>
+                                        </span>
+                                    </div>
                                 </td>
                                 <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
@@ -624,11 +635,13 @@
                                     {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
                                 </span>
                             </span>
-                            <span class="chart-pos-info-sep" v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) !== null">｜</span>
-                            <span class="chart-pos-info-item" v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) !== null">
+                            <span class="chart-pos-info-sep" v-if="bot.positions.find(p => p.symbol === symbol)">｜</span>
+                            <span class="chart-pos-info-item" v-if="bot.positions.find(p => p.symbol === symbol)">
                                 <span class="chart-pos-info-label">保底鎖利:</span>
-                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) === 0 ? 'zero' : '']">
+                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) === 0 ? 'zero' : '']" :title="getLockedProfitStatusTitle(bot.positions.find(p => p.symbol === symbol))">
                                     {{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)).toFixed(4) }} USDT
+                                    <span v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
+                                    <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
                             </span>
                         </div>
@@ -1108,6 +1121,26 @@
                             ctx.stopPriceLine = null;
                         }
 
+                        // ★ 鎖利保本線 (綠色虛線，顯示確切保本價位)
+                        const bePrice = parseFloat(pos.breakeven_price || (pos.channel_profit_protection && pos.channel_profit_protection.breakeven_price) || 0);
+                        if (bePrice > 0) {
+                            if (!ctx.lockedProfitLine) {
+                                ctx.lockedProfitLine = ctx.candlestickSeries.createPriceLine({
+                                    price: bePrice,
+                                    color: '#10b981',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: '🔒 鎖利保本線',
+                                });
+                            } else {
+                                ctx.lockedProfitLine.applyOptions({ price: bePrice, title: '🔒 鎖利保本線' });
+                            }
+                        } else if (ctx.lockedProfitLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.lockedProfitLine);
+                            ctx.lockedProfitLine = null;
+                        }
+
                         // ★ 新增：ATR 固定止盈線 (綠色) / 止損線 (紅色)
                         const atrTp = parseFloat(pos.atr_tp || 0);
 
@@ -1180,6 +1213,10 @@
                         if (ctx.swingExtremeLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.swingExtremeLine);
                             ctx.swingExtremeLine = null;
+                        }
+                        if (ctx.lockedProfitLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.lockedProfitLine);
+                            ctx.lockedProfitLine = null;
                         }
                     }
                     
@@ -1335,12 +1372,26 @@
                     return this.getEstimatedPnlAt(pos, pos.sl);
                 },
                 getLockedProfitAmount(pos) {
-                    // 優先抓取真實階梯鎖利的保護值
-                    if (pos && pos.channel_profit_protection && pos.channel_profit_protection.locked_net > 0) {
-                        return pos.channel_profit_protection.locked_net;
+                    if (!pos) return null;
+                    if (pos.channel_profit_protection && pos.channel_profit_protection.locked_net !== undefined && pos.channel_profit_protection.locked_net !== null) {
+                        return Number(pos.channel_profit_protection.locked_net);
                     }
-                    if (pos && pos.atr_protection_version === 1) return 0;
-                    return null; // 舊倉未提供鎖利狀態
+                    if (pos.locked_profit_usdt !== undefined && pos.locked_profit_usdt !== null) {
+                        return Number(pos.locked_profit_usdt);
+                    }
+                    return 0.0;
+                },
+                getLockedProfitStatusTitle(pos) {
+                    if (!pos) return '';
+                    const amt = this.getLockedProfitAmount(pos) || 0;
+                    const cpp = pos.channel_profit_protection || {};
+                    if (amt > 0 || cpp.armed) {
+                        const be = pos.breakeven_price || cpp.breakeven_price || pos.sl;
+                        return `已啟動保本鎖利！保底鎖定: +${amt.toFixed(4)} USDT，防線價位: ${be ? this.formatPrice(be) : '-'}`;
+                    }
+                    const peakAtr = cpp.peak_profit_atr !== undefined ? cpp.peak_profit_atr : (pos.peak_profit_atr || 0);
+                    const peakRoe = cpp.peak_roe_pct !== undefined ? cpp.peak_roe_pct : ((pos.peak_roe_pct || 0) * 100);
+                    return `待啟動保本 (門檻: 峰值 1.2 ATR 或 8% ROE | 當前峰值: ${peakAtr} ATR / ${Number(peakRoe).toFixed(1)}%)`;
                 },
                 async fetchStatus() {
                     try {
