@@ -269,11 +269,14 @@ class MemeSharedProtectionGate:
         return True, "PASSED"
 
 
+from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+
 EntryGate = StrictCrossAndKcTrendGate
 
 __all__ = [
     "StrictCrossAndKcTrendGate",
     "MemeSharedProtectionGate",
+    "MacroCandleStructureGate",
     "EntryGate",
     "has_recent_golden_cross",
     "has_recent_death_cross",
