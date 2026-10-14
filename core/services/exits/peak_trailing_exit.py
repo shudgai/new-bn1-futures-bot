@@ -1471,9 +1471,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                 if (snapshot.get('live_bar_ms') == bar
                         and snapshot.get('closed_bar_ms') == bar - 60000
                         and positive(opening) and positive(prior_atr)):
-                    live_open = float(opening)
                     entry_bar_ms = math.floor(ident[1] * 1000 / 60000) * 60000
-                    if is_channel_swing and bar == entry_bar_ms:
+                    if bar == entry_bar_ms and positive(entry):
                         live_open = entry
                     body = sign*(live_open-price)
                     if is_channel_swing:

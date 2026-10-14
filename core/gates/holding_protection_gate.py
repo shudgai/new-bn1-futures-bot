@@ -130,6 +130,7 @@ def has_confirmed_true_pivot(
 
                     ts_confirm = float(b_confirm.get('timestamp', 0.0))
                     ts_pivot = float(b_pivot.get('timestamp', 0.0))
+                    # 歷史雜訊過濾：真峰頂必須在開倉後推進成型，確認棒必須在開倉當根之後，樞紐棒必須至少在開倉當根
                     if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
                         continue
 
@@ -163,6 +164,7 @@ def has_confirmed_true_pivot(
 
                     ts_confirm = float(b_confirm.get('timestamp', 0.0))
                     ts_pivot = float(b_pivot.get('timestamp', 0.0))
+                    # 歷史雜訊過濾：真谷底必須在開倉後推進成型，確認棒必須在開倉當根之後，樞紐棒必須至少在開倉當根
                     if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
                         continue
 
@@ -194,12 +196,11 @@ def has_confirmed_true_pivot(
             b_pivot = frame.iloc[-2]
             b_live = frame.iloc[-1]
 
-            timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
             ts_pivot = float(b_pivot.get('timestamp', 0.0))
             ts_live = float(b_live.get('timestamp', 0.0))
-            # 盤中即時真峰谷：即時棒 ts_live 必須至少在開倉當根或之後（ts_live >= entry_bar_floor_ms）
-            # 且樞紐棒 ts_pivot 必須至少在 entry_bar_floor_ms - timeframe_ms（允許當根盤中確認反轉成型真峰谷）
-            if entry_bar_floor_ms > 0 and (ts_live < entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms - timeframe_ms):
+            # 盤中即時真峰谷：即時棒 ts_live 必須嚴格大於開倉當根（ts_live > entry_bar_floor_ms）
+            # 絕不允許在開倉當根拿開倉前的歷史 K 棒當成峰谷在盤中秒平倉！
+            if entry_bar_floor_ms > 0 and (ts_live <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
                 return False, None, {}
 
             quote_f = float(quote)
@@ -1690,11 +1691,11 @@ class HoldingProtectionExitGate:
                 return _reject(reason=immunity_reason)
 
         # ──【核心鐵律一：開倉後不要當根平倉】──
-        # 在開倉當根：除非剛好是真峰谷，否則除了鎖利外都不平倉！
+        # 在開倉當根：除非觸發最高優先硬停損或 10% 淨利鎖利，否則 100% 絕對禁止平倉！
         is_same_bar = is_same_bar_as_entry(position, frame)
-        if is_same_bar and not is_safety_exit:
-            if not is_profit_lock and not is_true_pivot_confirmed:
-                return _reject(reason='VETO_SAME_BAR_EXIT_UNLESS_PIVOT_OR_PROFIT_LOCK')
+        if is_same_bar and not hard_exit:
+            if not is_profit_lock:
+                return _reject(reason='VETO_SAME_BAR_EXIT_NO_EXIT_ON_ENTRY_BAR')
 
         # ──【核心鐵律二：真峰谷確認授權放行】──
         # 若已確認成型真峰谷且 candidate 屬於峰谷出場，立即放行平倉！
