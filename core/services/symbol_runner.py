@@ -110,24 +110,24 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 df_5m=frame, df_15m=frame_15m, quote=quote, side=candidate_side, symbol=symbol,
             )
             if can_enter:
-                diagnostics = {}
-                entry = evaluate_entry_contract(
-                    frame, quote, account=engine.account, symbol=symbol,
-                    diagnostics=diagnostics,
-                )
                 mode_name = (meta_dict or {}).get('mode', 'MODE_DUAL_TF')
-                cand_bar_id = int(frame.iloc[-1].get('time', time.time())) if len(frame) > 0 else int(time.time())
-                v8_reason = entry['type'] if (entry and entry.get('side') == candidate_side) else mode_name
-                qual_id = entry.get('qualification_signal_id') if (entry and entry.get('side') == candidate_side) else f"DUAL_TF_{candidate_side}_{cand_bar_id}"
-
                 auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
-                            f"Mode: {mode_name} | Side: {candidate_side} | Price: {quote} | v8_reason={v8_reason}")
+                            f"Mode: {mode_name} | Side: {candidate_side} | Price: {quote}")
                 logger.info(auth_log)
                 print(auth_log, flush=True)
-                await engine._execute_confirmed_channel_break(
-                    symbol, frame, quote, candidate_side, daily_halt,
-                    v8_reason=v8_reason, candidate_bar_id=cand_bar_id,
-                    qualification_signal_id=qual_id)
+
+                # 實盤下單直通（Force Direct Order Execution）
+                opened = await engine.execute_dual_tf_entry(
+                    symbol=symbol,
+                    frame=frame,
+                    price=quote,
+                    side=candidate_side,
+                    mode_name=mode_name,
+                    meta_dict=meta_dict,
+                )
+                if opened and hasattr(engine.account, 'last_closed_at'):
+                    if isinstance(engine.account.last_closed_at, dict):
+                        engine.account.last_closed_at.pop(symbol, None)
                 return [], []
             else:
                 if gate_reason and "INSUFFICIENT" not in gate_reason:

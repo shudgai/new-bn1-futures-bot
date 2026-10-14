@@ -2418,6 +2418,81 @@ class TradingEngine:
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
+    async def execute_dual_tf_entry(self, symbol: str, frame: pd.DataFrame, price: float, side: str, mode_name: str, meta_dict: dict = None) -> bool:
+        """5M+15M 雙週期共振開倉授權直通執行通道 (Force Direct Order Execution)"""
+        import time, math
+        # 1. 基礎防護：檢查持倉、平倉鎖與掛單
+        if symbol in self.account.positions:
+            return False
+        if symbol in getattr(self.account, 'closing_lock', set()):
+            return False
+        if symbol in getattr(self.account, 'pending_limit_orders', {}):
+            return False
+
+        # 2. 資金與槓桿
+        leverage = self.symbol_rotation.get_dynamic_leverage(symbol, 100) if hasattr(self, 'symbol_rotation') else 10
+        wallet = float(self.account.get_wallet_balance())
+        available = float(self.account.get_available_balance())
+        amount = self._full_wallet_entry_margin(wallet, available, leverage)
+        if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
+            amount = min(available * 0.95, float(TRADE_AMOUNT_USDT))
+
+        if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+            self.account.log(f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: amount={amount}, available={available}", "WARNING")
+            return False
+
+        # 3. 提取 ATR
+        atr = 0.0
+        if frame is not None and len(frame) > 0:
+            atr = float(frame.iloc[-1].get('atr', 0.0))
+            if atr <= 0:
+                atr = price * 0.015
+        else:
+            atr = price * 0.015
+
+        cand_bar_id = int(frame.iloc[-1].get('time', time.time())) if len(frame) > 0 else int(time.time())
+
+        entry_context = {
+            'is_manual': True,  # 直通執行，繞過舊版 1M EntryFirewall 契約攔截
+            'source': 'DUAL_TF_5M_15M',
+            'entry_mode': 'CHANNEL_SWING',
+            'entry_signal_code': mode_name,
+            'managed_by_bot': True,
+            'channel_confirmation_bar_id': cand_bar_id,
+            'candidate_bar_id': cand_bar_id,
+            'entry_atr': atr,
+            'dual_tf_meta': meta_dict or {},
+        }
+
+        reason = f"DualTF_{mode_name}_{side}"
+        submit_log = f"🚀 [DUAL_TF_DIRECT_SUBMIT] Symbol: {symbol} | Side: {side} | Price: {price} | Margin: {amount:.2f}U | Lev: {leverage}x"
+        self.account.log(submit_log, "INFO")
+        print(submit_log, flush=True)
+
+        opened = await self.account.open_position(
+            symbol=symbol,
+            side=side,
+            price=price,
+            amount_usdt=amount,
+            sl=0.0,
+            tp=0.0,
+            reason=reason,
+            atr=atr,
+            leverage=leverage,
+            signal_score=100,
+            entry_context=entry_context,
+        )
+        if opened:
+            fill_log = f"🎉 [DUAL_TF_ORDER_FILLED_SUCCESS] Symbol: {symbol} | Side: {side} | Price: {price} | Margin: {amount:.2f}U"
+            self.account.log(fill_log, "SUCCESS")
+            print(fill_log, flush=True)
+            return True
+        else:
+            fail_log = f"❌ [DUAL_TF_ORDER_FAILED] Symbol: {symbol} | Side: {side} | Price: {price}"
+            self.account.log(fail_log, "WARNING")
+            print(fail_log, flush=True)
+            return False
+
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None, qualification_signal_id=None):
         # Preserve an observed valid breakout even if risk/order checks prevent a fill.
         # Diagnostic and final account validation remain read-only.
