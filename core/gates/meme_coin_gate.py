@@ -175,13 +175,6 @@ class MemeCoinGate:
             curr_kc_lower = kc_lower
             prev_kc_lower = float(prev.get('kc_lower', 0.0))
 
-            # CAP's live breakout must start with the raw candle open inside KC.
-            # This keeps both directions eligible while avoiding entries that
-            # begin after price has already gapped outside the channel.
-            cap_open_in_channel = kc_lower <= open_p <= kc_upper
-            if is_cap_symbol(symbol) and not cap_open_in_channel:
-                return False, 'BLOCKED_CAP_BREAKOUT_OPEN_OUTSIDE_CHANNEL', None
-
             # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
             market_trend = cls.get_market_trend(frame, quote)
             if side == 'LONG' and market_trend == 'BEARISH':
@@ -222,7 +215,6 @@ class MemeCoinGate:
                 is_fresh_breakout = (
                     quote > kc_upper and body >= MEME_BREAKOUT_BODY_ATR * atr
                     and open_p <= kc_upper
-                    and (not is_cap_symbol(symbol) or cap_open_in_channel)
                 )
                 if is_fresh_breakout:
                     return True, 'MEME_INITIAL_KC_BREAKOUT_LONG', {
@@ -277,7 +269,6 @@ class MemeCoinGate:
                 is_fresh_breakout = (
                     kc_lower > 0 and quote < kc_lower
                     and body >= MEME_BREAKOUT_BODY_ATR * atr and open_p >= kc_lower
-                    and (not is_cap_symbol(symbol) or cap_open_in_channel)
                 )
                 if is_fresh_breakout:
                     return True, 'MEME_INITIAL_KC_BREAKOUT_SHORT', {
@@ -331,11 +322,20 @@ class MemeCoinGate:
                     return True, 'VETO_MEME_MA5_DEFENSE_HOLDING'
 
             elif side == 'SHORT':
-                # 空單外軌鎖定：價格維持在 KC 下軌之外且壓制在 MA5 之下
-                if kc_lower > 0 and quote < kc_lower and quote <= live_ma5:
+                # ── 空單持倉防洗鐵律（龍蝦 / CAP 專用：空頭走勢不要平倉，要到真谷底才能平倉）──
+                # 1. 價格維持在 KC 下軌之外
+                if kc_lower > 0 and quote < kc_lower:
                     return True, 'VETO_MEME_OUTER_RAIL_LOCK_HOLDING'
+                # 2. 價格壓制在 MA5 之下
                 if quote <= live_ma5:
                     return True, 'VETO_MEME_MA5_DEFENSE_HOLDING'
+
+                # 3. 空頭走勢護航：只要價格在 KC 中軌下方（quote <= kc_middle），且尚未收線確認形成真谷底，一票否決！
+                kc_middle = cls.calculate_kc_middle(curr)
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                has_valley, _, _ = has_confirmed_true_pivot({'side': 'SHORT'}, frame, quote)
+                if kc_middle > 0 and quote <= kc_middle and not has_valley:
+                    return True, 'VETO_MEME_SHORT_HOLDING_UNTIL_TRUE_VALLEY'
 
             return False, 'ALLOW_EXIT_EVALUATION'
         except Exception:
@@ -344,13 +344,13 @@ class MemeCoinGate:
     @classmethod
     def evaluate_meme_exit(
         cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
+        position: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, Optional[str]]:
         """妖幣出場止盈點審查。
         
-        出場條件（觸發平倉獲利了結）：
-        1. 實體收盤/最新價明確砸回 KC 軌道內（多單 quote <= kc_upper，空單 quote >= kc_lower）
-        2. 跌破 MA5 關鍵防守線（多單 quote < live_ma5，空單 quote > live_ma5）
-        註：最終平倉授權由 HoldingProtectionExitGate 嚴格把關『真峰谷成型』，未成真峰谷前絕不放行。
+        出場鐵律：
+        - 龍蝦 / 1000PEPE 開空後，若都是空頭走勢（價格在 KC 中軌下方）不要平倉，除非鎖利或真谷底出現，要不然一律不平倉！
+        - 註：未成真谷底前絕不放行平空，堅決吃滿主跌浪。
         """
         if not cls.is_meme_coin(symbol) or frame is None or len(frame) < 1:
             return False, None
@@ -361,22 +361,54 @@ class MemeCoinGate:
             live_ma5, _ = cls.calculate_live_ma5(frame, quote)
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
+            pos = position or {'side': side}
 
             if side == 'LONG':
-                # 條件 1：跌破 MA5 關鍵防守線
-                if quote < live_ma5:
-                    return True, 'EXIT_MEME_MA5_DEFENSE_BREACH'
-                # 條件 2：實體明確砸回 KC 軌道內
-                if kc_upper > 0 and quote <= kc_upper:
-                    return True, 'EXIT_MEME_RETURN_INSIDE_KC_RAIL'
+                # ── 妖幣多單出場鐵律：遇真峰頂要馬上平倉，不要等 1m 跑完才平倉！──
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                has_peak, _, _ = has_confirmed_true_pivot(pos, frame, quote)
+                if has_peak:
+                    return True, 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
+
+                # ── 徹底禁止碰上軌就平多！衝破上軌要穩穩抱住 ──
+                # 真頂峰出場條件：必須創高後回落，收盤實體跌破 KC 中軌連續 2 根才出場！
+                kc_middle = cls.calculate_kc_middle(curr)
+                if len(frame) >= 2 and kc_middle > 0:
+                    c1 = frame.iloc[-1]
+                    c2 = frame.iloc[-2]
+                    mid1 = cls.calculate_kc_middle(c1)
+                    mid2 = cls.calculate_kc_middle(c2)
+                    c1_close = float(c1.get('close', quote))
+                    c2_close = float(c2.get('close', c1_close))
+                    if c1_close < mid1 and c2_close < mid2 and quote < mid1:
+                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
+
+                # 其餘情況（在 KC 中軌上方、碰觸上軌、沿上軌走、稍觸 MA5 等）：
+                # 100% 嚴禁平多，堅決沿著上軌抱緊主升浪！
+                return False, None
 
             elif side == 'SHORT':
-                # 條件 1：突破 MA5 關鍵防守線
-                if quote > live_ma5:
-                    return True, 'EXIT_MEME_MA5_DEFENSE_BREACH'
-                # 條件 2：反彈回 KC 軌道內
-                if kc_lower > 0 and quote >= kc_lower:
-                    return True, 'EXIT_MEME_RETURN_INSIDE_KC_RAIL'
+                # ── 妖幣空單出場鐵律（龍蝦 / 1000PEPE 專用）：開空後不要平倉，除非鎖利或真谷底出現，要不然一律不平倉 ──
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                has_valley, _, _ = has_confirmed_true_pivot(pos, frame, quote)
+                if has_valley:
+                    return True, 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
+
+                # ── 徹底禁止碰下軌就平空！衝破下軌要穩穩抱住 ──
+                # 真谷底出場條件：必須創低後回升，收盤實體站上 KC 中軌連續 2 根才出場！
+                kc_middle = cls.calculate_kc_middle(curr)
+                if len(frame) >= 2 and kc_middle > 0:
+                    c1 = frame.iloc[-1]
+                    c2 = frame.iloc[-2]
+                    mid1 = cls.calculate_kc_middle(c1)
+                    mid2 = cls.calculate_kc_middle(c2)
+                    c1_close = float(c1.get('close', quote))
+                    c2_close = float(c2.get('close', c1_close))
+                    if c1_close > mid1 and c2_close > mid2 and quote > mid1:
+                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
+
+                # 其餘情況（在 KC 中軌下方、觸碰 MA5、回到下軌內等普通回踩雜訊），100% 嚴禁平空！
+                return False, None
 
             return False, None
         except Exception:

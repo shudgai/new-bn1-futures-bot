@@ -224,7 +224,8 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                         if prev_lower_shadow / prev_range >= 0.45:
                             # 緊接著出現「反向綠K且收在當棒高檔」
                             live_ma5 = float(snapshot.get('live_ma5') or snapshot.get('ma5') or 0.)
-                            if (quote - live_open >= 0.35 * atr
+                            if (quote > mid
+                                    and quote - live_open >= 0.5 * atr
                                     and quote > live_ma5
                                     and live_body / candle_range >= 0.60
                                     and (quote - live_low) / candle_range >= 0.70):
@@ -265,6 +266,128 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
                      current_net_roe_pct=current_roe)
         position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
         meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
+
+        # ──【鐵律一：極端避雷針動態收割（Spike Reversal Harvest）】──
+        # 觸發條件：持倉浮盈峰值 >= 1.5 ATR 的高檔衝刺中：
+        # 1. 盤中自最高點回撤 >= 1.2 ATR，或峰值浮盈回吐幅度 >= 40%
+        # 2. 或當前 1m K 棒上影線長度佔比 >= (High - Low) * 0.50（明顯衝高受阻大跳水）
+        # 執行動作：豁免所有均線防守等待，盤中當根立即市價平倉落袋（EXIT_BY_SPIKE_REVERSAL）！
+        peak_p = max(float(position.get('highest_price') or position.get('peak_price') or entry), quote if side == 'LONG' else entry)
+        trough_p = min(float(position.get('lowest_price') or position.get('trough_price') or entry), quote if side == 'SHORT' else entry)
+        position['highest_price'] = peak_p
+        position['lowest_price'] = trough_p
+        meta['highest_price'] = peak_p
+        meta['lowest_price'] = trough_p
+
+        c_range = max(live_high - live_low, 1e-9)
+        live_ma5 = float(snapshot.get('live_ma5') or snapshot.get('ma5') or 0.)
+        live_ma15 = float(snapshot.get('live_ma15') or snapshot.get('ma15') or 0.)
+
+        # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
+        # 浮盈曾達 >= 1.0 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price + 0.05%（空單 - 0.05%）
+        max_pnl_atr = (peak_p - entry) / atr if (side == 'LONG' and atr > 0) else (entry - trough_p) / atr if (side == 'SHORT' and atr > 0) else 0.0
+        is_be_locked = position.get('breakeven_locked', False) or meta.get('breakeven_locked', False) or (max_pnl_atr >= 1.0 or state['peak_net_roe_pct'] >= 8.0)
+        if is_be_locked:
+            position['breakeven_locked'] = True
+            meta['breakeven_locked'] = True
+            if side == 'LONG':
+                be_price = entry * 1.0005
+                curr_sl = float(position.get('sl') or position.get('stop_loss') or 0.0)
+                position['sl'] = max(curr_sl, be_price)
+                position['stop_loss'] = max(curr_sl, be_price)
+                if quote <= be_price:
+                    return 'EXIT_BY_BREAKEVEN_LOCK', True
+            elif side == 'SHORT':
+                be_price = entry * 0.9995
+                curr_sl = float(position.get('sl') or position.get('stop_loss') or 999999999.0)
+                position['sl'] = min(curr_sl, be_price)
+                position['stop_loss'] = min(curr_sl, be_price)
+                if quote >= be_price:
+                    return 'EXIT_BY_BREAKEVEN_LOCK', True
+
+        # ──【鐵律一：極端避雷針動態收割（Spike Reversal Harvest）】──
+        if side == 'LONG':
+            max_gain = peak_p - entry
+            if atr > 0 and max_gain >= 1.5 * atr:
+                rebound_drop = peak_p - quote
+                giveback = rebound_drop / max_gain if max_gain > 0 else 0.0
+                if (rebound_drop >= 1.2 * atr or giveback >= 0.40 or (upper_wick / c_range >= 0.50 and quote < live_high - 0.4 * atr)) and quote > entry:
+                    return 'EXIT_BY_SPIKE_REVERSAL', True
+        elif side == 'SHORT':
+            max_gain = entry - trough_p
+            if atr > 0 and max_gain >= 1.5 * atr:
+                rebound_rise = quote - trough_p
+                giveback = rebound_rise / max_gain if max_gain > 0 else 0.0
+                if (rebound_rise >= 1.2 * atr or giveback >= 0.40 or (lower_wick / c_range >= 0.50 and quote > live_low + 0.4 * atr)) and quote < entry:
+                    return 'EXIT_BY_SPIKE_REVERSAL', True
+
+        # ──【開倉當根防洗鐵律】開倉後不要當根平倉，除非剛好是真峰谷，否則除了鎖利外都不平倉──
+        entry_bar_ms = float((position.get('entry_snapshot') or meta.get('entry_snapshot') or {}).get('entry_bar_id') or 0.)
+        open_ts = float(position.get('open_timestamp') or meta.get('open_timestamp') or 0.)
+        open_ms = open_ts * 1000.0 if (0 < open_ts < 1e11) else open_ts
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.)
+        is_same_bar = False
+        if live_bar_ms > 0:
+            if entry_bar_ms > 0 and entry_bar_ms == live_bar_ms:
+                is_same_bar = True
+            elif open_ms > 0 and (math.floor(open_ms / 60000.0) * 60000.0 == live_bar_ms or open_ms >= live_bar_ms):
+                is_same_bar = True
+
+        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+        has_true_pivot = False
+        if isinstance(snapshot.get('frame'), pd.DataFrame):
+            has_true_pivot, _, _ = has_confirmed_true_pivot(position, snapshot.get('frame'), quote)
+
+        # 若在開倉當根，且未確認真峰谷，直接跳過一般回撤判定（除了上方已執行的鎖利與避雷針收割外，當根絕不平倉）
+        if not is_same_bar or has_true_pivot:
+            # ──【峰頂/谷底敏銳判定（Fast Top/Valley Exit: EXIT_BY_FAST_PEAK_REVERSAL）】──
+            # 浮盈顯著時（曾達 >= 0.8 ATR 或 ROE >= 5.0%）：
+            # 多單：高檔長上影線滯漲 + 實體陰線（body >= 0.4 ATR）摜穿 MA5，或 MA5 急速向下彎頭跌破 MA5 立即平多
+            if side == 'LONG':
+                max_gain = peak_p - entry
+                if (max_gain >= 0.8 * atr or state['peak_net_roe_pct'] >= 5.0):
+                    c_is_bearish = (live_open > quote) and ((live_open - quote) >= 0.4 * atr)
+                    if (upper_wick >= 0.35 * atr and c_is_bearish and quote < live_ma5):
+                        return 'EXIT_BY_FAST_PEAK_REVERSAL', True
+                    if len(history_5) >= 2:
+                        last_ma5 = float(history_5[-1].get('ma5', live_ma5))
+                        prev_ma5 = float(history_5[-2].get('ma5', last_ma5))
+                        if (last_ma5 - prev_ma5 <= -0.02 * atr) and quote < live_ma5:
+                            return 'EXIT_BY_FAST_PEAK_REVERSAL', True
+            elif side == 'SHORT':
+                max_gain = entry - trough_p
+                if (max_gain >= 0.8 * atr or state['peak_net_roe_pct'] >= 5.0):
+                    c_is_bullish = (quote > live_open) and ((quote - live_open) >= 0.4 * atr)
+                    if (lower_wick >= 0.35 * atr and c_is_bullish and quote > live_ma5):
+                        return 'EXIT_BY_FAST_VALLEY_REVERSAL', True
+                    if len(history_5) >= 2:
+                        last_ma5 = float(history_5[-1].get('ma5', live_ma5))
+                        prev_ma5 = float(history_5[-2].get('ma5', last_ma5))
+                        if (last_ma5 - prev_ma5 >= 0.02 * atr) and quote > live_ma5:
+                            return 'EXIT_BY_FAST_VALLEY_REVERSAL', True
+
+            # ──【第二道防線：真峰頂/真谷底趨勢逆轉即時檢查】──
+            channel_state = str(snapshot.get('channel_state', '')).strip().upper()
+            if side == 'LONG':
+                is_kc_down = channel_state in ('KC向下', 'DOWN', 'BEARISH', 'DOWNTREND', 'KC_TREND_DOWN')
+                if has_true_pivot or ((mid > 0 and quote < mid) and not is_same_bar):
+                    return 'EXIT_BY_CONFIRMED_TRUE_PEAK', True
+            elif side == 'SHORT':
+                is_kc_up = channel_state in ('KC向上', 'UP', 'BULLISH', 'UPTREND', 'KC_TREND_UP')
+                if has_true_pivot or ((mid > 0 and quote > mid) and not is_same_bar):
+                    return 'EXIT_BY_CONFIRMED_TRUE_VALLEY', True
+
+        # ──【多頭/空頭初生期強制抱緊鎖定（Initial Holding Protection）】──
+        # 只要 1m K 線收盤/最新價仍踩在 MA5 之上（或未跌破 MA15），一票否決所有神經質平多
+        if side == 'LONG':
+            is_bullish_struct = (live_ma5 >= live_ma15) and ('DOWN' not in channel_state)
+            if is_bullish_struct and (quote >= live_ma5 or (live_ma15 > 0 and quote >= live_ma15)):
+                return None, True
+        elif side == 'SHORT':
+            is_bearish_struct = (live_ma5 <= live_ma15) and ('UP' not in channel_state)
+            if is_bearish_struct and (quote <= live_ma5 or (live_ma15 > 0 and quote <= live_ma15)):
+                return None, True
+
         if floor is not None and has_reached_net_roe_floor(current_roe, floor):
             return f'{PROFIT_LOCK_TRIGGER}_TIER_{tier}', True
         return None, True
@@ -423,8 +546,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     account = engine.account
     position = account.positions.get(symbol)
     entry_m = str((position or {}).get('entry_mode', '')).upper()
-    from core.symbol_aliases import is_lobster_symbol
-    lobster_hold = is_lobster_symbol(symbol)
+    from core.symbol_aliases import is_lobster_symbol, is_cap_symbol, is_pepe_symbol
+    lobster_hold = is_lobster_symbol(symbol) or is_cap_symbol(symbol) or is_pepe_symbol(symbol)
     if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
     try:
@@ -447,7 +570,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 snapshot, atr = cached_tick_indicators(frame, price, stamp)
                 if entry_m == 'CHANNEL_SWING':
                     from core.gates.meme_coin_gate import MemeCoinGate
-                    if MemeCoinGate.is_meme_coin(symbol) and not lobster_hold:
+                    if MemeCoinGate.is_meme_coin(symbol):
                         side_m = str(position.get('side', '')).upper()
                         amb_fail, amb_fail_reason = MemeCoinGate.evaluate_ambush_failure_stop(
                             frame, price, side_m, symbol=symbol,
@@ -463,7 +586,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                             )
                             return True
                         m_exit, m_exit_reason = MemeCoinGate.evaluate_meme_exit(
-                            frame, price, side_m, symbol=symbol,
+                            frame, price, side_m, symbol=symbol, position=position,
                         )
                         if m_exit and m_exit_reason:
                             from core.gates.holding_protection_gate import HoldingProtectionExitGate

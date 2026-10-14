@@ -412,38 +412,14 @@ def detect_emergency_dump_exit(frame, quote: float, side: str, atr: float) -> bo
 
         if side == 'LONG':
             drop = open_p - quote
-            body = max(drop, 0.0)
-            upper_wick = high_p - max(open_p, quote)
-            prev_bull_body = max(prev_close - prev_open, 0.0)
-
-            # 條件 A【實體大反殺】：跌幅 >= 0.7 ATR 且 吞沒前一根陽線實體 70% 以上
-            if drop >= 0.7 * atr and prev_bull_body > 0 and drop >= 0.70 * prev_bull_body:
-                return True
-
-            # 條件 B【巨陰貫穿均線】：盤中價格直接摜破 MA5，且當根下跌幅度 >= 0.8 ATR
-            if quote < ma5_p and drop >= 0.7 * atr:
-                return True
-
-            # 條件 C【天地針避雷針】：高點衝高後劇烈回吐，上影線 >= 1.5 倍實體 且 上影線 >= 0.5 ATR
-            if upper_wick >= 0.5 * atr and upper_wick >= 1.5 * max(body, 1e-9):
+            # 遭遇極端大實體反殺：盤中即時跌幅 >= 0.8 ATR 且摜穿 MA5 均線
+            if quote < ma5_p and drop >= 0.8 * atr:
                 return True
 
         elif side == 'SHORT':
             rise = quote - open_p
-            body = max(rise, 0.0)
-            lower_wick = min(open_p, quote) - low_p
-            prev_bear_body = max(prev_open - prev_close, 0.0)
-
-            # 條件 A【實體大反殺】：漲幅 >= 0.7 ATR 且 吞沒前一根陰線實體 70% 以上
-            if rise >= 0.7 * atr and prev_bear_body > 0 and rise >= 0.70 * prev_bear_body:
-                return True
-
-            # 條件 B【巨陽貫穿均線】：盤中價格直接摜破 MA5，且當根上漲幅度 >= 0.8 ATR
+            # 遭遇極端大實體反殺：盤中即時漲幅 >= 0.8 ATR 且摜穿 MA5 均線
             if quote > ma5_p and rise >= 0.8 * atr:
-                return True
-
-            # 條件 C【天地針避雷針】：低點探底後劇烈回吐，下影線 >= 1.5 倍實體 且 下影線 >= 0.5 ATR
-            if lower_wick >= 0.5 * atr and lower_wick >= 1.5 * max(body, 1e-9):
                 return True
 
     except (TypeError, ValueError, IndexError):
@@ -487,66 +463,233 @@ class DualTrackExitStrategy(IExitStrategy):
             if frame is not None and not frame.empty and atr <= 0:
                 atr = float(frame.iloc[-1].get('atr') or 0.0)
 
-            # 1. 開倉初期生命週期保護（前 90 秒內）：
-            # 只要未擊穿 1.2 ATR 硬停損線，嚴禁僅因盤中價格波動穿過 MA5 平倉
-            # 2. 軌道二：突發大賣壓緊急避險（Emergency Dump Exit - 盤中即刻秒平，不等收線！）
-            # 條件 A 大反殺吞沒、條件 B 巨陰摜破 MA5、條件 C 天地針
-            # 豁免所有斜率保護與收線等待，在當根盤中當下立即以市價平倉！
-            if detect_emergency_dump_exit(frame, current_price, side, atr):
+            # 提取當前 1m K 棒指標
+            kc_mid = 0.0
+            prev_kc_mid = 0.0
+            curr_ma5 = 0.0
+            prev_ma5 = 0.0
+            curr_ma15 = 0.0
+            prev_ma15 = 0.0
+            curr_close = current_price
+            channel_state = ""
+            recent_candles = []
+            if frame is not None and len(frame) >= 1:
+                last_c = frame.iloc[-1]
+                prev_c = frame.iloc[-2] if len(frame) >= 2 else last_c
+                kc_mid = float(last_c.get('kc_middle', last_c.get('kc_basis', 0.0)))
+                prev_kc_mid = float(prev_c.get('kc_middle', prev_c.get('kc_basis', kc_mid)))
+                curr_ma5 = float(last_c.get('ma5', 0.0))
+                prev_ma5 = float(prev_c.get('ma5', curr_ma5))
+                curr_ma15 = float(last_c.get('ma15', 0.0))
+                prev_ma15 = float(prev_c.get('ma15', curr_ma15))
+                curr_close = float(last_c.get('close', current_price))
+                channel_state = str(last_c.get('channel_state', '')).strip().upper()
+                recent_candles = [frame.iloc[i] for i in range(max(0, len(frame) - 4), len(frame))]
+
+            delta_ma5 = curr_ma5 - prev_ma5
+            ma15_slope = curr_ma15 - prev_ma15
+            entry_p = float(position.get('entry_price', current_price))
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 【多頭趨勢：保本移損、真峰頂辨識與離場（Long Holding & Exit）】
+            # ══════════════════════════════════════════════════════════════════════
+            if side == 'LONG':
+                peak_p = max(float(position.get('highest_price') or position.get('peak_price') or entry_p), current_price)
+                position['highest_price'] = peak_p
+                position['peak_price'] = peak_p
+                max_gain = peak_p - entry_p
+
+                # 提取 K 棒影線指標
+                c_high = float(last_c.get('high', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_low = float(last_c.get('low', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_open = float(last_c.get('open', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_close = float(last_c.get('close', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_range = max(c_high - c_low, 1e-9)
+                upper_wick = c_high - max(c_open, current_price)
+
+                # 計算淨 ROE
+                qty = float(position.get('qty') or 1.0)
+                margin = float(position.get('margin') or 0.0)
+                if margin <= 0:
+                    leverage = float(position.get('leverage') or 10.0)
+                    margin = (entry_p * qty / leverage) if leverage > 0 else (entry_p * qty)
+                peak_net_pnl = (peak_p - entry_p) * qty - (entry_p + peak_p) * qty * TAKER_FEE_RATE
+                peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
+
+                # ──【第二道防線：真峰頂趨勢逆轉（Confirmed True Peak Exit）與敏銳逃頂】──
+                is_kc_down = (
+                    channel_state in ('KC向下', 'DOWN', 'BEARISH', 'DOWNTREND', 'KC_TREND_DOWN')
+                    or (kc_mid > 0 and prev_kc_mid > 0 and kc_mid < prev_kc_mid - 1e-6)
+                )
+                cond_b_trend_reverse = (kc_mid > 0 and curr_close < kc_mid) or is_kc_down
+                cond_c_ma_collapse = (delta_ma5 < -0.02 * atr) and (curr_ma15 > 0 and curr_close < curr_ma15)
+                if cond_b_trend_reverse or cond_c_ma_collapse:
+                    return 'EXIT_BY_CONFIRMED_TRUE_PEAK'
+
+                # ──【峰頂敏銳判定（Fast Top Exit: EXIT_BY_FAST_PEAK_REVERSAL）】──
+                # 在浮盈顯著時（曾達 >= 0.8 ATR 或 ROE >= 5.0%）：
+                # 高檔連續長上影線滯漲 + 實體陰線（body >= 0.4 ATR）直接摜穿 MA5；或 MA5 斜率急速轉負垂直向下彎頭且跌破 MA5
+                has_consecutive_upper_wicks = False
+                if len(recent_candles) >= 3:
+                    prior_bars = recent_candles[:-1]
+                    wick_count = 0
+                    for b in prior_bars[-3:]:
+                        bh, bl, bo, bc = float(b.get('high', 0)), float(b.get('low', 0)), float(b.get('open', 0)), float(b.get('close', 0))
+                        br = max(bh - bl, 1e-9)
+                        buw = bh - max(bo, bc)
+                        if (buw >= 0.35 * atr or buw / br >= 0.35):
+                            wick_count += 1
+                    if wick_count >= 2:
+                        has_consecutive_upper_wicks = True
+
+                c_is_bearish_body = (c_open > c_close) and ((c_open - c_close) >= 0.4 * atr)
+                if (max_gain >= 0.8 * atr or peak_roe >= 5.0):
+                    cond_fast_top_shape = has_consecutive_upper_wicks and c_is_bearish_body and (curr_close < curr_ma5)
+                    cond_fast_ma_drop = (delta_ma5 < -0.02 * atr) and (curr_close < curr_ma5)
+                    if cond_fast_top_shape or cond_fast_ma_drop:
+                        return 'EXIT_BY_FAST_PEAK_REVERSAL'
+
+                # ──【極端避雷針動態收割（Spike Reversal Harvest）】──
+                if atr > 0 and max_gain >= 1.5 * atr:
+                    rebound_distance = peak_p - current_price
+                    giveback_ratio = rebound_distance / max_gain if max_gain > 0 else 0.0
+                    spike_reversal = (
+                        (not is_closed and (rebound_distance >= 1.2 * atr or giveback_ratio >= 0.40))
+                        or (upper_wick / c_range >= 0.50 and current_price < c_high - 0.4 * atr)
+                    )
+                    if spike_reversal and current_price > entry_p:
+                        return 'EXIT_BY_SPIKE_REVERSAL'
+
+                # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
+                # 浮盈曾達 >= 1.0 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price + 0.05%
+                is_be_locked = position.get('breakeven_locked', False) or ((atr > 0 and max_gain >= 1.0 * atr) or peak_roe >= 8.0)
+                if is_be_locked:
+                    position['breakeven_locked'] = True
+                    be_price = entry_p * 1.0005
+                    curr_sl = float(position.get('sl') or position.get('stop_loss') or 0.0)
+                    position['sl'] = max(curr_sl, be_price)
+                    position['stop_loss'] = max(curr_sl, be_price)
+                    if current_price <= be_price:
+                        return 'EXIT_BY_BREAKEVEN_LOCK'
+
+                # 寬幅階梯鎖利：達到目標浮盈後，自最高點回撤 1.3 ATR 或利潤回吐 35%
+                if atr > 0 and max_gain >= 1.5 * atr:
+                    rebound_distance = peak_p - current_price
+                    giveback_ratio = rebound_distance / max_gain if max_gain > 0 else 0.0
+                    if (rebound_distance >= 1.3 * atr or giveback_ratio >= 0.35) and current_price > entry_p:
+                        return 'EXIT_BY_RATCHET_PROFIT_LOCK'
+
+                # ──【多頭初生期強制抱緊鎖定（Initial Holding Protection - 徹底根絕神經質誤殺平多）】──
+                # 多頭結構中（MA5 > MA15 且 KC 向上），只要收盤穩穩踩在 MA5 之上（close >= ma5）或未跌破 MA15（close >= ma15）：
+                # 一票否決所有「微幅利潤回吐」、「單根小陰線」、「短線停滯」等神經質平多！
+                is_bullish_structure = (curr_ma5 >= curr_ma15) and ('DOWN' not in channel_state) and (kc_mid >= prev_kc_mid - 1e-6)
+                if is_bullish_structure:
+                    if curr_close >= curr_ma5 or (curr_ma15 > 0 and curr_close >= curr_ma15):
+                        return None
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 【空頭趨勢：保本移損、真谷底辨識與離場（Short Holding & Exit）】
+            # ══════════════════════════════════════════════════════════════════════
+            elif side == 'SHORT':
+                trough_p = min(float(position.get('lowest_price') or position.get('trough_price') or entry_p), current_price)
+                position['lowest_price'] = trough_p
+                position['trough_price'] = trough_p
+                max_gain = entry_p - trough_p
+
+                # 提取 K 棒影線指標
+                c_high = float(last_c.get('high', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_low = float(last_c.get('low', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_open = float(last_c.get('open', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_close = float(last_c.get('close', current_price)) if frame is not None and len(frame) >= 1 else current_price
+                c_range = max(c_high - c_low, 1e-9)
+                lower_wick = min(c_open, current_price) - c_low
+
+                # 計算淨 ROE
+                qty = float(position.get('qty') or 1.0)
+                margin = float(position.get('margin') or 0.0)
+                if margin <= 0:
+                    leverage = float(position.get('leverage') or 10.0)
+                    margin = (entry_p * qty / leverage) if leverage > 0 else (entry_p * qty)
+                peak_net_pnl = (entry_p - trough_p) * qty - (entry_p + trough_p) * qty * TAKER_FEE_RATE
+                peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
+
+                # ──【空頭走勢與真谷底檢核（Bearish Trend & True Valley Check）】──
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                has_true_valley, _, _ = has_confirmed_true_pivot(position, frame, current_price)
+
+                is_kc_up = (
+                    channel_state in ('KC向上', 'UP', 'BULLISH', 'UPTREND', 'KC_TREND_UP')
+                    or (kc_mid > 0 and prev_kc_mid > 0 and kc_mid > prev_kc_mid + 1e-6)
+                )
+                is_below_kc_mid = (kc_mid > 0 and curr_close <= kc_mid)
+                is_bearish_structure = is_below_kc_mid or (not is_kc_up) or (curr_ma5 <= curr_ma15)
+
+                # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
+                # 浮盈曾達 >= 1.2 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price - 0.05%
+                is_be_locked = position.get('breakeven_locked', False) or ((atr > 0 and max_gain >= 1.2 * atr) or peak_roe >= 8.0)
+                if is_be_locked:
+                    position['breakeven_locked'] = True
+                    be_price = entry_p * 0.9995
+                    curr_sl = float(position.get('sl') or position.get('stop_loss') or 999999999.0)
+                    position['sl'] = min(curr_sl, be_price)
+                    position['stop_loss'] = min(curr_sl, be_price)
+                    if current_price >= be_price:
+                        return 'EXIT_BY_BREAKEVEN_LOCK'
+
+                # ──【極端避雷針動態收割（Spike Reversal Harvest - 鎖利優先）】──
+                if atr > 0 and max_gain >= 1.5 * atr:
+                    rebound_distance = current_price - trough_p
+                    giveback_ratio = rebound_distance / max_gain if max_gain > 0 else 0.0
+                    spike_reversal = (
+                        (not is_closed and (rebound_distance >= 1.2 * atr or giveback_ratio >= 0.40))
+                        or (lower_wick / c_range >= 0.50 and current_price > c_low + 0.4 * atr)
+                    )
+                    if spike_reversal and current_price < entry_p:
+                        return 'EXIT_BY_SPIKE_REVERSAL'
+
+                # ──【空頭走勢防洗鐵律：若都是空頭走勢不要平倉，要到真谷底才能平倉】──
+                # 只要仍處於空頭結構且尚未收線形成真谷底，且未突破 KC 中軌，一票否決所有普通平空！
+                if is_bearish_structure and not has_true_valley and not (kc_mid > 0 and curr_close > kc_mid):
+                    return None
+
+                # ──【第二道防線：真谷底趨勢逆轉（Confirmed True Valley Exit）與中軌突破】──
+                cond_b_trend_reverse = (kc_mid > 0 and curr_close > kc_mid) or is_kc_up
+                cond_c_ma_surge = (delta_ma5 > 0.02 * atr) and (curr_ma15 > 0 and curr_close > curr_ma15)
+                if cond_b_trend_reverse or (has_true_valley and cond_c_ma_surge):
+                    return 'EXIT_BY_CONFIRMED_TRUE_VALLEY'
+
+                # ──【谷底敏銳判定（Fast Valley Exit: EXIT_BY_FAST_VALLEY_REVERSAL）】──
+                # 僅在已成型真谷底或突破中軌時，才評估下影線或 MA5 急拉
+                has_consecutive_lower_wicks = False
+                if len(recent_candles) >= 3:
+                    prior_bars = recent_candles[:-1]
+                    wick_count = 0
+                    for b in prior_bars[-3:]:
+                        bh, bl, bo, bc = float(b.get('high', 0)), float(b.get('low', 0)), float(b.get('open', 0)), float(b.get('close', 0))
+                        br = max(bh - bl, 1e-9)
+                        blw = min(bo, bc) - bl
+                        if (blw >= 0.35 * atr or blw / br >= 0.35):
+                            wick_count += 1
+                    if wick_count >= 2:
+                        has_consecutive_lower_wicks = True
+
+                c_is_bullish_body = (c_close > c_open) and ((c_close - c_open) >= 0.4 * atr)
+                if (max_gain >= 0.8 * atr or peak_roe >= 5.0) and (has_true_valley or curr_close > kc_mid):
+                    cond_fast_bottom_shape = has_consecutive_lower_wicks and c_is_bullish_body and (curr_close > curr_ma5)
+                    cond_fast_ma_surge_fast = (delta_ma5 > 0.02 * atr) and (curr_close > curr_ma5)
+                    if cond_fast_bottom_shape or cond_fast_ma_surge_fast:
+                        return 'EXIT_BY_FAST_VALLEY_REVERSAL'
+
+                # 寬幅階梯鎖利：達到目標浮盈後，且有真谷底支撐，自最低點反彈回撤 1.3 ATR 或利潤回吐 35%
+                if atr > 0 and max_gain >= 1.5 * atr and (has_true_valley or curr_close > kc_mid):
+                    rebound_distance = current_price - trough_p
+                    giveback_ratio = rebound_distance / max_gain if max_gain > 0 else 0.0
+                    if (rebound_distance >= 1.3 * atr or giveback_ratio >= 0.35) and current_price < entry_p:
+                        return 'EXIT_BY_RATCHET_PROFIT_LOCK'
+
+            # ── 緊急避險保留：僅在遭遇極端大實體反殺（盤中即時逆向 >= 0.8 ATR 且摜穿均線）允許當根秒平保命 ──
+            if not is_closed and detect_emergency_dump_exit(frame, current_price, side, atr):
                 return 'EMERGENCY_DUMP_EXIT'
-
-            # Initial-position grace must not delay an authorized intrabar dump cut.
-            if is_early_lifecycle_protected(position, current_price, atr):
-                return None
-
-            # 3. 階梯利潤鎖定（Ratchet）：浮盈達 1.5 ATR 後，硬止損自動上推至保本位以上，鎖定贏面！
-            if atr > 0:
-                entry_p = float(position.get('entry_price', current_price))
-                if side == 'LONG':
-                    peak_p = max(float(position.get('highest_price') or position.get('peak_price') or entry_p), current_price)
-                    position['highest_price'] = peak_p
-                    if (peak_p - entry_p) >= 1.5 * atr:
-                        be_level = entry_p + 0.1 * atr
-                        if current_price <= be_level:
-                            return 'EXIT_BY_RATCHET_PROFIT_LOCK'
-                elif side == 'SHORT':
-                    trough_p = min(float(position.get('lowest_price') or position.get('trough_price') or entry_p), current_price)
-                    position['lowest_price'] = trough_p
-                    if (entry_p - trough_p) >= 1.5 * atr:
-                        be_level = entry_p - 0.1 * atr
-                        if current_price >= be_level:
-                            return 'EXIT_BY_RATCHET_PROFIT_LOCK'
-
-            # 4. 十字星出場必須「雙棒確認」（Two-Bar Top Confirmation）：
-            # 嚴禁單根十字星立即平倉！當根僅標記，次根收陰跌破十字星最低點才平倉；否則清除警示抱緊！
-            if evaluate_doji_two_bar_confirmation(position, frame, side, is_closed=is_closed, atr=atr):
-                return 'TWO_BAR_DOJI_REVERSAL_EXIT'
-
-            # 5. 衝高滯漲主動平倉（Momentum Stalling Exit）：
-            # 連續 2 根無法創新高 + 避雷針上影線 + MA5 斜率走平下彎
-            if detect_momentum_stalling_exit(position, frame, current_price, side, atr):
-                return 'MOMENTUM_STALLING_EXIT'
-
-            # 6. MA5 斜率護航（MA Slope Shield - 回踩強制抱緊）：
-            # 當 MA5 斜率強勢順向（多單 MA5 斜率 > 0.03 ATR 向上，空單 < -0.03 ATR 向下）時，
-            # 盤中回踩觸碰 MA5 視為正常抖動，強制「禁止觸發平倉」。
-            if is_ma5_slope_shield_active(frame, side, atr):
-                return None
-
-            # 7. 常規波段防守基準線移至 MA15（健康回踩強制抱緊）：
-            # 在多頭趨勢中，只要 1m K 線收盤未實體摜破 MA15，一律視為健康回測蓄力，強制禁止平多！
-            if is_healthy_ma15_pullback_protected(frame, side):
-                return None
-
-            # 8. 大實體破位果斷砍倉（Candle-Close Dump Exit）：
-            # 當遭遇實體陰線收盤確認跌破 MA15/MA5，於當根收線當下立即砍倉！
-            if is_closed and is_candle_closed_dump_exit(frame, side, is_closed=True):
-                return 'CANDLE_CLOSE_DUMP_EXIT'
-
-            # 9. 平倉必須收線確認（Candle-Close Only）：
-            # 均線防守必須等 1m K 線收盤確認跌破 MA5 才執行離場。
-            if is_closed and is_candle_closed_ma5_break(frame, side, is_closed=True):
-                return 'CONFIRMED_MA5_CLOSE_BREAK'
 
             climax = detect_climax_reversal(frame, position.get('side'))
             if climax:

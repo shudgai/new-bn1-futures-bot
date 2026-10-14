@@ -1160,9 +1160,9 @@ AI_ADVISOR_TIMEOUT_SEC = float(os.getenv("AI_ADVISOR_TIMEOUT_SEC", "30"))
 AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.05"))
 
 # 高流動性候選池。已退場或近期反覆停損的
-# TAO/FET/APT/WIF/1000PEPE/ETH 不放回自動候選池。
+# TAO/FET/APT/WIF/ETH 不放回自動候選池；1000PEPE 與龍蝦享有同等最高交易優先級。
 SYMBOL_CANDIDATE_POOL = [
-    "BTC/USDT",
+    "BTC/USDT", "1000PEPE/USDT",
     "AAVE/USDT", "ADA/USDT", "AVAX/USDT", "BCH/USDT", "DOGE/USDT",
     "DOT/USDT", "ETC/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT",
     "SOL/USDT", "SUI/USDT", "TRX/USDT", "UNI/USDT", "XRP/USDT",
@@ -1177,9 +1177,6 @@ ENTRY_DISABLED_SYMBOLS = {
     ).split(",")
     if symbol.strip()
 }
-
-# Owner decision: no new PEPE exposure; held positions remain managed.
-ENTRY_DISABLED_SYMBOLS.add("1000PEPE/USDT")
 
 
 def is_entry_disabled(symbol: str) -> bool:
@@ -1305,7 +1302,7 @@ TRAILING_STOP_DISTANCE_ATR = 1.5
 
 
 # ==========================================
-# 🟢 雙軌高波動風控系統參數配置 (Lobster vs PEPE)
+# 🟢 雙軌高波動風控系統參數配置 (Lobster & 1000PEPE 完全對齊)
 # ==========================================
 HIGH_BETA_CONFIG = {
     "DEFAULT": { # 預設通用/龍蝦等高波動
@@ -1318,15 +1315,15 @@ HIGH_BETA_CONFIG = {
         "BASE_POSITION_SIZE_RATIO": 1.0,
         "VOLATILITY_FILTER_PCT": 0.003
     },
-    "1000PEPE/USDT": { # PEPE 流動性差，滑點大，更緊的風控
+    "1000PEPE/USDT": { # 1000PEPE 規格與龍蝦 100% 一模一樣
         "ATR_PERIOD": 14,
         "BREAKEVEN_ACTIVATE_ATR": 0.5,
         "COOLDOWN_KLINES": 3,
-        "BODY_FILTER_PCT": 0.70,
-        "BREAKOUT_BUFFER_ATR": 0.6,
-        "TRAILING_STOP_DISTANCE_ATR": 1.8,
-        "BASE_POSITION_SIZE_RATIO": 0.6,
-        "VOLATILITY_FILTER_PCT": 0.002
+        "BODY_FILTER_PCT": 0.60,
+        "BREAKOUT_BUFFER_ATR": 0.7,
+        "TRAILING_STOP_DISTANCE_ATR": 2.0,
+        "BASE_POSITION_SIZE_RATIO": 1.0,
+        "VOLATILITY_FILTER_PCT": 0.003
     }
 }
 def get_high_beta_config(symbol: str) -> dict:

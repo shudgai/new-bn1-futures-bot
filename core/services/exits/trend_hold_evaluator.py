@@ -30,15 +30,21 @@ def evaluate_trend_hold(position, snapshot, current_price):
         return 'RELEASED', 'NOT_IN_STRONG_TREND'
 
     elif side == 'SHORT':
+        # 1. KC 中軌空頭防守鐵律：只有收盤實體明確站上 KC 中軌且 MA5 上行，才判定為釋放
         if last_close > kc_mid and ma5_slope >= 0:
             return 'RELEASED', 'CLOSED_ABOVE_KC_MID_AND_MA5_WEAK'
-        if ma5 > ma15:
+        # 2. 均線金叉破壞空頭排列才判定釋放
+        if ma5 > ma15 and ma15_slope >= 0:
             return 'RELEASED', 'MA5_ABOVE_MA15'
 
-        if ma5 < ma15 and ma5_slope < 0 and ma15_slope <= 0 and current_price < kc_mid:
+        # 3. 均線空頭排列護航（MA5 < MA15 且 MA15 下行）或價格在 KC 中軌下方：強制 HOLD 或 WARNING
+        if current_price <= kc_mid:
             if current_price > ma5:
                 return 'WARNING', 'PRICE_ABOVE_MA5_BUT_KC_HELD'
             return 'HOLD', 'STRONG_TREND_SHORT'
+
+        if ma5 < ma15 and ma15_slope <= 0:
+            return 'HOLD', 'BEARISH_MA_ALIGNMENT_HOLD'
 
         return 'RELEASED', 'NOT_IN_STRONG_TREND'
 

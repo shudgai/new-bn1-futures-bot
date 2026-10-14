@@ -9,6 +9,8 @@ from typing import Optional
 
 MEME_BREAKOUT_SYMBOLS = frozenset((
     'CAP/USDT', 'CAP/USDT:USDT',
+    '1000PEPE/USDT', '1000PEPE/USDT:USDT', '1000PEPEUSDT',
+    'PEPE/USDT', 'PEPE/USDT:USDT', 'PEPEUSDT',
     '龍蝦/USDT', '龍蝦/USDT:USDT', '龙虾/USDT', '龙虾/USDT:USDT',
     'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
 ))
@@ -41,6 +43,14 @@ def is_lobster_symbol(symbol: Optional[str]) -> bool:
 def is_cap_symbol(symbol: Optional[str]) -> bool:
     """Return whether a symbol is one of the CAP contract aliases."""
     return normalize_symbol(symbol) in {'CAP/USDT', 'CAP/USDT:USDT'}
+
+
+def is_pepe_symbol(symbol: Optional[str]) -> bool:
+    """Return whether a symbol is one of the 1000PEPE contract aliases."""
+    return normalize_symbol(symbol) in {
+        '1000PEPE/USDT', '1000PEPE/USDT:USDT', '1000PEPEUSDT',
+        'PEPE/USDT', 'PEPE/USDT:USDT', 'PEPEUSDT',
+    }
 
 
 def is_pivot_only_channel_symbol(symbol: Optional[str]) -> bool:

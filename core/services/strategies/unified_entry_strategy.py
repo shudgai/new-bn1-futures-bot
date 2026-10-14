@@ -461,7 +461,6 @@ def anti_bottom_short_problem(
 
 def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account=None, symbol=''):
     wait = lambda reason: (False, reason, dict(action='WAIT', side=side, reason=reason))
-    
 
     closed = confirmed(frame)
     if closed is None or closed.empty:
@@ -479,259 +478,184 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     )
     if cross_chop_problem:
         return wait(cross_chop_problem)
-        
+
     c = closed.iloc[-1]
-    for _, signal_bar in closed.tail(2).iterrows():
-        wick_problem = wick_exhaustion_problem(signal_bar, side)
-        if wick_problem:
-            return wait(wick_problem)
-
-    if side == 'SHORT':
-        rail_break_confirmed = (
-            three_bar_rail_gate_problem(
-                frame,
-                price if price is not None else float(frame.iloc[-1]['close']),
-                'SHORT',
-            ) is None
-        )
-        problem = anti_bottom_short_problem(
-            frame, price, account=account, symbol=symbol,
-            allow_confirmed_rail_break=rail_break_confirmed,
-        )
-        if problem:
-            return wait(problem)
-    
-    # 嚴格校驗已收線 K 棒的真實顏色與實體 (絕對防範由綠翻紅)
-    bar_close = float(c.close)
-    bar_open = float(c.open)
-    if side == 'LONG':
-        if bar_close <= bar_open:
-            return wait("REJECT_LONG_CANDLE_IS_RED")  # 收紅 K 絕對禁止開多
-        if bar_close <= float(c.kc_upper):
-            return wait("REJECT_LONG_CLOSE_INSIDE_KC") # 沒實質站上外軌絕對禁止開多
-    elif side == 'SHORT':
-        if bar_close >= bar_open:
-            return wait("REJECT_SHORT_CANDLE_IS_GREEN")  # 收綠 K 絕對禁止開空
-        if bar_close >= float(c.kc_lower):
-            return wait("REJECT_SHORT_CLOSE_INSIDE_KC") # 沒實質跌破外軌絕對禁止開空
-    if side not in ('LONG', 'SHORT'):
-        return wait('INVALID_SIDE')
-
-    if closed is None:
-        return wait('WAIT_VALID_CLOSED_1M_DATA')
-
-    # 位置物理鐵律 (Price vs KC Mid) & 趨勢方向鐵律
-    c1, c = closed.iloc[-2], closed.iloc[-1]
-    c_close = float(c.close)
-    c_middle = float(c.kc_middle)
-    c1_middle = float(c1.kc_middle)
-    c_ma15 = float(c.ma15)
-    c1_ma15 = float(c1.ma15)
-    
-    if side == 'LONG':
-        if c_close <= c_middle:
-            return wait('BLOCKED_LONG_PRICE_BELOW_KC_MID')
-        if c_middle < c1_middle or c_ma15 < c1_ma15:
-            return wait('BLOCKED_LONG_AGAINST_TREND')
-    elif side == 'SHORT':
-        if c_close >= c_middle:
-            return wait('BLOCKED_SHORT_PRICE_ABOVE_KC_MID')
-        if c_middle > c1_middle or c_ma15 > c1_ma15:
-            return wait('BLOCKED_SHORT_AGAINST_TREND')
-
-    # CK 趨勢嚴格同向要求 (Global CK Alignment Block)
-    if side == 'LONG':
-        if not (c_middle > c1_middle and float(c.kc_upper) >= float(c1.kc_upper)):
-            return wait('BLOCKED_CK_NOT_ALIGNED_LONG')
-    elif side == 'SHORT':
-        if not (c_middle < c1_middle and float(c.kc_lower) <= float(c1.kc_lower)):
-            return wait('BLOCKED_CK_NOT_ALIGNED_SHORT')
-
-    # (已依照妖幣鐵律刪除：通道寬度門檻與支撐位門檻)
-
-    # 兩根同色實體要求移至 rule 判定後，以豁免 IGNITION
-
-    if side == 'LONG':
-        problem = long_entry_trend_problem(closed)
-        if problem:
-            return wait(problem)
-    else:
-        problem = short_entry_trend_problem(closed)
-        if problem:
-            return wait(problem)
-
-    # Peak trough cross is completely removed
-
-    c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
-    sign = 1 if side == 'LONG' else -1
-
-    # ── 基礎數值 ─────────────────────────────────────────────────
-    # The caller may provide either closed-only rows or a live tail. Always
-    # derive entry CK from the same last two completed rows.
-    previous = closed.iloc[-2]
-    current = closed.iloc[-1]
-    ck = None
-    if current.kc_middle > previous.kc_middle and current.kc_upper >= previous.kc_upper:
-        ck = 'LONG'
-    elif current.kc_middle < previous.kc_middle and current.kc_lower <= previous.kc_lower:
-        ck = 'SHORT'
-    ck_opposing = 'SHORT' if side == 'LONG' else 'LONG'
-    if ck == side:
-        ck_status = '連續同向'
-    elif ck == ck_opposing:
-        ck_status = '明確反向趨勢'
-    else:
-        ck_status = '尚未連續同向 (非反向)'
-    
-    indicators = {
-        'kc_upper': [float(c0.kc_upper), float(c1.kc_upper), float(c.kc_upper)],
-        'kc_lower': [float(c0.kc_lower), float(c1.kc_lower), float(c.kc_lower)],
-        'kc_middle': [float(c0.kc_middle), float(c1.kc_middle), float(c.kc_middle)],
-        'atr': [float(c0.atr), float(c1.atr), float(c.atr)],
-        'ck_status': ck_status
-    }
-        
-    # 開倉觸發條件
-    atr = float(c.atr)
-    rule = None
-    
+    prev_c = closed.iloc[-2] if len(closed) >= 2 else c
     c_open = float(c.open)
     c_high = float(c.high)
     c_low = float(c.low)
     c_close = float(c.close)
+    atr = float(c.get('atr', prev_c.get('atr', 1.0)))
+    if atr <= 0:
+        atr = 1.0
+
+    curr_ma5 = float(c.get('ma5', c_close))
+    curr_ma15 = float(c.get('ma15', c_close))
+    kc_upper = float(c.get('kc_upper', 0.0))
+    kc_lower = float(c.get('kc_lower', 0.0))
+    kc_middle = float(c.get('kc_middle', (kc_upper + kc_lower) / 2.0 if kc_upper > kc_lower else 0.0))
+    prev_kc_middle = float(prev_c.get('kc_middle', kc_middle))
+
     candle_range = c_high - c_low
-    candle_body = abs(c_close - c_open)
-    body_ratio = 1.0 if candle_range <= 1e-9 else candle_body / candle_range
+    body = abs(c_close - c_open)
+    body_ratio = body / candle_range if candle_range > 1e-9 else 1.0
 
-    is_outside = False
-    fast_crawling = False
-    
-    if side == "LONG":
-        ma_aligned = float(c.ma3) > float(c.ma15)
-        c1_green = float(c1.close) > float(c1.open)
-        c_green = float(c.close) > float(c.open)
-        c1_breakout = float(c1.close) > float(c1.kc_upper)
-        c_breakout = float(c.close) > float(c.kc_upper)
-        
-        is_outside = c_breakout
-        
-        if ma_aligned and c1_green and c_green and c1_breakout and c_breakout:
-            rule = 'TREND_BREAKOUT'
-                
-    else:
-        ma_aligned = float(c.ma3) < float(c.ma15)
-        c1_red = float(c1.close) < float(c1.open)
-        c_red = float(c.close) < float(c.open)
-        c1_breakout = float(c1.close) < float(c1.kc_lower)
-        c_breakout = float(c.close) < float(c.kc_lower)
-        
-        is_outside = c_breakout
-        
-        if ma_aligned and c1_red and c_red and c1_breakout and c_breakout:
-            rule = 'TREND_BREAKOUT'
+    # ──【全域防護 1：實體佔振幅低於 35% 之長影線震盪形態，強制禁止開倉】──
+    if body_ratio < 0.35:
+        return wait("BLOCKED_PIN_BAR_OR_LONG_WICK_CHOP")
 
-            
-    if sign * (c_close - c_open) <= 0:
-        return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
+    # ──【全域防護 2：MA5 乖離過大（天花板追單防護）> 1.2% 一票否決】──
+    if curr_ma5 > 0:
+        if side == 'LONG' and (quote - curr_ma5) / curr_ma5 > 0.012:
+            return wait("BLOCKED_MA5_BIAS_OVEREXTENDED_LONG")
+        elif side == 'SHORT' and (curr_ma5 - quote) / curr_ma5 > 0.012:
+            return wait("BLOCKED_MA5_BIAS_OVEREXTENDED_SHORT")
 
-    if rule is None:
-        return wait('WAIT_NEW_BREAKOUT_TRIGGER')
+    from core.services.entry_contract import _PENDING_WICK_REENTRY_STATE
+    sym_key = symbol or '__default__'
+    pending_state = _PENDING_WICK_REENTRY_STATE.get(sym_key)
+    curr_stamp = float(c.timestamp)
+    is_retest_hit = False
 
-    # ══════════════════════════════════════════════════════════
-    # 終極守門員：嚴禁 TREND_CRAWLING 或任何未授權策略出門
-    # 唯一合法入口：TREND_BREAKOUT（兩根破軌確認）
-    # ══════════════════════════════════════════════════════════
-    if rule != 'TREND_BREAKOUT':
-        return wait(f'BLOCKED_ILLEGAL_RULE_{rule}_ONLY_TREND_BREAKOUT_ALLOWED')
+    # ══════════════════════════════════════════════════════════════════════
+    # 【移至適合 K 線的延續開倉（Eligible Re-entry Conditions）】
+    # ══════════════════════════════════════════════════════════════════════
+    if pending_state and curr_stamp > pending_state['bar_id']:
+        bars_diff = int(round((curr_stamp - pending_state['bar_id']) / 60000))
+        p_side = pending_state['side']
+        trend_broken = False
+        if p_side == 'LONG' and (kc_middle < prev_kc_middle - 1e-6 or curr_ma5 < curr_ma15):
+            trend_broken = True
+        elif p_side == 'SHORT' and (kc_middle > prev_kc_middle + 1e-6 or curr_ma5 > curr_ma15):
+            trend_broken = True
 
-    def get_body_info(row):
-        r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
-        r_range = r_high - r_low
-        r_body = r_close - r_open
-        r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
-        return r_body, r_ratio
-        
-    c1_body, c1_ratio = get_body_info(c1)
-    c_body_val, c_ratio = get_body_info(c)
-    
-    if side == "LONG":
-        if c1_body <= 0 or c_body_val <= 0:
-            return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
-    else:
-        if c1_body >= 0 or c_body_val >= 0:
-            return wait("BLOCKED_NOT_TWO_RED_CANDLES")
-            
-    if c1_ratio < 0.20 or c_ratio < 0.20:
-        return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
+        if bars_diff > 3 or trend_broken:
+            _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+        elif p_side == side:
+            if side == 'LONG':
+                upper_wick = c_high - max(c_open, c_close)
+                pullback_held = (c_low <= curr_ma5 or c_low <= curr_ma15) and (c_close >= curr_ma5 and c_close >= curr_ma15 and c_close > c_open)
+                breakout_reclaim = (body >= 0.5 * atr and upper_wick <= 0.3 * body and c_close > c_open and c_close > pending_state['extreme_price'])
+                if pullback_held or breakout_reclaim:
+                    _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+                    is_retest_hit = True
+                    selected_rule = 'PENDING_RETEST_ENTRY'
+            elif side == 'SHORT':
+                lower_wick = min(c_open, c_close) - c_low
+                pullback_rejected = (c_high >= curr_ma5 or c_high >= curr_ma15) and (c_close <= curr_ma5 and c_close <= curr_ma15 and c_close < c_open)
+                breakout_reclaim = (body >= 0.5 * atr and lower_wick <= 0.3 * body and c_close < c_open and c_close < pending_state['extreme_price'])
+                if pullback_rejected or breakout_reclaim:
+                    _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+                    is_retest_hit = True
+                    selected_rule = 'PENDING_RETEST_ENTRY'
 
-    problem = ma3_entry_problem(closed, side)
-    if problem:
-        return wait(problem)
+    is_mode1_hit = False
+    is_mode2_hit = False
+    if not is_retest_hit:
+        selected_rule = None
 
-    bypass_low_vol = is_outside and (body_ratio >= 0.4 or fast_crawling)
+        # ══════════════════════════════════════════════════════════════════════
+        # 【模式一：一般 KC 收線破軌開倉（Breakout Close Entry）】
+        # ══════════════════════════════════════════════════════════════════════
+        if side == 'LONG':
+            upper_wick = c_high - max(c_open, c_close)
+            mode1_kc_trend_ok = (kc_middle >= prev_kc_middle - 1e-6)
+            if (
+                c_close > kc_upper
+                and c_close > c_open
+                and body >= 0.4 * atr
+                and mode1_kc_trend_ok
+                and curr_ma5 > curr_ma15
+            ):
+                is_mode1_hit = True
+                selected_rule = 'TREND_BREAKOUT'
+        elif side == 'SHORT':
+            lower_wick = min(c_open, c_close) - c_low
+            mode1_kc_trend_ok = (kc_middle <= prev_kc_middle + 1e-6)
+            if (
+                c_close < kc_lower
+                and c_close < c_open
+                and body >= 0.4 * atr
+                and mode1_kc_trend_ok
+                and curr_ma5 < curr_ma15
+            ):
+                is_mode1_hit = True
+                selected_rule = 'TREND_BREAKOUT'
 
-    # 【優化】：判斷出 rule 後再進行通道審查，以豁免模式 B 的硬性限制
-    passed, reason = validate_channel_expansion(indicators, side, rule, bypass_low_vol=bypass_low_vol)
-    if not passed:
-        return wait(reason)
+        # ══════════════════════════════════════════════════════════════════════
+        # 【模式二：斷頭開倉（Decisive Momentum Guillotine Entry - 大實體貫穿）】
+        # ══════════════════════════════════════════════════════════════════════
+        if not is_mode1_hit:
+            if side == 'LONG':
+                pierced_upward = (
+                    (c_open <= kc_middle and c_close > kc_middle)
+                    or (c_open <= curr_ma15 and c_close > curr_ma15)
+                    or (c_open <= curr_ma5 and c_close > curr_ma5)
+                )
+                if (
+                    body >= 0.85 * atr
+                    and c_close > c_open
+                    and body_ratio >= 0.70
+                    and pierced_upward
+                    and curr_ma5 >= curr_ma15
+                ):
+                    is_mode2_hit = True
+                    selected_rule = 'MOMENTUM_GUILLOTINE'
+            elif side == 'SHORT':
+                pierced_downward = (
+                    (c_open >= kc_middle and c_close < kc_middle)
+                    or (c_open >= curr_ma15 and c_close < curr_ma15)
+                    or (c_open >= curr_ma5 and c_close < curr_ma5)
+                )
+                if (
+                    body >= 0.85 * atr
+                    and c_close < c_open
+                    and body_ratio >= 0.70
+                    and pierced_downward
+                    and curr_ma5 <= curr_ma15
+                ):
+                    is_mode2_hit = True
+                    selected_rule = 'MOMENTUM_GUILLOTINE'
 
-    # 【長影線插針防護 (Pin Bar Rejection Filter)】- 適用於所有入場 (包含 IGNITION)
-    candle_len = float(c.high) - float(c.low)
-    
-    if side == 'SHORT':
-        lower_wick = min(float(c.close), float(c.open)) - float(c.low)
-        if lower_wick > 0.8 * candle_body or (candle_len > 0 and lower_wick / candle_len > 0.4):
-            return wait(f"PIN_BAR_DETECTED (當根下探回升滯跌，嚴禁追空, wick={lower_wick:.5f}, body={candle_body:.5f})")
-            
-        prev_body = abs(float(c1.close) - float(c1.open))
-        prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
-        if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 0.8 * prev_body:
-            return wait("PREV_PIN_BAR_REJECTION (前根K棒已在下軌外插出長下影線，嚴禁追空)")
-    else:
-        upper_wick = float(c.high) - max(float(c.close), float(c.open))
-        if upper_wick > 0.8 * candle_body or (candle_len > 0 and upper_wick / candle_len > 0.4):
-            return wait(f"PIN_BAR_DETECTED (當根衝高回落滯漲，嚴禁追多, wick={upper_wick:.5f}, body={candle_body:.5f})")
-            
-        prev_body = abs(float(c1.close) - float(c1.open))
-        prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
-        if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 0.8 * prev_body:
-            return wait("PREV_PIN_BAR_REJECTION (前根K棒已在上軌外插出長上影線，嚴禁追多)")
-            
-    if body_ratio < 0.4:
-        return wait(f"PIN_BAR_DETECTED (實體佔比過小, ratio={body_ratio:.2f})")
+        if not is_mode1_hit and not is_mode2_hit:
+            return wait('WAIT_BREAKOUT_OR_GUILLOTINE_TRIGGER')
 
-    code = f'CLOSED_{rule}_{side}'
-    
-    # ─── INTRABAR ENTRY LOGIC (Bar3) ───
-    try:
-        live_bar = frame.iloc[-1]
-        if bool(live_bar.get('is_closed', False)):
-            return wait("WAIT_LIVE_BAR3_INCOMPLETE")
-            
-        bar3_open = float(live_bar.open)
-        bar3_ms = float(live_bar.timestamp)
-        bar2_ms = float(c.timestamp)
-        
-        if bar3_ms != bar2_ms + 60000:
-            return wait("WAIT_EXPECTED_BAR3_IDENTITY")
-            
-        live_price = float(price) if price is not None else float(live_bar.close)
-        
-        pending_signal_id = f"{side}:{int(bar2_ms)}:{int(bar3_ms)}"
-        candidate_bar_id = float(bar3_ms)
-    except Exception as e:
-        return wait("WAIT_VALID_LIVE_BAR3")
+        # ══════════════════════════════════════════════════════════════════════
+        # 【當根影線過長否決開倉（Wick Rejection Gate）】
+        # ══════════════════════════════════════════════════════════════════════
+        if side == 'LONG':
+            upper_wick = c_high - max(c_open, c_close)
+            if upper_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
+                _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                    'side': 'LONG',
+                    'bar_id': curr_stamp,
+                    'extreme_price': c_high,
+                }
+                return wait("REJECT_ENTRY: EXCESSIVE_UPPER_WICK")
+        elif side == 'SHORT':
+            lower_wick = min(c_open, c_close) - c_low
+            if lower_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
+                _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                    'side': 'SHORT',
+                    'bar_id': curr_stamp,
+                    'extreme_price': c_low,
+                }
+                return wait("REJECT_ENTRY: EXCESSIVE_LOWER_WICK")
 
-    rail_problem = three_bar_rail_gate_problem(frame, live_price, side)
-    if rail_problem:
-        return wait(rail_problem)
+    # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
+    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
+    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(frame, side, price)
+    if not gate_ok:
+        return wait(gate_reason)
 
+    code = f'CLOSED_{selected_rule}_{side}'
     return True, code, dict(
-        action='ENTER', side=side, reason=code, rule=rule,
-        entry_type=rule, entry_atr=atr, is_breakout=True,
+        action='ENTER', side=side, reason=code, rule=selected_rule,
+        entry_type=selected_rule, entry_atr=atr, is_breakout=True,
         confirmation_bar_id=float(c.timestamp), close_price=float(c.close),
-        pending_signal_id=pending_signal_id, candidate_bar_id=candidate_bar_id,
-        intrabar=True,
+        pending_signal_id=f"{selected_rule}:{side}:{int(c.timestamp)}",
+        candidate_bar_id=float(c.timestamp),
+        bypass_spatial_check=True,  # 空間豁免：強制標記 bypass_spatial_check = True
     )
 
 
@@ -762,124 +686,7 @@ def check_streamlined_entry_signal(df, side, live_price, position_status, **kwar
 
 
 def check_ma_cross_entry(df, live_price=None):
-    """引擎一：MA5 / MA15 交叉條件開倉（起跑點）：
-    【嚴格條件開倉鐵律，不是一交叉就開倉】：
-    必須同時滿足：
-    1. 順勢交易鐵律：空頭趨勢嚴禁開多（BLOCKED_LONG_ON_BEARISH_TREND），多頭趨勢嚴禁開空（BLOCKED_SHORT_ON_BULLISH_TREND）。
-    2. KC 中軌方向與位置：
-       - 多單：KC 中軌走平或向上（curr_kc_middle >= prev_kc_middle），且收盤價/最新價必須在 KC 中軌之上。
-       - 空單：KC 中軌走平或向下（curr_kc_middle <= prev_kc_middle），且收盤價/最新價必須在 KC 中軌之下。
-    3. 均線斜率與發散：
-       - 多單：MA5 明確向上發散（curr_ma5 > prev_ma5），且 MA15 同步向上或走平（curr_ma15 >= prev_ma15），嚴禁 MA15 向下拐頭！
-       - 空單：MA5 明確向下發散（curr_ma5 < prev_ma5），且 MA15 同步向下或走平（curr_ma15 <= prev_ma15），嚴禁 MA15 向上拐頭！
-    4. K 棒動能實體與收線確認：
-       - 多單：當根 1m K 棒收紅陽線（close > open），站穩 MA5 之上（close > ma5），實體具備動能，且無過長上影線壓制。
-       - 空單：當根 1m K 棒收黑陰線（close < open），壓制在 MA5 之下（close < ma5），實體具備動能，且無過長下影線支撐。
-    5. 均線相對位置對齊：通過 validate_ma_alignment 檢驗。
-    """
-    if df is None or len(df) < 2:
-        return None
-    try:
-        closed = closed_entry_candles(df)
-        if len(closed) < 2:
-            return None
-        curr = closed.iloc[-1]
-        prev = closed.iloc[-2]
-
-        curr_ma5 = float(curr.get('ma5', 0.0))
-        prev_ma5 = float(prev.get('ma5', 0.0))
-        curr_ma15 = float(curr.get('ma15', 0.0))
-        prev_ma15 = float(prev.get('ma15', 0.0))
-        curr_close = float(curr['close'])
-        curr_open = float(curr['open'])
-        p = float(live_price) if live_price is not None else curr_close
-
-        # 大趨勢判定（順勢鐵律：空頭不開多、多頭不開空）
-        from core.gates.meme_coin_gate import MemeCoinGate
-        market_trend = MemeCoinGate.get_market_trend(df, p)
-
-        # KC 中軌
-        curr_mid = MemeCoinGate.calculate_kc_middle(curr)
-        prev_mid = MemeCoinGate.calculate_kc_middle(prev)
-
-        # ATR 與實體
-        atr = float(curr.get('atr', 0.0))
-        if atr <= 0 and 'atr' in prev:
-            atr = float(prev.get('atr', 0.0))
-
-        # 金叉做多條件
-        is_golden_cross = (
-            (prev_ma5 <= prev_ma15 and curr_ma5 > curr_ma15)
-            and curr_ma5 > prev_ma5  # MA5 向上
-            and curr_ma15 >= prev_ma15 - 1e-6  # MA15 同步向上或走平，非下行
-            and curr_close > curr_ma5  # 收盤站穩 MA5 上方
-            and curr_close > curr_open  # 收紅陽線
-        )
-        if is_golden_cross:
-            # 條件 1: 順勢鐵律（空頭嚴禁開多）
-            if market_trend == 'BEARISH':
-                return None
-            # 條件 2: KC 中軌方向審查（多單中軌非下行）
-            if curr_mid > 0 and prev_mid > 0:
-                if curr_mid < prev_mid - 1e-6:
-                    return None
-            # 條件 3: 動能實體
-            if atr > 0:
-                body = curr_close - curr_open
-                if body < 0.3 * atr:
-                    return None
-            # 條件 4: 影線過濾
-            if 'high' in curr and 'low' in curr:
-                wick_problem = wick_exhaustion_problem(curr, 'LONG', quote=live_price)
-                if wick_problem is not None:
-                    return None
-            # 條件 5: 均線對齊
-            passed, _ = validate_ma_alignment(df, 'LONG', live_price)
-            if passed:
-                return {
-                    'side': 'LONG',
-                    'type': 'KC_GOLDEN_CROSS_FAST_LONG',
-                    'reason': 'KC_GOLDEN_CROSS_FAST_LONG',
-                    'bypass_spatial_check': True,
-                }
-
-        # 死叉做空條件
-        is_death_cross = (
-            (prev_ma5 >= prev_ma15 and curr_ma5 < curr_ma15)
-            and curr_ma5 < prev_ma5  # MA5 向下
-            and curr_ma15 <= prev_ma15 + 1e-6  # MA15 同步向下或走平，非上行
-            and curr_close < curr_ma5  # 收盤壓制 MA5 下方
-            and curr_close < curr_open  # 收黑陰線
-        )
-        if is_death_cross:
-            # 條件 1: 順勢鐵律（多頭嚴禁開空）
-            if market_trend == 'BULLISH':
-                return None
-            # 條件 2: KC 中軌方向審查（空單中軌非上行）
-            if curr_mid > 0 and prev_mid > 0:
-                if curr_mid > prev_mid + 1e-6:
-                    return None
-            # 條件 3: 動能實體
-            if atr > 0:
-                body = curr_open - curr_close
-                if body < 0.3 * atr:
-                    return None
-            # 條件 4: 影線過濾
-            if 'high' in curr and 'low' in curr:
-                wick_problem = wick_exhaustion_problem(curr, 'SHORT', quote=live_price)
-                if wick_problem is not None:
-                    return None
-            # 條件 5: 均線對齊
-            passed, _ = validate_ma_alignment(df, 'SHORT', live_price)
-            if passed:
-                return {
-                    'side': 'SHORT',
-                    'type': 'KC_DEATH_CROSS_FAST_SHORT',
-                    'reason': 'KC_DEATH_CROSS_FAST_SHORT',
-                    'bypass_spatial_check': True,
-                }
-    except Exception:
-        pass
+    """【清理廢棄邏輯】：MA5 / MA15 交叉敏捷開倉已永久廢除，僅保留純粹進場雙引擎。"""
     return None
 
 

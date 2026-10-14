@@ -96,63 +96,164 @@ def has_confirmed_true_pivot(
         last_bar = frame.iloc[-1]
         is_live_closed = bool(last_bar.get('is_closed', False))
         closed = frame if is_live_closed else frame.iloc[:-1]
-        if len(closed) < 3:
-            return False, None, {}
 
-        check_len = min(len(closed), 6)
-        sub = closed.iloc[-check_len:]
+        # ──【開倉前歷史雜訊過濾】：真峰谷必須在開倉後（或至少由開倉棒推進）形成，絕不能拿開倉前的歷史凹槽平倉！──
+        entry_bar_floor_ms = 0.0
+        try:
+            opened_at = (
+                (position or {}).get('open_timestamp')
+                or (position or {}).get('entry_timestamp')
+                or (position or {}).get('open_bar_id')
+                or (position or {}).get('entry_bar_id')
+                or ((position or {}).get('entry_snapshot') or {}).get('entry_bar_id')
+                or ((position or {}).get('entry_snapshot') or {}).get('timestamp')
+            )
+            if opened_at is not None:
+                opened_at_f = float(opened_at)
+                if math.isfinite(opened_at_f) and opened_at_f > 0:
+                    opened_ms = opened_at_f * 1000.0 if opened_at_f < 1e11 else opened_at_f
+                    timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
+                    entry_bar_floor_ms = math.floor(opened_ms / timeframe_ms) * timeframe_ms
+        except Exception:
+            entry_bar_floor_ms = 0.0
 
-        if side == 'LONG':
-            for i in range(len(sub) - 2):
-                b_before = sub.iloc[i]
-                b_pivot = sub.iloc[i + 1]
-                b_confirm = sub.iloc[i + 2]
+        # ──【第一層：歷史已收線 K 棒成型之真峰谷】──
+        if len(closed) >= 3:
+            check_len = min(len(closed), 6)
+            sub = closed.iloc[-check_len:]
 
+            if side == 'LONG':
+                for i in range(len(sub) - 2):
+                    b_before = sub.iloc[i]
+                    b_pivot = sub.iloc[i + 1]
+                    b_confirm = sub.iloc[i + 2]
+
+                    ts_confirm = float(b_confirm.get('timestamp', 0.0))
+                    ts_pivot = float(b_pivot.get('timestamp', 0.0))
+                    if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
+                        continue
+
+                    h_before = float(b_before['high'])
+                    h_pivot = float(b_pivot['high'])
+                    h_confirm = float(b_confirm['high'])
+
+                    if h_pivot > h_before and h_pivot > h_confirm:
+                        c_confirm = float(b_confirm['close'])
+                        return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
+                            'pivot_high': h_pivot,
+                            'confirm_close': c_confirm,
+                        }
+
+                if is_fractal_peak(closed):
+                    ts_last = float(closed.iloc[-1].get('timestamp', 0.0))
+                    if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
+                        last_c = float(closed.iloc[-1]['close'])
+                        prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                        if last_c < prev_mid:
+                            return True, 'TRUE_FRACTAL_PEAK_CONFIRMED', {
+                                'last_close': last_c,
+                                'prev_mid': prev_mid,
+                            }
+
+            elif side == 'SHORT':
+                for i in range(len(sub) - 2):
+                    b_before = sub.iloc[i]
+                    b_pivot = sub.iloc[i + 1]
+                    b_confirm = sub.iloc[i + 2]
+
+                    ts_confirm = float(b_confirm.get('timestamp', 0.0))
+                    ts_pivot = float(b_pivot.get('timestamp', 0.0))
+                    if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
+                        continue
+
+                    l_before = float(b_before['low'])
+                    l_pivot = float(b_pivot['low'])
+                    l_confirm = float(b_confirm['low'])
+
+                    if l_pivot < l_before and l_pivot < l_confirm:
+                        c_confirm = float(b_confirm['close'])
+                        return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
+                            'pivot_low': l_pivot,
+                            'confirm_close': c_confirm,
+                        }
+
+                if is_fractal_valley(closed):
+                    ts_last = float(closed.iloc[-1].get('timestamp', 0.0))
+                    if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
+                        last_c = float(closed.iloc[-1]['close'])
+                        prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                        if last_c > prev_mid:
+                            return True, 'TRUE_FRACTAL_VALLEY_CONFIRMED', {
+                                'last_close': last_c,
+                                'prev_mid': prev_mid,
+                            }
+
+        # ──【第二層：盤中即時真峰谷判定（遇真峰谷馬上平倉，不要等 1m 跑完才平倉！）】──
+        if len(frame) >= 3:
+            b_before = frame.iloc[-3]
+            b_pivot = frame.iloc[-2]
+            b_live = frame.iloc[-1]
+
+            timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
+            ts_pivot = float(b_pivot.get('timestamp', 0.0))
+            ts_live = float(b_live.get('timestamp', 0.0))
+            # 盤中即時真峰谷：即時棒 ts_live 必須至少在開倉當根或之後（ts_live >= entry_bar_floor_ms）
+            # 且樞紐棒 ts_pivot 必須至少在 entry_bar_floor_ms - timeframe_ms（允許當根盤中確認反轉成型真峰谷）
+            if entry_bar_floor_ms > 0 and (ts_live < entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms - timeframe_ms):
+                return False, None, {}
+
+            quote_f = float(quote)
+            live_high = max(float(b_live.get('high', quote_f)), quote_f)
+            live_low = min(float(b_live.get('low', quote_f)), quote_f)
+            atr_f = float(b_pivot.get('atr', b_live.get('atr', 0.001)))
+            if atr_f <= 0:
+                atr_f = 0.001
+
+            if side == 'LONG':
                 h_before = float(b_before['high'])
                 h_pivot = float(b_pivot['high'])
-                h_confirm = float(b_confirm['high'])
+                pivot_mid = (float(b_pivot['open']) + float(b_pivot['close'])) / 2.0
 
-                if h_pivot > h_before and h_pivot > h_confirm:
-                    c_confirm = float(b_confirm['close'])
-                    return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
-                        'pivot_high': h_pivot,
-                        'confirm_close': c_confirm,
-                    }
+                # 前棒形成最高峰，當前盤中未創新高，且價格已向下反轉確認包夾（跌破實體中點且回落 >= 0.35 ATR）
+                if h_pivot > h_before and live_high <= h_pivot:
+                    if (quote_f < pivot_mid) and (h_pivot - quote_f >= 0.35 * atr_f):
+                        return True, 'TRUE_PEAK_PIVOT_INTRABAR_CONFIRMED', {
+                            'pivot_high': h_pivot,
+                            'quote': quote_f,
+                            'intrabar_confirmed': True,
+                        }
 
-            if is_fractal_peak(closed):
-                last_c = float(closed.iloc[-1]['close'])
-                prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
-                if last_c < prev_mid:
-                    return True, 'TRUE_FRACTAL_PEAK_CONFIRMED', {
-                        'last_close': last_c,
-                        'prev_mid': prev_mid,
-                    }
+                # 盤中分形頂即時確認：跌破前棒實體中點且回落達標
+                if is_fractal_peak(frame.iloc[:-1]):
+                    if (quote_f < pivot_mid) and (h_pivot - quote_f >= 0.35 * atr_f):
+                        return True, 'TRUE_FRACTAL_PEAK_INTRABAR_CONFIRMED', {
+                            'quote': quote_f,
+                            'pivot_mid': pivot_mid,
+                            'intrabar_confirmed': True,
+                        }
 
-        elif side == 'SHORT':
-            for i in range(len(sub) - 2):
-                b_before = sub.iloc[i]
-                b_pivot = sub.iloc[i + 1]
-                b_confirm = sub.iloc[i + 2]
-
+            elif side == 'SHORT':
                 l_before = float(b_before['low'])
                 l_pivot = float(b_pivot['low'])
-                l_confirm = float(b_confirm['low'])
+                pivot_mid = (float(b_pivot['open']) + float(b_pivot['close'])) / 2.0
 
-                if l_pivot < l_before and l_pivot < l_confirm:
-                    c_confirm = float(b_confirm['close'])
-                    return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
-                        'pivot_low': l_pivot,
-                        'confirm_close': c_confirm,
-                    }
+                # 前棒形成最低谷，當前盤中未創新低，且價格已向上反彈確認包夾（突破實體中點且反彈 >= 0.35 ATR）
+                if l_pivot < l_before and live_low >= l_pivot:
+                    if (quote_f > pivot_mid) and (quote_f - l_pivot >= 0.35 * atr_f):
+                        return True, 'TRUE_VALLEY_PIVOT_INTRABAR_CONFIRMED', {
+                            'pivot_low': l_pivot,
+                            'quote': quote_f,
+                            'intrabar_confirmed': True,
+                        }
 
-            if is_fractal_valley(closed):
-                last_c = float(closed.iloc[-1]['close'])
-                prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
-                if last_c > prev_mid:
-                    return True, 'TRUE_FRACTAL_VALLEY_CONFIRMED', {
-                        'last_close': last_c,
-                        'prev_mid': prev_mid,
-                    }
+                # 盤中分形底即時確認：突破前棒實體中點且反彈達標
+                if is_fractal_valley(frame.iloc[:-1]):
+                    if (quote_f > pivot_mid) and (quote_f - l_pivot >= 0.35 * atr_f):
+                        return True, 'TRUE_FRACTAL_VALLEY_INTRABAR_CONFIRMED', {
+                            'quote': quote_f,
+                            'pivot_mid': pivot_mid,
+                            'intrabar_confirmed': True,
+                        }
 
         return False, None, {}
     except Exception:
@@ -672,12 +773,63 @@ def confirmed_short_bottom_evidence(frame, volume_multiple=1.5):
         return None
 
 
-def _is_profit_lock_reason(reason):
+def _is_profit_lock_reason(reason: str) -> bool:
+    r = str(reason or '').upper()
     return (
-        reason == 'EXIT_BY_RATCHET_PROFIT_LOCK'
-        or reason.startswith('PROFIT_LOCK')
-        or reason.startswith('NET_ROE_THREE_TIER_GIVEBACK')
+        r == 'EXIT_BY_RATCHET_PROFIT_LOCK'
+        or r.startswith('PROFIT_LOCK')
+        or r.startswith('NET_ROE_THREE_TIER_GIVEBACK')
+        or 'RATCHET' in r
+        or 'BREAKEVEN' in r
+        or 'TAKE_PROFIT' in r
+        or 'SPIKE_REVERSAL' in r
+        or 'LOCK' in r
     )
+
+
+def is_same_bar_as_entry(position: Dict[str, Any], frame: Optional[pd.DataFrame]) -> bool:
+    """檢查當前狀態是否處於開倉進場的同一根 K 棒（Same-Bar）。
+    
+    鐵律：開倉後不要當根平倉，除非剛好是真峰谷，否則除了鎖利外都不平倉。
+    """
+    if frame is None or len(frame) == 0 or not isinstance(position, dict):
+        return False
+    try:
+        opened_at = (
+            position.get('open_timestamp')
+            or position.get('entry_timestamp')
+            or position.get('open_bar_id')
+            or position.get('entry_bar_id')
+            or position.get('candidate_bar_id')
+            or (position.get('entry_snapshot') or {}).get('entry_bar_id')
+            or (position.get('entry_snapshot') or {}).get('timestamp')
+        )
+        if opened_at is None:
+            return False
+
+        opened_at_f = float(opened_at)
+        if not math.isfinite(opened_at_f) or opened_at_f <= 0:
+            return False
+
+        opened_ms = opened_at_f * 1000.0 if opened_at_f < 1e11 else opened_at_f
+
+        live_candle = frame.iloc[-1]
+        live_ts = float(live_candle.get('timestamp', 0.0))
+        if live_ts <= 0:
+            return False
+        live_bar_ms = live_ts * 1000.0 if live_ts < 1e11 else live_ts
+
+        timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
+        if not math.isfinite(timeframe_ms) or timeframe_ms <= 0:
+            timeframe_ms = 60_000.0
+
+        opened_bar_ms = math.floor(opened_ms / timeframe_ms) * timeframe_ms
+
+        if opened_bar_ms == live_bar_ms or opened_ms >= live_bar_ms:
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def _body_breaks_kc_middle(frame, side, price=None):
@@ -1472,42 +1624,56 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
-        # 妖幣專用 KC 外軌鎖定：只要價格維持在 KC 外軌外且守穩 MA5，一律死抱利潤，拒絕被洗盤震下車！
-        from core.gates.meme_coin_gate import MemeCoinGate
-        if MemeCoinGate.is_meme_coin(symbol):
-            should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
-                frame, quote, side, symbol=symbol,
-            )
-            if should_hold and clean_reason not in (
-                'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
-                'EMERGENCY_EXTREME_ADVERSE_BAR',
-            ):
-                return _reject(reason=hold_reason)
-
-        # ──【核心鐵律】開倉後，不要平倉，要到真峰谷才平倉──
-        # 除非觸發硬止損、極端大瀑布或反側外軌破軌等緊急安全風控；
-        # 其餘所有出場一律必須等待「真峰谷（Three-Point Pivot / True Fractal Peak or Valley）」成型確認！
-        # 若未形成真峰谷，100% 拒絕平倉，堅定抱牢！
         is_safety_exit = any(s in clean_reason.upper() for s in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
             'EMERGENCY_STOP', 'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
             'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
             'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
         ))
-        if not is_safety_exit:
-            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
-            is_pivot_candidate = any(p in clean_reason.upper() for p in (
-                'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
-            ))
-            if not has_pivot and not is_pivot_candidate:
-                # 尚未成型真峰谷，且 candidate_reason 亦非真峰谷 -> 絕對禁止提前平倉！
-                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+        is_profit_lock = _is_profit_lock_reason(clean_reason)
+        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
+        is_pivot_candidate = any(p in clean_reason.upper() for p in (
+            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
+        ))
+        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
+
+        # 妖幣專用 KC 外軌鎖定：只要價格維持在 KC 外軌外且守穩 MA5，一律死抱利潤，拒絕被洗盤震下車！
+        from core.gates.meme_coin_gate import MemeCoinGate
+        if MemeCoinGate.is_meme_coin(symbol):
+            should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
+                frame, quote, side, symbol=symbol,
+            )
+            if should_hold and not is_true_pivot_confirmed and not is_profit_lock and clean_reason not in (
+                'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
+                'EMERGENCY_EXTREME_ADVERSE_BAR',
+            ):
+                return _reject(reason=hold_reason)
+
+        # ──【核心鐵律一：開倉後不要當根平倉】──
+        # 在開倉當根：除非剛好是真峰谷，否則除了鎖利外都不平倉！
+        is_same_bar = is_same_bar_as_entry(position, frame)
+        if is_same_bar and not is_safety_exit:
+            if not is_profit_lock and not is_true_pivot_confirmed:
+                return _reject(reason='VETO_SAME_BAR_EXIT_UNLESS_PIVOT_OR_PROFIT_LOCK')
+
+        # ──【核心鐵律二：真峰谷確認授權放行】──
+        # 若已確認成型真峰谷且 candidate 屬於峰谷出場，立即放行平倉！
+        if is_true_pivot_confirmed:
+            return _auth(clean_reason)
+
+        # ──【核心鐵律三：持倉全週期防洗——除非剛好是真峰谷，否則除了鎖利外都不平倉】──
+        if not is_safety_exit and not is_profit_lock:
+            # 尚未成型真峰谷，且非鎖利 -> 100% 絕對禁止平倉！
+            if side == 'SHORT':
+                return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
+            return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
 
         # A completed LONG close above KC middle is a hard hold line for
         # ordinary price-action exits. A lower wick at least as large as the
         # body is independent buying-support evidence and also vetoes them.
         # Hard stops, emergency dumps, and an armed profit lock keep priority.
-        if (side == 'LONG' and not _is_profit_lock_reason(clean_reason)
+        if (side == 'LONG' and not is_profit_lock
+                and not is_pivot_candidate and not has_pivot
                 and clean_reason not in (
                     'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
                     'EMERGENCY_EXTREME_ADVERSE_BAR',
@@ -1537,30 +1703,43 @@ class HoldingProtectionExitGate:
             except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
                 pass
 
+        # ──【空頭不衰退嚴禁平倉鐵律（Holding Protection for Short）】──
+        if side == 'SHORT' and not is_safety_exit and not is_profit_lock and not is_pivot_candidate and not has_pivot:
+            # 1. 檢驗是否收線確認真谷底
+            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
+
+            # 2. 檢驗是否收盤站上 KC 中軌逆轉
+            last_closed_above = _last_closed_close_at_or_above_kc_middle(frame)
+            above_kc_mid = (last_closed_above is True) or (frame is not None and len(frame) > 0 and float(quote) > float(frame.iloc[-1].get('kc_middle', 0.0)))
+
+            # 鐵律：若未確認真谷底且未站上 KC 中軌，在空頭走勢中一票否決平空！
+            if not has_pivot and not above_kc_mid:
+                return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
+
         # One-vote veto: If latest candle closed in favorable KC half
-        # (close >= kc_middle for LONG, close <= kc_middle for SHORT),
-        # ordinary pullback exits are strictly vetoed.
+        # (close >= kc_middle for LONG), ordinary pullback exits are strictly vetoed.
         if (
-            not _is_profit_lock_reason(clean_reason)
+            side == 'LONG'
+            and not _is_profit_lock_reason(clean_reason)
             and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
             and clean_reason not in ('EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR')
         ):
             last_closed_above = _last_closed_close_at_or_above_kc_middle(frame)
-            if side == 'LONG' and last_closed_above is True:
+            if last_closed_above is True:
                 return _reject(reason="VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION")
-            elif side == 'SHORT' and last_closed_above is False:
-                return _reject(reason="VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION")
 
         if (clean_reason == 'THREE_POINT_PIVOT'
                 or clean_reason.startswith('HYBRID_DYNAMIC')
                 or clean_reason == 'KC_MIDLINE_CLOSE_BREACH'
                 or clean_reason.startswith('EXIT_MEME_')
+                or clean_reason.startswith('EXIT_BY_CONFIRMED_TRUE_')
                 or clean_reason in (
                     'MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT',
                     'CONFIRMED_MA5_CLOSE_BREAK', 'EXIT_BY_RATCHET_PROFIT_LOCK',
                     'RATCHET_BREAKEVEN_LOCK', 'EMERGENCY_DUMP_EXIT',
                     'TWO_BAR_DOJI_REVERSAL_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
                     'CANDLE_CLOSE_MA15_BREAK',
+                    'EXIT_BY_CONFIRMED_TRUE_VALLEY', 'EXIT_BY_CONFIRMED_TRUE_PEAK',
                 )):
             return _auth(clean_reason)
 

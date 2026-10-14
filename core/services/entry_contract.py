@@ -50,6 +50,14 @@ from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 from core.services.exits.dual_track_exit_service import (
     detect_climax_reversal, is_true_climax_peak, is_true_climax_valley,
 )
+from core.gates.strict_cross_kc_gate import (
+    StrictCrossAndKcTrendGate,
+    has_recent_golden_cross,
+    has_recent_death_cross,
+)
+
+EntryGate = StrictCrossAndKcTrendGate
+
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
 SHORT_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_SHORT"
@@ -322,7 +330,9 @@ def same_side_anti_churn_problem(account, symbol, frame, side, quote=None):
 def opposite_side_close_cooldown_problem(
     account, symbol, frame, side, cooldown_bars=3,
 ):
-    """Block opposite-side entries until three full bar identities have elapsed."""
+    """Block opposite-side entries until three full bar identities have elapsed,
+    UNLESS a decisive trend reversal is established (Fast Peak Reversal or Momentum Guillotine).
+    """
     try:
         if (account is None or not symbol or side not in ('LONG', 'SHORT')
                 or cooldown_bars < 1):
@@ -337,6 +347,32 @@ def opposite_side_close_cooldown_problem(
             return None
         if last_side not in ('LONG', 'SHORT'):
             return 'BLOCKED_INVALID_LAST_CLOSE_SIDE'
+
+        # ──【第三部分：空頭/多頭確立無縫直接開倉（解除平倉冷卻）】──
+        # 若盤面已確立順向結構，或者前一筆因真峰頂/真谷底/大瀑布平倉，嚴禁設置冷卻時間阻擋！
+        if frame is not None and len(frame) >= 2:
+            curr_b = frame.iloc[-1]
+            prev_b = frame.iloc[-2]
+            c_ma5 = float(curr_b.get('ma5', 0.0))
+            c_ma15 = float(curr_b.get('ma15', 0.0))
+            c_kc_trend = str(curr_b.get('kc_trend', '')).upper()
+            c_mid = float(curr_b.get('kc_middle', 0.0))
+            p_mid = float(prev_b.get('kc_middle', c_mid))
+
+            if side == 'SHORT' and (c_ma5 < c_ma15 or 'DOWN' in c_kc_trend or c_mid <= p_mid):
+                return None
+            elif side == 'LONG' and (c_ma5 > c_ma15 or 'UP' in c_kc_trend or c_mid >= p_mid):
+                return None
+
+        # 檢查上一筆平倉原因：若因真峰頂、真谷底或大瀑布離場，立即解除冷卻
+        trades = getattr(account, 'trades', [])
+        for t in reversed(trades[-5:]):
+            if t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
+                reason = str(t.get('reason') or '').upper()
+                if any(k in reason for k in ('PEAK', 'VALLEY', 'DUMP', 'WATERFALL', 'BREACH', 'STOP', 'SPIKE')):
+                    return None
+                break
+
         closed_at = float(last_closed_at[symbol])
         if not math.isfinite(closed_at) or closed_at <= 0:
             return 'BLOCKED_INVALID_LAST_CLOSE_TIMESTAMP'
@@ -1536,12 +1572,14 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             # 1. 實質破軌深度：盤中最新價 > KC 上軌 + 0.15 ATR
             if quote <= upper + 0.15 * atr:
                 return None
-            # 2. 實體門檻：盤中實體陽線漲幅（Price - Open）>= 0.6 ATR
+            high_p = max(float(live.get("high", quote)), quote)
+            low_p = min(float(live.get("low", quote)), quote)
+            live_range = max(high_p - low_p, 1e-9)
+            # 2. 實體門檻：必須為大實體起爆（>= 0.85 ATR 且實體佔比 >= 70%），移除缺乏大實體支撐的微破軌
             body = quote - opened
-            if atr > 0 and body < 0.6 * atr:
+            if atr > 0 and (body < 0.85 * atr or (body / live_range) < 0.70):
                 return None
             # 3. 嚴格影線過濾：當前價位於高點區，上影線長度 <= 0.3 倍實體
-            high_p = max(float(live.get("high", quote)), quote)
             upper_wick = high_p - quote
             if upper_wick > 0.3 * body:
                 return None
@@ -1553,10 +1591,12 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             )
             if is_kc_down:
                 return None
-            # 5. MA5 斜率向上（ΔMA5 > 0）
+            # 5. MA5 斜率向上（ΔMA5 > 0）且防天花板追單（MA5 乖離 <= 1.2%）
             prev_ma5 = float(closed_candles.iloc[-1].get("ma5", 0.0)) if len(closed_candles) >= 1 else 0.0
             live_ma5 = float(live.get("ma5", prev_ma5)) + (quote - float(live.get("close", quote))) / 5.0
             if prev_ma5 > 0 and live_ma5 <= prev_ma5:
+                return None
+            if live_ma5 > 0 and (quote - live_ma5) / live_ma5 > 0.012:
                 return None
 
         elif side == 'SHORT':
@@ -1564,12 +1604,14 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             # 1. 實質破軌深度：盤中最新價 < KC 下軌 - 0.15 ATR
             if quote >= lower - 0.15 * atr:
                 return None
-            # 2. 實體門檻：盤中實體陰線跌幅（Open - Price）>= 0.6 ATR
+            high_p = max(float(live.get("high", quote)), quote)
+            low_p = min(float(live.get("low", quote)), quote)
+            live_range = max(high_p - low_p, 1e-9)
+            # 2. 實體門檻：必須為大實體鍘刀（>= 0.85 ATR 且實體佔比 >= 70%），移除缺乏大實體支撐的微破軌
             body = opened - quote
-            if atr > 0 and body < 0.6 * atr:
+            if atr > 0 and (body < 0.85 * atr or (body / live_range) < 0.70):
                 return None
             # 3. 嚴格影線過濾：當前價位於低點區，下影線長度 <= 0.3 倍實體
-            low_p = min(float(live.get("low", quote)), quote)
             lower_wick = quote - low_p
             if lower_wick > 0.3 * body:
                 return None
@@ -1581,10 +1623,12 @@ def evaluate_live_body_breakout(frame, quote, symbol="", requested_side=None):
             )
             if is_kc_up:
                 return None
-            # 5. MA5 斜率向下（ΔMA5 < 0）
+            # 5. MA5 斜率向下（ΔMA5 < 0）且防天花板追單（MA5 乖離 <= 1.2%）
             prev_ma5 = float(closed_candles.iloc[-1].get("ma5", 0.0)) if len(closed_candles) >= 1 else 0.0
             live_ma5 = float(live.get("ma5", prev_ma5)) + (quote - float(live.get("close", quote))) / 5.0
             if prev_ma5 > 0 and live_ma5 >= prev_ma5:
+                return None
+            if live_ma5 > 0 and (live_ma5 - quote) / live_ma5 > 0.012:
                 return None
 
         edge = upper if side == "LONG" else lower
@@ -2152,6 +2196,8 @@ def evaluate_reentry_triggers(closed_frame, last_exit_side=None, bars_since_exit
 
     return None, "NO_REENTRY_SIGNAL"
 
+_PENDING_WICK_REENTRY_STATE = {}
+
 def detect_raw_triggers(closed_frame, account=None, symbol=None):
     if len(closed_frame) < 3: return None, None
     prev, curr = closed_frame.iloc[-2], closed_frame.iloc[-1]
@@ -2167,73 +2213,171 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
             if re_side is not None:
                 return re_side, re_trigger
 
-    atr = float(curr['atr'])
+    sym_key = symbol or getattr(account, 'symbol', '__default__')
+    pending_state = _PENDING_WICK_REENTRY_STATE.get(sym_key)
+    curr_stamp = float(curr.get('timestamp', 0))
+    atr = float(curr.get('atr', 1.0))
+    c_open, c_close = float(curr['open']), float(curr['close'])
+    c_high, c_low = float(curr['high']), float(curr['low'])
+    body = abs(c_close - c_open)
+    candle_range = float(c_high - c_low)
+    body_ratio = body / candle_range if candle_range > 1e-9 else 1.0
 
-    # 引擎二：一般 KC 收線破軌開倉（單邊爆發點）
-    # 多單：當根 1m 實體陽線收盤突破 KC 上軌（close > upper_band 且 close > open），實體 >= 0.5 ATR。限制：kc_trend != 'DOWN'，上影線 < 0.7 倍實體。
-    # 空單：當根 1m 實體陰線收盤跌破 KC 下軌（close < lower_band 且 close < open），實體 >= 0.5 ATR。限制：kc_trend != 'UP'，下影線 < 0.7 倍實體。
-    kc_up = curr['kc_middle'] >= prev['kc_middle']
-    kc_down = curr['kc_middle'] <= prev['kc_middle']
+    ma5_val = float(curr.get('ma5', c_close))
+    ma15_val = float(curr.get('ma15', c_close))
+    kc_mid = float(curr.get('kc_middle', c_close))
+    prev_kc_mid = float(prev.get('kc_middle', kc_mid))
+    kc_up_val = float(curr.get('kc_upper', c_close))
+    kc_low_val = float(curr.get('kc_lower', c_close))
     kc_trend = str(curr.get('kc_trend', '')).upper()
 
-    body_long = curr['close'] - curr['open']
-    upper_wick_long = curr['high'] - curr['close']
+    # ══════════════════════════════════════════════════════════════════════
+    # 【移至適合 K 線的延續開倉（Eligible Re-entry Conditions）】
+    # ══════════════════════════════════════════════════════════════════════
+    if pending_state and curr_stamp > pending_state['bar_id']:
+        bars_diff = int(round((curr_stamp - pending_state['bar_id']) / 60000))
+        p_side = pending_state['side']
+        trend_broken = False
+        if p_side == 'LONG' and ('DOWN' in kc_trend or ma5_val < ma15_val):
+            trend_broken = True
+        elif p_side == 'SHORT' and ('UP' in kc_trend or ma5_val > ma15_val):
+            trend_broken = True
+
+        if bars_diff > 3 or trend_broken:
+            _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+        else:
+            if p_side == 'LONG':
+                upper_wick = c_high - max(c_open, c_close)
+                # 結構 1 - 回踩均線踩穩：價格回踩 MA5 或 MA15 獲支撐未跌破，且當根 1m 收陽站回 MA5 上方
+                pullback_held = (c_low <= ma5_val or c_low <= ma15_val) and (c_close >= ma5_val and c_close >= ma15_val and c_close > c_open)
+                # 結構 2 - 飽滿實體突破影線極值：實體陽線（body >= 0.5 ATR 且上影線 <= 0.3 body），收盤突破 pending_long_reentry_high
+                breakout_reclaim = (body >= 0.5 * atr and upper_wick <= 0.3 * body and c_close > c_open and c_close > pending_state['extreme_price'])
+                if pullback_held or breakout_reclaim:
+                    _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+                    return "LONG", "TRIGGER_PENDING_RETEST_ENTRY"
+            elif p_side == 'SHORT':
+                lower_wick = min(c_open, c_close) - c_low
+                # 結構 1 - 反彈回抽均線受阻：價格反彈回抽 MA5 或 MA15 受阻未突破，且當根 1m 收陰壓制在 MA5 下方
+                pullback_rejected = (c_high >= ma5_val or c_high >= ma15_val) and (c_close <= ma5_val and c_close <= ma15_val and c_close < c_open)
+                # 結構 2 - 飽滿實體跌破影線極值：實體陰線（body >= 0.5 ATR 且下影線 <= 0.3 body），收盤跌破 pending_short_reentry_low
+                breakout_reclaim = (body >= 0.5 * atr and lower_wick <= 0.3 * body and c_close < c_open and c_close < pending_state['extreme_price'])
+                if pullback_rejected or breakout_reclaim:
+                    _PENDING_WICK_REENTRY_STATE.pop(sym_key, None)
+                    return "SHORT", "TRIGGER_PENDING_RETEST_ENTRY"
+
+    # 防天花板與影線過濾
+    # 1. 實體佔振幅低於 35%（body_ratio < 0.35）之長影線震盪形態，強制禁止開倉
+    if body_ratio < 0.35:
+        return None, None
+
+    # 2. 嚴格限制 MA5 乖離：> 1.2% 時一票否決
+    if ma5_val > 0:
+        if (c_close - ma5_val) / ma5_val > 0.012:
+            return None, None
+        if (ma5_val - c_close) / ma5_val > 0.012:
+            return None, None
+
+    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 【模式一：一般 KC 收線破軌開倉（Breakout Close Entry）】
+    # ══════════════════════════════════════════════════════════════════════
+    body_long = c_close - c_open
+    upper_wick_long = float(curr['high']) - c_close
     long_breakout = (
-        curr['close'] > curr['kc_upper'] and
-        curr['close'] > curr['open'] and
-        curr['ma5'] > curr['ma15'] and
-        curr['close'] > curr['ma5'] and
-        body_long >= 0.5 * atr and
-        not ('DOWN' in kc_trend or not kc_up) and
-        upper_wick_long < 0.7 * max(body_long, 1e-9)
+        c_close > kc_up_val and
+        c_close > c_open and
+        body_long >= 0.4 * atr
     )
 
-    body_short = curr['open'] - curr['close']
-    lower_wick_short = curr['close'] - curr['low']
+    body_short = c_open - c_close
+    lower_wick_short = c_close - float(curr['low'])
     short_breakout = (
-        curr['close'] < curr['kc_lower'] and
-        curr['close'] < curr['open'] and
-        curr['ma5'] < curr['ma15'] and
-        curr['close'] < curr['ma5'] and
-        body_short >= 0.5 * atr and
-        not ('UP' in kc_trend or not kc_down) and
-        lower_wick_short < 0.7 * max(body_short, 1e-9)
+        c_close < kc_low_val and
+        c_close < c_open and
+        body_short >= 0.4 * atr
     )
 
-    # 引擎一：MA5 / MA15 交叉敏捷開倉（起跑點）
-    golden_cross = prev['ma5'] <= prev['ma15'] and curr['ma5'] > curr['ma15']
-    death_cross = prev['ma5'] >= prev['ma15'] and curr['ma5'] < curr['ma15']
-    long_ma_cross = golden_cross and curr['close'] > curr['ma5'] and curr['close'] > curr['open'] and curr['ma5'] > curr['ma15']
-    short_ma_cross = death_cross and curr['close'] < curr['ma5'] and curr['close'] < curr['open'] and curr['ma5'] < curr['ma15']
-
-    # 引擎三及順勢延續
-    long_cont = (
-        curr['close'] > curr['kc_upper'] and
-        curr['close'] > curr['ma5'] and
-        curr['ma5'] > curr['ma15'] and
-        curr['ma5'] >= prev['ma5'] and
-        curr['close'] > curr['open']
+    # ══════════════════════════════════════════════════════════════════════
+    # 【模式二：斷頭開倉（Decisive Momentum Guillotine Entry - 大實體貫穿）】
+    # ══════════════════════════════════════════════════════════════════════
+    pierced_up = (
+        (c_open <= kc_mid and c_close > kc_mid) or
+        (c_open <= ma15_val and c_close > ma15_val) or
+        (c_open <= ma5_val and c_close > ma5_val)
+    )
+    long_guillotine = (
+        body_long >= 0.85 * atr and
+        c_close > c_open and
+        body_ratio >= 0.70 and
+        pierced_up
     )
 
-    short_cont = (
-        curr['close'] < curr['kc_lower'] and
-        curr['close'] < curr['ma5'] and
-        curr['ma5'] < curr['ma15'] and
-        curr['ma5'] <= prev['ma5'] and
-        curr['close'] < curr['open']
+    pierced_down = (
+        (c_open >= kc_mid and c_close < kc_mid) or
+        (c_open >= ma15_val and c_close < ma15_val) or
+        (c_open >= ma5_val and c_close < ma5_val)
+    )
+    short_guillotine = (
+        body_short >= 0.85 * atr and
+        c_close < c_open and
+        body_ratio >= 0.70 and
+        pierced_down
     )
 
-    if long_breakout: return "LONG", "TRIGGER_A_KC_BREAKOUT"
-    if short_breakout: return "SHORT", "TRIGGER_A_KC_BREAKOUT"
-    if long_ma_cross: return "LONG", "TRIGGER_B_MA_CROSS"
-    if short_ma_cross: return "SHORT", "TRIGGER_B_MA_CROSS"
-    if long_cont: return "LONG", "TRIGGER_C_CONTINUATION"
-    if short_cont: return "SHORT", "TRIGGER_C_CONTINUATION"
+    # ══════════════════════════════════════════════════════════════════════
+    # 【當根影線過長否決開倉（Wick Rejection Gate）與 Gate 前置硬檢核】
+    # ══════════════════════════════════════════════════════════════════════
+    if long_breakout or long_guillotine:
+        upper_wick = c_high - max(c_open, c_close)
+        if upper_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
+            _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                'side': 'LONG',
+                'bar_id': curr_stamp,
+                'extreme_price': c_high,
+            }
+            return None, "EXCESSIVE_UPPER_WICK"
+
+        # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
+        long_gate_ok, long_gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, 'LONG')
+        if not long_gate_ok:
+            return None, long_gate_reason
+
+        return "LONG", "TRIGGER_A_KC_BREAKOUT" if long_breakout else "TRIGGER_MOMENTUM_GUILLOTINE"
+
+    if short_breakout or short_guillotine:
+        lower_wick = min(c_open, c_close) - c_low
+        if lower_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
+            _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                'side': 'SHORT',
+                'bar_id': curr_stamp,
+                'extreme_price': c_low,
+            }
+            return None, "EXCESSIVE_LOWER_WICK"
+
+        # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
+        short_gate_ok, short_gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, 'SHORT')
+        if not short_gate_ok:
+            return None, short_gate_reason
+
+        return "SHORT", "TRIGGER_A_KC_BREAKOUT" if short_breakout else "TRIGGER_MOMENTUM_GUILLOTINE"
+
+    return None, None
 
     return None, None
 
 def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
-    if len(closed_frame) < 12: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
+    if len(closed_frame) < 2: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
+    # ══════════════════════════════════════════════════════════════════════
+    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
+    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, side)
+    if not gate_ok:
+        return False, gate_reason
+
+    if len(closed_frame) < 12: return True, "PASSED"
     curr = closed_frame.iloc[-1]
     prev = closed_frame.iloc[-2]
 
@@ -2281,7 +2425,10 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
             return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
 
     # ================= 快車道豁免 =================
-    is_fast_lane = trigger_type in ("TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT")
+    is_fast_lane = trigger_type in (
+        "TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION", "RE_ENTRY_LONG", "RE_ENTRY_SHORT",
+        "TRIGGER_MOMENTUM_GUILLOTINE", "TRIGGER_PENDING_RETEST_ENTRY",
+    )
     if is_fast_lane:
         if trigger_type == 'TRIGGER_C_CONTINUATION':
             continuation_problem = continuation_entry_problem(closed_frame, side)
@@ -2427,6 +2574,9 @@ def pre_flight_safety_check(
                 None if decision_type in (
                     BEARISH_INSTANT_BREAKOUT_CODE,
                     BULLISH_INSTANT_BREAKOUT_CODE,
+                    "TRIGGER_A_KC_BREAKOUT",
+                    "TRIGGER_MOMENTUM_GUILLOTINE",
+                    "TRIGGER_PENDING_RETEST_ENTRY",
                 ) else opposite_side_close_cooldown_problem(
                     account, symbol, frame, side,
                 )
@@ -2434,7 +2584,12 @@ def pre_flight_safety_check(
             if opposite_cooldown_problem:
                 return False, opposite_cooldown_problem
             if (side == 'SHORT' and is_flip and last_side == 'LONG'
-                    and decision_type != BEARISH_INSTANT_BREAKOUT_CODE):
+                    and decision_type not in (
+                        BEARISH_INSTANT_BREAKOUT_CODE,
+                        "TRIGGER_A_KC_BREAKOUT",
+                        "TRIGGER_MOMENTUM_GUILLOTINE",
+                        "TRIGGER_PENDING_RETEST_ENTRY",
+                    )):
                 from core.services.strategies.outer_strategy import kc_bearish_midline_turn
                 if not kc_bearish_midline_turn(frame, quote):
                     return False, 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'

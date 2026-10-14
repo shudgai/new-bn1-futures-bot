@@ -387,7 +387,7 @@ class SymbolRotation:
         excluded_bases = {
             "BTC", "ETH", "BNB", "APT", "FET", "TAO",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
-            "USD1", "BUSD", "USTC", "1000PEPE", "PEPE",
+            "USD1", "BUSD", "USTC",
         }
         normal_ranked = []
         meme_ranked = []

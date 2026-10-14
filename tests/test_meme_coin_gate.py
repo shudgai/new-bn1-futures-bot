@@ -130,21 +130,36 @@ class TestMemeCoinGate:
         assert reason == 'VETO_MEME_OUTER_RAIL_LOCK_HOLDING'
 
     def test_meme_exit_when_breaching_ma5_or_returning_inside_kc(self):
-        # 妖幣出場止盈點：跌破 MA5 關鍵防守線或砸回 KC 軌道內
-        df = make_frame([
+        # 徹底禁止碰上軌就平多：中軌上方回踩一律死抱，連續 2 根跌破 KC 中軌才出場
+        df_hold = make_frame([
             {'open': 10.0, 'close': 10.8, 'high': 11.0, 'low': 9.8,
-             'ma5': 10.2, 'ma15': 9.8, 'kc_upper': 10.5, 'kc_lower': 9.5,
+             'ma5': 10.2, 'ma15': 9.8, 'kc_upper': 10.5, 'kc_lower': 9.5, 'kc_middle': 10.0,
              'atr': 1.0, 'is_closed': True},
-            {'open': 11.0, 'close': 10.3, 'high': 11.1, 'low': 10.2,
-             'ma5': 10.6, 'ma15': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5,
+            # 盤中稍微回到上軌內 (10.4 <= 10.5)，但仍在中軌 10.0 之上，嚴禁平多！
+            {'open': 10.8, 'close': 10.4, 'high': 10.9, 'low': 10.3,
+             'ma5': 10.5, 'ma15': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5, 'kc_middle': 10.0,
+             'atr': 1.0, 'is_closed': False},
+        ])
+        should_exit, reason = MemeCoinGate.evaluate_meme_exit(
+            df_hold, quote=10.4, side='LONG', symbol='龍蝦/USDT'
+        )
+        assert should_exit is False
+        assert reason is None
+
+        # 連續 2 根收盤實體跌破 KC 中軌 (9.8 < 10.0 且 9.7 < 10.0) 才授權平多
+        df_exit = make_frame([
+            {'open': 10.2, 'close': 9.8, 'high': 10.3, 'low': 9.7,
+             'ma5': 10.0, 'ma15': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5, 'kc_middle': 10.0,
+             'atr': 1.0, 'is_closed': True},
+            {'open': 9.8, 'close': 9.7, 'high': 9.9, 'low': 9.6,
+             'ma5': 9.8, 'ma15': 10.0, 'kc_upper': 10.5, 'kc_lower': 9.5, 'kc_middle': 10.0,
              'atr': 1.0, 'is_closed': True},
         ])
-        # 價格跌破 MA5 (10.3 < 10.6) 且砸回 KC 上軌內 (10.3 <= 10.5)
         should_exit, reason = MemeCoinGate.evaluate_meme_exit(
-            df, quote=10.3, side='LONG', symbol='龍蝦/USDT'
+            df_exit, quote=9.7, side='LONG', symbol='龍蝦/USDT'
         )
         assert should_exit is True
-        assert reason in ('EXIT_MEME_MA5_DEFENSE_BREACH', 'EXIT_MEME_RETURN_INSIDE_KC_RAIL')
+        assert reason == 'EXIT_MEME_KC_MIDDLE_REVERSAL'
 
     def test_holding_protection_gate_integrates_meme_outer_lock(self):
         # 驗證 HoldingProtectionExitGate 自動識別妖幣並否決微利回吐偷跑平倉

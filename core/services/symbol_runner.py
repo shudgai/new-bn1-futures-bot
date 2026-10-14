@@ -1,5 +1,6 @@
 """Live entries and indicator refresh; held exits use the shared tick policy."""
 import math
+import time
 from core.services.strategies.strict_state_machine import StrictStateMachineStrategy, PositionState
 
 # 全域單一策略實例
@@ -94,14 +95,37 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         elif position.get("side") == "SHORT":
             unrealized_pnl = (entry_price - quote) * amount
             
-        # 同步更新引擎中的 pnl，方便後續讀取
         position["unrealized_pnl"] = unrealized_pnl
         if unrealized_pnl > position.get("max_pnl_usdt", 0.0):
             position["max_pnl_usdt"] = unrealized_pnl
-
     if not position:
         if exit_only:
             return [], []
+
+        # ──【冷卻期檢查 (平倉後至少間隔 3 根 K 棒 / 180 秒才能開新倉，防止原地再開)】──
+        curr_ts = float(frame.iloc[-1].get('timestamp', time.time() * 1000))
+        last_closed_ts = 0.0
+        last_closed_raw = getattr(engine.account, 'last_closed_at', {}).get(symbol)
+        if last_closed_raw:
+            last_closed_ts = float(last_closed_raw) * 1000.0 if float(last_closed_raw) < 1e11 else float(last_closed_raw)
+        for tr in reversed(getattr(engine.account, 'trades', [])):
+            if tr.get('symbol') == symbol and str(tr.get('action', '')).startswith('CLOSE_'):
+                tr_ts = float(tr.get('timestamp') or tr.get('id') or 0.0)
+                if tr_ts > 0:
+                    if tr_ts < 1e11:
+                        tr_ts *= 1000.0
+                    if tr_ts > last_closed_ts:
+                        last_closed_ts = tr_ts
+                break
+
+        COOLDOWN_MS = 180_000.0  # 3 根 1m K 棒 = 180,000 ms
+        if last_closed_ts > 0 and (curr_ts - last_closed_ts) < COOLDOWN_MS:
+            cooldown_left_sec = max(0, int((COOLDOWN_MS - (curr_ts - last_closed_ts)) / 1000))
+            from core.services.candle_data import log_entry_gate
+            log_entry_gate(engine, symbol, 'NONE', 'SIGNAL', f'WAIT_EXIT_COOLDOWN_3_BARS_{cooldown_left_sec}S_LEFT',
+                           float(frame.iloc[-1]['timestamp']))
+            return [], []
+
         from core.services.entry_contract import evaluate_entry_contract
         from core.services.candle_data import log_entry_gate
         diagnostics = {}
@@ -122,94 +146,18 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                            float(frame.iloc[-1]['timestamp']))
         return [], []
 
-    # Scan and aggTrade/ticker share the same persistent exit authority.
+    # ══════════════════════════════════════════════════════════════════════
+    # 【情況 B / C：當前「有持倉」 (IN_LONG / IN_SHORT) - 只判斷鎖利與真峰谷平倉】
+    # ══════════════════════════════════════════════════════════════════════
+    # 嚴格狀態機：持倉中所有開倉函數全部直接略過，絕不重複發送開倉訊號！
     from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
     await enforce_realtime_profit_exit(engine, symbol, quote)
+
     if symbol not in engine.account.positions:
         strict_strategy.set_state(symbol, PositionState.IDLE)
-        if not exit_only:
-            bar_id = float(frame.iloc[-1]['timestamp'])
-            close_candidates = [
-                trade for trade in getattr(engine.account, 'trades', [])
-                if trade.get('symbol') == symbol
-                and trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
-                and trade.get('status') == 'CLOSED'
-            ]
-            close_trade = max(
-                close_candidates, key=lambda trade: float(trade.get('id') or 0.),
-            ) if close_candidates else None
-            if close_trade:
-                close_id = float(close_trade.get('id') or 0.)
-                close_reason = str(close_trade.get('reason') or '')
-                same_bar_close = math.isfinite(close_id) and bar_id <= close_id < bar_id + 60000
-                climax_flip = (
-                    same_bar_close
-                    and (
-                        (close_trade.get('action') == 'CLOSE_LONG'
-                         and 'CLIMAX_REVERSAL_EXIT_TOP' in close_reason)
-                        or (close_trade.get('action') == 'CLOSE_SHORT'
-                            and 'CLIMAX_REVERSAL_EXIT_BOTTOM' in close_reason)
-                    )
-                )
-                top_waterfall_flip = (
-                    same_bar_close
-                    and close_trade.get('action') == 'CLOSE_LONG'
-                    and 'REAL_TOP_DUMP' in close_reason
-                )
-                reverse_triggers = (
-                    ('BEARISH_INSTANT_BREAKOUT', 'WATERFALL_DROP',
-                     'EXIT_DOJI_BEARISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
-                     'REAL_TOP_DUMP', 'CLIMAX_REVERSAL_EXIT_TOP')
-                    if close_trade.get('action') == 'CLOSE_LONG' else
-                    ('BULLISH_INSTANT_BREAKOUT', 'WATERFALL_RISE',
-                     'EXIT_DOJI_BULLISH_CONFIRMATION', 'DOJI_REVERSAL_EXIT',
-                     'REAL_BOTTOM_PUMP', 'CLIMAX_REVERSAL_EXIT_BOTTOM')
-                )
-                instant_reverse_close = (
-                    close_trade.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
-                    and any(trigger in close_reason for trigger in reverse_triggers)
-                )
-                if same_bar_close and instant_reverse_close:
-                    from core.services.entry_contract import (
-                        BEARISH_INSTANT_BREAKOUT_CODE,
-                        BULLISH_INSTANT_BREAKOUT_CODE,
-                        evaluate_entry_contract,
-                    )
-                    entry_code = (
-                        BEARISH_INSTANT_BREAKOUT_CODE
-                        if close_trade.get('action') == 'CLOSE_LONG'
-                        else BULLISH_INSTANT_BREAKOUT_CODE
-                    )
-                    decision = evaluate_entry_contract(
-                        frame, quote, entry_code,
-                        account=engine.account, symbol=symbol,
-                    )
-                    if decision is not None:
-                        await engine._execute_confirmed_channel_break(
-                            symbol, frame, quote, decision['side'], daily_halt,
-                            v8_reason=decision['type'],
-                            candidate_bar_id=decision['confirmation_bar_id'],
-                        )
-                elif climax_flip or top_waterfall_flip:
-                    from core.services.entry_contract import (
-                        BEARISH_INSTANT_BREAKOUT_CODE,
-                        CLIMAX_REVERSAL_FLIP_CODE,
-                        TOP_WATERFALL_FLIP_CODE,
-                        evaluate_entry_contract,
-                    )
-                    entry_code = (
-                        TOP_WATERFALL_FLIP_CODE if top_waterfall_flip
-                        else CLIMAX_REVERSAL_FLIP_CODE if climax_flip
-                        else BEARISH_INSTANT_BREAKOUT_CODE
-                    )
-                    decision = evaluate_entry_contract(
-                        frame, quote, entry_code,
-                        account=engine.account, symbol=symbol,
-                    )
-                    if decision is not None:
-                        await engine._execute_confirmed_channel_break(
-                            symbol, frame, quote, decision['side'], daily_halt,
-                            v8_reason=decision['type'],
-                            candidate_bar_id=decision['confirmation_bar_id'],
-                        )
+        # 平倉完成後，直接結束本次 tick 處理，進入嚴格冷卻期，絕對禁止同一根 K 棒內原地反手或重開！
+        if hasattr(engine.account, 'last_closed_at'):
+            engine.account.last_closed_at[symbol] = time.time()
+        return [], []
+
     return [], []

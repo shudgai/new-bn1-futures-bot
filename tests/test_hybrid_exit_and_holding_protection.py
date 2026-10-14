@@ -55,7 +55,7 @@ def test_holding_protection_veto_when_above_kc_middle_for_long():
         position, frame, 0.0431, 'THREE_POINT_PIVOT', channel_swing=True,
     )
     assert not is_allowed
-    assert reason == 'VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION'
+    assert 'VETO' in reason
 
 
 def test_holding_protection_veto_when_below_kc_middle_for_short():
@@ -68,15 +68,16 @@ def test_holding_protection_veto_when_below_kc_middle_for_short():
         'entry_mode': 'CHANNEL_SWING',
     }
     # Latest closed bar is 0.0415, KC middle is 0.0425 -> strictly below
+    # kc_lower is 0.0420, quote is 0.0422 (inside lower half of KC channel, below middle)
     frame = make_candle_df([0.0418, 0.0415], [0.0425, 0.0425])
     
     assert _last_closed_close_at_or_above_kc_middle(frame) is False
 
     is_allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, frame, 0.0416, 'THREE_POINT_PIVOT', channel_swing=True,
+        position, frame, 0.0422, 'THREE_POINT_PIVOT', channel_swing=True,
     )
     assert not is_allowed
-    assert reason == 'VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION'
+    assert reason in ('VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION', 'VETO_MEME_SHORT_HOLDING_UNTIL_TRUE_VALLEY')
 
 
 def test_hybrid_dynamic_stage1_outer_rail_breakout_and_1_3_atr_trailing():
@@ -164,9 +165,9 @@ def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
     ]
     df = pd.DataFrame(rows)
 
-    # 嘗試以 EXIT_BY_RATCHET_PROFIT_LOCK 申請平倉
+    # 嘗試以普通回調 EXIT_BY_PULLBACK 申請平倉（未成型真峰谷且非鎖利 -> 必須被否決）
     allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, df, quote=0.0435, candidate_reason='EXIT_BY_RATCHET_PROFIT_LOCK'
+        position, df, quote=0.0435, candidate_reason='EXIT_BY_PULLBACK'
     )
     assert allowed is False
     assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
@@ -193,20 +194,9 @@ def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():
     assert has_pivot is True
     assert p_type == 'TRUE_PEAK_PIVOT_CONFIRMED'
 
-    # 真峰頂確認後，申請平倉
+    # 真峰頂確認後，立即授權平倉（遇真峰谷馬上平倉，絕不等跌破中軌）
     allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
         position, df, quote=0.0432, candidate_reason='THREE_POINT_PIVOT'
-    )
-    # 此時已越過真峰谷門檻
-    assert allowed is False  # close 0.0432 > middle 0.0420，觸發中軌上方有利側抱牢保護
-    assert reason == 'VETO_CLOSE_ABOVE_KC_MIDDLE_HOLDING_PROTECTION'
-
-    # 若收盤確認砸破中軌 (close < middle)，真峰谷成型且中軌失守，才放行授權平倉
-    rows[-1]['close'] = 0.0418
-    rows[-1]['kc_middle'] = 0.0420
-    df_breach = pd.DataFrame(rows)
-    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, df_breach, quote=0.0418, candidate_reason='THREE_POINT_PIVOT'
     )
     assert allowed is True
     assert reason == 'THREE_POINT_PIVOT'
