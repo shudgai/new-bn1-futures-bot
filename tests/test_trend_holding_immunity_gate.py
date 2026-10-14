@@ -99,29 +99,29 @@ class TestTrendHoldingImmunityGate:
         position = {
             'side': 'LONG',
             'entry_price': 100.0,
-            'highest_price': 108.0,
-            'peak_price': 108.0,
+            'highest_price': 102.0,
+            'peak_price': 102.0,
             'entry_atr': 2.0,
             'qty': 10.0,
             'margin': 100.0,
         }
-        # 構造當前 K 棒：close 105 仍在 MA15 102 之上，MA5 105 > MA15 102，ma15_slope > 0
+        # 構造當前 K 棒：close 101.5 仍在 MA15 101 之上，MA5 101.8 > MA15 101，ma15_slope > 0
         df = pd.DataFrame([
             {
-                'timestamp': 1000000.0, 'open': 103.0, 'high': 106.0, 'low': 102.0, 'close': 104.0,
-                'ma5': 104.0, 'ma15': 101.5, 'atr': 2.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'kc_lower': 90.0,
+                'timestamp': 1000000.0, 'open': 100.5, 'high': 102.0, 'low': 100.0, 'close': 101.0,
+                'ma5': 101.0, 'ma15': 100.5, 'atr': 2.0, 'kc_middle': 100.0, 'kc_upper': 110.0, 'kc_lower': 90.0,
                 'is_closed': True,
             },
             {
-                'timestamp': 1060000.0, 'open': 104.0, 'high': 108.0, 'low': 103.5, 'close': 105.0,
-                'ma5': 105.0, 'ma15': 102.0, 'atr': 2.0, 'kc_middle': 100.5, 'kc_upper': 110.5, 'kc_lower': 90.5,
+                'timestamp': 1060000.0, 'open': 101.0, 'high': 102.0, 'low': 101.0, 'close': 101.5,
+                'ma5': 101.8, 'ma15': 101.0, 'atr': 2.0, 'kc_middle': 100.5, 'kc_upper': 110.5, 'kc_lower': 90.5,
                 'is_closed': True,
             },
         ])
         df.attrs['timeframe_ms'] = 60000
 
         # evaluate_exit 應被 TrendHoldingImmunityGate 一票否決，返回 None
-        exit_result = strategy.evaluate_exit(position, frame=df, current_price=105.0, is_closed=True)
+        exit_result = strategy.evaluate_exit(position, frame=df, current_price=101.5, is_closed=True)
         assert exit_result is None
 
     def test_dual_track_exit_strategy_allows_exit_when_pierced_ma15(self):

@@ -77,16 +77,63 @@ class TrendHoldingAndExitManager:
         position['highest_price'] = highest_p
         position['lowest_price'] = lowest_p
 
-        # ──【第一道出場：獲利階梯鎖利 (Ratchet Profit Lock)】──
-        # 規則：持倉浮盈淨利達 10% 啟動，自歷史最高淨利回吐滿 20% 市價平倉，不設硬保底
-        has_ratchet_armed = (peak_roe_pct >= 0.10)
-        floor_roe_pct = peak_roe_pct * 0.80 # 回吐滿 20%，鎖定 80% 峰值利潤
-        lock_price = entry_p * (1.0 + floor_roe_pct) if side == 'LONG' else entry_p * (1.0 - floor_roe_pct)
-        qty = float(position.get('qty', 0.0))
-        locked_net = abs(lock_price - entry_p) * qty
+        # ──【第一道出場：高檔利潤動態回撤止盈 (Dynamic Ratchet Profit Lock)】──
+        # 規格：
+        # 1. 若 Peak Profit >= 2.5 ATR (或 ROE >= 25%)：允許最大回撤 25% (保留 75% 峰值利潤)。
+        # 2. 若 Peak Profit >= 1.5 ATR (或 ROE >= 12%)：允許最大回撤 35% (保留 65% 峰值利潤)。
+        # 3. 若 Peak Profit >= 1.0 ATR (或 ROE >= 8%)：利潤保本移損，鎖定 entry_price ± 0.05%。
+        leverage = float(position.get('leverage') or 5.0)
+        margin_roe_pct = peak_roe_pct * leverage # 槓桿 ROE
+        curr_margin_roe_pct = curr_roe_pct * leverage
 
-        if has_ratchet_armed:
+        has_tier2_ratchet = (peak_profit_atr >= 2.5 or margin_roe_pct >= 0.25)
+        has_tier1_ratchet = (peak_profit_atr >= 1.5 or margin_roe_pct >= 0.12)
+        has_breakeven_lock = (peak_profit_atr >= 1.0 or margin_roe_pct >= 0.08)
+
+        qty = float(position.get('qty', 0.0))
+
+        if has_tier2_ratchet:
+            max_allowed_giveback = 0.25
+            floor_profit_atr = peak_profit_atr * (1.0 - max_allowed_giveback)
+            lock_price = (entry_p + floor_profit_atr * atr_5m) if side == 'LONG' else (entry_p - floor_profit_atr * atr_5m)
+            if peak_roe_pct >= 0.10:
+                lock_price_roe = entry_p * (1.0 + peak_roe_pct * 0.8) if side == 'LONG' else entry_p * (1.0 - peak_roe_pct * 0.8)
+                lock_price = max(lock_price, lock_price_roe) if side == 'LONG' else min(lock_price, lock_price_roe)
             lock_price = round(lock_price, 8)
+            locked_net = abs(lock_price - entry_p) * qty
+            giveback_ratio = (peak_profit_atr - curr_profit_atr) / peak_profit_atr if peak_profit_atr > 0 else 0.0
+
+            position['active_stop_price'] = lock_price
+            position['breakeven_price'] = lock_price
+            position['locked_profit_usdt'] = round(locked_net, 4)
+            position['locked_phase'] = 2
+            position['channel_profit_protection'] = {
+                'locked_net': round(locked_net, 4),
+                'breakeven_price': lock_price,
+                'armed': True,
+                'status': 'ARMED',
+                'peak_profit_atr': round(peak_profit_atr, 2),
+                'curr_profit_atr': round(curr_profit_atr, 2),
+                'giveback_ratio': round(giveback_ratio, 4),
+            }
+            if (side == 'LONG' and p <= lock_price) or (side == 'SHORT' and p >= lock_price):
+                return True, "EXIT_BY_RATCHET_PROFIT_LOCK", {
+                    'tier': 'TIER2_PEAK_2.5ATR',
+                    'peak_profit_atr': peak_profit_atr,
+                    'curr_profit_atr': curr_profit_atr,
+                    'giveback_ratio': giveback_ratio,
+                    'lock_price': lock_price,
+                    'trigger_price': p,
+                }
+
+        elif has_tier1_ratchet:
+            max_allowed_giveback = 0.35
+            floor_profit_atr = peak_profit_atr * (1.0 - max_allowed_giveback)
+            lock_price = (entry_p + floor_profit_atr * atr_5m) if side == 'LONG' else (entry_p - floor_profit_atr * atr_5m)
+            lock_price = round(lock_price, 8)
+            locked_net = abs(lock_price - entry_p) * qty
+            giveback_ratio = (peak_profit_atr - curr_profit_atr) / peak_profit_atr if peak_profit_atr > 0 else 0.0
+
             position['active_stop_price'] = lock_price
             position['breakeven_price'] = lock_price
             position['locked_profit_usdt'] = round(locked_net, 4)
@@ -95,27 +142,41 @@ class TrendHoldingAndExitManager:
                 'locked_net': round(locked_net, 4),
                 'breakeven_price': lock_price,
                 'armed': True,
-                'status': 'ARMED',
-                'peak_roe_pct': round(peak_roe_pct * 100, 2),
-                'floor_roe_pct': round(floor_roe_pct * 100, 2),
+                'status': 'ARMED_TIER1_35PCT_GIVEBACK',
+                'peak_profit_atr': round(peak_profit_atr, 2),
+                'curr_profit_atr': round(curr_profit_atr, 2),
+                'giveback_ratio': round(giveback_ratio, 4),
             }
-            if side == 'LONG' and p <= lock_price:
+            if (side == 'LONG' and p <= lock_price) or (side == 'SHORT' and p >= lock_price):
                 return True, "EXIT_BY_RATCHET_PROFIT_LOCK", {
-                    'peak_roe_pct': peak_roe_pct,
-                    'curr_roe_pct': curr_roe_pct,
-                    'floor_roe_pct': floor_roe_pct,
-                    'giveback_ratio': (peak_roe_pct - curr_roe_pct) / peak_roe_pct if peak_roe_pct > 0 else 0.0,
-                    'entry_price': entry_p,
+                    'tier': 'TIER1_PEAK_1.5ATR',
+                    'peak_profit_atr': peak_profit_atr,
+                    'curr_profit_atr': curr_profit_atr,
+                    'giveback_ratio': giveback_ratio,
+                    'lock_price': lock_price,
                     'trigger_price': p,
                 }
-            elif side == 'SHORT' and p >= lock_price:
-                return True, "EXIT_BY_RATCHET_PROFIT_LOCK", {
-                    'peak_roe_pct': peak_roe_pct,
-                    'curr_roe_pct': curr_roe_pct,
-                    'floor_roe_pct': floor_roe_pct,
-                    'giveback_ratio': (peak_roe_pct - curr_roe_pct) / peak_roe_pct if peak_roe_pct > 0 else 0.0,
+
+        elif has_breakeven_lock:
+            # 確保保本僅在價格真正回抽至開倉成本線 (Entry Price ± 0.05%) 時才觸發
+            be_price = (entry_p * 1.0005) if side == 'LONG' else (entry_p * 0.9995)
+            be_price = round(be_price, 8)
+            position['active_stop_price'] = be_price
+            position['breakeven_price'] = be_price
+            position['locked_profit_usdt'] = round(abs(be_price - entry_p) * qty, 4)
+            position['locked_phase'] = 0
+            position['channel_profit_protection'] = {
+                'locked_net': 0.0,
+                'breakeven_price': be_price,
+                'armed': True,
+                'status': 'ARMED_BREAKEVEN_ENTRY_PRICE',
+                'peak_profit_atr': round(peak_profit_atr, 2),
+            }
+            if (side == 'LONG' and p <= be_price) or (side == 'SHORT' and p >= be_price):
+                return True, "EXIT_BY_BREAKEVEN_LOCK", {
                     'entry_price': entry_p,
                     'trigger_price': p,
+                    'be_price': be_price,
                 }
         else:
             position['locked_profit_usdt'] = 0.0
@@ -125,8 +186,8 @@ class TrendHoldingAndExitManager:
                 'breakeven_price': None,
                 'armed': False,
                 'status': 'WAIT_TRIGGER',
-                'peak_roe_pct': round(peak_roe_pct * 100, 2),
-                'target_roe_pct': 10.0,
+                'peak_profit_atr': round(peak_profit_atr, 2),
+                'target_profit_atr': 1.5,
             }
 
         # 取得 15M 指標
@@ -136,15 +197,34 @@ class TrendHoldingAndExitManager:
             from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
             m15 = MemeSharedProtectionGate._resample_or_derive_15m(df_5m) if df_5m is not None else {}
 
-        # ──【第二道出場：真結構破位 (True Structural Exit)】──
-        c_5m = m5.get('5m_close', p)
-        o_5m = m5.get('5m_open', p)
-        h_5m = m5.get('5m_high', p)
-        l_5m = m5.get('5m_low', p)
-        ma5_5m = m5.get('5m_ma5', p)
-        ma15_5m = m5.get('5m_ma15', p)
+        # ──【第二道出場：避雷針收割、均線高檔死叉與真結構破位】──
+        # 嚴格取已收盤 5M K 棒 (df_5m.iloc[-2] 或已收定型之 bar) 判定結構破位：
+        # 盤中任何插針、走動中的影線一律無視，嚴禁對走動中的 iloc[-1] 進行 MA15 破位判定！
+        last_closed_bar = None
+        if df_5m is not None and len(df_5m) >= 2:
+            if 'is_closed' in df_5m.columns:
+                closed_bars = df_5m[df_5m['is_closed'] == True]
+                last_closed_bar = closed_bars.iloc[-1] if len(closed_bars) >= 1 else df_5m.iloc[-2]
+            else:
+                last_closed_bar = df_5m.iloc[-2] if len(df_5m) >= 3 else df_5m.iloc[-1]
+
+        if last_closed_bar is not None:
+            c_5m = float(last_closed_bar.get('close', p))
+            o_5m = float(last_closed_bar.get('open', p))
+            h_5m = float(last_closed_bar.get('high', p))
+            l_5m = float(last_closed_bar.get('low', p))
+            ma5_5m = float(last_closed_bar.get('ma5', p))
+            ma15_5m = float(last_closed_bar.get('ma15', p))
+        else:
+            c_5m = m5.get('5m_close', p)
+            o_5m = m5.get('5m_open', p)
+            h_5m = m5.get('5m_high', p)
+            l_5m = m5.get('5m_low', p)
+            ma5_5m = m5.get('5m_ma5', p)
+            ma15_5m = m5.get('5m_ma15', p)
+
         cross_5m = m5.get('ma_cross', 'NONE')
-        body_5m = m5.get('5m_body', abs(c_5m - o_5m))
+        body_5m = abs(c_5m - o_5m)
         range_5m = max(h_5m - l_5m, 1e-9)
 
         kc_trend_15m = m15.get('15m_kc_trend', 'RANGE')
@@ -152,38 +232,78 @@ class TrendHoldingAndExitManager:
         c_15m = m15.get('15m_close', p)
 
         if side == 'LONG':
-            # 1. 5M 實體陰線摜破 5M MA15 且 MA5 死叉 MA15
+            # 1. 高檔避雷針/長上影線主動收割（Exhaustion Upper Wick Exit）
+            # 多單持倉中，若處於顯著浮盈（Peak Profit >= 1.2 ATR 或 margin_roe >= 10%）：
+            # 當根 K 線出現巨幅上影線（上影線 >= 實體 1.5 倍，或上影線佔整根振幅 >= 60%）且收盤實體回落
+            upper_wick = max(0.0, h_5m - max(c_5m, o_5m))
+            has_wick_exhaustion = (upper_wick >= 0.5 * atr_5m) and (
+                (body_5m > 0 and upper_wick >= 1.5 * body_5m) or (range_5m > 0 and upper_wick >= 0.60 * range_5m)
+            )
+            if (peak_profit_atr >= 1.2 or margin_roe_pct >= 0.10) and has_wick_exhaustion:
+                return True, "EXIT_BY_EXHAUSTION_UPPER_WICK", {
+                    'peak_profit_atr': peak_profit_atr,
+                    'upper_wick': upper_wick,
+                    'body_5m': body_5m,
+                    'range_5m': range_5m,
+                    'upper_wick_ratio': upper_wick / range_5m if range_5m > 0 else 0.0,
+                }
+
+            # 2. 均線高檔高位死叉保護：若浮盈 >= 1.0 ATR，且 5M MA5 已經死叉 MA15
+            if (peak_profit_atr >= 1.0 or margin_roe_pct >= 0.08) and (cross_5m == 'DEATH' or (ma5_5m < ma15_5m and cross_5m != 'GOLDEN')):
+                return True, "EXIT_BY_HIGH_PROFIT_MA_CROSS_REVERSAL", {
+                    'peak_profit_atr': peak_profit_atr,
+                    'ma5_5m': ma5_5m,
+                    'ma15_5m': ma15_5m,
+                    'cross': cross_5m,
+                }
+
+            # 3. 5M 實體陰線摜破 5M MA15 且 MA5 死叉 MA15
             is_red_5m = (c_5m < o_5m)
             pierced_ma15_5m = (c_5m < ma15_5m)
             death_crossed = (cross_5m == 'DEATH') or (ma5_5m < ma15_5m and o_5m >= ma15_5m)
             if is_red_5m and pierced_ma15_5m and death_crossed:
                 return True, "EXIT_BY_5M_STRUCTURE_BREAK_RED_PIERCE_MA15", {'detail': '5m red pierce ma15 and death cross'}
 
-            # 2. 15M 通道轉 DOWN 或 摜破 15M KC 中軌
+            # 4. 15M 通道轉 DOWN 或 摜破 15M KC 中軌
             if (kc_trend_15m == 'DOWN') or (mid_15m > 0 and c_15m < mid_15m):
                 return True, "EXIT_BY_15M_TREND_REVERSED_OR_KC_MID_PIERCED", {'15m_kc_trend': kc_trend_15m, '15m_mid': mid_15m}
 
-            # 3. 高檔浮盈 >= 1.5 ATR 且上影線 >= 50% 避雷針收割
-            upper_wick = h_5m - max(c_5m, o_5m)
-            if curr_profit_atr >= 1.5 and upper_wick >= 0.50 * range_5m:
-                return True, "EXIT_BY_HIGH_PEAK_LIGHTNING_ROD_HARVEST", {'profit_atr': curr_profit_atr, 'upper_wick_ratio': upper_wick / range_5m}
-
         elif side == 'SHORT':
-            # 1. 5M 實體陽線突破 5M MA15 且 MA5 金叉 MA15
+            # 1. 低檔地板針/長下影線主動收割（Exhaustion Lower Wick Exit）
+            # 空單持倉中，若處於顯著浮盈（Peak Profit >= 1.2 ATR 或 margin_roe >= 10%）：
+            # 當根 K 線出現巨幅下影線（下影線 >= 實體 1.5 倍，或下影線佔整根振幅 >= 60%）且收盤實體回彈
+            lower_wick = max(0.0, min(c_5m, o_5m) - l_5m)
+            has_wick_exhaustion = (lower_wick >= 0.5 * atr_5m) and (
+                (body_5m > 0 and lower_wick >= 1.5 * body_5m) or (range_5m > 0 and lower_wick >= 0.60 * range_5m)
+            )
+            if (peak_profit_atr >= 1.2 or margin_roe_pct >= 0.10) and has_wick_exhaustion:
+                return True, "EXIT_BY_EXHAUSTION_LOWER_WICK", {
+                    'peak_profit_atr': peak_profit_atr,
+                    'lower_wick': lower_wick,
+                    'body_5m': body_5m,
+                    'range_5m': range_5m,
+                    'lower_wick_ratio': lower_wick / range_5m if range_5m > 0 else 0.0,
+                }
+
+            # 2. 均線低檔高位金叉保護：若浮盈 >= 1.0 ATR，且 5M MA5 已經金叉 MA15
+            if (peak_profit_atr >= 1.0 or margin_roe_pct >= 0.08) and (cross_5m == 'GOLDEN' or (ma5_5m > ma15_5m and cross_5m != 'DEATH')):
+                return True, "EXIT_BY_HIGH_PROFIT_MA_CROSS_REVERSAL", {
+                    'peak_profit_atr': peak_profit_atr,
+                    'ma5_5m': ma5_5m,
+                    'ma15_5m': ma15_5m,
+                    'cross': cross_5m,
+                }
+
+            # 3. 5M 實體陽線突破 5M MA15 且 MA5 金叉 MA15
             is_green_5m = (c_5m > o_5m)
             pierced_ma15_5m = (c_5m > ma15_5m)
             golden_crossed = (cross_5m == 'GOLDEN') or (ma5_5m > ma15_5m and o_5m <= ma15_5m)
             if is_green_5m and pierced_ma15_5m and golden_crossed:
                 return True, "EXIT_BY_5M_STRUCTURE_BREAK_GREEN_PIERCE_MA15", {'detail': '5m green pierce ma15 and golden cross'}
 
-            # 2. 15M 通道轉 UP 或 突破 15M KC 中軌
+            # 4. 15M 通道轉 UP 或 突破 15M KC 中軌
             if (kc_trend_15m == 'UP') or (mid_15m > 0 and c_15m > mid_15m):
                 return True, "EXIT_BY_15M_TREND_REVERSED_OR_KC_MID_PIERCED", {'15m_kc_trend': kc_trend_15m, '15m_mid': mid_15m}
-
-            # 3. 低檔浮盈 >= 1.5 ATR 且下影線 >= 50% 地板針收割
-            lower_wick = min(c_5m, o_5m) - l_5m
-            if curr_profit_atr >= 1.5 and lower_wick >= 0.50 * range_5m:
-                return True, "EXIT_BY_LOW_VALLEY_FLOOR_PIN_HARVEST", {'profit_atr': curr_profit_atr, 'lower_wick_ratio': lower_wick / range_5m}
 
         # ──【第三道：趨勢全程護航（一票否決）】──
         # 未觸發上述結構破位前，多單在 5M MA15 之上、空單在 5M MA15 之下，一律 100% 駁回常規平倉

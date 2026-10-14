@@ -651,10 +651,16 @@ class DualTrackExitStrategy(IExitStrategy):
             ma15_slope = curr_ma15 - prev_ma15
             kc_mid = float(last_c.get('kc_middle', last_c.get('kc_basis', 0.0)))
 
+        is_profit_lock = any(k in candidate_exit.upper() for k in (
+            'PROFIT_LOCK', 'RATCHET', 'BREAKEVEN', 'SPIKE_REVERSAL',
+            'EXHAUSTION', 'LIGHTNING_ROD', 'FLOOR_PIN', 'HIGH_PROFIT_MA_CROSS',
+        ))
+
         can_exit, gate_msg = TrendHoldingImmunityGate().can_exit(
             position_side=side,
             bar={'close': curr_close, 'open': c_open, 'high': c_high, 'low': c_low},
-            indicators={'ma5': curr_ma5, 'ma15': curr_ma15, 'ma15_slope': ma15_slope, 'kc_middle': kc_mid}
+            indicators={'ma5': curr_ma5, 'ma15': curr_ma15, 'ma15_slope': ma15_slope, 'kc_middle': kc_mid},
+            is_profit_lock=is_profit_lock,
         )
         if not can_exit:
             logging.getLogger(__name__).info(f"TrendHoldingImmunityGate vetoed exit {candidate_exit}: {gate_msg}")

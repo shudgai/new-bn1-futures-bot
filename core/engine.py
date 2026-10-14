@@ -1257,9 +1257,9 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Abnormal live bodies and hard stops; no REST or candle-close wait."""
-        from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
-        return await enforce_realtime_profit_exit(self, symbol, price, quote_ms)
+        """Abnormal live bodies and hard stops; only -1.5% hard stop permitted intra-bar."""
+        from core.services.exits.hard_stop_service import enforce_hard_stop
+        return await enforce_hard_stop(self.account, symbol, price)
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Ticker shares the same lock-free decision path as aggTrade."""

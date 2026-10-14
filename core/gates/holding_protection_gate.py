@@ -784,8 +784,13 @@ def _is_profit_lock_reason(reason: str) -> bool:
         or 'BREAKEVEN' in r
         or 'TAKE_PROFIT' in r
         or 'SPIKE_REVERSAL' in r
+        or 'EXHAUSTION' in r
+        or 'LIGHTNING_ROD' in r
+        or 'FLOOR_PIN' in r
+        or 'HIGH_PROFIT_MA_CROSS' in r
         or 'LOCK' in r
     )
+
 
 
 def is_same_bar_as_entry(position: Dict[str, Any], frame: Optional[pd.DataFrame]) -> bool:
@@ -1612,7 +1617,9 @@ class HoldingProtectionExitGate:
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         ))
-        if side == 'SHORT' and not hard_exit:
+        is_profit_lock = _is_profit_lock_reason(clean_reason)
+
+        if side == 'SHORT' and not hard_exit and not is_profit_lock:
             lower_break = short_lower_break_exit_confirmation(
                 frame, quote, position,
             )
@@ -1622,6 +1629,9 @@ class HoldingProtectionExitGate:
 
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        if is_profit_lock:
+            return _auth(clean_reason)
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
@@ -1636,7 +1646,7 @@ class HoldingProtectionExitGate:
             should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
                 frame, quote, side, symbol=symbol,
             )
-            if should_hold and not hard_exit and clean_reason not in (
+            if should_hold and not hard_exit and not is_profit_lock and clean_reason not in (
                 'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
                 'EMERGENCY_EXTREME_ADVERSE_BAR',
             ):

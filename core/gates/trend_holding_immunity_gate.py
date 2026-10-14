@@ -31,7 +31,8 @@ class TrendHoldingImmunityGate:
         bar: Dict[str, Any],
         indicators: Optional[Dict[str, Any]] = None,
         net_profit_pct: float = 0.0,
-        is_hard_stop: bool = False
+        is_hard_stop: bool = False,
+        is_profit_lock: bool = False,
     ) -> Tuple[bool, str]:
         """審查當前持倉是否允許平倉。
 
@@ -41,6 +42,7 @@ class TrendHoldingImmunityGate:
             indicators: 可包含 'ma5', 'ma15', 'ma15_slope', 'kc_middle' 等指標
             net_profit_pct: 當前浮動淨利潤率
             is_hard_stop: 是否觸發硬停損
+            is_profit_lock: 是否觸發動態回撤止盈/避雷針/均線高檔反轉鎖利
         Returns:
             (can_exit: bool, reason: str)
         """
@@ -48,8 +50,8 @@ class TrendHoldingImmunityGate:
         if is_hard_stop or net_profit_pct <= -0.015:
             return True, "PASSED: HARD_STOP_TRIGGERED"
 
-        # 2. 達到 10% 淨利後的動態鎖利，放行！
-        if net_profit_pct >= 0.10:
+        # 2. 獲利動態鎖利或達到淨利門檻放行！
+        if is_profit_lock or net_profit_pct >= 0.10:
             return True, "PASSED: AUTHORIZED_NET_PROFIT_LOCK"
 
         if position_side not in ('LONG', 'SHORT', 'CLOSE_LONG', 'EXIT_LONG', 'CLOSE_SHORT', 'EXIT_SHORT'):

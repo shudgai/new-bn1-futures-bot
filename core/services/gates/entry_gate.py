@@ -223,10 +223,12 @@ class MemeSharedProtectionGate:
 
     @classmethod
     def evaluate(
-        cls, frame: pd.DataFrame, side: str, quote: Optional[float] = None, symbol: Optional[str] = None
+        cls, frame: pd.DataFrame, side: str, quote: Optional[float] = None, symbol: Optional[str] = None,
+        bypass_spatial_check: bool = False, mode: Optional[str] = None
     ) -> Tuple[bool, str]:
         if frame is None or len(frame) < 1:
             return False, "REJECT_ENTRY: INSUFFICIENT_DATA"
+        side = side.upper()
         if side not in ('LONG', 'SHORT'):
             return False, "REJECT_ENTRY: INVALID_SIDE"
 
@@ -237,36 +239,41 @@ class MemeSharedProtectionGate:
         c_low = float(curr.get('low', 0.0))
         price = float(quote) if quote is not None else c_close
 
-        candle_range = c_high - c_low
+        candle_range = max(c_high - c_low, 1e-9)
         body = abs(c_close - c_open)
-        body_ratio = body / (candle_range + 1e-9)
+        body_ratio = body / candle_range
 
-        # 1. 影線與實體過濾（放寬門檻至 0.25 與 0.8）
-        if body_ratio < 0.25:
-            return False, "REJECT_ENTRY: DOMINATED_BY_WICKS"
-
-        if side == 'LONG':
-            upper_wick = c_high - max(c_open, c_close)
-            if upper_wick > 0.8 * body:
-                return False, "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
-        elif side == 'SHORT':
-            lower_wick = min(c_open, c_close) - c_low
-            if lower_wick > 0.8 * body:
-                return False, "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
-
-        # 2. 防天花板與追高乖離限制 (Max Slippage / Price Deviation Cap > 1.2%)
         curr_ma5 = float(curr.get('ma5', price))
         is_closed = bool(curr.get('is_closed', True))
         if not is_closed and quote is not None and c_close > 0:
             curr_ma5 += (price - c_close) / 5.0
 
-        if curr_ma5 > 0:
-            if side == 'LONG' and (price - curr_ma5) / curr_ma5 > 0.012:
-                return False, "REJECT_ENTRY: LONG_MA5_DEVIATION_CAP"
-            elif side == 'SHORT' and (curr_ma5 - price) / curr_ma5 > 0.012:
-                return False, "REJECT_ENTRY: SHORT_MA5_DEVIATION_CAP"
+        dev = abs(price - curr_ma5) / curr_ma5 if curr_ma5 > 0 else 0.0
+
+        # 當 bypass_spatial_check == True 時，100% 豁免乖離率與影線過濾
+        if not bypass_spatial_check:
+            # 1. 影線與實體過濾（放寬門檻至 0.25 與 0.8）
+            if body_ratio < 0.25:
+                return False, "REJECT_ENTRY: DOMINATED_BY_WICKS"
+
+            if side == 'LONG':
+                upper_wick = c_high - max(c_open, c_close)
+                if upper_wick > 0.8 * body:
+                    return False, "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
+            elif side == 'SHORT':
+                lower_wick = min(c_open, c_close) - c_low
+                if lower_wick > 0.8 * body:
+                    return False, "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
+
+            # 2. 防天花板與追高乖離限制 (Max Slippage / Price Deviation Cap > 1.2%)
+            if curr_ma5 > 0:
+                if side == 'LONG' and dev > 0.012:
+                    return False, "REJECT_ENTRY: LONG_MA5_DEVIATION_CAP"
+                elif side == 'SHORT' and dev > 0.012:
+                    return False, "REJECT_ENTRY: SHORT_MA5_DEVIATION_CAP"
 
         return True, "PASSED"
+
 
 
 from core.gates.macro_candle_structure_gate import MacroCandleStructureGate

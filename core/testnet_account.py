@@ -1204,33 +1204,7 @@ class BinanceTestnetAccount:
             max_unrealized = max(float(meta.get("max_unrealized_pnl", curr_unrealized)), curr_unrealized)
             meta["max_unrealized_pnl"] = max_unrealized
             
-            # 條件 1：高額利潤回吐 25% 即刻市價全平
-            trend_hold = pos.get("trend_hold_status", "RELEASED")
-            is_shielded = trend_hold in ("HOLD", "WARNING")
-            
-            if (max_unrealized >= 15.0 or highest_pnl >= 0.20) and not is_shielded:
-                if curr_unrealized <= max_unrealized * 0.75:
-                    self.log(
-                        f"⚡ [極值回撤保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
-                        f"目前縮水至 {curr_unrealized:.2f}U (回吐>=25%)，立即市價平倉保利！",
-                        "SUCCESS"
-                    )
-                    await self.close_position(symbol, mark_p, "極值利潤回撤25%強制保利")
-                    continue
-                    
-            # 條件 2：低浮盈保本門檻
-            elif (max_unrealized >= 5.0 or highest_pnl >= 0.03) and not is_shielded:
-                fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
-                breakeven_p = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
-                hit_breakeven = (side == "LONG" and mark_p <= breakeven_p) or (side == "SHORT" and mark_p >= breakeven_p)
-                if hit_breakeven:
-                    self.log(
-                        f"🛡️ [極值保本保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
-                        f"目前跌回成本價 {mark_p:.6g}，立即市價保本平倉！",
-                        "WARNING"
-                    )
-                    await self.close_position(symbol, mark_p, "極值浮盈跌回保本線")
-                    continue
+            # 【大週期架構防幽靈平倉】tick-level 極值回撤與浮盈保本已收歸 TrendHoldingAndExitManager，此處不再偷跑平倉
                 
             # --- 動態 ATR 防禦錨點計算 (0.75 ATR 邏輯對齊) ---
             atr_val = float(meta.get("atr") or entry_p * 0.015)
@@ -2738,6 +2712,7 @@ class BinanceTestnetAccount:
         # 直接送進 exchange.amount_to_precision() 會炸出未捕捉的交易所例外，
         # 拖垮整個主迴圈，這裡提前擋掉。
         if amount_usdt <= 0:
+            
             self.log(f"🛑 {symbol} 掛單金額為 0，拒絕掛單", "WARNING")
             return False
         try:
@@ -2967,6 +2942,49 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+
+        # ──【平倉警報與根因溯源打印 (Root Cause Logging)】──
+        import inspect
+        caller_frame = inspect.currentframe().f_back
+        caller_file = caller_frame.f_code.co_filename.split('/')[-1] if caller_frame else 'UNKNOWN'
+        caller_func = caller_frame.f_code.co_name if caller_frame else 'UNKNOWN'
+        caller_line = caller_frame.f_lineno if caller_frame else 0
+        trigger_source = f"{caller_file}:{caller_line}"
+
+        # 獲取 5M 已確認收盤 K 棒指標
+        frame_5m = getattr(getattr(self, 'engine', None), '_channel_exit_frames', {}).get(symbol)
+        ma15_5m = 0.0
+        c_5m_closed = 0.0
+        if frame_5m is not None and len(frame_5m) >= 2:
+            if 'is_closed' in frame_5m.columns:
+                closed_bars = frame_5m[frame_5m['is_closed'] == True]
+                last_closed = closed_bars.iloc[-1] if len(closed_bars) >= 1 else frame_5m.iloc[-2]
+            else:
+                last_closed = frame_5m.iloc[-2] if len(frame_5m) >= 3 else frame_5m.iloc[-1]
+            ma15_5m = float(last_closed.get('ma15', 0.0))
+            c_5m_closed = float(last_closed.get('close', 0.0))
+
+        log_alarm = (f"[平倉警報] 觸發來源檔案: {trigger_source} | 函數: {caller_func} | "
+                     f"理由: {close_reason} | 當前價格: {current_price} | 5M_MA15: {ma15_5m} | 5M_Close: {c_5m_closed}")
+        self.log(log_alarm, 'WARNING')
+        print(log_alarm, flush=True)
+
+        # ──【出場鐵壁焊死 VETO】──
+        # 除 -1.5% 絕對硬停損（破產保護）外，
+        # 空單只要 5M 已確認收盤價 <= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
+        # 多單只要 5M 已確認收盤價 >= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
+        is_hard_stop = ('HARD_STOP' in str(close_reason)) or ('PRICE_LOSS' in str(close_reason)) or ('MARGIN_LOSS' in str(close_reason))
+        if not is_hard_stop and c_5m_closed > 0 and ma15_5m > 0:
+            if position.get('side') == 'SHORT' and c_5m_closed <= ma15_5m:
+                veto_msg = f"[{symbol}] [鐵壁否決 VETO] 空單結構完好 (5M收盤 {c_5m_closed} <= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
+                self.log(veto_msg, 'WARNING')
+                print(veto_msg, flush=True)
+                return False
+            elif position.get('side') == 'LONG' and c_5m_closed >= ma15_5m:
+                veto_msg = f"[{symbol}] [鐵壁否決 VETO] 多單結構完好 (5M收盤 {c_5m_closed} >= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
+                self.log(veto_msg, 'WARNING')
+                print(veto_msg, flush=True)
+                return False
         if staged_enabled(position, meta):
             runtime = self.staged_risk_runtimes.get(symbol)
             if runtime is None or not is_manual or is_limit:

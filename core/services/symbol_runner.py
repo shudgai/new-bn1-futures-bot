@@ -50,6 +50,10 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     except Exception:
         pass
 
+    c_5m = float(frame.iloc[-1]['close']) if frame is not None and not frame.empty else None
+    len_5m = len(frame) if frame is not None else 0
+    len_15m = len(frame_15m) if frame_15m is not None else 0
+
     quote = float(exit_quote if exit_quote is not None else
                   (getattr(engine, 'tickers', {}).get(symbol) or frame.iloc[-1]['close']))
 
@@ -57,7 +61,22 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         return [], []
 
     if daily_halt and not position:
+        logger.error(f"[{symbol}] [RUNNER_PROBE] 5M_Close: {quote} | 15M_Trend: None | Action: REJECT | RejectReason: DAILY_HALT")
+        print(f"[{symbol}] [RUNNER_PROBE] 5M_Close: {quote} | 15M_Trend: None | Action: REJECT | RejectReason: DAILY_HALT", flush=True)
         return [], []
+
+    from core.indicators.dual_timeframe_provider import DualTimeframeProvider
+    trend_15m_dict = DualTimeframeProvider.get_15m_trend(frame_15m) if frame_15m is not None else {}
+    trend_15m = trend_15m_dict.get('15m_big_trend', 'UNKNOWN')
+
+    if position:
+        probe_msg = (
+            f"[{symbol}] [RUNNER_PROBE] len_5M: {len_5m} | len_15M: {len_15m} | "
+            f"5M_Close: {c_5m} | 15M_Trend: {trend_15m} | Pos: {position.get('side')} | "
+            f"Action: HOLD | RejectReason: ALREADY_IN_POSITION"
+        )
+        logger.error(probe_msg)
+        print(probe_msg, flush=True)
 
     # 4. 更新持倉 PnL 與峰值
     unrealized_pnl = 0.0
@@ -80,7 +99,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if exit_only:
             return [], []
 
-        # ──【冷卻期檢查 (平倉後至少間隔 1 根 5M / 300 秒才能開新倉)】──
+        # ──【平倉冷卻期：常規縮短至 20 秒 (20,000 ms)】──
         curr_ts = float(frame.iloc[-1].get('timestamp', time.time() * 1000))
         last_closed_ts = 0.0
         last_closed_raw = getattr(engine.account, 'last_closed_at', {}).get(symbol)
@@ -96,21 +115,62 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                         last_closed_ts = tr_ts
                 break
 
-        COOLDOWN_MS = 300_000.0  # 1 根 5m K 棒 = 300,000 ms
-        if last_closed_ts > 0 and (curr_ts - last_closed_ts) < COOLDOWN_MS:
-            return [], []
+        COOLDOWN_MS = 20_000.0  # 常規平倉冷卻時間縮短至 20 秒 (20,000 ms)
+        is_in_cooldown = (last_closed_ts > 0) and ((curr_ts - last_closed_ts) < COOLDOWN_MS)
 
         # 分別評估做多與做空潛力
         from core.services.entry_contract import evaluate_entry_contract
         from core.services.candle_data import log_entry_gate
 
         # 先以 5M+15M 跨週期共振閘門審查
+        from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+        from core.indicators.dual_timeframe_provider import DualTimeframeProvider
+        kc_trend_5m = resolve_kc_trend(frame)
+        trend_15m_dict = DualTimeframeProvider.get_15m_trend(frame_15m) if frame_15m is not None else {}
+        trend_15m = trend_15m_dict.get('15m_big_trend', 'UNKNOWN')
+
         for candidate_side in ('LONG', 'SHORT'):
             can_enter, gate_reason, meta_dict = MemeSharedProtectionGate.evaluate_entry(
                 df_5m=frame, df_15m=frame_15m, quote=quote, side=candidate_side, symbol=symbol,
             )
+            action = 'ENTER' if can_enter else 'REJECT'
+            probe_msg = (
+                f"[{symbol}] [RUNNER_PROBE] len_5M: {len_5m} | len_15M: {len_15m} | "
+                f"5M_Close: {c_5m} | 15M_Trend: {trend_15m} | Side: {candidate_side} | "
+                f"Action: {action} | RejectReason: {gate_reason}"
+            )
+            logger.error(probe_msg)
+            print(probe_msg, flush=True)
             if can_enter:
                 mode_name = (meta_dict or {}).get('mode', 'MODE_DUAL_TF')
+                # 強趨勢冷卻豁免：若 15M 大趨勢明確且觸發模式一（破軌）或模式三（斷頭鍘刀），直接豁免冷卻期，秒級開倉！
+                if is_in_cooldown:
+                    if mode_name in ('MODE1_KC_BREAKOUT', 'MODE3_GUILLOTINE_CUT'):
+                        logger.info(f"[{symbol}] BYPASS_COOLDOWN: Strong trend {mode_name} bypasses {COOLDOWN_MS/1000}s cooldown!")
+                    else:
+                        logger.info(f"[{symbol}] In cooldown ({COOLDOWN_MS/1000}s), blocked {mode_name}")
+                        continue
+
+                # 最終下單入口二度方向與 MA5 硬鎖檢核
+                m5_metrics = DualTimeframeProvider.get_5m_metrics(frame)
+                ma5_s = m5_metrics.get('5m_ma5_slope', 0.0)
+                ma5_v = m5_metrics.get('5m_ma5', 0.0)
+                kc_mid = m5_metrics.get('5m_kc_middle', 0.0)
+                # 均線間距 (>= 0.20 ATR) 與 MA5 斜率動能 (>= 0.05 / <= -0.05 ATR) 終極過濾
+                ma_ok, ma_reason = MemeSharedProtectionGate.validate_ma_condition(
+                    frame, candidate_side, min_gap_atr=0.20, min_down_slope_atr=-0.05, min_up_slope_atr=0.05
+                )
+                if not ma_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {ma_reason}")
+                    continue
+
+                if candidate_side == 'LONG' and (ma5_s <= 0 or quote < ma5_v or quote < kc_mid):
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked LONG due to non-positive MA5 slope ({ma5_s}) or price < MA5/Middle")
+                    continue
+                if candidate_side == 'SHORT' and (ma5_s >= 0 or quote > ma5_v or quote > kc_mid):
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked SHORT due to non-negative MA5 slope ({ma5_s}) or price > MA5/Middle")
+                    continue
+
                 auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
                             f"Mode: {mode_name} | Side: {candidate_side} | Price: {quote}")
                 logger.info(auth_log)
@@ -131,7 +191,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 return [], []
             else:
                 if gate_reason and "INSUFFICIENT" not in gate_reason:
-                    logger.debug(f"[{symbol}] 5M+15M Gate rejected {candidate_side}: {gate_reason}")
+                    logger.info(f"[{symbol}] 5M+15M Gate rejected {candidate_side}: {gate_reason}")
+
 
         return [], []
 
@@ -146,11 +207,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         exit_log = f"[DUAL_TF_EXIT_TRIGGERED] Symbol: {symbol} | Reason: {exit_reason} | Price: {quote}"
         logger.info(exit_log)
         print(exit_log, flush=True)
+        # 即時重置持倉狀態機，原子清除部位與標記
         await engine.account.close_position(symbol, quote, f"DualTF {exit_reason}", is_manual=True)
-        if symbol not in engine.account.positions:
-            strict_strategy.set_state(symbol, PositionState.IDLE)
-            if hasattr(engine.account, 'last_closed_at'):
+        engine.account.positions.pop(symbol, None)
+        if hasattr(engine.account, 'position_meta'):
+            engine.account.position_meta.pop(symbol, None)
+        strict_strategy.set_state(symbol, PositionState.IDLE)
+        if hasattr(engine.account, 'last_closed_at'):
+            if isinstance(engine.account.last_closed_at, dict):
                 engine.account.last_closed_at[symbol] = time.time()
-            return [], []
+        return [], []
 
     return [], []

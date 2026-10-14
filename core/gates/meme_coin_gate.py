@@ -194,6 +194,13 @@ class MemeCoinGate:
 
             # ── 1. 極短線動能防護（MA5 嚴格禁令）與 KC 通道趨勢防護 ──
             if side == 'LONG':
+                from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
+                ma_ok, ma_reason = MemeSharedProtectionGate.validate_long_ma_condition(
+                    frame, min_gap_atr=0.20, min_up_slope_atr=0.05
+                )
+                if not ma_ok:
+                    return False, f"BLOCKED_BY_{ma_reason}", None
+
                 if live_ma5 <= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
                 if quote <= live_ma5:
@@ -247,6 +254,13 @@ class MemeCoinGate:
                     }
 
             elif side == 'SHORT':
+                from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
+                ma_ok, ma_reason = MemeSharedProtectionGate.validate_short_ma_condition(
+                    frame, min_gap_atr=0.20, min_down_slope_atr=-0.05
+                )
+                if not ma_ok:
+                    return False, f"BLOCKED_BY_{ma_reason}", None
+
                 if live_ma5 >= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
                 if quote >= live_ma5:

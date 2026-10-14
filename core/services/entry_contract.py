@@ -2383,7 +2383,10 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     # 【Gate 前置硬檢核：MemeSharedProtectionGate 與 StrictCrossAndKcTrendGate】
     # ══════════════════════════════════════════════════════════════════════
     if long_breakout or long_cross or long_guillotine:
-        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(closed_frame, 'LONG', c_close, symbol=symbol)
+        is_breakout = bool(long_breakout or long_guillotine)
+        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(
+            closed_frame, 'LONG', c_close, symbol=symbol, bypass_spatial_check=is_breakout
+        )
         if not shared_ok:
             if "EXCESSIVE_UPPER_WICK" in shared_reason:
                 _PENDING_WICK_REENTRY_STATE[sym_key] = {
@@ -2394,7 +2397,6 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
                 return None, "EXCESSIVE_UPPER_WICK"
             return None, shared_reason
 
-        is_breakout = bool(long_breakout or long_guillotine)
         long_gate_ok, long_gate_reason = StrictCrossAndKcTrendGate.evaluate(
             closed_frame, 'LONG', bypass_spatial_check=is_breakout
         )
@@ -2409,7 +2411,10 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
         return "LONG", trigger_code
 
     if short_breakout or short_cross or short_guillotine:
-        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(closed_frame, 'SHORT', c_close, symbol=symbol)
+        is_breakout = bool(short_breakout or short_guillotine)
+        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(
+            closed_frame, 'SHORT', c_close, symbol=symbol, bypass_spatial_check=is_breakout
+        )
         if not shared_ok:
             if "EXCESSIVE_LOWER_WICK" in shared_reason:
                 _PENDING_WICK_REENTRY_STATE[sym_key] = {
@@ -2420,7 +2425,6 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
                 return None, "EXCESSIVE_LOWER_WICK"
             return None, shared_reason
 
-        is_breakout = bool(short_breakout or short_guillotine)
         short_gate_ok, short_gate_reason = StrictCrossAndKcTrendGate.evaluate(
             closed_frame, 'SHORT', bypass_spatial_check=is_breakout
         )

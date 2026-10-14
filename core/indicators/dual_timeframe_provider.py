@@ -157,9 +157,24 @@ class DualTimeframeProvider:
         df = cls.compute_indicators_df(df_5m)
         
         # 判斷最後一根是否已收盤
-        # 依規格：嚴格基於已確認收盤 K 棒（若最後一根未收盤取 iloc[-2]）
+        # 依規格：一般情況取已確認收盤 K 棒，但允許 5M 盤中強動能即時觸發 (Intra-bar Early Trigger)：
+        # 若最後一根未收盤 (is_closed == False)，檢查即時 K 棒是否具備強動能 (累計波動 >= 0.35 ATR 且穿破軌道)
         last_is_closed = bool(df.iloc[-1].get('is_closed', True))
-        if not last_is_closed and len(df) >= 3:
+        use_live_bar = False
+        if not last_is_closed and len(df) >= 2:
+            live_bar = df.iloc[-1]
+            c_live = float(live_bar.get('close', 0.0))
+            o_live = float(live_bar.get('open', 0.0))
+            body_live = abs(c_live - o_live)
+            atr_live = float(live_bar.get('atr', 1e-4))
+            upper_live = float(live_bar.get('kc_upper', 0.0))
+            lower_live = float(live_bar.get('kc_lower', 0.0))
+            # 盤中強動能條件：波動 >= 0.35 ATR 且實體同向穿破 KC 軌道
+            if body_live >= 0.35 * atr_live:
+                if (c_live > upper_live and c_live > o_live) or (c_live < lower_live and c_live < o_live):
+                    use_live_bar = True
+
+        if not last_is_closed and len(df) >= 3 and not use_live_bar:
             closed_df = df.iloc[:-1]
         else:
             closed_df = df
