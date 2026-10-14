@@ -270,6 +270,7 @@ class MemeSharedProtectionGate:
 
 
 from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+from core.gates.five_lines_confluence_gate import FiveLinesConfluenceGate
 
 EntryGate = StrictCrossAndKcTrendGate
 
@@ -277,6 +278,7 @@ __all__ = [
     "StrictCrossAndKcTrendGate",
     "MemeSharedProtectionGate",
     "MacroCandleStructureGate",
+    "FiveLinesConfluenceGate",
     "EntryGate",
     "has_recent_golden_cross",
     "has_recent_death_cross",
