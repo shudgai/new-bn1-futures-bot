@@ -207,6 +207,7 @@ class BinanceTestnetAccount:
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
         self.last_closed_side: Dict[str, str] = {}
+        self.last_closed_price: Dict[str, float] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
         self.pullback_outcome_stats: Dict[str, int] = {}
@@ -3043,6 +3044,7 @@ class BinanceTestnetAccount:
         self.last_closed_at[symbol] = _now
         position = dict(self.positions[symbol])
         self.last_closed_side[symbol] = position.get("side", "")
+        self.last_closed_price[symbol] = float(position.get("entry_price", 0.0))
         try:
             # ✅ A. 極速執行：HARD_STOP 優先送出市價平倉單，跳過撤單等待；一般平倉照舊先撤單
             close_side = "sell" if position["side"] == "LONG" else "buy"
@@ -3092,6 +3094,7 @@ class BinanceTestnetAccount:
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
             self.realized_pnl += net_pnl
+            self.last_closed_price[symbol] = float(execution_price)
             from core.services.post_profit_lock_gate import profit_exit_fields
             profit_exit_ms = int(time.time() * 1000)
             profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms, net_pnl=net_pnl)

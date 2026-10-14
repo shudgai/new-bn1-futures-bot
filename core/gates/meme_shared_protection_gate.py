@@ -102,6 +102,109 @@ class MemeSharedProtectionGate:
         return False, "REJECT_ENTRY: INVALID_SIDE"
 
     @classmethod
+    def validate_pullback_reentry(
+        cls,
+        df: pd.DataFrame,
+        side: str,
+        quote: float,
+        last_closed_action: str = "",
+        last_closed_price: float = 0.0,
+        last_closed_ts: float = 0.0,
+        curr_ts: float = 0.0,
+        atr: float = 0.0,
+        ma5: float = 0.0,
+    ) -> Tuple[bool, str]:
+        """驗證平倉後的二次開倉是否具備合格的回抽/回踩 (Pullback Re-entry Filter)。
+        
+        鐵律防護：
+        - 空單剛平倉 (CLOSE_SHORT)：嚴禁在地板無反彈原地追空！
+          必須在平倉後至少出現過小反彈（摸到 MA5 或反彈 >= 0.20 ATR 或最高價 >= 平倉價 * 1.002）。
+          若平倉後從未反彈且最新價趴在平倉價下方，一票否決。
+        - 多單剛平倉 (CLOSE_LONG)：嚴禁在天花板無回調原地追多！
+          必須在平倉後至少出現過小回踩（回踩 MA5 或回調 <= -0.20 ATR 或最低價 <= 平倉價 * 0.998）。
+          若平倉後從未回踩且最新價頂在平倉價上方，一票否決。
+        """
+        if not last_closed_action or last_closed_price <= 0 or last_closed_ts <= 0:
+            return True, "PASS: NO_RECENT_CLOSE_INFO"
+
+        if 0 < curr_ts < 1e11:
+            curr_ts *= 1000.0
+        if 0 < last_closed_ts < 1e11:
+            last_closed_ts *= 1000.0
+
+        elapsed_ms = (curr_ts - last_closed_ts) if curr_ts > 0 else 0.0
+        # 僅在平倉後 30 分鐘 (1,800,000 ms) 內進行嚴格回抽審查；超過 30 分鐘市場結構已重置
+        if elapsed_ms <= 0 or elapsed_ms > 1_800_000.0:
+            return True, "PASS: EXCEEDS_REENTRY_WINDOW"
+
+        side = side.upper()
+        # 1. 空單平倉後的二次開空 (Short Re-entry)
+        if side == 'SHORT' and last_closed_action == 'CLOSE_SHORT':
+            highs = [quote]
+            if df is not None and len(df) > 0:
+                ts_col = 'timestamp' if 'timestamp' in df.columns else None
+                if ts_col:
+                    first_ts = float(df.iloc[0][ts_col])
+                    scale = 1000.0 if first_ts < 1e11 else 1.0
+                    sub = df[df[ts_col] * scale >= last_closed_ts]
+                else:
+                    sub = df.tail(6)
+                if len(sub) > 0 and 'high' in sub.columns:
+                    highs.extend(sub['high'].dropna().astype(float).tolist())
+            max_high_since = max(highs)
+
+            # 判定是否有小反彈：
+            # A. 反彈幅度達到 0.20 ATR
+            bounced_by_atr = (max_high_since >= last_closed_price + 0.20 * atr) if atr > 0 else False
+            # B. 摸到或穿過 MA5 均線壓力位
+            bounced_to_ma5 = (max_high_since >= ma5) if ma5 > 0 else False
+            # C. 價格比平倉價高出 0.3%
+            bounced_by_pct = (max_high_since >= last_closed_price * 1.003)
+
+            has_bounced = bounced_by_atr or bounced_to_ma5 or bounced_by_pct
+            # 若平倉後完全沒有出現小反彈，且最新價格趴在平倉價下方或原地追空，一票否決！
+            if not has_bounced and (quote <= last_closed_price or (ma5 > 0 and quote < ma5)):
+                return False, (
+                    f"REJECT_REENTRY: NO_PULLBACK_AFTER_EXIT ("
+                    f"LastCloseShort: {last_closed_price:.6f}, MaxHighSince: {max_high_since:.6f}, "
+                    f"Quote: {quote:.6f}, MA5: {ma5:.6f}, Elapsed: {elapsed_ms/1000:.1f}s - Floor Chase Blocked)"
+                )
+
+        # 2. 多單平倉後的二次開多 (Long Re-entry)
+        elif side == 'LONG' and last_closed_action == 'CLOSE_LONG':
+            lows = [quote]
+            if df is not None and len(df) > 0:
+                ts_col = 'timestamp' if 'timestamp' in df.columns else None
+                if ts_col:
+                    first_ts = float(df.iloc[0][ts_col])
+                    scale = 1000.0 if first_ts < 1e11 else 1.0
+                    sub = df[df[ts_col] * scale >= last_closed_ts]
+                else:
+                    sub = df.tail(6)
+                if len(sub) > 0 and 'low' in sub.columns:
+                    lows.extend(sub['low'].dropna().astype(float).tolist())
+            min_low_since = min(lows)
+
+            # 判定是否有小回踩：
+            # A. 回調幅度達到 0.20 ATR
+            pulled_by_atr = (min_low_since <= last_closed_price - 0.20 * atr) if atr > 0 else False
+            # B. 回踩碰觸或跌穿 MA5 均線支撐位
+            pulled_to_ma5 = (min_low_since <= ma5) if ma5 > 0 else False
+            # C. 價格比平倉價低出 0.3%
+            pulled_by_pct = (min_low_since <= last_closed_price * 0.997)
+
+            has_pulled_back = pulled_by_atr or pulled_to_ma5 or pulled_by_pct
+            # 若平倉後完全沒有出現小回踩，且最新價格在平倉價上方天花板追多，一票否決！
+            if not has_pulled_back and (quote >= last_closed_price or (ma5 > 0 and quote > ma5)):
+                return False, (
+                    f"REJECT_REENTRY: NO_PULLBACK_AFTER_EXIT ("
+                    f"LastCloseLong: {last_closed_price:.6f}, MinLowSince: {min_low_since:.6f}, "
+                    f"Quote: {quote:.6f}, MA5: {ma5:.6f}, Elapsed: {elapsed_ms/1000:.1f}s - Ceiling Chase Blocked)"
+                )
+
+        return True, "PASS"
+
+    @classmethod
     def evaluate(
         cls,
         frame: pd.DataFrame,
@@ -181,6 +284,10 @@ class MemeSharedProtectionGate:
         side: str = 'LONG',
         symbol: Optional[str] = None,
         preferred_mode: Optional[str] = None,
+        last_closed_action: str = "",
+        last_closed_price: float = 0.0,
+        last_closed_ts: float = 0.0,
+        curr_ts: float = 0.0,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """審查跨週期共振開倉。
         
@@ -283,6 +390,22 @@ class MemeSharedProtectionGate:
             if quote is not None and quote > mid:
                 return cls._fail_entry(symbol, mode_candidate, f"REJECT_ENTRY: CRITICAL_BLOCK: Forbidden to open SHORT when price > KC Middle ({quote:.6f} > {mid:.6f})", trend_15m_info, dev)
 
+        # ──【平倉後回抽二次進場審查 (Pullback Re-entry Filter)】──
+        # 嚴防平空後無反彈地板追空，或平多後無回踩天花板追多！
+        if last_closed_action and last_closed_price > 0 and last_closed_ts > 0:
+            pb_pass, pb_fail_reason = cls.validate_pullback_reentry(
+                df=df_5m,
+                side=side,
+                quote=p,
+                last_closed_action=last_closed_action,
+                last_closed_price=last_closed_price,
+                last_closed_ts=last_closed_ts,
+                curr_ts=curr_ts,
+                atr=atr,
+                ma5=ma5,
+            )
+            if not pb_pass:
+                return cls._fail_entry(symbol, mode_candidate, pb_fail_reason, trend_15m_info, dev)
 
         # ──【三大開倉模式判定】──
         # 模式一（5M KC 破軌開倉 / 盤中即時破軌）：

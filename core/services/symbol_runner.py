@@ -99,21 +99,34 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if exit_only:
             return [], []
 
-        # ──【平倉冷卻期：常規縮短至 20 秒 (20,000 ms)】──
+        # ──【平倉冷卻期與二次進場回抽追蹤】──
         curr_ts = float(frame.iloc[-1].get('timestamp', time.time() * 1000))
+        if 0 < curr_ts < 1e11:
+            curr_ts *= 1000.0
         last_closed_ts = 0.0
+        last_closed_action = ""
+        last_closed_price = 0.0
+
         last_closed_raw = getattr(engine.account, 'last_closed_at', {}).get(symbol)
         if last_closed_raw:
             last_closed_ts = float(last_closed_raw) * 1000.0 if float(last_closed_raw) < 1e11 else float(last_closed_raw)
-        for tr in reversed(getattr(engine.account, 'trades', [])):
+        last_closed_side_raw = getattr(engine.account, 'last_closed_side', {}).get(symbol)
+        if last_closed_side_raw:
+            last_closed_action = f"CLOSE_{last_closed_side_raw}"
+        last_closed_price_raw = getattr(engine.account, 'last_closed_price', {}).get(symbol)
+        if last_closed_price_raw:
+            last_closed_price = float(last_closed_price_raw)
+
+        for tr in getattr(engine.account, 'trades', []):
             if tr.get('symbol') == symbol and str(tr.get('action', '')).startswith('CLOSE_'):
                 tr_ts = float(tr.get('timestamp') or tr.get('id') or 0.0)
                 if tr_ts > 0:
                     if tr_ts < 1e11:
                         tr_ts *= 1000.0
-                    if tr_ts > last_closed_ts:
+                    if tr_ts > last_closed_ts or last_closed_ts == 0.0:
                         last_closed_ts = tr_ts
-                break
+                        last_closed_action = str(tr.get('action', ''))
+                        last_closed_price = float(tr.get('price', 0.0))
 
         COOLDOWN_MS = 20_000.0  # 常規平倉冷卻時間縮短至 20 秒 (20,000 ms)
         is_in_cooldown = (last_closed_ts > 0) and ((curr_ts - last_closed_ts) < COOLDOWN_MS)
@@ -132,6 +145,10 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         for candidate_side in ('LONG', 'SHORT'):
             can_enter, gate_reason, meta_dict = MemeSharedProtectionGate.evaluate_entry(
                 df_5m=frame, df_15m=frame_15m, quote=quote, side=candidate_side, symbol=symbol,
+                last_closed_action=last_closed_action,
+                last_closed_price=last_closed_price,
+                last_closed_ts=last_closed_ts,
+                curr_ts=curr_ts,
             )
             action = 'ENTER' if can_enter else 'REJECT'
             probe_msg = (
@@ -162,6 +179,22 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 )
                 if not ma_ok:
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {ma_reason}")
+                    continue
+
+                # 平倉後回抽二次進場終極過濾 (Post-Exit Pullback Re-entry Filter)
+                pb_ok, pb_reason = MemeSharedProtectionGate.validate_pullback_reentry(
+                    df=frame,
+                    side=candidate_side,
+                    quote=quote,
+                    last_closed_action=last_closed_action,
+                    last_closed_price=last_closed_price,
+                    last_closed_ts=last_closed_ts,
+                    curr_ts=curr_ts,
+                    atr=m5_metrics.get('5m_atr', 0.0),
+                    ma5=ma5_v,
+                )
+                if not pb_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {pb_reason}")
                     continue
 
                 if candidate_side == 'LONG' and (ma5_s <= 0 or quote < ma5_v or quote < kc_mid):
