@@ -65,7 +65,7 @@ class TrendHoldingImmunityGate:
 
             # 檢核條件：均線維持多頭順向 (ma15_slope >= 0 或 ma5 > ma15) 且 1m 收盤價未破 MA15 (close >= ma15)
             if close >= ma15 and (ma15_slope >= 0 or ma5 > ma15):
-                return False, "REJECT_EXIT: TREND_INTACT_ABOVE_MA15"
+                return False, "REJECT_EXIT: TREND_INTACT_ABOVE_MA15 (VETO)"
 
         # 2. 空單全程護航閘門（Short Holding Immunity - 未站上 MA15 嚴禁平空）
         elif position_side == 'SHORT':
@@ -75,6 +75,6 @@ class TrendHoldingImmunityGate:
 
             # 檢核條件：均線維持空頭順向 (ma15_slope <= 0 或 ma5 < ma15) 且 1m 收盤價未站上 MA15 (close <= ma15)
             if close <= ma15 and (ma15_slope <= 0 or ma5 < ma15):
-                return False, "REJECT_EXIT: TREND_INTACT_BELOW_MA15"
+                return False, "REJECT_EXIT: TREND_INTACT_BELOW_MA15 (VETO)"
 
         return True, "PASSED_TREND_GATE"

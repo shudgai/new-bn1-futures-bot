@@ -1653,7 +1653,7 @@ class HoldingProtectionExitGate:
         # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查。
         # 凡趨勢結構未破壞者，一律一票否決平倉（REJECT_EXIT）
         from core.gates.trend_holding_immunity_gate import TrendHoldingImmunityGate
-        if not hard_exit and not is_safety_exit and frame is not None and len(frame) >= 1:
+        if not hard_exit and not is_safety_exit and not is_profit_lock and not is_true_pivot_confirmed and frame is not None and len(frame) >= 1:
             curr_bar = frame.iloc[-1]
             prev_bar = frame.iloc[-2] if len(frame) >= 2 else curr_bar
             curr_c = float(curr_bar.get('close', quote))
