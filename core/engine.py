@@ -1178,10 +1178,8 @@ class TradingEngine:
         return await self._place_structured_entry(symbol, signal, price)
 
     async def _channel_quote_pivot_entry(self, symbol, price, quote_ms=None):
-        """Evaluate the shared second-bar rule on fresh WebSocket quotes."""
-        if (not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS
-                or symbol in self.account.positions):
-            return
+        """全面廢除 1M 即時輪詢與下單判定，切換為 5M+15M 跨週期共振架構。"""
+        return
         try:
             now = time.time()
             quoted_at = float(quote_ms) / 1000 if quote_ms is not None else now
