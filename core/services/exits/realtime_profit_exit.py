@@ -2,6 +2,7 @@
 import copy
 import math
 import time
+import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
 from core.services.exits.peak_trailing_exit import (

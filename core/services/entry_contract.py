@@ -289,6 +289,15 @@ def same_side_anti_churn_problem(account, symbol, frame, side, quote=None):
         close_at = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
         if not math.isfinite(close_at) or close_at <= 0:
             return 'BLOCKED_SAME_SIDE_CLOSE_INVALID_MARKET_DATA'
+
+        # ──【過期放行防卡死】：若平倉時間已超過 3 根 K 棒（180 秒），Anti-churn 自然失效 ──
+        try:
+            curr_time = float(time.time())
+            if curr_time - close_at > 180.0:
+                return None
+        except Exception:
+            pass
+
         if frame is None or frame.empty:
             return 'BLOCKED_CURRENT_BAR_ID_INVALID'
         timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000))
@@ -304,11 +313,12 @@ def same_side_anti_churn_problem(account, symbol, frame, side, quote=None):
             closed_at_ms = float(trade.get('id') or 0.0)
             if math.isfinite(closed_at_ms) and closed_at_ms > 0:
                 matching_closes.append((closed_at_ms, trade))
-        if not matching_closes:
-            return 'BLOCKED_SAME_SIDE_CLOSE_INVALID_MARKET_DATA'
-        _, last_close = max(matching_closes, key=lambda item: item[0])
-        if last_close.get('action') != close_action:
-            return 'BLOCKED_SAME_SIDE_CLOSE_INVALID_MARKET_DATA'
+        
+        last_close = None
+        if matching_closes:
+            _, last_close = max(matching_closes, key=lambda item: item[0])
+            if last_close.get('action') != close_action:
+                return 'BLOCKED_SAME_SIDE_CLOSE_INVALID_MARKET_DATA'
 
         closed = closed_entry_candles(frame)
         if closed.empty or 'atr' not in closed:
@@ -317,7 +327,13 @@ def same_side_anti_churn_problem(account, symbol, frame, side, quote=None):
         current_quote = float(
             quote if quote is not None else frame.iloc[-1].get('close', float('nan'))
         )
-        close_price = float(last_close.get('price') or 0.0)
+        if last_close is not None:
+            close_price = float(last_close.get('price') or 0.0)
+        else:
+            close_price = float(getattr(account, 'last_closed_price', {}).get(symbol, 0.0))
+            if close_price <= 0:
+                # 歷史 trades 與平倉價均不可考，不再阻礙開倉
+                return None
         if (not all(math.isfinite(value) and value > 0
                     for value in (atr, current_quote, close_price))):
             return 'BLOCKED_SAME_SIDE_CLOSE_INVALID_MARKET_DATA'
