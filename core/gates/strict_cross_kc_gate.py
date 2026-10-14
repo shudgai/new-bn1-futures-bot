@@ -38,7 +38,7 @@ import pandas as pd
 
 def has_recent_golden_cross(
     df: pd.DataFrame,
-    max_lookback: int = 3,
+    max_lookback: int = 6,
     curr_ma5: Optional[float] = None,
     curr_ma15: Optional[float] = None,
 ) -> bool:
@@ -63,7 +63,7 @@ def has_recent_golden_cross(
 
 def has_recent_death_cross(
     df: pd.DataFrame,
-    max_lookback: int = 3,
+    max_lookback: int = 6,
     curr_ma5: Optional[float] = None,
     curr_ma15: Optional[float] = None,
 ) -> bool:
@@ -150,12 +150,12 @@ class StrictCrossAndKcTrendGate:
             if curr_ma5 <= curr_ma15:
                 return False, "REJECT_ENTRY: NO_GOLDEN_CROSS_MA5_BELOW_MA15"
 
-            # 實質金叉驗證：在最近 1~3 根 K 棒內必須發生「實質向上穿越」
-            if not has_recent_golden_cross(frame, max_lookback=3, curr_ma5=curr_ma5, curr_ma15=curr_ma15):
+            # 實質金叉驗證：在最近 1~6 根 K 棒內必須發生「實質向上穿越」
+            if not has_recent_golden_cross(frame, max_lookback=6, curr_ma5=curr_ma5, curr_ma15=curr_ma15):
                 return False, "REJECT_ENTRY: NO_VALID_GOLDEN_CROSS_FOUND"
 
-            # 3. MA5 即時斜率防向下彎折：放行唯一條件為 MA5 堅定向上發散（ma5_slope > 0 且 ma5_curr > ma5_prev）
-            if ma5_diff <= 0:
+            # 3. MA5 即時斜率防向下彎折（軟化死區計算：微幅浮點波動視為順勢延續，明確反向才否決）
+            if ma5_diff < -1e-5:
                 return False, "REJECT_ENTRY: MA5_HOOKING_DOWN_AFTER_CROSS"
 
             # 4. 獲利空間與防貼軌追多：距上軌不足 20% 通道空間或超買貼軌，嚴禁開多（收線破軌/貫穿豁免 25% 空間門檻）
@@ -178,16 +178,16 @@ class StrictCrossAndKcTrendGate:
             if curr_ma5 >= curr_ma15:
                 return False, "REJECT_ENTRY: NO_DEATH_CROSS_MA5_ABOVE_MA15"
 
-            # 2. 實質死叉驗證：在最近 1~3 根 K 棒內必須發生「實質向下貫穿」
-            if not has_recent_death_cross(frame, max_lookback=3, curr_ma5=curr_ma5, curr_ma15=curr_ma15):
+            # 2. 實質死叉驗證：在最近 1~6 根 K 棒內必須發生「實質向下貫穿」
+            if not has_recent_death_cross(frame, max_lookback=6, curr_ma5=curr_ma5, curr_ma15=curr_ma15):
                 return False, "REJECT_ENTRY: NO_VALID_DEATH_CROSS_FOUND"
 
             # 當前必須維持空頭排列：ma5_curr < ma15_curr 且 ma15_slope <= 0
             if ma15_diff > 1e-6:
                 return False, "REJECT_ENTRY: MA15_SLOPE_NOT_DOWN"
 
-            # 3. MA5 即時斜率防向上折起：放行唯一條件為 MA5 堅定向下俯衝（ma5_slope < 0 且 ma5_curr < ma5_prev）
-            if ma5_diff >= 0:
+            # 3. MA5 即時斜率防向上折起（軟化死區計算：微幅浮點波動視為順勢延續，明確反向才否決）
+            if ma5_diff > 1e-5:
                 return False, "REJECT_ENTRY: MA5_HOOKING_UP_AFTER_CROSS"
 
             # 4. 獲利空間與防貼軌追空：距下軌不足 20% 通道空間或超賣貼軌（防追在波段最低點地板），嚴禁開空（收線跌破/貫穿豁免 25% 空間門檻）
@@ -207,9 +207,9 @@ class MemeSharedProtectionGate:
     所有開倉模式在發出訊號前，必須 100% 通過以下前置硬檢核，否則一票否決（REJECT_ENTRY）：
     1. 影線與實體過濾（Anti-Wick Gate - 杜絕避雷針與地板陷阱）：
        - 計算當根 1m K 棒實體佔比：body_ratio = abs(close - open) / (high - low + 1e-9)
-       - 若 body_ratio < 0.35（上下影線主導之十字星、紡錘線），一票否決開倉（REJECT_ENTRY: DOMINATED_BY_WICKS）。
-       - 多單開倉：上影線不得超過實體的 0.6 倍（High - max(Open, Close) <= 0.6 * Body）。若超標，禁止追多。
-       - 空單開倉：下影線不得超過實體的 0.6 倍（min(Open, Close) - Low <= 0.6 * Body）。若超標，禁止追空。
+       - 若 body_ratio < 0.25（只擋極端十字星，放行一般波動 K 棒）。
+       - 多單開倉：上影線不得超過實體的 0.8 倍（High - max(Open, Close) <= 0.8 * Body）。若超標，禁止追多。
+       - 空單開倉：下影線不得超過實體的 0.8 倍（min(Open, Close) - Low <= 0.8 * Body）。若超標，禁止追空。
     2. 防天花板與追高乖離限制（Max Slippage / Price Deviation Cap）：
        - 多單：(Price - MA5) / MA5 > 1.2% 時，判定為短線嚴重超買天花板，一票否決開多（REJECT_ENTRY: LONG_MA5_DEVIATION_CAP）。
        - 空單：(MA5 - Price) / MA5 > 1.2% 時，判定為短線嚴重超賣地板，一票否決開空（REJECT_ENTRY: SHORT_MA5_DEVIATION_CAP）。
@@ -235,17 +235,17 @@ class MemeSharedProtectionGate:
         body = abs(c_close - c_open)
         body_ratio = body / (candle_range + 1e-9)
 
-        # 1. 影線與實體過濾
-        if body_ratio < 0.35:
+        # 1. 影線與實體過濾（放寬門檻至 0.25 與 0.8）
+        if body_ratio < 0.25:
             return False, "REJECT_ENTRY: DOMINATED_BY_WICKS"
 
         if side == 'LONG':
             upper_wick = c_high - max(c_open, c_close)
-            if upper_wick > 0.6 * body:
+            if upper_wick > 0.8 * body:
                 return False, "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
         elif side == 'SHORT':
             lower_wick = min(c_open, c_close) - c_low
-            if lower_wick > 0.6 * body:
+            if lower_wick > 0.8 * body:
                 return False, "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
 
         # 2. 防天花板與追高乖離限制 (Max Slippage / Price Deviation Cap > 1.2%)

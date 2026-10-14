@@ -115,16 +115,23 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     frame, quote, account=engine.account, symbol=symbol,
                     diagnostics=diagnostics,
                 )
-                if entry and entry.get('side') == candidate_side:
-                    auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
-                                f"Mode: {meta_dict.get('mode')} | Side: {candidate_side} | Price: {quote}")
-                    logger.info(auth_log)
-                    print(auth_log, flush=True)
-                    await engine._execute_confirmed_channel_break(
-                        symbol, frame, quote, candidate_side, daily_halt,
-                        v8_reason=entry['type'], candidate_bar_id=entry['confirmation_bar_id'],
-                        qualification_signal_id=entry.get('qualification_signal_id'))
-                    return [], []
+                mode_name = (meta_dict or {}).get('mode', 'MODE_DUAL_TF')
+                cand_bar_id = int(frame.iloc[-1].get('time', time.time())) if len(frame) > 0 else int(time.time())
+                v8_reason = entry['type'] if (entry and entry.get('side') == candidate_side) else mode_name
+                qual_id = entry.get('qualification_signal_id') if (entry and entry.get('side') == candidate_side) else f"DUAL_TF_{candidate_side}_{cand_bar_id}"
+
+                auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
+                            f"Mode: {mode_name} | Side: {candidate_side} | Price: {quote} | v8_reason={v8_reason}")
+                logger.info(auth_log)
+                print(auth_log, flush=True)
+                await engine._execute_confirmed_channel_break(
+                    symbol, frame, quote, candidate_side, daily_halt,
+                    v8_reason=v8_reason, candidate_bar_id=cand_bar_id,
+                    qualification_signal_id=qual_id)
+                return [], []
+            else:
+                if gate_reason and "INSUFFICIENT" not in gate_reason:
+                    logger.debug(f"[{symbol}] 5M+15M Gate rejected {candidate_side}: {gate_reason}")
 
         return [], []
 

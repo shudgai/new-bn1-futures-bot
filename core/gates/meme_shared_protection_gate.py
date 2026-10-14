@@ -63,17 +63,17 @@ class MemeSharedProtectionGate:
 
         # ──【三大開倉模式判定】──
         # 模式一（5M KC 破軌開倉）：
-        # 5m 實體 >= 0.4 ATR 突破上軌/下軌且均線方向一致
+        # 5m 實體 >= 0.25 ATR 突破上軌/下軌且均線方向一致
         # 放寬突破初期的 15M 宏觀趨勢認定：
         # - 多單：只要 15M KC 中軌未向下（kc_trend_15m != "DOWN"）且 15M 收盤價未跌破 15M MA15（close_15m >= ma15_15m 或 ma15_15m <= 0），即判定大氣候相容，允許開多。
         # - 空單：只要 15M KC 中軌未向上（kc_trend_15m != "UP"）且 15M 收盤價未突破 15M MA15（close_15m <= ma15_15m 或 ma15_15m <= 0），即判定大氣候相容，允許開空。
         is_mode1 = False
-        if body >= 0.4 * atr:
-            if side == 'LONG' and c > upper and ma5 >= ma15 and ma5_slope > 0:
+        if body >= 0.25 * atr:
+            if side == 'LONG' and c > upper and ma5 >= ma15 and ma5_slope >= -1e-5:
                 macro_15m_compat = (kc_trend_15m != 'DOWN') and (close_15m >= ma15_15m or ma15_15m <= 0)
                 if macro_15m_compat:
                     is_mode1 = True
-            elif side == 'SHORT' and c < lower and ma5 <= ma15 and ma5_slope < 0:
+            elif side == 'SHORT' and c < lower and ma5 <= ma15 and ma5_slope <= 1e-5:
                 macro_15m_compat = (kc_trend_15m != 'UP') and (close_15m <= ma15_15m or ma15_15m <= 0)
                 if macro_15m_compat:
                     is_mode1 = True
@@ -125,16 +125,16 @@ class MemeSharedProtectionGate:
         elif side == 'SHORT' and big_trend != 'DOWN':
             return False, f"REJECT_ENTRY: 15M_TREND_NOT_DOWN (15M={big_trend})", None
 
-        # 模式二：5M 影線實體過濾
-        if solid_ratio < 0.35:
-            return False, f"REJECT_ENTRY: WEAK_CANDLE_SOLIDITY ({solid_ratio:.2f} < 0.35)", None
+        # 模式二：5M 影線實體過濾（放寬門檻：body_ratio >= 0.25，只擋極端十字星）
+        if solid_ratio < 0.25:
+            return False, f"REJECT_ENTRY: WEAK_CANDLE_SOLIDITY ({solid_ratio:.2f} < 0.25)", None
 
         if side == 'LONG':
-            if upper_wick > 0.6 * body:
-                return False, f"REJECT_ENTRY: UPPER_WICK_TOO_LONG ({upper_wick:.4f} > 0.6 * {body:.4f})", None
+            if upper_wick > 0.8 * body:
+                return False, f"REJECT_ENTRY: UPPER_WICK_TOO_LONG ({upper_wick:.4f} > 0.8 * {body:.4f})", None
         elif side == 'SHORT':
-            if lower_wick > 0.6 * body:
-                return False, f"REJECT_ENTRY: LOWER_WICK_TOO_LONG ({lower_wick:.4f} > 0.6 * {body:.4f})", None
+            if lower_wick > 0.8 * body:
+                return False, f"REJECT_ENTRY: LOWER_WICK_TOO_LONG ({lower_wick:.4f} > 0.8 * {body:.4f})", None
 
         # 模式二：5M 均線乖離率檢核 (> 1.2% 一票否決)
         if ma5 > 0:
@@ -142,16 +142,16 @@ class MemeSharedProtectionGate:
             if bias_pct > 0.012:
                 return False, f"REJECT_ENTRY: MA5_BIAS_EXCEEDED ({bias_pct:.4f} > 1.2%)", None
 
-        # 模式二：判定過去 1~3 根真交叉且發散
+        # 模式二：判定過去 1~6 根真交叉且維持順向發散（軟化斜率計算避免微幅波動誤殺）
         is_mode2 = False
         cross = m5['ma_cross']
         bars_ago = m5['cross_bars_ago']
-        if bars_ago <= 3:
+        if bars_ago <= 6:
             if side == 'LONG' and cross == 'GOLDEN':
-                if ma5_slope > 0.0005 and ma5 > ma15:
+                if ma5_slope >= -1e-5 and ma5 > ma15:
                     is_mode2 = True
             elif side == 'SHORT' and cross == 'DEATH':
-                if ma5_slope < -0.0005 and ma5 < ma15:
+                if ma5_slope <= 1e-5 and ma5 < ma15:
                     is_mode2 = True
 
         if is_mode2:

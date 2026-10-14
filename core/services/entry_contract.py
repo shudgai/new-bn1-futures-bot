@@ -2289,8 +2289,8 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
                     return "SHORT", "TRIGGER_PENDING_RETEST_ENTRY"
 
     # 防天花板與影線過濾
-    # 1. 實體佔振幅低於 35%（body_ratio < 0.35）之長影線震盪形態，強制禁止開倉
-    if body_ratio < 0.35:
+    # 1. 實體佔振幅低於 25%（body_ratio < 0.25）之極端十字星形態，強制禁止開倉（放行一般波動 K 棒）
+    if body_ratio < 0.25:
         return None, None
 
     # 2. 嚴格限制 MA5 乖離：> 1.2% 時一票否決
@@ -2318,7 +2318,7 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     long_breakout = (
         c_close > kc_up_val and
         c_close > c_open and
-        body_long >= 0.4 * atr and
+        body_long >= 0.25 * atr and
         kc_up_ok and
         ma5_val > ma15_val
     )
@@ -2327,7 +2327,7 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     short_breakout = (
         c_close < kc_low_val and
         c_close < c_open and
-        body_short >= 0.4 * atr and
+        body_short >= 0.25 * atr and
         kc_down_ok and
         ma5_val < ma15_val
     )
@@ -2338,17 +2338,17 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     ma5_prev_val = float(prev.get('ma5', ma5_val))
     long_cross = (
         kc_up_ok and
-        has_recent_golden_cross(closed_frame, max_lookback=3, curr_ma5=ma5_val, curr_ma15=ma15_val) and
+        has_recent_golden_cross(closed_frame, max_lookback=6, curr_ma5=ma5_val, curr_ma15=ma15_val) and
         ma5_val > ma15_val and
-        ma5_val > ma5_prev_val and
+        ma5_val >= ma5_prev_val - 1e-5 and
         c_close > ma5_val
     )
 
     short_cross = (
         kc_down_ok and
-        has_recent_death_cross(closed_frame, max_lookback=3, curr_ma5=ma5_val, curr_ma15=ma15_val) and
+        has_recent_death_cross(closed_frame, max_lookback=6, curr_ma5=ma5_val, curr_ma15=ma15_val) and
         ma5_val < ma15_val and
-        ma5_val < ma5_prev_val and
+        ma5_val <= ma5_prev_val + 1e-5 and
         c_close < ma5_val
     )
 
@@ -2505,8 +2505,8 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         # CANDLE_QUALITY_GATE: 防止急漲急跌插針假突破
         candle_range = curr['high'] - curr['low'] + 1e-6
         body = abs(curr['close'] - curr['open'])
-        # 放寬實體佔比要求，因為大波動破軌常常伴隨較長影線
-        if body / candle_range < 0.35:
+        # 放寬實體佔比要求至 0.25，只擋極端十字星，放行一般波動 K 棒
+        if body / candle_range < 0.25:
             return False, "BLOCKED_BY_WEAK_CANDLE_STRUCTURE"
 
     # ================= 快車道豁免 =================

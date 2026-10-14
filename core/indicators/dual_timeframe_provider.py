@@ -191,10 +191,10 @@ class DualTimeframeProvider:
         upper = float(curr['kc_upper'])
         lower = float(curr['kc_lower'])
 
-        # 檢測過去 1~3 根內是否有 MA5/MA15 真交叉
+        # 檢測過去 1~6 根內是否有 MA5/MA15 真交叉
         ma_cross = 'NONE'
         cross_bars_ago = 999
-        check_len = min(len(closed_df), 4)
+        check_len = min(len(closed_df), 7)
         for i in range(1, check_len):
             idx_curr = -i
             idx_prev = -i - 1
