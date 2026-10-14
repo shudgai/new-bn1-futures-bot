@@ -115,34 +115,9 @@ def is_true_climax_valley(frame):
 
 
 def doji_reversal_exit_reason(bars, side):
-    """Return the bar-close reversal exit for two consecutive completed 1m bars."""
-    if side not in ('LONG', 'SHORT') or not isinstance(bars, (list, tuple)) or len(bars) < 2:
-        return None
-    previous, current = bars[-2:]
-    try:
-        def value(bar, short, long):
-            return float(bar.get(short, bar.get(long)))
-
-        prev_ms = value(previous, 'ms', 'timestamp')
-        curr_ms = value(current, 'ms', 'timestamp')
-        po, ph, pl, pc = (value(previous, short, long) for short, long in
-                          (('o', 'open'), ('h', 'high'), ('l', 'low'), ('c', 'close')))
-        co, cc = (value(current, short, long) for short, long in
-                  (('o', 'open'), ('c', 'close')))
-        values = (prev_ms, curr_ms, po, ph, pl, pc, co, cc)
-        if (not all(math.isfinite(item) for item in values)
-                or any(item <= 0 for item in values)
-                or curr_ms - prev_ms != 60_000
-                or ph < max(po, pc) or pl > min(po, pc) or ph <= pl):
-            return None
-        doji_body_ratio = abs(pc - po) / (ph - pl + 1e-9)
-        if doji_body_ratio > 0.35:
-            return None
-        if (side == 'LONG' and cc < co) or (side == 'SHORT' and cc > co):
-            return 'EXIT_DOJI_REVERSAL_CONFIRMED'
-    except (AttributeError, TypeError, ValueError, OverflowError):
-        return None
+    """Retired: 十字星與反向 K 棒平倉已全數拔除，禁止因十字星或微小反向 K 觸發平倉。"""
     return None
+
 
 
 def evaluate_trend_exit_and_take_profit(position, closed, atr):
@@ -319,73 +294,11 @@ def is_candle_closed_ma5_break(frame, side: str, is_closed: bool = False) -> boo
 
 
 def evaluate_doji_two_bar_confirmation(position: dict, frame, side: str, is_closed: bool = False, atr: float = 0.0) -> bool:
-    """二、 十字星出場必須「雙棒確認」（Two-Bar Top Confirmation）：
-    1. 嚴禁「單根十字星立即平倉」：
-       - 盤中或收線出現 Doji / 十字星時，當根僅作內部標記（awaiting_doji_confirmation = True），持倉強制繼續抱住。
-    2. 必須等「次根出現反現實體確認」才准平多：
-       - 只有在次根 1m K 線收線時（is_closed=True），同時滿足：
-         * 次根 K 棒收為「明確實體陰線（close < open for LONG, close > open for SHORT）」。
-         * 次根陰線收盤價「實體跌破前一根十字星的最低點（close < doji_low for LONG, close > doji_high for SHORT）」。
-       - 若次根 K 棒繼續收陽、收綠十字、或向上創新高，立即「作廢並清除」十字星警示，繼續順勢抱緊讓利潤奔跑！
-    """
-    if not position or frame is None or len(frame) < 2:
-        return False
-    try:
-        curr = frame.iloc[-1]
-        prev = frame.iloc[-2]
-
-        def _is_doji_bar(bar):
-            o = float(bar.get('open', 0.0))
-            c = float(bar.get('close', 0.0))
-            h = float(bar.get('high', 0.0))
-            l = float(bar.get('low', 0.0))
-            span = h - l
-            body = abs(c - o)
-            if span <= 0:
-                return False
-            return (body / span <= 0.35) or (atr > 0 and body <= 0.25 * atr)
-
-        # 若已在等待次根確認
-        if position.get('awaiting_doji_confirmation'):
-            if not is_closed:
-                return False  # 盤中未收線，繼續抱住
-
-            curr_open = float(curr.get('open', 0.0))
-            curr_close = float(curr.get('close', 0.0))
-
-            if side == 'LONG':
-                doji_low = float(position.get('doji_low', curr_open))
-                if curr_close < curr_open and curr_close < doji_low:
-                    position.pop('awaiting_doji_confirmation', None)
-                    position.pop('doji_low', None)
-                    return True
-                else:
-                    position.pop('awaiting_doji_confirmation', None)
-                    position.pop('doji_low', None)
-                    return False
-            elif side == 'SHORT':
-                doji_high = float(position.get('doji_high', curr_open))
-                if curr_close > curr_open and curr_close > doji_high:
-                    position.pop('awaiting_doji_confirmation', None)
-                    position.pop('doji_high', None)
-                    return True
-                else:
-                    position.pop('awaiting_doji_confirmation', None)
-                    position.pop('doji_high', None)
-                    return False
-
-        # 若目前未在等待確認，檢查最新收線之 K 線是否為十字星
-        check_bar = curr if is_closed else prev
-        if _is_doji_bar(check_bar):
-            position['awaiting_doji_confirmation'] = True
-            if side == 'LONG':
-                position['doji_low'] = float(check_bar.get('low', 0.0))
-            else:
-                position['doji_high'] = float(check_bar.get('high', 0.0))
-            return False
-
-    except (TypeError, ValueError, IndexError):
-        pass
+    """Retired: 十字星與反向 K 棒平倉已全數拔除，禁止因十字星或微小反向 K 觸發平倉。"""
+    if position:
+        position.pop('awaiting_doji_confirmation', None)
+        position.pop('doji_low', None)
+        position.pop('doji_high', None)
     return False
 
 

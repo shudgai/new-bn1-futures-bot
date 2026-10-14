@@ -1350,8 +1350,6 @@ class HoldingProtectionExitGate:
         # Aliases
         'EXIT_LONG_ON_FRACTAL_PEAK',
         'EXIT_SHORT_ON_FRACTAL_VALLEY',
-        'EXIT_LONG_ON_UPPER_WICK_REJECTION',
-        'EXIT_SHORT_ON_LOWER_WICK_REJECTION',
         'EXIT_LONG_ON_SELLING_PRESSURE',
         'EXIT_SHORT_ON_BUYING_PRESSURE',
     }
@@ -1649,9 +1647,10 @@ class HoldingProtectionExitGate:
             ):
                 return _reject(reason=hold_reason)
 
-        # ──【單邊趨勢全程護航閘門：Gate: TrendHoldingImmunityGate】──
+        # ──【單邊趨勢全程護航閘門：Gate: StrictEntryAndImmunityGate & TrendHoldingImmunityGate】──
         # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查。
-        # 凡趨勢結構未破壞者，一律一票否決平倉（REJECT_EXIT）
+        # 凡趨勢結構未破壞者（多單未跌破 MA15、空單未站上 MA15），一律一票否決平倉（REJECT_EXIT）
+        from core.gates.strict_entry_and_immunity_gate import StrictEntryAndImmunityGate
         from core.gates.trend_holding_immunity_gate import TrendHoldingImmunityGate
         if not hard_exit and not is_safety_exit and not is_profit_lock and not is_true_pivot_confirmed and frame is not None and len(frame) >= 1:
             curr_bar = frame.iloc[-1]
@@ -1662,10 +1661,30 @@ class HoldingProtectionExitGate:
             prev_m15 = float(prev_bar.get('ma15', curr_m15))
             m15_slope = curr_m15 - prev_m15
             mid_val = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
+
+            entry_p = float((position or {}).get('entry_price', 0.0))
+            if entry_p > 0:
+                net_pnl_pct = (quote - entry_p) / entry_p if side == 'LONG' else (entry_p - quote) / entry_p
+            else:
+                net_pnl_pct = 0.0
+
+            # 1. 優先使用 StrictEntryAndImmunityGate 檢核
+            can_pass_strict, strict_reason = StrictEntryAndImmunityGate().can_exit(
+                side,
+                {'close': curr_c, 'ma15': curr_m15},
+                net_profit_pct=net_pnl_pct,
+                is_hard_stop=hard_exit
+            )
+            if not can_pass_strict:
+                return _reject(reason=strict_reason)
+
+            # 2. 趨勢護航二度確認
             can_pass, immunity_reason = TrendHoldingImmunityGate().can_exit(
                 side,
                 {'close': curr_c, 'open': float(curr_bar.get('open', quote)), 'high': float(curr_bar.get('high', quote)), 'low': float(curr_bar.get('low', quote))},
-                {'ma5': curr_m5, 'ma15': curr_m15, 'ma15_slope': m15_slope, 'kc_middle': mid_val}
+                {'ma5': curr_m5, 'ma15': curr_m15, 'ma15_slope': m15_slope, 'kc_middle': mid_val},
+                net_profit_pct=net_pnl_pct,
+                is_hard_stop=hard_exit
             )
             if not can_pass:
                 return _reject(reason=immunity_reason)
@@ -1861,8 +1880,6 @@ class HoldingProtectionExitGate:
             INTRABAR_SPIKE_REBOUND_EXIT,
             'EXIT_BY_VERIFIED_FRACTAL_PEAK', 'EXIT_LONG_ON_FRACTAL_PEAK',
             'EXIT_BY_VERIFIED_FRACTAL_VALLEY', 'EXIT_SHORT_ON_FRACTAL_VALLEY',
-            'EXIT_LONG_ON_UPPER_WICK_REJECTION',
-            'EXIT_SHORT_ON_LOWER_WICK_REJECTION',
             'EXIT_LONG_ON_SELLING_PRESSURE', 'EXIT_SHORT_ON_BUYING_PRESSURE',
         }
         if (side == 'LONG' and bars_held <= 2
@@ -1995,33 +2012,8 @@ class HoldingProtectionExitGate:
             'EXIT_LONG_ON_UPPER_WICK_REJECTION',
             'EXIT_SHORT_ON_LOWER_WICK_REJECTION',
         ):
-            atr = float(details.get('atr') or 0.0)
-            body = float(details.get('body') or 0.0)
-            wick = float(
-                details.get('upper_wick' if side == 'LONG' else 'lower_wick') or 0.0
-            )
-            peak_roe = float(details.get('peak_roe' if side == 'LONG' else 'valley_roe') or 0.0)
-            peak_gain_atr = float(details.get('peak_gain_atr') or 0.0)
-            if (side not in ('LONG', 'SHORT')
-                    or (side == 'LONG' and clean_reason != 'EXIT_LONG_ON_UPPER_WICK_REJECTION')
-                    or (side == 'SHORT' and clean_reason != 'EXIT_SHORT_ON_LOWER_WICK_REJECTION')
-                    or not all(math.isfinite(value) for value in
-                               (atr, body, wick, peak_roe, peak_gain_atr))
-                    or atr <= 0
-                    or wick < 0.5 * atr
-                    or wick <= 2.0 * body
-                    or (side == 'SHORT'
-                        and float(details.get('upper_wick') or 0.0) >= 0.4 * atr)
-                    or (peak_roe < 0.03 and peak_gain_atr < 0.5)):
-                return _reject()
-            if (side == 'SHORT'
-                    and (confirmed_short_bottom_evidence(frame) is None
-                         or _short_reversal_body_evidence(frame, quote, atr) is None)):
-                return _reject()
-            if (side == 'LONG'
-                    and _long_reversal_body_evidence(frame, quote, atr) is None):
-                return _reject()
-            return _auth(clean_reason)
+            # 拔除影線平倉旁路：盤中影線震盪屬於健康整理，嚴禁平倉
+            return _reject(reason="REJECT_EXIT: WICK_REJECTION_EXIT_RETIRED (VETO)")
 
         # ── 4. 真實分形頂底 (WHITELIST SCENARIO 4) ──
         if clean_reason in (

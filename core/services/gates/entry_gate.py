@@ -272,6 +272,9 @@ class MemeSharedProtectionGate:
 from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 from core.gates.five_lines_confluence_gate import FiveLinesConfluenceGate
 from core.gates.trend_confirmation_filter_gate import TrendConfirmationFilterGate
+from core.gates.strict_entry_and_immunity_gate import StrictEntryAndImmunityGate
+
+strict_gate = StrictEntryAndImmunityGate(min_slope_pct=0.0010, cooldown_bars=3)
 
 EntryGate = StrictCrossAndKcTrendGate
 
@@ -281,6 +284,8 @@ __all__ = [
     "MacroCandleStructureGate",
     "FiveLinesConfluenceGate",
     "TrendConfirmationFilterGate",
+    "StrictEntryAndImmunityGate",
+    "strict_gate",
     "EntryGate",
     "has_recent_golden_cross",
     "has_recent_death_cross",
