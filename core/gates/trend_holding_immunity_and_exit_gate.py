@@ -77,38 +77,43 @@ class TrendHoldingAndExitManager:
         position['highest_price'] = highest_p
         position['lowest_price'] = lowest_p
 
-        # ──【第一道出場：保本移損 (Hard Breakeven Exit)】──
-        # 浮盈峰值曾達 >= 1.2 ATR（或淨 ROE >= 8.0%）後，回撤碰觸 entry_price ± 0.05% 即刻市價保本出場
-        has_reached_breakeven_arm = (peak_profit_atr >= 1.2) or (peak_roe_pct >= 0.08)
-        be_threshold = 0.0005 # 0.05%
-        be_price = entry_p * (1.0 + be_threshold) if side == 'LONG' else entry_p * (1.0 - be_threshold)
+        # ──【第一道出場：獲利階梯鎖利 (Ratchet Profit Lock)】──
+        # 規則：持倉浮盈淨利達 10% 啟動，自歷史最高淨利回吐滿 20% 市價平倉，不設硬保底
+        has_ratchet_armed = (peak_roe_pct >= 0.10)
+        floor_roe_pct = peak_roe_pct * 0.80 # 回吐滿 20%，鎖定 80% 峰值利潤
+        lock_price = entry_p * (1.0 + floor_roe_pct) if side == 'LONG' else entry_p * (1.0 - floor_roe_pct)
         qty = float(position.get('qty', 0.0))
-        locked_net = abs(be_price - entry_p) * qty
+        locked_net = abs(lock_price - entry_p) * qty
 
-        if has_reached_breakeven_arm:
-            position['active_stop_price'] = be_price
-            position['breakeven_price'] = be_price
+        if has_ratchet_armed:
+            lock_price = round(lock_price, 8)
+            position['active_stop_price'] = lock_price
+            position['breakeven_price'] = lock_price
             position['locked_profit_usdt'] = round(locked_net, 4)
             position['locked_phase'] = 1
             position['channel_profit_protection'] = {
                 'locked_net': round(locked_net, 4),
-                'breakeven_price': be_price,
+                'breakeven_price': lock_price,
                 'armed': True,
                 'status': 'ARMED',
-                'peak_profit_atr': round(peak_profit_atr, 2),
                 'peak_roe_pct': round(peak_roe_pct * 100, 2),
+                'floor_roe_pct': round(floor_roe_pct * 100, 2),
             }
-            if side == 'LONG' and p <= be_price:
-                return True, "EXIT_BY_HARD_BREAKEVEN_PROTECTION", {
-                    'peak_profit_atr': peak_profit_atr,
+            if side == 'LONG' and p <= lock_price:
+                return True, "EXIT_BY_RATCHET_PROFIT_LOCK", {
                     'peak_roe_pct': peak_roe_pct,
+                    'curr_roe_pct': curr_roe_pct,
+                    'floor_roe_pct': floor_roe_pct,
+                    'giveback_ratio': (peak_roe_pct - curr_roe_pct) / peak_roe_pct if peak_roe_pct > 0 else 0.0,
                     'entry_price': entry_p,
                     'trigger_price': p,
                 }
-            elif side == 'SHORT' and p >= be_price:
-                return True, "EXIT_BY_HARD_BREAKEVEN_PROTECTION", {
-                    'peak_profit_atr': peak_profit_atr,
+            elif side == 'SHORT' and p >= lock_price:
+                return True, "EXIT_BY_RATCHET_PROFIT_LOCK", {
                     'peak_roe_pct': peak_roe_pct,
+                    'curr_roe_pct': curr_roe_pct,
+                    'floor_roe_pct': floor_roe_pct,
+                    'giveback_ratio': (peak_roe_pct - curr_roe_pct) / peak_roe_pct if peak_roe_pct > 0 else 0.0,
                     'entry_price': entry_p,
                     'trigger_price': p,
                 }
@@ -120,8 +125,8 @@ class TrendHoldingAndExitManager:
                 'breakeven_price': None,
                 'armed': False,
                 'status': 'WAIT_TRIGGER',
-                'peak_profit_atr': round(peak_profit_atr, 2),
                 'peak_roe_pct': round(peak_roe_pct * 100, 2),
+                'target_roe_pct': 10.0,
             }
 
         # 取得 15M 指標

@@ -37,13 +37,9 @@ class MemeSharedProtectionGate:
             trend_15m_info = DualTimeframeProvider.get_15m_trend(df_15m)
 
         big_trend = trend_15m_info.get('15m_big_trend', 'RANGE')
-
-        # ──【核心檢核 A：15M 順勢過濾】──
-        # 開多必須 15M 為 UP；開空必須 15M 為 DOWN
-        if side == 'LONG' and big_trend != 'UP':
-            return False, f"REJECT_ENTRY: 15M_TREND_NOT_UP (15M={big_trend})", None
-        elif side == 'SHORT' and big_trend != 'DOWN':
-            return False, f"REJECT_ENTRY: 15M_TREND_NOT_DOWN (15M={big_trend})", None
+        kc_trend_15m = trend_15m_info.get('15m_kc_trend', 'RANGE')
+        close_15m = float(trend_15m_info.get('15m_close', 0.0))
+        ma15_15m = float(trend_15m_info.get('15m_ma15', 0.0))
 
         # 2. 取得 5M 操作週期指標
         m5 = DualTimeframeProvider.get_5m_metrics(df_5m)
@@ -61,15 +57,77 @@ class MemeSharedProtectionGate:
         lower = m5['5m_kc_lower']
         mid = m5['5m_kc_middle']
         candle_range = max(h - l, 1e-9)
-
-        # ──【核心檢核 B：5M 影線實體過濾】──
-        # 5m 實體比例 >= 0.35；開多上影線 <= 0.6*實體；開空下影線 <= 0.6*實體
         solid_ratio = body / candle_range
-        if solid_ratio < 0.35:
-            return False, f"REJECT_ENTRY: WEAK_CANDLE_SOLIDITY ({solid_ratio:.2f} < 0.35)", None
-
         upper_wick = h - max(c, o)
         lower_wick = min(c, o) - l
+
+        # ──【三大開倉模式判定】──
+        # 模式一（5M KC 破軌開倉）：
+        # 5m 實體 >= 0.4 ATR 突破上軌/下軌且均線方向一致
+        # 放寬突破初期的 15M 宏觀趨勢認定：
+        # - 多單：只要 15M KC 中軌未向下（kc_trend_15m != "DOWN"）且 15M 收盤價未跌破 15M MA15（close_15m >= ma15_15m 或 ma15_15m <= 0），即判定大氣候相容，允許開多。
+        # - 空單：只要 15M KC 中軌未向上（kc_trend_15m != "UP"）且 15M 收盤價未突破 15M MA15（close_15m <= ma15_15m 或 ma15_15m <= 0），即判定大氣候相容，允許開空。
+        is_mode1 = False
+        if body >= 0.4 * atr:
+            if side == 'LONG' and c > upper and ma5 >= ma15 and ma5_slope > 0:
+                macro_15m_compat = (kc_trend_15m != 'DOWN') and (close_15m >= ma15_15m or ma15_15m <= 0)
+                if macro_15m_compat:
+                    is_mode1 = True
+            elif side == 'SHORT' and c < lower and ma5 <= ma15 and ma5_slope < 0:
+                macro_15m_compat = (kc_trend_15m != 'UP') and (close_15m <= ma15_15m or ma15_15m <= 0)
+                if macro_15m_compat:
+                    is_mode1 = True
+
+        # 模式三（5M 斷頭鍘刀開倉）：
+        # 實體 >= 0.85 ATR，佔比 >= 70%，無長影線強勢切穿均線或 KC 中軌
+        is_mode3 = False
+        if body >= 0.85 * atr and solid_ratio >= 0.70:
+            if side == 'LONG':
+                cut_ma15 = (o <= ma15 and c > ma15) or (o <= mid and c > mid)
+                if cut_ma15 and c > o and upper_wick <= 0.25 * body:
+                    macro_15m_compat = (kc_trend_15m != 'DOWN') and (close_15m >= ma15_15m or ma15_15m <= 0)
+                    if macro_15m_compat:
+                        is_mode3 = True
+            elif side == 'SHORT':
+                cut_ma15 = (o >= ma15 and c < ma15) or (o >= mid and c < mid)
+                if cut_ma15 and c < o and lower_wick <= 0.25 * body:
+                    macro_15m_compat = (kc_trend_15m != 'UP') and (close_15m <= ma15_15m or ma15_15m <= 0)
+                    if macro_15m_compat:
+                        is_mode3 = True
+
+        # ──【豁免破軌/斷頭模式的乖離率與影線限制】──
+        # 若觸發「模式一（KC 破軌）」或「模式三（斷頭鍘刀）」，設定 bypass_spatial_check = True
+        # 當 bypass_spatial_check == True 時，100% 豁免「1.2% 均線乖離率檢核」與「影線佔比檢核」，直接放行突破進場
+        bypass_spatial_check = is_mode1 or is_mode3
+
+        meta = {
+            'side': side,
+            'price': p,
+            '15m_big_trend': big_trend,
+            '15m_kc_trend': kc_trend_15m,
+            '5m_ma5_slope': ma5_slope,
+            '5m_atr': atr,
+            'bypass_spatial_check': bypass_spatial_check,
+        }
+
+        if is_mode1:
+            meta['mode'] = 'MODE1_KC_BREAKOUT'
+            return True, "AUTHORIZED_ENTRY_MODE1_KC_BREAKOUT", meta
+
+        if is_mode3:
+            meta['mode'] = 'MODE3_GUILLOTINE_CUT'
+            return True, "AUTHORIZED_ENTRY_MODE3_GUILLOTINE", meta
+
+        # ──【模式二：5M MA5/MA15 交叉震盪進場】──
+        # 「15M 大趨勢順勢過濾」、「均線乖離率 > 1.2% 限制」與「影線比例限制」對模式二生效
+        if side == 'LONG' and big_trend != 'UP':
+            return False, f"REJECT_ENTRY: 15M_TREND_NOT_UP (15M={big_trend})", None
+        elif side == 'SHORT' and big_trend != 'DOWN':
+            return False, f"REJECT_ENTRY: 15M_TREND_NOT_DOWN (15M={big_trend})", None
+
+        # 模式二：5M 影線實體過濾
+        if solid_ratio < 0.35:
+            return False, f"REJECT_ENTRY: WEAK_CANDLE_SOLIDITY ({solid_ratio:.2f} < 0.35)", None
 
         if side == 'LONG':
             if upper_wick > 0.6 * body:
@@ -78,66 +136,25 @@ class MemeSharedProtectionGate:
             if lower_wick > 0.6 * body:
                 return False, f"REJECT_ENTRY: LOWER_WICK_TOO_LONG ({lower_wick:.4f} > 0.6 * {body:.4f})", None
 
-        # ──【核心檢核 C：5M 乖離率上限】──
-        # (價格與 5m_ma5 偏離幅度) > 1.2% 一票否決 (防止天花板追多或地板追空)
+        # 模式二：5M 均線乖離率檢核 (> 1.2% 一票否決)
         if ma5 > 0:
             bias_pct = abs(p - ma5) / ma5
             if bias_pct > 0.012:
                 return False, f"REJECT_ENTRY: MA5_BIAS_EXCEEDED ({bias_pct:.4f} > 1.2%)", None
 
-        # ──【三大開倉模式判定】──
-        # 模式一（5M KC 破軌開倉）：5m 實體 >= 0.4 ATR 突破上軌/下軌且均線方向一致
-        is_mode1 = False
-        if body >= 0.4 * atr:
-            if side == 'LONG' and c > upper and ma5 >= ma15 and ma5_slope > 0:
-                is_mode1 = True
-            elif side == 'SHORT' and c < lower and ma5 <= ma15 and ma5_slope < 0:
-                is_mode1 = True
-
-        # 模式二（5M 真交叉開倉）：過去 1~3 根真交叉，且 5M MA5 必須保持同向發散（ma5_slope 走平或逆向一票否決）
+        # 模式二：判定過去 1~3 根真交叉且發散
         is_mode2 = False
         cross = m5['ma_cross']
         bars_ago = m5['cross_bars_ago']
         if bars_ago <= 3:
             if side == 'LONG' and cross == 'GOLDEN':
-                # 均線必須同向發散且向上拉升（斜率 > 0.0005）
                 if ma5_slope > 0.0005 and ma5 > ma15:
                     is_mode2 = True
             elif side == 'SHORT' and cross == 'DEATH':
-                # 均線必須同向發散且向下傾斜（斜率 < -0.0005）
                 if ma5_slope < -0.0005 and ma5 < ma15:
                     is_mode2 = True
 
-        # 模式三（5M 斷頭開倉）：實體 >= 0.85 ATR，佔比 >= 70%，無長影線強勢切穿均線或 KC 中軌
-        is_mode3 = False
-        if body >= 0.85 * atr and solid_ratio >= 0.70:
-            if side == 'LONG':
-                # 實體陽線，收盤站上 MA15 或 KC 中軌，且由下方穿過
-                cut_ma15 = (o <= ma15 and c > ma15) or (o <= mid and c > mid)
-                if cut_ma15 and c > o and upper_wick <= 0.25 * body:
-                    is_mode3 = True
-            elif side == 'SHORT':
-                # 實體陰線，收盤摜穿 MA15 或 KC 中軌，且由上方穿過
-                cut_ma15 = (o >= ma15 and c < ma15) or (o >= mid and c < mid)
-                if cut_ma15 and c < o and lower_wick <= 0.25 * body:
-                    is_mode3 = True
-
-        # 根據命中模式放行
-        meta = {
-            'side': side,
-            'price': p,
-            '15m_big_trend': big_trend,
-            '5m_ma5_slope': ma5_slope,
-            '5m_atr': atr,
-        }
-
-        if is_mode3:
-            meta['mode'] = 'MODE3_GUILLOTINE_CUT'
-            return True, "AUTHORIZED_ENTRY_MODE3_GUILLOTINE", meta
-        elif is_mode1:
-            meta['mode'] = 'MODE1_KC_BREAKOUT'
-            return True, "AUTHORIZED_ENTRY_MODE1_KC_BREAKOUT", meta
-        elif is_mode2:
+        if is_mode2:
             meta['mode'] = 'MODE2_TRUE_CROSS'
             return True, "AUTHORIZED_ENTRY_MODE2_TRUE_CROSS", meta
 
