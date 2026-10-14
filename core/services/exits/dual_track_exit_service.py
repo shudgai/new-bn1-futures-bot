@@ -8,6 +8,7 @@ from core.services.exits.peak_trailing_exit import (
     POLICY, STATE_KEY, STATE_KEYS, channel_initial_stop_disabled, evaluate_peak_trailing,
 )
 from core.services.candle_data import closed_entry_candles
+from core.services.gates.exit_gate import TrendHoldingImmunityGate
 DUAL_TRACK_STATE_KEYS = list(STATE_KEYS)
 SL_INIT_MULT = 1.5
 
@@ -451,7 +452,7 @@ class DualTrackExitStrategy(IExitStrategy):
         position.update(entry_atr=float(atr), sl=entry_price-sign*SL_INIT_MULT*atr,
                         stop_loss=entry_price-sign*SL_INIT_MULT*atr, tp=0.)
 
-    def evaluate_exit(self, position, frame=None, current_price=None, is_closed=False, **kwargs):
+    def _evaluate_raw_exit(self, position, frame=None, current_price=None, is_closed=False, **kwargs):
         import time
         import logging
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
@@ -701,6 +702,52 @@ class DualTrackExitStrategy(IExitStrategy):
         except Exception as e:
             logging.getLogger(__name__).error(f"FAIL_SAFE_EXIT_ERROR in DualTrackExitStrategy: {e}", exc_info=True)
             return "FAIL_SAFE_EMERGENCY_EXIT"
+
+    def evaluate_exit(self, position, frame=None, current_price=None, is_closed=False, **kwargs):
+        """出場主入口：以 TrendHoldingImmunityGate 作為出場流程的第一道最高防禦閘門，未獲放行者不得平倉。"""
+        import logging
+        candidate_exit = self._evaluate_raw_exit(position, frame=frame, current_price=current_price, is_closed=is_closed, **kwargs)
+        if not candidate_exit:
+            return None
+
+        # 極端安全風控（硬止損、緊急暴跌防護、安全熔斷）
+        if candidate_exit in ('CIRCUIT_BREAKER_HARD_SL', 'HARD_STOP_LOSS', 'FAIL_SAFE_EMERGENCY_EXIT', 'EMERGENCY_DUMP_EXIT'):
+            return candidate_exit
+
+        # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查
+        side = position.get('side')
+        c_open = current_price
+        c_high = current_price
+        c_low = current_price
+        curr_close = current_price
+        curr_ma5 = current_price
+        curr_ma15 = current_price
+        ma15_slope = 0.0
+        kc_mid = 0.0
+
+        if frame is not None and len(frame) >= 1:
+            last_c = frame.iloc[-1]
+            prev_c = frame.iloc[-2] if len(frame) >= 2 else last_c
+            curr_close = float(last_c.get('close', current_price))
+            c_open = float(last_c.get('open', current_price))
+            c_high = float(last_c.get('high', current_price))
+            c_low = float(last_c.get('low', current_price))
+            curr_ma5 = float(last_c.get('ma5', current_price))
+            curr_ma15 = float(last_c.get('ma15', current_price))
+            prev_ma15 = float(prev_c.get('ma15', curr_ma15))
+            ma15_slope = curr_ma15 - prev_ma15
+            kc_mid = float(last_c.get('kc_middle', last_c.get('kc_basis', 0.0)))
+
+        can_exit, gate_msg = TrendHoldingImmunityGate().can_exit(
+            position_side=side,
+            bar={'close': curr_close, 'open': c_open, 'high': c_high, 'low': c_low},
+            indicators={'ma5': curr_ma5, 'ma15': curr_ma15, 'ma15_slope': ma15_slope, 'kc_middle': kc_mid}
+        )
+        if not can_exit:
+            logging.getLogger(__name__).info(f"TrendHoldingImmunityGate vetoed exit {candidate_exit}: {gate_msg}")
+            return None
+
+        return candidate_exit
 
     def handle_post_exit_cleanup(self, position, exit_reason):
         position.pop(STATE_KEY, None)

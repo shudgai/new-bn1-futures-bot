@@ -77,9 +77,13 @@ LIVE_BODY_BREAKOUT_CODES = frozenset((
     "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
 ))
 LIVE_PATTERN_BREAKOUT_CODES = KC_REALTIME_PATTERN_CODES
-# Continuation is independently revalidated from the current expanding KC candle.
+# Three Pure Modes trigger codes
 NEW_TRIGGER_CODES = frozenset((
-    "TRIGGER_A_KC_BREAKOUT", "TRIGGER_C_CONTINUATION",
+    "TRIGGER_A_KC_BREAKOUT",
+    "TRIGGER_B_MA_CROSS",
+    "TRIGGER_MOMENTUM_GUILLOTINE",
+    "TRIGGER_C_CONTINUATION",
+    "TRIGGER_PENDING_RETEST_ENTRY",
     TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
 ))
 # Automatic entries are limited to the general outer-rail breakout, its
@@ -87,7 +91,10 @@ NEW_TRIGGER_CODES = frozenset((
 # firewall imports this set and revalidates continuation with the same rail gate.
 LEGACY_ROUTE_CODES = frozenset((
     "TRIGGER_A_KC_BREAKOUT",
+    "TRIGGER_B_MA_CROSS",
+    "TRIGGER_MOMENTUM_GUILLOTINE",
     "TRIGGER_C_CONTINUATION",
+    "TRIGGER_PENDING_RETEST_ENTRY",
     TOP_WATERFALL_FLIP_CODE,
     "TOP_WATERFALL_FLIP",
 ))
@@ -2277,29 +2284,60 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
         if (ma5_val - c_close) / ma5_val > 0.012:
             return None, None
 
-    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
+    from core.gates.strict_cross_kc_gate import (
+        StrictCrossAndKcTrendGate,
+        MemeSharedProtectionGate,
+        has_recent_golden_cross,
+        has_recent_death_cross,
+    )
 
     # ══════════════════════════════════════════════════════════════════════
     # 【模式一：一般 KC 收線破軌開倉（Breakout Close Entry）】
     # ══════════════════════════════════════════════════════════════════════
+    kc_trend_str = str(curr.get('kc_trend', '')).strip().upper()
+    kc_up_ok = (kc_trend_str == 'UP') or (not kc_trend_str and kc_mid > prev_kc_mid)
+    kc_down_ok = (kc_trend_str == 'DOWN') or (not kc_trend_str and kc_mid < prev_kc_mid)
+
     body_long = c_close - c_open
-    upper_wick_long = float(curr['high']) - c_close
     long_breakout = (
         c_close > kc_up_val and
         c_close > c_open and
-        body_long >= 0.4 * atr
+        body_long >= 0.4 * atr and
+        kc_up_ok and
+        ma5_val > ma15_val
     )
 
     body_short = c_open - c_close
-    lower_wick_short = c_close - float(curr['low'])
     short_breakout = (
         c_close < kc_low_val and
         c_close < c_open and
-        body_short >= 0.4 * atr
+        body_short >= 0.4 * atr and
+        kc_down_ok and
+        ma5_val < ma15_val
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # 【模式二：斷頭開倉（Decisive Momentum Guillotine Entry - 大實體貫穿）】
+    # 【模式二：MA5 / MA15 交叉開倉（Strict Cross Entry - 抓順勢真轉折）】
+    # ══════════════════════════════════════════════════════════════════════
+    ma5_prev_val = float(prev.get('ma5', ma5_val))
+    long_cross = (
+        kc_up_ok and
+        has_recent_golden_cross(closed_frame, max_lookback=3, curr_ma5=ma5_val, curr_ma15=ma15_val) and
+        ma5_val > ma15_val and
+        ma5_val > ma5_prev_val and
+        c_close > ma5_val
+    )
+
+    short_cross = (
+        kc_down_ok and
+        has_recent_death_cross(closed_frame, max_lookback=3, curr_ma5=ma5_val, curr_ma15=ma15_val) and
+        ma5_val < ma15_val and
+        ma5_val < ma5_prev_val and
+        c_close < ma5_val
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 【模式三：斷頭開倉（Decisive Momentum Guillotine Entry - 大實體貫穿）】
     # ══════════════════════════════════════════════════════════════════════
     pierced_up = (
         (c_open <= kc_mid and c_close > kc_mid) or
@@ -2326,41 +2364,59 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # 【當根影線過長否決開倉（Wick Rejection Gate）與 Gate 前置硬檢核】
+    # 【Gate 前置硬檢核：MemeSharedProtectionGate 與 StrictCrossAndKcTrendGate】
     # ══════════════════════════════════════════════════════════════════════
-    if long_breakout or long_guillotine:
-        upper_wick = c_high - max(c_open, c_close)
-        if upper_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
-            _PENDING_WICK_REENTRY_STATE[sym_key] = {
-                'side': 'LONG',
-                'bar_id': curr_stamp,
-                'extreme_price': c_high,
-            }
-            return None, "EXCESSIVE_UPPER_WICK"
+    if long_breakout or long_cross or long_guillotine:
+        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(closed_frame, 'LONG', c_close, symbol=symbol)
+        if not shared_ok:
+            if "EXCESSIVE_UPPER_WICK" in shared_reason:
+                _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                    'side': 'LONG',
+                    'bar_id': curr_stamp,
+                    'extreme_price': c_high,
+                }
+                return None, "EXCESSIVE_UPPER_WICK"
+            return None, shared_reason
 
-        # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
-        long_gate_ok, long_gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, 'LONG')
+        is_breakout = bool(long_breakout or long_guillotine)
+        long_gate_ok, long_gate_reason = StrictCrossAndKcTrendGate.evaluate(
+            closed_frame, 'LONG', bypass_spatial_check=is_breakout
+        )
         if not long_gate_ok:
             return None, long_gate_reason
 
-        return "LONG", "TRIGGER_A_KC_BREAKOUT" if long_breakout else "TRIGGER_MOMENTUM_GUILLOTINE"
+        trigger_code = (
+            "TRIGGER_A_KC_BREAKOUT" if long_breakout
+            else "TRIGGER_MOMENTUM_GUILLOTINE" if long_guillotine
+            else "TRIGGER_B_MA_CROSS"
+        )
+        return "LONG", trigger_code
 
-    if short_breakout or short_guillotine:
-        lower_wick = min(c_open, c_close) - c_low
-        if lower_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
-            _PENDING_WICK_REENTRY_STATE[sym_key] = {
-                'side': 'SHORT',
-                'bar_id': curr_stamp,
-                'extreme_price': c_low,
-            }
-            return None, "EXCESSIVE_LOWER_WICK"
+    if short_breakout or short_cross or short_guillotine:
+        shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(closed_frame, 'SHORT', c_close, symbol=symbol)
+        if not shared_ok:
+            if "EXCESSIVE_LOWER_WICK" in shared_reason:
+                _PENDING_WICK_REENTRY_STATE[sym_key] = {
+                    'side': 'SHORT',
+                    'bar_id': curr_stamp,
+                    'extreme_price': c_low,
+                }
+                return None, "EXCESSIVE_LOWER_WICK"
+            return None, shared_reason
 
-        # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
-        short_gate_ok, short_gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, 'SHORT')
+        is_breakout = bool(short_breakout or short_guillotine)
+        short_gate_ok, short_gate_reason = StrictCrossAndKcTrendGate.evaluate(
+            closed_frame, 'SHORT', bypass_spatial_check=is_breakout
+        )
         if not short_gate_ok:
             return None, short_gate_reason
 
-        return "SHORT", "TRIGGER_A_KC_BREAKOUT" if short_breakout else "TRIGGER_MOMENTUM_GUILLOTINE"
+        trigger_code = (
+            "TRIGGER_A_KC_BREAKOUT" if short_breakout
+            else "TRIGGER_MOMENTUM_GUILLOTINE" if short_guillotine
+            else "TRIGGER_B_MA_CROSS"
+        )
+        return "SHORT", trigger_code
 
     return None, None
 

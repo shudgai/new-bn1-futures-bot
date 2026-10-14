@@ -25,11 +25,13 @@ ANTI_BOTTOM_SHORT_COOLDOWN_BARS = 3
 ANTI_BOTTOM_SHORT_TREND_LOOKBACK_BARS = 3
 ANTI_BOTTOM_SHORT_MIN_KC_DROP_ATR = 0.10
 
-# 合法入場信號：只保留兩根破軌確認 (TREND_BREAKOUT)
+# 合法入場信號：三大純粹模式 (TREND_BREAKOUT, MA_CROSS_FAST, MOMENTUM_GUILLOTINE)
 RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
-) 
+    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_MA_CROSS_FAST_{side}" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_MOMENTUM_GUILLOTINE_{side}" for side in ("LONG", "SHORT")]
+)
 # TREND_CRAWLING 已永久停用，嚴禁恢復。
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
@@ -471,13 +473,11 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     if not passed:
         return wait(reason)
 
-    from core.gates.pipeline import ma5_ma15_cross_chop_problem
     quote = price if price is not None else float(frame.iloc[-1]['close'])
-    cross_chop_problem = ma5_ma15_cross_chop_problem(
-        frame, quote, symbol=symbol, log_result=True, side=side,
-    )
-    if cross_chop_problem:
-        return wait(cross_chop_problem)
+    from core.gates.strict_cross_kc_gate import MemeSharedProtectionGate
+    shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(frame, side, quote, symbol=symbol)
+    if not shared_ok:
+        return wait(shared_reason)
 
     c = closed.iloc[-1]
     prev_c = closed.iloc[-2] if len(closed) >= 2 else c
@@ -499,17 +499,6 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
     candle_range = c_high - c_low
     body = abs(c_close - c_open)
     body_ratio = body / candle_range if candle_range > 1e-9 else 1.0
-
-    # ──【全域防護 1：實體佔振幅低於 35% 之長影線震盪形態，強制禁止開倉】──
-    if body_ratio < 0.35:
-        return wait("BLOCKED_PIN_BAR_OR_LONG_WICK_CHOP")
-
-    # ──【全域防護 2：MA5 乖離過大（天花板追單防護）> 1.2% 一票否決】──
-    if curr_ma5 > 0:
-        if side == 'LONG' and (quote - curr_ma5) / curr_ma5 > 0.012:
-            return wait("BLOCKED_MA5_BIAS_OVEREXTENDED_LONG")
-        elif side == 'SHORT' and (curr_ma5 - quote) / curr_ma5 > 0.012:
-            return wait("BLOCKED_MA5_BIAS_OVEREXTENDED_SHORT")
 
     from core.services.entry_contract import _PENDING_WICK_REENTRY_STATE
     sym_key = symbol or '__default__'
@@ -555,11 +544,11 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
         selected_rule = None
 
         # ══════════════════════════════════════════════════════════════════════
-        # 【模式一：一般 KC 收線破軌開倉（Breakout Close Entry）】
+        # 【模式一：一般 KC 收線破軌開倉（Breakout Close Entry - 抓單邊趨勢發動）】
         # ══════════════════════════════════════════════════════════════════════
         if side == 'LONG':
-            upper_wick = c_high - max(c_open, c_close)
-            mode1_kc_trend_ok = (kc_middle >= prev_kc_middle - 1e-6)
+            kc_trend_str = str(c.get('kc_trend', '')).strip().upper()
+            mode1_kc_trend_ok = (kc_trend_str == 'UP') or (not kc_trend_str and kc_middle > prev_kc_middle)
             if (
                 c_close > kc_upper
                 and c_close > c_open
@@ -570,8 +559,8 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
                 is_mode1_hit = True
                 selected_rule = 'TREND_BREAKOUT'
         elif side == 'SHORT':
-            lower_wick = min(c_open, c_close) - c_low
-            mode1_kc_trend_ok = (kc_middle <= prev_kc_middle + 1e-6)
+            kc_trend_str = str(c.get('kc_trend', '')).strip().upper()
+            mode1_kc_trend_ok = (kc_trend_str == 'DOWN') or (not kc_trend_str and kc_middle < prev_kc_middle)
             if (
                 c_close < kc_lower
                 and c_close < c_open
@@ -583,9 +572,59 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
                 selected_rule = 'TREND_BREAKOUT'
 
         # ══════════════════════════════════════════════════════════════════════
-        # 【模式二：斷頭開倉（Decisive Momentum Guillotine Entry - 大實體貫穿）】
+        # 【模式二：MA5 / MA15 交叉開倉（Strict Cross Entry - 抓順勢真轉折）】
         # ══════════════════════════════════════════════════════════════════════
+        is_mode_cross_hit = False
         if not is_mode1_hit:
+            from core.gates.strict_cross_kc_gate import has_recent_golden_cross, has_recent_death_cross, StrictCrossAndKcTrendGate
+            kc_trend_str = str(c.get('kc_trend', '')).strip().upper()
+            if side == 'LONG':
+                kc_up = (kc_trend_str == 'UP') or (not kc_trend_str and kc_middle > prev_kc_middle)
+                ma5_prev_c = float(prev_c.get('ma5', curr_ma5))
+                recent_gc = has_recent_golden_cross(closed, max_lookback=3, curr_ma5=curr_ma5, curr_ma15=curr_ma15)
+                # 勾頭檢查
+                if recent_gc and curr_ma5 <= ma5_prev_c:
+                    return wait("REJECT_ENTRY: MA5_HOOKING_DOWN_AFTER_CROSS")
+                if curr_ma5 <= curr_ma15 and recent_gc:
+                    return wait("REJECT_ENTRY: NO_GOLDEN_CROSS_MA5_BELOW_MA15")
+                ma5_rising = curr_ma5 > ma5_prev_c
+                price_above_ma5 = (c_close > curr_ma5)
+                if (
+                    kc_up
+                    and recent_gc
+                    and curr_ma5 > curr_ma15
+                    and ma5_rising
+                    and price_above_ma5
+                ):
+                    is_mode_cross_hit = True
+                    selected_rule = 'MA_CROSS_FAST'
+            elif side == 'SHORT':
+                kc_down = (kc_trend_str == 'DOWN') or (not kc_trend_str and kc_middle < prev_kc_middle)
+                ma5_prev_c = float(prev_c.get('ma5', curr_ma5))
+                # 鐵律：MA5 仍在 MA15 上方嚴禁開空
+                if curr_ma5 >= curr_ma15:
+                    # 檢測是否有短線勾頭向下欲嘗試開空
+                    if curr_ma5 < ma5_prev_c:
+                        return wait("REJECT_ENTRY: NO_DEATH_CROSS_MA5_ABOVE_MA15")
+                recent_dc = has_recent_death_cross(closed, max_lookback=3, curr_ma5=curr_ma5, curr_ma15=curr_ma15)
+                if recent_dc and curr_ma5 >= ma5_prev_c:
+                    return wait("REJECT_ENTRY: MA5_HOOKING_UP_AFTER_CROSS")
+                ma5_falling = curr_ma5 < ma5_prev_c
+                price_below_ma5 = (c_close < curr_ma5)
+                if (
+                    kc_down
+                    and recent_dc
+                    and curr_ma5 < curr_ma15
+                    and ma5_falling
+                    and price_below_ma5
+                ):
+                    is_mode_cross_hit = True
+                    selected_rule = 'MA_CROSS_FAST'
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 【模式三：斷頭開倉（Decisive Momentum Guillotine Entry - 抓極端單邊爆發）】
+        # ══════════════════════════════════════════════════════════════════════
+        if not is_mode1_hit and not is_mode_cross_hit:
             if side == 'LONG':
                 pierced_upward = (
                     (c_open <= kc_middle and c_close > kc_middle)
@@ -597,7 +636,6 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
                     and c_close > c_open
                     and body_ratio >= 0.70
                     and pierced_upward
-                    and curr_ma5 >= curr_ma15
                 ):
                     is_mode2_hit = True
                     selected_rule = 'MOMENTUM_GUILLOTINE'
@@ -612,13 +650,13 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
                     and c_close < c_open
                     and body_ratio >= 0.70
                     and pierced_downward
-                    and curr_ma5 <= curr_ma15
                 ):
                     is_mode2_hit = True
                     selected_rule = 'MOMENTUM_GUILLOTINE'
 
-        if not is_mode1_hit and not is_mode2_hit:
+        if not is_mode1_hit and not is_mode_cross_hit and not is_mode2_hit:
             return wait('WAIT_BREAKOUT_OR_GUILLOTINE_TRIGGER')
+
 
         # ══════════════════════════════════════════════════════════════════════
         # 【當根影線過長否決開倉（Wick Rejection Gate）】
@@ -642,21 +680,32 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
                 }
                 return wait("REJECT_ENTRY: EXCESSIVE_LOWER_WICK")
 
-    # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
-    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
-    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(frame, side, price)
-    if not gate_ok:
-        return wait(gate_reason)
+    # ══════════════════════════════════════════════════════════════════════
+    # 【前置硬檢核：MemeSharedProtectionGate 與 StrictCrossAndKcTrendGate】
+    # ══════════════════════════════════════════════════════════════════════
+    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate, MemeSharedProtectionGate
+    shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(frame, side, price, symbol=symbol)
+    if not shared_ok:
+        return wait(shared_reason)
+
+    is_breakout_mode = (selected_rule in ('TREND_BREAKOUT', 'MOMENTUM_GUILLOTINE'))
+    if selected_rule == 'MA_CROSS_FAST':
+        gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
+            frame, side, price, bypass_spatial_check=False
+        )
+        if not gate_ok:
+            return wait(gate_reason)
 
     code = f'CLOSED_{selected_rule}_{side}'
     return True, code, dict(
         action='ENTER', side=side, reason=code, rule=selected_rule,
-        entry_type=selected_rule, entry_atr=atr, is_breakout=True,
+        entry_type=selected_rule, entry_atr=atr, is_breakout=is_breakout_mode,
         confirmation_bar_id=float(c.timestamp), close_price=float(c.close),
         pending_signal_id=f"{selected_rule}:{side}:{int(c.timestamp)}",
         candidate_bar_id=float(c.timestamp),
-        bypass_spatial_check=True,  # 空間豁免：強制標記 bypass_spatial_check = True
+        bypass_spatial_check=is_breakout_mode,  # 空間豁免：凡收線破軌/貫穿直接標記 bypass_spatial_check = True
     )
+
 
 
 def check_streamlined_entry_signal(df, side, live_price, position_status, **kwargs):
