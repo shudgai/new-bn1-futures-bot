@@ -1095,7 +1095,7 @@ class TradingEngine:
                             "CRITICAL"
                         )
                         for sym in active_positions:
-                            if str(self.account.positions.get(sym, {}).get("entry_mode", "")).upper() == "CHANNEL_SWING":
+                            if str(self.account.positions.get(sym, {}).get("entry_mode", "")).upper() in ("CHANNEL_SWING", "WILD_SWING"):
                                 continue
                             try:
                                 asyncio.create_task(self.account.close_position(sym, reason="Watchdog Critical Timeout"))
@@ -1348,7 +1348,7 @@ class TradingEngine:
                                 for sym in positions_to_close:
                                     held = self.account.positions.get(sym, {})
                                     meta = self.account.position_meta.get(sym, {})
-                                    if str(held.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+                                    if str(held.get('entry_mode') or meta.get('entry_mode') or '').upper() in ('CHANNEL_SWING', 'WILD_SWING'):
                                         continue  # Only its own midpoint/drawdown/swing rules may exit.
                                     close_price = float(
                                         self.tickers.get(sym)
