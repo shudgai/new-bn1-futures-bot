@@ -347,17 +347,17 @@ class MemeSharedProtectionGate:
             dev_ma5 = (price - ma5) / ma5 if ma5 > 0 else 0.0
             is_initial_breakout = (o <= kc_upper + 0.1 * atr) and (c > o) and (upper_wick <= 0.4 * body)
 
-            if (price - kc_upper) > 1.2 * atr:
-                return False, f"VETO_LONG_BULLISH_EXHAUSTION: 衝出上軌過遠 ({(price - kc_upper)/atr:.2f} ATR > 1.2 ATR)，已在漲勢末端，嚴禁追多"
+            if (price - kc_upper) > 2.8 * atr:
+                return False, f"VETO_LONG_BULLISH_EXHAUSTION: 衝出上軌過遠 ({(price - kc_upper)/atr:.2f} ATR > 2.8 ATR)，已在漲勢極限末端，嚴禁追多"
 
             if not is_initial_breakout:
-                if bias_atr > 1.2:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 1.2 ATR)，已在漲勢末端，嚴禁追多"
-                if dev_ma5 > 0.012:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 1.2%)，已在漲勢末端，嚴禁追多"
+                if bias_atr > 2.2:
+                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 2.2 ATR)，已在漲勢極限末端，嚴禁追多"
+                if dev_ma5 > 0.025:
+                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 2.5%)，已在漲勢極限末端，嚴禁追多"
             else:
-                if bias_atr > 1.8:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 1.8 ATR)，已在漲勢末端，嚴禁追多"
+                if bias_atr > 2.8:
+                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 2.8 ATR)，已在漲勢極限末端，嚴禁追多"
 
             # 特徵 B：頂部高檔滯漲長上影線 / 避雷針遇阻 (Stalling Upper Wick)
             if price >= min(kc_upper, ma5) and upper_wick > 0.7 * body and upper_wick > 0.35 * candle_range:
@@ -397,17 +397,17 @@ class MemeSharedProtectionGate:
             dev_ma5 = (ma5 - price) / ma5 if ma5 > 0 else 0.0
             is_initial_breakout = (o >= kc_lower - 0.1 * atr) and (c < o) and (lower_wick <= 0.4 * body)
 
-            if (kc_lower - price) > 1.2 * atr:
-                return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 跌破下軌過遠 ({(kc_lower - price)/atr:.2f} ATR > 1.2 ATR)，已在跌勢末端，嚴禁追空"
+            if (kc_lower - price) > 2.8 * atr:
+                return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 跌破下軌過遠 ({(kc_lower - price)/atr:.2f} ATR > 2.8 ATR)，已在跌勢極限末端，嚴禁追空"
 
             if not is_initial_breakout:
-                if bias_atr > 1.2:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 1.2 ATR)，已在跌勢末端，嚴禁追空"
-                if dev_ma5 > 0.012:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 1.2%)，已在跌勢末端，嚴禁追空"
+                if bias_atr > 2.2:
+                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 2.2 ATR)，已在跌勢極限末端，嚴禁追空"
+                if dev_ma5 > 0.025:
+                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 2.5%)，已在跌勢極限末端，嚴禁追空"
             else:
-                if bias_atr > 1.8:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 1.8 ATR)，已在跌勢末端，嚴禁追空"
+                if bias_atr > 2.8:
+                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 2.8 ATR)，已在跌勢極限末端，嚴禁追空"
 
             # 特徵 B：底部低檔長下影線托底買盤抵抗 (Stalling Lower Wick)
             if price <= max(kc_lower, ma5) and lower_wick > 0.7 * body and lower_wick > 0.35 * candle_range:
