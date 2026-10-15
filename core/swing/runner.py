@@ -19,6 +19,20 @@ HISTORY_BARS = 30
 _REQUIRED = ("open", "high", "low", "close", "volume", "ma5", "ma15", "kc_upper", "kc_lower", "atr")
 
 
+def bar_status_line(symbol: str, bar: Bar, signal, vision: str) -> str:
+    """One-line closed-bar summary: price, MA5/MA15 relation, KC band state, entry/vision outcome."""
+    ma = "MA5>MA15" if bar.ma5 > bar.ma15 else "MA5<MA15" if bar.ma5 < bar.ma15 else "MA5=MA15"
+    if bar.close > bar.kc_upper:
+        kc = "ABOVE_UPPER"
+    elif bar.close < bar.kc_lower:
+        kc = "BELOW_LOWER"
+    else:
+        pos = bar.kc_pos
+        kc = f"INSIDE pos={pos:.2f}" if pos is not None else "INSIDE"
+    sig = f"{signal.side}/{signal.mode}" if signal else "NONE"
+    return f"SWING_BAR {symbol} close={bar.close:g} {ma} KC={kc} signal={sig} vision={vision}"
+
+
 def frame_to_bars(closed: pd.DataFrame, limit: int = HISTORY_BARS) -> List[Bar]:
     """Closed candles -> Bars; any invalid row aborts (fail closed)."""
     if closed is None or closed.empty or any(c not in closed for c in _REQUIRED):
@@ -87,6 +101,7 @@ class SwingRunner:
     states: Dict[str, SwingState] = field(default_factory=dict)
     _last_close_ts: Dict[str, float] = field(default_factory=dict)
     _attempted_bar: Dict[str, float] = field(default_factory=dict)
+    _logged_bar: Dict[str, float] = field(default_factory=dict)
 
     def state_for(self, symbol: str, closed: pd.DataFrame) -> SwingState:
         st = self.states.setdefault(symbol, SwingState())
@@ -98,6 +113,12 @@ class SwingRunner:
     def record_close(self, symbol: str, side: str, bar_ts: float) -> None:
         self.states[symbol] = SwingState(last_close_side=side, bars_since_close=0)
         self._last_close_ts[symbol] = bar_ts
+
+    def first_log_on_bar(self, symbol: str, bar_ts: float) -> bool:
+        if self._logged_bar.get(symbol) == bar_ts:
+            return False
+        self._logged_bar[symbol] = bar_ts
+        return True
 
     def first_attempt_on_bar(self, symbol: str, bar_ts: float) -> bool:
         if self._attempted_bar.get(symbol) == bar_ts:
@@ -165,14 +186,23 @@ async def process_symbol(engine, symbol, frame, quote, daily_halt, exit_only):
         return [], []
 
     signal = evaluate_entry(bars, runner.state_for(symbol, closed))
+    log_bar = runner.first_log_on_bar(symbol, bar_ts)
     if signal is None or not runner.first_attempt_on_bar(symbol, bar_ts):
+        if log_bar:
+            logger.info(bar_status_line(symbol, bars[-1], signal, "N/A"))
         return [], []
+    vision = "N/A"
     if signal.mode == "BREAKOUT_MOMENTUM":
         from core.vision.chart_guard import evaluate_breakout_vision
         approved, reason = await evaluate_breakout_vision(bars, signal.side)
+        vision = ("APPROVED" if approved else "VETO") + f"({reason})"
         if not approved:
             logger.info("VISION_VETO %s %s: %s", symbol, signal.side, reason)
+            if log_bar:
+                logger.info(bar_status_line(symbol, bars[-1], signal, vision))
             return [], []
+    if log_bar:
+        logger.info(bar_status_line(symbol, bars[-1], signal, vision))
     await engine.execute_dual_tf_entry(
         symbol=symbol, frame=closed, price=quote, side=signal.side,
         mode_name=f"SWING_{signal.mode}",

@@ -123,3 +123,23 @@ def test_firewall_revalidates_swing_breakout_and_rejects_stale():
     stale = dict(ctx, dual_tf_meta={"bar_id": bar_id - 60000})
     with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(Acct(), "X/USDT", "LONG", stale))
+
+
+def test_bar_status_line_one_line_summary():
+    from core.swing.models import Bar
+    from core.swing.runner import bar_status_line
+    b = Bar(100, 101, 99, 100.5, 10, 101.0, 100.0, 110.0, 90.0, 2.0)
+    line = bar_status_line("X", b, None, "N/A")
+    assert "\n" not in line and "MA5>MA15" in line and "INSIDE" in line and "signal=NONE" in line
+    b2 = Bar(100, 112, 99, 111, 10, 101.0, 100.0, 110.0, 90.0, 2.0)
+    assert "ABOVE_UPPER" in bar_status_line("X", b2, None, "N/A")
+
+
+def test_process_symbol_logs_once_per_bar(caplog):
+    import logging
+    df = make_frame()
+    eng = Engine(Account())
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        asyncio.run(process_symbol(eng, "X", df, 100.0, False, False))
+        asyncio.run(process_symbol(eng, "X", df, 100.0, False, False))
+    assert sum("SWING_BAR X" in r.getMessage() for r in caplog.records) == 1
