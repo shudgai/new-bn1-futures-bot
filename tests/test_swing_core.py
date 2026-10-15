@@ -23,11 +23,11 @@ def test_ratchet_locks_below_floor_with_limit_offset():
     d = evaluate_exit(Position("LONG", 3, 12.0, 4.9), b, 100.0)
     assert d.reason == "RATCHET_PROFIT_LOCK" and d.order_type == "LIMIT"
     assert d.limit_price == pytest.approx(99.75)
-    assert evaluate_exit(Position("LONG", 3, 12.0, 5.0), b, 100.0) is None
+    assert evaluate_exit(Position("LONG", 3, 12.0, 5.0), b, 100.0) is not None  # <= floor locks
     d = evaluate_exit(Position("SHORT", 3, 23.0, 14.0), b, 100.0)
     assert d.limit_price == pytest.approx(100.25)
     assert evaluate_exit(Position("LONG", 3, 17.0, 9.9), b, 100.0) is not None
-    assert evaluate_exit(Position("LONG", 3, 17.0, 10.0), b, 100.0) is None
+    assert evaluate_exit(Position("LONG", 3, 17.0, 10.1), b, 100.0) is None
 
 
 def test_no_exit_on_entry_bar():
