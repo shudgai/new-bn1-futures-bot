@@ -46,20 +46,21 @@ def test_window_allows_ratchet_lock_with_profit(held):
 
 @pytest.mark.parametrize("held", HELD)
 def test_window_allows_extreme_dump_and_squeeze(held):
-    dump = bar(o=106, c=101, ma15=104, closed=False)  # body 5 > 1.8*2, below midline
+    dump = bar(o=106, c=101, ma5=104, ma15=104, closed=False)  # body 5 > 1.8*2, below midline
     assert evaluate_exit(Position("LONG", held, 0.0, -2.0), bar(), 101, dump, PRIOR).reason == "EXTREME_DUMP_BREAKS_MIDLINE"
-    squeeze = bar(o=94, c=99, ma15=96, closed=False)
+    squeeze = bar(o=94, c=99, ma5=96, ma15=96, closed=False)
     assert evaluate_exit(Position("SHORT", held, 0.0, -2.0), bar(), 99, squeeze, PRIOR).reason == "EXTREME_SQUEEZE_BREAKS_MIDLINE"
 
 
 def test_window_dump_needs_body_and_midline_break():
-    assert true_reversal("LONG", bar(o=106, c=103, ma15=104, closed=False), PRIOR) is None   # body 3 < 3.6
-    assert true_reversal("LONG", bar(o=110, c=105, ma15=104, closed=False), PRIOR) is None   # still above midline
-    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=300), PRIOR) is None  # wick exhaustion no longer an exit
+    assert true_reversal("LONG", bar(o=106, c=103, ma5=104, ma15=104, closed=False), PRIOR) is None   # body 3 < 3.6
+    assert true_reversal("LONG", bar(o=110, c=105, ma5=104, ma15=100, closed=False), PRIOR) is None   # above MA5 & midline
+    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=300), PRIOR) == "TRUE_PEAK_CLIMAX_NEEDLE"
+    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=150), PRIOR) is None  # needle without climax volume
 
 
 def test_closed_extreme_bar_after_entry_exits_within_window():
-    dump = bar(o=106, c=101, ma15=104)
+    dump = bar(o=106, c=101, ma5=104, ma15=104)
     assert evaluate_exit(Position("LONG", 1, 0.0, -2.0), dump, 101, None, PRIOR + [dump]) is not None
     assert evaluate_exit(Position("LONG", 0, 0.0, -2.0), dump, 101, None, PRIOR + [dump]) is None  # stale pre-entry bar
 
