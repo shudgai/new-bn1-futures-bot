@@ -41,10 +41,10 @@ def outer_band_blocked(side: str, bar: Bar) -> bool:
 
 
 def in_cooldown(side: str, state: Optional[SwingState]) -> bool:
-    """Only opposite-direction re-entry is cooled down after a close."""
+    """After any close, MA-cross signals (either side) wait COOLDOWN_BARS bars."""
     if state is None or state.bars_since_close is None or state.last_close_side is None:
         return False
-    return side != state.last_close_side and state.bars_since_close < COOLDOWN_BARS
+    return state.bars_since_close < COOLDOWN_BARS
 
 
 def _breakout(bars: Sequence[Bar]) -> Optional[EntrySignal]:

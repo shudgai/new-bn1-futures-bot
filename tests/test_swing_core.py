@@ -72,11 +72,12 @@ def test_outer_band_blocks_chasing_long():
     assert evaluate_entry(bars) is None
 
 
-def test_cooldown_blocks_opposite_only():
+def test_cooldown_blocks_both_sides_until_elapsed():
     bars = _cross_up_bars()
     assert evaluate_entry(bars, SwingState("SHORT", 2)) is None
     assert evaluate_entry(bars, SwingState("SHORT", 4)) is not None
-    assert evaluate_entry(bars, SwingState("LONG", 1)) is not None
+    assert evaluate_entry(bars, SwingState("LONG", 1)) is None
+    assert evaluate_entry(bars, SwingState("LONG", 4)) is not None
 
 
 def test_breakout_long_needs_body_and_volume():
