@@ -20,8 +20,11 @@ def build(overrides=None, n=N, ma15_slope=0.0, close_off=0.0, ma5_off=0.0, formi
     ts = now - (total - 1) * 60000 + np.arange(total) * 60000.0
     mid = 100.0 + ma15_slope * np.arange(total)
     close = mid + close_off
+    body = 0.3 if close_off >= 0 else -0.3  # real bodies so the wick filter sees a normal market
+    opn = close - body
     df = pd.DataFrame({
-        "timestamp": ts, "open": close, "high": close + 0.3, "low": close - 0.3, "close": close,
+        "timestamp": ts, "open": opn, "high": np.maximum(opn, close) + 0.1, "low": np.minimum(opn, close) - 0.1,
+        "close": close,
         "volume": 100.0, "ma5": mid + ma5_off, "ma15": mid, "kc_upper": mid + 4.0,
         "kc_lower": mid - 4.0, "atr": 1.0, "is_closed": True,
     })
@@ -116,8 +119,9 @@ def test_ma_cross_poor_position_rejected(eng):
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])
 def test_breakout_opens_real_position(eng, direction):
     o, c = (100.0, 106.0) if direction == "LONG" else (100.0, 94.0)
+    ma5 = 100.5 if direction == "LONG" else 99.5
     df = build({N - 1: {"open": o, "close": c, "high": max(o, c) + 0.2, "low": min(o, c) - 0.2,
-                        "volume": 300.0}})
+                        "volume": 300.0, "ma5": ma5}})
     run(eng, df, c)
     assert side(eng) == direction
 
@@ -128,6 +132,12 @@ def test_breakout_without_volume_rejected(eng):
     assert side(eng) is None
 
 
+def test_breakout_needs_double_volume_and_1_5_atr_body(eng):
+    df = build({N - 1: {"open": 100.0, "close": 106.0, "high": 106.2, "low": 99.8, "volume": 190.0, "ma5": 100.5}})
+    run(eng, df, 106.0)
+    assert side(eng) is None  # 1.9x < 2.0x
+
+
 def test_breakout_small_body_rejected(eng):
     df = build({N - 1: {"open": 104.5, "close": 105.0, "high": 105.1, "low": 104.4, "volume": 300.0}})
     run(eng, df, 105.0)
@@ -136,7 +146,7 @@ def test_breakout_small_body_rejected(eng):
 
 # ---------------- Open then hold: helpers ----------------
 def open_long_by_breakout(eng):
-    df = build({N - 1: {"open": 100.0, "close": 106.0, "high": 106.2, "low": 99.8, "volume": 300.0}})
+    df = build({N - 1: {"open": 100.0, "close": 106.0, "high": 106.2, "low": 99.8, "volume": 300.0, "ma5": 100.5}})
     run(eng, df, 106.0)
     assert side(eng) == "LONG"
     pos = eng.account.positions[SYM]
@@ -219,6 +229,14 @@ def test_below_10_roe_no_ratchet_and_no_exit_above_midline(eng):
     run(eng, full, roe_quote(pos, 8.0))
     run(eng, full, roe_quote(pos, -3.0))
     assert side(eng) == "LONG"  # no fixed hard stop, no lock before 10%
+
+
+def test_structure_exit_blocked_inside_breathing_window(eng):
+    pos, df = open_long_by_breakout(eng)
+    weak = bar(104.5, 103.5, ma5=105.0, ma15=104.0)
+    full = held_frame(df, [weak])  # entry bar + weak bar closed => bars_held == 2
+    run(eng, full, 103.5)
+    assert side(eng) == "LONG"
 
 
 def test_structure_exit_when_close_below_midline(eng):

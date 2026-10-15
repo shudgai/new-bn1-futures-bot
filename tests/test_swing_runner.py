@@ -99,9 +99,10 @@ def test_firewall_revalidates_swing_breakout_and_rejects_stale():
     from core.services.entry_firewall import validate_account_entry
 
     df = make_frame()
-    df.loc[df.index[-1], ["open", "close", "high", "low"]] = [108.0, 112.0, 112.0, 108.0]
-    df.loc[df.index[-1], "volume"] = 200.0
+    df.loc[df.index[-1], ["open", "close", "high", "low"]] = [108.0, 113.0, 113.2, 107.8]
+    df.loc[df.index[-1], "volume"] = 250.0
     df.loc[df.index[-1], "atr"] = 3.0
+    df.loc[df.index[-1], "ma5"] = 101.0
     df.attrs["entry_finality_verified"] = True
     bar_id = float(df["timestamp"].iloc[-1])
 

@@ -35,68 +35,102 @@ def test_no_exit_on_entry_bar():
 
 
 def test_structure_exit_only_before_ratchet_and_closed_bar():
-    assert evaluate_exit(Position("LONG", 1, 3.0, 1.0), bar(c=99, ma15=100), 99).reason.startswith("STRUCTURE")
-    assert evaluate_exit(Position("LONG", 1, 3.0, 1.0), bar(c=99, ma15=100, closed=False), 99) is None
-    assert evaluate_exit(Position("SHORT", 1, 3.0, 1.0), bar(c=101, ma15=100), 101) is not None
+    assert evaluate_exit(Position("LONG", 3, 3.0, 1.0), bar(c=99, ma15=100), 99).reason.startswith("STRUCTURE")
+    assert evaluate_exit(Position("LONG", 3, 3.0, 1.0), bar(c=99, ma15=100, closed=False), 99) is None
+    assert evaluate_exit(Position("SHORT", 3, 3.0, 1.0), bar(c=101, ma15=100), 101) is not None
+    # inside the 3-bar breathing window a plain midline close does not exit
+    for held in (0, 1, 2):
+        assert evaluate_exit(Position("LONG", held, 3.0, 1.0), bar(c=99, ma15=100), 99) is None
     # ratchet active: midline break alone does not exit
     assert evaluate_exit(Position("LONG", 5, 12.0, 8.0), bar(c=99, ma15=100), 99) is None
 
 
-def _cross_up_bars(chop=False):
-    bars = []
-    for i in range(10):
-        c = 99 if (chop and i % 2) == 0 else 101 if chop else 98
-        bars.append(bar(c=c, ma5=98, ma15=99, up=110, lo=90))
-    bars[-1] = bar(c=101, ma5=100.0, ma15=99.5, up=110, lo=90)
-    bars[-2] = bar(c=98, ma5=99.0, ma15=99.0 - 0.0, up=110, lo=90)
-    bars[-2] = bar(c=98, ma5=98.9, ma15=99.0)
-    return bars
+def trend_bars(side="LONG", n=25):
+    """Clean trend with a MA5/MA15 cross on the last bar. ATR 1, KC half-width 4."""
+    sign = 1 if side == "LONG" else -1
+    out = []
+    for i in range(n):
+        mid = 100 + sign * 0.05 * i
+        c = mid + sign * 0.4
+        o = c - sign * 0.3
+        h, l = max(o, c) + 0.1, min(o, c) - 0.1
+        ma5 = mid - sign * 0.1
+        out.append(Bar(o, h, l, c, 100, ma5, mid, mid + 4, mid - 4, 1.0, True))
+    last = out[-1]
+    out[-1] = Bar(last.open, last.high, last.low, last.close, 100, last.ma15 + sign * 0.1,
+                  last.ma15, last.kc_upper, last.kc_lower, 1.0, True)
+    return out
 
 
-def test_ma_cross_long_accepted_in_clean_trend():
-    sig = evaluate_entry(_cross_up_bars())
-    assert sig and sig.side == "LONG" and sig.mode == "MA_SWING"
+def _with_last(bars, **kw):
+    from dataclasses import replace
+    return bars[:-1] + [replace(bars[-1], **kw)]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma_cross_accepted_in_clean_trend(side):
+    sig = evaluate_entry(trend_bars(side))
+    assert sig and sig.side == side and sig.mode == "MA_SWING" and sig.entry_at == "NEXT_OPEN"
+
+
+def test_unclosed_signal_bar_never_enters():
+    assert evaluate_entry(_with_last(trend_bars(), is_closed=False)) is None
 
 
 def test_whipsaw_rejects_entry():
-    bars = _cross_up_bars(chop=True)
-    bars[-1] = bar(c=101, ma5=100.0, ma15=99.5)
-    bars[-2] = bar(c=98, ma5=98.9, ma15=99.0)
+    from dataclasses import replace
+    bars = trend_bars()
+    for i, off in zip(range(-9, -1), [-0.4, 0.4] * 4):
+        bars[i] = replace(bars[i], close=bars[i].ma15 + off)
     assert evaluate_entry(bars) is None
 
 
 def test_outer_band_blocks_chasing_long():
-    bars = _cross_up_bars()
-    bars[-1] = bar(c=101, ma5=100.0, ma15=99.5, up=102, lo=95)  # kc_pos ~0.86
+    bars = _with_last(trend_bars(), kc_upper=101.5, kc_lower=95.0)  # kc_pos > 0.8
     assert bars[-1].kc_pos > 0.8
     assert evaluate_entry(bars) is None
 
 
+def test_insufficient_room_blocks_entry():
+    # kc_pos 0.62 is legal but only 1.2 ATR remains to the upper band
+    bars = _with_last(trend_bars(), kc_upper=trend_bars()[-1].close + 1.2, kc_lower=trend_bars()[-1].close - 2.0)
+    assert 0.4 <= bars[-1].kc_pos <= 0.7
+    assert evaluate_entry(bars) is None
+
+
 def test_cooldown_blocks_both_sides_until_elapsed():
-    bars = _cross_up_bars()
+    bars = trend_bars()
     assert evaluate_entry(bars, SwingState("SHORT", 2)) is None
     assert evaluate_entry(bars, SwingState("SHORT", 4)) is not None
     assert evaluate_entry(bars, SwingState("LONG", 1)) is None
     assert evaluate_entry(bars, SwingState("LONG", 4)) is not None
 
 
+def breakout_bars(side="LONG", vol=250, body=6.0):
+    from dataclasses import replace
+    bars = trend_bars(side)[:-1] + [trend_bars(side)[-1]]
+    last = bars[-1]
+    sign = 1 if side == "LONG" else -1
+    o = last.kc_upper - 1.0 if side == "LONG" else last.kc_lower + 1.0
+    c = o + sign * body
+    bars[-1] = replace(last, open=o, close=c, high=max(o, c) + 0.2, low=min(o, c) - 0.2, volume=vol,
+                       ma5=bars[-2].ma5 + sign * 0.5, ma15=bars[-2].ma15 + sign * 0.05)
+    return bars
+
+
 def test_breakout_long_needs_body_and_volume():
-    bars = [bar(c=100, v=100) for _ in range(10)]
-    bars.append(bar(o=108, c=112, up=110, atr=3, v=150))
-    sig = evaluate_entry(bars)
+    sig = evaluate_entry(breakout_bars())
     assert sig and sig.mode == "BREAKOUT_MOMENTUM" and sig.side == "LONG" and sig.entry_at == "NEXT_OPEN"
-    assert evaluate_entry(bars[:-1] + [bar(o=108, c=112, up=110, atr=3, v=120)]) is None
-    assert evaluate_entry(bars[:-1] + [bar(o=110, c=112, up=110, atr=3, v=150)]) is None
+    assert evaluate_entry(breakout_bars(vol=190)) is None      # < 2.0x average volume
+    assert evaluate_entry(breakout_bars(body=1.4)) is None     # body < 1.5 ATR
 
 
 def test_breakout_short():
-    bars = [bar(c=100, v=100) for _ in range(10)]
-    bars.append(bar(o=92, c=88, lo=90, atr=3, v=150))
-    assert evaluate_entry(bars).side == "SHORT"
+    assert evaluate_entry(breakout_bars("SHORT")).side == "SHORT"
 
 
 def test_no_signal_in_noise():
-    assert evaluate_entry([bar(), bar()]) is None
+    assert evaluate_entry([bar(), bar()]) is None  # too little history
     assert evaluate_entry([bar(), bar(closed=False)]) is None
 
 

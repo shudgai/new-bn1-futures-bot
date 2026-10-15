@@ -18,44 +18,50 @@ def bar(o=100, c=100, h=None, l=None, v=100, ma5=100, ma15=100, up=110, lo=90, a
 PRIOR = [bar() for _ in range(10)]
 
 
-# ---------- bar 0 ----------
-def test_bar0_blocks_micro_loss_ma_cross_and_band_touch():
-    live = bar(o=100, c=99, h=110.5, l=98.8, ma5=98, ma15=100, closed=False)  # touches upper, small loss
-    assert evaluate_exit(Position("LONG", 0, 2.0, -3.0), bar(c=99, ma15=100), 99, live, PRIOR) is None
-    assert evaluate_exit(Position("SHORT", 0, 2.0, -3.0), bar(c=101, ma15=100), 101, live, PRIOR) is None
+# ---------- breathing window (bars_held < 3) ----------
+HELD = (0, 1, 2)
 
 
-def test_bar0_allows_ratchet_lock_with_profit():
-    d = evaluate_exit(Position("LONG", 0, 12.0, 4.0), bar(), 100.0)
+@pytest.mark.parametrize("held", HELD)
+def test_window_blocks_micro_loss_ma_cross_band_touch_and_wicks(held):
+    live = bar(o=100, c=99, h=110.5, l=95.0, ma5=98, ma15=100, closed=False)  # band touch + long wick
+    closed_below_mid = bar(c=99, ma15=100)
+    assert evaluate_exit(Position("LONG", held, 2.0, -3.0), closed_below_mid, 99, live, PRIOR) is None
+    assert evaluate_exit(Position("SHORT", held, 2.0, -3.0), bar(c=101, ma15=100), 101, live, PRIOR) is None
+
+
+def test_structure_exit_resumes_at_bar_3_on_close_only():
+    assert evaluate_exit(Position("LONG", 3, 2.0, -1.0), bar(c=99, ma15=100), 99).reason.startswith("STRUCTURE")
+    wick_only = bar(o=101, c=100.5, l=95, ma15=100)  # deep wick, close above midline
+    assert evaluate_exit(Position("LONG", 3, 2.0, 0.0), wick_only, 100.5) is None
+
+
+@pytest.mark.parametrize("held", HELD)
+def test_window_allows_ratchet_lock_with_profit(held):
+    d = evaluate_exit(Position("LONG", held, 12.0, 4.0), bar(), 100.0)
     assert d.reason == "RATCHET_PROFIT_LOCK" and d.order_type == "LIMIT"
-    assert evaluate_exit(Position("LONG", 0, 12.0, 6.0), bar(), 100.0) is None
-    assert evaluate_exit(Position("SHORT", 0, 9.9, 0.0), bar(), 100.0) is None  # lock not active
+    assert evaluate_exit(Position("LONG", held, 12.0, 6.0), bar(), 100.0) is None
+    assert evaluate_exit(Position("SHORT", held, 9.9, 0.0), bar(), 100.0) is None  # lock not active
 
 
-def test_bar0_long_exhaustion_wick_allowed():
-    live = bar(o=108, c=108.5, h=114, l=107.5, v=300, closed=False)
-    assert true_reversal("LONG", live, PRIOR) == "TRUE_PEAK_EXHAUSTION"
-    assert evaluate_exit(Position("LONG", 0, 1.0, -1.0), bar(), 108, live, PRIOR).reason == "TRUE_PEAK_EXHAUSTION"
-
-
-def test_bar0_short_exhaustion_wick_allowed():
-    live = bar(o=92, c=91.5, h=92.5, l=86, v=300, closed=False)
-    assert evaluate_exit(Position("SHORT", 0, 1.0, -1.0), bar(), 92, live, PRIOR).reason == "TRUE_TROUGH_EXHAUSTION"
-
-
-def test_bar0_wick_without_volume_or_size_is_not_true_pivot():
-    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=100), PRIOR) is None
-    assert true_reversal("LONG", bar(o=108, c=108.5, h=109.5, l=107.5, v=300), PRIOR) is None
-    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=300, up=120), PRIOR) is None  # not at ceiling
-
-
-def test_bar0_extreme_body_engulf_both_sides():
-    dump = bar(o=106, c=101, ma15=104, closed=False)  # body 5 > 1.8*2
-    assert evaluate_exit(Position("LONG", 0, 0.0, -2.0), bar(), 101, dump, PRIOR).reason == "TRUE_PEAK_DUMP_ENGULF"
+@pytest.mark.parametrize("held", HELD)
+def test_window_allows_extreme_dump_and_squeeze(held):
+    dump = bar(o=106, c=101, ma15=104, closed=False)  # body 5 > 1.8*2, below midline
+    assert evaluate_exit(Position("LONG", held, 0.0, -2.0), bar(), 101, dump, PRIOR).reason == "EXTREME_DUMP_BREAKS_MIDLINE"
     squeeze = bar(o=94, c=99, ma15=96, closed=False)
-    assert evaluate_exit(Position("SHORT", 0, 0.0, -2.0), bar(), 99, squeeze, PRIOR).reason == "TRUE_TROUGH_SQUEEZE_ENGULF"
-    small = bar(o=106, c=103, ma15=104, closed=False)  # body 3 < 3.6
-    assert true_reversal("LONG", small, PRIOR) is None
+    assert evaluate_exit(Position("SHORT", held, 0.0, -2.0), bar(), 99, squeeze, PRIOR).reason == "EXTREME_SQUEEZE_BREAKS_MIDLINE"
+
+
+def test_window_dump_needs_body_and_midline_break():
+    assert true_reversal("LONG", bar(o=106, c=103, ma15=104, closed=False), PRIOR) is None   # body 3 < 3.6
+    assert true_reversal("LONG", bar(o=110, c=105, ma15=104, closed=False), PRIOR) is None   # still above midline
+    assert true_reversal("LONG", bar(o=108, c=108.5, h=114, l=107.5, v=300), PRIOR) is None  # wick exhaustion no longer an exit
+
+
+def test_closed_extreme_bar_after_entry_exits_within_window():
+    dump = bar(o=106, c=101, ma15=104)
+    assert evaluate_exit(Position("LONG", 1, 0.0, -2.0), dump, 101, None, PRIOR + [dump]) is not None
+    assert evaluate_exit(Position("LONG", 0, 0.0, -2.0), dump, 101, None, PRIOR + [dump]) is None  # stale pre-entry bar
 
 
 # ---------- no per-position hard stop ----------
