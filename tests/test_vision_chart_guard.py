@@ -109,3 +109,38 @@ def test_runner_vetoes_ma_swing_too(monkeypatch):
     eng = Engine(Account())
     asyncio.run(process_symbol(eng, "X", make_frame(), 100.0, False, False))
     assert calls == ["MA_SWING"] and not eng.entries
+
+
+class _Err(Exception):
+    def __init__(self, code):
+        super().__init__(str(code))
+        self.code = code
+
+
+def test_transient_503_is_retried_then_succeeds(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr(cg, "RETRY_DELAY_SEC", 0)
+    calls = []
+
+    def flaky(img, side, key, mode=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise _Err(503)
+        return '{"verdict":"TRAP","reason":"x"}'
+
+    monkeypatch.setattr(cg, "_call_gemini", flaky)
+    approved, _ = asyncio.run(cg.evaluate_breakout_vision(bars(), "LONG"))
+    assert len(calls) == 3 and approved is False
+
+
+def test_non_transient_error_not_retried(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    calls = []
+
+    def bad(img, side, key, mode=None):
+        calls.append(1)
+        raise _Err(401)
+
+    monkeypatch.setattr(cg, "_call_gemini", bad)
+    approved, reason = asyncio.run(cg.evaluate_breakout_vision(bars(), "LONG"))
+    assert len(calls) == 1 and approved is True and reason.startswith("VISION_UNAVAILABLE")

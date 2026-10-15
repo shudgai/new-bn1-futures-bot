@@ -95,6 +95,25 @@ def _call_gemini(image: bytes, side: str, api_key: str, mode: str = "BREAKOUT_MO
     return resp.text or ""
 
 
+MAX_ATTEMPTS = 3
+RETRY_DELAY_SEC = 1.0
+RETRYABLE_CODES = (429, 500, 502, 503, 504)
+
+
+async def _call_with_retry(image: bytes, side: str, api_key: str, mode: str) -> str:
+    """Retry transient Gemini overload/server errors; other errors raise at once."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return await asyncio.to_thread(_call_gemini, image, side, api_key, mode)
+        except Exception as exc:
+            transient = getattr(exc, "code", None) in RETRYABLE_CODES
+            if not transient or attempt == MAX_ATTEMPTS:
+                raise
+            logger.info("chart vision transient error %s, retry %d/%d", exc.code, attempt, MAX_ATTEMPTS - 1)
+            await asyncio.sleep(RETRY_DELAY_SEC)
+    raise RuntimeError("unreachable")
+
+
 def _fail_open() -> bool:
     return os.getenv("VISION_FAIL_OPEN", "1") != "0"
 
@@ -114,7 +133,7 @@ async def evaluate_breakout_vision(
     try:
         image = render_chart_bytes(bars)
         text = await asyncio.wait_for(
-            asyncio.to_thread(_call_gemini, image, proposed_side, api_key, mode),
+            _call_with_retry(image, proposed_side, api_key, mode),
             timeout=timeout or REQUEST_TIMEOUT_SEC,
         )
         approved, reason = parse_verdict(text)
