@@ -167,6 +167,12 @@ async def process_symbol(engine, symbol, frame, quote, daily_halt, exit_only):
     signal = evaluate_entry(bars, runner.state_for(symbol, closed))
     if signal is None or not runner.first_attempt_on_bar(symbol, bar_ts):
         return [], []
+    if signal.mode == "BREAKOUT_MOMENTUM":
+        from core.vision.chart_guard import evaluate_breakout_vision
+        approved, reason = await evaluate_breakout_vision(bars, signal.side)
+        if not approved:
+            logger.info("VISION_VETO %s %s: %s", symbol, signal.side, reason)
+            return [], []
     await engine.execute_dual_tf_entry(
         symbol=symbol, frame=closed, price=quote, side=signal.side,
         mode_name=f"SWING_{signal.mode}",
