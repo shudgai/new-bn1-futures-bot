@@ -144,3 +144,16 @@ def test_non_transient_error_not_retried(monkeypatch):
     monkeypatch.setattr(cg, "_call_gemini", bad)
     approved, reason = asyncio.run(cg.evaluate_breakout_vision(bars(), "LONG"))
     assert len(calls) == 1 and approved is True and reason.startswith("VISION_UNAVAILABLE")
+
+
+def test_quota_429_not_retried(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    calls = []
+
+    def quota(img, side, key, mode=None):
+        calls.append(1)
+        raise _Err(429)
+
+    monkeypatch.setattr(cg, "_call_gemini", quota)
+    asyncio.run(cg.evaluate_breakout_vision(bars(), "LONG"))
+    assert len(calls) == 1

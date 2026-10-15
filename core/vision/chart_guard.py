@@ -97,7 +97,7 @@ def _call_gemini(image: bytes, side: str, api_key: str, mode: str = "BREAKOUT_MO
 
 MAX_ATTEMPTS = 3
 RETRY_DELAY_SEC = 1.0
-RETRYABLE_CODES = (429, 500, 502, 503, 504)
+RETRYABLE_CODES = (500, 502, 503, 504)
 
 
 async def _call_with_retry(image: bytes, side: str, api_key: str, mode: str) -> str:
