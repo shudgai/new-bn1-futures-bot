@@ -81,14 +81,11 @@ def visible_tickers():
 def configured_trade_amount() -> float:
     """Return the target size of one slot, independent of current occupancy."""
     wallet_balance = engine.account.get_wallet_balance()
+    available_balance = engine.account.get_available_balance()
     effective_slots = get_effective_slot_count(wallet_balance)
-    fraction = (
-        CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
-        if effective_slots == 1
-        else 1.0 / effective_slots
-        if effective_slots > 1
-        else 1.0
-    )
+    if effective_slots <= 1:
+        return min(TRADE_AMOUNT_USDT, available_balance * CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION)
+    fraction = 1.0 / effective_slots
     return min(TRADE_AMOUNT_USDT, wallet_balance * fraction)
 
 def estimated_net_unrealized_pnl() -> float:

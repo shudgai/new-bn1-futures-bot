@@ -638,9 +638,9 @@
                             <span class="chart-pos-info-sep" v-if="bot.positions.find(p => p.symbol === symbol)">｜</span>
                             <span class="chart-pos-info-item" v-if="bot.positions.find(p => p.symbol === symbol)">
                                 <span class="chart-pos-info-label">保底鎖利:</span>
-                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) === 0 ? 'zero' : '']" :title="getLockedProfitStatusTitle(bot.positions.find(p => p.symbol === symbol))">
+                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', isLockedProfitArmed(bot.positions.find(p => p.symbol === symbol)) ? '' : 'zero']" :title="getLockedProfitStatusTitle(bot.positions.find(p => p.symbol === symbol))">
                                     {{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)).toFixed(4) }} USDT
-                                    <span v-if="getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
+                                    <span v-if="isLockedProfitArmed(bot.positions.find(p => p.symbol === symbol))" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
                                     <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
                             </span>
@@ -1371,13 +1371,18 @@
                 getEstimatedLossAtSL(pos) {
                     return this.getEstimatedPnlAt(pos, pos.sl);
                 },
+                isLockedProfitArmed(pos) {
+                    if (!pos) return false;
+                    const cpp = pos.channel_profit_protection || {};
+                    return Boolean(cpp.armed || (pos.locked_profit_usdt && pos.locked_profit_usdt > 0) || (pos.breakeven_price && pos.breakeven_price > 0));
+                },
                 getLockedProfitAmount(pos) {
-                    if (!pos) return null;
+                    if (!pos) return 0.0;
+                    if (pos.locked_profit_usdt !== undefined && pos.locked_profit_usdt !== null && pos.locked_profit_usdt > 0) {
+                        return Number(pos.locked_profit_usdt);
+                    }
                     if (pos.channel_profit_protection && pos.channel_profit_protection.locked_net !== undefined && pos.channel_profit_protection.locked_net !== null) {
                         return Number(pos.channel_profit_protection.locked_net);
-                    }
-                    if (pos.locked_profit_usdt !== undefined && pos.locked_profit_usdt !== null) {
-                        return Number(pos.locked_profit_usdt);
                     }
                     return 0.0;
                 },

@@ -100,9 +100,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             return [], []
 
         # ──【平倉冷卻期與二次進場回抽追蹤】──
-        curr_ts = float(frame.iloc[-1].get('timestamp', time.time() * 1000))
-        if 0 < curr_ts < 1e11:
-            curr_ts *= 1000.0
+        curr_ts = time.time() * 1000.0
         last_closed_ts = 0.0
         last_closed_action = ""
         last_closed_price = 0.0
@@ -128,7 +126,9 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                         last_closed_action = str(tr.get('action', ''))
                         last_closed_price = float(tr.get('price', 0.0))
 
-        COOLDOWN_MS = 20_000.0  # 常規平倉冷卻時間縮短至 20 秒 (20,000 ms)
+        # ──【平倉冷卻期：強制等待 5 根 1M K 棒 (300 秒 = 300,000 ms)】──
+        # 徹底避免在同一個底部/頂部連續被巴
+        COOLDOWN_MS = 300_000.0  # 強制等待 5 根 1M K 棒 (300 秒)
         is_in_cooldown = (last_closed_ts > 0) and ((curr_ts - last_closed_ts) < COOLDOWN_MS)
 
         # 分別評估做多與做空潛力
@@ -160,26 +160,32 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             print(probe_msg, flush=True)
             if can_enter:
                 mode_name = (meta_dict or {}).get('mode', 'MODE_DUAL_TF')
-                # 強趨勢冷卻豁免：若 15M 大趨勢明確且觸發模式一（破軌）或模式三（斷頭鍘刀），直接豁免冷卻期，秒級開倉！
-                if is_in_cooldown:
-                    if mode_name in ('MODE1_KC_BREAKOUT', 'MODE3_GUILLOTINE_CUT'):
-                        logger.info(f"[{symbol}] BYPASS_COOLDOWN: Strong trend {mode_name} bypasses {COOLDOWN_MS/1000}s cooldown!")
-                    else:
-                        logger.info(f"[{symbol}] In cooldown ({COOLDOWN_MS/1000}s), blocked {mode_name}")
-                        continue
+                # ──【平倉後冷卻期硬檢核 (Cooldown Hard Gate)】──
+                # 使用者鐵律：「剛觸發平空/平多離場後，強制等待 5 根 1M K 棒 (300秒)，嚴禁同向連續開倉」！
+                is_same_side_cooldown = (
+                    (candidate_side == 'SHORT' and last_closed_action in ('CLOSE_SHORT', 'EXIT_SHORT')) or
+                    (candidate_side == 'LONG' and last_closed_action in ('CLOSE_LONG', 'EXIT_LONG'))
+                )
+                if is_in_cooldown and is_same_side_cooldown:
+                    remaining_s = (COOLDOWN_MS - (curr_ts - last_closed_ts)) / 1000.0
+                    cooldown_msg = f"[{symbol}] [冷卻攔截 VETO] 平倉後強制冷卻 5 根 K 棒中，剩餘 {remaining_s:.1f} 秒，禁止開 {candidate_side} ({mode_name})"
+                    logger.info(cooldown_msg)
+                    print(cooldown_msg, flush=True)
+                    continue
 
                 # 最終下單入口二度方向與 MA5 硬鎖檢核
                 m5_metrics = DualTimeframeProvider.get_5m_metrics(frame)
                 ma5_s = m5_metrics.get('5m_ma5_slope', 0.0)
                 ma5_v = m5_metrics.get('5m_ma5', 0.0)
                 kc_mid = m5_metrics.get('5m_kc_middle', 0.0)
-                # 均線間距 (>= 0.20 ATR) 與 MA5 斜率動能 (>= 0.05 / <= -0.05 ATR) 終極過濾
-                ma_ok, ma_reason = MemeSharedProtectionGate.validate_ma_condition(
-                    frame, candidate_side, min_gap_atr=0.20, min_down_slope_atr=-0.05, min_up_slope_atr=0.05
-                )
-                if not ma_ok:
-                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {ma_reason}")
-                    continue
+                # 均線間距 (>= 0.20 ATR) 與 MA5 斜率動能 (>= 0.05 / <= -0.05 ATR) 終極過濾 (Mode 3 斷頭鍘刀已放寬)
+                if mode_name != 'MODE3_GUILLOTINE_CUT':
+                    ma_ok, ma_reason = MemeSharedProtectionGate.validate_ma_condition(
+                        frame, candidate_side, min_gap_atr=0.20, min_down_slope_atr=-0.05, min_up_slope_atr=0.05
+                    )
+                    if not ma_ok:
+                        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {ma_reason}")
+                        continue
 
                 # 平倉後回抽二次進場終極過濾 (Post-Exit Pullback Re-entry Filter)
                 pb_ok, pb_reason = MemeSharedProtectionGate.validate_pullback_reentry(
@@ -197,11 +203,45 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {pb_reason}")
                     continue
 
-                if candidate_side == 'LONG' and (ma5_s <= 0 or quote < ma5_v or quote < kc_mid):
-                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked LONG due to non-positive MA5 slope ({ma5_s}) or price < MA5/Middle")
+                # 終極「漲勢末端/跌勢末端」與「獲利空間」硬阻斷 (Final Exhaustion & Profit Room VETO)
+                exh_ok, exh_reason = MemeSharedProtectionGate.validate_trend_exhaustion(frame, candidate_side, quote)
+                if not exh_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {exh_reason}")
+                    print(f"[{symbol}] [進場攔截 VETO] {exh_reason}", flush=True)
                     continue
-                if candidate_side == 'SHORT' and (ma5_s >= 0 or quote > ma5_v or quote > kc_mid):
-                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked SHORT due to non-negative MA5 slope ({ma5_s}) or price > MA5/Middle")
+
+                room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(frame, candidate_side, quote)
+                if not room_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {room_reason}")
+                    print(f"[{symbol}] [進場攔截 VETO] {room_reason}", flush=True)
+                    continue
+
+                if candidate_side == 'LONG':
+                    price_ok = (quote >= ma5_v and quote >= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote >= min(ma5_v, kc_mid))
+                    if ma5_s <= 0 or not price_ok:
+                        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked LONG due to non-positive MA5 slope ({ma5_s}) or price < MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
+                        continue
+                if candidate_side == 'SHORT':
+                    price_ok = (quote <= ma5_v and quote <= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote <= max(ma5_v, kc_mid))
+                    if ma5_s >= 0 or not price_ok:
+                        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked SHORT due to non-negative MA5 slope ({ma5_s}) or price > MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
+                        continue
+
+                # 終極「高低位追單、負乖離過大與針尖力竭」雙重把關 (Final Anti-Chase & Pinbar VETO)
+                from core.gates.high_position_chase_and_defense_filter import HighPositionChaseAndDefenseFilter
+                final_chase_filter = HighPositionChaseAndDefenseFilter()
+                fc_ok, fc_reason, _ = final_chase_filter.validate_entry(
+                    side=candidate_side,
+                    df=frame,
+                    quote=quote,
+                    last_closed_action=last_closed_action,
+                    last_closed_ts=last_closed_ts,
+                    last_closed_price=last_closed_price,
+                    timeframe_ms=60_000.0,
+                )
+                if not fc_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {fc_reason}")
+                    print(f"[{symbol}] [進場攔截 VETO] {fc_reason}", flush=True)
                     continue
 
                 auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
@@ -221,6 +261,9 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 if opened and hasattr(engine.account, 'last_closed_at'):
                     if isinstance(engine.account.last_closed_at, dict):
                         engine.account.last_closed_at.pop(symbol, None)
+                if opened:
+                    from core.gates.ratchet_net_profit_gate import get_ratchet_manager
+                    get_ratchet_manager(symbol).reset()
                 return [], []
             else:
                 if gate_reason and "INSUFFICIENT" not in gate_reason:
@@ -240,8 +283,17 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         exit_log = f"[DUAL_TF_EXIT_TRIGGERED] Symbol: {symbol} | Reason: {exit_reason} | Price: {quote}"
         logger.info(exit_log)
         print(exit_log, flush=True)
+        is_limit = bool((exit_details or {}).get('is_limit', False))
+        limit_price = (exit_details or {}).get('limit_price', quote)
         # 即時重置持倉狀態機，原子清除部位與標記
-        await engine.account.close_position(symbol, quote, f"DualTF {exit_reason}", is_manual=True)
+        await engine.account.close_position(
+            symbol,
+            quote,
+            f"DualTF {exit_reason}",
+            is_manual=True,
+            is_limit=is_limit,
+            limit_price=limit_price,
+        )
         engine.account.positions.pop(symbol, None)
         if hasattr(engine.account, 'position_meta'):
             engine.account.position_meta.pop(symbol, None)
@@ -249,6 +301,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if hasattr(engine.account, 'last_closed_at'):
             if isinstance(engine.account.last_closed_at, dict):
                 engine.account.last_closed_at[symbol] = time.time()
+        from core.gates.ratchet_net_profit_gate import get_ratchet_manager
+        get_ratchet_manager(symbol).reset()
         return [], []
 
     return [], []

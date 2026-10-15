@@ -32,6 +32,18 @@ def evaluate_entry_candidate(candidate_signal: str, df, current_bar_index: int =
             return False, msg
 
     if candidate_signal in ['OPEN_LONG', 'OPEN_SHORT', 'LONG', 'SHORT']:
+        side = 'LONG' if 'LONG' in candidate_signal else 'SHORT'
+        quote = float(df.iloc[current_bar_index].get('close', 0.0)) if df is not None and len(df) > 0 else None
+        exh_ok, exh_reason = MemeSharedProtectionGate.validate_trend_exhaustion(df, side, quote)
+        if not exh_ok:
+            print(f"[{symbol}] [進場攔截 VETO] {exh_reason}", flush=True)
+            return False, exh_reason
+        if quote is not None and quote > 0:
+            room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(df, side, quote)
+            if not room_ok:
+                print(f"[{symbol}] [進場攔截 VETO] {room_reason}", flush=True)
+                return False, room_reason
+
         can_open, reason = strict_gate.can_open(candidate_signal, df, current_bar_index)
         if not can_open:
             print(f"[{symbol}] [進場攔截 VETO] {reason}", flush=True)

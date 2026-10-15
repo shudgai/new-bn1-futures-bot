@@ -1957,8 +1957,12 @@ class TradingEngine:
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
         slot_count = get_effective_slot_count(wallet)
-        per_slot_budget = wallet / slot_count if slot_count > 0 else wallet
-        return min(per_slot_budget, available / (1.0 + leverage * TAKER_FEE_RATE))
+        fee_buffer = 1.0 + leverage * TAKER_FEE_RATE
+        fee_safe_available = (available / fee_buffer) * 0.98
+        if slot_count <= 1:
+            return min(wallet * 0.98, fee_safe_available)
+        per_slot_budget = (wallet * 0.98) / slot_count
+        return min(per_slot_budget, fee_safe_available)
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
@@ -2709,13 +2713,14 @@ class TradingEngine:
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
         import core.config as runtime_config
-        target_amount = getattr(runtime_config, "TRADE_AMOUNT_USDT", 150.0)
+        target_amount = getattr(runtime_config, "TRADE_AMOUNT_USDT", 9999999.0)
         
-        # 交易金額平均分配 (Average distribution across slots)
-        if effective_slots > 0:
-            target_amount = min(target_amount, (wallet_balance * 0.95) / effective_slots)
+        # 交易金額分配：若為單槽，使用全部帳戶可用餘額
+        if effective_slots <= 1:
+            return min(target_amount, available * 0.98)
             
-        return min(target_amount, available * 0.98)
+        target_amount = min(target_amount, wallet_balance / effective_slots)
+        return min(target_amount, available)
 
     _continuous_entry_price_is_safe = staticmethod(continuous_entry_price_is_safe)
 

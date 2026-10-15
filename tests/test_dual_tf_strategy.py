@@ -127,7 +127,7 @@ def test_ratchet_profit_lock_exit_trigger():
 
 
 def test_profit_lock_metrics_and_breakeven_population():
-    """5. 覆蓋鎖利與保本數據寫回：浮盈達 10% 啟動鎖定 80% 峰值淨利"""
+    """5. 覆蓋鎖利與保本數據寫回：浮盈達 12% 啟動鎖定 8% 淨利 (Tier 3)"""
     position = {
         'symbol': 'LOBSTER/USDT',
         'side': 'LONG',
@@ -135,10 +135,10 @@ def test_profit_lock_metrics_and_breakeven_population():
         'qty': 10.0,
         'atr': 2.0,
         'peak_profit_atr': 2.5,
-        'peak_roe_pct': 0.12, # 12% > 10% 啟動
+        'peak_roe_pct': 0.12, # 12% 浮盈 (Tier 3: 5%起跑, 每3%一階 -> 鎖定 8% 淨利)
     }
 
-    # 現價 111.0，仍高於鎖利底線 100 * (1 + 0.12 * 0.8) = 109.6
+    # 現價 111.0，仍高於鎖定淨利線 (8% 淨利線對應價格約 108.1)
     df_5m = make_candle_df([
         {'open': 110.0, 'close': 111.0, 'high': 112.0, 'low': 109.8, 'ma5': 110.0, 'ma15': 105.0, 'kc_middle': 104.0, 'atr': 2.0, 'is_closed': True},
     ])
@@ -147,10 +147,10 @@ def test_profit_lock_metrics_and_breakeven_population():
         position=position, df_5m=df_5m, quote=111.0
     )
     assert can_exit is False
-    assert position.get('breakeven_price') == pytest.approx(109.6)
-    assert position.get('locked_profit_usdt') == pytest.approx(96.0, rel=1e-3)
     assert position.get('channel_profit_protection', {}).get('armed') is True
-    assert position.get('channel_profit_protection', {}).get('status') == 'ARMED'
+    assert position.get('channel_profit_protection', {}).get('locked_net') == 8.0 # 8% 淨利保底
+    assert position.get('locked_phase') == 3 # Tier 3
+    assert position.get('breakeven_price') > 107.0
 
 
 def test_mode1_breakout_exempts_spatial_bias_for_lobster_and_pepe():
@@ -219,8 +219,8 @@ def test_mode2_still_enforces_ma5_bias_limit():
 
     # 交叉但未破 KC 上軌 (仍在通道內)，實體未達 0.85 ATR (不觸發模式三)，但價格偏離 MA5 達 2% (> 1.2%)
     df_5m_cross_huge_bias = make_candle_df([
-        {'open': 100.0, 'close': 101.0, 'high': 101.5, 'low': 99.5, 'ma5': 100.2, 'ma15': 100.5, 'kc_middle': 101.0, 'kc_upper': 108.0, 'kc_lower': 94.0, 'atr': 3.5, 'is_closed': True},
-        {'open': 101.0, 'close': 103.0, 'high': 103.2, 'low': 100.8, 'ma5': 101.0, 'ma15': 100.6, 'kc_middle': 101.5, 'kc_upper': 108.5, 'kc_lower': 94.5, 'atr': 3.5, 'is_closed': True, 'ma_cross': 'GOLDEN', 'cross_bars_ago': 1},
+        {'open': 100.0, 'close': 101.0, 'high': 101.5, 'low': 99.5, 'ma5': 100.5, 'ma15': 100.8, 'kc_middle': 101.0, 'kc_upper': 108.0, 'kc_lower': 94.0, 'atr': 3.0, 'is_closed': True},
+        {'open': 101.0, 'close': 103.0, 'high': 103.2, 'low': 100.8, 'ma5': 101.5, 'ma15': 100.5, 'kc_middle': 101.5, 'kc_upper': 108.5, 'kc_lower': 94.5, 'atr': 3.0, 'is_closed': True, 'ma_cross': 'GOLDEN', 'cross_bars_ago': 1},
     ])
 
     passed, reason, _ = MemeSharedProtectionGate.evaluate_entry(

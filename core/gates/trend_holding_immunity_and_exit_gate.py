@@ -40,6 +40,12 @@ class TrendHoldingAndExitManager:
             return False, "REJECT_EXIT: INVALID_ENTRY_PRICE", None
 
         p = float(quote) if quote is not None else entry_p
+
+        # 新單保護期 (Grace Period)：開倉 120 秒內嚴禁被跨週期靜態指標秒殺平倉
+        open_time = float(position.get('open_time') or position.get('timestamp') or 0.0)
+        if open_time > 1e11:
+            open_time /= 1000.0
+        is_new_position = bool(open_time > 0 and (time.time() - open_time < 120.0))
         
         # 取得 5M 指標
         m5 = DualTimeframeProvider.get_5m_metrics(df_5m) if df_5m is not None else {}
@@ -264,46 +270,59 @@ class TrendHoldingAndExitManager:
             if is_red_5m and pierced_ma15_5m and death_crossed:
                 return True, "EXIT_BY_5M_STRUCTURE_BREAK_RED_PIERCE_MA15", {'detail': '5m red pierce ma15 and death cross'}
 
-            # 4. 15M 通道轉 DOWN 或 摜破 15M KC 中軌
-            if (kc_trend_15m == 'DOWN') or (mid_15m > 0 and c_15m < mid_15m):
-                return True, "EXIT_BY_15M_TREND_REVERSED_OR_KC_MID_PIERCED", {'15m_kc_trend': kc_trend_15m, '15m_mid': mid_15m}
+            # 4. 15M 通道明確逆向反轉且 5M 結構破位 (新單保護期內嚴禁觸發)
+            if not is_new_position:
+                if (kc_trend_15m == 'DOWN' or (mid_15m > 0 and c_15m < mid_15m)) and (c_5m < ma15_5m):
+                    return True, "EXIT_BY_15M_TREND_REVERSED_OR_KC_MID_PIERCED", {'15m_kc_trend': kc_trend_15m, '15m_mid': mid_15m}
 
         elif side == 'SHORT':
-            # 1. 低檔地板針/長下影線主動收割（Exhaustion Lower Wick Exit）
-            # 空單持倉中，若處於顯著浮盈（Peak Profit >= 1.2 ATR 或 margin_roe >= 10%）：
-            # 當根 K 線出現巨幅下影線（下影線 >= 實體 1.5 倍，或下影線佔整根振幅 >= 60%）且收盤實體回彈
+            # ──【空頭趨勢鎖倉防禦規則 (Bear Trend-Riding Short Exit Guard)】──
+            # 只要處於空頭趨勢（5M 收在 MA15 下方或 KC 中軌下行），嚴格遵守平倉禁令：
+            # 1. 禁用微幅反彈鎖利：嚴禁 2%~3% 敏感反抽平空，盤中小綠棒/下影線視為下跌中繼正常呼吸，強制 HOLD！
+            # 2. 允許通道內弱勢反抽：即使從 KC 下軌反抽回通道內，只要實體收盤未站上基準線 (c_5m <= ma15_5m)，一律不准平空！
+            # 3. 短均線未拐頭不平倉：短均線壓制且方向向下，堅決持倉讓利潤奔跑！
+            #
+            # ──【唯二合法平倉條件】──
+            # 條件 1：結構被破 (Trend Invalidation)
+            # 5M K 棒收盤價實體突破並站穩 5M MA15 或 KC 中軌
+            kc_mid_5m = m5.get('5m_kc_middle', ma15_5m)
+            exit_basis = max(ma15_5m, kc_mid_5m)
+            if c_5m > exit_basis:
+                return True, "EXIT_BY_SHORT_STRUCTURE_BROKEN_CLOSE_ABOVE_BASIS", {
+                    'close_5m': c_5m,
+                    'exit_basis': exit_basis,
+                    'ma15_5m': ma15_5m,
+                    'kc_mid_5m': kc_mid_5m,
+                    'desc': '5M 收盤價實體突破站穩基準線，空頭動能衰竭離場',
+                }
+
+            # 條件 2：極端恐慌天量插針 (Panic Climax Bottom)
+            # ① 價格跌破 KC 下軌 (超賣負乖離過大)
+            # ② 當根爆出 2.5 倍以上巨量 (確認針尖天量換手)
+            # ③ 留下超過實體 2 倍長度的超長下影線 (針尖放量主力吃單)
+            kc_lower_5m = m5.get('5m_kc_lower', 0.0)
+            curr_vol = float(last_closed_bar.get('volume', 0.0))
+            avg_vol = float(df_5m['volume'].tail(15).mean()) if df_5m is not None and 'volume' in df_5m.columns and len(df_5m) >= 10 else 0.0
+            is_climax_volume = (avg_vol > 0 and curr_vol >= 2.5 * avg_vol)
             lower_wick = max(0.0, min(c_5m, o_5m) - l_5m)
-            has_wick_exhaustion = (lower_wick >= 0.5 * atr_5m) and (
-                (body_5m > 0 and lower_wick >= 1.5 * body_5m) or (range_5m > 0 and lower_wick >= 0.60 * range_5m)
-            )
-            if (peak_profit_atr >= 1.2 or margin_roe_pct >= 0.10) and has_wick_exhaustion:
-                return True, "EXIT_BY_EXHAUSTION_LOWER_WICK", {
+            is_climax_wick = (lower_wick >= 2.0 * max(body_5m, 0.1 * atr_5m)) and (lower_wick / range_5m >= 0.50)
+            is_severe_oversold = (kc_lower_5m > 0 and l_5m <= kc_lower_5m) or ((exit_basis - l_5m) / atr_5m >= 1.5)
+
+            if is_severe_oversold and is_climax_volume and is_climax_wick:
+                return True, "EXIT_BY_PANIC_CLIMAX_BOTTOM_2_5X_VOL", {
                     'peak_profit_atr': peak_profit_atr,
                     'lower_wick': lower_wick,
                     'body_5m': body_5m,
-                    'range_5m': range_5m,
-                    'lower_wick_ratio': lower_wick / range_5m if range_5m > 0 else 0.0,
+                    'volume_ratio': curr_vol / avg_vol if avg_vol > 0 else 0.0,
+                    'desc': 'KC下軌外超賣 + 爆2.5倍天量 + 超長下影線>=實體2倍，恐慌針尖換手獲利離場',
                 }
 
-            # 2. 均線低檔高位金叉保護：若浮盈 >= 1.0 ATR，且 5M MA5 已經金叉 MA15
-            if (peak_profit_atr >= 1.0 or margin_roe_pct >= 0.08) and (cross_5m == 'GOLDEN' or (ma5_5m > ma15_5m and cross_5m != 'DEATH')):
-                return True, "EXIT_BY_HIGH_PROFIT_MA_CROSS_REVERSAL", {
-                    'peak_profit_atr': peak_profit_atr,
-                    'ma5_5m': ma5_5m,
-                    'ma15_5m': ma15_5m,
-                    'cross': cross_5m,
-                }
-
-            # 3. 5M 實體陽線突破 5M MA15 且 MA5 金叉 MA15
-            is_green_5m = (c_5m > o_5m)
-            pierced_ma15_5m = (c_5m > ma15_5m)
-            golden_crossed = (cross_5m == 'GOLDEN') or (ma5_5m > ma15_5m and o_5m <= ma15_5m)
-            if is_green_5m and pierced_ma15_5m and golden_crossed:
-                return True, "EXIT_BY_5M_STRUCTURE_BREAK_GREEN_PIERCE_MA15", {'detail': '5m green pierce ma15 and golden cross'}
-
-            # 4. 15M 通道轉 UP 或 突破 15M KC 中軌
-            if (kc_trend_15m == 'UP') or (mid_15m > 0 and c_15m > mid_15m):
-                return True, "EXIT_BY_15M_TREND_REVERSED_OR_KC_MID_PIERCED", {'15m_kc_trend': kc_trend_15m, '15m_mid': mid_15m}
+            # 只要仍在空頭結構內（c_5m <= exit_basis），任何一般下影線、小綠棒反抽或短線雜訊，一律強制 HOLD！
+            return False, "REJECT_EXIT: BEAR_TREND_LOCK_INTACT", {
+                'close_5m': c_5m,
+                'exit_basis': exit_basis,
+                'desc': '空頭主跌浪趨勢鎖定中，未破中軌且無天量插針，強制 HOLD 嚴禁中途被反彈洗下車',
+            }
 
         # ──【第三道：趨勢全程護航（一票否決）】──
         # 未觸發上述結構破位前，多單在 5M MA15 之上、空單在 5M MA15 之下，一律 100% 駁回常規平倉

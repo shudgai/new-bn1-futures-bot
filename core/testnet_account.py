@@ -2937,7 +2937,7 @@ class BinanceTestnetAccount:
         self._pending_retry_streak[symbol] = streak + 1
 
     async def close_position(
-        self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False
+        self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False, limit_price: float = None
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
@@ -3051,14 +3051,67 @@ class BinanceTestnetAccount:
             is_hard_stop_now = "HARD_STOP" in str(close_reason)
             if not is_hard_stop_now:
                 await self._cancel_all_orders(symbol)
-            order = await self._send_order(
-                symbol,
-                "market",
-                close_side,
-                position["qty"],
-                None,
-                {"reduceOnly": True, "newOrderRespType": "RESULT"},
-            )
+
+            is_ratchet_lock = "RATCHET_PROFIT_LOCK" in str(close_reason) or (is_limit and limit_price is not None)
+            if is_ratchet_lock and limit_price:
+                # 廢棄市價平倉，改為帶微幅折讓之限價防滑平倉單（死守底線，拒絕市價滑穿）
+                order_price = limit_price
+                if hasattr(self.exchange, "price_to_precision"):
+                    order_price = float(self.exchange.price_to_precision(symbol, order_price))
+                elif hasattr(self, "price_to_precision"):
+                    order_price = float(self.price_to_precision(symbol, order_price))
+
+                self.log(f"🛡️ [限價防滑平倉] {symbol} {close_side} 限價={order_price:.6g} (死守底線，拒絕市價滑價)", "INFO")
+                order = await self._send_order(
+                    symbol,
+                    "limit",
+                    close_side,
+                    position["qty"],
+                    order_price,
+                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
+                )
+                from core.gates.ratchet_net_profit_gate import get_ratchet_manager
+                rm = get_ratchet_manager(symbol, exchange=self)
+                order_id = (order or {}).get("id") or (order or {}).get("orderId")
+                if order_id:
+                    await rm._ensure_order_filled_async(str(order_id), close_side, position["qty"], order_price)
+            else:
+                from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
+                # 依 2026-10-15 最新規範：全面廢棄 Stop Market，改以帶 0.2%~0.3% 讓步緩衝之限價單發送
+                order_price = AntiSlippageOrderExecutor.calculate_limit_close_price(
+                    side=position["side"],
+                    live_price=current_price,
+                    offset_pct=0.002,
+                )
+                if hasattr(self.exchange, "price_to_precision"):
+                    order_price = float(self.exchange.price_to_precision(symbol, order_price))
+                elif hasattr(self, "price_to_precision"):
+                    order_price = float(self.price_to_precision(symbol, order_price))
+
+                self.log(f"🛡️ [防滑價限價平倉] {symbol} {close_side} 限價={order_price:.6g} (死守底線，全面廢棄市價單)", "INFO")
+                order = await self._send_order(
+                    symbol,
+                    "limit",
+                    close_side,
+                    position["qty"],
+                    order_price,
+                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
+                )
+                # 3 秒 Watchdog 撮合監控 (若未完全撮合則撤單以最新對手價重掛)
+                order_id = (order or {}).get("id") or (order or {}).get("orderId")
+                if order_id and not getattr(self, "is_paper", False):
+                    asyncio.create_task(
+                        AntiSlippageOrderExecutor.execute_anti_slippage_close(
+                            account=self,
+                            symbol=symbol,
+                            side=position["side"],
+                            qty=position["qty"],
+                            live_price=current_price,
+                            offset_pct=0.002,
+                            watchdog_timeout_sec=3.0,
+                            close_reason=close_reason,
+                        )
+                    )
             from core.services.post_profit_lock_gate import profit_exit_fields, confirmed_full_close
             profit_candidate = profit_exit_fields(position, close_reason, time.time()*1000)
             from core.services.impulse_breakout import reverse_close_fields

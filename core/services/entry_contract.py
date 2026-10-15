@@ -2933,6 +2933,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject('BLOCKED_LONG_ON_BEARISH_TREND')
         if side == 'SHORT' and market_trend == 'BULLISH':
             return reject('BLOCKED_SHORT_ON_BULLISH_TREND')
+        # ──【若已在漲勢末端就不要再開倉 / 跌勢末端同理】──
+        from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
+        exh_ok, exh_reason = MemeSharedProtectionGate.validate_trend_exhaustion(frame, side, quote)
+        if not exh_ok:
+            return reject(exh_reason)
+        room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(frame, side, quote)
+        if not room_ok:
+            return reject(room_reason)
+
         if decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES:
             top_problem = long_top_chase_problem(frame, quote)
             if top_problem:

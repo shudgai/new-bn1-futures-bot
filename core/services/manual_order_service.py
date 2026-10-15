@@ -57,10 +57,10 @@ async def process_manual_order(
         elif amount > 0:
             target_amount = amount
         else:
-            slot_amount = max(0.0, float(engine._continuous_entry_amount()))
             available = max(0.0, float(engine.account.get_available_balance()))
             fee_safe_available = available / (1.0 + leverage * max(TAKER_FEE_RATE, 0.0))
-            target_amount = min(slot_amount, fee_safe_available)
+            # 依使用者指令：開倉金額使用帳戶可用餘額（預留 2% 手續費與滑點安全空間）
+            target_amount = max(0.0, fee_safe_available * 0.98)
             
         if target_amount <= 0:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance or invalid quantity/amount"}

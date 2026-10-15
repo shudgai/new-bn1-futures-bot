@@ -106,10 +106,15 @@ class DualTimeframeProvider:
         elif any(w in c_state for w in ('KC向上', 'UP', 'UPTREND', 'BULLISH', 'LONG', 'KC_TREND_UP')):
             kc_trend_15m = 'UP'
         else:
-            # 中軌方向判定
-            if mid_15m > prev_mid >= prev2_mid or (mid_15m > prev_mid and ma5_15m > ma15_15m):
+            # 中軌方向判定（加入死區，避免中軌水平走平微幅浮點抖動被誤判為單邊趨勢）
+            mid_diff = mid_15m - prev_mid
+            atr_15m = float(curr_bar.get('atr', mid_15m * 0.01))
+            deadband = max(atr_15m * 0.04, mid_15m * 0.0001)
+            is_mid_up = mid_diff > deadband
+            is_mid_down = mid_diff < -deadband
+            if is_mid_up and (prev_mid >= prev2_mid - deadband or ma5_15m > ma15_15m):
                 kc_trend_15m = 'UP'
-            elif mid_15m < prev_mid <= prev2_mid or (mid_15m < prev_mid and ma5_15m < ma15_15m):
+            elif is_mid_down and (prev_mid <= prev2_mid + deadband or ma5_15m < ma15_15m):
                 kc_trend_15m = 'DOWN'
             else:
                 kc_trend_15m = 'RANGE'
@@ -194,9 +199,8 @@ class DualTimeframeProvider:
 
         ma5 = float(curr['ma5'])
         prev_ma5 = float(prev['ma5'])
-        prev2_ma5 = float(prev2['ma5'])
-        # 3根平滑斜率: (ma5 - prev2_ma5) / c
-        ma5_slope = (ma5 - prev2_ma5) / (c + 1e-9)
+        # 立即斜率: 當前 MA5 減去上一根 MA5 (對齊 AGENTS.md 當前 MA5 > 上一根 MA5 鐵律)
+        ma5_slope = (ma5 - prev_ma5) / (c + 1e-9)
 
         ma15 = float(curr['ma15'])
         prev_ma15 = float(prev['ma15'])

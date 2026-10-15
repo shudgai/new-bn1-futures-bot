@@ -1133,7 +1133,7 @@ class PaperAccount:
             self.log(f"↩️ [紙上Maker撤單] {symbol}：{reason}", "INFO")
             self.save_state()
 
-    async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False) -> bool:
+    async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False, limit_price: float = None) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         position = self.positions[symbol]
@@ -1209,7 +1209,12 @@ class PaperAccount:
             qty = pos["qty"]
             margin = pos.get("margin", 0.0)
 
-            exec_close_price = current_price * (1 - SLIPPAGE_PCT) if side == "LONG" else current_price * (1 + SLIPPAGE_PCT)
+            is_ratchet_lock = "RATCHET_PROFIT_LOCK" in str(close_reason) or (is_limit and limit_price is not None)
+            if is_ratchet_lock:
+                # 限價平倉死守底線，避免市價單穿價暴滑（徹底解決 14 滑到 11）
+                exec_close_price = float(limit_price if limit_price is not None else current_price)
+            else:
+                exec_close_price = current_price * (1 - SLIPPAGE_PCT) if side == "LONG" else current_price * (1 + SLIPPAGE_PCT)
             raw_pnl = (
                 (exec_close_price - entry_price) * qty if side == "LONG"
                 else (entry_price - exec_close_price) * qty
