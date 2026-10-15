@@ -213,8 +213,9 @@ def roe_quote(pos, roe_pct):
     (17.0, 11.0, False),
     (23.0, 14.0, True),   # floor 15%
     (23.0, 16.0, False),
-    (6.0, 1.0, True),     # micro band: peak 6% -> floor 2%
-    (6.0, 3.0, False),
+    (6.0, 1.0, False),    # below 10% peak: ratchet not armed
+    (12.0, 4.0, True),    # peak 12% -> floor 5%
+    (12.0, 6.0, False),
 ])
 def test_ratchet_lock_end_to_end(eng, peak_roe, fall_roe, expect_exit):
     pos, df = open_long_by_breakout(eng)

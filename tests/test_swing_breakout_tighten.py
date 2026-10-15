@@ -36,7 +36,7 @@ def test_first_single_bar_break_after_flat_is_trap():
 
 
 def test_compact_ratchet_ladder():
-    assert floor_roe(4.99) is None and floor_roe(5.0) == 2.0 and floor_roe(7.0) == 3.0
-    assert floor_roe(9.0) == 4.5 and floor_roe(9.9) == 4.86 and floor_roe(9.99) < 5.0
+    assert floor_roe(4.99) is None and floor_roe(5.0) is None and floor_roe(7.0) is None
+    assert floor_roe(9.0) is None and floor_roe(9.99) is None
     assert floor_roe(10.0) == 5.0 and floor_roe(15.0) == 10.0 and floor_roe(20.0) == 15.0
     assert floor_roe(26.0) == 20.0

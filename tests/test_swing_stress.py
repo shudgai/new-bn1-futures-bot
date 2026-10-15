@@ -57,4 +57,4 @@ def test_exit_never_on_entry_bar_and_ratchet_floor():
         if fl is not None and cur < fl:
             assert d is not None
         if fl is not None:
-            assert fl == float((int(peak // 5) * 5) - 5) if peak >= 25 else fl >= 2.0
+            assert fl == float((int(peak // 5) * 5) - 5) if peak >= 25 else fl >= 5.0
