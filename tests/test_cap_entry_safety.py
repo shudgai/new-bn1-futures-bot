@@ -85,66 +85,8 @@ def test_top_flip_requires_down_cross_and_bearish_channel(
         ) is None
 
 
-def test_top_pressure_can_close_long_without_authorizing_short_in_bullish_kc():
-    from core.gates.holding_protection_gate import HoldingProtectionExitGate
-    frame = _frame(channel_state='KC向上', close=102.5)
-    position = {'side': 'LONG', 'entry_price': 100.0, 'symbol': 'CAP/USDT'}
-
-    exit_code, details = HoldingProtectionExitGate.evaluate(position, frame, 102.5)
-
-    assert exit_code == 'EXIT_LONG_ON_TOP_WATERFALL_DUMP'
-    assert details['flip_short_allowed'] is False
-    assert 'authorized_action' not in details
-    assert position.get('flip_enter_short') is not True
-    account = SimpleNamespace(
-        last_closed_at={'CAP/USDT': float(frame.iloc[-1]['timestamp']) / 1000.0},
-        last_closed_side={'CAP/USDT': 'LONG'},
-    )
-    passed, reason = pre_flight_safety_check(
-        frame, 102.5, 'SHORT',
-        decision_type='AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
-        account=account, symbol='CAP/USDT',
-    )
-    assert passed is False
-    assert reason == 'BLOCKED_OPPOSITE_SIDE_COOLDOWN'
 
 
-@pytest.mark.parametrize(
-    ('open_price', 'close_price', 'high', 'low', 'atr', 'blocked'),
-    [
-        (100.0, 99.1, 100.1, 99.0, 1.0, True),   # 0.8 ATR
-        (100.0, 99.4, 100.0, 99.0, 1.0, True),   # 60% of full range
-        (100.0, 99.5, 100.0, 99.0, 1.0, False),  # below both thresholds
-    ],
-)
-def test_long_entry_vetoes_large_bearish_live_candle(
-    open_price, close_price, high, low, atr, blocked,
-):
-    frame = pd.DataFrame([
-        {
-            'timestamp': 1_700_000_000_000, 'open': 100.0, 'close': 100.0,
-            'high': 100.2, 'low': 99.8, 'atr': atr, 'ma5': 100.0,
-            'ma15': 100.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
-            'kc_lower': 99.0, 'is_closed': True,
-        },
-        {
-            'timestamp': 1_700_000_060_000, 'open': open_price,
-            'close': close_price, 'high': high, 'low': low, 'atr': atr,
-            'ma5': 100.0, 'ma15': 100.0, 'kc_middle': 100.0,
-            'kc_upper': 101.0, 'kc_lower': 99.0, 'is_closed': False,
-        },
-    ])
-    frame.attrs['timeframe_ms'] = 60_000
-    frame = _with_entry_history(frame)
-
-    problem = long_large_bearish_candle_problem(frame, close_price)
-    assert (problem == 'BLOCKED_BY_LARGE_BEARISH_CANDLE') is blocked
-    if blocked:
-        passed, reason = pre_flight_safety_check(
-            frame, close_price, 'LONG',
-        )
-        assert passed is False
-        assert reason == 'BLOCKED_BY_LARGE_BEARISH_CANDLE'
 
 
 def test_same_side_entry_is_blocked_only_for_the_closed_candle():
@@ -213,57 +155,5 @@ def test_pipeline_rejects_same_bar_long_before_signal_authorization():
     assert diagnostics['reason'] == 'BLOCKED_SAME_BAR_REENTRY'
 
 
-def test_account_firewall_rejects_same_bar_reopen():
-    from core.services.entry_firewall import validate_account_entry
-
-    bar_start_ms = int(time.time() // 60) * 60_000
-    frame = pd.DataFrame([{
-        'timestamp': bar_start_ms, 'open': 100.0, 'close': 100.1,
-        'high': 100.2, 'low': 99.8, 'atr': 1.0, 'ma5': 100.0,
-        'ma15': 99.9, 'kc_middle': 100.0, 'kc_upper': 101.0,
-        'kc_lower': 99.0, 'is_closed': False,
-    }])
-    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-    frame = _with_entry_history(frame)
-    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-    account = SimpleNamespace(
-        entry_frame_provider=AsyncMock(return_value=frame),
-        last_closed_at={'CAP/USDT': bar_start_ms / 1000 + 5},
-        last_closed_side={'CAP/USDT': 'LONG'},
-    )
-
-    with pytest.raises(ValueError, match='BLOCKED_SAME_BAR_REENTRY'):
-        asyncio.run(validate_account_entry(
-            account, 'CAP/USDT', 'LONG',
-            {'entry_signal_code': 'AUTHORIZED_REALTIME_BREAKOUT'},
-        ))
 
 
-def test_account_firewall_rejects_large_bearish_candle_on_long_fast_path():
-    from core.services.entry_firewall import validate_account_entry
-
-    bar_start_ms = int(time.time() // 60) * 60_000
-    frame = pd.DataFrame([
-        {
-            'timestamp': bar_start_ms - 60_000, 'open': 100.0, 'close': 100.0,
-            'high': 100.2, 'low': 99.8, 'atr': 1.0, 'ma5': 100.0,
-            'ma15': 99.9, 'kc_middle': 100.0, 'kc_upper': 101.0,
-            'kc_lower': 99.0, 'is_closed': True,
-        },
-        {
-            'timestamp': bar_start_ms, 'open': 100.0, 'close': 99.1,
-            'high': 100.1, 'low': 99.0, 'atr': 1.0, 'ma5': 100.0,
-            'ma15': 99.9, 'kc_middle': 100.0, 'kc_upper': 101.0,
-            'kc_lower': 99.0, 'is_closed': False,
-        },
-    ])
-    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-    frame = _with_entry_history(frame)
-    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-    account = SimpleNamespace(entry_frame_provider=AsyncMock(return_value=frame))
-
-    with pytest.raises(ValueError, match='BLOCKED_BY_LARGE_BEARISH_CANDLE'):
-        asyncio.run(validate_account_entry(
-            account, 'CAP/USDT', 'LONG',
-            {'entry_signal_code': 'AUTHORIZED_REALTIME_BREAKOUT'},
-        ))

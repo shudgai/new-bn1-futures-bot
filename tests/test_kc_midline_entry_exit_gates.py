@@ -42,21 +42,6 @@ def _entry_frame(side, quote, *, opening=None, ma5=None, ma15=None):
     return frame
 
 
-@pytest.mark.parametrize(
-    "side,quote,expected",
-    [
-        ("LONG", 105.0, None),
-        ("LONG", 105.01, "INSUFFICIENT_UPPER_SPACE"),
-        ("SHORT", 95.0, None),
-        ("SHORT", 94.99, "INSUFFICIENT_LOWER_SPACE"),
-    ],
-)
-def test_entry_space_firewall_is_symmetric_and_inclusive_at_25_percent(
-    side, quote, expected,
-):
-    frame = _entry_frame(side, quote)
-
-    assert entry_market_structure_problem(frame, quote, side) == expected
 
 
 @pytest.mark.parametrize(

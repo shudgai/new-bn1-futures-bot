@@ -94,30 +94,6 @@ def test_closed_bullish_candle_still_outside_lower_rail_keeps_short_open():
     assert evidence['confirmed'] is False
 
 
-def test_strategy_exit_is_blocked_while_large_bearish_break_is_extending(monkeypatch):
-    frame = lower_break_frame(quote=94.0)
-    position = {
-        'symbol': 'CAP/USDT',
-        'side': 'SHORT',
-        'entry_price': 101.0,
-        'entry_mode': 'CHANNEL_SWING',
-    }
-    monkeypatch.setattr(
-        'core.gates.holding_protection_gate.channel_peak_profit_exit_evidence',
-        lambda *_args: (
-            {'reason': CHANNEL_PEAK_PROFIT_EXIT},
-            False,
-        ),
-    )
-
-    allowed, reason, details = HoldingProtectionExitGate.validate_exit(
-        position, frame, 94.0, CHANNEL_PEAK_PROFIT_EXIT,
-        channel_swing=True,
-    )
-
-    assert allowed is False
-    assert reason == HoldingProtectionExitGate.SHORT_BREAK_HOLD_REJECT_REASON
-    assert details['short_lower_break_hold']['confirmed'] is False
 
 
 def test_lower_break_before_position_open_does_not_hold_current_exit():

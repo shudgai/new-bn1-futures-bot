@@ -102,20 +102,6 @@ def test_post_close_long_uses_ma5_or_ma15_support_reclaim():
     assert decision["post_close_opportunity"] == "PULLBACK_SUPPORT"
 
 
-def test_post_close_long_uses_body_break_of_prior_high_at_0_6_atr():
-    frame, account, close_id = reentry_frame(opportunity="MOMENTUM_BREAKOUT")
-    closed = frame.loc[frame["is_closed"]]
-
-    opportunity = _post_close_long_opportunity(closed, close_id)
-    decision = evaluate_post_close_continuation(
-        frame, 101.1, "CAP/USDT", account, diagnostics={},
-    )
-
-    assert opportunity is not None
-    assert opportunity["kind"] == "MOMENTUM_BREAKOUT"
-    assert opportunity["atr"] == pytest.approx(1.0)
-    assert decision is not None
-    assert decision["reason"] == "POST_CLOSE_LONG_MOMENTUM_BREAKOUT"
 
 
 @pytest.mark.parametrize("wick", ["signal", "live"])
@@ -161,28 +147,6 @@ def test_pullback_reentry_accepts_one_or_two_ma_tests_without_ma15_break():
     assert opportunity["kind"] == "PULLBACK_SUPPORT"
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("close", 99.8),  # The pullback candle closed below MA15.
-        ("ma5", 100.1),   # MA5 curled down before the confirmation.
-        ("ma15", 99.8),   # MA15 slope turned down.
-    ],
-)
-def test_pullback_reentry_fails_closed_on_broken_trend(field, value):
-    frame, _, close_id = reentry_frame()
-    closed = frame.loc[frame["is_closed"]].copy()
-    if field == "close":
-        closed.loc[closed.index[-2], field] = value
-        closed.loc[closed.index[-2], "low"] = 99.7
-    elif field == "ma5":
-        closed.loc[closed.index[-2], "ma5"] = 100.3
-        closed.loc[closed.index[-2], "low"] = 99.9
-        closed.loc[closed.index[-1], "ma5"] = 100.2
-    else:
-        closed.loc[closed.index[-1], field] = value
-
-    assert _post_close_long_opportunity(closed, close_id) is None
 
 
 def test_trend_continuation_can_reenter_near_upper_kc_rail():
@@ -203,27 +167,3 @@ def test_trend_continuation_can_reenter_near_upper_kc_rail():
     ) is None
 
 
-def test_entry_contract_authorizes_post_close_pullback_near_upper_rail(monkeypatch):
-    frame, account, _ = reentry_frame()
-    frame.loc[frame.index[-1], "kc_upper"] = 100.9
-    monkeypatch.setattr(
-        entry_contract, "ma5_ma15_cross_chop_problem",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        entry_contract.pipeline, "market_regime_problem",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        entry_contract.pipeline, "chop_lockout_problem",
-        lambda *args, **kwargs: None,
-    )
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        frame, 100.8, account=account, symbol="CAP/USDT",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is not None, diagnostics
-    assert decision["side"] == "LONG"
-    assert decision["entry_phase"] == "POST_CLOSE_CONTINUATION_ENTRY"

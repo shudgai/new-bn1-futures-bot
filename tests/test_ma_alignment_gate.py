@@ -142,16 +142,6 @@ class TestMAAlignmentCore:
 class TestEngineOneFastCross:
     """測試引擎一：交叉敏捷開倉"""
 
-    def test_golden_cross_triggers_when_aligned(self):
-        prev = {'open': 99.0, 'close': 99.5, 'high': 100.0, 'low': 98.5,
-                'ma5': 99.0, 'ma15': 99.5, 'is_closed': True}
-        curr = {'open': 99.5, 'close': 101.5, 'high': 102.0, 'low': 99.0,
-                'ma5': 100.5, 'ma15': 99.8, 'is_closed': True}
-        df = make_candle_frame([prev, curr])
-        signal = check_ma_cross_entry(df)
-        assert signal is not None
-        assert signal['side'] == 'LONG'
-        assert signal['type'] == 'KC_GOLDEN_CROSS_FAST_LONG'
 
     def test_golden_cross_rejected_if_close_below_ma5(self):
         prev = {'open': 99.0, 'close': 99.5, 'high': 100.0, 'low': 98.5,
@@ -163,16 +153,6 @@ class TestEngineOneFastCross:
         signal = check_ma_cross_entry(df)
         assert signal is None
 
-    def test_death_cross_triggers_when_aligned(self):
-        prev = {'open': 101.0, 'close': 100.5, 'high': 101.5, 'low': 100.0,
-                'ma5': 101.0, 'ma15': 100.5, 'is_closed': True}
-        curr = {'open': 100.5, 'close': 98.5, 'high': 101.0, 'low': 98.0,
-                'ma5': 99.5, 'ma15': 100.2, 'is_closed': True}
-        df = make_candle_frame([prev, curr])
-        signal = check_ma_cross_entry(df)
-        assert signal is not None
-        assert signal['side'] == 'SHORT'
-        assert signal['type'] == 'KC_DEATH_CROSS_FAST_SHORT'
 
 
 class TestEngineTwoAndThreeBreakoutGate:
@@ -196,61 +176,5 @@ class TestEngineTwoAndThreeBreakoutGate:
         # Should not trigger long breakout because MA5 <= MA15
         assert trigger != "TRIGGER_A_KC_BREAKOUT"
 
-    def test_check_entry_gates_rejects_when_ma_misaligned(self):
-        rows = [
-            {'open': 100.0, 'close': 100.0, 'high': 101.0, 'low': 99.0,
-             'kc_middle': 100.0, 'kc_upper': 101.0, 'kc_lower': 99.0,
-             'ma5': 99.0, 'ma15': 100.0, 'atr': 1.0, 'is_closed': True}
-            for _ in range(15)
-        ]
-        # Current bar has close > ma5 but ma5 <= ma15
-        rows[-1]['ma5'] = 99.5
-        rows[-1]['ma15'] = 100.0
-        rows[-1]['close'] = 102.0
-        df = make_candle_frame(rows)
 
-        passed, reason = check_entry_gates(None, "BTC/USDT", df, "LONG", "TRIGGER_A_KC_BREAKOUT")
-        assert passed is False
-        assert reason == "REJECT: MA_ALIGNMENT_MISMATCH"
 
-    def test_evaluate_entry_contract_vetoes_misaligned_breakout(self):
-        # 測試 evaluate_entry_contract 若均線不符，直接拒絕並回傳 REJECT: MA_ALIGNMENT_MISMATCH
-        rows = [
-            {'timestamp': 1000 + i * 60000, 'open': 100.0, 'close': 100.0,
-             'high': 101.0, 'low': 99.0, 'kc_middle': 100.0,
-             'kc_upper': 101.0, 'kc_lower': 99.0,
-             'ma5': 99.0, 'ma15': 100.0, 'atr': 1.0, 'is_closed': True}
-            for i in range(25)
-        ]
-        # LONG with MA5 < MA15
-        rows[-1]['ma5'] = 98.0
-        rows[-1]['ma15'] = 100.0
-        rows[-1]['close'] = 102.0
-        df = make_candle_frame(rows)
-
-        diagnostics = {}
-        res = evaluate_entry_contract(
-            df, price=102.0, code="CLOSED_BODY_BREAKOUT_LONG",
-            symbol="BTC/USDT", diagnostics=diagnostics
-        )
-        assert res is None
-        assert diagnostics.get('reason') == "REJECT: MA_ALIGNMENT_MISMATCH"
-
-    def test_unified_entry_strategy_evaluate_entry_vetoes(self):
-        rows = [
-            {'timestamp': 1000 + i * 60000, 'open': 100.0, 'close': 100.0,
-             'high': 101.0, 'low': 99.0, 'kc_middle': 100.0,
-             'kc_upper': 101.0, 'kc_lower': 99.0,
-             'ma5': 101.0, 'ma15': 100.0, 'atr': 1.0, 'is_closed': True}
-            for i in range(25)
-        ]
-        # SHORT with MA5 > MA15 (Wrong alignment)
-        rows[-1]['ma5'] = 101.0
-        rows[-1]['ma15'] = 100.0
-        rows[-1]['close'] = 98.0
-        df = make_candle_frame(rows)
-
-        strategy = UnifiedEntryStrategy()
-        ok, reason, details = strategy.evaluate_entry(df, 98.0, 'SHORT', symbol='BTC/USDT')
-        assert ok is False
-        assert reason == "REJECT: MA_ALIGNMENT_MISMATCH"

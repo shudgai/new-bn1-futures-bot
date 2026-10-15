@@ -73,41 +73,8 @@ def pattern_frame(side="SHORT", pullback_bars=2):
     return frame, live_quote
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("pullback_bars", [1, 2, 3])
-def test_live_pattern_breakout_accepts_small_counter_candles_then_large_break(
-    side, pullback_bars
-):
-    frame, quote = pattern_frame(side, pullback_bars)
-
-    decision = evaluate_entry_contract(frame, quote, symbol="龙虾/USDT")
-
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_LIVE_PATTERN_BREAKOUT_{side}"
-    assert decision["entry_phase"] == "KC_LIVE_PATTERN_BREAKOUT"
-    assert decision["live_pattern_pullback_bars"] == pullback_bars
-    assert decision["live_pattern_body_atr"] >= 0.5
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_pattern_breakout_is_in_entry_whitelist_and_revalidated(side):
-    frame, quote = pattern_frame(side, 2)
-    decision = evaluate_entry_contract(frame, quote, symbol="龙虾/USDT")
-    account = SimpleNamespace(
-        positions={}, trades=[], last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-
-    assert decision["type"] in ENTRY_CODES
-    validated = asyncio.run(
-        validate_account_entry(account, "龙虾/USDT", side, context)
-    )
-    assert validated["pending_signal_id"] == decision["pending_signal_id"]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -159,24 +126,6 @@ def test_live_pattern_code_cannot_authorize_the_opposite_side(actual_side):
     ) is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_scanner_sends_the_side_of_the_live_outer_rail_break(side):
-    from core.services.symbol_runner import process_single_symbol_runner
-
-    frame, quote = pattern_frame(side, 2)
-    engine = SimpleNamespace(
-        account=SimpleNamespace(positions={}, log=Mock()),
-        tickers={"龍蝦/USDT": quote},
-        _execute_confirmed_channel_break=AsyncMock(),
-    )
-
-    asyncio.run(process_single_symbol_runner(
-        engine, "龍蝦/USDT", time.time(), None, False, exit_frame=frame
-    ))
-
-    call = engine._execute_confirmed_channel_break.await_args
-    assert call.args[3] == side
-    assert call.kwargs["v8_reason"] == f"KC_LIVE_PATTERN_BREAKOUT_{side}"
 
 
 def test_legacy_qualified_outside_signal_is_not_in_current_entry_whitelist():

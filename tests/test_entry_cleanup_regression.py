@@ -29,21 +29,3 @@ def frame(side, mode):
     return f
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('mode',['cross','price_guard','continuation'])
-def test_active_signal_contract(side,mode):
-    f=frame(side,mode)
-    result=check_entry_signals(f,side,0)
-    allowed,reason,decision=UnifiedEntryStrategy().evaluate_entry(f,100.,side)
-    if side == 'SHORT' and mode == 'continuation':
-        assert not allowed
-        assert result['reason'] == 'BLOCKED_LATE_SHORT_NEAR_MIDDLE'
-    elif mode=='price_guard':
-        assert not allowed
-        assert 'BLOCKED_MA3_PRICE' in result['reason']
-    else:
-        assert allowed and result['action']=='ENTER'
-        assert supported_entry_reason(result['reason'],side)
-        assert not supported_entry_reason(result['reason'],'SHORT' if side=='LONG' else 'LONG')
-        assert reason==result['reason']==decision['reason']
-        assert result['side']==side

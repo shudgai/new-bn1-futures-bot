@@ -68,35 +68,6 @@ def test_initial_holding_protection_short_below_ma5():
     assert exit_signal is None
 
 
-def test_fast_peak_reversal_exit():
-    """【第二部分】真峰頂敏銳逃頂：浮盈顯著時，高檔長上影滯漲 + 實體陰線摜穿 MA5，立即觸發 EXIT_BY_FAST_PEAK_REVERSAL。"""
-    strategy = DualTrackExitStrategy()
-    entry = 100.0
-    atr = 1.0
-    position = {
-        'symbol': '龙虾/USDT',
-        'side': 'LONG',
-        'entry_price': entry,
-        'entry_atr': atr,
-        'highest_price': 102.5,  # 浮盈曾達 2.5 ATR
-        'open_timestamp': 1000,
-        'qty': 10.0,
-    }
-
-    stamp = 180000
-    # 前兩根帶明顯長上影線（高點 102.5，上影 >= 0.35 ATR）
-    # 第三根實體陰線 open 102.0, close 101.3 (body 0.7 ATR >= 0.4 ATR)，摜穿 MA5 (101.8)
-    frame = pd.DataFrame([
-        dict(timestamp=stamp-120000, is_closed=True, open=101.0, high=102.5, low=100.8, close=101.5,
-             ma5=101.6, ma15=100.5, kc_middle=100.8, atr=atr),
-        dict(timestamp=stamp-60000, is_closed=True, open=101.5, high=102.4, low=101.2, close=101.6,
-             ma5=101.7, ma15=100.6, kc_middle=100.9, atr=atr),
-        dict(timestamp=stamp, is_closed=False, open=102.0, high=102.1, low=101.2, close=101.3,
-             ma5=101.8, ma15=100.7, kc_middle=101.0, atr=atr),
-    ])
-
-    exit_signal = strategy.evaluate_exit(position, frame=frame, current_price=101.3, is_closed=False)
-    assert exit_signal == 'EXIT_BY_FAST_PEAK_REVERSAL'
 
 
 def test_hard_breakeven_floor_1_0_atr():

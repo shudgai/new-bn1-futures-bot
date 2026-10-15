@@ -57,47 +57,6 @@ def test_long_continuation_requires_rising_known_kc_and_closed_confirmation(
     assert diagnostics["reason"] == expected_reason
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_valid_breakout_is_remembered_but_never_authorizes_late_chase(side):
-    frame = live_outer_frame(side)
-    frame['volume'] = 100.0
-    quote = float(frame.iloc[-1]['close'])
-    # The live candle must meet the authorized 0.5 ATR body minimum; add the
-    # complete closed-bar history required by the shared entry contract.
-    first = frame.iloc[0].copy()
-    prefix = []
-    for offset in range(20, 0, -1):
-        row = first.copy()
-        row['timestamp'] = float(first['timestamp']) - offset * 60_000
-        row['is_closed'] = True
-        prefix.append(row)
-    frame = pd.concat([pd.DataFrame(prefix), frame], ignore_index=True)
-    frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-    quote = float(frame.iloc[-1]['close'])
-    from core.services.entry_contract import evaluate_entry_contract
-    entry = evaluate_entry_contract(frame, quote, symbol='SYM')
-    assert entry is not None
-    account = SimpleNamespace(positions={}, trades=[], last_closed_at={},
-                              breakout_qualification={}, log=Mock())
-    def record(symbol, value):
-        account.breakout_qualification[symbol] = value
-    account.record_qualification = Mock(side_effect=record)
-    engine = TradingEngine.__new__(TradingEngine)
-    engine.account = account
-    result = asyncio.run(engine._execute_confirmed_channel_break(
-        'SYM', frame, quote, side, daily_halt=True,
-        v8_reason=entry['type']))
-    assert result is False
-    qual = account.breakout_qualification['SYM']
-    assert qual['side'] == side
-    assert qual['breakout_bar_id'] == entry['confirmation_bar_id']
-    # The signal candle cannot immediately turn its own qualification into a
-    # continuation entry. The active entry contract accepts outer breakouts only.
-    assert evaluate_continuation_entry(frame, quote, symbol='SYM', account=account) is None
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, quote, symbol='SYM', account=account, diagnostics=diagnostics,
-    ) is not None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

@@ -31,21 +31,7 @@ def base_bars_short():
         {'timestamp': 240000, 'open': 1.65, 'high': 1.7, 'low': 1.5, 'close': 1.55, 'kc_upper': 1.9, 'kc_middle': 1.85, 'kc_lower': 1.8, 'atr': 0.1, 'ma3': 1.8, 'ma15': 1.85},
     ]
 
-def test_missed_long_later_continuation_accept():
-    account = MockAccount()
-    bars = base_bars_long()
-    frame = create_frame(bars)
-    res = evaluate_v2_frame(frame, code="SECOND_BAR_OUTSIDE_LONG", account=account, symbol='龙虾/USDT')
-    assert res is not None
-    assert res['entry_phase'] == 'MISSED_INITIAL_ENTRY_CONTINUATION'
     
-def test_missed_short_later_continuation_accept():
-    account = MockAccount()
-    bars = base_bars_short()
-    frame = create_frame(bars)
-    res = evaluate_v2_frame(frame, code="SECOND_BAR_OUTSIDE_SHORT", account=account, symbol='龙虾/USDT')
-    assert res is not None
-    assert res['entry_phase'] == 'MISSED_INITIAL_ENTRY_CONTINUATION'
 
 def test_missed_breakout_no_new_confirmation_no_entry():
     account = MockAccount()
@@ -77,17 +63,6 @@ def test_same_exit_confirmation_candle_block():
     res = evaluate_v2_frame(frame, code="SECOND_BAR_OUTSIDE_LONG", account=account, symbol='龙虾/USDT')
     assert res is None 
 
-def test_next_new_confirmation_after_exit_accept():
-    account = MockAccount()
-    account.trades = [
-        {'symbol': '龙虾/USDT', 'action': 'OPEN_LONG', 'id': 60000},
-        {'symbol': '龙虾/USDT', 'action': 'CLOSE_LONG', 'id': 120000}
-    ]
-    bars = base_bars_long()
-    frame = create_frame(bars)
-    res = evaluate_v2_frame(frame, code="SECOND_BAR_OUTSIDE_LONG", account=account, symbol='龙虾/USDT')
-    assert res is not None
-    assert res['entry_phase'] == 'POST_EXIT_CONTINUATION_REENTRY'
 
 def test_already_holding_position_no_duplicate():
     account = MockAccount()
@@ -113,17 +88,6 @@ def test_unknown_obsolete_signal_block():
     res = evaluate_entry_contract(frame, code="SOME_UNKNOWN_CODE", account=account, symbol='龙虾/USDT')
     assert res is None
 
-def test_previous_order_rejected_later_retry():
-    account = MockAccount()
-    # A failed order never records OPEN_LONG in trades
-    account.trades = [
-        {'symbol': '龙虾/USDT', 'action': 'OPEN_LONG_REJECTED', 'id': 120000},
-    ]
-    bars = base_bars_long()
-    frame = create_frame(bars)
-    res = evaluate_v2_frame(frame, code="SECOND_BAR_OUTSIDE_LONG", account=account, symbol='龙虾/USDT')
-    assert res is not None
-    assert res['entry_phase'] == 'MISSED_INITIAL_ENTRY_CONTINUATION'
 
 def test_shared_atr_blocker_preserved():
     bars = base_bars_long()

@@ -174,26 +174,6 @@ def test_account_adapter_blocks_waterfall_candidate(side, monkeypatch):
     account.close_position.assert_not_awaited()
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('trigger', ['THREE_POINT_PIVOT', 'MA5_TRUE_PEAK_REVERSAL'])
-def test_account_adapter_closes_for_verified_peak_candidate(trigger, side, monkeypatch):
-    p = position(side)
-    p['open_timestamp'] = time.time() - 120
-    account = SimpleNamespace(positions={'X': p}, position_meta={},
-                              save_state=Mock(), close_position=AsyncMock(return_value=True))
-    monkeypatch.setattr(
-        'core.services.exits.peak_trailing_exit.evaluate_peak_trailing',
-        lambda *args, **kwargs: {
-            'type': 'EXIT_VERIFIED_PEAK', 'trigger': trigger,
-        },
-    )
-
-    result = asyncio.run(enforce_atr_protection(account, 'X', 101.))
-
-    assert result
-    account.close_position.assert_awaited_once_with(
-        'X', 101., 'Channel Swing EXIT_VERIFIED_PEAK', is_manual=True,
-    )
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

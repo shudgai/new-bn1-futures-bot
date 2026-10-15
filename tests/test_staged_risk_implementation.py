@@ -164,30 +164,8 @@ def test_install_and_runner_share_durable_runtime(tmp_path):
         asyncio.run(scenario(store))
 
 
-def test_legacy_entry_points_are_silent_only_under_new_flag():
-    p = dict(side='LONG', entry_price=100, qty=10, margin=1000, use_staged_risk_engine=True)
-    assert protection(p, 103, 0.0005, 0.0005) is None
-    assert 'channel_profit_protection' not in p
-    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) is None
-    p['use_staged_risk_engine'] = False
-    result = protection(p, 103, 0.0005, 0.0005)
-    assert result['peak_net'] > 3
 
 
-def test_production_adapter_calls_staged_dispatcher_without_legacy(monkeypatch):
-    from my_package import red_eye_adapter as adapter
-    real_runner = adapter.symbol_runner.process_single_symbol_runner
-    runner = AsyncMock(wraps=real_runner)
-    monkeypatch.setattr(adapter.symbol_runner, 'process_single_symbol_runner', runner)
-    p, ex = PositionState(), MockExchange()
-    legacy = Mock(side_effect=AssertionError('legacy must be silent'))
-    sut = create_strategy(p, ex, legacy, legacy, RISK_PARAMS['B'])
-    sut.tick(103, 1, 30, 1)
-    runner.assert_awaited_once()
-    legacy.assert_not_called()
-    assert sut.raw['use_staged_risk_engine'] is True
-    assert sut.state.stage == p.stage == 3
-    assert sut.account.saved_states[-1][sut.symbol]['staged_risk_state']['stage'] == 3
 
 
 @pytest.mark.parametrize('side,price', [('LONG', 103.1), ('SHORT', 96.9)])

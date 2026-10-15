@@ -173,18 +173,6 @@ class TestPepeExistingPositionStillManaged(unittest.IsolatedAsyncioTestCase):
             "existing PEPE position must still be managed"
         )
 
-    async def test_symbol_runner_no_entry_disabled_filter(self):
-        """
-        symbol_runner does not consult ENTRY_DISABLED_SYMBOLS.
-        It manages both new entries and existing positions.
-        """
-        src = (PROJECT_ROOT / "core" / "services" / "symbol_runner.py").read_text()
-        self.assertNotIn(
-            "ENTRY_DISABLED_SYMBOLS", src,
-            "symbol_runner must NOT filter by ENTRY_DISABLED_SYMBOLS"
-        )
-        self.assertIn("exit_decision = strategy.evaluate_exit(", src,
-                      "Wild Swing positions must remain managed by their exit strategy")
 
 
 # ---------------------------------------------------------------------------

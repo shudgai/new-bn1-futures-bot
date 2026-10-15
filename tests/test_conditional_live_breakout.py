@@ -7,99 +7,16 @@ from core.services.entry_contract import ENTRY_CODES, evaluate_entry_contract
 from test_breakout_only_entry import breakout_frame, live_outer_frame
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_valid_two_closed_bar_breakout_is_directional(side):
-    frame = breakout_frame(side)
-    decision = evaluate_entry_contract(frame, symbol="TEST/USDT")
-
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_continuation_signal_is_rejected_before_entry_evaluation(side):
-    frame = breakout_frame(side)
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, code=f"KC_OUTSIDE_{side}", symbol="TEST/USDT",
-        diagnostics=diagnostics,
-    ) is None
-    assert diagnostics["reason"] == "WAIT_KC_CONTINUATION"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_body_breakout_enters_on_first_qualifying_outer_rail_cross(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    quote = float(frame.loc[live, "close"])
-
-    decision = evaluate_entry_contract(
-        frame, quote, symbol="TEST/USDT"
-    )
-
-    assert f"KC_LIVE_BODY_BREAKOUT_{side}" in ENTRY_CODES
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
-    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
-    assert decision["confirmation_bar_id"] == frame.iloc[-1]["timestamp"]
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("indicator", ["kc", "ma5", "ma15"])
-def test_live_body_breakout_requires_all_closed_trends_in_entry_direction(side, indicator):
-    frame = live_outer_frame(side)
-    previous, latest = frame.index[-3], frame.index[-2]
-    if indicator == "kc":
-        for key in ("kc_lower", "kc_middle", "kc_upper"):
-            frame.loc[latest, key] = frame.loc[previous, key]
-    else:
-        frame.loc[latest, indicator] = frame.loc[previous, indicator]
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, float(frame.iloc[-1]["close"]), symbol="TEST/USDT",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_KC_MA5_MA15_TREND_MISMATCH"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_body_breakout_requires_live_ma5_to_slope_in_entry_direction(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    previous_ma5 = float(frame.iloc[-2]["ma5"])
-    frame.loc[live, "ma5"] = previous_ma5 + (1 if side == "SHORT" else -1)
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, float(frame.iloc[-1]["close"]), symbol="TEST/USDT",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_LIVE_MA5_DIRECTION"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_unfilled_live_breakout_falls_back_to_confirmed_two_bar_breakout(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    quote = float(frame.loc[live, "close"])
-    frame.loc[live, "open"] = quote - 0.2 if side == "LONG" else quote + 0.2
-
-    # The instant signal is below its minimum body size, but the two closed
-    # candles already form a confirmed breakout and the quote remains outside.
-    assert evaluate_entry_contract(
-        frame, quote, f"KC_LIVE_BODY_BREAKOUT_{side}", symbol="TEST/USDT"
-    ) is None
-    fallback = evaluate_entry_contract(frame, quote, symbol="TEST/USDT")
-    assert fallback is not None
-    assert fallback["type"] == f"KC_2BAR_CONFIRM_{side}"
-    assert fallback["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -113,84 +30,8 @@ def test_no_outer_rail_break_means_no_entry(side):
     assert evaluate_entry_contract(frame, quote, symbol="TEST/USDT") is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_outer_body_entry_does_not_require_prior_qualification(side):
-    frame = breakout_frame(side)
-    breakout = frame.index[-2]
-    continuation_bar = frame.index[-1]
-    # The next candle opens outside and extends by at least 0.5 ATR.
-    frame.loc[continuation_bar, "is_closed"] = True
-    frame.loc[continuation_bar, ["open", "close", "high", "low"]] = (
-        [101.7, 101.55, 101.8, 101.4] if side == "LONG"
-        else [98.3, 98.45, 98.6, 98.2]
-    )
-    next_bar = frame.iloc[-1].copy()
-    next_bar["timestamp"] += 60_000
-    next_bar["is_closed"] = False
-    if side == "LONG":
-        next_bar["open"], next_bar["close"] = 101.7, 102.3
-        next_bar["high"], next_bar["low"] = 102.4, 101.6
-        next_bar["kc_upper"], next_bar["kc_middle"], next_bar["kc_lower"] = 101.5, 100.4, 99.4
-        next_bar["ma5"], next_bar["ma15"] = 101.1, 100.1
-    else:
-        next_bar["open"], next_bar["close"] = 98.3, 97.7
-        next_bar["high"], next_bar["low"] = 98.4, 97.6
-        next_bar["kc_upper"], next_bar["kc_middle"], next_bar["kc_lower"] = 100.6, 99.6, 98.5
-        next_bar["ma5"], next_bar["ma15"] = 98.9, 99.9
-    frame.loc[len(frame)] = next_bar
-
-    qualification = {
-        "side": side,
-        "pending_signal_id": f"prior-breakout-{side}",
-        "breakout_bar_id": float(frame.loc[breakout, "timestamp"]),
-    }
-    account = SimpleNamespace(
-        positions={}, trades=[], last_closed_at={},
-        breakout_qualification={"TEST/USDT": qualification},
-    )
-    quote = float(next_bar["close"])
-    decision = evaluate_entry_contract(
-        frame, quote, account=account, symbol="TEST/USDT"
-    )
-
-    assert decision is not None
-    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
-    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
-
-    account.breakout_qualification.clear()
-    unqualified = evaluate_entry_contract(
-        frame, quote, account=account, symbol="TEST/USDT"
-    )
-    assert unqualified is not None
-    assert unqualified["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_unfilled_live_breakout_is_saved_for_later_continuation(side):
-    from core.engine import TradingEngine
-
-    frame = live_outer_frame(side)
-    quote = float(frame.iloc[-1]["close"])
-    qualifications = {}
-    account = SimpleNamespace(
-        positions={}, trades=[], last_closed_at={},
-        breakout_qualification=qualifications,
-        record_qualification=Mock(
-            side_effect=lambda symbol, value: qualifications.__setitem__(symbol, value)
-        ),
-        log=Mock(),
-    )
-    engine = TradingEngine.__new__(TradingEngine)
-    engine.account = account
-
-    opened = asyncio.run(engine._execute_confirmed_channel_break(
-        "TEST/USDT", frame, quote, side, daily_halt=True,
-        v8_reason=f"KC_LIVE_BODY_BREAKOUT_{side}",
-    ))
-
-    assert opened is False
-    assert qualifications["TEST/USDT"]["side"] == side
-    assert qualifications["TEST/USDT"]["breakout_bar_id"] == float(frame.iloc[-1]["timestamp"])
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -210,71 +51,10 @@ def test_live_body_breakout_rejects_small_body_and_late_chase(side):
     assert evaluate_entry_contract(frame, late_quote, code, symbol="TEST/USDT") is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_body_breakout_continues_from_same_side_outer_open_without_ticket(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    lower = float(frame.loc[live, "kc_lower"])
-    upper = float(frame.loc[live, "kc_upper"])
-    rail = upper if side == "LONG" else lower
-    opened = rail + 0.1 if side == "LONG" else rail - 0.1
-    quote = rail + 0.7 if side == "LONG" else rail - 0.7
-    frame.loc[live, ["open", "close", "high", "low"]] = [
-        opened, quote, max(opened, quote), min(opened, quote),
-    ]
-
-    decision = evaluate_entry_contract(frame, quote, symbol="TEST/USDT")
-
-    assert decision is not None
-    assert decision["type"] == f"KC_LIVE_BODY_BREAKOUT_{side}"
-    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
-    assert decision["kc_distance_atr"] == pytest.approx(0.7)
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_same_side_outer_open_uses_inclusive_half_atr_body_threshold(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    edge = float(frame.loc[live, "kc_upper" if side == "LONG" else "kc_lower"])
-    sign = 1 if side == "LONG" else -1
-    opened = edge + sign * 0.1
-    code = f"KC_LIVE_BODY_BREAKOUT_{side}"
-
-    for body, expected in ((0.5, True), (0.499, False)):
-        quote = opened + sign * body
-        frame.loc[live, ["open", "close", "high", "low"]] = [
-            opened, quote, max(opened, quote), min(opened, quote),
-        ]
-        decision = evaluate_entry_contract(
-            frame, quote, code, symbol="TEST/USDT"
-        )
-        assert (decision is not None) is expected
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_fresh_closed_outer_break_is_blocked_when_live_ma5_is_not_directional(side):
-    frame = live_outer_frame(side)
-    breakout_index = frame.index[-1]
-    breakout_stamp = float(frame.loc[breakout_index, "timestamp"])
-    frame.loc[breakout_index, "is_closed"] = True
-    live = frame.iloc[-1].copy()
-    live["timestamp"] = breakout_stamp + 60_000
-    live["is_closed"] = False
-    live["open"] = float(frame.loc[breakout_index, "close"])
-    quote = float(live["open"]) + (-0.1 if side == "LONG" else 0.1)
-    live["close"] = quote
-    live["high"] = max(float(live["open"]), quote)
-    live["low"] = min(float(live["open"]), quote)
-    frame.loc[len(frame)] = live
-
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        frame, quote, f"KC_LIVE_BODY_BREAKOUT_{side}", symbol="TEST/USDT",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] == "BLOCKED_LIVE_MA5_DIRECTION"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

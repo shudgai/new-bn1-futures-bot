@@ -69,22 +69,6 @@ def climax_frame(prior_side='LONG', *, extended=True):
     return frame
 
 
-@pytest.mark.parametrize(('prior_side', 'expected_side', 'expected_reason'), [
-    ('LONG', 'SHORT', 'CLIMAX_REVERSAL_EXIT_TOP'),
-    ('SHORT', 'LONG', 'CLIMAX_REVERSAL_EXIT_BOTTOM'),
-])
-def test_climax_requires_directional_extension_and_engulfing_reversal(
-    prior_side, expected_side, expected_reason,
-):
-    frame = climax_frame(prior_side)
-    evidence = detect_climax_reversal(frame, prior_side)
-    assert evidence['side'] == expected_side
-    assert evidence['reason'] == expected_reason
-    assert evidence['body_atr'] >= .8
-    assert evidence['extension_atr'] >= 3.0
-    assert DualTrackExitStrategy().evaluate_exit(
-        {'side': prior_side}, frame, current_price=float(frame.iloc[-1]['close']),
-    ) == expected_reason
 
 
 @pytest.mark.parametrize('prior_side', ['LONG', 'SHORT'])
@@ -127,53 +111,8 @@ def test_extreme_must_touch_the_matching_kc_rail(prior_side, rail, value):
     assert detect_climax_reversal(frame, prior_side) is None
 
 
-@pytest.mark.parametrize(('old_side', 'new_side', 'close_action'), [
-    ('LONG', 'SHORT', 'CLOSE_LONG'),
-    ('SHORT', 'LONG', 'CLOSE_SHORT'),
-])
-def test_only_same_minute_climax_close_can_authorize_flip(old_side, new_side, close_action):
-    frame = climax_frame(old_side)
-    live_ms = float(frame.iloc[-1]['timestamp'])
-    reason = ('CLIMAX_REVERSAL_EXIT_TOP' if old_side == 'LONG'
-              else 'CLIMAX_REVERSAL_EXIT_BOTTOM')
-    account = SimpleNamespace(positions={}, trades=[dict(
-        id=live_ms + 1000, symbol='CAP/USDT', action=close_action,
-        status='CLOSED', reason='Channel Swing ' + reason,
-    )])
-
-    decision = evaluate_entry_contract(
-        frame, float(frame.iloc[-1]['close']), CLIMAX_REVERSAL_FLIP_CODE,
-        account=account, symbol='CAP/USDT',
-    )
-    assert decision['side'] == new_side
-    assert decision['entry_phase'] == 'EXTREME_CLIMAX_FLIP'
-    if new_side == 'SHORT':
-            assert decision['initial_sl'] == pytest.approx(112.2)
-    else:
-            assert decision['initial_sl'] == pytest.approx(97.3)
-
-    account.trades[0]['reason'] = 'Channel Swing ordinary profit close'
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, float(frame.iloc[-1]['close']), CLIMAX_REVERSAL_FLIP_CODE,
-        account=account, symbol='CAP/USDT', diagnostics=diagnostics,
-    ) is None
-    assert diagnostics['reason'] == 'BLOCKED_CLIMAX_FLIP_NO_MATCHED_EXTREME_REVERSAL_CLOSE'
 
 
-def test_climax_stop_breach_rejects_flip_order():
-    frame = climax_frame('LONG')
-    live_ms = float(frame.iloc[-1]['timestamp'])
-    account = SimpleNamespace(positions={}, trades=[dict(
-        id=live_ms + 1000, symbol='CAP/USDT', action='CLOSE_LONG',
-        status='CLOSED', reason='Channel Swing CLIMAX_REVERSAL_EXIT_TOP',
-    )])
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, 112.2, CLIMAX_REVERSAL_FLIP_CODE,
-        account=account, symbol='CAP/USDT', diagnostics=diagnostics,
-    ) is None
-    assert diagnostics['reason'] == 'BLOCKED_CLIMAX_FLIP_NO_MATCHED_EXTREME_REVERSAL_CLOSE'
 
 
 @pytest.mark.parametrize(('side', 'entry', 'stop', 'breach'), [

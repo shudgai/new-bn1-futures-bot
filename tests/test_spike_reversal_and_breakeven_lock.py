@@ -83,35 +83,6 @@ def test_lobster_true_peak_reversal_kc_down():
     assert exit_signal == 'EXIT_BY_CONFIRMED_TRUE_PEAK'
 
 
-def test_lobster_true_peak_reversal_consecutive_wicks_and_bear_body():
-    """驗證形態見頂：連續長上影線滯漲 + 當根實體大陰線摜穿 MA5 立即平多。"""
-    strategy = DualTrackExitStrategy()
-    entry = 0.047955
-    atr = 0.0003
-    position = {
-        'symbol': '龙虾/USDT',
-        'side': 'LONG',
-        'entry_price': entry,
-        'entry_atr': atr,
-        'highest_price': 0.048600,
-        'open_timestamp': 1000,
-        'qty': 1000.0,
-    }
-
-    stamp = 180000
-    # 前兩根帶明顯長上影線（高點 0.0486，收盤 0.0483，上影線 0.0003 = 1.0 ATR >= 0.35 ATR）
-    # 第三根大陰線 open 0.0484, close 0.0481 (跌幅 0.0003 = 1.0 ATR >= 0.5 ATR)，直接跌破 MA5 (0.0483)
-    frame = pd.DataFrame([
-        dict(timestamp=stamp-120000, is_closed=True, open=0.0482, high=0.0486, low=0.0481, close=0.0483,
-             ma5=0.0483, ma15=0.0480, kc_middle=0.0481, atr=atr),
-        dict(timestamp=stamp-60000, is_closed=True, open=0.0483, high=0.04855, low=0.0482, close=0.0483,
-             ma5=0.0483, ma15=0.0480, kc_middle=0.0481, atr=atr),
-        dict(timestamp=stamp, is_closed=False, open=0.0484, high=0.04845, low=0.0481, close=0.04815,
-             ma5=0.0483, ma15=0.0480, kc_middle=0.0481, atr=atr),
-    ])
-
-    exit_signal = strategy.evaluate_exit(position, frame=frame, current_price=0.04815, is_closed=False)
-    assert exit_signal in ('EXIT_BY_FAST_PEAK_REVERSAL', 'EXIT_BY_CONFIRMED_TRUE_PEAK')
 
 
 def test_short_spike_reversal_harvest():

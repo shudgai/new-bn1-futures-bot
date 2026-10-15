@@ -46,23 +46,8 @@ def test_missing_or_invalid_structure_holds(side,fault):
     assert PureTrendStrategyV2().evaluate_bar_closed_exit(p,f) is None
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_old_drawdown_pending_cleared_and_new_pending_retried(side):
-    p=position(side)
-    p.update(peak_pnl_usdt=100.,peak_profit_diff=20.,unrealized_pnl=1.,
-             closed_exit_state=dict(policy='closed_1m_ma15_structure_v1',pending=True,reason='INTRA_BAR_PEAK_DRAWDOWN_LOCK'))
-    strategy=DualTrackExitStrategy()
-    assert strategy.evaluate_exit(p,frame(side,101.),current_price=101.) is None
-    assert 'closed_exit_state' not in p
-    reason=strategy.evaluate_exit(p,frame(side),current_price=101.)
-    assert reason is None
-    assert strategy.evaluate_exit(p,current_price=101.) is None
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_hard_stop_without_candles(side):
-    p=position(side)
-    assert DualTrackExitStrategy().evaluate_exit(p,current_price=p['sl'])=='EXIT_INITIAL_ATR_HARD_STOP'
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

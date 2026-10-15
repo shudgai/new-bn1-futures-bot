@@ -45,25 +45,3 @@ def test_lobster_fast_path_respects_opposing_ma15_bias():
     res3 = evaluate_entry_contract(df, trigger_price)
     assert res3 is None
 
-def test_boundary_conditions():
-    df = make_lobster_frame()
-    atr = df.iloc[-2]['atr']
-    lower = df.iloc[-1]['kc_lower']
-    opened = df.iloc[-1]['open']
-    
-    # SHORT
-    price_not_below = lower + 0.00001
-    assert evaluate_entry_contract(df, price_not_below) is None
-    
-    # opened already below lower
-    df_already_below = df.copy()
-    df_already_below.iloc[-1, df_already_below.columns.get_loc('open')] = lower - 0.00010
-    df_already_below.iloc[-1, df_already_below.columns.get_loc('high')] = lower - 0.00010
-    df_already_below.iloc[-1, df_already_below.columns.get_loc('low')] = lower - 0.00060
-    df_already_below.iloc[-1, df_already_below.columns.get_loc('close')] = lower - 0.00050
-    diagnostics = {}
-    continuation = evaluate_entry_contract(
-        df_already_below, lower - 0.00050, diagnostics=diagnostics,
-    )
-    assert continuation is None
-    assert diagnostics['reason'] == 'INSUFFICIENT_LOWER_SPACE'

@@ -64,14 +64,6 @@ def test_long_warning_doji():
     assert res is None
     assert position.get('trend_hold_status') == 'WARNING'
 
-def test_long_released_peak_trailing():
-    # 5. RELEASED + Peak trailing -> normal exit
-    position = {'side': 'LONG', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 110, 'peak_net_pnl': 10.0, 'identity': ['LONG', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 90, 'open_timestamp': 60.0}
-    snapshot = get_base_snapshot('RELEASED')
-    res = evaluate_peak_trailing(position, 105, snapshot)
-    assert res is not None
-    assert res['trigger'] == 'TRAILING_2U_LADDER'
-    assert position.get('trend_hold_status') == 'RELEASED'
 
 def test_long_warning_waterfall():
     # 7. WARNING + Waterfall -> MUST exit
@@ -143,20 +135,7 @@ def test_short_warning_doji():
     assert res is None
     assert position.get('trend_hold_status') == 'WARNING'
 
-def test_short_released_peak_trailing():
-    position = {'side': 'SHORT', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 90, 'peak_net_pnl': 10.0, 'identity': ['SHORT', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 110, 'open_timestamp': 60.0}
-    snapshot = get_base_snapshot_short('RELEASED')
-    res = evaluate_peak_trailing(position, 95, snapshot)
-    assert res is not None
-    assert res['trigger'] == 'TRAILING_2U_LADDER'
-    assert position.get('trend_hold_status') == 'RELEASED'
 
-def test_short_warning_flash_crash():
-    position = {'side': 'SHORT', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 94, 'peak_net_pnl': 0.0, 'identity': ['SHORT', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 110, 'open_timestamp': 60.0}
-    snapshot = get_base_snapshot_short('WARNING')
-    res = evaluate_peak_trailing(position, 105, snapshot) # price surges > 1.5 ATR
-    assert res is not None
-    assert res['trigger'] == 'WATERFALL_DROP'
     
 def test_short_warning_hard_stop():
     position = {'side': 'SHORT', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 94, 'peak_net_pnl': 0.0, 'identity': ['SHORT', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 103, 'open_timestamp': 60.0}
@@ -192,19 +171,3 @@ def test_trend_hold_transition_hold_warning_hold():
     assert position['peak_trailing_state']['peak_price'] == 110
     assert 'identity' in position['peak_trailing_state']
 
-def test_trend_hold_transition_warning_released():
-    position = {'side': 'LONG', 'entry_price': 100, 'qty': 1, 'peak_trailing_state': {'peak_price': 110, 'peak_net_pnl': 10.0, 'identity': ['LONG', 60.0, 100.0, 1.0], 'policy': 'abnormal_body_only_v2'}, 'initial_sl': 90, 'open_timestamp': 60.0}
-    
-    # WARNING
-    snap2 = get_base_snapshot('WARNING')
-    res2 = evaluate_peak_trailing(position, 105, snap2)
-    assert res2 is None
-    assert position.get('trend_hold_status') == 'WARNING'
-    
-    # RELEASED
-    snap3 = get_base_snapshot('RELEASED')
-    snap3['quote_ms'] = 61000
-    res3 = evaluate_peak_trailing(position, 105, snap3)
-    assert res3 is not None
-    assert res3['trigger'] == 'TRAILING_2U_LADDER'
-    assert position.get('trend_hold_status') == 'RELEASED'

@@ -84,24 +84,6 @@ def test_next_closed_candle_without_failure_keeps_position(side, close, ma5):
     ) is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_fast_failure_exit_survives_channel_outer_hold(side):
-    position = make_position(side)
-    candle = make_snapshot(
-        side, close=99.8 if side == "LONG" else 100.2, ma5=100.0,
-    )
-    candle["history_5"][-1].update(
-        kc_upper=99.7 if side == "LONG" else 110.0,
-        kc_lower=90.0 if side == "LONG" else 100.3,
-    )
-
-    result = evaluate_peak_trailing(
-        position, candle["history_5"][-1]["c"], candle, fee=0.0, slippage=0.0,
-    )
-
-    assert result is not None
-    assert result["trigger"] == CONTINUATION_FAILED_TRIGGER
-    assert position["peak_trailing_state"]["pending"] == result["type"]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

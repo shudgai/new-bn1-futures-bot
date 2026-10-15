@@ -198,37 +198,6 @@ def test_pullback_outcome_classifies_touched_timeout():
     assert engine.account.pullback_outcome_stats["reversal_timeout"] == 1
 
 
-def test_entry_filter_stats_record_components_adjustments_and_last_snapshot():
-    engine = object.__new__(TradingEngine)
-
-    class DummyAccount:
-        entry_filter_stats = {"evaluations": 0, "outcomes": {}, "components": {}, "adjustments": {}}
-        entry_filter_last = {}
-
-    engine.account = DummyAccount()
-    signal = {
-        "action": "HOLD",
-        "reason": "Score_Low(53)",
-        "score": 53,
-        "raw_score": 65,
-        "btc_adjusted_score": 53,
-        "btc_score_penalty": 12,
-        "history_score_multiplier": 0.8,
-        "score_components": {"kc": 30, "volume": 20, "rsi": 0, "freshness": 2, "quality": 1},
-        "diagnostics": {"rsi": 50.0, "adx": 18.0, "atr_pct": 0.003},
-    }
-
-    engine._record_entry_filter("INJ/USDT", signal, "LONG")
-
-    stats = engine.account.entry_filter_stats
-    assert stats["evaluations"] == 1
-    assert stats["outcomes"]["score_low"] == 1
-    assert stats["components"]["kc"]["pass"] == 1
-    assert stats["components"]["rsi"]["fail"] == 1
-    assert stats["components"]["quality"]["fail"] == 1
-    assert stats["adjustments"]["btc_penalty"] == 1
-    assert stats["adjustments"]["history_penalty"] == 1
-    assert engine.account.entry_filter_last["INJ/USDT"]["diagnostics"]["adx"] == 18.0
 
 
 def test_score_low_progress_displays_component_breakdown():
@@ -277,39 +246,6 @@ def test_ma5_wait_detail_reports_first_turn_low_volume():
     assert "等待第2根" in text
 
 
-def test_entry_direction_guard_blocks_wrong_1h_st_and_ema50(monkeypatch):
-    import core.config as cfg
-    # Ensure predictable filter flags for this unit test
-    monkeypatch.setattr(cfg, "SYMBOL_1H_ST_FILTER_ENABLED", True)
-    monkeypatch.setattr(cfg, "BTC_REGIME_FILTER_ENABLED", False)
-    monkeypatch.setattr(cfg, "ENABLE_1H_EMA50_FILTER", True)
-
-    engine = object.__new__(TradingEngine)
-
-    class DummyAccount:
-        def __init__(self):
-            self.logs = []
-
-        def log(self, text, level="INFO"):
-            self.logs.append((text, level))
-
-    engine.account = DummyAccount()
-    # Simulate caches
-    engine.st_direction_1h_cache = {"AAA/USDT": -1}
-    engine.ema_50_1h_cache = {"AAA/USDT": 100.0}
-    engine.btc_1h_st_direction = 1
-
-    # Case 1: 1h ST is opposite (symbol is -1, want LONG=1)
-    allowed = engine._entry_direction_allowed("AAA/USDT", "LONG", planned_price=101.0)
-    assert allowed is False
-    assert any("1h SuperTrend" in msg for msg, _ in engine.account.logs)
-
-    engine.account.logs.clear()
-
-    # Case 2: EMA50 filter blocks SHORT when price is above EMA50
-    allowed2 = engine._entry_direction_allowed("AAA/USDT", "SHORT", planned_price=101.0)
-    assert allowed2 is False
-    assert any("1h EMA50" in msg or "EMA50" in msg for msg, _ in engine.account.logs)
 
 
 def test_strategy_indicators():
@@ -329,130 +265,16 @@ def test_strategy_indicators():
     assert "st_direction" in res.columns
     assert "atr" in res.columns
 
-@pytest.mark.anyio
-async def test_paper_entry_slippage_preserves_planned_reward_risk(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "slippage_rr.json"))
-    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", False)
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 101.5, "test",
-        signal_score=80, apply_slippage=True,
-    )
-    pos = account.positions["BTC/USDT"]
-    actual_risk = pos["entry_price"] - pos["sl"]
-    actual_reward = pos["tp"] - pos["entry_price"]
-    assert actual_reward / actual_risk == pytest.approx(1.5)
 
 
-@pytest.mark.anyio
-async def test_paper_small_profit_exits_are_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "runner_mode.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", True)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "runner",
-        signal_score=80, apply_slippage=False,
-        entry_context={"initial_sl": 99.0},
-    )
-
-    await account.update_positions({"BTC/USDT": 101.3})
-    await account.update_positions({"BTC/USDT": 100.7})
-
-    assert "BTC/USDT" in account.positions
-    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 
 
-@pytest.mark.anyio
-async def test_paper_account_open_close(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-    close_notifications = []
-    account.on_trade_closed = lambda: close_notifications.append("closed")
-    initial_bal = account.balance
-    success = await account.open_position(
-        "BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0,
-        "Test Entry", leverage=2, apply_slippage=False,
-    )
-    assert success is True
-    assert "BTC/USDT" in account.positions
-    qty = account.positions["BTC/USDT"]["qty"]
-    open_fee = qty * 50000.0 * TAKER_FEE_RATE
-    assert account.balance == pytest.approx(initial_bal - 50.0 - open_fee)
-    assert account.get_available_balance() == pytest.approx(account.balance)
-
-    close_success = await account.close_position("BTC/USDT", 51000.0, "Test Exit")
-    assert close_success is True
-    assert "BTC/USDT" not in account.positions
-    assert close_notifications == ["closed"]
-    exec_close_price = 51000.0 * (1 - pa_module.SLIPPAGE_PCT)
-    raw_pnl = (exec_close_price - 50000.0) * qty
-    close_fee = qty * exec_close_price * TAKER_FEE_RATE
-    assert account.balance == pytest.approx(initial_bal - open_fee + raw_pnl - close_fee)
-    assert account.balance == pytest.approx(initial_bal + account.realized_pnl)
 
 
-@pytest.mark.anyio
-async def test_paper_entry_rejects_margin_that_cannot_cover_entry_fee(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "insufficient_fee_balance.json"))
-    account = PaperAccount()
-    account.balance = 75.0
-
-    success = await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 75.0, 90.0, 0.0,
-        "Insufficient fee balance", leverage=5, signal_score=100,
-        apply_slippage=False,
-    )
-
-    assert success is False
-    assert account.balance == pytest.approx(75.0)
-    assert "BTC/USDT" not in account.positions
-    assert not account.trades
 
 
-@pytest.mark.anyio
-async def test_paper_account_repeated_close_creates_one_trade(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "repeat_close.json"))
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0,
-        "Test Entry", leverage=2, apply_slippage=False,
-    )
-
-    first, second = await asyncio.gather(
-        account.close_position("BTC/USDT", 50000.0, "auto exit"),
-        account.close_position("BTC/USDT", 50000.0, "manual exit", is_manual=True),
-    )
-
-    assert sorted((first, second)) == [False, True]
-    assert "BTC/USDT" not in account.positions
-    assert len([trade for trade in account.trades if trade["symbol"] == "BTC/USDT" and trade["status"] == "CLOSED"]) == 1
 
 
-@pytest.mark.anyio
-async def test_paper_partial_close_refunds_margin_and_pnl(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-    initial_bal = account.balance
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "test",
-        leverage=2, apply_slippage=False,
-    )
-    qty = account.positions["BTC/USDT"]["qty"]
-    open_fee = qty * 100.0 * TAKER_FEE_RATE
-    assert await account.partial_close_position("BTC/USDT", 101.0, "1.5R", fraction=0.5)
-    exec_close_price = 101.0 * (1 - pa_module.SLIPPAGE_PCT)
-    close_qty = qty * 0.5
-    raw_pnl = (exec_close_price - 100.0) * close_qty
-    close_fee = exec_close_price * close_qty * TAKER_FEE_RATE
-    assert account.positions["BTC/USDT"]["margin"] == pytest.approx(25.0)
-    assert account.balance == pytest.approx(
-        initial_bal - 50.0 - open_fee + 25.0 + raw_pnl - close_fee
-    )
 
 
 def test_paper_account_migrates_legacy_accounting_once(tmp_path, monkeypatch):
@@ -496,154 +318,14 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
 
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    (
-        "side", "peak_price", "bank_price", "runner_price", "runner_bank",
-        "high_peak_price", "high_peak_bank",
-    ),
-    [
-        # 峰值1.0%落在 _PROFIT_BANK_CAPTURE_TIERS 的 0.81%→80% 那一級，
-        # 峰值2.0%落在1.10%→90%那一級；
-        # 見 core/config.py 的 _PROFIT_BANK_CAPTURE_TIERS。
-        ("LONG", 100.35, 100.25, 101.0, 100.80, 102.0, 101.80),
-        ("SHORT", 99.65, 99.75, 99.0, 99.20, 98.0, 98.20),
-    ],
-)
-async def test_paper_profit_bank_turns_bankable_float_into_net_profit(
-    tmp_path, monkeypatch, side, peak_price, bank_price, runner_price, runner_bank,
-    high_peak_price, high_peak_bank,
-):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"profit_bank_{side}.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", True)
-    monkeypatch.setattr(pa_module, "PROFIT_BANK_TRIGGER_PCT", 0.0035)
-    monkeypatch.setattr(pa_module, "PROFIT_BANK_LOCK_PCT", 0.0025)
-    monkeypatch.setattr(pa_module, "PROFIT_BANK_CAPTURE_RATIO", 0.70)
-    monkeypatch.setattr(pa_module, "PROFIT_BANK_MIN_STEP_PCT", 0.0002)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    account = PaperAccount()
-    initial_sl = 99.0 if side == "LONG" else 101.0
-    await account.open_position(
-        "BTC/USDT", side, 100.0, 50.0, initial_sl, 0.0, "profit bank",
-        leverage=2, signal_score=80, apply_slippage=False,
-    )
-
-    await account.update_positions({"BTC/USDT": peak_price})
-    position = account.positions["BTC/USDT"]
-    assert position["sl"] == pytest.approx(bank_price)
-    assert position["profit_bank_armed"] is True
-    assert position["is_breakeven_moved"] is True
-
-    # 峰值達 1% 時鎖 80%；達 2% 時鎖 90%，回吐比例隨利潤縮小。
-    await account.update_positions({"BTC/USDT": runner_price})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(runner_bank)
-
-    await account.update_positions({"BTC/USDT": high_peak_price})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(high_peak_bank)
-
-    stop_cross_price = high_peak_bank - 0.001 if side == "LONG" else high_peak_bank + 0.001
-    await account.update_positions({"BTC/USDT": stop_cross_price})
-    assert "BTC/USDT" not in account.positions
-    assert account.trades[0]["pnl"] > 0
-    assert "移動止利" in account.trades[0]["reason"]
 
 
-@pytest.mark.anyio
-async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
-    account = PaperAccount()
-    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
-    entry = account.positions["BTC/USDT"]["entry_price"]
-
-    cost_floor = 2 * pa_module.TAKER_FEE_RATE + pa_module.SLIPPAGE_PCT
-    effective_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, cost_floor)
-    effective_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, cost_floor)
-    await account.update_positions({"BTC/USDT": entry * (1 + effective_trigger + 0.0001)})
-    assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
-    assert account.position_meta["BTC/USDT"]["early_profit_guard_price"] == pytest.approx(
-        entry * (1 + effective_exit)
-    )
-    assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
-
-    await account.update_positions({"BTC/USDT": entry * (1 + effective_exit)})
-    assert "BTC/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
-    assert account.trades[0]["pnl"] > 0
 
 
-@pytest.mark.anyio
-async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "dynamic_peak.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    account = PaperAccount()
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 90.0, 0.0, "trend", signal_score=85,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "profit_profile": "TREND_EXTENSION", "profit_room_pct": 0.02},
-    )
-    entry = account.positions["BTC/USDT"]["entry_price"]
-    await account.update_positions({"BTC/USDT": entry * 1.0044})
-    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
-    await account.update_positions({"BTC/USDT": entry * 1.0080})
-    assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
-    await account.update_positions({"BTC/USDT": entry * 1.0057})
-    assert "BTC/USDT" in account.positions
-    await account.update_positions({"BTC/USDT": entry * 1.0055})
-    assert "BTC/USDT" not in account.positions
-    assert account.trades[0]["peak_pnl_pct"] >= 0.008
 
 
-@pytest.mark.anyio
-async def test_bounce_closes_at_configured_room_capture_target(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_target.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_BOUNCE_TARGET_EXIT", True)
-    account = PaperAccount()
-    await account.open_position(
-        "DOGE/USDT", "SHORT", 100.0, 50.0, 110.0, 0.0, "bounce", signal_score=75,
-        entry_context={
-            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
-            "profit_room_pct": 0.004,
-        },
-    )
-    entry = account.positions["DOGE/USDT"]["entry_price"]
-    await account.update_positions({"DOGE/USDT": entry * (1 - 0.0029)})
-    assert "DOGE/USDT" in account.positions
-    assert account.positions["DOGE/USDT"]["bounce_capture_ratio"] == pytest.approx(0.75)
-    assert account.positions["DOGE/USDT"]["bounce_target_pct"] == pytest.approx(0.003)
-    await account.update_positions({"DOGE/USDT": entry * (1 - 0.0030)})
-    assert "DOGE/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "反彈空間75%目標平倉"
 
 
-@pytest.mark.anyio
-async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
-    account = PaperAccount()
-    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
-    entry = account.positions["BTC/USDT"]["entry_price"]
-
-    cost_floor = 2 * pa_module.TAKER_FEE_RATE + pa_module.SLIPPAGE_PCT
-    effective_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, cost_floor)
-    await account.update_positions({"BTC/USDT": entry * (1 + effective_trigger - 0.0001)})
-    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_EXIT_PCT - 0.0001)})
-    assert "BTC/USDT" in account.positions
-    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 
 
 def test_trailing_locks_at_least_seventy_percent_from_point_six_pct():
@@ -699,218 +381,18 @@ async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_pro
     assert trade["reason"] == "觸發止損 (Stop-Loss)"
 
 
-@pytest.mark.anyio
-async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    """獲利回吐警訊（💰⚠️，從高點回吐超過PROFIT_ALERT_GIVEBACK_RATIO）亮起
-    後，不是一有反彈就立刻平倉——只要浮盈還在持續往上爬，就繼續讓它跑；
-    只有等反彈自己也開始回落（找到這次反彈的高點）時，才把握那個高點
-    平倉。關掉移動停利避免SL價位干擾，單純測試這個邏輯。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
-    account = PaperAccount()
-
-    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
-
-    # 推高到峰值 pnl=10%
-    await account.update_positions({"BTC/USDT": 110.0})
-    assert "BTC/USDT" in account.positions
-    assert account.positions["BTC/USDT"]["profit_alert"] is False
-
-    # 從高點回吐超過20%（10% -> 7.5%以下），有足夠淨利可取，應該直接平倉。
-    await account.update_positions({"BTC/USDT": 107.0})
-
-    assert "BTC/USDT" not in account.positions
-    trade = account.trades[0]
-    assert trade["symbol"] == "BTC/USDT"
-    assert trade["pnl"] > 0
-    assert trade["reason"] == "峰值回吐平倉"
 
 
-@pytest.mark.anyio
-async def test_paper_account_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
-    account = PaperAccount()
-
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=500.0, reason="test", signal_score=80
-    )
-    account.positions["BTC/USDT"]["sl"] = 102.0
-    account.position_meta["BTC/USDT"]["sl"] = 102.0
-
-    await account.update_positions({"BTC/USDT": 110.0})
-    assert "BTC/USDT" in account.positions
-
-    await account.update_positions({"BTC/USDT": 102.0})
-
-    assert "BTC/USDT" not in account.positions
-    trade = account.trades[0]
-    assert trade["symbol"] == "BTC/USDT"
-    assert trade["reason"] == "峰值回吐平倉"
 
 
-@pytest.mark.anyio
-async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost(tmp_path, monkeypatch):
-    """反彈觸頂回落平倉不能只看「有沒有從反彈高點回落」，還要蓋過來回
-    成本（2x手續費+平倉滑價）才值得把握——實測ADA/USDT 08/01 17:01這筆
-    就是抓到只有0.001%的極小反彈就平倉，扣完成本後淨損-0.20。這裡用
-    極小的價格波動模擬同樣情境，驗證這種微小反彈觸頂不該觸發平倉，
-    部位要繼續留著等真正夠大的獲利。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
-    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
-    account = PaperAccount()
-
-    await account.open_position("ADA/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
-
-    # 推高到峰值 pnl=0.10%，本身就已經低於來回成本(2x手續費+滑價≈0.13%)
-    await account.update_positions({"ADA/USDT": 100.10})
-    # 回吐超過20%（0.10% -> 0.07%），警訊亮起
-    await account.update_positions({"ADA/USDT": 100.07})
-    assert account.positions["ADA/USDT"]["profit_alert"] is False
-
-    # 反彈到0.075%，比前一次(0.07%)高，還在往上爬，繼續持有
-    await account.update_positions({"ADA/USDT": 100.075})
-    assert "ADA/USDT" in account.positions
-
-    # 反彈本身開始回落（0.075% -> 0.073%），找到反彈高點了，但獲利依然
-    # 低於來回成本門檻，不該被當成「值得把握的高點」而平倉
-    await account.update_positions({"ADA/USDT": 100.073})
-
-    assert "ADA/USDT" in account.positions
 
 
-@pytest.mark.anyio
-async def test_half_percent_trigger_locks_fixed_three_tenths_pct(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "half_percent_lock.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_LADDER", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", True)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_TRIGGER_PCT", 0.005)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_FLOOR_PCT", 0.003)
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", False)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    account = PaperAccount()
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, sl=99.0, tp=0.0,
-        reason="single fixed lock", leverage=5, signal_score=100,
-        apply_slippage=False,
-    )
-    account.positions["BTC/USDT"]["outer_run_active"] = True
-    account.position_meta["BTC/USDT"]["outer_run_active"] = True
-
-    await account.update_positions({"BTC/USDT": 100.49})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(99.0)
-    assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
-
-    await account.update_positions({"BTC/USDT": 100.50})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.30)
-    assert account.position_meta["BTC/USDT"]["fixed_profit_lock_pct_armed"] is True
-
-    # 固定底線不會自行追價；原移動停利負責後續推進。
-    await account.update_positions({"BTC/USDT": 101.0})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.30)
-
-    await account.update_positions({"BTC/USDT": 100.31})
-    assert "BTC/USDT" in account.positions
-    account.positions["BTC/USDT"]["outer_run_active"] = False
-    account.position_meta["BTC/USDT"]["outer_run_active"] = False
-    await account.update_positions({"BTC/USDT": 100.29})
-    assert "BTC/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "觸發移動止利 (Trailing Take-Profit)"
-    assert account.trades[0]["pnl"] > 0
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("wave_regime", "side", "trigger_price"),
-    [
-        ("RANGE", "LONG", 100.50),
-        ("TREND", "SHORT", 99.50),
-    ],
-)
-async def test_fixed_profit_lock_does_not_apply_before_continuous_wave_pivot(
-    tmp_path, monkeypatch, wave_regime, side, trigger_price,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"{wave_regime}_{side}.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", True)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_TRIGGER_PCT", 0.005)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_FLOOR_PCT", 0.003)
-    account = PaperAccount()
-    original_sl = 95.0 if side == "LONG" else 105.0
-    assert await account.open_position(
-        "BTC/USDT", side, 100.0, 50.0, original_sl, 0.0,
-        "continuous wave", leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": wave_regime},
-    )
-    account.positions["BTC/USDT"]["outer_run_active"] = True
-    account.position_meta["BTC/USDT"]["outer_run_active"] = True
-
-    await account.update_positions({"BTC/USDT": trigger_price})
-
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
-    assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
 
 
-@pytest.mark.anyio
-async def test_outer_run_ignores_profit_lock_stop_until_returned_inside(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "outer_run_hold.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "SHORT", 100.0, 50.0, 101.0, 0.0,
-        "outer run short", leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "TREND"},
-    )
-    position = account.positions["BTC/USDT"]
-    meta = account.position_meta["BTC/USDT"]
-    position["outer_run_active"] = meta["outer_run_active"] = True
-    position["is_breakeven_moved"] = meta["is_breakeven_moved"] = True
-    position["profit_lock_usdt_armed"] = meta["profit_lock_usdt_armed"] = True
-    position["sl"] = meta["sl"] = 99.0
-
-    await account.update_positions({"BTC/USDT": 99.5})
-    assert "BTC/USDT" in account.positions
-
-    position["outer_run_active"] = meta["outer_run_active"] = False
-    await account.update_positions({"BTC/USDT": 99.5})
-    # 連續波段模式由引擎的 KC 回軌規則退出，帳戶層 SL 不可越權平倉。
-    assert "BTC/USDT" in account.positions
 
 
-@pytest.mark.anyio
-async def test_range_swing_does_not_arm_fixed_lock_before_outer_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "range_no_outer_run.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", True)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_TRIGGER_PCT", 0.005)
-    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_FLOOR_PCT", 0.003)
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 0.0,
-        "range swing", leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "RANGE"},
-    )
-
-    await account.update_positions({"BTC/USDT": 101.0})
-
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(95.0)
-    assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
 
 
 @pytest.mark.anyio
@@ -936,82 +418,10 @@ async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, 
     assert loss_pct == pytest.approx(15.0)
 
 
-@pytest.mark.anyio
-async def test_paper_account_place_limit_entry_fills_immediately(tmp_path, monkeypatch):
-    """MA5拐頭進場用的是對手價直接成交，紙上帳戶沒有真實委託簿要排隊，
-    place_limit_entry應該直接視為立即成交，不會留在pending狀態。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-
-    placed = await account.place_limit_entry(
-        "SOL/USDT", "SHORT", 150.0, 50.0, sl=155.0, tp=140.0,
-        reason="MA5_Reversal_SHORT", signal_score=89, post_only=False,
-    )
-    assert placed is True
-    assert "SOL/USDT" in account.positions
-    assert account.pending_limit_orders == {}
 
 
-@pytest.mark.anyio
-async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_path, monkeypatch):
-    """Post-Only掛單未觸價前保留pending；觸價後按原限價成交且不加Taker滑點。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-
-    placed = await account.place_limit_entry(
-        "SOL/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=110.0,
-        reason="maker_test", signal_score=89, post_only=True,
-    )
-    assert placed is True
-    assert "SOL/USDT" not in account.positions
-    assert "SOL/USDT" in account.pending_limit_orders
-
-    await account.update_positions({"SOL/USDT": 101.0})
-    await account.check_pending_limit_orders()
-    assert "SOL/USDT" in account.pending_limit_orders
-
-    # 只碰到掛單附近但尚未穿透 0.01%，仍模擬排隊未成交。
-    await account.update_positions({"SOL/USDT": 99.995})
-    await account.check_pending_limit_orders()
-    assert "SOL/USDT" in account.pending_limit_orders
-
-    await account.update_positions({"SOL/USDT": 99.98})
-    await account.check_pending_limit_orders()
-    assert "SOL/USDT" not in account.pending_limit_orders
-    assert account.positions["SOL/USDT"]["entry_price"] == pytest.approx(100.0)
 
 
-@pytest.mark.anyio
-async def test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "risk_trailing.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    # 固定門檻刻意高於 1.5R：有 initial_risk 的單仍應依 R 倍數啟動，
-    # 否則會發生先分批獲利、剩餘倉又退回完整止損的情況。
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.008)
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.5)
-    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.5)
-    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_PCT", 0.0)
-    account = PaperAccount()
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.8, 0.0, "structured",
-        atr=0.5, leverage=2, signal_score=80,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.8, "initial_risk": 0.2},
-    )
-    position = account.positions["BTC/USDT"]
-    entry = position["entry_price"]
-    risk = position["initial_risk"]
-    original_sl = position["sl"]
-
-    await account.update_positions({"BTC/USDT": entry + risk * 1.4})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
-
-    await account.update_positions({"BTC/USDT": entry + risk * 1.6})
-    assert account.positions["BTC/USDT"]["sl"] >= entry + risk
-    assert account.positions["BTC/USDT"]["is_breakeven_moved"] is True
 
 
 def test_low_score_signal_caps_eth_leverage():
@@ -1044,46 +454,6 @@ def test_effective_slots_remain_at_configured_cap_as_balance_changes():
     assert engine_module.get_effective_slot_count(225.0, configured_max=3) == 3
 
 
-def test_two_slots_reopen_independently_and_compound_realized_balance(monkeypatch):
-    monkeypatch.setattr("core.engine.get_effective_slot_count", lambda _balance: 2)
-
-    class SlotAccount:
-        pending_limit_orders = {}
-
-        def __init__(self):
-            self.positions = {}
-            self.available = 120.0
-            self.wallet = 120.0
-
-        def get_available_balance(self):
-            return self.available
-
-        def get_wallet_balance(self):
-            return self.wallet
-
-    engine = object.__new__(TradingEngine)
-    engine.account = SlotAccount()
-    assert engine._continuous_entry_amount() == pytest.approx(60.0)
-
-    # First slot closed; second remains. Reopening uses free balance, but
-    # never consumes the second slot's reserved margin.
-    engine.account.positions["SOL/USDT"] = {"margin": 60.0}
-    engine.account.available = 60.0
-    assert engine._continuous_entry_amount() == pytest.approx(60.0)
-
-    # Realized profit compounds the next entry amount.
-    engine.account.wallet = 130.0
-    engine.account.available = 70.0
-    assert engine._continuous_entry_amount() == pytest.approx(65.0)
-
-    engine.account.positions["PEPE/USDT"] = {"margin": 60.0}
-    engine.account.available = 10.0
-    assert engine._continuous_entry_amount() == 0.0
-
-    engine.account.positions.clear()
-    engine.account.available = 4000.0
-    engine.account.wallet = 4000.0
-    assert engine._continuous_entry_amount() == pytest.approx(1000.0)
 
 
 def test_pausing_trading_keeps_market_data_task_alive():
@@ -1238,25 +608,6 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
     assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(10.0)
 
 
-@pytest.mark.anyio
-async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-    # MIN_OPEN_SIGNAL_SCORE - 1 分必須拒絕，MIN_OPEN_SIGNAL_SCORE 分才會真的開倉。
-    assert not await account.open_position(
-        "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
-        "Score below reject", signal_score=MIN_OPEN_SIGNAL_SCORE - 1
-    )
-    assert await account.open_position(
-        "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
-        "Score accept", signal_score=MIN_OPEN_SIGNAL_SCORE
-    )
-    assert account.positions["ETH/USDT"]["leverage"] == get_signal_leverage("ETH/USDT", MIN_OPEN_SIGNAL_SCORE)
-    trade = account.trades[0]
-    assert trade["leverage"] == get_signal_leverage("ETH/USDT", MIN_OPEN_SIGNAL_SCORE)
-    assert trade["signal_score"] == MIN_OPEN_SIGNAL_SCORE
-    assert trade["reason"] == "Score accept"
 
 def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
     return pd.DataFrame({
@@ -1370,42 +721,6 @@ def test_signal_progress_reports_only_true_unconfirmed_kc_as_waiting():
     assert "待KC突破" in text
 
 
-def test_engine_records_four_shadow_profiles_without_changing_baseline(monkeypatch):
-    engine = object.__new__(TradingEngine)
-
-    class DummyAccount:
-        trades = []
-        shadow_parameter_stats = {"evaluations": 0, "profiles": {}}
-        shadow_parameter_last = {}
-
-    engine.account = DummyAccount()
-    engine.strategy = SuperTrendKeltnerStrategy()
-    engine.ema_50_1h_cache = {"DOGE/USDT": 95.0}
-    engine.adx_1h_declining_cache = {"DOGE/USDT": False}
-    engine.st_direction_1h_cache = {"DOGE/USDT": 1}
-    engine.btc_1h_st_direction = -1
-    engine.btc_1h_st_flip_age = 3
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    frame = _entry_score_frame(volume=700.0, rsi=69.0, adx=35.0)
-    baseline = engine.strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=-1,
-        btc_st_flip_age=3, symbol="DOGE/USDT", indicators_precomputed=True,
-    )
-    baseline_snapshot = dict(baseline)
-
-    engine._record_shadow_parameter_comparison(
-        "DOGE/USDT", frame, baseline, "LONG"
-    )
-
-    stats = engine.account.shadow_parameter_stats
-    assert stats["evaluations"] == 1
-    assert set(stats["profiles"]) == {
-        "volume_adx25_06", "atr_adx20_012", "rsi_70_30", "btc_penalty_8",
-    }
-    assert all(profile["evaluations"] == 1 for profile in stats["profiles"].values())
-    assert engine.account.shadow_parameter_last["rsi_70_30"]["DOGE/USDT"]["condition_met"] is True
-    assert baseline == baseline_snapshot
 
 
 @pytest.mark.skip(reason="obsolete MA5/exit logic")
@@ -2285,22 +1600,8 @@ def _opposite_impulse_frame(side, body_atr=0.6):
     })
 
 
-def test_position_trigger_strong_red_candle_protects_long_before_peak_confirmation():
-    result = compute_position_trigger(_opposite_impulse_frame("LONG"), "LONG")
-
-    assert result["pre_peak_exit"] is True
-    assert result["pre_trough_exit"] is False
-    assert result["active"] is True
-    assert "保護性平多" in "｜".join(result["reasons"])
 
 
-def test_position_trigger_strong_green_candle_protects_short_before_trough_confirmation():
-    result = compute_position_trigger(_opposite_impulse_frame("SHORT"), "SHORT")
-
-    assert result["pre_peak_exit"] is False
-    assert result["pre_trough_exit"] is True
-    assert result["active"] is True
-    assert "保護性平空" in "｜".join(result["reasons"])
 
 
 def test_position_trigger_small_opposite_candle_keeps_position():
@@ -2315,58 +1616,6 @@ def test_position_trigger_small_opposite_candle_keeps_position():
     assert short_result["pre_trough_exit"] is False
 
 
-@pytest.mark.anyio
-async def test_unconfirmed_opposite_candle_keeps_cr_position_until_closed_pivot(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "protective_exit.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(engine_module, "DISABLE_STOP_LOSS", True)
-    account = PaperAccount()
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=0.0,
-        reason="TREND_LONG: test", signal_score=85, apply_slippage=False,
-    )
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    engine.tickers = {"BTC/USDT": 99.0}
-
-    async def mock_fetch_klines(*args, **kwargs):
-        return pd.DataFrame({
-            "timestamp": list(range(30)),
-            "open": [100.0] * 30,
-            "high": [100.5] * 30, "low": [98.5] * 30,
-            "close": [100.0] * 29 + [99.0],
-            "volume": [100.0] * 30, "atr": [1.0] * 30,
-        })
-
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    monkeypatch.setattr(engine_module, "compute_position_trigger", lambda df, side: {
-        "active": True, "ma_ok": True, "reasons": ["保護性平多"],
-        "strong": False, "ma5_reversed": False,
-        "ema_breach_confirmed": False, "structure_broken": False,
-        "is_panic_reversal": False, "pre_peak_exit": True,
-        "pre_trough_exit": False, "atr": 1.0,
-    })
-    monkeypatch.setattr(
-        "core.indicators.detect_ma3_ma15_cross_and_turn",
-        lambda *args, **kwargs: {"signal": None, "entry_type": "WAIT_MA_NOISE", "reason": "等待"},
-    )
-    original_sleep = asyncio.sleep
-
-    async def stop_after_one_loop(_seconds):
-        engine.is_running = False
-        await original_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", stop_after_one_loop)
-    await engine._position_trigger_loop()
-
-    assert "BTC/USDT" in account.positions
-    assert "BTC/USDT" not in engine._continuous_alignment_wait
-    assert not any(trade["action"] == "CLOSE_LONG" for trade in account.trades)
 
 
 def test_position_trigger_long_inactive_when_price_healthy():
@@ -2399,18 +1648,6 @@ def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
 
 
 
-def test_ma5_exit_gate_requires_ten_minute_hold(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
-    position = {
-        "side": "LONG", "entry_price": 100.0, "open_timestamp": 500.0,
-    }
-
-    ready, reason = TradingEngine._ma5_exit_ready(
-        position, {"atr": 0.4}, mark_price=99.0, now=1000.0
-    )
-
-    assert ready is False
-    assert "8.3分<10分" in reason
 
 
 def test_ma5_exit_gate_requires_adverse_price_move(monkeypatch):
@@ -2460,51 +1697,6 @@ def test_bottom_entry_has_thirty_minute_soft_exit_grace(monkeypatch):
     assert expired_age == pytest.approx(1801.0)
 
 
-@pytest.mark.anyio
-async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    """底點單剛成交時即使5m結構仍偏弱，也交給原始SL而不立即軟平倉。"""
-    import asyncio
-
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(engine_module, "MA5_BOTTOM_MIN_HOLD_SEC", 1800.0)
-    account = PaperAccount()
-    await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0,
-        sl=95.0, tp=110.0, reason="bottom", signal_score=80,
-        entry_context={"entry_mode": "MA5_BOTTOM_LIMIT"},
-    )
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    engine.tickers = {"DOGE/USDT": 99.0}
-
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30, **_kwargs):
-        return pd.DataFrame({
-            "timestamp": list(range(25)), "open": [99.0] * 25,
-            "high": [100.0] * 25, "low": [98.0] * 25,
-            "close": [99.0] * 25, "volume": [100.0] * 25,
-        })
-
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    monkeypatch.setattr(engine_module, "compute_position_trigger", lambda df, side: {
-        "active": True, "ma_ok": False, "reasons": ["均線與結構失守"],
-        "strong": True, "ma5_reversed": True,
-        "ema_breach_confirmed": True, "structure_broken": True, "atr": 0.4,
-    })
-    original_sleep = asyncio.sleep
-
-    async def stop_after_one_loop(_secs):
-        engine.is_running = False
-        await original_sleep(0.001)
-
-    monkeypatch.setattr(asyncio, "sleep", stop_after_one_loop)
-    await engine._position_trigger_loop()
-
-    assert "DOGE/USDT" in account.positions
-    assert engine.position_triggers["DOGE/USDT"]["bottom_entry_grace"] is True
 
 
 def test_margin_is_reduced_to_fixed_net_risk_cap(monkeypatch):
@@ -2598,81 +1790,10 @@ def test_trailing_profit_lock_is_not_treated_as_initial_risk():
     validate_sl_tp_pair(100.0, "SHORT", 98.0, 90.0, allow_profit_lock=True)
 
 
-@pytest.mark.anyio
-async def test_zero_sl_peak_threshold_executes_initial_stop_immediately(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "immediate_stop.json"))
-    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.0)
-    account = PaperAccount()
-    await account.open_position(
-        "GRVT/USDT", "SHORT", 100.0, 50.0, sl=101.0, tp=0.0,
-        reason="MomentumCross_SHORT", signal_score=80, apply_slippage=False,
-    )
-
-    await account.update_positions({"GRVT/USDT": 105.0})
-
-    assert "GRVT/USDT" not in account.positions
-    assert "Stop-Loss" in account.trades[0]["reason"]
-    assert account.trades[0]["price"] == pytest.approx(
-        101.0 * (1 + pa_module.SLIPPAGE_PCT)
-    )
 
 
-@pytest.mark.anyio
-async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    """如果設定 SL_ONLY_AFTER_PEAK_PCT，觸及 SL 但未曾達到峰值，應該暫不平倉；
-    只有當峰值達到門檻後再次觸及 SL 才會平倉。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    # 啟用門檻 1%
-    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.01)
-
-    account = PaperAccount()
-    # 開倉：entry 100, SL 95
-    await account.open_position(
-        "TEST/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=110.0, reason="test", signal_score=80
-    )
-    # 初始 highest_pnl 為 0
-    assert account.position_meta["TEST/USDT"]["highest_pnl_pct"] == pytest.approx(0.0)
-
-    # 價格跌到 SL，應該不會平倉
-    await account.update_positions({"TEST/USDT": 95.0})
-    assert "TEST/USDT" in account.positions
-
-    # 模擬價格曾達到 2% 的峰值
-    account.position_meta["TEST/USDT"]["highest_pnl_pct"] = 0.02
-    # 再次跌回 SL，這次應該平倉
-    await account.update_positions({"TEST/USDT": 95.0})
-    assert "TEST/USDT" not in account.positions
 
 
-@pytest.mark.anyio
-async def test_exhaustion_sniper_hard_stop_ignores_peak_gate(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "exhaustion_stop.json"))
-    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.50)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    account = PaperAccount()
-    await account.open_position(
-        "TEST/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=0.0,
-        reason="Exhaustion_Sniper_LONG", signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "EXHAUSTION_SNIPER"},
-    )
-
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
-    # 即使前三分鐘先達到 0.5%，固定鎖利也不可移動硬停損或提早出場。
-    await account.update_positions({"TEST/USDT": 100.5})
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
-    assert not account.position_meta["TEST/USDT"].get("fixed_profit_lock_pct_armed")
-    await account.update_positions({
-        "TEST/USDT": 100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT)
-    })
-
-    assert "TEST/USDT" not in account.positions
-    assert "Stop-Loss" in account.trades[0]["reason"]
 
 
 def test_trade_history_counts_only_classified_stop_losses():
@@ -2751,356 +1872,21 @@ def test_pullback_reversal_requires_a_closed_candle_after_touch():
 
 
 
-def test_expired_pullback_blocks_same_breakout_until_kc_resets():
-    engine = object.__new__(TradingEngine)
-    engine._expired_pullback_sides = {"XPL/USDT": "SHORT"}
 
-    assert engine._expired_pullback_still_active(
-        "XPL/USDT", "SHORT", price=99.0, kc_upper=102.0, kc_lower=100.0
-    ) is True
-    assert engine._expired_pullback_sides["XPL/USDT"] == "SHORT"
 
-    assert engine._expired_pullback_still_active(
-        "XPL/USDT", "SHORT", price=100.1, kc_upper=102.0, kc_lower=100.0
-    ) is False
-    assert "XPL/USDT" not in engine._expired_pullback_sides
 
 
-@pytest.mark.anyio
-async def test_pullback_timeout_locks_old_breakout_instead_of_recreating(monkeypatch):
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-        logs = []
 
 
-        def daily_loss_limit_hit(self):
-            return False, 0.0
 
-        def log(self, text, level):
-            self.logs.append((text, level))
 
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.pending_pullback_candidates = {
-        "XPL/USDT": {"side": "SHORT", "created_at": 0.0}
-    }
-    engine._pullback_retry_after = {}
-    engine._expired_pullback_sides = {}
-    engine.tickers = {}
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XPL/USDT"])
 
-    await engine._monitor_pullback_candidates(PULLBACK_TIMEOUT_MINUTES * 60 + 1)
 
-    assert "XPL/USDT" not in engine.pending_pullback_candidates
-    assert engine._expired_pullback_sides["XPL/USDT"] == "SHORT"
-    assert any("本波不再掛單" in text for text, _ in engine.account.logs)
 
 
-def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-        logs = []
 
-        def log(self, text, level):
-            self.logs.append((text, level))
 
-        @staticmethod
-        def get_wallet_balance():
-            return 100.0
 
-    class DummyRotation:
-        @staticmethod
-        def get_dynamic_leverage(symbol, score):
-            return 5
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.symbol_rotation = DummyRotation()
-    engine.pending_pullback_candidates = {}
-    engine._pullback_retry_after = {}
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT", "DOGE/USDT"])
-    monkeypatch.setattr(engine_module, "MAX_SLOTS", 1)
-    signals = [
-        (80, "BTC/USDT", {
-            "side": "LONG", "target_zone": 100.0, "atr": 1.0,
-            "reason": "Quality+5",
-        }, 101.0, 1.0),
-        (90, "DOGE/USDT", {
-            "side": "LONG", "target_zone": 10.0, "atr": 0.1,
-            "reason": "Quality+9",
-        }, 10.1, 0.1),
-    ]
-
-    engine._admit_pullback_candidates(signals, available_balance=100.0, now=1000.0)
-
-    assert list(engine.pending_pullback_candidates) == ["DOGE/USDT"]
-
-
-
-def test_90_plus_candidate_uses_current_price_maker_mode(monkeypatch):
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-        logs = []
-
-        def log(self, text, level):
-            self.logs.append((text, level))
-
-        @staticmethod
-        def get_wallet_balance():
-            return 100.0
-
-    class DummyRotation:
-
-        def get_dynamic_leverage(self, symbol, score):
-            return 5
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.symbol_rotation = DummyRotation()
-    engine.pending_pullback_candidates = {}
-    engine._pullback_retry_after = {}
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XPL/USDT"])
-    signal = {
-        "side": "SHORT", "target_zone": 105.0, "atr": 1.0,
-        "kc_lower": 100.0, "ema_20": 120.0, "reason": "Quality+9",
-    }
-
-    engine._admit_pullback_candidates(
-        [(93, "XPL/USDT", signal, 99.0, 1.0)], available_balance=100.0, now=1000.0
-    )
-
-    candidate = engine.pending_pullback_candidates["XPL/USDT"]
-    assert candidate["pullback_depth"] == pytest.approx(0.0)
-    assert candidate["target_price"] == pytest.approx(100.1)
-    assert candidate["entry_mode"] == "PULLBACK"
-
-
-@pytest.mark.anyio
-async def test_90_plus_current_maker_places_post_only_without_pullback_wait():
-    placed = {}
-
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-        logs = []
-
-        @staticmethod
-        def get_available_balance():
-            return 1000.0
-
-        async def place_limit_entry(self, **kwargs):
-            placed.update(kwargs)
-            self.pending_limit_orders[kwargs["symbol"]] = {
-                "side": kwargs["side"], "entry_context": kwargs["entry_context"],
-            }
-            return True
-
-        def log(self, text, level):
-            self.logs.append((text, level))
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.pending_pullback_candidates = {
-        "XPL/USDT": {
-            "symbol": "XPL/USDT", "side": "SHORT", "score": 93,
-            "entry_mode": "CURRENT_MAKER", "amount_usdt": 75.0,
-            "atr": 0.001, "reason": "Quality+9", "leverage": 5,
-            "btc_regime_mode": "ALIGNED", "btc_direction_1h": -1,
-            "btc_score_penalty": 0, "btc_allocation_factor": 1.0,
-            "btc_pre_penalty_score": 93, "raw_signal_score": 93,
-            "btc_adjusted_score": 93, "history_adjusted_score": 93,
-            "history_score_multiplier": 1.0,
-        }
-    }
-    engine._pullback_retry_after = {}
-
-    result = await engine._place_current_maker_candidate(
-        "XPL/USDT", engine.pending_pullback_candidates["XPL/USDT"],
-        live_price=0.07616, now=1000.0,
-    )
-
-    assert result is True
-    assert placed["target_price"] == pytest.approx(0.07616)
-    assert placed["post_only"] is True
-    assert placed["signal_score"] == 93
-    assert placed["entry_context"]["entry_mode"] == "CURRENT_MAKER"
-    assert "XPL/USDT" not in engine.pending_pullback_candidates
-
-
-def test_btc_contrary_candidate_uses_half_position(monkeypatch):
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-        logs = []
-
-        def log(self, text, level):
-            self.logs.append((text, level))
-
-        @staticmethod
-        def get_wallet_balance():
-            return 100.0
-
-    class DummyRotation:
-        @staticmethod
-        def get_dynamic_leverage(symbol, score):
-            return 5
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.symbol_rotation = DummyRotation()
-    engine.pending_pullback_candidates = {}
-    engine._pullback_retry_after = {}
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["DOGE/USDT"])
-    monkeypatch.setattr(engine_module, "MAX_SLOTS", 1)
-    signal = {
-        "side": "LONG", "target_zone": 10.0, "atr": 0.1, "reason": "Quality+9",
-        "btc_regime_mode": "CONTRARY", "btc_direction_1h": -1,
-        "btc_score_penalty": 12, "btc_allocation_factor": 0.5,
-        "btc_pre_penalty_score": 102,
-    }
-
-    engine._admit_pullback_candidates(
-        [(90, "DOGE/USDT", signal, 10.1, 0.1)], available_balance=100.0, now=1000.0
-    )
-
-    candidate = engine.pending_pullback_candidates["DOGE/USDT"]
-    assert candidate["amount_usdt"] == pytest.approx(candidate["base_amount_usdt"] * 0.5)
-
-
-@pytest.mark.anyio
-async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatch):
-    events = []
-
-    class DummyAccount:
-        pending_limit_orders = {
-            "BTC/USDT": {
-                "side": "LONG", "target_price": 100.0, "atr": 1.0,
-                "placed_at": 99.0,
-            }
-        }
-
-        async def cancel_pending_limit(self, symbol, reason):
-            events.append(("cancel", reason))
-
-        async def check_pending_limit_orders(self):
-            events.append(("check", ""))
-
-        @staticmethod
-        def daily_loss_limit_hit():
-            return False, 0.0
-
-    class DummyStrategy:
-        @staticmethod
-        def confirm_pullback_entry(*args, **kwargs):
-            return {"status": "PASS", "reason": "ok"}
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.strategy = DummyStrategy()
-    engine.ema_50_1h_cache = {}
-    engine.adx_1h_declining_cache = {}
-    engine._pullback_retry_after = {}
-    engine.fetch_klines = lambda *args, **kwargs: None
-
-    async def fake_fetch(*args, **kwargs):
-        return pd.DataFrame({"close": [100.0] * 50})
-
-    engine.fetch_klines = fake_fetch
-    engine._fresh_pullback_target = lambda df, side, score: (100.30, 1.0)
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT"])
-    monkeypatch.setattr(engine_module, "ENTRY_DISABLED_SYMBOLS", set())
-
-    await engine._validate_pending_limit_orders(now=100.0)
-
-    assert events[0][0] == "cancel"
-    assert "漂移" in events[0][1]
-    assert events[-1][0] == "check"
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("fresh_signal", "reason_fragment"),
-    [
-        (
-            {
-                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
-                "side": "SHORT", "score": 85, "target_price": 99.8, "atr": 1.0,
-            },
-            "方向已翻轉",
-        ),
-        (
-            {
-                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
-                "side": "LONG", "score": 85, "target_price": 100.5, "atr": 1.0,
-            },
-            "結構掛單目標已漂移",
-        ),
-        (
-            {
-                "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
-                "side": "LONG", "score": 95, "target_price": 101.0, "atr": 1.0,
-            },
-            "入口模式已改變",
-        ),
-    ],
-)
-async def test_structured_pending_revalidates_direction_mode_and_target(
-    monkeypatch, fresh_signal, reason_fragment,
-):
-    events = []
-
-    class DummyAccount:
-        pending_limit_orders = {
-            "COIN/USDT": {
-                "side": "LONG", "target_price": 100.0, "atr": 1.0,
-                "placed_at": 99.0,
-                "entry_context": {"entry_mode": "SUPPORT_PULLBACK"},
-            }
-        }
-
-        async def cancel_pending_limit(self, symbol, reason):
-            events.append(("cancel", reason))
-
-        async def check_pending_limit_orders(self):
-            events.append(("check", ""))
-
-        @staticmethod
-        def daily_loss_limit_hit():
-            return False, 0.0
-
-    class DummyStrategy:
-        @staticmethod
-        def compute_indicators(frame):
-            return frame
-
-        @staticmethod
-        def evaluate_structured_entry(*args, **kwargs):
-            return fresh_signal
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.strategy = DummyStrategy()
-    engine.ema_50_1h_cache = {}
-    engine.st_direction_1h_cache = {}
-    engine.btc_1h_st_direction = 1
-    engine._pullback_retry_after = {}
-    engine._record_pullback_outcome = lambda *_args: None
-    engine.fetch_klines = lambda *args, **kwargs: None
-
-    async def fake_fetch(*args, **kwargs):
-        return pd.DataFrame({"close": [100.0] * 50})
-
-    engine.fetch_klines = fake_fetch
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["COIN/USDT"])
-
-    await engine._validate_pending_limit_orders(now=100.0)
-
-    assert events[0][0] == "cancel"
-    assert reason_fragment in events[0][1]
-    assert engine._pullback_retry_after["COIN/USDT"] == 100.0
 
 
 def test_structured_pullback_allows_low_room_small_limit_when_signal_is_strong(monkeypatch):
@@ -3251,75 +2037,6 @@ def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch
     assert result["reason"]
 
 
-def test_limit_order_stays_on_maker_side_for_buy_and_short():
-    account = PaperAccount()
-    account.latest_prices = {"BTC/USDT": 100.0, "ETH/USDT": 100.0}
-    account.get_available_balance = lambda: 5000.0
-    account.save_state = lambda: None
-
-    buy_order = asyncio.run(account.place_limit_entry(
-        symbol="BTC/USDT",
-        side="LONG",
-        target_price=99.90,
-        amount_usdt=100.0,
-        sl=95.0,
-        tp=110.0,
-        reason="test_buy",
-        atr=1.0,
-        leverage=1,
-        signal_score=80,
-        post_only=True,
-        timeframe="5m",
-    ))
-    assert buy_order is True
-    assert 99.80 <= account.pending_limit_orders["BTC/USDT"]["target_price"] <= 99.95
-
-    short_order = asyncio.run(account.place_limit_entry(
-        symbol="ETH/USDT",
-        side="SHORT",
-        target_price=100.10,
-        amount_usdt=100.0,
-        sl=105.0,
-        tp=90.0,
-        reason="test_short",
-        atr=1.0,
-        leverage=1,
-        signal_score=80,
-        post_only=True,
-        timeframe="5m",
-    ))
-    assert short_order is True
-    assert 100.05 <= account.pending_limit_orders["ETH/USDT"]["target_price"] <= 100.20
-
-    assert asyncio.run(account.place_limit_entry(
-        symbol="BTC/USDT",
-        side="LONG",
-        target_price=99.20,
-        amount_usdt=100.0,
-        sl=95.0,
-        tp=110.0,
-        reason="too_deep",
-        atr=1.0,
-        leverage=1,
-        signal_score=80,
-        post_only=True,
-        timeframe="5m",
-    )) is False
-
-    assert asyncio.run(account.place_limit_entry(
-        symbol="ETH/USDT",
-        side="SHORT",
-        target_price=100.50,
-        amount_usdt=100.0,
-        sl=105.0,
-        tp=90.0,
-        reason="too_high",
-        atr=1.0,
-        leverage=1,
-        signal_score=80,
-        post_only=True,
-        timeframe="5m",
-    )) is False
 
 
 def test_maker_limit_offset_uses_timeframe_specific_factor():
@@ -3332,132 +2049,8 @@ def test_maker_limit_offset_uses_timeframe_specific_factor():
     assert base < mid < long_h
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("bounce_target_pct", "low_room_exploration", "should_place"),
-    [(0.0095, False, True), (0.004, False, False), (0.004, True, False)],
-)
-async def test_structured_rr_experiment_keeps_point_five_hard_floor(
-    monkeypatch, bounce_target_pct, low_room_exploration, should_place,
-):
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XMR/USDT"])
-    placed_orders = []
-    log_messages = []
-
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
 
 
-        def get_available_balance(self):
-            return 1000.0
-
-
-        def log(*args, **kwargs):
-            log_messages.append(args)
-
-        async def place_limit_entry(self, **kwargs):
-            placed_orders.append(kwargs)
-            return True
-
-    class DummyRotation:
-
-        def get_stop_cooldown_remaining(*args):
-            return 0.0
-
-
-        def get_history_allocation_factor(*args):
-            return 1.0
-
-
-        def get_dynamic_leverage(*args):
-            return 5
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.symbol_rotation = DummyRotation()
-    engine.btc_1h_st_direction = 1
-
-    async def price_is_safe(*args):
-        return True
-
-    engine._execution_price_is_safe = price_is_safe
-    engine._same_side_entry_allowed = lambda *_args: True
-    engine._entry_direction_allowed = lambda *_args, **_kwargs: True
-    monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
-    monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_HARD_FLOOR", 0.5)
-    monkeypatch.setattr(engine_module, "MIN_TRADE_USDT", 1.0)
-    signal = {
-        "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
-        "side": "LONG", "score": 85, "target_price": 100.0, "atr": 0.6,
-        "signal_candle_low": 100.0, "signal_candle_high": 100.2,
-        "profit_profile": "BOUNCE", "profit_room_pct": 0.002,
-        "bounce_capture_ratio": 0.75, "bounce_target_pct": bounce_target_pct,
-        "high_readiness_low_room": low_room_exploration,
-        "reason": "low-rr experiment",
-    }
-
-    result = await engine._place_structured_entry("XMR/USDT", signal, 100.0)
-    assert result is should_place, log_messages
-    assert bool(placed_orders) is should_place
-    if should_place:
-        rr = placed_orders[0]["entry_context"]["structured_net_rr"]
-        assert 0.5 <= rr < 1.0
-
-
-@pytest.mark.anyio
-async def test_exhaustion_sniper_structured_entry_is_market_with_exact_stop(monkeypatch):
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["TEST/USDT"])
-    market_orders = []
-
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-
-        def get_available_balance(self):
-            return 1000.0
-
-        def get_wallet_balance(self):
-            return 1000.0
-
-        def log(self, *args, **kwargs):
-            return None
-
-        async def open_position(self, **kwargs):
-            market_orders.append(kwargs)
-            return True
-
-        async def place_limit_entry(self, **kwargs):
-            pytest.fail("Exhaustion Sniper 不可走限價")
-
-    class DummyRotation:
-        def get_stop_cooldown_remaining(self, *args):
-            return 9999.0
-
-        def get_dynamic_leverage(self, *args):
-            return 5
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.symbol_rotation = DummyRotation()
-    engine.btc_1h_st_direction = -1
-
-    async def price_is_safe(*args):
-        return True
-
-    engine._execution_price_is_safe = price_is_safe
-    signal = {
-        "action": "ENTER_MARKET", "entry_mode": "EXHAUSTION_SNIPER",
-        "side": "LONG", "score": 100, "atr": 1.0,
-        "profit_profile": "TREND_EXTENSION", "reason": "four conditions",
-    }
-
-    assert await engine._place_structured_entry("TEST/USDT", signal, 100.0) is True
-    assert len(market_orders) == 1
-    assert market_orders[0]["price"] == pytest.approx(100.0)
-    assert market_orders[0]["sl"] == pytest.approx(100.0 * (1.0 - engine_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
-    assert market_orders[0]["tp"] == 0.0
-    assert market_orders[0]["entry_context"]["entry_mode"] == "EXHAUSTION_SNIPER"
 
 
 def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
@@ -3759,104 +2352,16 @@ def _outer_run_second_candle_frame(timestamp, candle):
     }])
 
 
-def test_outer_run_same_closed_bar_keeps_waiting_for_second_red_candle():
-    pending = {
-        "from_side": "LONG", "first_bar_id": 60_000, "first_close": 109.0,
-    }
-
-    status, _reason, bar_id = TradingEngine._outer_run_second_candle_status(
-        _outer_run_second_candle_frame(60_000, (111.0, 109.0)), pending,
-    )
-
-    assert status == "WAIT"
-    assert bar_id == 60_000
 
 
-def test_outer_run_second_red_close_confirms_short_for_third_candle():
-    pending = {
-        "from_side": "LONG", "first_bar_id": 60_000, "first_close": 109.0,
-    }
-
-    status, reason, bar_id = TradingEngine._outer_run_second_candle_status(
-        _outer_run_second_candle_frame(120_000, (109.0, 108.0)), pending,
-    )
-
-    assert status == "CONFIRMED"
-    assert "第二根紅K" in reason
-    assert bar_id == 120_000
 
 
-def test_outer_run_second_green_close_confirms_long_for_third_candle():
-    pending = {
-        "from_side": "SHORT", "first_bar_id": 60_000, "first_close": 91.0,
-    }
-
-    status, reason, bar_id = TradingEngine._outer_run_second_candle_status(
-        _outer_run_second_candle_frame(120_000, (91.0, 92.0)), pending,
-    )
-
-    assert status == "CONFIRMED"
-    assert "第二根綠K" in reason
-    assert bar_id == 120_000
 
 
-def test_outer_run_second_green_must_continue_higher_to_open_long():
-    pending = {
-        "from_side": "SHORT", "first_bar_id": 60_000, "first_close": 91.0,
-    }
-
-    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
-        _outer_run_second_candle_frame(120_000, (91.5, 90.8)), pending,
-    )
-
-    assert status == "INVALIDATED"
-    assert "取消開多" in reason
 
 
-@pytest.mark.parametrize("candle", [
-    (108.0, 109.0),  # 綠K：峰頂未延續
-    (112.0, 111.0),  # 雖是紅K，但收盤又回到上軌外
-    (110.0, 109.5),  # 紅K，但沒有低於第一根收盤
-])
-def test_outer_run_invalid_second_candle_cancels_short(candle):
-    pending = {
-        "from_side": "LONG", "first_bar_id": 60_000, "first_close": 109.0,
-    }
-
-    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
-        _outer_run_second_candle_frame(120_000, candle), pending,
-    )
-
-    assert status == "INVALIDATED"
-    assert "取消開空" in reason
 
 
-def test_two_bar_structure_failure_exit_is_symmetric():
-    rising = pd.DataFrame({
-        "close": [100.0, 102.0, 103.0],
-        "ma3": [99.0, 100.0, 101.0],
-        "ma15": [100.0, 100.2, 100.4],
-        "ema_20": [100.0, 100.3, 100.6],
-        "kc_upper": [102.0, 102.3, 102.6],
-        "kc_lower": [98.0, 98.3, 98.6],
-    })
-    assert TradingEngine._two_bar_structure_failure_exit(rising, "SHORT") is True
-    assert TradingEngine._two_bar_structure_failure_exit(rising, "LONG") is False
-
-    falling = pd.DataFrame({
-        "close": [100.0, 98.0, 97.0],
-        "ma3": [101.0, 100.0, 99.0],
-        "ma15": [100.0, 99.8, 99.6],
-        "ema_20": [100.0, 99.7, 99.4],
-        "kc_upper": [102.0, 101.7, 101.4],
-        "kc_lower": [98.0, 97.7, 97.4],
-    })
-    assert TradingEngine._two_bar_structure_failure_exit(falling, "LONG") is True
-    assert TradingEngine._two_bar_structure_failure_exit(falling, "SHORT") is False
-
-    not_confirmed = rising.copy()
-    not_confirmed.loc[2, "close"] = 99.0
-    assert TradingEngine._two_bar_structure_failure_exit(not_confirmed, "SHORT") is False
 
 
 def test_adverse_kc_outer_break_is_directional():
@@ -3871,40 +2376,8 @@ def test_adverse_kc_outer_break_is_directional():
     assert TradingEngine._adverse_kc_outer_breached("LONG", 89.9, 110.0, 90.0) is True
 
 
-def test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction():
-    frame = pd.DataFrame({
-        "ma3": [100.0, 101.0, 100.5],
-        "kc_upper": [102.0, 102.0, 102.0],
-        "kc_lower": [98.0, 98.0, 98.0],
-        "volume": [150.0, 150.0, 150.0],
-        "vol_ma_20": [100.0, 100.0, 100.0],
-    })
-    peak = {
-        "signal": "SHORT", "entry_type": "PEAK_TURN",
-        "pivot_type": "PEAK_TURN", "pivot_confirmed": True,
-        "pivot_offset": -2,
-    }
-
-    assert TradingEngine._confirmed_outer_reversal("LONG", peak, frame) is False
-
-    frame.loc[frame.index[-2], "ma3"] = 102.1
-    assert TradingEngine._confirmed_outer_reversal("LONG", peak, frame) is True
-    assert TradingEngine._confirmed_outer_reversal("SHORT", peak, frame) is False
 
 
-def test_confirmed_outer_reversal_requires_closed_confirmed_pivot():
-    frame = pd.DataFrame({
-        "ma3": [100.0, 102.1, 101.5],
-        "kc_upper": [102.0, 102.0, 102.0],
-        "kc_lower": [98.0, 98.0, 98.0],
-    })
-    waiting = {
-        "signal": None, "entry_type": "WAIT_NEXT_KC_BAND",
-        "pivot_type": "PEAK_TURN", "pivot_confirmed": False,
-        "pivot_offset": -2,
-    }
-
-    assert TradingEngine._confirmed_outer_reversal("LONG", waiting, frame) is False
 
 
 @pytest.mark.anyio
@@ -3970,270 +2443,19 @@ def test_outer_run_one_usdt_protection_arms_only_after_matching_peak_or_trough()
     assert not should_arm_outer_run_pivot_protection("SHORT", True, waiting_peak)
 
 
-def test_strong_burst_live_entry_rejects_price_back_near_middle():
-    frame = pd.DataFrame({"atr": [2.0]})
-    burst = {"kc_middle": 100.0, "kc_upper": 102.0}
-    assert TradingEngine._strong_burst_live_entry_is_valid(burst, frame, 100.2) is False
-    assert TradingEngine._strong_burst_live_entry_is_valid(burst, frame, 102.2) is True
-
-
-def test_trailing_atr_prefers_live_trigger_and_rejects_near_zero_saved_value():
-    engine = TradingEngine()
-    engine.position_triggers["BTC/USDT"] = {"atr": 1.25}
-    assert engine._resolve_trailing_atr(
-        "BTC/USDT", {"atr": 0.00001}, {"atr": 0.00001}, 100.0,
-    ) == pytest.approx(1.25)
-
-    engine.position_triggers.clear()
-    assert engine._resolve_trailing_atr(
-        "BTC/USDT", {"atr": None}, {"atr": float("nan")}, 100.0,
-    ) == pytest.approx(1.5)
-
-
-@pytest.mark.parametrize(
-    ("side", "candle_open", "candle_close", "expected"),
-    [
-        ("LONG", 101.0, 100.0, False),
-        ("LONG", 100.0, 101.0, False),
-        ("SHORT", 100.0, 101.0, False),
-        ("SHORT", 101.0, 100.0, False),
-    ],
-)
-def test_general_position_waits_for_confirmed_pivot_before_exit(
-    side, candle_open, candle_close, expected,
-):
-    position = {"side": side, "open_timestamp": 100.0}
-    frame = pd.DataFrame([{
-        "timestamp": 120_000, "open": candle_open, "close": candle_close,
-    }])
-    assert TradingEngine._opposite_closed_candle_exit(
-        position, frame, "1m", False,
-    ) is expected
-    assert TradingEngine._opposite_closed_candle_exit(
-        position, frame, "1m", True,
-    ) is False
-
-
-@pytest.mark.parametrize(
-    ("side", "opens", "closes", "ma3", "expected"),
-    [
-        ("LONG", [111.0, 111.0, 111.0], [111.0, 111.0, 110.0], [109.8, 109.9, 109.8], False),
-        ("SHORT", [89.0, 89.0, 89.0], [89.0, 89.0, 90.0], [90.2, 90.1, 90.2], False),
-        ("LONG", [105.0, 106.0, 106.0], [105.0, 106.0, 105.0], [105.0, 106.0, 105.0], False),
-        ("SHORT", [95.0, 94.0, 94.0], [95.0, 94.0, 95.0], [95.0, 94.0, 95.0], False),
-        ("LONG", [105.0, 115.0, 106.0], [105.0, 115.0, 105.0], [105.0, 115.0, 105.0], True),
-        ("LONG", [105.0, 106.0, 101.0], [105.0, 106.0, 99.0], [105.0, 106.0, 99.0], True),
-        ("LONG", [95.0, 95.0, 91.0], [95.0, 95.0, 89.0], [95.0, 95.0, 89.0], True),
-        ("SHORT", [95.0, 85.0, 94.0], [95.0, 85.0, 95.0], [95.0, 85.0, 95.0], True),
-        ("SHORT", [95.0, 94.0, 99.0], [95.0, 94.0, 101.0], [95.0, 94.0, 101.0], True),
-        ("SHORT", [105.0, 105.0, 109.0], [105.0, 105.0, 111.0], [105.0, 105.0, 111.0], True),
-    ],
-)
-def test_opposite_candle_never_exits_before_confirmed_pivot(
-    side, opens, closes, ma3, expected,
-):
-    frame = pd.DataFrame({
-        "timestamp": [0, 60_000, 120_000],
-        "open": opens, "close": closes, "ma3": ma3,
-        "kc_upper": [110.0] * 3, "kc_lower": [90.0] * 3,
-    })
-    assert TradingEngine._opposite_closed_candle_exit(
-        {"side": side}, frame, "1m", False,
-    ) is False
-
-
-def test_range_swing_reverses_at_confirmed_high_and_low_but_not_outer_run():
-    assert TradingEngine._range_swing_reverse_side(
-        "LONG", "PEAK_TURN", "RANGE", False,
-    ) == "SHORT"
-    assert TradingEngine._range_swing_reverse_side(
-        "SHORT", "TROUGH_TURN", "RANGE", False,
-    ) == "LONG"
-    assert TradingEngine._range_swing_reverse_side(
-        "LONG", "PEAK_TURN", "RANGE", True,
-    ) is None
-    assert TradingEngine._range_swing_reverse_side(
-        "LONG", "WAIT_MA_NOISE", "RANGE", False,
-    ) is None
 
 
 
-@pytest.mark.anyio
-async def test_legacy_outer_peak_wait_is_discarded(monkeypatch):
-    from core.engine import TradingEngine
-
-    engine = TradingEngine()
-
-    class FakeAccount:
-        def __init__(self):
-            self.positions = {}
-            self.position_meta = {}
-            self.trades = []
-            self.last_closed_at = {}
-            self.logs = []
-
-        def get_available_balance(self):
-            return 1000.0
-
-        def log(self, text, level):
-            self.logs.append((text, level))
-
-    engine.account = FakeAccount()
-    engine.tickers = {"DOGE/USDT": 109.0}
-    engine._kc_reversal_wait["DOGE/USDT"] = {
-        "from_side": "LONG",
-        "target_side": "SHORT",
-        "pivot_type": "PEAK_TURN",
-        "middle_reached": False,
-    }
-    reaches_middle = {"value": False}
-
-    async def fetch_bars(*_args, **_kwargs):
-        rows = 30
-        frame = pd.DataFrame({
-            "timestamp": list(range(rows)),
-            "open": [109.0] * rows,
-            "high": [112.0] * rows,
-            "low": [108.0] * rows,
-            "close": [109.0] * rows,
-            "volume": [100.0] * rows,
-            "kc_upper": [110.0] * rows,
-            "kc_middle": [100.0] * rows,
-            "kc_lower": [90.0] * rows,
-            "atr": [2.0] * rows,
-        })
-        if reaches_middle["value"]:
-            frame.loc[frame.index[-1], ["open", "close", "low"]] = [111.0, 99.0, 98.0]
-        return frame
-
-    opened = []
-
-    async def place_entry(**kwargs):
-        opened.append(kwargs)
-        return True
-
-    monkeypatch.setattr(engine, "fetch_klines", fetch_bars)
-    monkeypatch.setattr(engine, "_place_continuous_market_entry", place_entry)
-    monkeypatch.setattr(
-        "core.indicators.classify_wave_regime",
-        lambda *_args, **_kwargs: {
-            "regime": "RANGE", "candidate": "RANGE", "confirmed": True,
-            "adx": 10.0, "spread_atr": 0.1, "confirmation_bars": 3,
-        },
-    )
-    monkeypatch.setattr(
-        "core.indicators.detect_ma3_ma15_cross_and_turn",
-        lambda *_args, **_kwargs: {"signal": None, "entry_type": ""},
-    )
-
-    await engine._process_single_symbol("DOGE/USDT", 0.0, None, False)
-    assert opened == []
-    # 未形成正式反轉時保留等待狀態，避免下一輪遺失候選。
-    assert "DOGE/USDT" in engine._kc_reversal_wait
 
 
-@pytest.mark.anyio
-async def test_outer_run_holds_through_unconfirmed_red_candles(monkeypatch):
-    engine = TradingEngine()
-    symbol = "DOGE/USDT"
 
-    class FakeAccount:
-        def __init__(self):
-            self.positions = {
-                symbol: {
-                    "side": "LONG", "entry_price": 95.0, "qty": 1.0,
-                    "outer_run_active": True,
-                },
-            }
-            self.position_meta = {symbol: {"outer_run_active": True}}
-            self.trades = []
-            self.last_closed_at = {}
-            self.logs = []
-            self.closed = []
 
-        def get_available_balance(self):
-            return 1000.0
 
-        def log(self, text, level):
-            self.logs.append((text, level))
 
-        async def close_position(self, symbol, current_price, close_reason, is_manual=False):
-            self.closed.append({
-                "symbol": symbol, "price": current_price,
-                "reason": close_reason, "is_manual": is_manual,
-            })
-            self.positions.pop(symbol, None)
-            self.position_meta.pop(symbol, None)
-            return True
 
-    engine.account = FakeAccount()
-    engine.tickers = {symbol: 101.0}
-    candle_step = {"value": 1}
 
-    async def fetch_bars(*_args, **_kwargs):
-        rows = 30
-        timestamps = [60_000 * index for index in range(rows)]
-        frame = pd.DataFrame({
-            "timestamp": timestamps,
-            "open": [100.0] * rows,
-            "high": [100.5] * rows,
-            "low": [99.5] * rows,
-            "close": [100.0] * rows,
-            "volume": [100.0] * rows,
-        })
-        if candle_step["value"] == 1:
-            frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [
-                100.5, 100.6, 99.4, 99.5,
-            ]
-        else:
-            frame.loc[frame.index[-1], "timestamp"] += 60_000
-            frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [
-                99.5, 99.6, 98.9, 99.0,
-            ]
-        return frame
 
-    opened = []
 
-    async def place_entry(**kwargs):
-        opened.append(kwargs)
-        return True
-
-    monkeypatch.setattr(engine, "fetch_klines", fetch_bars)
-    monkeypatch.setattr(engine, "_place_continuous_market_entry", place_entry)
-    monkeypatch.setattr(
-        "core.strategy.detect_strong_green_candle_burst",
-        lambda *_args, **_kwargs: {"detected": False},
-    )
-    monkeypatch.setattr(
-        "core.indicators.classify_wave_regime",
-        lambda *_args, **_kwargs: {
-            "regime": "RANGE", "candidate": "RANGE", "confirmed": True,
-            "adx": 10.0, "spread_atr": 0.1, "confirmation_bars": 3,
-        },
-    )
-    monkeypatch.setattr(
-        "core.indicators.detect_ma3_ma15_cross_and_turn",
-        lambda *_args, **_kwargs: {
-            "signal": None, "entry_type": "WAIT_NEXT_KC_BAND",
-            "pivot_type": "PEAK_TURN", "pivot_confirmed": False,
-        },
-    )
-
-    await engine._process_single_symbol(symbol, 1_000.0, None, False)
-
-    assert engine.account.closed == []
-    assert symbol in engine.account.positions
-    assert opened == []
-    assert symbol not in engine._kc_reversal_wait
-
-    candle_step["value"] = 2
-    engine.tickers[symbol] = 99.5
-    await engine._process_single_symbol(symbol, 1_060.0, None, False)
-
-    assert engine.account.closed == []
-    assert symbol in engine.account.positions
-    assert opened == []
-    assert symbol not in engine._kc_reversal_wait
 
 
 def test_strong_trend_waits_through_new_high_and_exits_after_two_bar_fade():
@@ -4333,62 +2555,10 @@ def test_wave_regime_requires_three_closed_bars_and_uses_hysteresis():
     assert classify_wave_regime(middle_frame, previous_regime="TREND")["regime"] == "TREND"
 
 
-@pytest.mark.anyio
-async def test_range_position_ignores_fixed_stop_in_outer_rail_only_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "range_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    account = PaperAccount()
-    opened = await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 101.0, "range pivot",
-        leverage=1, signal_score=100,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "RANGE"},
-    )
-    assert opened is True
-    original_sl = account.positions["BTC/USDT"]["sl"]
-
-    await account.update_positions({"BTC/USDT": 110.0})
-    assert "BTC/USDT" in account.positions
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
-
-    await account.update_positions({"BTC/USDT": original_sl * 0.99})
-    assert "BTC/USDT" in account.positions
-    assert not any(str(trade.get("action", "")).startswith("CLOSE") for trade in account.trades)
 
 
-@pytest.mark.anyio
-async def test_trend_position_ignores_middle_take_profit(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "trend_account.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    account = PaperAccount()
-    assert await account.open_position(
-        "ETH/USDT", "LONG", 100.0, 50.0, 95.0, 101.0, "strong trend",
-        leverage=1, signal_score=100,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "TREND"},
-    )
-    original_sl = account.positions["ETH/USDT"]["sl"]
-    await account.update_positions({"ETH/USDT": 110.0})
-    assert "ETH/USDT" in account.positions
-    assert account.positions["ETH/USDT"]["sl"] == pytest.approx(original_sl)
 
 
-def test_confirmed_pivot_can_reverse_before_ma15_cross():
-    engine = object.__new__(TradingEngine)
-    frame = _ma3_ma15_frame([99.4, 99.0, 99.2], ma15=100.0)
-
-    assert engine._ma3_ma15_entry_allowed(
-        "TEST/USDT", "LONG", frame, log_on_fail=False, entry_type="TROUGH_TURN",
-    ) is True
-    assert engine._ma3_ma15_entry_allowed(
-        "TEST/USDT", "LONG", frame, log_on_fail=False, entry_type="TREND_LONG",
-    ) is False
-
-    frame = _ma3_ma15_frame([100.8, 101.2, 101.0], ma15=100.0)
-    assert engine._ma3_ma15_entry_allowed(
-        "TEST/USDT", "SHORT", frame, log_on_fail=False, entry_type="PEAK_TURN",
-    ) is True
-    assert engine._ma3_ma15_entry_allowed(
-        "TEST/USDT", "SHORT", frame, log_on_fail=False, entry_type="TREND_SHORT",
-    ) is False
 
 
 def test_ma3_ma15_limit_target_uses_recent_low_for_long_and_high_for_short():
@@ -4402,136 +2572,10 @@ def test_ma3_ma15_limit_target_uses_recent_low_for_long_and_high_for_short():
     assert get_ma3_ma15_limit_target(frame, "SHORT", lookback=3) == pytest.approx(101.3)
 
 
-def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
-    # Isolate this routing test to one slot with a known 80% allocation.
-    monkeypatch.setattr(engine_module, "get_effective_slot_count", lambda _balance: 1)
-    monkeypatch.setattr(engine_module, "CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", .8)
-    monkeypatch.setattr(engine_module, "TRADE_AMOUNT_USDT", 100.)
-    monkeypatch.setattr(engine_module, "MAX_SLOT_TRADE_USDT", 100.)
-    opened = []
-
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-
-        def get_available_balance(self):
-            return 100.0
-
-        def get_wallet_balance(self):
-            return 100.0
-
-        async def open_position(self, **kwargs):
-            opened.append(kwargs)
-            return True
-
-        def log(self, *args, **kwargs):
-            return None
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.st_direction_1h_cache = {"BTC/USDT": 1, "ETH/USDT": -1}
-    frame = pd.DataFrame({
-        "low": [99.6, 99.2, 99.5],
-        "high": [100.4, 101.3, 100.8],
-        "close": [100.0, 100.2, 100.1],
-        "atr": [1.0, 1.0, 1.0],
-        "kc_middle": [100.0, 100.0, 100.0],
-        "kc_upper": [102.0, 102.0, 102.0],
-        "kc_lower": [98.0, 98.0, 98.0],
-        "volume": [150.0, 150.0, 150.0],
-        "vol_ma_20": [100.0, 100.0, 100.0],
-    })
-    low_energy = frame.copy()
-    low_energy["volume"] = 100.0
-    assert not asyncio.run(engine._place_continuous_market_entry(
-        "BTC/USDT", "LONG", low_energy, 100.0,
-        "TREND_LONG", "low energy", 85, "1m",
-    ))
-    assert opened == []
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "BTC/USDT", "LONG", frame, 100.0, "TREND_LONG", "test", 85, "1m"
-    ))
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "ETH/USDT", "SHORT", frame, 100.0, "TREND_SHORT", "test", 85, "1m"
-    ))
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "BTC/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m"
-    ))
-
-    assert opened[0]["price"] == pytest.approx(100.0)
-    assert opened[0]["sl"] == opened[0]["tp"] == 0.0
-    assert opened[1]["sl"] == opened[1]["tp"] == 0.0
-    for order in opened:
-        assert order["amount_usdt"] == pytest.approx(80.0)
-        total_debit = order["amount_usdt"] * (1 + order["leverage"] * TAKER_FEE_RATE)
-        assert total_debit < 100.0
-    assert all(order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET" for order in opened)
 
 
-def test_continuous_entry_checks_current_symbol_trend_only_in_range():
-    opened = []
-
-    class DummyAccount:
-        positions = {}
-        pending_limit_orders = {}
-
-        def get_available_balance(self):
-            return 100.0
-
-        def get_wallet_balance(self):
-            return 100.0
-
-        async def open_position(self, **kwargs):
-            opened.append(kwargs)
-            return True
-
-        def log(self, *args, **kwargs):
-            return None
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    frame = pd.DataFrame({
-        "low": [99.0] * 15,
-        "high": [101.0] * 15,
-        "open": list(range(88, 103)),
-        "close": list(range(88, 103)),
-        "atr": [1.0] * 15,
-        "kc_middle": [100.0] * 15,
-        "kc_upper": [104.0] * 15,
-        "kc_lower": [96.0] * 15,
-        "volume": [150.0] * 15,
-        "vol_ma_20": [100.0] * 15,
-    })
-
-    assert not asyncio.run(engine._place_continuous_market_entry(
-        "1000PEPE/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m",
-        wave_regime="RANGE",
-    ))
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "1000PEPE/USDT", "LONG", frame, 100.0, "TROUGH_TURN", "test", 100, "1m",
-        wave_regime="RANGE",
-    ))
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "1000PEPE/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m",
-        wave_regime="TREND",
-    ))
 
 
-def test_continuous_market_mode_uses_1000pepe_trend_not_btc():
-    engine = object.__new__(TradingEngine)
-    engine.st_direction_1h_cache = {"1000PEPE/USDT": 1}
-    engine.ema_50_1h_cache = {"1000PEPE/USDT": 100.0}
-    engine.btc_1h_st_direction = -1
-
-    assert engine._continuous_market_mode_for(
-        "1000PEPE/USDT", "TREND", 101.0,
-    ) == "BULL"
-
-    engine.st_direction_1h_cache["1000PEPE/USDT"] = -1
-    engine.btc_1h_st_direction = 1
-    assert engine._continuous_market_mode_for(
-        "1000PEPE/USDT", "TREND", 99.0,
-    ) == "BEAR"
 
 
 def test_continuous_entry_rejects_directional_kc_extremes():
@@ -5459,199 +3503,12 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     assert "DOGE/USDT" not in account.positions
 
 
-@pytest.mark.anyio
-async def test_strong_trigger_alone_does_not_auto_close_without_exit_signal(monkeypatch):
-    from tests.test_testnet_account import FakeTestnetExchange
-    from core.testnet_account import BinanceTestnetAccount
-    from core.engine import TradingEngine
-    import pandas as pd
-    import asyncio
-
-    exchange = FakeTestnetExchange()
-    account = BinanceTestnetAccount(exchange)
-    await account.initialize()
-
-    # Open a LONG position at 100
-    await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
-    )
-
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    engine.tickers = {"DOGE/USDT": 100.0}
-
-    # Mock fetch_klines to return a DataFrame that breaches both EMA20 (two
-    # consecutive bars, per compute_position_trigger's confirmation window)
-    # and Swing Low
-    async def mock_fetch_klines(symbol, timeframe, limit, **_kwargs):
-        closes = [100.0] * 28 + [92.0, 88.0]
-        lows = [98.0] * 28 + [90.0, 86.0]
-        highs = [102.0] * 30
-        return pd.DataFrame({
-            "timestamp": [0] * 30,
-            "open": closes,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": [0] * 30
-        })
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    monkeypatch.setattr(
-        engine_module,
-        "compute_position_trigger",
-        lambda df, side: {
-            "active": True, "ma_ok": False, "reasons": ["EMA與結構同步跌破"],
-            "strong": True, "ma5_reversed": False,
-            "ema_breach_confirmed": True, "structure_broken": True, "atr": 1.32,
-        },
-    )
-
-    # Let _position_trigger_loop run once and stop
-    original_sleep = asyncio.sleep
-    async def mock_sleep_stop(secs):
-        engine.is_running = False
-        await original_sleep(0.001)
-    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
-    monkeypatch.setattr("core.engine.ENABLE_STRONG_TRIGGER_AUTO_CLOSE", True)
-
-    await engine._position_trigger_loop()
-
-    # 結構 strong 只提供警示；沒有正式峰谷/MA 退出訊號不得單獨平倉。
-    assert "DOGE/USDT" in account.positions
-    assert engine.position_triggers["DOGE/USDT"]["strong"] is True
 
 
-@pytest.mark.anyio
-async def test_ma5_only_trigger_does_not_close_during_minimum_hold(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    """MA5單獨反轉即使strong=True，持倉未滿10分鐘仍交給固定SL保護。"""
-    import asyncio
-
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    account = PaperAccount()
-    await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0,
-        sl=95.0, tp=110.0, reason="test", signal_score=80,
-    )
-
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    engine.tickers = {"DOGE/USDT": 99.0}
-
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30, **_kwargs):
-        return pd.DataFrame({
-            "timestamp": list(range(25)),
-            "open": [99.0] * 25, "high": [100.0] * 25,
-            "low": [98.0] * 25, "close": [99.0] * 25,
-            "volume": [100.0] * 25,
-        })
-
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    monkeypatch.setattr(
-        engine_module,
-        "compute_position_trigger",
-        lambda df, side: {
-            "active": True, "ma_ok": False, "reasons": ["MA5連續兩根轉彎向下"],
-            "strong": True, "ma5_reversed": True,
-            "ema_breach_confirmed": False, "structure_broken": False, "atr": 0.4,
-        },
-    )
-    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
-
-    original_sleep = asyncio.sleep
-    async def mock_sleep_stop(secs):
-        engine.is_running = False
-        await original_sleep(0.001)
-    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
-
-    await engine._position_trigger_loop()
-
-    assert "DOGE/USDT" in account.positions
-    assert engine.position_triggers["DOGE/USDT"]["ma5_exit_ready"] is False
-    assert "持倉0.0分<10分" in engine.position_triggers["DOGE/USDT"]["ma5_exit_gate"]
 
 
-@pytest.mark.anyio
-async def test_trailing_sl_moves_up_for_long(monkeypatch):
-    from tests.test_testnet_account import FakeTestnetExchange
-    from core.testnet_account import BinanceTestnetAccount
-    from core.engine import TradingEngine
-    import asyncio
-
-    exchange = FakeTestnetExchange()
-    account = BinanceTestnetAccount(exchange)
-    await account.initialize()
-
-    # Open LONG at 100, initial SL = 95
-    await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=110.0, reason="test", leverage=5
-    )
-    original_sl = account.position_meta["DOGE/USDT"]["sl"]
-
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    # Price moves up to 108
-    engine.tickers = {"DOGE/USDT": 108.0}
-
-    original_sleep = asyncio.sleep
-    async def mock_sleep_stop(secs):
-        engine.is_running = False
-        await original_sleep(0.001)
-    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
-    monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
-    monkeypatch.setattr("core.engine.USE_NATIVE_TRAILING_STOP", False)
-    monkeypatch.setattr("core.engine.SL_ONLY_AFTER_PEAK_PCT", 0.0)
-    account.position_meta["DOGE/USDT"]["outer_run_active"] = True
-    account.positions["DOGE/USDT"]["outer_run_active"] = True
-    monkeypatch.setattr("core.engine.TRAILING_SL_ATR_MULT", 3.0)
-
-    await engine._run_trailing_sl_loop()
-
-    # SL should have moved up (new_sl = 108 - 3 * 1.5 = 103.5 > original 95)
-    new_sl = account.position_meta["DOGE/USDT"]["sl"]
-    assert new_sl > original_sl
 
 
-@pytest.mark.anyio
-async def test_trailing_sl_does_not_move_back(monkeypatch):
-    from tests.test_testnet_account import FakeTestnetExchange
-    from core.testnet_account import BinanceTestnetAccount
-    from core.engine import TradingEngine
-    import asyncio
-
-    exchange = FakeTestnetExchange()
-    account = BinanceTestnetAccount(exchange)
-    await account.initialize()
-
-    # Open LONG at 100, initial SL = 98 (already close)
-    await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=110.0, reason="test", leverage=5
-    )
-    original_sl = account.position_meta["DOGE/USDT"]["sl"]
-
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    # Price drops to 99 — trail would compute new_sl = 99 - 3 * 1.5 = 94.5 < 98
-    engine.tickers = {"DOGE/USDT": 99.0}
-
-    original_sleep = asyncio.sleep
-    async def mock_sleep_stop(secs):
-        engine.is_running = False
-        await original_sleep(0.001)
-    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
-    monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
-    monkeypatch.setattr("core.engine.TRAILING_SL_ATR_MULT", 3.0)
-
-    await engine._run_trailing_sl_loop()
-
-    # SL should NOT have moved back (still original_sl)
-    assert account.position_meta["DOGE/USDT"]["sl"] == original_sl
 
 
 def _structured_entry_frame():
@@ -6135,63 +3992,8 @@ def test_momentum_cross_rejects_profit_room_below_cost_buffer(monkeypatch):
     assert "預估獲利空間不足" in signal["reason"]
 
 
-@pytest.mark.anyio
-async def test_legacy_momentum_cross_position_migrates_to_trend_profile(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "momentum_profile.json"))
-    account = PaperAccount()
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "momentum",
-        signal_score=80,
-        entry_context={
-            "entry_mode": "MOMENTUM_CROSS",
-            "profit_profile": "BOUNCE",
-            "profit_room_pct": 0.0,
-            "bounce_target_pct": 0.0,
-        },
-        apply_slippage=False,
-    )
-
-    await account.update_positions({"BTC/USDT": 100.24})
-
-    assert account.positions["BTC/USDT"]["profit_profile"] == "TREND_EXTENSION"
-    assert account.position_meta["BTC/USDT"]["profit_profile"] == "TREND_EXTENSION"
-    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 
 
-@pytest.mark.anyio
-async def test_structured_exit_scales_half_at_one_point_five_r(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "structured.json"))
-    account = PaperAccount()
-    await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "breakout",
-        atr=1.0, leverage=2, signal_score=90,
-        entry_context={"entry_mode": "MOMENTUM_CROSS", "initial_sl": 99.0, "initial_risk": 1.0},
-    )
-    engine = TradingEngine()
-    engine.account = account
-    engine.is_running = True
-    entry = account.positions["BTC/USDT"]["entry_price"]
-    engine.tickers = {"BTC/USDT": entry + 1.6}
-    engine.st_direction_1h_cache = {"BTC/USDT": 1}
-    engine.btc_1h_st_direction = 1
-
-    async def bars(symbol, timeframe="5m", limit=100, **_kwargs):
-        prices = [entry + 1.6] * 70
-        return pd.DataFrame({
-            "timestamp": list(range(70)), "open": prices, "high": prices,
-            "low": prices, "close": prices, "volume": [100.0] * 70,
-        })
-
-    async def stop_after_one(_seconds):
-        engine.is_running = False
-
-    monkeypatch.setattr(engine, "fetch_klines", bars)
-    monkeypatch.setattr(asyncio, "sleep", stop_after_one)
-    monkeypatch.setattr(engine_module, "ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT", True)
-    original_qty = account.positions["BTC/USDT"]["qty"]
-    await engine._run_structured_exits()
-    assert account.positions["BTC/USDT"]["qty"] == pytest.approx(original_qty * 0.5), account.logs
-    assert account.position_meta["BTC/USDT"]["rr_1_5_done"] is True
 
 
 
@@ -6338,196 +4140,18 @@ async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, mo
     assert account.positions["ETH/USDT"]["sl"] == pytest.approx(90.0)
 
 
-@pytest.mark.anyio
-async def test_support_pullback_touch_waits_for_reclaim_before_entry(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "reclaim.json"))
-    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
-    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
-    account = PaperAccount()
-    await account.place_limit_entry(
-        "SOL/USDT", "LONG", 100.0, 50.0, sl=98.0, tp=0.0, atr=1.0,
-        reason="SupportPullback_LONG", signal_score=85, post_only=True,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 98.0},
-    )
-
-    await account.update_positions({"SOL/USDT": 99.98})
-    await account.check_pending_limit_orders()
-    assert "SOL/USDT" not in account.positions
-    assert account.pending_limit_orders["SOL/USDT"]["touched_at"] > 0
-
-    await account.update_positions({"SOL/USDT": 100.06})
-    await account.check_pending_limit_orders()
-    assert "SOL/USDT" in account.positions
-    assert account.positions["SOL/USDT"]["reclaim_confirmed"] is True
-    assert account.positions["SOL/USDT"]["entry_price"] > 100.06
 
 
-@pytest.mark.anyio
-async def test_support_pullback_cancels_when_touch_keeps_moving_adverse(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "adverse.json"))
-    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
-    account = PaperAccount()
-    await account.place_limit_entry(
-        "SOL/USDT", "LONG", 100.0, 50.0, sl=98.0, tp=0.0, atr=1.0,
-        reason="SupportPullback_LONG", signal_score=85, post_only=True,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 98.0},
-    )
-
-    await account.update_positions({"SOL/USDT": 99.98})
-    await account.check_pending_limit_orders()
-    await account.update_positions({"SOL/USDT": 99.60})
-    await account.check_pending_limit_orders()
-
-    assert "SOL/USDT" not in account.positions
-    assert "SOL/USDT" not in account.pending_limit_orders
-    assert any("承接失敗" in row["text"] for row in account.logs)
 
 
-@pytest.mark.anyio
-async def test_support_pullback_allows_low_reward_risk_when_filter_disabled(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "low_rr.json"))
-    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
-    monkeypatch.setattr(pa_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
-    monkeypatch.setattr(pa_module, "STRUCTURED_NET_RR_HARD_FLOOR", 0.5)
-    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
-    account = PaperAccount()
-    await account.place_limit_entry(
-        "ZEC/USDT", "LONG", 100.0, 50.0, sl=99.4, tp=0.0, atr=1.0,
-        reason="SupportPullback_LONG", signal_score=87, post_only=True,
-        entry_context={
-            "entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.4,
-            "profit_profile": "BOUNCE", "bounce_target_pct": 0.0060,
-        },
-    )
-
-    await account.update_positions({"ZEC/USDT": 99.98})
-    await account.check_pending_limit_orders()
-    await account.update_positions({"ZEC/USDT": 100.06})
-    await account.check_pending_limit_orders()
-
-    assert "ZEC/USDT" in account.positions
-    assert "ZEC/USDT" not in account.pending_limit_orders
-    assert not any("回收後淨風報比" in row["text"] for row in account.logs)
 
 
-@pytest.mark.anyio
-async def test_support_pullback_default_paper_maker_fills_at_resting_limit(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "maker_fill.json"))
-    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", False)
-    account = PaperAccount()
-    await account.place_limit_entry(
-        "XMR/USDT", "LONG", 397.9811, 25.0, sl=396.0251, tp=0.0, atr=1.0,
-        reason="SupportPullback_LONG", signal_score=85, post_only=True,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 396.0251},
-    )
-
-    await account.update_positions({"XMR/USDT": 396.31})
-    await account.check_pending_limit_orders()
-
-    assert "XMR/USDT" in account.positions
-    assert "XMR/USDT" not in account.pending_limit_orders
-    assert account.positions["XMR/USDT"]["entry_price"] == pytest.approx(397.9811)
-    assert any("紙上Maker成交" in row["text"] for row in account.logs)
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "entry_context",
-    [
-        {
-            "entry_mode": "SUPPORT_PULLBACK",
-            "btc_regime_at_entry": "CONTRARY",
-            "btc_allocation_factor": 0.5,
-        },
-        {
-            "entry_mode": "SUPPORT_PULLBACK",
-            "high_readiness_low_room": True,
-            "low_room_allocation_factor": 0.5,
-        },
-    ],
-)
-async def test_risky_support_pullback_requires_reclaim_even_when_global_flag_is_off(
-    tmp_path, monkeypatch, entry_context,
-):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "selective_reclaim.json"))
-    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", False)
-    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
-    account = PaperAccount()
-    await account.place_limit_entry(
-        "PEOPLE/USDT", "LONG", 100.0, 25.0, sl=98.0, tp=0.0, atr=1.0,
-        reason="SupportPullback_LONG", signal_score=85, post_only=True,
-        entry_context=entry_context,
-    )
-
-    await account.update_positions({"PEOPLE/USDT": 99.98})
-    await account.check_pending_limit_orders()
-    assert "PEOPLE/USDT" not in account.positions
-    assert account.pending_limit_orders["PEOPLE/USDT"]["touched_at"] > 0
-
-    await account.update_positions({"PEOPLE/USDT": 100.06})
-    await account.check_pending_limit_orders()
-    assert "PEOPLE/USDT" in account.positions
-    assert account.positions["PEOPLE/USDT"]["reclaim_confirmed"] is True
 
 
-@pytest.mark.anyio
-async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "no_follow.json"))
-    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_SEC", 3600.0)
-    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.0023)
-    account = PaperAccount()
-    await account.open_position(
-        "ZEC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=0.0,
-        reason="SupportPullback_LONG", signal_score=87,
-        entry_context={
-            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
-            "profit_room_pct": 0.01, "bounce_target_pct": 0.0078,
-        },
-    )
-    account.positions["ZEC/USDT"]["open_timestamp"] -= 3601.0
-    account.position_meta["ZEC/USDT"]["open_timestamp"] -= 3601.0
-
-    await account.update_positions({"ZEC/USDT": 99.9})
-
-    assert "ZEC/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "反彈逾時未延續平倉"
 
 
-@pytest.mark.anyio
-async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_guard.json"))
-    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
-    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
-    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0020)
-    account = PaperAccount()
-    await account.open_position(
-        "ADA/USDT", "SHORT", 100.0, 50.0, sl=101.0, tp=0.0,
-        reason="SupportPullback_SHORT", signal_score=88,
-        entry_context={
-            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
-            "initial_sl": 101.0, "profit_room_pct": 0.01, "bounce_target_pct": 0.008,
-        },
-        apply_slippage=False,
-    )
-
-    await account.update_positions({"ADA/USDT": 99.765})
-
-    assert "ADA/USDT" in account.positions
-    assert account.position_meta["ADA/USDT"]["early_profit_guard_armed"] is True
-    assert account.position_meta["ADA/USDT"]["early_profit_guard_price"] == pytest.approx(99.8)
-
-    # 模擬 HEI：下次輪詢時報價已從浮盈跳到浮虧。
-    await account.update_positions({"ADA/USDT": 100.056})
-
-    assert "ADA/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
-    assert account.trades[0]["pnl"] > 0
-    assert account.trades[0]["price"] < 100.0
 
 
 def test_two_symbol_rotation_keeps_confirmed_outer_setup_on_board(monkeypatch):

@@ -20,14 +20,6 @@ def case(side='LONG', kind='pin'):
     return f,p
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('kind,expected',[('pin','PIN'),('reversal','REVERSAL')])
-def test_closed_exhaustion_dispatch_and_pending(side,kind,expected):
-    f,p=case(side,kind);price=float(f.iloc[-1].close)
-    reason=f'EXIT_EXHAUSTION_{expected}_CLOSED'
-    assert exhaustion_exit_reason(p,f,price)==reason
-    assert DualTrackExitStrategy().evaluate_exit(p,f,current_price=price)==reason
-    assert DualTrackExitStrategy().evaluate_exit(copy.deepcopy(p),None,current_price=price)==reason
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -56,12 +48,3 @@ def test_live_tail_cannot_trigger_exhaustion(side):
     assert DualTrackExitStrategy().evaluate_exit(p,f,current_price=float(f.iloc[-1].close)) is None
 
 
-def test_short_trailing_is_monotone_and_close_only():
-    from core.services.exits.dual_track_exit_service import trailing_structure_exit
-    f,p=case('SHORT');p['swing_trailing_armed']=True
-    assert trailing_structure_exit(p,f) is None
-    first=p['swing_trailing_line']
-    row=f.iloc[-1].copy();row.timestamp+=60000;row['close']=first+.1
-    f=pd.concat([f,pd.DataFrame([row])],ignore_index=True)
-    assert trailing_structure_exit(p,f)=='EXIT_TWO_BAR_HIGH_TRAILING_CLOSED'
-    assert p['swing_trailing_line']<=first

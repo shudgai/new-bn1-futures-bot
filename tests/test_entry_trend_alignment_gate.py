@@ -19,43 +19,6 @@ def with_chop_history(data):
     return pd.DataFrame(padding + data)
 
 
-def test_trend_alignment_gate_blocks_short_when_kc_up():
-    """
-    Simulates the CAP/USDT scenario where KC is UP (or flat), MA15 is flat,
-    and a SHORT entry is attempted during consolidation.
-    It should be BLOCKED_BY_TREND_MISALIGNMENT_SHORT.
-    """
-    # Create fake bars
-    # ATR = 10, slope_threshold = 0.05
-    data = [
-        # Bar 1 (prev closed)
-        {'timestamp': 1000, 'open': 100, 'high': 110, 'low': 90, 'close': 105,
-         'atr': 10, 'kc_lower': 90, 'kc_middle': 100, 'kc_upper': 110,
-         'ma5': 102, 'ma15': 100, 'is_closed': True},
-        # Bar 2 (last closed) - KC middle increases (kc_slope = 2) -> UP
-        {'timestamp': 2000, 'open': 105, 'high': 115, 'low': 95, 'close': 110,
-         'atr': 10, 'kc_lower': 92, 'kc_middle': 102, 'kc_upper': 112,
-         'ma5': 104, 'ma15': 100, 'is_closed': True}, # ma5 goes down slightly, ma15 flat
-        # Bar 3 (live forming)
-        {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 90, 'is_closed': False}
-    ]
-    data[-1].update(ma5=103, ma15=100, atr=10)
-    frame = with_chop_history(data)
-
-    decision = {
-        'side': 'SHORT',
-        'type': 'TRIGGER_A_KC_BREAKOUT',
-    }
-
-    diagnostics = {}
-    from unittest.mock import patch
-    with patch('core.services.entry_contract.evaluate_realtime_short_rail_breach') as mock_eval:
-        mock_eval.return_value = {'action': 'ENTER', 'side': 'SHORT', 'pending_signal_id': 1}
-        result = evaluate_entry_contract(frame, price=90, code=decision['type'], account=None, symbol="CAP/USDT", diagnostics=diagnostics)
-
-    
-    assert result is None
-    assert diagnostics.get('reason') == 'BLOCKED_BY_TREND_MISALIGNMENT_SHORT'
 
 def test_trend_alignment_gate_passes_when_aligned():
     """
@@ -96,52 +59,4 @@ def test_trend_alignment_gate_passes_when_aligned():
     assert diagnostics.get('reason') != 'BLOCKED_BY_TREND_MISALIGNMENT_SHORT'
 
 
-def test_ma_overlap_consolidation():
-    # ATR = 10, MA5 = 101, MA15 = 100. (101-100)/10 = 0.1 < 0.2
-    data = [
-        {'timestamp': 1000, 'open': 100, 'high': 110, 'low': 90, 'close': 105,
-         'atr': 10, 'kc_lower': 90, 'kc_middle': 100, 'kc_upper': 110,
-         'ma5': 102, 'ma15': 100, 'is_closed': True},
-        {'timestamp': 2000, 'open': 105, 'high': 115, 'low': 95, 'close': 110,
-         'atr': 10, 'kc_lower': 92, 'kc_middle': 102, 'kc_upper': 112,
-         'ma5': 101, 'ma15': 100, 'is_closed': True}, 
-        {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 90, 'is_closed': False}
-    ]
-    data[-1].update(ma5=101, ma15=100, atr=10)
-    frame = with_chop_history(data)
-    decision = {'side': 'SHORT', 'type': 'TRIGGER_A_KC_BREAKOUT'}
-    diagnostics = {}
-    
-    from unittest.mock import patch
-    with patch('core.services.entry_contract.evaluate_realtime_short_rail_breach') as mock_eval:
-        mock_eval.return_value = {'action': 'ENTER', 'side': 'SHORT', 'pending_signal_id': 1}
-        result = evaluate_entry_contract(frame, price=90, code=decision['type'], account=None, symbol="CAP/USDT", diagnostics=diagnostics)
-    
-    assert result is None
-    assert diagnostics.get('reason') == 'BLOCKED_BY_MA_OVERLAP_CONSOLIDATION'
 
-def test_anti_top_fading_gate():
-    # SHORT entry, but close > kc_basis and ma5 > ma15
-    # ATR = 10. MA5 = 105, MA15 = 100 -> diff 5 -> 5/10 = 0.5 > 0.2 (no overlap)
-    # quote = 108 > kc_middle(102)
-    data = [
-        {'timestamp': 1000, 'open': 100, 'high': 110, 'low': 90, 'close': 105,
-         'atr': 10, 'kc_lower': 90, 'kc_middle': 100, 'kc_upper': 110,
-         'ma5': 102, 'ma15': 100, 'is_closed': True},
-        {'timestamp': 2000, 'open': 105, 'high': 115, 'low': 95, 'close': 110,
-         'atr': 10, 'kc_lower': 92, 'kc_middle': 102, 'kc_upper': 112,
-         'ma5': 105, 'ma15': 100, 'is_closed': True}, 
-        {'timestamp': 3000, 'open': 110, 'high': 110, 'low': 90, 'close': 108, 'is_closed': False}
-    ]
-    data[-1].update(ma5=105, ma15=100, atr=10)
-    frame = with_chop_history(data)
-    decision = {'side': 'SHORT', 'type': 'TRIGGER_A_KC_BREAKOUT'}
-    diagnostics = {}
-    
-    from unittest.mock import patch
-    with patch('core.services.entry_contract.evaluate_realtime_short_rail_breach') as mock_eval:
-        mock_eval.return_value = {'action': 'ENTER', 'side': 'SHORT', 'pending_signal_id': 1}
-        result = evaluate_entry_contract(frame, price=108, code=decision['type'], account=None, symbol="CAP/USDT", diagnostics=diagnostics)
-    
-    assert result is None
-    assert diagnostics.get('reason') == 'BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT'

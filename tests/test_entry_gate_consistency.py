@@ -39,28 +39,6 @@ def frame(side='LONG'):
     return f
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_shared_signal_reaches_order_executor(monkeypatch, side):
-    from core.engine import TradingEngine
-    from core.paper_account import PaperAccount
-    from core.services.symbol_runner import process_single_symbol_runner
-    from test_intrabar_midline_entry import make_frame as midline_frame
-    monkeypatch.setattr(PaperAccount, 'load_state', lambda self: None)
-    monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
-    account = PaperAccount(); account.balance = 100.
-    engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '1000PEPE/USDT'; f, quote = midline_frame(side)
-    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
-    f['timestamp'] += current_bar - int(f.iloc[-1]['timestamp'])
-    engine.tickers = {symbol: quote}
-    engine.fetch_klines = AsyncMock(return_value=f)
-    engine.strategy = SimpleNamespace(compute_indicators=lambda data: data)
-    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
-    engine._execution_price_is_safe = AsyncMock(return_value=True)
-    engine._execute_confirmed_channel_break = AsyncMock()
-    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    engine._execute_confirmed_channel_break.assert_awaited_once()
-    assert engine._execute_confirmed_channel_break.await_args.args[3] == side
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

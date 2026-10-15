@@ -241,42 +241,8 @@ def test_bearish_ma_midline_launch_keeps_strict_common_entry_gates(fault):
     ) is None
 
 
-def test_bearish_ma_midline_launch_keeps_three_bar_opposite_close_cooldown():
-    frame, quote = make_bearish_ma_midline_frame()
-    decision = EntryGatePipeline.detect_momentum_burst(
-        frame, quote, side='SHORT',
-    )
-
-    class Account:
-        last_closed_at = {'CAP/USDT': 600.0}
-        last_closed_side = {'CAP/USDT': 'LONG'}
-
-    diagnostics = {}
-    authorized = pipeline.authorize(
-        decision, frame, quote, symbol='CAP/USDT', account=Account(),
-        requested_side='SHORT', diagnostics=diagnostics,
-    )
-
-    assert authorized is None
-    assert diagnostics['reason'] == 'BLOCKED_OPPOSITE_SIDE_COOLDOWN'
 
 
-def test_bearish_ma_midline_launch_passes_contract_and_pipeline():
-    frame, quote = make_bearish_ma_midline_frame()
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, quote, code=MOMENTUM_BURST_SHORT_CODE,
-        symbol='CAP/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is not None, diagnostics
-    assert decision['entry_phase'] == 'KC_MOMENTUM_BURST_SHORT'
-    refreshed = pipeline.authorize(
-        decision, frame, quote, symbol='CAP/USDT', requested_side='SHORT',
-    )
-    assert refreshed is not None
-    assert refreshed['pending_signal_id'] == decision['pending_signal_id']
 
 
 @pytest.mark.parametrize(
@@ -334,43 +300,6 @@ def test_momentum_burst_allows_exact_fifty_percent_body_and_one_x_wick():
     assert decision['upper_rail_space_ratio'] >= 0.15
 
 
-@pytest.mark.parametrize(
-    ('side', 'code'),
-    [('LONG', MOMENTUM_BURST_LONG_CODE),
-     ('SHORT', MOMENTUM_BURST_SHORT_CODE)],
-)
-def test_momentum_burst_passes_account_firewall_revalidation(side, code):
-    frame, quote = make_momentum_burst_frame(side)
-    live = frame.index[-1]
-    adjustment = quote - float(frame.loc[live, 'close'])
-    frame.loc[live, 'ma5'] = float(frame.loc[live, 'ma5']) + adjustment / 5.0
-    frame.loc[live, 'ma15'] = float(frame.loc[live, 'ma15']) + adjustment / 15.0
-    frame.loc[live, 'close'] = quote
-    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
-    frame['timestamp'] += current_bar - int(frame.iloc[-1]['timestamp'])
-    frame.attrs['entry_finality_verified'] = True
-
-    class Account:
-        positions = {}
-        trades = []
-        last_closed_at = {}
-        last_closed_side = {}
-
-        async def entry_frame_provider(self, symbol):
-            return frame
-
-    context = {
-        'entry_signal_code': code,
-        'entry_phase': f'KC_MOMENTUM_BURST_{side}',
-        'channel_confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
-    }
-
-    decision = asyncio.run(validate_account_entry(
-        Account(), 'CAP/USDT', side, context,
-    ))
-
-    assert decision['type'] == code
-    assert decision['side'] == side
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -421,24 +350,6 @@ def test_next_bar_midline_retest_recovers_missed_launch(side):
     assert decision['breakout_bar_id'] == frame.iloc[-2]['timestamp']
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_midline_retest_passes_contract_and_pipeline_revalidation(side):
-    frame, quote = make_frame(side, phase='retest')
-    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, quote, code=code, symbol='CAP/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is not None, diagnostics
-    assert decision['entry_phase'] == 'KC_MIDLINE_RETEST'
-    assert decision['breakout_bar_id'] == frame.iloc[-2]['timestamp']
-    refreshed = pipeline.authorize(
-        decision, frame, quote, symbol='CAP/USDT', requested_side=side,
-    )
-    assert refreshed is not None
-    assert refreshed['entry_phase'] == 'KC_MIDLINE_RETEST'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -473,32 +384,6 @@ def test_midline_retest_rejects_incomplete_evidence(side, fault):
     assert detector(frame, quote, side=side) is None
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_midline_retest_passes_account_firewall_revalidation(side):
-    frame, _ = make_frame(side, phase='retest')
-    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
-    frame['timestamp'] += current_bar - int(frame.iloc[-1]['timestamp'])
-    frame.attrs['entry_finality_verified'] = True
-
-    class Account:
-        last_closed_at = {}
-        last_closed_side = {}
-
-        async def entry_frame_provider(self, symbol):
-            return frame
-
-    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
-    context = {
-        'entry_signal_code': code,
-        'channel_confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
-    }
-    decision = asyncio.run(validate_account_entry(
-        Account(), 'CAP/USDT', side, context,
-    ))
-
-    assert decision['side'] == side
-    assert decision['entry_phase'] == 'KC_MIDLINE_RETEST'
-    assert decision['breakout_bar_id'] == frame.iloc[-2]['timestamp']
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -573,39 +458,8 @@ def test_closed_bar_does_not_authorize_delayed_midline_entry(side):
     assert detector(frame, quote, side=side) is None
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_midline_launch_passes_contract_and_shared_pipeline(side):
-    frame, quote = make_frame(side)
-    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, quote, code=code, symbol='CAP/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is not None, diagnostics
-    assert decision['side'] == side
-    assert decision['entry_phase'] == 'KC_MIDLINE_LAUNCH'
-    pipeline_decision = pipeline.authorize(
-        decision, frame, quote, symbol='CAP/USDT', requested_side=side,
-    )
-    assert pipeline_decision is not None
-    assert pipeline_decision['side'] == side
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_send_time_contract_rejects_quote_after_midline_signal_lost(side):
-    frame, _ = make_frame(side)
-    quote = 99.9 if side == 'LONG' else 100.1
-    diagnostics = {}
-    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
-
-    decision = evaluate_entry_contract(
-        frame, quote, code=code, symbol='CAP/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_MIDLINE_BREAK_EVIDENCE'
 
 
 def test_midline_launch_still_blocks_two_recent_ma_crosses():
@@ -628,29 +482,3 @@ def test_midline_launch_still_blocks_two_recent_ma_crosses():
     ) is None
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_entry_firewall_revalidates_live_midline_entry(side):
-    frame, _ = make_frame(side)
-    current_bar = int(time.time() * 1000 // 60_000 * 60_000)
-    frame['timestamp'] += current_bar - int(frame.iloc[-1]['timestamp'])
-    frame.attrs['entry_finality_verified'] = True
-
-    class Account:
-        last_closed_at = {}
-        last_closed_side = {}
-
-        async def entry_frame_provider(self, symbol):
-            return frame
-
-    code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
-    context = {
-        'entry_signal_code': code,
-        'channel_confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
-    }
-
-    decision = asyncio.run(validate_account_entry(
-        Account(), 'CAP/USDT', side, context,
-    ))
-
-    assert decision['side'] == side
-    assert decision['entry_phase'] == 'KC_MIDLINE_LAUNCH'

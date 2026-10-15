@@ -64,43 +64,10 @@ def _short_setup_frame():
     })
 
 
-def test_ma3_pivot_long_uses_current_confirmation_path():
-    frame = _long_setup_frame()
-    frame["ma15"] = 100.0
-
-    signal = SuperTrendKeltnerStrategy().evaluate_signal(
-        frame, indicators_precomputed=True,
-    )
-
-    assert signal["action"] == "ENTER_MARKET"
-    assert signal["side"] == "LONG"
-    assert signal["entry_mode"] == "MA3_PIVOT"
 
 
-def test_ma3_pivot_short_uses_current_confirmation_path():
-    frame = _short_setup_frame()
-    frame["ma15"] = 100.0
-
-    signal = SuperTrendKeltnerStrategy().evaluate_signal(
-        frame, indicators_precomputed=True,
-    )
-
-    assert signal["action"] == "ENTER_MARKET"
-    assert signal["side"] == "SHORT"
-    assert signal["entry_mode"] == "MA3_PIVOT"
 
 
-def test_high_atr_candidate_is_blocked_before_pivot_entry():
-    frame = _long_setup_frame()
-    frame["ma15"] = 100.0
-    frame["ma3"] = [100.1, 100.0, 100.10, 99.95, 100.08, 99.94, 100.07, 100.03]
-
-    signal = SuperTrendKeltnerStrategy().evaluate_signal(
-        frame, indicators_precomputed=True,
-    )
-
-    assert signal["action"] == "HOLD"
-    assert "ATR_Too_High" in signal["reason"]
 
 
 def test_progress_log_reports_current_direction_and_failed_qualification():

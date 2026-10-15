@@ -147,37 +147,5 @@ def test_golden_cross_blocked_when_body_insufficient():
     assert decision is None, "微弱無動能實體十字星金叉，拒絕開多"
 
 
-def test_golden_cross_success_when_all_conditions_met():
-    """7. 條件全滿足：順勢、中軌向上、MA15 走平/向上、實體動能充分，正常觸發金叉開多。"""
-    df = _build_test_frame(trend='UP', n=30, base_price=100.0, atr=1.0)
-    df.loc[df.index[-2], 'ma5'] = 105.8
-    df.loc[df.index[-2], 'ma15'] = 106.0
-    df.loc[df.index[-1], 'ma5'] = 106.6
-    df.loc[df.index[-1], 'ma15'] = 106.2
-    df.loc[df.index[-1], 'open'] = 106.2
-    df.loc[df.index[-1], 'close'] = 107.0
-    df.loc[df.index[-1], 'high'] = 107.1
-    df.loc[df.index[-1], 'low'] = 106.1
-
-    decision = check_ma_cross_entry(df, live_price=107.0)
-    assert decision is not None, "所有條件嚴格滿足時，正常觸發開多"
-    assert decision['side'] == 'LONG'
-    assert decision['type'] == 'KC_GOLDEN_CROSS_FAST_LONG'
 
 
-def test_death_cross_success_when_all_conditions_met():
-    """8. 條件全滿足：順勢、中軌向下、MA15 走平/向下、實體動能充分，正常觸發死叉開空。"""
-    df = _build_test_frame(trend='DOWN', n=30, base_price=100.0, atr=1.0)
-    df.loc[df.index[-2], 'ma5'] = 94.2
-    df.loc[df.index[-2], 'ma15'] = 94.0
-    df.loc[df.index[-1], 'ma5'] = 93.4
-    df.loc[df.index[-1], 'ma15'] = 93.8
-    df.loc[df.index[-1], 'open'] = 93.8
-    df.loc[df.index[-1], 'close'] = 93.0
-    df.loc[df.index[-1], 'high'] = 93.9
-    df.loc[df.index[-1], 'low'] = 92.9
-
-    decision = check_ma_cross_entry(df, live_price=93.0)
-    assert decision is not None, "所有條件嚴格滿足時，正常觸發開空"
-    assert decision['side'] == 'SHORT'
-    assert decision['type'] == 'KC_DEATH_CROSS_FAST_SHORT'

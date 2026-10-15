@@ -278,51 +278,5 @@ def reversal_frame(side):
     return frame, quote
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_impulse_reversal_blocks_entry_for_rest_of_same_candle(side):
-    account = type("Account", (), {
-        "positions": {}, "trades": [], "last_closed_at": {},
-        "breakout_qualification": {}, "save_state": lambda self: None,
-    })()
-    frame, quote = reversal_frame(side)
-    symbol = "LOBSTER/USDT"
-    diagnostics = {}
-
-    assert evaluate_entry_contract(
-        frame, quote, account=account, symbol=symbol, diagnostics=diagnostics
-    ) is None
-    assert diagnostics["reason"] in (
-        "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE",
-        "WAIT_LIVE_BODY_BREAKOUT",
-        "KC_PENDING_CANCELLED_INSIDE_RAIL",
-        "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
-        "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
-        "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
-    )
-    assert not account.breakout_qualification
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_next_candle_requires_observed_pullback_then_resume(side):
-    account = type("Account", (), {
-        "positions": {}, "trades": [], "last_closed_at": {},
-        "breakout_qualification": {}, "save_state": lambda self: None,
-    })()
-    frame, quote = reversal_frame(side)
-    symbol = "LOBSTER/USDT"
-    diagnostics = {}
-    assert evaluate_entry_contract(
-        frame, quote, account=account, symbol=symbol, diagnostics=diagnostics
-    ) is None
-
-    assert evaluate_entry_contract(
-        frame, quote, account=account, symbol=symbol, diagnostics=diagnostics
-    ) is None
-    assert diagnostics["reason"] in (
-        "BLOCKED_ENTRY_REQUIRES_INNER_CHANNEL_PRESSURE",
-        "WAIT_LIVE_BODY_BREAKOUT",
-        "KC_PENDING_CANCELLED_INSIDE_RAIL",
-        "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
-        "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
-        "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
-    )

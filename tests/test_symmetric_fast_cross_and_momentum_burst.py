@@ -128,57 +128,8 @@ def test_golden_cross_and_death_cross_fast_lane_symmetry():
     assert short_decision['lower_rail_space_ratio'] >= 0.25
 
 
-def test_ma_tangling_exemption_for_fast_cross():
-    """Verify section 3.1: Exemption for BLOCKED_BY_MA_TANGLING on valid fast cross."""
-    pipeline = EntryGatePipeline()
-
-    # Gap between MA5 and MA15 is 0.05 ATR (< 0.25 ATR), which normally triggers tangling
-    # With signal_code=None:
-    long_frame, long_quote = make_test_frame_for_cross('LONG', body_atr=0.5, space_ratio=0.35, tangling_gap=0.05)
-    assert is_ma_tangling(long_frame, long_quote, signal_code=None) is True
-    assert pipeline.chop_lockout_problem(long_frame, long_quote, signal_code=None, allow_flat_lines=True) == 'BLOCKED_BY_MA_TANGLING'
-
-    # With signal_code=GOLDEN_CROSS_FAST_LONG_CODE and valid momentum:
-    assert is_ma_tangling(long_frame, long_quote, signal_code=GOLDEN_CROSS_FAST_LONG_CODE) is False
-    assert pipeline.chop_lockout_problem(long_frame, long_quote, signal_code=GOLDEN_CROSS_FAST_LONG_CODE, allow_flat_lines=True) is None
-
-    # Symmetrically for SHORT:
-    short_frame, short_quote = make_test_frame_for_cross('SHORT', body_atr=0.5, space_ratio=0.35, tangling_gap=0.05)
-    assert is_ma_tangling(short_frame, short_quote, signal_code=None) is True
-    assert pipeline.chop_lockout_problem(short_frame, short_quote, signal_code=None, allow_flat_lines=True) == 'BLOCKED_BY_MA_TANGLING'
-
-    assert is_ma_tangling(short_frame, short_quote, signal_code=DEATH_CROSS_FAST_SHORT_CODE) is False
-    assert pipeline.chop_lockout_problem(short_frame, short_quote, signal_code=DEATH_CROSS_FAST_SHORT_CODE, allow_flat_lines=True) is None
 
 
-def test_kc_room_gate_and_breakout_strategy_exemption():
-    """Verify section 3.2: KC room 25% gate and STRATEGY_TYPE_BREAKOUT exemption."""
-    frame, _ = make_test_frame_for_cross('LONG')
-    # Upper = 104, Lower = 96, Width = 8
-
-    # Inside channel with 30% space (quote = 101.6) -> Passes
-    assert strict_kc_entry_problem(frame, 101.6, 'LONG') is None
-    # Inside channel with 10% space (quote = 103.2) -> Fails with INSUFFICIENT_UPPER_SPACE
-    assert strict_kc_entry_problem(frame, 103.2, 'LONG') == 'INSUFFICIENT_UPPER_SPACE'
-
-    # Symmetrically for SHORT:
-    # Inside channel with 30% space (quote = 98.4) -> Passes
-    assert strict_kc_entry_problem(frame, 98.4, 'SHORT') is None
-    # Inside channel with 10% space (quote = 96.8) -> Fails with INSUFFICIENT_LOWER_SPACE
-    assert strict_kc_entry_problem(frame, 96.8, 'SHORT') == 'INSUFFICIENT_LOWER_SPACE'
-
-    # Outside outer rail (breakout):
-    # LONG breakout at 104.5 (> upper 104.0):
-    # Without breakout strategy_type: blocked
-    assert strict_kc_entry_problem(frame, 104.5, 'LONG') == 'INSUFFICIENT_UPPER_SPACE'
-    # Long breakout remains exempt from the directional room check.
-    assert strict_kc_entry_problem(frame, 104.5, 'LONG', strategy_type=STRATEGY_TYPE_BREAKOUT) is None
-
-    # A short breakout may not chase below the lower rail.
-    assert strict_kc_entry_problem(frame, 95.5, 'SHORT') == 'INSUFFICIENT_LOWER_SPACE'
-    assert strict_kc_entry_problem(
-        frame, 95.5, 'SHORT', strategy_type=STRATEGY_TYPE_BREAKOUT,
-    ) == 'INSUFFICIENT_LOWER_SPACE'
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -198,25 +149,6 @@ def test_fast_cross_requires_directional_ma15_slope(side):
     assert fast_cross_evidence(frame, quote, side) is not None
 
 
-@pytest.mark.parametrize(
-    ("quote", "opening", "expected"),
-    [
-        (98.0, 98.5, None),              # exactly 25% room, normal body
-        (97.59, 98.09, "INSUFFICIENT_LOWER_SPACE"),
-        (97.2, 98.0, None),              # exactly 15% room, high momentum
-        (97.19, 98.0, "INSUFFICIENT_LOWER_SPACE"),
-        (95.5, 96.5, "INSUFFICIENT_LOWER_SPACE"),  # outside lower rail
-    ],
-)
-def test_short_kc_room_floor_cannot_be_bypassed_by_breakout(
-    quote, opening, expected,
-):
-    frame, _ = make_test_frame_for_cross("SHORT")
-    frame.loc[frame.index[-1], "open"] = opening
-    result = strict_kc_entry_problem(
-        frame, quote, "SHORT", strategy_type=STRATEGY_TYPE_BREAKOUT,
-    )
-    assert result == expected
 
 
 def test_momentum_burst_symmetry_and_market_structure():

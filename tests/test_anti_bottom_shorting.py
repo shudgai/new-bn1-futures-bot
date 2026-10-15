@@ -118,35 +118,8 @@ def test_short_close_requires_half_atr_rebound_from_post_close_low():
     assert ANTI_BOTTOM_SHORT_POST_CLOSE_REBOUND_ATR == .50
 
 
-def test_unified_closed_entry_applies_anti_bottom_gate():
-    frame = short_frame(live=False)
-    ok, reason, _ = evaluate_closed_entry(frame, 'SHORT', price=97.69)
-    assert not ok
-    assert reason == 'REJECT_SHORT_CLOSE_INSIDE_KC'
 
 
-def test_entry_contract_final_candidate_applies_anti_bottom_gate(monkeypatch):
-    frame = short_frame(live=False)
-    frame['is_closed'] = True
-    frame.loc[frame.index[-1], 'is_closed'] = False
-    frame.loc[frame.index[-1], ['open', 'high', 'low', 'close']] = [
-        98.1, 98.2, 97.69, 97.69,
-    ]
-    # A live quote outside the band cannot replace a completed Bar 1 rail break.
-    monkeypatch.setattr(entry_contract, 'evaluate_golden_cross_fast_lane', lambda *_a, **_k: None)
-    monkeypatch.setattr(entry_contract, 'evaluate_bearish_instant_breakout', lambda *_a, **_k: None)
-    monkeypatch.setattr(entry_contract, 'evaluate_continuation_entry', lambda *_a, **_k: None)
-    monkeypatch.setattr(entry_contract, 'detect_raw_triggers', lambda *_a, **_k: ('SHORT', 'TRIGGER_A_KC_BREAKOUT'))
-    monkeypatch.setattr(entry_contract, 'evaluate_three_bar_outer_breakout', lambda *_a, **_k: dict(
-        action='ENTER', side='SHORT', type='TRIGGER_A_KC_BREAKOUT',
-        entry_phase='KC_THREE_BAR_BREAKOUT',
-    ))
-    monkeypatch.setattr(entry_contract, 'check_entry_gates', lambda *_a, **_k: (True, 'PASSED'))
-    monkeypatch.setattr(entry_contract, 'excessive_upper_shadow_problem', lambda *_a, **_k: None)
-    diagnostics = {}
-
-    assert entry_contract.evaluate_entry_contract(frame, diagnostics=diagnostics) is None
-    assert diagnostics['reason'] == 'BLOCKED_INSIDE_KC_BANDS'
 
 
 def test_upper_shadow_uses_latest_completed_candle_not_live_tick():

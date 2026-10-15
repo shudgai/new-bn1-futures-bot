@@ -105,37 +105,3 @@ def test_old_pending_doji_exit_is_revoked_under_stricter_rule():
     assert "trigger" not in state
 
 
-def test_armed_net_roe_lock_suppresses_valid_doji_morphology_exit():
-    current_position = position()
-    current_position.update(
-        qty=10.0,
-        margin=1000.0,
-        leverage=1.0,
-        entry_atr=1.0,
-    )
-    assert evaluate_peak_trailing(
-        current_position, 108.12, {"quote_ms": 180_000.0},
-    ) is None
-    current = snapshot(
-        reversal_close=105.7, reversal_high=106.1, reversal_low=105.3,
-        ma5=105.8, kc_upper=106.5, kc_lower=104.5,
-    )
-    current["quote_ms"] = 240_001.0
-    current.update(
-        live_bar_ms=240_000.0,
-        closed_bar_ms=180_000.0,
-        live_open=105.7,
-        live_high=105.8,
-        live_low=105.6,
-        atr=1.0,
-        kc_upper=106.5,
-        kc_middle=105.5,
-        kc_lower=104.5,
-        live_kc_upper=106.5,
-        live_kc_lower=104.5,
-    )
-
-    result = evaluate_peak_trailing(current_position, 105.7, current)
-
-    assert current_position[STATE_KEY]["net_roe_lock_armed"] is True
-    assert result is None

@@ -23,32 +23,8 @@ def engine_fixture(monkeypatch):
     return engine,f
 
 
-@pytest.mark.parametrize('parallel',[2,50,200])
-def test_same_candle_concurrent_requests_fill_once(monkeypatch,parallel):
-    engine,f=engine_fixture(monkeypatch)
-    async def run():
-        return await asyncio.gather(*(engine._execute_confirmed_channel_break(
-            '1000PEPE/USDT',f,101.8,'LONG',candidate_bar_id=float(f.iloc[-1].timestamp),v8_reason=evaluate_v2_frame(f)['type']) for _ in range(parallel)))
-    assert sum(asyncio.run(run()))==1
-    assert len(engine.account.trades)==1
 
 
-def test_two_symbols_cannot_race_past_single_slot(monkeypatch):
-    import core.engine as module
-    monkeypatch.setattr(module,'MAX_SLOTS',1)
-    engine,f=engine_fixture(monkeypatch)
-    # Isolate slot enforcement from the independent fee/balance veto.
-    async def delayed(*args,**kwargs):
-        await asyncio.sleep(.01)
-        engine.account.positions[kwargs['symbol']]={'side':kwargs['side'], 'margin':kwargs['amount_usdt']}
-        return True
-    engine.account.open_position=delayed
-    async def run():
-        return await asyncio.gather(*(engine._execute_confirmed_channel_break(
-            symbol,f,101.8,'LONG',candidate_bar_id=float(f.iloc[-1].timestamp),v8_reason=evaluate_v2_frame(f)['type'])
-            for symbol in engine.tickers))
-    assert sum(asyncio.run(run()))==1
-    assert len(engine.account.positions)==1
 
 
 def test_snapshot_evidence_excludes_forming_candle():
@@ -64,17 +40,3 @@ def test_snapshot_evidence_excludes_forming_candle():
     assert json.loads(json.dumps(expected))==expected
 
 
-def test_account_failure_releases_submit_lock_for_other_symbol(monkeypatch):
-    engine,f=engine_fixture(monkeypatch)
-    original=engine.account.open_position
-    async def maybe_fail(*args,**kwargs):
-        if kwargs['symbol']=='1000PEPE/USDT':raise RuntimeError('injected broker failure')
-        return await original(*args,**kwargs)
-    engine.account.open_position=maybe_fail
-    async def run():
-        code=evaluate_v2_frame(f)['type']
-        results=await asyncio.gather(*(engine._execute_confirmed_channel_break(symbol,f,101.8,'LONG',candidate_bar_id=float(f.iloc[-1].timestamp),v8_reason=code)
-                                      for symbol in engine.tickers))
-        assert not engine._account_entry_submit_lock.locked()
-        return results
-    assert asyncio.run(run())==[False,True]

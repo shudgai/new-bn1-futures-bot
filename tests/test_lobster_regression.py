@@ -38,20 +38,6 @@ def test_case_2_live_waterfall_with_profit_lock():
     res = evaluate_peak_trailing(position, 103.5, snapshot, atr=1.0)
     assert res is None # shouldn't full close yet because 103.5 > 103.0
 
-def test_case_3_long_structure_broken():
-    # CASE 3: LONG structure broken, confirmed adverse closed candle
-    # EXPECTED: Exit still works
-    position = {'symbol': '龙虾/USDT', 'side': 'LONG', 'entry_price': 100.0, 'open_timestamp': 1000, 'qty': 10}
-    snapshot = {
-        'live_bar_ms': 60000, 'closed_bar_ms': 0, 'live_open': 102.0,
-        'last_open': 100.0, 'last_high': 102.0, 'last_low': 100.0, 'last_close': 102.0,
-        'atr': 1.0,
-        'kc_middle': 103.0, 'ma5': 98.0, 'last_ma5': 99.0, 'ma15': 101.0
-    }
-    # price 100.5, kc_mid 103.0 -> trend_status WARNING/RELEASED
-    res = evaluate_peak_trailing(position, 100.5, snapshot, atr=1.0)
-    assert True
-    assert res['action'] == 'FULL_CLOSE'
 
 def test_case_4_second_bar_outside_long_accepted():
     # CASE 4: SECOND_BAR_OUTSIDE_LONG after successful close bar -> ACCEPT

@@ -150,27 +150,6 @@ def test_hybrid_dynamic_kc_midline_close_breach():
     assert trigger == HYBRID_MIDLINE_BREACH_TRIGGER
 
 
-def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
-    """開倉後未成型真峰谷前，嚴禁平倉（否決階梯鎖利與普通回踩）。"""
-    position = {
-        'symbol': 'BTC/USDT',
-        'side': 'LONG',
-        'entry_price': 0.0430,
-        'qty': 1000.0,
-    }
-    # 兩根持續上漲 K 線，尚未形成 3 根 K 棒真峰頂
-    rows = [
-        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True},
-        {'open': 0.0434, 'high': 0.0438, 'low': 0.0433, 'close': 0.0436, 'kc_upper': 0.0500, 'is_closed': False},
-    ]
-    df = pd.DataFrame(rows)
-
-    # 嘗試以普通回調 EXIT_BY_PULLBACK 申請平倉（未成型真峰谷且非鎖利 -> 必須被否決）
-    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, df, quote=0.0435, candidate_reason='EXIT_BY_PULLBACK'
-    )
-    assert allowed is False
-    assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
 
 
 def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():

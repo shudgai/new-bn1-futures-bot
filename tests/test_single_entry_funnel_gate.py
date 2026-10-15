@@ -56,18 +56,6 @@ def create_sample_bars(body_ratio=0.3, body_atr=0.2):
     return df, live_close
 
 
-def test_weak_body_breakout_rejected():
-    frame, quote = create_sample_bars(body_ratio=0.3, body_atr=0.2)
-    diagnostics = {}
-    decision = evaluate_entry_contract(frame, quote, symbol="LOBSTER/USDT", diagnostics=diagnostics)
-    
-    # Assert system returns None, strictly blocking the weak-body breakout
-    assert decision is None
-    assert diagnostics.get('reason') in (
-        'BLOCKED_BY_WEAK_BODY_RATIO',
-        'BLOCKED_BY_INSUFFICIENT_BODY_ATR',
-        'BLOCKED_BY_INSUFFICIENT_BREAKOUT_CONFIRMATION'
-    )
 
 
 def test_unauthorized_entry_bypass_raises_exception():

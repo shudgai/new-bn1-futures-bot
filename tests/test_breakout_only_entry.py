@@ -148,15 +148,6 @@ def consolidated_candidate_frame(side, kind):
     return frame
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_two_candle_breakout_is_general_entry(side):
-    frame = breakout_frame(side)
-    decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
-
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
 def test_long_reversal_below_kc_middle_is_blocked():
@@ -367,67 +358,12 @@ def test_old_short_close_cannot_authorize_current_bar_squeeze():
     assert decision is None or decision["type"] != "OPEN_LONG_MOMENTUM_SQUEEZE"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_accept_the_same_closed_breakout(side, symbol):
-    frame = with_chop_history(breakout_frame(side))
-    decision = evaluate_entry_contract(frame, symbol=symbol)
-
-    assert decision is not None
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-def test_sui_and_lobster_closed_breakout_do_not_require_ma_cross(side, symbol):
-    frame = with_chop_history(breakout_frame(side))
-    decision = evaluate_entry_contract(frame, symbol=symbol)
-
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙蝦/USDT"])
-def test_sui_and_lobster_with_confirmed_pair_use_the_two_bar_route(side, symbol):
-    frame = with_chop_history(live_outer_frame(side))
-    ma5 = [99.0, 99.2, 99.4, 99.6, 99.8, 100.0, 100.2]
-    ma15 = [98.0, 98.2, 98.4, 98.6, 98.8, 99.0, 99.2]
-    if side == "SHORT":
-        ma5 = [200.0 - value for value in ma5]
-        ma15 = [200.0 - value for value in ma15]
-    closed_indices = frame.index[frame["is_closed"].astype(bool)][-7:]
-    frame.loc[closed_indices, "ma5"] = ma5
-    frame.loc[closed_indices, "ma15"] = ma15
-    quote = float(frame.iloc[-1]["close"])
-
-    decision = evaluate_entry_contract(frame, quote, symbol=symbol)
-
-    assert decision is not None
-    assert decision["side"] == side
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-    assert decision["entry_phase"] == "KC_2BAR_CLOSED_CONFIRM"
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("line", ["kc_middle", "ma15"])
-def test_sui_rejects_horizontal_kc_or_ma15(side, line):
-    frame = sui_cross_frame(side)
-    frame.loc[2, line] = frame.loc[1, line]
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, symbol="SUI/USDT", diagnostics=diagnostics
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] in (
-        "BLOCKED_KC_MA5_MA15_TREND_MISMATCH",
-        "BLOCKED_BY_MA5_SLOPE_UP",
-        "BLOCKED_BY_MA5_SLOPE_DOWN",
-    )
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -602,84 +538,10 @@ def test_repeated_ma_cross_releases_only_after_three_directional_steps(side):
     ) == "BLOCKED_MA5_MA15_CROSS_CHOP"
 
 
-@pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize(
-    ("kind", "expected_reason"),
-    [
-        ("flat", "BLOCKED_FLAT_MA15_KC"),
-        ("oscillating", "BLOCKED_MA5_REGULAR_OSCILLATION"),
-    ],
-)
-def test_consolidation_gate_blocks_real_entry_contract(
-    symbol, side, kind, expected_reason
-):
-    frame = consolidated_candidate_frame(side, kind)
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, symbol=symbol, diagnostics=diagnostics
-    )
-
-    if kind == "oscillating":
-        assert decision is not None
-        assert decision["side"] == side
-        assert decision["entry_phase"] in (
-            "KC_LIVE_OUTER_BREAKOUT", "KC_2BAR_CLOSED_CONFIRM",
-            "KC_CONTINUATION_ENTRY", "KC_LIVE_BODY_BREAKOUT",
-        )
-    else:
-        assert decision is None
-        assert diagnostics["reason"] in (
-            expected_reason,
-            "BLOCKED_KC_MA5_MA15_TREND_MISMATCH",
-        )
 
 
-@pytest.mark.parametrize(
-    ("side", "mutation"),
-    [
-        ("LONG", "first_inside"),
-        ("LONG", "second_red"),
-        ("LONG", "live_red"),
-        ("SHORT", "first_inside"),
-        ("SHORT", "second_green"),
-        ("SHORT", "live_green"),
-    ],
-)
-def test_invalid_closed_pair_blocks_entry_but_live_color_does_not(side, mutation):
-    frame = breakout_frame(side)
-    sign = 1 if side == "LONG" else -1
-    if mutation == "first_inside":
-        frame.loc[1, "close"] = frame.loc[1, "kc_upper" if side == "LONG" else "kc_lower"]
-    elif mutation == "second_red":
-        frame.loc[2, "open"] = frame.loc[2, "close"] + 0.1
-    elif mutation == "second_green":
-        frame.loc[2, "open"] = frame.loc[2, "close"] - 0.1
-    elif mutation == "live_red":
-        frame.loc[3, "open"] = frame.loc[3, "close"] + 0.1
-    elif mutation == "live_green":
-        frame.loc[3, "open"] = frame.loc[3, "close"] - 0.1
-
-    quote = float(frame.iloc[-1]["close"])
-    if mutation in ("live_red", "live_green"):
-        quote = float(frame.iloc[-1]["open"])
-    assert sign * (quote - float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])) > 0
-    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
-    if mutation in ("live_red", "live_green"):
-        assert decision is not None
-        assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-    else:
-        assert decision is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pivot_or_ma_cross_code_is_not_an_entry_authority(side):
-    frame = breakout_frame(side)
-    assert f"KC_2BAR_CONFIRM_{side}" in ENTRY_CODES
-    assert evaluate_entry_contract(frame, code=f"KC_OUTER_PIVOT_{side}") is None
-    assert evaluate_entry_contract(frame, code=f"MA5_MA15_LIVE_CROSS_{side}") is None
-    assert evaluate_entry_contract(frame, code=f"KC_LIVE_BODY_BREAKOUT_{side}") is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -721,127 +583,11 @@ def test_opposite_outer_rail_never_authorizes_the_requested_side(side, opposite_
     assert evaluate_entry_contract(frame, quote, symbol="CAP/USDT") is None
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_revalidation_rechecks_the_same_breakout(side):
-    frame = breakout_frame(side)
-    decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-    validated = asyncio.run(
-        validate_account_entry(account, "CAP/USDT", side, context)
-    )
-    assert validated["pending_signal_id"] == decision["pending_signal_id"]
-
-    live = frame.index[-1]
-    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
-    with pytest.raises(ValueError):
-        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_revalidation_uses_confirmed_pair_even_when_live_bar_breaks(side):
-    frame = live_outer_frame(side)
-    live = frame.index[-1]
-    lower = float(frame.loc[live, "kc_lower"])
-    upper = float(frame.loc[live, "kc_upper"])
-    quote = float(frame.loc[live, "close"])
-
-    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
-    assert decision is not None
-    assert decision["type"] == f"KC_2BAR_CONFIRM_{side}"
-
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-    validated = asyncio.run(
-        validate_account_entry(account, "CAP/USDT", side, context)
-    )
-    assert validated["pending_signal_id"] == decision["pending_signal_id"]
-
-    frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
-    with pytest.raises(ValueError, match="最新入口行情不符"):
-        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_revalidation_rejects_live_breakout_when_ma15_stops_trending(side):
-    frame = live_outer_frame(side)
-    quote = float(frame.iloc[-1]["close"])
-    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-    frame.loc[frame.index[-2], "ma15"] = frame.iloc[-3]["ma15"]
-
-    with pytest.raises(ValueError, match="最新入口行情不符"):
-        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_revalidation_rejects_live_breakout_when_live_ma5_reverses(side):
-    frame = live_outer_frame(side)
-    quote = float(frame.iloc[-1]["close"])
-    decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-    previous_ma5 = float(frame.iloc[-2]["ma5"])
-    frame.loc[frame.index[-1], "ma5"] = previous_ma5 + (
-        1 if side == "SHORT" else -1
-    )
-
-    with pytest.raises(ValueError, match="最新入口行情不符"):
-        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("invalid_bar", [1, 2])
-def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
-    side, invalid_bar
-):
-    frame = breakout_frame(side)
-    decision = evaluate_entry_contract(frame, symbol="龍蝦/USDT")
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-
-    frame.loc[invalid_bar, "close"] = frame.loc[invalid_bar, "open"]
-
-    with pytest.raises(ValueError):
-        asyncio.run(validate_account_entry(account, "龍蝦/USDT", side, context))

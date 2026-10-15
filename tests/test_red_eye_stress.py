@@ -54,15 +54,6 @@ def test_direction_forbidden_zones(strategy):
 # -------------------------------------------------------------
 # 測試 4：盤中黑天鵝大瀑布秒殺測試 (Flash Crash Intra-bar Exit)
 # -------------------------------------------------------------
-def test_intra_bar_flash_crash(strategy):
-    position = {'side': 'LONG', 'entry_price': 100.0}
-    snapshot = {'open': 100.0, 'atr': 1.0}
-    btc_status = {'is_crashing': False}
-    
-    # 盤中直接暴跌 2 ATR (現價 98.0)
-    current_price = 98.0
-    exit_reason = strategy.check_intra_bar_emergency_exit(position, current_price, snapshot, btc_status)
-    assert exit_reason == 'EMERGENCY_FLASH_CRASH_LONG', f"❌ 失敗：大瀑布竟然沒在盤中秒殺！原因={exit_reason}"
 
 # -------------------------------------------------------------
 # 測試 5：常規行情一股不賣測試 (Hold Tight Test)

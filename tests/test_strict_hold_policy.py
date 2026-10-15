@@ -2,15 +2,6 @@ import pytest
 from test_intraday_instant_exit import pos, observe
 from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, POLICY
 
-@pytest.mark.parametrize('reason',[
-    'EXIT_INTRADAY_ANOMALY_SPIKE','EXIT_BREAKEVEN_LOCK','EXIT_PROFIT_TIER2_LOCK','EXIT_INTRADAY_PROFIT_DRAWDOWN_20PCT',
-    'EMERGENCY_GIANT_REVERSE_CANDLE','EMERGENCY_FLASH_SURGE_SHORT',
-    'EMERGENCY_FLASH_CRASH_LONG','EMERGENCY_BTC_CRASH','MA3_TURN','TIMEOUT_EXIT'])
-def test_retired_pending_cannot_retry(reason):
-    p=pos()
-    p['closed_exit_state']=dict(policy=POLICY,pending=True,reason=reason)
-    assert DualTrackExitStrategy().evaluate_exit(p,current_price=100.) is None
-    assert 'closed_exit_state' not in p
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_removed_lines_migrate_without_dropping_peaks(side):

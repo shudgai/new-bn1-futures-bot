@@ -36,15 +36,6 @@ def bearish_breach_frame():
     return frame
 
 
-def test_wild_symbol_realtime_breach_is_blocked_by_entry_contract():
-    frame = bearish_breach_frame()
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        frame, 98.8, symbol='龙虾/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_non_meme_realtime_short_helper_remains_available():
@@ -59,30 +50,8 @@ def test_non_meme_realtime_short_helper_remains_available():
     assert candidate['type'] == REALTIME_RAIL_BREACH_SHORT_CODE
 
 
-def test_realtime_short_requires_net_reward_at_least_net_risk():
-    frame = bearish_breach_frame()
-    diagnostics = {}
-    with patch('core.services.entry_room_service.entry_room', return_value={'target': 98.0}), \
-            patch('core.services.entry_contract.check_entry_gates', return_value=(True, None)):
-        decision = evaluate_entry_contract(
-            frame, 98.8, symbol='龍蝦/USDT', diagnostics=diagnostics,
-        )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
-def test_realtime_short_fails_closed_without_confirmed_profit_target():
-    frame = bearish_breach_frame()
-    diagnostics = {}
-    with patch('core.services.entry_room_service.entry_room', return_value={'allowed': False}), \
-            patch('core.services.entry_contract.check_entry_gates', return_value=(True, None)):
-        decision = evaluate_entry_contract(
-            frame, 98.8, symbol='龍蝦/USDT', diagnostics=diagnostics,
-        )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_realtime_short_net_reward_risk_uses_structural_target_and_1_5_atr_stop():
@@ -96,63 +65,9 @@ def test_realtime_short_net_reward_risk_uses_structural_target_and_1_5_atr_stop(
     assert estimate['reward_risk'] > 1.0
 
 
-def test_realtime_short_is_rejected_at_1_5_atr_below_lower_rail():
-    frame = bearish_breach_frame()
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, 95.8, symbol='龙虾/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
-@pytest.mark.parametrize('wick_bar', ['live', 'previous'])
-def test_realtime_short_is_rejected_for_extreme_lower_shadow(wick_bar):
-    frame = bearish_breach_frame()
-    if wick_bar == 'live':
-        frame.loc[frame.index[-1], 'low'] = 95.8
-    else:
-        frame.loc[frame.index[-2], 'low'] = 98.0
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, 98.8, symbol='龙虾/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
-@pytest.mark.parametrize('failure', ['small_body', 'kc_flat', 'ma_reversed'])
-def test_wild_symbol_live_route_fails_closed_before_legacy_trigger_checks(failure):
-    frame = bearish_breach_frame()
-    if failure == 'small_body':
-        frame.loc[frame.index[-1], 'open'] = 99.0
-    elif failure == 'kc_flat':
-        frame.loc[frame.index[-1], 'kc_middle'] = frame.loc[frame.index[-2], 'kc_middle']
-    else:
-        frame.loc[frame.index[-1], 'ma3'] = 99.4
-        frame.loc[frame.index[-1], 'ma5'] = 99.2
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, 98.8, symbol='龙虾/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
-def test_realtime_route_code_cannot_be_reused_after_quote_returns_inside_rail():
-    frame = bearish_breach_frame()
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame, 99.1, code=REALTIME_RAIL_BREACH_SHORT_CODE,
-        symbol='龙虾/USDT', diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'

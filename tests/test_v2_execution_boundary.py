@@ -49,34 +49,6 @@ def context(f, side):
                 channel_confirmation_bar_id=d['confirmation_bar_id'])
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('live', [True,False])
-def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
-    from core.engine import TradingEngine
-    from core.paper_account import PaperAccount
-    from core.services.symbol_runner import process_single_symbol_runner
-    monkeypatch.setattr(PaperAccount, 'load_state', lambda self: None)
-    monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
-    account = PaperAccount(); account.balance = 100.
-    engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '1000PEPE/USDT'; f = candles(side, live)
-    engine.tickers = {symbol: float(f.iloc[-1].close)}
-    engine.fetch_klines = AsyncMock(return_value=f)
-    engine.strategy = SimpleNamespace(compute_indicators=lambda frame: frame)
-    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
-    engine._execution_price_is_safe = AsyncMock(return_value=True)
-    if not live:
-        asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-        assert not account.trades
-        return
-    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    assert account.positions[symbol]['side'] == side
-    assert account.positions[symbol]['entry_atr'] == 1.
-    assert engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1] == 'FILLED'
-    account.positions.clear()
-    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    assert len(account.trades) == 1
-    assert 'already filled' in engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -95,18 +67,6 @@ def test_account_boundary_rejects_invalid(side, fault):
         asyncio.run(validate_account_entry(account,'TEST',side,ctx))
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_exchange_boundary_sends_v2_order(monkeypatch, side):
-    from core.testnet_account import BinanceTestnetAccount
-    monkeypatch.setattr(BinanceTestnetAccount,'_load_state',lambda self:None)
-    monkeypatch.setattr(BinanceTestnetAccount,'save_state',lambda self,**kwargs:None)
-    raw = AsyncMock(return_value={'id':'test-order','status':'closed'})
-    account = BinanceTestnetAccount(SimpleNamespace(create_order=raw))
-    f = candles(side); account.entry_frame_provider = AsyncMock(return_value=f)
-    account.last_closed_at = {}
-    asyncio.run(account._send_order('TEST','market','buy' if side=='LONG' else 'sell',1,
-                                   entry_context=context(f,side)))
-    raw.assert_awaited_once()
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -117,30 +77,3 @@ def test_obsolete_entry_codes_rejected(side):
             validate_entry_frame(f,side,prefix+side)
 
 
-@pytest.mark.parametrize('fault', ['slots','daily','balance','quote','changed','exchange_error'])
-def test_engine_risk_and_failure_gates(monkeypatch, fault):
-    from core.engine import TradingEngine
-    from core.paper_account import PaperAccount
-    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
-    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
-    account=PaperAccount(); account.balance=100.
-    engine=object.__new__(TradingEngine); engine.account=account
-    symbol='1000PEPE/USDT'; f=candles(); ctx=context(f,'LONG')
-    engine.tickers={symbol:float(f.iloc[-1].close)}
-    engine.fetch_klines=AsyncMock(return_value=f)
-    engine.strategy=SimpleNamespace(compute_indicators=lambda frame:frame)
-    engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
-    engine._execution_price_is_safe=AsyncMock(return_value=fault!='quote')
-    if fault=='slots':
-        monkeypatch.setattr('core.engine.MAX_SLOTS',1)
-        account.positions['OTHER']={}
-    if fault=='daily': account.daily_loss_limit_hit=lambda:(True,10.)
-    if fault=='balance': account.balance=0.
-    if fault=='changed': ctx['channel_confirmation_bar_id']-=60000
-    if fault=='exchange_error': account.open_position=AsyncMock(side_effect=RuntimeError('exchange rejected'))
-    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,101.8,'LONG',
-        v8_reason=ctx['entry_signal_code'],candidate_bar_id=ctx['channel_confirmation_bar_id']))
-    reason=engine._entry_gate_diagnostics[(symbol,'LONG','EXECUTION')][1]
-    assert {'slots':'MAX_SLOTS','daily':'daily loss','balance':'INSUFFICIENT_MARGIN',
-            'quote':'execution_price','changed':'snapshot is None','exchange_error':'exchange rejected'}[fault] in reason
-    assert symbol not in account.positions

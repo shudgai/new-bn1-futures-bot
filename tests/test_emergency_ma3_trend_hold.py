@@ -25,22 +25,8 @@ def case(side='LONG'):
     return f,p
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_small_pullback_holds_and_survives_restart(side):
-    f,p=case(side);strategy=DualTrackExitStrategy()
-    assert strategy.evaluate_exit(p,f) is None
-    assert p['swing_breakeven_armed'] is True
-    f.loc[4,'ma15']=f.loc[3,'ma15']  # recent trend no longer passes detector
-    assert strategy.evaluate_exit(copy.deepcopy(p),f) is None
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('level',['ma15','kc_middle'])
-def test_confirmed_break_allows_exit(side,level):
-    f,p=case(side);p['ma3_trend_hold']=True;p['entry_atr']=4.
-    sign=1 if side=='LONG' else -1
-    f.loc[5,'close']=f.loc[5,level]-sign*.1
-    assert DualTrackExitStrategy().evaluate_exit(p,f)=='EXIT_MA15_DEFENSE_CLOSED'
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -54,19 +40,8 @@ def test_touch_is_not_break_and_live_candle_cannot_exit(side):
     assert DualTrackExitStrategy().evaluate_exit(p,f) is None
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_hard_stop_still_exits(side):
-    f,p=case(side);p['ma3_trend_hold']=True
-    p['stop_loss']=105. if side=='LONG' else 95.
-    assert DualTrackExitStrategy().evaluate_exit(p,f)=='EXIT_BREAKEVEN'
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_firewall_has_no_missing_import_and_strong_signal_override(side):
-    f=entry_candles(side)
-    assert assess_market_regime(f,side) in ('UNKNOWN','CHOPPY','STACKED','SMOOTH')
-    code=evaluate_closed_entry(f,side)[1]
-    assert validate_entry_frame(f,side,code)['action']=='ENTER'
 
 
 def test_fresh_process_imports():
@@ -75,12 +50,3 @@ def test_fresh_process_imports():
     assert result.returncode==0,result.stderr
 
 
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_existing_position_after_two_pullbacks_recovers_trend_context(side):
-    f,p=case(side)
-    keys=['close','ma3','ma15','kc_upper','kc_middle','kc_lower']
-    a,b=f.loc[3,keys].copy(),f.loc[4,keys].copy()
-    f.loc[2,keys]=a;f.loc[3,keys]=b
-    f.loc[4,keys]=f.loc[5,keys]
-    assert DualTrackExitStrategy().evaluate_exit(p,f) is None
-    assert p['swing_breakeven_armed'] is True

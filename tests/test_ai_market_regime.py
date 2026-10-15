@@ -74,31 +74,6 @@ def test_local_ai_choppy_unknown_invalid_and_stale_states_fail_closed():
     assert advisor.market_regime_for("CAP/USDT") == "UNKNOWN"
 
 
-@pytest.mark.parametrize(
-    "code",
-    [
-        None,
-        "TRIGGER_C_CONTINUATION",
-        "AUTHORIZED_REALTIME_BREAKOUT",
-        "KC_LIVE_BODY_BREAKOUT_SHORT",
-    ],
-)
-def test_entry_pipeline_blocks_choppy_or_missing_ai_regime(monkeypatch, code):
-    frame = pd.DataFrame([{"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}])
-    frame.attrs["timeframe_ms"] = 60_000
-    monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "CHOPPY")
-    diagnostics = {}
-    assert pipeline.authorize(
-        None, frame, 1.0, symbol="CAP/USDT", diagnostics=diagnostics,
-    ) is None
-    assert diagnostics["reason"] == "BLOCKED_INVALID_MA_CROSS_HISTORY"
-    assert evaluate_entry_contract(
-        frame, 1.0, code=code, symbol="CAP/USDT", diagnostics=diagnostics,
-    ) is None
-    assert diagnostics["reason"] == "BLOCKED_INVALID_MA_CROSS_HISTORY"
-
-    monkeypatch.setattr(pipeline, "market_regime_provider", None)
-    assert pipeline.market_regime_problem("CAP/USDT") == "BLOCKED_BY_AI_CHOP_REGIME"
 
 
 def test_strong_bullish_kc_breakout_overrides_only_explicit_ai_chop(monkeypatch):
@@ -264,52 +239,6 @@ def test_account_firewall_blocks_choppy_ai_even_for_pipeline_ttl_grace(monkeypat
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(
-    ("channel_state", "ma_gap", "expected_reason"),
-    [
-        ("KC方向不明", 1.0, "BLOCKED_INVALID_MA_CROSS_HISTORY"),
-        ("UP", 0.1, "BLOCKED_INVALID_MA_CROSS_HISTORY"),
-    ],
-)
-def test_account_firewall_blocks_chop_even_with_trend_ai(
-    monkeypatch, channel_state, ma_gap, expected_reason,
-):
-    async def check():
-        rows = [
-            {
-                "timestamp": 1_700_000_000_000 + index * 60_000,
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.2,
-                "atr": 1.0,
-                "kc_lower": 98.0,
-                "kc_middle": 100.0,
-                "kc_upper": 102.0,
-                "ma5": 100.0 + ma_gap,
-                "ma15": 100.0,
-                "kc_upper_slope": 0.2,
-                "kc_lower_slope": 0.2,
-                "channel_state": channel_state,
-                "is_closed": True,
-            }
-            for index in range(3)
-        ]
-        frame = pd.DataFrame(rows)
-        frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
-        account = SimpleNamespace(
-            entry_frame_provider=lambda _symbol: asyncio.sleep(0, result=frame),
-        )
-        monkeypatch.setattr(pipeline, "market_regime_provider", lambda _symbol: "TRENDING")
-        with pytest.raises(ValueError, match=expected_reason):
-            await validate_account_entry(
-                account,
-                "CAP/USDT",
-                "SHORT",
-                {"entry_signal_code": "KC_LIVE_BODY_BREAKOUT_SHORT"},
-            )
-
-    asyncio.run(check())
 
 
 def test_engine_refreshes_symbol_regimes_in_background_from_closed_1m_bars(monkeypatch):

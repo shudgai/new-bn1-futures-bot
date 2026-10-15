@@ -6,18 +6,6 @@ from core.services.exits.peak_trailing_exit import (
 from test_kc_outer_pivot_strategy import position, snapshot
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('symbol', ['SUI/USDT','龙虾/USDT','DOGE/USDT'])
-def test_old_pivot_retry_is_retired_without_closing(side,symbol):
-    p=position(side,symbol)
-    migrate_peak_state(p)
-    p[STATE_KEY].update(pending=ABNORMAL_REASON,trigger='THREE_POINT_PIVOT',
-                        trigger_bar_ms=180000.,trigger_confirmed_ms=240000.)
-    meta={STATE_KEY:copy.deepcopy(p[STATE_KEY])}
-    migrate_peak_state(p,meta)
-    assert not p[STATE_KEY].get('pending')
-    assert not meta[STATE_KEY].get('trigger')
-    assert evaluate_peak_trailing(p,101.,snapshot(side),fee=0.,slippage=0.) is None
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

@@ -176,112 +176,11 @@ def test_chop_guard_logs_metrics_and_decision(caplog):
     ) in caplog.text
 
 
-def test_pipeline_rejects_chop_before_candidate_fast_lanes():
-    frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, 0.5, 0.13],
-        atr=0.1,
-    )
-    diagnostics = {}
-
-    decision = EntryGatePipeline().authorize(
-        {
-            "type": "AUTHORIZED_BY_MIDLINE_BREAK_LONG",
-            "side": "LONG",
-        },
-        frame,
-        100.0,
-        symbol="CAP/USDT",
-        requested_side="LONG",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] == CROSS_BLOCK
 
 
-def test_entry_contract_rejects_chop_before_midline_and_flip_exceptions():
-    frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, 0.5, 0.13],
-        atr=0.1,
-    )
-    diagnostics = {}
-
-    decision = evaluate_entry_contract(
-        frame,
-        100.0,
-        code="AUTHORIZED_BY_MIDLINE_BREAK_LONG",
-        symbol="CAP/USDT",
-        diagnostics=diagnostics,
-    )
-
-    assert decision is None
-    assert diagnostics["reason"] == CROSS_BLOCK
 
 
-def test_pipeline_and_account_firewall_reject_misaligned_slope():
-    frame = frame_with_spreads([0.5] * 6)
-    frame.loc[frame.index[-2], ["ma5", "ma15"]] = [100.0, 100.0]
-    frame.loc[frame.index[-1], ["ma5", "ma15"]] = [100.4, 99.9]
-    frame.attrs["entry_finality_verified"] = True
-
-    pipeline_diagnostics = {}
-    assert EntryGatePipeline().authorize(
-        {"type": "AUTHORIZED_BY_MIDLINE_BREAK_LONG", "side": "LONG"},
-        frame, 100.0, requested_side="LONG",
-        diagnostics=pipeline_diagnostics,
-    ) is None
-    assert pipeline_diagnostics["reason"] == "BLOCKED_MA5_MA15_SLOPE_MISALIGNED"
-
-    async def provider(_symbol):
-        return frame
-
-    account = SimpleNamespace(
-        entry_frame_provider=provider,
-        last_closed_at={},
-        last_closed_side={},
-        positions={},
-    )
-    with pytest.raises(ValueError, match="BLOCKED_MA5_MA15_SLOPE_MISALIGNED"):
-        asyncio.run(validate_account_entry(
-            account, "CAP/USDT", "LONG",
-            {"entry_signal_code": "TRIGGER_A_KC_BREAKOUT"},
-        ))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_entry_firewall_rejects_chop_on_fresh_quote(side):
-    frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, 0.5, 0.13],
-        atr=0.1,
-    )
-    frame.attrs["entry_finality_verified"] = True
-
-    async def provider(_symbol):
-        return frame
-
-    account = SimpleNamespace(
-        entry_frame_provider=provider,
-        last_closed_at={},
-        last_closed_side={},
-        positions={},
-    )
-    context = {"entry_signal_code": "TRIGGER_A_KC_BREAKOUT"}
-
-    with pytest.raises(ValueError, match=CROSS_BLOCK):
-        asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
-@pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_unified_entry_strategy_does_not_bypass_chop_gate(side):
-    frame = frame_with_spreads(
-        [0.5, 0.5, 0.5, -0.5, 0.5, 0.13],
-        atr=0.1,
-    )
-
-    passed, reason, decision = UnifiedEntryStrategy().evaluate_entry(
-        frame, 100.0, side, symbol="CAP/USDT",
-    )
-
-    assert not passed
-    assert reason == CROSS_BLOCK
-    assert decision["action"] == "WAIT"

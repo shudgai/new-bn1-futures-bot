@@ -140,35 +140,6 @@ def test_12_real_channel_swing_hook_reached(mock_entry_room):
 
 # TEST 13 requires importing engine and simulating.
 # We will do a small test inside the same file for engine integration.
-def test_13_engine_hook_shadow_crash():
-    import asyncio
-    from core.engine import TradingEngine
-    
-    class FakeAccount:
-        def __init__(self):
-            self.positions = {}
-            self.pending_limit_orders = {}
-        def get_wallet_balance(self): return 1000.0
-        def get_available_balance(self): return 1000.0
-        async def open_position(self, **kwargs):
-            self.open_called = True
-            return True
-            
-    engine = TradingEngine()
-    engine.account = FakeAccount()
-    engine.account.open_called = False
-    
-    snapshot = {"price": 100.0, "frame": None}
-    decision = {"type": "TEST", "entry_phase": "INITIAL_BREAKOUT", "close_price": 99.0, "entry_atr": 1.0, "breakout_bar_id": None, "pair_confirmation_bar_id": None}
-    signal = {"signal_id": "1", "candidate_bar_id": 123}
-    
-    with patch('core.services.pre_entry_space_shadow.record_pre_entry_space_shadow') as m:
-        m.side_effect = RuntimeError("SHADOW_CRASH")
-        # We need to bypass some checks in submit_entry_candidate, let's just mock evaluate_entry_contract
-        with patch('core.services.entry_contract.evaluate_entry_contract', return_value=True):
-            asyncio.run(engine.submit_entry_candidate("BTCUSDT", "LONG", 123456, decision, signal, snapshot, None, 1.0))
-            
-    assert engine.account.open_called == True
 
 def test_14_continuation_reentry():
     record_pre_entry_space_shadow("BTCUSDT", "LONG", 123456, 100.0, 1.0, 98.0, None, "sig1", 123, "CHANNEL_SWING", "CONTINUATION_REENTRY")

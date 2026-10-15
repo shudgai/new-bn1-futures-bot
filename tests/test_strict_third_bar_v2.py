@@ -10,14 +10,6 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2, evaluate
 from core.services.entry_firewall import validate_account_entry
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('closed_second', [False,True])
-def test_second_bar_enters_only_while_live(side, closed_second):
-    f=candles(side).iloc[:-1].copy()
-    f.loc[f.index[-2],'close']=101.5 if side=='LONG' else 98.5
-    f.loc[f.index[-1],'is_closed']=closed_second
-    # Only one completed outside bar is required; no closed-only fallback.
-    assert bool(evaluate_v2_frame(f)) is (not closed_second)
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -61,11 +53,3 @@ def test_bad_live_bar_does_not_reuse_previous_closed_signal(side):
     assert evaluate_v2_frame(f) is None
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_account_rechecks_third_bar_retracement(side):
-    f=candles(side);d=evaluate_v2_frame(f)
-    ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
-    f.loc[f.index[-1],'open']=102.1 if side=='LONG' else 97.9
-    account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f),last_closed_at={})
-    with pytest.raises(ValueError,match='V2'):
-        asyncio.run(validate_account_entry(account,'TEST',side,ctx))

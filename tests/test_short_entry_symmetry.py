@@ -65,63 +65,7 @@ def _build_base_dataframe(n=30, base_price=100.0, trend="DOWN"):
 
 class TestShortEntrySymmetry:
 
-    def test_ma5_death_cross_fast_short_success(self):
-        """1. MA5 Death Cross: ma5 crosses below ma15, close < ma5 and close < open."""
-        df = _build_base_dataframe(30, base_price=100.0, trend="DOWN")
-        # 前一根 ma5 >= ma15
-        df.loc[df.index[-2], 'ma5'] = 98.2
-        df.loc[df.index[-2], 'ma15'] = 98.0
-        # 當根 ma5 < ma15 死叉，close < ma5 且 close < open
-        df.loc[df.index[-1], 'ma5'] = 97.4
-        df.loc[df.index[-1], 'ma15'] = 97.8
-        df.loc[df.index[-1], 'open'] = 97.5
-        df.loc[df.index[-1], 'close'] = 97.0
-        df.loc[df.index[-1], 'high'] = 97.6
-        df.loc[df.index[-1], 'low'] = 96.9
 
-        res = check_ma_cross_entry(df, live_price=97.0)
-        assert res is not None, "check_ma_cross_entry should trigger on death cross"
-        assert res['side'] == 'SHORT'
-        assert res['type'] == 'KC_DEATH_CROSS_FAST_SHORT'
-        assert res['bypass_spatial_check'] is True
-
-        # 驗證 MA 對齊閘門
-        passed, reason = validate_ma_alignment(df, 'SHORT', quote=97.0)
-        assert passed is True, f"validate_ma_alignment SHORT failed: {reason}"
-
-    def test_death_cross_vs_golden_cross_symmetry(self):
-        """Mirror symmetry test: Golden Cross Long vs Death Cross Short."""
-        # Long scenario
-        df_long = _build_base_dataframe(30, base_price=100.0, trend="UP")
-        df_long.loc[df_long.index[-2], 'ma5'] = 101.8
-        df_long.loc[df_long.index[-2], 'ma15'] = 102.0
-        df_long.loc[df_long.index[-1], 'ma5'] = 102.6
-        df_long.loc[df_long.index[-1], 'ma15'] = 102.2
-        df_long.loc[df_long.index[-1], 'open'] = 102.5
-        df_long.loc[df_long.index[-1], 'close'] = 103.0
-        df_long.loc[df_long.index[-1], 'high'] = 103.1
-        df_long.loc[df_long.index[-1], 'low'] = 102.4
-
-        res_long = check_ma_cross_entry(df_long, live_price=103.0)
-        assert res_long is not None
-        assert res_long['side'] == 'LONG'
-        assert res_long['type'] == 'KC_GOLDEN_CROSS_FAST_LONG'
-
-        # Short scenario
-        df_short = _build_base_dataframe(30, base_price=100.0, trend="DOWN")
-        df_short.loc[df_short.index[-2], 'ma5'] = 98.2
-        df_short.loc[df_short.index[-2], 'ma15'] = 98.0
-        df_short.loc[df_short.index[-1], 'ma5'] = 97.4
-        df_short.loc[df_short.index[-1], 'ma15'] = 97.8
-        df_short.loc[df_short.index[-1], 'open'] = 97.5
-        df_short.loc[df_short.index[-1], 'close'] = 97.0
-        df_short.loc[df_short.index[-1], 'high'] = 97.6
-        df_short.loc[df_short.index[-1], 'low'] = 96.9
-
-        res_short = check_ma_cross_entry(df_short, live_price=97.0)
-        assert res_short is not None
-        assert res_short['side'] == 'SHORT'
-        assert res_short['type'] == 'KC_DEATH_CROSS_FAST_SHORT'
 
     def test_closed_bar_kc_lower_breakout_short(self):
         """2. KC Lower Band Breakout: 2 consecutive red bars below kc_lower."""

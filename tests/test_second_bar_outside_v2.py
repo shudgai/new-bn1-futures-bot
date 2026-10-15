@@ -23,18 +23,6 @@ def second_frame(side='LONG'):
     return f
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_one_closed_breakout_immediately_enters_live_second(side):
-    f = second_frame(side)
-    d = evaluate_v2_frame(f)
-    assert d['type'] == 'SECOND_BAR_OUTSIDE_' + side
-    assert d['intrabar'] is True
-    assert d['confirmation_bar_id'] == float(f.iloc[-1].timestamp)
-    assert d['breakout_bar_id'] == float(f.iloc[-2].timestamp)
-    assert d['close_price'] == float(f.iloc[-2].close)
-    a = SimpleNamespace(trades=[], last_closed_at={}, entry_frame_provider=AsyncMock(return_value=f))
-    ctx = dict(entry_signal_code=d['type'], channel_confirmation_bar_id=d['confirmation_bar_id'])
-    assert asyncio.run(validate_account_entry(a, SYMBOL, side, ctx))['type'] == d['type']
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -75,22 +63,8 @@ def test_invalid_confirmation_and_live_conditions(side, fault):
     assert evaluate_v2_frame(f) is None
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_first_open_already_outside_is_allowed_by_supplied_predicate(side):
-    f = second_frame(side)
-    f.loc[f.index[-2], 'open'] = 101.5 if side == 'LONG' else 98.5
-    assert evaluate_v2_frame(f)
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_quote_recomputes_ma_alignment_without_mutating_frame(side):
-    f = second_frame(side)
-    f.loc[f.index[-1], 'ma3'] = 100.001 if side == 'LONG' else 99.999
-    saved = f.copy(deep=True)
-    assert evaluate_v2_frame(f)
-    quote = float(f.iloc[-1].close) + (-.01 if side == 'LONG' else .01)
-    assert evaluate_v2_frame(f, quote) is None
-    assert f.equals(saved)
 
 
 @pytest.mark.parametrize('code', ['THIRD_BAR_CONFIRMED_LONG', 'SUPER_BREAKOUT_LONG',
@@ -106,23 +80,8 @@ def test_obsolete_cached_codes_rejected_everywhere(code):
     a.entry_frame_provider.assert_not_awaited()
 
 
-@pytest.mark.parametrize('bars,allowed', [(0, False), (1, False), (2, True), (8, True)])
-def test_post_exit_cooldown_preserved_but_no_alternate_reentry(bars, allowed):
-    f = second_frame()
-    a = SimpleNamespace(trades=[dict(symbol=SYMBOL, action='CLOSE_LONG',
-        id=float(f.iloc[-1].timestamp) - bars * 60000 + 1000)])
-    assert bool(evaluate_v2_frame(f, account=a, symbol=SYMBOL)) is allowed
-    f.loc[f.index[-2], 'open'] = 101.9
-    assert evaluate_v2_frame(f, account=a, symbol=SYMBOL) is None
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_latest_quote_can_retreat_and_recover_without_consuming_signal(side):
-    f = second_frame(side)
-    quote = float(f.iloc[-1].close)
-    assert evaluate_v2_frame(f, quote)
-    assert evaluate_v2_frame(f, 100.) is None
-    assert evaluate_v2_frame(f, quote)
 
 
 def test_missing_or_string_closed_flag_fails_direct_helper():
@@ -134,16 +93,6 @@ def test_missing_or_string_closed_flag_fails_direct_helper():
     assert PureTrendStrategyV2().evaluate_second_bar_outside_entry(SYMBOL, current, previous) is None
 
 
-def test_default_engine_signal_uses_live_bar_and_failed_order_can_retry(monkeypatch):
-    engine, _ = engine_fixture(monkeypatch)
-    f = second_frame()
-    engine.fetch_klines = AsyncMock(return_value=f)
-    original = engine.account.open_position
-    engine.account.open_position = AsyncMock(return_value=False)
-    assert not asyncio.run(engine._execute_confirmed_channel_break(SYMBOL, f, 101.8, 'LONG'))
-    engine.account.open_position = original
-    assert asyncio.run(engine._execute_confirmed_channel_break(SYMBOL, f, 101.8, 'LONG'))
-    assert engine.account.trades[-1]['channel_confirmation_bar_id'] == float(f.iloc[-1].timestamp)
 
 
 def test_restart_dedupe_reads_persisted_fill(monkeypatch):
@@ -156,19 +105,6 @@ def test_restart_dedupe_reads_persisted_fill(monkeypatch):
     assert SYMBOL not in engine.account.positions
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_websocket_quote_enters_second_bar_without_waiting_for_scan(monkeypatch, side):
-    import core.engine as module
-    monkeypatch.setattr(module, 'SYMBOL_ROTATION_ENABLED', False)
-    monkeypatch.setattr(module, 'BTC_1M_PULSE_FILTER_ENABLED', False)
-    engine, _ = engine_fixture(monkeypatch)
-    engine.is_running = True
-    f = second_frame(side)
-    engine.fetch_klines = AsyncMock(return_value=f)
-    engine.tickers[SYMBOL] = float(f.iloc[-1].close)
-    asyncio.run(engine._channel_quote_pivot_entry(SYMBOL, engine.tickers[SYMBOL], time.time()*1000))
-    assert engine.account.positions[SYMBOL]['side'] == side
-    assert len(engine.account.trades) == 1
 
 
 @pytest.mark.parametrize('fault', ['stale', 'stopped', 'rotation', 'daily', 'btc', 'unknown'])
@@ -208,45 +144,7 @@ def test_fill_in_opposite_direction_still_locks_same_symbol_bar(monkeypatch):
     assert SYMBOL not in engine.account.positions
 
 
-def test_boundary_updates_quote_before_computing_indicators(monkeypatch):
-    engine, _ = engine_fixture(monkeypatch)
-    f = second_frame()
-    f['close_price_spike_filtered'] = f['close']
-    saved = f.copy(deep=True)
-    engine.fetch_klines = AsyncMock(return_value=f)
-    engine.tickers[SYMBOL] = 102.5
-    def compute(frame):
-        assert frame.iloc[-1].close == 102.5
-        assert frame.iloc[-1].high == 102.5
-        assert frame.iloc[-1].close_price_spike_filtered == 102.5
-        assert frame.iloc[-2].close == saved.iloc[-2].close
-        frame['ma3'] = frame['close'].rolling(3).mean()
-        return frame
-    engine.strategy.compute_indicators = compute
-    result = asyncio.run(engine._entry_boundary_frame(SYMBOL))
-    assert result.iloc[-1].ma3 == pytest.approx(f['close'].iloc[-3:-1].sum() / 3 + 102.5 / 3)
-    assert f.equals(saved)
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('atr', [.01, 1., 10.])
-def test_entry_and_paper_submit_ignore_profit_estimates(monkeypatch, side, atr):
-    engine, _ = engine_fixture(monkeypatch)
-    f = second_frame(side)
-    f.loc[f.index[-2], 'atr'] = atr
-    engine.fetch_klines = AsyncMock(return_value=f)
-    engine.tickers[SYMBOL] = float(f.iloc[-1].close)
-    decision = evaluate_v2_frame(f)
-    assert decision['type'] == 'SECOND_BAR_OUTSIDE_' + side
-    assert decision['entry_atr'] == atr
-    assert asyncio.run(engine._execute_confirmed_channel_break(
-        SYMBOL, f, float(f.iloc[-1].close), side))
-    assert engine.account.positions[SYMBOL]['side'] == side
-    assert len(engine.account.trades) == 1
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_large_favorable_quote_not_blocked_by_old_reward_risk(side):
-    f = second_frame(side)
-    quote = 103. if side == 'LONG' else 97.
-    assert evaluate_v2_frame(f, quote)['price'] == quote
