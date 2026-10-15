@@ -12,7 +12,7 @@ from core.swing.models import Bar
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.5-flash"
 API_KEY_ENV = "GEMINI_API_KEY"
 LOOKBACK = 40
 REQUEST_TIMEOUT_SEC = 20.0
