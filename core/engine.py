@@ -1095,10 +1095,20 @@ class TradingEngine:
                             "CRITICAL"
                         )
                         for sym in active_positions:
-                            if str(self.account.positions.get(sym, {}).get("entry_mode", "")).upper() in ("CHANNEL_SWING", "WILD_SWING"):
+                            held = self.account.positions.get(sym, {})
+                            if str(held.get("entry_mode", "")).upper() == "CHANNEL_SWING":
                                 continue
                             try:
-                                asyncio.create_task(self.account.close_position(sym, reason="Watchdog Critical Timeout"))
+                                last_px = float(
+                                    self.tickers.get(sym)
+                                    or getattr(self.account, "latest_prices", {}).get(sym)
+                                    or held.get("mark_price")
+                                    or held.get("entry_price")
+                                    or 0.0
+                                )
+                                asyncio.create_task(self.account.close_position(
+                                    sym, last_px, "Watchdog Critical Timeout", is_manual=True,
+                                ))
                                 self.account.log(f"⚠️ [WATCHDOG] Position {sym} closed due to data loss.", "WARNING")
                             except Exception as ex:
                                 self.account.log(f"🔥 [WATCHDOG FAIL] Close attempt failed for {sym}: {ex}", "CRITICAL")
