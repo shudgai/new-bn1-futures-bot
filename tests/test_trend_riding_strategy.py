@@ -477,3 +477,70 @@ def test_should_close_short_blocks_non_climax_wick_holds():
     assert "BEAR_TREND_LOCK_INTACT" in reason
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 7. 頂底破位即時反手開倉測試 (evaluate_swing_entry & FLIP)
+# ══════════════════════════════════════════════════════════════════════
+def test_swing_entry_bull_breakout_and_flip():
+    """底部破位即時開多 / 平空反手開多 (FLIP_SHORT_TO_LONG)"""
+    strategy = TrendRidingStrategy()
+    df = make_candle_df([
+        {'close': 97.0, 'open': 97.5, 'high': 97.8, 'low': 96.8, 'atr': 1.0, 'kc_middle': 98.0, 'kc_upper': 100.0, 'kc_lower': 96.0, 'ma5': 97.2, 'ema3': 97.0, 'is_closed': True},
+        {'close': 97.5, 'open': 97.0, 'high': 97.8, 'low': 96.9, 'atr': 1.0, 'kc_middle': 98.0, 'kc_upper': 100.0, 'kc_lower': 96.0, 'ma5': 97.4, 'ema3': 97.5, 'is_closed': True},
+        # 當前 K 棒：大陽線突破站上 KC 中軌 98.0 (收 98.5 > open 97.5)，短均線 ema3 達 98.2 > 98.0
+        {'close': 98.5, 'open': 97.5, 'high': 98.8, 'low': 97.4, 'atr': 1.0, 'kc_middle': 98.0, 'kc_upper': 100.0, 'kc_lower': 96.0, 'ma5': 98.0, 'ema3': 98.2, 'is_closed': True},
+    ])
+
+    # 空倉時發出 BUY_LONG
+    sig, reason, _ = strategy.evaluate_swing_entry({}, df)
+    assert sig == 'BUY_LONG'
+
+    # 持空單時觸發 FLIP_SHORT_TO_LONG 反手開多！
+    sig_flip, reason_flip, _ = strategy.evaluate_swing_entry({'side': 'SHORT'}, df)
+    assert sig_flip == 'FLIP_SHORT_TO_LONG'
+    assert "反手開多" in reason_flip
+
+
+def test_swing_entry_bear_breakdown_and_flip():
+    """頂部破位即時開空 / 平多反手開空 (FLIP_LONG_TO_SHORT)"""
+    strategy = TrendRidingStrategy()
+    df = make_candle_df([
+        {'close': 103.0, 'open': 102.5, 'high': 103.2, 'low': 102.0, 'atr': 1.0, 'kc_middle': 102.0, 'kc_upper': 104.0, 'kc_lower': 100.0, 'ma5': 102.8, 'ema3': 103.0, 'is_closed': True},
+        {'close': 102.5, 'open': 103.0, 'high': 103.0, 'low': 102.2, 'atr': 1.0, 'kc_middle': 102.0, 'kc_upper': 104.0, 'kc_lower': 100.0, 'ma5': 102.6, 'ema3': 102.5, 'is_closed': True},
+        # 當前 K 棒：大陰線跌破 KC 中軌 102.0 (收 101.2 < open 102.5)，短均線 ema3 跌至 101.6 < 102.0
+        {'close': 101.2, 'open': 102.5, 'high': 102.5, 'low': 101.0, 'atr': 1.0, 'kc_middle': 102.0, 'kc_upper': 104.0, 'kc_lower': 100.0, 'ma5': 101.8, 'ema3': 101.6, 'is_closed': True},
+    ])
+
+    # 空倉時發出 SELL_SHORT
+    sig, reason, _ = strategy.evaluate_swing_entry({}, df)
+    assert sig == 'SELL_SHORT'
+
+    # 持多單時觸發 FLIP_LONG_TO_SHORT 反手開空！
+    sig_flip, reason_flip, _ = strategy.evaluate_swing_entry({'side': 'LONG'}, df)
+    assert sig_flip == 'FLIP_LONG_TO_SHORT'
+    assert "反手開空" in reason_flip
+
+
+def test_should_close_long_holds_in_bull_trend():
+    """多單趨勢鎖倉：回踩未破中軌，強制 HOLD 嚴禁平多"""
+    strategy = TrendRidingStrategy()
+    records = []
+    for i in range(5):
+        records.append({
+            'close': 102.0 + i * 0.5, 'open': 101.5 + i * 0.5, 'high': 102.5 + i * 0.5, 'low': 101.2 + i * 0.5,
+            'atr': 1.0, 'kc_middle': 101.0 + i * 0.4, 'kc_upper': 103.0 + i * 0.4, 'kc_lower': 99.0 + i * 0.4,
+            'ma5': 102.0 + i * 0.4, 'ema3': 102.2 + i * 0.4, 'volume': 100, 'is_closed': True
+        })
+    # 最新 K 棒：小陰線回踩 104.2 (open 104.5)，但仍遠在中軌 103.0 之上
+    records.append({
+        'close': 104.2, 'open': 104.5, 'high': 104.8, 'low': 104.0,
+        'atr': 1.0, 'kc_middle': 103.0, 'kc_upper': 105.0, 'kc_lower': 101.0,
+        'ma5': 103.8, 'ema3': 104.0, 'volume': 100, 'is_closed': True
+    })
+    df = make_candle_df(records)
+
+    should_close, reason, _ = strategy.should_close_long({}, df, quote=104.2, is_candle_closed=True)
+    assert should_close is False
+    assert "BULL_TREND_LOCK_INTACT" in reason
+
+
+

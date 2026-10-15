@@ -474,32 +474,14 @@ class TrendRidingStrategy:
         if not is_candle_closed:
             return False, "HOLD: CANDLE_NOT_CLOSED (等待 1M K 棒收線確認，防盤中插針毛刺)", details
 
-        # ──【A. 多單持倉審查 (LONG)】──
+        # ──【A. 多單持倉審查 (LONG，調用專用多頭趨勢鎖倉平倉審查)】──
         if side == 'LONG':
-            # 條件 1：結構被破 (Trend Invalidation)
-            # 實體收盤正式跌破基準線 (KC 中軌 / 15 MA)
-            if c < basis:
-                return True, "EXIT_LONG_STRUCTURE_BROKEN (收盤實體摜破基準線，趨勢終結離場)", details
-
-            # 條件 2：爆量高位滯漲力竭 (Climax Exit)
-            # 條件：價格在 KC 上軌外嚴重超買 + 爆出 2 倍以上巨量 + 長上影線佔比 >= 50%
-            is_at_upper = (h >= kc_upper)
-            bar_range = max(h - l, 1e-9)
-            upper_wick = max(0.0, h - max(o, c))
-            wick_ratio = upper_wick / bar_range
-
-            curr_vol = float(curr.get('volume', 0.0))
-            avg_vol = float(df['volume'].tail(10).mean()) if 'volume' in df.columns and len(df) >= 10 else 0.0
-            is_volume_climax = (avg_vol > 0 and curr_vol >= self.climax_volume_multiplier * avg_vol)
-
-            if is_at_upper and wick_ratio >= self.exhaustion_wick_ratio and is_volume_climax:
-                details['wick_ratio'] = round(wick_ratio, 3)
-                details['volume_ratio'] = round(curr_vol / avg_vol, 2)
-                return True, "EXIT_LONG_BLOW_OFF_TOP / CLIMAX_EXHAUSTION (KC上軌外爆2倍巨量且長上影線>=50%，高位滯漲力竭)", details
-
-            # 趨勢鎖倉防洗盤規則 (Trend-Riding Mode)：
-            # 只要收盤價守在基準線之上，即便價格跌回收進通道內、或盤中微幅回吐，一律強制 HOLD，不准平多！
-            return False, "HOLD: TREND_RIDING_LOCK_BULL_INTACT (基準線未跌破，趨勢鎖倉堅定續抱)", details
+            return self.should_close_long(
+                position=position,
+                df=df,
+                quote=p,
+                is_candle_closed=is_candle_closed,
+            )
 
         # ──【B. 空單持倉審查 (SHORT，調用專用空頭趨勢鎖倉平倉審查)】──
         elif side == 'SHORT':
@@ -511,6 +493,231 @@ class TrendRidingStrategy:
             )
 
         return False, "HOLD: DEFAULT_POSITION_PROTECTION", details
+
+    def should_close_long(
+        self,
+        position: Dict[str, Any],
+        df: pd.DataFrame,
+        quote: Optional[float] = None,
+        is_candle_closed: Optional[bool] = None,
+    ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+        """多頭趨勢中持倉鎖定 (Bull Trend-Riding) 專用平多審查
+        
+        嚴格執行多空完全對稱規範：
+        一、 多頭趨勢狀態鎖定 (BULL_SWING == True):
+            1. 基準線斜率持續向上 (Basis_Slope > 0)
+            2. KC 通道三軌 (上軌、中軌、下軌) 同步向上發散
+            3. 價格多數收在 KC 中軌上方 (最近 5 根有 >= 3 根收在中軌上，且當前 Close > KC_Basis)
+
+        二、 多頭趨勢中的【平倉禁令 (禁止中途平多)】:
+            只要 BULL_SWING == True:
+            1. 禁用微幅回吐鎖利：嚴禁 2%~3% 的敏感回撤平多，盤中小陰線或微幅回調視為多頭健康換手正常呼吸，強制 HOLD！
+            2. 允許通道內弱勢回踩：即使價格跌回收進通道內，只要實體收盤未跌破 KC 中軌 (Close > KC_Basis)，一律不准平多！
+            3. 短期均線未拐頭不平多：短均線 (3 EMA / 5 EMA) 只要依然獲得支撐且方向向上，堅決持倉讓利潤奔跑！
+
+        三、 多單在多頭趨勢下的【唯二平倉條件】:
+            1. 結構被破 (Trend Invalidation): K 棒收盤價實體跌破 KC 中軌 (Close < KC_Basis)。
+            2. 極端天量高位滯漲 (Climax Exit):
+               價格大幅脫離 KC 上軌 (超買正乖離過大)，且當根爆出 2.5 倍以上巨量，並留下超過實體 2 倍長度的超長上影線 (確認高位放量滯漲出貨)。
+
+        四、 收盤價判定鐵律：
+            所有條件均以「K 棒收盤價 (is_candle_closed == True)」判斷，未收盤 100% 駁回平倉！
+        """
+        if df is None or len(df) < 1:
+            return False, "HOLD: INSUFFICIENT_DATA", {}
+
+        curr = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else curr
+        c = float(curr.get('close', 0.0))
+        o = float(curr.get('open', 0.0))
+        h = float(curr.get('high', 0.0))
+        l = float(curr.get('low', 0.0))
+        p = float(quote) if quote is not None else c
+
+        if is_candle_closed is None:
+            is_candle_closed = bool(curr.get('is_closed', True))
+
+        atr = float(curr.get('atr', 0.0))
+        if atr <= 0:
+            atr = max(c * 0.01, 1e-8)
+
+        basis = float(curr.get('kc_middle', curr.get('ma15', c)))
+        prev_basis = float(prev.get('kc_middle', prev.get('ma15', basis)))
+        basis_slope = basis - prev_basis
+
+        kc_upper = float(curr.get('kc_upper', basis + 2 * atr))
+        prev_upper = float(prev.get('kc_upper', prev_basis + 2 * atr))
+        kc_lower = float(curr.get('kc_lower', basis - 2 * atr))
+        prev_lower = float(prev.get('kc_lower', prev_basis - 2 * atr))
+
+        ma5 = float(curr.get('ma5', c))
+        prev_ma5 = float(prev.get('ma5', ma5))
+        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
+        prev_ema3 = float(prev.get('ema3', prev.get('ma3', ema3)))
+
+        details = {
+            'side': 'LONG',
+            'close': c,
+            'quote': p,
+            'basis': basis,
+            'basis_slope': basis_slope,
+            'kc_upper': kc_upper,
+            'kc_lower': kc_lower,
+            'is_candle_closed': is_candle_closed,
+            'atr': atr,
+            'ma5': ma5,
+            'ema3': ema3,
+        }
+
+        # ──【鐵律四：收盤價判定鐵律】──
+        if not is_candle_closed:
+            return False, "HOLD: CANDLE_NOT_CLOSED (等待 1M K 棒收線確認，徹底防範盤中毛刺與插針)", details
+
+        # ──【一、 多頭趨勢狀態鎖定 (BULL_SWING)】──
+        recent_5 = df.tail(5)
+        above_count = sum(float(r.get('close', 0)) >= float(r.get('kc_middle', basis)) for _, r in recent_5.iterrows())
+        three_bands_up = (kc_upper >= prev_upper * 0.9995) and (basis >= prev_basis) and (kc_lower >= prev_lower * 0.9995)
+        is_bull_trend = (basis_slope > 0 or three_bands_up) and (c > basis) and (above_count >= 3)
+        details['is_bull_trend'] = is_bull_trend
+        details['above_count'] = above_count
+
+        # ──【二、 非多頭趨勢時 (已反轉或跌破中軌)】──
+        if not is_bull_trend:
+            if c < basis:
+                return True, "EXIT_LONG_STRUCTURE_BROKEN (收盤價已實體摜破基準線，非多頭趨勢離場)", details
+
+        # ──【三、 多單在多頭趨勢下的【唯二平倉條件】】──
+        # 條件 1：結構被破 (Trend Invalidation)
+        # K 棒收盤價 (Close) 實體跌破 KC 中軌 (Close < KC_Basis)
+        if c < basis:
+            return True, "EXIT_LONG_STRUCTURE_BROKEN (K棒收盤實體摜破 KC 中軌，多頭結構被破離場)", details
+
+        # 條件 2：極端天量高位滯漲 (Climax Exit)
+        # ① 價格大幅脫離 KC 上軌 (超買正乖離過大)
+        # ② 該根 K 棒爆出 2.0~2.5 倍以上巨量 (確認天量換手)
+        # ③ 留下超過實體 2 倍長度的超長上影線 (確認高位滯漲出貨)
+        body = abs(c - o)
+        upper_wick = max(0.0, h - max(c, o))
+        bar_range = max(h - l, 1e-9)
+
+        curr_vol = float(curr.get('volume', 0.0))
+        prev_bars = df.iloc[:-1] if len(df) > 1 else df
+        avg_vol = float(prev_bars['volume'].tail(10).mean()) if 'volume' in prev_bars.columns and len(prev_bars) > 0 else 0.0
+        is_climax_volume = (avg_vol > 0 and curr_vol >= min(2.5, self.climax_volume_multiplier) * avg_vol)
+        is_climax_wick = (upper_wick >= 2.0 * max(body, 0.1 * atr)) or (upper_wick / bar_range >= self.exhaustion_wick_ratio)
+        is_severe_overbought = (h >= kc_upper) or ((h - basis) / atr >= 1.2)
+
+        if is_severe_overbought and is_climax_volume and is_climax_wick:
+            details['wick_ratio'] = round(upper_wick / bar_range, 3)
+            details['wick_to_body_ratio'] = round(upper_wick / max(body, 1e-9), 2)
+            details['volume_ratio'] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 0.0
+            return True, "EXIT_LONG_BLOW_OFF_TOP / CLIMAX_EXHAUSTION (KC上軌外超買 + 爆量換手 + 超長上影線，高位滯漲力竭離場)", details
+
+        # ──【平倉禁令：強制 HOLD，嚴禁中途被微幅回調洗出場】──
+        long_ma_holding = (c >= ema3 or c >= ma5 or ema3 >= prev_ema3 or ma5 >= prev_ma5)
+        details['long_ma_holding'] = long_ma_holding
+
+        return False, "HOLD: BULL_TREND_LOCK_INTACT / TREND_RIDING_LOCK_BULL_INTACT (多頭主升浪趨勢鎖定中，未破中軌且無天量滯漲，嚴禁中途被洗下車)", details
+
+    def evaluate_swing_entry(
+        self,
+        position: Dict[str, Any],
+        df: pd.DataFrame,
+        quote: Optional[float] = None,
+        is_candle_closed: Optional[bool] = None,
+    ) -> Tuple[Optional[str], str, Dict[str, Any]]:
+        """波段交易：頂底破位即時反手開倉審查 (Swing Entry & Flip Engine)
+
+        回傳:
+            (signal, reason, details)
+            signal: 'BUY_LONG' | 'SELL_SHORT' | 'FLIP_SHORT_TO_LONG' | 'FLIP_LONG_TO_SHORT' | None
+        """
+        if df is None or len(df) < 3:
+            return None, "VETO: INSUFFICIENT_DATA", {}
+
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        c = float(curr.get('close', 0.0))
+        o = float(curr.get('open', 0.0))
+        h = float(curr.get('high', 0.0))
+        l = float(curr.get('low', 0.0))
+        p = float(quote) if quote is not None else c
+
+        if is_candle_closed is None:
+            is_candle_closed = bool(curr.get('is_closed', True))
+
+        if not is_candle_closed:
+            return None, "VETO: CANDLE_NOT_CLOSED (開倉必須等待 1M K 棒收線確認)", {}
+
+        atr = float(curr.get('atr', 0.0))
+        if atr <= 0:
+            atr = max(c * 0.01, 1e-8)
+
+        basis = float(curr.get('kc_middle', curr.get('ma15', c)))
+        prev_basis = float(prev.get('kc_middle', prev.get('ma15', basis)))
+        kc_upper = float(curr.get('kc_upper', basis + 2 * atr))
+        kc_lower = float(curr.get('kc_lower', basis - 2 * atr))
+
+        ma5 = float(curr.get('ma5', c))
+        prev_ma5 = float(prev.get('ma5', ma5))
+        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
+        prev_ema3 = float(prev.get('ema3', prev.get('ma3', ema3)))
+
+        holding_side = str(position.get('side', '')).upper() if position else ''
+
+        details = {
+            'close': c,
+            'quote': p,
+            'basis': basis,
+            'ema3': ema3,
+            'ma5': ma5,
+            'holding_side': holding_side,
+        }
+
+        # ──【1. 多單開倉 (Long Entry)】──
+        # 最佳起爆點（底部反轉第一時間開多）：
+        # K 棒收盤突破站上基準線 (c > basis) 且 短均線金叉/站上基準線 (ema3 >= basis 或 ema3 > prev_ema3)
+        prev_below_basis = float(prev.get('close', 0.0)) <= prev_basis or float(df.iloc[-3].get('close', 0.0)) <= prev_basis
+        is_bull_breakout_reversal = (c > basis and c > o) and (ema3 >= basis or ma5 >= basis) and prev_below_basis
+        
+        # 中途二次進場（回踩確認）：
+        recent_3 = df.tail(3)
+        has_tested_support = float(recent_3['low'].min()) <= max(ema3, basis)
+        is_bull_pullback_entry = (c > basis and c > o) and has_tested_support and (basis >= prev_basis)
+
+        # 禁止半山腰追高：正乖離過大禁追
+        bias_atr_long = (p - basis) / atr
+        is_long_overextended = (bias_atr_long > self.max_bias_atr) or (p > kc_upper + 0.5 * atr)
+
+        if (is_bull_breakout_reversal or is_bull_pullback_entry) and not is_long_overextended:
+            if holding_side == 'SHORT':
+                return 'FLIP_SHORT_TO_LONG', "FLIP: 底部反轉破位站上基準線，立即平空並反手開多！", details
+            elif not holding_side:
+                entry_type = "REVERSAL_BREAKOUT" if is_bull_breakout_reversal else "PULLBACK_REENTRY"
+                return 'BUY_LONG', f"ENTER: 多頭波段啟動 ({entry_type})，第一時間開多！", details
+
+        # ──【2. 空單開倉 (Short Entry，完全對稱)】──
+        # 最佳起跌點（頂部反轉第一時間開空）：
+        # K 棒收盤跌破基準線 (c < basis) 且 短均線死叉/壓制基準線 (ema3 <= basis 或 ema3 < prev_ema3)
+        prev_above_basis = float(prev.get('close', 0.0)) >= prev_basis or float(df.iloc[-3].get('close', 0.0)) >= prev_basis
+        is_bear_breakdown_reversal = (c < basis and c < o) and (ema3 <= basis or ma5 <= basis) and prev_above_basis
+
+        # 中途二次進場（回抽確認）：
+        has_tested_resistance = float(recent_3['high'].max()) >= min(ema3, basis)
+        is_bear_pullback_entry = (c < basis and c < o) and has_tested_resistance and (basis <= prev_basis)
+
+        # 禁止地板追空：負乖離過大禁追
+        bias_atr_short = (basis - p) / atr
+        is_short_overextended = (bias_atr_short > self.max_bias_atr) or (p < kc_lower - 0.5 * atr)
+
+        if (is_bear_breakdown_reversal or is_bear_pullback_entry) and not is_short_overextended:
+            if holding_side == 'LONG':
+                return 'FLIP_LONG_TO_SHORT', "FLIP: 頂部反轉破位跌破基準線，立即平多並反手開空！", details
+            elif not holding_side:
+                entry_type = "REVERSAL_BREAKDOWN" if is_bear_breakdown_reversal else "PULLBACK_REENTRY"
+                return 'SELL_SHORT', f"ENTER: 空頭波段啟動 ({entry_type})，第一時間開空！", details
+
+        return None, "HOLD / NO_SIGNAL", details
 
     def should_close_short(
         self,
