@@ -50,10 +50,17 @@ from core.services.three_bar_rail_gate import three_bar_rail_gate_problem
 from core.services.exits.dual_track_exit_service import (
     detect_climax_reversal, is_true_climax_peak, is_true_climax_valley,
 )
+from core.gates.smart_entry_gate import SMART_ENTRY_CODES, smart_entry_candidate, smart_entry_gate_problem
 from core.gates.strict_cross_kc_gate import (
     StrictCrossAndKcTrendGate,
     has_recent_golden_cross,
     has_recent_death_cross,
+)
+from core.services.strategies.three_mode_entry_engine import (
+    MODE_C_SHORT,
+    THREE_MODE_ENTRY_CODES,
+    evaluate_entry_signal,
+    has_confirmed_dump_close,
 )
 
 EntryGate = StrictCrossAndKcTrendGate
@@ -100,9 +107,7 @@ LEGACY_ROUTE_CODES = frozenset((
 ))
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 
-ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES | frozenset((
-    GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
-))
+ENTRY_CODES = THREE_MODE_ENTRY_CODES
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
@@ -474,6 +479,8 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
     try:
         if frame is None or frame.empty:
             return "BLOCKED_INVALID_ENTRY_CANDLE"
+        if decision and decision.get("entry_phase") == "SMART_ENTRY_PULLBACK":
+            return None
         if decision and (
             decision.get("type") in MEME_ENTRY_CODES
             or decision.get("entry_phase") in (
@@ -2625,7 +2632,7 @@ def pre_flight_safety_check(
             BEARISH_INSTANT_BREAKOUT_CODE,
             BULLISH_INSTANT_BREAKOUT_CODE,
         )
-        if account is not None and symbol:
+        if account is not None and symbol and entry_phase != 'SMART_ENTRY_PULLBACK':
             last_closed_ts = float(getattr(account, 'last_closed_at', {}).get(symbol, 0.0))
             last_side = str(getattr(account, 'last_closed_side', {}).get(symbol, '')).upper()
             now_ts = time.time()
@@ -2756,6 +2763,7 @@ def pre_flight_safety_check(
                 'KC_MOMENTUM_BURST_SHORT',
                 'KC_MIDLINE_BREAK_LONG',
                 'KC_MIDLINE_BREAK_SHORT',
+                'SMART_ENTRY_PULLBACK',
             )
             or entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
@@ -2926,6 +2934,58 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             diagnostics["reason"] = reason
         return None
 
+    if code is not None and code not in THREE_MODE_ENTRY_CODES:
+        return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+    if (
+        account is not None
+        and symbol
+        and (
+            symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        )
+    ):
+        return reject("BLOCKED_THREE_MODE_ACCOUNT_ORDER_STATE")
+
+    position = None
+    if code == MODE_C_SHORT:
+        if not has_confirmed_dump_close(account, symbol):
+            return reject("BLOCKED_THREE_MODE_DUMP_CLOSE_NOT_CONFIRMED")
+        position = {"side": "LONG"}
+    elif account is not None and symbol in getattr(account, "positions", {}):
+        return reject("BLOCKED_THREE_MODE_POSITION_NOT_FLAT")
+
+    decision = evaluate_entry_signal(
+        frame,
+        position=position,
+        account=account,
+        symbol=symbol,
+        quote=price,
+        requested_side=(
+            "LONG" if code and code.endswith("_LONG")
+            else "SHORT" if code and code.endswith("_SHORT")
+            else None
+        ),
+        diagnostics=diagnostics,
+    )
+    if decision is None:
+        return None
+    if code is not None and decision.get("type") != code:
+        return reject("BLOCKED_THREE_MODE_SIGNAL_MISMATCH")
+    try:
+        quote = float(price if price is not None else decision["price"])
+        bar_id = float(decision["confirmation_bar_id"])
+        atr = float(decision["entry_atr"])
+        if not all(math.isfinite(value) and value > 0 for value in (quote, bar_id, atr)):
+            return reject("BLOCKED_THREE_MODE_INVALID_EXECUTION_DATA")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return reject("BLOCKED_THREE_MODE_INVALID_EXECUTION_DATA")
+    decision["price"] = quote
+    decision["_is_authorized"] = True
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(decision)
+    return decision
+
     def authorize(decision, quote):
         # Normalize the execution snapshot fields for every entry authority.
         # Meme breakout candidates provide `price` but older routes omit
@@ -2935,6 +2995,14 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         confirmation_bar_id = decision.get('confirmation_bar_id')
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
+        gate_problem, _ = smart_entry_gate_problem(
+            frame, decision.get('side'), account=account, symbol=symbol,
+            quote=quote,
+        )
+        if gate_problem:
+            return reject(gate_problem)
+        decision['_smart_entry_gate_passed'] = True
+        decision['entry_phase'] = 'SMART_ENTRY_PULLBACK'
         passed, reason = validate_ma_alignment(frame, decision.get('side'), quote)
         if not passed:
             return reject(reason)
@@ -2975,7 +3043,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             decision.get('type') == 'TRIGGER_C_CONTINUATION'
             and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
-        if (decision.get('type') not in FLAT_LINE_BREAKOUT_TYPES
+        if (not decision.get('_smart_entry_gate_passed')
+                and decision.get('type') not in FLAT_LINE_BREAKOUT_TYPES
                 and not is_post_close_continuation
                 and decision.get('type') not in (
                     BEARISH_INSTANT_BREAKOUT_CODE,
@@ -2997,7 +3066,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             )
             or str(decision.get('type', '')).startswith('CLOSED_TREND_BREAKOUT_')
         )
-        if requires_three_bar_gate:
+        if requires_three_bar_gate and not decision.get('_smart_entry_gate_passed'):
             rail_problem = three_bar_rail_gate_problem(
                 frame, quote, decision.get('side'),
             )
@@ -3017,7 +3086,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject(market_structure_problem)
 
         cross_chop_problem = (
-            None if decision.get('entry_phase') in (
+            None if decision.get('_smart_entry_gate_passed') or decision.get('entry_phase') in (
                 'KC_2BAR_CLOSED_CONFIRM', 'KC_LIVE_OUTER_BREAKOUT',
                 'KC_LIVE_PATTERN_BREAKOUT', 'MEME_BREAKOUT_ENTRY',
                 'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION',
@@ -3107,6 +3176,30 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if code is not None and code not in ENTRY_CODES:
             return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+
+        if code in SMART_ENTRY_CODES.values():
+            side = "LONG" if code == SMART_ENTRY_CODES["LONG"] else "SHORT"
+            smart_decision, problem = smart_entry_candidate(
+                frame, side, account=account, symbol=symbol, quote=quote,
+            )
+            if smart_decision is None:
+                return reject(problem or "BLOCKED_SMART_ENTRY_INVALID_SIGNAL")
+            smart_decision["_is_authorized"] = True
+            return authorize(smart_decision, quote)
+
+        if code is None:
+            smart_candidates = []
+            for side in ("LONG", "SHORT"):
+                candidate, problem = smart_entry_candidate(
+                    frame, side, account=account, symbol=symbol, quote=quote,
+                )
+                if candidate is not None:
+                    smart_candidates.append(candidate)
+            if len(smart_candidates) > 1:
+                return reject("BLOCKED_SMART_ENTRY_AMBIGUOUS_SIDE")
+            if smart_candidates:
+                smart_candidates[0]["_is_authorized"] = True
+                return authorize(smart_candidates[0], quote)
 
         # ── 妖幣專屬極速破軌、延續補倉與提前埋伏入口（Meme Coin Authority）──
         from core.gates.meme_coin_gate import MemeCoinGate

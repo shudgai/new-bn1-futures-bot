@@ -1146,6 +1146,25 @@ class PaperAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        is_wild_swing = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper() == "WILD_SWING"
+        close_reason_upper = str(close_reason).upper()
+        is_hard_stop = any(
+            token in close_reason_upper
+            for token in ("HARD_STOP", "PRICE_LOSS", "MARGIN_LOSS")
+        )
+        if is_wild_swing and not is_hard_stop:
+            from core.services.exits.minimum_hold import has_completed_post_entry_bar
+
+            frames = getattr(self, "_channel_exit_frames", {})
+            if not has_completed_post_entry_bar(position, frames.get(symbol)):
+                self.log(
+                    f"⏸️ [最短持倉保護] {symbol} 尚未完成至少一根進場後 K 棒，"
+                    f"拒絕常規平倉：{close_reason}",
+                    "WARNING",
+                )
+                return False
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
         # 止損先平倉。硬虧損停損（尚未鎖利）與手動平倉仍照常執行。
         outer_run_profit_lock_hold = bool(

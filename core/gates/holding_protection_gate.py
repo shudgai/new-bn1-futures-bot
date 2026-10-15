@@ -3,8 +3,8 @@
 Enforces an explicit exit whitelist:
 1. EXIT_BY_EXTREME_WATERFALL: An adverse body >= 1.5*ATR that crosses KC middle.
 2. EXIT_BY_CIRCUIT_BREAKER_HARD_SL: Hard Stop Loss or market circuit breaker.
-3. EXIT_BY_RATCHET_PROFIT_LOCK: net ROE activates at 10%, advances every 1 point,
-   and locks the reached step 2 points below its peak threshold.
+3. EXIT_BY_RATCHET_PROFIT_LOCK: net ROE activates at 10%, then locks 5% below
+   each 5-point peak tier.
 4. Fractal pullback exits require peak gain >3*ATR, or >2*ATR while
    the established favorable extreme still qualifies as a strong trend.
 5. INTRABAR_SPIKE_REBOUND_EXIT closes on a live extreme-KC spike and rebound.
@@ -18,10 +18,7 @@ import math
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 from core.intelligence.spatial_brain import SpatialBrain
-from core.services.exits.net_roe_profit_lock import (
-    has_reached_net_roe_floor,
-    tiered_net_roe_floor,
-)
+from core.swing.ratchet import floor_roe as _swing_floor_roe
 
 
 def _fractal_pullback_exit_authorized(position, frame, side, quote, atr, favorable_move):
@@ -1272,10 +1269,11 @@ def _ratchet_lock_details(position, quote):
             saved_peak = float(saved_state.get('peak_net_roe_pct') or peak_roe)
             if math.isfinite(saved_peak):
                 peak_roe = max(peak_roe, saved_peak)
-        floor, tier = tiered_net_roe_floor(peak_roe)
+        floor = _swing_floor_roe(peak_roe)
         if floor is None:
             return None
-        if not has_reached_net_roe_floor(current_roe, floor):
+        tier = int((floor - 5.0) // 5.0) + 1
+        if current_roe > floor and not math.isclose(current_roe, floor, rel_tol=1e-12, abs_tol=1e-12):
             return None
         return {
             'peak_net_roe_pct': peak_roe,

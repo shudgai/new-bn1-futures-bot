@@ -741,14 +741,49 @@ class SuperTrendKeltnerStrategy:
         symbol: str = None,
         parameter_overrides: dict = None,
         indicators_precomputed: bool = False,
+        account=None,
+        position=None,
     ) -> dict:
-        from core import strategy as rules
-        from core.services.strategies.signal_selection import evaluate_signal
-        return evaluate_signal(
-            self, rules, df, ema_50_1h, trend_1h_declining,
-            st_direction_1h, btc_st_direction_1h, btc_st_flip_age,
-            symbol, parameter_overrides, indicators_precomputed,
+        if not indicators_precomputed:
+            df = self.compute_indicators(df)
+        from core.services.strategies.three_mode_entry_engine import (
+            evaluate_entry_signal,
         )
+
+        quote = None
+        if df is not None and not df.empty:
+            quote = float(df.iloc[-1]["close"])
+        diagnostics = {}
+        decision = evaluate_entry_signal(
+            df,
+            position=position,
+            account=account,
+            symbol=symbol or "",
+            quote=quote,
+            diagnostics=diagnostics,
+        )
+        if decision is None:
+            return {
+                "action": "HOLD",
+                "reason": diagnostics.get("reason", "WAIT_NO_THREE_MODE_SETUP"),
+                "eligible": False,
+                "score_stage": "ELIGIBILITY",
+                "diagnostics": diagnostics,
+            }
+        return {
+            **decision,
+            "action": "ENTER_MARKET",
+            "score": 100,
+            "eligible": True,
+            "score_stage": "FINAL",
+            "profit_profile": "TREND_EXTENSION",
+            "fast_entry": False,
+            "diagnostics": {
+                "price": decision["price"],
+                "atr": decision["entry_atr"],
+                "entry_mode": decision["entry_mode"],
+            },
+        }
 
 
     def confirm_pullback_entry(

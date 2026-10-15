@@ -713,6 +713,24 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+        from core.services.strategies.three_mode_entry_engine import (
+            evaluate_entry_signal,
+        )
+        diagnostics = {}
+        engine = kwargs.get("engine")
+        decision = evaluate_entry_signal(
+            frame,
+            position=kwargs.get("position"),
+            account=getattr(engine, "account", None),
+            symbol=kwargs.get("symbol", ""),
+            quote=price,
+            requested_side=side,
+            diagnostics=diagnostics,
+        )
+        if decision is None:
+            reason = diagnostics.get("reason", "WAIT_NO_THREE_MODE_SETUP")
+            return False, reason, {"action": "WAIT", "reason": reason}
+        return True, decision["type"], decision
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線
         passed, reason = validate_ma_alignment(frame, side, price)

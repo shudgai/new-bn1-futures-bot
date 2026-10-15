@@ -2974,6 +2974,11 @@ class BinanceTestnetAccount:
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"
+        is_hard_stop = (
+            "HARD_STOP" in str(close_reason).upper()
+            or "PRICE_LOSS" in str(close_reason).upper()
+            or "MARGIN_LOSS" in str(close_reason).upper()
+        )
         if is_wild_swing and meta.get("wild_swing_close_unknown"):
             pending_id = str(meta["wild_swing_close_unknown"])
             try:
@@ -3036,11 +3041,24 @@ class BinanceTestnetAccount:
         self.log(log_alarm, 'WARNING')
         print(log_alarm, flush=True)
 
+        # ──【鐵律一：嚴禁當根開倉當根平倉 (Min Hold Bars Protection)】──
+        if is_wild_swing and not is_hard_stop:
+            from core.services.exits.minimum_hold import has_completed_post_entry_bar
+
+            curr_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+            if not has_completed_post_entry_bar(position, curr_frame):
+                msg = (
+                    f"[{symbol}] [鐵律一否決 VETO] 尚未完成至少一根進場後 K 棒，"
+                    f"阻擋常規平倉；理由: {close_reason}"
+                )
+                self.log(msg, "WARNING")
+                print(msg, flush=True)
+                return False
+
         # ──【出場鐵壁焊死 VETO】──
         # 除 -1.5% 絕對硬停損（破產保護）外，
         # 空單只要 5M 已確認收盤價 <= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
         # 多單只要 5M 已確認收盤價 >= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
-        is_hard_stop = ('HARD_STOP' in str(close_reason)) or ('PRICE_LOSS' in str(close_reason)) or ('MARGIN_LOSS' in str(close_reason))
         if not is_wild_swing and not is_hard_stop and c_5m_closed > 0 and ma15_5m > 0:
             if position.get('side') == 'SHORT' and c_5m_closed <= ma15_5m:
                 veto_msg = f"[{symbol}] [鐵壁否決 VETO] 空單結構完好 (5M收盤 {c_5m_closed} <= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
@@ -3120,7 +3138,6 @@ class BinanceTestnetAccount:
             if not is_hard_stop_now:
                 await self._cancel_all_orders(symbol)
 
-            is_ratchet_lock = "RATCHET_PROFIT_LOCK" in str(close_reason) or (is_limit and limit_price is not None)
             if is_wild_swing:
                 from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
                 completed, order = await AntiSlippageOrderExecutor.execute_confirmed_limit_close(
@@ -3137,28 +3154,6 @@ class BinanceTestnetAccount:
                     raise RuntimeError(
                         f"Wild Swing limit close not fully confirmed: {order.get('error', 'UNKNOWN')}"
                     )
-            elif is_ratchet_lock and limit_price:
-                # 廢棄市價平倉，改為帶微幅折讓之限價防滑平倉單（死守底線，拒絕市價滑穿）
-                order_price = limit_price
-                if hasattr(self.exchange, "price_to_precision"):
-                    order_price = float(self.exchange.price_to_precision(symbol, order_price))
-                elif hasattr(self, "price_to_precision"):
-                    order_price = float(self.price_to_precision(symbol, order_price))
-
-                self.log(f"🛡️ [限價防滑平倉] {symbol} {close_side} 限價={order_price:.6g} (死守底線，拒絕市價滑價)", "INFO")
-                order = await self._send_order(
-                    symbol,
-                    "limit",
-                    close_side,
-                    position["qty"],
-                    order_price,
-                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
-                )
-                from core.gates.ratchet_net_profit_gate import get_ratchet_manager
-                rm = get_ratchet_manager(symbol, exchange=self)
-                order_id = (order or {}).get("id") or (order or {}).get("orderId")
-                if order_id:
-                    await rm._ensure_order_filled_async(str(order_id), close_side, position["qty"], order_price)
             else:
                 from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
                 # 依 2026-10-15 最新規範：全面廢棄 Stop Market，改以帶 0.2%~0.3% 讓步緩衝之限價單發送

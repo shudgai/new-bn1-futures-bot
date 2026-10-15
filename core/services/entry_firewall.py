@@ -5,6 +5,7 @@ import time
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
+    SMART_ENTRY_CODES,
     evaluate_entry_contract,
 )
 
@@ -53,41 +54,126 @@ async def validate_account_entry(account, symbol, side, context):
         if not callable(provider):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MISSING_FRESH_MARKET_DATA")
         fresh_frame = await provider(symbol)
-        if (
-            fresh_frame is None
-            or not fresh_frame.attrs.get("entry_finality_verified")
-            or fresh_frame.attrs.get("timeframe_ms") != 60_000
-        ):
+        if fresh_frame is None or not fresh_frame.attrs.get("entry_finality_verified"):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
 
-        from core.services.strategies.wild_swing_strategy import WildSwingStrategy
-        signal = WildSwingStrategy().evaluate_entry(symbol, fresh_frame, side)
+        from core.services.candle_data import closed_entry_candles
+        from core.swing.entry import evaluate_entry
+        from core.swing.models import SwingState
+        from core.swing.reversal import evaluate_dump_reversal
+        from core.swing.runner import frame_to_bars
+
+        closed = closed_entry_candles(fresh_frame)
+        bars = frame_to_bars(closed)
+        if not bars or "timestamp" not in closed:
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+        entry_code = str(context.get("entry_signal_code") or "")
+        if entry_code == "SWING_DUMP_FLUSH_REVERSAL":
+            held_side = "LONG" if side == "SHORT" else "SHORT"
+            signal = evaluate_dump_reversal(held_side, bars)
+        else:
+            runner = getattr(account, "_swing_runner", None)
+            state = runner.state_for(symbol, closed) if runner else SwingState()
+            signal = evaluate_entry(bars, state)
         expected = context.get("dual_tf_meta")
-        expected_bar = expected.get("bar_id") if isinstance(expected, dict) else None
-        signal_bar_id = finite_bar_id(signal.get("bar_id")) if signal else None
-        expected_bar_id = finite_bar_id(expected_bar)
-        confirmation_bar_id = finite_bar_id(
-            context.get("channel_confirmation_bar_id")
-        )
+        expected_bar_id = finite_bar_id(expected.get("bar_id") if isinstance(expected, dict) else None)
+        latest_bar_id = finite_bar_id(closed.iloc[-1]["timestamp"])
+        confirmation_bar_id = finite_bar_id(context.get("channel_confirmation_bar_id"))
         if (
             signal is None
-            or signal.get("side") != side
-            or signal_bar_id is None
-            or expected_bar_id != signal_bar_id
-            or confirmation_bar_id != signal_bar_id
+            or signal.side != side
+            or f"SWING_{signal.mode}" != entry_code
+            or latest_bar_id is None
+            or expected_bar_id != latest_bar_id
+            or confirmation_bar_id != latest_bar_id
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
         return {
-            "type": context.get("entry_signal_code"),
-            "side": side,
+            "side": signal.side,
+            "type": entry_code,
             "entry_mode": "WILD_SWING",
-            "entry_phase": "WILD_SWING_1M",
-            "confirmation_bar_id": signal_bar_id,
-            "close_price": float(signal["close"]),
-            "price": float(signal["close"]),
+            "entry_phase": signal.mode,
+            "confirmation_bar_id": latest_bar_id,
         }
 
     code = context.get('entry_signal_code')
+    if code in ENTRY_CODES:
+        if (
+            symbol in getattr(account, "positions", {})
+            or symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] THREE_MODE_ACCOUNT_STATE_BLOCK")
+        provider = getattr(account, "entry_frame_provider", None)
+        if not callable(provider):
+            raise ValueError("[FORBIDDEN_ENTRY] 缺少可重驗的行情來源")
+        try:
+            frame = await provider(symbol)
+        except Exception as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
+        if frame is None or not frame.attrs.get("entry_finality_verified"):
+            raise ValueError("[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認")
+
+        snapshot = context.get("entry_snapshot")
+        if snapshot and (
+            snapshot.get("symbol") != symbol
+            or snapshot.get("side") != side
+            or snapshot.get("signal_code") != code
+            or snapshot.get("signal_id") != context.get("signal_id")
+            or snapshot.get("candidate_bar_id") != context.get("candidate_bar_id")
+            or snapshot.get("closed_bar") != context.get("channel_confirmation_bar_id")
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] THREE_MODE_SNAPSHOT_IDENTITY_MISMATCH")
+
+        from core.services.entry_contract import evaluate_entry_contract
+
+        diagnostics = {}
+        decision = evaluate_entry_contract(
+            frame,
+            float(frame.iloc[-1]["close"]),
+            code,
+            account=account,
+            symbol=symbol,
+            diagnostics=diagnostics,
+        )
+        expected_bar = finite_bar_id(context.get("channel_confirmation_bar_id"))
+        decision_bar = finite_bar_id(
+            decision.get("confirmation_bar_id") if decision else None
+        )
+        if (
+            decision is None
+            or decision.get("side") != side
+            or decision_bar is None
+            or expected_bar != decision_bar
+        ):
+            reason = diagnostics.get("reason", "THREE_MODE_SIGNAL_REVALIDATION_FAILED")
+            raise ValueError("[FORBIDDEN_ENTRY] " + reason)
+
+        daily_check = getattr(account, "daily_loss_limit_hit", None)
+        if callable(daily_check):
+            result = daily_check()
+            halted = bool(result[0] if isinstance(result, (tuple, list)) else result)
+            if halted:
+                raise ValueError("[FORBIDDEN_ENTRY] ACCOUNT_DAILY_LOSS_LIMIT")
+        from core.config import MAX_SLOTS
+        if MAX_SLOTS > 0 and (
+            len(getattr(account, "positions", {}))
+            + len(getattr(account, "pending_limit_orders", {}))
+            >= MAX_SLOTS
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] ACCOUNT_MAX_SLOTS")
+        if getattr(account, "d0_quarantine_state", {}).get(symbol):
+            raise ValueError("[FORBIDDEN_ENTRY] ACCOUNT_SYMBOL_QUARANTINED")
+        if any(
+            trade.get("symbol") == symbol
+            and trade.get("action") in ("OPEN_LONG", "OPEN_SHORT")
+            and str(trade.get("channel_confirmation_bar_id"))
+                == str(decision_bar)
+            for trade in getattr(account, "trades", [])
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] THREE_MODE_DUPLICATE_BAR_ENTRY")
+        return decision
+
     if code not in ENTRY_CODES:
         from core.gates.pipeline import pipeline
         regime_problem = pipeline.market_regime_problem(symbol)
@@ -159,6 +245,7 @@ async def validate_account_entry(account, symbol, side, context):
     )
     cross_chop_problem = (
         None if meme_golden_cross or code in KC_PENDING_CODES
+        or code in SMART_ENTRY_CODES.values()
         or code in MEME_ENTRY_CODES
         or code in (
             'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
@@ -180,12 +267,15 @@ async def validate_account_entry(account, symbol, side, context):
         'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
         'KC_REALTIME_RAIL_BREACH_SHORT',
     }
-    kc_problem = strict_kc_entry_problem(
-        frame, quote, side,
-        strategy_type=(
-            'BREAKOUT' if code in breakout_codes
-            else entry_strategy_type(context.get('entry_phase'))
-        ),
+    kc_problem = (
+        None if code in SMART_ENTRY_CODES.values()
+        else strict_kc_entry_problem(
+            frame, quote, side,
+            strategy_type=(
+                'BREAKOUT' if code in breakout_codes
+                else entry_strategy_type(context.get('entry_phase'))
+            ),
+        )
     )
     if kc_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + kc_problem)
@@ -193,18 +283,21 @@ async def validate_account_entry(account, symbol, side, context):
         opposite_side_close_cooldown_problem, same_bar_close_entry_problem,
         same_side_anti_churn_problem,
     )
-    churn_problem = same_side_anti_churn_problem(
-        account, symbol, frame, side, quote,
+    churn_problem = (
+        None if code in SMART_ENTRY_CODES.values()
+        else same_side_anti_churn_problem(account, symbol, frame, side, quote)
     )
     if churn_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + churn_problem)
-    same_bar_problem = same_bar_close_entry_problem(
-        account, symbol, frame, side,
+    same_bar_problem = (
+        None if code in SMART_ENTRY_CODES.values()
+        else same_bar_close_entry_problem(account, symbol, frame, side)
     )
     if same_bar_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
     opposite_cooldown_problem = (
-        None if code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
+        None if code in SMART_ENTRY_CODES.values()
+        or code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
         else opposite_side_close_cooldown_problem(
             account, symbol, frame, side,
         )
@@ -272,12 +365,14 @@ async def validate_account_entry(account, symbol, side, context):
         code in KC_PENDING_CODES or is_flip_or_shadow
         or is_verified_live_breakout or verified_midline_entry
         or verified_fast_cross is not None
+        or code in SMART_ENTRY_CODES.values()
         or code in MEME_ENTRY_CODES
     )
     regime_problem = pipeline.market_regime_problem(symbol, frame, quote)
     if regime_problem and not is_exempt_from_regime:
         raise ValueError("[FORBIDDEN_ENTRY] " + regime_problem)
-    if (code not in KC_PENDING_CODES and not is_flip_or_shadow and not verified_midline_entry
+    if (code not in KC_PENDING_CODES and code not in SMART_ENTRY_CODES.values()
+            and not is_flip_or_shadow and not verified_midline_entry
             and verified_fast_cross is None and code not in MEME_ENTRY_CODES):
         try:
             chop_problem = pipeline.chop_lockout_problem(

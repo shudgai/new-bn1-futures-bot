@@ -562,8 +562,6 @@ class TradingEngine:
         self.symbol_rotation.ai.clear_market_regimes()
         from core.gates.pipeline import pipeline
         pipeline.set_market_regime_provider(self.symbol_rotation.ai.market_regime_for)
-        from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
-        migrate_account_peak_exits(self.account)
         self.account.log('ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
         # 策略切換後撤掉尚未成交的舊 MA5/舊回踩進場單，避免重啟後偷渡成交。
         for symbol, pending in list(self.account.pending_limit_orders.items()):

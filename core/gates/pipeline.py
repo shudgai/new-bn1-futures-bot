@@ -836,6 +836,10 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
     try:
         if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
+        if entry_phase == 'SMART_ENTRY_PULLBACK':
+            from core.gates.smart_entry_gate import smart_entry_gate_problem
+            problem, _ = smart_entry_gate_problem(frame, side, quote=quote)
+            return problem
         if entry_phase in ('MEME_BREAKOUT_ENTRY', 'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION'):
             return None
         if entry_phase == 'REALTIME_RAIL_BREACH':
