@@ -19,9 +19,10 @@ REQUEST_TIMEOUT_SEC = 20.0
 
 PROMPT = (
     "你是一個高頻量化波段審查員。這是一張 1M 級別的 K 線圖（包含 MA5、MA15、KC 軌道與成交量），"
-    "目前技術指標剛發出 {side} 破軌突破信號。\n"
+    "目前技術指標剛發出 {side} {signal_desc}信號。\n"
     "請依據形態學判定：這是『真實強勢突破（放量起漲、剛出發）』，"
-    "還是『誘多/誘空陷阱（衝高回落長影線、縮量假突破、已連續大漲跌的末端追價、盤整區內的假破）』。\n"
+    "還是『誘多/誘空陷阱（衝高回落長影線、縮量假突破、已連續大漲跌的末端追價、盤整區內的假破、"
+    "橫盤均線纏繞的假金叉/假死叉、滯後追高追空）』。\n"
     "只回傳 JSON：{{\"verdict\": \"REAL\" 或 \"TRAP\", \"reason\": \"一句話理由\"}}。"
 )
 
@@ -75,7 +76,10 @@ def parse_verdict(text: str) -> Tuple[bool, str]:
     raise ValueError("unknown verdict")
 
 
-def _call_gemini(image: bytes, side: str, api_key: str) -> str:
+SIGNAL_DESC = {"MA_SWING": "MA5/MA15 交叉", "BREAKOUT_MOMENTUM": "破軌突破"}
+
+
+def _call_gemini(image: bytes, side: str, api_key: str, mode: str = "BREAKOUT_MOMENTUM") -> str:
     from google import genai
     from google.genai import types
 
@@ -84,7 +88,7 @@ def _call_gemini(image: bytes, side: str, api_key: str) -> str:
         model=MODEL_NAME,
         contents=[
             types.Part.from_bytes(data=image, mime_type="image/png"),
-            PROMPT.format(side=side),
+            PROMPT.format(side=side, signal_desc=SIGNAL_DESC.get(mode, "進場")),
         ],
         config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
     )
@@ -96,7 +100,8 @@ def _fail_open() -> bool:
 
 
 async def evaluate_breakout_vision(
-    bars: Sequence[Bar], proposed_side: str, timeout: Optional[float] = None
+    bars: Sequence[Bar], proposed_side: str, timeout: Optional[float] = None,
+    mode: str = "BREAKOUT_MOMENTUM",
 ) -> Tuple[bool, str]:
     """Return (approved, reason). Only an explicit TRAP verdict vetoes.
 
@@ -109,7 +114,7 @@ async def evaluate_breakout_vision(
     try:
         image = render_chart_bytes(bars)
         text = await asyncio.wait_for(
-            asyncio.to_thread(_call_gemini, image, proposed_side, api_key),
+            asyncio.to_thread(_call_gemini, image, proposed_side, api_key, mode),
             timeout=timeout or REQUEST_TIMEOUT_SEC,
         )
         approved, reason = parse_verdict(text)

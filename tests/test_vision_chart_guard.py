@@ -36,9 +36,9 @@ def run(side="LONG"):
 
 def test_trap_vetoes_and_real_approves(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    monkeypatch.setattr(cg, "_call_gemini", lambda img, side, key: '{"verdict":"TRAP","reason":"長影線"}')
+    monkeypatch.setattr(cg, "_call_gemini", lambda img, side, key, mode=None: '{"verdict":"TRAP","reason":"長影線"}')
     assert run() == (False, "長影線")
-    monkeypatch.setattr(cg, "_call_gemini", lambda img, side, key: '{"verdict":"REAL","reason":"放量"}')
+    monkeypatch.setattr(cg, "_call_gemini", lambda img, side, key, mode=None: '{"verdict":"REAL","reason":"放量"}')
     assert run() == (True, "放量")
 
 
@@ -69,7 +69,7 @@ def breakout_frame():
 
 @pytest.mark.parametrize("approved,expected_entries", [(True, 1), (False, 0)])
 def test_runner_vision_gates_breakout(monkeypatch, approved, expected_entries):
-    async def fake(b, side):
+    async def fake(b, side, mode=None):
         return approved, "t"
 
     monkeypatch.setattr("core.vision.chart_guard.evaluate_breakout_vision", fake)
@@ -78,3 +78,34 @@ def test_runner_vision_gates_breakout(monkeypatch, approved, expected_entries):
     if expected_entries == 1 and not eng.entries:
         pytest.skip("fixture does not produce a breakout signal")
     assert len(eng.entries) == expected_entries
+
+
+def test_prompt_adapts_to_ma_cross_mode(monkeypatch):
+    seen = {}
+
+    def fake(img, side, key, mode=None):
+        seen["mode"] = mode
+        return '{"verdict":"TRAP","reason":"纏繞"}'
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr(cg, "_call_gemini", fake)
+    out = asyncio.run(cg.evaluate_breakout_vision(bars(), "LONG", mode="MA_SWING"))
+    assert out == (False, "纏繞") and seen["mode"] == "MA_SWING"
+    assert "MA5/MA15 交叉" in cg.PROMPT.format(side="LONG", signal_desc=cg.SIGNAL_DESC["MA_SWING"])
+
+
+def test_runner_vetoes_ma_swing_too(monkeypatch):
+    import core.swing.runner as r
+    from core.swing.models import EntrySignal
+
+    calls = []
+
+    async def fake(b, side, mode=None):
+        calls.append(mode)
+        return False, "t"
+
+    monkeypatch.setattr("core.vision.chart_guard.evaluate_breakout_vision", fake)
+    monkeypatch.setattr(r, "evaluate_entry", lambda bars, st: EntrySignal("LONG", "MA_SWING", "NEXT_OPEN"))
+    eng = Engine(Account())
+    asyncio.run(process_symbol(eng, "X", make_frame(), 100.0, False, False))
+    assert calls == ["MA_SWING"] and not eng.entries

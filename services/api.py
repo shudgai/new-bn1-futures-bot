@@ -434,7 +434,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "1M 波段（WILD_SWING）：三種進場——均線波段（MA5/MA15 交叉＋MA15 斜率同向＋KC 位置合理）、帶量破軌（實體、放量、影線過濾與 anti-trap）、斷頭瀑布反手。守門員：震盪、均線走平、外軌追價、冷卻、量不足皆空手。破軌進場須通過 Gemini 視覺審核（判定 TRAP 即否決；API 故障預設放行）。出場：峰值淨 ROE 達 10% 後階梯鎖利（10-15% 保 5%、15-20% 保 10%、20-25% 保 15%，其後每 5% 升一階）、真峰谷反轉、走勢不變時不平倉、跌破中軌結構平倉；持倉未滿 3 根僅鎖利與極端形態可平倉。策略端無單筆硬止損，極端風險由帳戶級熔斷處理。",
+        "strategy": "1M 波段（WILD_SWING）：三種進場——均線波段（MA5/MA15 交叉＋MA15 斜率同向＋KC 位置合理）、帶量破軌（實體、放量、影線過濾與 anti-trap）、斷頭瀑布反手。守門員：震盪、均線走平、外軌追價、冷卻、量不足皆空手。所有進場（均線波段與破軌）須通過 Gemini 視覺審核（判定 TRAP 即否決；API 故障預設放行）。出場：峰值淨 ROE 達 10% 後階梯鎖利（10-15% 保 5%、15-20% 保 10%、20-25% 保 15%，其後每 5% 升一階）、真峰谷反轉、走勢不變時不平倉、跌破中軌結構平倉；持倉未滿 3 根僅鎖利與極端形態可平倉。策略端無單筆硬止損，極端風險由帳戶級熔斷處理。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

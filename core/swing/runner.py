@@ -191,16 +191,14 @@ async def process_symbol(engine, symbol, frame, quote, daily_halt, exit_only):
         if log_bar:
             logger.info(bar_status_line(symbol, bars[-1], signal, "N/A"))
         return [], []
-    vision = "N/A"
-    if signal.mode == "BREAKOUT_MOMENTUM":
-        from core.vision.chart_guard import evaluate_breakout_vision
-        approved, reason = await evaluate_breakout_vision(bars, signal.side)
-        vision = ("APPROVED" if approved else "VETO") + f"({reason})"
-        if not approved:
-            logger.info("VISION_VETO %s %s: %s", symbol, signal.side, reason)
-            if log_bar:
-                logger.info(bar_status_line(symbol, bars[-1], signal, vision))
-            return [], []
+    from core.vision.chart_guard import evaluate_breakout_vision
+    approved, reason = await evaluate_breakout_vision(bars, signal.side, mode=signal.mode)
+    vision = ("APPROVED" if approved else "VETO") + f"({reason})"
+    if not approved:
+        logger.info("VISION_VETO %s %s (%s): %s", symbol, signal.side, signal.mode, reason)
+        if log_bar:
+            logger.info(bar_status_line(symbol, bars[-1], signal, vision))
+        return [], []
     if log_bar:
         logger.info(bar_status_line(symbol, bars[-1], signal, vision))
     await engine.execute_dual_tf_entry(
