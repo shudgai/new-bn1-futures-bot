@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -34,6 +34,20 @@ def frame_to_bars(closed: pd.DataFrame, limit: int = HISTORY_BARS) -> List[Bar]:
             return []
         bars.append(Bar(*vals, is_closed=True))
     return bars
+
+
+def live_bar_from(frame: pd.DataFrame, quote: float) -> Optional[Bar]:
+    """The still-forming candle with the latest quote folded in (None if unusable)."""
+    try:
+        if frame is None or frame.empty or bool(frame.iloc[-1].get("is_closed", True)):
+            return None
+        bars = frame_to_bars(frame.tail(1), limit=1)
+        if not bars or not math.isfinite(quote) or quote <= 0:
+            return None
+        b = bars[0]
+        return replace(b, close=quote, high=max(b.high, quote), low=min(b.low, quote), is_closed=False)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def bars_held(position: Dict[str, Any], closed: pd.DataFrame) -> int:
@@ -122,7 +136,9 @@ async def process_symbol(engine, symbol, frame, quote, daily_halt, exit_only):
         pos = Position(side, held, roes[0], roes[1])
 
         flip = evaluate_dump_reversal(side, bars) if held >= 1 else None
-        decision = None if flip else evaluate_exit(pos, bars[-1], quote)
+        decision = None if flip else evaluate_exit(
+            pos, bars[-1], quote, live_bar=live_bar_from(frame, quote), prior_bars=bars,
+        )
         if flip is None and decision is None:
             return [], []
 

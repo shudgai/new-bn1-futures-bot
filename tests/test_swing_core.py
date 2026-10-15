@@ -31,7 +31,7 @@ def test_ratchet_locks_below_floor_with_limit_offset():
 
 
 def test_no_exit_on_entry_bar():
-    assert evaluate_exit(Position("LONG", 0, 12.0, 0.0), bar(c=80, ma15=100), 80) is None
+    assert evaluate_exit(Position("LONG", 0, 3.0, -4.0), bar(c=80, ma15=100), 80) is None
 
 
 def test_structure_exit_only_before_ratchet_and_closed_bar():

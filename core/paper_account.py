@@ -1,6 +1,5 @@
 from core.services.exits.entry_atr_protection import initialize_atr_protection, valid_entry_atr, enforce_atr_protection
 from core.services.exits.staged_risk_service import staged_enabled
-from core.services.exits.hard_stop_service import enforce_hard_stop
 import json
 import math
 import os
@@ -1413,8 +1412,6 @@ class PaperAccount:
             meta = self.position_meta.get(symbol,{})
             entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
             if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
-                if await enforce_hard_stop(self, symbol, curr_p):
-                    continue
                 if entry_m == "WILD_SWING":
                     unrealized = (
                         (curr_p - float(pos["entry_price"]))
@@ -1654,8 +1651,6 @@ class PaperAccount:
                     await self._execute_market_close(symbol, pos, curr_p, "極值浮盈跌回保本線")
                     continue
 
-            if await enforce_hard_stop(self, symbol, curr_p):
-                continue
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue

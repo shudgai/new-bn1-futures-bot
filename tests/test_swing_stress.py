@@ -46,7 +46,12 @@ def test_exit_never_on_entry_bar_and_ratchet_floor():
         peak = rng.uniform(-5, 60)
         cur = rng.uniform(-10, peak)
         side = rng.choice(["LONG", "SHORT"])
-        assert evaluate_exit(Position(side, 0, peak, cur), bar, bar.close) is None
+        d0 = evaluate_exit(Position(side, 0, peak, cur), bar, bar.close)
+        f0 = floor_roe(peak)
+        if f0 is not None and cur < f0:
+            assert d0 is not None and d0.reason == "RATCHET_PROFIT_LOCK"
+        else:
+            assert d0 is None  # bar 0: only the ratchet may exit (no live bar given)
         d = evaluate_exit(Position(side, 3, peak, cur), bar, bar.close)
         fl = floor_roe(peak)
         if fl is not None and cur < fl:

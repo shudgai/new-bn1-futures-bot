@@ -1,14 +1,29 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from .models import LONG, SHORT, Bar, ExitDecision, Position
+from .pivot import true_reversal
 from .ratchet import floor_roe, limit_price
 
 
-def evaluate_exit(position: Position, bar: Bar, last_price: float) -> Optional[ExitDecision]:
-    """Regular exits only. No fixed hard stop (account-level circuit breaker owns tail risk)."""
+def evaluate_exit(
+    position: Position, bar: Bar, last_price: float,
+    live_bar: Optional[Bar] = None, prior_bars: Sequence[Bar] = (),
+) -> Optional[ExitDecision]:
+    """Regular exits only. No per-position hard stop (the account circuit breaker owns tail risk).
+
+    On the entry bar (bars_held == 0) only two exceptions may exit: an activated
+    ratchet (net ROE reached the 10% lock) or a true peak/trough reversal on the live bar.
+    """
     if position.bars_held < 1:
+        floor = floor_roe(position.peak_roe)
+        if floor is not None and position.current_roe < floor:
+            return ExitDecision("RATCHET_PROFIT_LOCK", "LIMIT", limit_price(position.side, last_price))
+        if live_bar is not None:
+            reason = true_reversal(position.side, live_bar, prior_bars)
+            if reason:
+                return ExitDecision(reason, "MARKET")
         return None
 
     floor = floor_roe(position.peak_roe)

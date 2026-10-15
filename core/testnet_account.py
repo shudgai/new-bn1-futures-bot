@@ -1,6 +1,5 @@
 from core.services.exits.entry_atr_protection import initialize_atr_protection, valid_entry_atr, enforce_atr_protection
 from core.services.exits.staged_risk_service import staged_enabled
-from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS
 import asyncio
 import copy
@@ -1128,9 +1127,6 @@ class BinanceTestnetAccount:
                     or ticker_prices.get(f"{symbol}:USDT")
                     or ticker_prices.get(symbol.replace('/USDT', ''))
                 )
-                if curr_p is not None:
-                    from core.services.exits.hard_stop_service import enforce_hard_stop
-                    await enforce_hard_stop(self, symbol, float(curr_p))
                 continue
             if entry_mode == 'CHANNEL_SWING':
                 continue  # refresh() already values positions; no ticker exits
@@ -1234,8 +1230,6 @@ class BinanceTestnetAccount:
             ).upper()
             is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
             is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
-            if await enforce_hard_stop(self, symbol, curr_p):
-                continue
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue

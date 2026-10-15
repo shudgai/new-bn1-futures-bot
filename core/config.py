@@ -1217,6 +1217,8 @@ USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
 # 既有持倉的止損/止利仍正常運作，不受影響。設為 0 或負數可停用，供測試使用。
 # 隔天（台北時區）自動重置。
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "5.0"))
+# Account-level hard stop: flatten everything when total equity <= floor (0 = disabled).
+ACCOUNT_EQUITY_FLOOR_USDT = float(os.getenv("ACCOUNT_EQUITY_FLOOR_USDT", "0"))
 
 # --- Email 警報 ---
 # 用 SMTP 寄送重大事件（開倉/平倉失敗、每日熔斷觸發等 DANGER 等級事件）。

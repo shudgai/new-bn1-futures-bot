@@ -48,7 +48,6 @@ from core.services.surveillance_service import (
 from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
 from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
-from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 import asyncio
 import collections
@@ -1255,9 +1254,8 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Abnormal live bodies and hard stops; only -1.5% hard stop permitted intra-bar."""
-        from core.services.exits.hard_stop_service import enforce_hard_stop
-        return await enforce_hard_stop(self.account, symbol, price)
+        """No per-position hard stop; tail risk is owned by the account circuit breaker."""
+        return False
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Ticker shares the same lock-free decision path as aggTrade."""
@@ -3071,6 +3069,14 @@ class TradingEngine:
                 # 每日虧損熔斷：觸發時只跳過本段（不開新倉），上面的持倉管理
                 # （止損/止利/移動止利/分批止盈）完全不受影響。
                 daily_halt, _daily_loss_pct = self.account.daily_loss_limit_hit()
+                from core.config import MAX_DAILY_LOSS_PCT as _MDL, ACCOUNT_EQUITY_FLOOR_USDT as _FLOOR
+                from core.swing.account_guard import enforce_account_breaker, breaker_active
+                from core.paper_account import get_taipei_now_str as _today_str
+                _today = _today_str("%Y-%m-%d")
+                if not breaker_active(self.account, _today):
+                    await enforce_account_breaker(self.account, dict(self.tickers), _MDL, _FLOOR, _today)
+                if breaker_active(self.account, _today):
+                    daily_halt = True
                 # Closed strategy has no timed market/exit cooldown.
                 available_balance = self.account.get_available_balance()
                 if TEST_BUDGET_CAP_USDT > 0:
