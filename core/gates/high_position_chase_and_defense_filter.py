@@ -32,8 +32,8 @@ class HighPositionChaseAndDefenseFilter:
     def __init__(
         self,
         cooldown_bars: int = 5,          # 平多後強制冷凍根數 (預設 5 根)
-        max_bias_atr: float = 1.2,       # 距 KC 中軌乖離上限 (超過 1.2 ATR 禁追)
-        max_bias_pct: float = 0.025,     # 距 KC 中軌百分比上限 (超過 2.5% 禁追)
+        max_bias_atr: float = 3.0,       # 距 KC 中軌乖離上限 (超過 3.0 ATR 極限延伸才禁追)
+        max_bias_pct: float = 0.05,      # 距 KC 中軌百分比上限 (超過 5.0% 禁追)
         wick_exhaustion_ratio: float = 0.50, # 上影線長度佔比上限 (超過 50% 判定滯漲出貨)
     ):
         self.cooldown_bars = cooldown_bars
@@ -119,15 +119,15 @@ class HighPositionChaseAndDefenseFilter:
                 return False, reason, details
 
         # ── 3. 回踩健康度檢驗（禁止浮空進場）──
-        # 鐵律：新的多頭訊號必須滿足「近 3 根內至少回踩測試過極短期均線或 KC 中軌，且獲得支撐反彈」，不可在空中追單！
-        # 檢查近 3 根 K 棒是否有回踩摸到 EMA3 / MA5 / KC_Middle
+        # 鐵律：普通通道內進場必須回踩均線或中軌；但若處於破軌突破或外軌強勢延續（Breakout Flow），依授權手冊執行極速進場與延續開倉！
+        is_breakout_flow = (c > kc_upper and c > o and (c - o) >= 0.25 * atr) or (p > kc_upper and p > ma5)
         recent_3 = df.tail(3)
         min_low_recent = float(recent_3['low'].min()) if 'low' in recent_3.columns else l
         has_tested_support = (min_low_recent <= ema3) or (min_low_recent <= ma5) or (kc_middle > 0 and min_low_recent <= kc_middle)
         details['min_low_recent_3'] = min_low_recent
         details['has_tested_support'] = has_tested_support
 
-        if not has_tested_support and (p > kc_upper or p > ma5 + 0.3 * atr):
+        if not is_breakout_flow and not has_tested_support and (p > kc_upper or p > ma5 + 0.3 * atr):
             reason = (f"VETO: FLOATING_CHASE_WITHOUT_PULLBACK "
                       f"(Recent low {min_low_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air)")
             return False, reason, details
@@ -273,15 +273,15 @@ class HighPositionChaseAndDefenseFilter:
                 return False, reason, details
 
         # ── 4. 回抽測試受阻收陰檢驗（禁止浮空追空）──
-        # 鐵律：合法的順勢空單進場，必須等待價格「回抽測試 KC 中軌或 3/5 EMA 均線受阻收陰」後，才可進場！
-        # 檢查近 3 根 K 棒最高價是否曾回抽摸到 EMA3 / MA5 / KC_Middle
+        # 鐵律：普通通道內進場必須等待回抽受阻；但若處於破軌突破或外軌強勢延續（Breakout Flow），依授權手冊執行極速進場與延續開空！
+        is_breakout_flow = (c < kc_lower and c < o and (o - c) >= 0.25 * atr) or (p < kc_lower and p < ma5)
         recent_3 = df.tail(3)
         max_high_recent = float(recent_3['high'].max()) if 'high' in recent_3.columns else h
         has_tested_resistance = (max_high_recent >= ema3) or (max_high_recent >= ma5) or (kc_middle > 0 and max_high_recent >= kc_middle)
         details['max_high_recent_3'] = max_high_recent
         details['has_tested_resistance'] = has_tested_resistance
 
-        if not has_tested_resistance and (p < kc_lower or p < ma5 - 0.3 * atr):
+        if not is_breakout_flow and not has_tested_resistance and (p < kc_lower or p < ma5 - 0.3 * atr):
             reason = (f"VETO: FLOATING_SHORT_CHASE_WITHOUT_PULLBACK "
                       f"(Recent high {max_high_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air without resistance test)")
             return False, reason, details

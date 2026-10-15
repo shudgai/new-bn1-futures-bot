@@ -377,14 +377,11 @@ class MemeSharedProtectionGate:
                     return False, f"VETO_LONG_BULLISH_EXHAUSTION: 連續大幅推升後多頭動能耗盡衰竭 (LastBody: {recent_bodies[-1]:.4f} < 0.4*AvgPrior)，已在漲勢末端，嚴禁追多"
 
             # 特徵 D：高檔 MA5 斜率走平衰竭 (MA5 Deceleration at Highs)
+            # 特徵 D：高檔 MA5 斜率向下拐頭衰竭 (MA5 Reversal at Highs)
             if price > kc_middle and prev_ma5 > 0:
                 ma5_slope = (ma5 - prev_ma5) / prev_ma5
-                if ma5_slope <= 0.0001:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 高檔 MA5 斜率走平衰減 (Slope: {ma5_slope:.6f} <= 0.0001)，已在漲勢末端，嚴禁追多"
-
-            # 特徵 E：通道上軌停止擴張走平 (KC Upper Rail Stalling at Highs)
-            if price >= kc_upper and kc_upper <= prev_kc_upper + 1e-6:
-                return False, f"VETO_LONG_BULLISH_EXHAUSTION: 通道上軌停止向上擴張走平 (Upper Rail Stalled)，已在漲勢末端，嚴禁追多"
+                if ma5_slope <= 0.0:
+                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 高檔 MA5 斜率向下拐頭 (Slope: {ma5_slope:.6f} <= 0)，已在漲勢末端，嚴禁追多"
 
             return True, "PASS"
 
@@ -426,15 +423,11 @@ class MemeSharedProtectionGate:
                 if recent_bodies[-1] < 0.4 * avg_prior_body or recent_bodies[-1] < 0.2 * atr:
                     return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 連續大幅下殺後空頭動能耗盡衰竭 (LastBody: {recent_bodies[-1]:.4f} < 0.4*AvgPrior)，已在跌勢末端，嚴禁追空"
 
-            # 特徵 D：低檔 MA5 斜率走平翹頭 (MA5 Deceleration at Lows)
+            # 特徵 D：低檔 MA5 斜率向上拐頭 (MA5 Reversal at Lows)
             if price < kc_middle and prev_ma5 > 0:
                 ma5_slope = (ma5 - prev_ma5) / prev_ma5
-                if ma5_slope >= -0.0001:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 低檔 MA5 斜率走平回翹 (Slope: {ma5_slope:.6f} >= -0.0001)，已在跌勢末端，嚴禁追空"
-
-            # 特徵 E：通道下軌停止擴張走平 (KC Lower Rail Stalling at Lows)
-            if price <= kc_lower and kc_lower >= prev_kc_lower - 1e-6:
-                return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 通道下軌停止向下擴張走平 (Lower Rail Stalled)，已在跌勢末端，嚴禁追空"
+                if ma5_slope >= 0.0:
+                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 低檔 MA5 斜率向上拐頭 (Slope: {ma5_slope:.6f} >= 0)，已在跌勢末端，嚴禁追空"
 
             return True, "PASS"
 
