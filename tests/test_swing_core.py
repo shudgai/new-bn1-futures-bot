@@ -122,8 +122,10 @@ def breakout_bars(side="LONG", vol=250, body=6.0):
 def test_breakout_long_needs_body_and_volume():
     sig = evaluate_entry(breakout_bars())
     assert sig and sig.mode == "BREAKOUT_MOMENTUM" and sig.side == "LONG" and sig.entry_at == "NEXT_OPEN"
-    assert evaluate_entry(breakout_bars(vol=190)) is None      # < 2.0x average volume
-    assert evaluate_entry(breakout_bars(body=1.4)) is None     # body < 1.5 ATR
+    assert evaluate_entry(breakout_bars(vol=140)) is None      # < 1.5x average volume
+    assert evaluate_entry(breakout_bars(body=1.1)) is None     # body < 1.2 ATR
+    assert evaluate_entry(breakout_bars(vol=150)) is not None  # exactly 1.5x passes
+    assert evaluate_entry(breakout_bars(body=1.2)) is not None  # exactly 1.2 ATR passes
 
 
 def test_breakout_short():
