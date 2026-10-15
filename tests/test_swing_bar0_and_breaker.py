@@ -38,9 +38,9 @@ def test_structure_exit_resumes_at_bar_3_on_close_only():
 
 @pytest.mark.parametrize("held", HELD)
 def test_window_allows_ratchet_lock_with_profit(held):
-    d = evaluate_exit(Position("LONG", held, 12.0, 4.0), bar(), 100.0)
+    d = evaluate_exit(Position("LONG", held, 12.0, 6.0), bar(), 100.0)
     assert d.reason == "RATCHET_PROFIT_LOCK" and d.order_type == "LIMIT"
-    assert evaluate_exit(Position("LONG", held, 12.0, 6.0), bar(), 100.0) is None
+    assert evaluate_exit(Position("LONG", held, 12.0, 8.0), bar(), 100.0) is None
     assert evaluate_exit(Position("SHORT", held, 9.9, 0.0), bar(), 100.0) is None  # lock not active
 
 
@@ -121,3 +121,33 @@ def test_breaker_does_not_trip_inside_limits():
     acc = FakeAccount(1000.0, 1000.0, {"龙虾/USDT": {"side": "LONG", "entry_price": 100, "qty": 10}})
     assert not asyncio.run(enforce_account_breaker(acc, {"龙虾/USDT": 96.0}, 5.0, 0.0, "d"))
     assert acc.positions and not acc.closed
+
+
+@pytest.mark.parametrize("reason,ok", [
+    ("ACCOUNT_HARD_STOP_HARD_STOP_1_2_ATR", False), ("EXIT_INITIAL_ATR_HARD_STOP", False),
+    ("觸發止損 (Stop-Loss)", False), ("PRICE_LOSS", False), ("MARGIN_LOSS", False),
+    ("Swing RATCHET_PROFIT_LOCK", True), ("ACCOUNT_CIRCUIT_BREAKER_HARD_STOP_X", True),
+    ("全市場熔斷 BTC", True), ("Watchdog Critical Timeout", True), ("手動平倉", True),
+])
+def test_close_gate_whitelist(reason, ok):
+    from core.swing.close_gate import wild_swing_close_allowed
+    assert wild_swing_close_allowed(reason) is ok
+
+
+@pytest.mark.parametrize("module,cls", [("core.paper_account", "PaperAccount"), ("core.testnet_account", "BinanceTestnetAccount")])
+def test_legacy_hard_stop_cannot_close_wild_swing(module, cls):
+    import importlib, inspect
+    src = inspect.getsource(getattr(importlib.import_module(module), cls).close_position)
+    assert "wild_swing_close_allowed" in src
+
+
+def test_paper_account_rejects_legacy_hard_stop_on_wild_swing():
+    from types import SimpleNamespace
+    from core.paper_account import PaperAccount
+    acc = PaperAccount.__new__(PaperAccount)
+    acc.positions = {"龙虾/USDT": {"side": "LONG", "entry_mode": "WILD_SWING", "entry_price": 1.0, "qty": 1.0}}
+    acc.position_meta, acc.closing_lock, acc.logs = {}, set(), []
+    acc.log = lambda m, l="INFO": acc.logs.append(m)
+    for reason in ("ACCOUNT_HARD_STOP_HARD_STOP_1_2_ATR", "PRICE_LOSS"):
+        assert asyncio.run(acc.close_position("龙虾/USDT", 0.5, reason, is_manual=True)) is False
+    assert "龙虾/USDT" in acc.positions

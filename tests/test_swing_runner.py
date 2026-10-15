@@ -100,6 +100,7 @@ def test_firewall_revalidates_swing_breakout_and_rejects_stale():
 
     df = make_frame()
     df.loc[df.index[-1], ["open", "close", "high", "low"]] = [108.0, 113.0, 113.2, 107.8]
+    df.loc[df.index[-2], ["open", "close", "high", "low"]] = [110.5, 111.0, 111.2, 110.4]  # prior bar already outside
     df.loc[df.index[-1], "volume"] = 250.0
     df.loc[df.index[-1], "atr"] = 3.0
     df.loc[df.index[-1], "ma5"] = 101.0

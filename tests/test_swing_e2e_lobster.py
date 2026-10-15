@@ -120,7 +120,10 @@ def test_ma_cross_poor_position_rejected(eng):
 def test_breakout_opens_real_position(eng, direction):
     o, c = (100.0, 106.0) if direction == "LONG" else (100.0, 94.0)
     ma5 = 100.5 if direction == "LONG" else 99.5
-    df = build({N - 1: {"open": o, "close": c, "high": max(o, c) + 0.2, "low": min(o, c) - 0.2,
+    prev_c = 105.0 if direction == "LONG" else 95.0  # 2nd bar held outside the band (anti-trap)
+    df = build({N - 2: {"close": prev_c, "open": prev_c - (0.3 if direction == "LONG" else -0.3),
+                        "high": prev_c + 0.4, "low": prev_c - 0.4},
+                N - 1: {"open": o, "close": c, "high": max(o, c) + 0.2, "low": min(o, c) - 0.2,
                         "volume": 300.0, "ma5": ma5}})
     run(eng, df, c)
     assert side(eng) == direction
@@ -146,7 +149,8 @@ def test_breakout_small_body_rejected(eng):
 
 # ---------------- Open then hold: helpers ----------------
 def open_long_by_breakout(eng):
-    df = build({N - 1: {"open": 100.0, "close": 106.0, "high": 106.2, "low": 99.8, "volume": 300.0, "ma5": 100.5}})
+    df = build({N - 2: {"open": 104.7, "close": 105.0, "high": 105.4, "low": 104.6},  # 2nd bar outside (anti-trap)
+                N - 1: {"open": 100.0, "close": 106.0, "high": 106.2, "low": 99.8, "volume": 300.0, "ma5": 100.5}})
     run(eng, df, 106.0)
     assert side(eng) == "LONG"
     pos = eng.account.positions[SYM]
@@ -203,12 +207,12 @@ def roe_quote(pos, roe_pct):
 
 
 @pytest.mark.parametrize("peak_roe,fall_roe,expect_exit", [
-    (12.0, 6.0, False),   # floor 5%: 6% still above floor
-    (12.0, 4.0, True),    # floor 5%: below -> lock
-    (17.0, 9.0, True),    # floor 10%
-    (17.0, 11.0, False),
-    (23.0, 14.0, True),   # floor 15%
-    (23.0, 16.5, False),
+    (12.0, 8.0, False),   # floor 7%
+    (12.0, 6.0, True),
+    (17.0, 11.0, True),   # floor 12%
+    (17.0, 13.0, False),
+    (23.0, 17.0, True),   # floor peak-5 = 18%
+    (23.0, 19.0, False),
 ])
 def test_ratchet_lock_end_to_end(eng, peak_roe, fall_roe, expect_exit):
     pos, df = open_long_by_breakout(eng)

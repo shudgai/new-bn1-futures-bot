@@ -2968,6 +2968,15 @@ class BinanceTestnetAccount:
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"
+        if is_wild_swing:
+            from core.swing.close_gate import wild_swing_close_allowed
+
+            if not wild_swing_close_allowed(close_reason):
+                self.log(
+                    f"⛔ [WILD_SWING 平倉閘門] {symbol} 拒絕非授權平倉原因：{close_reason}",
+                    "WARNING",
+                )
+                return False
         is_hard_stop = (
             "HARD_STOP" in str(close_reason).upper()
             or "PRICE_LOSS" in str(close_reason).upper()

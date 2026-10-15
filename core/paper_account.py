@@ -1148,6 +1148,15 @@ class PaperAccount:
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"
+        if is_wild_swing:
+            from core.swing.close_gate import wild_swing_close_allowed
+
+            if not wild_swing_close_allowed(close_reason):
+                self.log(
+                    f"⛔ [WILD_SWING 平倉閘門] {symbol} 拒絕非授權平倉原因：{close_reason}",
+                    "WARNING",
+                )
+                return False
         close_reason_upper = str(close_reason).upper()
         is_hard_stop = any(
             token in close_reason_upper

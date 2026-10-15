@@ -17,6 +17,8 @@ MIN_ROOM_ATR = 1.5   # room to the target band before a MA cross may enter
 BREAKOUT_BODY_ATR = 1.5
 BREAKOUT_VOL_MULT = 2.0
 BREAKOUT_VOL_LOOKBACK = 10
+BREAKOUT_MAX_WICK_BODY = 0.25   # rejection wick vs body
+TRAP_FLAT_BARS = 5
 
 
 def midline_crosses(bars: Sequence[Bar], window: int = WHIPSAW_WINDOW) -> int:
@@ -41,6 +43,19 @@ def in_cooldown(side: str, state: Optional[SwingState]) -> bool:
     return gk.in_cooldown(state)
 
 
+def _first_break_after_flat(bars: Sequence[Bar], side: str) -> bool:
+    """True when the 5 bars before the signal bar were all five-line-flat and the previous bar
+    was not already outside the band on the same side (i.e. this is the first single-bar break)."""
+    prior = bars[:-1]
+    if len(prior) < TRAP_FLAT_BARS + 1:
+        return False
+    if not all(gk.is_lines_flat(prior[:k]) for k in range(len(prior) - TRAP_FLAT_BARS + 1, len(prior) + 1)):
+        return False
+    prev = prior[-1]
+    outside = prev.close > prev.kc_upper if side == LONG else prev.close < prev.kc_lower
+    return not outside
+
+
 def _breakout(bars: Sequence[Bar], state: Optional[SwingState] = None) -> Optional[EntrySignal]:
     last = bars[-1]
     prior = bars[-1 - BREAKOUT_VOL_LOOKBACK:-1]
@@ -54,7 +69,15 @@ def _breakout(bars: Sequence[Bar], state: Optional[SwingState] = None) -> Option
         side = LONG
     elif last.close < last.open and last.close < last.kc_lower and (last.open - last.close) >= BREAKOUT_BODY_ATR * last.atr:
         side = SHORT
-    if side is None or not YaoBiEntryGatekeeper.can_enter(bars, side, state, breakout=True)[0]:
+    if side is None:
+        return None
+    body = abs(last.close - last.open)
+    wick = (last.high - last.close) if side == LONG else (last.close - last.low)
+    if wick > BREAKOUT_MAX_WICK_BODY * body:
+        return None  # needle / rejection wick: false breakout
+    if _first_break_after_flat(bars, side):
+        return None  # anti-trap: wait for a 2nd bar to hold outside the band
+    if not YaoBiEntryGatekeeper.can_enter(bars, side, state, breakout=True)[0]:
         return None
     return EntrySignal(side, "BREAKOUT_MOMENTUM", "NEXT_OPEN")
 
