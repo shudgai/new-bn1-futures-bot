@@ -11,8 +11,9 @@ def bar(o=100, c=100, h=None, l=None, v=100, ma5=100, ma15=100, up=110, lo=90, a
 
 
 @pytest.mark.parametrize("peak,expected", [
-    (9.99, None), (10.0, 7.0), (12.0, 7.0), (14.99, 7.0), (15.0, 12.0), (17.0, 12.0),
-    (19.99, 12.0), (20.0, 15.0), (23.0, 18.0), (25.0, 20.0), (30.0, 25.0), (34.99, 29.99),
+    (4.99, None), (5.0, 2.0), (6.99, 2.0), (7.0, 3.0), (8.99, 3.0), (9.0, 4.5), (9.5, 4.7), (9.9, 4.86),
+    (10.0, 5.0), (12.0, 5.0), (14.99, 5.0), (15.0, 10.0), (19.99, 10.0), (20.0, 15.0), (24.99, 15.0),
+    (25.0, 20.0), (30.0, 25.0), (34.99, 25.0),
 ])
 def test_floor_roe_ladder(peak, expected):
     assert floor_roe(peak) == pytest.approx(expected)
@@ -20,14 +21,14 @@ def test_floor_roe_ladder(peak, expected):
 
 def test_ratchet_locks_below_floor_with_limit_offset():
     b = bar(c=100)
-    d = evaluate_exit(Position("LONG", 3, 12.0, 6.9), b, 100.0)
+    d = evaluate_exit(Position("LONG", 3, 12.0, 4.9), b, 100.0)
     assert d.reason == "RATCHET_PROFIT_LOCK" and d.order_type == "LIMIT"
     assert d.limit_price == pytest.approx(99.75)
-    assert evaluate_exit(Position("LONG", 3, 12.0, 7.0), b, 100.0) is not None  # <= floor locks
-    d = evaluate_exit(Position("SHORT", 3, 23.0, 18.0), b, 100.0)
+    assert evaluate_exit(Position("LONG", 3, 12.0, 5.0), b, 100.0) is not None  # <= floor locks
+    d = evaluate_exit(Position("SHORT", 3, 23.0, 14.0), b, 100.0)
     assert d.limit_price == pytest.approx(100.25)
-    assert evaluate_exit(Position("LONG", 3, 17.0, 11.9), b, 100.0) is not None
-    assert evaluate_exit(Position("LONG", 3, 17.0, 12.1), b, 100.0) is None
+    assert evaluate_exit(Position("LONG", 3, 17.0, 9.9), b, 100.0) is not None
+    assert evaluate_exit(Position("LONG", 3, 17.0, 10.1), b, 100.0) is None
 
 
 def test_no_exit_on_entry_bar():
@@ -42,7 +43,7 @@ def test_structure_exit_only_before_ratchet_and_closed_bar():
     for held in (0, 1, 2):
         assert evaluate_exit(Position("LONG", held, 3.0, 1.0), bar(c=99, ma15=100), 99) is None
     # ratchet active: midline break alone does not exit
-    assert evaluate_exit(Position("LONG", 5, 12.0, 8.0), bar(c=99, ma15=100), 99) is None
+    assert evaluate_exit(Position("LONG", 5, 12.0, 6.0), bar(c=99, ma15=100), 99) is None
 
 
 def trend_bars(side="LONG", n=25):

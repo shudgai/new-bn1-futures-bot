@@ -9,7 +9,7 @@ def bar(o=100, c=100, h=None, l=None, v=100, ma5=100, ma15=100, up=110, lo=90, a
 
 
 @pytest.mark.parametrize("peak,expected", [
-    (9.9, None), (10.0, 7.0), (14.8, 7.0), (15.0, 12.0), (19.9, 12.0), (20.0, 15.0),
+    (4.9, None), (5.0, 2.0), (7.0, 3.0), (9.0, 4.5), (9.9, 4.86), (10.0, 5.0), (14.8, 5.0), (15.0, 10.0), (19.9, 10.0), (20.0, 15.0),
     (25.0, 20.0), (30.0, 25.0),
 ])
 def test_ladder_boundaries(peak, expected):
@@ -18,9 +18,9 @@ def test_ladder_boundaries(peak, expected):
 
 def test_ratchet_triggers_at_or_below_floor_only_when_armed():
     g = ExitGatekeeper.evaluate
-    assert g(Position("LONG", 5, 12.0, 7.0), bar(), 100).reason == "RATCHET_PROFIT_LOCK"
-    assert g(Position("LONG", 5, 12.0, 7.1), bar(), 100) is None
-    assert g(Position("LONG", 5, 9.9, 0.0), bar(), 100) is None  # not armed
+    assert g(Position("LONG", 5, 12.0, 5.0), bar(), 100).reason == "RATCHET_PROFIT_LOCK"
+    assert g(Position("LONG", 5, 12.0, 5.1), bar(), 100) is None
+    assert g(Position("LONG", 5, 4.9, 0.0), bar(), 100) is None  # not armed
 
 
 @pytest.mark.parametrize("held", [0, 1, 2])

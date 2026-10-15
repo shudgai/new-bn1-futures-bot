@@ -41,7 +41,7 @@ def test_close_under_midline_exits_only_when_trend_not_intact():
 
 def test_ratchet_lock_still_exits_in_intact_trend():
     b = bars_up = uptrend()[-1]
-    d = evaluate_exit(Position("LONG", 5, 12.0, 6.0), b, b.close, None, uptrend()[:-1])
+    d = evaluate_exit(Position("LONG", 5, 12.0, 4.0), b, b.close, None, uptrend()[:-1])
     assert d.reason == "RATCHET_PROFIT_LOCK"
 
 

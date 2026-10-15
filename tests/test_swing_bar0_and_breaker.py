@@ -38,10 +38,10 @@ def test_structure_exit_resumes_at_bar_3_on_close_only():
 
 @pytest.mark.parametrize("held", HELD)
 def test_window_allows_ratchet_lock_with_profit(held):
-    d = evaluate_exit(Position("LONG", held, 12.0, 6.0), bar(), 100.0)
+    d = evaluate_exit(Position("LONG", held, 12.0, 4.0), bar(), 100.0)
     assert d.reason == "RATCHET_PROFIT_LOCK" and d.order_type == "LIMIT"
-    assert evaluate_exit(Position("LONG", held, 12.0, 8.0), bar(), 100.0) is None
-    assert evaluate_exit(Position("SHORT", held, 9.9, 0.0), bar(), 100.0) is None  # lock not active
+    assert evaluate_exit(Position("LONG", held, 12.0, 6.0), bar(), 100.0) is None
+    assert evaluate_exit(Position("SHORT", held, 4.9, 0.0), bar(), 100.0) is None  # lock not active
 
 
 @pytest.mark.parametrize("held", HELD)

@@ -207,12 +207,14 @@ def roe_quote(pos, roe_pct):
 
 
 @pytest.mark.parametrize("peak_roe,fall_roe,expect_exit", [
-    (12.0, 8.0, False),   # floor 7%
-    (12.0, 6.0, True),
-    (17.0, 11.0, True),   # floor 12%
-    (17.0, 13.0, False),
-    (23.0, 17.0, True),   # floor peak-5 = 18%
-    (23.0, 19.0, False),
+    (12.0, 6.0, False),   # floor 5%
+    (12.0, 4.0, True),
+    (17.0, 9.0, True),    # floor 10%
+    (17.0, 11.0, False),
+    (23.0, 14.0, True),   # floor 15%
+    (23.0, 16.0, False),
+    (6.0, 1.0, True),     # micro band: peak 6% -> floor 2%
+    (6.0, 3.0, False),
 ])
 def test_ratchet_lock_end_to_end(eng, peak_roe, fall_roe, expect_exit):
     pos, df = open_long_by_breakout(eng)
@@ -230,9 +232,9 @@ def test_below_10_roe_no_ratchet_and_no_exit_above_midline(eng):
     pos, df = open_long_by_breakout(eng)
     hold = bar(106.0, 106.5, ma5=106.0, ma15=100.0, kc_upper=110.0, kc_lower=90.0)
     full = held_frame(df, [hold, hold])
-    run(eng, full, roe_quote(pos, 8.0))
+    run(eng, full, roe_quote(pos, 4.0))
     run(eng, full, roe_quote(pos, -3.0))
-    assert side(eng) == "LONG"  # no fixed hard stop, no lock before 10%
+    assert side(eng) == "LONG"  # no fixed hard stop, no lock before 5%
 
 
 def test_structure_exit_blocked_inside_breathing_window(eng):
