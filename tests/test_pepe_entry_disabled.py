@@ -183,8 +183,8 @@ class TestPepeExistingPositionStillManaged(unittest.IsolatedAsyncioTestCase):
             "ENTRY_DISABLED_SYMBOLS", src,
             "symbol_runner must NOT filter by ENTRY_DISABLED_SYMBOLS"
         )
-        self.assertIn("enforce_realtime_profit_exit", src,
-                      "symbol_runner must call enforce_realtime_profit_exit")
+        self.assertIn("exit_decision = strategy.evaluate_exit(", src,
+                      "Wild Swing positions must remain managed by their exit strategy")
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,64 @@ async def validate_account_entry(account, symbol, side, context):
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
-    
+
+    def finite_bar_id(value):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    if (
+        str(context.get("entry_mode") or "").upper() == "WILD_SWING"
+        and context.get("source") == "WILD_SWING_1M"
+    ):
+        if side not in ("LONG", "SHORT"):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_INVALID_SIDE")
+        if (
+            symbol in getattr(account, "positions", {})
+            or symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_ACCOUNT_STATE_BLOCK")
+        provider = getattr(account, "entry_frame_provider", None)
+        if not callable(provider):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MISSING_FRESH_MARKET_DATA")
+        fresh_frame = await provider(symbol)
+        if (
+            fresh_frame is None
+            or not fresh_frame.attrs.get("entry_finality_verified")
+            or fresh_frame.attrs.get("timeframe_ms") != 60_000
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
+
+        from core.services.strategies.wild_swing_strategy import WildSwingStrategy
+        signal = WildSwingStrategy().evaluate_entry(symbol, fresh_frame, side)
+        expected = context.get("dual_tf_meta")
+        expected_bar = expected.get("bar_id") if isinstance(expected, dict) else None
+        signal_bar_id = finite_bar_id(signal.get("bar_id")) if signal else None
+        expected_bar_id = finite_bar_id(expected_bar)
+        confirmation_bar_id = finite_bar_id(
+            context.get("channel_confirmation_bar_id")
+        )
+        if (
+            signal is None
+            or signal.get("side") != side
+            or signal_bar_id is None
+            or expected_bar_id != signal_bar_id
+            or confirmation_bar_id != signal_bar_id
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+        return {
+            "type": context.get("entry_signal_code"),
+            "side": side,
+            "entry_mode": "WILD_SWING",
+            "entry_phase": "WILD_SWING_1M",
+            "confirmation_bar_id": signal_bar_id,
+            "close_price": float(signal["close"]),
+            "price": float(signal["close"]),
+        }
+
     code = context.get('entry_signal_code')
     if code not in ENTRY_CODES:
         from core.gates.pipeline import pipeline
@@ -116,13 +173,17 @@ async def validate_account_entry(account, symbol, side, context):
     )
     if cross_chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + cross_chop_problem)
+    breakout_codes = KC_PENDING_CODES | MEME_ENTRY_CODES | {
+        'TRIGGER_A_KC_BREAKOUT', 'TRIGGER_C_CONTINUATION',
+        'RE_ENTRY_LONG', 'RE_ENTRY_SHORT',
+        'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
+        'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
+        'KC_REALTIME_RAIL_BREACH_SHORT',
+    }
     kc_problem = strict_kc_entry_problem(
         frame, quote, side,
         strategy_type=(
-            'BREAKOUT' if code in KC_PENDING_CODES or code in MEME_ENTRY_CODES or code in (
-                'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
-            'KC_REALTIME_RAIL_BREACH_SHORT',
-            )
+            'BREAKOUT' if code in breakout_codes
             else entry_strategy_type(context.get('entry_phase'))
         ),
     )

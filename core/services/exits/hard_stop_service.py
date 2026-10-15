@@ -48,7 +48,9 @@ async def enforce_hard_stop(account, symbol, price):
     if not position:
         return False
     meta = account.position_meta.get(symbol, {})
-    if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() != "CHANNEL_SWING":
+    if str(position.get("entry_mode") or meta.get("entry_mode") or "").upper() not in (
+        "CHANNEL_SWING", "WILD_SWING",
+    ):
         return False
     pending = position.get("channel_hard_stop_pending") or meta.get("channel_hard_stop_pending")
     if pending in ("MARGIN_LOSS", "PRICE_LOSS"):

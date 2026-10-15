@@ -40,14 +40,12 @@ def make_kline_df(rows, timeframe_ms=60000):
     return df
 
 
-def test_long_wick_rejection_gate():
-    """多單開倉檢核：當根上影線過長（避雷針），一票否決開多並記錄 pending_long_reentry_high。"""
+def test_long_single_wick_does_not_create_rejection_or_pending_retest():
+    """單根上影線未確認量價耗竭時，不建立影線拒絕或回測等待狀態。"""
     _PENDING_WICK_REENTRY_STATE.clear()
     symbol = "TEST_LONG_REJECT"
 
-    # 突破 KC 上軌（kc_upper=110），但上影線極長：
-    # open=109, close=111, high=114, low=108.5, body = 2, upper_wick = 3 (> 0.6 * 2 = 1.2)
-    # candle_range = 5.5, body/range = 2/5.5 = 0.3636 < 0.40
+    # 突破 KC 上軌（kc_upper=110），但僅有單根長上影線。
     # 提供足夠 K 棒（>= 6 根）滿足 MA 歷史長度
     rows = [
         {'open': 99, 'high': 100, 'low': 98.5, 'close': 99.5, 'kc_middle': 99, 'ma5': 99.5, 'ma15': 98},
@@ -66,29 +64,20 @@ def test_long_wick_rejection_gate():
 
     # 1. 檢測 detect_raw_triggers
     side, trigger = detect_raw_triggers(df, symbol=symbol)
-    assert side is None
-    assert trigger == "EXCESSIVE_UPPER_WICK"
-
-    # 2. 驗證 pending 狀態已記錄
-    assert symbol in _PENDING_WICK_REENTRY_STATE
-    p_state = _PENDING_WICK_REENTRY_STATE[symbol]
-    assert p_state['side'] == 'LONG'
-    assert p_state['extreme_price'] == 114.0
+    assert trigger is None or "WICK" not in trigger
+    assert symbol not in _PENDING_WICK_REENTRY_STATE
 
     # 3. 檢測 evaluate_closed_entry
     allowed, reason, data = evaluate_closed_entry(df, side='LONG', price=111.0, symbol=symbol)
-    assert not allowed
-    assert "EXCESSIVE_UPPER_WICK" in reason
+    assert "WICK" not in reason
 
 
-def test_short_wick_rejection_gate():
-    """空單開倉檢核：當根下影線過長（下影托底），一票否決開空並記錄 pending_short_reentry_low。"""
+def test_short_single_wick_does_not_create_rejection_or_pending_retest():
+    """單根下影線未確認量價耗竭時，不建立影線拒絕或回測等待狀態。"""
     _PENDING_WICK_REENTRY_STATE.clear()
     symbol = "TEST_SHORT_REJECT"
 
-    # 跌破 KC 下軌（kc_lower=90），但下影線極長：
-    # open=91, close=89, low=86, high=91.5, body = 2, lower_wick = 3 (> 0.6 * 2 = 1.2)
-    # candle_range = 5.5, body/range = 2/5.5 = 0.3636 < 0.40
+    # 跌破 KC 下軌（kc_lower=90），但僅有單根長下影線。
     # 提供足夠 K 棒（>= 6 根）滿足 MA 歷史長度
     rows = [
         {'open': 101, 'high': 101.5, 'low': 100, 'close': 100.5, 'kc_middle': 101, 'ma5': 100.5, 'ma15': 102},
@@ -107,19 +96,12 @@ def test_short_wick_rejection_gate():
 
     # 1. 檢測 detect_raw_triggers
     side, trigger = detect_raw_triggers(df, symbol=symbol)
-    assert side is None
-    assert trigger == "EXCESSIVE_LOWER_WICK"
-
-    # 2. 驗證 pending 狀態已記錄
-    assert symbol in _PENDING_WICK_REENTRY_STATE
-    p_state = _PENDING_WICK_REENTRY_STATE[symbol]
-    assert p_state['side'] == 'SHORT'
-    assert p_state['extreme_price'] == 86.0
+    assert trigger is None or "WICK" not in trigger
+    assert symbol not in _PENDING_WICK_REENTRY_STATE
 
     # 3. 檢測 evaluate_closed_entry
     allowed, reason, data = evaluate_closed_entry(df, side='SHORT', price=89.0, symbol=symbol)
-    assert not allowed
-    assert "EXCESSIVE_LOWER_WICK" in reason
+    assert "WICK" not in reason
 
 
 def test_long_pending_retest_structure_1_pullback_held():

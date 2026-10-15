@@ -151,15 +151,16 @@ def test_final_upper_shadow_guard_uses_completed_candle_only():
     ) == "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
 
 
-def test_qualified_live_breakout_enters_before_closed_bar_fallback(monkeypatch):
+def test_qualified_live_breakout_is_blocked_for_wild_swing_symbols(monkeypatch):
     frame = three_bar_frame()
+    diagnostics = {}
     monkeypatch.setattr(
         entry_contract, "check_entry_gates", lambda *_args, **_kwargs: (True, "OK"),
     )
     decision = evaluate_entry_contract(
         frame, float(frame.iloc[-1]["close"]), symbol="CAP/USDT",
+        diagnostics=diagnostics,
     )
 
-    assert decision is not None
-    assert decision["type"] == "KC_LIVE_BODY_BREAKOUT_LONG"
-    assert decision["entry_phase"] == "KC_LIVE_OUTER_BREAKOUT"
+    assert decision is None
+    assert diagnostics["reason"] == "BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR"

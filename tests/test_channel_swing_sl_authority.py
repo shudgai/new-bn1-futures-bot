@@ -4,8 +4,10 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from core.testnet_account import BinanceTestnetAccount
 
 @pytest.fixture
-def account():
-    acc = BinanceTestnetAccount(MagicMock())
+def account(tmp_path):
+    acc = BinanceTestnetAccount(
+        MagicMock(), state_file=str(tmp_path / "testnet_account.json"),
+    )
     acc.exchange = MagicMock()
     acc.exchange.price_to_precision = lambda sym, p: f"{p:.4f}"
     acc._cancel_all_orders = AsyncMock()

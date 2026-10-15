@@ -12,6 +12,97 @@ logger = logging.getLogger("uvicorn.error")
 strict_strategy = StrictStateMachineStrategy()
 
 
+async def _process_wild_swing_symbol(
+    engine, symbol, frame, quote, daily_halt, exit_only,
+):
+    from core.services.candle_data import closed_entry_candles
+    from core.services.strategies.wild_swing_strategy import WildSwingStrategy
+
+    strategy = getattr(engine, "_wild_swing_strategy", None)
+    if strategy is None:
+        strategy = engine._wild_swing_strategy = WildSwingStrategy()
+    closed = closed_entry_candles(frame)
+    if closed.empty or "timestamp" not in closed:
+        return [], []
+
+    latest_closed_bar_id = float(closed.iloc[-1]["timestamp"])
+    if symbol not in strategy.states:
+        strategy.reset_symbol(symbol, latest_closed_bar_id)
+
+    if not hasattr(engine, "_channel_exit_frames"):
+        engine._channel_exit_frames = {}
+    engine._channel_exit_frames[symbol] = frame.copy()
+
+    position = engine.account.positions.get(symbol)
+    if position:
+        from core.gates.holding_protection_gate import _ratchet_lock_details
+
+        closed_price = float(closed.iloc[-1]["close"])
+        profit_lock = _ratchet_lock_details(position, closed_price)
+        exit_decision = strategy.evaluate_exit(
+            symbol,
+            position,
+            frame,
+            profit_lock_triggered=profit_lock is not None,
+        )
+        if exit_decision is not None:
+            from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
+
+            limit_price = AntiSlippageOrderExecutor.calculate_limit_close_price(
+                position["side"], quote, offset_pct=0.0025,
+            )
+            closed_ok = await engine.account.close_position(
+                symbol,
+                quote,
+                "Wild Swing " + exit_decision["reason"],
+                is_manual=True,
+                is_limit=True,
+                limit_price=limit_price,
+            )
+            if closed_ok and symbol not in engine.account.positions:
+                exit_price = getattr(engine.account, "last_closed_price", {}).get(
+                    symbol, quote,
+                )
+                strategy.record_exit(
+                    symbol,
+                    exit_decision["side"],
+                    exit_price,
+                    exit_decision["reason"],
+                    exit_decision["bar_id"],
+                )
+        return [], []
+
+    if exit_only or daily_halt or not math.isfinite(quote) or quote <= 0:
+        return [], []
+    if (
+        symbol in getattr(engine.account, "closing_lock", set())
+        or symbol in getattr(engine.account, "pending_limit_orders", {})
+    ):
+        return [], []
+
+    signals = [
+        strategy.evaluate_entry(symbol, frame, side)
+        for side in ("LONG", "SHORT")
+    ]
+    signals = [signal for signal in signals if signal is not None]
+    if len(signals) != 1:
+        return [], []
+
+    signal = signals[0]
+    opened = await engine.execute_dual_tf_entry(
+        symbol=symbol,
+        frame=closed,
+        price=quote,
+        side=signal["side"],
+        mode_name=f"WILD_SWING_{signal['reason']}",
+        meta_dict=signal,
+        entry_mode="WILD_SWING",
+    )
+    if opened and symbol in engine.account.positions:
+        strategy.record_entry_fill(symbol, signal["bar_id"])
+    return [], []
+
+
 async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, daily_halt,
                                        exit_frame=None, exit_quote=None, exit_only=False):
     # 1. 狀態與交易所同步（防重啟失步）
@@ -30,12 +121,40 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     # 2. 獲取 5M 操作級別 K 棒
     frame = exit_frame
     if frame is None:
-        frame = await engine.fetch_klines(symbol, timeframe='5m', limit=150, keep_live=True)
+        from core.symbol_aliases import is_meme_breakout_symbol
+        timeframe = "1m" if is_meme_breakout_symbol(symbol) else "5m"
+        frame = await engine.fetch_klines(symbol, timeframe=timeframe, limit=150, keep_live=True)
         if frame is not None and not frame.empty:
             frame = engine.strategy.compute_indicators(frame.copy())
 
     if frame is None or frame.empty:
         return [], []
+
+    from core.symbol_aliases import is_meme_breakout_symbol
+    wild_swing_symbol = is_meme_breakout_symbol(symbol)
+    if wild_swing_symbol:
+        timeframe_ms = frame.attrs.get("timeframe_ms")
+        if timeframe_ms is not None and float(timeframe_ms) != 60_000.0:
+            frame = await engine.fetch_klines(
+                symbol, timeframe="1m", limit=150, keep_live=True,
+            )
+            if frame is None or frame.empty:
+                return [], []
+            frame = engine.strategy.compute_indicators(frame.copy())
+            if float(frame.attrs.get("timeframe_ms", 0) or 0) != 60_000.0:
+                return [], []
+        quote = float(
+            exit_quote
+            if exit_quote is not None
+            else (getattr(engine, "tickers", {}).get(symbol) or frame.iloc[-1]["close"])
+        )
+        if not math.isfinite(quote) or quote <= 0:
+            return [], []
+        if daily_halt and symbol not in engine.account.positions:
+            return [], []
+        return await _process_wild_swing_symbol(
+            engine, symbol, frame, quote, daily_halt, exit_only,
+        )
 
     if not hasattr(engine, '_channel_exit_frames'):
         engine._channel_exit_frames = {}
@@ -204,7 +323,19 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     continue
 
                 # 終極「漲勢末端/跌勢末端」與「獲利空間」硬阻斷 (Final Exhaustion & Profit Room VETO)
-                exh_ok, exh_reason = MemeSharedProtectionGate.validate_trend_exhaustion(frame, candidate_side, quote)
+                strong_bullish_trend = bool((meta_dict or {}).get('strong_bullish_trend', False))
+                strong_bearish_trend = bool((meta_dict or {}).get('strong_bearish_trend', False))
+                bullish_continuation = bool((meta_dict or {}).get('is_bullish_pullback_continuation', False))
+                bearish_continuation = bool((meta_dict or {}).get('is_bearish_pullback_continuation', False))
+                exh_ok, exh_reason = MemeSharedProtectionGate.validate_trend_exhaustion(
+                    frame,
+                    candidate_side,
+                    quote,
+                    strong_bullish_trend=strong_bullish_trend,
+                    strong_bearish_trend=strong_bearish_trend,
+                    bullish_continuation=bullish_continuation,
+                    bearish_continuation=bearish_continuation,
+                )
                 if not exh_ok:
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {exh_reason}")
                     print(f"[{symbol}] [進場攔截 VETO] {exh_reason}", flush=True)
@@ -238,6 +369,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     last_closed_ts=last_closed_ts,
                     last_closed_price=last_closed_price,
                     timeframe_ms=60_000.0,
+                    strong_trend=(
+                        strong_bullish_trend if candidate_side == 'LONG'
+                        else strong_bearish_trend
+                    ),
+                    bypass_extension_check=(
+                        bullish_continuation if candidate_side == 'LONG'
+                        else bearish_continuation
+                    ),
                 )
                 if not fc_ok:
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {fc_reason}")

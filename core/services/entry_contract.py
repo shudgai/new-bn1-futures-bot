@@ -419,51 +419,51 @@ def opposite_side_close_cooldown_problem(
 
 
 def excessive_upper_shadow_problem(frame, quote, side, trigger_type=None):
-    """Reject LONG entries whose latest completed candle has an excessive wick."""
-    if side != "LONG":
+    """Reject directional exhaustion wicks on the latest completed candle."""
+    if side not in ("LONG", "SHORT"):
         return None
     try:
         closed = closed_entry_candles(frame)
         if closed.empty:
             return "BLOCKED_INVALID_ENTRY_CANDLE"
         quote = float(quote)
-        if not math.isfinite(quote) or quote <= 0:
-            return "BLOCKED_INVALID_ENTRY_CANDLE"
         candle = closed.iloc[-1]
         opening, high, low, close = (
             float(candle["open"]), float(candle["high"]),
             float(candle["low"]), float(candle["close"]),
         )
-        if not all(math.isfinite(value) and value > 0 for value in
-                   (opening, high, low, close)):
-            return "BLOCKED_INVALID_ENTRY_CANDLE"
-        if low > min(opening, close) or high < max(opening, close):
+        values = (quote, opening, high, low, close)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or low > min(opening, close) or high < max(opening, close)):
             return "BLOCKED_INVALID_ENTRY_CANDLE"
         body = abs(close - opening)
-        upper_wick = high - max(opening, close)
+        wick = (
+            high - max(opening, close)
+            if side == "LONG"
+            else min(opening, close) - low
+        )
         max_wick_body_ratio = 0.7
-        breakout_fast_lanes = {
+        if side == "LONG" and trigger_type in {
             "TRIGGER_A_KC_BREAKOUT", GOLDEN_CROSS_FAST_LONG_CODE,
-        }
-        if trigger_type in breakout_fast_lanes and len(closed) >= 3:
+        } and len(closed) >= 3:
             trend = closed.iloc[-3:]
-            try:
-                middle = [float(value) for value in trend["kc_middle"]]
-                opens = [float(value) for value in trend.iloc[-2:]["open"]]
-                closes = [float(value) for value in trend.iloc[-2:]["close"]]
-                ma5 = [float(value) for value in trend.iloc[-2:]["ma5"]]
-            except (KeyError, TypeError, ValueError):
-                middle, opens, closes, ma5 = [], [], [], []
-            trend_values = middle + opens + closes + ma5
-            if (len(middle) == 3 and len(opens) == 2
-                    and all(math.isfinite(value) for value in trend_values)
-                    and middle[0] < middle[1] < middle[2]
-                    and all(close > opening and close > average
-                            for opening, close, average
-                            in zip(opens, closes, ma5))):
+            middle = [float(value) for value in trend["kc_middle"]]
+            opens = [float(value) for value in trend.iloc[-2:]["open"]]
+            closes = [float(value) for value in trend.iloc[-2:]["close"]]
+            ma5 = [float(value) for value in trend.iloc[-2:]["ma5"]]
+            if (
+                all(math.isfinite(value) for value in middle + opens + closes + ma5)
+                and middle[0] < middle[1] < middle[2]
+                and all(close > opening and close > average
+                        for opening, close, average in zip(opens, closes, ma5))
+            ):
                 max_wick_body_ratio = 1.0
-        if upper_wick > max_wick_body_ratio * body:
-            return "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
+        if body <= 0 or wick > max_wick_body_ratio * body:
+            return (
+                "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
+                if side == "LONG"
+                else "BLOCKED_BY_EXCESSIVE_LOWER_SHADOW"
+            )
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return "BLOCKED_INVALID_ENTRY_CANDLE"
@@ -559,6 +559,19 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
                     "BLOCKED_LIVE_LONG_WICK_OR_DOJI"
                     if is_live else "BLOCKED_ENTRY_WICK_OR_DOJI"
                 )
+            side = decision.get("side") if decision else None
+            if side in ("LONG", "SHORT"):
+                directional_wick = (
+                    high - max(opening, close)
+                    if side == "LONG"
+                    else min(opening, close) - low
+                )
+                if directional_wick > 0.7 * body:
+                    return (
+                        "BLOCKED_BY_EXCESSIVE_UPPER_SHADOW"
+                        if side == "LONG"
+                        else "BLOCKED_BY_EXCESSIVE_LOWER_SHADOW"
+                    )
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return "BLOCKED_INVALID_ENTRY_CANDLE"
@@ -2293,13 +2306,6 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
     if body_ratio < 0.25:
         return None, None
 
-    # 2. 嚴格限制 MA5 乖離：> 1.2% 時一票否決
-    if ma5_val > 0:
-        if (c_close - ma5_val) / ma5_val > 0.012:
-            return None, None
-        if (ma5_val - c_close) / ma5_val > 0.012:
-            return None, None
-
     from core.gates.strict_cross_kc_gate import (
         StrictCrossAndKcTrendGate,
         MemeSharedProtectionGate,
@@ -2462,7 +2468,15 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
     # ══════════════════════════════════════════════════════════════════════
     from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
-    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(closed_frame, side)
+    spatial_bypass = trigger_type in (
+        "TRIGGER_A_KC_BREAKOUT",
+        "TRIGGER_C_CONTINUATION",
+        "RE_ENTRY_LONG",
+        "RE_ENTRY_SHORT",
+    )
+    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
+        closed_frame, side, bypass_spatial_check=spatial_bypass,
+    )
     if not gate_ok:
         return False, gate_reason
 
@@ -3077,6 +3091,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
         closed = closed_entry_candles(frame)
+        if forming_bar and is_meme_breakout_symbol(symbol):
+            return reject("BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR")
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線（已知方向或指定訊號代碼）
         known_side = (

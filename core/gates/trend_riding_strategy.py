@@ -978,3 +978,127 @@ class AntiSlippageOrderExecutor:
             {"reduceOnly": True, "newOrderRespType": "RESULT"},
         )
         return True, {"order_id": (re_order or {}).get("id"), "status": "RE_SUBMITTED", "price": aggressive_price}
+
+    @classmethod
+    async def execute_confirmed_limit_close(
+        cls,
+        account: Any,
+        symbol: str,
+        side: str,
+        qty: float,
+        live_price: float,
+        offset_pct: float = 0.0025,
+        watchdog_timeout_sec: float = 3.0,
+        initial_limit_price: Optional[float] = None,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Close with sequential reduce-only limits; never treat a submission as a fill."""
+        if account is None or not math.isfinite(qty) or qty <= 0:
+            return False, {"error": "INVALID_PARAMS"}
+        if not math.isfinite(live_price) or live_price <= 0:
+            return False, {"error": "INVALID_PRICE"}
+        if getattr(account, "is_paper", False) or "Paper" in type(account).__name__:
+            close_price = initial_limit_price or cls.calculate_limit_close_price(
+                side, live_price, offset_pct,
+            )
+            return True, {
+                "id": "PAPER_FILL", "status": "CLOSED", "filled": qty,
+                "remaining": 0.0, "average": close_price,
+            }
+
+        close_side = "sell" if side.upper() in ("LONG", "BUY") else "buy"
+        for attempt in range(3):
+            quote = live_price
+            if attempt:
+                try:
+                    cached = getattr(account, "tickers", {}).get(symbol)
+                    if cached:
+                        quote = float(cached)
+                    else:
+                        ticker = await account.exchange.fetch_ticker(symbol)
+                        quote = float(ticker.get("last") or ticker.get("close") or 0)
+                except Exception as exc:
+                    account.log(
+                        f"限價平倉重取報價失敗 {symbol}: {type(exc).__name__}: {exc}",
+                        "ERROR",
+                    )
+                    return False, {"error": "QUOTE_UNKNOWN"}
+                if not math.isfinite(quote) or quote <= 0:
+                    return False, {"error": "QUOTE_INVALID"}
+
+            offset = offset_pct if attempt == 0 else max(offset_pct, 0.003)
+            raw_price = (
+                initial_limit_price
+                if attempt == 0 and initial_limit_price is not None
+                else cls.calculate_limit_close_price(side, quote, offset)
+            )
+            order_price = float(account.exchange.price_to_precision(symbol, raw_price))
+            order = await account._send_order(
+                symbol, "limit", close_side, qty, order_price,
+                {"reduceOnly": True, "newOrderRespType": "RESULT"},
+            )
+            order_id = (order or {}).get("id") or (order or {}).get("orderId")
+            if not order_id:
+                return False, {"error": "NO_ORDER_ID"}
+
+            deadline = time.monotonic() + watchdog_timeout_sec
+            status_order = order
+            while time.monotonic() < deadline:
+                try:
+                    status_order = await account.exchange.fetch_order(str(order_id), symbol)
+                except Exception as exc:
+                    account.log(
+                        f"平倉訂單狀態未知，禁止重複送單 {symbol} order={order_id}: "
+                        f"{type(exc).__name__}: {exc}",
+                        "ERROR",
+                    )
+                    account.position_meta.setdefault(symbol, {})[
+                        "wild_swing_close_unknown"
+                    ] = str(order_id)
+                    account.save_state()
+                    return False, {"error": "ORDER_STATUS_UNKNOWN", "id": str(order_id)}
+                filled = float(status_order.get("filled") or 0.0)
+                status = str(status_order.get("status") or "").lower()
+                if status in ("closed", "filled") and filled + max(qty * 1e-8, 1e-12) >= qty:
+                    status_order["status"] = "CLOSED"
+                    return True, status_order
+                if status in ("canceled", "cancelled", "expired", "rejected"):
+                    break
+                await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+
+            try:
+                await account._cancel_order(symbol, str(order_id))
+                status_order = await account.exchange.fetch_order(str(order_id), symbol)
+            except Exception as exc:
+                account.log(
+                    f"撤單或成交核對未知，禁止追單 {symbol} order={order_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    "ERROR",
+                )
+                account.position_meta.setdefault(symbol, {})[
+                    "wild_swing_close_unknown"
+                ] = str(order_id)
+                account.save_state()
+                return False, {"error": "CANCEL_STATUS_UNKNOWN", "id": str(order_id)}
+
+            filled = float(status_order.get("filled") or 0.0)
+            status = str(status_order.get("status") or "").lower()
+            if filled + max(qty * 1e-8, 1e-12) >= qty and status in (
+                "closed", "filled", "canceled", "cancelled",
+            ):
+                status_order.update({"status": "CLOSED", "filled": qty, "remaining": 0.0})
+                return True, status_order
+            if filled > 0:
+                account.log(
+                    f"限價平倉部分成交 {symbol}: {filled}/{qty}；先同步倉位，不重送原數量",
+                    "WARNING",
+                )
+                await account.refresh(force=True)
+                return False, {"error": "PARTIAL_FILL", "id": str(order_id), "filled": filled}
+            if status not in ("canceled", "cancelled", "expired", "rejected"):
+                account.position_meta.setdefault(symbol, {})[
+                    "wild_swing_close_unknown"
+                ] = str(order_id)
+                account.save_state()
+                return False, {"error": "CANCEL_NOT_CONFIRMED", "id": str(order_id)}
+
+        return False, {"error": "UNFILLED_AFTER_RETRIES"}

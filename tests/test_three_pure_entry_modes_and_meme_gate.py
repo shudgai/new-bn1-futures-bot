@@ -64,8 +64,8 @@ class TestThreePureEntryModesAndMemeGate:
         assert passed is False
         assert reason == "REJECT_ENTRY: DOMINATED_BY_WICKS"
 
-    def test_gate_rejects_excessive_upper_wick_for_long(self):
-        """多單上影線 > 0.6 * body 一票否決 (避雷針)"""
+    def test_gate_does_not_veto_single_upper_wick_for_long(self):
+        """單根上影線沒有量價確認時不單獨否決多單。"""
         # open=100, close=102 (body=2.0), high=103.5 (upper_wick=1.5 > 0.6*2.0=1.2), low=99.8
         # range = 3.7, body_ratio = 2/3.7 = 0.54 > 0.35
         df = make_candle_df([
@@ -73,11 +73,11 @@ class TestThreePureEntryModesAndMemeGate:
             {'open': 100, 'close': 102, 'high': 103.5, 'low': 99.8, 'ma5': 101.5, 'ma15': 99, 'is_closed': True},
         ])
         passed, reason = MemeSharedProtectionGate.evaluate(df, 'LONG')
-        assert passed is False
-        assert reason == "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
+        assert passed is True
+        assert reason == "PASSED"
 
-    def test_gate_rejects_excessive_lower_wick_for_short(self):
-        """空單下影線 > 0.6 * body 一票否決 (地板長針托底)"""
+    def test_gate_does_not_veto_single_lower_wick_for_short(self):
+        """單根下影線沒有量價確認時不單獨否決空單。"""
         # open=102, close=100 (body=2.0), low=98.5 (lower_wick=1.5 > 1.2), high=102.2
         # range = 3.7, body_ratio = 0.54
         df = make_candle_df([
@@ -85,8 +85,8 @@ class TestThreePureEntryModesAndMemeGate:
             {'open': 102, 'close': 100, 'high': 102.2, 'low': 98.5, 'ma5': 100.5, 'ma15': 102.5, 'is_closed': True},
         ])
         passed, reason = MemeSharedProtectionGate.evaluate(df, 'SHORT')
-        assert passed is False
-        assert reason == "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
+        assert passed is True
+        assert reason == "PASSED"
 
     def test_gate_rejects_ma5_deviation_cap_overextended(self):
         """防天花板與地板乖離限制：偏離 MA5 > 1.2% 一票否決"""

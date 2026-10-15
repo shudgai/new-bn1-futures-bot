@@ -5,29 +5,28 @@
 """
 import pytest
 import pandas as pd
-import time
 from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
 
 
 def test_bullish_exhaustion_vetoes_long_on_extreme_bias():
-    """漲勢末端：MA15 乖離過大（> 1.2 ATR）100% 否決開多，嚴禁追高天花板！"""
+    """一般趨勢下，MA15 乖離超過 1.5 ATR 阻止追多。"""
     df = pd.DataFrame([
         {'open': 100.0, 'close': 101.0, 'high': 101.2, 'low': 99.8, 'ma5': 101.0, 'ma15': 100.0, 'atr': 1.0,
          'kc_upper': 102.0, 'kc_lower': 98.0, 'kc_middle': 100.0},
         {'open': 101.0, 'close': 102.0, 'high': 102.2, 'low': 100.8, 'ma5': 101.5, 'ma15': 100.2, 'atr': 1.0,
          'kc_upper': 102.5, 'kc_lower': 98.5, 'kc_middle': 100.2},
-        # 價格衝到 103.5，相對於 ma15 (100.5) 乖離達 3.0 ATR > 1.2 ATR
+        # 價格衝到 103.5，相對於 ma15 (100.5) 乖離達 3 ATR。
         {'open': 102.0, 'close': 103.5, 'high': 103.6, 'low': 101.9, 'ma5': 102.8, 'ma15': 100.5, 'atr': 1.0,
          'kc_upper': 103.0, 'kc_lower': 99.0, 'kc_middle': 100.5},
     ])
     passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(df, side='LONG', quote=103.5)
     assert not passed
     assert 'VETO_LONG_BULLISH_EXHAUSTION' in reason
-    assert '均線乖離' in reason
+    assert 'MA15 乖離' in reason
 
 
-def test_bullish_exhaustion_vetoes_long_on_stalling_upper_wick():
-    """漲勢末端：頂部遇阻留下長上影線（避雷針），100% 否決開多！"""
+def test_bullish_exhaustion_does_not_veto_on_one_upper_wick():
+    """單根上影線沒有爆量及後續轉弱確認時，不單獨否決開多。"""
     df = pd.DataFrame([
         {'open': 100.0, 'close': 101.0, 'high': 101.2, 'low': 99.8, 'ma5': 100.5, 'ma15': 100.0, 'atr': 1.0,
          'kc_upper': 102.0, 'kc_lower': 98.0, 'kc_middle': 100.0},
@@ -38,30 +37,29 @@ def test_bullish_exhaustion_vetoes_long_on_stalling_upper_wick():
          'kc_upper': 102.8, 'kc_lower': 99.0, 'kc_middle': 101.0},
     ])
     passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(df, side='LONG', quote=102.3)
-    assert not passed
-    assert 'VETO_LONG_BULLISH_EXHAUSTION' in reason
-    assert '頂部留長上影線受阻滯漲' in reason
+    assert passed
+    assert reason == 'PASS'
 
 
 def test_bearish_exhaustion_vetoes_short_on_extreme_bias():
-    """跌勢末端：MA15 超賣乖離過大（> 1.2 ATR）100% 否決開空，嚴禁地板追空！"""
+    """一般趨勢下，MA15 乖離超過 1.5 ATR 阻止追空。"""
     df = pd.DataFrame([
         {'open': 100.0, 'close': 99.0, 'high': 100.2, 'low': 98.8, 'ma5': 99.0, 'ma15': 100.0, 'atr': 1.0,
          'kc_upper': 102.0, 'kc_lower': 98.0, 'kc_middle': 100.0},
         {'open': 99.0, 'close': 98.0, 'high': 99.2, 'low': 97.8, 'ma5': 98.5, 'ma15': 99.8, 'atr': 1.0,
          'kc_upper': 101.5, 'kc_lower': 97.5, 'kc_middle': 99.8},
-        # 價格跌至 96.5，相對於 ma15 (99.5) 乖離達 3.0 ATR > 1.2 ATR
+        # 價格跌至 96.5，相對於 ma15 (99.5) 乖離達 3 ATR。
         {'open': 98.0, 'close': 96.5, 'high': 98.1, 'low': 96.4, 'ma5': 97.2, 'ma15': 99.5, 'atr': 1.0,
          'kc_upper': 101.0, 'kc_lower': 97.0, 'kc_middle': 99.5},
     ])
     passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(df, side='SHORT', quote=96.5)
     assert not passed
     assert 'VETO_SHORT_BEARISH_EXHAUSTION' in reason
-    assert '均線乖離' in reason
+    assert 'MA15 乖離' in reason
 
 
-def test_bearish_exhaustion_vetoes_short_on_stalling_lower_wick():
-    """跌勢末端：底部托底留下長下影線，100% 否決開空！"""
+def test_bearish_exhaustion_does_not_veto_on_one_lower_wick():
+    """單根下影線沒有爆量及後續轉強確認時，不單獨否決開空。"""
     df = pd.DataFrame([
         {'open': 100.0, 'close': 99.0, 'high': 100.2, 'low': 98.8, 'ma5': 99.5, 'ma15': 100.0, 'atr': 1.0,
          'kc_upper': 102.0, 'kc_lower': 98.0, 'kc_middle': 100.0},
@@ -72,9 +70,113 @@ def test_bearish_exhaustion_vetoes_short_on_stalling_lower_wick():
          'kc_upper': 101.0, 'kc_lower': 97.2, 'kc_middle': 99.0},
     ])
     passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(df, side='SHORT', quote=97.7)
+    assert passed
+    assert reason == 'PASS'
+
+
+@pytest.mark.parametrize(
+    ('side', 'strong_kwargs', 'expected'),
+    [
+        ('LONG', {}, False),
+        ('LONG', {'strong_bullish_trend': True}, True),
+        ('SHORT', {}, False),
+        ('SHORT', {'strong_bearish_trend': True}, True),
+    ],
+)
+def test_strong_trend_uses_symmetric_extension_allowance(side, strong_kwargs, expected):
+    direction = 1 if side == 'LONG' else -1
+    ma15 = 100.0
+    price = ma15 + direction * 1.6
+    df = pd.DataFrame([
+        {
+            'open': price - direction * 0.1,
+            'close': price,
+            'high': price + 0.2,
+            'low': price - 0.2,
+            'ma5': 100.0,
+            'ma15': ma15,
+            'atr': 1.0,
+            'kc_upper': 103.0,
+            'kc_lower': 97.0,
+        }
+        for _ in range(3)
+    ])
+    passed, _ = MemeSharedProtectionGate.validate_trend_exhaustion(
+        df, side=side, quote=price, **strong_kwargs
+    )
+    assert passed is expected
+
+
+@pytest.mark.parametrize(
+    ('side', 'continuation_kwargs'),
+    [
+        ('LONG', {'bullish_continuation': True}),
+        ('SHORT', {'bearish_continuation': True}),
+    ],
+)
+def test_qualified_continuation_bypasses_extension_filter(side, continuation_kwargs):
+    direction = 1 if side == 'LONG' else -1
+    price = 100.0 + direction * 3.2
+    df = pd.DataFrame([
+        {
+            'open': price - direction * 0.1,
+            'close': price,
+            'high': price + 0.2,
+            'low': price - 0.2,
+            'ma5': 100.0,
+            'ma15': 100.0,
+            'atr': 1.0,
+            'kc_upper': 101.0,
+            'kc_lower': 99.0,
+        }
+        for _ in range(3)
+    ])
+    passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(
+        df, side=side, quote=price, **continuation_kwargs
+    )
+    assert passed
+    assert reason == 'PASS: QUALIFIED_STRONG_TREND_CONTINUATION'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_confirmed_volume_climax_requires_following_reversal_without_new_extreme(side):
+    bars = [
+        {
+            'open': 100.0, 'close': 100.1, 'high': 100.2, 'low': 99.9,
+            'volume': 100.0, 'ma5': 100.0, 'ma15': 100.0, 'atr': 1.0,
+            'kc_upper': 103.0, 'kc_lower': 97.0,
+        }
+        for _ in range(10)
+    ]
+    if side == 'SHORT':
+        bars.append({
+            'open': 98.0, 'close': 96.0, 'high': 98.1, 'low': 93.8,
+            'volume': 300.0, 'ma5': 96.8, 'ma15': 99.0, 'atr': 1.0,
+            'kc_upper': 102.0, 'kc_lower': 95.0,
+        })
+        bars.append({
+            'open': 96.0, 'close': 96.5, 'high': 96.7, 'low': 94.1,
+            'volume': 100.0, 'ma5': 96.2, 'ma15': 96.2, 'atr': 1.0,
+            'kc_upper': 100.0, 'kc_lower': 92.0,
+        })
+    else:
+        bars.append({
+            'open': 102.0, 'close': 104.0, 'high': 106.2, 'low': 101.9,
+            'volume': 300.0, 'ma5': 103.0, 'ma15': 101.0, 'atr': 1.0,
+            'kc_upper': 107.0, 'kc_lower': 98.0,
+        })
+        bars.append({
+            'open': 104.0, 'close': 103.5, 'high': 106.1, 'low': 103.2,
+            'volume': 100.0, 'ma5': 103.8, 'ma15': 103.8, 'atr': 1.0,
+            'kc_upper': 108.0, 'kc_lower': 99.0,
+        })
+    df = pd.DataFrame(bars)
+
+    passed, reason = MemeSharedProtectionGate.validate_trend_exhaustion(
+        df, side=side, quote=float(df.iloc[-1]['close'])
+    )
     assert not passed
-    assert 'VETO_SHORT_BEARISH_EXHAUSTION' in reason
-    assert '底部留長下影線托底抵抗' in reason
+    assert f'VETO_{side}_' in reason and 'CONFIRMED_VOLUME_CLIMAX' in reason
 
 
 def test_profit_room_filter_blocks_long_near_upper_rail():
@@ -122,22 +224,25 @@ def test_profit_room_filter_passes_when_room_is_healthy():
     assert passed_short
 
 
-def test_evaluate_entry_blocked_when_in_exhaustion():
-    """跨週期共振 evaluate_entry 遇漲勢末端時，一票否決開多！"""
-    df_5m = pd.DataFrame([
-        {'timestamp': 1000, 'open': 100.0, 'close': 101.0, 'high': 101.2, 'low': 99.8, 'ma5': 100.5, 'ma15': 100.0,
-         'kc_upper': 102.0, 'kc_lower': 98.0, 'kc_middle': 100.0, 'atr': 1.0},
-        {'timestamp': 2000, 'open': 101.0, 'close': 102.0, 'high': 102.2, 'low': 100.8, 'ma5': 101.5, 'ma15': 100.2,
-         'kc_upper': 102.5, 'kc_lower': 98.5, 'kc_middle': 100.2, 'atr': 1.0},
-        # 末端長上影線
-        {'timestamp': 3000, 'open': 102.0, 'close': 102.2, 'high': 103.8, 'low': 101.9, 'ma5': 102.0, 'ma15': 100.5,
-         'kc_upper': 102.8, 'kc_lower': 99.0, 'kc_middle': 100.5, 'atr': 1.0},
-    ])
-    can_enter, reason, meta = MemeSharedProtectionGate.evaluate_entry(
-        df_5m=df_5m,
-        side='LONG',
-        quote=102.2,
-        symbol='TEST/USDT',
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_shared_entry_evaluation_does_not_veto_on_single_wick(side):
+    direction = 1 if side == 'LONG' else -1
+    open_price = 100.0
+    close_price = open_price + direction * 0.8
+    high = max(open_price, close_price) + (1.0 if side == 'LONG' else 0.2)
+    low = min(open_price, close_price) - (1.0 if side == 'SHORT' else 0.2)
+    df = pd.DataFrame([{
+        'open': open_price,
+        'close': close_price,
+        'high': high,
+        'low': low,
+        'ma5': 100.0,
+        'ma15': 100.0,
+        'atr': 1.0,
+        'volume': 100.0,
+    }])
+    passed, reason = MemeSharedProtectionGate.evaluate(
+        df, side=side, quote=close_price
     )
-    assert not can_enter
-    assert 'VETO_LONG_BULLISH_EXHAUSTION' in reason
+    assert passed
+    assert reason == 'PASSED'

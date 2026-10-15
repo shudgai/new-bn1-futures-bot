@@ -942,7 +942,8 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
 
         if side == 'LONG':
             remaining = (upper - quote) / width
-            if (remaining < min_space
+            if (resolved_strategy_type != STRATEGY_TYPE_BREAKOUT
+                    and remaining < min_space
                     and not math.isclose(remaining, min_space, rel_tol=1e-12, abs_tol=0.0)):
                 return 'INSUFFICIENT_UPPER_SPACE'
             if quote < middle and ma5 < ma15:
@@ -957,7 +958,8 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
                 return 'LONG_NOT_CONFIRMED_ABOVE_KC_MIDDLE'
         else:
             remaining = (quote - lower) / width
-            if (remaining < min_space
+            if (resolved_strategy_type != STRATEGY_TYPE_BREAKOUT
+                    and remaining < min_space
                     and not math.isclose(remaining, min_space, rel_tol=1e-12, abs_tol=0.0)):
                 return 'INSUFFICIENT_LOWER_SPACE'
             if (entry_phase != 'KC_BEARISH_MA_MIDLINE_LAUNCH'

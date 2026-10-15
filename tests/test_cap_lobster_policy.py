@@ -8,9 +8,9 @@ from test_strict_entry_gates_live import frame_for
 from test_kc_outer_pivot_strategy import position,snapshot
 
 
-def test_active_symbols_switched_to_cap():
-    assert config.DEFAULT_SYMBOLS == ['龙虾/USDT','CAP/USDT']
-    assert 'CAP/USDT' in config.DEFAULT_SYMBOLS
+def test_active_symbols_exclude_disabled_entries():
+    assert all(symbol not in config.ENTRY_DISABLED_SYMBOLS
+               for symbol in config.DEFAULT_SYMBOLS)
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -66,4 +66,3 @@ def test_all_lobster_and_cap_aliases_share_pivot_exit_protection(symbol):
     # Under Channel Swing, peak trailing exit preserves position unless a 3-point pivot forms
     decision = evaluate_peak_trailing(pos, 101.0, snap, fee=0.0, slippage=0.0)
     assert decision is None
-

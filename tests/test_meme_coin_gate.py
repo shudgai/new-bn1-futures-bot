@@ -78,7 +78,7 @@ class TestMemeCoinGate:
             df, quote=10.9, side='LONG', symbol='龍蝦/USDT'
         )
         assert passed is False
-        assert reason == 'BLOCKED_BY_MA5_DOWNWARD_SLOPE'
+        assert 'MA5_SLOPE_FLAT_FOR_LONG' in reason
 
     def test_meme_kc_trend_veto_blocks_short_when_kc_not_downward(self):
         # 核心防護：MA5 往下 (10.0 -> 9.7)，但 KC 沒往下（走平或往上 9.9 -> 10.0），一律嚴禁開空！
@@ -246,8 +246,7 @@ class TestMemeCoinGate:
         assert should_stop is True
         assert reason == 'EXIT_MEME_AMBUSH_FAIL_KC_MID_BREACH'
 
-    def test_evaluate_entry_contract_authorizes_meme_ambush_successfully(self):
-        # 測試 evaluate_entry_contract 真正放行妖幣提前埋伏底倉（不再被三根慢速或空間檢查阻擋）
+    def test_evaluate_entry_contract_blocks_live_meme_ambush_until_close(self):
         from core.services.entry_contract import evaluate_entry_contract
         rows = [
             {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
@@ -266,14 +265,10 @@ class TestMemeCoinGate:
         decision = evaluate_entry_contract(
             df, price=10.3, symbol='CAP/USDT', diagnostics=diagnostics
         )
-        assert decision is not None, f"Blocked: {diagnostics.get('reason')}"
-        assert decision['type'] == 'MEME_AMBUSH_ENTRY_LONG'
-        assert decision['side'] == 'LONG'
-        assert decision['size_fraction'] == 0.35
-        assert decision['_is_authorized'] is True
+        assert decision is None
+        assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
-    def test_evaluate_entry_contract_authorizes_meme_breakout_successfully(self):
-        # 測試 evaluate_entry_contract 真正放行妖幣兩根破軌極速捕捉（不再被三根慢速阻擋）
+    def test_evaluate_entry_contract_blocks_live_meme_breakout_until_close(self):
         from core.services.entry_contract import evaluate_entry_contract
         rows = [
             {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
@@ -298,17 +293,11 @@ class TestMemeCoinGate:
         decision = evaluate_entry_contract(
             df, price=11.2, symbol='龍蝦/USDT', diagnostics=diagnostics
         )
-        assert decision is not None, f"Blocked: {diagnostics.get('reason')}"
-        assert decision['type'] in ('MEME_INITIAL_KC_BREAKOUT_LONG', 'MEME_FORCED_CONTINUATION_ENTRY_LONG')
-        assert decision['side'] == 'LONG'
-        assert decision['size_fraction'] == 1.0
-        assert decision['_is_authorized'] is True
+        assert decision is None
+        assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
-    def test_full_pipeline_authorization_and_firewall_verification_for_meme(self):
-        # 測試完整鏈路：evaluate_entry_contract -> pipeline.authorize -> EntryFirewall.verify_can_open
+    def test_full_pipeline_rejects_legacy_live_meme_entry(self):
         from core.services.entry_contract import evaluate_entry_contract
-        from core.gates.pipeline import pipeline
-        from core.services.entry_firewall import EntryFirewall
 
         rows = [
             {'open': 9.8, 'close': 9.9, 'high': 10.0, 'low': 9.7,
@@ -331,20 +320,8 @@ class TestMemeCoinGate:
         decision = evaluate_entry_contract(
             df, price=11.2, symbol='龍蝦/USDT', diagnostics=diagnostics
         )
-        assert decision is not None, f"Contract blocked: {diagnostics.get('reason')}"
-        code = decision['type']
-        side = decision['side']
-
-        # 1. 測試 pipeline.authorize
-        pipe_diag = {}
-        authorized = pipeline.authorize(decision, df, 11.2, symbol='龍蝦/USDT', diagnostics=pipe_diag)
-        assert authorized is not None, f"Pipeline blocked: {pipe_diag.get('reason')}"
-
-        # 2. 測試 EntryFirewall.verify_can_open
-        verified = EntryFirewall.verify_can_open(df, side, code, symbol='龍蝦/USDT')
-        assert verified is not None
-        assert verified['side'] == side
-        assert verified['type'] == code
+        assert decision is None
+        assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
     def test_trend_veto_blocks_long_entry_when_trend_is_bearish(self):
         """如果趨勢是空頭，嚴禁開多（一票否決）。"""
@@ -387,6 +364,4 @@ class TestMemeCoinGate:
         )
         assert passed is False
         assert reason in ('BLOCKED_SHORT_ON_BULLISH_TREND', 'BLOCKED_BY_MA15_UPWARD_SLOPE', 'BLOCKED_BY_KC_NOT_DOWNWARD', 'VETO_CANNOT_SHORT_WHEN_KC_UP')
-
-
 

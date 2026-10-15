@@ -8,9 +8,9 @@
 【改進 A：開倉端防護 (Anti-Top Chase Gate)】
 1. 平倉冷卻期 (Cooldown)：高位平倉後強制凍結 N 根 K 棒 (預設 5 根 K 棒)，避免在同一個頂部連續進場。
 2. 回踩健康度檢驗 (Pullback Health Check)：
-   - 價格距離 KC 中軌乖離過大時禁止開多 ((Close - KC_Middle) / ATR > max_bias_atr)。
+   - 一般趨勢的乖離上限為 1.5 ATR，已確認強趨勢放寬至 2.8 ATR；max_bias_atr 可再收緊。
    - 禁止浮空進場：必須滿足「至少回踩測試極短期均線或 KC 中軌 (Low <= EMA3/EMA5 或 Low <= KC_Middle) 且獲得支撐反彈」，不可在空中追單。
-3. 前 1~3 根長上影線/滯漲避險：若近 3 根 K 棒內出現上影線佔比 > 50% 的避雷針，判定主力出貨滯漲，一票否決開多。
+3. 單根長影線不單獨否決進場；共用耗竭閘門負責已確認的量價反轉型態。
 
 【改進 B：出場端分級防守 (Tiered Position Defense)】
 1. 起爆點進場單 (BREAKOUT_INITIAL)：可寬鬆防守至 KC 中軌。
@@ -32,14 +32,18 @@ class HighPositionChaseAndDefenseFilter:
     def __init__(
         self,
         cooldown_bars: int = 5,          # 平多後強制冷凍根數 (預設 5 根)
-        max_bias_atr: float = 3.0,       # 距 KC 中軌乖離上限 (超過 3.0 ATR 極限延伸才禁追)
+        max_bias_atr: float = 3.0,       # 可配置的絕對乖離上限；實際上限由趨勢等級限制
         max_bias_pct: float = 0.05,      # 距 KC 中軌百分比上限 (超過 5.0% 禁追)
-        wick_exhaustion_ratio: float = 0.50, # 上影線長度佔比上限 (超過 50% 判定滯漲出貨)
+        wick_exhaustion_ratio: float = 0.50, # 保留舊建構參數相容性，不單獨以影線判定耗竭
+        normal_trend_bias_atr: float = 1.5,
+        strong_trend_bias_atr: float = 2.8,
     ):
         self.cooldown_bars = cooldown_bars
         self.max_bias_atr = max_bias_atr
         self.max_bias_pct = max_bias_pct
         self.wick_exhaustion_ratio = wick_exhaustion_ratio
+        self.normal_trend_bias_atr = normal_trend_bias_atr
+        self.strong_trend_bias_atr = strong_trend_bias_atr
 
     # ══════════════════════════════════════════════════════════════════════
     # 【改進 A：開倉過濾（禁止動能竭盡時追高）】
@@ -52,6 +56,8 @@ class HighPositionChaseAndDefenseFilter:
         last_closed_ts: float = 0.0,
         last_closed_price: float = 0.0,
         timeframe_ms: float = 60_000.0,
+        strong_trend: bool = False,
+        bypass_extension_check: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """開多前置審查：嚴格過濾天花板追多、浮空進場與頂部滯漲。
         
@@ -104,18 +110,20 @@ class HighPositionChaseAndDefenseFilter:
                               f"(Only {bars_since_close:.1f} bars since LastClose, must wait >= {self.cooldown_bars} bars)")
                     return False, reason, details
 
-        # ── 2. 中軌正乖離過大檢驗 (KC Bias Check) ──
-        # 價格懸空在 KC 上軌之外且遠離中軌，嚴禁無腦追多（初始起爆單除外：開盤於軌道內突破）
-        is_initial_breakout = (o < kc_upper - 0.2 * atr) and (c > o) and (not last_closed_action)
-        if not is_initial_breakout and kc_middle > 0:
+        # ── 2. 中軌正乖離檢驗 (KC Bias Check) ──
+        if not bypass_extension_check and kc_middle > 0:
             bias_atr = (p - kc_middle) / atr
             bias_pct = (p - kc_middle) / kc_middle
             details['bias_atr'] = round(bias_atr, 2)
             details['bias_pct'] = round(bias_pct, 4)
 
-            if bias_atr > self.max_bias_atr or bias_pct > self.max_bias_pct:
+            bias_limit = min(
+                self.max_bias_atr,
+                self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
+            )
+            if bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct):
                 reason = (f"VETO: OVEREXTENDED_BIAS_TOO_HIGH "
-                          f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} above KC Mid, max: {self.max_bias_atr} ATR)")
+                          f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} above KC Mid, max: {bias_limit:.1f} ATR)")
                 return False, reason, details
 
         # ── 3. 回踩健康度檢驗（禁止浮空進場）──
@@ -132,24 +140,6 @@ class HighPositionChaseAndDefenseFilter:
                       f"(Recent low {min_low_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air)")
             return False, reason, details
 
-        # ── 4. 近 1~3 根長上影線/滯漲避險 ──
-        # 若前 1~3 根 K 棒出現長上影線（上影線佔比 > 50%），判定頂部主力出貨滯漲，禁止立即接刀！
-        for idx in range(1, min(len(df), 4)):
-            bar = df.iloc[-idx]
-            b_h = float(bar.get('high', 0.0))
-            b_l = float(bar.get('low', 0.0))
-            b_o = float(bar.get('open', 0.0))
-            b_c = float(bar.get('close', 0.0))
-            b_range = max(b_h - b_l, 1e-9)
-            b_upper_wick = max(0.0, b_h - max(b_o, b_c))
-            wick_ratio = b_upper_wick / b_range
-
-            if wick_ratio >= self.wick_exhaustion_ratio and b_h >= (kc_upper - 0.2 * atr):
-                reason = (f"VETO: TOP_STALLING_UPPER_WICK "
-                          f"(Bar[-{idx}] has {wick_ratio:.1%} upper wick at {b_h:.6g} >= KC_Upper - Exhaustion selling pressure)")
-                details['stalling_bar_idx'] = idx
-                details['stalling_wick_ratio'] = round(wick_ratio, 3)
-                return False, reason, details
         # ── 5. 順勢鐵律：KC 中軌下方或中軌下行嚴禁開多（嚴防陰跌接飛刀）──
         if kc_middle > 0:
             if p < kc_middle:
@@ -173,6 +163,8 @@ class HighPositionChaseAndDefenseFilter:
         last_closed_ts: float = 0.0,
         last_closed_price: float = 0.0,
         timeframe_ms: float = 60_000.0,
+        strong_trend: bool = False,
+        bypass_extension_check: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """開空前置審查：嚴格過濾地板追空、長下影線力竭與平空後連續追單。
 
@@ -232,44 +224,23 @@ class HighPositionChaseAndDefenseFilter:
                               f"(Only {bars_since_close:.1f} bars since LastCloseShort, must wait >= {self.cooldown_bars} bars to prevent whipsaw)")
                     return False, reason, details
 
-        # ── 2. 長下影線/針尖力竭過濾 (Climax Pinbar Filter) ──
-        # 若當前或前一根 K 棒出現長下影線（下影線長度 > 整根 K 棒的 50%），判定為底部主力吃單/空頭衰竭，
-        # 強制凍結賣空信號至少 5 根 K 棒！
-        # 回溯檢查最近 5 根 K 棒，若曾出現長下影線 Pinbar，強制阻斷賣空！
-        max_lookback = min(len(df) + 1, self.cooldown_bars + 1)
-        for idx in range(1, max_lookback):
-            bar = df.iloc[-idx]
-            b_h = float(bar.get('high', 0.0))
-            b_l = float(bar.get('low', 0.0))
-            b_o = float(bar.get('open', 0.0))
-            b_c = float(bar.get('close', 0.0))
-            b_range = max(b_h - b_l, 1e-9)
-            b_lower_wick = max(0.0, min(b_o, b_c) - b_l)
-            wick_ratio = b_lower_wick / b_range
-
-            if wick_ratio >= self.wick_exhaustion_ratio:
-                bars_ago = idx - 1
-                reason = (f"VETO: BOTTOM_CLIMAX_PINBAR_EXHAUSTION "
-                          f"(Bar[-{idx}] has {wick_ratio:.1%} lower wick pinbar at low {b_l:.6g} - Whale bottom absorption, shorting frozen for {self.cooldown_bars} bars)")
-                details['climax_bar_idx'] = idx
-                details['climax_wick_ratio'] = round(wick_ratio, 3)
-                return False, reason, details
-
         # ── 3. KC 下軌外負乖離過大（禁止地板追空）──
-        # 價格位於 KC 下軌外側，且 (KC_Basis - Close) / KC_Basis > 負乖離閾值時，視為超賣恐慌區，一律嚴禁新開空單。
-        # 初始跌破單（開在通道內跌破下軌）除外
-        is_initial_breakdown = (o > kc_lower + 0.2 * atr) and (c < o) and (not last_closed_action)
-        if not is_initial_breakdown and kc_middle > 0:
+        if not bypass_extension_check and kc_middle > 0:
             bias_atr = (kc_middle - p) / atr
             bias_pct = (kc_middle - p) / kc_middle
             details['bias_atr'] = round(bias_atr, 2)
             details['bias_pct'] = round(bias_pct, 4)
 
-            # 當價格在下軌外側或已深度超賣
+            bias_limit = min(
+                self.max_bias_atr,
+                self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
+            )
             is_outside_lower = (kc_lower > 0 and p <= kc_lower) or (c <= kc_lower)
-            if is_outside_lower and (bias_atr > self.max_bias_atr or bias_pct > self.max_bias_pct):
+            if is_outside_lower and (
+                bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct)
+            ):
                 reason = (f"VETO: OVEREXTENDED_NEGATIVE_BIAS_TOO_HIGH "
-                          f"(Price: {p:.6g} is outside KC Lower with {bias_atr:.2f} ATR / {bias_pct:.2%} negative bias below KC Mid, max: {self.max_bias_atr} ATR - Panic oversold floor, no chasing shorts)")
+                          f"(Price: {p:.6g} is outside KC Lower with {bias_atr:.2f} ATR / {bias_pct:.2%} negative bias below KC Mid, max: {bias_limit:.1f} ATR)")
                 return False, reason, details
 
         # ── 4. 回抽測試受阻收陰檢驗（禁止浮空追空）──
@@ -310,6 +281,8 @@ class HighPositionChaseAndDefenseFilter:
         last_closed_ts: float = 0.0,
         last_closed_price: float = 0.0,
         timeframe_ms: float = 60_000.0,
+        strong_trend: bool = False,
+        bypass_extension_check: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """通用開倉審查入口（依據多/空方向分流）"""
         side_upper = str(side).upper()
@@ -317,13 +290,15 @@ class HighPositionChaseAndDefenseFilter:
             return self.validate_long_entry(
                 df=df, quote=quote, last_closed_action=last_closed_action,
                 last_closed_ts=last_closed_ts, last_closed_price=last_closed_price,
-                timeframe_ms=timeframe_ms
+                timeframe_ms=timeframe_ms, strong_trend=strong_trend,
+                bypass_extension_check=bypass_extension_check,
             )
         elif side_upper == 'SHORT':
             return self.validate_short_entry(
                 df=df, quote=quote, last_closed_action=last_closed_action,
                 last_closed_ts=last_closed_ts, last_closed_price=last_closed_price,
-                timeframe_ms=timeframe_ms
+                timeframe_ms=timeframe_ms, strong_trend=strong_trend,
+                bypass_extension_check=bypass_extension_check,
             )
         return False, f"REJECT_ENTRY: INVALID_SIDE ({side})", {}
     def evaluate_tiered_defense_exit(

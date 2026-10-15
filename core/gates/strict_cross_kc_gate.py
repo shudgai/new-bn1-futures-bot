@@ -205,11 +205,10 @@ class MemeSharedProtectionGate:
     """Gate: MemeSharedProtectionGate - 妖幣共用防禦閘門 (Anti-Wick & Max Slippage / Price Deviation Cap)
     
     所有開倉模式在發出訊號前，必須 100% 通過以下前置硬檢核，否則一票否決（REJECT_ENTRY）：
-    1. 影線與實體過濾（Anti-Wick Gate - 杜絕避雷針與地板陷阱）：
+    1. 弱實體過濾與已確認耗竭：
        - 計算當根 1m K 棒實體佔比：body_ratio = abs(close - open) / (high - low + 1e-9)
        - 若 body_ratio < 0.25（只擋極端十字星，放行一般波動 K 棒）。
-       - 多單開倉：上影線不得超過實體的 0.8 倍（High - max(Open, Close) <= 0.8 * Body）。若超標，禁止追多。
-       - 空單開倉：下影線不得超過實體的 0.8 倍（min(Open, Close) - Low <= 0.8 * Body）。若超標，禁止追空。
+       - 單根長影線不單獨構成耗竭；須同時確認高乖離、爆量、方向性長影線及後續反向收線且未創新極值。
     2. 防天花板與追高乖離限制（Max Slippage / Price Deviation Cap）：
        - 多單：(Price - MA5) / MA5 > 1.2% 時，判定為短線嚴重超買天花板，一票否決開多（REJECT_ENTRY: LONG_MA5_DEVIATION_CAP）。
        - 空單：(MA5 - Price) / MA5 > 1.2% 時，判定為短線嚴重超賣地板，一票否決開空（REJECT_ENTRY: SHORT_MA5_DEVIATION_CAP）。
@@ -250,15 +249,6 @@ class MemeSharedProtectionGate:
             if body_ratio < 0.25:
                 return False, "REJECT_ENTRY: DOMINATED_BY_WICKS"
 
-            if side == 'LONG':
-                upper_wick = c_high - max(c_open, c_close)
-                if upper_wick > 0.7 * body:
-                    return False, "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
-            elif side == 'SHORT':
-                lower_wick = min(c_open, c_close) - c_low
-                if lower_wick > 0.7 * body:
-                    return False, "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
-
             # 2. 防天花板與追高乖離限制 (Max Slippage / Price Deviation Cap > 1.2%)
             if curr_ma5 > 0:
                 if side == 'LONG' and dev > 0.012:
@@ -267,5 +257,3 @@ class MemeSharedProtectionGate:
                     return False, "REJECT_ENTRY: SHORT_MA5_DEVIATION_CAP"
 
         return True, "PASSED"
-
-

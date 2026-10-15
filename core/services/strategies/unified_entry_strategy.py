@@ -155,7 +155,7 @@ def at_least(value, threshold):
 
 
 def wick_exhaustion_problem(candle, side, quote=None, min_body_ratio=0.35):
-    """Reject low-body candles and side-opposing wick resistance/support."""
+    """Reject invalid or weak-body candles; the shared gate handles confirmed exhaustion."""
     if side not in (None, 'LONG', 'SHORT'):
         return 'BLOCKED_INVALID_ENTRY_SIDE'
     try:
@@ -174,16 +174,6 @@ def wick_exhaustion_problem(candle, side, quote=None, min_body_ratio=0.35):
         body_ratio = body / (high - low + 1e-9)
         if body_ratio < float(min_body_ratio):
             return 'REJECT_ENTRY: DOMINATED_BY_WICKS'
-        if side == 'LONG':
-            upper_wick = high - max(opening, close)
-            threshold = 0.7 * body
-            if upper_wick > threshold and not math.isclose(upper_wick, threshold, rel_tol=1e-12, abs_tol=0.):
-                return 'REJECT_ENTRY: UPPER_WICK_RESISTANCE'
-        elif side == 'SHORT':
-            lower_wick = min(opening, close) - low
-            threshold = 0.7 * body
-            if lower_wick > threshold and not math.isclose(lower_wick, threshold, rel_tol=1e-12, abs_tol=0.):
-                return 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_INVALID_ENTRY_CANDLE'
@@ -658,37 +648,17 @@ def evaluate_closed_entry(frame, side, price=None, *, after_close=False, account
             return wait('WAIT_BREAKOUT_OR_GUILLOTINE_TRIGGER')
 
 
-        # ══════════════════════════════════════════════════════════════════════
-        # 【當根影線過長否決開倉（Wick Rejection Gate）】
-        # ══════════════════════════════════════════════════════════════════════
-        if side == 'LONG':
-            upper_wick = c_high - max(c_open, c_close)
-            if upper_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
-                _PENDING_WICK_REENTRY_STATE[sym_key] = {
-                    'side': 'LONG',
-                    'bar_id': curr_stamp,
-                    'extreme_price': c_high,
-                }
-                return wait("REJECT_ENTRY: EXCESSIVE_UPPER_WICK")
-        elif side == 'SHORT':
-            lower_wick = min(c_open, c_close) - c_low
-            if lower_wick > 0.6 * body or body / (candle_range + 1e-9) < 0.40:
-                _PENDING_WICK_REENTRY_STATE[sym_key] = {
-                    'side': 'SHORT',
-                    'bar_id': curr_stamp,
-                    'extreme_price': c_low,
-                }
-                return wait("REJECT_ENTRY: EXCESSIVE_LOWER_WICK")
-
     # ══════════════════════════════════════════════════════════════════════
     # 【前置硬檢核：MemeSharedProtectionGate 與 StrictCrossAndKcTrendGate】
     # ══════════════════════════════════════════════════════════════════════
     from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate, MemeSharedProtectionGate
-    shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(frame, side, price, symbol=symbol)
+    is_breakout_mode = selected_rule in ('TREND_BREAKOUT', 'MOMENTUM_GUILLOTINE')
+    shared_ok, shared_reason = MemeSharedProtectionGate.evaluate(
+        frame, side, price, symbol=symbol, bypass_spatial_check=is_breakout_mode
+    )
     if not shared_ok:
         return wait(shared_reason)
 
-    is_breakout_mode = (selected_rule in ('TREND_BREAKOUT', 'MOMENTUM_GUILLOTINE'))
     if selected_rule == 'MA_CROSS_FAST':
         gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
             frame, side, price, bypass_spatial_check=False

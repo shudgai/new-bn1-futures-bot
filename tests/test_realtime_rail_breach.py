@@ -36,40 +36,27 @@ def bearish_breach_frame():
     return frame
 
 
-def test_realtime_short_breach_enters_without_closed_bar_pair():
+def test_wild_symbol_realtime_breach_is_blocked_by_entry_contract():
     frame = bearish_breach_frame()
+    diagnostics = {}
+    decision = evaluate_entry_contract(
+        frame, 98.8, symbol='龙虾/USDT', diagnostics=diagnostics,
+    )
 
+    assert decision is None
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
+
+
+def test_non_meme_realtime_short_helper_remains_available():
+    frame = bearish_breach_frame()
     with patch('core.services.entry_room_service.entry_room', return_value={'target': 95.0}):
-        decision = evaluate_realtime_short_rail_breach(frame, 98.8, symbol='龙虾/USDT')
-
-    assert decision['action'] == 'ENTER'
-    assert decision['side'] == 'SHORT'
-    assert decision['type'] == REALTIME_RAIL_BREACH_SHORT_CODE
-    assert decision['entry_phase'] == 'REALTIME_RAIL_BREACH'
-    assert decision['realtime_body_atr'] == pytest.approx(1.0)
-
-
-def test_meme_realtime_short_rejects_lower_wick_resistance():
-    frame = bearish_breach_frame()
-    frame.loc[frame.index[-1], ['ma5', 'ma15']] = [99.4, 99.8]
-    frame.loc[frame.index[-1], ['low', 'kc_lower']] = [99.0, 99.5]
-    with patch('core.services.entry_room_service.entry_room', return_value={'target': 97.5}):
         candidate = evaluate_realtime_short_rail_breach(
-            frame, 99.4, symbol='CAP/USDT',
+            frame, 98.8, symbol='TEST/USDT',
         )
 
-    assert candidate['action'] == 'WAIT'
-    assert candidate['reason'] == 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
-
-
-def test_realtime_short_survives_fresh_account_entry_revalidation():
-    frame = bearish_breach_frame()
-    with patch('core.services.entry_room_service.entry_room', return_value={'target': 95.0}):
-        candidate = evaluate_realtime_short_rail_breach(frame, 98.8, symbol='龙虾/USDT')
-
     assert candidate['action'] == 'ENTER'
-    assert candidate['expected_reward_risk'] >= 1.0
-    assert candidate['structural_target'] == 95.0
+    assert candidate['side'] == 'SHORT'
+    assert candidate['type'] == REALTIME_RAIL_BREACH_SHORT_CODE
 
 
 def test_realtime_short_requires_net_reward_at_least_net_risk():
@@ -78,11 +65,11 @@ def test_realtime_short_requires_net_reward_at_least_net_risk():
     with patch('core.services.entry_room_service.entry_room', return_value={'target': 98.0}), \
             patch('core.services.entry_contract.check_entry_gates', return_value=(True, None)):
         decision = evaluate_entry_contract(
-            frame, 98.8, symbol='龙蝦/USDT', diagnostics=diagnostics,
+            frame, 98.8, symbol='龍蝦/USDT', diagnostics=diagnostics,
         )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_REWARD_BELOW_RISK'
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_realtime_short_fails_closed_without_confirmed_profit_target():
@@ -95,7 +82,7 @@ def test_realtime_short_fails_closed_without_confirmed_profit_target():
         )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_REWARD_RISK_UNAVAILABLE'
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_realtime_short_net_reward_risk_uses_structural_target_and_1_5_atr_stop():
@@ -118,7 +105,7 @@ def test_realtime_short_is_rejected_at_1_5_atr_below_lower_rail():
     )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_BY_EXTENDED_BREAKOUT'
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 @pytest.mark.parametrize('wick_bar', ['live', 'previous'])
@@ -135,18 +122,11 @@ def test_realtime_short_is_rejected_for_extreme_lower_shadow(wick_bar):
     )
 
     assert decision is None
-    assert diagnostics['reason'] == (
-        'REJECT_ENTRY: LOWER_WICK_SUPPORT'
-        if wick_bar == 'live' else 'REJECT_ENTRY: DOMINATED_BY_WICKS'
-    )
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
-@pytest.mark.parametrize('failure,reason', [
-    ('small_body', 'REJECT_ENTRY: DOMINATED_BY_WICKS'),
-    ('kc_flat', 'BLOCKED_REALTIME_SHORT_KC_NOT_FALLING'),
-    ('ma_reversed', 'BLOCKED_REALTIME_SHORT_MA_ORDER'),
-])
-def test_realtime_short_fails_closed_when_trigger_conditions_are_missing(failure, reason):
+@pytest.mark.parametrize('failure', ['small_body', 'kc_flat', 'ma_reversed'])
+def test_wild_symbol_live_route_fails_closed_before_legacy_trigger_checks(failure):
     frame = bearish_breach_frame()
     if failure == 'small_body':
         frame.loc[frame.index[-1], 'open'] = 99.0
@@ -162,7 +142,7 @@ def test_realtime_short_fails_closed_when_trigger_conditions_are_missing(failure
     )
 
     assert decision is None
-    assert diagnostics['reason'] == reason
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_realtime_route_code_cannot_be_reused_after_quote_returns_inside_rail():
@@ -175,4 +155,4 @@ def test_realtime_route_code_cannot_be_reused_after_quote_returns_inside_rail():
     )
 
     assert decision is None
-    assert diagnostics['reason'] == 'BLOCKED_REALTIME_SHORT_BREACH_NOT_QUALIFIED'
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'

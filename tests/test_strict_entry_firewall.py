@@ -60,15 +60,17 @@ def frame(rule='B', side='LONG'):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_live_midline_launch_is_authorized_by_current_contract(side):
+def test_live_midline_launch_is_rejected_by_current_contract(side):
     f, quote = live_midline_frame(side)
     code = f'AUTHORIZED_BY_MIDLINE_BREAK_{side}'
+    diagnostics = {}
 
-    decision = evaluate_entry_contract(f, quote, code=code, symbol='CAP/USDT')
+    decision = evaluate_entry_contract(
+        f, quote, code=code, symbol='CAP/USDT', diagnostics=diagnostics,
+    )
 
-    assert decision is not None
-    assert decision['type'] == code
-    assert decision['entry_phase'] == 'KC_MIDLINE_LAUNCH'
+    assert decision is None
+    assert diagnostics['reason'] == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -130,7 +132,7 @@ def test_account_fails_closed(fault):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_actual_exchange_boundary(side):
     from core.testnet_account import BinanceTestnetAccount
-    f, quote = live_midline_frame(side)
+    f, _ = live_midline_frame(side)
     account = object.__new__(BinanceTestnetAccount)
     account.exchange = SimpleNamespace(create_order=AsyncMock(return_value={'id': 'ok'}))
     account.entry_frame_provider = AsyncMock(return_value=f)
@@ -140,14 +142,12 @@ def test_actual_exchange_boundary(side):
         channel_confirmation_bar_id=float(f.iloc[-1].timestamp),
     )
     exchange_side = 'buy' if side == 'LONG' else 'sell'
-    asyncio.run(account._send_order(
-        'TEST', 'market', exchange_side, 1, entry_context=context,
-    ))
-    account.exchange.create_order.assert_awaited_once()
-    account.exchange.create_order.reset_mock()
-    f.loc[f.index[-1], 'close'] = f.loc[f.index[-1], 'open']
-    with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
-        asyncio.run(account._send_order('TEST', 'limit', exchange_side, 1, 100, entry_context=context))
+    for order_type, price in (('market', None), ('limit', 100.)):
+        with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
+            asyncio.run(account._send_order(
+                'TEST', order_type, exchange_side, 1, price,
+                entry_context=context,
+            ))
     account.exchange.create_order.assert_not_awaited()
     asyncio.run(account._send_order('TEST', 'market', exchange_side, 1, params={'reduceOnly': True}))
     account.exchange.create_order.assert_awaited_once()
@@ -200,11 +200,9 @@ def test_successful_close_cannot_open_in_same_runner(monkeypatch):
     engine._execute_confirmed_channel_break.assert_not_awaited()
 
 
-def test_physical_gate_uses_latest_atr():
-    f, quote = live_midline_frame('LONG')
+def test_physical_gate_rejects_obsolete_midline_launch_code():
+    f, _ = live_midline_frame('LONG')
     code = 'AUTHORIZED_BY_MIDLINE_BREAK_LONG'
 
-    assert validate_entry_frame(f, 'LONG', code)['entry_phase'] == 'KC_MIDLINE_LAUNCH'
-    f.loc[f.index[-1], 'close'] = f.loc[f.index[-1], 'open']
     with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
         validate_entry_frame(f, 'LONG', code)

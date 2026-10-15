@@ -3,12 +3,18 @@
 涵蓋三大開倉模式與開倉前置強制審查。
 """
 import logging
+import math
 from typing import Dict, Any, Optional, Tuple
 import pandas as pd
 from core.indicators.dual_timeframe_provider import DualTimeframeProvider
 from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
 
 logger = logging.getLogger(__name__)
+
+NORMAL_MAX_BIAS_ATR = 1.5
+STRONG_TREND_MAX_BIAS_ATR = 2.8
+CLIMAX_VOLUME_MULTIPLE = 2.5
+CLIMAX_WICK_RATIO = 0.50
 
 
 class MemeSharedProtectionGate:
@@ -293,145 +299,329 @@ class MemeSharedProtectionGate:
 
         return False, "REJECT_ENTRY: INVALID_SIDE"
 
+    @staticmethod
+    def _closed_bars(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if 'is_closed' not in df.columns:
+            return df
+        return df[df['is_closed'].fillna(False).astype(bool)]
+
+    @classmethod
+    def is_strong_directional_expansion(
+        cls,
+        df_5m: pd.DataFrame,
+        trend_15m_info: Optional[Dict[str, Any]],
+        side: str,
+    ) -> bool:
+        """Require aligned 15m/5m trend structure and expanding 5m KC width."""
+        if not trend_15m_info:
+            return False
+        side = str(side).upper()
+        trend = 'DOWN' if side == 'SHORT' else 'UP'
+        if side not in ('LONG', 'SHORT'):
+            return False
+        if str(trend_15m_info.get('15m_big_trend', '')).upper() != trend:
+            return False
+        if str(trend_15m_info.get('15m_kc_trend', '')).upper() != trend:
+            return False
+
+        closed = cls._closed_bars(df_5m)
+        if len(closed) < 3:
+            return False
+        recent = closed.tail(3)
+        required = ('kc_middle', 'kc_upper', 'kc_lower', 'ma5', 'atr')
+        if any(column not in recent.columns for column in required):
+            return False
+
+        try:
+            middle = recent['kc_middle'].astype(float).tolist()
+            upper = recent['kc_upper'].astype(float).tolist()
+            lower = recent['kc_lower'].astype(float).tolist()
+            ma5 = recent['ma5'].astype(float).tolist()
+            atr = float(recent.iloc[-1]['atr'])
+        except (TypeError, ValueError):
+            return False
+
+        widths = [high - low for high, low in zip(upper, lower)]
+        values = middle + upper + lower + ma5 + widths + [atr]
+        if not all(math.isfinite(value) and value > 0 for value in (atr, *upper, *lower, *widths)):
+            return False
+        if not all(math.isfinite(value) and value > 0 for value in (*middle, *ma5)):
+            return False
+
+        is_short = side == 'SHORT'
+        mid_is_aligned = (
+            middle[0] > middle[1] > middle[2]
+            if is_short else middle[0] < middle[1] < middle[2]
+        )
+        ma5_is_aligned = (
+            ma5[0] > ma5[1] > ma5[2]
+            if is_short else ma5[0] < ma5[1] < ma5[2]
+        )
+        channel_is_expanding = widths[0] < widths[1] < widths[2]
+        ma5_move_atr = (
+            (ma5[0] - ma5[2]) / atr
+            if is_short else (ma5[2] - ma5[0]) / atr
+        )
+        return mid_is_aligned and ma5_is_aligned and channel_is_expanding and ma5_move_atr >= 0.10
+
+    @classmethod
+    def is_confirmed_directional_climax(cls, df: pd.DataFrame, side: str) -> bool:
+        """Confirm an extended, high-volume rejection candle followed by no new extreme."""
+        closed = cls._closed_bars(df)
+        if len(closed) < 12:
+            return False
+        side = str(side).upper()
+        if side not in ('LONG', 'SHORT'):
+            return False
+
+        baseline = closed.iloc[-12:-2]
+        climax = closed.iloc[-2]
+        confirmation = closed.iloc[-1]
+        required = ('open', 'high', 'low', 'close', 'volume', 'ma15', 'atr')
+        if any(column not in closed.columns for column in required):
+            return False
+
+        try:
+            opens = float(climax['open'])
+            high = float(climax['high'])
+            low = float(climax['low'])
+            close = float(climax['close'])
+            ma15 = float(climax['ma15'])
+            atr = float(climax['atr'])
+            volume = float(climax['volume'])
+            baseline_volume = baseline['volume'].astype(float).mean()
+            next_open = float(confirmation['open'])
+            next_close = float(confirmation['close'])
+            next_low = float(confirmation['low'])
+            next_high = float(confirmation['high'])
+        except (TypeError, ValueError):
+            return False
+
+        candle_range = high - low
+        if (
+            not all(math.isfinite(value) for value in (
+                opens, high, low, close, ma15, atr, volume, baseline_volume,
+                next_open, next_close, next_low, next_high,
+            ))
+            or candle_range <= 0
+            or atr <= 0
+            or baseline_volume <= 0
+            or low > min(opens, close)
+            or high < max(opens, close)
+            or next_low > min(next_open, next_close)
+            or next_high < max(next_open, next_close)
+        ):
+            return False
+
+        bias_atr = (
+            (ma15 - close) / atr
+            if side == 'SHORT' else (close - ma15) / atr
+        )
+        wick_ratio = (
+            max(0.0, min(opens, close) - low) / candle_range
+            if side == 'SHORT'
+            else max(0.0, high - max(opens, close)) / candle_range
+        )
+        volume_ratio = volume / baseline_volume
+        if side == 'SHORT':
+            return (
+                close < opens
+                and bias_atr >= NORMAL_MAX_BIAS_ATR
+                and volume_ratio >= CLIMAX_VOLUME_MULTIPLE
+                and wick_ratio > CLIMAX_WICK_RATIO
+                and next_close > next_open
+                and next_low >= low
+            )
+        return (
+            close > opens
+            and bias_atr >= NORMAL_MAX_BIAS_ATR
+            and volume_ratio >= CLIMAX_VOLUME_MULTIPLE
+            and wick_ratio > CLIMAX_WICK_RATIO
+            and next_close < next_open
+            and next_high <= high
+        )
+
+    @classmethod
+    def is_directional_pullback_continuation(
+        cls,
+        df: pd.DataFrame,
+        quote: float,
+        strong_trend: bool,
+        side: str,
+    ) -> bool:
+        """Recognize a small pullback followed by a live turn in a strong trend."""
+        side = str(side).upper()
+        if not strong_trend or side not in ('LONG', 'SHORT') or df is None or len(df) < 4:
+            return False
+
+        is_short = side == 'SHORT'
+        current = df.iloc[-1]
+        history = cls._closed_bars(df)
+        current_is_closed = bool(current.get('is_closed', True))
+        if current_is_closed:
+            history = history.iloc[:-1]
+        if len(history) < 2:
+            return False
+
+        pullback_end = len(history) - 1
+        pullback_start = pullback_end + 1
+        for idx in range(pullback_end, max(-1, pullback_end - 2), -1):
+            bar = history.iloc[idx]
+            try:
+                bar_open = float(bar['open'])
+                bar_close = float(bar['close'])
+                atr = float(bar['atr'])
+            except (KeyError, TypeError, ValueError):
+                return False
+            is_pullback_candle = bar_close > bar_open if is_short else bar_close < bar_open
+            if not is_pullback_candle or atr <= 0 or abs(bar_close - bar_open) > 0.5 * atr:
+                break
+            pullback_start = idx
+
+        if pullback_start > pullback_end:
+            return False
+        pullback_bar = history.iloc[pullback_end]
+        pullback_open = float(pullback_bar.get('open', 0.0))
+        pullback_close = float(pullback_bar.get('close', 0.0))
+        if (
+            (is_short and pullback_close <= pullback_open)
+            or (not is_short and pullback_close >= pullback_open)
+            or abs(pullback_close - pullback_open)
+            > 0.5 * float(pullback_bar.get('atr', 0.0))
+        ):
+            return False
+        if pullback_start == 0:
+            return False
+
+        preceding = history.iloc[pullback_start - 1]
+        preceding_open = float(preceding.get('open', 0.0))
+        preceding_close = float(preceding.get('close', 0.0))
+        if (
+            (is_short and preceding_close >= preceding_open)
+            or (not is_short and preceding_close <= preceding_open)
+        ):
+            return False
+
+        touched_level = False
+        for idx in range(pullback_start, pullback_end + 1):
+            bar = history.iloc[idx]
+            try:
+                high = float(bar['high'])
+                low = float(bar['low'])
+                close = float(bar['close'])
+                atr = float(bar['atr'])
+                levels = (
+                    float(bar.get('ema3', 0.0)),
+                    float(bar.get('ma5', 0.0)),
+                    float(bar.get('kc_middle', bar.get('kc_basis', 0.0))),
+                )
+            except (TypeError, ValueError):
+                return False
+            if atr <= 0:
+                return False
+            if any(
+                level > 0
+                and (
+                    (is_short and high >= level - 0.20 * atr and close <= level)
+                    or (not is_short and low <= level + 0.20 * atr and close >= level)
+                )
+                for level in levels
+            ):
+                touched_level = True
+                break
+        if not touched_level:
+            return False
+
+        try:
+            price = float(quote)
+            current_open = float(current.get('open', price))
+            current_ma5 = float(current.get('ma5', 0.0))
+            current_mid = float(current.get('kc_middle', current.get('kc_basis', 0.0)))
+            trigger_is_aligned = price < current_open if is_short else price > current_open
+            price_has_reversed = price <= pullback_close if is_short else price >= pullback_close
+            price_ma_aligned = price < current_ma5 if is_short else price > current_ma5
+            price_mid_aligned = price < current_mid if is_short else price > current_mid
+        except (TypeError, ValueError):
+            return False
+        return (
+            trigger_is_aligned
+            and price_has_reversed
+            and current_ma5 > 0
+            and current_mid > 0
+            and price_ma_aligned
+            and price_mid_aligned
+        )
+
     @classmethod
     def validate_trend_exhaustion(
         cls,
         df: pd.DataFrame,
         side: str,
         quote: Optional[float] = None,
+        *,
+        strong_bullish_trend: bool = False,
+        strong_bearish_trend: bool = False,
+        bullish_continuation: bool = False,
+        bearish_continuation: bool = False,
     ) -> Tuple[bool, str]:
-        """驗證是否已處於趨勢末端 (Trend Exhaustion Gate)。
-        
-        使用者鐵律：「若已在漲勢末端就不要再開倉」！
-        多空對稱：
-        - 漲勢末端 (BULLISH_EXHAUSTION)：100% 嚴禁開多，一票否決！
-        - 跌勢末端 (BEARISH_EXHAUSTION)：100% 嚴禁開空，一票否決！
-        """
+        """Block excessive extension except for confirmed strong-trend continuations."""
         if df is None or len(df) < 3:
             return True, "PASS: INSUFFICIENT_DATA"
 
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        c = float(curr.get('close', 0.0))
-        o = float(curr.get('open', 0.0))
-        h = float(curr.get('high', 0.0))
-        l = float(curr.get('low', 0.0))
-        price = float(quote) if quote is not None else c
+        side = str(side).upper()
+        if side not in ('LONG', 'SHORT'):
+            return False, "REJECT_ENTRY: INVALID_SIDE"
 
-        ma5 = float(curr.get('ma5', 0.0))
-        prev_ma5 = float(prev.get('ma5', ma5))
+        if cls.is_confirmed_directional_climax(df, side):
+            if side == 'LONG':
+                return False, (
+                    "VETO_LONG_CONFIRMED_VOLUME_CLIMAX: "
+                    "高乖離、爆量長上影與後續收黑且未破高已同時確認"
+                )
+            return False, (
+                "VETO_SHORT_CONFIRMED_VOLUME_CLIMAX: "
+                "高乖離、爆量長下影與後續收紅且未破底已同時確認"
+            )
+
+        curr = df.iloc[-1]
+        close = float(curr.get('close', 0.0))
+        price = float(quote) if quote is not None else close
         ma15 = float(curr.get('ma15', 0.0))
         atr = float(curr.get('atr', 0.0))
-        if atr <= 0:
-            atr = max(c * 0.01, 1e-8)
+        upper = float(curr.get('kc_upper', 0.0))
+        lower = float(curr.get('kc_lower', 0.0))
+        if not all(math.isfinite(value) for value in (close, price, ma15, atr, upper, lower)):
+            return False, "REJECT_ENTRY: INVALID_TREND_EXHAUSTION_DATA"
+        if close <= 0 or price <= 0 or ma15 <= 0 or atr <= 0 or upper <= 0 or lower <= 0 or upper <= lower:
+            return False, "REJECT_ENTRY: INVALID_TREND_EXHAUSTION_DATA"
 
-        kc_upper = float(curr.get('kc_upper', 0.0))
-        prev_kc_upper = float(prev.get('kc_upper', kc_upper))
-        kc_lower = float(curr.get('kc_lower', 0.0))
-        prev_kc_lower = float(prev.get('kc_lower', kc_lower))
-        kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
-
-        candle_range = max(h - l, 1e-9)
-        body = abs(c - o)
-        upper_wick = h - max(c, o)
-        lower_wick = min(c, o) - l
-
-        side = side.upper()
-
-        # =====================================================================
-        # 1. 漲勢末端檢核 (Bullish Trend Exhaustion Gate - 禁止開多)
-        # =====================================================================
         if side == 'LONG':
-            # 特徵 A：極端超買與均線嚴重過度延伸 (Extreme Overextension)
             bias_atr = (price - ma15) / atr if ma15 > 0 else 0.0
-            dev_ma5 = (price - ma5) / ma5 if ma5 > 0 else 0.0
-            is_initial_breakout = (o <= kc_upper + 0.1 * atr) and (c > o) and (upper_wick <= 0.4 * body)
-
-            if (price - kc_upper) > 2.8 * atr:
-                return False, f"VETO_LONG_BULLISH_EXHAUSTION: 衝出上軌過遠 ({(price - kc_upper)/atr:.2f} ATR > 2.8 ATR)，已在漲勢極限末端，嚴禁追多"
-
-            if not is_initial_breakout:
-                if bias_atr > 2.2:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 2.2 ATR)，已在漲勢極限末端，嚴禁追多"
-                if dev_ma5 > 0.025:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 2.5%)，已在漲勢極限末端，嚴禁追多"
-            else:
-                if bias_atr > 2.8:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 2.8 ATR)，已在漲勢極限末端，嚴禁追多"
-
-            # 特徵 B：頂部高檔滯漲長上影線 / 避雷針遇阻 (Stalling Upper Wick)
-            if price >= min(kc_upper, ma5) and upper_wick > 0.7 * body and upper_wick > 0.35 * candle_range:
-                return False, f"VETO_LONG_BULLISH_EXHAUSTION: 頂部留長上影線受阻滯漲 (Wick: {upper_wick:.4f} > 0.7*Body)，已在漲勢末端，嚴禁追多"
-
-            # 特徵 C：連續推進後動能顯著枯竭 (Diminishing Thrust)
-            lookback = min(len(df), 6)
-            recent = df.tail(lookback)
-            recent_closes = recent['close'].astype(float).tolist()
-            recent_opens = recent['open'].astype(float).tolist()
-            recent_bodies = [abs(rc - ro) for rc, ro in zip(recent_closes, recent_opens)]
-            bull_bars = sum(1 for rc, ro in zip(recent_closes, recent_opens) if rc > ro)
-            total_gain = recent_closes[-1] - recent_opens[0]
-            if bull_bars >= 4 and total_gain >= 2.0 * atr:
-                avg_prior_body = sum(recent_bodies[:-1]) / max(len(recent_bodies) - 1, 1)
-                if recent_bodies[-1] < 0.4 * avg_prior_body or recent_bodies[-1] < 0.2 * atr:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 連續大幅推升後多頭動能耗盡衰竭 (LastBody: {recent_bodies[-1]:.4f} < 0.4*AvgPrior)，已在漲勢末端，嚴禁追多"
-
-            # 特徵 D：高檔 MA5 斜率走平衰竭 (MA5 Deceleration at Highs)
-            # 特徵 D：高檔 MA5 斜率向下拐頭衰竭 (MA5 Reversal at Highs)
-            if price > kc_middle and prev_ma5 > 0:
-                ma5_slope = (ma5 - prev_ma5) / prev_ma5
-                if ma5_slope <= 0.0:
-                    return False, f"VETO_LONG_BULLISH_EXHAUSTION: 高檔 MA5 斜率向下拐頭 (Slope: {ma5_slope:.6f} <= 0)，已在漲勢末端，嚴禁追多"
-
-            return True, "PASS"
-
-        # =====================================================================
-        # 2. 跌勢末端檢核 (Bearish Trend Exhaustion Gate - 禁止開空)
-        # =====================================================================
-        elif side == 'SHORT':
-            # 特徵 A：極端超賣與均線嚴重過度延伸 (Extreme Overextension)
+            rail_extension = max(0.0, price - upper) / atr
+            is_strong = strong_bullish_trend
+            is_continuation = bullish_continuation
+            veto_code = 'VETO_LONG_BULLISH_EXHAUSTION'
+            rail_name = '突破上軌距離'
+        else:
             bias_atr = (ma15 - price) / atr if ma15 > 0 else 0.0
-            dev_ma5 = (ma5 - price) / ma5 if ma5 > 0 else 0.0
-            is_initial_breakout = (o >= kc_lower - 0.1 * atr) and (c < o) and (lower_wick <= 0.4 * body)
+            rail_extension = max(0.0, lower - price) / atr
+            is_strong = strong_bearish_trend
+            is_continuation = bearish_continuation
+            veto_code = 'VETO_SHORT_BEARISH_EXHAUSTION'
+            rail_name = '跌破下軌距離'
 
-            if (kc_lower - price) > 2.8 * atr:
-                return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 跌破下軌過遠 ({(kc_lower - price)/atr:.2f} ATR > 2.8 ATR)，已在跌勢極限末端，嚴禁追空"
+        if is_continuation:
+            return True, 'PASS: QUALIFIED_STRONG_TREND_CONTINUATION'
 
-            if not is_initial_breakout:
-                if bias_atr > 2.2:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離過大已達極限 ({bias_atr:.2f}x ATR > 2.2 ATR)，已在跌勢極限末端，嚴禁追空"
-                if dev_ma5 > 0.025:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 偏離 MA5 過大 ({dev_ma5:.2%} > 2.5%)，已在跌勢極限末端，嚴禁追空"
-            else:
-                if bias_atr > 2.8:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 均線乖離極度過大 ({bias_atr:.2f}x ATR > 2.8 ATR)，已在跌勢極限末端，嚴禁追空"
+        bias_limit = STRONG_TREND_MAX_BIAS_ATR if is_strong else NORMAL_MAX_BIAS_ATR
+        if bias_atr > bias_limit:
+            return False, f'{veto_code}: MA15 乖離 {bias_atr:.2f} ATR > {bias_limit:.1f} ATR'
+        if rail_extension > bias_limit:
+            return False, f'{veto_code}: {rail_name} {rail_extension:.2f} ATR > {bias_limit:.1f} ATR'
 
-            # 特徵 B：底部低檔長下影線托底買盤抵抗 (Stalling Lower Wick)
-            if price <= max(kc_lower, ma5) and lower_wick > 0.7 * body and lower_wick > 0.35 * candle_range:
-                return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 底部留長下影線托底抵抗 (Wick: {lower_wick:.4f} > 0.7*Body)，已在跌勢末端，嚴禁追空"
-
-            # 特徵 C：連續下跌趕底後動能顯著枯竭 (Diminishing Downward Thrust)
-            lookback = min(len(df), 6)
-            recent = df.tail(lookback)
-            recent_closes = recent['close'].astype(float).tolist()
-            recent_opens = recent['open'].astype(float).tolist()
-            recent_bodies = [abs(rc - ro) for rc, ro in zip(recent_closes, recent_opens)]
-            bear_bars = sum(1 for rc, ro in zip(recent_closes, recent_opens) if rc < ro)
-            total_drop = recent_opens[0] - recent_closes[-1]
-            if bear_bars >= 4 and total_drop >= 2.0 * atr:
-                avg_prior_body = sum(recent_bodies[:-1]) / max(len(recent_bodies) - 1, 1)
-                if recent_bodies[-1] < 0.4 * avg_prior_body or recent_bodies[-1] < 0.2 * atr:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 連續大幅下殺後空頭動能耗盡衰竭 (LastBody: {recent_bodies[-1]:.4f} < 0.4*AvgPrior)，已在跌勢末端，嚴禁追空"
-
-            # 特徵 D：低檔 MA5 斜率向上拐頭 (MA5 Reversal at Lows)
-            if price < kc_middle and prev_ma5 > 0:
-                ma5_slope = (ma5 - prev_ma5) / prev_ma5
-                if ma5_slope >= 0.0:
-                    return False, f"VETO_SHORT_BEARISH_EXHAUSTION: 低檔 MA5 斜率向上拐頭 (Slope: {ma5_slope:.6f} >= 0)，已在跌勢末端，嚴禁追空"
-
-            return True, "PASS"
-
-        return False, "REJECT_ENTRY: INVALID_SIDE"
+        return True, 'PASS'
 
     @classmethod
     def evaluate(
@@ -470,26 +660,22 @@ class MemeSharedProtectionGate:
 
         dev = abs(price - curr_ma5) / curr_ma5 if curr_ma5 > 0 else 0.0
 
+        if cls.is_confirmed_directional_climax(frame, side):
+            reason = (
+                "VETO_LONG_CONFIRMED_VOLUME_CLIMAX"
+                if side == 'LONG'
+                else "VETO_SHORT_CONFIRMED_VOLUME_CLIMAX"
+            )
+            return False, reason
+
         # 當 bypass_spatial_check == True 時，100% 略過乖離率與影線檢核
         if not bypass_spatial_check:
-            # 1. 影線與實體過濾（依據鐵律：影線不得超過實體的 70%）
+            # Reject weak bodies and excessive MA5 distance, but require the
+            # shared confirmed-climax evidence before treating a wick as exhaustion.
             if body_ratio < 0.25:
                 reason = "REJECT_ENTRY: DOMINATED_BY_WICKS"
                 logger.info(f"[{symbol or 'UNKNOWN'}] [開倉攔截 VETO] 模式: {mode or 'MODE2'} | 原因: {reason} | 15M_trend: UNKNOWN | Dev: {dev:.4f}")
                 return False, reason
-
-            if side == 'LONG':
-                upper_wick = c_high - max(c_open, c_close)
-                if upper_wick > 0.7 * body:
-                    reason = "REJECT_ENTRY: EXCESSIVE_UPPER_WICK"
-                    logger.info(f"[{symbol or 'UNKNOWN'}] [開倉攔截 VETO] 模式: {mode or 'MODE2'} | 原因: {reason} | 15M_trend: UNKNOWN | Dev: {dev:.4f}")
-                    return False, reason
-            elif side == 'SHORT':
-                lower_wick = min(c_open, c_close) - c_low
-                if lower_wick > 0.7 * body:
-                    reason = "REJECT_ENTRY: EXCESSIVE_LOWER_WICK"
-                    logger.info(f"[{symbol or 'UNKNOWN'}] [開倉攔截 VETO] 模式: {mode or 'MODE2'} | 原因: {reason} | 15M_trend: UNKNOWN | Dev: {dev:.4f}")
-                    return False, reason
 
             # 2. 1.2% MA5 乖離率檢核
             if curr_ma5 > 0:
@@ -564,9 +750,49 @@ class MemeSharedProtectionGate:
         lower_wick = min(c, o) - l
         dev = abs(p - ma5) / ma5 if ma5 > 0 else 0.0
 
+        strong_trend = cls.is_strong_directional_expansion(
+            df_5m, trend_15m_info, side,
+        )
+        is_initial_breakout = (
+            side == 'LONG'
+            and upper > 0
+            and o <= upper
+            and p > upper
+            and p > o
+            and (p - o) >= 0.25 * atr
+        ) or (
+            side == 'SHORT'
+            and lower > 0
+            and o >= lower
+            and p < lower
+            and p < o
+            and (o - p) >= 0.25 * atr
+        )
+        is_directional_pullback_continuation = cls.is_directional_pullback_continuation(
+            df_5m, p, strong_trend, side,
+        )
+        is_initial_short_breakdown = (
+            is_initial_breakout and side == 'SHORT'
+        )
+        is_initial_long_breakout = (
+            is_initial_breakout and side == 'LONG'
+        )
+        is_bullish_pullback_continuation = (
+            is_directional_pullback_continuation and side == 'LONG'
+        )
+        is_bearish_pullback_continuation = (
+            is_directional_pullback_continuation and side == 'SHORT'
+        )
+
         # 推定當前候選模式
         if preferred_mode:
             mode_candidate = preferred_mode
+        elif is_initial_breakout:
+            mode_candidate = 'MODE1_KC_BREAKOUT'
+        elif is_bullish_pullback_continuation:
+            mode_candidate = 'MODE5_BULLISH_PULLBACK_CONTINUATION'
+        elif is_bearish_pullback_continuation:
+            mode_candidate = 'MODE5_BEARISH_PULLBACK_CONTINUATION'
         elif side == 'LONG' and c > upper:
             mode_candidate = 'MODE1_KC_BREAKOUT'
         elif side == 'SHORT' and c < lower:
@@ -631,7 +857,15 @@ class MemeSharedProtectionGate:
 
         # ──【全域趨勢末端一票否決 (Trend Exhaustion VETO Gate)】──
         # 使用者鐵律：「若已在漲勢末端就不要再開倉」
-        exh_ok, exh_reason = cls.validate_trend_exhaustion(df_5m, side, p)
+        exh_ok, exh_reason = cls.validate_trend_exhaustion(
+            df_5m,
+            side,
+            p,
+            strong_bullish_trend=strong_trend and side == 'LONG',
+            strong_bearish_trend=strong_trend and side == 'SHORT',
+            bullish_continuation=is_bullish_pullback_continuation,
+            bearish_continuation=is_bearish_pullback_continuation,
+        )
         if not exh_ok:
             return cls._fail_entry(symbol, mode_candidate, f"REJECT_ENTRY: CRITICAL_BLOCK: {exh_reason}", trend_15m_info, dev)
 
@@ -662,6 +896,8 @@ class MemeSharedProtectionGate:
                 last_closed_action=last_closed_action,
                 last_closed_ts=last_closed_ts,
                 last_closed_price=last_closed_price,
+                strong_trend=strong_trend and side == 'LONG',
+                bypass_extension_check=is_bullish_pullback_continuation,
             )
             if not top_ok:
                 return cls._fail_entry(symbol, mode_candidate, f"REJECT_ENTRY: CRITICAL_BLOCK: {top_reason}", trend_15m_info, dev)
@@ -672,6 +908,8 @@ class MemeSharedProtectionGate:
                 last_closed_action=last_closed_action,
                 last_closed_ts=last_closed_ts,
                 last_closed_price=last_closed_price,
+                strong_trend=strong_trend and side == 'SHORT',
+                bypass_extension_check=is_bearish_pullback_continuation,
             )
             if not short_ok:
                 return cls._fail_entry(symbol, mode_candidate, f"REJECT_ENTRY: CRITICAL_BLOCK: {short_reason}", trend_15m_info, dev)
@@ -744,7 +982,9 @@ class MemeSharedProtectionGate:
         # ──【豁免破軌/斷頭/延續模式的乖離率與影線限制】──
         # 若觸發「模式一（KC 破軌）」、「模式三（斷頭鍘刀）」或「模式四（KC 延續）」，設定 bypass_spatial_check = True
         # 當 bypass_spatial_check == True 時，100% 豁免「1.2% 均線乖離率檢核」與「影線佔比檢核」，直接放行突破進場
-        bypass_spatial_check = is_mode1 or is_mode3 or is_mode4
+        bypass_spatial_check = (
+            is_mode1 or is_mode3 or is_mode4 or is_directional_pullback_continuation
+        )
 
         meta = {
             'side': side,
@@ -754,6 +994,12 @@ class MemeSharedProtectionGate:
             '5m_ma5_slope': ma5_slope,
             '5m_atr': atr,
             'bypass_spatial_check': bypass_spatial_check,
+            'strong_bullish_trend': strong_trend and side == 'LONG',
+            'strong_bearish_trend': strong_trend and side == 'SHORT',
+            'is_initial_long_breakout': is_initial_long_breakout,
+            'is_initial_short_breakdown': is_initial_short_breakdown,
+            'is_bullish_pullback_continuation': is_bullish_pullback_continuation,
+            'is_bearish_pullback_continuation': is_bearish_pullback_continuation,
         }
 
         if is_mode1:
@@ -763,6 +1009,15 @@ class MemeSharedProtectionGate:
         if is_mode3:
             meta['mode'] = 'MODE3_GUILLOTINE_CUT'
             return True, "AUTHORIZED_ENTRY_MODE3_GUILLOTINE", meta
+
+        if is_directional_pullback_continuation:
+            mode = (
+                'MODE5_BULLISH_PULLBACK_CONTINUATION'
+                if side == 'LONG'
+                else 'MODE5_BEARISH_PULLBACK_CONTINUATION'
+            )
+            meta['mode'] = mode
+            return True, f"AUTHORIZED_ENTRY_{mode}", meta
 
         if is_mode4:
             meta['mode'] = 'MODE4_KC_CONTINUATION'
@@ -778,13 +1033,6 @@ class MemeSharedProtectionGate:
         # 模式二：5M 影線實體過濾（放寬門檻：body_ratio >= 0.25，只擋極端十字星）
         if solid_ratio < 0.25:
             return cls._fail_entry(symbol, 'MODE2_TRUE_CROSS', f"REJECT_ENTRY: WEAK_CANDLE_SOLIDITY ({solid_ratio:.2f} < 0.25)", trend_15m_info, dev)
-
-        if side == 'LONG':
-            if upper_wick > 0.8 * body:
-                return cls._fail_entry(symbol, 'MODE2_TRUE_CROSS', f"REJECT_ENTRY: UPPER_WICK_TOO_LONG ({upper_wick:.4f} > 0.8 * {body:.4f})", trend_15m_info, dev)
-        elif side == 'SHORT':
-            if lower_wick > 0.8 * body:
-                return cls._fail_entry(symbol, 'MODE2_TRUE_CROSS', f"REJECT_ENTRY: LOWER_WICK_TOO_LONG ({lower_wick:.4f} > 0.8 * {body:.4f})", trend_15m_info, dev)
 
         # 模式二：5M 均線乖離率檢核 (> 1.2% 一票否決)
         if ma5 > 0 and dev > 0.012:

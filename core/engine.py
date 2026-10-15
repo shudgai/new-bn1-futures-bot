@@ -2422,9 +2422,15 @@ class TradingEngine:
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
-    async def execute_dual_tf_entry(self, symbol: str, frame: pd.DataFrame, price: float, side: str, mode_name: str, meta_dict: dict = None) -> bool:
+    async def execute_dual_tf_entry(
+        self, symbol: str, frame: pd.DataFrame, price: float, side: str,
+        mode_name: str, meta_dict: dict = None, entry_mode: str = "CHANNEL_SWING",
+    ) -> bool:
         """5M+15M 雙週期共振開倉授權直通執行通道 (Force Direct Order Execution)"""
         import time, math
+        entry_mode = str(entry_mode or "CHANNEL_SWING").upper()
+        if entry_mode not in ("CHANNEL_SWING", "WILD_SWING"):
+            raise ValueError(f"Unsupported direct-entry mode: {entry_mode}")
         # 1. 基礎防護：檢查持倉、平倉鎖與掛單
         if symbol in self.account.positions:
             return False
@@ -2454,12 +2460,19 @@ class TradingEngine:
         else:
             atr = price * 0.015
 
-        cand_bar_id = int(frame.iloc[-1].get('time', time.time())) if len(frame) > 0 else int(time.time())
+        wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
+        cand_bar_id = (
+            int(wild_signal["bar_id"])
+            if wild_signal.get("bar_id") is not None
+            else int(frame.iloc[-1].get('timestamp', frame.iloc[-1].get('time', time.time())))
+            if len(frame) > 0
+            else int(time.time())
+        )
 
         entry_context = {
-            'is_manual': True,  # 直通執行，繞過舊版 1M EntryFirewall 契約攔截
-            'source': 'DUAL_TF_5M_15M',
-            'entry_mode': 'CHANNEL_SWING',
+            'is_manual': entry_mode == "CHANNEL_SWING",
+            'source': 'DUAL_TF_5M_15M' if entry_mode == "CHANNEL_SWING" else 'WILD_SWING_1M',
+            'entry_mode': entry_mode,
             'entry_signal_code': mode_name,
             'managed_by_bot': True,
             'channel_confirmation_bar_id': cand_bar_id,

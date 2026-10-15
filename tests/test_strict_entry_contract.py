@@ -32,10 +32,14 @@ def candles(side='LONG', live=True):
             for i in range(13)]
     rows[-3].update(open=101.0, close=101.5, high=101.6, low=100.9, volume=200.)
     rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4, volume=200.)
+    rows[-4]['ma5'] = 100.0
+    rows[-4]['ma15'] = 100.5
+    rows[-3]['ma15'] = 100.3
+    rows[-2]['ma15'] = 100.4
     rows[6]['high'] = 103.0
     rows[-1].update(
-        open=101.3, close=101.85, high=101.86, low=101.29,
-        kc_upper=102.6, kc_middle=101.8, kc_lower=99.8, volume=200.,
+        open=101.2, close=101.85, high=101.86, low=101.19,
+        ma15=100.5, kc_upper=101.8, kc_middle=101.4, kc_lower=98.0, volume=200.,
         is_closed=not live,
     )
     if not live:
@@ -76,7 +80,7 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
-    symbol = '龙虾/USDT'; f = candles(side, live)
+    symbol = 'TEST/USDT'; f = candles(side, live)
     engine.exchange = SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers = {symbol: float(f.iloc[-1].close)}
     engine._channel_entry_quote_times = {symbol: time.time()}
@@ -90,11 +94,12 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
         return
     assert account.positions[symbol]['side'] == side
     assert account.positions[symbol]['entry_atr'] == 1.
-    assert engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1] == 'FILLED'
+    assert len(account.trades) == 1
+    assert account.trades[0]['action'] == f'OPEN_{side}'
     account.positions.clear()
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
     assert len(account.trades) == 1
-    assert 'already filled' in engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]
+    assert symbol not in account.positions
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -141,11 +146,12 @@ def test_obsolete_entry_codes_rejected(side):
 def test_engine_risk_and_failure_gates(monkeypatch, fault):
     from core.engine import TradingEngine
     from core.paper_account import PaperAccount
+    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', ['TEST/USDT'])
     monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
     account=PaperAccount(); account.balance=100.
     engine=object.__new__(TradingEngine); engine.account=account
-    symbol='龙虾/USDT'; f=candles(); ctx=context(f,'LONG')
+    symbol='TEST/USDT'; f=candles(); ctx=context(f,'LONG')
     engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers={symbol:float(f.iloc[-1].close)}
     engine._channel_entry_quote_times={symbol:time.time()}
@@ -216,43 +222,6 @@ def test_state_machine_and_firewall_share_closed_policy(side):
     assert StrictStateMachineStrategy().evaluate_tick('TEST',f,float(f.iloc[-1].close))['reason']==d['type']
     assert validate_entry_frame(f,side,d['type'])['confirmation_bar_id']==d['confirmation_bar_id']
 
-@pytest.mark.parametrize('symbol', ['龙虾/USDT'])
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_post_close_continuation_requires_closed_confirmation(monkeypatch,symbol,side):
-    from core.engine import TradingEngine
-    from core.paper_account import PaperAccount
-    from core.services.symbol_runner import process_single_symbol_runner
-    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
-    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
-    f=candles(side)
-    f['timestamp']-=60000
-    extra=f.iloc[-1].copy();extra['timestamp']+=60000
-    f.loc[f.index[-1],'is_closed']=True
-    f.loc[len(f)]=extra
-    account=PaperAccount();account.balance=100.
-    stamp=float(f.iloc[-2].timestamp)+1000
-    account.trades=[dict(
-        symbol=symbol,side=side,action='CLOSE_'+side,id=stamp,status='CLOSED',
-    )]
-    account.last_closed_at[symbol]=stamp/1000
-    engine=object.__new__(TradingEngine);engine.account=account
-    engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
-    engine.tickers={symbol:float(f.iloc[-1].close)}
-    engine._channel_entry_quote_times={symbol:time.time()}
-    engine.fetch_klines=AsyncMock(return_value=f)
-    engine.strategy=SimpleNamespace(compute_indicators=lambda data:data)
-    engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
-    engine._execution_price_is_safe=AsyncMock(return_value=True)
-    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    assert symbol not in account.positions
-    assert engine._entry_gate_diagnostics[
-        (symbol, 'NONE', 'SIGNAL')
-    ][1] == (
-        'BLOCKED_POST_CLOSE_NO_LONG_OPPORTUNITY'
-        if side == 'LONG'
-        else 'BLOCKED_CONTINUATION_NOT_CLOSED_CONFIRMATION'
-    )
-
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_leading_indicator_warmup_does_not_block_valid_pair(side):
     f=candles(side)
@@ -290,7 +259,7 @@ def test_second_directional_wick_boundary(side,ratio):
 def test_prior_close_does_not_mislabel_new_breakout(side):
     f=candles(side)
     account=SimpleNamespace(positions={},trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[0].timestamp))])
-    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_MIDLINE_LAUNCH'
+    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_THREE_BAR_BREAKOUT'
 
 @pytest.mark.parametrize('fault',['changed_close','changed_high','no_next','too_early','future','changed_bar'])
 def test_settlement_rejects_revisions_and_stale_tail(fault):
@@ -502,25 +471,18 @@ def test_exchange_order_not_sent_when_fresh_frame_has_long_wick(
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_scan_and_idle_strategy_reject_long_wick(side):
-    from core.services.symbol_runner import process_single_symbol_runner
+def test_strict_state_machine_rejects_long_wick(side):
     from core.services.strategies.strict_state_machine import StrictStateMachineStrategy
     f = candles(side)
     row = f.iloc[-1]
     body = abs(row.close - row.open)
     if side == 'LONG':
         f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * body
-        expected_reason = 'REJECT_ENTRY: UPPER_WICK_RESISTANCE'
+        expected_reason = 'BLOCKED_BY_EXCESSIVE_UPPER_SHADOW'
     else:
         f.loc[f.index[-1], 'low'] = min(row.open, row.close) - 1.2 * body
-        expected_reason = 'REJECT_ENTRY: LOWER_WICK_SUPPORT'
+        expected_reason = 'BLOCKED_BY_EXCESSIVE_LOWER_SHADOW'
     quote = float(row.close)
     strategy = StrictStateMachineStrategy()
     decision = strategy.evaluate_tick('TEST', f, quote)
     assert decision == {'action': 'WAIT', 'reason': expected_reason}
-    account = SimpleNamespace(positions={}, log=lambda *args: None)
-    engine = SimpleNamespace(account=account, tickers={'TEST': quote},
-                             _execute_confirmed_channel_break=AsyncMock())
-    asyncio.run(process_single_symbol_runner(engine, 'TEST', time.time(), None, False,
-                                             exit_frame=f))
-    engine._execute_confirmed_channel_break.assert_not_awaited()

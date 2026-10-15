@@ -251,7 +251,7 @@ class PaperAccount:
                 entry_mode = str(
                     pos.get("entry_mode") or meta.get("entry_mode") or ""
                 ).upper()
-                if entry_mode == "CHANNEL_SWING":
+                if entry_mode in ("CHANNEL_SWING", "WILD_SWING"):
                     continue
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
@@ -538,7 +538,11 @@ class PaperAccount:
             or entry_context.get('source') == 'MANUAL'
             or reason == 'MANUAL'
         )
-        if is_manual:
+        is_wild_swing = (
+            str(entry_context.get('entry_mode') or '').upper() == 'WILD_SWING'
+            and entry_context.get('source') == 'WILD_SWING_1M'
+        )
+        if is_manual and not is_wild_swing:
             # A manual fill is still managed under the bot's normal position
             # lifecycle. Normalize here so alternate API callers cannot create
             # an unmanaged/legacy-mode position by omitting these fields.
@@ -547,6 +551,8 @@ class PaperAccount:
                 'manual_entry': True,
                 'managed_by_bot': True,
             })
+        elif is_wild_swing:
+            entry_context['managed_by_bot'] = True
 
         if not is_manual and 'snapshot' in entry_context:
             snapshot = entry_context['snapshot']
@@ -636,8 +642,8 @@ class PaperAccount:
                 or self.position_meta.get(symbol, {}).get("entry_mode")
                 or ""
             ).upper()
-            if entry_mode == "CHANNEL_SWING" or held_mode == "CHANNEL_SWING":
-                self.log(f"🛑 {symbol} Channel Swing 持倉中，拒絕加碼", "WARNING")
+            if entry_mode in ("CHANNEL_SWING", "WILD_SWING") or held_mode in ("CHANNEL_SWING", "WILD_SWING"):
+                self.log(f"🛑 {symbol} 策略持倉中，拒絕加碼", "WARNING")
                 return False
             if not explicit_dca_top_up:
                 self.log(f"🛑 {symbol} 已有同向持倉，非 DCA 加碼一律拒絕", "WARNING")
@@ -674,7 +680,7 @@ class PaperAccount:
             }
             self.save_state()
 
-        if entry_mode == "CHANNEL_SWING" or is_d0:
+        if entry_mode in ("CHANNEL_SWING", "WILD_SWING") or is_d0:
             if not valid_entry_atr(atr) and entry_mode == "CHANNEL_SWING":
                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
                 return False
@@ -685,6 +691,8 @@ class PaperAccount:
             except (ValueError, TypeError):
                 return False
             tp = 0.0
+            if entry_mode == "WILD_SWING":
+                sl = 0.0
         else:
             try:
                 validate_sl_tp_pair(price, side, sl, tp)
@@ -714,7 +722,7 @@ class PaperAccount:
                 if side == "LONG"
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
-        if entry_mode == "CHANNEL_SWING":
+        if entry_mode in ("CHANNEL_SWING", "WILD_SWING"):
             sl = 0.0 if DISABLE_STOP_LOSS else sl
             tp = 0.0
         elif CONTINUOUS_PIVOT_ONLY:
@@ -818,7 +826,7 @@ class PaperAccount:
                 "is_half_closed": False,
                 **entry_context,
             }
-            if entry_mode != 'CHANNEL_SWING':
+            if entry_mode not in ('CHANNEL_SWING', 'WILD_SWING'):
                 # 自動掛出 50% Limit TP1
                 tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
                 limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
@@ -1387,6 +1395,15 @@ class PaperAccount:
             entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
             if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
                 if await enforce_hard_stop(self, symbol, curr_p):
+                    continue
+                if entry_m == "WILD_SWING":
+                    unrealized = (
+                        (curr_p - float(pos["entry_price"]))
+                        * float(pos["qty"])
+                        * (1 if side == "LONG" else -1)
+                    )
+                    pos.update(mark_price=curr_p, unrealized_pnl=unrealized)
+                    total_unrealized += unrealized
                     continue
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue

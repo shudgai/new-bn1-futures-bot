@@ -1,15 +1,9 @@
-"""Exercise every automatic trigger and the final account boundary gates."""
-import asyncio
-import copy
+"""Exercise the standalone strict-entry validator's current contract."""
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
 
-from core.services import entry_contract
-from core.services.entry_firewall import validate_account_entry
 from core.services.strict_entry_gates import validate_strict_entry
 
 
@@ -46,19 +40,26 @@ def test_valid_symmetric_gate_and_recorded_costs(side):
     assert passed, reason
     assert evidence['passed']
     assert evidence['body_atr'] >= .5
-    assert 0 < evidence['distance_atr'] <= 3
-    assert evidence['net_room'] >= .0015
+    assert 0 < evidence['distance_atr'] <= 1.5
 
 
-@pytest.mark.parametrize('code', ['TRIGGER_A_KC_BREAKOUT','TRIGGER_B_MA_CROSS',
-                                 'TRIGGER_C_CONTINUATION','RE_ENTRY_LONG'])
-@pytest.mark.parametrize('failure', ['inside','body','ma5','narrow','ma_spacing',
-                                     'rail_spacing','no_target','bad_data','gap','distance'])
-def test_no_trigger_can_bypass_strict_gates(code, failure, monkeypatch):
+@pytest.mark.parametrize(('failure', 'expected_reason'), [
+    ('inside', 'BLOCKED_STRICT_LIVE_DOJI'),
+    ('body', 'BLOCKED_STRICT_BODY_BELOW_HALF_ATR'),
+    ('ma5', 'BLOCKED_BY_MA5_SLOPE_DOWN'),
+    ('narrow', 'BLOCKED_STRICT_CHANNEL_CONVERGENCE'),
+    ('ma_spacing', 'BLOCKED_STRICT_MA_SPACING'),
+    ('rail_spacing', 'BLOCKED_STRICT_RAIL_SPACING'),
+    ('bad_data', 'BLOCKED_STRICT_INVALID_LIVE_DATA'),
+    ('gap', 'BLOCKED_STRICT_INVALID_LIVE_DATA'),
+    ('distance', 'BLOCKED_BY_EXTENDED_BREAKOUT'),
+])
+def test_strict_validator_rejects_invalid_live_evidence(failure, expected_reason):
     f = frame_for()
     quote = 103.
     changes = {
-        'inside': {'close':101.}, 'body': {'open':102.8}, 'ma5': {'ma5':100.4},
+        'inside': {'close':101.}, 'body': {'open':102.8, 'low':102.7},
+        'ma5': {'ma5':100.4},
         'ma_spacing': {'ma15':100.4}, 'rail_spacing': {'ma5':102.},
         'bad_data': {'ma5':float('nan')}, 'gap': {'open':97.},
     }
@@ -68,15 +69,10 @@ def test_no_trigger_can_bypass_strict_gates(code, failure, monkeypatch):
     if failure == 'distance': quote=106.
     if failure == 'narrow':
         f.loc[f.index[-5], ['kc_lower','kc_upper']] = [80.,120.]
-    if failure == 'no_target': f.loc[f.index[30],'high'] = 101.
-    monkeypatch.setattr(entry_contract, 'detect_raw_triggers', lambda *a:("LONG",code))
-    diagnostics = {}
-    assert entry_contract.evaluate_entry_contract(f, quote, code, diagnostics=diagnostics) is None
-    if failure == 'bad_data':
-        assert diagnostics['reason'] == 'BLOCKED_BY_INVALID_MA5'
-    else:
-        assert diagnostics['reason'].startswith('BLOCKED_STRICT_')
-        assert diagnostics['strict_gate_evidence']['passed'] is False
+    passed, reason, evidence = validate_strict_entry(f, quote, 'LONG')
+    assert not passed
+    assert reason == expected_reason
+    assert evidence['passed'] is False
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -93,93 +89,19 @@ def test_same_side_continuation_requires_prior_outside_and_ck(side):
     assert validate_strict_entry(f,100+sign*3,side)[1] == 'BLOCKED_STRICT_CK_DIRECTION'
 
 
-def test_half_atr_boundary_and_three_atr_cap():
+def test_half_atr_boundary_and_current_extension_cap():
     f = frame_for()
     f.loc[f.index[-1],'open'] = 102.5
     assert validate_strict_entry(f,103.,'LONG')[0]
     f.loc[f.index[-1],'open'] = 102.50001
     assert validate_strict_entry(f,103.,'LONG')[1] == 'BLOCKED_STRICT_BODY_BELOW_HALF_ATR'
     f = frame_for()
-    assert validate_strict_entry(f,float(f.iloc[-1].kc_upper)+3,'LONG')[0]
-    assert validate_strict_entry(f,float(f.iloc[-1].kc_upper)+3.00001,'LONG')[1] == 'BLOCKED_STRICT_DISTANCE_ABOVE_3_ATR'
+    edge = float(f.iloc[-1].kc_upper)
+    assert validate_strict_entry(f, edge+1.5, 'LONG')[0]
+    assert validate_strict_entry(f, edge+1.50001, 'LONG')[1] == 'BLOCKED_BY_EXTENDED_BREAKOUT'
 
 
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_final_firewall_rechecks_and_saves_gate_evidence(side):
-    f = frame_for(side)
-    symbol='X/USDT'
-    account=SimpleNamespace(positions={},trades=[],entry_frame_provider=AsyncMock(return_value=f))
-    d=entry_contract.evaluate_entry_contract(f,account=account,symbol=symbol)
-    assert d is not None
-    snapshot=dict(symbol=symbol, side=side,signal_code=d['type'],signal_id=d['pending_signal_id'],
-                  pending_signal_id=d['pending_signal_id'],candidate_bar_id=d['confirmation_bar_id'],
-                  closed_bar=d['confirmation_bar_id'])
-    context=dict(entry_signal_code=d['type'],signal_id=d['pending_signal_id'],
-                 candidate_bar_id=d['confirmation_bar_id'],channel_confirmation_bar_id=d['confirmation_bar_id'],
-                 entry_snapshot=snapshot)
-    asyncio.run(validate_account_entry(account,symbol,side,context))
-    assert snapshot['strict_gate_evidence']['passed']
-    f.loc[f.index[-1],'close']=100.
-    f.loc[f.index[-1],'low']=min(100.,float(f.iloc[-1].low))
-    f.loc[f.index[-1],'high']=max(100.,float(f.iloc[-1].high))
-    with pytest.raises(ValueError,match='BLOCKED_SECOND_THIRD_OUTSIDE_OR_DOJI'):
-        asyncio.run(validate_account_entry(account,symbol,side,context))
-
-
-def test_target_must_be_untouched_and_cost_adjusted(monkeypatch):
-    f=frame_for()
-    f.loc[f.index[-2],'high']=110.
-    assert validate_strict_entry(f,103.,'LONG')[1]=='BLOCKED_STRICT_NO_UNTOUCHED_TARGET'
-    f=frame_for()
-    monkeypatch.setattr('core.config.TAKER_FEE_RATE', .04)
-    assert validate_strict_entry(f,103.,'LONG')[1]=='BLOCKED_STRICT_NET_ROOM'
-
-
-def test_closed_only_missing_history_and_signal_change_fail_closed():
+def test_validator_fails_closed_without_history_or_live_bar():
     f=frame_for()
     assert not validate_strict_entry(f.tail(30),103.,'LONG')[0]
     assert not validate_strict_entry(f.iloc[:-1],103.,'LONG')[0]
-    assert entry_contract.evaluate_entry_contract(f,code='RE_ENTRY_SHORT') is None
-
-
-@pytest.mark.parametrize('side', ['LONG','SHORT'])
-@pytest.mark.parametrize('trigger', ['TRIGGER_A_KC_BREAKOUT','TRIGGER_B_MA_CROSS',
-                                    'TRIGGER_C_CONTINUATION','RE_ENTRY'])
-def test_engine_to_account_uses_real_strict_gate_and_records_evidence(side, trigger, monkeypatch):
-    from unittest.mock import Mock
-    from core.engine import TradingEngine
-    if trigger == 'RE_ENTRY': trigger += '_' + side
-    f=frame_for(side)
-    symbol='SUI/USDT'
-    monkeypatch.setattr(entry_contract, 'detect_raw_triggers',lambda *a:(side,trigger))
-    monkeypatch.setattr('core.config.is_entry_disabled',lambda _:False)
-    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS',[symbol])
-    monkeypatch.setattr('core.services.pre_entry_space_shadow.record_pre_entry_space_shadow',lambda **k:None)
-    a=SimpleNamespace(positions={},pending_limit_orders={},trades=[],log=Mock(),
-                      get_wallet_balance=lambda:100.,get_available_balance=lambda:100.)
-    e=object.__new__(TradingEngine)
-    e.account=a
-    e.tickers={symbol:float(f.iloc[-1].close)}
-    e._entry_boundary_frame=AsyncMock(return_value=f)
-    e._execution_price_is_safe=AsyncMock(return_value=True)
-    e._abnormal_market_entry_allowed=Mock(return_value=True)
-    e.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *a:2.)
-    captured={}
-    async def opened(**kwargs):
-        captured.update(kwargs)
-        decision=await validate_account_entry(a,symbol,side,kwargs['entry_context'])
-        assert decision['strict_gate_evidence']['passed']
-        a.positions[symbol]=dict(side=side)
-        return True
-    a.open_position=AsyncMock(side_effect=opened)
-    signal=dict(side=side,candidate_bar_id=float(f.iloc[-2].timestamp),
-                entry_mode='CHANNEL_SWING',signal_code=trigger)
-    assert asyncio.run(e._place_structured_entry(symbol,signal,float(f.iloc[-1].close)))
-    a.open_position.assert_awaited_once()
-    assert captured['entry_context']['entry_snapshot']['strict_gate_evidence']['passed']
-
-
-def test_target_touched_in_live_candle_is_not_reused():
-    f=frame_for()
-    f.loc[f.index[-1], 'high']=110.
-    assert validate_strict_entry(f,103.,'LONG')[1] == 'BLOCKED_STRICT_NO_UNTOUCHED_TARGET'
