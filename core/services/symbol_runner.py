@@ -80,6 +80,26 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
+    from core.vision.chart_guard import DynamicVisionGatekeeper, evaluate_breakout_vision
+
+    vision_gate = getattr(engine, "_wild_swing_vision_gate", None)
+    if vision_gate is None:
+        vision_gate = engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
+    seen_bar_ids = getattr(engine, "_wild_swing_vision_seen_bar_ids", None)
+    if not isinstance(seen_bar_ids, dict):
+        seen_bar_ids = engine._wild_swing_vision_seen_bar_ids = {}
+    previous_vision_bar_id = seen_bar_ids.get(symbol)
+    if previous_vision_bar_id is None:
+        seen_bar_ids[symbol] = latest_closed_bar_id
+    elif latest_closed_bar_id > previous_vision_bar_id:
+        elapsed_bars = sum(
+            float(bar_id) > previous_vision_bar_id
+            for bar_id in closed["timestamp"]
+        )
+        for _ in range(elapsed_bars):
+            vision_gate.on_bar_closed(symbol)
+        seen_bar_ids[symbol] = latest_closed_bar_id
+
     signals = [
         strategy.evaluate_entry(symbol, frame, side)
         for side in ("LONG", "SHORT")
@@ -89,6 +109,37 @@ async def _process_wild_swing_symbol(
         return [], []
 
     signal = signals[0]
+    attempted_bar_ids = getattr(engine, "_wild_swing_vision_attempted_bar_ids", None)
+    if not isinstance(attempted_bar_ids, dict):
+        attempted_bar_ids = engine._wild_swing_vision_attempted_bar_ids = {}
+    if attempted_bar_ids.get(symbol) == latest_closed_bar_id:
+        return [], []
+    attempted_bar_ids[symbol] = latest_closed_bar_id
+
+    current_bar = closed.iloc[-1]
+    can_submit, gate_reason = vision_gate.can_submit_for_vision(
+        symbol, current_bar, signal["side"],
+    )
+    if not can_submit:
+        logger.info(
+            "WILD_SWING_VISION_SKIPPED %s %s bar=%s reason=%s",
+            symbol, signal["side"], latest_closed_bar_id, gate_reason,
+        )
+        return [], []
+
+    approved, vision_reason = await evaluate_breakout_vision(
+        closed, signal["side"], mode=signal["reason"],
+    )
+    if not approved:
+        vision_gate.record_rejection(symbol, current_bar, signal["side"])
+        logger.info(
+            "WILD_SWING_VISION_VETO %s %s mode=%s bar=%s reason=%s",
+            symbol, signal["side"], signal["reason"], latest_closed_bar_id,
+            vision_reason,
+        )
+        return [], []
+    vision_gate.record_approved(symbol)
+
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
         frame=closed,
