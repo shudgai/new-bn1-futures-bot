@@ -188,7 +188,12 @@ async def _process_wild_swing_symbol(
     )
 
     can_submit, gate_reason = vision_gate.can_submit_for_vision(
-        symbol, current_bar, signal["side"],
+        symbol,
+        current_bar,
+        signal["side"],
+        entry_pattern=signal.get("entry_pattern"),
+        structure_confirmation=signal.get("structure_confirmation"),
+        structure_confirmed=signal.get("structure_confirmed") is True,
     )
     if not can_submit:
         logger.info(

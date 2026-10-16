@@ -83,6 +83,111 @@ def test_dynamic_gate_short_unlocks_when_low_broken():
     assert "UNLOCKED_BREAK_LOW" in reason
 
 
+def test_confirmed_reversal_cross_bypasses_old_price_lock_and_clears_it():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "SHORT")
+
+    ok, reason = gate.can_submit_for_vision(
+        "BTC",
+        make_test_bar(c=100.0),
+        "SHORT",
+        entry_pattern="REVERSAL",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert ok is True
+    assert reason == "UNLOCKED_CONFIRMED_MA_TURN"
+    assert "BTC" not in gate._rejections
+
+
+def test_same_side_reversal_cross_bypasses_prior_qwen_rejection_low():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection(
+        "LOBSTER/USDT",
+        make_test_bar(h=0.02820, l=0.02801, c=0.02808),
+        "SHORT",
+    )
+
+    ok, reason = gate.can_submit_for_vision(
+        "LOBSTER/USDT",
+        make_test_bar(o=0.02810, c=0.02806, h=0.02812, l=0.02802),
+        "SHORT",
+        entry_pattern="REVERSAL",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert ok is True
+    assert reason == "UNLOCKED_CONFIRMED_MA_TURN"
+    assert "LOBSTER/USDT" not in gate._rejections
+
+
+def test_confirmed_crossover_bypasses_lock_for_opposite_swing():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "LONG")
+
+    ok, reason = gate.can_submit_for_vision(
+        "BTC",
+        make_test_bar(c=100.0),
+        "SHORT",
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert ok is True
+    assert reason == "UNLOCKED_CONFIRMED_MA_TURN"
+    assert "BTC" not in gate._rejections
+
+
+def test_opposite_direction_candidate_clears_rejection_lock():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "LONG")
+
+    ok, reason = gate.can_submit_for_vision("BTC", make_test_bar(), "SHORT")
+
+    assert ok is True
+    assert reason == "OPPOSITE_SIDE_RESET"
+    assert "BTC" not in gate._rejections
+
+
+def test_unconfirmed_or_unrelated_pattern_does_not_bypass_lock():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "SHORT")
+
+    ok, reason = gate.can_submit_for_vision(
+        "BTC",
+        make_test_bar(c=100.0),
+        "SHORT",
+        entry_pattern="REVERSAL",
+        structure_confirmation="TOP_BOTTOM_DIVERGENCE",
+        structure_confirmed=True,
+    )
+
+    assert ok is False
+    assert "BLOCKED_INTERVAL" in reason
+    assert "BTC" in gate._rejections
+
+
+def test_dynamic_lock_expires_after_more_than_five_closed_bars():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "SHORT")
+
+    for _ in range(5):
+        gate.on_bar_closed("BTC")
+    assert "BTC" in gate._rejections
+    ok, reason = gate.can_submit_for_vision("BTC", make_test_bar(c=100.0), "SHORT")
+    assert ok is False
+    assert "BLOCKED_STRUCTURE_SHORT" in reason
+
+    gate.on_bar_closed("BTC")
+    assert "BTC" not in gate._rejections
+    ok, reason = gate.can_submit_for_vision("BTC", make_test_bar(c=100.0), "SHORT")
+    assert ok is True
+    assert reason == "CLEAN_STATE"
+
+
 def test_dynamic_gate_cleared_on_approved():
     gate = DynamicVisionGatekeeper(min_bars_interval=2)
     b0 = make_test_bar(h=105.0, l=95.0, c=100.0)

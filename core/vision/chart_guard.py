@@ -113,7 +113,7 @@ class RejectionContext:
 
 
 class DynamicVisionGatekeeper:
-    """以『K 棒數量 (>=2根) + 價格結構突破 (破高/破低)』替代固定時間冷卻。"""
+    """Require a fresh structure after rejection, except for confirmed MA turns."""
 
     def __init__(self, min_bars_interval: int = 2):
         self.min_bars_interval = min_bars_interval
@@ -122,15 +122,56 @@ class DynamicVisionGatekeeper:
     def on_bar_closed(self, symbol: str) -> None:
         """每根 1M K 棒收線時呼叫，推進計數器。"""
         if symbol in self._rejections:
-            self._rejections[symbol].bars_since_reject += 1
+            context = self._rejections[symbol]
+            context.bars_since_reject += 1
+            if context.bars_since_reject > 5:
+                del self._rejections[symbol]
+                logger.info(
+                    "✅ [VISION_CLEARED] %s 動態拒絕鎖超過 5 根完整 K 棒，自動失效",
+                    symbol,
+                )
+
+    @staticmethod
+    def _is_confirmed_ma_turn(
+        entry_pattern: Optional[str],
+        structure_confirmation: Optional[str],
+        structure_confirmed: bool,
+    ) -> bool:
+        if not structure_confirmed:
+            return False
+        pattern = str(entry_pattern or "").strip().upper()
+        confirmation = str(structure_confirmation or "").strip().upper()
+        if pattern == "CROSSOVER":
+            return confirmation in {
+                "MA5_MA15_1M_CROSS",
+                "MA5_MA15_5M_CONVERGENCE",
+            }
+        if pattern == "REVERSAL":
+            return confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
+        return False
 
     def can_submit_for_vision(
         self,
         symbol: str,
         current_bar: Any,
         proposed_side: str,
+        *,
+        entry_pattern: Optional[str] = None,
+        structure_confirmation: Optional[str] = None,
+        structure_confirmed: bool = False,
     ) -> Tuple[bool, str]:
         """判定當前是否滿足送審條件。"""
+        if self._is_confirmed_ma_turn(
+            entry_pattern, structure_confirmation, structure_confirmed,
+        ):
+            if symbol in self._rejections:
+                del self._rejections[symbol]
+                logger.info(
+                    "✅ [VISION_CLEARED] %s 已確認 MA5/MA15 轉向，清除舊動態拒絕鎖",
+                    symbol,
+                )
+            return True, "UNLOCKED_CONFIRMED_MA_TURN"
+
         if symbol not in self._rejections:
             return True, "CLEAN_STATE"
 
@@ -138,6 +179,11 @@ class DynamicVisionGatekeeper:
 
         # 若方向與上次被拒相反，視為全新結構放行
         if proposed_side != ctx.side:
+            del self._rejections[symbol]
+            logger.info(
+                "✅ [VISION_CLEARED] %s 出現相反方向候選，清除舊動態拒絕鎖",
+                symbol,
+            )
             return True, "OPPOSITE_SIDE_RESET"
 
         # 規則 A：最小 K 棒間隔（至少 2 根完整收線）
@@ -177,7 +223,7 @@ class DynamicVisionGatekeeper:
             bars_since_reject=0,
         )
         logger.info(
-            "🛡️ [VISION_DYNAMIC_LOCK] %s %s 被拒，錨定防守區 [%.5f, %.5f]，需等 2 根且突破才可再次送審",
+            "🛡️ [VISION_DYNAMIC_LOCK] %s %s 被拒，錨定防守區 [%.5f, %.5f]，需等待間隔與結構突破才可再次送審（最多 5 根 K）",
             symbol, side, bar.low, bar.high,
         )
 
