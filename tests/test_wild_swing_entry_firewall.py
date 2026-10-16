@@ -66,11 +66,18 @@ def _context(bar_id):
     }
 
 
-def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
+def _firewall_cross_frame():
     frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
+    frame["kc_upper"] = 102.0
+    frame["kc_lower"] = 98.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
+    return frame
+
+
+def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
+    frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
 
     result = asyncio.run(
@@ -93,10 +100,7 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     ],
 )
 def test_wild_swing_firewall_rejects_stale_or_unverified_market_data(change):
-    frame = _pivot_cross_frame("SHORT")
-    frame["atr"] = 2.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
+    frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
     context = _context(bar_id)
     if change == "bar_id":
@@ -140,10 +144,7 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", qwen)
     monkeypatch.setattr(MacroCandleStructureGate, "can_open", veto)
-    frame = _pivot_cross_frame("SHORT")
-    frame["atr"] = 2.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
+    frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
 
     with pytest.raises(ValueError, match="WILD_SWING_MACRO_GATE: TEST_MODE_VETO"):
@@ -155,7 +156,7 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
 
     assert calls == [{
         "entry_pattern": "CROSSOVER",
-        "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        "structure_confirmation": "MA5_MA15_1M_CROSS",
         "structure_confirmed": True,
         "channel_expanding": False,
     }]
@@ -169,10 +170,7 @@ def test_wild_swing_firewall_rejects_without_explicit_qwen_approval(monkeypatch)
         return False, "AI_EXPLICIT_APPROVAL_REQUIRED"
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", reject)
-    frame = _pivot_cross_frame("SHORT")
-    frame["atr"] = 2.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
+    frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
 
     with pytest.raises(ValueError, match="WILD_SWING_QWEN_REJECTED"):

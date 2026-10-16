@@ -49,6 +49,13 @@ While climax tracking is armed, ordinary MA, momentum-stall, and pullback exits 
 - **Trigger Reason & Requirement**: User requested that high/low turn crosses and true KC breakouts reach the local Qwen-VL review instead of deadlocking on stale rejection lows, delayed MA15 slope or inappropriate KC-position limits.
 - **Verification & Test Status**: Focused suite — 144 passed with 14 pre-existing matplotlib/pyparsing deprecation warnings; `compileall` and `git diff --check` passed. Both chart API requests returned 200 bars, and the restarted paper service is responsive. Historical 21:16–21:20 Gate attribution remains unavailable because the host journal and retained application log did not contain those candidate decisions; no historical cause is inferred.
 
+### [2026-10-16 22:16:44 UTC+8] - Modification Phase: Remove KC outer-pivot prerequisite from WILD_SWING crossovers
+- **Author**: shudgai999 / Copilot SDK in VS Code
+- **Target Files & Lines**: `core/services/strategies/wild_swing_strategy.py` (`evaluate_entry`); `core/gates/macro_candle_structure_gate.py` (`can_open`); `tests/test_wild_swing_strategy.py`, `tests/test_macro_candle_structure_gate.py`, `tests/test_wild_swing_entry_firewall.py`.
+- **Modification Description**: A closed-candle MA5/MA15 cross now emits a `CROSSOVER` candidate without searching for a prior KC outer-band pivot. LONG still requires MA5 crossing up, rising MA5, a bullish candle and close above MA5; SHORT mirrors this. The candidate uses the generic `MA5_MA15_1M_CROSS` confirmation, which is recognized by the entry-pattern, Macro Candle and Dynamic Vision gates. The Macro gate still applies its existing KC-position, extension, candle-quality and validity rules; a passing candidate is sent to local Qwen-VL, and only explicit approval proceeds.
+- **Trigger Reason & Requirement**: User requested immediate crossover entry eligibility independent of prior KC outer-band peak/valley formation, with Gate and local vision review still enforced.
+- **Verification & Test Status**: Focused strategy, Macro Gate, Dynamic Vision, firewall and runner tests — 105 passed; `compileall` and `git diff --check` passed. Deployment/restart is explicitly authorized and pending.
+
 ### [2026-10-12 23:43:06 UTC+8] - Modification Phase: Strict MA5 entry and climax peak protection
 - **Author**: shudgai999 / Copilot SDK in VS Code
 - **Target Files & Lines**: `core/services/ma5_entry_slope.py`; `core/gates/pipeline.py`; `core/services/entry_contract.py`; `core/services/entry_firewall.py`; `core/gates/holding_protection_gate.py`; `core/services/exits/peak_trailing_exit.py`; focused tests.

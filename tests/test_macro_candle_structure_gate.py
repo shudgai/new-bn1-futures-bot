@@ -373,6 +373,41 @@ def test_outer_pivot_then_ma_cross_reversal_gate_accepts_aligned_ma5(
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
 
+@pytest.mark.parametrize(
+    "side,bar,ma5_current,ma5_previous",
+    [
+        (
+            "LONG",
+            {"open": 99.9, "high": 100.4, "low": 99.8, "close": 100.3},
+            100.2, 100.1,
+        ),
+        (
+            "SHORT",
+            {"open": 100.1, "high": 100.2, "low": 99.6, "close": 99.7},
+            99.8, 99.9,
+        ),
+    ],
+)
+def test_ma5_ma15_cross_gate_accepts_without_outer_pivot_structure(
+    side, bar, ma5_current, ma5_previous,
+):
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        {
+            "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 2.0,
+            "ma5_current": ma5_current, "ma5_previous": ma5_previous,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
 def test_top_pivot_crossover_passes_outside_mid_channel_and_two_atr_bias():
     allowed, reason = MacroCandleStructureGate().can_open(
         "SHORT",

@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
 
@@ -97,9 +98,16 @@ def _profit_lock_continuation_frame(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
+def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
     frame = _pivot_cross_frame(side)
     frame["atr"] = 2.0
+    frame["kc_upper"] = 102.0
+    frame["kc_lower"] = 98.0
+    for index in frame.index[:-1]:
+        open_price = float(frame.loc[index, "open"])
+        close = float(frame.loc[index, "close"])
+        frame.loc[index, "high"] = max(open_price, close) + 0.1
+        frame.loc[index, "low"] = min(open_price, close) - 0.1
     if side == "LONG":
         frame.loc[10, "ma15"] = 100.2
         frame.loc[11, "ma15"] = 100.0
@@ -112,9 +120,9 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
     assert signal["side"] == side
     assert signal["reason"] == "REVERSAL_CROSSOVER_ENTRY"
     assert signal["entry_pattern"] == "CROSSOVER"
-    assert signal["structure_confirmation"] == (
-        "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
-    )
+    assert signal["structure_confirmation"] == "MA5_MA15_1M_CROSS"
+    assert "pivot_bar_id" not in signal
+    assert "pivot_price" not in signal
     assert signal["bar_id"] == frame.iloc[-1]["timestamp"]
     assert (
         frame.iloc[-1]["ma15"] - frame.iloc[-2]["ma15"] < 0
@@ -143,6 +151,8 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
     )
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
+    pattern_allowed, _ = EntryPatternPermittedGate.check_signal(signal)
+    assert pattern_allowed is True
 
     live_frame = frame.copy()
     live_frame.loc[live_frame.index[-1], "is_closed"] = False
@@ -158,10 +168,12 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
                 -2: {
                     "open": 100.2, "high": 100.3, "low": 99.9, "close": 100.0,
                     "kc_upper": 101.5, "kc_lower": 99.8,
+                    "ma5": 99.8, "ma15": 100.0,
                 },
                 -1: {
                     "open": 99.9, "high": 100.0, "low": 98.8, "close": 99.0,
                     "kc_upper": 101.2, "kc_lower": 99.2,
+                    "ma5": 99.7, "ma15": 99.9,
                 },
             },
         ),
@@ -171,10 +183,12 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
                 -2: {
                     "open": 100.0, "high": 100.2, "low": 99.8, "close": 100.0,
                     "kc_upper": 100.2, "kc_lower": 98.5,
+                    "ma5": 100.1, "ma15": 99.9,
                 },
                 -1: {
                     "open": 100.1, "high": 101.2, "low": 100.0, "close": 101.0,
                     "kc_upper": 100.8, "kc_lower": 98.3,
+                    "ma5": 100.0, "ma15": 100.0,
                 },
             },
         ),
@@ -226,6 +240,8 @@ def test_outer_band_breakout_is_not_an_initial_entry_by_itself():
     frame = _frame("LONG")
     frame.loc[10, ["open", "high", "low", "close"]] = [100.0, 101.2, 99.9, 101.1]
     frame.loc[11, ["open", "high", "low", "close"]] = [101.1, 101.8, 101.0, 101.6]
+    frame.loc[10, ["ma5", "ma15"]] = [100.0, 99.9]
+    frame.loc[11, ["ma5", "ma15"]] = [99.8, 100.0]
     assert WildSwingStrategy().evaluate_entry("LOBSTER/USDT", frame, "LONG") is None
 
 
