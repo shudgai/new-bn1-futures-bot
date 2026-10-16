@@ -80,7 +80,7 @@ def test_original_open_same_entry_bar_and_no_favorable_body_exit(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('pending', ['EXIT_REALTIME_PEAK_TRAILING', HARD_REASON])
-def test_migrate_preserves_verified_peak_and_only_hard_pending(side, pending):
+def test_migrate_preserves_verified_peak_but_ignores_position_hard_stop(side, pending):
     p = position(side); sign = 1 if side == 'LONG' else -1
     p[STATE_KEY] = dict(policy='realtime_peak_trailing_v1',
                        identity=[side,60.,100.,1.], peak_price=100+sign*10.,
@@ -91,23 +91,29 @@ def test_migrate_preserves_verified_peak_and_only_hard_pending(side, pending):
     state = migrate_peak_state(p, meta)
     assert state['policy'] == POLICY
     assert state['peak_price'] == 100+sign*10.
-    assert state.get('pending') == (HARD_REASON if pending == HARD_REASON else None)
+    assert state.get('pending') is None
     assert p['sl'] == p['initial_sl']
     assert 'limit_tp1_price' not in meta and 'breakeven_trigger_price' not in meta
     result = evaluate_peak_trailing(p, 100., 181000)
-    assert bool(result) == (pending == HARD_REASON)
+    assert result is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_pending_retry_new_identity_and_initial_stop(side):
-    p = position(side); snap = snapshot(side)
-    price = 108. if side == 'LONG' else 92.
-    assert evaluate_peak_trailing(p, price, snap)['type'] == ABNORMAL_REASON
-    restored = copy.deepcopy(p)
-    assert evaluate_peak_trailing(restored, 100., 241000)['type'] == ABNORMAL_REASON
-    restored['open_timestamp'] = 240.
-    assert evaluate_peak_trailing(restored, 100., 241001) is None
-    assert evaluate_peak_trailing(restored, restored['initial_sl'], 241002)['type'] == HARD_REASON
+def test_pending_retry_new_identity_without_position_hard_stop(side):
+    p = position(side)
+    p[STATE_KEY] = dict(
+        policy=POLICY,
+        identity=[side, 60., 100., 1.],
+        peak_price=101. if side == 'LONG' else 99.,
+        peak_net_pnl=0.,
+        atr=10.,
+        pending=HARD_REASON,
+        trigger='INITIAL_ATR',
+    )
+    snap = snapshot(side)
+
+    assert evaluate_peak_trailing(p, p['initial_sl'], snap) is None
+    assert p[STATE_KEY].get('pending') is None
 
 
 def frame_for(side, now):
@@ -194,7 +200,7 @@ def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_pa
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_paper_account_updates_keep_initial_and_account_hard_stops(side, tmp_path, monkeypatch):
+def test_paper_account_does_not_execute_position_hard_stops(side, tmp_path, monkeypatch):
     async def run():
         import core.paper_account as pm
         monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
@@ -203,8 +209,8 @@ def test_paper_account_updates_keep_initial_and_account_hard_stops(side, tmp_pat
             entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
         stop=account.positions['X']['initial_sl']
         await account.update_positions({'X': stop})
-        assert 'X' not in account.positions
-        assert 'HARD_STOP' in account.trades[0]['reason']
+        assert 'X' in account.positions
+        assert not any(trade['action'].startswith('CLOSE') for trade in account.trades)
     asyncio.run(run())
 
 

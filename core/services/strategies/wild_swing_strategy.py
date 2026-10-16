@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from core.gates.breakout_continuation_entry_gate import BreakoutContinuationEntryGate
 from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
 from core.services.candle_data import closed_entry_candles
 
@@ -226,11 +227,11 @@ class WildSwingStrategy:
             return self._profit_lock_continuation_signal(
                 bars, current, previous, side, bar_id, profit_lock_exit,
             )
-
         if side == "LONG":
             valid_cross = (
                 cross_up
                 and ma5 > prev_ma5
+                and float(current["kc_middle"]) > prev_middle
                 and close > open_price
                 and close > ma5
             )
@@ -238,6 +239,8 @@ class WildSwingStrategy:
             valid_cross = (
                 cross_down
                 and ma5 < prev_ma5
+                and float(current["kc_middle"]) < prev_middle
+                and close < float(current["kc_upper"])
                 and close < open_price
                 and close < ma5
             )
@@ -301,7 +304,10 @@ class WildSwingStrategy:
                     "close": close,
                     "entry_mode": "WILD_SWING",
                 }
-            return None
+            return self._additional_breakout_continuation_signal(
+                bars, current, side, bar_id, channel_expanding,
+                ma5, prev_ma5, prev_middle,
+            )
 
         return {
             "side": side,
@@ -321,6 +327,65 @@ class WildSwingStrategy:
             "bar_id": bar_id,
             "close": close,
             "entry_mode": "WILD_SWING",
+        }
+
+    @staticmethod
+    def _additional_breakout_continuation_signal(
+        bars: pd.DataFrame,
+        current: pd.Series,
+        side: str,
+        bar_id: float,
+        channel_expanding: bool,
+        ma5: float,
+        prev_ma5: float,
+        prev_middle: float,
+    ) -> Optional[dict[str, Any]]:
+        candidate = BreakoutContinuationEntryGate.evaluate(
+            bars.to_dict("records"),
+            bars["kc_upper"].tolist(),
+            bars["kc_lower"].tolist(),
+            bars["kc_middle"].tolist(),
+        )
+        if candidate is None or candidate["action"] != f"OPEN_{side}":
+            return None
+
+        is_breakout = candidate["type"] == "CHANNEL_CONSOLIDATION_BREAKOUT"
+        pattern = ENTRY_MODE_BREAKOUT if is_breakout else ENTRY_MODE_CONTINUATION
+        reason = (
+            "CHANNEL_CONSOLIDATION_BREAKOUT_ENTRY"
+            if is_breakout
+            else "OUTSIDE_CHANNEL_CONTINUATION_ENTRY"
+        )
+        close = float(current["close"])
+        candle_range = float(current["high"] - current["low"])
+        body_ratio = (
+            abs(close - float(current["open"])) / candle_range
+            if candle_range > 0
+            else 0.0
+        )
+        return {
+            "side": side,
+            "reason": reason,
+            "entry_label": reason,
+            "entry_pattern": pattern,
+            "entry_signal_mode": pattern,
+            "structure_confirmation": (
+                "KC_OUTER_BREAKOUT"
+                if is_breakout
+                else "OUTSIDE_CHANNEL_CONTINUATION"
+            ),
+            "structure_confirmed": True,
+            "channel_expanding": channel_expanding,
+            "ma5_current": ma5,
+            "ma5_previous": prev_ma5,
+            "kc_middle_current": float(current["kc_middle"]),
+            "kc_middle_previous": prev_middle,
+            "body_ratio": body_ratio,
+            "volume_exhausted": False,
+            "bar_id": bar_id,
+            "close": close,
+            "entry_mode": "WILD_SWING",
+            "candidate_reason": candidate["reason"],
         }
 
     def _profit_lock_continuation_signal(

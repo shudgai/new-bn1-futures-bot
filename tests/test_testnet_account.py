@@ -128,21 +128,16 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     assert account.available_balance == 900.0
     assert "DOGE/USDT" in account.positions
     assert [order["type"] for order in exchange.orders] == [
-        "market",
-        "STOP_MARKET",
-        "TAKE_PROFIT_MARKET",
+        "market", "TAKE_PROFIT_MARKET",
     ]
     assert exchange.orders[1]["params"]["reduceOnly"] == "true"
-    assert exchange.orders[2]["params"]["reduceOnly"] == "true"
-    assert exchange.orders[1]["params"]["triggerPrice"] == "98.0"
 
 
 @pytest.mark.anyio
 async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     tmp_path, monkeypatch
 ):
-    """停用交易所初始 STOP 後仍保留虛擬 SL；小幅穿越不平倉，
-    只有達本地最大虧損門檻才退出。"""
+    """A single-position loss limit must not close the position."""
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
@@ -187,7 +182,7 @@ async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     exchange.positions[0]["unRealizedProfit"] = "-25"
     account.last_sync_at = 0
     await account.update_positions({"DOGE/USDT": 97.5})
-    assert close_reasons == ["本地最大虧損門檻觸發"]
+    assert close_reasons == []
 
 
 @pytest.mark.anyio
@@ -234,7 +229,7 @@ async def test_dynamic_margin_loss_guard_scales_with_actual_margin(
     exchange.positions[0]["unRealizedProfit"] = "-5.25"
     account.last_sync_at = 0
     await account.update_positions({"DOGE/USDT": 97.9})
-    assert close_reasons == ["動態本金最大虧損門檻觸發"]
+    assert close_reasons == []
 
 
 @pytest.mark.anyio
@@ -272,11 +267,33 @@ async def test_initialize_restores_exchange_stop_for_position_opened_in_local_mo
         order for order in exchange.orders
         if order["type"] in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
     ]
-    assert [order["type"] for order in restored] == [
-        "STOP_MARKET", "TAKE_PROFIT_MARKET",
-    ]
-    assert restored[0]["params"]["triggerPrice"] == "98.0"
-    assert any("啟動保護遷移" in entry["text"] for entry in account.logs)
+    assert restored == []
+    assert not any("啟動保護遷移" in entry["text"] for entry in account.logs)
+
+
+@pytest.mark.anyio
+async def test_orphan_protection_keeps_take_profit_without_position_stop(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "POSITION_HARD_STOPS_ENABLED", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
+    monkeypatch.setattr(testnet_module, "DISABLE_STOP_LOSS", False)
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    position = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "qty": 1.0,
+        "leverage": 5,
+    }
+    meta = {"atr": 1.0}
+
+    await account._create_orphan_protection("DOGE/USDT", position, meta)
+
+    assert [order["type"] for order in exchange.orders] == ["TAKE_PROFIT_MARKET"]
+    assert meta["sl"] == 0.0
 
 
 

@@ -207,6 +207,7 @@ class StrictCrossAndKcTrendGate:
 
 
 
+from core.gates.breakout_continuation_entry_gate import BreakoutContinuationEntryGate
 from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
 
 
@@ -222,6 +223,7 @@ EntryGate = StrictCrossAndKcTrendGate
 
 __all__ = [
     "StrictCrossAndKcTrendGate",
+    "BreakoutContinuationEntryGate",
     "MemeSharedProtectionGate",
     "MacroCandleStructureGate",
     "FiveLinesConfluenceGate",
@@ -232,4 +234,3 @@ __all__ = [
     "has_recent_golden_cross",
     "has_recent_death_cross",
 ]
-

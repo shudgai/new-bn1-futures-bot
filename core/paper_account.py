@@ -1,6 +1,9 @@
 from core.services.exits.entry_atr_protection import initialize_atr_protection, valid_entry_atr, enforce_atr_protection
 from core.services.exits.staged_risk_service import staged_enabled
-from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.services.exits.hard_stop_service import (
+    POSITION_HARD_STOPS_ENABLED,
+    enforce_hard_stop,
+)
 import json
 import math
 import os
@@ -66,7 +69,6 @@ from core.config import (
     STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
-    SL_ONLY_AFTER_PEAK_PCT,
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
     ENABLE_PROFIT_LOCK_USDT,
@@ -245,7 +247,7 @@ class PaperAccount:
             if channel_initial_stop_disabled(pos, meta):
                 migrate_peak_state(pos, meta)
                 restored = True
-        if not DISABLE_STOP_LOSS:
+        if POSITION_HARD_STOPS_ENABLED and not DISABLE_STOP_LOSS:
             for symbol, pos in self.positions.items():
                 meta = self.position_meta.setdefault(symbol, {})
                 entry_mode = str(
@@ -770,6 +772,8 @@ class PaperAccount:
         if entry_context.get("initial_sl") is not None:
             entry_context["initial_sl"] = sl
             entry_context["initial_risk"] = abs(execution_price - sl)
+        if not POSITION_HARD_STOPS_ENABLED:
+            sl = 0.0
         now = __import__('time').time()
         
         if is_top_up:
@@ -1147,7 +1151,8 @@ class PaperAccount:
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
-        # 止損先平倉。硬虧損停損（尚未鎖利）與手動平倉仍照常執行。
+        # Position loss stops are disabled; strategy exits, profit locks, and
+        # explicit manual closes continue through their existing authorities.
         outer_run_profit_lock_hold = bool(
             not is_manual
             and (position.get("outer_run_active") or meta.get("outer_run_active"))
@@ -1394,7 +1399,7 @@ class PaperAccount:
             meta = self.position_meta.get(symbol,{})
             entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
             if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
-                if await enforce_hard_stop(self, symbol, curr_p):
+                if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
                     continue
                 if entry_m == "WILD_SWING":
                     unrealized = (
@@ -1635,7 +1640,7 @@ class PaperAccount:
                     await self._execute_market_close(symbol, pos, curr_p, "極值浮盈跌回保本線")
                     continue
 
-            if await enforce_hard_stop(self, symbol, curr_p):
+            if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
                 continue
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
                 if await enforce_atr_protection(self, symbol, curr_p):
@@ -1658,12 +1663,22 @@ class PaperAccount:
                 and now_ts - float(pos.get("open_timestamp") or now_ts) < EXHAUSTION_SNIPER_GRACE_SEC
             )
             if exhaustion_grace:
-                hard_stop_hit = (
+                stop_hit = (
                     current_sl > 0
                     and ((side == "LONG" and curr_p <= current_sl)
                          or (side == "SHORT" and curr_p >= current_sl))
                 )
-                if hard_stop_hit:
+                profit_stop_armed = bool(
+                    pos.get("is_breakeven_moved")
+                    or meta.get("is_breakeven_moved")
+                    or pos.get("profit_lock_usdt_armed")
+                    or meta.get("profit_lock_usdt_armed")
+                    or pos.get("profit_bank_armed")
+                    or meta.get("profit_bank_armed")
+                    or pos.get("fixed_profit_lock_ladder")
+                    or meta.get("fixed_profit_lock_ladder")
+                )
+                if stop_hit and (POSITION_HARD_STOPS_ENABLED or profit_stop_armed):
                     await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
                     continue
                 pos["peak_pnl_pct"] = highest_pnl
@@ -1823,14 +1838,26 @@ class PaperAccount:
                 is_u_ladder_armed = bool(
                     pos.get("profit_lock_usdt_armed") or meta.get("profit_lock_usdt_armed")
                 )
-                hard_stop_hit = (
+                stop_hit = (
                     current_sl > 0
                     and ((side == "LONG" and curr_p <= current_sl)
                          or (side == "SHORT" and curr_p >= current_sl))
                 )
+                profit_stop_armed = bool(
+                    pos.get("is_breakeven_moved")
+                    or meta.get("is_breakeven_moved")
+                    or pos.get("profit_bank_armed")
+                    or meta.get("profit_bank_armed")
+                    or pos.get("fixed_profit_lock_ladder")
+                    or meta.get("fixed_profit_lock_ladder")
+                )
                 if (
-                    hard_stop_hit
-                    and (is_u_ladder_armed or (not outer_run_profit_lock_hold and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY))
+                    stop_hit
+                    and (POSITION_HARD_STOPS_ENABLED or is_u_ladder_armed or profit_stop_armed)
+                    and (
+                        is_u_ladder_armed
+                        or not outer_run_profit_lock_hold and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY
+                    )
                 ):
                     await self.close_position(symbol, current_sl, "觸發階梯鎖利/止損 (Ladder Lock/Stop-Loss)")
                     continue
@@ -2089,14 +2116,16 @@ class PaperAccount:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
-            # 動態本金防線：單筆毛虧損達實際投入保證金的設定比例即平倉。
+            # Legacy per-position loss limit; inert while account-level hard stops
+            # are the only active hard-stop authority.
             margin_used = float(pos.get("margin") or 0.0)
             leverage = float(pos.get("leverage") or 1.0)
             if margin_used <= 0:
                 margin_used = abs(entry_p * float(pos.get("qty") or 0.0)) / max(leverage, 1.0)
             max_margin_loss_usdt = margin_used * MAX_POSITION_MARGIN_LOSS_RATIO
             current_loss_usdt = max(0.0, -pnl_pct * margin_used * leverage)
-            if max_margin_loss_usdt > 0 and current_loss_usdt >= max_margin_loss_usdt:
+            if (POSITION_HARD_STOPS_ENABLED and max_margin_loss_usdt > 0
+                    and current_loss_usdt >= max_margin_loss_usdt):
                 self.log(
                     f"🚨 [紙上交易/動態本金防線] {symbol} {side} 毛虧損 "
                     f"{current_loss_usdt:.2f}U 已達本金上限 {max_margin_loss_usdt:.2f}U "
@@ -2106,8 +2135,8 @@ class PaperAccount:
                 await self.close_position(symbol, curr_p, "動態本金最大虧損門檻觸發")
                 continue
 
-            # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
-            if MAX_ACCEPTABLE_LOSS_PCT < 0:
+            # Retained for an explicitly re-enabled position-stop policy.
+            if POSITION_HARD_STOPS_ENABLED and MAX_ACCEPTABLE_LOSS_PCT < 0:
                 current_loss_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
                 if current_loss_pct <= MAX_ACCEPTABLE_LOSS_PCT:
                     self.log(
@@ -2156,44 +2185,42 @@ class PaperAccount:
                     continue
                 peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))
                 long_sl_hit = curr_p < sl_price if peak_lock_armed else curr_p <= sl_price
-                if sl_price > 0 and long_sl_hit and not profit_lock_updated_this_cycle:
+                profit_stop_armed = bool(
+                    pos.get("is_breakeven_moved")
+                    or meta.get("is_breakeven_moved")
+                    or pos.get("profit_lock_usdt_armed")
+                    or meta.get("profit_lock_usdt_armed")
+                    or pos.get("profit_bank_armed")
+                    or meta.get("profit_bank_armed")
+                    or pos.get("fixed_profit_lock_ladder")
+                    or meta.get("fixed_profit_lock_ladder")
+                )
+                if (sl_price > 0 and long_sl_hit and not profit_lock_updated_this_cycle
+                        and (POSITION_HARD_STOPS_ENABLED or profit_stop_armed)):
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
-                    highest_peak = float(meta.get("highest_pnl_pct", -999.0))
-                    hard_initial_stop = (pos.get("entry_mode") or meta.get("entry_mode")) in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
-                    if hard_initial_stop or pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
-                        # Simulate an already-resting protective stop at its trigger;
-                        # close_position adds the configured market slippage.
-                        await self.close_position(symbol, sl_price, reason)
-                        continue
-                    else:
-                        # 忽略此輪穿越，視為觀察線；記錄日誌以便追蹤
-                        self.log(
-                            f"🔍 [紙上交易] {symbol} 觸及 SL={sl_price:.6g} 但未達峰值 {SL_ONLY_AFTER_PEAK_PCT:.4%}，暫不平倉",
-                            "INFO",
-                        )
-                        continue
+                    await self.close_position(symbol, sl_price, reason)
+                    continue
             else:
                 if tp_price > 0 and curr_p <= tp_price and not DISABLE_TAKE_PROFIT and not ENABLE_PROFIT_LOCK_USDT:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
                 peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))
                 short_sl_hit = curr_p > sl_price if peak_lock_armed else curr_p >= sl_price
-                if sl_price > 0 and short_sl_hit and not profit_lock_updated_this_cycle:
+                profit_stop_armed = bool(
+                    pos.get("is_breakeven_moved")
+                    or meta.get("is_breakeven_moved")
+                    or pos.get("profit_lock_usdt_armed")
+                    or meta.get("profit_lock_usdt_armed")
+                    or pos.get("profit_bank_armed")
+                    or meta.get("profit_bank_armed")
+                    or pos.get("fixed_profit_lock_ladder")
+                    or meta.get("fixed_profit_lock_ladder")
+                )
+                if (sl_price > 0 and short_sl_hit and not profit_lock_updated_this_cycle
+                        and (POSITION_HARD_STOPS_ENABLED or profit_stop_armed)):
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    highest_peak = float(meta.get("highest_pnl_pct", -999.0))
-                    hard_initial_stop = (pos.get("entry_mode") or meta.get("entry_mode")) in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
-                    if hard_initial_stop or pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
-                        # Simulate an already-resting protective stop at its trigger;
-                        # close_position adds the configured market slippage.
-                        await self.close_position(symbol, sl_price, reason)
-                        continue
-                    else:
-                        self.log(
-                            f"🔍 [紙上交易] {symbol} 觸及 SL={sl_price:.6g} 但未達峰值 {SL_ONLY_AFTER_PEAK_PCT:.4%}，暫不平倉",
-                            "INFO",
-                        )
-                        continue
+                    await self.close_position(symbol, sl_price, reason)
+                    continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p

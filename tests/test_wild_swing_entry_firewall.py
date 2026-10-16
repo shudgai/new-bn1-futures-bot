@@ -69,6 +69,8 @@ def _context(bar_id):
 def _firewall_cross_frame():
     frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
+    frame.loc[10, "kc_middle"] = 100.0
+    frame.loc[11, "kc_middle"] = 99.9
     frame["kc_upper"] = 102.0
     frame["kc_lower"] = 98.0
     frame.attrs["timeframe_ms"] = 60_000

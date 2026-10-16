@@ -1,8 +1,9 @@
-"""Position-bound peak, abnormal-body and independent hard-stop exits."""
+"""Position-bound profit and structure exits; hard stops are account-level only."""
 import copy
 import math
 import sys
 
+from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
 from core.services.strategies.outer_strategy import ma5_ma15_trend_confirmed
 from core.symbol_aliases import (  # noqa: F401 - re-exported for callers
     PIVOT_ONLY_CHANNEL_SYMBOLS,
@@ -1270,13 +1271,21 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
         previous = position.get(STATE_KEY) or {}
         if previous.get('identity') == ident and stamp < previous.get('last_ms', 0):
             return None
-        pending_at_start = previous.get('pending') in (
-            ABNORMAL_REASON, HARD_REASON, PEAK_REASON,
+        pending_at_start = (
+            previous.get('pending') in (ABNORMAL_REASON, PEAK_REASON)
+            or (
+                POSITION_HARD_STOPS_ENABLED
+                and previous.get('pending') == HARD_REASON
+            )
         )
         state = migrate_peak_state(position)
         sign = 1 if ident[0] == 'LONG' else -1
         entry, qty = ident[2:]
 
+        if not POSITION_HARD_STOPS_ENABLED and state.get('pending') == HARD_REASON:
+            state.pop('pending', None)
+            state.pop('trigger', None)
+            position.pop('channel_hard_stop_pending', None)
         if 'peak_price' not in state:
             state['peak_price'] = entry
 
@@ -1394,7 +1403,10 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         peak_unrealized_profit_usd=gain*qty, current_unrealized_pnl_usd=sign*(price-entry)*qty,
                         current_net_pnl_usd=net)
 
-        initial_stop_enabled = not channel_initial_stop_disabled(position)
+        initial_stop_enabled = (
+            POSITION_HARD_STOPS_ENABLED
+            and not channel_initial_stop_disabled(position)
+        )
         stop = entry-sign*1.5*scale if scale>0 and initial_stop_enabled else 0.
         initial = position.get('initial_sl') if initial_stop_enabled else None
         if positive(initial):
@@ -1422,7 +1434,8 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
 
         if positive(stop) and sign*(price-stop) <= 0:
             reason, trigger = HARD_REASON, 'INITIAL_ATR'
-        elif state.get('pending') in (ABNORMAL_REASON, HARD_REASON, PEAK_REASON):
+        elif state.get('pending') in (ABNORMAL_REASON, PEAK_REASON) or (
+                POSITION_HARD_STOPS_ENABLED and state.get('pending') == HARD_REASON):
             reason, trigger = state['pending'], state.get('trigger', 'RETRY')
         else:
             if isinstance(snapshot, dict):

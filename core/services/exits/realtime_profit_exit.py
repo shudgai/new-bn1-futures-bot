@@ -566,11 +566,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if await enforce_hard_stop(account, symbol, price):
             return True
 
-        # 依大週期架構鐵律：盤中即時只允許 -1.5% 絕對硬停損（破產保護）。
-        # 其餘所有策略出場全面收歸 5M 收盤時由 TrendHoldingAndExitManager 集中審查，
-        # 徹底拔除盤中每秒/每跳運行的幽靈平倉邏輯！
-        return False
-
         try:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is not None and not frame.empty:

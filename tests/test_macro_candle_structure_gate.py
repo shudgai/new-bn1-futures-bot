@@ -34,7 +34,11 @@ def test_long_vetoed_when_bias_too_large():
 def test_long_vetoed_when_upper_wick_rejection():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
     bar = {'open': 99.8, 'close': 100.0, 'high': 101.0, 'low': 99.5}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': 100.0, 'atr': 2.0,
+        'kc_middle_current': 100.1, 'kc_middle_previous': 100.0,
+    }
 
     can_open, reason = gate.can_open(
         'LONG', bar, indicators, entry_pattern="CROSSOVER",
@@ -80,7 +84,11 @@ def test_short_vetoed_when_kc_position_too_low():
     # kc_upper = 110, kc_lower = 90 (range = 20)
     # close = 92 -> kc_pos = (92 - 90) / 20 = 0.10 < 0.15 (floor short chasing)
     bar = {'open': 93.0, 'close': 92.0, 'high': 93.2, 'low': 91.8, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 93.0, 'atr': 2.0}
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': 93.0, 'atr': 2.0,
+        'kc_middle_current': 99.9, 'kc_middle_previous': 100.0,
+    }
 
     can_open, reason = gate.can_open(
         'SHORT', bar, indicators, entry_pattern="CROSSOVER",
@@ -170,7 +178,11 @@ def test_breakout_short_bias_above_relaxed_atr_is_still_vetoed():
 def test_short_vetoed_when_lower_wick_exhaustion():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
     bar = {'open': 100.2, 'close': 100.0, 'high': 100.3, 'low': 98.5}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': 100.0, 'atr': 2.0,
+        'kc_middle_current': 99.9, 'kc_middle_previous': 100.0,
+    }
 
     can_open, reason = gate.can_open(
         'SHORT', bar, indicators, entry_pattern="CROSSOVER",
@@ -183,7 +195,11 @@ def test_short_vetoed_when_lower_wick_exhaustion():
 def test_short_bullish_candle_is_not_rejected_by_bearish_wick_rule():
     gate = MacroCandleStructureGate()
     bar = {'open': 99.8, 'close': 100.0, 'high': 100.3, 'low': 98.5}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': 100.0, 'atr': 2.0,
+        'kc_middle_current': 99.9, 'kc_middle_previous': 100.0,
+    }
 
     can_open, reason = gate.can_open(
         'SHORT', bar, indicators, entry_pattern="CROSSOVER",
@@ -265,6 +281,11 @@ def test_each_entry_mode_uses_its_structure_gate(side, mode, bar, indicators, ex
             }
         else:
             bar = {"open": 101.0, "high": 101.1, "low": 99.9, "close": 100.0}
+    if mode == "CROSSOVER":
+        indicators = indicators | {
+            "kc_middle_current": 100.1 if side == "LONG" else 99.9,
+            "kc_middle_previous": 100.0,
+        }
 
     allowed, reason = MacroCandleStructureGate().can_open(
         side, bar, indicators, entry_pattern=mode, **extra,
@@ -340,6 +361,77 @@ def test_crossover_gate_accepts_confirmed_five_minute_ma_convergence():
 
 
 @pytest.mark.parametrize(
+    "side,bar,middle_current,middle_previous",
+    [
+        (
+            "SHORT",
+            {"open": 100.2, "high": 100.3, "low": 99.9, "close": 100.0},
+            100.1, 100.0,
+        ),
+        (
+            "LONG",
+            {"open": 99.8, "high": 100.1, "low": 99.7, "close": 100.0},
+            99.9, 100.0,
+        ),
+    ],
+)
+def test_one_minute_crossover_is_vetoed_against_kc_middle_trend(
+    side, bar, middle_current, middle_previous,
+):
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        {
+            "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 2.0,
+            "kc_middle_current": middle_current,
+            "kc_middle_previous": middle_previous,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert allowed is False
+    assert reason == f"VETO_CROSSOVER_{side}: KC 中軌未{'向上' if side == 'LONG' else '向下'}"
+
+
+def test_one_minute_short_crossover_requires_valid_kc_downtrend_data():
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 100.2, "high": 100.3, "low": 99.9, "close": 100.0},
+        {
+            "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 2.0,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert allowed is False
+    assert reason == "VETO_CROSSOVER_SHORT: KC 中軌方向資料無效"
+
+
+def test_one_minute_short_crossover_is_vetoed_at_upper_kc_rail():
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 110.2, "high": 110.3, "low": 109.9, "close": 110.0},
+        {
+            "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 110.0, "atr": 2.0,
+            "kc_middle_current": 99.9, "kc_middle_previous": 100.0,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert allowed is False
+    assert reason == "VETO_CROSSOVER_SHORT: 價格觸及 KC 上軌，禁止逆勢放空"
+
+
+@pytest.mark.parametrize(
     "side,bar,extra",
     [
         (
@@ -398,6 +490,8 @@ def test_ma5_ma15_cross_gate_accepts_without_outer_pivot_structure(
             "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0,
             "ma15": 100.0, "atr": 2.0,
             "ma5_current": ma5_current, "ma5_previous": ma5_previous,
+            "kc_middle_current": 100.1 if side == "LONG" else 99.9,
+            "kc_middle_previous": 100.0,
         },
         entry_pattern="CROSSOVER",
         structure_confirmation="MA5_MA15_1M_CROSS",

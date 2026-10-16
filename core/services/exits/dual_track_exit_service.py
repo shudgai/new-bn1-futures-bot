@@ -3,6 +3,7 @@ import math
 
 from core.interfaces.exit_interface import IExitStrategy
 from core.services.exit_service import initialize_chandelier
+from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
 
 from core.services.exits.peak_trailing_exit import (
     POLICY, STATE_KEY, STATE_KEYS, channel_initial_stop_disabled, evaluate_peak_trailing,
@@ -357,7 +358,7 @@ def observe_breakeven(position: dict, price: float) -> dict:
 
 class DualTrackExitStrategy(IExitStrategy):
     def initialize_position(self, position, entry_price, atr):
-        if channel_initial_stop_disabled(position):
+        if not POSITION_HARD_STOPS_ENABLED or channel_initial_stop_disabled(position):
             initialize_chandelier(position, entry_price, position['side'], atr,
                                  initial_stop_enabled=False)
             return

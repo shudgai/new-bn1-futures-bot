@@ -4,6 +4,7 @@ import time
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
 from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
+from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
 
 
 def valid_entry_atr(value):
@@ -51,7 +52,10 @@ def initialize_atr_protection(position, entry_price, side, atr, initial_stop=Non
     from core.services.exit_service import initialize_chandelier
     from core.services.exits.peak_trailing_exit import channel_initial_stop_disabled
     initialize_chandelier(position, entry_price, side, atr, initial_stop=initial_stop,
-                          initial_stop_enabled=not channel_initial_stop_disabled(position))
+                          initial_stop_enabled=(
+                              POSITION_HARD_STOPS_ENABLED
+                              and not channel_initial_stop_disabled(position)
+                          ))
 
 
 def atr_exit_reason(position, price, frame=None):

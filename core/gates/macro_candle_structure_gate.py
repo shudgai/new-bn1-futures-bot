@@ -133,6 +133,22 @@ class MacroCandleStructureGate:
             }
         ):
             return False, "VETO_CROSSOVER: 缺少已確認的 1M 交叉或 5M 均線收斂"
+        if mode == "CROSSOVER" and confirmation == "MA5_MA15_1M_CROSS":
+            if side == "SHORT" and close >= kc_upper:
+                return False, "VETO_CROSSOVER_SHORT: 價格觸及 KC 上軌，禁止逆勢放空"
+            if side == "LONG" and close <= kc_lower:
+                return False, "VETO_CROSSOVER_LONG: 價格觸及 KC 下軌，禁止逆勢做多"
+            try:
+                middle_current = float(indicators["kc_middle_current"])
+                middle_previous = float(indicators["kc_middle_previous"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return False, f"VETO_CROSSOVER_{side}: KC 中軌方向資料無效"
+            if not math.isfinite(middle_current) or not math.isfinite(middle_previous):
+                return False, f"VETO_CROSSOVER_{side}: KC 中軌方向資料無效"
+            if side == "LONG" and middle_current <= middle_previous:
+                return False, "VETO_CROSSOVER_LONG: KC 中軌未向上"
+            if side == "SHORT" and middle_current >= middle_previous:
+                return False, "VETO_CROSSOVER_SHORT: KC 中軌未向下"
         if mode == "REVERSAL" and (
             not structure_confirmed
             or confirmation not in {

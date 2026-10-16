@@ -1,6 +1,7 @@
 """Entry gate pipeline & exports.
 Integrates StrictEntryAndImmunityGate, StrictCrossAndKcTrendGate, etc.
 """
+from core.gates.breakout_continuation_entry_gate import BreakoutContinuationEntryGate
 from core.gates.strict_entry_and_immunity_gate import StrictEntryAndImmunityGate, default_strict_gate
 from core.services.gates.entry_gate import (
     StrictCrossAndKcTrendGate,
@@ -61,6 +62,7 @@ __all__ = [
     "FiveLinesConfluenceGate",
     "TrendConfirmationFilterGate",
     "EntryGate",
+    "BreakoutContinuationEntryGate",
     "has_recent_golden_cross",
     "has_recent_death_cross",
 ]

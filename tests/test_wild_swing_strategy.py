@@ -109,9 +109,13 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
         frame.loc[index, "high"] = max(open_price, close) + 0.1
         frame.loc[index, "low"] = min(open_price, close) - 0.1
     if side == "LONG":
+        frame.loc[10, "kc_middle"] = 100.0
+        frame.loc[11, "kc_middle"] = 100.1
         frame.loc[10, "ma15"] = 100.2
         frame.loc[11, "ma15"] = 100.0
     else:
+        frame.loc[10, "kc_middle"] = 100.0
+        frame.loc[11, "kc_middle"] = 99.9
         frame.loc[10, "ma15"] = 99.8
         frame.loc[11, "ma15"] = 100.0
 
@@ -143,6 +147,8 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
         } | {
             "ma5_current": signal["ma5_current"],
             "ma5_previous": signal["ma5_previous"],
+            "kc_middle_current": signal["kc_middle_current"],
+            "kc_middle_previous": signal["kc_middle_previous"],
         },
         entry_pattern=signal["entry_pattern"],
         structure_confirmation=signal["structure_confirmation"],
@@ -157,6 +163,29 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
     live_frame = frame.copy()
     live_frame.loc[live_frame.index[-1], "is_closed"] = False
     assert WildSwingStrategy().evaluate_entry("LOBSTER/USDT", live_frame, side) is None
+
+
+def test_short_crossover_is_rejected_while_kc_middle_rises():
+    frame = _pivot_cross_frame("SHORT")
+    frame.loc[10, "kc_middle"] = 100.0
+    frame.loc[11, "kc_middle"] = 100.1
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, "SHORT",
+    ) is None
+
+
+def test_short_crossover_is_not_generated_at_kc_upper_rail():
+    frame = _pivot_cross_frame("SHORT")
+    frame.loc[10, ["kc_middle", "ma5", "ma15"]] = [100.0, 100.3, 100.0]
+    frame.loc[11, [
+        "open", "high", "low", "close", "kc_upper", "kc_lower",
+        "kc_middle", "ma5", "ma15",
+    ]] = [100.2, 100.3, 99.9, 100.0, 100.0, 98.0, 99.9, 100.1, 100.2]
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, "SHORT",
+    ) is None
 
 
 @pytest.mark.parametrize(

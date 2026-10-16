@@ -577,7 +577,11 @@ class TradingEngine:
         pipeline.set_market_regime_provider(self.symbol_rotation.ai.market_regime_for)
         from core.services.exits.realtime_profit_exit import migrate_account_peak_exits
         migrate_account_peak_exits(self.account)
-        self.account.log('ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR hard_stops=ON mode=FULL_CLOSE tick=aggTrade+ticker', 'INFO')
+        self.account.log(
+            'ABNORMAL_EXIT_POLICY_READY adverse_body=1.2_PREVIOUS_CLOSED_ATR '
+            'position_hard_stops=OFF account_circuit_breaker=LIVE_MAINNET',
+            'INFO',
+        )
         # 策略切換後撤掉尚未成交的舊 MA5/舊回踩進場單，避免重啟後偷渡成交。
         for symbol, pending in list(self.account.pending_limit_orders.items()):
             mode = (pending.get("entry_context") or {}).get("entry_mode")
@@ -1293,7 +1297,7 @@ class TradingEngine:
 
 
     async def _instant_exit_trade_loop(self):
-        """Dedicated trade stream: entry REST/scan work cannot stall exit observation."""
+        """Dedicated trade stream for low-latency account and strategy exit checks."""
         seen = {}
         announced = set()
         while self.is_running:
@@ -1329,7 +1333,7 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Abnormal live bodies and hard stops; only -1.5% hard stop permitted intra-bar."""
+        """Per-position hard stops are disabled; account circuit breakers run separately."""
         from core.services.exits.hard_stop_service import enforce_hard_stop
         return await enforce_hard_stop(self.account, symbol, price)
 

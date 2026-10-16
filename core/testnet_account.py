@@ -1,6 +1,9 @@
 from core.services.exits.entry_atr_protection import initialize_atr_protection, valid_entry_atr, enforce_atr_protection
 from core.services.exits.staged_risk_service import staged_enabled
-from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.services.exits.hard_stop_service import (
+    POSITION_HARD_STOPS_ENABLED,
+    enforce_hard_stop,
+)
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS
 import asyncio
 import copy
@@ -1313,8 +1316,7 @@ class BinanceTestnetAccount:
                 < EXHAUSTION_SNIPER_GRACE_SEC
             )
             if exhaustion_grace:
-                # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
-                # 也不執行任何獲利／技術型出場。
+                # Keep the existing entry grace period for strategy exits.
                 continue
             # ✅ 策略型平倉防火牆：進場後未滿 MIN_HOLD_SEC_FOR_STRATEGY_EXIT 秒，小心記錄並跳過所有策略型出場
             if not _strategy_exit_ok and (is_structure_exit_mode or is_channel_swing):
@@ -1400,7 +1402,7 @@ class BinanceTestnetAccount:
                         pos["is_breakeven_moved"] = True
                         self.log(f"🛡️ [0.8 ATR 移保本] {symbol} {side} 浮盈達標，止損已上調至保本位 {new_sl:.8g}", "INFO")
                         
-                        if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                        if POSITION_HARD_STOPS_ENABLED and ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
                             close_side_bank = "sell" if side == "LONG" else "buy"
                             try:
                                 await self._cancel_all_orders(symbol)
@@ -1626,14 +1628,16 @@ class BinanceTestnetAccount:
                         await self.close_position(symbol, curr_p, "急速逆向閃崩觸發平倉")
                         continue
 
-            # 動態本金防線：以實際投入保證金為基準，未來本金放大時自動縮放。
+            # Legacy per-position loss limit; inert while account-level hard stops
+            # are the only active hard-stop authority.
             margin_used = float(pos.get("margin") or 0.0)
             leverage = float(pos.get("leverage") or 1.0)
             if margin_used <= 0:
                 margin_used = abs(entry_p * float(pos.get("qty") or 0.0)) / max(leverage, 1.0)
             max_margin_loss_usdt = margin_used * MAX_POSITION_MARGIN_LOSS_RATIO
             current_loss_usdt = max(0.0, -pnl_pct * margin_used * leverage)
-            if max_margin_loss_usdt > 0 and current_loss_usdt >= max_margin_loss_usdt:
+            if (POSITION_HARD_STOPS_ENABLED and max_margin_loss_usdt > 0
+                    and current_loss_usdt >= max_margin_loss_usdt):
                 self.log(
                     f"🚨 [動態本金防線] {symbol} {side} 毛虧損 "
                     f"{current_loss_usdt:.2f}U 已達本金上限 {max_margin_loss_usdt:.2f}U "
@@ -1643,8 +1647,8 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, curr_p, "動態本金最大虧損門檻觸發")
                 continue
 
-            # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
-            if MAX_ACCEPTABLE_LOSS_PCT < 0:
+            # Retained for an explicitly re-enabled position-stop policy.
+            if POSITION_HARD_STOPS_ENABLED and MAX_ACCEPTABLE_LOSS_PCT < 0:
                 current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
                 if current_loss_pct <= MAX_ACCEPTABLE_LOSS_PCT:
                     self.log(
@@ -1657,7 +1661,8 @@ class BinanceTestnetAccount:
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
             # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。
             # ✅ 修正：穿越觀察線即立即平倉，不再額外等待虧損達標（移除舊的「耐心等待」邏輯）
-            if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0:
+            if (POSITION_HARD_STOPS_ENABLED
+                    and not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0):
                 breached = (
                     (side == "LONG" and mark_p <= old_sl)
                     or (side == "SHORT" and mark_p >= old_sl)
@@ -1945,19 +1950,23 @@ class BinanceTestnetAccount:
         entry_p = pos["entry_price"]
         atr = meta.get("atr") or entry_p * 0.015
         sl_distance, tp_distance = compute_sl_tp_distance(entry_p, atr)
-        if side == "LONG":
+        if POSITION_HARD_STOPS_ENABLED and side == "LONG":
             sl_price = float(self._price_to_precision(symbol, entry_p - sl_distance)) if not DISABLE_STOP_LOSS else 0.0
+        elif POSITION_HARD_STOPS_ENABLED:
+            sl_price = float(self._price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
+        else:
+            sl_price = 0.0
+        if side == "LONG":
             tp_price = float(self._price_to_precision(symbol, entry_p + tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         else:
-            sl_price = float(self._price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self._price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
-        if not DISABLE_STOP_LOSS:
+        if POSITION_HARD_STOPS_ENABLED and not DISABLE_STOP_LOSS:
             sl_price = cap_stop_loss_to_margin_risk(entry_p, side, sl_price, pos["leverage"])
             sl_price = float(self._price_to_precision(symbol, sl_price))
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
-            if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+            if POSITION_HARD_STOPS_ENABLED and ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
                 await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
@@ -1969,7 +1978,11 @@ class BinanceTestnetAccount:
             meta["atr"] = atr
             self.position_meta[symbol] = meta
             self.save_state()
-            sl_msg = f"SL={sl_price}" if ENABLE_EXCHANGE_INITIAL_STOP_LOSS else f"本地SL觀察線={sl_price}"
+            sl_msg = (
+                f"SL={sl_price}"
+                if POSITION_HARD_STOPS_ENABLED and ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                else "逐筆硬止損停用"
+            )
             tp_msg = f" TP={tp_price}" if not DISABLE_TAKE_PROFIT else " (已停用初始止利)"
             self.log(
                 f"🔧 [補建保護] {symbol} 偵測到缺少保護資料，已建立 {sl_msg}{tp_msg}",
@@ -1989,7 +2002,7 @@ class BinanceTestnetAccount:
         開關已切回交易所模式、本地監控也不再觸發，卻留下裸倉。已升級原生
         trailing 的部位不動，避免把鎖利單降級回初始固定停損。
         """
-        if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+        if not POSITION_HARD_STOPS_ENABLED or not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
             return
         channel_swing_cleared = False
         for symbol, pos in list(self.positions.items()):
@@ -2575,7 +2588,8 @@ class BinanceTestnetAccount:
                 # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
-                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS and sl_price > 0 and not (is_channel_swing or is_wild_swing):
+                if (POSITION_HARD_STOPS_ENABLED and ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                        and sl_price > 0 and not (is_channel_swing or is_wild_swing)):
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )
@@ -2614,6 +2628,9 @@ class BinanceTestnetAccount:
                 entry_context.update({key: meta[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
                                        "initial_sl", "initial_risk")})
+            if not POSITION_HARD_STOPS_ENABLED:
+                sl_price = 0.0
+                meta["sl"] = 0.0
             self.position_meta[symbol] = meta
             # 「金額」用實際成交的 qty×成交價÷槓桿算，不要直接沿用呼叫端
             # 傳入的 amount_usdt（原本打算下的預算）——限價單部分成交時
@@ -2649,10 +2666,9 @@ class BinanceTestnetAccount:
                 **entry_context,
             })
             await self.refresh(force=True)
-            sl_label = "SL" if ENABLE_EXCHANGE_INITIAL_STOP_LOSS else "本地SL觀察線"
             self.log(
                 f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
-                f"{execution_price:.6f} ({leverage}x，{sl_label}={sl_price}, TP={tp_price})",
+                f"{execution_price:.6f} ({leverage}x，單筆硬止損已停用，TP={tp_price})",
                 "SUCCESS",
             )
             return True

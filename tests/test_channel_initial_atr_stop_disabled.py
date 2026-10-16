@@ -1,4 +1,4 @@
-"""Channel initial ATR stops are retired; account loss limits stay authoritative."""
+"""Per-position hard stops are retired; account circuit breakers remain separate."""
 import asyncio
 import copy
 import json
@@ -75,28 +75,30 @@ def test_restart_revokes_only_strategy_atr_pending(side, store):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_non_channel_initial_stop_is_unchanged(side):
+def test_non_channel_initial_atr_stop_is_disabled(side):
     p = position(side)
     p['entry_mode'] = 'OTHER'
     sign = 1 if side == 'LONG' else -1
 
     result = evaluate_peak_trailing(p, 100-sign*1.6, 61000, fee=0., slippage=0.)
 
-    assert result['reason'] == HARD_REASON
+    assert result is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_non_channel_initializer_preserves_stop(side):
+def test_non_channel_initializer_does_not_create_position_hard_stop(side):
     p = position(side)
     p['entry_mode'] = 'OTHER'
     initialize_atr_protection(p, 100., side, 1.)
-    assert p['sl'] == (98.5 if side == 'LONG' else 101.5)
+    assert p['sl'] == p['atr_sl'] == p['initial_sl'] == p['initial_risk'] == 0.
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('initializer', ['account', 'strategy'])
-def test_new_channel_position_keeps_atr_without_stop(side, initializer):
+@pytest.mark.parametrize('entry_mode', ['CHANNEL_SWING', 'WILD_SWING'])
+def test_new_position_keeps_atr_without_hard_stop(side, initializer, entry_mode):
     p = position(side)
+    p['entry_mode'] = entry_mode
 
     if initializer == 'account':
         initialize_atr_protection(p, 100., side, 1.)
@@ -109,7 +111,7 @@ def test_new_channel_position_keeps_atr_without_stop(side, initializer):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('loss_gate', ['MARGIN_LOSS', 'PRICE_LOSS'])
-def test_channel_account_loss_limits_close(side, loss_gate, monkeypatch):
+def test_channel_position_loss_limits_do_not_close(side, loss_gate, monkeypatch):
     monkeypatch.setattr(config, 'MAX_POSITION_MARGIN_LOSS_RATIO', .01 if loss_gate == 'MARGIN_LOSS' else 0.)
     monkeypatch.setattr(config, 'MAX_ACCEPTABLE_LOSS_PCT', -.02)
     p = position(side)
@@ -119,11 +121,11 @@ def test_channel_account_loss_limits_close(side, loss_gate, monkeypatch):
     price = 100-sign*(1.1 if loss_gate == 'MARGIN_LOSS' else 2.1)
 
     async def run():
-        assert await enforce_hard_stop(account, 'X', price)
+        assert not await enforce_hard_stop(account, 'X', price)
 
     asyncio.run(run())
 
-    account.close_position.assert_awaited_once()
+    account.close_position.assert_not_awaited()
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
