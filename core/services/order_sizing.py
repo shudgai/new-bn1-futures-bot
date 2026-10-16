@@ -1,6 +1,8 @@
 """USD-M linear quantities are expressed in the quoted market's base units."""
 from decimal import Decimal, InvalidOperation
 
+from core.symbol_aliases import to_binance_usdm_symbol
+
 
 def positive(value):
     try:
@@ -19,11 +21,12 @@ def raw_order_qty(margin, leverage, price):
 
 
 def calculate_order_qty(exchange, symbol, margin, leverage, price, *, market_order=True):
-    market = exchange.market(symbol)
+    exchange_symbol = to_binance_usdm_symbol(symbol)
+    market = exchange.market(exchange_symbol)
     if market.get('linear') is not True or positive(market.get('contractSize')) != 1:
         raise ValueError('[ORDER_SIZE] Expected Binance linear base-unit contract')
     raw = raw_order_qty(margin, leverage, price)
-    quantity = positive(exchange.amount_to_precision(symbol, str(raw)))
+    quantity = positive(exchange.amount_to_precision(exchange_symbol, str(raw)))
     filters = {item['filterType']: item for item in market['info']['filters']}
     required = ['LOT_SIZE', 'MARKET_LOT_SIZE'] if market_order else ['LOT_SIZE']
     steps = []

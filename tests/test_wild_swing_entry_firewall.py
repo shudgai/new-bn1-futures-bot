@@ -58,9 +58,9 @@ def _context(bar_id):
     return {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
-        "entry_pattern": "REVERSAL",
+        "entry_pattern": "CROSSOVER",
         "entry_signal_code": "WILD_SWING_REVERSAL_CROSSOVER_ENTRY",
-        "entry_signal_mode": "REVERSAL",
+        "entry_signal_mode": "CROSSOVER",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
     }
@@ -80,8 +80,8 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     )
 
     assert result["entry_mode"] == "WILD_SWING"
-    assert result["entry_pattern"] == "REVERSAL"
-    assert result["entry_signal_mode"] == "REVERSAL"
+    assert result["entry_pattern"] == "CROSSOVER"
+    assert result["entry_signal_mode"] == "CROSSOVER"
     assert result["side"] == "SHORT"
     assert result["confirmation_bar_id"] == bar_id
 
@@ -154,7 +154,7 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
         )
 
     assert calls == [{
-        "entry_pattern": "REVERSAL",
+        "entry_pattern": "CROSSOVER",
         "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
         "structure_confirmed": True,
         "channel_expanding": False,
@@ -292,7 +292,7 @@ def test_engine_passes_signal_mode_into_account_entry_context():
     engine = SimpleNamespace(
         account=account,
         symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args: 10),
-        _full_wallet_entry_margin=lambda wallet, available, leverage: 10.0,
+        _full_wallet_entry_margin=lambda wallet, available, leverage, symbol=None: 10.0,
     )
     signal = {
         "bar_id": 660_000,

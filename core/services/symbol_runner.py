@@ -124,6 +124,12 @@ async def _process_wild_swing_symbol(
     attempted_bar_ids[symbol] = latest_closed_bar_id
 
     current_bar = closed.iloc[-1]
+    vision_gate.clear_for_confirmed_ma_turn(
+        symbol,
+        entry_pattern=signal.get("entry_pattern"),
+        structure_confirmation=signal.get("structure_confirmation"),
+        structure_confirmed=signal.get("structure_confirmed") is True,
+    )
     from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 
     macro_fields = (

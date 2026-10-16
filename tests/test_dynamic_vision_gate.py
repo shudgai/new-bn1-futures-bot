@@ -101,6 +101,24 @@ def test_confirmed_reversal_cross_bypasses_old_price_lock_and_clears_it():
     assert "BTC" not in gate._rejections
 
 
+def test_confirmed_reversal_ma_cross_bypasses_old_price_lock():
+    gate = DynamicVisionGatekeeper(min_bars_interval=2)
+    gate.record_rejection("BTC", make_test_bar(h=105.0, l=95.0), "SHORT")
+
+    ok, reason = gate.can_submit_for_vision(
+        "BTC",
+        make_test_bar(c=100.0),
+        "SHORT",
+        entry_pattern="REVERSAL",
+        structure_confirmation="MA5_MA15_1M_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert ok is True
+    assert reason == "UNLOCKED_CONFIRMED_MA_TURN"
+    assert "BTC" not in gate._rejections
+
+
 def test_same_side_reversal_cross_bypasses_prior_qwen_rejection_low():
     gate = DynamicVisionGatekeeper(min_bars_interval=2)
     gate.record_rejection(

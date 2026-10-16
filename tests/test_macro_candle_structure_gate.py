@@ -123,6 +123,50 @@ def test_short_vetoed_when_bias_too_large():
     assert can_open is False
     assert "VETO_SHORT: 乖離過大" in reason
 
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_breakout_bias_limit_is_two_atr(side):
+    if side == "SHORT":
+        bar = {"open": 91.2, "close": 89.8, "high": 91.3, "low": 89.7}
+        ma15 = 93.4
+    else:
+        bar = {"open": 108.8, "close": 110.2, "high": 110.3, "low": 108.7}
+        ma15 = 106.6
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": ma15, "atr": 2.0,
+    }
+    if side == "SHORT":
+        bar["close"] = 89.8
+        bar["open"] = 91.2
+        indicators["ma15"] = 93.8  # exactly 2 ATR away
+
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side, bar, indicators, entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+def test_breakout_short_bias_above_two_atr_is_still_vetoed():
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 91.2, "close": 89.8, "high": 91.3, "low": 89.7},
+        {
+            "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 94.0, "atr": 2.0,
+        },
+        entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
+    assert allowed is False
+    assert "2.00x ATR" in reason
+
+
 def test_short_vetoed_when_lower_wick_exhaustion():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
     bar = {'open': 100.2, 'close': 100.0, 'high': 100.3, 'low': 98.5}
@@ -329,6 +373,68 @@ def test_outer_pivot_then_ma_cross_reversal_gate_accepts_aligned_ma5(
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
 
+def test_top_pivot_crossover_passes_outside_mid_channel_and_two_atr_bias():
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 102.0, "high": 102.2, "low": 99.7, "close": 100.0},
+        {
+            "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+            "ma15": 104.0, "atr": 2.0,
+            "ma5_current": 100.1, "ma5_previous": 100.2,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+    assert allowed is True
+    assert reason == "PASSED_MACRO_SHORT_GATE"
+
+
+@pytest.mark.parametrize(
+    "side,wick_ratio,expected",
+    [
+        ("LONG", 0.45, True),
+        ("LONG", 0.51, False),
+        ("SHORT", 0.45, True),
+        ("SHORT", 0.51, False),
+    ],
+)
+def test_outer_pivot_crossover_allows_moderate_wick_but_rejects_over_half(
+    side, wick_ratio, expected,
+):
+    wick = wick_ratio / (1.0 - wick_ratio)
+    if side == "LONG":
+        bar = {
+            "open": 100.0, "close": 101.0,
+            "high": 101.0 + wick, "low": 100.0,
+        }
+        ma5_current, ma5_previous = 100.9, 100.8
+    else:
+        bar = {
+            "open": 100.0, "close": 99.0,
+            "high": 100.0, "low": 99.0 - wick,
+        }
+        ma5_current, ma5_previous = 99.1, 99.2
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        {
+            "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 1.0,
+            "ma5_current": ma5_current, "ma5_previous": ma5_previous,
+        },
+        entry_pattern="CROSSOVER",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+
+    assert allowed is expected
+    if expected:
+        assert reason == f"PASSED_MACRO_{side}_GATE"
+    else:
+        assert "峰谷交叉" in reason
+
+
 def test_outer_pivot_then_ma_cross_rejects_wrong_ma5_slope():
     allowed, reason = MacroCandleStructureGate().can_open(
         "LONG",
@@ -344,6 +450,34 @@ def test_outer_pivot_then_ma_cross_rejects_wrong_ma5_slope():
     )
     assert allowed is False
     assert reason == "VETO_REVERSAL: MA5 斜率或價格位置逆向"
+
+
+def test_breakout_short_requires_solid_body_and_rejects_extreme_lower_wick():
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 90.0, "atr": 2.0,
+    }
+    extreme_wick, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 92.0, "high": 92.1, "low": 87.8, "close": 90.0},
+        indicators,
+        entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
+    assert extreme_wick is False
+    assert "下影線超過 K 棒區間 50%" in reason
+
+    weak_body, reason = MacroCandleStructureGate().can_open(
+        "SHORT",
+        {"open": 91.0, "high": 91.1, "low": 88.9, "close": 90.0},
+        indicators,
+        entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
+    assert weak_body is False
+    assert "實體比例未超過 K 棒區間 60%" in reason
 
 
 @pytest.mark.parametrize(

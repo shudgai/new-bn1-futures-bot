@@ -49,8 +49,9 @@ class FakeEngine:
         return True
 
 
+@pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "1000PEPE/USDT"])
 def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_bar(
-    monkeypatch,
+    monkeypatch, symbol,
 ):
     from types import SimpleNamespace
 
@@ -63,7 +64,7 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
 
     asyncio.run(
         process_single_symbol_runner(
-            engine, "LOBSTER/USDT", 0, None, False,
+            engine, symbol, 0, None, False,
             exit_frame=first, exit_quote=99.0,
         )
     )
@@ -85,22 +86,60 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     next_frame.loc[11, "ma15"] = 100.0
     engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
     engine._wild_swing_vision_gate.record_rejection(
-        "LOBSTER/USDT",
+        symbol,
         SimpleNamespace(**next_frame.iloc[-1].to_dict()),
         "SHORT",
     )
     asyncio.run(
         process_single_symbol_runner(
-            engine, "LOBSTER/USDT", 60, None, False,
+            engine, symbol, 60, None, False,
             exit_frame=next_frame, exit_quote=99.0,
         )
     )
 
     assert len(engine.entries) == 1
     assert engine.entries[0]["entry_mode"] == "WILD_SWING"
-    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "REVERSAL"
+    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"
     assert engine.entries[0]["frame"].iloc[-1]["timestamp"] == next_frame.iloc[-1]["timestamp"]
-    assert vision_calls == [("SHORT", "REVERSAL")]
+    assert vision_calls == [("SHORT", "CROSSOVER")]
+    assert symbol not in engine._wild_swing_vision_gate._rejections
+
+
+def test_wild_swing_vision_rejection_state_is_isolated_by_symbol(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.vision.chart_guard import DynamicVisionGatekeeper
+
+    engine = FakeEngine()
+    engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
+    rejected_bar = SimpleNamespace(high=101., low=99., close=100.)
+    engine._wild_swing_vision_gate.record_rejection(
+        "1000PEPE/USDT", rejected_bar, "SHORT",
+    )
+    first = _frame("SHORT")
+    first["atr"] = 2.0
+    first["timestamp"] = [index * 60_000 for index in range(len(first))]
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, "LOBSTER/USDT", 0, None, False,
+            exit_frame=first, exit_quote=99.,
+        )
+    )
+    next_frame = _pivot_cross_frame("SHORT")
+    next_frame["timestamp"] += 720_000
+    next_frame["atr"] = 2.0
+    next_frame.loc[10, "ma15"] = 99.8
+    next_frame.loc[11, "ma15"] = 100.0
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, "LOBSTER/USDT", 60, None, False,
+            exit_frame=next_frame, exit_quote=99.,
+        )
+    )
+
+    assert len(engine.entries) == 1
+    assert engine.entries[0]["symbol"] == "LOBSTER/USDT"
+    assert "1000PEPE/USDT" in engine._wild_swing_vision_gate._rejections
     assert "LOBSTER/USDT" not in engine._wild_swing_vision_gate._rejections
 
 
@@ -142,6 +181,48 @@ def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):
 
     assert qwen_calls == []
     assert engine.entries == []
+
+
+def test_runner_clears_dynamic_lock_before_macro_gate_for_confirmed_cross(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.vision.chart_guard import DynamicVisionGatekeeper
+    from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+
+    monkeypatch.setattr(
+        MacroCandleStructureGate,
+        "can_open",
+        lambda *args, **kwargs: (False, "TEST_VETO"),
+    )
+    engine = FakeEngine()
+    engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
+    first = _frame("SHORT")
+    first["atr"] = 2.0
+    first["timestamp"] = [index * 60_000 for index in range(len(first))]
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, "LOBSTER/USDT", 0, None, False,
+            exit_frame=first, exit_quote=99.0,
+        )
+    )
+    engine._wild_swing_vision_gate.record_rejection(
+        "LOBSTER/USDT",
+        SimpleNamespace(high=100.2, low=98.8, close=99.5),
+        "SHORT",
+    )
+
+    frame = _pivot_cross_frame("SHORT")
+    frame["timestamp"] += 720_000
+    frame["atr"] = 2.0
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, "LOBSTER/USDT", 60, None, False,
+            exit_frame=frame, exit_quote=99.0,
+        )
+    )
+
+    assert engine.entries == []
+    assert "LOBSTER/USDT" not in engine._wild_swing_vision_gate._rejections
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -214,4 +295,4 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     )
     assert len(engine.entries) == 1
     assert engine.entries[0]["side"] == side
-    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "REVERSAL"
+    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"

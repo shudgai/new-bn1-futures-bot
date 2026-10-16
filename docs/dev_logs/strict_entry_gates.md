@@ -42,6 +42,13 @@ The position-bound Channel Swing peak state arms only after the current quote is
 
 While climax tracking is armed, ordinary MA, momentum-stall, and pullback exits are suppressed. Account hard stops, verified waterfall/emergency defenses, and independently confirmed KC-midline structural exits remain active. The separate SHORT lower-rail-break confirmation guard retains its own 35% rebound-or-bullish-reclaim rule.
 
+### [2026-10-16 21:54:27 UTC+8] - Modification Phase: WILD_SWING crossover and breakout gate repair
+- **Author**: shudgai999 / Copilot SDK in VS Code
+- **Target Files & Lines**: `core/services/strategies/wild_swing_strategy.py` (`evaluate_entry`); `core/gates/macro_candle_structure_gate.py` (`can_open`); `core/vision/chart_guard.py` (`DynamicVisionGatekeeper`); `core/services/symbol_runner.py`; `tests/test_wild_swing_strategy.py`, `tests/test_wild_swing_runner.py`, `tests/test_macro_candle_structure_gate.py`, `tests/test_dynamic_vision_gate.py`, `tests/test_wild_swing_entry_firewall.py`.
+- **Modification Description**: Confirmed KC-outer-pivot MA5/MA15 turns now emit CROSSOVER signals without requiring MA15 to already turn; the MA5 slope and candle close remain directional. A confirmed new turn clears the historical Dynamic Vision lock before Macro Gate evaluation and bypasses only that historical extreme-break check. The confirmed pivot crossover wick threshold is symmetric at 50%; BREAKOUT requires an expanding channel, a >60% directional body and rejects a SHORT lower wick above 50%; breakout/crossover MA15 bias is capped at 2.0 ATR.
+- **Trigger Reason & Requirement**: User requested that high/low turn crosses and true KC breakouts reach the local Qwen-VL review instead of deadlocking on stale rejection lows, delayed MA15 slope or inappropriate KC-position limits.
+- **Verification & Test Status**: Focused suite — 144 passed with 14 pre-existing matplotlib/pyparsing deprecation warnings; `compileall` and `git diff --check` passed. Both chart API requests returned 200 bars, and the restarted paper service is responsive. Historical 21:16–21:20 Gate attribution remains unavailable because the host journal and retained application log did not contain those candidate decisions; no historical cause is inferred.
+
 ### [2026-10-12 23:43:06 UTC+8] - Modification Phase: Strict MA5 entry and climax peak protection
 - **Author**: shudgai999 / Copilot SDK in VS Code
 - **Target Files & Lines**: `core/services/ma5_entry_slope.py`; `core/gates/pipeline.py`; `core/services/entry_contract.py`; `core/services/entry_firewall.py`; `core/gates/holding_protection_gate.py`; `core/services/exits/peak_trailing_exit.py`; focused tests.

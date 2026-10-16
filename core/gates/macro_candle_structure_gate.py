@@ -11,6 +11,8 @@ from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 
 
 class MacroCandleStructureGate:
+    CROSSOVER_BREAKOUT_MAX_BIAS_ATR = 2.0
+
     def __init__(self, max_bias_atr: float = 1.2):
         self.max_bias_atr = max_bias_atr
 
@@ -103,15 +105,29 @@ class MacroCandleStructureGate:
             return False, "VETO_INVALID_STRUCTURE_DATA"
 
         confirmation = str(structure_confirmation or "").upper()
+        outer_pivot_ma_cross = (
+            structure_confirmed
+            and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
+            and mode in {"CROSSOVER", "REVERSAL"}
+        )
         if mode == "BREAKOUT" and (
             not channel_expanding or confirmation != "KC_OUTER_BREAKOUT"
         ):
             return False, "VETO_BREAKOUT: KC 通道未擴張或缺少有效破軌確認"
+        if mode == "BREAKOUT":
+            if side == "SHORT" and lower_wick / candle_range > 0.50:
+                return False, (
+                    "VETO_BREAKOUT_SHORT: 下影線超過 K 棒區間 50%，"
+                    "拒絕極端反彈長針"
+                )
+            if body / candle_range <= 0.60:
+                return False, "VETO_BREAKOUT: 實體比例未超過 K 棒區間 60%"
         if mode == "CROSSOVER" and (
             not structure_confirmed
             or confirmation not in {
                 "MA5_MA15_1M_CROSS",
                 "MA5_MA15_5M_CONVERGENCE",
+                "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
             }
         ):
             return False, "VETO_CROSSOVER: 缺少已確認的 1M 交叉或 5M 均線收斂"
@@ -160,7 +176,7 @@ class MacroCandleStructureGate:
             ):
                 return False, "VETO_CONTINUATION_SHORT: KC 外軌、MA5 或中軌方向未確認"
         if (
-            mode == "REVERSAL"
+            mode in {"CROSSOVER", "REVERSAL"}
             and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
         ):
             try:
@@ -193,10 +209,19 @@ class MacroCandleStructureGate:
                 if kc_pos < 0.35:
                     return False, f"VETO_CONTINUATION_LONG: KC_Pos {kc_pos:.2f} 低於回踩區"
             elif mode == "CROSSOVER":
-                if not 0.35 <= kc_pos <= 0.65:
+                outer_pivot_cross = (
+                    confirmation
+                    == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
+                )
+                if not outer_pivot_cross and not 0.35 <= kc_pos <= 0.65:
                     return False, f"VETO_CROSSOVER_LONG: KC_Pos {kc_pos:.2f} 不在中軌區"
             # 規則 2：不可在超買過度延伸時進場
-            if bias_atr > self.max_bias_atr:
+            max_bias_atr = (
+                self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
+                else self.max_bias_atr
+            )
+            if bias_atr > max_bias_atr:
                 return False, f"VETO_LONG: 乖離過大 (Bias: {bias_atr:.2f}x ATR)，嚴禁追多"
 
             # 規則 3：頂部遇阻上影線不可做多
@@ -211,15 +236,23 @@ class MacroCandleStructureGate:
                 return False, "VETO_REVERSAL_LONG: 谷底長下影線未確認"
             if (
                 not pinbar_reversal
+                and not outer_pivot_ma_cross
                 and upper_wick > body
                 and close < high
             ) or (
                 mode in {"CROSSOVER", "REVERSAL"}
                 and not pinbar_reversal
+                and not outer_pivot_ma_cross
                 and candle_range > 0
                 and upper_wick / candle_range > 0.40
             ):
                 return False, "VETO_LONG: K 棒受阻留長上影線，禁止開多"
+            if (
+                outer_pivot_ma_cross
+                and candle_range > 0
+                and upper_wick / candle_range > 0.50
+            ):
+                return False, "VETO_CROSSOVER_LONG: 峰谷交叉上影線超過 K 棒區間 50%"
 
             return True, "PASSED_MACRO_LONG_GATE"
 
@@ -234,11 +267,22 @@ class MacroCandleStructureGate:
                 if kc_pos > 0.65:
                     return False, f"VETO_CONTINUATION_SHORT: KC_Pos {kc_pos:.2f} 高於回踩區"
             elif mode == "CROSSOVER":
-                if not 0.35 <= kc_pos <= 0.65:
+                outer_pivot_cross = (
+                    confirmation
+                    == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
+                )
+                if not outer_pivot_cross and not 0.35 <= kc_pos <= 0.65:
                     return False, f"VETO_CROSSOVER_SHORT: KC_Pos {kc_pos:.2f} 不在中軌區"
-            # 規則 2：不可在超跌過度延伸時追空
-            if bias_atr > self.max_bias_atr:
-                return False, f"VETO_SHORT: 乖離過大 (Bias: {bias_atr:.2f}x ATR)，嚴禁追空"
+            max_bias_atr = (
+                self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
+                else self.max_bias_atr
+            )
+            if bias_atr > max_bias_atr:
+                return False, (
+                    f"VETO_SHORT: 乖離過大 (Bias: {bias_atr:.2f}x ATR > "
+                    f"{max_bias_atr:.2f}x ATR)，嚴禁追空"
+                )
 
             pinbar_reversal = (
                 mode == "REVERSAL"
@@ -251,9 +295,16 @@ class MacroCandleStructureGate:
                 return False, "VETO_REVERSAL_SHORT: 頂部長上影線未確認"
             if close < open_price and candle_range > 0:
                 wick_ratio = lower_wick / candle_range
-                if wick_ratio > 0.40 or (
-                    mode in {"CROSSOVER", "REVERSAL"}
-                    and lower_wick > body
+                if outer_pivot_ma_cross and wick_ratio > 0.50:
+                    return False, (
+                        "VETO_CROSSOVER_SHORT: 峰谷交叉下影線超過 K 棒區間 50%"
+                    )
+                if not outer_pivot_ma_cross and mode != "BREAKOUT" and (
+                    wick_ratio > 0.40
+                    or (
+                        mode in {"CROSSOVER", "REVERSAL"}
+                        and lower_wick > body
+                    )
                 ):
                     return False, "VETO_SHORT: 陰線下影線結構力竭，禁止追空"
 

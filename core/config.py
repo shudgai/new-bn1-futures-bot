@@ -77,6 +77,18 @@ def get_effective_slot_count(wallet_balance: float, configured_max: int = None) 
         return 0
     return slot_cap
 
+
+WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.50
+
+
+def get_wild_swing_margin_fraction(symbol: str) -> float | None:
+    from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
+
+    if is_lobster_symbol(symbol) or is_pepe_symbol(symbol):
+        return WILD_SWING_SYMBOL_MARGIN_FRACTION
+    return None
+
+
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
 MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "15")))

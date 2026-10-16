@@ -156,7 +156,11 @@ from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import drop_unclosed_candle, compute_position_trigger
 from core.services.candle_data import closed_entry_candles, log_entry_gate
-from core.services.market_data_service import fetch_klines as fetch_market_klines
+from core.services.market_data_service import (
+    fetch_klines as fetch_market_klines,
+    frame_from_ohlcv_snapshot,
+)
+from core.symbol_aliases import to_binance_usdm_symbol
 from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES, MOMENTUM_ENTRY_CODES
 
 class TradingEngine:
@@ -347,6 +351,11 @@ class TradingEngine:
         self.trend_follow_task: asyncio.Task = None
         self.trailing_sl_task: asyncio.Task = None
         self.ticker_task: asyncio.Task = None
+        self.wild_swing_kline_tasks: Dict[str, asyncio.Task] = {}
+        self._wild_swing_kline_cache: Dict[str, list] = {}
+        self._wild_swing_kline_updated_at: Dict[str, float] = {}
+        self._wild_swing_kline_stream_ready: set[str] = set()
+        self._wild_swing_kline_fallback_logged: set[str] = set()
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -512,8 +521,12 @@ class TradingEngine:
             return False
         try:
             main_book, execution_book = await asyncio.gather(
-                self.exchange.fetch_order_book(symbol, limit=5),
-                self.execution_exchange.fetch_order_book(symbol, limit=5),
+                self.exchange.fetch_order_book(
+                    to_binance_usdm_symbol(symbol), limit=5,
+                ),
+                self.execution_exchange.fetch_order_book(
+                    to_binance_usdm_symbol(symbol), limit=5,
+                ),
             )
             book_side = "asks" if str(side).upper() == "LONG" else "bids"
             main_rows = main_book.get(book_side) or []
@@ -608,9 +621,22 @@ class TradingEngine:
         self.request_trade_analysis()
 
     def start_market_data(self) -> None:
-        """Keep one ticker stream alive independently from trading tasks."""
+        """Keep ticker and WILD_SWING candle streams alive independently."""
         if self.ticker_task is None or self.ticker_task.done():
             self.ticker_task = asyncio.create_task(self._ticker_loop())
+        from core.symbol_aliases import is_meme_breakout_symbol
+
+        kline_tasks = getattr(self, "wild_swing_kline_tasks", None)
+        if kline_tasks is None:
+            kline_tasks = self.wild_swing_kline_tasks = {}
+        for symbol in DEFAULT_SYMBOLS:
+            if not is_meme_breakout_symbol(symbol):
+                continue
+            task = kline_tasks.get(symbol)
+            if task is None or task.done():
+                kline_tasks[symbol] = asyncio.create_task(
+                    self._wild_swing_kline_loop(symbol)
+                )
 
     async def stop(self, close_exchanges: bool = False):
         was_running = self.is_running
@@ -629,6 +655,12 @@ class TradingEngine:
                 task.cancel()
                 tasks.append(task)
                 setattr(self, name, None)
+        if close_exchanges:
+            kline_tasks = list(getattr(self, "wild_swing_kline_tasks", {}).values())
+            for task in kline_tasks:
+                task.cancel()
+            tasks.extend(kline_tasks)
+            self.wild_swing_kline_tasks = {}
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         # UI 的停止只是暫停交易任務，不能關閉 ccxt；否則按下再次啟動後，
@@ -1049,7 +1081,44 @@ class TradingEngine:
 
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
-        """Compatibility facade; market-data I/O lives in its service."""
+        """Read fresh WILD_SWING 1m WebSocket candles, falling back to REST."""
+        if timeframe == "1m":
+            from core.symbol_aliases import is_meme_breakout_symbol
+
+            updated_at = getattr(self, "_wild_swing_kline_updated_at", {}).get(symbol)
+            candles = getattr(self, "_wild_swing_kline_cache", {}).get(symbol)
+            if (
+                is_meme_breakout_symbol(symbol)
+                and updated_at is not None
+                and time.monotonic() - updated_at <= 15.0
+                and candles
+                and len(candles) >= limit
+            ):
+                try:
+                    frame = frame_from_ohlcv_snapshot(
+                        candles[-limit:],
+                        timeframe,
+                        keep_live=keep_live,
+                    )
+                    if not frame.empty:
+                        getattr(
+                            self, "_wild_swing_kline_fallback_logged", set(),
+                        ).discard(symbol)
+                        return frame
+                except (TypeError, ValueError):
+                    pass
+            if is_meme_breakout_symbol(symbol):
+                fallback_logged = getattr(
+                    self, "_wild_swing_kline_fallback_logged", None,
+                )
+                if fallback_logged is None:
+                    fallback_logged = self._wild_swing_kline_fallback_logged = set()
+                if symbol not in fallback_logged:
+                    fallback_logged.add(symbol)
+                    self.account.log(
+                        f"⚠️ [{symbol}] WebSocket 1m K 線不可用或過期，改用 REST",
+                        "WARNING",
+                    )
         return await fetch_market_klines(
             self.exchange, symbol, timeframe=timeframe, limit=limit, keep_live=keep_live,
         )
@@ -1066,7 +1135,10 @@ class TradingEngine:
             valid_monitored = monitored_symbols
             
             if valid_monitored:
-                tickers = await self.exchange.fetch_tickers(valid_monitored)
+                exchange_symbols = [
+                    to_binance_usdm_symbol(symbol) for symbol in valid_monitored
+                ]
+                tickers = await self.exchange.fetch_tickers(exchange_symbols)
             else:
                 tickers = {}
                 
@@ -1264,6 +1336,43 @@ class TradingEngine:
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Ticker shares the same lock-free decision path as aggTrade."""
         return await self._instant_quote_exit(symbol, price, quote_ms)
+
+    async def _wild_swing_kline_loop(self, symbol):
+        """Maintain an isolated 1m OHLCV WebSocket cache per WILD_SWING symbol."""
+        retry_delay = 1.0
+        while True:
+            try:
+                candles = await self.ws_exchange.watch_ohlcv(
+                    to_binance_usdm_symbol(symbol),
+                    timeframe="1m",
+                    limit=150,
+                )
+                if not candles:
+                    await asyncio.sleep(0.1)
+                    continue
+                frame_from_ohlcv_snapshot(
+                    candles[-150:], "1m", keep_live=True,
+                )
+                self._wild_swing_kline_cache[symbol] = list(candles[-150:])
+                self._wild_swing_kline_updated_at[symbol] = time.monotonic()
+                retry_delay = 1.0
+                self._wild_swing_kline_fallback_logged.discard(symbol)
+                if symbol not in self._wild_swing_kline_stream_ready:
+                    self._wild_swing_kline_stream_ready.add(symbol)
+                    self.account.log(
+                        f"WILD_SWING_KLINE_STREAM symbol={symbol} "
+                        "timeframe=1m feed=ohlcv",
+                        "INFO",
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.account.log(
+                    f"⚠️ [{symbol}] WebSocket K 線串流失敗，將重試: {exc}",
+                    "WARNING",
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2.0, 30.0)
 
     async def _ticker_loop(self):
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
@@ -1953,16 +2062,21 @@ class TradingEngine:
         return 0.0
         
     @staticmethod
-    def _full_wallet_entry_margin(wallet, available, leverage):
+    def _full_wallet_entry_margin(wallet, available, leverage, symbol=None):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
+        from core.config import get_wild_swing_margin_fraction
+
         slot_count = get_effective_slot_count(wallet)
         fee_buffer = 1.0 + leverage * TAKER_FEE_RATE
         fee_safe_available = (available / fee_buffer) * 0.98
         if slot_count <= 1:
-            return min(wallet * 0.98, fee_safe_available)
-        per_slot_budget = (wallet * 0.98) / slot_count
-        return min(per_slot_budget, fee_safe_available)
+            per_slot_budget = wallet * 0.98
+        else:
+            per_slot_budget = (wallet * 0.98) / slot_count
+        symbol_fraction = get_wild_swing_margin_fraction(symbol) if symbol else None
+        symbol_budget = wallet * symbol_fraction if symbol_fraction is not None else wallet
+        return min(per_slot_budget, fee_safe_available, symbol_budget)
 
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
@@ -2081,7 +2195,7 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = self._full_wallet_entry_margin(wallet, available, leverage)
+        amount = self._full_wallet_entry_margin(wallet, available, leverage, symbol)
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
@@ -2223,8 +2337,12 @@ class TradingEngine:
             if daily and daily()[0]:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
                 return False
-            amount = self._full_wallet_entry_margin(float(self.account.get_wallet_balance()),
-                float(self.account.get_available_balance()), leverage)
+            amount = self._full_wallet_entry_margin(
+                float(self.account.get_wallet_balance()),
+                float(self.account.get_available_balance()),
+                leverage,
+                symbol,
+            )
             size_fraction = float(signal.get('size_fraction') or decision.get('size_fraction') or 1.0)
             if 0.0 < size_fraction < 1.0:
                 amount = amount * size_fraction
@@ -2443,9 +2561,15 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, 100) if hasattr(self, 'symbol_rotation') else 10
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = self._full_wallet_entry_margin(wallet, available, leverage)
+        amount = self._full_wallet_entry_margin(wallet, available, leverage, symbol)
         if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
-            amount = min(available * 0.95, float(TRADE_AMOUNT_USDT))
+            fallback_amount = min(available * 0.95, float(TRADE_AMOUNT_USDT))
+            from core.config import get_wild_swing_margin_fraction
+
+            symbol_fraction = get_wild_swing_margin_fraction(symbol)
+            if symbol_fraction is not None:
+                fallback_amount = min(fallback_amount, wallet * symbol_fraction)
+            amount = fallback_amount
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             self.account.log(f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: amount={amount}, available={available}", "WARNING")
@@ -2490,23 +2614,71 @@ class TradingEngine:
         }
 
         reason = f"DualTF_{mode_name}_{side}"
-        submit_log = f"🚀 [DUAL_TF_DIRECT_SUBMIT] Symbol: {symbol} | Side: {side} | Price: {price} | Margin: {amount:.2f}U | Lev: {leverage}x"
-        self.account.log(submit_log, "INFO")
-        print(submit_log, flush=True)
+        submit_lock = getattr(self, "_account_entry_submit_lock", None)
+        if submit_lock is None:
+            submit_lock = self._account_entry_submit_lock = asyncio.Lock()
+        async with submit_lock:
+            positions = self.account.positions
+            pending_orders = getattr(self.account, "pending_limit_orders", {})
+            if (
+                symbol in positions
+                or symbol in getattr(self.account, "closing_lock", set())
+                or symbol in pending_orders
+            ):
+                return False
+            occupied_symbols = set(positions).union(pending_orders)
+            if MAX_SLOTS > 0 and len(occupied_symbols) >= MAX_SLOTS:
+                self.account.log(
+                    f"🛑 [EXECUTION_FAIL] {symbol} 已達最大持倉槽位: {MAX_SLOTS}",
+                    "WARNING",
+                )
+                return False
 
-        opened = await self.account.open_position(
-            symbol=symbol,
-            side=side,
-            price=price,
-            amount_usdt=amount,
-            sl=0.0,
-            tp=0.0,
-            reason=reason,
-            atr=atr,
-            leverage=leverage,
-            signal_score=100,
-            entry_context=entry_context,
-        )
+            wallet = float(self.account.get_wallet_balance())
+            available = float(self.account.get_available_balance())
+            amount = self._full_wallet_entry_margin(
+                wallet, available, leverage, symbol,
+            )
+            if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
+                fallback_amount = min(
+                    available * 0.95, float(TRADE_AMOUNT_USDT),
+                )
+                from core.config import get_wild_swing_margin_fraction
+
+                symbol_fraction = get_wild_swing_margin_fraction(symbol)
+                if symbol_fraction is not None:
+                    fallback_amount = min(
+                        fallback_amount, wallet * symbol_fraction,
+                    )
+                amount = fallback_amount
+            if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+                self.account.log(
+                    f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: "
+                    f"amount={amount}, available={available}",
+                    "WARNING",
+                )
+                return False
+
+            submit_log = (
+                f"🚀 [DUAL_TF_DIRECT_SUBMIT] Symbol: {symbol} | Side: {side} "
+                f"| Price: {price} | Margin: {amount:.2f}U | Lev: {leverage}x"
+            )
+            self.account.log(submit_log, "INFO")
+            print(submit_log, flush=True)
+
+            opened = await self.account.open_position(
+                symbol=symbol,
+                side=side,
+                price=price,
+                amount_usdt=amount,
+                sl=0.0,
+                tp=0.0,
+                reason=reason,
+                atr=atr,
+                leverage=leverage,
+                signal_score=100,
+                entry_context=entry_context,
+            )
         if opened:
             fill_log = f"🎉 [DUAL_TF_ORDER_FILLED_SUCCESS] Symbol: {symbol} | Side: {side} | Price: {price} | Margin: {amount:.2f}U"
             self.account.log(fill_log, "SUCCESS")

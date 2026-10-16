@@ -227,25 +227,64 @@ class WildSwingStrategy:
                 and close < open_price
                 and close < ma5
             )
-        if pivot is None or not valid_cross:
+        if pivot is not None and valid_cross:
+            return {
+                "side": side,
+                "reason": "REVERSAL_CROSSOVER_ENTRY",
+                "entry_label": "REVERSAL_CROSSOVER_ENTRY",
+                "entry_pattern": ENTRY_MODE_CROSSOVER,
+                "entry_signal_mode": ENTRY_MODE_CROSSOVER,
+                "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+                "structure_confirmed": True,
+                "channel_expanding": channel_expanding,
+                "ma5_current": ma5,
+                "ma5_previous": prev_ma5,
+                "kc_middle_current": float(current["kc_middle"]),
+                "kc_middle_previous": prev_middle,
+                "volume_exhausted": False,
+                "pivot_bar_id": self._bar_id(bars.iloc[pivot["index"]]),
+                "pivot_price": pivot["price"],
+                "bar_id": bar_id,
+                "close": close,
+                "entry_mode": "WILD_SWING",
+            }
+
+        candle_range = float(current["high"] - current["low"])
+        body_ratio = abs(close - open_price) / candle_range
+        if side == "LONG":
+            breakout_confirmed = (
+                close > float(current["kc_upper"])
+                and open_price <= float(current["kc_upper"])
+                and float(previous["close"]) <= float(previous["kc_upper"])
+                and close > open_price
+                and body_ratio > 0.60
+            )
+        else:
+            breakout_confirmed = (
+                close < float(current["kc_lower"])
+                and open_price >= float(current["kc_lower"])
+                and float(previous["close"]) >= float(previous["kc_lower"])
+                and close < open_price
+                and body_ratio > 0.60
+            )
+        if not channel_expanding or not breakout_confirmed:
             return None
 
         return {
             "side": side,
-            "reason": "REVERSAL_CROSSOVER_ENTRY",
-            "entry_label": "REVERSAL_CROSSOVER_ENTRY",
-            "entry_pattern": ENTRY_MODE_REVERSAL,
-            "entry_signal_mode": ENTRY_MODE_REVERSAL,
-            "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+            "reason": "KC_OUTER_BREAKOUT_ENTRY",
+            "entry_label": "KC_OUTER_BREAKOUT_ENTRY",
+            "entry_pattern": ENTRY_MODE_BREAKOUT,
+            "entry_signal_mode": ENTRY_MODE_BREAKOUT,
+            "structure_confirmation": "KC_OUTER_BREAKOUT",
             "structure_confirmed": True,
-            "channel_expanding": channel_expanding,
+            "channel_expanding": True,
             "ma5_current": ma5,
             "ma5_previous": prev_ma5,
             "kc_middle_current": float(current["kc_middle"]),
             "kc_middle_previous": prev_middle,
+            "body_ratio": body_ratio,
             "volume_exhausted": False,
-            "pivot_bar_id": self._bar_id(bars.iloc[pivot["index"]]),
-            "pivot_price": pivot["price"],
             "bar_id": bar_id,
             "close": close,
             "entry_mode": "WILD_SWING",

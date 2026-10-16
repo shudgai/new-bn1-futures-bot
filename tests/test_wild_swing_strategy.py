@@ -111,7 +111,7 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
     assert signal is not None
     assert signal["side"] == side
     assert signal["reason"] == "REVERSAL_CROSSOVER_ENTRY"
-    assert signal["entry_pattern"] == "REVERSAL"
+    assert signal["entry_pattern"] == "CROSSOVER"
     assert signal["structure_confirmation"] == (
         "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
     )
@@ -147,6 +147,70 @@ def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
     live_frame = frame.copy()
     live_frame.loc[live_frame.index[-1], "is_closed"] = False
     assert WildSwingStrategy().evaluate_entry("LOBSTER/USDT", live_frame, side) is None
+
+
+@pytest.mark.parametrize(
+    "side,updates",
+    [
+        (
+            "SHORT",
+            {
+                -2: {
+                    "open": 100.2, "high": 100.3, "low": 99.9, "close": 100.0,
+                    "kc_upper": 101.5, "kc_lower": 99.8,
+                },
+                -1: {
+                    "open": 99.9, "high": 100.0, "low": 98.8, "close": 99.0,
+                    "kc_upper": 101.2, "kc_lower": 99.2,
+                },
+            },
+        ),
+        (
+            "LONG",
+            {
+                -2: {
+                    "open": 100.0, "high": 100.2, "low": 99.8, "close": 100.0,
+                    "kc_upper": 100.2, "kc_lower": 98.5,
+                },
+                -1: {
+                    "open": 100.1, "high": 101.2, "low": 100.0, "close": 101.0,
+                    "kc_upper": 100.8, "kc_lower": 98.3,
+                },
+            },
+        ),
+    ],
+)
+def test_expanding_outer_band_breakout_with_solid_body_creates_breakout_signal(
+    side, updates,
+):
+    frame = _frame(side)
+    frame["atr"] = 2.0
+    for offset, values in updates.items():
+        row_index = frame.index[offset]
+        for name, value in values.items():
+            frame.loc[row_index, name] = value
+
+    signal = WildSwingStrategy().evaluate_entry("LOBSTER/USDT", frame, side)
+
+    assert signal is not None
+    assert signal["side"] == side
+    assert signal["reason"] == "KC_OUTER_BREAKOUT_ENTRY"
+    assert signal["entry_pattern"] == "BREAKOUT"
+    assert signal["structure_confirmation"] == "KC_OUTER_BREAKOUT"
+    assert signal["body_ratio"] > 0.60
+
+
+def test_breakout_entry_rejects_body_ratio_at_or_below_sixty_percent():
+    frame = _frame("SHORT")
+    previous_index, current_index = frame.index[-2], frame.index[-1]
+    frame.loc[previous_index, ["close", "kc_lower"]] = [100.0, 99.8]
+    frame.loc[current_index, [
+        "open", "high", "low", "close", "kc_upper", "kc_lower",
+    ]] = [99.9, 100.5, 98.5, 99.0, 101.2, 99.2]
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, "SHORT",
+    ) is None
 
 
 def test_consecutive_green_candles_without_new_outer_pivot_and_cross_do_not_enter():

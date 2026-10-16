@@ -95,6 +95,7 @@ from core.config import (
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
+from core.symbol_aliases import to_binance_usdm_symbol
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -173,7 +174,14 @@ class BinanceTestnetAccount:
             # Internal strategy metadata must never reach Binance parameters.
             self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
             try:
-                result = await self._raw_create_order(symbol, order_type, side, amount, price, params)
+                result = await self._raw_create_order(
+                    to_binance_usdm_symbol(symbol),
+                    order_type,
+                    side,
+                    amount,
+                    price,
+                    params,
+                )
             except Exception as exc:
                 self.log(f'[ORDER_REJECT] symbol={symbol} {type(exc).__name__}: {exc}', 'ERROR')
                 raise
@@ -272,6 +280,16 @@ class BinanceTestnetAccount:
     def _clean_symbol(symbol: str) -> str:
         raw = str(symbol).upper().replace("/", "").replace(":USDT", "")
         return f"{raw[:-4]}/USDT" if raw.endswith("USDT") else raw
+
+    def _amount_to_precision(self, symbol: str, amount: float) -> str:
+        return self.exchange.amount_to_precision(
+            to_binance_usdm_symbol(symbol), amount,
+        )
+
+    def _price_to_precision(self, symbol: str, price: float) -> str:
+        return self.exchange.price_to_precision(
+            to_binance_usdm_symbol(symbol), price,
+        )
 
 
 
@@ -427,7 +445,13 @@ class BinanceTestnetAccount:
                 attempt = {"symbol": symbol, "qty": str(abs(signed)), "ok": False}
                 try:
                     await self._raw_create_order(
-                        symbol, "market", close_side, float(abs(signed)), None, {"reduceOnly": True})
+                        to_binance_usdm_symbol(symbol),
+                        "market",
+                        close_side,
+                        float(abs(signed)),
+                        None,
+                        {"reduceOnly": True},
+                    )
                     attempt["ok"] = True
                 except Exception as exc:
                     attempt["error"] = f"{type(exc).__name__}: {exc}"
@@ -1395,7 +1419,7 @@ class BinanceTestnetAccount:
                     if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
                         meta["limit_tp1_filled"] = True
                         pos["is_half_closed"] = True
-                        half_qty = float(self.exchange.amount_to_precision(symbol, float(pos["qty"]) / 2.0))
+                        half_qty = float(self._amount_to_precision(symbol, float(pos["qty"]) / 2.0))
                         if half_qty > 0:
                             self.log(f"🎯 [Limit TP1 達標] {symbol} {side} 觸及 {tp1_target:.8g}！市價平倉 50% 數量 {half_qty}", "SUCCESS")
                             # Send MARKET order to close 50%
@@ -1686,7 +1710,7 @@ class BinanceTestnetAccount:
                     ):
                         if side == "LONG":
                             breakeven_sl = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                            new_sl_price = float(self.exchange.price_to_precision(symbol, breakeven_sl))
+                            new_sl_price = float(self._price_to_precision(symbol, breakeven_sl))
                             if new_sl_price > old_sl:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
@@ -1709,7 +1733,7 @@ class BinanceTestnetAccount:
                                     self.log(f"⚠️ {symbol} 設置本地保本單失敗: {e}", "WARNING")
                         else:  # SHORT
                             breakeven_sl = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                            new_sl_price = float(self.exchange.price_to_precision(symbol, breakeven_sl))
+                            new_sl_price = float(self._price_to_precision(symbol, breakeven_sl))
                             if new_sl_price < old_sl or old_sl == 0.0:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
@@ -1770,7 +1794,7 @@ class BinanceTestnetAccount:
                                     mark_p * (1.0 + 0.001),
                                 )
                             fallback_sl = float(
-                                self.exchange.price_to_precision(symbol, fallback_sl)
+                                self._price_to_precision(symbol, fallback_sl)
                             )
                         try:
                             await self._cancel_all_orders(symbol)
@@ -1858,7 +1882,7 @@ class BinanceTestnetAccount:
                             trail_sl = entry_p * (1.0 + highest_pnl - trailing_callback)
                             npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = max(trail_sl, npg_floor)
-                            new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
+                            new_sl_price = float(self._price_to_precision(symbol, trail_sl))
                             if new_sl_price > old_sl:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
@@ -1882,7 +1906,7 @@ class BinanceTestnetAccount:
                             trail_sl = entry_p * (1.0 - highest_pnl + trailing_callback)
                             npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = min(trail_sl, npg_ceiling)
-                            new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
+                            new_sl_price = float(self._price_to_precision(symbol, trail_sl))
                             if new_sl_price < old_sl or old_sl == 0.0:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
@@ -1922,14 +1946,14 @@ class BinanceTestnetAccount:
         atr = meta.get("atr") or entry_p * 0.015
         sl_distance, tp_distance = compute_sl_tp_distance(entry_p, atr)
         if side == "LONG":
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - sl_distance)) if not DISABLE_STOP_LOSS else 0.0
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
+            sl_price = float(self._price_to_precision(symbol, entry_p - sl_distance)) if not DISABLE_STOP_LOSS else 0.0
+            tp_price = float(self._price_to_precision(symbol, entry_p + tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         else:
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
+            sl_price = float(self._price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
+            tp_price = float(self._price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         if not DISABLE_STOP_LOSS:
             sl_price = cap_stop_loss_to_margin_risk(entry_p, side, sl_price, pos["leverage"])
-            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+            sl_price = float(self._price_to_precision(symbol, sl_price))
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
@@ -1985,7 +2009,7 @@ class BinanceTestnetAccount:
             sl_price = cap_stop_loss_to_margin_risk(
                 pos["entry_price"], pos["side"], sl_price, pos["leverage"]
             )
-            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+            sl_price = float(self._price_to_precision(symbol, sl_price))
             try:
                 await self._cancel_all_orders(symbol)
                 order = await self._create_protection_order(
@@ -2030,7 +2054,7 @@ class BinanceTestnetAccount:
 
     async def _cancel_all_orders(self, symbol: str) -> None:
         try:
-            await self.exchange.cancel_all_orders(symbol)
+            await self.exchange.cancel_all_orders(to_binance_usdm_symbol(symbol))
         except Exception:
             pass
         try:
@@ -2051,8 +2075,8 @@ class BinanceTestnetAccount:
             "algoType": "CONDITIONAL",
             "symbol": self._raw_symbol(symbol),
             "side": side.upper(),
-            "quantity": self.exchange.amount_to_precision(symbol, qty),
-            "triggerPrice": self.exchange.price_to_precision(symbol, trigger_price),
+            "quantity": self._amount_to_precision(symbol, qty),
+            "triggerPrice": self._price_to_precision(symbol, trigger_price),
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
         }
@@ -2115,13 +2139,13 @@ class BinanceTestnetAccount:
             "symbol": self._raw_symbol(symbol),
             "side": close_side.upper(),
             "type": "TRAILING_STOP_MARKET",
-            "quantity": self.exchange.amount_to_precision(symbol, qty),
+            "quantity": self._amount_to_precision(symbol, qty),
             "callbackRate": callback_rate,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
         }
         if activation_price is not None:
-            params["activationPrice"] = self.exchange.price_to_precision(
+            params["activationPrice"] = self._price_to_precision(
                 symbol, activation_price
             )
         result = await self.exchange.request(
@@ -2427,10 +2451,14 @@ class BinanceTestnetAccount:
         # 假設。已經是 ISOLATED 時 Binance 會回錯誤（-4046 No need to change
         # margin type），單純忽略即可，不影響下單流程。
         try:
-            await self.exchange.set_margin_mode("ISOLATED", symbol)
+            await self.exchange.set_margin_mode(
+                "ISOLATED", to_binance_usdm_symbol(symbol),
+            )
         except Exception:
             pass
-        await self.exchange.set_leverage(leverage, symbol)
+        await self.exchange.set_leverage(
+            leverage, to_binance_usdm_symbol(symbol),
+        )
 
     async def _finalize_new_position(
         self,
@@ -2515,15 +2543,15 @@ class BinanceTestnetAccount:
                 else:
                     if adjusted_sl <= execution_price + 1e-12:
                         adjusted_sl = execution_price + min_dist
-                sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
+                sl_price = float(self._price_to_precision(symbol, adjusted_sl))
             else:
                 sl_price = 0.0
             if not is_channel_swing and not is_wild_swing and not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
                 sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
-                sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+                sl_price = float(self._price_to_precision(symbol, sl_price))
             structure_exit_only = str(entry_context.get("wave_regime") or "").upper() in ("RANGE", "TREND")
             tp_price = (
-                float(self.exchange.price_to_precision(symbol, adjusted_tp))
+                float(self._price_to_precision(symbol, adjusted_tp))
                 if not DISABLE_TAKE_PROFIT and not structure_exit_only else 0.0
             )
             if entry_context.get("initial_sl") is not None:
@@ -2537,7 +2565,7 @@ class BinanceTestnetAccount:
                 initialize_atr_protection(anchored, execution_price, side, atr, initial_stop=structural_stop)
                 sl_price, tp_price = anchored['sl'], anchored['tp']
                 if entry_context.get('entry_phase') == 'EXTREME_CLIMAX_FLIP':
-                    sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+                    sl_price = float(self._price_to_precision(symbol, sl_price))
                     entry_context['initial_sl'] = sl_price
                     entry_context['initial_risk'] = abs(execution_price - sl_price)
             atr_value = atr if atr > 0 else execution_price * 0.015
@@ -2754,7 +2782,9 @@ class BinanceTestnetAccount:
         # 最少掛最佳賣價。回踩目標若本來更保守，則維持原目標不追價。
         if post_only and hasattr(self.exchange, "fetch_order_book"):
             try:
-                book = await self.exchange.fetch_order_book(symbol, limit=5)
+                book = await self.exchange.fetch_order_book(
+                    to_binance_usdm_symbol(symbol), limit=5,
+                )
                 if side == "LONG" and book.get("bids"):
                     target_price = min(float(target_price), float(book["bids"][0][0]))
                 elif side == "SHORT" and book.get("asks"):
@@ -2781,7 +2811,7 @@ class BinanceTestnetAccount:
         # 查詢孤兒單要用的 price_str 一定已經有值，不會是未賦值狀態
         # （實測曾在 _prepare_leverage 逾時時觸發 UnboundLocalError，把
         # 整個主迴圈拖垮）。
-        price_str = self.exchange.price_to_precision(symbol, target_price)
+        price_str = self._price_to_precision(symbol, target_price)
         try:
             await self._prepare_leverage(symbol, leverage)
             order_params = {"timeInForce": "GTX" if post_only else "GTC"}
@@ -3141,7 +3171,7 @@ class BinanceTestnetAccount:
                 # 廢棄市價平倉，改為帶微幅折讓之限價防滑平倉單（死守底線，拒絕市價滑穿）
                 order_price = limit_price
                 if hasattr(self.exchange, "price_to_precision"):
-                    order_price = float(self.exchange.price_to_precision(symbol, order_price))
+                    order_price = float(self._price_to_precision(symbol, order_price))
                 elif hasattr(self, "price_to_precision"):
                     order_price = float(self.price_to_precision(symbol, order_price))
 
@@ -3168,7 +3198,7 @@ class BinanceTestnetAccount:
                     offset_pct=0.002,
                 )
                 if hasattr(self.exchange, "price_to_precision"):
-                    order_price = float(self.exchange.price_to_precision(symbol, order_price))
+                    order_price = float(self._price_to_precision(symbol, order_price))
                 elif hasattr(self, "price_to_precision"):
                     order_price = float(self.price_to_precision(symbol, order_price))
 
@@ -3369,7 +3399,7 @@ class BinanceTestnetAccount:
         close_side = "sell" if position["side"] == "LONG" else "buy"
         qty = position["qty"]
         try:
-            new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl_price))
+            new_sl_price = float(self._price_to_precision(symbol, new_sl_price))
 
             # 取消所有現有保護單
             await self._cancel_all_orders(symbol)

@@ -141,14 +141,34 @@ class DynamicVisionGatekeeper:
             return False
         pattern = str(entry_pattern or "").strip().upper()
         confirmation = str(structure_confirmation or "").strip().upper()
-        if pattern == "CROSSOVER":
+        if pattern in {"CROSSOVER", "REVERSAL"}:
             return confirmation in {
                 "MA5_MA15_1M_CROSS",
                 "MA5_MA15_5M_CONVERGENCE",
+                "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
             }
-        if pattern == "REVERSAL":
-            return confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
         return False
+
+    def clear_for_confirmed_ma_turn(
+        self,
+        symbol: str,
+        *,
+        entry_pattern: Optional[str] = None,
+        structure_confirmation: Optional[str] = None,
+        structure_confirmed: bool = False,
+    ) -> bool:
+        """Clear historical rejection state as soon as a confirmed MA turn appears."""
+        if not self._is_confirmed_ma_turn(
+            entry_pattern, structure_confirmation, structure_confirmed,
+        ):
+            return False
+        if symbol in self._rejections:
+            del self._rejections[symbol]
+            logger.info(
+                "✅ [VISION_CLEARED] %s 已確認 MA5/MA15 轉向，清除舊動態拒絕鎖",
+                symbol,
+            )
+        return True
 
     def can_submit_for_vision(
         self,
@@ -161,15 +181,12 @@ class DynamicVisionGatekeeper:
         structure_confirmed: bool = False,
     ) -> Tuple[bool, str]:
         """判定當前是否滿足送審條件。"""
-        if self._is_confirmed_ma_turn(
-            entry_pattern, structure_confirmation, structure_confirmed,
+        if self.clear_for_confirmed_ma_turn(
+            symbol,
+            entry_pattern=entry_pattern,
+            structure_confirmation=structure_confirmation,
+            structure_confirmed=structure_confirmed,
         ):
-            if symbol in self._rejections:
-                del self._rejections[symbol]
-                logger.info(
-                    "✅ [VISION_CLEARED] %s 已確認 MA5/MA15 轉向，清除舊動態拒絕鎖",
-                    symbol,
-                )
             return True, "UNLOCKED_CONFIRMED_MA_TURN"
 
         if symbol not in self._rejections:
