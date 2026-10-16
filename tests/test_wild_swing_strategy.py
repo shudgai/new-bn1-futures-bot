@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 
+from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
 
@@ -96,8 +97,16 @@ def _profit_lock_continuation_frame(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_initial_entry_requires_kc_outer_pivot_then_ma5_ma15_cross(side):
+def test_initial_entry_allows_ma15_flat_or_turning_against_ma5_cross(side):
     frame = _pivot_cross_frame(side)
+    frame["atr"] = 2.0
+    if side == "LONG":
+        frame.loc[10, "ma15"] = 100.2
+        frame.loc[11, "ma15"] = 100.0
+    else:
+        frame.loc[10, "ma15"] = 99.8
+        frame.loc[11, "ma15"] = 100.0
+
     signal = WildSwingStrategy().evaluate_entry("LOBSTER/USDT", frame, side)
     assert signal is not None
     assert signal["side"] == side
@@ -107,6 +116,33 @@ def test_initial_entry_requires_kc_outer_pivot_then_ma5_ma15_cross(side):
         "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
     )
     assert signal["bar_id"] == frame.iloc[-1]["timestamp"]
+    assert (
+        frame.iloc[-1]["ma15"] - frame.iloc[-2]["ma15"] < 0
+        if side == "LONG"
+        else frame.iloc[-1]["ma15"] - frame.iloc[-2]["ma15"] > 0
+    )
+
+    current = frame.iloc[-1]
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        {
+            name: float(current[name])
+            for name in ("open", "high", "low", "close")
+        },
+        {
+            name: float(current[name])
+            for name in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
+        } | {
+            "ma5_current": signal["ma5_current"],
+            "ma5_previous": signal["ma5_previous"],
+        },
+        entry_pattern=signal["entry_pattern"],
+        structure_confirmation=signal["structure_confirmation"],
+        structure_confirmed=signal["structure_confirmed"],
+        channel_expanding=signal["channel_expanding"],
+    )
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
 
     live_frame = frame.copy()
     live_frame.loc[live_frame.index[-1], "is_closed"] = False

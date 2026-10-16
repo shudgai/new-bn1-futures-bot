@@ -49,7 +49,13 @@ class FakeEngine:
         return True
 
 
-def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_bar():
+def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_bar(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from core.vision.chart_guard import DynamicVisionGatekeeper
+
     engine = FakeEngine()
     first = _frame("SHORT")
     first["atr"] = 2.0
@@ -63,9 +69,26 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     )
     assert engine.entries == []
 
+    vision_calls = []
+
+    async def approve(frame, side, mode=None):
+        vision_calls.append((side, mode))
+        return True, "test approved"
+
+    from core.vision import chart_guard
+
+    monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", approve)
     next_frame = _pivot_cross_frame("SHORT")
     next_frame["timestamp"] += 720_000
     next_frame["atr"] = 2.0
+    next_frame.loc[10, "ma15"] = 99.8
+    next_frame.loc[11, "ma15"] = 100.0
+    engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
+    engine._wild_swing_vision_gate.record_rejection(
+        "LOBSTER/USDT",
+        SimpleNamespace(**next_frame.iloc[-1].to_dict()),
+        "SHORT",
+    )
     asyncio.run(
         process_single_symbol_runner(
             engine, "LOBSTER/USDT", 60, None, False,
@@ -77,6 +100,8 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     assert engine.entries[0]["entry_mode"] == "WILD_SWING"
     assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "REVERSAL"
     assert engine.entries[0]["frame"].iloc[-1]["timestamp"] == next_frame.iloc[-1]["timestamp"]
+    assert vision_calls == [("SHORT", "REVERSAL")]
+    assert "LOBSTER/USDT" not in engine._wild_swing_vision_gate._rejections
 
 
 def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):

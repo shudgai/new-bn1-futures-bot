@@ -216,7 +216,6 @@ class WildSwingStrategy:
                 and ma5 > prev_ma5
                 and close > open_price
                 and close > ma5
-                and close > ma15
             )
         else:
             pivot = self._latest_kc_outer_pivot(
@@ -227,7 +226,6 @@ class WildSwingStrategy:
                 and ma5 < prev_ma5
                 and close < open_price
                 and close < ma5
-                and close < ma15
             )
         if pivot is None or not valid_cross:
             return None
