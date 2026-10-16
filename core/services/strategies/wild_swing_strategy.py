@@ -262,6 +262,45 @@ class WildSwingStrategy:
             }
 
         if not breakout_signal:
+            # 依據 AGENTS.md 妖幣規範：漏單補救與「延續開倉（強制上車）」機制
+            # 只要上一根或當前價格實體運行在 KC 外軌強勢區，且 MA5 與中軌同向向上/向下，允許延續開倉上車
+            if side == "LONG":
+                continuation_aligned = (
+                    close > float(current["kc_upper"])
+                    and close > ma5
+                    and ma5 > prev_ma5
+                    and float(current["kc_middle"]) >= prev_middle
+                    and close > open_price
+                    and body_ratio >= 0.25
+                )
+            else:
+                continuation_aligned = (
+                    close < float(current["kc_lower"])
+                    and close < ma5
+                    and ma5 < prev_ma5
+                    and float(current["kc_middle"]) <= prev_middle
+                    and close < open_price
+                    and body_ratio >= 0.25
+                )
+            if continuation_aligned:
+                return {
+                    "side": side,
+                    "reason": "KC_OUTER_CONTINUATION_ENTRY",
+                    "entry_label": "KC_OUTER_CONTINUATION_ENTRY",
+                    "entry_pattern": ENTRY_MODE_CONTINUATION,
+                    "entry_signal_mode": ENTRY_MODE_CONTINUATION,
+                    "structure_confirmation": "PROFIT_LOCK_CONTINUATION",
+                    "structure_confirmed": True,
+                    "channel_expanding": channel_expanding,
+                    "ma5_current": ma5,
+                    "ma5_previous": prev_ma5,
+                    "kc_middle_current": float(current["kc_middle"]),
+                    "kc_middle_previous": prev_middle,
+                    "volume_exhausted": False,
+                    "bar_id": bar_id,
+                    "close": close,
+                    "entry_mode": "WILD_SWING",
+                }
             return None
 
         return {

@@ -176,6 +176,7 @@ async def _process_wild_swing_symbol(
                     signal["side"],
                     macro_bar,
                     macro_indicators,
+                    symbol=symbol,
                     entry_pattern=signal.get("entry_pattern"),
                     structure_confirmation=signal.get("structure_confirmation"),
                     structure_confirmed=signal.get("structure_confirmed") is True,

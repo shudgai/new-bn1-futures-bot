@@ -12,6 +12,7 @@ from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 
 class MacroCandleStructureGate:
     CROSSOVER_BREAKOUT_MAX_BIAS_ATR = 2.8
+    MEME_CROSSOVER_BREAKOUT_MAX_BIAS_ATR = 3.8
 
     def __init__(self, max_bias_atr: float = 1.2):
         self.max_bias_atr = max_bias_atr
@@ -22,6 +23,7 @@ class MacroCandleStructureGate:
         closed_bar: dict,
         indicators: dict,
         *,
+        symbol: Optional[str] = None,
         entry_pattern: Optional[str] = None,
         entry_signal_mode: Optional[str] = None,
         entry_mode: Optional[str] = None,
@@ -213,11 +215,21 @@ class MacroCandleStructureGate:
                     confirmation
                     == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
                 )
-                if not outer_pivot_cross and not 0.20 <= kc_pos <= 0.85:
+                from core.symbol_aliases import is_meme_breakout_symbol
+                is_meme = is_meme_breakout_symbol(symbol)
+                min_pos, max_pos = (0.10, 1.05) if is_meme else (0.20, 0.85)
+                if not outer_pivot_cross and not min_pos <= kc_pos <= max_pos:
                     return False, f"VETO_CROSSOVER_LONG: KC_Pos {kc_pos:.2f} 不在中軌區"
             # 規則 2：不可在超買過度延伸時進場
+            from core.symbol_aliases import is_meme_breakout_symbol
+            is_meme = is_meme_breakout_symbol(symbol)
+            base_max_bias = (
+                self.MEME_CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                if is_meme
+                else self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+            )
             max_bias_atr = (
-                self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                base_max_bias
                 if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
                 else self.max_bias_atr
             )
@@ -273,10 +285,20 @@ class MacroCandleStructureGate:
                     confirmation
                     == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
                 )
-                if not outer_pivot_cross and not 0.15 <= kc_pos <= 0.80:
+                from core.symbol_aliases import is_meme_breakout_symbol
+                is_meme = is_meme_breakout_symbol(symbol)
+                min_pos, max_pos = (-0.05, 0.90) if is_meme else (0.15, 0.80)
+                if not outer_pivot_cross and not min_pos <= kc_pos <= max_pos:
                     return False, f"VETO_CROSSOVER_SHORT: KC_Pos {kc_pos:.2f} 不在中軌區"
+            from core.symbol_aliases import is_meme_breakout_symbol
+            is_meme = is_meme_breakout_symbol(symbol)
+            base_max_bias = (
+                self.MEME_CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                if is_meme
+                else self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+            )
             max_bias_atr = (
-                self.CROSSOVER_BREAKOUT_MAX_BIAS_ATR
+                base_max_bias
                 if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
                 else self.max_bias_atr
             )
