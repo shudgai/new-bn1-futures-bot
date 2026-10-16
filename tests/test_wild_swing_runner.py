@@ -5,7 +5,9 @@ import pytest
 
 from core.services.symbol_runner import process_single_symbol_runner
 from core.services.strategies.wild_swing_strategy import WildSwingStrategy
-from test_wild_swing_strategy import _frame
+from test_wild_swing_strategy import (
+    _frame, _pivot_cross_frame, _profit_lock_continuation_frame,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +34,7 @@ class FakeAccount:
         self.positions = {}
         self.closing_lock = set()
         self.pending_limit_orders = {}
+        self.trades = []
 
 
 class FakeEngine:
@@ -60,18 +63,9 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     )
     assert engine.entries == []
 
-    next_bar = first.iloc[-1].copy()
-    next_bar["timestamp"] = float(first.iloc[-1]["timestamp"]) + 60_000
-    next_bar.update({
-        "open": 99.2,
-        "high": 99.3,
-        "low": 98.8,
-        "close": 98.9,
-        "kc_middle": 99.8,
-        "ma15": 100.0,
-        "ma5": 99.7,
-    })
-    next_frame = pd.concat([first, next_bar.to_frame().T], ignore_index=True)
+    next_frame = _pivot_cross_frame("SHORT")
+    next_frame["timestamp"] += 720_000
+    next_frame["atr"] = 2.0
     asyncio.run(
         process_single_symbol_runner(
             engine, "LOBSTER/USDT", 60, None, False,
@@ -81,8 +75,8 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
 
     assert len(engine.entries) == 1
     assert engine.entries[0]["entry_mode"] == "WILD_SWING"
-    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CONTINUATION"
-    assert engine.entries[0]["frame"].iloc[-1]["timestamp"] == next_bar["timestamp"]
+    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "REVERSAL"
+    assert engine.entries[0]["frame"].iloc[-1]["timestamp"] == next_frame.iloc[-1]["timestamp"]
 
 
 def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):
@@ -111,13 +105,9 @@ def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):
             exit_frame=first, exit_quote=99.0,
         )
     )
-    next_bar = first.iloc[-1].copy()
-    next_bar["timestamp"] = float(first.iloc[-1]["timestamp"]) + 60_000
-    next_bar.update({
-        "open": 99.2, "high": 99.3, "low": 98.8, "close": 98.9,
-        "kc_middle": 99.8, "ma15": 100.0, "ma5": 99.7,
-    })
-    next_frame = pd.concat([first, next_bar.to_frame().T], ignore_index=True)
+    next_frame = _pivot_cross_frame("SHORT")
+    next_frame["timestamp"] += 720_000
+    next_frame["atr"] = 2.0
     asyncio.run(
         process_single_symbol_runner(
             engine, "LOBSTER/USDT", 60, None, False,
@@ -130,10 +120,44 @@ def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_runner_reconstructs_profit_lock_continuation_from_account_trade(side):
+    engine = FakeEngine()
+    symbol = "LOBSTER/USDT"
+    timestamp_offset = 1_740_000_000_000
+    close_id = timestamp_offset + 600_001
+    engine.account.trades.insert(0, {
+        "symbol": symbol,
+        "action": f"CLOSE_{side}",
+        "entry_mode": "WILD_SWING",
+        "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
+        "id": close_id,
+    })
+    strategy = WildSwingStrategy()
+    strategy.state_for(symbol)
+    engine._wild_swing_strategy = strategy
+    frame = _profit_lock_continuation_frame(side)
+    frame["timestamp"] += timestamp_offset
+    frame["atr"] = 2.0
+
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, symbol, 60, None, False,
+            exit_frame=frame, exit_quote=float(frame.iloc[-1]["close"]),
+        )
+    )
+
+    assert len(engine.entries) == 1
+    signal = engine.entries[0]["meta_dict"]
+    assert signal["reason"] == "PROFIT_LOCK_CONTINUATION_ENTRY"
+    assert signal["profit_lock_close_id"] == close_id
+    assert signal["side"] == side
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     engine = FakeEngine()
     symbol = "LOBSTER/USDT"
-    frame = _frame(side)
+    frame = _pivot_cross_frame(side)
     frame["atr"] = 2.0
     frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
     exit_bar_id = float(frame.iloc[-1]["timestamp"])
@@ -141,20 +165,12 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     strategy.record_exit(symbol, side, float(frame.iloc[-1]["close"]), "TEST_EXIT", exit_bar_id)
     engine._wild_swing_strategy = strategy
 
-    next_bar = frame.iloc[-1].copy()
-    next_bar["timestamp"] = exit_bar_id + 60_000
-    if side == "SHORT":
-        next_bar.update({
-            "open": 99.2, "high": 99.3, "low": 98.8, "close": 98.9,
-            "kc_middle": 99.8, "ma15": 100.0, "ma5": 99.7,
-        })
-    else:
-        next_bar.update({
-            "open": 100.8, "high": 101.3, "low": 100.7, "close": 101.2,
-            "kc_middle": 100.2, "ma15": 100.0, "ma5": 100.1,
-        })
-    next_bar["is_closed"] = False
-    live_frame = pd.concat([frame, next_bar.to_frame().T], ignore_index=True)
+    next_frame = _pivot_cross_frame(side)
+    next_frame["timestamp"] += 720_000
+    next_frame["atr"] = 2.0
+    live_frame = next_frame.copy()
+    live_frame.loc[live_frame.index[-1], "is_closed"] = False
+    next_bar = live_frame.iloc[-1]
 
     asyncio.run(
         process_single_symbol_runner(
@@ -173,3 +189,4 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     )
     assert len(engine.entries) == 1
     assert engine.entries[0]["side"] == side
+    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "REVERSAL"

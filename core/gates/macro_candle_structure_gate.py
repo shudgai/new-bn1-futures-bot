@@ -121,9 +121,66 @@ class MacroCandleStructureGate:
                 "CONFIRMED_KC_OUTER_PEAK_VALLEY",
                 "TOP_BOTTOM_DIVERGENCE",
                 "PINBAR_EXHAUSTION_TURN",
+                "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
             }
         ):
             return False, "VETO_REVERSAL: 缺少峰谷背離或長針力竭確認"
+        if mode == "CONTINUATION" and confirmation == "PROFIT_LOCK_CONTINUATION":
+            if not structure_confirmed:
+                return False, "VETO_CONTINUATION: 缺少鎖利後延續確認"
+            required_signal_indicators = (
+                "ma5_current", "ma5_previous",
+                "kc_middle_current", "kc_middle_previous",
+            )
+            try:
+                signal_indicators = {
+                    key: float(indicators[key])
+                    for key in required_signal_indicators
+                }
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return False, "VETO_CONTINUATION: 延續指標資料無效"
+            if not all(math.isfinite(value) for value in signal_indicators.values()):
+                return False, "VETO_CONTINUATION: 延續指標資料無效"
+            ma5_current = signal_indicators["ma5_current"]
+            ma5_previous = signal_indicators["ma5_previous"]
+            middle_current = signal_indicators["kc_middle_current"]
+            middle_previous = signal_indicators["kc_middle_previous"]
+            if side == "LONG" and not (
+                close > kc_upper
+                and close > ma5_current
+                and ma5_current > ma5_previous
+                and middle_current >= middle_previous
+            ):
+                return False, "VETO_CONTINUATION_LONG: KC 外軌、MA5 或中軌方向未確認"
+            if side == "SHORT" and not (
+                close < kc_lower
+                and close < ma5_current
+                and ma5_current < ma5_previous
+                and middle_current <= middle_previous
+            ):
+                return False, "VETO_CONTINUATION_SHORT: KC 外軌、MA5 或中軌方向未確認"
+        if (
+            mode == "REVERSAL"
+            and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
+        ):
+            try:
+                ma5_current = float(indicators["ma5_current"])
+                ma5_previous = float(indicators["ma5_previous"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return False, "VETO_REVERSAL: MA5 交叉資料無效"
+            if (
+                not math.isfinite(ma5_current)
+                or not math.isfinite(ma5_previous)
+                or (
+                    side == "LONG"
+                    and not (ma5_current > ma5_previous and close > ma5_current)
+                )
+                or (
+                    side == "SHORT"
+                    and not (ma5_current < ma5_previous and close < ma5_current)
+                )
+            ):
+                return False, "VETO_REVERSAL: MA5 斜率或價格位置逆向"
 
         # =====================================================================
         # 多單審查（買多）

@@ -6,7 +6,9 @@ import pytest
 
 from core.engine import TradingEngine
 from core.services.entry_firewall import validate_account_entry
-from test_wild_swing_strategy import _frame
+from test_wild_swing_strategy import (
+    _frame, _pivot_cross_frame, _profit_lock_continuation_frame,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +34,7 @@ class FakeAccount:
         self.closing_lock = set()
         self.pending_limit_orders = {}
         self.logs = []
+        self.trades = []
 
     async def entry_frame_provider(self, symbol):
         assert symbol == "LOBSTER/USDT"
@@ -55,16 +58,16 @@ def _context(bar_id):
     return {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
-        "entry_pattern": "CROSSOVER",
-        "entry_signal_code": "WILD_SWING_BASELINE_BREAK_AND_MA_CROSS",
-        "entry_signal_mode": "CROSSOVER",
+        "entry_pattern": "REVERSAL",
+        "entry_signal_code": "WILD_SWING_REVERSAL_CROSSOVER_ENTRY",
+        "entry_signal_mode": "REVERSAL",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
     }
 
 
 def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
-    frame = _frame("SHORT")
+    frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
@@ -77,8 +80,8 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     )
 
     assert result["entry_mode"] == "WILD_SWING"
-    assert result["entry_pattern"] == "CROSSOVER"
-    assert result["entry_signal_mode"] == "CROSSOVER"
+    assert result["entry_pattern"] == "REVERSAL"
+    assert result["entry_signal_mode"] == "REVERSAL"
     assert result["side"] == "SHORT"
     assert result["confirmation_bar_id"] == bar_id
 
@@ -90,7 +93,7 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     ],
 )
 def test_wild_swing_firewall_rejects_stale_or_unverified_market_data(change):
-    frame = _frame("SHORT")
+    frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
@@ -137,7 +140,7 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", qwen)
     monkeypatch.setattr(MacroCandleStructureGate, "can_open", veto)
-    frame = _frame("SHORT")
+    frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
@@ -151,8 +154,8 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
         )
 
     assert calls == [{
-        "entry_pattern": "CROSSOVER",
-        "structure_confirmation": "MA5_MA15_1M_CROSS",
+        "entry_pattern": "REVERSAL",
+        "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
         "structure_confirmed": True,
         "channel_expanding": False,
     }]
@@ -166,7 +169,7 @@ def test_wild_swing_firewall_rejects_without_explicit_qwen_approval(monkeypatch)
         return False, "AI_EXPLICIT_APPROVAL_REQUIRED"
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", reject)
-    frame = _frame("SHORT")
+    frame = _pivot_cross_frame("SHORT")
     frame["atr"] = 2.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
@@ -208,6 +211,79 @@ def test_wild_swing_firewall_rejects_unapproved_signal_pattern(monkeypatch):
             validate_account_entry(
                 FakeAccount(frame), "LOBSTER/USDT", "SHORT", _context(bar_id),
             )
+        )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_wild_swing_firewall_rebuilds_profit_lock_continuation_from_trade(side):
+    frame = _profit_lock_continuation_frame(side)
+    timestamp_offset = 1_740_000_000_000
+    frame["timestamp"] += timestamp_offset
+    frame["atr"] = 2.0
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    bar_id = float(frame.iloc[-1]["timestamp"])
+    close_id = timestamp_offset + 600_001
+    account = FakeAccount(frame)
+    account.trades = [{
+        "symbol": "LOBSTER/USDT",
+        "action": f"CLOSE_{side}",
+        "entry_mode": "WILD_SWING",
+        "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
+        "id": close_id,
+    }]
+    context = {
+        "entry_mode": "WILD_SWING",
+        "source": "WILD_SWING_1M",
+        "entry_pattern": "CONTINUATION",
+        "entry_signal_code": "WILD_SWING_PROFIT_LOCK_CONTINUATION_ENTRY",
+        "entry_signal_mode": "CONTINUATION",
+        "channel_confirmation_bar_id": bar_id,
+        "dual_tf_meta": {
+            "bar_id": bar_id,
+            "profit_lock_close_id": close_id,
+        },
+    }
+
+    result = asyncio.run(
+        validate_account_entry(account, "LOBSTER/USDT", side, context)
+    )
+    assert result["entry_pattern"] == "CONTINUATION"
+    assert result["side"] == side
+
+
+def test_wild_swing_firewall_rejects_mismatched_profit_lock_close_identity():
+    frame = _profit_lock_continuation_frame("LONG")
+    timestamp_offset = 1_740_000_000_000
+    frame["timestamp"] += timestamp_offset
+    frame["atr"] = 2.0
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    bar_id = float(frame.iloc[-1]["timestamp"])
+    close_id = timestamp_offset + 600_001
+    account = FakeAccount(frame)
+    account.trades = [{
+        "symbol": "LOBSTER/USDT",
+        "action": "CLOSE_LONG",
+        "entry_mode": "WILD_SWING",
+        "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
+        "id": close_id,
+    }]
+    context = {
+        "entry_mode": "WILD_SWING",
+        "source": "WILD_SWING_1M",
+        "entry_pattern": "CONTINUATION",
+        "entry_signal_code": "WILD_SWING_PROFIT_LOCK_CONTINUATION_ENTRY",
+        "entry_signal_mode": "CONTINUATION",
+        "channel_confirmation_bar_id": bar_id,
+        "dual_tf_meta": {
+            "bar_id": bar_id,
+            "profit_lock_close_id": close_id - 60_000,
+        },
+    }
+    with pytest.raises(ValueError, match="WILD_SWING_SIGNAL_STALE_OR_INVALID"):
+        asyncio.run(
+            validate_account_entry(account, "LOBSTER/USDT", "LONG", context)
         )
 
 

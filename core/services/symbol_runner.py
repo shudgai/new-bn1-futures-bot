@@ -37,8 +37,7 @@ async def _process_wild_swing_symbol(
     if position:
         from core.gates.holding_protection_gate import _ratchet_lock_details
 
-        closed_price = float(closed.iloc[-1]["close"])
-        profit_lock = _ratchet_lock_details(position, closed_price)
+        profit_lock = _ratchet_lock_details(position, quote)
         exit_decision = strategy.evaluate_exit(
             symbol,
             position,
@@ -103,8 +102,13 @@ async def _process_wild_swing_symbol(
             vision_gate.on_bar_closed(symbol)
         seen_bar_ids[symbol] = latest_closed_bar_id
 
+    profit_lock_exit = strategy.latest_profit_lock_exit(
+        getattr(engine.account, "trades", None), symbol,
+    )
     signals = [
-        strategy.evaluate_entry(symbol, frame, side)
+        strategy.evaluate_entry(
+            symbol, frame, side, profit_lock_exit=profit_lock_exit,
+        )
         for side in ("LONG", "SHORT")
     ]
     signals = [signal for signal in signals if signal is not None]
@@ -143,6 +147,12 @@ async def _process_wild_swing_symbol(
                 field: float(current_bar[field])
                 for field in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
             }
+            for field in (
+                "ma5_current", "ma5_previous",
+                "kc_middle_current", "kc_middle_previous",
+            ):
+                if field in signal:
+                    macro_indicators[field] = float(signal[field])
         except (TypeError, ValueError, OverflowError):
             macro_allowed = False
             macro_reason = "VETO_INVALID_MARKET_DATA: non-numeric structure"

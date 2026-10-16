@@ -117,7 +117,50 @@ class WildSwingStrategy:
         )
         return closed.loc[valid]
 
-    def evaluate_entry(self, symbol: str, frame: pd.DataFrame, side: str) -> Optional[dict[str, Any]]:
+    @staticmethod
+    def latest_profit_lock_exit(
+        trades: Any, symbol: str,
+    ) -> Optional[dict[str, Any]]:
+        """Return the latest WILD_SWING close only when its reason was profit lock."""
+        if not isinstance(trades, list):
+            return None
+        for trade in trades:
+            if not isinstance(trade, dict) or trade.get("symbol") != symbol:
+                continue
+            action = str(trade.get("action") or "").upper()
+            if not (action.startswith("OPEN_") or action.startswith("CLOSE_")):
+                continue
+            if not action.startswith("CLOSE_"):
+                return None
+            reason = str(trade.get("reason") or "").upper()
+            if (
+                str(trade.get("entry_mode") or "").upper() != "WILD_SWING"
+                or action not in {"CLOSE_LONG", "CLOSE_SHORT"}
+                or "EXIT_BY_PROFIT_LOCK" not in reason
+            ):
+                return None
+            try:
+                close_id = float(trade.get("id") or trade.get("timestamp"))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(close_id) or close_id <= 0:
+                return None
+            close_ms = close_id * 1000.0 if close_id < 1e11 else close_id
+            return {
+                "side": action.removeprefix("CLOSE_"),
+                "close_id": close_id,
+                "close_bar_id": math.floor(close_ms / 60_000) * 60_000,
+            }
+        return None
+
+    def evaluate_entry(
+        self,
+        symbol: str,
+        frame: pd.DataFrame,
+        side: str,
+        *,
+        profit_lock_exit: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
         side = str(side).upper()
         if side not in ("LONG", "SHORT"):
             raise ValueError("side must be LONG or SHORT")
@@ -139,178 +182,200 @@ class WildSwingStrategy:
 
         close = float(current["close"])
         open_price = float(current["open"])
-        middle = float(current["kc_middle"])
-        ma15 = float(current["ma15"])
         ma5 = float(current["_wild_ma5"])
-        prev_close = float(previous["close"])
+        ma15 = float(current["ma15"])
         prev_middle = float(previous["kc_middle"])
-        prev_ma15 = float(previous["ma15"])
         prev_ma5 = float(previous["_wild_ma5"])
+        prev_ma15 = float(previous["ma15"])
+        cross_up = prev_ma5 <= prev_ma15 and ma5 > ma15
+        cross_down = prev_ma5 >= prev_ma15 and ma5 < ma15
+        channel_expanding = (
+            float(current["kc_upper"] - current["kc_lower"])
+            > float(previous["kc_upper"] - previous["kc_lower"])
+        )
 
-        channel_width = float(current["kc_upper"] - current["kc_lower"])
-        previous_channel_width = float(previous["kc_upper"] - previous["kc_lower"])
-        channel_expanding = channel_width > previous_channel_width
-
-        if side == "SHORT":
-            trend = middle < prev_middle and ma15 < prev_ma15
-            below_baseline = close < middle and close < ma15
-            directional_bar = close < open_price
-            crossed_baseline = (
-                prev_close >= max(prev_middle, prev_ma15)
-                and close < min(middle, ma15)
-                and prev_ma5 >= prev_ma15
-                and ma5 < ma15
-            )
-            broke_previous_low = close < float(previous["low"])
-            pullback_reversal = self._pullback_reversal(bars, "SHORT", middle, ma15)
-            breakout = (
-                close < float(current["kc_lower"])
-                and prev_close >= float(previous["kc_lower"])
-                and directional_bar
-                and middle < prev_middle
-                and ma15 < prev_ma15
-                and float(current["kc_lower"]) < float(previous["kc_lower"])
-                and channel_expanding
-            )
-            reversal = self._confirmed_pivot_reversal(bars, "SHORT")
-        else:
-            trend = middle > prev_middle and ma15 > prev_ma15
-            above_baseline = close > middle and close > ma15
-            directional_bar = close > open_price
-            crossed_baseline = (
-                prev_close <= min(prev_middle, prev_ma15)
-                and close > max(middle, ma15)
-                and prev_ma5 <= prev_ma15
-                and ma5 > ma15
-            )
-            broke_previous_high = close > float(previous["high"])
-            pullback_reversal = self._pullback_reversal(bars, "LONG", middle, ma15)
-
-            breakout = (
-                close > float(current["kc_upper"])
-                and prev_close <= float(previous["kc_upper"])
-                and directional_bar
-                and middle > prev_middle
-                and ma15 > prev_ma15
-                and float(current["kc_upper"]) > float(previous["kc_upper"])
-                and channel_expanding
-            )
-            reversal = self._confirmed_pivot_reversal(bars, "LONG")
-
-        if reversal:
-            signal_mode = ENTRY_MODE_REVERSAL
-        elif breakout:
-            signal_mode = ENTRY_MODE_BREAKOUT
-        else:
-            location = below_baseline if side == "SHORT" else above_baseline
-            if not (trend and location and directional_bar):
-                return None
-
-            if side == "SHORT":
-                continuation = broke_previous_low or pullback_reversal
-            else:
-                continuation = broke_previous_high or pullback_reversal
-            if crossed_baseline:
-                signal_mode = ENTRY_MODE_CROSSOVER
-            elif continuation:
-                signal_mode = ENTRY_MODE_CONTINUATION
-            else:
-                return None
-
-        if signal_mode in (ENTRY_MODE_CROSSOVER, ENTRY_MODE_CONTINUATION):
-            location = below_baseline if side == "SHORT" else above_baseline
-            if not (trend and location and directional_bar):
-                return None
-
-        if signal_mode == ENTRY_MODE_CROSSOVER and not crossed_baseline:
-            return None
-        if signal_mode == ENTRY_MODE_CONTINUATION and not (
-            (broke_previous_low or pullback_reversal)
-            if side == "SHORT"
-            else (broke_previous_high or pullback_reversal)
+        if (
+            profit_lock_exit
+            and str(profit_lock_exit.get("side") or "").upper() == side
+            and bar_id > float(profit_lock_exit.get("close_bar_id") or 0.0)
         ):
+            return self._profit_lock_continuation_signal(
+                bars, current, previous, side, bar_id, profit_lock_exit,
+            )
+
+        min_pivot_bar_id = max(
+            float(state.reset_bar_id or 0.0),
+            float(state.last_exit_bar_id or 0.0),
+        )
+        if side == "LONG":
+            pivot = self._latest_kc_outer_pivot(
+                bars.iloc[:-1], "LONG", min_pivot_bar_id,
+            )
+            valid_cross = (
+                cross_up
+                and ma5 > prev_ma5
+                and close > open_price
+                and close > ma5
+                and close > ma15
+            )
+        else:
+            pivot = self._latest_kc_outer_pivot(
+                bars.iloc[:-1], "SHORT", min_pivot_bar_id,
+            )
+            valid_cross = (
+                cross_down
+                and ma5 < prev_ma5
+                and close < open_price
+                and close < ma5
+                and close < ma15
+            )
+        if pivot is None or not valid_cross:
             return None
-
-        if side == "SHORT":
-            pending_bar_id = state.pending_short_wick_bar_id
-            pending_low = state.pending_short_wick_low
-            previous_bar_id = self._bar_id(previous)
-            if pending_bar_id is not None:
-                confirmed_next_bar = (
-                    previous_bar_id == pending_bar_id
-                    and pending_low is not None
-                    and close < open_price
-                    and close < pending_low
-                )
-                state.pending_short_wick_bar_id = None
-                state.pending_short_wick_low = None
-                if previous_bar_id == pending_bar_id and not confirmed_next_bar:
-                    if self._has_short_exhaustion_wick(current):
-                        state.pending_short_wick_bar_id = bar_id
-                        state.pending_short_wick_low = float(current["low"])
-                    state.last_processed_bar_id = bar_id
-                    return None
-
-            if self._has_short_exhaustion_wick(current):
-                state.pending_short_wick_bar_id = bar_id
-                state.pending_short_wick_low = float(current["low"])
-                state.last_processed_bar_id = bar_id
-                return None
 
         return {
             "side": side,
-            "reason": {
-                ENTRY_MODE_BREAKOUT: "KC_OUTER_BAND_BREAKOUT",
-                ENTRY_MODE_CONTINUATION: "TREND_CONTINUATION",
-                ENTRY_MODE_CROSSOVER: "BASELINE_BREAK_AND_MA_CROSS",
-                ENTRY_MODE_REVERSAL: "CONFIRMED_PEAK_VALLEY_REVERSAL",
-            }[signal_mode],
-            "entry_pattern": signal_mode,
-            "entry_signal_mode": signal_mode,
-            "structure_confirmation": {
-                ENTRY_MODE_BREAKOUT: "KC_OUTER_BREAKOUT",
-                ENTRY_MODE_CONTINUATION: "TREND_CONTINUATION",
-                ENTRY_MODE_CROSSOVER: "MA5_MA15_1M_CROSS",
-                ENTRY_MODE_REVERSAL: "CONFIRMED_KC_OUTER_PEAK_VALLEY",
-            }[signal_mode],
+            "reason": "REVERSAL_CROSSOVER_ENTRY",
+            "entry_label": "REVERSAL_CROSSOVER_ENTRY",
+            "entry_pattern": ENTRY_MODE_REVERSAL,
+            "entry_signal_mode": ENTRY_MODE_REVERSAL,
+            "structure_confirmation": "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
             "structure_confirmed": True,
             "channel_expanding": channel_expanding,
+            "ma5_current": ma5,
+            "ma5_previous": prev_ma5,
+            "kc_middle_current": float(current["kc_middle"]),
+            "kc_middle_previous": prev_middle,
+            "volume_exhausted": False,
+            "pivot_bar_id": self._bar_id(bars.iloc[pivot["index"]]),
+            "pivot_price": pivot["price"],
+            "bar_id": bar_id,
+            "close": close,
+            "entry_mode": "WILD_SWING",
+        }
+
+    def _profit_lock_continuation_signal(
+        self,
+        bars: pd.DataFrame,
+        current: pd.Series,
+        previous: pd.Series,
+        side: str,
+        bar_id: float,
+        profit_lock_exit: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        close = float(current["close"])
+        ma5 = float(current["_wild_ma5"])
+        prev_ma5 = float(previous["_wild_ma5"])
+        ma15 = float(current["ma15"])
+        middle = float(current["kc_middle"])
+        prev_middle = float(previous["kc_middle"])
+        if side == "LONG":
+            aligned = (
+                close > float(current["kc_upper"])
+                and close > ma5
+                and ma5 > prev_ma5
+                and middle >= prev_middle
+            )
+        else:
+            aligned = (
+                close < float(current["kc_lower"])
+                and close < ma5
+                and ma5 < prev_ma5
+                and middle <= prev_middle
+            )
+        if not aligned:
+            return None
+
+        volume_exhausted = self._volume_exhausted(bars, side)
+        if volume_exhausted:
+            return None
+        return {
+            "side": side,
+            "reason": "PROFIT_LOCK_CONTINUATION_ENTRY",
+            "entry_label": "PROFIT_LOCK_CONTINUATION_ENTRY",
+            "entry_pattern": ENTRY_MODE_CONTINUATION,
+            "entry_signal_mode": ENTRY_MODE_CONTINUATION,
+            "structure_confirmation": "PROFIT_LOCK_CONTINUATION",
+            "structure_confirmed": True,
+            "channel_expanding": (
+                float(current["kc_upper"] - current["kc_lower"])
+                > float(previous["kc_upper"] - previous["kc_lower"])
+            ),
+            "ma5_current": ma5,
+            "ma5_previous": prev_ma5,
+            "kc_middle_current": middle,
+            "kc_middle_previous": prev_middle,
+            "volume_exhausted": False,
+            "profit_lock_close_id": float(profit_lock_exit["close_id"]),
+            "profit_lock_close_bar_id": float(profit_lock_exit["close_bar_id"]),
             "bar_id": bar_id,
             "close": close,
             "entry_mode": "WILD_SWING",
         }
 
     @staticmethod
-    def _confirmed_pivot_reversal(bars: pd.DataFrame, side: str) -> bool:
-        if len(bars) < 3:
-            return False
-        left, pivot, trigger = bars.iloc[-3], bars.iloc[-2], bars.iloc[-1]
-        pivot_ma5 = float(pivot["_wild_ma5"])
-        pivot_ma15 = float(pivot["ma15"])
-        trigger_ma5 = float(trigger["_wild_ma5"])
-        trigger_ma15 = float(trigger["ma15"])
-        open_price = float(trigger["open"])
-        close = float(trigger["close"])
-
-        if side == "LONG":
-            return bool(
-                pivot["low"] < left["low"]
-                and pivot["low"] < trigger["low"]
-                and pivot["low"] <= pivot["kc_lower"]
-                and close > open_price
-                and close > float(pivot["high"])
-                and pivot_ma5 <= pivot_ma15
-                and trigger_ma5 > trigger_ma15
-            )
-        return bool(
-            pivot["high"] > left["high"]
-            and pivot["high"] > trigger["high"]
-            and pivot["high"] >= pivot["kc_upper"]
-            and close < open_price
-            and close < float(pivot["low"])
-            and pivot_ma5 >= pivot_ma15
-            and trigger_ma5 < trigger_ma15
+    def _volume_exhausted(bars: pd.DataFrame, side: str) -> bool:
+        if side not in ("LONG", "SHORT") or len(bars) < 6:
+            return True
+        previous_volumes = pd.to_numeric(
+            bars["volume"].iloc[-6:-1], errors="coerce",
         )
+        current_volume = float(bars.iloc[-1]["volume"])
+        baseline = float(previous_volumes.mean())
+        if (
+            not previous_volumes.map(math.isfinite).all()
+            or not math.isfinite(current_volume)
+            or not math.isfinite(baseline)
+            or baseline <= 0
+        ):
+            return True
+        low_volume = current_volume < 0.60 * baseline
+        recent = bars.iloc[-3:]
+        stalled = True
+        for index in range(1, len(recent)):
+            previous = recent.iloc[index - 1]
+            current = recent.iloc[index]
+            if side == "LONG":
+                stalled = stalled and (
+                    float(current["high"]) <= float(previous["high"])
+                    and float(current["close"]) <= float(previous["close"])
+                )
+            else:
+                stalled = stalled and (
+                    float(current["low"]) >= float(previous["low"])
+                    and float(current["close"]) >= float(previous["close"])
+                )
+        return low_volume and stalled
+
+    def _latest_kc_outer_pivot(
+        self, bars: pd.DataFrame, side: str, min_bar_id: float,
+    ) -> Optional[dict[str, Any]]:
+        if side not in ("LONG", "SHORT") or len(bars) < 3:
+            return None
+        first_index = max(1, len(bars) - self.volume_lookback - 1)
+        for pivot_index in range(len(bars) - 2, first_index - 1, -1):
+            left = bars.iloc[pivot_index - 1]
+            pivot = bars.iloc[pivot_index]
+            right = bars.iloc[pivot_index + 1]
+            pivot_bar_id = self._bar_id(pivot)
+            if pivot_bar_id is None or pivot_bar_id <= min_bar_id:
+                continue
+            if side == "LONG":
+                confirmed = (
+                    float(pivot["low"]) < float(left["low"])
+                    and float(pivot["low"]) < float(right["low"])
+                    and float(pivot["low"]) <= float(pivot["kc_lower"])
+                )
+                price = float(pivot["low"])
+            else:
+                confirmed = (
+                    float(pivot["high"]) > float(left["high"])
+                    and float(pivot["high"]) > float(right["high"])
+                    and float(pivot["high"]) >= float(pivot["kc_upper"])
+                )
+                price = float(pivot["high"])
+            if confirmed:
+                return {"index": pivot_index, "price": price}
+        return None
 
     @staticmethod
     def _has_short_exhaustion_wick(bar: pd.Series) -> bool:
@@ -387,7 +452,7 @@ class WildSwingStrategy:
         if side not in ("LONG", "SHORT"):
             return None
         bars = self._closed_frame(frame)
-        if len(bars) < self.volume_lookback + 1:
+        if bars.empty:
             return None
         current = bars.iloc[-1]
         bar_id = self._bar_id(current)
@@ -400,45 +465,127 @@ class WildSwingStrategy:
             return None
 
         close = float(current["close"])
-        middle = float(current["kc_middle"])
-        upper = self._number(current, "kc_upper")
-        lower = self._number(current, "kc_lower")
-        open_price = float(current["open"])
-        body = abs(close - open_price)
-        volume_mean = float(bars.iloc[-self.volume_lookback - 1:-1]["volume"].mean())
-        volume = float(current["volume"])
-        upper_wick = float(current["high"]) - max(open_price, close)
-        lower_wick = min(open_price, close) - float(current["low"])
-
         if profit_lock_triggered:
             reason = "EXIT_BY_PROFIT_LOCK"
-        elif side == "SHORT" and close > middle:
-            reason = "EXIT_SHORT_ON_CONFIRMED_KC_MIDDLE_BREAK"
-        elif side == "LONG" and close < middle:
-            reason = "EXIT_LONG_ON_CONFIRMED_KC_MIDDLE_BREAK"
-        elif (
-            side == "SHORT" and lower is not None and close < lower
-            and volume_mean > 0 and volume >= self.climax_volume_multiple * volume_mean
-            and lower_wick > 2.0 * body
-        ):
-            reason = "EXIT_SHORT_ON_EXTREME_VOLUME_PIN"
-        elif (
-            side == "LONG" and upper is not None and close > upper
-            and volume_mean > 0 and volume >= self.climax_volume_multiple * volume_mean
-            and upper_wick > 2.0 * body
-        ):
-            reason = "EXIT_LONG_ON_EXTREME_VOLUME_PIN"
         else:
-            state.last_processed_bar_id = bar_id
-            return None
+            evidence = self._true_pivot_volume_divergence_exit(
+                position, bars, side,
+            )
+            if evidence is None:
+                state.last_processed_bar_id = bar_id
+                return None
+            reason = (
+                "EXIT_BY_TRUE_PEAK_VOLUME_DIVERGENCE"
+                if side == "LONG"
+                else "EXIT_BY_TRUE_VALLEY_VOLUME_DIVERGENCE"
+            )
 
         return {
             "side": side,
             "reason": reason,
             "bar_id": bar_id,
             "close": close,
+            **(evidence if not profit_lock_triggered else {}),
             "entry_mode": "WILD_SWING",
         }
+
+    @staticmethod
+    def _position_entry_bar_floor(
+        position: dict, frame: pd.DataFrame,
+    ) -> Optional[float]:
+        timeframe_ms = float(frame.attrs.get("timeframe_ms", 60_000) or 60_000)
+        for key in ("open_bar_id", "entry_bar_id", "candidate_bar_id",
+                    "open_timestamp", "entry_timestamp"):
+            value = (position or {}).get(key)
+            if value is None:
+                continue
+            try:
+                timestamp = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(timestamp) or timestamp <= 0:
+                continue
+            timestamp_ms = timestamp * 1000.0 if timestamp < 1e11 else timestamp
+            return math.floor(timestamp_ms / timeframe_ms) * timeframe_ms
+        return None
+
+    @classmethod
+    def _true_pivot_volume_divergence_exit(
+        cls,
+        position: dict,
+        bars: pd.DataFrame,
+        side: str,
+    ) -> Optional[dict[str, Any]]:
+        entry_bar_floor = cls._position_entry_bar_floor(position, bars)
+        if entry_bar_floor is None or len(bars) < 5:
+            return None
+
+        pivots = []
+        for index in range(1, len(bars) - 1):
+            left, pivot, right = (
+                bars.iloc[index - 1], bars.iloc[index], bars.iloc[index + 1],
+            )
+            bar_id = cls._bar_id(pivot)
+            volume = cls._number(pivot, "volume")
+            if bar_id is None or bar_id < entry_bar_floor or volume is None:
+                continue
+            if side == "LONG":
+                confirmed = (
+                    float(pivot["high"]) > float(left["high"])
+                    and float(pivot["high"]) > float(right["high"])
+                )
+                price = float(pivot["high"])
+            else:
+                confirmed = (
+                    float(pivot["low"]) < float(left["low"])
+                    and float(pivot["low"]) < float(right["low"])
+                )
+                price = float(pivot["low"])
+            if confirmed:
+                pivots.append({
+                    "index": index, "bar_id": bar_id,
+                    "price": price, "volume": volume,
+                })
+
+        if len(pivots) < 2:
+            return None
+        current_index = len(bars) - 1
+        current_close = float(bars.iloc[-1]["close"])
+        for previous_pivot, pivot in reversed(list(zip(pivots, pivots[1:]))):
+            directional_divergence = (
+                pivot["price"] > previous_pivot["price"]
+                if side == "LONG"
+                else pivot["price"] < previous_pivot["price"]
+            )
+            if not directional_divergence:
+                continue
+            if (
+                pivot["index"] >= current_index
+                or pivot["index"] + 1 > current_index
+                or pivot["volume"] >= previous_pivot["volume"]
+            ):
+                continue
+            intervening = bars.iloc[
+                previous_pivot["index"] + 1:pivot["index"]
+            ]
+            if intervening.empty:
+                continue
+            if side == "LONG":
+                structure_level = float(intervening["low"].min())
+                structure_broken = current_close < structure_level
+            else:
+                structure_level = float(intervening["high"].max())
+                structure_broken = current_close > structure_level
+            if structure_broken:
+                return {
+                    "pivot_bar_id": pivot["bar_id"],
+                    "pivot_price": pivot["price"],
+                    "previous_pivot_price": previous_pivot["price"],
+                    "pivot_volume": pivot["volume"],
+                    "previous_pivot_volume": previous_pivot["volume"],
+                    "broken_structure_level": structure_level,
+                }
+        return None
 
     def record_exit(
         self, symbol: str, side: str, price: float, reason: str, bar_id: float,

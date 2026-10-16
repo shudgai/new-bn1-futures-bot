@@ -63,7 +63,16 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
 
         from core.services.strategies.wild_swing_strategy import WildSwingStrategy
-        signal = WildSwingStrategy().evaluate_entry(symbol, fresh_frame, side)
+        wild_strategy = WildSwingStrategy()
+        profit_lock_exit = wild_strategy.latest_profit_lock_exit(
+            getattr(account, "trades", None), symbol,
+        )
+        if profit_lock_exit is None:
+            signal = wild_strategy.evaluate_entry(symbol, fresh_frame, side)
+        else:
+            signal = wild_strategy.evaluate_entry(
+                symbol, fresh_frame, side, profit_lock_exit=profit_lock_exit,
+            )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
         from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
@@ -82,6 +91,10 @@ async def validate_account_entry(account, symbol, side, context):
             )
         expected = context.get("dual_tf_meta")
         expected_bar = expected.get("bar_id") if isinstance(expected, dict) else None
+        expected_profit_lock_close_id = (
+            expected.get("profit_lock_close_id")
+            if isinstance(expected, dict) else None
+        )
         expected_pattern = EntryPatternPermittedGate.normalize(
             context.get("entry_pattern")
         )
@@ -105,6 +118,11 @@ async def validate_account_entry(account, symbol, side, context):
             or signal_bar_id is None
             or expected_bar_id != signal_bar_id
             or confirmation_bar_id != signal_bar_id
+            or (
+                signal.get("reason") == "PROFIT_LOCK_CONTINUATION_ENTRY"
+                and finite_bar_id(expected_profit_lock_close_id)
+                != finite_bar_id(signal.get("profit_lock_close_id"))
+            )
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
 
@@ -130,6 +148,12 @@ async def validate_account_entry(account, symbol, side, context):
                 field: float(current[field])
                 for field in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
             }
+            for field in (
+                "ma5_current", "ma5_previous",
+                "kc_middle_current", "kc_middle_previous",
+            ):
+                if field in signal:
+                    macro_indicators[field] = float(signal[field])
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_INVALID"

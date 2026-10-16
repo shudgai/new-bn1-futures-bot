@@ -296,6 +296,97 @@ def test_crossover_gate_accepts_confirmed_five_minute_ma_convergence():
 
 
 @pytest.mark.parametrize(
+    "side,bar,extra",
+    [
+        (
+            "LONG",
+            {"open": 100.0, "high": 100.4, "low": 99.9, "close": 100.3},
+            {"ma5_current": 100.2, "ma5_previous": 100.1},
+        ),
+        (
+            "SHORT",
+            {"open": 100.0, "high": 100.1, "low": 99.6, "close": 99.7},
+            {"ma5_current": 99.8, "ma5_previous": 99.9},
+        ),
+    ],
+)
+def test_outer_pivot_then_ma_cross_reversal_gate_accepts_aligned_ma5(
+    side, bar, extra,
+):
+    indicators = {
+        "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0, **extra,
+    }
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern="REVERSAL",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+def test_outer_pivot_then_ma_cross_rejects_wrong_ma5_slope():
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "LONG",
+        {"open": 100.0, "high": 100.4, "low": 99.9, "close": 100.3},
+        {
+            "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 2.0,
+            "ma5_current": 100.1, "ma5_previous": 100.2,
+        },
+        entry_pattern="REVERSAL",
+        structure_confirmation="CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+        structure_confirmed=True,
+    )
+    assert allowed is False
+    assert reason == "VETO_REVERSAL: MA5 斜率或價格位置逆向"
+
+
+@pytest.mark.parametrize(
+    "side,bar,indicators",
+    [
+        (
+            "LONG",
+            {"open": 101.0, "high": 101.3, "low": 100.9, "close": 101.2},
+            {
+                "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+                "ma15": 101.0, "atr": 2.0, "ma5_current": 101.1,
+                "ma5_previous": 101.0, "kc_middle_current": 100.1,
+                "kc_middle_previous": 100.0,
+            },
+        ),
+        (
+            "SHORT",
+            {"open": 99.0, "high": 99.1, "low": 98.7, "close": 98.8},
+            {
+                "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+                "ma15": 99.0, "atr": 2.0, "ma5_current": 98.9,
+                "ma5_previous": 99.0, "kc_middle_current": 99.9,
+                "kc_middle_previous": 100.0,
+            },
+        ),
+    ],
+)
+def test_profit_lock_continuation_gate_requires_outer_location_and_aligned_trend(
+    side, bar, indicators,
+):
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern="CONTINUATION",
+        structure_confirmation="PROFIT_LOCK_CONTINUATION",
+        structure_confirmed=True,
+    )
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+@pytest.mark.parametrize(
     "side,bar",
     [
         ("LONG", {"open": 99.8, "high": 100.1, "low": 98.0, "close": 100.0}),

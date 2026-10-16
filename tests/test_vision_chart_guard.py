@@ -6,7 +6,7 @@ import pytest
 
 from core.vision import chart_guard as cg
 from core.services.symbol_runner import _process_wild_swing_symbol
-from test_wild_swing_strategy import _frame
+from test_wild_swing_strategy import _frame, _profit_lock_continuation_frame
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +169,7 @@ def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_en
             self.positions = {}
             self.closing_lock = set()
             self.pending_limit_orders = {}
+            self.trades = []
 
     class Engine:
         def __init__(self):
@@ -187,32 +188,28 @@ def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_en
         lambda *args, **kwargs: (True, "test macro pass"),
     )
     engine = Engine()
-    frame = _frame(side)
+    frame = _profit_lock_continuation_frame(side)
+    timestamp_offset = 1_740_000_000_000
+    frame["timestamp"] += timestamp_offset
     frame["atr"] = 2.0
-    frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+    engine.account.trades = [{
+        "symbol": "LOBSTER/USDT",
+        "action": f"CLOSE_{side}",
+        "entry_mode": "WILD_SWING",
+        "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
+        "id": timestamp_offset + 600_001,
+    }]
+    asyncio.run(_process_wild_swing_symbol(
+        engine, "LOBSTER/USDT", frame.iloc[:-1], float(frame.iloc[-2]["close"]),
+        False, False,
+    ))
     asyncio.run(_process_wild_swing_symbol(
         engine, "LOBSTER/USDT", frame, float(frame.iloc[-1]["close"]), False, False,
-    ))
-    next_bar = frame.iloc[-1].copy()
-    next_bar["timestamp"] = float(frame.iloc[-1]["timestamp"]) + 60_000
-    if side == "SHORT":
-        next_bar.update({
-            "open": 99.2, "high": 99.3, "low": 98.8, "close": 98.9,
-            "kc_middle": 99.8, "ma15": 100.0, "ma5": 99.7,
-        })
-    else:
-        next_bar.update({
-            "open": 100.8, "high": 101.3, "low": 100.7, "close": 101.2,
-            "kc_middle": 100.2, "ma15": 100.0, "ma5": 100.1,
-        })
-    next_frame = pd.concat([frame, next_bar.to_frame().T], ignore_index=True)
-    asyncio.run(_process_wild_swing_symbol(
-        engine, "LOBSTER/USDT", next_frame, float(next_bar["close"]), False, False,
     ))
 
     assert len(engine.entries) == expected_entries
     assert len(calls) == 1
-    assert calls[0][0].iloc[-1]["timestamp"] == next_bar["timestamp"]
+    assert calls[0][0].iloc[-1]["timestamp"] == frame.iloc[-1]["timestamp"]
     assert calls[0][1] == side
     assert calls[0][2] == "CONTINUATION"
     if expected_entries:
@@ -221,13 +218,15 @@ def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_en
         assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CONTINUATION"
     else:
         asyncio.run(_process_wild_swing_symbol(
-            engine, "LOBSTER/USDT", next_frame, float(next_bar["close"]), False, False,
+            engine, "LOBSTER/USDT", frame, float(frame.iloc[-1]["close"]), False, False,
         ))
         assert len(calls) == 1
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_macro_structure_gate_allows_mid_channel_pullback_to_ai_and_order(monkeypatch, side):
+def test_mid_channel_pullback_without_pivot_cross_or_profit_lock_is_not_sent_to_ai(
+    monkeypatch, side,
+):
     calls = []
 
     async def approve(*args, **kwargs):
@@ -277,10 +276,8 @@ def test_macro_structure_gate_allows_mid_channel_pullback_to_ai_and_order(monkey
         engine, "LOBSTER/USDT", next_frame, float(next_bar["close"]), False, False,
     ))
 
-    assert len(calls) == 1
-    assert len(engine.entries) == 1
-    assert engine.entries[0]["side"] == side
-    assert engine.entries[0]["entry_mode"] == "WILD_SWING"
+    assert calls == []
+    assert engine.entries == []
 
 
 def test_prompt_adapts_to_ma_cross_mode(monkeypatch):
