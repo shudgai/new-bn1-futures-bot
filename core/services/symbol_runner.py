@@ -224,7 +224,8 @@ async def _process_wild_swing_symbol(
         latest_closed_bar_id, vision_reason,
     )
     if not approved:
-        vision_gate.record_rejection(symbol, current_bar, signal["side"])
+        if not vision_reason.startswith("QWEN_REVIEW_UNAVAILABLE") and not vision_reason.startswith("QWEN_REVIEW_FAILED"):
+            vision_gate.record_rejection(symbol, current_bar, signal["side"])
         logger.info(
             "【執行取消】symbol=%s side=%s pattern=%s bar=%s reason=%s",
             symbol, signal["side"], signal["entry_pattern"],
