@@ -205,7 +205,7 @@ class WildSwingStrategy:
                 and open_price <= float(current["kc_upper"])
                 and float(previous["close"]) <= float(previous["kc_upper"])
                 and close > open_price
-                and body_ratio > 0.60
+                and body_ratio >= 0.35
             )
         else:
             breakout_confirmed = (
@@ -213,7 +213,7 @@ class WildSwingStrategy:
                 and open_price >= float(current["kc_lower"])
                 and float(previous["close"]) >= float(previous["kc_lower"])
                 and close < open_price
-                and body_ratio > 0.60
+                and body_ratio >= 0.35
             )
         breakout_signal = channel_expanding and breakout_confirmed
 

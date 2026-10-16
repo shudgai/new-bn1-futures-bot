@@ -7,7 +7,7 @@ def test_gate_export():
 
 def test_long_vetoed_when_kc_position_too_high():
     gate = MacroCandleStructureGate()
-    bar = {'open': 105.0, 'close': 106.0, 'high': 106.2, 'low': 104.8}
+    bar = {'open': 107.0, 'close': 108.0, 'high': 108.2, 'low': 106.8}
     indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 106.0, 'atr': 2.0}
 
     can_open, reason = gate.can_open(
@@ -78,9 +78,9 @@ def test_long_mid_channel_pullback_positions_pass(kc_pos):
 def test_short_vetoed_when_kc_position_too_low():
     gate = MacroCandleStructureGate()
     # kc_upper = 110, kc_lower = 90 (range = 20)
-    # close = 96 -> kc_pos = (96 - 90) / 20 = 0.30 < 0.35 (floor short chasing)
-    bar = {'open': 97.0, 'close': 96.0, 'high': 97.2, 'low': 95.8, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 96.5, 'atr': 2.0}
+    # close = 92 -> kc_pos = (92 - 90) / 20 = 0.10 < 0.15 (floor short chasing)
+    bar = {'open': 93.0, 'close': 92.0, 'high': 93.2, 'low': 91.8, 'volume': 100}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 93.0, 'atr': 2.0}
 
     can_open, reason = gate.can_open(
         'SHORT', bar, indicators, entry_pattern="CROSSOVER",
@@ -151,20 +151,20 @@ def test_breakout_bias_limit_is_two_atr(side):
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
 
-def test_breakout_short_bias_above_two_atr_is_still_vetoed():
+def test_breakout_short_bias_above_relaxed_atr_is_still_vetoed():
     allowed, reason = MacroCandleStructureGate().can_open(
         "SHORT",
         {"open": 91.2, "close": 89.8, "high": 91.3, "low": 89.7},
         {
             "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
-            "ma15": 94.0, "atr": 2.0,
+            "ma15": 96.0, "atr": 2.0,
         },
         entry_pattern="BREAKOUT",
         channel_expanding=True,
         structure_confirmation="KC_OUTER_BREAKOUT",
     )
     assert allowed is False
-    assert "2.00x ATR" in reason
+    assert "2.80x ATR" in reason
 
 
 def test_short_vetoed_when_lower_wick_exhaustion():
@@ -428,10 +428,10 @@ def test_top_pivot_crossover_passes_outside_mid_channel_and_two_atr_bias():
 @pytest.mark.parametrize(
     "side,wick_ratio,expected",
     [
-        ("LONG", 0.45, True),
-        ("LONG", 0.51, False),
-        ("SHORT", 0.45, True),
-        ("SHORT", 0.51, False),
+        ("LONG", 0.55, True),
+        ("LONG", 0.66, False),
+        ("SHORT", 0.55, True),
+        ("SHORT", 0.66, False),
     ],
 )
 def test_outer_pivot_crossover_allows_moderate_wick_but_rejects_over_half(
@@ -494,25 +494,25 @@ def test_breakout_short_requires_solid_body_and_rejects_extreme_lower_wick():
     }
     extreme_wick, reason = MacroCandleStructureGate().can_open(
         "SHORT",
-        {"open": 92.0, "high": 92.1, "low": 87.8, "close": 90.0},
+        {"open": 91.0, "high": 91.1, "low": 84.0, "close": 89.0},
         indicators,
         entry_pattern="BREAKOUT",
         channel_expanding=True,
         structure_confirmation="KC_OUTER_BREAKOUT",
     )
     assert extreme_wick is False
-    assert "下影線超過 K 棒區間 50%" in reason
+    assert "下影線超過 K 棒區間 65%" in reason
 
     weak_body, reason = MacroCandleStructureGate().can_open(
         "SHORT",
-        {"open": 91.0, "high": 91.1, "low": 88.9, "close": 90.0},
+        {"open": 89.3, "high": 91.1, "low": 88.0, "close": 89.0},
         indicators,
         entry_pattern="BREAKOUT",
         channel_expanding=True,
         structure_confirmation="KC_OUTER_BREAKOUT",
     )
     assert weak_body is False
-    assert "實體比例未超過 K 棒區間 60%" in reason
+    assert "實體比例未超過 K 棒區間 35%" in reason
 
 
 @pytest.mark.parametrize(
