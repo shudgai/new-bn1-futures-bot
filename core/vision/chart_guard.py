@@ -89,15 +89,39 @@ def _vision_prompt(side: str, mode: str) -> str:
     )
 
 
-def _qwen_entry_prompt(side: str, mode: str) -> str:
-    prompt = _vision_prompt(side, mode).replace("TRAP", "REJECTED").replace(
-        "REAL", "APPROVED",
-    )
-    return (
-        prompt
-        + "\n視覺審查規則：若無上述明確否決危險，應回傳 "
-        '{"verdict":"APPROVED","reason":"符合順勢結構"}; 只有觸發上述具體否決條件時才回傳 '
-        '{"verdict":"REJECTED","reason":"..."}。不得回傳 REAL、TRAP 或其他狀態。'
+QWEN_OPTION_A_PROMPT = (
+    "你是一個專精於短線量價型態與假突破識別的資深加密貨幣交易員。\n"
+    "目前底層數值引擎【已透過精確浮點數運算，確認當前 K 線有效突破 Keltner Channel (KC) 軌道且具備通道動能】，無須用肉眼重新校驗微幅破軌或通道像素寬度。\n\n"
+    "你的唯一職責是：【審查最新 1~2 根 K 棒是否呈現反向誘單或極端假突破陷阱】。\n\n"
+    "【交易訊號資訊】\n"
+    "- 幣種：{symbol}\n"
+    "- 訊號方向：{side} ({side_desc})\n"
+    "- 破軌類型：{breakout_type}\n\n"
+    "【審核規則】\n"
+    "1. 若為 LONG (做多)：\n"
+    "   - 拒絕條件 (REJECTED)：最新 K 線出現極端「衝高回落爆長上影線」（上影線長度 > 實體長度的 2 倍），或當前形成巨大反向大陰線吞噬。\n"
+    "   - 放行條件 (APPROVED)：未出現上述極端反向長上影，實體順勢或正常小影線，代表買盤動能未被瞬間瓦解。\n\n"
+    "2. 若為 SHORT (做空)：\n"
+    "   - 拒絕條件 (REJECTED)：最新 K 線出現極端「探底回升爆長下影線」（下影線長度 > 實體長度的 2 倍），或當前形成巨大反向大陽線吞噬。\n"
+    "   - 放行條件 (APPROVED)：未出現上述極端反向長下影，實體順勢或正常小影線，代表賣盤動能未被瞬間承接。\n\n"
+    "3. 原則：【預設放行 (Fail-Open to Trade)】。微幅影線、窄幅實體破軌均屬正常動能啟動，切勿因微小的肉眼誤差否決數值系統的判斷。除非看到非常明顯的誘多/誘空反向長針，否則一律核准。\n\n"
+    "【輸出格式規範】\n"
+    "請嚴格僅回傳以下 JSON 格式，不要包含任何額外說明或 Markdown 標籤：\n"
+    '{{\n  "decision": "APPROVED",\n  "reason": "無極端反向長影線，順勢破軌結構成立"\n}}\n'
+    "或\n"
+    '{{\n  "decision": "REJECTED",\n  "reason": "具體簡述偵測到的反向長影線或反轉型態"\n}}'
+)
+
+
+def _qwen_entry_prompt(side: str, mode: str, symbol: Optional[str] = None) -> str:
+    sym = symbol or "合約標的"
+    side_desc = "LONG 做多" if side == "LONG" else "SHORT 做空"
+    breakout_type = SIGNAL_DESC.get(mode, mode)
+    return QWEN_OPTION_A_PROMPT.format(
+        symbol=sym,
+        side=side,
+        side_desc=side_desc,
+        breakout_type=breakout_type,
     )
 
 
@@ -329,11 +353,11 @@ def parse_verdict(text: str) -> Tuple[bool, str]:
     if start < 0 or end < start:
         raise ValueError("unparseable verdict")
     obj = json.loads(raw[start:end + 1])
-    verdict = str(obj.get("verdict", "")).strip().upper()
+    verdict = str(obj.get("decision") or obj.get("verdict") or "").strip().upper()
     reason = str(obj.get("reason", "")).strip()
-    if verdict == "REAL":
+    if verdict in ("REAL", "APPROVED"):
         return True, reason
-    if verdict == "TRAP":
+    if verdict in ("TRAP", "REJECTED"):
         return False, reason
     raise ValueError("unknown verdict")
 
@@ -346,7 +370,7 @@ def parse_qwen_entry_approval(text: str) -> Tuple[bool, str]:
         if start < 0 or end < start:
             return False, "AI_INVALID_RESPONSE"
         obj = json.loads(raw[start:end + 1])
-        verdict = str(obj.get("verdict", "")).strip()
+        verdict = str(obj.get("decision") or obj.get("verdict") or "").strip()
         reason = str(obj.get("reason", "")).strip()
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
         return False, "AI_INVALID_RESPONSE"
@@ -373,6 +397,7 @@ async def _call_local_qwen(
     side: str,
     mode: str,
     *,
+    symbol: Optional[str] = None,
     require_explicit_approval: bool = False,
 ) -> Optional[str]:
     """優先呼叫本地 Qwen2-VL，支援多 Port (8000 -> 11434) 自動候補。"""
@@ -386,7 +411,7 @@ async def _call_local_qwen(
 
     b64_image = base64.b64encode(image).decode("utf-8")
     prompt_text = (
-        _qwen_entry_prompt(side, mode)
+        _qwen_entry_prompt(side, mode, symbol=symbol)
         if require_explicit_approval else _vision_prompt(side, mode)
     )
 
@@ -423,6 +448,7 @@ async def evaluate_qwen_entry_vision(
     *,
     mode: str,
     timeout: Optional[float] = None,
+    symbol: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Require a fresh local Qwen-VL review; never use cloud or indicator fallback."""
     from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
@@ -441,6 +467,12 @@ async def evaluate_qwen_entry_vision(
     ):
         return False, "LOCAL_QWEN_REQUIRED"
 
+    if symbol is None:
+        if hasattr(bars, "symbol"):
+            symbol = str(bars.symbol)
+        elif hasattr(bars, "columns") and "symbol" in bars.columns and len(bars) > 0:
+            symbol = str(bars["symbol"].iloc[-1])
+
     try:
         image = render_chart_bytes(bars)
         response = await asyncio.wait_for(
@@ -448,6 +480,7 @@ async def evaluate_qwen_entry_vision(
                 image,
                 proposed_side,
                 EntryPatternPermittedGate.normalize(mode),
+                symbol=symbol,
                 require_explicit_approval=True,
             ),
             timeout=timeout or LOCAL_READ_TIMEOUT_SEC + LOCAL_CONNECT_TIMEOUT_SEC,
