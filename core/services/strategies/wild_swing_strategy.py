@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import math
+import os
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -464,20 +465,29 @@ class WildSwingStrategy:
             return None
 
         close = float(current["close"])
+        evidence: dict[str, Any] = {}
         if profit_lock_triggered:
             reason = "EXIT_BY_PROFIT_LOCK"
         else:
-            evidence = self._true_pivot_volume_divergence_exit(
+            pivot_exit, pivot_reason, pivot_evidence = self._pivot_exhaustion_exit(
                 position, bars, side,
             )
-            if evidence is None:
-                state.last_processed_bar_id = bar_id
-                return None
-            reason = (
-                "EXIT_BY_TRUE_PEAK_VOLUME_DIVERGENCE"
-                if side == "LONG"
-                else "EXIT_BY_TRUE_VALLEY_VOLUME_DIVERGENCE"
-            )
+            if pivot_exit:
+                reason = pivot_reason
+                evidence = pivot_evidence
+            else:
+                divergence_evidence = self._true_pivot_volume_divergence_exit(
+                    position, bars, side,
+                )
+                if divergence_evidence is None:
+                    state.last_processed_bar_id = bar_id
+                    return None
+                evidence = divergence_evidence
+                reason = (
+                    "EXIT_BY_TRUE_PEAK_VOLUME_DIVERGENCE"
+                    if side == "LONG"
+                    else "EXIT_BY_TRUE_VALLEY_VOLUME_DIVERGENCE"
+                )
 
         return {
             "side": side,
@@ -507,6 +517,113 @@ class WildSwingStrategy:
             timestamp_ms = timestamp * 1000.0 if timestamp < 1e11 else timestamp
             return math.floor(timestamp_ms / timeframe_ms) * timeframe_ms
         return None
+
+    @classmethod
+    def _pivot_exhaustion_exit(
+        cls,
+        position: dict,
+        bars: pd.DataFrame,
+        side: str,
+        min_profit_pct: Optional[float] = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """
+        偵測真峰谷提前平倉 (Pivot Peak/Valley Early Exit):
+        k0 (bars.iloc[-1]): 當前確認收盤 K 棒
+        k1 (bars.iloc[-2]): 潛在峰谷 K 棒
+        k2 (bars.iloc[-3]): 前置確認 K 棒
+        min_profit_pct: 只有在已有微幅獲利（預設 > 0.3%）時才啟動，避免剛開倉就因微幅震盪被刷出場
+        """
+        if len(bars) < 5:
+            return False, "", {}
+
+        entry_bar_floor = cls._position_entry_bar_floor(position, bars)
+        k1 = bars.iloc[-2]
+        k1_bar_id = cls._bar_id(k1)
+        if entry_bar_floor is not None and k1_bar_id is not None and k1_bar_id < entry_bar_floor:
+            return False, "", {}
+
+        try:
+            entry_price = float(
+                (position or {}).get("entry_price")
+                or (position or {}).get("price")
+                or (position or {}).get("avg_price")
+                or 0.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False, "", {}
+
+        if not math.isfinite(entry_price) or entry_price <= 0:
+            return False, "", {}
+
+        if min_profit_pct is None:
+            try:
+                min_profit_pct = float(os.getenv("WILD_SWING_PIVOT_MIN_PROFIT_PCT", "0.003"))
+            except (TypeError, ValueError):
+                min_profit_pct = 0.003
+
+        k0 = bars.iloc[-1]
+        k2 = bars.iloc[-3]
+
+        try:
+            current_price = float(k0["close"])
+            k1_open = float(k1["open"])
+            k1_close = float(k1["close"])
+            k1_high = float(k1["high"])
+            k1_low = float(k1["low"])
+            k0_high = float(k0["high"])
+            k0_low = float(k0["low"])
+            k2_high = float(k2["high"])
+            k2_low = float(k2["low"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "", {}
+
+        # --- 1. 多單持倉：偵測「真頂/真峰 (Pivot Peak)」---
+        if side == "LONG":
+            profit_ratio = (current_price - entry_price) / entry_price
+            if profit_ratio < min_profit_pct:
+                return False, "", {}
+
+            # 真峰條件：
+            # 1. k1 的高點高於 k2 與 k0 的高點（形成 3 根局部高點）
+            # 2. k0 收盤跌破 k1 的中點或最低點（確認反轉）
+            is_pivot_high = (k1_high > k2_high) and (k1_high > k0_high)
+            is_break_k1_low = (
+                current_price < k1_low
+                or current_price < (k1_open + k1_close) / 2
+            )
+
+            if is_pivot_high and is_break_k1_low:
+                return True, "EXIT_BY_PIVOT_PEAK", {
+                    "pivot_bar_id": k1_bar_id,
+                    "pivot_price": k1_high,
+                    "broken_structure_level": k1_low,
+                    "profit_ratio": profit_ratio,
+                }
+
+        # --- 2. 空單持倉：偵測「真谷/真底 (Pivot Valley)」---
+        elif side == "SHORT":
+            profit_ratio = (entry_price - current_price) / entry_price
+            if profit_ratio < min_profit_pct:
+                return False, "", {}
+
+            # 真谷條件：
+            # 1. k1 的低點低於 k2 與 k0 的低點（形成 3 根局部低點）
+            # 2. k0 收盤突破 k1 的中點或最高點（確認反轉）
+            is_pivot_low = (k1_low < k2_low) and (k1_low < k0_low)
+            is_break_k1_high = (
+                current_price > k1_high
+                or current_price > (k1_open + k1_close) / 2
+            )
+
+            if is_pivot_low and is_break_k1_high:
+                return True, "EXIT_BY_PIVOT_VALLEY", {
+                    "pivot_bar_id": k1_bar_id,
+                    "pivot_price": k1_low,
+                    "broken_structure_level": k1_high,
+                    "profit_ratio": profit_ratio,
+                }
+
+        return False, "", {}
 
     @classmethod
     def _true_pivot_volume_divergence_exit(
