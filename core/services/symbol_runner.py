@@ -80,7 +80,10 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
-    from core.vision.chart_guard import DynamicVisionGatekeeper, evaluate_breakout_vision
+    from core.vision.chart_guard import (
+        DynamicVisionGatekeeper,
+        evaluate_qwen_entry_vision,
+    )
 
     vision_gate = getattr(engine, "_wild_swing_vision_gate", None)
     if vision_gate is None:
@@ -117,29 +120,96 @@ async def _process_wild_swing_symbol(
     attempted_bar_ids[symbol] = latest_closed_bar_id
 
     current_bar = closed.iloc[-1]
+    from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+
+    macro_fields = (
+        "open", "high", "low", "close", "kc_upper", "kc_lower",
+        "kc_middle", "ma15", "atr",
+    )
+    missing_macro_fields = [field for field in macro_fields if field not in current_bar]
+    if missing_macro_fields:
+        macro_allowed = False
+        macro_reason = (
+            "VETO_INVALID_MARKET_DATA: missing "
+            + ",".join(missing_macro_fields)
+        )
+    else:
+        try:
+            macro_bar = {
+                field: float(current_bar[field])
+                for field in ("open", "high", "low", "close")
+            }
+            macro_indicators = {
+                field: float(current_bar[field])
+                for field in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
+            }
+        except (TypeError, ValueError, OverflowError):
+            macro_allowed = False
+            macro_reason = "VETO_INVALID_MARKET_DATA: non-numeric structure"
+        else:
+            values = tuple(macro_bar.values()) + tuple(macro_indicators.values())
+            if (
+                not all(math.isfinite(value) for value in values)
+                or macro_indicators["atr"] <= 0
+                or macro_indicators["kc_upper"] <= macro_indicators["kc_lower"]
+            ):
+                macro_allowed = False
+                macro_reason = "VETO_INVALID_MARKET_DATA: invalid KC/ATR values"
+            else:
+                macro_allowed, macro_reason = MacroCandleStructureGate().can_open(
+                    signal["side"],
+                    macro_bar,
+                    macro_indicators,
+                    entry_pattern=signal.get("entry_pattern"),
+                    structure_confirmation=signal.get("structure_confirmation"),
+                    structure_confirmed=signal.get("structure_confirmed") is True,
+                    channel_expanding=signal.get("channel_expanding") is True,
+                )
+    if not macro_allowed:
+        logger.info(
+            "【GATE 拒絕】symbol=%s side=%s pattern=%s bar=%s signal=%s reason=%s",
+            symbol, signal["side"], signal["entry_pattern"],
+            latest_closed_bar_id, signal["reason"], macro_reason,
+        )
+        return [], []
+    logger.info(
+        "【GATE 通過: %s】symbol=%s side=%s bar=%s",
+        signal["entry_pattern"], symbol, signal["side"], latest_closed_bar_id,
+    )
+
     can_submit, gate_reason = vision_gate.can_submit_for_vision(
         symbol, current_bar, signal["side"],
     )
     if not can_submit:
         logger.info(
-            "WILD_SWING_VISION_SKIPPED %s %s bar=%s reason=%s",
-            symbol, signal["side"], latest_closed_bar_id, gate_reason,
+            "WILD_SWING_VISION_SKIPPED %s %s mode=%s bar=%s reason=%s",
+            symbol, signal["side"], signal["entry_pattern"],
+            latest_closed_bar_id, gate_reason,
         )
         return [], []
 
-    approved, vision_reason = await evaluate_breakout_vision(
-        closed, signal["side"], mode=signal["reason"],
+    logger.info(
+        "【送審 AI 截圖...】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s",
+        symbol, signal["side"], signal["entry_pattern"], latest_closed_bar_id,
+    )
+    approved, vision_reason = await evaluate_qwen_entry_vision(
+        closed, signal["side"], mode=signal["entry_pattern"],
+    )
+    ai_status = "APPROVED" if approved else "REJECTED"
+    logger.info(
+        "【AI 審查結果: %s】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s reason=%s",
+        ai_status, symbol, signal["side"], signal["entry_pattern"],
+        latest_closed_bar_id, vision_reason,
     )
     if not approved:
         vision_gate.record_rejection(symbol, current_bar, signal["side"])
         logger.info(
-            "WILD_SWING_VISION_VETO %s %s mode=%s bar=%s reason=%s",
-            symbol, signal["side"], signal["reason"], latest_closed_bar_id,
-            vision_reason,
+            "【執行取消】symbol=%s side=%s pattern=%s bar=%s reason=%s",
+            symbol, signal["side"], signal["entry_pattern"],
+            latest_closed_bar_id, vision_reason,
         )
         return [], []
     vision_gate.record_approved(symbol)
-
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
         frame=closed,
@@ -148,6 +218,11 @@ async def _process_wild_swing_symbol(
         mode_name=f"WILD_SWING_{signal['reason']}",
         meta_dict=signal,
         entry_mode="WILD_SWING",
+    )
+    logger.info(
+        "【執行下單】symbol=%s side=%s pattern=%s bar=%s result=%s",
+        symbol, signal["side"], signal["entry_pattern"],
+        latest_closed_bar_id, "FILLED" if opened else "REJECTED",
     )
     if opened and symbol in engine.account.positions:
         strategy.record_entry_fill(symbol, signal["bar_id"])

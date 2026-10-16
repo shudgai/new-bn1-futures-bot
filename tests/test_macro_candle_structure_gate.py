@@ -6,91 +6,158 @@ def test_gate_export():
     assert MacroCandleStructureGate is ExportedGate
 
 def test_long_vetoed_when_kc_position_too_high():
-    gate = MacroCandleStructureGate(kc_pos_long_max=0.35)
-    # kc_upper = 110, kc_lower = 90 (range = 20)
-    # close = 100 -> kc_pos = (100 - 90) / 20 = 0.50 > 0.35
-    bar = {'open': 99.0, 'close': 100.0, 'high': 100.5, 'low': 98.8, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 99.5, 'atr': 2.0}
-    
-    can_open, reason = gate.can_open('LONG', bar, indicators)
+    gate = MacroCandleStructureGate()
+    bar = {'open': 105.0, 'close': 106.0, 'high': 106.2, 'low': 104.8}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 106.0, 'atr': 2.0}
+
+    can_open, reason = gate.can_open(
+        'LONG', bar, indicators, entry_pattern="CROSSOVER",
+        structure_confirmed=True,
+        structure_confirmation="MA5_MA15_1M_CROSS",
+    )
     assert can_open is False
-    assert "VETO_LONG: 價格位於通道偏高處" in reason
+    assert "VETO_CROSSOVER_LONG" in reason
 
 def test_long_vetoed_when_bias_too_large():
-    gate = MacroCandleStructureGate(kc_pos_long_max=0.35, max_bias_atr=1.2)
-    # close = 92, kc_lower = 90, kc_upper = 110 -> kc_pos = 2/20 = 0.10 <= 0.35
-    # ma15 = 96, close = 92 -> abs(close - ma15) = 4.0. If atr = 2.0, bias = 4.0 / 2.0 = 2.0 > 1.2
-    bar = {'open': 91.5, 'close': 92.0, 'high': 92.2, 'low': 91.0, 'volume': 100}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 110.0, 'close': 112.0, 'high': 112.2, 'low': 109.8}
     indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 96.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('LONG', bar, indicators)
+    can_open, reason = gate.can_open(
+        'LONG', bar, indicators, entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
     assert can_open is False
     assert "VETO_LONG: 乖離過大" in reason
 
 def test_long_vetoed_when_upper_wick_rejection():
-    gate = MacroCandleStructureGate(kc_pos_long_max=0.35, max_bias_atr=1.2)
-    # close = 92.0, open = 91.8 (body = 0.2), high = 93.0 (upper_wick = 93.0 - 92.0 = 1.0 > 0.2)
-    bar = {'open': 91.8, 'close': 92.0, 'high': 93.0, 'low': 91.7, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 92.5, 'atr': 2.0}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 99.8, 'close': 100.0, 'high': 101.0, 'low': 99.5}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('LONG', bar, indicators)
+    can_open, reason = gate.can_open(
+        'LONG', bar, indicators, entry_pattern="CROSSOVER",
+        structure_confirmed=True,
+        structure_confirmation="MA5_MA15_1M_CROSS",
+    )
     assert can_open is False
     assert "VETO_LONG: K 棒受阻留長上影線" in reason
 
 def test_long_passed_when_all_conditions_met():
-    gate = MacroCandleStructureGate(kc_pos_long_max=0.35, max_bias_atr=1.2)
-    # close = 93.0, open = 91.5 (body = 1.5), high = 93.3 (upper_wick = 0.3 < 1.5), low = 91.4
-    # kc_range = 20, kc_pos = 3/20 = 0.15 <= 0.35
-    # ma15 = 93.5, diff = 0.5, atr = 2.0 -> bias = 0.25 <= 1.2
-    bar = {'open': 91.5, 'close': 93.0, 'high': 93.3, 'low': 91.4, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 93.5, 'atr': 2.0}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 99.0, 'close': 100.0, 'high': 100.3, 'low': 98.8}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('LONG', bar, indicators)
+    can_open, reason = gate.can_open(
+        'LONG', bar, indicators, entry_pattern="CONTINUATION",
+    )
+    assert can_open is True
+    assert reason == "PASSED_MACRO_LONG_GATE"
+
+@pytest.mark.parametrize("kc_pos", [0.35, 0.50, 0.65])
+def test_long_mid_channel_pullback_positions_pass(kc_pos):
+    gate = MacroCandleStructureGate()
+    close = 90.0 + kc_pos * 20.0
+    bar = {
+        'open': close - 0.2, 'close': close, 'high': close + 0.1,
+        'low': close - 0.3, 'volume': 100,
+    }
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': close, 'atr': 2.0,
+    }
+
+    can_open, reason = gate.can_open(
+        'LONG', bar, indicators, entry_pattern="CONTINUATION",
+    )
+
     assert can_open is True
     assert reason == "PASSED_MACRO_LONG_GATE"
 
 def test_short_vetoed_when_kc_position_too_low():
-    gate = MacroCandleStructureGate(kc_pos_short_min=0.65)
+    gate = MacroCandleStructureGate()
     # kc_upper = 110, kc_lower = 90 (range = 20)
-    # close = 98 -> kc_pos = (98 - 90) / 20 = 0.40 < 0.65 (floor short chasing)
-    bar = {'open': 99.0, 'close': 98.0, 'high': 99.2, 'low': 97.8, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 99.0, 'atr': 2.0}
+    # close = 96 -> kc_pos = (96 - 90) / 20 = 0.30 < 0.35 (floor short chasing)
+    bar = {'open': 97.0, 'close': 96.0, 'high': 97.2, 'low': 95.8, 'volume': 100}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 96.5, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('SHORT', bar, indicators)
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="CROSSOVER",
+        structure_confirmed=True,
+        structure_confirmation="MA5_MA15_1M_CROSS",
+    )
     assert can_open is False
-    assert "VETO_SHORT: 價格已跌入通道底部" in reason
+    assert "VETO_CROSSOVER_SHORT: KC_Pos" in reason
+
+@pytest.mark.parametrize("kc_pos", [0.35, 0.50, 0.65])
+def test_short_mid_channel_pullback_positions_pass(kc_pos):
+    gate = MacroCandleStructureGate()
+    close = 90.0 + kc_pos * 20.0
+    bar = {
+        'open': close + 0.2, 'close': close, 'high': close + 0.3,
+        'low': close - 0.1, 'volume': 100,
+    }
+    indicators = {
+        'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0,
+        'ma15': close, 'atr': 2.0,
+    }
+
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="CONTINUATION",
+    )
+
+    assert can_open is True
+    assert reason == "PASSED_MACRO_SHORT_GATE"
 
 def test_short_vetoed_when_bias_too_large():
-    gate = MacroCandleStructureGate(kc_pos_short_min=0.65, max_bias_atr=1.2)
-    # close = 108, kc_range = 20 -> kc_pos = 18/20 = 0.90 >= 0.65
-    # ma15 = 104, diff = 4.0, atr = 2.0 -> bias = 2.0 > 1.2
-    bar = {'open': 108.5, 'close': 108.0, 'high': 108.8, 'low': 107.8, 'volume': 100}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 90.0, 'close': 89.0, 'high': 90.2, 'low': 88.8}
     indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 104.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('SHORT', bar, indicators)
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="BREAKOUT",
+        channel_expanding=True,
+        structure_confirmation="KC_OUTER_BREAKOUT",
+    )
     assert can_open is False
     assert "VETO_SHORT: 乖離過大" in reason
 
 def test_short_vetoed_when_lower_wick_exhaustion():
-    gate = MacroCandleStructureGate(kc_pos_short_min=0.65, max_bias_atr=1.2)
-    # close = 107.0, open = 107.2 (body = 0.2), low = 105.8 (lower_wick = 107.0 - 105.8 = 1.2 > 0.2)
-    # high = 107.3
-    bar = {'open': 107.2, 'close': 107.0, 'high': 107.3, 'low': 105.8, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 107.5, 'atr': 2.0}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 100.2, 'close': 100.0, 'high': 100.3, 'low': 98.5}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('SHORT', bar, indicators)
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="CROSSOVER",
+        structure_confirmed=True,
+        structure_confirmation="MA5_MA15_1M_CROSS",
+    )
     assert can_open is False
-    assert "VETO_SHORT: K 棒見底留長下影線" in reason
+    assert "VETO_SHORT: 陰線下影線結構力竭" in reason
+
+def test_short_bullish_candle_is_not_rejected_by_bearish_wick_rule():
+    gate = MacroCandleStructureGate()
+    bar = {'open': 99.8, 'close': 100.0, 'high': 100.3, 'low': 98.5}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
+
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="CROSSOVER",
+        structure_confirmed=True,
+        structure_confirmation="MA5_MA15_1M_CROSS",
+    )
+
+    assert can_open is True
+    assert reason == "PASSED_MACRO_SHORT_GATE"
 
 def test_short_passed_when_all_conditions_met():
-    gate = MacroCandleStructureGate(kc_pos_short_min=0.65, max_bias_atr=1.2)
-    # close = 106.0, open = 107.5 (body = 1.5), high = 107.7, low = 105.7 (lower_wick = 0.3 < 1.5)
-    # kc_range = 20, kc_pos = 16/20 = 0.80 >= 0.65
-    # ma15 = 106.5, diff = 0.5, atr = 2.0 -> bias = 0.25 <= 1.2
-    bar = {'open': 107.5, 'close': 106.0, 'high': 107.7, 'low': 105.7, 'volume': 100}
-    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 106.5, 'atr': 2.0}
+    gate = MacroCandleStructureGate(max_bias_atr=1.2)
+    bar = {'open': 101.0, 'close': 100.0, 'high': 101.2, 'low': 99.8}
+    indicators = {'kc_upper': 110.0, 'kc_lower': 90.0, 'kc_middle': 100.0, 'ma15': 100.0, 'atr': 2.0}
 
-    can_open, reason = gate.can_open('SHORT', bar, indicators)
+    can_open, reason = gate.can_open(
+        'SHORT', bar, indicators, entry_pattern="CONTINUATION",
+    )
     assert can_open is True
     assert reason == "PASSED_MACRO_SHORT_GATE"
 
@@ -98,6 +165,196 @@ def test_unknown_side():
     gate = MacroCandleStructureGate()
     bar = {'open': 100, 'close': 100, 'high': 101, 'low': 99}
     indicators = {'kc_upper': 110, 'kc_lower': 90, 'kc_middle': 100, 'ma15': 100, 'atr': 1}
-    can_open, reason = gate.can_open('INVALID', bar, indicators)
+    can_open, reason = gate.can_open(
+        'INVALID', bar, indicators, entry_pattern="CONTINUATION",
+    )
     assert can_open is False
     assert reason == "UNKNOWN_SIDE"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize(
+    "mode,bar,indicators,extra",
+    [
+        (
+            "BREAKOUT",
+            {"open": 109.0, "high": 111.2, "low": 108.8, "close": 111.0},
+            {"kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0, "ma15": 110.5, "atr": 2.0},
+            {
+                "channel_expanding": True,
+                "structure_confirmation": "KC_OUTER_BREAKOUT",
+            },
+        ),
+        (
+            "CONTINUATION",
+            {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0},
+            {"kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0, "ma15": 100.0, "atr": 2.0},
+            {},
+        ),
+        (
+            "CROSSOVER",
+            {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0},
+            {"kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0, "ma15": 100.0, "atr": 2.0},
+            {
+                "structure_confirmed": True,
+                "structure_confirmation": "MA5_MA15_1M_CROSS",
+            },
+        ),
+        (
+            "REVERSAL",
+            {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0},
+            {"kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0, "ma15": 100.0, "atr": 2.0},
+            {
+                "structure_confirmed": True,
+                "structure_confirmation": "CONFIRMED_KC_OUTER_PEAK_VALLEY",
+            },
+        ),
+    ],
+)
+def test_each_entry_mode_uses_its_structure_gate(side, mode, bar, indicators, extra):
+    if side == "SHORT":
+        if mode == "BREAKOUT":
+            bar = {"open": 91.0, "high": 91.2, "low": 88.8, "close": 89.0}
+            indicators = {
+                "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+                "ma15": 89.5, "atr": 2.0,
+            }
+        else:
+            bar = {"open": 101.0, "high": 101.1, "low": 99.9, "close": 100.0}
+
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side, bar, indicators, entry_pattern=mode, **extra,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+@pytest.mark.parametrize(
+    "mode,extra,reason",
+    [
+        ("BREAKOUT", {}, "VETO_BREAKOUT: KC 通道未擴張或缺少有效破軌確認"),
+        ("CROSSOVER", {}, "VETO_CROSSOVER: 缺少已確認的 1M 交叉或 5M 均線收斂"),
+        ("REVERSAL", {}, "VETO_REVERSAL: 缺少峰谷背離或長針力竭確認"),
+        ("NOT_A_MODE", {}, "REJECT_UNAUTHORIZED_ENTRY_PATTERN"),
+    ],
+)
+def test_mode_gate_fails_closed_without_required_metadata(mode, extra, reason):
+    bar = {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0}
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0,
+    }
+
+    allowed, actual_reason = MacroCandleStructureGate().can_open(
+        "LONG", bar, indicators, entry_pattern=mode, **extra,
+    )
+
+    assert allowed is False
+    assert actual_reason == reason
+
+
+@pytest.mark.parametrize(
+    "side,bar,ma15",
+    [
+        ("LONG", {"open": 111.0, "high": 112.1, "low": 110.9, "close": 112.0}, 111.5),
+        ("SHORT", {"open": 89.0, "high": 89.1, "low": 87.9, "close": 88.0}, 88.5),
+    ],
+)
+def test_continuation_mode_allows_strong_outer_band_zone(side, bar, ma15):
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": ma15, "atr": 2.0,
+    }
+
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side, bar, indicators, entry_pattern="CONTINUATION",
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+def test_crossover_gate_accepts_confirmed_five_minute_ma_convergence():
+    bar = {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0}
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0,
+    }
+
+    allowed, reason = MacroCandleStructureGate().can_open(
+        "LONG",
+        bar,
+        indicators,
+        entry_pattern="CROSSOVER",
+        structure_confirmation="MA5_MA15_5M_CONVERGENCE",
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == "PASSED_MACRO_LONG_GATE"
+
+
+@pytest.mark.parametrize(
+    "side,bar",
+    [
+        ("LONG", {"open": 99.8, "high": 100.1, "low": 98.0, "close": 100.0}),
+        ("SHORT", {"open": 100.2, "high": 102.0, "low": 99.9, "close": 100.0}),
+    ],
+)
+def test_reversal_gate_requires_directional_exhaustion_pinbar(side, bar):
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0,
+    }
+
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern="REVERSAL",
+        structure_confirmation="PINBAR_EXHAUSTION_TURN",
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+def test_gate_fails_closed_for_missing_or_non_finite_structure_values():
+    gate = MacroCandleStructureGate()
+    bar = {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0}
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0,
+    }
+
+    assert gate.can_open(
+        "LONG", bar, {**indicators, "atr": float("nan")},
+        entry_pattern="CONTINUATION",
+    ) == (
+        False, "VETO_INVALID_STRUCTURE_DATA",
+    )
+    assert gate.can_open(
+        "LONG", bar, {key: value for key, value in indicators.items() if key != "atr"},
+        entry_pattern="CONTINUATION",
+    ) == (
+        False, "VETO_INVALID_STRUCTURE_DATA",
+    )
+
+
+def test_gate_rejects_missing_or_conflicting_entry_pattern():
+    bar = {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0}
+    indicators = {
+        "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
+        "ma15": 100.0, "atr": 2.0,
+    }
+    gate = MacroCandleStructureGate()
+
+    assert gate.can_open("LONG", bar, indicators) == (
+        False, "REJECT_UNAUTHORIZED_ENTRY_PATTERN",
+    )
+    assert gate.can_open(
+        "LONG", bar, indicators, entry_pattern="BREAKOUT",
+        entry_signal_mode="CONTINUATION",
+    ) == (False, "REJECT_UNAUTHORIZED_ENTRY_PATTERN")

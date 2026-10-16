@@ -4,13 +4,29 @@ MacroCandleStructureGate
 在開倉前進行強制結構性審查。
 """
 
-class MacroCandleStructureGate:
-    def __init__(self, kc_pos_long_max: float = 0.35, kc_pos_short_min: float = 0.65, max_bias_atr: float = 1.2):
-        self.kc_pos_long_max = kc_pos_long_max    # 多單最高允許位置 (通道下 35%)
-        self.kc_pos_short_min = kc_pos_short_min  # 空單最低允許位置 (通道上 65%)
-        self.max_bias_atr = max_bias_atr          # 最大允許乖離倍數
+import math
+from typing import Optional
 
-    def can_open(self, side: str, closed_bar: dict, indicators: dict) -> tuple[bool, str]:
+from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
+
+
+class MacroCandleStructureGate:
+    def __init__(self, max_bias_atr: float = 1.2):
+        self.max_bias_atr = max_bias_atr
+
+    def can_open(
+        self,
+        side: str,
+        closed_bar: dict,
+        indicators: dict,
+        *,
+        entry_pattern: Optional[str] = None,
+        entry_signal_mode: Optional[str] = None,
+        entry_mode: Optional[str] = None,
+        structure_confirmation: Optional[str] = None,
+        structure_confirmed: bool = False,
+        channel_expanding: bool = False,
+    ) -> tuple[bool, str]:
         """
         AI 開倉前置審查接口
         :param side: 'LONG' 或 'SHORT'
@@ -18,15 +34,47 @@ class MacroCandleStructureGate:
         :param indicators: 指標字典 (kc_upper, kc_lower, kc_middle, ma15, atr)
         :return: (is_allowed: bool, reason: str)
         """
-        close = float(closed_bar['close'])
-        open_price = float(closed_bar['open'])
-        high = float(closed_bar['high'])
-        low = float(closed_bar['low'])
+        supplied_pattern = (
+            entry_pattern
+            if entry_pattern is not None
+            else entry_signal_mode
+            if entry_signal_mode is not None
+            else entry_mode
+        )
+        pattern_allowed, pattern_reason = (
+            EntryPatternPermittedGate.check_pattern(supplied_pattern)
+        )
+        if not pattern_allowed:
+            return False, pattern_reason
+        if (
+            entry_pattern is not None
+            and entry_signal_mode is not None
+            and EntryPatternPermittedGate.normalize(entry_pattern)
+            != EntryPatternPermittedGate.normalize(entry_signal_mode)
+        ):
+            return False, "REJECT_UNAUTHORIZED_ENTRY_PATTERN"
+        mode = EntryPatternPermittedGate.normalize(
+            supplied_pattern
+        )
 
-        kc_upper = float(indicators['kc_upper'])
-        kc_lower = float(indicators['kc_lower'])
-        ma15 = float(indicators['ma15'])
-        atr = float(indicators.get('atr', 1e-8))
+        required_bar = ("open", "high", "low", "close")
+        required_indicators = ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
+        if any(field not in closed_bar for field in required_bar) or any(
+            field not in indicators for field in required_indicators
+        ):
+            return False, "VETO_INVALID_STRUCTURE_DATA"
+        try:
+            close = float(closed_bar['close'])
+            open_price = float(closed_bar['open'])
+            high = float(closed_bar['high'])
+            low = float(closed_bar['low'])
+            kc_upper = float(indicators['kc_upper'])
+            kc_lower = float(indicators['kc_lower'])
+            kc_middle = float(indicators['kc_middle'])
+            ma15 = float(indicators['ma15'])
+            atr = float(indicators['atr'])
+        except (TypeError, ValueError, OverflowError):
+            return False, "VETO_INVALID_STRUCTURE_DATA"
 
         # 1. 計算通道相對位置百分比 (0.0 = 下軌, 1.0 = 上軌)
         kc_range = kc_upper - kc_lower
@@ -39,21 +87,81 @@ class MacroCandleStructureGate:
         body = abs(close - open_price)
         upper_wick = high - max(open_price, close)
         lower_wick = min(open_price, close) - low
+        candle_range = high - low
+        values = (
+            close, open_price, high, low, kc_upper, kc_lower,
+            kc_middle, ma15, atr,
+        )
+        if (
+            not all(math.isfinite(value) for value in values)
+            or kc_range <= 0
+            or atr <= 0
+            or candle_range <= 0
+            or high < max(open_price, close, low)
+            or low > min(open_price, close, high)
+        ):
+            return False, "VETO_INVALID_STRUCTURE_DATA"
+
+        confirmation = str(structure_confirmation or "").upper()
+        if mode == "BREAKOUT" and (
+            not channel_expanding or confirmation != "KC_OUTER_BREAKOUT"
+        ):
+            return False, "VETO_BREAKOUT: KC 通道未擴張或缺少有效破軌確認"
+        if mode == "CROSSOVER" and (
+            not structure_confirmed
+            or confirmation not in {
+                "MA5_MA15_1M_CROSS",
+                "MA5_MA15_5M_CONVERGENCE",
+            }
+        ):
+            return False, "VETO_CROSSOVER: 缺少已確認的 1M 交叉或 5M 均線收斂"
+        if mode == "REVERSAL" and (
+            not structure_confirmed
+            or confirmation not in {
+                "CONFIRMED_KC_OUTER_PEAK_VALLEY",
+                "TOP_BOTTOM_DIVERGENCE",
+                "PINBAR_EXHAUSTION_TURN",
+            }
+        ):
+            return False, "VETO_REVERSAL: 缺少峰谷背離或長針力竭確認"
 
         # =====================================================================
         # 多單審查（買多）
         # =====================================================================
         if side == 'LONG':
-            # 規則 1：通道位置不可追高
-            if kc_pos > self.kc_pos_long_max:
-                return False, f"VETO_LONG: 價格位於通道偏高處 (KC_Pos: {kc_pos:.2f} > {self.kc_pos_long_max})，嚴禁追多"
-
+            if mode == "BREAKOUT":
+                if close <= kc_upper:
+                    return False, "VETO_BREAKOUT_LONG: 收盤未有效突破 KC 上軌"
+            elif mode == "CONTINUATION":
+                if kc_pos < 0.35:
+                    return False, f"VETO_CONTINUATION_LONG: KC_Pos {kc_pos:.2f} 低於回踩區"
+            elif mode == "CROSSOVER":
+                if not 0.35 <= kc_pos <= 0.65:
+                    return False, f"VETO_CROSSOVER_LONG: KC_Pos {kc_pos:.2f} 不在中軌區"
             # 規則 2：不可在超買過度延伸時進場
             if bias_atr > self.max_bias_atr:
                 return False, f"VETO_LONG: 乖離過大 (Bias: {bias_atr:.2f}x ATR)，嚴禁追多"
 
             # 規則 3：頂部遇阻上影線不可做多
-            if upper_wick > body and close < high:
+            pinbar_reversal = (
+                mode == "REVERSAL"
+                and confirmation == "PINBAR_EXHAUSTION_TURN"
+            )
+            if pinbar_reversal and not (
+                lower_wick > body * 1.5
+                or (candle_range > 0 and lower_wick / candle_range > 0.40)
+            ):
+                return False, "VETO_REVERSAL_LONG: 谷底長下影線未確認"
+            if (
+                not pinbar_reversal
+                and upper_wick > body
+                and close < high
+            ) or (
+                mode in {"CROSSOVER", "REVERSAL"}
+                and not pinbar_reversal
+                and candle_range > 0
+                and upper_wick / candle_range > 0.40
+            ):
                 return False, "VETO_LONG: K 棒受阻留長上影線，禁止開多"
 
             return True, "PASSED_MACRO_LONG_GATE"
@@ -62,17 +170,35 @@ class MacroCandleStructureGate:
         # 空單審查（賣空）
         # =====================================================================
         elif side == 'SHORT':
-            # 規則 1：通道位置不可在地板追空
-            if kc_pos < self.kc_pos_short_min:
-                return False, f"VETO_SHORT: 價格已跌入通道底部 (KC_Pos: {kc_pos:.2f} < {self.kc_pos_short_min})，嚴禁地板追空"
-
+            if mode == "BREAKOUT":
+                if close >= kc_lower:
+                    return False, "VETO_BREAKOUT_SHORT: 收盤未有效跌破 KC 下軌"
+            elif mode == "CONTINUATION":
+                if kc_pos > 0.65:
+                    return False, f"VETO_CONTINUATION_SHORT: KC_Pos {kc_pos:.2f} 高於回踩區"
+            elif mode == "CROSSOVER":
+                if not 0.35 <= kc_pos <= 0.65:
+                    return False, f"VETO_CROSSOVER_SHORT: KC_Pos {kc_pos:.2f} 不在中軌區"
             # 規則 2：不可在超跌過度延伸時追空
             if bias_atr > self.max_bias_atr:
                 return False, f"VETO_SHORT: 乖離過大 (Bias: {bias_atr:.2f}x ATR)，嚴禁追空"
 
-            # 規則 3：底部爆量長下影線不可追空
-            if lower_wick > body and close > low:
-                return False, "VETO_SHORT: K 棒見底留長下影線，禁止追空"
+            pinbar_reversal = (
+                mode == "REVERSAL"
+                and confirmation == "PINBAR_EXHAUSTION_TURN"
+            )
+            if pinbar_reversal and not (
+                upper_wick > body * 1.5
+                or (candle_range > 0 and upper_wick / candle_range > 0.40)
+            ):
+                return False, "VETO_REVERSAL_SHORT: 頂部長上影線未確認"
+            if close < open_price and candle_range > 0:
+                wick_ratio = lower_wick / candle_range
+                if wick_ratio > 0.40 or (
+                    mode in {"CROSSOVER", "REVERSAL"}
+                    and lower_wick > body
+                ):
+                    return False, "VETO_SHORT: 陰線下影線結構力竭，禁止追空"
 
             return True, "PASSED_MACRO_SHORT_GATE"
 

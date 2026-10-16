@@ -6,7 +6,15 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
 from core.services.candle_data import closed_entry_candles
+
+
+ENTRY_MODE_BREAKOUT = "BREAKOUT"
+ENTRY_MODE_CONTINUATION = "CONTINUATION"
+ENTRY_MODE_CROSSOVER = "CROSSOVER"
+ENTRY_MODE_REVERSAL = "REVERSAL"
+WILD_SWING_ENTRY_MODES = PERMITTED_ENTRY_PATTERNS
 
 
 @dataclass
@@ -18,11 +26,15 @@ class WildSwingSymbolState:
     last_exit_bar_id: Optional[float] = None
     last_processed_bar_id: Optional[float] = None
     reset_bar_id: Optional[float] = None
+    pending_short_wick_bar_id: Optional[float] = None
+    pending_short_wick_low: Optional[float] = None
     veto_flags: set[str] = field(default_factory=set)
 
 
 class WildSwingStrategy:
     """Evaluate one-minute swing signals without consuming intrabar candles."""
+
+    ENTRY_MODES = WILD_SWING_ENTRY_MODES
 
     def __init__(self, volume_lookback: int = 10, climax_volume_multiple: float = 2.5):
         if volume_lookback < 1 or climax_volume_multiple <= 0:
@@ -69,21 +81,24 @@ class WildSwingStrategy:
         if frame is None or frame.empty:
             return pd.DataFrame()
         closed = closed_entry_candles(frame)
-        required = {"open", "high", "low", "close", "volume"}
+        required = {
+            "open", "high", "low", "close", "volume",
+            "kc_upper", "kc_middle", "kc_lower", "ma5", "ma15",
+        }
         if not required.issubset(closed.columns):
-            return pd.DataFrame()
-        if not {"kc_middle", "ma15"}.issubset(closed.columns):
-            return pd.DataFrame()
-        if "ma5" not in closed.columns:
             return pd.DataFrame()
         closed = closed.copy()
         closed["_wild_ma5"] = pd.to_numeric(closed["ma5"], errors="coerce")
         for column in (
-            "open", "high", "low", "close", "volume", "kc_middle", "ma15",
+            "open", "high", "low", "close", "volume",
+            "kc_upper", "kc_middle", "kc_lower", "ma15",
         ):
             closed[column] = pd.to_numeric(closed[column], errors="coerce")
         closed = closed.dropna(
-            subset=["open", "high", "low", "close", "volume", "kc_middle", "ma15", "_wild_ma5"],
+            subset=[
+                "open", "high", "low", "close", "volume", "kc_upper",
+                "kc_middle", "kc_lower", "ma15", "_wild_ma5",
+            ],
         )
         if closed.empty:
             return closed
@@ -93,6 +108,7 @@ class WildSwingStrategy:
             & (closed["low"] > 0)
             & (closed["close"] > 0)
             & (closed["volume"] >= 0)
+            & (closed["kc_upper"] > closed["kc_lower"])
             & (closed["kc_middle"] > 0)
             & (closed["ma15"] > 0)
             & (closed["_wild_ma5"] > 0)
@@ -131,6 +147,10 @@ class WildSwingStrategy:
         prev_ma15 = float(previous["ma15"])
         prev_ma5 = float(previous["_wild_ma5"])
 
+        channel_width = float(current["kc_upper"] - current["kc_lower"])
+        previous_channel_width = float(previous["kc_upper"] - previous["kc_lower"])
+        channel_expanding = channel_width > previous_channel_width
+
         if side == "SHORT":
             trend = middle < prev_middle and ma15 < prev_ma15
             below_baseline = close < middle and close < ma15
@@ -143,6 +163,16 @@ class WildSwingStrategy:
             )
             broke_previous_low = close < float(previous["low"])
             pullback_reversal = self._pullback_reversal(bars, "SHORT", middle, ma15)
+            breakout = (
+                close < float(current["kc_lower"])
+                and prev_close >= float(previous["kc_lower"])
+                and directional_bar
+                and middle < prev_middle
+                and ma15 < prev_ma15
+                and float(current["kc_lower"]) < float(previous["kc_lower"])
+                and channel_expanding
+            )
+            reversal = self._confirmed_pivot_reversal(bars, "SHORT")
         else:
             trend = middle > prev_middle and ma15 > prev_ma15
             above_baseline = close > middle and close > ma15
@@ -156,24 +186,148 @@ class WildSwingStrategy:
             broke_previous_high = close > float(previous["high"])
             pullback_reversal = self._pullback_reversal(bars, "LONG", middle, ma15)
 
-        location = below_baseline if side == "SHORT" else above_baseline
-        if not (trend and location and directional_bar):
+            breakout = (
+                close > float(current["kc_upper"])
+                and prev_close <= float(previous["kc_upper"])
+                and directional_bar
+                and middle > prev_middle
+                and ma15 > prev_ma15
+                and float(current["kc_upper"]) > float(previous["kc_upper"])
+                and channel_expanding
+            )
+            reversal = self._confirmed_pivot_reversal(bars, "LONG")
+
+        if reversal:
+            signal_mode = ENTRY_MODE_REVERSAL
+        elif breakout:
+            signal_mode = ENTRY_MODE_BREAKOUT
+        else:
+            location = below_baseline if side == "SHORT" else above_baseline
+            if not (trend and location and directional_bar):
+                return None
+
+            if side == "SHORT":
+                continuation = broke_previous_low or pullback_reversal
+            else:
+                continuation = broke_previous_high or pullback_reversal
+            if crossed_baseline:
+                signal_mode = ENTRY_MODE_CROSSOVER
+            elif continuation:
+                signal_mode = ENTRY_MODE_CONTINUATION
+            else:
+                return None
+
+        if signal_mode in (ENTRY_MODE_CROSSOVER, ENTRY_MODE_CONTINUATION):
+            location = below_baseline if side == "SHORT" else above_baseline
+            if not (trend and location and directional_bar):
+                return None
+
+        if signal_mode == ENTRY_MODE_CROSSOVER and not crossed_baseline:
+            return None
+        if signal_mode == ENTRY_MODE_CONTINUATION and not (
+            (broke_previous_low or pullback_reversal)
+            if side == "SHORT"
+            else (broke_previous_high or pullback_reversal)
+        ):
             return None
 
         if side == "SHORT":
-            continuation = broke_previous_low or pullback_reversal
-        else:
-            continuation = broke_previous_high or pullback_reversal
-        if not crossed_baseline and not continuation:
-            return None
+            pending_bar_id = state.pending_short_wick_bar_id
+            pending_low = state.pending_short_wick_low
+            previous_bar_id = self._bar_id(previous)
+            if pending_bar_id is not None:
+                confirmed_next_bar = (
+                    previous_bar_id == pending_bar_id
+                    and pending_low is not None
+                    and close < open_price
+                    and close < pending_low
+                )
+                state.pending_short_wick_bar_id = None
+                state.pending_short_wick_low = None
+                if previous_bar_id == pending_bar_id and not confirmed_next_bar:
+                    if self._has_short_exhaustion_wick(current):
+                        state.pending_short_wick_bar_id = bar_id
+                        state.pending_short_wick_low = float(current["low"])
+                    state.last_processed_bar_id = bar_id
+                    return None
+
+            if self._has_short_exhaustion_wick(current):
+                state.pending_short_wick_bar_id = bar_id
+                state.pending_short_wick_low = float(current["low"])
+                state.last_processed_bar_id = bar_id
+                return None
 
         return {
             "side": side,
-            "reason": "BASELINE_BREAK_AND_MA_CROSS" if crossed_baseline else "TREND_CONTINUATION",
+            "reason": {
+                ENTRY_MODE_BREAKOUT: "KC_OUTER_BAND_BREAKOUT",
+                ENTRY_MODE_CONTINUATION: "TREND_CONTINUATION",
+                ENTRY_MODE_CROSSOVER: "BASELINE_BREAK_AND_MA_CROSS",
+                ENTRY_MODE_REVERSAL: "CONFIRMED_PEAK_VALLEY_REVERSAL",
+            }[signal_mode],
+            "entry_pattern": signal_mode,
+            "entry_signal_mode": signal_mode,
+            "structure_confirmation": {
+                ENTRY_MODE_BREAKOUT: "KC_OUTER_BREAKOUT",
+                ENTRY_MODE_CONTINUATION: "TREND_CONTINUATION",
+                ENTRY_MODE_CROSSOVER: "MA5_MA15_1M_CROSS",
+                ENTRY_MODE_REVERSAL: "CONFIRMED_KC_OUTER_PEAK_VALLEY",
+            }[signal_mode],
+            "structure_confirmed": True,
+            "channel_expanding": channel_expanding,
             "bar_id": bar_id,
             "close": close,
             "entry_mode": "WILD_SWING",
         }
+
+    @staticmethod
+    def _confirmed_pivot_reversal(bars: pd.DataFrame, side: str) -> bool:
+        if len(bars) < 3:
+            return False
+        left, pivot, trigger = bars.iloc[-3], bars.iloc[-2], bars.iloc[-1]
+        pivot_ma5 = float(pivot["_wild_ma5"])
+        pivot_ma15 = float(pivot["ma15"])
+        trigger_ma5 = float(trigger["_wild_ma5"])
+        trigger_ma15 = float(trigger["ma15"])
+        open_price = float(trigger["open"])
+        close = float(trigger["close"])
+
+        if side == "LONG":
+            return bool(
+                pivot["low"] < left["low"]
+                and pivot["low"] < trigger["low"]
+                and pivot["low"] <= pivot["kc_lower"]
+                and close > open_price
+                and close > float(pivot["high"])
+                and pivot_ma5 <= pivot_ma15
+                and trigger_ma5 > trigger_ma15
+            )
+        return bool(
+            pivot["high"] > left["high"]
+            and pivot["high"] > trigger["high"]
+            and pivot["high"] >= pivot["kc_upper"]
+            and close < open_price
+            and close < float(pivot["low"])
+            and pivot_ma5 >= pivot_ma15
+            and trigger_ma5 < trigger_ma15
+        )
+
+    @staticmethod
+    def _has_short_exhaustion_wick(bar: pd.Series) -> bool:
+        open_price = float(bar["open"])
+        close = float(bar["close"])
+        high = float(bar["high"])
+        low = float(bar["low"])
+        candle_range = high - low
+        if candle_range <= 0:
+            return True
+        body = abs(close - open_price)
+        lower_wick = min(open_price, close) - low
+        return (
+            lower_wick / candle_range > 0.40
+            or lower_wick > body * 1.2
+            or body / candle_range < 0.25
+        )
 
     @staticmethod
     def _pullback_reversal(

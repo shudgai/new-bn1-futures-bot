@@ -2473,6 +2473,14 @@ class TradingEngine:
             'is_manual': entry_mode == "CHANNEL_SWING",
             'source': 'DUAL_TF_5M_15M' if entry_mode == "CHANNEL_SWING" else 'WILD_SWING_1M',
             'entry_mode': entry_mode,
+            'entry_pattern': (
+                wild_signal.get('entry_pattern')
+                if entry_mode == "WILD_SWING" else None
+            ),
+            'entry_signal_mode': (
+                wild_signal.get('entry_pattern')
+                if entry_mode == "WILD_SWING" else None
+            ),
             'entry_signal_code': mode_name,
             'managed_by_bot': True,
             'channel_confirmation_bar_id': cand_bar_id,

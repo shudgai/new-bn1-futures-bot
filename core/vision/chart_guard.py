@@ -29,17 +29,20 @@ LOCAL_READ_TIMEOUT_SEC = 8.0
 PROMPT = (
     "你是一位精通合約與妖幣/迷因幣（如龍蝦/CAP）爆發行情的量化審查員。"
     "這是一張 1M 級別的 K 線圖（包含 MA5、MA15、KC 通道與成交量），技術指標剛發出 {side} {signal_desc} 信號。\n"
-    "【重要認知：妖幣/迷因幣動能極強，往往沿著 KC 外軌狂飆走出單邊主升浪/主跌浪，開倉條件需針對妖幣特性大幅放寬，絕不可套用主流幣『怕高拒追』的思維】\n"
-    "判定標準（放寬順勢，只攔截致命危險）：\n"
-    "1. 判定為 REAL（允許開倉）：\n"
-    "   - 做多：只要 K 棒站在 MA5 之上、MA5 斜率向上、沿著 KC 上軌或均線順勢推進，且沒有反向砸盤大陰線或超長反向天線（上影線 <= 實體 70%），即使處於高位或沿軌連續上行，均判定為【妖幣強勢單邊延續（REAL）】！\n"
-    "   - 做空：只要 K 棒壓制在 MA5 之下、MA5 斜率向下、沿著 KC 下軌順勢下跌，且沒有反向大陽線或超長反向地針（下影線 <= 實體 70%），即使處於低位，均判定為【妖幣強勢主跌延續（REAL）】！\n"
-    "2. 判定為 TRAP（一票否決）：\n"
-    "   - 僅當出現【致命反轉危險】：如爆量巨型反向瀑布貫穿均線、頂部/底部出現超過實體 1.5 倍的極端長針插針力竭、或橫盤無方向死水嚴重糾纏時，才判定為 TRAP。\n"
+    "本訊號模式的結構檢查：{mode_criteria}\n"
+    "【不可放寬的結構性否決條件；任一成立必須判 TRAP】\n"
+    "2. MA15 乖離：abs(close-ma15)/ATR > 1.2 時必須拒絕追單。\n"
+    "3. K 棒衰竭：多單出現 upper_wick > body 且 close < high，或空單陰線下影線佔整根 K 棒全長 >40%，必須拒絕。\n"
+    "4. 資訊不足、KC 寬度無效、ATR/MA15 缺失或方向不清時，一律判 TRAP；不可猜測或使用純指標備援批准。\n"
+    "只有未觸發以上任何否決條件、且圖表確實支持候選方向時才判 REAL。模型判斷不得覆蓋任何程式化風控。\n"
     "只回傳 JSON：{{\"verdict\": \"REAL\" 或 \"TRAP\", \"reason\": \"一句話理由\"}}。"
 )
 
 SIGNAL_DESC = {
+    "BREAKOUT": "KC 外軌破軌開倉",
+    "CONTINUATION": "KC 外軌延續或中軌回踩轉向",
+    "CROSSOVER": "MA5/MA15 交叉開倉",
+    "REVERSAL": "確認峰谷反轉開倉",
     "MA_SWING": "MA5/MA15 交叉",
     "BREAKOUT_MOMENTUM": "破軌突破",
     "BASELINE_BREAK_AND_MA_CROSS": "通道基準突破與 MA 交叉",
@@ -50,6 +53,49 @@ SIGNAL_DESC = {
     "CONTINUATION_ENTRY": "平倉後外軌延續開倉",
     "POST_CLOSE_CONTINUATION": "平倉後外軌延續開倉",
 }
+
+MODE_CRITERIA = {
+    "BREAKOUT": (
+        "收盤須突破同側 KC 外軌，方向中軌與外軌同步，通道寬度擴張；"
+        "不得把通道持平或反向訊號判為有效破軌。"
+    ),
+    "CONTINUATION": (
+        "順勢延續可位於多單 KC_Pos >= 0.35 或空單 KC_Pos <= 0.65，"
+        "涵蓋同側外軌推進及 0.35-0.65 中軌回踩區；拒絕反向長影線。"
+    ),
+    "CROSSOVER": (
+        "必須有已收線 MA5/MA15 真正交叉及價格基準確認；"
+        "KC_Pos 須在 0.35-0.65 中軌區，並檢查反向長影線。"
+    ),
+    "REVERSAL": (
+        "必須有 KC 外確認三點峰谷、右側突破樞紐 K 棒，及 MA5/MA15 交叉確認；"
+        "未確認樞紐或反向長影線一律拒絕。"
+    ),
+}
+
+
+def _vision_prompt(side: str, mode: str) -> str:
+    mode = str(mode or "").upper()
+    return PROMPT.format(
+        side=side,
+        signal_desc=SIGNAL_DESC.get(mode, "進場"),
+        mode_criteria=MODE_CRITERIA.get(
+            mode,
+            "遵循現有已確認的方向訊號，不得用圖表印象覆蓋程式化 Gate。",
+        ),
+    )
+
+
+def _qwen_entry_prompt(side: str, mode: str) -> str:
+    prompt = _vision_prompt(side, mode).replace("TRAP", "REJECTED").replace(
+        "REAL", "APPROVED",
+    )
+    return (
+        prompt
+        + "\n視覺審查是必要下單授權：只有所有檢查明確通過時才回傳 "
+        '{"verdict":"APPROVED","reason":"..."}；否則回傳 '
+        '{"verdict":"REJECTED","reason":"..."}。不得回傳 REAL、TRAP 或其他狀態。'
+    )
 
 
 # ==============================================================================
@@ -226,6 +272,25 @@ def parse_verdict(text: str) -> Tuple[bool, str]:
     raise ValueError("unknown verdict")
 
 
+def parse_qwen_entry_approval(text: str) -> Tuple[bool, str]:
+    """Only an explicit APPROVED verdict from the configured local Qwen is valid."""
+    try:
+        raw = (text or "").strip()
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end < start:
+            return False, "AI_INVALID_RESPONSE"
+        obj = json.loads(raw[start:end + 1])
+        verdict = str(obj.get("verdict", "")).strip()
+        reason = str(obj.get("reason", "")).strip()
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return False, "AI_INVALID_RESPONSE"
+    if verdict == "APPROVED":
+        return True, reason or "QWEN_APPROVED"
+    if verdict == "REJECTED":
+        return False, reason or "QWEN_REJECTED"
+    return False, "AI_EXPLICIT_APPROVAL_REQUIRED"
+
+
 # ==============================================================================
 # 3. 本地優先：Qwen2-VL (OpenAI 相容協定 + Port 自動輪巡)
 # ==============================================================================
@@ -237,7 +302,13 @@ async def _call_local_qwen_once(client: httpx.AsyncClient, base_url: str, model_
     return data["choices"][0]["message"]["content"]
 
 
-async def _call_local_qwen(image: bytes, side: str, mode: str) -> Optional[str]:
+async def _call_local_qwen(
+    image: bytes,
+    side: str,
+    mode: str,
+    *,
+    require_explicit_approval: bool = False,
+) -> Optional[str]:
     """優先呼叫本地 Qwen2-VL，支援多 Port (8000 -> 11434) 自動候補。"""
     primary_url = os.getenv("LOCAL_QWEN_URL", "http://127.0.0.1:8000/v1")
     model_name = os.getenv("LOCAL_QWEN_MODEL", "qwen2-vl")
@@ -248,7 +319,10 @@ async def _call_local_qwen(image: bytes, side: str, mode: str) -> Optional[str]:
         candidates.append(fallback_ollama)
 
     b64_image = base64.b64encode(image).decode("utf-8")
-    prompt_text = PROMPT.format(side=side, signal_desc=SIGNAL_DESC.get(mode, "進場"))
+    prompt_text = (
+        _qwen_entry_prompt(side, mode)
+        if require_explicit_approval else _vision_prompt(side, mode)
+    )
 
     payload = {
         "model": model_name,
@@ -277,6 +351,52 @@ async def _call_local_qwen(image: bytes, side: str, mode: str) -> Optional[str]:
     return None
 
 
+async def evaluate_qwen_entry_vision(
+    bars: Any,
+    proposed_side: str,
+    *,
+    mode: str,
+    timeout: Optional[float] = None,
+) -> Tuple[bool, str]:
+    """Require a fresh local Qwen-VL review; never use cloud or indicator fallback."""
+    from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
+
+    permitted, reason = EntryPatternPermittedGate.check_pattern(mode)
+    if not permitted:
+        return False, reason
+    if proposed_side not in (LONG, SHORT):
+        return False, "AI_INVALID_ENTRY_SIDE"
+    if os.getenv("ENABLE_VISION_GUARD", "true").strip().lower() not in (
+        "true", "1", "yes",
+    ):
+        return False, "VISION_GUARD_DISABLED"
+    if os.getenv("USE_LOCAL_QWEN", "false").strip().lower() not in (
+        "true", "1", "yes",
+    ):
+        return False, "LOCAL_QWEN_REQUIRED"
+
+    try:
+        image = render_chart_bytes(bars)
+        response = await asyncio.wait_for(
+            _call_local_qwen(
+                image,
+                proposed_side,
+                EntryPatternPermittedGate.normalize(mode),
+                require_explicit_approval=True,
+            ),
+            timeout=timeout or LOCAL_READ_TIMEOUT_SEC + LOCAL_CONNECT_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        logger.warning(
+            "本地 Qwen-VL 審查失敗 (%s): %s",
+            type(exc).__name__, exc,
+        )
+        return False, f"QWEN_REVIEW_FAILED:{type(exc).__name__}"
+    if not response:
+        return False, "QWEN_REVIEW_UNAVAILABLE"
+    return parse_qwen_entry_approval(response)
+
+
 # ==============================================================================
 # 4. 雲端備援：Gemini Vision
 # ==============================================================================
@@ -289,7 +409,7 @@ def _call_gemini(image: bytes, side: str, api_key: str, mode: str = "BREAKOUT_MO
         model=GEMINI_MODEL_NAME,
         contents=[
             types.Part.from_bytes(data=image, mime_type="image/png"),
-            PROMPT.format(side=side, signal_desc=SIGNAL_DESC.get(mode, "進場")),
+            _vision_prompt(side, mode),
         ],
         config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
     )
@@ -315,7 +435,7 @@ async def _call_gemini_with_retry(image: bytes, side: str, api_key: str, mode: s
 
 
 def _fail_open() -> bool:
-    return os.getenv("VISION_FAIL_OPEN", "1") != "0"
+    return os.getenv("VISION_FAIL_OPEN", "0") == "1"
 
 
 # ==============================================================================
@@ -336,7 +456,7 @@ async def evaluate_breakout_vision(
     """
     enable_guard = os.getenv("ENABLE_VISION_GUARD", "true").strip().lower() in ("true", "1", "yes")
     if not enable_guard:
-        return True, "VISION_GUARD_DISABLED"
+        return False, "VISION_GUARD_DISABLED"
 
     image = render_chart_bytes(bars)
     use_local = os.getenv("USE_LOCAL_QWEN", "false").strip().lower() in ("true", "1", "yes")

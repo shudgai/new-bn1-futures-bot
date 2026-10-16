@@ -1,12 +1,15 @@
 """Fail-closed shared entry verification immediately before opening exposure."""
 import math
 import time
+import logging
 
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
     evaluate_entry_contract,
 )
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class EntryFirewall:
@@ -37,10 +40,9 @@ async def validate_account_entry(account, symbol, side, context):
             return None
         return parsed if math.isfinite(parsed) else None
 
-    if (
-        str(context.get("entry_mode") or "").upper() == "WILD_SWING"
-        and context.get("source") == "WILD_SWING_1M"
-    ):
+    if str(context.get("entry_mode") or "").upper() == "WILD_SWING":
+        if context.get("source") != "WILD_SWING_1M":
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SOURCE_INVALID")
         if side not in ("LONG", "SHORT"):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_INVALID_SIDE")
         if (
@@ -62,25 +64,128 @@ async def validate_account_entry(account, symbol, side, context):
 
         from core.services.strategies.wild_swing_strategy import WildSwingStrategy
         signal = WildSwingStrategy().evaluate_entry(symbol, fresh_frame, side)
+        if signal is None:
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+        from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
+
+        pattern_allowed, pattern_reason = EntryPatternPermittedGate.check_signal(signal)
+        if not pattern_allowed:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] " + pattern_reason
+            )
+        signal_pattern = EntryPatternPermittedGate.normalize(
+            signal.get("entry_pattern") or signal.get("entry_signal_mode")
+        )
+        if signal_pattern is None:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] REJECT_UNAUTHORIZED_ENTRY_PATTERN"
+            )
         expected = context.get("dual_tf_meta")
         expected_bar = expected.get("bar_id") if isinstance(expected, dict) else None
-        signal_bar_id = finite_bar_id(signal.get("bar_id")) if signal else None
+        expected_pattern = EntryPatternPermittedGate.normalize(
+            context.get("entry_pattern")
+        )
+        signal_bar_id = finite_bar_id(signal.get("bar_id"))
         expected_bar_id = finite_bar_id(expected_bar)
         confirmation_bar_id = finite_bar_id(
             context.get("channel_confirmation_bar_id")
         )
         if (
-            signal is None
-            or signal.get("side") != side
+            signal.get("side") != side
+            or signal_pattern is None
+            or signal_pattern != expected_pattern
+            or (
+                context.get("entry_signal_mode") is not None
+                and EntryPatternPermittedGate.normalize(
+                    context.get("entry_signal_mode")
+                ) != signal_pattern
+            )
+            or context.get("entry_signal_code")
+            != f"WILD_SWING_{signal.get('reason')}"
             or signal_bar_id is None
             or expected_bar_id != signal_bar_id
             or confirmation_bar_id != signal_bar_id
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+
+        from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(fresh_frame)
+        if closed.empty:
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_NO_CLOSED_MARKET_DATA")
+        current = closed.iloc[-1]
+        required = (
+            "open", "high", "low", "close", "kc_upper", "kc_lower",
+            "kc_middle", "ma15", "atr",
+        )
+        if any(field not in current for field in required):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_MISSING")
+        try:
+            macro_bar = {
+                field: float(current[field])
+                for field in ("open", "high", "low", "close")
+            }
+            macro_indicators = {
+                field: float(current[field])
+                for field in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
+            }
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_INVALID"
+            ) from exc
+        macro_values = tuple(macro_bar.values()) + tuple(macro_indicators.values())
+        if (
+            not all(math.isfinite(value) for value in macro_values)
+            or macro_indicators["kc_upper"] <= macro_indicators["kc_lower"]
+            or macro_indicators["atr"] <= 0
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_INVALID")
+        macro_allowed, macro_reason = MacroCandleStructureGate().can_open(
+            side,
+            macro_bar,
+            macro_indicators,
+            entry_pattern=signal_pattern,
+            structure_confirmation=signal.get("structure_confirmation"),
+            structure_confirmed=signal.get("structure_confirmed") is True,
+            channel_expanding=signal.get("channel_expanding") is True,
+        )
+        if not macro_allowed:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_GATE: " + macro_reason
+            )
+        logger.info(
+            "【GATE 通過: %s】symbol=%s side=%s bar=%s stage=final_firewall",
+            signal_pattern, symbol, side, signal_bar_id,
+        )
+        logger.info(
+            "【送審 AI 截圖...】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s stage=final_firewall",
+            symbol, side, signal_pattern, signal_bar_id,
+        )
+        from core.vision.chart_guard import evaluate_qwen_entry_vision
+
+        ai_approved, ai_reason = await evaluate_qwen_entry_vision(
+            closed, side, mode=signal_pattern,
+        )
+        ai_status = "APPROVED" if ai_approved else "REJECTED"
+        logger.info(
+            "【AI 審查結果: %s】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s stage=final_firewall reason=%s",
+            ai_status, symbol, side, signal_pattern, signal_bar_id, ai_reason,
+        )
+        if not ai_approved:
+            logger.warning(
+                "【執行取消】symbol=%s side=%s pattern=%s bar=%s reason=%s",
+                symbol, side, signal_pattern, signal_bar_id, ai_reason,
+            )
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_QWEN_REJECTED: " + ai_reason
+            )
         return {
             "type": context.get("entry_signal_code"),
             "side": side,
             "entry_mode": "WILD_SWING",
+            "entry_pattern": signal_pattern,
+            "entry_signal_mode": signal_pattern,
             "entry_phase": "WILD_SWING_1M",
             "confirmation_bar_id": signal_bar_id,
             "close_price": float(signal["close"]),
