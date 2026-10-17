@@ -1,8 +1,7 @@
-"""Closed-candle entry and exit rules for high-volatility directional swings."""
+"""Mathematical entry gates and trend-reversal exits for directional swings."""
 
 from dataclasses import dataclass, field
 import math
-import os
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -214,9 +213,36 @@ class WildSwingStrategy:
         if candidate is None or candidate["action"] != f"OPEN_{side}":
             return None
 
-        entry_type = str(candidate["type"])
         current = bars.iloc[-1]
         previous = bars.iloc[-2]
+        current_ma5 = float(candidate["ma5_current"])
+        current_ma15 = float(candidate["ma15_current"])
+        current_middle = float(candidate["kc_basis"])
+        previous_ma5 = float(candidate["ma5_previous"])
+        if candidate.get("is_intrabar") is True:
+            live_row = frame.iloc[-1]
+            live_ma15 = self._number(live_row, "ma15")
+            if live_ma15 is None:
+                return None
+            current_ma15 = live_ma15
+        kc_middle_rising = current_middle > float(previous["kc_middle"])
+        kc_middle_falling = current_middle < float(previous["kc_middle"])
+        if side == "LONG":
+            trend_aligned = (
+                kc_middle_rising
+                and current_ma5 > current_ma15
+                and current_ma5 > previous_ma5
+            )
+        else:
+            trend_aligned = (
+                kc_middle_falling
+                and current_ma5 < current_ma15
+                and current_ma5 < previous_ma5
+            )
+        if not trend_aligned:
+            return None
+
+        entry_type = str(candidate["type"])
         is_intrabar = candidate.get("is_intrabar") is True
         bar_id = live_bar_id if is_intrabar else self._bar_id(current)
         if bar_id is None:
@@ -734,59 +760,101 @@ class WildSwingStrategy:
         symbol: str,
         position: dict,
         frame: pd.DataFrame,
-        *,
-        profit_lock_triggered: bool = False,
-        current_tick_price: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
         side = str((position or {}).get("side", "")).upper()
         if side not in ("LONG", "SHORT"):
             return None
         bars = self._closed_frame(frame)
-        if bars.empty:
-            if not profit_lock_triggered or frame is None or frame.empty:
-                return None
-            current = frame.iloc[-1]
-        else:
-            current = bars.iloc[-1]
+        if len(bars) < 2:
+            return None
+        current, previous = bars.iloc[-1], bars.iloc[-2]
         bar_id = self._bar_id(current)
         if bar_id is None:
             return None
         state = self.state_for(symbol)
-        close = self._number(current, "close")
-        evidence: dict[str, Any] = {}
-        if profit_lock_triggered:
-            reason = "EXIT_BY_PROFIT_LOCK"
-            exit_type = "RATCHET_PROFIT_LOCK"
-        else:
-            if bars.empty:
-                return None
-            if state.reset_bar_id is not None and bar_id <= state.reset_bar_id:
-                return None
-            if state.last_processed_bar_id is not None and bar_id <= state.last_processed_bar_id:
-                return None
-            pivot_exit, pivot_reason, pivot_evidence = self._pivot_exhaustion_exit(
-                position, bars, side, current_tick_price=current_tick_price,
-            )
-            if pivot_exit:
-                reason = pivot_reason
-                exit_type = (
-                    "PIVOT_PEAK_EXIT"
-                    if side == "LONG"
-                    else "PIVOT_VALLEY_EXIT"
-                )
-                evidence = pivot_evidence
+        live_row = None
+        if (
+            frame is not None
+            and not frame.empty
+            and "is_closed" in frame
+            and not bool(frame.iloc[-1]["is_closed"])
+        ):
+            live_row = frame.iloc[-1]
+        entry_bar_floor = self._position_entry_bar_floor(position, bars)
+        live_bar_id = self._bar_id(live_row) if live_row is not None else None
+        live_exit_is_fresh = (
+            live_bar_id is not None
+            and live_bar_id > bar_id
+            and (entry_bar_floor is None or live_bar_id > entry_bar_floor)
+        )
+        closed_exit_is_fresh = (
+            entry_bar_floor is None or bar_id > entry_bar_floor
+        )
+        if not closed_exit_is_fresh and not live_exit_is_fresh:
+            return None
+        reset_closed_bar = (
+            state.reset_bar_id is not None and bar_id <= state.reset_bar_id
+        )
+        if reset_closed_bar and not live_exit_is_fresh:
+            return None
+
+        current_ma5 = self._number(live_row, "ma5") if live_row is not None else None
+        current_ma15 = self._number(live_row, "ma15") if live_row is not None else None
+        current_ma5 = (
+            current_ma5
+            if current_ma5 is not None
+            else float(current["_wild_ma5"])
+        )
+        current_ma15 = (
+            current_ma15
+            if current_ma15 is not None
+            else float(current["ma15"])
+        )
+        previous_ma5 = float(previous["_wild_ma5"])
+        previous_ma15 = float(previous["ma15"])
+        ma5_slope_up = current_ma5 > previous_ma5
+        ma5_slope_down = current_ma5 < previous_ma5
+        golden_cross = previous_ma5 <= previous_ma15 and current_ma5 > current_ma15
+        death_cross = previous_ma5 >= previous_ma15 and current_ma5 < current_ma15
+        close = float(current["close"])
+        kc_middle = float(current["kc_middle"])
+        kc_upper = float(current["kc_upper"])
+        kc_lower = float(current["kc_lower"])
+
+        if side == "SHORT":
+            if golden_cross:
+                reason = "EXIT_BY_MA_GOLDEN_CROSS"
+            elif ma5_slope_up:
+                reason = "EXIT_BY_MA5_TREND_REVERSAL"
+            elif (
+                closed_exit_is_fresh
+                and not reset_closed_bar
+                and (close > kc_middle or close > kc_upper)
+            ):
+                reason = "EXIT_BY_KC_BAND_BREACH"
             else:
-                state.last_processed_bar_id = bar_id
+                return None
+        else:
+            if death_cross:
+                reason = "EXIT_BY_MA_DEATH_CROSS"
+            elif ma5_slope_down:
+                reason = "EXIT_BY_MA5_TREND_REVERSAL"
+            elif (
+                closed_exit_is_fresh
+                and not reset_closed_bar
+                and (close < kc_middle or close < kc_lower)
+            ):
+                reason = "EXIT_BY_KC_BAND_BREACH"
+            else:
                 return None
 
         return {
             "action": f"CLOSE_{side}",
-            "type": exit_type,
+            "type": reason,
             "side": side,
             "reason": reason,
             "bar_id": bar_id,
             "close": close,
-            **(evidence if not profit_lock_triggered else {}),
             "entry_mode": "WILD_SWING",
         }
 
@@ -808,203 +876,6 @@ class WildSwingStrategy:
                 continue
             timestamp_ms = timestamp * 1000.0 if timestamp < 1e11 else timestamp
             return math.floor(timestamp_ms / timeframe_ms) * timeframe_ms
-        return None
-
-    @classmethod
-    def _pivot_exhaustion_exit(
-        cls,
-        position: dict,
-        bars: pd.DataFrame,
-        side: str,
-        min_profit_pct: Optional[float] = None,
-        *,
-        current_tick_price: Optional[float] = None,
-    ) -> tuple[bool, str, dict[str, Any]]:
-        """
-        偵測真峰谷提前平倉 (Pivot Peak/Valley Early Exit):
-        k0 (bars.iloc[-1]): 當前確認收盤 K 棒
-        k1 (bars.iloc[-2]): 潛在峰谷 K 棒
-        k2 (bars.iloc[-3]): 前置確認 K 棒
-        min_profit_pct: 只有在已有微幅獲利（預設 > 0.3%）時才啟動，避免剛開倉就因微幅震盪被刷出場
-        """
-        if len(bars) < 5:
-            return False, "", {}
-
-        entry_bar_floor = cls._position_entry_bar_floor(position, bars)
-        k1 = bars.iloc[-2]
-        k1_bar_id = cls._bar_id(k1)
-        if entry_bar_floor is not None and k1_bar_id is not None and k1_bar_id < entry_bar_floor:
-            return False, "", {}
-
-        try:
-            entry_price = float(
-                (position or {}).get("entry_price")
-                or (position or {}).get("price")
-                or (position or {}).get("avg_price")
-                or 0.0
-            )
-        except (TypeError, ValueError, OverflowError):
-            return False, "", {}
-
-        if min_profit_pct is None:
-            try:
-                min_profit_pct = float(os.getenv("WILD_SWING_PIVOT_MIN_PROFIT_PCT", "0.003"))
-            except (TypeError, ValueError):
-                min_profit_pct = 0.003
-
-        k0 = bars.iloc[-1]
-        k2 = bars.iloc[-3]
-
-        try:
-            current_price = (
-                float(k0["close"])
-                if current_tick_price is None
-                else float(current_tick_price)
-            )
-            k1_open = float(k1["open"])
-            k1_close = float(k1["close"])
-            k1_high = float(k1["high"])
-            k1_low = float(k1["low"])
-            k0_close = float(k0["close"])
-            k0_high = float(k0["high"])
-            k0_low = float(k0["low"])
-            k2_high = float(k2["high"])
-            k2_low = float(k2["low"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return False, "", {}
-        if (
-            not math.isfinite(entry_price)
-            or entry_price <= 0
-            or not math.isfinite(current_price)
-            or current_price <= 0
-            or not math.isfinite(k0_close)
-        ):
-            return False, "", {}
-
-        # --- 1. 多單持倉：偵測「真頂/真峰 (Pivot Peak)」---
-        if side == "LONG":
-            profit_ratio = (current_price - entry_price) / entry_price
-            if profit_ratio < min_profit_pct:
-                return False, "", {}
-
-            # 真峰條件：
-            # 1. k1 的高點高於 k2 與 k0 的高點（形成 3 根局部高點）
-            # 2. k0 收盤同時跌破 k1 的中點與最低點（確認反轉）
-            is_pivot_high = (k1_high > k2_high) and (k1_high > k0_high)
-            is_break_k1_low = (
-                k0_close < (k1_open + k1_close) / 2
-                and k0_close < k1_low
-            )
-
-            if is_pivot_high and is_break_k1_low:
-                return True, "EXIT_BY_PIVOT_PEAK", {
-                    "pivot_bar_id": k1_bar_id,
-                    "pivot_price": k1_high,
-                    "broken_structure_level": k1_low,
-                    "profit_ratio": profit_ratio,
-                }
-
-        # --- 2. 空單持倉：偵測「真谷/真底 (Pivot Valley)」---
-        elif side == "SHORT":
-            profit_ratio = (entry_price - current_price) / entry_price
-            if profit_ratio < min_profit_pct:
-                return False, "", {}
-
-            # 真谷條件：
-            # 1. k1 的低點低於 k2 與 k0 的低點（形成 3 根局部低點）
-            # 2. k0 收盤同時突破 k1 的中點與最高點（確認反轉）
-            is_pivot_low = (k1_low < k2_low) and (k1_low < k0_low)
-            is_break_k1_high = (
-                k0_close > (k1_open + k1_close) / 2
-                and k0_close > k1_high
-            )
-
-            if is_pivot_low and is_break_k1_high:
-                return True, "EXIT_BY_PIVOT_VALLEY", {
-                    "pivot_bar_id": k1_bar_id,
-                    "pivot_price": k1_low,
-                    "broken_structure_level": k1_high,
-                    "profit_ratio": profit_ratio,
-                }
-
-        return False, "", {}
-
-    @classmethod
-    def _true_pivot_volume_divergence_exit(
-        cls,
-        position: dict,
-        bars: pd.DataFrame,
-        side: str,
-    ) -> Optional[dict[str, Any]]:
-        entry_bar_floor = cls._position_entry_bar_floor(position, bars)
-        if entry_bar_floor is None or len(bars) < 5:
-            return None
-
-        pivots = []
-        for index in range(1, len(bars) - 1):
-            left, pivot, right = (
-                bars.iloc[index - 1], bars.iloc[index], bars.iloc[index + 1],
-            )
-            bar_id = cls._bar_id(pivot)
-            volume = cls._number(pivot, "volume")
-            if bar_id is None or bar_id < entry_bar_floor or volume is None:
-                continue
-            if side == "LONG":
-                confirmed = (
-                    float(pivot["high"]) > float(left["high"])
-                    and float(pivot["high"]) > float(right["high"])
-                )
-                price = float(pivot["high"])
-            else:
-                confirmed = (
-                    float(pivot["low"]) < float(left["low"])
-                    and float(pivot["low"]) < float(right["low"])
-                )
-                price = float(pivot["low"])
-            if confirmed:
-                pivots.append({
-                    "index": index, "bar_id": bar_id,
-                    "price": price, "volume": volume,
-                })
-
-        if len(pivots) < 2:
-            return None
-        current_index = len(bars) - 1
-        current_close = float(bars.iloc[-1]["close"])
-        for previous_pivot, pivot in reversed(list(zip(pivots, pivots[1:]))):
-            directional_divergence = (
-                pivot["price"] > previous_pivot["price"]
-                if side == "LONG"
-                else pivot["price"] < previous_pivot["price"]
-            )
-            if not directional_divergence:
-                continue
-            if (
-                pivot["index"] >= current_index
-                or pivot["index"] + 1 > current_index
-                or pivot["volume"] >= previous_pivot["volume"]
-            ):
-                continue
-            intervening = bars.iloc[
-                previous_pivot["index"] + 1:pivot["index"]
-            ]
-            if intervening.empty:
-                continue
-            if side == "LONG":
-                structure_level = float(intervening["low"].min())
-                structure_broken = current_close < structure_level
-            else:
-                structure_level = float(intervening["high"].max())
-                structure_broken = current_close > structure_level
-            if structure_broken:
-                return {
-                    "pivot_bar_id": pivot["bar_id"],
-                    "pivot_price": pivot["price"],
-                    "previous_pivot_price": previous_pivot["price"],
-                    "pivot_volume": pivot["volume"],
-                    "previous_pivot_volume": previous_pivot["volume"],
-                    "broken_structure_level": structure_level,
-                }
         return None
 
     def record_exit(

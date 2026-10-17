@@ -105,6 +105,8 @@ def test_wild_swing_firewall_revalidates_live_breakout_bar_identity():
     frame["kc_lower"] = 90.0
     frame["ma5"] = 100.0
     frame["ma15"] = 100.0
+    frame.loc[frame.index[-2], "kc_middle"] = 94.9
+    frame.loc[frame.index[-1], "kc_middle"] = 95.0
     live = frame.iloc[-1].copy()
     live.update({
         "timestamp": float(frame.iloc[-1]["timestamp"]) + 60_000,

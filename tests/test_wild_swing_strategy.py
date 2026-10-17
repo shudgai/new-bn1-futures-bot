@@ -80,20 +80,20 @@ def _profit_lock_continuation_frame(side):
     frame = _pivot_cross_frame(side)
     if side == "LONG":
         frame.loc[10, ["kc_upper", "kc_middle", "ma5", "ma15", "close", "high"]] = [
-            100.2, 100.0, 100.3, 100.3, 100.4, 100.5,
+            100.2, 100.0, 100.3, 100.2, 100.4, 100.5,
         ]
         frame.loc[11, [
             "kc_upper", "kc_middle", "ma5", "ma15", "kc_lower",
             "open", "high", "low", "close",
-        ]] = [100.2, 100.1, 100.4, 100.4, 98.0, 100.4, 100.7, 100.3, 100.6]
+        ]] = [100.2, 100.1, 100.4, 100.3, 98.0, 100.4, 100.7, 100.3, 100.6]
     else:
         frame.loc[10, ["kc_lower", "kc_middle", "ma5", "ma15", "close", "low"]] = [
-            99.8, 100.0, 99.7, 99.7, 99.6, 99.5,
+            99.8, 100.0, 99.7, 99.8, 99.6, 99.5,
         ]
         frame.loc[11, [
             "kc_lower", "kc_middle", "ma5", "ma15", "kc_upper",
             "open", "high", "low", "close",
-        ]] = [99.8, 99.9, 99.6, 99.6, 102.0, 99.6, 99.7, 99.3, 99.4]
+        ]] = [99.8, 99.9, 99.6, 99.7, 102.0, 99.6, 99.7, 99.3, 99.4]
     return frame
 
 
@@ -165,7 +165,7 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
     assert WildSwingStrategy().evaluate_entry("LOBSTER/USDT", live_frame, side) is None
 
 
-def test_short_crossover_uses_ma5_direction_and_basis_position_not_kc_slope():
+def test_short_crossover_is_blocked_when_kc_middle_rises():
     frame = _pivot_cross_frame("SHORT")
     frame.loc[10, "kc_middle"] = 100.0
     frame.loc[11, "kc_middle"] = 100.1
@@ -173,8 +173,7 @@ def test_short_crossover_uses_ma5_direction_and_basis_position_not_kc_slope():
     signal = WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT", frame, "SHORT",
     )
-    assert signal is not None
-    assert signal["structure_confirmation"] == "MA_CROSSOVER"
+    assert signal is None
 
 
 @pytest.mark.parametrize(
@@ -220,6 +219,8 @@ def test_live_outside_continuation_keeps_live_bar_identity(side):
     frame["ma5"] = 100.0
     frame["ma15"] = 100.0
     if side == "LONG":
+        frame.loc[10, "kc_middle"] = 99.9
+        frame.loc[11, "kc_middle"] = 100.0
         frame.loc[10, ["open", "high", "low", "close", "ma5"]] = [
             100.0, 105.0, 99.9, 104.9, 100.1,
         ]
@@ -227,6 +228,8 @@ def test_live_outside_continuation_keeps_live_bar_identity(side):
             106.0, 106.6, 105.8, 106.5, 100.2, 105.5,
         ]
     else:
+        frame.loc[10, "kc_middle"] = 100.1
+        frame.loc[11, "kc_middle"] = 100.0
         frame.loc[10, ["open", "high", "low", "close", "ma5"]] = [
             100.0, 100.1, 95.0, 95.1, 99.9,
         ]
@@ -393,172 +396,49 @@ def test_latest_profit_lock_exit_requires_most_recent_matching_close():
     ) is None
 
 
-def _pivot_exit_frame(side):
-    if side == "LONG":
-        highs = [101, 102, 103, 105, 102, 104, 106, 103, 101]
-        lows = [100, 101, 102, 100, 99, 98, 101, 99, 97]
-        closes = [100.5, 101.5, 102.5, 104, 100, 103, 105, 100, 97.5]
-        volumes = [10, 10, 10, 20, 10, 10, 10, 10, 10]
-    else:
-        highs = [103, 102, 101, 102, 102, 103, 102, 104, 105]
-        lows = [102, 101, 100, 98, 99, 97, 96, 98, 103]
-        closes = [102.5, 101.5, 100.5, 99, 100, 98, 97, 102, 104]
-        volumes = [10, 10, 10, 20, 10, 10, 10, 10, 10]
-    rows = []
-    for index in range(len(highs)):
-        rows.append({
-            "timestamp": index * 60_000,
-            "open": (highs[index] + lows[index]) / 2,
-            "high": highs[index],
-            "low": lows[index],
-            "close": closes[index],
-            "volume": volumes[index],
-            "kc_upper": 110,
-            "kc_middle": 100,
-            "kc_lower": 90,
-            "ma5": 100,
-            "ma15": 100,
-            "is_closed": True,
-        })
-    return pd.DataFrame(rows)
+@pytest.mark.parametrize(
+    "side,previous_ma5,previous_ma15,current_ma5,current_ma15,close,middle,expected",
+    [
+        ("SHORT", 100.3, 100.2, 100.4, 100.1, 99.5, 99.9, "EXIT_BY_MA5_TREND_REVERSAL"),
+        ("SHORT", 99.9, 100.0, 100.2, 100.1, 99.5, 99.9, "EXIT_BY_MA_GOLDEN_CROSS"),
+        ("SHORT", 100.3, 100.4, 100.1, 100.4, 100.1, 100.0, "EXIT_BY_KC_BAND_BREACH"),
+        ("LONG", 99.7, 99.8, 99.6, 99.7, 100.5, 100.1, "EXIT_BY_MA5_TREND_REVERSAL"),
+        ("LONG", 100.1, 100.0, 99.8, 99.9, 100.5, 100.1, "EXIT_BY_MA_DEATH_CROSS"),
+        ("LONG", 99.7, 99.8, 99.8, 99.8, 100.0, 100.1, "EXIT_BY_KC_BAND_BREACH"),
+    ],
+)
+def test_exit_triggers_on_ma_reversal_or_kc_close(
+    side, previous_ma5, previous_ma15, current_ma5, current_ma15,
+    close, middle, expected,
+):
+    frame = _frame(side)
+    frame.loc[10, ["ma5", "ma15"]] = [previous_ma5, previous_ma15]
+    frame.loc[11, ["ma5", "ma15", "close", "kc_middle"]] = [
+        current_ma5, current_ma15, close, middle,
+    ]
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", {"side": side}, frame,
+    )
+    assert result is not None
+    assert result["action"] == f"CLOSE_{side}"
+    assert result["reason"] == expected
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_volume_divergence_without_confirmed_pivot_exit_does_not_close(side):
-    frame = _pivot_exit_frame(side)
+def test_exit_holds_when_trend_and_kc_position_remain_favorable(side):
     result = WildSwingStrategy().evaluate_exit(
-        "LOBSTER/USDT",
-        {"side": side, "open_timestamp": 60.0},
-        frame,
+        "LOBSTER/USDT", {"side": side}, _frame(side),
     )
     assert result is None
 
 
-def test_trend_loss_or_midline_cross_alone_does_not_exit():
+def test_exit_checks_ma5_reversal_from_live_indicator_on_every_tick():
     frame = _frame("SHORT")
-    frame.loc[11, ["open", "high", "low", "close", "kc_middle"]] = [
-        99.4, 100.2, 99.3, 100.1, 100.0,
-    ]
-    assert WildSwingStrategy().evaluate_exit(
-        "LOBSTER/USDT", {"side": "SHORT", "open_timestamp": 60.0}, frame,
-    ) is None
-
-
-def test_profit_lock_exit_is_available_without_true_pivot_and_live_bar_never_exits():
-    strategy = WildSwingStrategy()
-    frame = _frame("LONG")
-    frame.loc[11, "close"] = 99.5
-    result = strategy.evaluate_exit(
-        "LOBSTER/USDT", {"side": "LONG"}, frame, profit_lock_triggered=True,
-    )
-    assert result["reason"] == "EXIT_BY_PROFIT_LOCK"
-    assert result["action"] == "CLOSE_LONG"
-    assert result["type"] == "RATCHET_PROFIT_LOCK"
-
-    strategy = WildSwingStrategy()
     frame.loc[11, "is_closed"] = False
-    strategy.reset_execution_state({"LOBSTER/USDT": frame.iloc[-2]["timestamp"]})
-    assert strategy.evaluate_exit("LOBSTER/USDT", {"side": "LONG"}, frame) is None
-
-
-def test_pivot_exhaustion_exit_triggers_for_long_and_short():
-    strategy = WildSwingStrategy()
-
-    # 1. 測試多單真峰 (Pivot Peak) 平倉
-    # k2 (idx 9): high=102, low=100, close=101
-    # k1 (idx 10): high=106, low=102, open=102.5, close=105 (真峰高點 106)
-    # k0 (idx 11): 收盤同時跌破 k1 中點 103.75 與最低點 102
-    frame_long = _frame("LONG")
-    frame_long.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
-    frame_long.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-    frame_long.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
-    pos_long = {"side": "LONG", "entry_price": 100.0, "open_timestamp": 60.0}
-
-    result_long = strategy.evaluate_exit("LOBSTER/USDT", pos_long, frame_long)
-    assert result_long is not None
-    assert result_long["action"] == "CLOSE_LONG"
-    assert result_long["type"] == "PIVOT_PEAK_EXIT"
-    assert result_long["reason"] == "EXIT_BY_PIVOT_PEAK"
-    assert result_long["pivot_price"] == 106.0
-
-    # 2. 測試空單真谷 (Pivot Valley) 平倉
-    # k2 (idx 9): high=100, low=98, close=99
-    # k1 (idx 10): high=98, low=94, open=97.5, close=95 (真谷低點 94)
-    # k0 (idx 11): 收盤同時突破 k1 中點 96.25 與最高點 98
-    strategy.reset_execution_state({})
-    frame_short = _frame("SHORT")
-    frame_short.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
-    frame_short.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
-    frame_short.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 98.2, 98.5]
-    pos_short = {"side": "SHORT", "entry_price": 100.0, "open_timestamp": 60.0}
-
-    result_short = strategy.evaluate_exit("LOBSTER/USDT", pos_short, frame_short)
-    assert result_short is not None
-    assert result_short["action"] == "CLOSE_SHORT"
-    assert result_short["type"] == "PIVOT_VALLEY_EXIT"
-    assert result_short["reason"] == "EXIT_BY_PIVOT_VALLEY"
-    assert result_short["pivot_price"] == 94.0
-
-
-@pytest.mark.parametrize(
-    "side,close",
-    [("LONG", 102.5), ("SHORT", 97.5)],
-)
-def test_pivot_exit_requires_close_beyond_pivot_extreme(side, close):
-    frame = _frame(side)
-    if side == "LONG":
-        frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
-        frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-        frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 102.0, close]
-    else:
-        frame.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
-        frame.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
-        frame.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 97.0, close]
+    frame.loc[11, "ma5"] = 100.4
 
     result = WildSwingStrategy().evaluate_exit(
-        "LOBSTER/USDT",
-        {"side": side, "entry_price": 100.0, "open_timestamp": 60.0},
-        frame,
+        "LOBSTER/USDT", {"side": "SHORT"}, frame,
     )
-    assert result is None
-
-
-def test_pivot_exhaustion_exit_requires_min_profit_threshold():
-    strategy = WildSwingStrategy()
-    frame_long = _frame("LONG")
-    frame_long.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
-    frame_long.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-    frame_long.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 103.5, 102.5]
-
-    # 開倉成本過高 (entry_price 103.0 > close 102.5)，處於虧損狀態，禁止被峰谷洗出場
-    pos_loss = {"side": "LONG", "entry_price": 103.0, "open_timestamp": 60.0}
-    assert strategy.evaluate_exit("LOBSTER/USDT", pos_loss, frame_long) is None
-
-
-@pytest.mark.parametrize(
-    "side,price,should_exit",
-    [
-        ("LONG", 100.2, False),
-        ("LONG", 100.31, True),
-        ("SHORT", 99.8, False),
-        ("SHORT", 99.69, True),
-    ],
-)
-def test_pivot_min_profit_uses_current_tick(side, price, should_exit):
-    frame = _frame(side)
-    if side == "LONG":
-        frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
-        frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-        frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
-    else:
-        frame.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
-        frame.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
-        frame.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 98.2, 98.5]
-
-    result = WildSwingStrategy().evaluate_exit(
-        "LOBSTER/USDT",
-        {"side": side, "entry_price": 100.0, "open_timestamp": 60.0},
-        frame,
-        current_tick_price=price,
-    )
-    assert (result is not None) is should_exit
+    assert result is not None
+    assert result["reason"] == "EXIT_BY_MA5_TREND_REVERSAL"

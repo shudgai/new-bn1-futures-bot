@@ -225,6 +225,8 @@ def _outside_continuation_frame():
     frame.loc[11, ["open", "high", "low", "close"]] = [103.6, 104.6, 103.5, 104.5]
     frame.loc[10, "ma5"] = 100.3
     frame.loc[11, "ma5"] = 100.2
+    frame.loc[10, "kc_middle"] = 99.9
+    frame.loc[11, "kc_middle"] = 100.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
     return frame
@@ -242,7 +244,7 @@ def _numeric_wild_swing_frame(side, pattern):
     frame["kc_lower"] = 95.0
     frame["kc_middle"] = 100.0
     frame["ma5"] = 100.0
-    frame["ma15"] = 106.0 if side == "LONG" else 94.0
+    frame["ma15"] = 99.8 if side == "LONG" else 100.3
 
     if side == "LONG":
         frame.loc[10, ["ma5", "kc_middle", "kc_upper"]] = [100.1, 100.0, 105.0]
@@ -353,6 +355,38 @@ def test_numeric_patterns_revalidate_without_qwen(
     assert result["side"] == side
     assert result["confirmation_bar_id"] == bar_id
     assert qwen_calls == []
+
+
+@pytest.mark.parametrize(
+    "side,pattern",
+    [
+        ("LONG", "INITIAL_2BAR_BREAKOUT"),
+        ("LONG", "CONTINUATION_OUTSIDE_KC"),
+        ("SHORT", "INITIAL_2BAR_BREAKOUT"),
+        ("SHORT", "CONTINUATION_OUTSIDE_KC"),
+    ],
+)
+def test_all_math_entry_patterns_require_kc_ma5_ma15_alignment(side, pattern):
+    frame = _numeric_wild_swing_frame(side, pattern)
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, side,
+    ) is not None
+
+    wrong_ma_order = frame.copy()
+    wrong_kc_direction = frame.copy()
+    if side == "LONG":
+        wrong_ma_order.loc[11, "ma15"] = wrong_ma_order.loc[11, "ma5"] + 0.1
+        wrong_kc_direction.loc[10, "kc_middle"] = 100.2
+    else:
+        wrong_ma_order.loc[11, "ma15"] = wrong_ma_order.loc[11, "ma5"] - 0.1
+        wrong_kc_direction.loc[10, "kc_middle"] = 99.8
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", wrong_ma_order, side,
+    ) is None
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", wrong_kc_direction, side,
+    ) is None
 
 
 def test_additional_closed_candle_candidate_reaches_existing_macro_gate():

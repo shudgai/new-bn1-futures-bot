@@ -394,9 +394,7 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"
 
 
-def test_profit_lock_exit_is_not_blocked_by_bar_dedup_and_uses_market_close(monkeypatch):
-    from core.gates import holding_protection_gate
-
+def test_runner_does_not_close_on_ratchet_alone():
     class Account(FakeAccount):
         def __init__(self):
             super().__init__()
@@ -423,13 +421,7 @@ def test_profit_lock_exit_is_not_blocked_by_bar_dedup_and_uses_market_close(monk
     }
     strategy = WildSwingStrategy()
     strategy.reset_symbol(symbol, 720_000.0)
-    strategy.state_for(symbol).last_processed_bar_id = 720_000.0
     engine._wild_swing_strategy = strategy
-    monkeypatch.setattr(
-        holding_protection_gate,
-        "_ratchet_lock_details",
-        lambda position, quote: {"stop_price": 101.0},
-    )
     frame = _frame("LONG")
     frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
 
@@ -437,19 +429,11 @@ def test_profit_lock_exit_is_not_blocked_by_bar_dedup_and_uses_market_close(monk
         engine, symbol, frame, 101.0, False, False,
     ))
 
-    assert len(engine.account.close_calls) == 1
-    _, _, reason, options = engine.account.close_calls[0]
-    assert "EXIT_BY_PROFIT_LOCK" in reason
-    assert options["is_limit"] is False
-    assert symbol not in engine.account.positions
+    assert engine.account.close_calls == []
+    assert symbol in engine.account.positions
 
 
-@pytest.mark.parametrize("quote,expected_exit", [(100.2, False), (100.31, True)])
-def test_runner_uses_live_quote_for_pivot_profit_threshold(
-    monkeypatch, quote, expected_exit,
-):
-    from core.gates import holding_protection_gate
-
+def test_runner_closes_on_live_ma5_slope_reversal():
     class Account(FakeAccount):
         def __init__(self):
             super().__init__()
@@ -478,19 +462,17 @@ def test_runner_uses_live_quote_for_pivot_profit_threshold(
     strategy = WildSwingStrategy()
     strategy.reset_symbol(symbol, 600_000.0)
     engine._wild_swing_strategy = strategy
-    monkeypatch.setattr(
-        holding_protection_gate, "_ratchet_lock_details", lambda position, price: None,
-    )
     frame = _frame("LONG")
-    frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
-    frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-    frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
     frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+    frame.loc[11, "is_closed"] = False
+    frame.loc[11, "ma5"] = float(frame.loc[10, "ma5"]) - 0.1
 
     asyncio.run(_process_wild_swing_symbol(
-        engine, symbol, frame, quote, False, False,
+        engine, symbol, frame, 99.0, False, False,
     ))
 
-    assert bool(engine.account.close_calls) is expected_exit
-    if expected_exit:
-        assert "EXIT_BY_PIVOT_PEAK" in engine.account.close_calls[0][2]
+    assert len(engine.account.close_calls) == 1
+    _, _, reason, options = engine.account.close_calls[0]
+    assert "EXIT_BY_MA5_TREND_REVERSAL" in reason
+    assert options["is_limit"] is False
+    assert symbol not in engine.account.positions

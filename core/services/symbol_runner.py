@@ -38,15 +38,10 @@ async def _process_wild_swing_symbol(
 
     position = engine.account.positions.get(symbol)
     if position:
-        from core.gates.holding_protection_gate import _ratchet_lock_details
-
-        profit_lock = _ratchet_lock_details(position, quote)
         exit_decision = strategy.evaluate_exit(
             symbol,
             position,
             frame,
-            profit_lock_triggered=profit_lock is not None,
-            current_tick_price=quote,
         )
         if exit_decision is not None:
             closed_ok = await engine.account.close_position(
