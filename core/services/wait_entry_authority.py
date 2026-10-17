@@ -295,8 +295,8 @@ class WaitEntryAuthority:
     ) -> dict[str, Any]:
         """Observe one snapshot; an initial snapshot only establishes a baseline."""
         with self._lock:
-            from core.symbol_aliases import is_lobster_symbol
-            if not is_lobster_symbol(symbol):
+            from core.symbol_aliases import is_cap_symbol, is_lobster_symbol
+            if not (is_lobster_symbol(symbol) or is_cap_symbol(symbol)):
                 return {"status": "BLOCKED_SYMBOL"}
             requested_symbol = symbol
             symbol = self._symbol_key(symbol)

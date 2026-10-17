@@ -112,6 +112,65 @@ def test_wait_entry_uses_shared_submit_lock_and_half_wallet_limit(tmp_path):
     assert engine._account_entry_submit_lock is not None
 
 
+@pytest.mark.parametrize(
+    "symbol,side",
+    [
+        ("LOBSTER/USDT", "LONG"),
+        ("LOBSTER/USDT", "SHORT"),
+        ("CAP/USDT", "LONG"),
+        ("CAP/USDT", "SHORT"),
+    ],
+)
+def test_authority_entry_skips_strategy_only_gates(
+    tmp_path, monkeypatch, symbol, side,
+):
+    import core.gates.ma5_ma15_cross_entry_gate as cross_gate
+    import core.gates.trend_riding_strategy as trend_gate
+
+    authority = WaitEntryAuthority(tmp_path / "wait.json")
+    engine = _engine(authority)
+    trigger = _claimed_trigger(authority, symbol=symbol, side=side)
+    called = []
+    monkeypatch.setattr(
+        trend_gate,
+        "can_open_position",
+        lambda **_kwargs: called.append("trend") or (
+            False, "BLOCKED_TEST_STRATEGY_GATE", {},
+        ),
+    )
+    monkeypatch.setattr(
+        cross_gate,
+        "validate_ma5_ma15_cross_entry",
+        lambda *_args: called.append("ma_cross") or (
+            False, "BLOCKED_TEST_CROSS_GATE", {},
+        ),
+    )
+
+    result = asyncio.run(engine.execute_dual_tf_entry(
+        symbol=symbol,
+        frame=pd.DataFrame([{"timestamp": 120_000, "atr": 2.0}]),
+        price=101.0 if side == "LONG" else 99.0,
+        side=side,
+        mode_name="WAIT_LIVE_BIG_TRIGGER",
+        meta_dict={
+            "entry_authority": "WAIT",
+            "wait_trigger": trigger,
+            "wait_trigger_id": trigger["trigger_id"],
+            "wait_client_order_id": trigger["client_order_id"],
+            "entry_authority_claim_id": trigger["trigger_id"],
+            "entry_client_order_id": trigger["client_order_id"],
+            "position_uuid": authority.position_uuid_for_trigger(
+                trigger["trigger_id"],
+            ),
+        },
+        entry_mode="CHANNEL_SWING",
+    ))
+
+    assert result is True
+    assert engine.account.calls
+    assert called == []
+
+
 def test_wait_engine_rejects_mismatched_trigger_before_account_submit(tmp_path):
     authority = WaitEntryAuthority(tmp_path / "wait.json")
     engine = _engine(authority)

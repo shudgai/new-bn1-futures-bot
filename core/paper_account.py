@@ -566,7 +566,11 @@ class PaperAccount:
         elif is_wild_swing:
             entry_context['managed_by_bot'] = True
 
-        if not is_manual and 'snapshot' in entry_context:
+        if (
+            not is_manual
+            and entry_context.get("entry_authority") != "WAIT"
+            and 'snapshot' in entry_context
+        ):
             snapshot = entry_context['snapshot']
             if 'candles' in snapshot and len(snapshot['candles']) > 0:
                 current_bar = snapshot['candles'][-1]

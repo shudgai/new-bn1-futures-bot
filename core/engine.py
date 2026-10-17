@@ -2705,22 +2705,23 @@ class TradingEngine:
         if not math.isfinite(atr) or atr <= 0:
             return False
 
-        from core.gates.trend_riding_strategy import can_open_position
-        can_open, gate_reason, _ = can_open_position(
-            df=frame,
-            side=side,
-            quote=price,
-            symbol=symbol,
-            last_closed_side=getattr(self.account, 'last_closed_side', {}).get(symbol, ''),
-            last_closed_ts=getattr(self.account, 'last_closed_at', {}).get(symbol, 0.0),
-        )
-        if not can_open:
-            self.account.log(
-                f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}",
-                "WARNING",
+        if not is_wait_authority:
+            from core.gates.trend_riding_strategy import can_open_position
+            can_open, gate_reason, _ = can_open_position(
+                df=frame,
+                side=side,
+                quote=price,
+                symbol=symbol,
+                last_closed_side=getattr(self.account, 'last_closed_side', {}).get(symbol, ''),
+                last_closed_ts=getattr(self.account, 'last_closed_at', {}).get(symbol, 0.0),
             )
-            print(f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}", flush=True)
-            return False
+            if not can_open:
+                self.account.log(
+                    f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}",
+                    "WARNING",
+                )
+                print(f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}", flush=True)
+                return False
 
         wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
         cand_bar_id = (
@@ -2804,16 +2805,20 @@ class TradingEngine:
                 or symbol in pending_orders
             ):
                 return False
-            cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
-                frame, side,
-            )
-            if not cross_allowed:
-                self.account.log(
-                    f"ENTRY_CROSS_GATE_BLOCK symbol={symbol} side={side} "
-                    f"reason={cross_reason}",
-                    "WARNING",
+            if not is_wait_authority:
+                from core.gates.ma5_ma15_cross_entry_gate import (
+                    validate_ma5_ma15_cross_entry,
                 )
-                return False
+                cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
+                    frame, side,
+                )
+                if not cross_allowed:
+                    self.account.log(
+                        f"ENTRY_CROSS_GATE_BLOCK symbol={symbol} side={side} "
+                        f"reason={cross_reason}",
+                        "WARNING",
+                    )
+                    return False
             occupied_symbols = set(positions).union(pending_orders)
             authority = getattr(self, "wait_entry_authority", None)
             claim_id = (
