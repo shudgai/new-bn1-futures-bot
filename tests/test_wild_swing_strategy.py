@@ -206,7 +206,7 @@ def test_short_crossover_is_not_generated_at_kc_upper_rail():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_live_outside_continuation_keeps_live_bar_identity(side):
+def test_live_outside_continuation_waits_for_candle_close(side):
     frame = _frame(side)
     frame["atr"] = 2.0
     frame["open"] = 100.0
@@ -251,14 +251,17 @@ def test_live_outside_continuation_keeps_live_bar_identity(side):
     frame = pd.concat([frame, live.to_frame().T], ignore_index=True)
     frame.attrs["timeframe_ms"] = 60_000
 
+    closed_signal = WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, side,
+    )
     signal = WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT", frame, side, tick_price=float(live["close"]),
     )
 
+    assert signal == closed_signal
     assert signal is not None
-    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
-    assert signal["is_intrabar"] is True
-    assert signal["bar_id"] == float(live["timestamp"])
+    assert signal["is_intrabar"] is False
+    assert signal["bar_id"] == float(frame.iloc[-2]["timestamp"])
 
 
 @pytest.mark.parametrize(

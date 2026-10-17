@@ -93,7 +93,7 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     assert result["confirmation_bar_id"] == bar_id
 
 
-def test_wild_swing_firewall_revalidates_live_breakout_bar_identity():
+def test_wild_swing_firewall_rejects_live_breakout_bar_as_unconfirmed():
     frame = _frame("LONG")
     frame["atr"] = 2.0
     frame["open"] = 100.0
@@ -130,12 +130,14 @@ def test_wild_swing_firewall_revalidates_live_breakout_bar_identity():
         "dual_tf_meta": {"bar_id": bar_id},
     }
 
-    result = asyncio.run(
-        validate_account_entry(FakeAccount(frame), "LOBSTER/USDT", "LONG", context)
-    )
-
-    assert result["side"] == "LONG"
-    assert result["confirmation_bar_id"] == bar_id
+    with pytest.raises(
+        ValueError, match="WILD_SWING_SIGNAL_STALE_OR_INVALID",
+    ):
+        asyncio.run(
+            validate_account_entry(
+                FakeAccount(frame), "LOBSTER/USDT", "LONG", context,
+            )
+        )
 
 
 @pytest.mark.parametrize(

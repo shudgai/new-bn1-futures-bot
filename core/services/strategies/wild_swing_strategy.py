@@ -1,6 +1,7 @@
 """Mathematical entry gates and trend-reversal exits for directional swings."""
 
 from dataclasses import dataclass, field
+import logging
 import math
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,7 @@ ENTRY_MODE_CONTINUATION = "CONTINUATION"
 ENTRY_MODE_CROSSOVER = "CROSSOVER"
 ENTRY_MODE_REVERSAL = "REVERSAL"
 WILD_SWING_ENTRY_MODES = PERMITTED_ENTRY_PATTERNS
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -176,30 +178,6 @@ class WildSwingStrategy:
         if len(bars) < self.volume_lookback + 2:
             return None
 
-        live_candle = None
-        live_bar_id = None
-        try:
-            interval_ms = float(frame.attrs.get("timeframe_ms"))
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            interval_ms = None
-        if (
-            frame is not None
-            and not frame.empty
-            and "is_closed" in frame
-            and not bool(frame.iloc[-1]["is_closed"])
-            and interval_ms == 60_000.0
-        ):
-            live_candle = frame.iloc[-1].to_dict()
-            live_bar_id = self._bar_id(frame.iloc[-1])
-            closed_bar_id = self._bar_id(bars.iloc[-1])
-            if (
-                live_bar_id is None
-                or closed_bar_id is None
-                or live_bar_id != closed_bar_id + 60_000.0
-            ):
-                live_candle = None
-                live_bar_id = None
-
         candidate = BreakoutContinuationEntryGate.evaluate_pure_math(
             bars.to_dict("records"),
             bars["kc_upper"].tolist(),
@@ -207,26 +185,22 @@ class WildSwingStrategy:
             bars["kc_middle"].tolist(),
             bars["_wild_ma5"].tolist(),
             bars["ma15"].tolist(),
-            tick_price=tick_price if live_candle is not None else None,
-            live_candle=live_candle,
+            tick_price=None,
+            live_candle=None,
         )
         if candidate is None or candidate["action"] != f"OPEN_{side}":
             return None
 
         current = bars.iloc[-1]
         previous = bars.iloc[-2]
-        current_ma5 = float(candidate["ma5_current"])
-        current_ma15 = float(candidate["ma15_current"])
-        current_middle = float(candidate["kc_basis"])
+        current_ma5 = float(current["_wild_ma5"])
+        current_ma15 = float(current["ma15"])
+        current_middle = float(current["kc_middle"])
         previous_ma5 = float(candidate["ma5_previous"])
-        if candidate.get("is_intrabar") is True:
-            live_row = frame.iloc[-1]
-            live_ma15 = self._number(live_row, "ma15")
-            if live_ma15 is None:
-                return None
-            current_ma15 = live_ma15
-        kc_middle_rising = current_middle > float(previous["kc_middle"])
-        kc_middle_falling = current_middle < float(previous["kc_middle"])
+        previous_middle = float(previous["kc_middle"])
+        kc_middle_slope = current_middle - previous_middle
+        kc_middle_rising = kc_middle_slope > 0
+        kc_middle_falling = kc_middle_slope < 0
         if side == "LONG":
             trend_aligned = (
                 kc_middle_rising
@@ -240,11 +214,22 @@ class WildSwingStrategy:
                 and current_ma5 < previous_ma5
             )
         if not trend_aligned:
+            logger.info(
+                "[拒絕開%s] symbol=%s KC方向=%s KC中軌斜率=%+.8g "
+                "MA5=%g MA15=%g MA5斜率=%+.8g",
+                "多" if side == "LONG" else "空",
+                symbol,
+                "UP" if kc_middle_rising else "DOWN" if kc_middle_falling else "FLAT",
+                kc_middle_slope,
+                current_ma5,
+                current_ma15,
+                current_ma5 - previous_ma5,
+            )
             return None
 
         entry_type = str(candidate["type"])
-        is_intrabar = candidate.get("is_intrabar") is True
-        bar_id = live_bar_id if is_intrabar else self._bar_id(current)
+        is_intrabar = False
+        bar_id = self._bar_id(current)
         if bar_id is None:
             return None
         state = self.state_for(symbol)
@@ -278,12 +263,6 @@ class WildSwingStrategy:
         ):
             return None
 
-        live_middle = (
-            float(candidate["kc_basis"])
-            if is_intrabar
-            else float(current["kc_middle"])
-        )
-        previous_middle = float(previous["kc_middle"])
         channel_expanding = (
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
@@ -301,7 +280,7 @@ class WildSwingStrategy:
             "channel_expanding": channel_expanding,
             "ma5_current": ma5_current,
             "ma5_previous": ma5_previous,
-            "kc_middle_current": live_middle,
+            "kc_middle_current": current_middle,
             "kc_middle_previous": previous_middle,
             "volume_exhausted": False,
             "bar_id": bar_id,

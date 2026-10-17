@@ -466,7 +466,7 @@ def test_additional_candidate_is_revalidated_by_final_entry_firewall(monkeypatch
         ("SHORT", 93.5, 93.5, 93.4, 93.45),
     ],
 )
-def test_live_outside_continuation_revalidates_through_final_firewall(
+def test_live_bar_cannot_authorize_new_signal_through_final_firewall(
     side, open_price, high, low, close,
 ):
     frame = _numeric_wild_swing_frame(side, "CONTINUATION_OUTSIDE_KC")
@@ -483,8 +483,8 @@ def test_live_outside_continuation_revalidates_through_final_firewall(
         "LOBSTER/USDT", frame, side, tick_price=close,
     )
     assert signal is not None
-    assert signal["is_intrabar"] is True
-    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
+    assert signal["is_intrabar"] is False
+    assert signal["bar_id"] == float(frame.iloc[-2]["timestamp"])
 
     class Account:
         positions = {}
@@ -496,9 +496,10 @@ def test_live_outside_continuation_revalidates_through_final_firewall(
             assert symbol == "LOBSTER/USDT"
             return frame.copy()
 
-    bar_id = float(live["timestamp"])
-    result = asyncio.run(
-        validate_account_entry(
+    live_bar_id = float(live["timestamp"])
+    closed_bar_id = float(frame.iloc[-2]["timestamp"])
+    with pytest.raises(ValueError, match="WILD_SWING_SIGNAL_STALE_OR_INVALID"):
+        asyncio.run(validate_account_entry(
             Account(),
             "LOBSTER/USDT",
             side,
@@ -510,14 +511,11 @@ def test_live_outside_continuation_revalidates_through_final_firewall(
                 "entry_signal_code": (
                     "WILD_SWING_CONTINUATION_OUTSIDE_KC_ENTRY"
                 ),
-                "channel_confirmation_bar_id": bar_id,
-                "dual_tf_meta": {"bar_id": bar_id},
+                "channel_confirmation_bar_id": live_bar_id,
+                "dual_tf_meta": {"bar_id": live_bar_id},
             },
-        )
-    )
-
-    assert result["side"] == side
-    assert result["confirmation_bar_id"] == bar_id
+        ))
+    assert closed_bar_id != live_bar_id
 
 
 @pytest.mark.parametrize(

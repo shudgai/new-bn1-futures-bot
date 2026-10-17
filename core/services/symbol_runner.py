@@ -72,39 +72,6 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
-    latest = frame.iloc[-1]
-    if "is_closed" in frame and not bool(latest["is_closed"]):
-        if float(latest["close"]) != quote:
-            attrs = dict(frame.attrs)
-            refreshed = frame.copy()
-            refreshed.loc[refreshed.index[-1], "close"] = quote
-            refreshed.loc[refreshed.index[-1], "high"] = max(
-                float(latest["high"]), quote,
-            )
-            refreshed.loc[refreshed.index[-1], "low"] = min(
-                float(latest["low"]), quote,
-            )
-            indicator_calculator = getattr(
-                getattr(engine, "strategy", None), "compute_indicators", None,
-            )
-            if not callable(indicator_calculator):
-                logger.error(
-                    "WILD_SWING_ENTRY_BLOCK symbol=%s reason=LIVE_INDICATOR_REFRESH_UNAVAILABLE",
-                    symbol,
-                )
-                return [], []
-            frame = indicator_calculator(refreshed)
-            if frame is None or frame.empty:
-                logger.error(
-                    "WILD_SWING_ENTRY_BLOCK symbol=%s reason=LIVE_INDICATOR_REFRESH_FAILED",
-                    symbol,
-                )
-                return [], []
-            frame.attrs.update(attrs)
-            closed = closed_entry_candles(frame)
-            if closed.empty:
-                return [], []
-
     signals = [
         strategy.evaluate_entry(
             symbol, frame, side, tick_price=quote,

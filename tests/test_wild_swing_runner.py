@@ -286,7 +286,7 @@ def test_runner_bypasses_vision_and_dynamic_lock_for_numeric_patterns(
         ("SHORT", 93.5, 93.5, 93.4, 93.45),
     ],
 )
-def test_runner_preserves_live_bar_for_outside_ma5_continuation(
+def test_runner_waits_for_live_bar_close_before_outside_continuation(
     side, open_price, high, low, close,
 ):
     frame = _numeric_wild_swing_frame(side, "CONTINUATION_OUTSIDE_KC")
@@ -307,12 +307,7 @@ def test_runner_preserves_live_bar_for_outside_ma5_continuation(
         )
     )
 
-    assert len(engine.entries) == 1
-    signal = engine.entries[0]["meta_dict"]
-    assert signal["side"] == side
-    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
-    assert signal["is_intrabar"] is True
-    assert signal["bar_id"] == float(live["timestamp"])
+    assert engine.entries == []
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
