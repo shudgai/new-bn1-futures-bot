@@ -589,6 +589,47 @@ def test_intrabar_gate_rejects_tick_outside_live_candle_ohlc():
 
 
 @pytest.mark.parametrize(
+    "live_open,tick,upper,lower,basis,ma5",
+    [
+        (99.6, 99.7, 110.0, 99.8, 105.0, [100.0, 100.0, 100.0, 100.5]),
+        (100.2, 100.1, 100.0, 90.0, 95.0, [100.0, 100.0, 100.0, 99.5]),
+    ],
+)
+def test_intrabar_breakout_rejects_direction_opposed_to_live_candle(
+    live_open, tick, upper, lower, basis, ma5,
+):
+    closed = [
+        {
+            **_candle(100.0, close, max(close, 100.05), min(close, 99.0)),
+            "timestamp": index * 60_000,
+        }
+        for index, close in enumerate([100.0, 100.0, 100.0, ma5[-1]])
+    ]
+    live = {
+        **_candle(
+            live_open, tick, max(live_open, tick) + 0.1,
+            min(live_open, tick) - 0.1,
+        ),
+        "timestamp": 240_000,
+        "is_closed": False,
+        "kc_upper": upper,
+        "kc_lower": lower,
+        "kc_middle": basis,
+    }
+    signal = BreakoutContinuationEntryGate.evaluate_pure_math(
+        closed,
+        [upper] * 4,
+        [lower] * 4,
+        [basis] * 4,
+        ma5,
+        [100.0] * 4,
+        tick_price=tick,
+        live_candle=live,
+    )
+    assert signal is None
+
+
+@pytest.mark.parametrize(
     "side,live_open,tick,previous_extreme",
     [
         ("LONG", 100.1, 100.5, 101.0),

@@ -273,6 +273,7 @@ def check_long_exit(
     position: Dict[str, Any],
     df: pd.DataFrame,
     quote: Optional[float] = None,
+    allow_pullback_exits: bool = True,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """持有多單審查 (Long Exit Guard Clauses)
     
@@ -368,18 +369,19 @@ def check_long_exit(
             return True, "EXIT_LONG_BLOW_OFF_TOP", details
         return False, "HOLD: ENTRY_BAR_BREATHING", details
 
-    # 1. 均線死叉離場
-    if death_cross:
+    # WILD_SWING can hold through ordinary MA/KC pullbacks while retaining
+    # independent profit-lock and numeric hard-stop exits.
+    if allow_pullback_exits and death_cross:
         logger.info(f"[平倉觸發] {symbol} 多單 - MA5/MA15 均線死叉平多 (MA5={ma5_curr:.6g} < MA15={ma15_curr:.6g})")
         return True, "EXIT_BY_MA_DEATH_CROSS", details
 
     # 2. 均線斜率下彎反轉
-    if ma5_slope_down:
+    if allow_pullback_exits and ma5_slope_down:
         logger.info(f"[平倉觸發] {symbol} 多單 - MA5 明確下彎平多 (MA5={ma5_curr:.6g}, 斜率={ma5_curr - ma5_prev:+.6g})")
         return True, "EXIT_BY_MA5_TREND_REVERSAL", details
 
     # 3. 趨勢逆轉強制全平 (Fail-Safe)
-    if kc_trend == "DOWN" or kc_mid_slope < -1e-12:
+    if allow_pullback_exits and (kc_trend == "DOWN" or kc_mid_slope < -1e-12):
         logger.info(f"[平倉觸發] {symbol} 多單 - KC翻空強制清倉 (kc_trend={kc_trend}, slope={kc_mid_slope:+.6g})")
         return True, "EXIT_BY_KC_TREND_REVERSAL", details
 
@@ -395,7 +397,7 @@ def check_long_exit(
             return True, "EXIT_BY_BREAKEVEN", details
 
     # 5. 伺服器硬止損 (Hard Stop-Loss) 與結構破位
-    if close_p < kc_mid_curr or close_p < kc_lower:
+    if allow_pullback_exits and (close_p < kc_mid_curr or close_p < kc_lower):
         logger.info(f"[平倉觸發] {symbol} 多單 - 實體收盤摜破 KC 中軌/下軌結構防線 (close={close_p:.6g} < middle={kc_mid_curr:.6g})")
         return True, "EXIT_BY_KC_BAND_BREACH", details
 
@@ -412,6 +414,7 @@ def check_short_exit(
     df: pd.DataFrame,
     quote: Optional[float] = None,
     allow_ma5_slope_exit: bool = True,
+    allow_pullback_exits: bool = True,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """持有空單審查 (Short Exit Guard Clauses)
     
@@ -510,13 +513,14 @@ def check_short_exit(
             return True, "EXIT_SHORT_BLOW_OFF_BOTTOM", details
         return False, "HOLD: ENTRY_BAR_BREATHING", details
 
-    # 1. 均線金叉離場
-    if golden_cross:
+    # WILD_SWING can hold through ordinary MA/KC pullbacks while retaining
+    # independent profit-lock and numeric hard-stop exits.
+    if allow_pullback_exits and golden_cross:
         logger.info(f"[平倉觸發] {symbol} 空單 - MA5/MA15 均線金叉平空 (MA5={ma5_curr:.6g} > MA15={ma15_curr:.6g})")
         return True, "EXIT_BY_MA_GOLDEN_CROSS", details
 
     # 2. 均線斜率反轉向上
-    if allow_ma5_slope_exit and ma5_slope_up:
+    if allow_pullback_exits and allow_ma5_slope_exit and ma5_slope_up:
         # 防守過濾：若價格與 MA5 均仍在 MA15 下方且無金叉，視為正常健康回踩，嚴禁神經質平空避免底部被雙巴刷單
         if ma5_curr <= ma15_curr and close_p <= ma15_curr:
             logger.info(
@@ -528,14 +532,14 @@ def check_short_exit(
             return True, "EXIT_BY_MA5_TREND_REVERSAL", details
 
     # 3. 均線連 2 根站上 MA15 離場
-    if two_bars_above_ma15:
+    if allow_pullback_exits and two_bars_above_ma15:
         logger.info(
             f"[平倉觸發] {symbol} 空單 - 連續 2 根收盤站上 MA15 離場 (close={close_p:.6g}, prev={prev_close:.6g} > MA15={ma15_curr:.6g})"
         )
         return True, "EXIT_BY_MA15_BREAKOUT", details
 
     # 4. 趨勢逆轉強制全平 (Fail-Safe)
-    if kc_trend == "UP" or kc_mid_slope > 1e-12:
+    if allow_pullback_exits and (kc_trend == "UP" or kc_mid_slope > 1e-12):
         logger.info(f"[平倉觸發] {symbol} 空單 - KC翻多/中軌上行強制清倉 (kc_trend={kc_trend}, slope={kc_mid_slope:+.6g})")
         return True, "EXIT_BY_KC_TREND_REVERSAL", details
 
@@ -551,7 +555,7 @@ def check_short_exit(
             return True, "EXIT_BY_BREAKEVEN", details
 
     # 6. 伺服器硬止損 (Hard Stop-Loss) 與結構破位
-    if close_p > kc_mid_curr or close_p > kc_upper:
+    if allow_pullback_exits and (close_p > kc_mid_curr or close_p > kc_upper):
         logger.info(f"[平倉觸發] {symbol} 空單 - 實體收盤突破 KC 中軌/上軌結構防線 (close={close_p:.6g} > middle={kc_mid_curr:.6g})")
         return True, "EXIT_BY_KC_BAND_BREACH", details
 

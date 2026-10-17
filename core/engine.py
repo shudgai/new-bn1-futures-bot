@@ -2764,6 +2764,10 @@ class TradingEngine:
             'entry_signal_code': mode_name,
             'managed_by_bot': True,
             'channel_confirmation_bar_id': cand_bar_id,
+            'wick_trigger_bar_id': (
+                wild_signal.get('wick_trigger_bar_id')
+                if entry_mode == "WILD_SWING" else None
+            ),
             'candidate_bar_id': cand_bar_id,
             'entry_atr': atr,
             'dual_tf_meta': meta_dict or {},

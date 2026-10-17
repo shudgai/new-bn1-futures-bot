@@ -76,6 +76,29 @@ def _pivot_cross_frame(side):
     return frame
 
 
+def _wick_follow_through_frame(side):
+    frame = _pivot_cross_frame(side)
+    if side == "LONG":
+        frame.loc[11, ["open", "high", "low", "close"]] = [
+            99.9, 101.6, 99.8, 100.4,
+        ]
+        frame.loc[12] = frame.loc[11]
+        frame.loc[12, [
+            "timestamp", "open", "high", "low", "close",
+            "kc_middle", "ma5", "ma15",
+        ]] = [720_000, 100.4, 100.8, 100.3, 100.7, 100.2, 100.3, 100.1]
+    else:
+        frame.loc[11, ["open", "high", "low", "close"]] = [
+            100.0, 100.1, 98.9, 99.6,
+        ]
+        frame.loc[12] = frame.loc[11]
+        frame.loc[12, [
+            "timestamp", "open", "high", "low", "close",
+            "kc_middle", "ma5", "ma15",
+        ]] = [720_000, 99.6, 99.7, 99.2, 99.3, 99.8, 99.8, 99.9]
+    return frame
+
+
 def _profit_lock_continuation_frame(side):
     frame = _pivot_cross_frame(side)
     if side == "LONG":
@@ -95,6 +118,34 @@ def _profit_lock_continuation_frame(side):
             "open", "high", "low", "close",
         ]] = [99.8, 99.9, 99.6, 99.7, 102.0, 99.6, 99.7, 99.3, 99.4]
     return frame
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_directional_long_wick_defers_entry_to_next_closed_bar(side):
+    frame = _wick_follow_through_frame(side)
+    strategy = WildSwingStrategy()
+
+    assert strategy.evaluate_entry("LOBSTER/USDT", frame.iloc[:12], side) is None
+
+    signal = strategy.evaluate_entry("LOBSTER/USDT", frame, side)
+
+    assert signal is not None
+    assert signal["side"] == side
+    assert signal["reason"] == "MA_CROSSOVER_WICK_FOLLOW_THROUGH_ENTRY"
+    assert signal["bar_id"] == frame.iloc[12]["timestamp"]
+    assert signal["wick_trigger_bar_id"] == frame.iloc[11]["timestamp"]
+
+
+def test_long_wick_follow_through_is_rejected_when_ma5_turns_down():
+    frame = _wick_follow_through_frame("LONG")
+    frame.loc[12, "ma5"] = 100.0
+    strategy = WildSwingStrategy()
+
+    assert strategy.evaluate_entry(
+        "LOBSTER/USDT", frame.iloc[:12], "LONG",
+    ) is None
+    assert strategy.evaluate_entry("LOBSTER/USDT", frame, "LONG") is None
+    assert "LONG" not in strategy.state_for("LOBSTER/USDT").pending_wick_bar_ids
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -417,19 +468,19 @@ def test_latest_profit_lock_exit_requires_most_recent_matching_close():
 
 
 @pytest.mark.parametrize(
-    "side,previous_ma5,previous_ma15,current_ma5,current_ma15,close,middle,expected",
+    "side,previous_ma5,previous_ma15,current_ma5,current_ma15,close,middle",
     [
-        ("SHORT", 100.3, 100.2, 100.4, 100.1, 99.5, 99.9, "EXIT_BY_MA5_TREND_REVERSAL"),
-        ("SHORT", 99.9, 100.0, 100.2, 100.1, 99.5, 99.9, "EXIT_BY_MA_GOLDEN_CROSS"),
-        ("SHORT", 100.3, 100.4, 100.1, 100.4, 100.1, 100.0, "EXIT_BY_KC_BAND_BREACH"),
-        ("LONG", 99.7, 99.8, 99.6, 99.7, 100.5, 100.1, "EXIT_BY_MA5_TREND_REVERSAL"),
-        ("LONG", 100.1, 100.0, 99.8, 99.9, 100.5, 100.1, "EXIT_BY_MA_DEATH_CROSS"),
-        ("LONG", 99.7, 99.8, 99.8, 99.8, 100.0, 100.1, "EXIT_BY_KC_BAND_BREACH"),
+        ("SHORT", 100.3, 100.2, 100.4, 100.1, 99.5, 99.9),
+        ("SHORT", 99.9, 100.0, 100.2, 100.1, 99.5, 99.9),
+        ("SHORT", 100.3, 100.4, 100.1, 100.4, 100.1, 100.0),
+        ("LONG", 99.7, 99.8, 99.6, 99.7, 100.5, 100.1),
+        ("LONG", 100.1, 100.0, 99.8, 99.9, 100.5, 100.1),
+        ("LONG", 99.7, 99.8, 99.8, 99.8, 100.0, 100.1),
     ],
 )
-def test_exit_triggers_on_ma_reversal_or_kc_close(
+def test_exit_holds_through_ma_and_kc_pullbacks(
     side, previous_ma5, previous_ma15, current_ma5, current_ma15,
-    close, middle, expected,
+    close, middle,
 ):
     frame = _frame(side)
     frame.loc[10, ["ma5", "ma15"]] = [previous_ma5, previous_ma15]
@@ -439,9 +490,7 @@ def test_exit_triggers_on_ma_reversal_or_kc_close(
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": side}, frame,
     )
-    assert result is not None
-    assert result["action"] == f"CLOSE_{side}"
-    assert result["reason"] == expected
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -452,7 +501,7 @@ def test_exit_holds_when_trend_and_kc_position_remain_favorable(side):
     assert result is None
 
 
-def test_exit_checks_ma5_reversal_from_live_indicator_on_every_tick():
+def test_exit_holds_through_live_ma5_pullback():
     frame = _frame("SHORT")
     frame.loc[11, "is_closed"] = False
     frame.loc[11, "ma5"] = 100.4
@@ -460,12 +509,10 @@ def test_exit_checks_ma5_reversal_from_live_indicator_on_every_tick():
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": "SHORT"}, frame,
     )
-    assert result is not None
-    assert result["reason"] == "EXIT_BY_MA5_TREND_REVERSAL"
+    assert result is None
 
 
-def test_exit_kc_trend_reversal_fail_safe():
-    """第一道防線：持有多單時，只要 KC 通道翻空或中軌下行，立即市價全平多單，嚴禁逆勢死扛"""
+def test_exit_holds_when_kc_trend_reverses_without_profit_lock_or_hard_stop():
     frame = _frame("LONG")
     # 將 KC 中軌改成向下翻空 (100.2 -> 99.8)
     frame.loc[10, "kc_middle"] = 100.2
@@ -478,9 +525,7 @@ def test_exit_kc_trend_reversal_fail_safe():
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": "LONG"}, frame,
     )
-    assert result is not None
-    assert result["action"] == "CLOSE_LONG"
-    assert result["reason"] in ("EXIT_BY_KC_BAND_BREACH", "EXIT_BY_KC_TREND_REVERSAL")
+    assert result is None
 
 
 def test_exit_trailing_profit_lock_and_breakeven():
@@ -515,22 +560,79 @@ def test_exit_trailing_profit_lock_and_breakeven():
     assert result2["reason"] in ("EXIT_BY_TRAILING_PROFIT_LOCK", "EXIT_BY_BREAKEVEN")
 
 
-def test_exit_hard_stop_loss():
-    """第四道防線：虧損達到 -2.5% 或 2.2 ATR 時，觸發硬性止損清倉"""
+def test_exit_short_trailing_profit_lock_survives_pullback_suppression():
+    frame = _frame("SHORT")
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT",
+        {"side": "SHORT", "entry_price": 100.0, "lowest_price": 98.0},
+        frame,
+        quote=99.0,
+    )
+    assert result is not None
+    assert result["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
+
+
+def test_live_bar_exit_blocks_same_bar_reentry(monkeypatch):
     frame = _frame("LONG")
+    live_bar_id = float(frame.iloc[-1]["timestamp"])
+    frame.loc[11, "is_closed"] = False
+    strategy = WildSwingStrategy()
+    decision = strategy.evaluate_exit(
+        "LOBSTER/USDT",
+        {"side": "LONG", "entry_price": 100.0, "highest_price": 102.0},
+        frame,
+        quote=100.9,
+    )
+
+    assert decision is not None
+    assert decision["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
+    assert decision["bar_id"] == live_bar_id
+
+    strategy.record_entry_fill("LOBSTER/USDT", live_bar_id)
+    strategy.record_exit(
+        "LOBSTER/USDT", "LONG", 100.9,
+        decision["reason"], decision["bar_id"] - 60_000,
+    )
+    assert strategy.state_for("LOBSTER/USDT").last_exit_bar_id == live_bar_id
+
+    frame.loc[11, "is_closed"] = True
+    monkeypatch.setattr(
+        strategy,
+        "_pure_math_candidate",
+        lambda bars: {
+            "action": "OPEN_LONG",
+            "type": "CONTINUATION_OUTSIDE_KC",
+            "reason": "test candidate",
+        },
+    )
+    assert strategy.evaluate_entry("LOBSTER/USDT", frame, "LONG") is None
+
+
+@pytest.mark.parametrize(
+    "side,open_price,high,low,close",
+    [
+        ("LONG", 100.2, 100.3, 96.5, 97.0),
+        ("SHORT", 100.2, 103.5, 99.5, 103.0),
+    ],
+)
+def test_exit_hard_stop_loss(side, open_price, high, low, close):
+    """第四道防線：虧損達到 -2.5% 或 2.2 ATR 時，觸發硬性止損清倉"""
+    frame = _frame(side)
     # 均線保持向上但盤中長黑插針暴跌
     frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
-    frame.loc[11, ["ma5", "ma15", "kc_middle", "close", "low"]] = [100.2, 99.9, 100.1, 97.0, 96.5]
+    frame.loc[11, [
+        "open", "high", "low", "ma5", "ma15", "kc_middle", "close",
+    ]] = [open_price, high, low, 100.2, 99.9, 100.1, close]
 
     pos = {
-        "side": "LONG",
+        "side": side,
         "entry_price": 100.0,
     }
     result = WildSwingStrategy().evaluate_exit(
-        "LOBSTER/USDT", pos, frame, quote=97.0,
+        "LOBSTER/USDT", pos, frame, quote=close,
     )
     assert result is not None
-    assert result["reason"] in ("EXIT_BY_HARD_STOP_LOSS", "EXIT_BY_KC_BAND_BREACH")
+    assert result["reason"] == "EXIT_BY_HARD_STOP_LOSS"
 
 
 def test_exit_entry_bar_immunity_and_extreme_pinbar_exception():
@@ -563,4 +665,3 @@ def test_exit_entry_bar_immunity_and_extreme_pinbar_exception():
     )
     assert result_pinbar is not None
     assert result_pinbar["reason"] == "EXIT_LONG_BLOW_OFF_TOP"
-

@@ -52,16 +52,19 @@ class FakeAccount:
         self.logs.append((message, level))
 
 
-def _context(bar_id):
-    return {
+def _context(bar_id, reason="MA_CROSSOVER_ENTRY", wick_trigger_bar_id=None):
+    context = {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "CROSSOVER",
-        "entry_signal_code": "WILD_SWING_MA_CROSSOVER_ENTRY",
+        "entry_signal_code": f"WILD_SWING_{reason}",
         "entry_signal_mode": "CROSSOVER",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
     }
+    if wick_trigger_bar_id is not None:
+        context["wick_trigger_bar_id"] = wick_trigger_bar_id
+    return context
 
 
 def _firewall_cross_frame():
@@ -91,6 +94,33 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     assert result["entry_signal_mode"] == "CROSSOVER"
     assert result["side"] == "SHORT"
     assert result["confirmation_bar_id"] == bar_id
+
+
+def test_wild_swing_firewall_revalidates_long_wick_follow_through():
+    from test_wild_swing_strategy import _wick_follow_through_frame
+
+    frame = _wick_follow_through_frame("LONG")
+    frame["atr"] = 2.0
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    wick_bar_id = float(frame.iloc[-2]["timestamp"])
+    confirmation_bar_id = float(frame.iloc[-1]["timestamp"])
+
+    result = asyncio.run(
+        validate_account_entry(
+            FakeAccount(frame),
+            "LOBSTER/USDT",
+            "LONG",
+            _context(
+                confirmation_bar_id,
+                "MA_CROSSOVER_WICK_FOLLOW_THROUGH_ENTRY",
+                wick_bar_id,
+            ),
+        )
+    )
+
+    assert result["side"] == "LONG"
+    assert result["confirmation_bar_id"] == confirmation_bar_id
 
 
 def test_wild_swing_firewall_rejects_live_breakout_bar_as_unconfirmed():

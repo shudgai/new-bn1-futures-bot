@@ -144,7 +144,7 @@ ENTRY_CONTEXT_KEYS = (
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
     "channel_pivot_middle_exit_pending", "entry_kc_middle",
-    "channel_confirmation_bar_id",
+    "channel_confirmation_bar_id", "wick_trigger_bar_id",
     "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "channel_favorable_rail_reached",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",

@@ -371,7 +371,11 @@ async def validate_account_entry(account, symbol, side, context):
                     "[FORBIDDEN_ENTRY] WILD_SWING_LIVE_QUOTE_INVALID"
                 )
         signal = WildSwingStrategy().evaluate_entry(
-            symbol, fresh_frame, side, tick_price=tick_price,
+            symbol,
+            fresh_frame,
+            side,
+            tick_price=tick_price,
+            expected_wick_bar_id=context.get("wick_trigger_bar_id"),
         )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
@@ -403,6 +407,12 @@ async def validate_account_entry(account, symbol, side, context):
         confirmation_bar_id = finite_bar_id(
             context.get("channel_confirmation_bar_id")
         )
+        expected_wick_bar_id = finite_bar_id(
+            context.get("wick_trigger_bar_id")
+        )
+        signal_wick_bar_id = finite_bar_id(
+            signal.get("wick_trigger_bar_id")
+        )
         if (
             signal.get("side") != side
             or signal_pattern is None
@@ -418,6 +428,7 @@ async def validate_account_entry(account, symbol, side, context):
             or signal_bar_id is None
             or expected_bar_id != signal_bar_id
             or confirmation_bar_id != signal_bar_id
+            or expected_wick_bar_id != signal_wick_bar_id
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
 

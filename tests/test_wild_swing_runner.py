@@ -41,9 +41,29 @@ class FakeAccount:
         self.trades = []
 
 
+class FakeWaitEntryAuthority:
+    def arbitrate(self, authorities):
+        sides = {item["side"] for item in authorities}
+        if len(sides) > 1:
+            return {"status": "BLOCKED_OPPOSITE_AUTHORITIES"}
+        if not authorities:
+            return {"status": "NO_AUTHORITY"}
+        return {"status": "ONE_ORDER", "winner": authorities[0]}
+
+    def pending_events(self, symbol):
+        return []
+
+    def acknowledge_events(self, event_ids):
+        return None
+
+    def unknown_claims(self, symbol):
+        return []
+
+
 class FakeEngine:
     def __init__(self):
         self.account = FakeAccount()
+        self.wait_entry_authority = FakeWaitEntryAuthority()
         self.tickers = {"LOBSTER/USDT": 99.0}
         self.entries = []
 
@@ -428,7 +448,7 @@ def test_runner_does_not_close_on_ratchet_alone():
     assert symbol in engine.account.positions
 
 
-def test_runner_closes_on_live_ma5_slope_reversal():
+def test_runner_holds_through_live_ma5_pullback():
     class Account(FakeAccount):
         def __init__(self):
             super().__init__()
@@ -466,8 +486,5 @@ def test_runner_closes_on_live_ma5_slope_reversal():
         engine, symbol, frame, 99.0, False, False,
     ))
 
-    assert len(engine.account.close_calls) == 1
-    _, _, reason, options = engine.account.close_calls[0]
-    assert "EXIT_BY_MA5_TREND_REVERSAL" in reason
-    assert options["is_limit"] is False
-    assert symbol not in engine.account.positions
+    assert engine.account.close_calls == []
+    assert symbol in engine.account.positions

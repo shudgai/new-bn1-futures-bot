@@ -24,6 +24,14 @@ ENTRY_MODE_CONTINUATION = "CONTINUATION"
 ENTRY_MODE_CROSSOVER = "CROSSOVER"
 ENTRY_MODE_REVERSAL = "REVERSAL"
 WILD_SWING_ENTRY_MODES = PERMITTED_ENTRY_PATTERNS
+PULLBACK_EXIT_REASONS = frozenset({
+    "EXIT_BY_MA_DEATH_CROSS",
+    "EXIT_BY_MA_GOLDEN_CROSS",
+    "EXIT_BY_MA5_TREND_REVERSAL",
+    "EXIT_BY_MA15_BREAKOUT",
+    "EXIT_BY_KC_TREND_REVERSAL",
+    "EXIT_BY_KC_BAND_BREACH",
+})
 logger = logging.getLogger(__name__)
 
 
@@ -36,8 +44,7 @@ class WildSwingSymbolState:
     last_exit_bar_id: Optional[float] = None
     last_processed_bar_id: Optional[float] = None
     reset_bar_id: Optional[float] = None
-    pending_short_wick_bar_id: Optional[float] = None
-    pending_short_wick_low: Optional[float] = None
+    pending_wick_bar_ids: Dict[str, float] = field(default_factory=dict)
     veto_flags: set[str] = field(default_factory=set)
 
 
@@ -174,6 +181,7 @@ class WildSwingStrategy:
         side: str,
         *,
         tick_price: Optional[float] = None,
+        expected_wick_bar_id: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
         """Evaluate only the five explicitly authorized mathematical entries."""
         side = str(side).upper()
@@ -183,59 +191,11 @@ class WildSwingStrategy:
         if len(bars) < self.volume_lookback + 2:
             return None
 
-        candidate = BreakoutContinuationEntryGate.evaluate_pure_math(
-            bars.to_dict("records"),
-            bars["kc_upper"].tolist(),
-            bars["kc_lower"].tolist(),
-            bars["kc_middle"].tolist(),
-            bars["_wild_ma5"].tolist(),
-            bars["ma15"].tolist(),
-            tick_price=None,
-            live_candle=None,
-        )
-        if candidate is None or candidate["action"] != f"OPEN_{side}":
-            return None
-
         current = bars.iloc[-1]
         previous = bars.iloc[-2]
-        current_ma5 = float(current["_wild_ma5"])
-        current_ma15 = float(current["ma15"])
-        current_middle = float(current["kc_middle"])
-        previous_ma5 = float(candidate["ma5_previous"])
-        previous_middle = float(previous["kc_middle"])
-        kc_middle_slope = current_middle - previous_middle
-        kc_middle_rising = kc_middle_slope > 0
-        kc_middle_falling = kc_middle_slope < 0
-        if side == "LONG":
-            trend_aligned = (
-                kc_middle_rising
-                and current_ma5 > current_ma15
-                and current_ma5 > previous_ma5
-            )
-        else:
-            trend_aligned = (
-                kc_middle_falling
-                and current_ma5 < current_ma15
-                and current_ma5 < previous_ma5
-            )
-        if not trend_aligned:
-            logger.info(
-                "[拒絕開%s] symbol=%s KC方向=%s KC中軌斜率=%+.8g "
-                "MA5=%g MA15=%g MA5斜率=%+.8g",
-                "多" if side == "LONG" else "空",
-                symbol,
-                "UP" if kc_middle_rising else "DOWN" if kc_middle_falling else "FLAT",
-                kc_middle_slope,
-                current_ma5,
-                current_ma15,
-                current_ma5 - previous_ma5,
-            )
-            return None
-
-        entry_type = str(candidate["type"])
-        is_intrabar = False
         bar_id = self._bar_id(current)
-        if bar_id is None:
+        previous_bar_id = self._bar_id(previous)
+        if bar_id is None or previous_bar_id is None:
             return None
         state = self.state_for(symbol)
         if (
@@ -248,6 +208,99 @@ class WildSwingStrategy:
         ):
             return None
 
+        delayed = False
+        candidate = None
+        if expected_wick_bar_id is not None:
+            try:
+                expected_id = float(expected_wick_bar_id)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(expected_id):
+                return None
+            candidate = self._wick_follow_through_candidate(
+                bars, side, expected_id,
+            )
+            delayed = candidate is not None
+        else:
+            pending_id = state.pending_wick_bar_ids.get(side)
+            if pending_id is not None and bar_id > pending_id:
+                state.pending_wick_bar_ids.pop(side, None)
+                if bar_id == pending_id + 60_000:
+                    candidate = self._wick_follow_through_candidate(
+                        bars, side, pending_id,
+                    )
+                    if candidate is None:
+                        logger.info(
+                            "WILD_SWING_WICK_CONFIRMATION_BLOCK "
+                            "symbol=%s side=%s wick_bar=%s confirmation_bar=%s",
+                            symbol, side, pending_id, bar_id,
+                        )
+                        return None
+                    delayed = True
+
+            if candidate is None:
+                candidate = self._pure_math_candidate(bars)
+                if candidate is None or candidate["action"] != f"OPEN_{side}":
+                    return None
+                if self._has_directional_exhaustion_wick(current, side):
+                    state.pending_wick_bar_ids[side] = bar_id
+                    logger.info(
+                        "WILD_SWING_WICK_CONFIRMATION_WAIT "
+                        "symbol=%s side=%s wick_bar=%s",
+                        symbol, side, bar_id,
+                    )
+                    return None
+
+        if candidate is None or candidate["action"] != f"OPEN_{side}":
+            return None
+
+        if delayed:
+            candle_directional = (
+                float(current["close"]) > float(current["open"])
+                if side == "LONG"
+                else float(current["close"]) < float(current["open"])
+            )
+            if not candle_directional:
+                return None
+
+        current_ma5 = float(current["_wild_ma5"])
+        current_ma15 = float(current["ma15"])
+        current_middle = float(current["kc_middle"])
+        previous_ma5 = float(previous["_wild_ma5"])
+        previous_middle = float(previous["kc_middle"])
+        kc_middle_slope = current_middle - previous_middle
+        kc_middle_rising = kc_middle_slope > 0
+        kc_middle_falling = kc_middle_slope < 0
+        ma5_slope = current_ma5 - previous_ma5
+        if side == "LONG":
+            trend_aligned = (
+                kc_middle_rising
+                and current_ma5 > current_ma15
+                and ma5_slope > 0
+                and (not delayed or float(current["close"]) > current_ma5)
+            )
+        else:
+            trend_aligned = (
+                kc_middle_falling
+                and current_ma5 < current_ma15
+                and ma5_slope < 0
+                and (not delayed or float(current["close"]) < current_ma5)
+            )
+        if not trend_aligned:
+            logger.info(
+                "[拒絕開%s] symbol=%s KC方向=%s KC中軌斜率=%+.8g "
+                "MA5=%g MA15=%g MA5斜率=%+.8g",
+                "多" if side == "LONG" else "空",
+                symbol,
+                "UP" if kc_middle_rising else "DOWN" if kc_middle_falling else "FLAT",
+                kc_middle_slope,
+                current_ma5,
+                current_ma15,
+                ma5_slope,
+            )
+            return None
+
+        entry_type = str(candidate["type"])
         entry_pattern = (
             ENTRY_MODE_BREAKOUT
             if entry_type in {
@@ -260,20 +313,18 @@ class WildSwingStrategy:
             if entry_type == MA_CROSSOVER
             else ENTRY_MODE_CONTINUATION
         )
-        ma5_current = float(candidate["ma5_current"])
-        ma5_previous = float(candidate["ma5_previous"])
-        if (
-            (side == "LONG" and ma5_current <= ma5_previous)
-            or (side == "SHORT" and ma5_current >= ma5_previous)
-        ):
-            return None
-
+        ma5_current = current_ma5
+        ma5_previous = previous_ma5
         channel_expanding = (
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
-        reason = f"{entry_type}_ENTRY"
-        return {
+        reason = (
+            f"{entry_type}_WICK_FOLLOW_THROUGH_ENTRY"
+            if delayed
+            else f"{entry_type}_ENTRY"
+        )
+        signal = {
             "side": side,
             "reason": reason,
             "entry_label": reason,
@@ -281,7 +332,7 @@ class WildSwingStrategy:
             "entry_signal_mode": entry_pattern,
             "structure_confirmation": entry_type,
             "structure_confirmed": True,
-            "is_intrabar": is_intrabar,
+            "is_intrabar": False,
             "channel_expanding": channel_expanding,
             "ma5_current": ma5_current,
             "ma5_previous": ma5_previous,
@@ -289,9 +340,66 @@ class WildSwingStrategy:
             "kc_middle_previous": previous_middle,
             "volume_exhausted": False,
             "bar_id": bar_id,
-            "close": float(candidate["price"]),
+            "close": float(current["close"]),
             "entry_mode": "WILD_SWING",
             "candidate_reason": candidate["reason"],
+        }
+        if delayed:
+            signal["wick_trigger_bar_id"] = float(candidate["wick_bar_id"])
+        return signal
+
+    @staticmethod
+    def _pure_math_candidate(bars: pd.DataFrame) -> Optional[dict[str, Any]]:
+        return BreakoutContinuationEntryGate.evaluate_pure_math(
+            bars.to_dict("records"),
+            bars["kc_upper"].tolist(),
+            bars["kc_lower"].tolist(),
+            bars["kc_middle"].tolist(),
+            bars["_wild_ma5"].tolist(),
+            bars["ma15"].tolist(),
+            tick_price=None,
+            live_candle=None,
+        )
+
+    @staticmethod
+    def _has_directional_exhaustion_wick(
+        bar: pd.Series, side: str,
+    ) -> bool:
+        open_price = float(bar["open"])
+        close = float(bar["close"])
+        high = float(bar["high"])
+        low = float(bar["low"])
+        body = abs(close - open_price)
+        wick = (
+            high - max(open_price, close)
+            if side == "LONG"
+            else min(open_price, close) - low
+        )
+        return wick > body
+
+    def _wick_follow_through_candidate(
+        self,
+        bars: pd.DataFrame,
+        side: str,
+        wick_bar_id: float,
+    ) -> Optional[dict[str, Any]]:
+        trigger_bar = bars.iloc[-2]
+        confirmation_bar = bars.iloc[-1]
+        if (
+            self._bar_id(trigger_bar) != wick_bar_id
+            or self._bar_id(confirmation_bar) != wick_bar_id + 60_000
+        ):
+            return None
+        candidate = self._pure_math_candidate(bars.iloc[:-1])
+        if (
+            candidate is None
+            or candidate["action"] != f"OPEN_{side}"
+            or not self._has_directional_exhaustion_wick(trigger_bar, side)
+        ):
+            return None
+        return {
+            **candidate,
+            "wick_bar_id": wick_bar_id,
         }
 
     def _evaluate_legacy_entry(
@@ -756,6 +864,15 @@ class WildSwingStrategy:
         bar_id = self._bar_id(current)
         if bar_id is None:
             return None
+        if (
+            frame is not None
+            and not frame.empty
+            and "is_closed" in frame
+            and not bool(frame.iloc[-1].get("is_closed", True))
+        ):
+            live_bar_id = self._bar_id(frame.iloc[-1])
+            if live_bar_id is not None and live_bar_id > bar_id:
+                bar_id = live_bar_id
 
         from core.services.strategies.defensive_trend_strategy import (
             check_long_exit,
@@ -767,11 +884,20 @@ class WildSwingStrategy:
         if side == "SHORT":
             should_exit, reason, details = check_short_exit(
                 position, frame, quote=current_price,
+                allow_pullback_exits=False,
             )
         else:
             should_exit, reason, details = check_long_exit(
                 position, frame, quote=current_price,
+                allow_pullback_exits=False,
             )
+
+        if should_exit and reason in PULLBACK_EXIT_REASONS:
+            logger.info(
+                "WILD_SWING_PULLBACK_EXIT_SUPPRESSED symbol=%s side=%s reason=%s",
+                symbol, side, reason,
+            )
+            return None
 
         if not should_exit or not reason:
             return None
@@ -812,11 +938,19 @@ class WildSwingStrategy:
         self, symbol: str, side: str, price: float, reason: str, bar_id: float,
     ) -> None:
         state = self.state_for(symbol)
+        effective_bar_id = max(
+            float(bar_id),
+            state.last_exit_bar_id or float(bar_id),
+            state.last_processed_bar_id or float(bar_id),
+        )
         state.last_exit_side = str(side).upper()
         state.last_exit_price = float(price)
         state.last_exit_reason = str(reason)
-        state.last_exit_bar_id = float(bar_id)
-        state.last_processed_bar_id = float(bar_id)
+        state.last_exit_bar_id = effective_bar_id
+        state.last_processed_bar_id = max(
+            state.last_processed_bar_id or effective_bar_id,
+            effective_bar_id,
+        )
         state.bars_since_last_exit = 0
 
     def record_entry_fill(self, symbol: str, bar_id: float) -> None:

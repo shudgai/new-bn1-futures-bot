@@ -179,8 +179,10 @@ class BreakoutContinuationEntryGate:
                 ma5_up = live_ma5 is not None and live_ma5 > closed_ma5
                 ma5_down = live_ma5 is not None and live_ma5 < closed_ma5
                 live_basis = float(live_basis)
+                live_bullish = tick > live["open"]
+                live_bearish = tick < live["open"]
                 if (
-                    ma5_up
+                    live_bullish and ma5_up
                     and live["open"] <= float(live_upper)
                     and tick > float(live_upper)
                 ):
@@ -194,7 +196,7 @@ class BreakoutContinuationEntryGate:
                         is_intrabar=True,
                     )
                 if (
-                    ma5_up
+                    live_bullish and ma5_up
                     and live["open"] > float(live_upper)
                     and tick > float(live_upper)
                     and tick > current["high"]
@@ -209,7 +211,7 @@ class BreakoutContinuationEntryGate:
                         is_intrabar=True,
                     )
                 if (
-                    ma5_down
+                    live_bearish and ma5_down
                     and live["open"] >= float(live_lower)
                     and tick < float(live_lower)
                 ):
@@ -223,7 +225,7 @@ class BreakoutContinuationEntryGate:
                         is_intrabar=True,
                     )
                 if (
-                    ma5_down
+                    live_bearish and ma5_down
                     and live["open"] < float(live_lower)
                     and tick < float(live_lower)
                     and tick < current["low"]
@@ -237,7 +239,7 @@ class BreakoutContinuationEntryGate:
                         current_basis=live_basis,
                         is_intrabar=True,
                     )
-                if ma5_up and tick > float(live_upper):
+                if live_bullish and ma5_up and tick > float(live_upper):
                     return signal(
                         "OPEN_LONG",
                         CONTINUATION_OUTSIDE_KC,
@@ -247,7 +249,7 @@ class BreakoutContinuationEntryGate:
                         current_basis=live_basis,
                         is_intrabar=True,
                     )
-                if ma5_down and tick < float(live_lower):
+                if live_bearish and ma5_down and tick < float(live_lower):
                     return signal(
                         "OPEN_SHORT",
                         CONTINUATION_OUTSIDE_KC,

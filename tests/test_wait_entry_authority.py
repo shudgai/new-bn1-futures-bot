@@ -186,6 +186,38 @@ def test_small_refresh_and_bridge_do_not_flip_active_wait(tmp_path):
     assert state["setup_bar_id"] == 240_000
 
 
+def test_cap_red_setup_green_bridge_live_big_green_opens_long(tmp_path):
+    authority = WaitEntryAuthority(tmp_path / "wait.json")
+    baseline = _candle(60_000)
+    _observe(
+        authority, "CAP/USDT", [baseline],
+        _candle(120_000, is_closed=False), 100.0,
+    )
+
+    setup = _candle(120_000, 100.0, 99.6)
+    live_after_setup = _candle(180_000, 100.0, 100.0, is_closed=False)
+    assert _observe(
+        authority, "CAP/USDT", [baseline, setup],
+        live_after_setup, 100.0,
+    )["status"] == "WAIT_LIVE_TRIGGER"
+
+    bridge = _candle(180_000, 99.6, 99.8)
+    live_after_bridge = _candle(
+        240_000, 100.0, 100.0, span=2.4, is_closed=False,
+    )
+    assert _observe(
+        authority, "CAP/USDT", [baseline, setup, bridge],
+        live_after_bridge, 100.0,
+    )["status"] == "WAIT_LIVE_TRIGGER"
+
+    candidate = _observe(
+        authority, "CAP/USDT", [baseline, setup, bridge],
+        live_after_bridge, 101.0,
+    )
+    assert candidate["status"] == "TRIGGER_AVAILABLE"
+    assert candidate["side"] == "LONG"
+
+
 def test_doji_and_opposite_big_keep_existing_wait_without_refresh(tmp_path):
     authority = WaitEntryAuthority(tmp_path / "wait.json")
     c0 = _candle(60_000)
