@@ -70,7 +70,6 @@ CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'NET_ROE_THREE_TIER_GIVEBACK',
     'HYBRID_DYNAMIC_ATR_TRAILING',
     'HYBRID_DYNAMIC_RATCHET_GIVEBACK',
-    'KC_MIDLINE_CLOSE_BREACH',
 })
 PIVOT_ONLY_CHANNEL_EXIT_TRIGGERS = CHANNEL_SWING_EXIT_TRIGGERS
 DISABLED_CHANNEL_PULLBACK_TRIGGERS = frozenset({
@@ -98,7 +97,6 @@ def channel_swing_exit_allowed(reason=None, trigger=None):
         if (value == 'THREE_POINT_PIVOT'
                 or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')
                 or value.startswith('HYBRID_DYNAMIC')
-                or value == 'KC_MIDLINE_CLOSE_BREACH'
                 or value.startswith('EXIT_MEME_')):
             return True
     return False
@@ -1765,38 +1763,6 @@ def evaluate_peak_trailing(position, price, snapshot, atr=0., *, fee=0.0005, sli
                         state.pop(key, None)
         else:
             state.pop('upper_shadow_resistance_hold', None)
-
-        # ──【空頭不衰退嚴禁平倉鐵律（Holding Protection for Short）】──
-        if sign == -1 and reason is not None and reason != HARD_REASON:
-            snap_mid = float(snapshot.get('kc_middle') or snapshot.get('live_kc_middle') or 0.0) if isinstance(snapshot, dict) else 0.0
-            snap_ma5 = float(snapshot.get('ma5') or 0.0) if isinstance(snapshot, dict) else 0.0
-            snap_ma15 = float(snapshot.get('ma15') or 0.0) if isinstance(snapshot, dict) else 0.0
-            last_ma15 = float(snapshot.get('last_ma15') or snap_ma15) if isinstance(snapshot, dict) else snap_ma15
-            ma15_slope = snap_ma15 - last_ma15
-
-            # 允許出場的極端/保本理由
-            is_breakeven_or_hard = trigger in ('BREAKEVEN_FLOOR', 'EXIT_BY_BREAKEVEN_LOCK', 'HARD_STOP_LOSS')
-
-            # 真谷反轉檢查：價格收盤實體明確站上 KC 中軌或大陽反包金叉
-            is_true_valley_break = False
-            if snap_mid > 0 and price > snap_mid:
-                is_true_valley_break = True
-            elif snap_ma5 > snap_ma15 and snap_ma15 > 0 and ma15_slope > 0:
-                is_true_valley_break = True
-
-            # 均線空頭排列護航：當 MA5 < MA15 且 MA15 斜率向下時，盤中任何反彈均視為良性回測，嚴禁平倉
-            bearish_ma_guard = (snap_ma5 <= snap_ma15 and ma15_slope <= 0) if (snap_ma5 > 0 and snap_ma15 > 0) else False
-
-            # KC 中軌空頭防守鐵律：只要價格在 KC 中軌下方（price <= kc_middle），強制鎖定禁止平空！
-            below_kc_middle = (price <= snap_mid) if snap_mid > 0 else True
-
-            if not is_breakeven_or_hard and not is_true_valley_break and (below_kc_middle or bearish_ma_guard):
-                # 一票否決所有「因出現小陽線、觸碰 MA5、短線震盪、提前階梯鎖利」的神經質平倉
-                reason, trigger = None, None
-                state.update(
-                    soft_exit_blocked=True,
-                    trend_hold_reason='VETO_SHORT_HOLDING_BELOW_KC_MID',
-                )
 
         if reason:
             try:

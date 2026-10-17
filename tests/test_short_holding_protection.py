@@ -125,14 +125,15 @@ class TestShortHoldingProtection:
         decision = strategy.evaluate_exit(position, current_price=8.25, frame=df)
         assert decision is None
 
-    def test_peak_trailing_exit_veto_below_kc_middle(self):
-        """evaluate_peak_trailing 在 KC 中軌下方一票否決非硬止損平倉"""
+    def test_peak_trailing_does_not_create_a_kc_middle_exit(self):
+        """單純位於 KC 中軌下方不得產生平空訊號。"""
         position = {
             'symbol': 'CAP/USDT',
             'side': 'SHORT',
             'entry_price': 9.0,
             'qty': 100.0,
             'lowest_price': 8.0,
+            'open_timestamp': 1700000000.0,
         }
         snapshot = {
             'quote_ms': 1700000060000,
@@ -145,8 +146,8 @@ class TestShortHoldingProtection:
         res = evaluate_peak_trailing(position, price=8.3, snapshot=snapshot, atr=0.5)
         assert res is None
 
-    def test_immediate_exit_on_intrabar_true_pivot_without_waiting_bar_close(self):
-        """遇真峰谷要馬上平倉，不要等 1m 跑完才平倉"""
+    def test_intrabar_pivot_candidate_is_not_a_confirmed_exit(self):
+        """未收線的右側確認棒不得授權真谷底平倉。"""
         # 1. 空單遇盤中真谷底：K0 low 8.5, K1 low 8.0 (谷底棒已收線，open 8.6, close 8.1 -> mid 8.35), K2 正在走 (is_closed=False)，最新報價 8.4 已反彈突破前棒中點
         df_short = make_frame([
             {'open': 8.8, 'close': 8.6, 'high': 8.9, 'low': 8.5, 'is_closed': True, 'atr': 0.3},
@@ -165,9 +166,9 @@ class TestShortHoldingProtection:
         assert should_exit is True
         assert reason == 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
 
-        # HoldingProtectionExitGate 盤中立刻放行，絕不擋 Wait Bar Close
+        # Intrabar pivot signals are not exit authority.
         can_exit, veto_r, _ = HoldingProtectionExitGate.validate_exit(pos_short, df_short, quote=8.4, candidate_reason='EXIT_MEME_TRUE_VALLEY_CONFIRMED')
-        assert can_exit is True
+        assert can_exit is False
 
         # 2. 多單遇盤中真峰頂：K0 high 8.0, K1 high 8.8 (頂部棒已收線，open 7.9, close 8.7 -> mid 8.3), K2 正在走 (is_closed=False)，最新報價 8.2 已跌破前棒中點
         df_long = make_frame([
@@ -187,6 +188,6 @@ class TestShortHoldingProtection:
         assert should_exit_long is True
         assert reason_long == 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
 
-        # HoldingProtectionExitGate 盤中立刻放行
+        # Intrabar pivot signals are not exit authority.
         can_exit_long, _, _ = HoldingProtectionExitGate.validate_exit(pos_long, df_long, quote=8.2, candidate_reason='EXIT_MEME_TRUE_PEAK_CONFIRMED')
-        assert can_exit_long is True
+        assert can_exit_long is False

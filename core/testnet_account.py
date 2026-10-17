@@ -3159,6 +3159,19 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual,
+        ):
+            self.log(
+                f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                "WARNING",
+            )
+            return False
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"

@@ -528,16 +528,12 @@ class DualTrackExitStrategy(IExitStrategy):
                 peak_net_pnl = (entry_p - trough_p) * qty - (entry_p + trough_p) * qty * TAKER_FEE_RATE
                 peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
 
-                # ──【空頭走勢與真谷底檢核（Bearish Trend & True Valley Check）】──
-                from core.gates.holding_protection_gate import has_confirmed_true_pivot
-                has_true_valley, _, _ = has_confirmed_true_pivot(position, frame, current_price)
-
-                is_kc_up = (
-                    channel_state in ('KC向上', 'UP', 'BULLISH', 'UPTREND', 'KC_TREND_UP')
-                    or (kc_mid > 0 and prev_kc_mid > 0 and kc_mid > prev_kc_mid + 1e-6)
+                from core.services.exits.strict_true_pivot import (
+                    confirmed_true_pivot_exit,
                 )
-                is_below_kc_mid = (kc_mid > 0 and curr_close <= kc_mid)
-                is_bearish_structure = is_below_kc_mid or (not is_kc_up) or (curr_ma5 <= curr_ma15)
+                true_pivot = confirmed_true_pivot_exit(position, frame)
+                if true_pivot is not None:
+                    return true_pivot[0]
 
                 # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
                 # 浮盈曾達 >= 1.2 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price - 0.05%
@@ -562,41 +558,8 @@ class DualTrackExitStrategy(IExitStrategy):
                     if spike_reversal and current_price < entry_p:
                         return 'EXIT_BY_SPIKE_REVERSAL'
 
-                # ──【空頭走勢防洗鐵律：若都是空頭走勢不要平倉，要到真谷底才能平倉】──
-                # 只要仍處於空頭結構且尚未收線形成真谷底，且未突破 KC 中軌，一票否決所有普通平空！
-                if is_bearish_structure and not has_true_valley and not (kc_mid > 0 and curr_close > kc_mid):
-                    return None
-
-                # ──【第二道防線：真谷底趨勢逆轉（Confirmed True Valley Exit）與中軌突破】──
-                cond_b_trend_reverse = (kc_mid > 0 and curr_close > kc_mid) or is_kc_up
-                cond_c_ma_surge = (delta_ma5 > 0.02 * atr) and (curr_ma15 > 0 and curr_close > curr_ma15)
-                if cond_b_trend_reverse or (has_true_valley and cond_c_ma_surge):
-                    return 'EXIT_BY_CONFIRMED_TRUE_VALLEY'
-
-                # ──【谷底敏銳判定（Fast Valley Exit: EXIT_BY_FAST_VALLEY_REVERSAL）】──
-                # 僅在已成型真谷底或突破中軌時，才評估下影線或 MA5 急拉
-                has_consecutive_lower_wicks = False
-                if len(recent_candles) >= 3:
-                    prior_bars = recent_candles[:-1]
-                    wick_count = 0
-                    for b in prior_bars[-3:]:
-                        bh, bl, bo, bc = float(b.get('high', 0)), float(b.get('low', 0)), float(b.get('open', 0)), float(b.get('close', 0))
-                        br = max(bh - bl, 1e-9)
-                        blw = min(bo, bc) - bl
-                        if (blw >= 0.35 * atr or blw / br >= 0.35):
-                            wick_count += 1
-                    if wick_count >= 2:
-                        has_consecutive_lower_wicks = True
-
-                c_is_bullish_body = (c_close > c_open) and ((c_close - c_open) >= 0.4 * atr)
-                if (max_gain >= 0.8 * atr or peak_roe >= 5.0) and (has_true_valley or curr_close > kc_mid):
-                    cond_fast_bottom_shape = has_consecutive_lower_wicks and c_is_bullish_body and (curr_close > curr_ma5)
-                    cond_fast_ma_surge_fast = (delta_ma5 > 0.02 * atr) and (curr_close > curr_ma5)
-                    if cond_fast_bottom_shape or cond_fast_ma_surge_fast:
-                        return 'EXIT_BY_FAST_VALLEY_REVERSAL'
-
-                # 寬幅階梯鎖利：達到目標浮盈後，且有真谷底支撐，自最低點反彈回撤 1.3 ATR 或利潤回吐 35%
-                if atr > 0 and max_gain >= 1.5 * atr and (has_true_valley or curr_close > kc_mid):
+                # 寬幅階梯鎖利不依賴 KC 中軌或額外的真谷判斷。
+                if atr > 0 and max_gain >= 1.5 * atr:
                     rebound_distance = current_price - trough_p
                     giveback_ratio = rebound_distance / max_gain if max_gain > 0 else 0.0
                     if (rebound_distance >= 1.3 * atr or giveback_ratio >= 0.35) and current_price < entry_p:

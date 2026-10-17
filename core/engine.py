@@ -214,6 +214,9 @@ class TradingEngine:
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.account.entry_frame_provider = self._entry_boundary_frame
+        self.account.channel_exit_frame_provider = (
+            lambda symbol: getattr(self, "_channel_exit_frames", {}).get(symbol)
+        )
         from core.services.wait_entry_authority import WaitEntryAuthority
         self.wait_entry_authority = WaitEntryAuthority()
         self.account.wait_entry_authority = self.wait_entry_authority

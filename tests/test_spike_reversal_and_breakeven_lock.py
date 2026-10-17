@@ -83,8 +83,8 @@ def test_lobster_true_peak_reversal_kc_down():
     assert exit_signal == 'EXIT_BY_CONFIRMED_TRUE_PEAK'
 
 
-def test_lobster_true_peak_reversal_consecutive_wicks_and_bear_body():
-    """驗證形態見頂：連續長上影線滯漲 + 當根實體大陰線摜穿 MA5 立即平多。"""
+def test_lobster_peak_requires_fifteen_completed_bars():
+    """不足 15 根已收線資料時，不能把長上影或盤中陰線當成真峰頂。"""
     strategy = DualTrackExitStrategy()
     entry = 0.047955
     atr = 0.0003
@@ -111,7 +111,7 @@ def test_lobster_true_peak_reversal_consecutive_wicks_and_bear_body():
     ])
 
     exit_signal = strategy.evaluate_exit(position, frame=frame, current_price=0.04815, is_closed=False)
-    assert exit_signal in ('EXIT_BY_FAST_PEAK_REVERSAL', 'EXIT_BY_CONFIRMED_TRUE_PEAK')
+    assert exit_signal is None
 
 
 def test_short_spike_reversal_harvest():
@@ -165,8 +165,8 @@ def test_short_hard_breakeven_lock():
     assert position.get('breakeven_locked') is True
 
 
-def test_short_true_valley_reversal_kc_up():
-    """驗證空單真谷底反轉：突破站上 KC 中軌且通道轉為「KC向上」，立即一票平空。"""
+def test_short_lock_exit_does_not_require_a_kc_middle_break():
+    """階梯鎖利可獨立出場；KC 中軌不是平空前置條件。"""
     strategy = DualTrackExitStrategy()
     entry = 100.0
     atr = 1.0
@@ -189,4 +189,4 @@ def test_short_true_valley_reversal_kc_up():
     ])
 
     exit_signal = strategy.evaluate_exit(position, frame=frame, current_price=98.8, is_closed=True)
-    assert exit_signal == 'EXIT_BY_CONFIRMED_TRUE_VALLEY'
+    assert exit_signal == 'EXIT_BY_RATCHET_PROFIT_LOCK'

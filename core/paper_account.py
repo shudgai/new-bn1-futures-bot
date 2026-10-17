@@ -1174,6 +1174,19 @@ class PaperAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual,
+        ):
+            self.log(
+                f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                "WARNING",
+            )
+            return False
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
         # Position loss stops are disabled; strategy exits, profit locks, and
         # explicit manual closes continue through their existing authorities.
