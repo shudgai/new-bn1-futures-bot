@@ -3,11 +3,15 @@ import asyncio
 import pandas as pd
 import pytest
 
-from core.services.symbol_runner import process_single_symbol_runner
+from core.services.symbol_runner import (
+    _process_wild_swing_symbol,
+    process_single_symbol_runner,
+)
 from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 from test_wild_swing_strategy import (
     _frame, _pivot_cross_frame, _profit_lock_continuation_frame,
 )
+from test_breakout_continuation_entry_gate import _numeric_wild_swing_frame
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +54,7 @@ class FakeEngine:
 
 
 @pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "1000PEPE/USDT"])
-def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_bar(
+def test_runner_ignores_old_vision_lock_and_does_not_call_qwen(
     monkeypatch, symbol,
 ):
     from types import SimpleNamespace
@@ -84,6 +88,8 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     next_frame["atr"] = 2.0
     next_frame.loc[10, "ma15"] = 99.8
     next_frame.loc[11, "ma15"] = 100.0
+    next_frame.loc[10, "kc_middle"] = 100.0
+    next_frame.loc[11, "kc_middle"] = 99.9
     engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
     engine._wild_swing_vision_gate.record_rejection(
         symbol,
@@ -101,8 +107,8 @@ def test_runner_anchors_state_on_restart_then_evaluates_next_closed_one_minute_b
     assert engine.entries[0]["entry_mode"] == "WILD_SWING"
     assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"
     assert engine.entries[0]["frame"].iloc[-1]["timestamp"] == next_frame.iloc[-1]["timestamp"]
-    assert vision_calls == [("SHORT", "CROSSOVER")]
-    assert symbol not in engine._wild_swing_vision_gate._rejections
+    assert vision_calls == []
+    assert symbol in engine._wild_swing_vision_gate._rejections
 
 
 def test_wild_swing_vision_rejection_state_is_isolated_by_symbol(monkeypatch):
@@ -128,6 +134,8 @@ def test_wild_swing_vision_rejection_state_is_isolated_by_symbol(monkeypatch):
     next_frame = _pivot_cross_frame("SHORT")
     next_frame["timestamp"] += 720_000
     next_frame["atr"] = 2.0
+    next_frame.loc[10, "kc_middle"] = 100.0
+    next_frame.loc[11, "kc_middle"] = 99.9
     next_frame.loc[10, "ma15"] = 99.8
     next_frame.loc[11, "ma15"] = 100.0
     asyncio.run(
@@ -183,7 +191,7 @@ def test_runner_does_not_send_chart_for_a_macro_gate_veto(monkeypatch):
     assert engine.entries == []
 
 
-def test_runner_clears_dynamic_lock_before_macro_gate_for_confirmed_cross(monkeypatch):
+def test_runner_macro_veto_is_independent_of_dynamic_vision_lock(monkeypatch):
     from types import SimpleNamespace
 
     from core.vision.chart_guard import DynamicVisionGatekeeper
@@ -222,7 +230,89 @@ def test_runner_clears_dynamic_lock_before_macro_gate_for_confirmed_cross(monkey
     )
 
     assert engine.entries == []
-    assert "LOBSTER/USDT" not in engine._wild_swing_vision_gate._rejections
+    assert "LOBSTER/USDT" in engine._wild_swing_vision_gate._rejections
+
+
+@pytest.mark.parametrize(
+    "side,pattern",
+    [
+        ("LONG", "INITIAL_2BAR_BREAKOUT"),
+        ("SHORT", "CONTINUATION_OUTSIDE_KC"),
+    ],
+)
+def test_runner_bypasses_vision_and_dynamic_lock_for_numeric_patterns(
+    monkeypatch, side, pattern,
+):
+    from types import SimpleNamespace
+
+    from core.vision.chart_guard import DynamicVisionGatekeeper
+
+    qwen_calls = []
+
+    async def reject_if_called(*args, **kwargs):
+        qwen_calls.append((args, kwargs))
+        return False, "unexpected visual review"
+
+    from core.vision import chart_guard
+
+    monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", reject_if_called)
+    engine = FakeEngine()
+    frame = _numeric_wild_swing_frame(side, pattern)
+    engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
+    engine._wild_swing_vision_gate.record_rejection(
+        "LOBSTER/USDT",
+        SimpleNamespace(high=110.0, low=90.0, close=100.0),
+        side,
+    )
+
+    asyncio.run(_process_wild_swing_symbol(
+        engine, "LOBSTER/USDT", frame.iloc[:-1],
+        float(frame.iloc[-2]["close"]), False, False,
+    ))
+    asyncio.run(_process_wild_swing_symbol(
+        engine, "LOBSTER/USDT", frame,
+        float(frame.iloc[-1]["close"]), False, False,
+    ))
+
+    assert len(engine.entries) == 1
+    assert engine.entries[0]["side"] == side
+    assert qwen_calls == []
+
+
+@pytest.mark.parametrize(
+    "side,open_price,high,low,close",
+    [
+        ("LONG", 106.5, 106.6, 106.5, 106.55),
+        ("SHORT", 93.5, 93.5, 93.4, 93.45),
+    ],
+)
+def test_runner_preserves_live_bar_for_outside_ma5_continuation(
+    side, open_price, high, low, close,
+):
+    frame = _numeric_wild_swing_frame(side, "CONTINUATION_OUTSIDE_KC")
+    live = frame.iloc[-1].copy()
+    live["timestamp"] += 60_000
+    live["is_closed"] = False
+    live["open"], live["high"], live["low"], live["close"] = (
+        open_price, high, low, close,
+    )
+    frame = pd.concat([frame, live.to_frame().T], ignore_index=True)
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    engine = FakeEngine()
+
+    asyncio.run(
+        _process_wild_swing_symbol(
+            engine, "LOBSTER/USDT", frame, close, False, False,
+        )
+    )
+
+    assert len(engine.entries) == 1
+    signal = engine.entries[0]["meta_dict"]
+    assert signal["side"] == side
+    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
+    assert signal["is_intrabar"] is True
+    assert signal["bar_id"] == float(live["timestamp"])
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -254,8 +344,8 @@ def test_runner_reconstructs_profit_lock_continuation_from_account_trade(side):
 
     assert len(engine.entries) == 1
     signal = engine.entries[0]["meta_dict"]
-    assert signal["reason"] == "PROFIT_LOCK_CONTINUATION_ENTRY"
-    assert signal["profit_lock_close_id"] == close_id
+    assert signal["reason"] == "CONFIRMED_2BAR_BREAKOUT_ENTRY"
+    assert signal["structure_confirmation"] == "CONFIRMED_2BAR_BREAKOUT"
     assert signal["side"] == side
 
 
@@ -274,6 +364,12 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     next_frame = _pivot_cross_frame(side)
     next_frame["timestamp"] += 720_000
     next_frame["atr"] = 2.0
+    if side == "LONG":
+        next_frame.loc[10, "kc_middle"] = 100.0
+        next_frame.loc[11, "kc_middle"] = 100.1
+    else:
+        next_frame.loc[10, "kc_middle"] = 100.0
+        next_frame.loc[11, "kc_middle"] = 99.9
     live_frame = next_frame.copy()
     live_frame.loc[live_frame.index[-1], "is_closed"] = False
     next_bar = live_frame.iloc[-1]
@@ -296,3 +392,53 @@ def test_post_close_reentry_waits_for_a_new_closed_one_minute_bar(side):
     assert len(engine.entries) == 1
     assert engine.entries[0]["side"] == side
     assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"
+
+
+def test_profit_lock_exit_is_not_blocked_by_bar_dedup_and_uses_market_close(monkeypatch):
+    from core.gates import holding_protection_gate
+
+    class Account(FakeAccount):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = []
+            self.last_closed_price = {}
+
+        async def close_position(self, symbol, price, reason, **kwargs):
+            self.close_calls.append((symbol, price, reason, kwargs))
+            self.positions.pop(symbol, None)
+            self.last_closed_price[symbol] = price
+            return True
+
+    class Engine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.account = Account()
+
+    engine = Engine()
+    symbol = "LOBSTER/USDT"
+    engine.account.positions[symbol] = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "entry_mode": "WILD_SWING",
+    }
+    strategy = WildSwingStrategy()
+    strategy.reset_symbol(symbol, 720_000.0)
+    strategy.state_for(symbol).last_processed_bar_id = 720_000.0
+    engine._wild_swing_strategy = strategy
+    monkeypatch.setattr(
+        holding_protection_gate,
+        "_ratchet_lock_details",
+        lambda position, quote: {"stop_price": 101.0},
+    )
+    frame = _frame("LONG")
+    frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+
+    asyncio.run(_process_wild_swing_symbol(
+        engine, symbol, frame, 101.0, False, False,
+    ))
+
+    assert len(engine.account.close_calls) == 1
+    _, _, reason, options = engine.account.close_calls[0]
+    assert "EXIT_BY_PROFIT_LOCK" in reason
+    assert options["is_limit"] is False
+    assert symbol not in engine.account.positions

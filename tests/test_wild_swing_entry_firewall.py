@@ -12,15 +12,13 @@ from test_wild_swing_strategy import (
 
 
 @pytest.fixture(autouse=True)
-def approve_final_qwen_check(monkeypatch):
+def forbid_final_qwen_check(monkeypatch):
     from core.vision import chart_guard
 
-    async def approve(*args, **kwargs):
-        return True, "test approved"
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("WILD_SWING must not invoke Qwen")
 
-    monkeypatch.setenv("ENABLE_VISION_GUARD", "true")
-    monkeypatch.setenv("USE_LOCAL_QWEN", "true")
-    monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", approve)
+    monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", forbidden)
 
 
 class FakeAccount:
@@ -59,7 +57,7 @@ def _context(bar_id):
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "CROSSOVER",
-        "entry_signal_code": "WILD_SWING_REVERSAL_CROSSOVER_ENTRY",
+        "entry_signal_code": "WILD_SWING_MA_CROSSOVER_ENTRY",
         "entry_signal_mode": "CROSSOVER",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
@@ -92,6 +90,49 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     assert result["entry_pattern"] == "CROSSOVER"
     assert result["entry_signal_mode"] == "CROSSOVER"
     assert result["side"] == "SHORT"
+    assert result["confirmation_bar_id"] == bar_id
+
+
+def test_wild_swing_firewall_revalidates_live_breakout_bar_identity():
+    frame = _frame("LONG")
+    frame["atr"] = 2.0
+    frame["open"] = 100.0
+    frame["high"] = 100.2
+    frame["low"] = 99.8
+    frame["close"] = 100.0
+    frame["kc_upper"] = 100.0
+    frame["kc_middle"] = 95.0
+    frame["kc_lower"] = 90.0
+    frame["ma5"] = 100.0
+    frame["ma15"] = 100.0
+    live = frame.iloc[-1].copy()
+    live.update({
+        "timestamp": float(frame.iloc[-1]["timestamp"]) + 60_000,
+        "open": 99.8,
+        "high": 100.1,
+        "low": 99.8,
+        "close": 100.1,
+        "is_closed": False,
+    })
+    frame = pd.concat([frame, live.to_frame().T], ignore_index=True)
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    bar_id = float(frame.iloc[-1]["timestamp"])
+    context = {
+        "entry_mode": "WILD_SWING",
+        "source": "WILD_SWING_1M",
+        "entry_pattern": "BREAKOUT",
+        "entry_signal_code": "WILD_SWING_INSTANT_BREAKOUT_INSIDE_ENTRY",
+        "entry_signal_mode": "BREAKOUT",
+        "channel_confirmation_bar_id": bar_id,
+        "dual_tf_meta": {"bar_id": bar_id},
+    }
+
+    result = asyncio.run(
+        validate_account_entry(FakeAccount(frame), "LOBSTER/USDT", "LONG", context)
+    )
+
+    assert result["side"] == "LONG"
     assert result["confirmation_bar_id"] == bar_id
 
 
@@ -158,29 +199,33 @@ def test_wild_swing_firewall_reruns_mode_specific_macro_gate(monkeypatch):
 
     assert calls == [{
         "entry_pattern": "CROSSOVER",
-        "structure_confirmation": "MA5_MA15_1M_CROSS",
+        "structure_confirmation": "MA_CROSSOVER",
         "structure_confirmed": True,
         "channel_expanding": False,
     }]
     assert qwen_calls == []
 
 
-def test_wild_swing_firewall_rejects_without_explicit_qwen_approval(monkeypatch):
+def test_wild_swing_firewall_does_not_call_qwen(monkeypatch):
     from core.vision import chart_guard
 
+    calls = []
+
     async def reject(*args, **kwargs):
+        calls.append((args, kwargs))
         return False, "AI_EXPLICIT_APPROVAL_REQUIRED"
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", reject)
     frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
 
-    with pytest.raises(ValueError, match="WILD_SWING_QWEN_REJECTED"):
-        asyncio.run(
-            validate_account_entry(
-                FakeAccount(frame), "LOBSTER/USDT", "SHORT", _context(bar_id),
-            )
+    result = asyncio.run(
+        validate_account_entry(
+            FakeAccount(frame), "LOBSTER/USDT", "SHORT", _context(bar_id),
         )
+    )
+    assert result["entry_pattern"] == "CROSSOVER"
+    assert calls == []
 
 
 def test_wild_swing_firewall_rejects_unapproved_signal_pattern(monkeypatch):
@@ -194,11 +239,13 @@ def test_wild_swing_firewall_rejects_unapproved_signal_pattern(monkeypatch):
     monkeypatch.setattr(
         WildSwingStrategy,
         "evaluate_entry",
-        lambda *args: {
+        lambda *args, **kwargs: {
             "side": "SHORT",
             "reason": "UNAPPROVED",
             "entry_pattern": "MA_SWING",
             "entry_signal_mode": "MA_SWING",
+            "structure_confirmation": "MA_CROSSOVER",
+            "structure_confirmed": True,
             "bar_id": bar_id,
         },
     )
@@ -215,7 +262,7 @@ def test_wild_swing_firewall_rejects_unapproved_signal_pattern(monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_wild_swing_firewall_rebuilds_profit_lock_continuation_from_trade(side):
+def test_wild_swing_firewall_accepts_only_current_math_signal_after_profit_lock(side):
     frame = _profit_lock_continuation_frame(side)
     timestamp_offset = 1_740_000_000_000
     frame["timestamp"] += timestamp_offset
@@ -235,9 +282,9 @@ def test_wild_swing_firewall_rebuilds_profit_lock_continuation_from_trade(side):
     context = {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
-        "entry_pattern": "CONTINUATION",
-        "entry_signal_code": "WILD_SWING_PROFIT_LOCK_CONTINUATION_ENTRY",
-        "entry_signal_mode": "CONTINUATION",
+        "entry_pattern": "BREAKOUT",
+        "entry_signal_code": "WILD_SWING_CONFIRMED_2BAR_BREAKOUT_ENTRY",
+        "entry_signal_mode": "BREAKOUT",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {
             "bar_id": bar_id,
@@ -248,11 +295,11 @@ def test_wild_swing_firewall_rebuilds_profit_lock_continuation_from_trade(side):
     result = asyncio.run(
         validate_account_entry(account, "LOBSTER/USDT", side, context)
     )
-    assert result["entry_pattern"] == "CONTINUATION"
+    assert result["entry_pattern"] == "BREAKOUT"
     assert result["side"] == side
 
 
-def test_wild_swing_firewall_rejects_mismatched_profit_lock_close_identity():
+def test_wild_swing_firewall_does_not_depend_on_legacy_profit_lock_ticket():
     frame = _profit_lock_continuation_frame("LONG")
     timestamp_offset = 1_740_000_000_000
     frame["timestamp"] += timestamp_offset
@@ -272,19 +319,19 @@ def test_wild_swing_firewall_rejects_mismatched_profit_lock_close_identity():
     context = {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
-        "entry_pattern": "CONTINUATION",
-        "entry_signal_code": "WILD_SWING_PROFIT_LOCK_CONTINUATION_ENTRY",
-        "entry_signal_mode": "CONTINUATION",
+        "entry_pattern": "BREAKOUT",
+        "entry_signal_code": "WILD_SWING_CONFIRMED_2BAR_BREAKOUT_ENTRY",
+        "entry_signal_mode": "BREAKOUT",
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {
             "bar_id": bar_id,
             "profit_lock_close_id": close_id - 60_000,
         },
     }
-    with pytest.raises(ValueError, match="WILD_SWING_SIGNAL_STALE_OR_INVALID"):
-        asyncio.run(
-            validate_account_entry(account, "LOBSTER/USDT", "LONG", context)
-        )
+    result = asyncio.run(
+        validate_account_entry(account, "LOBSTER/USDT", "LONG", context)
+    )
+    assert result["entry_pattern"] == "BREAKOUT"
 
 
 def test_engine_passes_signal_mode_into_account_entry_context():

@@ -7,7 +7,13 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from core.gates.breakout_continuation_entry_gate import BreakoutContinuationEntryGate
+from core.gates.breakout_continuation_entry_gate import (
+    CONFIRMED_2BAR_BREAKOUT,
+    CONTINUATION_OUTSIDE_KC,
+    INITIAL_2BAR_BREAKOUT,
+    MA_CROSSOVER,
+    BreakoutContinuationEntryGate,
+)
 from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
 from core.services.candle_data import closed_entry_candles
 
@@ -161,6 +167,129 @@ class WildSwingStrategy:
         frame: pd.DataFrame,
         side: str,
         *,
+        tick_price: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Evaluate only the five explicitly authorized mathematical entries."""
+        side = str(side).upper()
+        if side not in ("LONG", "SHORT"):
+            raise ValueError("side must be LONG or SHORT")
+        bars = self._closed_frame(frame)
+        if len(bars) < self.volume_lookback + 2:
+            return None
+
+        live_candle = None
+        live_bar_id = None
+        try:
+            interval_ms = float(frame.attrs.get("timeframe_ms"))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            interval_ms = None
+        if (
+            frame is not None
+            and not frame.empty
+            and "is_closed" in frame
+            and not bool(frame.iloc[-1]["is_closed"])
+            and interval_ms == 60_000.0
+        ):
+            live_candle = frame.iloc[-1].to_dict()
+            live_bar_id = self._bar_id(frame.iloc[-1])
+            closed_bar_id = self._bar_id(bars.iloc[-1])
+            if (
+                live_bar_id is None
+                or closed_bar_id is None
+                or live_bar_id != closed_bar_id + 60_000.0
+            ):
+                live_candle = None
+                live_bar_id = None
+
+        candidate = BreakoutContinuationEntryGate.evaluate_pure_math(
+            bars.to_dict("records"),
+            bars["kc_upper"].tolist(),
+            bars["kc_lower"].tolist(),
+            bars["kc_middle"].tolist(),
+            bars["_wild_ma5"].tolist(),
+            bars["ma15"].tolist(),
+            tick_price=tick_price if live_candle is not None else None,
+            live_candle=live_candle,
+        )
+        if candidate is None or candidate["action"] != f"OPEN_{side}":
+            return None
+
+        entry_type = str(candidate["type"])
+        current = bars.iloc[-1]
+        previous = bars.iloc[-2]
+        is_intrabar = candidate.get("is_intrabar") is True
+        bar_id = live_bar_id if is_intrabar else self._bar_id(current)
+        if bar_id is None:
+            return None
+        state = self.state_for(symbol)
+        if (
+            (state.reset_bar_id is not None and bar_id <= state.reset_bar_id)
+            or (state.last_exit_bar_id is not None and bar_id <= state.last_exit_bar_id)
+            or (
+                state.last_processed_bar_id is not None
+                and bar_id <= state.last_processed_bar_id
+            )
+        ):
+            return None
+
+        entry_pattern = (
+            ENTRY_MODE_BREAKOUT
+            if entry_type in {
+                CONFIRMED_2BAR_BREAKOUT,
+                INITIAL_2BAR_BREAKOUT,
+                "INSTANT_BREAKOUT_INSIDE",
+                "INSTANT_BREAKOUT_OUTSIDE",
+            }
+            else ENTRY_MODE_CROSSOVER
+            if entry_type == MA_CROSSOVER
+            else ENTRY_MODE_CONTINUATION
+        )
+        ma5_current = float(candidate["ma5_current"])
+        ma5_previous = float(candidate["ma5_previous"])
+        if (
+            (side == "LONG" and ma5_current <= ma5_previous)
+            or (side == "SHORT" and ma5_current >= ma5_previous)
+        ):
+            return None
+
+        live_middle = (
+            float(candidate["kc_basis"])
+            if is_intrabar
+            else float(current["kc_middle"])
+        )
+        previous_middle = float(previous["kc_middle"])
+        channel_expanding = (
+            float(current["kc_upper"] - current["kc_lower"])
+            > float(previous["kc_upper"] - previous["kc_lower"])
+        )
+        reason = f"{entry_type}_ENTRY"
+        return {
+            "side": side,
+            "reason": reason,
+            "entry_label": reason,
+            "entry_pattern": entry_pattern,
+            "entry_signal_mode": entry_pattern,
+            "structure_confirmation": entry_type,
+            "structure_confirmed": True,
+            "is_intrabar": is_intrabar,
+            "channel_expanding": channel_expanding,
+            "ma5_current": ma5_current,
+            "ma5_previous": ma5_previous,
+            "kc_middle_current": live_middle,
+            "kc_middle_previous": previous_middle,
+            "volume_exhausted": False,
+            "bar_id": bar_id,
+            "close": float(candidate["price"]),
+            "entry_mode": "WILD_SWING",
+            "candidate_reason": candidate["reason"],
+        }
+
+    def _evaluate_legacy_entry(
+        self,
+        symbol: str,
+        frame: pd.DataFrame,
+        side: str,
+        *,
         profit_lock_exit: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         side = str(side).upper()
@@ -224,9 +353,63 @@ class WildSwingStrategy:
             and str(profit_lock_exit.get("side") or "").upper() == side
             and bar_id > float(profit_lock_exit.get("close_bar_id") or 0.0)
         ):
-            return self._profit_lock_continuation_signal(
+            profit_lock_signal = self._profit_lock_continuation_signal(
                 bars, current, previous, side, bar_id, profit_lock_exit,
             )
+            if profit_lock_signal is not None:
+                return profit_lock_signal
+
+        numeric_candidate = BreakoutContinuationEntryGate.evaluate(
+            bars.to_dict("records"),
+            bars["kc_upper"].tolist(),
+            bars["kc_lower"].tolist(),
+            bars["kc_middle"].tolist(),
+            ma5_series=bars["_wild_ma5"].tolist(),
+        )
+        if (
+            numeric_candidate is not None
+            and numeric_candidate["action"] == f"OPEN_{side}"
+            and (
+                numeric_candidate["type"] == INITIAL_2BAR_BREAKOUT
+                or (
+                    numeric_candidate["type"] == CONTINUATION_OUTSIDE_KC
+                    and not breakout_signal
+                )
+            )
+        ):
+            is_initial_breakout = (
+                numeric_candidate["type"] == INITIAL_2BAR_BREAKOUT
+            )
+            pattern = (
+                ENTRY_MODE_BREAKOUT
+                if is_initial_breakout
+                else ENTRY_MODE_CONTINUATION
+            )
+            reason = (
+                "INITIAL_2BAR_BREAKOUT_ENTRY"
+                if is_initial_breakout
+                else "CONTINUATION_OUTSIDE_KC_ENTRY"
+            )
+            return {
+                "side": side,
+                "reason": reason,
+                "entry_label": reason,
+                "entry_pattern": pattern,
+                "entry_signal_mode": pattern,
+                "structure_confirmation": numeric_candidate["type"],
+                "structure_confirmed": True,
+                "channel_expanding": channel_expanding,
+                "ma5_current": ma5,
+                "ma5_previous": prev_ma5,
+                "kc_middle_current": float(current["kc_middle"]),
+                "kc_middle_previous": prev_middle,
+                "volume_exhausted": False,
+                "bar_id": bar_id,
+                "close": close,
+                "entry_mode": "WILD_SWING",
+                "candidate_reason": numeric_candidate["reason"],
+            }
+
         if side == "LONG":
             valid_cross = (
                 cross_up
@@ -292,7 +475,7 @@ class WildSwingStrategy:
                     "entry_label": "KC_OUTER_CONTINUATION_ENTRY",
                     "entry_pattern": ENTRY_MODE_CONTINUATION,
                     "entry_signal_mode": ENTRY_MODE_CONTINUATION,
-                    "structure_confirmation": "PROFIT_LOCK_CONTINUATION",
+                    "structure_confirmation": CONTINUATION_OUTSIDE_KC,
                     "structure_confirmed": True,
                     "channel_expanding": channel_expanding,
                     "ma5_current": ma5,
@@ -557,22 +740,26 @@ class WildSwingStrategy:
             return None
         bars = self._closed_frame(frame)
         if bars.empty:
-            return None
-        current = bars.iloc[-1]
+            if not profit_lock_triggered or frame is None or frame.empty:
+                return None
+            current = frame.iloc[-1]
+        else:
+            current = bars.iloc[-1]
         bar_id = self._bar_id(current)
         if bar_id is None:
             return None
         state = self.state_for(symbol)
-        if state.reset_bar_id is not None and bar_id <= state.reset_bar_id:
-            return None
-        if state.last_processed_bar_id is not None and bar_id <= state.last_processed_bar_id:
-            return None
-
-        close = float(current["close"])
+        close = self._number(current, "close")
         evidence: dict[str, Any] = {}
         if profit_lock_triggered:
             reason = "EXIT_BY_PROFIT_LOCK"
         else:
+            if bars.empty:
+                return None
+            if state.reset_bar_id is not None and bar_id <= state.reset_bar_id:
+                return None
+            if state.last_processed_bar_id is not None and bar_id <= state.last_processed_bar_id:
+                return None
             pivot_exit, pivot_reason, pivot_evidence = self._pivot_exhaustion_exit(
                 position, bars, side,
             )
@@ -580,18 +767,8 @@ class WildSwingStrategy:
                 reason = pivot_reason
                 evidence = pivot_evidence
             else:
-                divergence_evidence = self._true_pivot_volume_divergence_exit(
-                    position, bars, side,
-                )
-                if divergence_evidence is None:
-                    state.last_processed_bar_id = bar_id
-                    return None
-                evidence = divergence_evidence
-                reason = (
-                    "EXIT_BY_TRUE_PEAK_VOLUME_DIVERGENCE"
-                    if side == "LONG"
-                    else "EXIT_BY_TRUE_VALLEY_VOLUME_DIVERGENCE"
-                )
+                state.last_processed_bar_id = bar_id
+                return None
 
         return {
             "side": side,

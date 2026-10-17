@@ -16,6 +16,9 @@ async def _process_wild_swing_symbol(
     engine, symbol, frame, quote, daily_halt, exit_only,
 ):
     from core.services.candle_data import closed_entry_candles
+    from core.gates.breakout_continuation_entry_gate import (
+        PURE_MATH_ENTRY_CONFIRMATIONS,
+    )
     from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
     strategy = getattr(engine, "_wild_swing_strategy", None)
@@ -45,18 +48,12 @@ async def _process_wild_swing_symbol(
             profit_lock_triggered=profit_lock is not None,
         )
         if exit_decision is not None:
-            from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
-
-            limit_price = AntiSlippageOrderExecutor.calculate_limit_close_price(
-                position["side"], quote, offset_pct=0.0025,
-            )
             closed_ok = await engine.account.close_position(
                 symbol,
                 quote,
                 "Wild Swing " + exit_decision["reason"],
                 is_manual=True,
-                is_limit=True,
-                limit_price=limit_price,
+                is_limit=False,
             )
             if closed_ok and symbol not in engine.account.positions:
                 exit_price = getattr(engine.account, "last_closed_price", {}).get(
@@ -79,35 +76,42 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
-    from core.vision.chart_guard import (
-        DynamicVisionGatekeeper,
-        evaluate_qwen_entry_vision,
-    )
+    latest = frame.iloc[-1]
+    if "is_closed" in frame and not bool(latest["is_closed"]):
+        if float(latest["close"]) != quote:
+            attrs = dict(frame.attrs)
+            refreshed = frame.copy()
+            refreshed.loc[refreshed.index[-1], "close"] = quote
+            refreshed.loc[refreshed.index[-1], "high"] = max(
+                float(latest["high"]), quote,
+            )
+            refreshed.loc[refreshed.index[-1], "low"] = min(
+                float(latest["low"]), quote,
+            )
+            indicator_calculator = getattr(
+                getattr(engine, "strategy", None), "compute_indicators", None,
+            )
+            if not callable(indicator_calculator):
+                logger.error(
+                    "WILD_SWING_ENTRY_BLOCK symbol=%s reason=LIVE_INDICATOR_REFRESH_UNAVAILABLE",
+                    symbol,
+                )
+                return [], []
+            frame = indicator_calculator(refreshed)
+            if frame is None or frame.empty:
+                logger.error(
+                    "WILD_SWING_ENTRY_BLOCK symbol=%s reason=LIVE_INDICATOR_REFRESH_FAILED",
+                    symbol,
+                )
+                return [], []
+            frame.attrs.update(attrs)
+            closed = closed_entry_candles(frame)
+            if closed.empty:
+                return [], []
 
-    vision_gate = getattr(engine, "_wild_swing_vision_gate", None)
-    if vision_gate is None:
-        vision_gate = engine._wild_swing_vision_gate = DynamicVisionGatekeeper()
-    seen_bar_ids = getattr(engine, "_wild_swing_vision_seen_bar_ids", None)
-    if not isinstance(seen_bar_ids, dict):
-        seen_bar_ids = engine._wild_swing_vision_seen_bar_ids = {}
-    previous_vision_bar_id = seen_bar_ids.get(symbol)
-    if previous_vision_bar_id is None:
-        seen_bar_ids[symbol] = latest_closed_bar_id
-    elif latest_closed_bar_id > previous_vision_bar_id:
-        elapsed_bars = sum(
-            float(bar_id) > previous_vision_bar_id
-            for bar_id in closed["timestamp"]
-        )
-        for _ in range(elapsed_bars):
-            vision_gate.on_bar_closed(symbol)
-        seen_bar_ids[symbol] = latest_closed_bar_id
-
-    profit_lock_exit = strategy.latest_profit_lock_exit(
-        getattr(engine.account, "trades", None), symbol,
-    )
     signals = [
         strategy.evaluate_entry(
-            symbol, frame, side, profit_lock_exit=profit_lock_exit,
+            symbol, frame, side, tick_price=quote,
         )
         for side in ("LONG", "SHORT")
     ]
@@ -116,20 +120,27 @@ async def _process_wild_swing_symbol(
         return [], []
 
     signal = signals[0]
-    attempted_bar_ids = getattr(engine, "_wild_swing_vision_attempted_bar_ids", None)
-    if not isinstance(attempted_bar_ids, dict):
-        attempted_bar_ids = engine._wild_swing_vision_attempted_bar_ids = {}
-    if attempted_bar_ids.get(symbol) == latest_closed_bar_id:
+    if signal.get("structure_confirmation") not in PURE_MATH_ENTRY_CONFIRMATIONS:
+        logger.error(
+            "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=NON_MATHEMATICAL_ENTRY_DISABLED",
+            symbol, signal["side"], signal.get("structure_confirmation"),
+        )
         return [], []
-    attempted_bar_ids[symbol] = latest_closed_bar_id
-
-    current_bar = closed.iloc[-1]
-    vision_gate.clear_for_confirmed_ma_turn(
-        symbol,
-        entry_pattern=signal.get("entry_pattern"),
-        structure_confirmation=signal.get("structure_confirmation"),
-        structure_confirmed=signal.get("structure_confirmed") is True,
-    )
+    signal_bar_id = float(signal["bar_id"])
+    if signal.get("is_intrabar") is True:
+        live_bar = frame.iloc[-1]
+        if (
+            bool(live_bar.get("is_closed", True))
+            or float(live_bar.get("timestamp", -1)) != signal_bar_id
+        ):
+            logger.info(
+                "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s bar=%s reason=LIVE_CANDLE_IDENTITY_CHANGED",
+                symbol, signal["side"], signal_bar_id,
+            )
+            return [], []
+        current_bar = live_bar
+    else:
+        current_bar = closed.iloc[-1]
     from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 
     macro_fields = (
@@ -184,55 +195,21 @@ async def _process_wild_swing_symbol(
                 )
     if not macro_allowed:
         logger.info(
-            "【GATE 拒絕】symbol=%s side=%s pattern=%s bar=%s signal=%s reason=%s",
+            "【純數學 Gate 拒絕】symbol=%s side=%s pattern=%s bar=%s signal=%s reason=%s",
             symbol, signal["side"], signal["entry_pattern"],
-            latest_closed_bar_id, signal["reason"], macro_reason,
+            signal_bar_id, signal["reason"], macro_reason,
         )
         return [], []
     logger.info(
-        "【GATE 通過: %s】symbol=%s side=%s bar=%s",
-        signal["entry_pattern"], symbol, signal["side"], latest_closed_bar_id,
+        "【純數學 Gate 通過: %s】symbol=%s side=%s mode=%s bar=%s",
+        signal["entry_pattern"], symbol, signal["side"],
+        signal["structure_confirmation"], signal_bar_id,
     )
 
-    can_submit, gate_reason = vision_gate.can_submit_for_vision(
-        symbol,
-        current_bar,
-        signal["side"],
-        entry_pattern=signal.get("entry_pattern"),
-        structure_confirmation=signal.get("structure_confirmation"),
-        structure_confirmed=signal.get("structure_confirmed") is True,
-    )
-    if not can_submit:
-        logger.info(
-            "WILD_SWING_VISION_SKIPPED %s %s mode=%s bar=%s reason=%s",
-            symbol, signal["side"], signal["entry_pattern"],
-            latest_closed_bar_id, gate_reason,
-        )
-        return [], []
-
     logger.info(
-        "【送審 AI 截圖...】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s",
-        symbol, signal["side"], signal["entry_pattern"], latest_closed_bar_id,
+        "WILD_SWING_NUMERIC_VISION_BYPASS symbol=%s side=%s confirmation=%s bar=%s",
+        symbol, signal["side"], signal["structure_confirmation"], signal_bar_id,
     )
-    approved, vision_reason = await evaluate_qwen_entry_vision(
-        closed, signal["side"], mode=signal["entry_pattern"],
-    )
-    ai_status = "APPROVED" if approved else "REJECTED"
-    logger.info(
-        "【AI 審查結果: %s】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s reason=%s",
-        ai_status, symbol, signal["side"], signal["entry_pattern"],
-        latest_closed_bar_id, vision_reason,
-    )
-    if not approved:
-        if not vision_reason.startswith("QWEN_REVIEW_UNAVAILABLE") and not vision_reason.startswith("QWEN_REVIEW_FAILED"):
-            vision_gate.record_rejection(symbol, current_bar, signal["side"])
-        logger.info(
-            "【執行取消】symbol=%s side=%s pattern=%s bar=%s reason=%s",
-            symbol, signal["side"], signal["entry_pattern"],
-            latest_closed_bar_id, vision_reason,
-        )
-        return [], []
-    vision_gate.record_approved(symbol)
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
         frame=closed,
@@ -245,7 +222,7 @@ async def _process_wild_swing_symbol(
     logger.info(
         "【執行下單】symbol=%s side=%s pattern=%s bar=%s result=%s",
         symbol, signal["side"], signal["entry_pattern"],
-        latest_closed_bar_id, "FILLED" if opened else "REJECTED",
+        signal_bar_id, "FILLED" if opened else "REJECTED",
     )
     if opened and symbol in engine.account.positions:
         strategy.record_entry_fill(symbol, signal["bar_id"])

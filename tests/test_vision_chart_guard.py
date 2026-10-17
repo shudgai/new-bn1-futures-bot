@@ -6,7 +6,7 @@ import pytest
 
 from core.vision import chart_guard as cg
 from core.services.symbol_runner import _process_wild_swing_symbol
-from test_wild_swing_strategy import _frame, _profit_lock_continuation_frame
+from test_wild_swing_strategy import _frame, _pivot_cross_frame
 
 
 @pytest.fixture(autouse=True)
@@ -153,16 +153,15 @@ def test_disabled_vision_guard_rejects_entry(monkeypatch):
     assert run() == (False, "VISION_GUARD_DISABLED")
 
 
-@pytest.mark.parametrize("approved,expected_entries", [(True, 1), (False, 0)])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_entries, side):
+def test_wild_swing_runner_uses_math_gate_without_qwen(monkeypatch, side):
     from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 
     calls = []
 
     async def fake(frame, proposed_side, mode=None):
         calls.append((frame, proposed_side, mode))
-        return approved, "test verdict"
+        return False, "unexpected Qwen call"
 
     class Account:
         def __init__(self):
@@ -188,17 +187,16 @@ def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_en
         lambda *args, **kwargs: (True, "test macro pass"),
     )
     engine = Engine()
-    frame = _profit_lock_continuation_frame(side)
+    frame = _pivot_cross_frame(side)
     timestamp_offset = 1_740_000_000_000
     frame["timestamp"] += timestamp_offset
     frame["atr"] = 2.0
-    engine.account.trades = [{
-        "symbol": "LOBSTER/USDT",
-        "action": f"CLOSE_{side}",
-        "entry_mode": "WILD_SWING",
-        "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
-        "id": timestamp_offset + 600_001,
-    }]
+    if side == "LONG":
+        frame.loc[10, "kc_middle"] = 100.0
+        frame.loc[11, "kc_middle"] = 100.1
+    else:
+        frame.loc[10, "kc_middle"] = 100.0
+        frame.loc[11, "kc_middle"] = 99.9
     asyncio.run(_process_wild_swing_symbol(
         engine, "LOBSTER/USDT", frame.iloc[:-1], float(frame.iloc[-2]["close"]),
         False, False,
@@ -207,20 +205,11 @@ def test_wild_swing_runner_vision_gates_entry(monkeypatch, approved, expected_en
         engine, "LOBSTER/USDT", frame, float(frame.iloc[-1]["close"]), False, False,
     ))
 
-    assert len(engine.entries) == expected_entries
-    assert len(calls) == 1
-    assert calls[0][0].iloc[-1]["timestamp"] == frame.iloc[-1]["timestamp"]
-    assert calls[0][1] == side
-    assert calls[0][2] == "CONTINUATION"
-    if expected_entries:
-        assert engine.entries[0]["entry_mode"] == "WILD_SWING"
-        assert engine.entries[0]["meta_dict"]["entry_pattern"] == "CONTINUATION"
-        assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CONTINUATION"
-    else:
-        asyncio.run(_process_wild_swing_symbol(
-            engine, "LOBSTER/USDT", frame, float(frame.iloc[-1]["close"]), False, False,
-        ))
-        assert len(calls) == 1
+    assert len(engine.entries) == 1
+    assert calls == []
+    assert engine.entries[0]["entry_mode"] == "WILD_SWING"
+    assert engine.entries[0]["meta_dict"]["entry_pattern"] == "CROSSOVER"
+    assert engine.entries[0]["meta_dict"]["entry_signal_mode"] == "CROSSOVER"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

@@ -221,6 +221,97 @@ def test_short_passed_when_all_conditions_met():
     assert can_open is True
     assert reason == "PASSED_MACRO_SHORT_GATE"
 
+
+@pytest.mark.parametrize(
+    "side,bar,indicators",
+    [
+        (
+            "LONG",
+            {"open": 100.4, "close": 101.2, "high": 101.3, "low": 100.3},
+            {
+                "kc_upper": 100.0, "kc_lower": 90.0, "kc_middle": 95.1,
+                "ma15": 101.0, "atr": 2.0, "ma5_current": 101.1,
+                "ma5_previous": 101.0, "kc_middle_current": 95.1,
+                "kc_middle_previous": 95.0,
+            },
+        ),
+        (
+            "SHORT",
+            {"open": 90.2, "close": 89.4, "high": 90.3, "low": 89.3},
+            {
+                "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 99.9,
+                "ma15": 90.0, "atr": 2.0, "ma5_current": 89.9,
+                "ma5_previous": 90.0, "kc_middle_current": 99.9,
+                "kc_middle_previous": 100.0,
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "pattern,confirmation",
+    [
+        ("BREAKOUT", "CONFIRMED_2BAR_BREAKOUT"),
+        ("CONTINUATION", "CONTINUATION_OUTSIDE_KC"),
+    ],
+)
+def test_numeric_kc_entries_allow_valid_outer_rail_location(
+    side, bar, indicators, pattern, confirmation,
+):
+    gate = MacroCandleStructureGate()
+
+    allowed, reason = gate.can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern=pattern,
+        structure_confirmation=confirmation,
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_PURE_MATH_GATE"
+
+
+@pytest.mark.parametrize(
+    "side,pattern,confirmation,indicators",
+    [
+        (
+            "LONG", "BREAKOUT", "CONFIRMED_2BAR_BREAKOUT",
+            {
+                "ma5_current": 100.0, "ma5_previous": 100.0,
+                "kc_middle_current": 100.1, "kc_middle_previous": 100.0,
+            },
+        ),
+        (
+            "SHORT", "CONTINUATION", "CONTINUATION_OUTSIDE_KC",
+            {
+                "ma5_current": 100.0, "ma5_previous": 99.9,
+                "kc_middle_current": 99.9, "kc_middle_previous": 100.0,
+            },
+        ),
+    ],
+)
+def test_numeric_kc_entries_still_require_directional_ma5_and_kc(
+    side, pattern, confirmation, indicators,
+):
+    allowed, reason = MacroCandleStructureGate().can_open(
+        side,
+        {"open": 100.0, "close": 101.0 if side == "LONG" else 89.0,
+         "high": 101.2 if side == "LONG" else 100.2,
+         "low": 99.8 if side == "LONG" else 88.8},
+        {
+            "kc_upper": 100.0 if side == "LONG" else 110.0,
+            "kc_lower": 90.0, "kc_middle": 100.0,
+            "ma15": 100.0, "atr": 2.0, **indicators,
+        },
+        entry_pattern=pattern,
+        structure_confirmation=confirmation,
+        structure_confirmed=True,
+    )
+
+    assert allowed is False
+    assert "VETO_MA5_DIRECTION" in reason
+
 def test_unknown_side():
     gate = MacroCandleStructureGate()
     bar = {'open': 100, 'close': 100, 'high': 101, 'low': 99}

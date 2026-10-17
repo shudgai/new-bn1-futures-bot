@@ -122,9 +122,9 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
     signal = WildSwingStrategy().evaluate_entry("LOBSTER/USDT", frame, side)
     assert signal is not None
     assert signal["side"] == side
-    assert signal["reason"] == "REVERSAL_CROSSOVER_ENTRY"
+    assert signal["reason"] == "MA_CROSSOVER_ENTRY"
     assert signal["entry_pattern"] == "CROSSOVER"
-    assert signal["structure_confirmation"] == "MA5_MA15_1M_CROSS"
+    assert signal["structure_confirmation"] == "MA_CROSSOVER"
     assert "pivot_bar_id" not in signal
     assert "pivot_price" not in signal
     assert signal["bar_id"] == frame.iloc[-1]["timestamp"]
@@ -156,7 +156,7 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
         channel_expanding=signal["channel_expanding"],
     )
     assert allowed is True
-    assert reason == f"PASSED_MACRO_{side}_GATE"
+    assert reason == f"PASSED_MACRO_{side}_PURE_MATH_GATE"
     pattern_allowed, _ = EntryPatternPermittedGate.check_signal(signal)
     assert pattern_allowed is True
 
@@ -165,14 +165,16 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
     assert WildSwingStrategy().evaluate_entry("LOBSTER/USDT", live_frame, side) is None
 
 
-def test_short_crossover_is_rejected_while_kc_middle_rises():
+def test_short_crossover_uses_ma5_direction_and_basis_position_not_kc_slope():
     frame = _pivot_cross_frame("SHORT")
     frame.loc[10, "kc_middle"] = 100.0
     frame.loc[11, "kc_middle"] = 100.1
 
-    assert WildSwingStrategy().evaluate_entry(
+    signal = WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT", frame, "SHORT",
-    ) is None
+    )
+    assert signal is not None
+    assert signal["structure_confirmation"] == "MA_CROSSOVER"
 
 
 def test_short_crossover_is_not_generated_at_kc_upper_rail():
@@ -186,6 +188,58 @@ def test_short_crossover_is_not_generated_at_kc_upper_rail():
     assert WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT", frame, "SHORT",
     ) is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_live_outside_continuation_keeps_live_bar_identity(side):
+    frame = _frame(side)
+    frame["atr"] = 2.0
+    frame["open"] = 100.0
+    frame["high"] = 100.2
+    frame["low"] = 99.8
+    frame["close"] = 100.0
+    frame["kc_upper"] = 105.0 if side == "LONG" else 104.5
+    frame["kc_lower"] = 95.0 if side == "LONG" else 94.5
+    frame["kc_middle"] = 100.0
+    frame["ma5"] = 100.0
+    frame["ma15"] = 100.0
+    if side == "LONG":
+        frame.loc[10, ["open", "high", "low", "close", "ma5"]] = [
+            100.0, 105.0, 99.9, 104.9, 100.1,
+        ]
+        frame.loc[11, ["open", "high", "low", "close", "ma5", "kc_upper"]] = [
+            106.0, 106.6, 105.8, 106.5, 100.2, 105.5,
+        ]
+    else:
+        frame.loc[10, ["open", "high", "low", "close", "ma5"]] = [
+            100.0, 100.1, 95.0, 95.1, 99.9,
+        ]
+        frame.loc[11, ["open", "high", "low", "close", "ma5", "kc_lower"]] = [
+            94.0, 94.1, 93.4, 93.5, 99.8, 94.5,
+        ]
+    frame.attrs["timeframe_ms"] = 60_000
+    live = frame.iloc[-1].copy()
+    live["timestamp"] += 60_000
+    live["is_closed"] = False
+    if side == "LONG":
+        live["open"], live["high"], live["low"], live["close"] = (
+            106.5, 106.6, 106.5, 106.55,
+        )
+    else:
+        live["open"], live["high"], live["low"], live["close"] = (
+            93.5, 93.5, 93.4, 93.45,
+        )
+    frame = pd.concat([frame, live.to_frame().T], ignore_index=True)
+    frame.attrs["timeframe_ms"] = 60_000
+
+    signal = WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, side, tick_price=float(live["close"]),
+    )
+
+    assert signal is not None
+    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
+    assert signal["is_intrabar"] is True
+    assert signal["bar_id"] == float(live["timestamp"])
 
 
 @pytest.mark.parametrize(
@@ -217,7 +271,7 @@ def test_short_crossover_is_not_generated_at_kc_upper_rail():
                 -1: {
                     "open": 100.1, "high": 101.2, "low": 100.0, "close": 101.0,
                     "kc_upper": 100.8, "kc_lower": 98.3,
-                    "ma5": 100.0, "ma15": 100.0,
+                    "ma5": 100.2, "ma15": 100.0,
                 },
             },
         ),
@@ -237,10 +291,9 @@ def test_expanding_outer_band_breakout_with_solid_body_creates_breakout_signal(
 
     assert signal is not None
     assert signal["side"] == side
-    assert signal["reason"] == "KC_OUTER_BREAKOUT_ENTRY"
-    assert signal["entry_pattern"] == "BREAKOUT"
-    assert signal["structure_confirmation"] == "KC_OUTER_BREAKOUT"
-    assert signal["body_ratio"] > 0.60
+    assert signal["reason"] == "CONTINUATION_OUTSIDE_KC_ENTRY"
+    assert signal["entry_pattern"] == "CONTINUATION"
+    assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
 
 
 def test_breakout_entry_rejects_body_ratio_at_or_below_sixty_percent():
@@ -275,22 +328,20 @@ def test_outer_band_breakout_is_not_an_initial_entry_by_itself():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_profit_lock_exit_allows_only_aligned_outer_band_continuation(side):
+def test_entry_mode_is_independent_of_profit_lock_metadata(side):
     frame = _profit_lock_continuation_frame(side)
     signal = WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT",
         frame,
         side,
-        profit_lock_exit={
-            "side": side, "close_id": 600_001, "close_bar_id": 600_000,
-        },
     )
     assert signal is not None
-    assert signal["reason"] == "PROFIT_LOCK_CONTINUATION_ENTRY"
-    assert signal["entry_pattern"] == "CONTINUATION"
+    assert signal["reason"] == "CONFIRMED_2BAR_BREAKOUT_ENTRY"
+    assert signal["structure_confirmation"] == "CONFIRMED_2BAR_BREAKOUT"
+    assert signal["entry_pattern"] == "BREAKOUT"
 
 
-def test_profit_lock_continuation_rejects_low_volume_stall():
+def test_no_math_entry_is_created_for_flat_stall_after_profit_lock():
     frame = _pivot_cross_frame("LONG")
     frame.loc[9:, ["high", "close"]] = [[100.2, 100.2]] * 3
     frame.loc[9:, "volume"] = [10.0, 10.0, 5.0]
@@ -303,9 +354,6 @@ def test_profit_lock_continuation_rejects_low_volume_stall():
     ]
     assert WildSwingStrategy().evaluate_entry(
         "LOBSTER/USDT", frame, "LONG",
-        profit_lock_exit={
-            "side": "LONG", "close_id": 600_001, "close_bar_id": 600_000,
-        },
     ) is None
 
 
@@ -359,23 +407,15 @@ def _pivot_exit_frame(side):
     return pd.DataFrame(rows)
 
 
-@pytest.mark.parametrize(
-    "side,expected_reason", [
-        ("LONG", "EXIT_BY_TRUE_PEAK_VOLUME_DIVERGENCE"),
-        ("SHORT", "EXIT_BY_TRUE_VALLEY_VOLUME_DIVERGENCE"),
-    ],
-)
-def test_exit_requires_confirmed_true_pivot_volume_divergence_and_structure_break(
-    side, expected_reason,
-):
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_volume_divergence_without_confirmed_pivot_exit_does_not_close(side):
     frame = _pivot_exit_frame(side)
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT",
         {"side": side, "open_timestamp": 60.0},
         frame,
     )
-    assert result is not None
-    assert result["reason"] == expected_reason
+    assert result is None
 
 
 def test_trend_loss_or_midline_cross_alone_does_not_exit():

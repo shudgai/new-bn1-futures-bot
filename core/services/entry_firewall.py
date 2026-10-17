@@ -3,6 +3,9 @@ import math
 import time
 import logging
 
+from core.gates.breakout_continuation_entry_gate import (
+    PURE_MATH_ENTRY_CONFIRMATIONS,
+)
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
@@ -57,24 +60,35 @@ async def validate_account_entry(account, symbol, side, context):
         fresh_frame = await provider(symbol)
         if (
             fresh_frame is None
+            or fresh_frame.empty
             or not fresh_frame.attrs.get("entry_finality_verified")
             or fresh_frame.attrs.get("timeframe_ms") != 60_000
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
 
         from core.services.strategies.wild_swing_strategy import WildSwingStrategy
-        wild_strategy = WildSwingStrategy()
-        profit_lock_exit = wild_strategy.latest_profit_lock_exit(
-            getattr(account, "trades", None), symbol,
+        live_row = fresh_frame.iloc[-1]
+        tick_price = None
+        if "is_closed" in fresh_frame and not bool(live_row["is_closed"]):
+            try:
+                tick_price = float(live_row["close"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_LIVE_QUOTE_INVALID"
+                ) from exc
+            if not math.isfinite(tick_price) or tick_price <= 0:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_LIVE_QUOTE_INVALID"
+                )
+        signal = WildSwingStrategy().evaluate_entry(
+            symbol, fresh_frame, side, tick_price=tick_price,
         )
-        if profit_lock_exit is None:
-            signal = wild_strategy.evaluate_entry(symbol, fresh_frame, side)
-        else:
-            signal = wild_strategy.evaluate_entry(
-                symbol, fresh_frame, side, profit_lock_exit=profit_lock_exit,
-            )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+        if signal.get("structure_confirmation") not in PURE_MATH_ENTRY_CONFIRMATIONS:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_NON_MATHEMATICAL_ENTRY_DISABLED"
+            )
         from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 
         pattern_allowed, pattern_reason = EntryPatternPermittedGate.check_signal(signal)
@@ -91,10 +105,6 @@ async def validate_account_entry(account, symbol, side, context):
             )
         expected = context.get("dual_tf_meta")
         expected_bar = expected.get("bar_id") if isinstance(expected, dict) else None
-        expected_profit_lock_close_id = (
-            expected.get("profit_lock_close_id")
-            if isinstance(expected, dict) else None
-        )
         expected_pattern = EntryPatternPermittedGate.normalize(
             context.get("entry_pattern")
         )
@@ -118,11 +128,6 @@ async def validate_account_entry(account, symbol, side, context):
             or signal_bar_id is None
             or expected_bar_id != signal_bar_id
             or confirmation_bar_id != signal_bar_id
-            or (
-                signal.get("reason") == "PROFIT_LOCK_CONTINUATION_ENTRY"
-                and finite_bar_id(expected_profit_lock_close_id)
-                != finite_bar_id(signal.get("profit_lock_close_id"))
-            )
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
 
@@ -132,7 +137,17 @@ async def validate_account_entry(account, symbol, side, context):
         closed = closed_entry_candles(fresh_frame)
         if closed.empty:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_NO_CLOSED_MARKET_DATA")
-        current = closed.iloc[-1]
+        if signal.get("is_intrabar") is True:
+            current = fresh_frame.iloc[-1]
+            if (
+                bool(current.get("is_closed", True))
+                or finite_bar_id(current.get("timestamp")) != signal_bar_id
+            ):
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_LIVE_CANDLE_IDENTITY_CHANGED"
+                )
+        else:
+            current = closed.iloc[-1]
         required = (
             "open", "high", "low", "close", "kc_upper", "kc_lower",
             "kc_middle", "ma15", "atr",
@@ -183,27 +198,9 @@ async def validate_account_entry(account, symbol, side, context):
             signal_pattern, symbol, side, signal_bar_id,
         )
         logger.info(
-            "【送審 AI 截圖...】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s stage=final_firewall",
-            symbol, side, signal_pattern, signal_bar_id,
+            "WILD_SWING_PURE_MATH_FIREWALL_PASS symbol=%s side=%s confirmation=%s bar=%s",
+            symbol, side, signal["structure_confirmation"], signal_bar_id,
         )
-        from core.vision.chart_guard import evaluate_qwen_entry_vision
-
-        ai_approved, ai_reason = await evaluate_qwen_entry_vision(
-            closed, side, mode=signal_pattern,
-        )
-        ai_status = "APPROVED" if ai_approved else "REJECTED"
-        logger.info(
-            "【AI 審查結果: %s】source=local_qwen_vl symbol=%s side=%s pattern=%s bar=%s stage=final_firewall reason=%s",
-            ai_status, symbol, side, signal_pattern, signal_bar_id, ai_reason,
-        )
-        if not ai_approved:
-            logger.warning(
-                "【執行取消】symbol=%s side=%s pattern=%s bar=%s reason=%s",
-                symbol, side, signal_pattern, signal_bar_id, ai_reason,
-            )
-            raise ValueError(
-                "[FORBIDDEN_ENTRY] WILD_SWING_QWEN_REJECTED: " + ai_reason
-            )
         return {
             "type": context.get("entry_signal_code"),
             "side": side,
