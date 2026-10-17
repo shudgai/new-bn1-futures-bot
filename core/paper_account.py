@@ -1180,6 +1180,117 @@ class PaperAccount:
             self.log(f"↩️ [紙上Maker撤單] {symbol}：{reason}", "INFO")
             self.save_state()
 
+    async def partial_close_position(
+        self,
+        symbol: str,
+        current_price: float,
+        close_reason: str,
+        fraction: float = 0.5,
+        is_manual: bool = False,
+    ) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        try:
+            fraction = float(fraction)
+            current_price = float(current_price)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (math.isfinite(fraction) and 0 < fraction < 1
+                and math.isfinite(current_price) and current_price > 0):
+            return False
+
+        position = self.positions[symbol]
+        meta = self.position_meta.get(symbol, {})
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual,
+        ):
+            self.log(
+                f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=CHANNEL_SHORT_OVERSOLD_REVERSAL",
+                "WARNING",
+            )
+            return False
+
+        quantity = float(position.get("qty") or 0.0)
+        margin = float(position.get("margin") or 0.0)
+        if not math.isfinite(quantity) or quantity <= 0 or margin < 0:
+            return False
+        close_qty = quantity * fraction
+        if close_qty <= 0 or close_qty >= quantity:
+            return False
+
+        self.closing_lock.add(symbol)
+        try:
+            self.pending_limit_orders.pop(symbol, None)
+            side = position["side"]
+            entry_price = float(position["entry_price"])
+            execution_price = (
+                current_price * (1 - SLIPPAGE_PCT)
+                if side == "LONG"
+                else current_price * (1 + SLIPPAGE_PCT)
+            )
+            raw_pnl = (
+                (execution_price - entry_price) * close_qty
+                if side == "LONG"
+                else (entry_price - execution_price) * close_qty
+            )
+            open_fee = entry_price * close_qty * TAKER_FEE_RATE
+            close_fee = execution_price * close_qty * TAKER_FEE_RATE
+            net_pnl = raw_pnl - open_fee - close_fee
+            margin_closed = margin * fraction
+
+            position["qty"] = quantity - close_qty
+            position["margin"] = max(0.0, margin - margin_closed)
+            position["is_half_closed"] = True
+            meta["is_half_closed"] = True
+            meta["channel_short_oversold_partial_close_done"] = True
+            from core.services.exits.short_oversold_exit import mark_partial_exit_result
+            mark_partial_exit_result(position, meta, completed=True)
+            position["unrealized_pnl"] = (
+                (current_price - entry_price) * position["qty"]
+                * (1 if side == "LONG" else -1)
+            )
+            self.balance += margin_closed + raw_pnl - close_fee
+            self.available_balance = self.balance
+            self.realized_pnl += net_pnl
+
+            from core.services.post_profit_lock_gate import profit_exit_fields
+            trade_ms = int(time.time() * 1000)
+            closed_position = dict(position)
+            closed_position["qty"] = close_qty
+            self.trades.insert(0, {
+                "id": trade_ms,
+                **profit_exit_fields(
+                    closed_position, close_reason, trade_ms, net_pnl=net_pnl,
+                ),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"PARTIAL_CLOSE_{side}",
+                "side": side,
+                "price": round(execution_price, 8),
+                "qty": round(close_qty, 8),
+                "amount": margin_closed,
+                "fee": round(open_fee + close_fee, 4),
+                "pnl": round(net_pnl, 4),
+                "status": "PARTIAL_CLOSED",
+                "reason": close_reason,
+                **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
+            })
+            self.save_state()
+            self.log(
+                f"PARTIAL_CLOSE symbol={symbol} side={side} qty={close_qty:.8g} "
+                f"remaining={position['qty']:.8g} price={execution_price:.8g} "
+                f"net_pnl={net_pnl:+.4f} reason={close_reason}",
+                "SUCCESS" if net_pnl >= 0 else "WARNING",
+            )
+            return True
+        finally:
+            self.closing_lock.discard(symbol)
+
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False, limit_price: float = None) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False

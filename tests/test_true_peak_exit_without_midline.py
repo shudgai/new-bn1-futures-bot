@@ -259,7 +259,12 @@ def test_confirmed_peak_closes_channel_position_without_kc_midline_gate(
     monkeypatch.setattr(
         realtime_profit_exit,
         "cached_tick_indicators",
-        lambda *_args: ({"live_bar_ms": live_bar_ms, "timeframe_ms": 60_000}, 1.0),
+        lambda *_args: ({
+            "live_bar_ms": live_bar_ms,
+            "timeframe_ms": 60_000,
+            "ma5_history": [10.0, 10.0, 10.0],
+            "ma15_history": [9.0, 9.0, 9.0],
+        }, 1.0),
     )
     monkeypatch.setattr(
         realtime_profit_exit,
@@ -339,7 +344,12 @@ def test_confirmed_valley_closes_channel_position_without_kc_midline_gate(
     monkeypatch.setattr(
         realtime_profit_exit,
         "cached_tick_indicators",
-        lambda *_args: ({"live_bar_ms": live_bar_ms, "timeframe_ms": 60_000}, 1.0),
+        lambda *_args: ({
+            "live_bar_ms": live_bar_ms,
+            "timeframe_ms": 60_000,
+            "ma5_history": [10.0, 10.0, 10.0],
+            "ma15_history": [9.0, 9.0, 9.0],
+        }, 1.0),
     )
     monkeypatch.setattr(
         realtime_profit_exit,

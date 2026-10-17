@@ -79,6 +79,8 @@ async def enforce_atr_protection(account, symbol, price):
     entry_mode = str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
 
     from core.symbol_aliases import is_auto_entry_symbol
+    short_trend_hold = False
+    frame = None
     if is_auto_entry_symbol(symbol):
         from core.services.exits.strict_true_pivot import (
             CONFIRMED_PIVOT_PENDING_KEY,
@@ -86,11 +88,40 @@ async def enforce_atr_protection(account, symbol, price):
             pending_confirmed_pivot_exit,
             store_confirmed_pivot_exit,
         )
-
-        pivot = pending_confirmed_pivot_exit(position, meta)
-        if pivot is None:
+        if entry_mode == "CHANNEL_SWING" and position.get("side") == "SHORT":
+            from core.services.exits.short_oversold_exit import (
+                STATE_KEY as SHORT_OVERSOLD_STATE_KEY,
+                TREND_HOLD_STATE_KEY,
+                short_bearish_trend_in_frame,
+            )
             frame_provider = getattr(account, "channel_exit_frame_provider", None)
             frame = frame_provider(symbol) if callable(frame_provider) else None
+            short_trend_hold = short_bearish_trend_in_frame(frame) is not False
+            position[TREND_HOLD_STATE_KEY] = short_trend_hold
+            meta[TREND_HOLD_STATE_KEY] = short_trend_hold
+            oversold_state = (
+                position.get(SHORT_OVERSOLD_STATE_KEY)
+                or meta.get(SHORT_OVERSOLD_STATE_KEY)
+            )
+            if isinstance(oversold_state, dict):
+                oversold_state["bearish_trend_hold_active"] = short_trend_hold
+                if short_trend_hold:
+                    oversold_state["partial_exit_pending"] = False
+                    oversold_state["reversal_confirmed"] = False
+                    oversold_state["full_exit_pending"] = False
+                    oversold_state.pop("reversal_bar_ms", None)
+                    oversold_state.pop("full_exit_price", None)
+                position[SHORT_OVERSOLD_STATE_KEY] = copy.deepcopy(oversold_state)
+                meta[SHORT_OVERSOLD_STATE_KEY] = copy.deepcopy(oversold_state)
+
+        pivot = (
+            None if short_trend_hold
+            else pending_confirmed_pivot_exit(position, meta)
+        )
+        if pivot is None and not short_trend_hold:
+            if frame is None:
+                frame_provider = getattr(account, "channel_exit_frame_provider", None)
+                frame = frame_provider(symbol) if callable(frame_provider) else None
             pivot = confirmed_true_pivot_exit(position, frame)
             if pivot is not None and not store_confirmed_pivot_exit(position, pivot):
                 account.log(

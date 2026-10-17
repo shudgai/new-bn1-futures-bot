@@ -715,6 +715,29 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             return True
 
         pending_pivot = pending_confirmed_pivot_exit(position, meta)
+        short_channel_position = (
+            restricted_exit_policy
+            and entry_m == 'CHANNEL_SWING'
+            and position.get('side') == 'SHORT'
+        )
+        if pending_pivot is not None and short_channel_position:
+            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+            if frame is None or frame.empty:
+                short_trend_hold = True
+            else:
+                pending_snapshot, _ = cached_tick_indicators(frame, price, stamp)
+                from core.services.exits.short_oversold_exit import (
+                    TREND_HOLD_STATE_KEY,
+                    short_bearish_trend_active,
+                )
+                short_trend_hold = (
+                    short_bearish_trend_active(pending_snapshot) is not False
+                )
+                position[TREND_HOLD_STATE_KEY] = short_trend_hold
+                meta[TREND_HOLD_STATE_KEY] = short_trend_hold
+                account.save_state()
+            if short_trend_hold:
+                pending_pivot = None
         if pending_pivot is not None:
             pending_reason, pending_details = pending_pivot
             account.log(
@@ -745,6 +768,55 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 return False
 
             snapshot, _ = cached_tick_indicators(frame, price, stamp)
+            if entry_m == 'CHANNEL_SWING' and position.get('side') == 'SHORT':
+                from core.services.exits.short_oversold_exit import (
+                    REVERSAL_PARTIAL_TRIGGER,
+                    RATCHET_EXIT_TRIGGER,
+                    TREND_HOLD_STATE_KEY,
+                    evaluate_short_oversold_exit,
+                    short_bearish_trend_active,
+                )
+                trend_hold_active = (
+                    short_bearish_trend_active(snapshot) is not False
+                )
+                if (
+                    position.get(TREND_HOLD_STATE_KEY) is not trend_hold_active
+                    or meta.get(TREND_HOLD_STATE_KEY) is not trend_hold_active
+                ):
+                    position[TREND_HOLD_STATE_KEY] = trend_hold_active
+                    meta[TREND_HOLD_STATE_KEY] = trend_hold_active
+                    account.save_state()
+                oversold_trigger, oversold_state_changed = (
+                    evaluate_short_oversold_exit(position, meta, price, snapshot)
+                )
+                if oversold_state_changed:
+                    account.save_state()
+                if oversold_trigger == REVERSAL_PARTIAL_TRIGGER:
+                    account.log(
+                        f'CHANNEL_SHORT_OVERSOLD_PARTIAL symbol={symbol} '
+                        f'quote_ms={stamp} price={price}',
+                        'WARNING',
+                    )
+                    return await account.partial_close_position(
+                        symbol,
+                        price,
+                        f'Channel Swing {REVERSAL_PARTIAL_TRIGGER}',
+                        fraction=0.5,
+                        is_manual=True,
+                    )
+                if oversold_trigger == RATCHET_EXIT_TRIGGER:
+                    account.log(
+                        f'CHANNEL_SHORT_OVERSOLD_RATCHET symbol={symbol} '
+                        f'quote_ms={stamp} price={price}',
+                        'WARNING',
+                    )
+                    return await account.close_position(
+                        symbol,
+                        price,
+                        f'Channel Swing {RATCHET_EXIT_TRIGGER}',
+                        is_manual=True,
+                    )
+
             from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
             lock_trigger, state_changed = _evaluate_profit_lock_only(
                 position, meta, price, stamp, snapshot,
@@ -763,6 +835,18 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                         'WARNING',
                     )
                 return bool(closed)
+
+            if entry_m == 'CHANNEL_SWING' and position.get('side') == 'SHORT':
+                from core.services.exits.short_oversold_exit import (
+                    short_bearish_trend_active,
+                )
+                if short_bearish_trend_active(snapshot) is not False:
+                    account.log(
+                        f'CHANNEL_SHORT_TREND_HOLD symbol={symbol} '
+                        'reason=BEARISH_MA_TREND_OR_INVALID_DATA',
+                        'INFO',
+                    )
+                    return False
 
             from core.services.exits.strict_true_pivot import (
                 confirmed_true_pivot_exit,

@@ -7,6 +7,10 @@ from typing import Any, Mapping
 
 from core.symbol_aliases import is_auto_entry_symbol
 
+from core.services.exits.short_oversold_exit import (
+    STATE_KEY as _SHORT_OVERSOLD_STATE_KEY,
+    TREND_HOLD_STATE_KEY as _SHORT_TREND_HOLD_STATE_KEY,
+)
 
 _PROFIT_LOCK_REASONS = (
     "NET_ROE_THREE_TIER_GIVEBACK",
@@ -24,6 +28,8 @@ _PIVOT_REASONS = {
     "LONG": "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
     "SHORT": "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
 }
+_OVERSOLD_REVERSAL_REASON = "CHANNEL_SHORT_OVERSOLD_REVERSAL_PARTIAL_50"
+_OVERSOLD_RATCHET_REASON = "CHANNEL_SHORT_OVERSOLD_RATCHET_EXIT"
 _LOCK_FLAGS = (
     "profit_lock_usdt_armed",
     "profit_lock_atr_armed",
@@ -99,6 +105,65 @@ def automated_position_exit_allowed(
     meta = metadata if isinstance(metadata, Mapping) else {}
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
+    state = (
+        position.get(_SHORT_OVERSOLD_STATE_KEY)
+        or meta.get(_SHORT_OVERSOLD_STATE_KEY)
+        or {}
+    )
+    trend_hold_active = (
+        position.get(_SHORT_TREND_HOLD_STATE_KEY) is True
+        or meta.get(_SHORT_TREND_HOLD_STATE_KEY) is True
+        or (
+            isinstance(state, Mapping)
+            and state.get("bearish_trend_hold_active") is True
+        )
+    )
+    if (
+        side == "SHORT"
+        and str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
+        == "CHANNEL_SWING"
+        and trend_hold_active
+    ):
+        if any(
+            token in normalized_reason
+            for token in (
+                "HARD_STOP",
+                "CIRCUIT_BREAKER",
+                "EMERGENCY_DUMP",
+                "EMERGENCY_WATERFALL",
+            )
+        ):
+            return True
+        lock_reason = any(
+            token in normalized_reason
+            for token in _PROFIT_LOCK_REASONS
+        )
+        return bool(
+            lock_reason
+            and _profit_lock_armed(position, meta)
+            and _net_profit_positive(position, price)
+        )
+    if (
+        side == "SHORT"
+        and str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
+        == "CHANNEL_SWING"
+        and isinstance(state, Mapping)
+        and state.get("armed") is True
+    ):
+        if (
+            _OVERSOLD_REVERSAL_REASON in normalized_reason
+            and state.get("bearish_trend_hold_active") is False
+            and state.get("reversal_confirmed") is True
+            and state.get("partial_exit_pending") is True
+            and state.get("partial_exit_done") is not True
+        ):
+            return True
+        if (
+            _OVERSOLD_RATCHET_REASON in normalized_reason
+            and state.get("bearish_trend_hold_active") is False
+            and state.get("full_exit_pending") is True
+        ):
+            return True
 
     if (
         normalized_reason.endswith(_PIVOT_REASONS.get(side, "\0"))

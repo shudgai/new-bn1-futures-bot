@@ -384,7 +384,7 @@
                                 <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
                                 <td>{{ pos.leverage || getLeverage(pos.symbol) }}x</td>
                                 <td style="color:var(--muted); font-size:12px; white-space:nowrap;">{{ formatTime(pos.open_time) }}</td>
-                                <td><b>{{ pos.symbol }}</b></td>
+                                <td><b>{{ formatSymbol(pos.symbol) }}</b></td>
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
@@ -430,7 +430,7 @@
                                 <td>{{ pos.qty }}</td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="10" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>
@@ -495,8 +495,8 @@
                 <!-- MANUAL ORDER PANEL -->
                 <div v-if="bot.symbols && bot.symbols.length > 0" class="card">
                     <div class="card-title">⚡ 手動開倉（自動掛載 2.0 ATR 止盈 / 1.5 ATR 止損）</div>
-                    <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
-                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
+                    <div v-for="symbol in displaySymbols" :key="'manual-' + symbol" style="margin-top:10px;">
+                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ formatSymbol(symbol) }}</div>
                         <div style="display:flex; gap:8px;">
                             <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做多 (LONG)</button>
                             <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做空 (SHORT)</button>
@@ -506,8 +506,8 @@
 
                 <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
                 <div v-if="bot.symbols && bot.symbols.length > 0" class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
-                    <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
-                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
+                    <div v-for="symbol in displaySymbols" :key="'mobile-manual-' + symbol" style="width:100%;">
+                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ formatSymbol(symbol) }}</div>
                         <div style="display:flex; gap:10px;">
                             <button class="btn btn-success" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder">買進 LONG</button>
                             <button class="btn btn-danger" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder">賣出 SHORT</button>
@@ -522,8 +522,11 @@
 
             <!-- TRADE HISTORY TABLE -->
             <div class="card full-width col-12" style="min-width:0;">
-                <div class="card-title">
+                <div class="card-title" style="flex-wrap:wrap; gap:8px;">
                     <span>📜 近期交易明細 (Trade History)</span>
+                    <span style="font-size:11px; color:var(--muted); text-transform:none; letter-spacing:normal;">
+                        交易記錄為歷史事件；目前是否持倉請以上方「當前持倉」為準。
+                    </span>
                     <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
                         <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
                             <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
@@ -550,19 +553,20 @@
                         </thead>
                         <tbody>
                             <tr v-for="t in bot.trades" :key="t.id"
-                                :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
+                                :style="{ opacity: getTradeStatus(t) === 'OPEN' ? 0.5 : 1 }">
                                 <td>{{ t.time }}</td>
-                                <td><b>{{ t.symbol }}</b></td>
+                                <td><b>{{ formatSymbol(t.symbol) }}</b></td>
                                 <td :style="{
                                     color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
                                            (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
                                 }">{{ formatTradeAction(t.action) }}</td>
                                 <td :style="{
-                                    color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
-                                           t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
+                                    color: t.action && t.action.startsWith('OPEN_') ? 'var(--muted)' :
+                                           getTradeStatus(t) === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
+                                           getTradeStatus(t) === 'PARTIAL_CLOSED' ? 'var(--up)' :
                                            'var(--muted)',
                                     fontSize: '11px'
-                                }">{{ t.status }}</td>
+                                }">{{ formatTradeStatus(getTradeStatus(t)) }}</td>
                                 <td>{{ t.price }}</td>
                                 <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
                                 <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
@@ -596,7 +600,7 @@
         <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" aria-label="K線圖">
             <div class="chart-modal-header">
                 <div class="chart-modal-title">
-                    📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
+                    📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : formatSymbol(chartModal.symbol) + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1M·階梯鎖利＋幾何真峰谷確認</span>
@@ -608,13 +612,13 @@
                 <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': (chartModal.states[symbol] || {}).entryBlock }">
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
-                            <span>{{ symbol }}</span>
+                            <span>{{ formatSymbol(symbol) }}</span>
                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="即時 K 價格站上／跌破 KC 中軌，或觸及同側外軌時優先顯示方向；否則參考最近三根已收線中軌">
                                 {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
-                        <div v-if="bot.positions && bot.positions.find(p => p.symbol === symbol)" class="chart-pos-info-bar">
+                        <div v-if="getPos(symbol)" class="chart-pos-info-bar">
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">開倉價:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">
@@ -624,8 +628,8 @@
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">淨利%:</span>
-                                <span :class="['chart-pos-info-value', getPosRoePct(bot.positions.find(p => p.symbol === symbol)) >= 0 ? 'text-green' : 'text-red']" style="font-family:monospace; font-weight: 600;">
-                                    {{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)).toFixed(2) }}%
+                                <span :class="['chart-pos-info-value', getPosRoePct(getPos(symbol)) >= 0 ? 'text-green' : 'text-red']" style="font-family:monospace; font-weight: 600;">
+                                    {{ getPosRoePct(getPos(symbol)) > 0 ? '+' : '' }}{{ getPosRoePct(getPos(symbol)).toFixed(2) }}%
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
@@ -635,12 +639,12 @@
                                     {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
                                 </span>
                             </span>
-                            <span class="chart-pos-info-sep" v-if="bot.positions.find(p => p.symbol === symbol)">｜</span>
-                            <span class="chart-pos-info-item" v-if="bot.positions.find(p => p.symbol === symbol)">
+                            <span class="chart-pos-info-sep" v-if="getPos(symbol)">｜</span>
+                            <span class="chart-pos-info-item" v-if="getPos(symbol)">
                                 <span class="chart-pos-info-label">保底鎖利:</span>
-                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', isLockedProfitArmed(bot.positions.find(p => p.symbol === symbol)) ? '' : 'zero']" :title="getLockedProfitStatusTitle(bot.positions.find(p => p.symbol === symbol))">
-                                    {{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(bot.positions.find(p => p.symbol === symbol)).toFixed(4) }} USDT
-                                    <span v-if="isLockedProfitArmed(bot.positions.find(p => p.symbol === symbol))" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
+                                <span :class="['locked-profit-badge', lockedProfitBump[symbol] ? 'bump' : '', isLockedProfitArmed(getPos(symbol)) ? '' : 'zero']" :title="getLockedProfitStatusTitle(getPos(symbol))">
+                                    {{ getLockedProfitAmount(getPos(symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(getPos(symbol)).toFixed(4) }} USDT
+                                    <span v-if="isLockedProfitArmed(getPos(symbol))" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
                                     <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
                             </span>
@@ -733,12 +737,21 @@
                         Number(b.timestamp || 0) - Number(a.timestamp || 0)
                     ));
                 },
-                sortedTickers() {
+                displaySymbols() {
                     if (!this.bot || !Array.isArray(this.bot.symbols)) return [];
-                    return this.bot.symbols
+                    const seen = new Set();
+                    return this.bot.symbols.filter(symbol => {
+                        const displayName = this.formatSymbol(symbol);
+                        if (seen.has(displayName)) return false;
+                        seen.add(displayName);
+                        return true;
+                    });
+                },
+                sortedTickers() {
+                    return this.displaySymbols
                         .map(sym => ({
                             sym,
-                            name: sym.replace('/USDT', ''),
+                            name: this.formatSymbol(sym).replace(/\/USDT(?::USDT)?$/i, ''),
                             price: this.getCurrPrice(sym),
                             direction: (this.bot.symbol_directions || {})[sym] || ''
                         }))
@@ -1286,6 +1299,61 @@
                     const url = this.exportDate ? '/api/export_trades?date=' + this.exportDate : '/api/export_trades';
                     window.location.href = url;
                 },
+                formatSymbol(symbol) {
+                    const raw = String(symbol || '').trim();
+                    const normalized = raw.toUpperCase();
+                    if ([
+                        'LOBSTER', 'LOBSTER/USDT', 'LOBSTER/USDT:USDT',
+                        '龍蝦/USDT', '龍蝦/USDT:USDT',
+                        '龙虾/USDT', '龙虾/USDT:USDT',
+                    ].includes(normalized)) {
+                        return '龙虾/USDT';
+                    }
+                    return raw;
+                },
+                sameSymbol(left, right) {
+                    return this.formatSymbol(left) === this.formatSymbol(right);
+                },
+                getTradeStatus(trade) {
+                    if (
+                        !trade
+                        || trade.status !== 'OPEN'
+                        || !String(trade.action || '').startsWith('OPEN_')
+                    ) {
+                        return trade && trade.status ? trade.status : '';
+                    }
+                    const id = Number(trade.id);
+                    const side = trade.side || String(trade.action).slice(5);
+                    if (!Number.isFinite(id) || !side) return trade.status;
+                    const laterClosures = (this.bot.trades || []).filter(event => (
+                        this.sameSymbol(event.symbol, trade.symbol)
+                        && event.side === side
+                        && Number(event.id) > id
+                        && (
+                            event.action === 'CLOSE_' + side
+                            || event.action === 'PARTIAL_CLOSE_' + side
+                        )
+                    ));
+                    if (laterClosures.some(event => (
+                        event.action === 'CLOSE_' + side && event.status === 'CLOSED'
+                    ))) {
+                        return 'CLOSED';
+                    }
+                    if (laterClosures.some(event => (
+                        event.action === 'PARTIAL_CLOSE_' + side
+                        && event.status === 'PARTIAL_CLOSED'
+                    ))) {
+                        return 'PARTIAL_CLOSED';
+                    }
+                    return trade.status;
+                },
+                formatTradeStatus(status) {
+                    return {
+                        OPEN: '持倉中',
+                        CLOSED: '已平倉',
+                        PARTIAL_CLOSED: '部分平倉',
+                    }[status] || status || '-';
+                },
                 formatTradeAction(action) {
                     return {
                         OPEN_LONG: '買入開多',
@@ -1311,12 +1379,30 @@
                 },
                 getCurrPrice(symbol) {
                     if (!this.bot || !this.bot.tickers) return null;
+                    symbol = String(symbol || '');
                     // tickers key 可能是 "DOGE/USDT:USDT"、"DOGE/USDT" 或 "DOGE"
-                    return this.bot.tickers[symbol]                          // 完全一致
-                        || this.bot.tickers[symbol + ':USDT']                // 加 :USDT
-                        || this.bot.tickers[symbol.replace('/USDT', ':USDT')]// /USDT → :USDT
-                        || this.bot.tickers[symbol.replace('/USDT', '')]     // 去掉 /USDT
-                        || null;
+                    const keys = [
+                        symbol,
+                        symbol + ':USDT',
+                        symbol.replace('/USDT', ':USDT'),
+                        symbol.replace('/USDT', ''),
+                    ];
+                    if (this.formatSymbol(symbol) === '龙虾/USDT') {
+                        keys.push(
+                            'LOBSTER/USDT',
+                            'LOBSTER/USDT:USDT',
+                            '龙虾/USDT',
+                            '龙虾/USDT:USDT',
+                            '龍蝦/USDT',
+                            '龍蝦/USDT:USDT',
+                        );
+                    }
+                    for (const key of keys) {
+                        if (this.bot.tickers[key] !== undefined && this.bot.tickers[key] !== null) {
+                            return this.bot.tickers[key];
+                        }
+                    }
+                    return null;
                 },
                 getPosUnrealizedPnl(pos) {
                     const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
@@ -1335,7 +1421,9 @@
                         - curr * pos.qty * slippage;
                 },
                 getPos(symbol) {
-                    return (this.bot && this.bot.positions) ? this.bot.positions.find(p => p.symbol === symbol) : null;
+                    return (this.bot && this.bot.positions)
+                        ? this.bot.positions.find(p => this.sameSymbol(p.symbol, symbol))
+                        : null;
                 },
                 getPosRoePct(pos) {
                     const pnl = this.getPosEstimatedNetPnl(pos);

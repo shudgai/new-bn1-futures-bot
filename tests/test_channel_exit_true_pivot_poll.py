@@ -42,13 +42,13 @@ def _valley_frame(live_bar_ms):
             {
                 "timestamp": live_bar_ms - 120_000,
                 "open": 10.4, "high": 10.9, "low": 9.2, "close": 10.0,
-                "ma5": 10.0, "ma15": 11.2, "kc_middle": 11.2,
+                "ma5": 10.0, "ma15": 11.0, "kc_middle": 11.2,
                 "is_closed": True,
             },
             {
                 "timestamp": live_bar_ms - 60_000,
                 "open": 9.6, "high": 10.9, "low": 9.4, "close": 10.6,
-                "ma5": 10.2, "ma15": 11.0, "kc_middle": 11.0,
+                "ma5": 10.2, "ma15": 11.2, "kc_middle": 11.0,
                 "is_closed": True,
             },
             {
@@ -104,10 +104,11 @@ class _Account:
 def test_channel_short_true_valley_closes_below_kc_middle_and_retries(symbol):
     live_bar_ms = 1_800_000_000_000
     position = _short_position(live_bar_ms)
+    frame = _valley_frame(live_bar_ms)
     account = _Account(
         symbol,
         position,
-        _valley_frame(live_bar_ms),
+        frame,
         close_results=[False, True],
     )
 
@@ -123,8 +124,12 @@ def test_channel_short_true_valley_closes_below_kc_middle_and_retries(symbol):
     )
 
     account.channel_exit_frame_provider = lambda _symbol: None
-    retried = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
+    unavailable = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
+    assert unavailable is False
+    assert len(account.close_attempts) == 1
 
+    account.channel_exit_frame_provider = lambda _symbol: frame
+    retried = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
     assert retried is True
     assert len(account.close_attempts) == 2
 

@@ -3204,6 +3204,262 @@ class BinanceTestnetAccount:
             self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
         self._pending_retry_streak[symbol] = streak + 1
 
+    async def partial_close_position(
+        self,
+        symbol: str,
+        current_price: float,
+        close_reason: str,
+        fraction: float = 0.5,
+        is_manual: bool = False,
+    ) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        try:
+            fraction = float(fraction)
+            current_price = float(current_price)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (math.isfinite(fraction) and 0 < fraction < 1
+                and math.isfinite(current_price) and current_price > 0):
+            return False
+
+        position = self.positions[symbol]
+        meta = self.position_meta.setdefault(symbol, {})
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual,
+        ):
+            self.log(
+                f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=CHANNEL_SHORT_OVERSOLD_REVERSAL",
+                "WARNING",
+            )
+            return False
+        if meta.get("channel_short_oversold_partial_order_unknown"):
+            self.log(
+                f"PARTIAL_EXIT_QUARANTINED symbol={symbol} "
+                f"order={meta['channel_short_oversold_partial_order_unknown']}",
+                "ERROR",
+            )
+            return False
+        if meta.get("channel_short_oversold_partial_order_pending"):
+            self.log(
+                f"PARTIAL_EXIT_QUARANTINED symbol={symbol} "
+                "reason=PERSISTED_ORDER_INTENT_REQUIRES_RECONCILIATION",
+                "ERROR",
+            )
+            return False
+
+        quantity = float(position.get("qty") or 0.0)
+        margin = float(position.get("margin") or 0.0)
+        if not math.isfinite(quantity) or quantity <= 0 or margin < 0:
+            return False
+        try:
+            close_qty = float(self._amount_to_precision(symbol, quantity * fraction))
+        except (TypeError, ValueError, OverflowError) as exc:
+            self.log(
+                f"PARTIAL_EXIT_INVALID_SIZE symbol={symbol}: "
+                f"{type(exc).__name__}: {exc}",
+                "ERROR",
+            )
+            return False
+        if (not math.isfinite(close_qty) or close_qty <= 0
+                or close_qty >= quantity):
+            self.log(
+                f"PARTIAL_EXIT_INVALID_SIZE symbol={symbol} "
+                f"position_qty={quantity} requested_qty={close_qty}",
+                "WARNING",
+            )
+            return False
+
+        self.closing_lock.add(symbol)
+        refresh_after_fill = False
+        try:
+            from core.services.exits.short_oversold_exit import (
+                STATE_KEY,
+                mark_partial_exit_result,
+            )
+            state = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
+            state = dict(state)
+            state["partial_exit_pending"] = True
+            position[STATE_KEY] = dict(state)
+            meta[STATE_KEY] = dict(state)
+            meta["channel_short_oversold_partial_order_pending"] = {
+                "qty": close_qty,
+                "reason": close_reason,
+                "started_at": time.time(),
+            }
+            self.save_state()
+
+            try:
+                await self._cancel_all_orders(symbol)
+            except Exception as exc:
+                meta.pop("channel_short_oversold_partial_order_pending", None)
+                mark_partial_exit_result(position, meta, completed=False)
+                self.save_state()
+                self.log(
+                    f"PARTIAL_EXIT_CANCEL_FAILED symbol={symbol}: "
+                    f"{type(exc).__name__}: {exc}",
+                    "ERROR",
+                )
+                return False
+
+            from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
+            try:
+                filled_ok, order = (
+                    await AntiSlippageOrderExecutor.execute_confirmed_limit_close(
+                        account=self,
+                        symbol=symbol,
+                        side=position["side"],
+                        qty=close_qty,
+                        live_price=current_price,
+                        offset_pct=0.002,
+                        watchdog_timeout_sec=3.0,
+                    )
+                )
+            except Exception as exc:
+                order = {"error": "SUBMISSION_OR_STATUS_UNKNOWN"}
+                self.log(
+                    f"PARTIAL_EXIT_SUBMISSION_UNKNOWN symbol={symbol}: "
+                    f"{type(exc).__name__}: {exc}",
+                    "ERROR",
+                )
+                meta["channel_short_oversold_partial_order_unknown"] = "UNKNOWN"
+                meta.pop("channel_short_oversold_partial_order_pending", None)
+                mark_partial_exit_result(
+                    position, meta, completed=False, quarantined=True,
+                )
+                self.save_state()
+                return False
+
+            filled = float(order.get("filled") or 0.0)
+            if not filled_ok and filled <= 0:
+                error = str(order.get("error") or "UNKNOWN")
+                if error in {
+                    "ORDER_STATUS_UNKNOWN",
+                    "CANCEL_STATUS_UNKNOWN",
+                    "CANCEL_NOT_CONFIRMED",
+                    "NO_ORDER_ID",
+                }:
+                    meta["channel_short_oversold_partial_order_unknown"] = (
+                        str(order.get("id") or "UNKNOWN")
+                    )
+                    mark_partial_exit_result(
+                        position, meta, completed=False, quarantined=True,
+                    )
+                else:
+                    meta.pop("channel_short_oversold_partial_order_pending", None)
+                    mark_partial_exit_result(position, meta, completed=False)
+                self.save_state()
+                self.log(
+                    f"PARTIAL_EXIT_UNFILLED symbol={symbol} error={error}",
+                    "WARNING",
+                )
+                return False
+
+            if not math.isfinite(filled) or filled <= 0 or filled > quantity:
+                meta["channel_short_oversold_partial_order_unknown"] = (
+                    str(order.get("id") or "UNKNOWN")
+                )
+                mark_partial_exit_result(
+                    position, meta, completed=False, quarantined=True,
+                )
+                self.save_state()
+                self.log(
+                    f"PARTIAL_EXIT_INVALID_FILL symbol={symbol} filled={filled}",
+                    "ERROR",
+                )
+                return False
+
+            execution_price = float(order.get("average") or current_price)
+            if not math.isfinite(execution_price) or execution_price <= 0:
+                meta["channel_short_oversold_partial_order_unknown"] = (
+                    str(order.get("id") or "UNKNOWN")
+                )
+                mark_partial_exit_result(
+                    position, meta, completed=False, quarantined=True,
+                )
+                self.save_state()
+                self.log(
+                    f"PARTIAL_EXIT_INVALID_AVERAGE symbol={symbol} "
+                    f"average={execution_price}",
+                    "ERROR",
+                )
+                return False
+
+            side = str(position["side"]).upper()
+            entry_price = float(position["entry_price"])
+            closed_margin = margin * (filled / quantity)
+            raw_pnl = (
+                (execution_price - entry_price) * filled
+                if side == "LONG"
+                else (entry_price - execution_price) * filled
+            )
+            open_fee = entry_price * filled * TAKER_FEE_RATE
+            close_fee = execution_price * filled * TAKER_FEE_RATE
+            net_pnl = raw_pnl - open_fee - close_fee
+            position["qty"] = quantity - filled
+            position["margin"] = max(0.0, margin - closed_margin)
+            position["is_half_closed"] = True
+            meta["is_half_closed"] = True
+            meta.pop("channel_short_oversold_partial_order_pending", None)
+            meta.pop("channel_short_oversold_partial_order_unknown", None)
+            meta["channel_short_oversold_partial_close_done"] = True
+            position["unrealized_pnl"] = (
+                (current_price - entry_price) * position["qty"]
+                * (1 if side == "LONG" else -1)
+            )
+            mark_partial_exit_result(position, meta, completed=True)
+            self.realized_pnl += net_pnl
+
+            from core.services.post_profit_lock_gate import profit_exit_fields
+            trade_ms = int(time.time() * 1000)
+            closed_position = dict(position)
+            closed_position["qty"] = filled
+            self.trades.insert(0, {
+                "id": trade_ms,
+                **profit_exit_fields(
+                    closed_position, close_reason, trade_ms, net_pnl=net_pnl,
+                ),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"PARTIAL_CLOSE_{side}",
+                "side": side,
+                "price": execution_price,
+                "qty": filled,
+                "amount": closed_margin,
+                "fee": round(open_fee + close_fee, 4),
+                "pnl": round(net_pnl, 4),
+                "status": "PARTIAL_CLOSED",
+                "reason": close_reason,
+                "exchange_order_id": order.get("id"),
+                **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
+            })
+            self.save_state()
+            refresh_after_fill = True
+            self.log(
+                f"PARTIAL_CLOSE symbol={symbol} side={side} qty={filled:.8g} "
+                f"remaining={position['qty']:.8g} price={execution_price:.8g} "
+                f"net_pnl={net_pnl:+.4f} reason={close_reason}",
+                "SUCCESS" if net_pnl >= 0 else "WARNING",
+            )
+        finally:
+            self.closing_lock.discard(symbol)
+
+        if refresh_after_fill:
+            try:
+                await self.refresh(force=True)
+            except Exception as exc:
+                self.log(
+                    f"PARTIAL_CLOSE_SYNC_PENDING symbol={symbol}: "
+                    f"{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
+        return refresh_after_fill
+
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False, limit_price: float = None
     ) -> bool:
@@ -3294,7 +3550,9 @@ class BinanceTestnetAccount:
         # 空單只要 5M 已確認收盤價 <= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
         # 多單只要 5M 已確認收盤價 >= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
         is_hard_stop = ('HARD_STOP' in str(close_reason)) or ('PRICE_LOSS' in str(close_reason)) or ('MARGIN_LOSS' in str(close_reason))
-        if not is_wild_swing and not is_hard_stop and c_5m_closed > 0 and ma15_5m > 0:
+        is_channel_oversold_exit = "CHANNEL_SHORT_OVERSOLD_" in str(close_reason)
+        if (not is_wild_swing and not is_hard_stop and not is_channel_oversold_exit
+                and c_5m_closed > 0 and ma15_5m > 0):
             if position.get('side') == 'SHORT' and c_5m_closed <= ma15_5m:
                 veto_msg = f"[{symbol}] [鐵壁否決 VETO] 空單結構完好 (5M收盤 {c_5m_closed} <= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
                 self.log(veto_msg, 'WARNING')

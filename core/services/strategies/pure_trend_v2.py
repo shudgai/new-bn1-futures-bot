@@ -468,8 +468,16 @@ class PureTrendStrategyV2:
     # 二、 盤中即時極端熔斷（每一秒檢查，不看收盤，立刻秒平逃命）
     # =================================================================
     def check_intra_bar_emergency_exit(self, position: Dict[str, Any], current_price: float, bar_snapshot: Dict[str, Any], btc_status: Dict[str, Any]) -> Optional[str]:
-        # Legacy candle-body/BTC strategy exits are retired. Live exits use
-        # observed ticks in evaluate_anti_whipsaw_profit_lock instead.
+        if not position or not bar_snapshot:
+            return None
+        side = position.get('side')
+        open_p = float(bar_snapshot.get('open', 0.0))
+        atr = float(bar_snapshot.get('atr', 0.0))
+        if atr > 0:
+            if side == 'LONG' and (open_p - current_price) >= 2.0 * atr:
+                return 'EMERGENCY_FLASH_CRASH_LONG'
+            if side == 'SHORT' and (current_price - open_p) >= 2.0 * atr:
+                return 'EMERGENCY_FLASH_CRASH_SHORT'
         return None
 
     def evaluate_bar_closed_exit(self, position: Dict[str, Any], closed: Any) -> Optional[str]:
