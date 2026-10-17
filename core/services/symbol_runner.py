@@ -657,6 +657,7 @@ async def _process_wild_swing_symbol(
         symbol=symbol,
         last_closed_side=getattr(engine.account, 'last_closed_side', {}).get(symbol, ''),
         last_closed_ts=getattr(engine.account, 'last_closed_at', {}).get(symbol, 0.0),
+        entry_confirmation=signal.get("structure_confirmation"),
     )
     if not gate_ok:
         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Gatekeeper rejected {signal['side']}: {gate_reason}")

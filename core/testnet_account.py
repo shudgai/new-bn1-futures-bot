@@ -2423,6 +2423,7 @@ class BinanceTestnetAccount:
                 entry_context.get("entry_gate_frame"),
                 side,
                 quote=entry_context.get("entry_gate_quote", price),
+                is_manual=True,
             )
             # Manual orders skip strategy-signal validation but still require
             # the hard MA entry gates and normal account/exchange checks.

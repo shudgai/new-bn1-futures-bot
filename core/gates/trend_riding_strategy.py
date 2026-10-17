@@ -128,6 +128,32 @@ def can_open_position(
         "body": body,
     }
 
+    entry_confirmation = str(kwargs.get("entry_confirmation") or "").upper()
+    wild_outer_entry = False
+    if entry_confirmation in {
+        "CONFIRMED_2BAR_BREAKOUT",
+        "CONTINUATION_OUTSIDE_KC",
+    }:
+        try:
+            from core.gates.breakout_continuation_entry_gate import (
+                BreakoutContinuationEntryGate,
+            )
+            from core.services.candle_data import closed_entry_candles
+
+            closed = closed_entry_candles(df)
+            wild_outer_entry = (
+                BreakoutContinuationEntryGate.validate_closed_outer_entry(
+                    closed.to_dict("records"),
+                    side,
+                    entry_confirmation,
+                )
+                is not None
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            wild_outer_entry = False
+        if not wild_outer_entry:
+            return False, "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID", details
+
     # ══════════════════════════════════════════════════════════════════
     # 二、 防刷單冷卻時間 (Anti-Chop Cooldown >= 3 根 K 棒)
     # ══════════════════════════════════════════════════════════════════
@@ -135,7 +161,7 @@ def can_open_position(
         "LONG" if ("LONG" in last_closed_action.upper() or last_closed_side == "LONG")
         else ("SHORT" if ("SHORT" in last_closed_action.upper() or last_closed_side == "SHORT") else "")
     )
-    if target_side == side:
+    if target_side == side and entry_confirmation != "CONTINUATION_OUTSIDE_KC":
         if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
             msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
             logger.warning(msg)
@@ -157,21 +183,21 @@ def can_open_position(
     # ══════════════════════════════════════════════════════════════════
     if side == "LONG":
         # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多)
-        if kc_trend != "UP":
+        if not wild_outer_entry and kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_LONG: KC_TREND_NOT_UP ({kc_trend})", details
 
         # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
-        if ma5_curr <= ma15_curr:
+        if not wild_outer_entry and ma5_curr <= ma15_curr:
             msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
 
         # 3. ma5[-1] <= ma5[-2]: return False (MA5 未實質向上勾頭不開多)
-        if ma5_curr <= ma5_prev:
+        if not wild_outer_entry and ma5_curr <= ma5_prev:
             msg = f"[攔截開多] {symbol} MA5 未實質向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -195,7 +221,9 @@ def can_open_position(
         is_golden_cross = (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
         is_first_bull_bar = (close_p > open_p and (prev_close <= prev_open or ma5_prev <= ma15_prev))
         is_strong_bull_aligned = (ma5_curr > ma15_curr and close_p > open_p and ma5_curr > ma5_prev)
-        if not (is_golden_cross or is_first_bull_bar or is_strong_bull_aligned):
+        if not wild_outer_entry and not (
+            is_golden_cross or is_first_bull_bar or is_strong_bull_aligned
+        ):
             msg = f"[攔截開多] {symbol} 非金叉突破且非多頭排列首根收陽，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -203,21 +231,21 @@ def can_open_position(
 
     elif side == "SHORT":
         # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空！CAP 的 4 筆空單必須全被此條攔截！)
-        if kc_trend != "DOWN":
+        if not wild_outer_entry and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_SHORT: KC_TREND_NOT_DOWN ({kc_trend})", details
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
-        if ma5_curr >= ma15_curr:
+        if not wild_outer_entry and ma5_curr >= ma15_curr:
             msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
 
         # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
-        if ma5_curr >= ma5_prev:
+        if not wild_outer_entry and ma5_curr >= ma5_prev:
             msg = f"[攔截開空] {symbol} MA5 走平或向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)

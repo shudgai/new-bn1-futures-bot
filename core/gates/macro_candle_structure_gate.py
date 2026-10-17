@@ -132,23 +132,27 @@ class MacroCandleStructureGate:
             )
             if not structure_confirmed or mode != expected_mode:
                 return False, "VETO_PURE_MATH_ENTRY: 訊號模式與結構確認不一致"
-            try:
-                ma5_current = float(indicators["ma5_current"])
-                ma5_previous = float(indicators["ma5_previous"])
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return False, "VETO_PURE_MATH_ENTRY: MA5 方向資料無效"
-            if not math.isfinite(ma5_current) or not math.isfinite(ma5_previous):
-                return False, "VETO_PURE_MATH_ENTRY: MA5 方向資料無效"
-            if (
-                (side == "LONG" and ma5_current <= ma5_previous)
-                or (side == "SHORT" and ma5_current >= ma5_previous)
-            ):
-                return False, f"VETO_MA5_DIRECTION_{side}: MA5 方向不允許此方向開倉"
-            return True, f"PASSED_MACRO_{side}_PURE_MATH_GATE"
+            if confirmation != CONFIRMED_2BAR_BREAKOUT:
+                try:
+                    ma5_current = float(indicators["ma5_current"])
+                    ma5_previous = float(indicators["ma5_previous"])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    return False, "VETO_PURE_MATH_ENTRY: MA5 方向資料無效"
+                if not math.isfinite(ma5_current) or not math.isfinite(ma5_previous):
+                    return False, "VETO_PURE_MATH_ENTRY: MA5 方向資料無效"
+                if (
+                    (side == "LONG" and ma5_current <= ma5_previous)
+                    or (side == "SHORT" and ma5_current >= ma5_previous)
+                ):
+                    return False, f"VETO_MA5_DIRECTION_{side}: MA5 方向不允許此方向開倉"
+            return True, f"PASSED_MACRO_{side}_GATE"
 
         initial_two_bar_breakout = (
             mode == "BREAKOUT"
-            and confirmation == INITIAL_2BAR_BREAKOUT
+            and confirmation in {
+                INITIAL_2BAR_BREAKOUT,
+                CONFIRMED_2BAR_BREAKOUT,
+            }
             and structure_confirmed
         )
         outside_kc_continuation = (
@@ -184,14 +188,24 @@ class MacroCandleStructureGate:
                 ma5_current, ma5_previous, middle_current, middle_previous,
             )):
                 return False, "VETO_NUMERIC_KC_ENTRY: MA5/KC 方向資料無效"
-            if side == "LONG" and not (
-                ma5_current > ma5_previous
-                and middle_current > middle_previous
+            if (
+                confirmation != CONFIRMED_2BAR_BREAKOUT
+                and side == "LONG"
+                and ma5_current <= ma5_previous
+            ):
+                return False, "VETO_NUMERIC_KC_ENTRY_LONG: MA5 方向未向上"
+            if (
+                confirmation != CONFIRMED_2BAR_BREAKOUT
+                and side == "SHORT"
+                and ma5_current >= ma5_previous
+            ):
+                return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5 方向未向下"
+            if side == "LONG" and confirmation == INITIAL_2BAR_BREAKOUT and not (
+                middle_current > middle_previous
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_LONG: MA5/KC 趨勢未向上"
-            if side == "SHORT" and not (
-                ma5_current < ma5_previous
-                and middle_current < middle_previous
+            if side == "SHORT" and confirmation == INITIAL_2BAR_BREAKOUT and not (
+                middle_current < middle_previous
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5/KC 趨勢未向下"
         if mode == "BREAKOUT":
@@ -200,7 +214,10 @@ class MacroCandleStructureGate:
                     "VETO_BREAKOUT_SHORT: 下影線超過 K 棒區間 65%，"
                     "拒絕極端反彈長針"
                 )
-            if body / candle_range <= 0.35:
+            if (
+                confirmation != CONFIRMED_2BAR_BREAKOUT
+                and body / candle_range <= 0.35
+            ):
                 return False, "VETO_BREAKOUT: 實體比例未超過 K 棒區間 35%"
         if mode == "CROSSOVER" and (
             not structure_confirmed
@@ -262,18 +279,14 @@ class MacroCandleStructureGate:
             middle_previous = signal_indicators["kc_middle_previous"]
             if side == "LONG" and not (
                 close > kc_upper
-                and close > ma5_current
                 and ma5_current > ma5_previous
-                and middle_current >= middle_previous
             ):
-                return False, "VETO_CONTINUATION_LONG: KC 外軌、MA5 或中軌方向未確認"
+                return False, "VETO_CONTINUATION_LONG: KC 外軌或 MA5 方向未確認"
             if side == "SHORT" and not (
                 close < kc_lower
-                and close < ma5_current
                 and ma5_current < ma5_previous
-                and middle_current <= middle_previous
             ):
-                return False, "VETO_CONTINUATION_SHORT: KC 外軌、MA5 或中軌方向未確認"
+                return False, "VETO_CONTINUATION_SHORT: KC 外軌或 MA5 方向未確認"
         if (
             mode in {"CROSSOVER", "REVERSAL"}
             and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"

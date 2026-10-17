@@ -260,35 +260,45 @@ class BreakoutContinuationEntryGate:
                         is_intrabar=True,
                     )
 
-        previous_body_low = min(previous["open"], previous["close"])
-        previous_body_high = max(previous["open"], previous["close"])
-        current_body_low = min(current["open"], current["close"])
-        current_body_high = max(current["open"], current["close"])
+        previous_bullish = previous["close"] > previous["open"]
+        current_bullish = current["close"] > current["open"]
+        previous_bearish = previous["close"] < previous["open"]
+        current_bearish = current["close"] < current["open"]
         ma5_up = effective_ma5 > effective_previous_ma5
         ma5_down = effective_ma5 < effective_previous_ma5
 
-        if previous_body_high > previous_upper and current_body_low > upper and ma5_up:
+        if (
+            previous_bullish
+            and current_bullish
+            and previous["open"] <= previous_upper < previous["close"]
+            and current["close"] > upper
+        ):
             return signal(
                 "OPEN_LONG",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
-                "兩根收線確認：前 K 實體越過上軌且當前 K 實體完全站在上軌外，MA5 向上",
+                "兩根收線確認：首根實體突破上軌，次根同色收在上軌外",
             )
-        if previous_body_low < float(previous_lower) and current_body_high < lower and ma5_down:
+        if (
+            previous_bearish
+            and current_bearish
+            and previous["open"] >= float(previous_lower) > previous["close"]
+            and current["close"] < lower
+        ):
             return signal(
                 "OPEN_SHORT",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
-                "兩根收線確認：前 K 實體越過下軌且當前 K 實體完全站在下軌外，MA5 向下",
+                "兩根收線確認：首根實體跌破下軌，次根同色收在下軌外",
             )
-        if current["close"] > upper and ma5_up:
+        if current_bullish and current["close"] > upper and ma5_up:
             return signal(
                 "OPEN_LONG",
                 CONTINUATION_OUTSIDE_KC,
                 current["close"],
                 "KC 上軌外收線且 MA5 嚴格向上",
             )
-        if current["close"] < lower and ma5_down:
+        if current_bearish and current["close"] < lower and ma5_down:
             return signal(
                 "OPEN_SHORT",
                 CONTINUATION_OUTSIDE_KC,
@@ -323,6 +333,43 @@ class BreakoutContinuationEntryGate:
                 "MA5 死叉 MA15，收盤在 KC 中軌下且 MA5 向下",
             )
         return None
+
+    @classmethod
+    def validate_closed_outer_entry(
+        cls,
+        closed_klines: Sequence[Mapping[str, Any]],
+        side: str,
+        confirmation: str,
+    ) -> Optional[dict[str, Any]]:
+        """Re-derive a confirmed breakout or continuation from closed candles."""
+        if confirmation not in {
+            CONFIRMED_2BAR_BREAKOUT,
+            CONTINUATION_OUTSIDE_KC,
+        }:
+            return None
+        try:
+            ma5_key = (
+                "_wild_ma5"
+                if closed_klines and "_wild_ma5" in closed_klines[-1]
+                else "ma5"
+            )
+            candidate = cls.evaluate_pure_math(
+                closed_klines,
+                [row["kc_upper"] for row in closed_klines],
+                [row["kc_lower"] for row in closed_klines],
+                [row["kc_middle"] for row in closed_klines],
+                [row[ma5_key] for row in closed_klines],
+                [row["ma15"] for row in closed_klines],
+            )
+        except (KeyError, TypeError, IndexError):
+            return None
+        if (
+            candidate is None
+            or candidate["action"] != f"OPEN_{str(side).upper()}"
+            or candidate["type"] != confirmation
+        ):
+            return None
+        return candidate
 
     @classmethod
     def _evaluate_legacy(

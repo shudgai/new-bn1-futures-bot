@@ -2849,7 +2849,8 @@ class TradingEngine:
         if not math.isfinite(atr) or atr <= 0:
             return False
 
-        if not is_wait_authority:
+        wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
+        if not is_wait_authority and frame is not None and len(frame) >= 2:
             from core.gates.trend_riding_strategy import can_open_position
             can_open, gate_reason, _ = can_open_position(
                 df=frame,
@@ -2858,6 +2859,7 @@ class TradingEngine:
                 symbol=symbol,
                 last_closed_side=getattr(self.account, 'last_closed_side', {}).get(symbol, ''),
                 last_closed_ts=getattr(self.account, 'last_closed_at', {}).get(symbol, 0.0),
+                entry_confirmation=wild_signal.get("structure_confirmation"),
             )
             if not can_open:
                 self.account.log(
@@ -2867,7 +2869,6 @@ class TradingEngine:
                 print(f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}", flush=True)
                 return False
 
-        wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
         cand_bar_id = (
             int(wild_signal["bar_id"])
             if wild_signal.get("bar_id") is not None
@@ -2949,7 +2950,17 @@ class TradingEngine:
                 or symbol in pending_orders
             ):
                 return False
-            if not is_wait_authority:
+            is_wild_outer = str(
+                wild_signal.get("structure_confirmation")
+                or wild_signal.get("entry_pattern")
+                or ""
+            ).upper() in {
+                "CONFIRMED_2BAR_BREAKOUT",
+                "CONTINUATION_OUTSIDE_KC",
+                "BREAKOUT",
+                "CONTINUATION",
+            }
+            if not is_wait_authority and not is_wild_outer:
                 from core.gates.ma5_ma15_cross_entry_gate import (
                     validate_ma5_ma15_cross_entry,
                 )

@@ -243,19 +243,53 @@ def ma_parallel_chop_problem(frame, side, quote=None):
         return "BLOCKED_MA_PARALLEL_DATA_INVALID"
 
 
-def ma5_ma15_entry_gate_problem(frame, side, quote=None):
+def ma5_ma15_entry_gate_problem(
+    frame, side, quote=None, *, entry_confirmation=None, is_manual=False,
+):
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
         return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
+    is_confirmed_outer_entry = _has_valid_wild_outer_confirmation(
+        frame, normalized_side, entry_confirmation,
+    )
     structure_problem = market_structure_gate_problem(
-        frame, normalized_side, quote=quote,
+        frame,
+        normalized_side,
+        quote=quote,
+        enforce_ma_direction=not (is_confirmed_outer_entry or is_manual),
+        is_confirmed_outer_entry=is_confirmed_outer_entry,
+        is_manual=is_manual,
     )
     if structure_problem:
         return structure_problem
+    if is_confirmed_outer_entry or is_manual:
+        return None
     return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
 
 
-def market_structure_gate_problem(frame, side, quote=None):
+def _has_valid_wild_outer_confirmation(frame, side, confirmation):
+    from core.gates.breakout_continuation_entry_gate import (
+        BreakoutContinuationEntryGate,
+    )
+    from core.services.candle_data import closed_entry_candles
+
+    try:
+        closed = closed_entry_candles(frame)
+        return (
+            BreakoutContinuationEntryGate.validate_closed_outer_entry(
+                closed.to_dict("records"), side, confirmation,
+            )
+            is not None
+        )
+    except (
+        AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError,
+    ):
+        return False
+
+
+def market_structure_gate_problem(
+    frame, side, quote=None, *, enforce_ma_direction=True, is_confirmed_outer_entry=False, is_manual=False,
+):
     from core.services.candle_data import closed_entry_candles
 
     normalized_side = str(side or "").upper()
@@ -338,48 +372,51 @@ def market_structure_gate_problem(frame, side, quote=None):
             min_gap=f"{min_gap:.8f}",
         )
 
-        for name, slope in slopes.items():
-            if abs(slope) < 0.00015:
-                return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
+        if not is_confirmed_outer_entry and not is_manual:
+            for name, slope in slopes.items():
+                if abs(slope) < 0.00015:
+                    return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if gap < min_gap:
-            return veto(
-                f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
-            )
-
-        window = 10
-        ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
-        crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
-        if len(crosses) > 1:
-            return veto(
-                f"VETO_FREQUENT_MA_CROSSES (count: {len(crosses)} in {window} bars)"
-            )
-        if len(crosses):
-            bars_since_last_cross = (window - 1) - int(crosses[-1])
-            if bars_since_last_cross < 4 and gap < current_atr * 0.25:
+        if not is_confirmed_outer_entry and not is_manual:
+            if gap < min_gap:
                 return veto(
-                    "VETO_CHOP_AFTER_CROSS "
-                    f"(bars_since_cross: {bars_since_last_cross})"
+                    f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
                 )
 
-        ma5_diffs = np.diff(values["ma5"][-12:])
-        direction_turns = np.flatnonzero(np.diff(np.sign(ma5_diffs)))
-        if len(direction_turns) >= 3:
-            return veto(
-                "VETO_REGULAR_WAVE_OSCILLATION "
-                f"(turns: {len(direction_turns)} in 12 bars)"
-            )
+            window = 10
+            ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
+            crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
+            if len(crosses) > 1:
+                return veto(
+                    f"VETO_FREQUENT_MA_CROSSES (count: {len(crosses)} in {window} bars)"
+                )
+            if len(crosses):
+                bars_since_last_cross = (window - 1) - int(crosses[-1])
+                if bars_since_last_cross < 4 and gap < current_atr * 0.25:
+                    return veto(
+                        "VETO_CHOP_AFTER_CROSS "
+                        f"(bars_since_cross: {bars_since_last_cross})"
+                    )
+
+        if not is_confirmed_outer_entry and not is_manual:
+            ma5_diffs = np.diff(values["ma5"][-12:])
+            direction_turns = np.flatnonzero(np.diff(np.sign(ma5_diffs)))
+            if len(direction_turns) >= 3:
+                return veto(
+                    "VETO_REGULAR_WAVE_OSCILLATION "
+                    f"(turns: {len(direction_turns)} in 12 bars)"
+                )
 
         ma5_rising = slopes["MA5"] > 0
         ma5_falling = slopes["MA5"] < 0
         ma5 = float(values["ma5"][-1])
         ma15 = float(values["ma15"][-1])
         previous_ma5 = float(values["ma5"][-2])
-        if normalized_side == "LONG" and not (
+        if enforce_ma_direction and normalized_side == "LONG" and not (
             ma5 > ma15 and ma5_rising and ma5 > previous_ma5
         ):
             return veto("VETO_LONG_MA_CONDITION_NOT_MET")
-        if normalized_side == "SHORT" and not (
+        if enforce_ma_direction and normalized_side == "SHORT" and not (
             ma5 < ma15 and ma5_falling and ma5 < previous_ma5
         ):
             return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
@@ -388,13 +425,15 @@ def market_structure_gate_problem(frame, side, quote=None):
         return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
 
 
-def require_ma5_ma15_entry_gates(frame, side, quote=None):
-    problem = ma5_ma15_entry_gate_problem(frame, side, quote=quote)
+def require_ma5_ma15_entry_gates(frame, side, quote=None, *, is_manual=False):
+    problem = ma5_ma15_entry_gate_problem(frame, side, quote=quote, is_manual=is_manual)
     if problem:
         raise ValueError("[FORBIDDEN_ENTRY] " + problem)
 
 
-def final_trend_alignment_problem(frame, side, quote=None):
+def final_trend_alignment_problem(
+    frame, side, quote=None, *, entry_confirmation=None,
+):
     """Fail closed unless completed KC and MA5/MA15 agree with the order side."""
     from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
     from core.services.candle_data import closed_entry_candles
@@ -415,11 +454,49 @@ def final_trend_alignment_problem(frame, side, quote=None):
         if not all(math.isfinite(value) and value > 0 for value in values):
             return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
-        ma_gate_problem = ma5_ma15_entry_gate_problem(
-            frame, normalized_side, quote=quote,
-        )
-        if ma_gate_problem:
-            return ma_gate_problem
+        is_confirmed_outer_entry = entry_confirmation in {
+            "CONFIRMED_2BAR_BREAKOUT",
+            "CONTINUATION_OUTSIDE_KC",
+        }
+        if is_confirmed_outer_entry and not _has_valid_wild_outer_confirmation(
+            frame, normalized_side, entry_confirmation,
+        ):
+            return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
+        if len(closed) >= 15:
+            ma_gate_problem = ma5_ma15_entry_gate_problem(
+                frame,
+                normalized_side,
+                quote=quote,
+                entry_confirmation=(
+                    entry_confirmation if is_confirmed_outer_entry else None
+                ),
+            )
+            if ma_gate_problem:
+                return ma_gate_problem
+
+        if is_confirmed_outer_entry:
+            latest_row = frame.iloc[-1]
+            try:
+                latest_price = float(
+                    quote if quote is not None
+                    else latest_row.get("close", current["close"])
+                )
+                latest_upper = float(latest_row["kc_upper"])
+                latest_lower = float(latest_row["kc_lower"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return "BLOCKED_WILD_OUTER_QUOTE_INVALID"
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (latest_price, latest_upper, latest_lower)
+            ) or latest_upper <= latest_lower:
+                return "BLOCKED_WILD_OUTER_QUOTE_INVALID"
+            if (
+                normalized_side == "LONG" and latest_price <= latest_upper
+            ) or (
+                normalized_side == "SHORT" and latest_price >= latest_lower
+            ):
+                return "BLOCKED_WILD_OUTER_QUOTE_RETURNED_INSIDE_KC"
+            return None
 
         trend = resolve_kc_trend(frame)
         if normalized_side == "LONG":
@@ -516,12 +593,19 @@ def final_trend_alignment_problem(frame, side, quote=None):
         return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
 
-def require_final_trend_alignment(frame, side, symbol, quote=None):
+def require_final_trend_alignment(
+    frame, side, symbol, quote=None, *, entry_confirmation=None,
+):
     from core.symbol_aliases import is_auto_entry_symbol
 
     if not is_auto_entry_symbol(symbol):
         return
-    problem = final_trend_alignment_problem(frame, side, quote=quote)
+    problem = final_trend_alignment_problem(
+        frame,
+        side,
+        quote=quote,
+        entry_confirmation=entry_confirmation,
+    )
     if problem:
         raise ValueError("[FORBIDDEN_ENTRY] " + problem)
 
@@ -933,7 +1017,6 @@ async def validate_account_entry(account, symbol, side, context):
             or fresh_frame.attrs.get("timeframe_ms") != 60_000
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
-        require_final_trend_alignment(fresh_frame, side, symbol)
 
         from core.services.strategies.wild_swing_strategy import WildSwingStrategy
         live_row = fresh_frame.iloc[-1]
@@ -1010,6 +1093,14 @@ async def validate_account_entry(account, symbol, side, context):
             or expected_wick_bar_id != signal_wick_bar_id
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+
+        require_final_trend_alignment(
+            fresh_frame,
+            side,
+            symbol,
+            quote=tick_price,
+            entry_confirmation=signal.get("structure_confirmation"),
+        )
 
         from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
         from core.services.candle_data import closed_entry_candles

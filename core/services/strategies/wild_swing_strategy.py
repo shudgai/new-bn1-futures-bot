@@ -199,22 +199,6 @@ class WildSwingStrategy:
         bars = self._closed_frame(frame)
         if len(bars) < self.volume_lookback + 2:
             return None
-        from core.gates.trend_riding_strategy import can_open_position
-        state = self.state_for(symbol)
-        can_open, gate_reason, _ = can_open_position(
-            df=frame,
-            side=side,
-            symbol=symbol,
-            bars_since_last_exit=state.bars_since_last_exit,
-            last_closed_side=state.last_exit_side,
-            last_closed_ts=state.last_exit_bar_id or 0.0,
-        )
-        if not can_open:
-            logger.info(
-                "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s reason=%s",
-                symbol, side, gate_reason,
-            )
-            return None
 
         current = bars.iloc[-1]
         previous = bars.iloc[-2]
@@ -279,6 +263,56 @@ class WildSwingStrategy:
         if candidate is None or candidate["action"] != f"OPEN_{side}":
             return None
 
+        entry_type = str(candidate["type"])
+        if not delayed and entry_type in {
+            CONFIRMED_2BAR_BREAKOUT,
+            CONTINUATION_OUTSIDE_KC,
+        }:
+            latest = frame.iloc[-1]
+            try:
+                quote = float(
+                    tick_price if tick_price is not None else current["close"]
+                )
+                latest_upper = float(latest["kc_upper"])
+                latest_lower = float(latest["kc_lower"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (quote, latest_upper, latest_lower)
+            ) or latest_upper <= latest_lower:
+                return None
+            if (
+                side == "LONG" and quote <= latest_upper
+            ) or (
+                side == "SHORT" and quote >= latest_lower
+            ):
+                logger.info(
+                    "WILD_SWING_OUTER_QUOTE_BLOCK symbol=%s side=%s quote=%s "
+                    "upper=%s lower=%s",
+                    symbol, side, quote, latest_upper, latest_lower,
+                )
+                return None
+
+        from core.gates.trend_riding_strategy import can_open_position
+        state = self.state_for(symbol)
+        gate_confirmation = entry_type if not delayed else None
+        can_open, gate_reason, _ = can_open_position(
+            df=frame,
+            side=side,
+            symbol=symbol,
+            bars_since_last_exit=state.bars_since_last_exit,
+            last_closed_side=state.last_exit_side,
+            last_closed_ts=state.last_exit_bar_id or 0.0,
+            entry_confirmation=gate_confirmation,
+        )
+        if not can_open:
+            logger.info(
+                "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s reason=%s",
+                symbol, side, gate_reason,
+            )
+            return None
+
         if delayed:
             candle_directional = (
                 float(current["close"]) > float(current["open"])
@@ -297,7 +331,11 @@ class WildSwingStrategy:
         kc_middle_rising = kc_middle_slope > 0
         kc_middle_falling = kc_middle_slope < 0
         ma5_slope = current_ma5 - previous_ma5
-        if side == "LONG":
+        if not delayed and entry_type == CONFIRMED_2BAR_BREAKOUT:
+            trend_aligned = True
+        elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
+            trend_aligned = ma5_slope > 0 if side == "LONG" else ma5_slope < 0
+        elif side == "LONG":
             trend_aligned = (
                 kc_middle_rising
                 and current_ma5 > current_ma15
@@ -325,7 +363,6 @@ class WildSwingStrategy:
             )
             return None
 
-        entry_type = str(candidate["type"])
         entry_pattern = (
             ENTRY_MODE_BREAKOUT
             if entry_type in {
