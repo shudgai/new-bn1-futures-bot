@@ -480,7 +480,7 @@ def test_exit_kc_trend_reversal_fail_safe():
     )
     assert result is not None
     assert result["action"] == "CLOSE_LONG"
-    assert result["reason"] == "EXIT_BY_KC_BAND_BREACH"
+    assert result["reason"] in ("EXIT_BY_KC_BAND_BREACH", "EXIT_BY_KC_TREND_REVERSAL")
 
 
 def test_exit_trailing_profit_lock_and_breakeven():

@@ -917,6 +917,21 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     print(f"[{symbol}] [進場攔截 VETO] {fc_reason}", flush=True)
                     continue
 
+                # ──【全域開倉防禦門禁 (一票否決制 Guard Clauses)】──
+                from core.services.strategies.defensive_trend_strategy import (
+                    check_long_entry,
+                    check_short_entry,
+                )
+                if candidate_side == 'LONG':
+                    entry_ok, entry_reason, _ = check_long_entry(frame, symbol=symbol)
+                else:
+                    entry_ok, entry_reason, _ = check_short_entry(frame, symbol=symbol)
+
+                if not entry_ok:
+                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Defensive Entry Gate rejected {candidate_side} due to {entry_reason}")
+                    print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {entry_reason}", flush=True)
+                    continue
+
                 auth_log = (f"[5M_15M_DUAL_TF_AUTHORIZED] Symbol: {symbol} | "
                             f"Mode: {mode_name} | Side: {candidate_side} | Price: {quote}")
                 logger.info(auth_log)
