@@ -1,4 +1,5 @@
 """Live entries and indicator refresh; held exits use the 5M+15M dual timeframe policy."""
+import copy
 import math
 import time
 import logging
@@ -377,6 +378,7 @@ async def _process_wild_swing_symbol(
     engine, symbol, frame, quote, daily_halt, exit_only,
 ):
     from core.services.candle_data import closed_entry_candles
+    from core.services.exits.strict_true_pivot import CONFIRMED_PIVOT_PENDING_KEY
     from core.gates.breakout_continuation_entry_gate import (
         PURE_MATH_ENTRY_CONFIRMATIONS,
     )
@@ -439,6 +441,15 @@ async def _process_wild_swing_symbol(
             )
     _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
     if position:
+        meta_store = getattr(engine.account, "position_meta", None)
+        if not isinstance(meta_store, dict):
+            meta_store = {}
+            engine.account.position_meta = meta_store
+        position_meta = meta_store.setdefault(symbol, {})
+        pending_ticket = position_meta.get(CONFIRMED_PIVOT_PENDING_KEY)
+        if (CONFIRMED_PIVOT_PENDING_KEY not in position
+                and isinstance(pending_ticket, dict)):
+            position[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(pending_ticket)
         exit_decision = strategy.evaluate_exit(
             symbol,
             position,
@@ -446,6 +457,21 @@ async def _process_wild_swing_symbol(
             quote=quote,
         )
         if exit_decision is not None:
+            pending_ticket = position.get(CONFIRMED_PIVOT_PENDING_KEY)
+            if isinstance(pending_ticket, dict):
+                if position_meta.get(CONFIRMED_PIVOT_PENDING_KEY) != pending_ticket:
+                    position_meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
+                        pending_ticket
+                    )
+                    save_state = getattr(engine.account, "save_state", None)
+                    if callable(save_state):
+                        save_state()
+                    else:
+                        logger.error(
+                            "WILD_SWING_PIVOT_RETRY_PERSISTENCE_BLOCK "
+                            "symbol=%s reason=ACCOUNT_SAVE_UNAVAILABLE",
+                            symbol,
+                        )
             closed_ok = await engine.account.close_position(
                 symbol,
                 quote,
@@ -463,6 +489,11 @@ async def _process_wild_swing_symbol(
                     exit_price,
                     exit_decision["reason"],
                     exit_decision["bar_id"],
+                )
+            elif pending_ticket:
+                logger.warning(
+                    "WILD_SWING_PIVOT_CLOSE_RETRY_PENDING symbol=%s reason=%s",
+                    symbol, exit_decision["reason"],
                 )
         return [], []
 
@@ -618,6 +649,20 @@ async def _process_wild_swing_symbol(
         "WILD_SWING_NUMERIC_VISION_BYPASS symbol=%s side=%s confirmation=%s bar=%s",
         symbol, signal["side"], signal["structure_confirmation"], signal_bar_id,
     )
+    from core.gates.trend_riding_strategy import can_open_position
+    gate_ok, gate_reason, _ = can_open_position(
+        df=closed if closed is not None and not closed.empty else frame,
+        side=signal["side"],
+        quote=quote,
+        symbol=symbol,
+        last_closed_side=getattr(engine.account, 'last_closed_side', {}).get(symbol, ''),
+        last_closed_ts=getattr(engine.account, 'last_closed_at', {}).get(symbol, 0.0),
+    )
+    if not gate_ok:
+        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Gatekeeper rejected {signal['side']}: {gate_reason}")
+        print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {gate_reason}", flush=True)
+        return [], []
+
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
         frame=closed,

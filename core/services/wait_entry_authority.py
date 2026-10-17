@@ -21,11 +21,6 @@ from core.services.entry_contract import is_entry_doji
 TIMEFRAME_MS = 60_000
 SMALL_BODY_MAX = 0.25
 BIG_BODY_MIN = 0.50
-_ALLOWED_SYMBOLS = {
-    "LOBSTER/USDT", "龙虾/USDT", "龍蝦/USDT", "CAP/USDT",
-}
-
-
 @dataclass
 class WaitSymbolState:
     last_closed_bar_id: Optional[int] = None
@@ -235,7 +230,8 @@ class WaitEntryAuthority:
 
     @staticmethod
     def _symbol_key(symbol: str) -> str:
-        return "LOBSTER/USDT" if symbol in ("龙虾/USDT", "龍蝦/USDT") else symbol
+        from core.symbol_aliases import is_lobster_symbol
+        return "LOBSTER/USDT" if is_lobster_symbol(symbol) else symbol
 
     @staticmethod
     def canonical_symbol(symbol: str) -> str:
@@ -299,7 +295,8 @@ class WaitEntryAuthority:
     ) -> dict[str, Any]:
         """Observe one snapshot; an initial snapshot only establishes a baseline."""
         with self._lock:
-            if symbol not in _ALLOWED_SYMBOLS:
+            from core.symbol_aliases import is_lobster_symbol
+            if not is_lobster_symbol(symbol):
                 return {"status": "BLOCKED_SYMBOL"}
             requested_symbol = symbol
             symbol = self._symbol_key(symbol)

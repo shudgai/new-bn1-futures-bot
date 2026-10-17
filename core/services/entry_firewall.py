@@ -21,6 +21,13 @@ class EntryFirewall:
     @classmethod
     def verify_can_open(cls, frame, side, code, symbol=None):
         """Only a supported, freshly validated contract authorizes automatic entry."""
+        from core.symbol_aliases import is_auto_entry_symbol
+        if not is_auto_entry_symbol(symbol):
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] AUTOMATIC_ENTRY_SYMBOL_DISABLED: "
+                + str(symbol)
+            )
+        require_final_trend_alignment(frame, side, symbol)
         if code not in ENTRY_CODES:
             raise ValueError('[FORBIDDEN_ENTRY] 已停用的自動入口訊號')
         decision = evaluate_entry_contract(frame, code=code, symbol=symbol)
@@ -32,7 +39,61 @@ class EntryFirewall:
 def validate_entry_frame(frame, side, code, symbol=None):
     return EntryFirewall.verify_can_open(frame, side, code, symbol=symbol)
 
+
+def final_trend_alignment_problem(frame, side):
+    """Fail closed unless completed KC and MA5/MA15 agree with the order side."""
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+    from core.services.candle_data import closed_entry_candles
+
+    normalized_side = str(side or "").upper()
+    if normalized_side not in ("LONG", "SHORT"):
+        return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return "BLOCKED_FINAL_TREND_DATA_INSUFFICIENT"
+        current, previous = closed.iloc[-1], closed.iloc[-2]
+        ma5 = float(current["ma5"])
+        ma15 = float(current["ma15"])
+        kc_middle = float(current["kc_middle"])
+        previous_middle = float(previous["kc_middle"])
+        values = (ma5, ma15, kc_middle, previous_middle)
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return "BLOCKED_FINAL_TREND_DATA_INVALID"
+
+        trend = resolve_kc_trend(closed)
+        if normalized_side == "LONG":
+            if trend != "UP":
+                return "BLOCKED_LONG_KC_NOT_UP"
+            if ma5 <= ma15:
+                return "BLOCKED_LONG_MA5_NOT_ABOVE_MA15"
+        else:
+            if trend != "DOWN":
+                return "BLOCKED_SHORT_KC_NOT_DOWN"
+            if ma5 >= ma15:
+                return "BLOCKED_SHORT_MA5_NOT_BELOW_MA15"
+        return None
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+        return "BLOCKED_FINAL_TREND_DATA_INVALID"
+
+
+def require_final_trend_alignment(frame, side, symbol):
+    from core.symbol_aliases import is_auto_entry_symbol
+
+    if not is_auto_entry_symbol(symbol):
+        return
+    problem = final_trend_alignment_problem(frame, side)
+    if problem:
+        raise ValueError("[FORBIDDEN_ENTRY] " + problem)
+
+
 async def validate_account_entry(account, symbol, side, context):
+    from core.symbol_aliases import is_auto_entry_symbol
+    if not is_auto_entry_symbol(symbol):
+        raise ValueError(
+            "[FORBIDDEN_ENTRY] AUTOMATIC_ENTRY_SYMBOL_DISABLED: "
+            + str(symbol)
+        )
     from core.config import is_entry_disabled
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
@@ -119,6 +180,7 @@ async def validate_account_entry(account, symbol, side, context):
             or fresh_frame.attrs.get("timeframe_ms") != 60_000
         ):
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_UNVERIFIED_MARKET_DATA")
+        require_final_trend_alignment(fresh_frame, side, symbol)
         try:
             quote_snapshot = quote_provider(symbol)
             quote = float(quote_snapshot["price"])
@@ -355,6 +417,7 @@ async def validate_account_entry(account, symbol, side, context):
             or fresh_frame.attrs.get("timeframe_ms") != 60_000
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
+        require_final_trend_alignment(fresh_frame, side, symbol)
 
         from core.services.strategies.wild_swing_strategy import WildSwingStrategy
         live_row = fresh_frame.iloc[-1]
@@ -551,6 +614,7 @@ async def validate_account_entry(account, symbol, side, context):
         
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
+    require_final_trend_alignment(frame, side, symbol)
     quote = float(frame.iloc[-1]['close'])
     from core.services.entry_contract import (
         evaluate_death_cross_fast_lane,

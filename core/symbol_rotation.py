@@ -1072,6 +1072,10 @@ class SymbolRotation:
                 if execution_symbols is None or symbol in execution_symbols
             ),
         ]))
+        from core.symbol_aliases import is_auto_entry_symbol
+        candidates = [
+            symbol for symbol in candidates if is_auto_entry_symbol(symbol)
+        ]
         forced_exclusions = self.replacement_exclusions()
         if forced_exclusions:
             candidates = [
@@ -1143,6 +1147,7 @@ class SymbolRotation:
         )
         self.entry_scan_symbols = list(dict.fromkeys(
             item["symbol"] for item in entry_ranked
+            if is_auto_entry_symbol(item["symbol"])
         ))
         score_low_count = len(eligible_symbols - qualified_symbols)
         other_rejected_count = max(
@@ -1177,13 +1182,14 @@ class SymbolRotation:
             directions = {symbol: "BOTH" for symbol in selected}
             changes = []
 
-        # 當沒有任何合格幣種時，放入指定的備用迷因幣
+        # When Lobster has no qualifying metrics, retain only its own fallback.
         if not selected and not force_fresh:
-            for meme in ["1000PEPE/USDT", "1000BONK/USDT", "1000SHIB/USDT"]:
-                if meme not in ENTRY_DISABLED_SYMBOLS and meme not in forced_exclusions:
-                    selected.append(meme)
-                    directions[meme] = "BOTH"
-                    changes.append({"out": "", "in": meme, "direction": "BOTH"})
+            for symbol in self.fallback_symbols:
+                if is_auto_entry_symbol(symbol) and symbol not in forced_exclusions:
+                    selected.append(symbol)
+                    directions[symbol] = "BOTH"
+                    changes.append({"out": "", "in": symbol, "direction": "BOTH"})
+                    break
         # 持倉中的幣強制保留，即使已被輪替出去也不可移除
         for held_symbol in self.account.positions:
             if held_symbol not in selected:

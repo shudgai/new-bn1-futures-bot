@@ -572,6 +572,84 @@ def test_exit_short_trailing_profit_lock_survives_pullback_suppression():
     assert result["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
 
 
+@pytest.mark.parametrize(
+    "side,entry_timestamp,quote,pivot_rows,expected_reason,pivot_key,pivot_value",
+    [
+        (
+            "LONG", 9 * 60.0, 100.1,
+            [(100.0, 100.4, 99.7, 100.1),
+             (100.1, 100.8, 99.9, 100.5),
+             (100.5, 100.6, 99.8, 100.1)],
+            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "pivot_high", 100.8,
+        ),
+        (
+            "SHORT", 9 * 60.0, 99.9,
+            [(100.0, 100.3, 99.6, 99.9),
+             (99.9, 100.1, 99.2, 99.5),
+             (99.5, 100.2, 99.4, 99.9)],
+            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "pivot_low", 99.2,
+        ),
+    ],
+)
+def test_exit_after_entry_only_on_confirmed_true_pivot(
+    side, entry_timestamp, quote, pivot_rows, expected_reason, pivot_key,
+    pivot_value,
+):
+    frame = _frame(side)
+    for index, values in zip((9, 10, 11), pivot_rows):
+        frame.loc[index, ["open", "high", "low", "close"]] = values
+        frame.loc[index, "is_closed"] = True
+    if side == "LONG":
+        frame.loc[10, "ma5"] = 100.2
+        frame.loc[11, "ma5"] = 100.0
+    else:
+        frame.loc[10, "ma5"] = 99.8
+        frame.loc[11, "ma5"] = 100.0
+    position = {
+        "side": side,
+        "entry_price": 100.0,
+        "entry_timestamp": entry_timestamp,
+    }
+
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", position, frame, quote=quote,
+    )
+
+    assert result is not None
+    assert result["reason"] == expected_reason
+    assert result["pivot"][pivot_key] == pytest.approx(pivot_value)
+    assert result["pivot"]["confirm_bar_id"] == 11 * 60_000
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_exit_does_not_use_unclosed_pivot_confirmation(side):
+    frame = _frame(side)
+    if side == "LONG":
+        values = [
+            (100.0, 100.4, 99.7, 100.1),
+            (100.1, 100.8, 99.9, 100.5),
+            (100.5, 100.6, 99.8, 100.1),
+        ]
+    else:
+        values = [
+            (100.0, 100.3, 99.6, 99.9),
+            (99.9, 100.1, 99.2, 99.5),
+            (99.5, 100.2, 99.4, 99.9),
+        ]
+    for index, candle in zip((9, 10, 11), values):
+        frame.loc[index, ["open", "high", "low", "close"]] = candle
+    frame.loc[11, "is_closed"] = False
+
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT",
+        {"side": side, "entry_price": 100.0, "entry_timestamp": 9 * 60.0},
+        frame,
+        quote=100.1 if side == "LONG" else 99.9,
+    )
+
+    assert result is None
+
+
 def test_live_bar_exit_blocks_same_bar_reentry(monkeypatch):
     frame = _frame("LONG")
     live_bar_id = float(frame.iloc[-1]["timestamp"])
@@ -635,8 +713,8 @@ def test_exit_hard_stop_loss(side, open_price, high, low, close):
     assert result["reason"] == "EXIT_BY_HARD_STOP_LOSS"
 
 
-def test_exit_entry_bar_immunity_and_extreme_pinbar_exception():
-    """開倉當根 (<= 60s) 保護：免疫普通回踩與硬止損，除非成型長上影極端力竭避雷針"""
+def test_exit_entry_bar_immunity_and_suppresses_unconfirmed_pinbar():
+    """開倉當根的影線不是已確認真峰，不能單獨授權平倉。"""
     import time
     now_ts = time.time()
     frame = _frame("LONG")
@@ -663,5 +741,4 @@ def test_exit_entry_bar_immunity_and_extreme_pinbar_exception():
     result_pinbar = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", pos, frame, quote=100.1,
     )
-    assert result_pinbar is not None
-    assert result_pinbar["reason"] == "EXIT_LONG_BLOW_OFF_TOP"
+    assert result_pinbar is None

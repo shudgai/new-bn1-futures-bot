@@ -51,7 +51,22 @@ def check_long_entry(
     df: pd.DataFrame,
     symbol: str = "UNKNOWN",
     bars_since_last_exit: Optional[int] = None,
+    last_closed_side: str = "",
+    last_closed_ts: float = 0.0,
+    **kwargs,
 ) -> Tuple[bool, str, Dict[str, Any]]:
+    from core.gates.trend_riding_strategy import can_open_position
+    return can_open_position(
+        df=df,
+        side="LONG",
+        symbol=symbol,
+        bars_since_last_exit=bars_since_last_exit,
+        last_closed_side=last_closed_side,
+        last_closed_ts=last_closed_ts,
+        **kwargs,
+    )
+
+def _legacy_check_long_entry_disabled(*args, **kwargs):
     """開多單嚴格條件 (Long Entry Guard Clauses - 一票否決制)
     
     1. 平倉冷卻門禁：同一方向平倉後，至少間隔 3 根 K 棒
@@ -160,7 +175,22 @@ def check_short_entry(
     df: pd.DataFrame,
     symbol: str = "UNKNOWN",
     bars_since_last_exit: Optional[int] = None,
+    last_closed_side: str = "",
+    last_closed_ts: float = 0.0,
+    **kwargs,
 ) -> Tuple[bool, str, Dict[str, Any]]:
+    from core.gates.trend_riding_strategy import can_open_position
+    return can_open_position(
+        df=df,
+        side="SHORT",
+        symbol=symbol,
+        bars_since_last_exit=bars_since_last_exit,
+        last_closed_side=last_closed_side,
+        last_closed_ts=last_closed_ts,
+        **kwargs,
+    )
+
+def _legacy_check_short_entry_disabled(*args, **kwargs):
     """開空單嚴格條件 (Short Entry Guard Clauses - 一票否決制)
     
     1. 平倉冷卻門禁：同一方向平倉後，至少間隔 3 根 K 棒
@@ -369,37 +399,34 @@ def check_long_exit(
             return True, "EXIT_LONG_BLOW_OFF_TOP", details
         return False, "HOLD: ENTRY_BAR_BREATHING", details
 
-    # WILD_SWING can hold through ordinary MA/KC pullbacks while retaining
-    # independent profit-lock and numeric hard-stop exits.
-    if allow_pullback_exits and death_cross:
-        logger.info(f"[平倉觸發] {symbol} 多單 - MA5/MA15 均線死叉平多 (MA5={ma5_curr:.6g} < MA15={ma15_curr:.6g})")
-        return True, "EXIT_BY_MA_DEATH_CROSS", details
+    # ──【影線容忍與利潤聯動規則 & 回踩容忍 (徹底刪除 KC 中軌平倉)】──
+    body_last = abs(close_p - open_p)
+    upper_wick_last = max(0.0, high_p - max(close_p, open_p))
 
-    # 2. 均線斜率下彎反轉
-    if allow_pullback_exits and ma5_slope_down:
-        logger.info(f"[平倉觸發] {symbol} 多單 - MA5 明確下彎平多 (MA5={ma5_curr:.6g}, 斜率={ma5_curr - ma5_prev:+.6g})")
-        return True, "EXIT_BY_MA5_TREND_REVERSAL", details
-
-    # 3. 趨勢逆轉強制全平 (Fail-Safe)
-    if allow_pullback_exits and (kc_trend == "DOWN" or kc_mid_slope < -1e-12):
-        logger.info(f"[平倉觸發] {symbol} 多單 - KC翻空強制清倉 (kc_trend={kc_trend}, slope={kc_mid_slope:+.6g})")
-        return True, "EXIT_BY_KC_TREND_REVERSAL", details
-
-    # 4. 動態回撤止盈 (Trailing Stop) 與保本防守
-    if peak_gain_pct >= 0.012 or highest_p >= kc_upper:
+    # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
+    if peak_gain_pct >= 0.012:
         pullback_pct = (highest_p - curr_price) / entry_p
         if pullback_pct >= 0.008:
             logger.info(f"[平倉觸發] {symbol} 多單 - 動態回撤止盈 (最高點={highest_p:.6g}, 回撤={pullback_pct:.2%})")
             return True, "EXIT_BY_TRAILING_PROFIT_LOCK", details
-        fee_buffer = entry_p * 0.0015
-        if curr_price <= entry_p + fee_buffer:
-            logger.info(f"[平倉觸發] {symbol} 多單 - 跌破成本線保本平倉 (成本={entry_p:.6g}, 現價={curr_price:.6g})")
-            return True, "EXIT_BY_BREAKEVEN", details
 
-    # 5. 伺服器硬止損 (Hard Stop-Loss) 與結構破位
-    if allow_pullback_exits and (close_p < kc_mid_curr or close_p < kc_lower):
-        logger.info(f"[平倉觸發] {symbol} 多單 - 實體收盤摜破 KC 中軌/下軌結構防線 (close={close_p:.6g} < middle={kc_mid_curr:.6g})")
-        return True, "EXIT_BY_KC_BAND_BREACH", details
+    # 2. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向下插針（長下影線）只要收盤在 MA15 上方且未死叉，一律視為洗盤，嚴禁平倉！
+    if pnl_pct < 0.008 and close_p >= ma15_curr and ma5_curr >= ma15_curr:
+        return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，下影線洗盤尋求支撐，嚴禁慌張平多)", details
+
+    # 3. 回踩容忍（Hold on Pullback）：只要 ma5 > ma15 且收盤價未跌破 ma15，一律判定為「多頭健康回踩」，【嚴禁平多】！
+    if ma5_curr > ma15_curr and close_p >= ma15_curr:
+        return False, "HOLD: BULL_HEALTHY_PULLBACK_TOLERANCE (MA5 > MA15 且收盤未破 MA15，多頭健康回踩嚴禁平多)", details
+
+    # 4. 已有實質利潤狀態下 (浮盈 >= 0.8% ~ 1.2%)：頂部長上影線力竭允許觸發保護性止盈
+    if pnl_pct >= 0.008 and upper_wick_last > 1.5 * max(body_last, 1e-9) and upper_wick_last >= 0.3 * atr:
+        logger.info(f"[保護性止盈] {symbol} 多單 - 實質浮盈 ({pnl_pct:.2%}) 且頂部長上影線力竭，平多落袋")
+        return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK", details
+
+    # 5. MA5 死叉 (僅在跌破 MA15 且非健康回踩時)
+    if allow_pullback_exits and death_cross and close_p < ma15_curr:
+        logger.info(f"[平倉觸發] {symbol} 多單 - MA5/MA15 均線死叉且跌破 MA15 (MA5={ma5_curr:.6g} < MA15={ma15_curr:.6g})")
+        return True, "EXIT_BY_MA_DEATH_CROSS", details
 
     if pnl_pct <= -0.015 or (entry_p - curr_price) >= 2.2 * atr:
         logger.info(f"[平倉觸發] {symbol} 多單 - 達到伺服器硬止損門檻 (虧損={pnl_pct:.2%})")
@@ -519,45 +546,34 @@ def check_short_exit(
         logger.info(f"[平倉觸發] {symbol} 空單 - MA5/MA15 均線金叉平空 (MA5={ma5_curr:.6g} > MA15={ma15_curr:.6g})")
         return True, "EXIT_BY_MA_GOLDEN_CROSS", details
 
-    # 2. 均線斜率反轉向上
-    if allow_pullback_exits and allow_ma5_slope_exit and ma5_slope_up:
-        # 防守過濾：若價格與 MA5 均仍在 MA15 下方且無金叉，視為正常健康回踩，嚴禁神經質平空避免底部被雙巴刷單
-        if ma5_curr <= ma15_curr and close_p <= ma15_curr:
-            logger.info(
-                f"[防守續抱] {symbol} 空單 - 價格與 MA5 仍在 MA15 下方 (MA5={ma5_curr:.6g}<=MA15={ma15_curr:.6g})，"
-                f"判定為健康回踩，嚴禁神經質刷單平空"
-            )
-        else:
-            logger.info(f"[平倉觸發] {symbol} 空單 - MA5 明確向上仰頭平空 (MA5={ma5_curr:.6g}, 斜率={ma5_curr - ma5_prev:+.6g})")
-            return True, "EXIT_BY_MA5_TREND_REVERSAL", details
+    # ──【影線容忍與利潤聯動規則 & 回抽容忍 (徹底刪除 KC 中軌平倉)】──
+    body_last = abs(close_p - open_p)
+    lower_wick_last = max(0.0, min(close_p, open_p) - low_p)
 
-    # 3. 均線連 2 根站上 MA15 離場
-    if allow_pullback_exits and two_bars_above_ma15:
-        logger.info(
-            f"[平倉觸發] {symbol} 空單 - 連續 2 根收盤站上 MA15 離場 (close={close_p:.6g}, prev={prev_close:.6g} > MA15={ma15_curr:.6g})"
-        )
-        return True, "EXIT_BY_MA15_BREAKOUT", details
-
-    # 4. 趨勢逆轉強制全平 (Fail-Safe)
-    if allow_pullback_exits and (kc_trend == "UP" or kc_mid_slope > 1e-12):
-        logger.info(f"[平倉觸發] {symbol} 空單 - KC翻多/中軌上行強制清倉 (kc_trend={kc_trend}, slope={kc_mid_slope:+.6g})")
-        return True, "EXIT_BY_KC_TREND_REVERSAL", details
-
-    # 5. 動態回撤止盈 (Trailing Stop) 與保本防守
-    if peak_gain_pct >= 0.012 or lowest_p <= kc_lower:
+    # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
+    if peak_gain_pct >= 0.012:
         rebound_pct = (curr_price - lowest_p) / entry_p
         if rebound_pct >= 0.008:
             logger.info(f"[平倉觸發] {symbol} 空單 - 動態低點回抽止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")
             return True, "EXIT_BY_TRAILING_PROFIT_LOCK", details
-        fee_buffer = entry_p * 0.0015
-        if curr_price >= entry_p - fee_buffer:
-            logger.info(f"[平倉觸發] {symbol} 空單 - 跌破成本線保本平空 (成本={entry_p:.6g}, 現價={curr_price:.6g})")
-            return True, "EXIT_BY_BREAKEVEN", details
 
-    # 6. 伺服器硬止損 (Hard Stop-Loss) 與結構破位
-    if allow_pullback_exits and (close_p > kc_mid_curr or close_p > kc_upper):
-        logger.info(f"[平倉觸發] {symbol} 空單 - 實體收盤突破 KC 中軌/上軌結構防線 (close={close_p:.6g} > middle={kc_mid_curr:.6g})")
-        return True, "EXIT_BY_KC_BAND_BREACH", details
+    # 2. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
+    if pnl_pct < 0.008 and close_p <= ma15_curr and ma5_curr <= ma15_curr:
+        return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，上影線受阻確認阻力，嚴禁慌張平空)", details
+
+    # 3. 回抽容忍（Hold on Pullback）：只要 ma5 < ma15 且收盤價未突破 ma15，視為空頭回抽，【嚴禁平空】！
+    if ma5_curr < ma15_curr and close_p <= ma15_curr:
+        return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE (MA5 < MA15 且收盤未破 MA15，空頭健康回抽嚴禁平空)", details
+
+    # 4. 已有實質利潤狀態下 (浮盈 >= 0.8% ~ 1.2%)：底部長下影線探底回升允許觸發保護性止盈
+    if pnl_pct >= 0.008 and lower_wick_last > 1.5 * max(body_last, 1e-9) and lower_wick_last >= 0.3 * atr:
+        logger.info(f"[保護性止盈] {symbol} 空單 - 實質浮盈 ({pnl_pct:.2%}) 且底部長下影線探底回升，平空落袋")
+        return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK", details
+
+    # 5. MA5 金叉 (僅在突破 MA15 且非健康回抽時)
+    if allow_pullback_exits and golden_cross and close_p > ma15_curr:
+        logger.info(f"[平倉觸發] {symbol} 空單 - MA5/MA15 均線金叉且突破 MA15 (MA5={ma5_curr:.6g} > MA15={ma15_curr:.6g})")
+        return True, "EXIT_BY_MA_GOLDEN_CROSS", details
 
     if pnl_pct <= -0.015 or (curr_price - entry_p) >= 2.2 * atr:
         logger.info(f"[平倉觸發] {symbol} 空單 - 達到伺服器硬止損門檻 (虧損={pnl_pct:.2%})")

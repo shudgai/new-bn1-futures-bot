@@ -3,7 +3,8 @@ import os
 import json
 from typing import Dict, Any, Optional
 from core.engine import engine
-from core.config import get_leverage, TAKER_FEE_RATE
+from core.config import DEFAULT_SYMBOLS, get_leverage, TAKER_FEE_RATE
+from core.symbol_aliases import is_auto_entry_symbol
 from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
 import logging
 
@@ -19,13 +20,28 @@ def get_symbol_selection() -> list:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return data
+                    symbols = data
                 elif isinstance(data, dict) and "symbols" in data:
-                    return data["symbols"]
+                    symbols = data["symbols"]
+                else:
+                    symbols = []
+                allowed = [
+                    symbol for symbol in symbols
+                    if is_auto_entry_symbol(symbol)
+                ]
+                return allowed or [
+                    symbol for symbol in DEFAULT_SYMBOLS
+                    if is_auto_entry_symbol(symbol)
+                ]
         except Exception as e:
             logger.error(f"Failed to read symbol_selection.json: {e}")
     # Fallback to engine tickers if file not found or invalid
-    return list(engine.tickers.keys()) if hasattr(engine, 'tickers') else []
+    return [
+        symbol for symbol in engine.tickers.keys()
+        if is_auto_entry_symbol(symbol)
+    ] if hasattr(engine, 'tickers') else [
+        symbol for symbol in DEFAULT_SYMBOLS if is_auto_entry_symbol(symbol)
+    ]
 
 async def process_manual_order(
     symbol: str,
@@ -36,6 +52,12 @@ async def process_manual_order(
 ) -> Dict[str, Any]:
     
     async with _manual_order_lock:
+        if not is_auto_entry_symbol(symbol):
+            return {
+                "success": False,
+                "status_code": 403,
+                "detail": "目前僅允許龍蝦 (LOBSTER/USDT) 與 CAP/USDT 開倉",
+            }
         if symbol not in engine.tickers:
             return {"success": False, "status_code": 400, "detail": "Invalid Symbol: 幣種價格尚未載入"}
 
@@ -50,23 +72,32 @@ async def process_manual_order(
                 return {"success": False, "status_code": 400, "detail": "Invalid Price Format"}
 
         leverage = get_leverage(symbol)
+        available_balance = max(0.0, float(engine.account.get_available_balance()))
+        max_margin = engine._full_wallet_entry_margin(
+            float(engine.account.get_wallet_balance()),
+            available_balance,
+            leverage,
+            symbol,
+        )
         
-        # Calculate amount (USDT)
+        # Calculate amount (USDT) within the same wallet and slot caps as bot entries.
         if quantity > 0:
             target_amount = quantity * exec_price / leverage
         elif amount > 0:
             target_amount = amount
         else:
-            available = max(0.0, float(engine.account.get_available_balance()))
-            fee_safe_available = available / (1.0 + leverage * max(TAKER_FEE_RATE, 0.0))
-            # 依使用者指令：開倉金額使用帳戶可用餘額（預留 2% 手續費與滑點安全空間）
-            target_amount = max(0.0, fee_safe_available * 0.98)
+            target_amount = max_margin
             
         if target_amount <= 0:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance or invalid quantity/amount"}
+        if not max_margin or target_amount > max_margin:
+            return {
+                "success": False,
+                "status_code": 400,
+                "detail": "Requested margin exceeds the account-balance risk limit",
+            }
 
         # Check balance
-        available_balance = max(0.0, float(engine.account.get_available_balance()))
         cost = target_amount * (1.0 + leverage * max(TAKER_FEE_RATE, 0.0))
         if cost > available_balance:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance"}

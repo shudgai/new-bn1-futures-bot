@@ -17,6 +17,8 @@ MEME_BREAKOUT_SYMBOLS = frozenset((
 
 PIVOT_ONLY_CHANNEL_SYMBOLS = frozenset((
     'SUI/USDT', 'SUI/USDT:USDT',
+    # CAP and Lobster share the same strict entry and exit policy.
+    'CAP/USDT', 'CAP/USDT:USDT',
 )) | MEME_BREAKOUT_SYMBOLS
 
 CHOP_FILTER_SYMBOLS = PIVOT_ONLY_CHANNEL_SYMBOLS
@@ -40,6 +42,11 @@ def is_lobster_symbol(symbol: Optional[str]) -> bool:
     }
 
 
+def is_auto_entry_symbol(symbol: Optional[str]) -> bool:
+    """Return whether automatic and manual entry is currently enabled."""
+    return is_lobster_symbol(symbol) or is_cap_symbol(symbol)
+
+
 def is_cap_symbol(symbol: Optional[str]) -> bool:
     """Return whether a symbol is one of the CAP contract aliases."""
     return normalize_symbol(symbol) in {'CAP/USDT', 'CAP/USDT:USDT'}
@@ -57,6 +64,8 @@ def to_binance_usdm_symbol(symbol: str) -> str:
     """Map internal display aliases to Binance USD-M perpetual symbols."""
     if is_lobster_symbol(symbol):
         return '龙虾/USDT:USDT'
+    if is_cap_symbol(symbol):
+        return 'CAP/USDT:USDT'
     if is_pepe_symbol(symbol):
         return '1000PEPE/USDT:USDT'
     return str(symbol).strip()

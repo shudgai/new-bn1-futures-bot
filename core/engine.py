@@ -2389,6 +2389,17 @@ class TradingEngine:
             if not math.isfinite(price) or price <= 0:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
+            from core.gates.ma5_ma15_cross_entry_gate import (
+                validate_ma5_ma15_cross_entry,
+            )
+            cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
+                snapshot['frame'], side,
+            )
+            if not cross_allowed:
+                log_entry_gate(
+                    self, symbol, side, 'EXECUTION', cross_reason, bar,
+                )
+                return False
             from core.services.entry_contract import (
                 entry_direction_problem, evaluate_entry_contract,
             )
@@ -2582,6 +2593,13 @@ class TradingEngine:
     ) -> bool:
         """5M+15M 雙週期共振開倉授權直通執行通道 (Force Direct Order Execution)"""
         import time, math
+        from core.symbol_aliases import is_auto_entry_symbol
+        if not is_auto_entry_symbol(symbol):
+            self.account.log(
+                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=LOBSTER/USDT,CAP/USDT",
+                "WARNING",
+            )
+            return False
         entry_mode = str(entry_mode or "CHANNEL_SWING").upper()
         if entry_mode not in ("CHANNEL_SWING", "WILD_SWING"):
             raise ValueError(f"Unsupported direct-entry mode: {entry_mode}")
@@ -2664,27 +2682,7 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, 100) if hasattr(self, 'symbol_rotation') else 10
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = (
-            min(
-                wallet * 0.5,
-                available / (1.0 + leverage * TAKER_FEE_RATE) * 0.98,
-            )
-            if is_authority_entry
-            else self._full_wallet_entry_margin(wallet, available, leverage, symbol)
-        )
-        if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
-            fallback_amount = min(
-                available * 0.95,
-                float(TRADE_AMOUNT_USDT),
-                wallet * 0.5 if is_authority_entry else wallet,
-            )
-            if not is_authority_entry:
-                from core.config import get_wild_swing_margin_fraction
-
-                symbol_fraction = get_wild_swing_margin_fraction(symbol)
-                if symbol_fraction is not None:
-                    fallback_amount = min(fallback_amount, wallet * symbol_fraction)
-            amount = fallback_amount
+        amount = self._full_wallet_entry_margin(wallet, available, leverage, symbol)
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             self.account.log(f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: amount={amount}, available={available}", "WARNING")
@@ -2705,6 +2703,23 @@ class TradingEngine:
         elif not is_authority_entry:
             atr = price * 0.015
         if not math.isfinite(atr) or atr <= 0:
+            return False
+
+        from core.gates.trend_riding_strategy import can_open_position
+        can_open, gate_reason, _ = can_open_position(
+            df=frame,
+            side=side,
+            quote=price,
+            symbol=symbol,
+            last_closed_side=getattr(self.account, 'last_closed_side', {}).get(symbol, ''),
+            last_closed_ts=getattr(self.account, 'last_closed_at', {}).get(symbol, 0.0),
+        )
+        if not can_open:
+            self.account.log(
+                f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}",
+                "WARNING",
+            )
+            print(f"[攔截開倉] {symbol} {side} 未通過開倉絕對門禁: {gate_reason}", flush=True)
             return False
 
         wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
@@ -2789,6 +2804,16 @@ class TradingEngine:
                 or symbol in pending_orders
             ):
                 return False
+            cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
+                frame, side,
+            )
+            if not cross_allowed:
+                self.account.log(
+                    f"ENTRY_CROSS_GATE_BLOCK symbol={symbol} side={side} "
+                    f"reason={cross_reason}",
+                    "WARNING",
+                )
+                return False
             occupied_symbols = set(positions).union(pending_orders)
             authority = getattr(self, "wait_entry_authority", None)
             claim_id = (
@@ -2849,31 +2874,9 @@ class TradingEngine:
 
             wallet = float(self.account.get_wallet_balance())
             available = float(self.account.get_available_balance())
-            amount = (
-                min(
-                    wallet * 0.5,
-                    available / (1.0 + leverage * TAKER_FEE_RATE) * 0.98,
-                )
-                if is_authority_entry
-                else self._full_wallet_entry_margin(
-                    wallet, available, leverage, symbol,
-                )
+            amount = self._full_wallet_entry_margin(
+                wallet, available, leverage, symbol,
             )
-            if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
-                fallback_amount = min(
-                    available * 0.95,
-                    float(TRADE_AMOUNT_USDT),
-                    wallet * 0.5 if is_authority_entry else wallet,
-                )
-                if not is_authority_entry:
-                    from core.config import get_wild_swing_margin_fraction
-
-                    symbol_fraction = get_wild_swing_margin_fraction(symbol)
-                    if symbol_fraction is not None:
-                        fallback_amount = min(
-                            fallback_amount, wallet * symbol_fraction,
-                        )
-                amount = fallback_amount
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 self.account.log(
                     f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: "
@@ -2914,6 +2917,13 @@ class TradingEngine:
             return False
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1., candidate_bar_id=None, qualification_signal_id=None):
+        from core.symbol_aliases import is_auto_entry_symbol
+        if not is_auto_entry_symbol(symbol):
+            self.account.log(
+                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=LOBSTER/USDT,CAP/USDT",
+                "WARNING",
+            )
+            return False
         # Preserve an observed valid breakout even if risk/order checks prevent a fill.
         # Diagnostic and final account validation remain read-only.
         from core.services.entry_contract import evaluate_entry_contract
@@ -3547,6 +3557,11 @@ class TradingEngine:
                             *getattr(self.symbol_rotation, "entry_scan_symbols", []),
                         ]))
                     )
+                    from core.symbol_aliases import is_auto_entry_symbol
+                    broad_entry_symbols = [
+                        symbol for symbol in broad_entry_symbols
+                        if is_auto_entry_symbol(symbol)
+                    ]
                     symbols_snapshot = self._entry_scan_symbol_snapshot(
                         list(active_trade_symbols),
                         broad_entry_symbols,

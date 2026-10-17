@@ -19,6 +19,11 @@ from core.services.exits.entry_atr_protection import (
     channel_strategy_exit_grace_active,
     clear_channel_strategy_exit_pending,
 )
+from core.services.exits.strict_true_pivot import (
+    CONFIRMED_PIVOT_PENDING_KEY,
+    pending_confirmed_pivot_exit,
+    store_confirmed_pivot_exit,
+)
 from core.services.exits.net_roe_profit_lock import (
     has_reached_net_roe_floor,
     tiered_net_roe_floor,
@@ -28,6 +33,44 @@ from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 PROFIT_LOCK_STATE_KEY = 'three_tier_net_roe_lock_state'
 PROFIT_LOCK_TRIGGER = 'NET_ROE_THREE_TIER_GIVEBACK'
 SHORT_FALSE_BREAKOUT_TRIGGER = 'EXIT_SHORT_FAILED_KC_BREAKOUT'
+SAME_BAR_MIN_NET_PROFIT_RATE = 0.003
+
+
+def same_bar_net_profit_exit(position, price, stamp, snapshot, fee_rate, slippage_pct):
+    """Require a fee-adjusted return threshold before exiting in the entry candle."""
+    try:
+        side = str(position.get('side') or '').upper()
+        entry = float(position.get('entry_price') or 0.0)
+        opened = float(position.get('open_timestamp') or 0.0)
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.0)
+        quote_ms = float(stamp)
+        timeframe_ms = float(snapshot.get('timeframe_ms') or 60_000.0)
+        current_price = float(price)
+        fee_rate = float(fee_rate)
+        slippage_pct = float(slippage_pct)
+        if opened < 1e11:
+            opened *= 1000.0
+        values = (
+            entry, opened, live_bar_ms, quote_ms, timeframe_ms, current_price,
+            fee_rate, slippage_pct,
+        )
+        if (
+            side not in ('LONG', 'SHORT')
+            or not all(math.isfinite(value) for value in values)
+            or min(entry, opened, live_bar_ms, quote_ms, timeframe_ms, current_price) <= 0
+            or fee_rate < 0
+            or slippage_pct < 0
+            or not live_bar_ms <= opened < live_bar_ms + timeframe_ms
+            or not live_bar_ms <= quote_ms < live_bar_ms + timeframe_ms
+        ):
+            return False, None
+        direction = 1.0 if side == 'LONG' else -1.0
+        gross_rate = direction * (current_price - entry) / entry
+        estimated_cost_rate = 2.0 * (fee_rate + slippage_pct)
+        net_rate = gross_rate - estimated_cost_rate
+        return net_rate >= SAME_BAR_MIN_NET_PROFIT_RATE, net_rate
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False, None
 
 
 def short_false_breakout_exit(position, meta, price, snapshot):
@@ -397,6 +440,111 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         return None, False
 
 
+def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slippage):
+    """Update and evaluate only the persisted net-ROE profit-lock floor."""
+    if not isinstance(snapshot, dict) or snapshot.get('reason') is not None:
+        return None, False
+    try:
+        side = str(position.get('side') or '').upper()
+        sign = 1 if side == 'LONG' else -1 if side == 'SHORT' else 0
+        quote = float(price)
+        entry = float(position.get('entry_price') or 0.0)
+        qty = float(position.get('qty') or 0.0)
+        margin = float(position.get('margin') or 0.0)
+        if margin <= 0:
+            leverage = float(position.get('leverage') or 0.0)
+            if leverage > 0:
+                margin = entry * qty / leverage
+        if (
+            not sign
+            or not all(math.isfinite(value) and value > 0
+                       for value in (quote, entry, qty, margin))
+        ):
+            return None, False
+
+        current_roe = estimated_display_net_pnl(
+            entry, quote, qty, sign, fee, slippage,
+        ) / margin * 100.0
+        if not math.isfinite(current_roe):
+            return None, False
+
+        identity = _profit_lock_identity(position)
+        state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
+        if state.get('identity') != identity:
+            state = {
+                'identity': identity,
+                'peak_net_roe_pct': current_roe,
+                'last_ms': stamp,
+                'tier': 0,
+                'floor_net_roe_pct': None,
+            }
+        elif stamp < float(state.get('last_ms') or 0.0):
+            return None, False
+        else:
+            state = copy.deepcopy(state)
+            state['peak_net_roe_pct'] = max(
+                current_roe, float(state.get('peak_net_roe_pct', current_roe)),
+            )
+            state['last_ms'] = stamp
+
+        floor, tier = _tiered_net_roe_floor(state['peak_net_roe_pct'])
+        state.update(
+            tier=tier,
+            floor_net_roe_pct=floor,
+            current_net_roe_pct=current_roe,
+        )
+        position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
+        meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
+
+        atr = float(snapshot.get('atr') or 0.0)
+        peak_price = max(
+            float(position.get('highest_price') or entry), quote,
+        ) if side == 'LONG' else float(position.get('highest_price') or entry)
+        trough_price = min(
+            float(position.get('lowest_price') or entry), quote,
+        ) if side == 'SHORT' else float(position.get('lowest_price') or entry)
+        position['highest_price'] = peak_price
+        position['lowest_price'] = trough_price
+        meta['highest_price'] = peak_price
+        meta['lowest_price'] = trough_price
+        favorable_atr = (
+            (peak_price - entry) / atr if side == 'LONG' and atr > 0
+            else (entry - trough_price) / atr if side == 'SHORT' and atr > 0
+            else 0.0
+        )
+        if (
+            position.get('breakeven_locked')
+            or meta.get('breakeven_locked')
+            or favorable_atr >= 1.0
+            or state['peak_net_roe_pct'] >= 8.0
+        ):
+            position['breakeven_locked'] = True
+            meta['breakeven_locked'] = True
+            be_price = entry * (1.0005 if side == 'LONG' else 0.9995)
+            if side == 'LONG':
+                stop = max(
+                    float(position.get('sl') or position.get('stop_loss') or 0.0),
+                    be_price,
+                )
+                position['sl'] = position['stop_loss'] = stop
+                if quote <= be_price:
+                    return 'EXIT_BY_BREAKEVEN_LOCK', True
+            else:
+                stop = min(
+                    float(position.get('sl') or position.get('stop_loss') or math.inf),
+                    be_price,
+                )
+                position['sl'] = position['stop_loss'] = stop
+                if quote >= be_price:
+                    return 'EXIT_BY_BREAKEVEN_LOCK', True
+
+        if floor is not None and has_reached_net_roe_floor(current_roe, floor):
+            return f'{PROFIT_LOCK_TRIGGER}_TIER_{tier}', True
+        return None, True
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, False
+
+
 def cached_tick_indicators(frame, price, stamp):
     """Require the quote minute and its preceding closed ATR for body exits."""
     snapshot = {'quote_ms': stamp, 'reason': 'UNKNOWN'}
@@ -548,8 +696,8 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     account = engine.account
     position = account.positions.get(symbol)
     entry_m = str((position or {}).get('entry_mode', '')).upper()
-    from core.symbol_aliases import is_lobster_symbol, is_cap_symbol, is_pepe_symbol
-    lobster_hold = is_lobster_symbol(symbol) or is_cap_symbol(symbol) or is_pepe_symbol(symbol)
+    from core.symbol_aliases import is_auto_entry_symbol
+    restricted_exit_policy = is_auto_entry_symbol(symbol)
     if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
         return False
     try:
@@ -565,6 +713,168 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             return False
         if await enforce_hard_stop(account, symbol, price):
             return True
+
+        pending_pivot = pending_confirmed_pivot_exit(position, meta)
+        if pending_pivot is not None:
+            pending_reason, pending_details = pending_pivot
+            account.log(
+                f'REALTIME_EXIT_RETRY symbol={symbol} reason={pending_reason} '
+                f'quote_ms={stamp} price={price} '
+                f'details={pending_details}',
+                'WARNING',
+            )
+            closed = await account.close_position(
+                symbol, price, f'{entry_m} {pending_reason}', is_manual=True,
+            )
+            if not closed:
+                account.log(
+                    f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                    f'reason={pending_reason} quote_ms={stamp}',
+                    'WARNING',
+                )
+            return bool(closed)
+
+        if restricted_exit_policy:
+            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+            if frame is None or frame.empty:
+                account.log(
+                    f'REALTIME_EXIT_HOLD symbol={symbol} '
+                    'reason=EXIT_SNAPSHOT_UNAVAILABLE',
+                    'WARNING',
+                )
+                return False
+
+            snapshot, _ = cached_tick_indicators(frame, price, stamp)
+            from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+            lock_trigger, state_changed = _evaluate_profit_lock_only(
+                position, meta, price, stamp, snapshot,
+                TAKER_FEE_RATE, SLIPPAGE_PCT,
+            )
+            if state_changed:
+                account.save_state()
+            if lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER):
+                closed = await account.close_position(
+                    symbol, price, f'{entry_m} {lock_trigger}', is_manual=True,
+                )
+                if not closed:
+                    account.log(
+                        f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                        f'reason={lock_trigger} quote_ms={stamp}',
+                        'WARNING',
+                    )
+                return bool(closed)
+
+            from core.services.exits.strict_true_pivot import (
+                confirmed_true_pivot_exit,
+            )
+            pivot = confirmed_true_pivot_exit(position, frame)
+            if pivot is None:
+                return False
+            pivot_reason, pivot_details = pivot
+            if not store_confirmed_pivot_exit(position, pivot):
+                account.log(
+                    f'REALTIME_EXIT_BLOCK symbol={symbol} '
+                    'reason=INVALID_CONFIRMED_PIVOT_TICKET',
+                    'ERROR',
+                )
+                return False
+            meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
+                position[CONFIRMED_PIVOT_PENDING_KEY]
+            )
+            account.save_state()
+            closed = await account.close_position(
+                symbol, price, f'{entry_m} {pivot_reason}', is_manual=True,
+            )
+            if not closed:
+                account.log(
+                    f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                    f'reason={pivot_reason} quote_ms={stamp}',
+                    'WARNING',
+                )
+            return bool(closed)
+
+        if entry_m in ('CHANNEL_SWING', 'WILD_SWING'):
+            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+            if frame is not None and not frame.empty:
+                snapshot, atr = cached_tick_indicators(frame, price, stamp)
+                from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+                same_bar_exit, net_rate = same_bar_net_profit_exit(
+                    position, price, stamp, snapshot,
+                    TAKER_FEE_RATE, SLIPPAGE_PCT,
+                )
+                if same_bar_exit:
+                    account.log(
+                        f'REALTIME_EXIT symbol={symbol} '
+                        f'reason=SAME_BAR_NET_PROFIT net_rate={net_rate:.6%} '
+                        f'quote_ms={stamp} price={price}',
+                        'WARNING',
+                    )
+                    closed = await account.close_position(
+                        symbol, price, f'{entry_m} SAME_BAR_NET_PROFIT_EXIT',
+                        is_manual=True,
+                    )
+                    if not closed:
+                        account.log(
+                            f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                            f'reason=SAME_BAR_NET_PROFIT_EXIT quote_ms={stamp}',
+                            'WARNING',
+                        )
+                    return bool(closed)
+                lock_trigger, state_changed = _evaluate_profit_lock_only(
+                    position, meta, price, stamp, snapshot,
+                    TAKER_FEE_RATE, SLIPPAGE_PCT,
+                )
+                if state_changed:
+                    account.save_state()
+                if (
+                    lock_trigger == 'EXIT_BY_BREAKEVEN_LOCK'
+                    or (lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER))
+                ):
+                    account.log(
+                        f'REALTIME_EXIT symbol={symbol} reason={lock_trigger} '
+                        f'quote_ms={stamp} price={price}',
+                        'WARNING',
+                    )
+                    await account.close_position(
+                        symbol, price, f'{entry_m} {lock_trigger}',
+                        is_manual=True,
+                    )
+                    return True
+
+                from core.services.exits.strict_true_pivot import (
+                    confirmed_true_pivot_exit,
+                )
+                pivot = confirmed_true_pivot_exit(position, frame)
+                if pivot is not None:
+                    pivot_reason, pivot_details = pivot
+                    if not store_confirmed_pivot_exit(position, pivot):
+                        account.log(
+                            f'REALTIME_EXIT_BLOCK symbol={symbol} '
+                            'reason=INVALID_CONFIRMED_PIVOT_TICKET',
+                            'ERROR',
+                        )
+                        return False
+                    meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
+                        position[CONFIRMED_PIVOT_PENDING_KEY]
+                    )
+                    account.save_state()
+                    account.log(
+                        f'REALTIME_EXIT symbol={symbol} reason={pivot_reason} '
+                        f'quote_ms={stamp} price={price} details={pivot_details}',
+                        'WARNING',
+                    )
+                    closed = await account.close_position(
+                        symbol, price, f'{entry_m} {pivot_reason}',
+                        is_manual=True,
+                    )
+                    if not closed:
+                        account.log(
+                            f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                            f'reason={pivot_reason} quote_ms={stamp}',
+                            'WARNING',
+                        )
+                    return bool(closed)
+            return False
 
         try:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
@@ -804,39 +1114,16 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     from core.services.exits.peak_trailing_exit import three_point_pivot_exit
                     pivot = three_point_pivot_exit(position, snapshot)
                     if pivot is not None:
-                        from core.gates.holding_protection_gate import _last_closed_close_at_or_above_kc_middle
-                        closed_above_mid = _last_closed_close_at_or_above_kc_middle(frame)
-                        if closed_above_mid is None and isinstance(snapshot, dict):
-                            h5 = snapshot.get('history_5') or []
-                            if h5:
-                                last_c = float(h5[-1].get('c', 0.0))
-                                last_mid = float(h5[-1].get('kc_middle', 0.0))
-                                if last_c > 0 and last_mid > 0:
-                                    closed_above_mid = last_c >= last_mid
-                        side = position.get('side')
-                        if side == 'LONG' and closed_above_mid is True:
-                            account.log(
-                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason=THREE_POINT_PIVOT '
-                                f'gate_reason=CLOSE_ABOVE_KC_MIDDLE_VETO price={price}',
-                                'INFO',
-                            )
-                        elif side == 'SHORT' and closed_above_mid is False:
-                            account.log(
-                                f'HOLDING_PROTECTION_BLOCKED symbol={symbol} reason=THREE_POINT_PIVOT '
-                                f'gate_reason=CLOSE_BELOW_KC_MIDDLE_VETO price={price}',
-                                'INFO',
-                            )
-                        else:
-                            account.log(
-                                f'REALTIME_EXIT symbol={symbol} reason=THREE_POINT_PIVOT '
-                                f'quote_ms={stamp} price={price} evidence={pivot}',
-                                'WARNING',
-                            )
-                            await account.close_position(
-                                symbol, price, 'Channel Swing THREE_POINT_PIVOT',
-                                is_manual=True,
-                            )
-                            return True
+                        account.log(
+                            f'REALTIME_EXIT symbol={symbol} reason=THREE_POINT_PIVOT '
+                            f'quote_ms={stamp} price={price} evidence={pivot}',
+                            'WARNING',
+                        )
+                        await account.close_position(
+                            symbol, price, 'Channel Swing THREE_POINT_PIVOT',
+                            is_manual=True,
+                        )
+                        return True
                     if meta.get('trend_exit_last_audit_bar') != snapshot.get('snapshot_bar_id'):
                         account.log(
                             f'TREND_EXIT_GATE symbol={symbol} side={position.get("side")} '

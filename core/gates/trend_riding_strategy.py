@@ -31,6 +31,214 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# ══════════════════════════════════════════════════════════════════════
+# 【通盤開倉審查入口 can_open_position (整合一票否決硬性門禁與防刷單冷卻)】
+# ══════════════════════════════════════════════════════════════════════
+def can_open_position(
+    df: pd.DataFrame,
+    side: str,
+    quote: Optional[float] = None,
+    last_closed_action: str = "",
+    last_closed_ts: float = 0.0,
+    timeframe_ms: float = 60_000.0,
+    symbol: str = "UNKNOWN",
+    bars_since_last_exit: Optional[int] = None,
+    last_closed_side: str = "",
+    cooldown_bars: int = 3,
+    **kwargs,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """開倉絕對門禁 (Gatekeeper 一票否決制，嚴禁繞過)
+    
+    1. 【開多門禁 (LONG)】：
+       - if kc_trend != 'UP': return False  (KC 非向上絕對不開多)
+       - if ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
+       - if ma5[-1] <= ma5[-2]: return False  (MA5 未實質向上勾頭不開多)
+       - 必須是上一根已收盤為「金叉突破」或「多頭排列首根收陽」，嚴禁在頂部上影線追多！
+    
+    2. 【開空門禁 (SHORT)】：
+       - if kc_trend != 'DOWN': return False  (KC 非向下絕對不開空！CAP 的 4 筆空單必須全被此條攔截！)
+       - if ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
+       - if ma5[-1] >= ma5[-2]: return False  (MA5 走平或向上勾頭絕對不開空)
+       - if close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
+    
+    3. 【防刷單冷卻時間 (Anti-Chop Cooldown)】：
+       - 任何一筆訂單平倉（不論盈虧）後，系統強制進入冷卻期，至少 3 根 K 棒內（3 分鐘）嚴禁同方向再次開倉！
+    """
+    if df is None or len(df) < 2:
+        return False, "VETO: INSUFFICIENT_DATA", {}
+
+    side = str(side).upper()
+    if side not in ("LONG", "SHORT"):
+        return False, f"VETO: INVALID_SIDE ({side})", {}
+
+    side_cn = "多" if side == "LONG" else "空"
+
+    # 提取已收盤 K 棒
+    if "is_closed" in df.columns:
+        closed_df = df[df["is_closed"] == True]
+        if len(closed_df) >= 2:
+            last_closed = closed_df.iloc[-1]
+            prev_closed = closed_df.iloc[-2]
+        else:
+            last_closed = df.iloc[-2] if len(df) >= 3 else df.iloc[-1]
+            prev_closed = df.iloc[-3] if len(df) >= 3 else last_closed
+    else:
+        last_closed = df.iloc[-2] if len(df) >= 3 else df.iloc[-1]
+        prev_closed = df.iloc[-3] if len(df) >= 3 else last_closed
+
+    close_p = float(last_closed["close"])
+    open_p = float(last_closed["open"])
+    high_p = float(last_closed["high"])
+    low_p = float(last_closed["low"])
+
+    prev_close = float(prev_closed["close"])
+    prev_open = float(prev_closed["open"])
+
+    ma5_curr = float(last_closed.get("ma5", last_closed.get("_wild_ma5", close_p)))
+    ma5_prev = float(prev_closed.get("ma5", prev_closed.get("_wild_ma5", ma5_curr)))
+    ma15_curr = float(last_closed.get("ma15", close_p))
+    ma15_prev = float(prev_closed.get("ma15", ma15_curr))
+
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+    kc_trend = resolve_kc_trend(df)
+    explicit_kc = str(last_closed.get("kc_trend") or last_closed.get("channel_state") or "").strip().upper()
+    if any(w in explicit_kc for w in ("UP", "KC向上", "UPTREND", "BULLISH")):
+        kc_trend = "UP"
+    elif any(w in explicit_kc for w in ("DOWN", "KC向下", "DOWNTREND", "BEARISH")):
+        kc_trend = "DOWN"
+
+    body = abs(close_p - open_p)
+    upper_wick = max(0.0, high_p - max(close_p, open_p))
+    lower_wick = max(0.0, min(close_p, open_p) - low_p)
+
+    details = {
+        "symbol": symbol,
+        "side": side,
+        "kc_trend": kc_trend,
+        "close": close_p,
+        "open": open_p,
+        "high": high_p,
+        "low": low_p,
+        "ma5_curr": ma5_curr,
+        "ma5_prev": ma5_prev,
+        "ma15_curr": ma15_curr,
+        "ma15_prev": ma15_prev,
+        "upper_wick": upper_wick,
+        "lower_wick": lower_wick,
+        "body": body,
+    }
+
+    # ══════════════════════════════════════════════════════════════════
+    # 二、 防刷單冷卻時間 (Anti-Chop Cooldown >= 3 根 K 棒)
+    # ══════════════════════════════════════════════════════════════════
+    target_side = (
+        "LONG" if ("LONG" in last_closed_action.upper() or last_closed_side == "LONG")
+        else ("SHORT" if ("SHORT" in last_closed_action.upper() or last_closed_side == "SHORT") else "")
+    )
+    if target_side == side:
+        if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
+            msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)", details
+
+        if last_closed_ts > 0:
+            curr_ts = float(last_closed.get("timestamp", time.time() * 1000.0))
+            ts_norm = last_closed_ts * 1000.0 if last_closed_ts < 1e11 else last_closed_ts
+            bars_since = (curr_ts - ts_norm) / timeframe_ms
+            if bars_since < float(cooldown_bars):
+                msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"
+                logger.warning(msg)
+                print(msg, flush=True)
+                return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)", details
+
+    # ══════════════════════════════════════════════════════════════════
+    # 一、 開倉絕對門禁 (一票否決制，嚴禁繞過)
+    # ══════════════════════════════════════════════════════════════════
+    if side == "LONG":
+        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多)
+        if kc_trend != "UP":
+            msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, f"VETO_LONG: KC_TREND_NOT_UP ({kc_trend})", details
+
+        # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
+        if ma5_curr <= ma15_curr:
+            msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
+
+        # 3. ma5[-1] <= ma5[-2]: return False (MA5 未實質向上勾頭不開多)
+        if ma5_curr <= ma5_prev:
+            msg = f"[攔截開多] {symbol} MA5 未實質向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_LONG: MA5_SLOPE_NOT_POSITIVE", details
+
+        # 4. 實體陰線禁止開多
+        if close_p <= open_p:
+            msg = f"[攔截開多] {symbol} 上一根為陰線實體，禁止開多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_LONG: BEARISH_CANDLE", details
+
+        # 5. 頂部上影線追多過濾 (嚴禁頂部上影線追多)
+        if upper_wick > 1.5 * max(body, 1e-9):
+            msg = f"[攔截開多] {symbol} 上一根為長上影線竭盡避雷針，嚴禁頂部追多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_LONG: EXHAUSTION_UPPER_WICK", details
+
+        # 6. 必須是上一根已收盤為「金叉突破」或「多頭排列首根收陽」
+        is_golden_cross = (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
+        is_first_bull_bar = (close_p > open_p and (prev_close <= prev_open or ma5_prev <= ma15_prev))
+        is_strong_bull_aligned = (ma5_curr > ma15_curr and close_p > open_p and ma5_curr > ma5_prev)
+        if not (is_golden_cross or is_first_bull_bar or is_strong_bull_aligned):
+            msg = f"[攔截開多] {symbol} 非金叉突破且非多頭排列首根收陽，禁止開多"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
+
+    elif side == "SHORT":
+        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空！CAP 的 4 筆空單必須全被此條攔截！)
+        if kc_trend != "DOWN":
+            msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, f"VETO_SHORT: KC_TREND_NOT_DOWN ({kc_trend})", details
+
+        # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
+        if ma5_curr >= ma15_curr:
+            msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
+
+        # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
+        if ma5_curr >= ma5_prev:
+            msg = f"[攔截開空] {symbol} MA5 走平或向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開空"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_SHORT: MA5_SLOPE_NOT_NEGATIVE", details
+
+        # 4. close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
+        if close_p >= open_p:
+            msg = f"[攔截開空] {symbol} 上一根為實體陽線，禁止開空"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_SHORT: BULLISH_CANDLE", details
+
+        # 5. 底部下影線反彈過濾
+        if lower_wick > 1.5 * max(body, 1e-9):
+            msg = f"[攔截開空] {symbol} 上一根為長下影線反彈棒，嚴禁底部追空"
+            logger.warning(msg)
+            print(msg, flush=True)
+            return False, "VETO_SHORT: REBOUND_LOWER_WICK", details
+
+    return True, "PASS: GATEKEEPER_PERMIT", details
+
 
 class TrendRidingStrategy:
     """多空趨勢鎖倉、通道收窄中繼再進場與對稱防洗盤策略控制器"""
@@ -324,8 +532,25 @@ class TrendRidingStrategy:
         last_closed_action: str = "",
         last_closed_ts: float = 0.0,
         timeframe_ms: float = 60_000.0,
+        symbol: str = "UNKNOWN",
+        **kwargs,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """開倉審查：通道收窄時智能切換至 Squeeze Re-entry 機制，通道張開時走常規趨勢突破"""
+        # 最外層硬性門禁攔截 (一票否決制，嚴禁繞過)
+        passed, gate_reason, gate_details = can_open_position(
+            df=df,
+            side=side,
+            quote=quote,
+            last_closed_action=last_closed_action,
+            last_closed_ts=last_closed_ts,
+            timeframe_ms=timeframe_ms,
+            symbol=symbol,
+            cooldown_bars=self.cooldown_bars,
+            **kwargs,
+        )
+        if not passed:
+            return False, gate_reason, gate_details
+
         if df is None or len(df) < 5:
             return False, "VETO: INSUFFICIENT_DATA", {}
 
@@ -581,16 +806,26 @@ class TrendRidingStrategy:
         details['is_bull_trend'] = is_bull_trend
         details['above_count'] = above_count
 
-        # ──【二、 非多頭趨勢時 (已反轉或跌破中軌)】──
-        if not is_bull_trend:
-            if c < basis:
-                return True, "EXIT_LONG_STRUCTURE_BROKEN (收盤價已實體摜破基準線，非多頭趨勢離場)", details
+        # ──【回踩容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
+        entry_price = float(position.get("entry_price") or c)
+        pnl_pct = (p - entry_price) / entry_price if entry_price > 0 else 0.0
+        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
+        ma15_curr = float(curr.get("ma15", basis))
+        body = abs(c - o)
+        upper_wick = max(0.0, h - max(c, o))
+        lower_wick = max(0.0, min(c, o) - l)
 
-        # ──【三、 多單在多頭趨勢下的【唯二平倉條件】】──
-        # 條件 1：結構被破 (Trend Invalidation)
-        # K 棒收盤價 (Close) 實體跌破 KC 中軌 (Close < KC_Basis)
-        if c < basis:
-            return True, "EXIT_LONG_STRUCTURE_BROKEN (K棒收盤實體摜破 KC 中軌，多頭結構被破離場)", details
+        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向下插針（長下影線）只要收盤在 MA15 上方且未死叉，一律視為洗盤，嚴禁平倉！
+        if pnl_pct < 0.008 and c >= ma15_curr and ma5_curr >= ma15_curr:
+            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，下影線洗盤尋求支撐，嚴禁慌張平多)", details
+
+        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：頂部長上影線力竭允許觸發保護性止盈
+        if pnl_pct >= 0.008 and upper_wick > 1.5 * max(body, 1e-9):
+            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下頂部長上影線力竭，保護性止盈平多)", details
+
+        # 3. 回踩容忍（Hold on Pullback）：只要 ma5 > ma15 且收盤價未跌破 ma15，一律判定為「多頭健康回踩」，【嚴禁平多】！
+        if ma5_curr > ma15_curr and c >= ma15_curr:
+            return False, "HOLD: BULL_HEALTHY_PULLBACK_TOLERANCE (MA5 > MA15 且收盤未破 MA15，多頭健康回踩嚴禁平多)", details
 
         # 條件 2：極端天量高位滯漲 (Climax Exit)
         # ① 價格大幅脫離 KC 上軌 (超買正乖離過大)
@@ -810,16 +1045,26 @@ class TrendRidingStrategy:
         details['is_bear_trend'] = is_bear_trend
         details['below_count'] = below_count
 
-        # ──【二、 非空頭趨勢時 (已反轉或站上中軌)】──
-        if not is_bear_trend:
-            if c > basis:
-                return True, "EXIT_SHORT_STRUCTURE_BROKEN (收盤價已實體突破站上基準線，非空頭趨勢離場)", details
+        # ──【回抽容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
+        entry_price = float(position.get("entry_price") or c)
+        pnl_pct = (entry_price - p) / entry_price if entry_price > 0 else 0.0
+        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
+        ma15_curr = float(curr.get("ma15", basis))
+        body = abs(c - o)
+        upper_wick = max(0.0, h - max(c, o))
+        lower_wick = max(0.0, min(c, o) - l)
 
-        # ──【三、 空單在空頭趨勢下的【唯二平倉條件】】──
-        # 條件 1：結構被破 (Trend Invalidation)
-        # K 棒收盤價 (Close) 實體突破並站穩 KC 中軌 (Close > KC_Basis)
-        if c > basis:
-            return True, "EXIT_SHORT_STRUCTURE_BROKEN (K棒收盤實體突破並站穩 KC 中軌，空頭動能衰竭離場)", details
+        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
+        if pnl_pct < 0.008 and c <= ma15_curr and ma5_curr <= ma15_curr:
+            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，上影線受阻確認阻力，嚴禁慌張平空)", details
+
+        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：底部長下影線探底回升允許觸發保護性止盈
+        if pnl_pct >= 0.008 and lower_wick > 1.5 * max(body, 1e-9):
+            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下底部長下影線力竭，保護性止盈平空)", details
+
+        # 3. 回抽容忍（Hold on Pullback）：只要 ma5 < ma15 且收盤價未突破 ma15，視為空頭回抽，【嚴禁平空】！
+        if ma5_curr < ma15_curr and c <= ma15_curr:
+            return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE (MA5 < MA15 且收盤未破 MA15，空頭健康回抽嚴禁平空)", details
 
         # 條件 2：極端恐慌天量插針 (Panic Climax Bottom)
         # ① 價格嚴重跌破 KC 下軌 (超賣負乖離過大)

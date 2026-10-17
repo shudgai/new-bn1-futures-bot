@@ -16,7 +16,14 @@ from core.gates.breakout_continuation_entry_gate import (
     BreakoutContinuationEntryGate,
 )
 from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
+from core.gates.ma5_ma15_cross_entry_gate import validate_ma5_ma15_cross_entry
 from core.services.candle_data import closed_entry_candles
+from core.services.exits.strict_true_pivot import (
+    confirmed_true_pivot_exit,
+    pending_confirmed_pivot_exit,
+    store_confirmed_pivot_exit,
+)
+from core.symbol_aliases import is_auto_entry_symbol
 
 
 ENTRY_MODE_BREAKOUT = "BREAKOUT"
@@ -187,8 +194,26 @@ class WildSwingStrategy:
         side = str(side).upper()
         if side not in ("LONG", "SHORT"):
             raise ValueError("side must be LONG or SHORT")
+        if not is_auto_entry_symbol(symbol):
+            return None
         bars = self._closed_frame(frame)
         if len(bars) < self.volume_lookback + 2:
+            return None
+        from core.gates.trend_riding_strategy import can_open_position
+        state = self.state_for(symbol)
+        can_open, gate_reason, _ = can_open_position(
+            df=frame,
+            side=side,
+            symbol=symbol,
+            bars_since_last_exit=state.bars_since_last_exit,
+            last_closed_side=state.last_exit_side,
+            last_closed_ts=state.last_exit_bar_id or 0.0,
+        )
+        if not can_open:
+            logger.info(
+                "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s reason=%s",
+                symbol, side, gate_reason,
+            )
             return None
 
         current = bars.iloc[-1]
@@ -857,6 +882,22 @@ class WildSwingStrategy:
         side = str((position or {}).get("side", "")).upper()
         if side not in ("LONG", "SHORT"):
             return None
+        pending_pivot = pending_confirmed_pivot_exit(position)
+        if pending_pivot is not None:
+            reason, details = pending_pivot
+            close = float(quote) if quote is not None else float(
+                position.get("entry_price") or 0.0
+            )
+            return {
+                "action": f"CLOSE_{side}",
+                "type": reason,
+                "side": side,
+                "reason": reason,
+                "bar_id": details.get("exit_bar_id", details["confirm_bar_id"]),
+                "close": close,
+                "entry_mode": "WILD_SWING",
+                "pivot": details,
+            }
         bars = self._closed_frame(frame)
         if len(bars) < 2:
             return None
@@ -897,13 +938,51 @@ class WildSwingStrategy:
                 "WILD_SWING_PULLBACK_EXIT_SUPPRESSED symbol=%s side=%s reason=%s",
                 symbol, side, reason,
             )
+            should_exit = False
+
+        allowed_exit_reasons = {
+            "EXIT_BY_TRAILING_PROFIT_LOCK",
+            "EXIT_BY_BREAKEVEN",
+            "EXIT_BY_PROFIT_EXHAUSTION_WICK",
+            "EXIT_BY_HARD_STOP_LOSS",
+        }
+        if should_exit and reason in allowed_exit_reasons:
+            close = float(details.get("close", current["close"]))
+            print(
+                f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}",
+                flush=True,
+            )
+            return {
+                "action": f"CLOSE_{side}",
+                "type": reason,
+                "side": side,
+                "reason": reason,
+                "bar_id": bar_id,
+                "close": close,
+                "entry_mode": "WILD_SWING",
+            }
+
+        pivot = self._confirmed_pivot_exit(position, bars, frame)
+        if pivot is None:
+            if should_exit:
+                logger.info(
+                    "WILD_SWING_NON_AUTHORIZED_EXIT_SUPPRESSED "
+                    "symbol=%s side=%s reason=%s",
+                    symbol, side, reason,
+                )
             return None
 
-        if not should_exit or not reason:
+        reason, pivot_details = pivot
+        pending_details = {**pivot_details, "exit_bar_id": bar_id}
+        if not store_confirmed_pivot_exit(
+            position, (reason, pending_details),
+        ):
             return None
-
-        close = float(details.get("close", current["close"]))
-        print(f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}", flush=True)
+        close = float(current_price)
+        print(
+            f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}",
+            flush=True,
+        )
         return {
             "action": f"CLOSE_{side}",
             "type": reason,
@@ -912,7 +991,16 @@ class WildSwingStrategy:
             "bar_id": bar_id,
             "close": close,
             "entry_mode": "WILD_SWING",
+            "pivot": pivot_details,
         }
+
+    def _confirmed_pivot_exit(
+        self,
+        position: dict,
+        bars: pd.DataFrame,
+        frame: pd.DataFrame,
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        return confirmed_true_pivot_exit(position, frame)
 
     @staticmethod
     def _position_entry_bar_floor(

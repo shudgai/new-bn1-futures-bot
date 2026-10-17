@@ -14,6 +14,7 @@ from core.testnet_account import BinanceTestnetAccount
 
 LOBSTER = "龙虾/USDT"
 PEPE = "1000PEPE/USDT"
+CAP = "CAP/USDT"
 
 
 def _ohlcv_rows(count=2):
@@ -47,6 +48,7 @@ def _engine_with_kline_cache():
         (LOBSTER, "龙虾/USDT:USDT"),
         ("龍蝦/USDT", "龙虾/USDT:USDT"),
         ("LOBSTER/USDT", "龙虾/USDT:USDT"),
+        (CAP, "CAP/USDT:USDT"),
         (PEPE, "1000PEPE/USDT:USDT"),
     ],
 )
@@ -66,7 +68,7 @@ def test_active_symbols_start_independent_wild_swing_kline_tasks(monkeypatch):
         engine._wild_swing_kline_loop = lambda _symbol: wait_forever()
 
         engine.start_market_data()
-        assert set(engine.wild_swing_kline_tasks) == {LOBSTER, PEPE}
+        assert set(engine.wild_swing_kline_tasks) == {LOBSTER, CAP}
         assert not engine.ticker_task.done()
         assert all(not task.done() for task in engine.wild_swing_kline_tasks.values())
 
@@ -75,7 +77,7 @@ def test_active_symbols_start_independent_wild_swing_kline_tasks(monkeypatch):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", [LOBSTER, PEPE])
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", [LOBSTER, CAP])
     asyncio.run(scenario())
 
 

@@ -450,11 +450,24 @@ class BinanceTestnetAccount:
                 report["pending_entry_status"] = "PROCESSED"
 
             # G. Verified reduce-only market close for every exchange position.
+            from core.symbol_aliases import is_auto_entry_symbol
+
             for row in open_positions:
                 signed = Decimal(str(row.get("positionAmt")))
                 symbol = self._clean_symbol(row.get("symbol", ""))
                 close_side = "sell" if signed > 0 else "buy"
                 attempt = {"symbol": symbol, "qty": str(abs(signed)), "ok": False}
+                if is_auto_entry_symbol(symbol):
+                    attempt["blocked"] = (
+                        "SOFTWARE_EXIT_POLICY_PROFIT_LOCK_OR_CONFIRMED_PIVOT"
+                    )
+                    self.log(
+                        f"🛑 [CIRCUIT_BREAKER] software close blocked by exit policy: "
+                        f"{symbol}",
+                        "WARNING",
+                    )
+                    report["close_attempts"].append(attempt)
+                    continue
                 try:
                     await self._raw_create_order(
                         to_binance_usdm_symbol(symbol),
@@ -1480,18 +1493,46 @@ class BinanceTestnetAccount:
 
                 if not meta.get("limit_tp1_filled", False):
                     if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
-                        meta["limit_tp1_filled"] = True
-                        pos["is_half_closed"] = True
-                        half_qty = float(self._amount_to_precision(symbol, float(pos["qty"]) / 2.0))
-                        if half_qty > 0:
-                            self.log(f"🎯 [Limit TP1 達標] {symbol} {side} 觸及 {tp1_target:.8g}！市價平倉 50% 數量 {half_qty}", "SUCCESS")
-                            # Send MARKET order to close 50%
-                            close_side = "sell" if side == "LONG" else "buy"
-                            try:
-                                await self._send_order(symbol, "MARKET", close_side, half_qty, reason="TAKE_PROFIT_50PCT")
-                            except Exception as e:
-                                self.log(f"⚠️ [TP1 平倉失敗] API Error: {e}", "WARNING")
-                                meta["limit_tp1_filled"] = False # Retry later
+                        from core.services.exits.authorized_position_exit import (
+                            automated_position_exit_allowed,
+                        )
+
+                        if not automated_position_exit_allowed(
+                            symbol, pos, meta, "TAKE_PROFIT_50PCT", curr_p,
+                        ):
+                            self.log(
+                                f"POSITION_EXIT_BLOCK symbol={symbol} "
+                                "reason=TAKE_PROFIT_50PCT "
+                                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                                "WARNING",
+                            )
+                        else:
+                            meta["limit_tp1_filled"] = True
+                            pos["is_half_closed"] = True
+                            half_qty = float(
+                                self._amount_to_precision(
+                                    symbol, float(pos["qty"]) / 2.0,
+                                )
+                            )
+                            if half_qty > 0:
+                                self.log(
+                                    f"🎯 [Limit TP1 達標] {symbol} {side} "
+                                    f"觸及 {tp1_target:.8g}！市價平倉 50% 數量 "
+                                    f"{half_qty}",
+                                    "SUCCESS",
+                                )
+                                close_side = "sell" if side == "LONG" else "buy"
+                                try:
+                                    await self._send_order(
+                                        symbol, "MARKET", close_side, half_qty,
+                                        reason="TAKE_PROFIT_50PCT",
+                                    )
+                                except Exception as exc:
+                                    self.log(
+                                        f"⚠️ [TP1 平倉失敗] API Error: {exc}",
+                                        "WARNING",
+                                    )
+                                    meta["limit_tp1_filled"] = False
                         
             # =========================================================================
             # 終極防禦體系：分階段動態防禦系統 (TieredExitManager)

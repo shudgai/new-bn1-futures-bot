@@ -83,9 +83,9 @@ WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.50
 
 
 def get_wild_swing_margin_fraction(symbol: str) -> float | None:
-    from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
+    from core.symbol_aliases import is_lobster_symbol
 
-    if is_lobster_symbol(symbol) or is_pepe_symbol(symbol):
+    if is_lobster_symbol(symbol):
         return WILD_SWING_SYMBOL_MARGIN_FRACTION
     return None
 
@@ -1204,19 +1204,12 @@ SYMBOL_CANDIDATE_POOL[:] = [
     symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS
 ]
 
-# 可新開倉牌面：正績效幣種搭配高流動性主流合約。
-# TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。
-# 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
-# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（24）覆寫，這裡先湊到
-# 24 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
-_env_symbols = os.getenv("DEFAULT_SYMBOLS", os.getenv("SYMBOLS", "")).strip()
-if _env_symbols:
-    DEFAULT_SYMBOLS = [s.strip() for s in _env_symbols.split(",") if s.strip()]
-else:
-    DEFAULT_SYMBOLS = sorted(MAINSTREAM_SYMBOLS)
-
-DEFAULT_SYMBOLS[:] = [
-    symbol for symbol in DEFAULT_SYMBOLS if symbol not in ENTRY_DISABLED_SYMBOLS
+# Automatic trading is restricted to Lobster and CAP; symbol-list environment
+# variables cannot re-enable other contracts. Existing other positions remain
+# managed by the position-management loop.
+DEFAULT_SYMBOLS = [
+    symbol for symbol in ("LOBSTER/USDT", "CAP/USDT")
+    if not is_entry_disabled(symbol)
 ]
 
 # --- 真實/測試網切換 ---

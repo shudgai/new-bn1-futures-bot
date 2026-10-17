@@ -14,6 +14,7 @@ from core.symbol_aliases import is_meme_breakout_symbol
 
 PEPE = '1000PEPE/USDT'
 LOBSTER = '龙虾/USDT'
+CAP = 'CAP/USDT'
 
 
 def held(side='LONG'):
@@ -49,11 +50,11 @@ def account_for(kind, state_file=None):
 
 
 def test_active_board_uses_shared_wild_swing_symbols():
-    assert config.DEFAULT_SYMBOLS == [LOBSTER, PEPE]
+    assert config.DEFAULT_SYMBOLS == ['LOBSTER/USDT', CAP]
     assert not config.is_entry_disabled(LOBSTER)
-    assert not config.is_entry_disabled(PEPE)
+    assert not config.is_entry_disabled(CAP)
     assert is_meme_breakout_symbol(LOBSTER)
-    assert is_meme_breakout_symbol(PEPE)
+    assert is_meme_breakout_symbol(CAP)
 
 
 def test_fixed_entry_scan_includes_both_symbols():
@@ -66,7 +67,7 @@ def test_fixed_entry_scan_includes_both_symbols():
         2,
     )
 
-    assert symbols == [LOBSTER, PEPE]
+    assert symbols == ['LOBSTER/USDT', CAP]
 
 
 def test_cancel_race_partial_fill_is_still_managed(tmp_path):
@@ -102,7 +103,7 @@ def test_existing_testnet_update_and_native_sl_still_execute(tmp_path):
     assert a.exchange.request.await_args.args[3]['reduceOnly']=='true'
 
 
-def test_existing_pepe_is_in_the_active_fixed_scan():
+def test_unapproved_symbols_are_excluded_from_automatic_fixed_scan():
     symbols = TradingEngine._entry_scan_symbol_snapshot(
         config.DEFAULT_SYMBOLS,
         config.DEFAULT_SYMBOLS,
@@ -111,7 +112,7 @@ def test_existing_pepe_is_in_the_active_fixed_scan():
         True,
         2,
     )
-    assert symbols == [LOBSTER, PEPE]
+    assert symbols == ['LOBSTER/USDT', CAP]
 
 
 def test_cancel_failure_keeps_order_tracked_and_does_not_submit(monkeypatch,tmp_path):
@@ -125,10 +126,10 @@ def test_cancel_failure_keeps_order_tracked_and_does_not_submit(monkeypatch,tmp_
     a._raw_create_order.assert_not_awaited()
 
 
-def test_environment_can_enable_pepe_when_not_disabled():
+def test_environment_cannot_expand_the_fixed_entry_allowlist():
     import os,subprocess,sys,json
     env=dict(os.environ,ENTRY_DISABLED_SYMBOLS='',DEFAULT_SYMBOLS=PEPE+','+LOBSTER)
     result=subprocess.check_output([sys.executable,'-c',
         'import json; from core.config import DEFAULT_SYMBOLS,is_entry_disabled; '
         'print(json.dumps([DEFAULT_SYMBOLS,is_entry_disabled("1000PEPEUSDT")]))'],env=env,text=True)
-    assert json.loads(result.strip())==[[PEPE,LOBSTER],False]
+    assert json.loads(result.strip())==[['LOBSTER/USDT',CAP],False]

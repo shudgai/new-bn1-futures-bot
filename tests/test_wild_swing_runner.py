@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pandas as pd
 import pytest
@@ -448,6 +449,104 @@ def test_runner_does_not_close_on_ratchet_alone():
     assert symbol in engine.account.positions
 
 
+def test_runner_persists_and_retries_confirmed_pivot_close_after_restore():
+    from core.services.exits.strict_true_pivot import (
+        CONFIRMED_PIVOT_PENDING_KEY,
+        store_confirmed_pivot_exit,
+    )
+
+    class Account(FakeAccount):
+        def __init__(self, symbol, position):
+            super().__init__()
+            self.positions[symbol] = position
+            self.position_meta = {symbol: {}}
+            self.close_results = [False, True]
+            self.close_calls = []
+            self.last_closed_price = {}
+            self.save_count = 0
+
+        def save_state(self):
+            self.save_count += 1
+
+        async def close_position(self, symbol, price, reason, **_kwargs):
+            self.close_calls.append((symbol, price, reason))
+            closed = self.close_results.pop(0)
+            if closed:
+                self.positions.pop(symbol, None)
+                self.position_meta.pop(symbol, None)
+                self.last_closed_price[symbol] = price
+            return closed
+
+    symbol = "LOBSTER/USDT"
+    position = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "qty": 1.0,
+        "open_timestamp": 600.0,
+        "entry_mode": "WILD_SWING",
+    }
+    engine = FakeEngine()
+    engine.account = Account(symbol, position)
+    strategy = WildSwingStrategy()
+    strategy.reset_symbol(symbol, 720_000.0)
+    engine._wild_swing_strategy = strategy
+
+    def confirmed_exit(_symbol, held_position, _frame, quote=None):
+        details = {
+            "pivot_bar_id": 660_000.0,
+            "confirm_bar_id": 720_000.0,
+            "pivot_high": 110.0,
+            "confirmation_close": 108.0,
+            "exit_bar_id": 780_000.0,
+        }
+        pivot = ("EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", details)
+        assert store_confirmed_pivot_exit(held_position, pivot)
+        return {
+            "action": "CLOSE_LONG",
+            "type": pivot[0],
+            "side": "LONG",
+            "reason": pivot[0],
+            "bar_id": details["exit_bar_id"],
+            "close": quote,
+            "entry_mode": "WILD_SWING",
+            "pivot": details,
+        }
+
+    strategy.evaluate_exit = confirmed_exit
+    frame = _frame("LONG")
+    frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+    frame.attrs["timeframe_ms"] = 60_000
+
+    asyncio.run(
+        _process_wild_swing_symbol(
+            engine, symbol, frame, 108.0, False, False,
+        )
+    )
+
+    assert engine.account.close_calls
+    assert CONFIRMED_PIVOT_PENDING_KEY in engine.account.position_meta[symbol]
+    assert engine.account.save_count == 1
+
+    restored_position = json.loads(json.dumps(engine.account.positions[symbol]))
+    restored_position.pop(CONFIRMED_PIVOT_PENDING_KEY)
+    restored_meta = json.loads(
+        json.dumps(engine.account.position_meta[symbol])
+    )
+    engine.account.positions[symbol] = restored_position
+    engine.account.position_meta[symbol] = restored_meta
+    engine._wild_swing_strategy = WildSwingStrategy()
+
+    asyncio.run(
+        _process_wild_swing_symbol(
+            engine, symbol, frame, 107.5, False, False,
+        )
+    )
+
+    assert len(engine.account.close_calls) == 2
+    assert "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" in engine.account.close_calls[1][2]
+    assert symbol not in engine.account.positions
+
+
 def test_runner_holds_through_live_ma5_pullback():
     class Account(FakeAccount):
         def __init__(self):
@@ -471,7 +570,7 @@ def test_runner_holds_through_live_ma5_pullback():
     engine.account.positions[symbol] = {
         "side": "LONG",
         "entry_price": 100.0,
-        "open_timestamp": 60.0,
+        "open_timestamp": 600.0,
         "entry_mode": "WILD_SWING",
     }
     strategy = WildSwingStrategy()
