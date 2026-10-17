@@ -106,6 +106,9 @@ STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
     "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
+    "entry_authority", "wait_trigger_id", "wait_trigger",
+    "wait_client_order_id", "kc2bar_signal", "kc2bar_signal_id",
+    "entry_authority_claim_id", "entry_client_order_id", "position_uuid",
     "trigger_price", "trigger_timestamp",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
@@ -158,6 +161,7 @@ class BinanceTestnetAccount:
         
         async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
             from core.services.entry_firewall import validate_account_entry
+            from core.config import ENTRY_SUBMISSION_ENABLED
             params = dict(params or {})
             context = params.pop('_entry_context', None)
             is_live_mainnet = self._is_live_mainnet()
@@ -170,6 +174,10 @@ class BinanceTestnetAccount:
 
             is_reduce = is_reducing or (not is_live_mainnet and (params.get('reduceOnly') in (True, 'true', 'TRUE') or params.get('closePosition') in (True, 'true', 'TRUE')))
             if not is_reduce:
+                if not ENTRY_SUBMISSION_ENABLED:
+                    raise ValueError(
+                        "[FORBIDDEN_ENTRY] BLOCKED_ENTRY_SUBMISSION_DISABLED"
+                    )
                 if side not in ('buy', 'sell'):
                     raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
                 await validate_account_entry(
@@ -255,6 +263,7 @@ class BinanceTestnetAccount:
         self.d0_failed_state: Dict[str, str] = {}
         self.d0_quarantine_state: Dict[str, bool] = {}
         self.tickers: Dict[str, float] = {}
+        self.wait_entry_execution: Dict[str, dict] = {}
         self.staged_state_directory = f"{self._state_path()}.staged"
         # Account-level 15% circuit breaker (Live Mainnet only). Persisted;
         # never reset by refresh, restart, close or equity recovery.
@@ -884,6 +893,58 @@ class BinanceTestnetAccount:
         self.save_state()
         asyncio.create_task(self._fetch_exchange_order_snapshot())
         return self.unrealized_pnl
+
+    async def reconcile_wait_entry_claims(self, authority, symbol: str) -> None:
+        claims = authority.unknown_claims(symbol)
+        if not claims:
+            return
+        await self.refresh(force=True)
+        terminal_statuses = {"closed", "canceled", "expired", "rejected"}
+        for claim in claims:
+            client_order_id = claim.get("client_order_id")
+            if not isinstance(client_order_id, str) or not client_order_id:
+                continue
+            try:
+                order = await self.exchange.fetch_order(
+                    None,
+                    symbol,
+                    {"origClientOrderId": client_order_id},
+                )
+            except ccxt.OrderNotFound:
+                continue
+            except ccxt.NetworkError as exc:
+                self.log(
+                    f"WAIT_RECONCILIATION_DEFERRED {symbol}: "
+                    f"{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
+                continue
+            status = str(order.get("status") or "").lower()
+            if status not in terminal_statuses:
+                continue
+            try:
+                filled_qty = float(order.get("filled") or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            await self.refresh(force=True)
+            position = self.positions.get(symbol)
+            position_claim_id = (
+                position.get("entry_authority_claim_id")
+                or position.get("wait_trigger_id")
+                if position
+                else None
+            )
+            position_uuid = position.get("position_uuid") if position else None
+            authority.reconcile(
+                claim["trigger_id"],
+                filled_qty=filled_qty,
+                position_present=bool(
+                    position
+                    and position_claim_id == claim["trigger_id"]
+                    and position_uuid == claim.get("position_uuid")
+                ),
+                order_reconciled=True,
+            )
 
     async def _fetch_exchange_order_snapshot(self) -> None:
         """PATCH A: Read-only reconciliation of exchange state vs local state.
@@ -2216,6 +2277,13 @@ class BinanceTestnetAccount:
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
+        from core.config import ENTRY_SUBMISSION_ENABLED
+        if not ENTRY_SUBMISSION_ENABLED:
+            self.log(
+                f"ENTRY_GATE {symbol} BLOCKED_ENTRY_SUBMISSION_DISABLED",
+                "WARNING",
+            )
+            return False
         entry_context = dict(entry_context or {})
         is_manual = (
             entry_context.get("is_manual") in [True, "true", "TRUE"]
@@ -2310,6 +2378,9 @@ class BinanceTestnetAccount:
         else:
             from core.services.entry_firewall import validate_account_entry
             entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
+                price = float(entry_decision["price"])
+                atr = float(entry_decision["entry_atr"])
         structural_stop = entry_decision.get('initial_sl')
 
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
@@ -2406,6 +2477,12 @@ class BinanceTestnetAccount:
             order_params = {"newOrderRespType": "RESULT"}
             if is_d0:
                 order_params["newClientOrderId"] = client_order_id
+            authority_client_order_id = (
+                entry_context.get("entry_client_order_id")
+                or entry_context.get("wait_client_order_id")
+            )
+            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
+                order_params["newClientOrderId"] = authority_client_order_id
 
             entry_order = await self._send_order(
                 symbol,
@@ -2417,6 +2494,60 @@ class BinanceTestnetAccount:
                 entry_context=entry_context,
             )
             execution_price = float(entry_order.get("average") or price)
+            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
+                try:
+                    filled_qty = float(entry_order.get("filled") or 0.0)
+                    requested_qty = float(entry_order.get("amount") or qty)
+                except (TypeError, ValueError, OverflowError):
+                    filled_qty = None
+                    requested_qty = None
+                status = str(entry_order.get("status") or "").lower()
+                terminal_statuses = {"closed", "canceled", "expired", "rejected"}
+                if status not in terminal_statuses:
+                    try:
+                        await self.exchange.cancel_order(
+                            entry_order.get("id"),
+                            symbol,
+                            {"origClientOrderId": authority_client_order_id},
+                        )
+                    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+                        self.log(
+                            f"WAIT_REMAINING_ORDER_CANCEL_UNCONFIRMED {symbol}: "
+                            f"{type(exc).__name__}: {exc}",
+                            "DANGER",
+                        )
+                    try:
+                        entry_order = await self.exchange.fetch_order(
+                            None,
+                            symbol,
+                            {"origClientOrderId": authority_client_order_id},
+                        )
+                        status = str(entry_order.get("status") or "").lower()
+                        filled_qty = float(entry_order.get("filled") or 0.0)
+                        requested_qty = float(entry_order.get("amount") or qty)
+                        execution_price = float(
+                            entry_order.get("average") or execution_price
+                        )
+                    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+                        self.log(
+                            f"WAIT_ORDER_RECONCILIATION_UNCONFIRMED {symbol}: "
+                            f"{type(exc).__name__}: {exc}",
+                            "DANGER",
+                        )
+                self.wait_entry_execution[symbol] = {
+                    "order_id": entry_order.get("id"),
+                    "status": status,
+                    "filled_qty": filled_qty,
+                    "requested_qty": requested_qty,
+                }
+                if filled_qty is None or filled_qty < 0:
+                    await self.refresh(force=True)
+                    return False
+                if filled_qty == 0 and status in terminal_statuses:
+                    await self.refresh(force=True)
+                    return False
+                if filled_qty > 0:
+                    qty = filled_qty
         except Exception as exc:
             import ccxt
             is_definitive = False
@@ -2705,7 +2836,13 @@ class BinanceTestnetAccount:
         改以市價單（open_position）立即成交進場，避免價格快速拉升時錯過行情。
         """
         # ✅ 修正：配合突破確認後限價回踩優化，90 分以上也完全恢復使用限價單，移除先前強制轉市價的設定。
-        
+        from core.config import ENTRY_SUBMISSION_ENABLED
+        if not ENTRY_SUBMISSION_ENABLED:
+            self.log(
+                f"ENTRY_GATE {symbol} BLOCKED_ENTRY_SUBMISSION_DISABLED",
+                "WARNING",
+            )
+            return False
         from core.config import is_entry_disabled
         if is_entry_disabled(symbol):
             return False
@@ -2889,10 +3026,14 @@ class BinanceTestnetAccount:
         交易；被交易所取消/拒絕的直接清掉追蹤。超時/條件變差的主動撤單
         判斷交給 engine.py（需要策略/K線資料才能重新驗證條件），這裡只
         處理「有沒有成交」。"""
-        from core.config import is_entry_disabled
+        from core.config import ENTRY_SUBMISSION_ENABLED, is_entry_disabled
         for symbol, info in list(self.pending_limit_orders.items()):
-            if is_entry_disabled(symbol):
-                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
+            if not ENTRY_SUBMISSION_ENABLED or is_entry_disabled(symbol):
+                reason = (
+                    "ENTRY_SUBMISSION_DISABLED"
+                    if not ENTRY_SUBMISSION_ENABLED else "ENTRY_DISABLED_SYMBOL"
+                )
+                await self.cancel_pending_limit(symbol, reason)
                 continue
             try:
                 order_status = await self.exchange.fetch_order(info["order_id"], symbol)

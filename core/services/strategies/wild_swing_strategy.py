@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 import logging
 import math
+import time
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -743,6 +744,7 @@ class WildSwingStrategy:
         symbol: str,
         position: dict,
         frame: pd.DataFrame,
+        quote: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
         side = str((position or {}).get("side", "")).upper()
         if side not in ("LONG", "SHORT"):
@@ -754,7 +756,7 @@ class WildSwingStrategy:
         bar_id = self._bar_id(current)
         if bar_id is None:
             return None
-        state = self.state_for(symbol)
+
         live_row = None
         if (
             frame is not None
@@ -763,23 +765,18 @@ class WildSwingStrategy:
             and not bool(frame.iloc[-1]["is_closed"])
         ):
             live_row = frame.iloc[-1]
-        entry_bar_floor = self._position_entry_bar_floor(position, bars)
-        live_bar_id = self._bar_id(live_row) if live_row is not None else None
-        live_exit_is_fresh = (
-            live_bar_id is not None
-            and live_bar_id > bar_id
-            and (entry_bar_floor is None or live_bar_id > entry_bar_floor)
+
+        # ──【開倉當根生命週期檢查 (Entry Bar Lifecycle)】──
+        open_time = float(
+            (position or {}).get("open_timestamp")
+            or (position or {}).get("timestamp")
+            or (position or {}).get("entry_timestamp")
+            or 0.0
         )
-        closed_exit_is_fresh = (
-            entry_bar_floor is None or bar_id > entry_bar_floor
-        )
-        if not closed_exit_is_fresh and not live_exit_is_fresh:
-            return None
-        reset_closed_bar = (
-            state.reset_bar_id is not None and bar_id <= state.reset_bar_id
-        )
-        if reset_closed_bar and not live_exit_is_fresh:
-            return None
+        if open_time > 1e11:
+            open_time /= 1000.0
+        now_ts = time.time()
+        is_entry_bar = (open_time > 0 and (now_ts - open_time) < 60.0)
 
         current_ma5 = self._number(live_row, "ma5") if live_row is not None else None
         current_ma15 = self._number(live_row, "ma15") if live_row is not None else None
@@ -799,38 +796,137 @@ class WildSwingStrategy:
         ma5_slope_down = current_ma5 < previous_ma5
         golden_cross = previous_ma5 <= previous_ma15 and current_ma5 > current_ma15
         death_cross = previous_ma5 >= previous_ma15 and current_ma5 < current_ma15
+
         close = float(current["close"])
         kc_middle = float(current["kc_middle"])
+        prev_kc_middle = float(previous["kc_middle"])
         kc_upper = float(current["kc_upper"])
         kc_lower = float(current["kc_lower"])
+        atr = float(current.get("atr", abs(kc_upper - kc_lower) / 4.0))
+        if atr <= 0:
+            atr = max(close * 0.01, 1e-8)
 
+        entry_p = float((position or {}).get("entry_price") or close)
+        if entry_p <= 0:
+            entry_p = close
+
+        current_price = float(quote) if quote is not None else (
+            float(self._number(live_row, "close") or close) if live_row is not None else close
+        )
+        highest_p = max(float((position or {}).get("highest_price") or entry_p), current_price, float(current.get("high", close)))
+        lowest_p = min(float((position or {}).get("lowest_price") or entry_p), current_price, float(current.get("low", close)))
+        if position:
+            position["highest_price"] = highest_p
+            position["lowest_price"] = lowest_p
+
+        kc_trend = str(current.get("kc_trend", "")).upper()
+        if not kc_trend and live_row is not None:
+            kc_trend = str(live_row.get("kc_trend", "")).upper()
+
+        # ──【開倉當根保護：不硬止損，要繼續跑，除非當下剛好是峰頂/谷底力竭避雷針】──
+        if is_entry_bar:
+            body = abs(float(current["close"]) - float(current["open"]))
+            if side == "LONG":
+                upper_wick = max(0.0, float(current["high"]) - max(float(current["close"]), float(current["open"])))
+                is_climax = (float(current["high"]) >= kc_upper and upper_wick >= 2.0 * max(body, 0.2 * atr) and current_price < (float(current["open"]) + float(current["close"])) / 2.0)
+                if is_climax:
+                    reason = "EXIT_LONG_BLOW_OFF_TOP"
+                    logger.info(f"[平倉觸發] {symbol} 開倉當根峰頂避雷針力竭 close={close:.6g} wick={upper_wick:.6g}")
+                    print(f"[平倉觸發] {symbol} LONG - 原因: {reason} (當根峰頂避雷針) | 價格: {close}", flush=True)
+                    return {
+                        "action": f"CLOSE_{side}",
+                        "type": reason,
+                        "side": side,
+                        "reason": reason,
+                        "bar_id": bar_id,
+                        "close": close,
+                        "entry_mode": "WILD_SWING",
+                    }
+            else:
+                lower_wick = max(0.0, min(float(current["close"]), float(current["open"])) - float(current["low"]))
+                is_climax = (float(current["low"]) <= kc_lower and lower_wick >= 2.0 * max(body, 0.2 * atr) and current_price > (float(current["open"]) + float(current["close"])) / 2.0)
+                if is_climax:
+                    reason = "EXIT_SHORT_BLOW_OFF_BOTTOM"
+                    logger.info(f"[平倉觸發] {symbol} 開倉當根谷底針尖力竭 close={close:.6g} wick={lower_wick:.6g}")
+                    print(f"[平倉觸發] {symbol} SHORT - 原因: {reason} (當根谷底針尖) | 價格: {close}", flush=True)
+                    return {
+                        "action": f"CLOSE_{side}",
+                        "type": reason,
+                        "side": side,
+                        "reason": reason,
+                        "bar_id": bar_id,
+                        "close": close,
+                        "entry_mode": "WILD_SWING",
+                    }
+            return None
+
+        # ──【四大防線嚴格離場審查】──
+        reason = None
         if side == "SHORT":
+            # 1. 均線死叉 / 金叉
             if golden_cross:
                 reason = "EXIT_BY_MA_GOLDEN_CROSS"
+                logger.info(f"[平倉觸發] 均線金叉 {symbol} ma5={current_ma5:.6g} > ma15={current_ma15:.6g}")
+            # 2. MA5 斜率反轉
             elif ma5_slope_up:
                 reason = "EXIT_BY_MA5_TREND_REVERSAL"
-            elif (
-                closed_exit_is_fresh
-                and not reset_closed_bar
-                and (close > kc_middle or close > kc_upper)
-            ):
+                logger.info(f"[平倉觸發] 均線斜率走弱向上 {symbol} ma5={current_ma5:.6g} > prev={previous_ma5:.6g}")
+            # 3. 趨勢逆轉強制清倉 (Fail-Safe)
+            elif kc_trend == "UP" or (kc_middle > prev_kc_middle + 1e-12):
                 reason = "EXIT_BY_KC_BAND_BREACH"
-            else:
-                return None
-        else:
+                logger.info(f"[平倉觸發] KC翻多/中軌上行 {symbol} kc_middle={kc_middle:.6g} > prev={prev_kc_middle:.6g}")
+            # 4. 動態移動止盈 / 谷底回彈保護
+            elif (entry_p - lowest_p) / entry_p >= 0.012 or lowest_p <= kc_lower:
+                rebound_pct = (current_price - lowest_p) / entry_p
+                if rebound_pct >= 0.008:
+                    reason = "EXIT_BY_TRAILING_PROFIT_LOCK"
+                    logger.info(f"[平倉觸發] 動態移動止盈 {symbol} lowest={lowest_p:.6g} rebound={rebound_pct:.2%}")
+                elif current_price >= entry_p - (entry_p * 0.0015):
+                    reason = "EXIT_BY_BREAKEVEN"
+                    logger.info(f"[平倉觸發] 浮盈跌回保本線 {symbol} quote={current_price:.6g}")
+            # 5. 通道破位與硬止損
+            if reason is None:
+                if close > kc_middle or close > kc_upper:
+                    reason = "EXIT_BY_KC_BAND_BREACH"
+                    logger.info(f"[平倉觸發] 結構破位穿中軌/上軌 {symbol} close={close:.6g} middle={kc_middle:.6g}")
+                elif (current_price - entry_p) / entry_p >= 0.025 or (current_price - entry_p) >= 2.2 * atr:
+                    reason = "EXIT_BY_HARD_STOP_LOSS"
+                    logger.info(f"[平倉觸發] 硬性止損 {symbol} loss={(current_price - entry_p) / entry_p:.2%}")
+        else:  # LONG
+            # 1. 均線死叉
             if death_cross:
                 reason = "EXIT_BY_MA_DEATH_CROSS"
+                logger.info(f"[平倉觸發] 均線死叉 {symbol} ma5={current_ma5:.6g} < ma15={current_ma15:.6g}")
+            # 2. MA5 斜率反轉
             elif ma5_slope_down:
                 reason = "EXIT_BY_MA5_TREND_REVERSAL"
-            elif (
-                closed_exit_is_fresh
-                and not reset_closed_bar
-                and (close < kc_middle or close < kc_lower)
-            ):
+                logger.info(f"[平倉觸發] 均線斜率走弱向下 {symbol} ma5={current_ma5:.6g} < prev={previous_ma5:.6g}")
+            # 3. 趨勢逆轉強制清倉 (Fail-Safe)
+            elif kc_trend == "DOWN" or (kc_middle < prev_kc_middle - 1e-12):
                 reason = "EXIT_BY_KC_BAND_BREACH"
-            else:
-                return None
+                logger.info(f"[平倉觸發] KC翻空/中軌下行 {symbol} kc_middle={kc_middle:.6g} < prev={prev_kc_middle:.6g}")
+            # 4. 動態移動止盈 / 高點回撤保護
+            elif (highest_p - entry_p) / entry_p >= 0.012 or highest_p >= kc_upper:
+                giveback_pct = (highest_p - current_price) / entry_p
+                if giveback_pct >= 0.008:
+                    reason = "EXIT_BY_TRAILING_PROFIT_LOCK"
+                    logger.info(f"[平倉觸發] 動態移動止盈 {symbol} highest={highest_p:.6g} giveback={giveback_pct:.2%}")
+                elif current_price <= entry_p + (entry_p * 0.0015):
+                    reason = "EXIT_BY_BREAKEVEN"
+                    logger.info(f"[平倉觸發] 浮盈跌回保本線 {symbol} quote={current_price:.6g}")
+            # 5. 通道破位與硬止損
+            if reason is None:
+                if close < kc_middle or close < kc_lower:
+                    reason = "EXIT_BY_KC_BAND_BREACH"
+                    logger.info(f"[平倉觸發] 結構破位穿中軌/下軌 {symbol} close={close:.6g} middle={kc_middle:.6g}")
+                elif (entry_p - current_price) / entry_p >= 0.025 or (entry_p - current_price) >= 2.2 * atr:
+                    reason = "EXIT_BY_HARD_STOP_LOSS"
+                    logger.info(f"[平倉觸發] 硬性止損 {symbol} loss={(entry_p - current_price) / entry_p:.2%}")
 
+        if reason is None:
+            return None
+
+        print(f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}", flush=True)
         return {
             "action": f"CLOSE_{side}",
             "type": reason,

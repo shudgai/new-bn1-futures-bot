@@ -2,6 +2,7 @@
 import math
 import time
 import logging
+import hashlib
 
 from core.gates.breakout_continuation_entry_gate import (
     PURE_MATH_ENTRY_CONFIRMATIONS,
@@ -11,6 +12,7 @@ from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
     evaluate_entry_contract,
 )
+from core.services.wait_entry_authority import WaitEntryAuthority
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -42,6 +44,294 @@ async def validate_account_entry(account, symbol, side, context):
         except (TypeError, ValueError, OverflowError):
             return None
         return parsed if math.isfinite(parsed) else None
+
+    if context.get("entry_authority") == "KC2BAR":
+        if (
+            str(context.get("entry_mode") or "").upper() != "CHANNEL_SWING"
+            or context.get("source") != "KC2BAR_1M"
+            or side not in ("LONG", "SHORT")
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_AUTHORITY_CONTEXT_INVALID")
+        signal = context.get("kc2bar_signal")
+        claim_id = str(context.get("entry_authority_claim_id") or "")
+        client_order_id = str(context.get("entry_client_order_id") or "")
+        if (
+            not isinstance(signal, dict)
+            or signal.get("side") != side
+            or signal.get("type") != f"KC_2BAR_CONFIRM_{side}"
+            or signal.get("entry_phase") != "KC_2BAR_CLOSED_CONFIRM"
+            or not claim_id
+            or not client_order_id
+            or context.get("kc2bar_signal_id") != claim_id
+            or client_order_id != "KC2BAR" + claim_id[:30]
+            or context.get("position_uuid")
+            != WaitEntryAuthority.position_uuid_for_trigger(claim_id)
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_SIGNAL_IDENTITY_INVALID")
+        expected_signal_id = hashlib.sha256(
+            (
+                f"KC2BAR|{WaitEntryAuthority.canonical_symbol(symbol)}|{side}|"
+                f"{signal.get('breakout_bar_id')}|"
+                f"{signal.get('pair_confirmation_bar_id')}|"
+                f"{signal.get('confirmation_bar_id')}"
+            ).encode("utf-8"),
+        ).hexdigest()
+        if expected_signal_id != claim_id:
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_SIGNAL_IDENTITY_INVALID")
+        if (
+            symbol in getattr(account, "positions", {})
+            or symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_ACCOUNT_STATE_BLOCK")
+        authority = getattr(account, "wait_entry_authority", None)
+        provider = getattr(account, "entry_frame_provider", None)
+        quote_provider = getattr(account, "wait_quote_provider", None)
+        if (
+            authority is None
+            or not callable(provider)
+            or not callable(quote_provider)
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_REVALIDATION_PROVIDER_MISSING")
+        if hasattr(account, "last_sync_at"):
+            try:
+                await account.refresh(force=True)
+            except Exception as exc:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] KC2BAR_POSITION_RECONCILIATION_FAILED"
+                ) from exc
+            if (
+                symbol in getattr(account, "positions", {})
+                or symbol in getattr(account, "closing_lock", set())
+                or symbol in getattr(account, "pending_limit_orders", {})
+            ):
+                raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_ACCOUNT_STATE_BLOCK")
+        try:
+            fresh_frame = await provider(symbol)
+        except Exception as exc:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] KC2BAR_MARKET_DATA_REFRESH_FAILED"
+            ) from exc
+        if (
+            fresh_frame is None
+            or fresh_frame.empty
+            or not fresh_frame.attrs.get("entry_finality_verified")
+            or fresh_frame.attrs.get("timeframe_ms") != 60_000
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_UNVERIFIED_MARKET_DATA")
+        try:
+            quote_snapshot = quote_provider(symbol)
+            quote = float(quote_snapshot["price"])
+            observed_at = float(quote_snapshot["observed_at"])
+            from core.config import WATCHDOG_MAX_TIMEOUT_SECONDS
+            quote_fresh = (
+                math.isfinite(quote)
+                and quote > 0
+                and math.isfinite(observed_at)
+                and 0 <= time.monotonic() - observed_at
+                <= WATCHDOG_MAX_TIMEOUT_SECONDS
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_INVALID") from exc
+        if not quote_fresh:
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_STALE")
+
+        code = f"KC_2BAR_CONFIRM_{side}"
+        decision = evaluate_entry_contract(
+            fresh_frame,
+            price=quote,
+            code=code,
+            account=account,
+            symbol=symbol,
+        )
+        try:
+            breakout_bar_id = int(float(decision["breakout_bar_id"]))
+            confirmation_bar_id = int(float(decision["pair_confirmation_bar_id"]))
+            live_bar_id = int(float(decision["confirmation_bar_id"]))
+            signal_id = hashlib.sha256(
+                (
+                    f"KC2BAR|{WaitEntryAuthority.canonical_symbol(symbol)}|{side}|{breakout_bar_id}|"
+                    f"{confirmation_bar_id}|{live_bar_id}"
+                ).encode("utf-8"),
+            ).hexdigest()
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_SIGNAL_STALE_OR_INVALID")
+        position_verified = isinstance(getattr(account, "positions", None), dict)
+        if hasattr(account, "last_sync_at"):
+            position_verified = (
+                position_verified
+                and time.time() - float(account.last_sync_at) <= 5.0
+            )
+        if (
+            not isinstance(decision, dict)
+            or decision.get("action") != "ENTER"
+            or decision.get("side") != side
+            or decision.get("type") != code
+            or decision.get("entry_phase") != "KC_2BAR_CLOSED_CONFIRM"
+            or signal_id != claim_id
+            or breakout_bar_id != int(signal["breakout_bar_id"])
+            or confirmation_bar_id != int(signal["pair_confirmation_bar_id"])
+            or live_bar_id != int(signal["confirmation_bar_id"])
+            or not authority.is_external_claim_valid(
+                claim_id,
+                symbol,
+                side,
+                live_bar_id,
+                breakout_bar_id,
+                client_order_id,
+            )
+            or authority.has_unknown_claims(except_trigger_id=claim_id)
+            or not position_verified
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_SIGNAL_STALE_OR_INVALID")
+        logger.info(
+            "KC2BAR_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
+            symbol, side, claim_id,
+        )
+        return {
+            **decision,
+            "side": side,
+            "entry_mode": "CHANNEL_SWING",
+            "price": quote,
+            "entry_atr": float(decision["entry_atr"]),
+        }
+
+    if context.get("entry_authority") == "WAIT":
+        if (
+            str(context.get("entry_mode") or "").upper() != "CHANNEL_SWING"
+            or context.get("source") != "WAIT_1M"
+            or side not in ("LONG", "SHORT")
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_AUTHORITY_CONTEXT_INVALID")
+        trigger = context.get("wait_trigger")
+        trigger_id = str(context.get("wait_trigger_id") or "")
+        authority = getattr(account, "wait_entry_authority", None)
+        if authority is None:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_REVALIDATION_PROVIDER_MISSING")
+        if (
+            not isinstance(trigger, dict)
+            or trigger.get("trigger_id") != trigger_id
+            or trigger.get("symbol") != symbol
+            or trigger.get("side") != side
+            or not trigger_id
+            or context.get("wait_client_order_id") != "WAIT" + trigger_id[:32]
+            or context.get("entry_authority_claim_id") != trigger_id
+            or context.get("entry_client_order_id")
+            != context.get("wait_client_order_id")
+            or trigger.get("position_uuid")
+            != authority.position_uuid_for_trigger(trigger_id)
+            or context.get("position_uuid")
+            != authority.position_uuid_for_trigger(trigger_id)
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_TRIGGER_IDENTITY_INVALID")
+        if (
+            symbol in getattr(account, "positions", {})
+            or symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_ACCOUNT_STATE_BLOCK")
+        provider = getattr(account, "entry_frame_provider", None)
+        quote_provider = getattr(account, "wait_quote_provider", None)
+        if authority is None or not callable(provider) or not callable(quote_provider):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_REVALIDATION_PROVIDER_MISSING")
+        if hasattr(account, "last_sync_at"):
+            try:
+                await account.refresh(force=True)
+            except Exception as exc:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WAIT_POSITION_RECONCILIATION_FAILED"
+                ) from exc
+            if (
+                symbol in getattr(account, "positions", {})
+                or symbol in getattr(account, "closing_lock", set())
+                or symbol in getattr(account, "pending_limit_orders", {})
+            ):
+                raise ValueError("[FORBIDDEN_ENTRY] WAIT_ACCOUNT_STATE_BLOCK")
+        try:
+            fresh_frame = await provider(symbol)
+        except Exception as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_MARKET_DATA_REFRESH_FAILED") from exc
+        if (
+            fresh_frame is None
+            or fresh_frame.empty
+            or not fresh_frame.attrs.get("entry_finality_verified")
+            or fresh_frame.attrs.get("timeframe_ms") != 60_000
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_UNVERIFIED_MARKET_DATA")
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(fresh_frame)
+        if closed.empty or len(closed) < 2 or "is_closed" not in fresh_frame:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_CLOSED_CANDLES_INVALID")
+        live_row = fresh_frame.iloc[-1]
+        if bool(live_row.get("is_closed", True)):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_LIVE_CANDLE_MISSING")
+        required = ("timestamp", "open", "high", "low", "close", "atr")
+        if any(field not in closed or field not in fresh_frame for field in required):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_MARKET_FIELDS_MISSING")
+        closed_rows = closed.tail(2).to_dict("records")
+        for row in closed_rows:
+            row["is_closed"] = True
+        live_candle = live_row.to_dict()
+        live_candle["is_closed"] = False
+        live_candle["atr"] = float(closed.iloc[-1]["atr"])
+        quote_snapshot = quote_provider(symbol)
+        if not isinstance(quote_snapshot, dict):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_MISSING")
+        try:
+            quote = float(quote_snapshot["price"])
+            observed_at = float(quote_snapshot["observed_at"])
+            from core.config import WATCHDOG_MAX_TIMEOUT_SECONDS
+            quote_fresh = (
+                math.isfinite(quote)
+                and quote > 0
+                and math.isfinite(observed_at)
+                and 0 <= time.monotonic() - observed_at
+                <= WATCHDOG_MAX_TIMEOUT_SECONDS
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_INVALID") from exc
+        if not quote_fresh:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_STALE")
+        position_verified = isinstance(getattr(account, "positions", None), dict)
+        if hasattr(account, "last_sync_at"):
+            position_verified = (
+                position_verified
+                and time.time() - float(account.last_sync_at) <= 5.0
+            )
+        if (
+            authority.has_unknown_claims(except_trigger_id=trigger_id)
+            or not authority.is_order_identity_bound(
+                trigger_id,
+                str(context.get("wait_client_order_id") or ""),
+            )
+            or not authority.revalidate_claim(
+            trigger,
+            closed_rows,
+            live_candle,
+            quote,
+            quote_fresh=quote_fresh,
+            position_open=symbol in getattr(account, "positions", {}),
+            authoritative_position_state=position_verified,
+            )
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_TRIGGER_STALE_OR_INVALID")
+        latest_atr = finite_bar_id(closed.iloc[-1]["atr"])
+        if latest_atr is None or latest_atr <= 0:
+            raise ValueError("[FORBIDDEN_ENTRY] WAIT_ATR_INVALID")
+        logger.info(
+            "WAIT_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
+            symbol, side, trigger_id,
+        )
+        return {
+            "type": "WAIT_LIVE_BIG_TRIGGER",
+            "side": side,
+            "entry_mode": "CHANNEL_SWING",
+            "entry_phase": "WAIT_LIVE_BIG_TRIGGER",
+            "confirmation_bar_id": int(trigger["live_bar_id"]),
+            "entry_atr": latest_atr,
+            "price": quote,
+        }
 
     if str(context.get("entry_mode") or "").upper() == "WILD_SWING":
         if context.get("source") != "WILD_SWING_1M":

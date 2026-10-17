@@ -2,6 +2,8 @@
 import math
 import time
 import logging
+import hashlib
+import json
 from core.services.strategies.strict_state_machine import StrictStateMachineStrategy, PositionState
 from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
 from core.gates.trend_holding_immunity_and_exit_gate import TrendHoldingAndExitManager
@@ -10,6 +12,365 @@ logger = logging.getLogger("uvicorn.error")
 
 # 全域單一策略實例
 strict_strategy = StrictStateMachineStrategy()
+
+
+def _kc2bar_candidates(frame, symbol, quote):
+    from core.services.entry_contract import evaluate_entry_contract
+    from core.services.wait_entry_authority import WaitEntryAuthority
+
+    if (
+        frame is None
+        or frame.empty
+        or not frame.attrs.get("entry_finality_verified")
+        or frame.attrs.get("timeframe_ms") != 60_000
+    ):
+        return []
+    candidates = []
+    for side in ("LONG", "SHORT"):
+        code = f"KC_2BAR_CONFIRM_{side}"
+        decision = evaluate_entry_contract(
+            frame,
+            price=quote,
+            code=code,
+            symbol=symbol,
+        )
+        if (
+            not isinstance(decision, dict)
+            or decision.get("action") != "ENTER"
+            or decision.get("side") != side
+            or decision.get("entry_phase") != "KC_2BAR_CLOSED_CONFIRM"
+        ):
+            continue
+        breakout_bar_id = decision.get("breakout_bar_id")
+        confirmation_bar_id = decision.get("pair_confirmation_bar_id")
+        live_bar_id = decision.get("confirmation_bar_id")
+        try:
+            breakout_bar_id = int(float(breakout_bar_id))
+            confirmation_bar_id = int(float(confirmation_bar_id))
+            live_bar_id = int(float(live_bar_id))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            breakout_bar_id <= 0
+            or confirmation_bar_id != breakout_bar_id + 60_000
+            or live_bar_id != confirmation_bar_id + 60_000
+        ):
+            continue
+        signal_id = str(decision.get("pending_signal_id") or "")
+        if signal_id != f"{side}:{breakout_bar_id}:{confirmation_bar_id}":
+            continue
+        trigger_id = hashlib.sha256(
+            (
+                f"KC2BAR|{WaitEntryAuthority.canonical_symbol(symbol)}|{side}|{breakout_bar_id}|"
+                f"{confirmation_bar_id}|{live_bar_id}"
+            ).encode("utf-8"),
+        ).hexdigest()
+        candidates.append({
+            "status": "TRIGGER_AVAILABLE",
+            "authority": "KC2BAR",
+            "trigger_id": trigger_id,
+            "symbol": symbol,
+            "side": side,
+            "live_bar_id": live_bar_id,
+            "setup_bar_id": breakout_bar_id,
+            "signal": decision,
+            "quote": float(quote),
+            "atr": float(decision.get("entry_atr") or 0.0),
+        })
+    return candidates
+
+
+def _dispatch_wait_outbox(authority, symbol):
+    events = authority.pending_events(symbol)
+    if not events:
+        return
+    for event in events:
+        logger.info(
+            "WAIT_OUTBOX_EVENT %s",
+            json.dumps(event, sort_keys=True, separators=(",", ":")),
+        )
+    authority.acknowledge_events([event["event_id"] for event in events])
+
+
+def _observe_wait_entry(engine, symbol, frame, quote, position_open):
+    from core.config import PAPER_TRADING, WATCHDOG_MAX_TIMEOUT_SECONDS
+    from core.services.candle_data import closed_entry_candles
+
+    authority = getattr(engine, "wait_entry_authority", None)
+    if authority is None or frame is None or frame.empty:
+        return None
+    if frame.attrs.get("timeframe_ms") != 60_000:
+        return None
+    closed = closed_entry_candles(frame)
+    quote_provider = getattr(engine, "_wait_quote_snapshot", None)
+    if not callable(quote_provider):
+        return None
+    quote_snapshot = quote_provider(symbol)
+    quote_fresh = False
+    try:
+        observed_at = float(quote_snapshot["observed_at"])
+        quote = float(quote_snapshot["price"])
+        quote_age = time.monotonic() - observed_at
+        quote_fresh = (
+            math.isfinite(quote)
+            and quote > 0
+            and math.isfinite(observed_at)
+            and 0 <= quote_age <= WATCHDOG_MAX_TIMEOUT_SECONDS
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        quote_fresh = False
+    if quote_fresh:
+        quote = float(quote_snapshot["price"])
+    live_row = frame.iloc[-1].to_dict()
+    if quote_fresh and not bool(live_row.get("is_closed", False)):
+        live_row["close"] = quote
+        live_row["high"] = max(float(live_row["high"]), quote)
+        live_row["low"] = min(float(live_row["low"]), quote)
+    latest_closed_atr = (
+        float(closed.iloc[-1]["atr"])
+        if not closed.empty and "atr" in closed
+        else 0.0
+    )
+    live_row["atr"] = latest_closed_atr
+    live_row["is_closed"] = bool(live_row.get("is_closed", False))
+    closed_rows = closed.tail(2).to_dict("records")
+    for row in closed_rows:
+        row["is_closed"] = True
+    account = engine.account
+    position_state_verified = isinstance(getattr(account, "positions", None), dict)
+    if not PAPER_TRADING:
+        position_state_verified = (
+            position_state_verified
+            and time.time() - float(getattr(account, "last_sync_at", 0.0)) <= 5.0
+        )
+    result = authority.observe(
+        symbol,
+        closed_rows,
+        live_row,
+        quote,
+        quote_fresh=quote_fresh,
+        position_open=position_open,
+        authoritative_position_state=position_state_verified,
+    )
+    if result.get("status") in ("TRIGGER_AVAILABLE", "TRIGGER_CLAIMED"):
+        logger.info(
+            "WAIT_ENTRY_CANDIDATE symbol=%s side=%s trigger=%s status=%s",
+            symbol, result.get("side"), result.get("trigger_id"),
+            result.get("status"),
+        )
+        return result
+    return None
+
+
+async def _reconcile_wait_claims(engine, symbol):
+    authority = getattr(engine, "wait_entry_authority", None)
+    if authority is None:
+        return
+    claims = authority.unknown_claims(symbol)
+    if not claims:
+        return
+    account = engine.account
+    reconciler = getattr(account, "reconcile_wait_entry_claims", None)
+    if callable(reconciler):
+        await reconciler(authority, symbol)
+        return
+    for claim in claims:
+        position = account.positions.get(symbol)
+        position_claim_id = (
+            position.get("entry_authority_claim_id")
+            or position.get("wait_trigger_id")
+            if position
+            else None
+        )
+        position_identity_matches = bool(
+            position
+            and position_claim_id == claim["trigger_id"]
+            and position.get("position_uuid") == claim.get("position_uuid")
+        )
+        if position is not None and not position_identity_matches:
+            continue
+        quantity = float(position.get("qty") or 0.0) if position else 0.0
+        authority.reconcile(
+            claim["trigger_id"],
+            filled_qty=quantity,
+            position_present=position_identity_matches,
+            order_reconciled=True,
+        )
+
+
+async def _submit_wait_entry(engine, symbol, frame, candidate):
+    authority = engine.wait_entry_authority
+    if candidate.get("status") != "TRIGGER_AVAILABLE":
+        return False
+    trigger_id = str(candidate.get("trigger_id") or "")
+    if not trigger_id or not authority.claim(trigger_id):
+        return False
+    client_order_id = "WAIT" + trigger_id[:32]
+    if not authority.bind_order_identity(trigger_id, client_order_id):
+        authority.resolve(
+            trigger_id,
+            filled_qty=0.0,
+            position_present=False,
+            outcome="FAILED",
+        )
+        return False
+    return await _submit_claimed_authority(
+        engine,
+        symbol,
+        frame,
+        candidate,
+        authority_kind="WAIT",
+        client_order_id=client_order_id,
+        metadata={
+            "wait_trigger": dict(candidate),
+            "wait_trigger_id": trigger_id,
+            "wait_client_order_id": client_order_id,
+        },
+    )
+
+
+async def _submit_kc2bar_entry(engine, symbol, frame, candidate):
+    authority = engine.wait_entry_authority
+    trigger_id = str(candidate.get("trigger_id") or "")
+    client_order_id = "KC2BAR" + trigger_id[:30]
+    if not trigger_id or not authority.claim_external(
+        trigger_id,
+        symbol=symbol,
+        side=str(candidate["side"]),
+        authority="KC2BAR",
+        live_bar_id=int(candidate["live_bar_id"]),
+        setup_bar_id=int(candidate["setup_bar_id"]),
+        client_order_id=client_order_id,
+    ):
+        return False
+    return await _submit_claimed_authority(
+        engine,
+        symbol,
+        frame,
+        candidate,
+        authority_kind="KC2BAR",
+        client_order_id=client_order_id,
+        metadata={
+            "kc2bar_signal": dict(candidate["signal"]),
+            "kc2bar_signal_id": trigger_id,
+        },
+    )
+
+
+async def _submit_claimed_authority(
+    engine,
+    symbol,
+    frame,
+    candidate,
+    *,
+    authority_kind,
+    client_order_id,
+    metadata,
+):
+    authority = engine.wait_entry_authority
+    trigger_id = str(candidate["trigger_id"])
+    entry_metadata = {
+        **metadata,
+        "entry_authority": authority_kind,
+        "entry_authority_claim_id": trigger_id,
+        "entry_client_order_id": client_order_id,
+        "position_uuid": authority.position_uuid_for_trigger(trigger_id),
+    }
+    try:
+        opened = await engine.execute_dual_tf_entry(
+            symbol=symbol,
+            frame=frame,
+            price=float(candidate["quote"]),
+            side=str(candidate["side"]),
+            mode_name=(
+                "WAIT_LIVE_BIG_TRIGGER"
+                if authority_kind == "WAIT"
+                else str(candidate["signal"]["type"])
+            ),
+            meta_dict=entry_metadata,
+            entry_mode="CHANNEL_SWING",
+        )
+    except Exception as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(
+            "[FORBIDDEN_ENTRY]",
+        ):
+            authority.resolve(
+                trigger_id,
+                filled_qty=0.0,
+                position_present=False,
+                outcome="FAILED",
+            )
+            logger.warning(
+                "%s_ENTRY_REJECTED_BEFORE_SUBMIT symbol=%s side=%s trigger=%s reason=%s",
+                authority_kind,
+                symbol,
+                candidate.get("side"),
+                trigger_id,
+                exc,
+            )
+            return False
+        position = engine.account.positions.get(symbol)
+        quantity = float(position.get("qty") or 0.0) if position else 0.0
+        authority.resolve(
+            trigger_id,
+            filled_qty=quantity,
+            position_present=bool(position),
+            outcome="UNKNOWN",
+        )
+        logger.exception(
+            "%s_ENTRY_SUBMISSION_UNKNOWN symbol=%s side=%s trigger=%s",
+            authority_kind, symbol, candidate.get("side"), trigger_id,
+        )
+        raise
+
+    position = engine.account.positions.get(symbol)
+    quantity = float(position.get("qty") or 0.0) if position else 0.0
+    execution = getattr(engine.account, "wait_entry_execution", {}).get(symbol)
+    terminal = isinstance(execution, dict) and execution.get("status") in {
+        "closed", "canceled", "expired", "rejected",
+    }
+    remaining_reconciled = not hasattr(engine.account, "last_sync_at")
+    execution_reconciled = remaining_reconciled or terminal
+    filled_quantity = quantity
+    if hasattr(engine.account, "last_sync_at"):
+        if isinstance(execution, dict):
+            filled_quantity = float(execution.get("filled_qty") or 0.0)
+            remaining_reconciled = bool(
+                terminal
+                and execution.get("requested_qty") is not None
+                and filled_quantity > 0
+                and position is not None
+                and position.get("entry_authority_claim_id") == trigger_id
+                and position.get("position_uuid")
+                == authority.position_uuid_for_trigger(trigger_id)
+                and math.isclose(
+                    quantity, filled_quantity, rel_tol=1e-8, abs_tol=1e-12,
+                )
+            )
+    if opened and position and quantity > 0:
+        authority.resolve(
+            trigger_id,
+            filled_qty=filled_quantity,
+            position_present=True,
+            outcome="FILLED",
+            remaining_reconciled=remaining_reconciled,
+        )
+        return remaining_reconciled
+    authority.resolve(
+        trigger_id,
+        filled_qty=filled_quantity,
+        position_present=bool(position),
+        outcome=(
+            "FAILED"
+            if (
+                not opened
+                and not position
+                and execution_reconciled
+            )
+            else "UNKNOWN"
+        ),
+    )
+    return False
 
 
 async def _process_wild_swing_symbol(
@@ -36,12 +397,53 @@ async def _process_wild_swing_symbol(
         engine._channel_exit_frames = {}
     engine._channel_exit_frames[symbol] = frame.copy()
 
+    await _reconcile_wait_claims(engine, symbol)
     position = engine.account.positions.get(symbol)
+    entry_frame = frame
+    if position:
+        wait_candidate = _observe_wait_entry(
+            engine, symbol, frame, quote, True,
+        )
+    else:
+        boundary_provider = getattr(engine, "_entry_boundary_frame", None)
+        if not callable(boundary_provider):
+            logger.warning(
+                "WAIT_ENTRY_BLOCK symbol=%s reason=FINALITY_PROVIDER_MISSING",
+                symbol,
+            )
+            entry_frame = None
+        else:
+            try:
+                entry_frame = await boundary_provider(symbol)
+            except Exception:
+                logger.exception(
+                    "WAIT_ENTRY_BLOCK symbol=%s reason=FINALITY_REFRESH_FAILED",
+                    symbol,
+                )
+                entry_frame = None
+        if (
+            entry_frame is None
+            or entry_frame.empty
+            or not entry_frame.attrs.get("entry_finality_verified")
+            or entry_frame.attrs.get("timeframe_ms") != 60_000
+        ):
+            logger.warning(
+                "WAIT_ENTRY_BLOCK symbol=%s reason=UNVERIFIED_FINALITY_FRAME",
+                symbol,
+            )
+            entry_frame = None
+            wait_candidate = None
+        else:
+            wait_candidate = _observe_wait_entry(
+                engine, symbol, entry_frame, quote, False,
+            )
+    _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
     if position:
         exit_decision = strategy.evaluate_exit(
             symbol,
             position,
             frame,
+            quote=quote,
         )
         if exit_decision is not None:
             closed_ok = await engine.account.close_position(
@@ -72,6 +474,11 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
+    kc2bar_candidates = (
+        _kc2bar_candidates(entry_frame, symbol, quote)
+        if entry_frame is not None
+        else []
+    )
     signals = [
         strategy.evaluate_entry(
             symbol, frame, side, tick_price=quote,
@@ -79,10 +486,48 @@ async def _process_wild_swing_symbol(
         for side in ("LONG", "SHORT")
     ]
     signals = [signal for signal in signals if signal is not None]
-    if len(signals) != 1:
+    authorities = []
+    if wait_candidate is not None:
+        authorities.append({**wait_candidate, "authority": "WAIT"})
+    authorities.extend(kc2bar_candidates)
+    authorities.extend(
+        {"side": signal["side"], "authority": "WILD_SWING", "signal": signal}
+        for signal in signals
+    )
+    wait_authority = getattr(engine, "wait_entry_authority", None)
+    if wait_authority is None:
+        if len(signals) != 1:
+            return [], []
+        arbitration = {
+            "status": "ONE_ORDER",
+            "winner": {
+                "authority": "WILD_SWING",
+                "side": signals[0]["side"],
+                "signal": signals[0],
+            },
+        }
+    else:
+        arbitration = wait_authority.arbitrate(authorities)
+    if arbitration["status"] == "BLOCKED_OPPOSITE_AUTHORITIES":
+        logger.warning(
+            "ENTRY_AUTHORITY_ARBITRATION_BLOCK symbol=%s sides=%s",
+            symbol, sorted({item["side"] for item in authorities}),
+        )
+        return [], []
+    if arbitration["status"] == "NO_AUTHORITY":
         return [], []
 
-    signal = signals[0]
+    winner = arbitration["winner"]
+    if winner["authority"] == "WAIT":
+        await _submit_wait_entry(engine, symbol, entry_frame, wait_candidate)
+        _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
+        return [], []
+    if winner["authority"] == "KC2BAR":
+        await _submit_kc2bar_entry(engine, symbol, entry_frame, winner)
+        _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
+        return [], []
+
+    signal = winner["signal"]
     if signal.get("structure_confirmation") not in PURE_MATH_ENTRY_CONFIRMATIONS:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=NON_MATHEMATICAL_ENTRY_DISABLED",

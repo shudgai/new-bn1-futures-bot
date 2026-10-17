@@ -6,6 +6,7 @@ load_dotenv(find_dotenv())
 
 PORT = int(os.getenv("PORT", "8006"))
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
+ENTRY_SUBMISSION_ENABLED = os.getenv("ENTRY_SUBMISSION_ENABLED", "true").lower() == "true"
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000.0"))
 LEVERAGE = int(os.getenv("LEVERAGE", "5"))  # 預設槓桿：SYMBOL_LEVERAGE 未列出的幣種使用此值
 

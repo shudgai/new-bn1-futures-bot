@@ -136,6 +136,9 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
     "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
+    "entry_authority", "wait_trigger_id", "wait_trigger",
+    "wait_client_order_id", "kc2bar_signal", "kc2bar_signal_id",
+    "entry_authority_claim_id", "entry_client_order_id", "position_uuid",
     "trigger_price", "trigger_timestamp",
     "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
@@ -527,6 +530,13 @@ class PaperAccount:
         entry_context: dict = None,
         apply_slippage: bool = True,
     ) -> bool:
+        from core.config import ENTRY_SUBMISSION_ENABLED
+        if not ENTRY_SUBMISSION_ENABLED:
+            self.log(
+                f"ENTRY_GATE {symbol} BLOCKED_ENTRY_SUBMISSION_DISABLED",
+                "WARNING",
+            )
+            return False
         if symbol in self.closing_lock:
             return False
         if symbol in self.pending_limit_orders:
@@ -621,6 +631,9 @@ class PaperAccount:
         else:
             from core.services.entry_firewall import validate_account_entry
             entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
+                price = float(entry_decision["price"])
+                atr = float(entry_decision["entry_atr"])
         structural_stop = entry_decision.get('initial_sl')
         
         # The shared account firewall above owns strategy validation. Repeating
@@ -899,6 +912,13 @@ class PaperAccount:
         timeframe: str = "3m",
     ) -> bool:
         """非Post-Only對手價單立即成交；Post-Only保留至市價穿越掛單價。"""
+        from core.config import ENTRY_SUBMISSION_ENABLED
+        if not ENTRY_SUBMISSION_ENABLED:
+            self.log(
+                f"ENTRY_GATE {symbol} BLOCKED_ENTRY_SUBMISSION_DISABLED",
+                "WARNING",
+            )
+            return False
         from core.services.entry_firewall import validate_account_entry
         await validate_account_entry(self, symbol, side, entry_context)
         if str((entry_context or {}).get("entry_mode", "")).upper() == "CHANNEL_SWING" and not valid_entry_atr(atr):
@@ -1019,10 +1039,14 @@ class PaperAccount:
 
     async def check_pending_limit_orders(self) -> None:
         """模擬掛單；支撐反轉單觸價後須先確認回收，避免接住持續下跌。"""
-        from core.config import is_entry_disabled
+        from core.config import ENTRY_SUBMISSION_ENABLED, is_entry_disabled
         for symbol, info in list(self.pending_limit_orders.items()):
-            if is_entry_disabled(symbol):
-                await self.cancel_pending_limit(symbol, "ENTRY_DISABLED_SYMBOL")
+            if not ENTRY_SUBMISSION_ENABLED or is_entry_disabled(symbol):
+                reason = (
+                    "ENTRY_SUBMISSION_DISABLED"
+                    if not ENTRY_SUBMISSION_ENABLED else "ENTRY_DISABLED_SYMBOL"
+                )
+                await self.cancel_pending_limit(symbol, reason)
                 continue
             current_price = self.latest_prices.get(symbol)
             if current_price is None:

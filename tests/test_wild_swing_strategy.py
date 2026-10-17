@@ -462,3 +462,105 @@ def test_exit_checks_ma5_reversal_from_live_indicator_on_every_tick():
     )
     assert result is not None
     assert result["reason"] == "EXIT_BY_MA5_TREND_REVERSAL"
+
+
+def test_exit_kc_trend_reversal_fail_safe():
+    """第一道防線：持有多單時，只要 KC 通道翻空或中軌下行，立即市價全平多單，嚴禁逆勢死扛"""
+    frame = _frame("LONG")
+    # 將 KC 中軌改成向下翻空 (100.2 -> 99.8)
+    frame.loc[10, "kc_middle"] = 100.2
+    frame.loc[11, "kc_middle"] = 99.8
+    frame.loc[11, "kc_trend"] = "DOWN"
+    # MA 保持微幅多頭，以凸顯 KC 翻空的第一道防線清倉效力
+    frame.loc[10, ["ma5", "ma15"]] = [100.0, 99.8]
+    frame.loc[11, ["ma5", "ma15", "close"]] = [100.2, 99.9, 100.3]
+
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", {"side": "LONG"}, frame,
+    )
+    assert result is not None
+    assert result["action"] == "CLOSE_LONG"
+    assert result["reason"] == "EXIT_BY_KC_BAND_BREACH"
+
+
+def test_exit_trailing_profit_lock_and_breakeven():
+    """第三道防線：持有多單浮盈達標 (+1.2%) 後，利潤回撤超過 0.8% 立即動態移動止盈；跌破成本+手續費立刻保本平倉"""
+    frame = _frame("LONG")
+    # 保持均線向上與通道向上
+    frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
+    frame.loc[11, ["ma5", "ma15", "kc_middle", "close"]] = [100.2, 99.9, 100.1, 100.3]
+
+    # 開倉價 100.0，最高衝到 101.5 (+1.5% 浮盈)，當前跌到 100.5 (從高點回撤 1.0% >= 0.8%)
+    pos = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "highest_price": 101.5,
+    }
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", pos, frame, quote=100.5,
+    )
+    assert result is not None
+    assert result["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
+
+    # 若衝到 101.3 後跌回保本線 100.1 (< entry + 0.15U)
+    pos2 = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "highest_price": 101.3,
+    }
+    result2 = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", pos2, frame, quote=100.1,
+    )
+    assert result2 is not None
+    assert result2["reason"] in ("EXIT_BY_TRAILING_PROFIT_LOCK", "EXIT_BY_BREAKEVEN")
+
+
+def test_exit_hard_stop_loss():
+    """第四道防線：虧損達到 -2.5% 或 2.2 ATR 時，觸發硬性止損清倉"""
+    frame = _frame("LONG")
+    # 均線保持向上但盤中長黑插針暴跌
+    frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
+    frame.loc[11, ["ma5", "ma15", "kc_middle", "close", "low"]] = [100.2, 99.9, 100.1, 97.0, 96.5]
+
+    pos = {
+        "side": "LONG",
+        "entry_price": 100.0,
+    }
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", pos, frame, quote=97.0,
+    )
+    assert result is not None
+    assert result["reason"] in ("EXIT_BY_HARD_STOP_LOSS", "EXIT_BY_KC_BAND_BREACH")
+
+
+def test_exit_entry_bar_immunity_and_extreme_pinbar_exception():
+    """開倉當根 (<= 60s) 保護：免疫普通回踩與硬止損，除非成型長上影極端力竭避雷針"""
+    import time
+    now_ts = time.time()
+    frame = _frame("LONG")
+    # 普通微幅回踩跌破 MA5
+    frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
+    frame.loc[11, ["ma5", "ma15", "kc_middle", "close"]] = [99.7, 99.9, 100.1, 99.6]
+
+    pos = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "open_timestamp": now_ts - 20.0,  # 20秒前剛開倉 (處於當根)
+    }
+    # 普通回踩在當根內應受到保護，繼續跑 (返回 None)
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", pos, frame, quote=99.6,
+    )
+    assert result is None
+
+    # 若開倉當根衝高形成極端避雷針 (High衝破上軌，超長上影線 >= 2倍實體)
+    frame.loc[11, "high"] = 104.0
+    frame.loc[11, "open"] = 100.0
+    frame.loc[11, "close"] = 100.5  # 實體 0.5，上影線 104.0 - 100.5 = 3.5 (7倍實體)
+    frame.loc[11, "kc_upper"] = 102.0
+    result_pinbar = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", pos, frame, quote=100.1,
+    )
+    assert result_pinbar is not None
+    assert result_pinbar["reason"] == "EXIT_LONG_BLOW_OFF_TOP"
+

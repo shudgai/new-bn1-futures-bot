@@ -214,6 +214,10 @@ class TradingEngine:
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.account.entry_frame_provider = self._entry_boundary_frame
+        from core.services.wait_entry_authority import WaitEntryAuthority
+        self.wait_entry_authority = WaitEntryAuthority()
+        self.account.wait_entry_authority = self.wait_entry_authority
+        self.account.wait_quote_provider = self._wait_quote_snapshot
         self.symbol_rotation = SymbolRotation(self.account)
         self.surveillance_service = MarketSurveillanceService()
         self.risk_guard = RiskGuardManager()
@@ -230,6 +234,7 @@ class TradingEngine:
         self._entry_waiting_for_post_close_rotation = False
         self.account.on_trade_closed = self._on_trade_closed
         self.tickers: Dict[str, float] = {}
+        self._ticker_observed_at: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         # Binance 全合約 miniTicker 每秒雷達。UI 牌面只負責顯示，不再限制
         # 真正被監看的市場；只有多空各自排名最前的少量標的進完整 K 線檢查。
@@ -1129,6 +1134,8 @@ class TradingEngine:
 
     async def update_market_prices(self):
         try:
+            if not hasattr(self, "_ticker_observed_at"):
+                self._ticker_observed_at = {}
             # 牌面外的舊持倉仍必須取得報價，才能正常執行停損／停利；
             # 只有 DEFAULT_SYMBOLS 會進入下方的新開倉掃描。
             monitored_symbols = list(dict.fromkeys([
@@ -1153,6 +1160,9 @@ class TradingEngine:
                     clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
                     self.tickers[clean_sym] = price
                     self.tickers[sym] = price  # 同時保留原格式作為備援
+                    observed_at = time.monotonic()
+                    self._ticker_observed_at[clean_sym] = observed_at
+                    self._ticker_observed_at[sym] = observed_at
                     self._observe_channel_entry_quote(clean_sym, price, t.get("timestamp"))
                 if 'quoteVolume' in t and t['quoteVolume'] is not None:
                     clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
@@ -1380,6 +1390,8 @@ class TradingEngine:
 
     async def _ticker_loop(self):
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
+        if not hasattr(self, "_ticker_observed_at"):
+            self._ticker_observed_at = {}
         while True:
             try:
                 # symbols=None 對 Binance USD-M 會使用 !miniTicker@arr，一條
@@ -1392,6 +1404,9 @@ class TradingEngine:
                         clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
                         self.tickers[clean_sym] = price
                         self.tickers[sym] = price
+                        observed_at = time.monotonic()
+                        self._ticker_observed_at[clean_sym] = observed_at
+                        self._ticker_observed_at[sym] = observed_at
                         
                         # V5.0 極致點位捕捉: 更新 Tick 速度緩衝區
                         ts = ticker.get("timestamp") or (time.time() * 1000)
@@ -2082,6 +2097,19 @@ class TradingEngine:
         symbol_budget = wallet * symbol_fraction if symbol_fraction is not None else wallet
         return min(per_slot_budget, fee_safe_available, symbol_budget)
 
+    def _wait_quote_snapshot(self, symbol):
+        aliases = [symbol]
+        if symbol in ("龙虾/USDT", "龍蝦/USDT", "龙虾/USDT:USDT", "龍蝦/USDT:USDT"):
+            aliases.extend(("LOBSTER/USDT", "LOBSTER/USDT:USDT"))
+        elif symbol == "LOBSTER/USDT":
+            aliases.extend(("龙虾/USDT", "龍蝦/USDT"))
+        for alias in aliases:
+            price = self.tickers.get(alias)
+            observed_at = self._ticker_observed_at.get(alias)
+            if price is not None and observed_at is not None:
+                return {"price": float(price), "observed_at": float(observed_at)}
+        return None
+
     async def _entry_boundary_frame(self, symbol):
         from core.services.entry_finality import fetch_settled_entry_frame
         frame = await fetch_settled_entry_frame(self, symbol)
@@ -2106,6 +2134,7 @@ class TradingEngine:
         # Preserve the independently verified candle-finality evidence for
         # the account firewall's second validation.
         enriched.attrs.update(finality)
+        enriched.attrs["timeframe_ms"] = 60_000
         return enriched
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
@@ -2553,6 +2582,73 @@ class TradingEngine:
         entry_mode = str(entry_mode or "CHANNEL_SWING").upper()
         if entry_mode not in ("CHANNEL_SWING", "WILD_SWING"):
             raise ValueError(f"Unsupported direct-entry mode: {entry_mode}")
+        entry_metadata = meta_dict if isinstance(meta_dict, dict) else {}
+        is_wait_authority = entry_metadata.get("entry_authority") == "WAIT"
+        is_kc2bar_authority = entry_metadata.get("entry_authority") == "KC2BAR"
+        is_authority_entry = is_wait_authority or is_kc2bar_authority
+        wait_trigger = entry_metadata.get("wait_trigger")
+        kc2bar_signal = entry_metadata.get("kc2bar_signal")
+        if is_wait_authority and (
+            entry_mode != "CHANNEL_SWING"
+            or not isinstance(wait_trigger, dict)
+            or wait_trigger.get("side") != side
+            or wait_trigger.get("symbol") != symbol
+            or wait_trigger.get("trigger_id") != entry_metadata.get("wait_trigger_id")
+        ):
+            raise ValueError("Invalid WAIT direct-entry authority")
+        if is_kc2bar_authority and (
+            entry_mode != "CHANNEL_SWING"
+            or not isinstance(kc2bar_signal, dict)
+            or kc2bar_signal.get("side") != side
+            or kc2bar_signal.get("entry_phase") != "KC_2BAR_CLOSED_CONFIRM"
+            or not entry_metadata.get("entry_authority_claim_id")
+            or entry_metadata.get("kc2bar_signal_id")
+            != entry_metadata.get("entry_authority_claim_id")
+            or not entry_metadata.get("entry_client_order_id")
+            or entry_metadata.get("entry_client_order_id")
+            != "KC2BAR" + str(entry_metadata.get("entry_authority_claim_id"))[:30]
+        ):
+            raise ValueError("Invalid KC2BAR direct-entry authority")
+        if is_authority_entry:
+            authority = getattr(self, "wait_entry_authority", None)
+            claim_id = str(
+                entry_metadata.get("wait_trigger_id")
+                if is_wait_authority
+                else entry_metadata.get("entry_authority_claim_id")
+                or ""
+            )
+            if authority is not None and is_kc2bar_authority:
+                import hashlib
+
+                expected_claim_id = hashlib.sha256(
+                    (
+                        f"KC2BAR|{authority.canonical_symbol(symbol)}|{side}|"
+                        f"{kc2bar_signal.get('breakout_bar_id')}|"
+                        f"{kc2bar_signal.get('pair_confirmation_bar_id')}|"
+                        f"{kc2bar_signal.get('confirmation_bar_id')}"
+                    ).encode("utf-8"),
+                ).hexdigest()
+                if expected_claim_id != claim_id:
+                    raise ValueError("KC2BAR signal identity does not match claim")
+            claim_valid = bool(
+                authority
+                and (
+                    authority.is_claim_valid(
+                        claim_id, symbol, side, int(wait_trigger["live_bar_id"]),
+                    )
+                    if is_wait_authority
+                    else authority.is_external_claim_valid(
+                        claim_id,
+                        symbol,
+                        side,
+                        int(kc2bar_signal["confirmation_bar_id"]),
+                        int(kc2bar_signal["breakout_bar_id"]),
+                        str(entry_metadata.get("entry_client_order_id") or ""),
+                    )
+                )
+            )
+            if not claim_valid:
+                raise ValueError("Persistent entry authority claim is not active")
         # 1. 基礎防護：檢查持倉、平倉鎖與掛單
         if symbol in self.account.positions:
             return False
@@ -2565,14 +2661,26 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, 100) if hasattr(self, 'symbol_rotation') else 10
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = self._full_wallet_entry_margin(wallet, available, leverage, symbol)
+        amount = (
+            min(
+                wallet * 0.5,
+                available / (1.0 + leverage * TAKER_FEE_RATE) * 0.98,
+            )
+            if is_authority_entry
+            else self._full_wallet_entry_margin(wallet, available, leverage, symbol)
+        )
         if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
-            fallback_amount = min(available * 0.95, float(TRADE_AMOUNT_USDT))
-            from core.config import get_wild_swing_margin_fraction
+            fallback_amount = min(
+                available * 0.95,
+                float(TRADE_AMOUNT_USDT),
+                wallet * 0.5 if is_authority_entry else wallet,
+            )
+            if not is_authority_entry:
+                from core.config import get_wild_swing_margin_fraction
 
-            symbol_fraction = get_wild_swing_margin_fraction(symbol)
-            if symbol_fraction is not None:
-                fallback_amount = min(fallback_amount, wallet * symbol_fraction)
+                symbol_fraction = get_wild_swing_margin_fraction(symbol)
+                if symbol_fraction is not None:
+                    fallback_amount = min(fallback_amount, wallet * symbol_fraction)
             amount = fallback_amount
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
@@ -2580,13 +2688,21 @@ class TradingEngine:
             return False
 
         # 3. 提取 ATR
-        atr = 0.0
-        if frame is not None and len(frame) > 0:
+        atr = (
+            float(wait_trigger.get("atr", 0.0))
+            if is_wait_authority
+            else float(kc2bar_signal.get("entry_atr", 0.0))
+            if is_kc2bar_authority
+            else 0.0
+        )
+        if not is_authority_entry and frame is not None and len(frame) > 0:
             atr = float(frame.iloc[-1].get('atr', 0.0))
             if atr <= 0:
                 atr = price * 0.015
-        else:
+        elif not is_authority_entry:
             atr = price * 0.015
+        if not math.isfinite(atr) or atr <= 0:
+            return False
 
         wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
         cand_bar_id = (
@@ -2598,9 +2714,45 @@ class TradingEngine:
         )
 
         entry_context = {
-            'is_manual': entry_mode == "CHANNEL_SWING",
-            'source': 'DUAL_TF_5M_15M' if entry_mode == "CHANNEL_SWING" else 'WILD_SWING_1M',
+            'is_manual': entry_mode == "CHANNEL_SWING" and not is_authority_entry,
+            'source': (
+                'WAIT_1M' if is_wait_authority
+                else 'KC2BAR_1M' if is_kc2bar_authority
+                else 'DUAL_TF_5M_15M' if entry_mode == "CHANNEL_SWING"
+                else 'WILD_SWING_1M'
+            ),
             'entry_mode': entry_mode,
+            'entry_authority': (
+                "WAIT" if is_wait_authority
+                else "KC2BAR" if is_kc2bar_authority
+                else None
+            ),
+            'wait_trigger': wait_trigger if is_wait_authority else None,
+            'wait_trigger_id': (
+                entry_metadata.get("wait_trigger_id")
+                if is_wait_authority else None
+            ),
+            'wait_client_order_id': (
+                entry_metadata.get("wait_client_order_id")
+                if is_wait_authority else None
+            ),
+            'kc2bar_signal': kc2bar_signal if is_kc2bar_authority else None,
+            'kc2bar_signal_id': (
+                entry_metadata.get("kc2bar_signal_id")
+                if is_kc2bar_authority else None
+            ),
+            'entry_authority_claim_id': (
+                entry_metadata.get("entry_authority_claim_id")
+                if is_authority_entry else None
+            ),
+            'entry_client_order_id': (
+                entry_metadata.get("entry_client_order_id")
+                if is_authority_entry else None
+            ),
+            'position_uuid': (
+                entry_metadata.get("position_uuid")
+                if is_authority_entry else None
+            ),
             'entry_pattern': (
                 wild_signal.get('entry_pattern')
                 if entry_mode == "WILD_SWING" else None
@@ -2631,6 +2783,56 @@ class TradingEngine:
             ):
                 return False
             occupied_symbols = set(positions).union(pending_orders)
+            authority = getattr(self, "wait_entry_authority", None)
+            claim_id = (
+                str(entry_metadata.get("entry_authority_claim_id") or "")
+                if is_authority_entry
+                else ""
+            )
+            if authority is not None and authority.has_unknown_claims(
+                except_trigger_id=claim_id,
+            ):
+                self.account.log(
+                    f"ENTRY_AUTHORITY_BLOCK symbol={symbol} claim={claim_id}",
+                    "WARNING",
+                )
+                return False
+            if is_authority_entry:
+                claim_valid = (
+                    authority.is_claim_valid(
+                        str(entry_metadata.get("wait_trigger_id") or ""),
+                        symbol,
+                        side,
+                        int(wait_trigger["live_bar_id"]),
+                    )
+                    if is_wait_authority and authority is not None
+                    else authority.is_external_claim_valid(
+                        claim_id,
+                        symbol,
+                        side,
+                        int(kc2bar_signal["confirmation_bar_id"]),
+                        int(kc2bar_signal["breakout_bar_id"]),
+                    )
+                    if authority is not None
+                    else False
+                )
+                if (
+                    not claim_valid
+                ):
+                    self.account.log(
+                        f"ENTRY_AUTHORITY_BLOCK symbol={symbol} claim={claim_id}",
+                        "WARNING",
+                    )
+                    return False
+            if authority is not None:
+                reserved_symbols = {
+                    str(claim["symbol"])
+                    for claim in authority.active_claims()
+                    if claim["trigger_id"] != claim_id
+                }
+                occupied_symbols.update(
+                    reserved_symbols - set(positions) - set(pending_orders)
+                )
             if MAX_SLOTS > 0 and len(occupied_symbols) >= MAX_SLOTS:
                 self.account.log(
                     f"🛑 [EXECUTION_FAIL] {symbol} 已達最大持倉槽位: {MAX_SLOTS}",
@@ -2640,20 +2842,30 @@ class TradingEngine:
 
             wallet = float(self.account.get_wallet_balance())
             available = float(self.account.get_available_balance())
-            amount = self._full_wallet_entry_margin(
-                wallet, available, leverage, symbol,
+            amount = (
+                min(
+                    wallet * 0.5,
+                    available / (1.0 + leverage * TAKER_FEE_RATE) * 0.98,
+                )
+                if is_authority_entry
+                else self._full_wallet_entry_margin(
+                    wallet, available, leverage, symbol,
+                )
             )
             if amount < MIN_TRADE_USDT and available >= MIN_TRADE_USDT:
                 fallback_amount = min(
-                    available * 0.95, float(TRADE_AMOUNT_USDT),
+                    available * 0.95,
+                    float(TRADE_AMOUNT_USDT),
+                    wallet * 0.5 if is_authority_entry else wallet,
                 )
-                from core.config import get_wild_swing_margin_fraction
+                if not is_authority_entry:
+                    from core.config import get_wild_swing_margin_fraction
 
-                symbol_fraction = get_wild_swing_margin_fraction(symbol)
-                if symbol_fraction is not None:
-                    fallback_amount = min(
-                        fallback_amount, wallet * symbol_fraction,
-                    )
+                    symbol_fraction = get_wild_swing_margin_fraction(symbol)
+                    if symbol_fraction is not None:
+                        fallback_amount = min(
+                            fallback_amount, wallet * symbol_fraction,
+                        )
                 amount = fallback_amount
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 self.account.log(
