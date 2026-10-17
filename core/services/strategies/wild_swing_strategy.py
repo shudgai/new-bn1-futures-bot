@@ -124,6 +124,10 @@ class WildSwingStrategy:
             & (closed["high"] >= closed[["open", "close", "low"]].max(axis=1))
             & (closed["low"] <= closed[["open", "close", "high"]].min(axis=1))
         )
+        if len(closed) >= self.volume_lookback + 2 and not valid.tail(
+            self.volume_lookback + 2,
+        ).all():
+            return closed.iloc[:0]
         return closed.loc[valid]
 
     @staticmethod

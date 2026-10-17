@@ -176,6 +176,23 @@ def test_short_crossover_is_blocked_when_kc_middle_rises():
     assert signal is None
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_invalid_latest_closed_bar_cannot_fall_back_to_stale_entry(side):
+    frame = _pivot_cross_frame(side)
+    stale_signal_bar = frame.iloc[-1].copy()
+    invalid_latest = stale_signal_bar.copy()
+    invalid_latest["timestamp"] += 60_000
+    invalid_latest["ma5"] = float("nan")
+    frame = pd.concat(
+        [frame, invalid_latest.to_frame().T],
+        ignore_index=True,
+    )
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, side,
+    ) is None
+
+
 @pytest.mark.parametrize(
     "side,current_middle",
     [("LONG", 100.6), ("SHORT", 99.5)],
