@@ -13,3 +13,10 @@
 - **Modification Description**: Pushed the non-vision changes to `bugfix/vision-structure-veto` and restarted the user-level 8006 service. The local vision-gate changes remain preserved in a stash and were not deployed.
 - **Trigger Reason & Requirement**: User explicitly requested deployment, service restart, and commit while deferring vision analysis.
 - **Verification & Test Status**: The focused short-oversold and pivot suite passed (29 tests). The adjacent emergency/confirmed-exit selection passed 34 tests and failed 4; the clean parent commit had 33 passed and 5 failed, with the same 4 failures in legacy confirmed-swing assertions, so those 4 are baseline failures. The service is active; `/api/status` returned HTTP 200 with `is_running=true`, `paper_trading=true`, and zero positions both before and after restart. No live orders were submitted. Legacy testnet partial-close/staged integration failures are documented above.
+
+### [2026-10-17 21:41:16 UTC+8] - Verification Phase: Recheck WAIT and entry safety gates
+- **Author**: shudgai999 / Copilot SDK in VS Code
+- **Target Files & Lines**: `tests/test_wait_entry_firewall.py`; `tests/test_wait_entry_authority.py`; `tests/test_wait_kc2bar_integration.py`; `tests/test_wait_engine_entry.py`; entry-gate regression tests.
+- **Modification Description**: Re-ran deployed WAIT lifecycle, KC2BAR coexistence, entry-firewall, numeric trend-gate, and manual-order safety tests with vision changes isolated.
+- **Trigger Reason & Requirement**: Verify that deferring the optional vision layer did not remove the required numeric and shared safety gates.
+- **Verification & Test Status**: WAIT/firewall/KC2BAR/engine selection: 57 passed. Broader gate/manual selection: 89 passed, 3 failed because legacy fixtures expected later trend/chop veto reasons but lacked the required closed 1m candle and were correctly rejected earlier with `BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR`; these cases did not authorize an order. `TRADING_GATE` remains blocked for live/production trading pending those legacy assertion updates and separate live-order authorization; the deployed service remains paper mode.
