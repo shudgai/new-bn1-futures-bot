@@ -163,6 +163,14 @@ from core.services.market_data_service import (
 from core.symbol_aliases import to_binance_usdm_symbol
 from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES, MOMENTUM_ENTRY_CODES
 
+
+WILD_SWING_KLINE_REST_COOLDOWN_SECONDS = 3.0
+WILD_SWING_KLINE_WS_IDLE_TIMEOUT_SECONDS = 45.0
+WILD_SWING_TICKER_WS_IDLE_TIMEOUT_SECONDS = 45.0
+WILD_SWING_KLINE_WS_MAX_AGE_SECONDS = 15.0
+WILD_SWING_KLINE_CACHE_LIMIT = 200
+
+
 class TradingEngine:
     def __init__(self):
         # 真實市場公開行情永遠連線（訊號偵測用，讀取公開資料不受
@@ -364,6 +372,8 @@ class TradingEngine:
         self._wild_swing_kline_updated_at: Dict[str, float] = {}
         self._wild_swing_kline_stream_ready: set[str] = set()
         self._wild_swing_kline_fallback_logged: set[str] = set()
+        self._wild_swing_kline_rest_cache: Dict[tuple[str, str], list] = {}
+        self._wild_swing_kline_rest_last_attempt: Dict[str, float] = {}
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -1093,33 +1103,33 @@ class TradingEngine:
 
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
-        """Read fresh WILD_SWING 1m WebSocket candles, falling back to REST."""
-        if timeframe == "1m":
-            from core.symbol_aliases import is_meme_breakout_symbol
+        """Use cached WILD_SWING candles and throttle any REST fallback."""
+        from core.symbol_aliases import is_meme_breakout_symbol
 
-            updated_at = getattr(self, "_wild_swing_kline_updated_at", {}).get(symbol)
+        if is_meme_breakout_symbol(symbol):
             candles = getattr(self, "_wild_swing_kline_cache", {}).get(symbol)
-            if (
-                is_meme_breakout_symbol(symbol)
-                and updated_at is not None
-                and time.monotonic() - updated_at <= 15.0
-                and candles
-                and len(candles) >= limit
-            ):
-                try:
-                    frame = frame_from_ohlcv_snapshot(
-                        candles[-limit:],
-                        timeframe,
-                        keep_live=keep_live,
-                    )
-                    if not frame.empty:
-                        getattr(
-                            self, "_wild_swing_kline_fallback_logged", set(),
-                        ).discard(symbol)
-                        return frame
-                except (TypeError, ValueError):
-                    pass
-            if is_meme_breakout_symbol(symbol):
+            if timeframe == "1m":
+                updated_at = getattr(self, "_wild_swing_kline_updated_at", {}).get(symbol)
+                if (
+                    updated_at is not None
+                    and time.monotonic() - updated_at <= WILD_SWING_KLINE_WS_MAX_AGE_SECONDS
+                    and candles
+                    and len(candles) >= limit
+                ):
+                    try:
+                        frame = frame_from_ohlcv_snapshot(
+                            candles[-limit:],
+                            timeframe,
+                            keep_live=keep_live,
+                        )
+                        if not frame.empty:
+                            getattr(
+                                self, "_wild_swing_kline_fallback_logged", set(),
+                            ).discard(symbol)
+                            return frame
+                    except (TypeError, ValueError):
+                        pass
+
                 fallback_logged = getattr(
                     self, "_wild_swing_kline_fallback_logged", None,
                 )
@@ -1128,11 +1138,103 @@ class TradingEngine:
                 if symbol not in fallback_logged:
                     fallback_logged.add(symbol)
                     self.account.log(
-                        f"⚠️ [{symbol}] WebSocket 1m K 線不可用或過期，改用 REST",
+                        f"⚠️ [{symbol}] WebSocket {timeframe} K 線不可用或過期，"
+                        "啟用每幣 3 秒 REST 節流",
                         "WARNING",
                     )
+
+            return await self._fetch_wild_swing_rest_klines(
+                symbol,
+                timeframe,
+                limit,
+                keep_live,
+                fallback_rows=candles if timeframe == "1m" else None,
+            )
+
         return await fetch_market_klines(
             self.exchange, symbol, timeframe=timeframe, limit=limit, keep_live=keep_live,
+        )
+
+    async def _fetch_wild_swing_rest_klines(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        keep_live: bool,
+        fallback_rows: list | None = None,
+    ) -> pd.DataFrame:
+        exchange_symbol = to_binance_usdm_symbol(symbol)
+        cache_key = (exchange_symbol, timeframe)
+        rest_cache = getattr(self, "_wild_swing_kline_rest_cache", None)
+        if rest_cache is None:
+            rest_cache = self._wild_swing_kline_rest_cache = {}
+        last_attempts = getattr(self, "_wild_swing_kline_rest_last_attempt", None)
+        if last_attempts is None:
+            last_attempts = self._wild_swing_kline_rest_last_attempt = {}
+
+        now = time.monotonic()
+        cached_rows = rest_cache.get(cache_key)
+        last_attempt = last_attempts.get(exchange_symbol)
+        if (
+            last_attempt is not None
+            and now - last_attempt < WILD_SWING_KLINE_REST_COOLDOWN_SECONDS
+        ):
+            rows = cached_rows or fallback_rows
+            if rows:
+                return frame_from_ohlcv_snapshot(
+                    rows[-limit:],
+                    timeframe,
+                    keep_live=keep_live,
+                )
+            cooldown_logged_at = getattr(
+                self, "_wild_swing_kline_cooldown_logged_at", None,
+            )
+            if cooldown_logged_at is None:
+                cooldown_logged_at = self._wild_swing_kline_cooldown_logged_at = {}
+            if now - cooldown_logged_at.get(exchange_symbol, 0.0) >= 30.0:
+                cooldown_logged_at[exchange_symbol] = now
+                self.account.log(
+                    f"⚠️ [{symbol}] REST K 線仍在 3 秒節流冷卻內且沒有可用快取，"
+                    "本輪不以缺資料授權新單",
+                    "WARNING",
+                )
+            return pd.DataFrame()
+
+        last_attempts[exchange_symbol] = now
+        fetched = await fetch_market_klines(
+            self.exchange,
+            symbol,
+            timeframe=timeframe,
+            limit=limit,
+            keep_live=True,
+        )
+        if fetched is not None and not fetched.empty:
+            fetched_rows = (
+                fetched[["timestamp", "open", "high", "low", "close", "volume"]]
+                .tail(limit)
+                .values.tolist()
+            )
+            rest_cache[cache_key] = fetched_rows
+            if timeframe == "1m":
+                kline_cache = getattr(self, "_wild_swing_kline_cache", None)
+                if kline_cache is None:
+                    kline_cache = self._wild_swing_kline_cache = {}
+                merged = {
+                    int(row[0]): list(row)
+                    for row in [*kline_cache.get(symbol, []), *fetched_rows]
+                }
+                kline_cache[symbol] = [
+                    merged[timestamp]
+                    for timestamp in sorted(merged)[-WILD_SWING_KLINE_CACHE_LIMIT:]
+                ]
+
+        rows = rest_cache.get(cache_key) or fallback_rows
+        if not rows:
+            return pd.DataFrame()
+        return frame_from_ohlcv_snapshot(
+            rows[-limit:],
+            timeframe,
+            keep_live=keep_live,
         )
 
     async def update_market_prices(self):
@@ -1173,45 +1275,58 @@ class TradingEngine:
                     self.ticker_volumes[sym] = float(t['quoteVolume'])
             self.last_ticker_success_ts = time.time()
         except Exception as e:
-            now = time.time()
-            stale_sec = now - getattr(self, 'last_ticker_success_ts', now)
-            
-            from core.config import ENABLE_DYNAMIC_WATCHDOG, WATCHDOG_BASE_TIMEOUT_SECONDS, WATCHDOG_MAX_TIMEOUT_SECONDS
-            if ENABLE_DYNAMIC_WATCHDOG:
-                if stale_sec > WATCHDOG_MAX_TIMEOUT_SECONDS:
-                    active_positions = list(self.account.positions.keys())
-                    if active_positions:
-                        self.account.log(
-                            f"🚨 [WATCHDOG CRITICAL] Data stream lost for {stale_sec:.1f}s "
-                            f"(Limit: {WATCHDOG_MAX_TIMEOUT_SECONDS}s). Forcing position close.", 
-                            "CRITICAL"
-                        )
-                        for sym in active_positions:
-                            if str(self.account.positions.get(sym, {}).get("entry_mode", "")).upper() == "CHANNEL_SWING":
-                                continue
-                            try:
-                                asyncio.create_task(self.account.close_position(sym, reason="Watchdog Critical Timeout"))
-                                self.account.log(f"⚠️ [WATCHDOG] Position {sym} closed due to data loss.", "WARNING")
-                            except Exception as ex:
-                                self.account.log(f"🔥 [WATCHDOG FAIL] Close attempt failed for {sym}: {ex}", "CRITICAL")
-                        # 重置計時器，防止在平倉過程中重複觸發
-                        self.last_ticker_success_ts = now
-                elif stale_sec > WATCHDOG_BASE_TIMEOUT_SECONDS:
-                    if now - getattr(self, '_last_stale_ticker_log', 0) >= 10:
-                        self._last_stale_ticker_log = now
-                        self.account.log(
-                            f"⚠️ [WATCHDOG WARN] Data delay: {stale_sec:.1f}s "
-                            f"(Base: {WATCHDOG_BASE_TIMEOUT_SECONDS}s).",
-                            "WARNING"
-                        )
-            else:
-                if now - getattr(self, '_last_stale_ticker_log', 0) >= 30:
+            self._handle_ticker_data_failure(e)
+
+    def _handle_ticker_data_failure(self, error: Exception) -> None:
+        now = time.time()
+        stale_sec = now - getattr(self, "last_ticker_success_ts", now)
+        from core.config import (
+            ENABLE_DYNAMIC_WATCHDOG,
+            WATCHDOG_BASE_TIMEOUT_SECONDS,
+            WATCHDOG_MAX_TIMEOUT_SECONDS,
+        )
+
+        if ENABLE_DYNAMIC_WATCHDOG:
+            if stale_sec > WATCHDOG_MAX_TIMEOUT_SECONDS:
+                active_positions = list(self.account.positions.keys())
+                if active_positions:
+                    self.account.log(
+                        f"🚨 [WATCHDOG CRITICAL] Data stream lost for {stale_sec:.1f}s "
+                        f"(Limit: {WATCHDOG_MAX_TIMEOUT_SECONDS}s). Forcing position close.",
+                        "CRITICAL",
+                    )
+                    for symbol in active_positions:
+                        if str(self.account.positions.get(symbol, {}).get("entry_mode", "")).upper() == "CHANNEL_SWING":
+                            continue
+                        try:
+                            asyncio.create_task(self.account.close_position(
+                                symbol, reason="Watchdog Critical Timeout",
+                            ))
+                            self.account.log(
+                                f"⚠️ [WATCHDOG] Position {symbol} closed due to data loss.",
+                                "WARNING",
+                            )
+                        except Exception as exc:
+                            self.account.log(
+                                f"🔥 [WATCHDOG FAIL] Close attempt failed for {symbol}: {exc}",
+                                "CRITICAL",
+                            )
+                    self.last_ticker_success_ts = now
+            elif stale_sec > WATCHDOG_BASE_TIMEOUT_SECONDS:
+                if now - getattr(self, "_last_stale_ticker_log", 0) >= 10:
                     self._last_stale_ticker_log = now
                     self.account.log(
-                        f"⚠️ 抓取即時報價失敗（{type(e).__name__}: {e}），"
-                        f"報價已 {stale_sec:.0f} 秒未更新",
+                        f"⚠️ [WATCHDOG WARN] Data delay: {stale_sec:.1f}s "
+                        f"(Base: {WATCHDOG_BASE_TIMEOUT_SECONDS}s).",
                         "WARNING",
                     )
+        elif now - getattr(self, "_last_stale_ticker_log", 0) >= 30:
+            self._last_stale_ticker_log = now
+            self.account.log(
+                f"⚠️ 抓取即時報價失敗（{type(error).__name__}: {error}），"
+                f"報價已 {stale_sec:.0f} 秒未更新",
+                "WARNING",
+            )
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         return
@@ -1359,18 +1474,32 @@ class TradingEngine:
         retry_delay = 1.0
         while True:
             try:
-                candles = await self.ws_exchange.watch_ohlcv(
-                    to_binance_usdm_symbol(symbol),
-                    timeframe="1m",
-                    limit=150,
+                candles = await asyncio.wait_for(
+                    self.ws_exchange.watch_ohlcv(
+                        to_binance_usdm_symbol(symbol),
+                        timeframe="1m",
+                        limit=WILD_SWING_KLINE_CACHE_LIMIT,
+                    ),
+                    timeout=WILD_SWING_KLINE_WS_IDLE_TIMEOUT_SECONDS,
                 )
                 if not candles:
-                    await asyncio.sleep(0.1)
-                    continue
+                    raise RuntimeError("watch_ohlcv returned no candles")
                 frame_from_ohlcv_snapshot(
-                    candles[-150:], "1m", keep_live=True,
+                    candles[-WILD_SWING_KLINE_CACHE_LIMIT:],
+                    "1m",
+                    keep_live=True,
                 )
-                self._wild_swing_kline_cache[symbol] = list(candles[-150:])
+                merged = {
+                    int(candle[0]): list(candle)
+                    for candle in [
+                        *self._wild_swing_kline_cache.get(symbol, []),
+                        *candles[-WILD_SWING_KLINE_CACHE_LIMIT:],
+                    ]
+                }
+                self._wild_swing_kline_cache[symbol] = [
+                    merged[timestamp]
+                    for timestamp in sorted(merged)[-WILD_SWING_KLINE_CACHE_LIMIT:]
+                ]
                 self._wild_swing_kline_updated_at[symbol] = time.monotonic()
                 retry_delay = 1.0
                 self._wild_swing_kline_fallback_logged.discard(symbol)
@@ -1395,11 +1524,17 @@ class TradingEngine:
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
         if not hasattr(self, "_ticker_observed_at"):
             self._ticker_observed_at = {}
+        retry_delay = 1.0
         while True:
             try:
                 # symbols=None 對 Binance USD-M 會使用 !miniTicker@arr，一條
                 # WebSocket 即可接收所有合約，不會為 500 多個幣建立 REST 請求。
-                tickers = await self.ws_exchange.watch_tickers()
+                tickers = await asyncio.wait_for(
+                    self.ws_exchange.watch_tickers(),
+                    timeout=WILD_SWING_TICKER_WS_IDLE_TIMEOUT_SECONDS,
+                )
+                if tickers:
+                    retry_delay = 1.0
 
                 for sym, ticker in tickers.items():
                     if ticker.get("last") is not None:
@@ -1517,14 +1652,13 @@ class TradingEngine:
                 break
             except Exception as exc:
                 self.account.log(
-                    f"⚠️ [WebSocket Ticker Loop] 錯誤: {exc}，暫時退回 REST 抓取...",
+                    f"⚠️ [WebSocket Ticker Loop] 錯誤: {exc}，"
+                    f"{retry_delay:.0f} 秒後重連；此期間不輪詢 REST 報價",
                     "WARNING",
                 )
-                try:
-                    await self.update_market_prices()
-                except Exception as rest_exc:
-                    self.account.log(f"⚠️ [REST Fallback] 錯誤: {rest_exc}", "WARNING")
-                await asyncio.sleep(2)
+                self._handle_ticker_data_failure(exc)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2.0, 30.0)
 
     _sample_reference_price = staticmethod(sample_reference_price)
 
