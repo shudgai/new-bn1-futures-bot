@@ -106,7 +106,7 @@ def test_top_pressure_can_close_long_without_authorizing_short_in_bullish_kc():
         account=account, symbol='CAP/USDT',
     )
     assert passed is False
-    assert reason == 'BLOCKED_OPPOSITE_SIDE_COOLDOWN'
+    assert reason == 'BLOCKED_SHORT_FLIP_WITHOUT_BEARISH_KC_TURN'
 
 
 @pytest.mark.parametrize(
@@ -123,14 +123,14 @@ def test_long_entry_vetoes_large_bearish_live_candle(
     frame = pd.DataFrame([
         {
             'timestamp': 1_700_000_000_000, 'open': 100.0, 'close': 100.0,
-            'high': 100.2, 'low': 99.8, 'atr': atr, 'ma5': 100.0,
-            'ma15': 100.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
+            'high': 100.2, 'low': 99.8, 'atr': atr, 'ma5': 98.7,
+            'ma15': 99.0, 'kc_middle': 100.0, 'kc_upper': 101.0,
             'kc_lower': 99.0, 'is_closed': True,
         },
         {
             'timestamp': 1_700_000_060_000, 'open': open_price,
             'close': close_price, 'high': high, 'low': low, 'atr': atr,
-            'ma5': 100.0, 'ma15': 100.0, 'kc_middle': 100.0,
+            'ma5': 98.9, 'ma15': 99.0, 'kc_middle': 100.0,
             'kc_upper': 101.0, 'kc_lower': 99.0, 'is_closed': False,
         },
     ])
@@ -218,10 +218,15 @@ def test_account_firewall_rejects_same_bar_reopen():
 
     bar_start_ms = int(time.time() // 60) * 60_000
     frame = pd.DataFrame([{
-        'timestamp': bar_start_ms, 'open': 100.0, 'close': 100.1,
-        'high': 100.2, 'low': 99.8, 'atr': 1.0, 'ma5': 100.0,
-        'ma15': 99.9, 'kc_middle': 100.0, 'kc_upper': 101.0,
-        'kc_lower': 99.0, 'is_closed': False,
+        'timestamp': bar_start_ms - 60_000, 'open': 100.0, 'close': 100.0,
+        'high': 100.2, 'low': 99.8, 'atr': 1.0, 'ma5': 99.8,
+        'ma15': 99.5, 'kc_middle': 99.8, 'kc_upper': 100.5,
+        'kc_lower': 99.0, 'is_closed': True,
+    }, {
+        'timestamp': bar_start_ms, 'open': 102.0, 'close': 101.0,
+        'high': 102.1, 'low': 100.9, 'atr': 1.0, 'ma5': 100.0,
+        'ma15': 99.6, 'kc_middle': 100.0, 'kc_upper': 100.5,
+        'kc_lower': 99.5, 'is_closed': False,
     }])
     frame.attrs.update(timeframe_ms=60_000, entry_finality_verified=True)
     frame = _with_entry_history(frame)
@@ -235,7 +240,7 @@ def test_account_firewall_rejects_same_bar_reopen():
     with pytest.raises(ValueError, match='BLOCKED_SAME_BAR_REENTRY'):
         asyncio.run(validate_account_entry(
             account, 'CAP/USDT', 'LONG',
-            {'entry_signal_code': 'AUTHORIZED_REALTIME_BREAKOUT'},
+            {'entry_signal_code': 'MEME_INITIAL_KC_BREAKOUT_LONG'},
         ))
 
 
@@ -265,5 +270,5 @@ def test_account_firewall_rejects_large_bearish_candle_on_long_fast_path():
     with pytest.raises(ValueError, match='BLOCKED_BY_LARGE_BEARISH_CANDLE'):
         asyncio.run(validate_account_entry(
             account, 'CAP/USDT', 'LONG',
-            {'entry_signal_code': 'AUTHORIZED_REALTIME_BREAKOUT'},
+            {'entry_signal_code': 'MEME_INITIAL_KC_BREAKOUT_LONG'},
         ))
