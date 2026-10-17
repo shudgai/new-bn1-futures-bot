@@ -177,6 +177,22 @@ def test_short_crossover_uses_ma5_direction_and_basis_position_not_kc_slope():
     assert signal["structure_confirmation"] == "MA_CROSSOVER"
 
 
+@pytest.mark.parametrize(
+    "side,current_middle",
+    [("LONG", 100.6), ("SHORT", 99.5)],
+)
+def test_ma_crossover_requires_close_on_correct_side_of_kc_basis(
+    side, current_middle,
+):
+    frame = _pivot_cross_frame(side)
+    frame.loc[10, "kc_middle"] = 100.0
+    frame.loc[11, "kc_middle"] = current_middle
+
+    assert WildSwingStrategy().evaluate_entry(
+        "LOBSTER/USDT", frame, side,
+    ) is None
+
+
 def test_short_crossover_is_not_generated_at_kc_upper_rail():
     frame = _pivot_cross_frame("SHORT")
     frame.loc[10, ["kc_middle", "ma5", "ma15"]] = [100.0, 100.3, 100.0]

@@ -415,6 +415,7 @@ class WildSwingStrategy:
                 cross_up
                 and ma5 > prev_ma5
                 and float(current["kc_middle"]) > prev_middle
+                and close > float(current["kc_middle"])
                 and close > open_price
                 and close > ma5
             )
@@ -423,6 +424,7 @@ class WildSwingStrategy:
                 cross_down
                 and ma5 < prev_ma5
                 and float(current["kc_middle"]) < prev_middle
+                and close < float(current["kc_middle"])
                 and close < float(current["kc_upper"])
                 and close < open_price
                 and close < ma5
