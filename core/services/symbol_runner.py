@@ -46,6 +46,7 @@ async def _process_wild_swing_symbol(
             position,
             frame,
             profit_lock_triggered=profit_lock is not None,
+            current_tick_price=quote,
         )
         if exit_decision is not None:
             closed_ok = await engine.account.close_position(

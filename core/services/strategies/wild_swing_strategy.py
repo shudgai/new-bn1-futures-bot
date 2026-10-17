@@ -734,6 +734,7 @@ class WildSwingStrategy:
         frame: pd.DataFrame,
         *,
         profit_lock_triggered: bool = False,
+        current_tick_price: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
         side = str((position or {}).get("side", "")).upper()
         if side not in ("LONG", "SHORT"):
@@ -753,6 +754,7 @@ class WildSwingStrategy:
         evidence: dict[str, Any] = {}
         if profit_lock_triggered:
             reason = "EXIT_BY_PROFIT_LOCK"
+            exit_type = "RATCHET_PROFIT_LOCK"
         else:
             if bars.empty:
                 return None
@@ -761,16 +763,23 @@ class WildSwingStrategy:
             if state.last_processed_bar_id is not None and bar_id <= state.last_processed_bar_id:
                 return None
             pivot_exit, pivot_reason, pivot_evidence = self._pivot_exhaustion_exit(
-                position, bars, side,
+                position, bars, side, current_tick_price=current_tick_price,
             )
             if pivot_exit:
                 reason = pivot_reason
+                exit_type = (
+                    "PIVOT_PEAK_EXIT"
+                    if side == "LONG"
+                    else "PIVOT_VALLEY_EXIT"
+                )
                 evidence = pivot_evidence
             else:
                 state.last_processed_bar_id = bar_id
                 return None
 
         return {
+            "action": f"CLOSE_{side}",
+            "type": exit_type,
             "side": side,
             "reason": reason,
             "bar_id": bar_id,
@@ -806,6 +815,8 @@ class WildSwingStrategy:
         bars: pd.DataFrame,
         side: str,
         min_profit_pct: Optional[float] = None,
+        *,
+        current_tick_price: Optional[float] = None,
     ) -> tuple[bool, str, dict[str, Any]]:
         """
         偵測真峰谷提前平倉 (Pivot Peak/Valley Early Exit):
@@ -833,9 +844,6 @@ class WildSwingStrategy:
         except (TypeError, ValueError, OverflowError):
             return False, "", {}
 
-        if not math.isfinite(entry_price) or entry_price <= 0:
-            return False, "", {}
-
         if min_profit_pct is None:
             try:
                 min_profit_pct = float(os.getenv("WILD_SWING_PIVOT_MIN_PROFIT_PCT", "0.003"))
@@ -846,16 +854,29 @@ class WildSwingStrategy:
         k2 = bars.iloc[-3]
 
         try:
-            current_price = float(k0["close"])
+            current_price = (
+                float(k0["close"])
+                if current_tick_price is None
+                else float(current_tick_price)
+            )
             k1_open = float(k1["open"])
             k1_close = float(k1["close"])
             k1_high = float(k1["high"])
             k1_low = float(k1["low"])
+            k0_close = float(k0["close"])
             k0_high = float(k0["high"])
             k0_low = float(k0["low"])
             k2_high = float(k2["high"])
             k2_low = float(k2["low"])
         except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "", {}
+        if (
+            not math.isfinite(entry_price)
+            or entry_price <= 0
+            or not math.isfinite(current_price)
+            or current_price <= 0
+            or not math.isfinite(k0_close)
+        ):
             return False, "", {}
 
         # --- 1. 多單持倉：偵測「真頂/真峰 (Pivot Peak)」---
@@ -866,11 +887,11 @@ class WildSwingStrategy:
 
             # 真峰條件：
             # 1. k1 的高點高於 k2 與 k0 的高點（形成 3 根局部高點）
-            # 2. k0 收盤跌破 k1 的中點或最低點（確認反轉）
+            # 2. k0 收盤同時跌破 k1 的中點與最低點（確認反轉）
             is_pivot_high = (k1_high > k2_high) and (k1_high > k0_high)
             is_break_k1_low = (
-                current_price < k1_low
-                or current_price < (k1_open + k1_close) / 2
+                k0_close < (k1_open + k1_close) / 2
+                and k0_close < k1_low
             )
 
             if is_pivot_high and is_break_k1_low:
@@ -889,11 +910,11 @@ class WildSwingStrategy:
 
             # 真谷條件：
             # 1. k1 的低點低於 k2 與 k0 的低點（形成 3 根局部低點）
-            # 2. k0 收盤突破 k1 的中點或最高點（確認反轉）
+            # 2. k0 收盤同時突破 k1 的中點與最高點（確認反轉）
             is_pivot_low = (k1_low < k2_low) and (k1_low < k0_low)
             is_break_k1_high = (
-                current_price > k1_high
-                or current_price > (k1_open + k1_close) / 2
+                k0_close > (k1_open + k1_close) / 2
+                and k0_close > k1_high
             )
 
             if is_pivot_low and is_break_k1_high:

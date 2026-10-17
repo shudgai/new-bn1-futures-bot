@@ -442,3 +442,55 @@ def test_profit_lock_exit_is_not_blocked_by_bar_dedup_and_uses_market_close(monk
     assert "EXIT_BY_PROFIT_LOCK" in reason
     assert options["is_limit"] is False
     assert symbol not in engine.account.positions
+
+
+@pytest.mark.parametrize("quote,expected_exit", [(100.2, False), (100.31, True)])
+def test_runner_uses_live_quote_for_pivot_profit_threshold(
+    monkeypatch, quote, expected_exit,
+):
+    from core.gates import holding_protection_gate
+
+    class Account(FakeAccount):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = []
+            self.last_closed_price = {}
+
+        async def close_position(self, symbol, price, reason, **kwargs):
+            self.close_calls.append((symbol, price, reason, kwargs))
+            self.positions.pop(symbol, None)
+            self.last_closed_price[symbol] = price
+            return True
+
+    class Engine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.account = Account()
+
+    engine = Engine()
+    symbol = "LOBSTER/USDT"
+    engine.account.positions[symbol] = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "open_timestamp": 60.0,
+        "entry_mode": "WILD_SWING",
+    }
+    strategy = WildSwingStrategy()
+    strategy.reset_symbol(symbol, 600_000.0)
+    engine._wild_swing_strategy = strategy
+    monkeypatch.setattr(
+        holding_protection_gate, "_ratchet_lock_details", lambda position, price: None,
+    )
+    frame = _frame("LONG")
+    frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
+    frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
+    frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
+    frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+
+    asyncio.run(_process_wild_swing_symbol(
+        engine, symbol, frame, quote, False, False,
+    ))
+
+    assert bool(engine.account.close_calls) is expected_exit
+    if expected_exit:
+        assert "EXIT_BY_PIVOT_PEAK" in engine.account.close_calls[0][2]

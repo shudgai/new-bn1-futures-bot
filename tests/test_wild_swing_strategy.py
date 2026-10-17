@@ -436,6 +436,8 @@ def test_profit_lock_exit_is_available_without_true_pivot_and_live_bar_never_exi
         "LOBSTER/USDT", {"side": "LONG"}, frame, profit_lock_triggered=True,
     )
     assert result["reason"] == "EXIT_BY_PROFIT_LOCK"
+    assert result["action"] == "CLOSE_LONG"
+    assert result["type"] == "RATCHET_PROFIT_LOCK"
 
     strategy = WildSwingStrategy()
     frame.loc[11, "is_closed"] = False
@@ -449,33 +451,60 @@ def test_pivot_exhaustion_exit_triggers_for_long_and_short():
     # 1. 測試多單真峰 (Pivot Peak) 平倉
     # k2 (idx 9): high=102, low=100, close=101
     # k1 (idx 10): high=106, low=102, open=102.5, close=105 (真峰高點 106)
-    # k0 (idx 11): high=104, low=101, close=102.5 (收盤跌破 k1 中點 103.75)
+    # k0 (idx 11): 收盤同時跌破 k1 中點 103.75 與最低點 102
     frame_long = _frame("LONG")
     frame_long.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
     frame_long.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
-    frame_long.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 103.5, 102.5]
+    frame_long.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
     pos_long = {"side": "LONG", "entry_price": 100.0, "open_timestamp": 60.0}
 
     result_long = strategy.evaluate_exit("LOBSTER/USDT", pos_long, frame_long)
     assert result_long is not None
+    assert result_long["action"] == "CLOSE_LONG"
+    assert result_long["type"] == "PIVOT_PEAK_EXIT"
     assert result_long["reason"] == "EXIT_BY_PIVOT_PEAK"
     assert result_long["pivot_price"] == 106.0
 
     # 2. 測試空單真谷 (Pivot Valley) 平倉
     # k2 (idx 9): high=100, low=98, close=99
     # k1 (idx 10): high=98, low=94, open=97.5, close=95 (真谷低點 94)
-    # k0 (idx 11): high=99, low=96, close=97.5 (收盤突破 k1 中點 96.25)
+    # k0 (idx 11): 收盤同時突破 k1 中點 96.25 與最高點 98
     strategy.reset_execution_state({})
     frame_short = _frame("SHORT")
     frame_short.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
     frame_short.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
-    frame_short.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 96.5, 97.5]
+    frame_short.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 98.2, 98.5]
     pos_short = {"side": "SHORT", "entry_price": 100.0, "open_timestamp": 60.0}
 
     result_short = strategy.evaluate_exit("LOBSTER/USDT", pos_short, frame_short)
     assert result_short is not None
+    assert result_short["action"] == "CLOSE_SHORT"
+    assert result_short["type"] == "PIVOT_VALLEY_EXIT"
     assert result_short["reason"] == "EXIT_BY_PIVOT_VALLEY"
     assert result_short["pivot_price"] == 94.0
+
+
+@pytest.mark.parametrize(
+    "side,close",
+    [("LONG", 102.5), ("SHORT", 97.5)],
+)
+def test_pivot_exit_requires_close_beyond_pivot_extreme(side, close):
+    frame = _frame(side)
+    if side == "LONG":
+        frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
+        frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
+        frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 102.0, close]
+    else:
+        frame.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
+        frame.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
+        frame.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 97.0, close]
+
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT",
+        {"side": side, "entry_price": 100.0, "open_timestamp": 60.0},
+        frame,
+    )
+    assert result is None
 
 
 def test_pivot_exhaustion_exit_requires_min_profit_threshold():
@@ -488,3 +517,32 @@ def test_pivot_exhaustion_exit_requires_min_profit_threshold():
     # 開倉成本過高 (entry_price 103.0 > close 102.5)，處於虧損狀態，禁止被峰谷洗出場
     pos_loss = {"side": "LONG", "entry_price": 103.0, "open_timestamp": 60.0}
     assert strategy.evaluate_exit("LOBSTER/USDT", pos_loss, frame_long) is None
+
+
+@pytest.mark.parametrize(
+    "side,price,should_exit",
+    [
+        ("LONG", 100.2, False),
+        ("LONG", 100.31, True),
+        ("SHORT", 99.8, False),
+        ("SHORT", 99.69, True),
+    ],
+)
+def test_pivot_min_profit_uses_current_tick(side, price, should_exit):
+    frame = _frame(side)
+    if side == "LONG":
+        frame.loc[9, ["high", "low", "open", "close"]] = [102.0, 100.0, 100.5, 101.0]
+        frame.loc[10, ["high", "low", "open", "close"]] = [106.0, 102.0, 102.5, 105.0]
+        frame.loc[11, ["high", "low", "open", "close"]] = [104.0, 101.0, 101.8, 101.5]
+    else:
+        frame.loc[9, ["high", "low", "open", "close"]] = [100.0, 98.0, 99.5, 99.0]
+        frame.loc[10, ["high", "low", "open", "close"]] = [98.0, 94.0, 97.5, 95.0]
+        frame.loc[11, ["high", "low", "open", "close"]] = [99.0, 96.0, 98.2, 98.5]
+
+    result = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT",
+        {"side": side, "entry_price": 100.0, "open_timestamp": 60.0},
+        frame,
+        current_tick_price=price,
+    )
+    assert (result is not None) is should_exit
