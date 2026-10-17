@@ -42,6 +42,7 @@ from core.config import (
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
 from core.engine import engine
+from core.symbol_aliases import is_lobster_symbol, to_binance_usdm_symbol
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
@@ -69,7 +70,26 @@ def visible_tickers():
     """只回傳目前牌面與持倉，避免輪替後的舊價格快取留在介面。"""
     result = {}
     for symbol in visible_symbols():
-        price = engine.tickers.get(symbol) or engine.tickers.get(f"{symbol}:USDT")
+        canonical_symbol = to_binance_usdm_symbol(symbol)
+        ticker_keys = [
+            symbol,
+            f"{symbol}:USDT",
+            canonical_symbol,
+            canonical_symbol.removesuffix(":USDT"),
+        ]
+        if is_lobster_symbol(symbol):
+            ticker_keys.extend((
+                "LOBSTER/USDT",
+                "LOBSTER/USDT:USDT",
+                "龍蝦/USDT",
+                "龍蝦/USDT:USDT",
+                "龙虾/USDT",
+                "龙虾/USDT:USDT",
+            ))
+        price = next(
+            (engine.tickers[key] for key in ticker_keys if engine.tickers.get(key) is not None),
+            None,
+        )
         if price is None:
             position = engine.account.positions.get(symbol, {})
             price = position.get("mark_price") or position.get("entry_price")

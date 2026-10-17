@@ -43,3 +43,50 @@ def test_empty_shadow_status_is_read_only():
         "eligible_events": 0, "average_delay_sec": None,
     }
     assert vars(engine) == {}
+
+
+def test_visible_tickers_resolves_lobster_exchange_symbol_alias(monkeypatch):
+    from services import api
+
+    monkeypatch.setattr(api, "DEFAULT_SYMBOLS", ["LOBSTER/USDT", "CAP/USDT"])
+    monkeypatch.setattr(
+        api.engine,
+        "tickers",
+        {
+            "龙虾/USDT:USDT": 0.02832,
+            "CAP/USDT:USDT": 0.07386,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        api.engine,
+        "account",
+        type("Account", (), {"positions": {}})(),
+    )
+
+    assert api.visible_tickers() == {
+        "LOBSTER/USDT": 0.02832,
+        "CAP/USDT": 0.07386,
+    }
+
+
+def test_visible_tickers_keeps_position_price_fallback(monkeypatch):
+    from services import api
+
+    monkeypatch.setattr(api, "DEFAULT_SYMBOLS", ["LOBSTER/USDT"])
+    monkeypatch.setattr(api.engine, "tickers", {}, raising=False)
+    monkeypatch.setattr(
+        api.engine,
+        "account",
+        type(
+            "Account",
+            (),
+            {
+                "positions": {
+                    "LOBSTER/USDT": {"mark_price": 0.0284, "entry_price": 0.0280},
+                },
+            },
+        )(),
+    )
+
+    assert api.visible_tickers() == {"LOBSTER/USDT": 0.0284}
