@@ -546,6 +546,7 @@ def test_exit_trailing_profit_lock_and_breakeven():
     )
     assert result is not None
     assert result["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
+    assert pos["profit_floor_armed"] is True
 
     # 若衝到 101.3 後跌回保本線 100.1 (< entry + 0.15U)
     pos2 = {
@@ -562,14 +563,16 @@ def test_exit_trailing_profit_lock_and_breakeven():
 
 def test_exit_short_trailing_profit_lock_survives_pullback_suppression():
     frame = _frame("SHORT")
+    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 98.0}
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT",
-        {"side": "SHORT", "entry_price": 100.0, "lowest_price": 98.0},
+        pos,
         frame,
         quote=99.0,
     )
     assert result is not None
     assert result["reason"] == "EXIT_BY_TRAILING_PROFIT_LOCK"
+    assert pos["profit_floor_armed"] is True
 
 
 @pytest.mark.parametrize(

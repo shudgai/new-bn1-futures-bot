@@ -115,3 +115,37 @@ def test_trade_stream_deduplicates_cache_and_observes_each_trade():
         await engine._instant_exit_trade_loop()
         assert engine._instant_quote_exit.await_count==3
     asyncio.run(run())
+
+
+def test_trade_stream_maps_lobster_exchange_alias_to_position_symbol():
+    async def run():
+        engine = object.__new__(TradingEngine)
+        engine.is_running = True
+        engine.account = SimpleNamespace(
+            positions={"LOBSTER/USDT": pos()},
+            log=Mock(),
+        )
+        trades = [{
+            "symbol": "龙虾/USDT:USDT",
+            "timestamp": 61_000,
+            "id": "lobster-trade",
+            "price": 99.0,
+        }]
+
+        async def watch(symbols, **_kwargs):
+            assert symbols == ["龙虾/USDT:USDT"]
+            if engine.ws_exchange.watch_trades_for_symbols.await_count == 2:
+                engine.is_running = False
+            return trades
+
+        engine.ws_exchange = SimpleNamespace(
+            watch_trades_for_symbols=AsyncMock(side_effect=watch),
+        )
+        engine._instant_quote_exit = AsyncMock()
+        await engine._instant_exit_trade_loop()
+
+        engine._instant_quote_exit.assert_awaited_with(
+            "LOBSTER/USDT", 99.0, 61_000,
+        )
+
+    asyncio.run(run())

@@ -641,6 +641,48 @@ async def test_refresh_flags_profit_alert_when_giveback_from_peak(tmp_path, monk
 
 
 @pytest.mark.anyio
+async def test_refresh_uses_lobster_quote_when_exchange_mark_is_entry_fallback(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.tickers = {"龙虾/USDT": 0.0276}
+    account.position_meta["LOBSTER/USDT"] = {
+        "entry_mode": "WILD_SWING",
+        "highest_price": 0.0284,
+        "lowest_price": 0.0275,
+        "profit_floor_armed": True,
+    }
+    exchange.positions = [{
+        "symbol": "LOBSTERUSDT",
+        "positionAmt": "-1000",
+        "entryPrice": "0.028",
+        "markPrice": "0.028",
+        "leverage": "5",
+        "unRealizedProfit": "0",
+    }]
+
+    await account.refresh(force=True)
+
+    position = account.positions["LOBSTER/USDT"]
+    assert position["mark_price"] == pytest.approx(0.0276)
+    assert position["unrealized_pnl"] == pytest.approx(0.4)
+    assert position["highest_price"] == pytest.approx(0.0284)
+    assert position["lowest_price"] == pytest.approx(0.0275)
+    assert position["profit_floor_armed"] is True
+    assert position["peak_pnl_pct"] == pytest.approx(
+        (0.028 - 0.0276) / 0.028,
+    )
+
+
+@pytest.mark.anyio
 async def test_testnet_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)

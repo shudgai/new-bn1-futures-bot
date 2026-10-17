@@ -413,7 +413,9 @@
                                                 +{{ getLockedProfitAmount(pos).toFixed(4) }} USDT (防線: {{ formatPrice(pos.breakeven_price || (pos.channel_profit_protection && pos.channel_profit_protection.breakeven_price) || pos.sl) }})
                                             </span>
                                             <span v-else style="color: #94a3b8; margin-left: 4px;">
-                                                0.0000 USDT (待啟動: 1.2 ATR / 8% ROE)
+                                                <template v-if="pos.trailing_profit_lock_armed">回撤止盈監控已啟動（非固定止損價）</template>
+                                                <template v-else-if="pos.entry_mode === 'WILD_SWING'">未啟動：等待峰值浮盈達 1.2%</template>
+                                                <template v-else>待啟動: 1.2 ATR / 8% ROE</template>
                                             </span>
                                         </span>
                                     </div>
@@ -634,9 +636,16 @@
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">未實現盈虧:</span>
-                                <span class="chart-pos-info-value" :style="((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
-                                    {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
+                                <span class="chart-pos-info-label">未實現毛利:</span>
+                                <span class="chart-pos-info-value" :style="getPosUnrealizedPnl(getPos(symbol)) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
+                                    {{ getPosUnrealizedPnl(getPos(symbol)) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(getPos(symbol)).toFixed(4) }} USDT
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">預估淨損益(扣費):</span>
+                                <span class="chart-pos-info-value" :style="getPosEstimatedNetPnl(getPos(symbol)) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
+                                    {{ getPosEstimatedNetPnl(getPos(symbol)) > 0 ? '+' : '' }}{{ getPosEstimatedNetPnl(getPos(symbol)).toFixed(4) }} USDT
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep" v-if="getPos(symbol)">｜</span>
@@ -726,6 +735,9 @@
                     volatilityExpanded: false,
                     lockedProfitBump: {},      // { [symbol]: true } 當 Phase 升級時閪爍
                     _prevLockedPhase: {},      // { [symbol]: number } 上一次 Phase 編號
+                    _pricesRequestSeq: 0,
+                    _pricesAppliedSeq: 0,
+                    _pricesVersion: 0,
                 }
             },
             computed: {
@@ -1405,14 +1417,20 @@
                     return null;
                 },
                 getPosUnrealizedPnl(pos) {
-                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
+                    if (pos && pos.unrealized_pnl !== undefined && pos.unrealized_pnl !== null) {
+                        return Number(pos.unrealized_pnl);
+                    }
+                    const curr = Number(pos.pnl_price || pos.mark_price || this.getCurrPrice(pos.symbol));
                     if (!curr) return 0;
                     return pos.side === 'LONG'
                         ? (curr - pos.entry_price) * pos.qty
                         : (pos.entry_price - curr) * pos.qty;
                 },
                 getPosEstimatedNetPnl(pos) {
-                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
+                    if (pos && pos.estimated_net_unrealized_pnl !== undefined && pos.estimated_net_unrealized_pnl !== null) {
+                        return Number(pos.estimated_net_unrealized_pnl);
+                    }
+                    const curr = Number(pos.pnl_price || pos.mark_price || this.getCurrPrice(pos.symbol));
                     if (!curr) return 0;
                     const raw = this.getPosUnrealizedPnl(pos);
                     const feeRate = this.bot.taker_fee_rate || 0.0005;
@@ -1487,15 +1505,22 @@
                     return `待啟動保本 (門檻: 峰值 1.2 ATR 或 8% ROE | 當前峰值: ${peakAtr} ATR / ${Number(peakRoe).toFixed(1)}%)`;
                 },
                 async fetchStatus() {
+                    const pricesVersionAtStart = this._pricesVersion;
                     try {
                         const res = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
                         const currentTickerTime = Number((this.bot || {}).ticker_updated_at || 0);
                         const incomingTickerTime = Number(data.ticker_updated_at || 0);
-                        if (currentTickerTime > incomingTickerTime) {
+                        if (
+                            this._pricesVersion > pricesVersionAtStart
+                            || currentTickerTime > incomingTickerTime
+                        ) {
                             data.tickers = this.bot.tickers;
                             data.positions = this.bot.positions;
+                            data.unrealized_pnl = this.bot.unrealized_pnl;
+                            data.estimated_net_unrealized_pnl = this.bot.estimated_net_unrealized_pnl;
+                            data.realized_pnl = this.bot.realized_pnl;
                             data.ticker_updated_at = currentTickerTime;
                         }
                         this.bot = data;
@@ -1504,13 +1529,19 @@
                     }
                 },
                 async fetchPrices() {
+                    const requestSeq = ++this._pricesRequestSeq;
                     try {
                         const res = await fetch('/api/prices?_=' + Date.now(), { cache: 'no-store' });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
                         const currentTickerTime = Number((this.bot || {}).ticker_updated_at || 0);
                         const incomingTickerTime = Number(data.ticker_updated_at || 0);
-                        if (incomingTickerTime < currentTickerTime) return;
+                        if (
+                            requestSeq < this._pricesAppliedSeq
+                            || incomingTickerTime < currentTickerTime
+                        ) return;
+                        this._pricesAppliedSeq = requestSeq;
+                        this._pricesVersion += 1;
                         if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
                         if (data.market_modes) this.bot.market_modes = data.market_modes;
@@ -1525,17 +1556,28 @@
                                 const newPhase = p.locked_phase || 0;
                                 const prevPhase = this._prevLockedPhase[sym] || 0;
                                 if (newPhase > prevPhase && newPhase > 0) {
-                                    this.$set(this.lockedProfitBump, sym, true);
-                                    setTimeout(() => this.$set(this.lockedProfitBump, sym, false), 560);
+                                    this.lockedProfitBump[sym] = true;
+                                    setTimeout(() => {
+                                        this.lockedProfitBump[sym] = false;
+                                    }, 560);
                                 }
-                                this.$set(this._prevLockedPhase, sym, newPhase);
+                                this._prevLockedPhase[sym] = newPhase;
                             });
                             this.bot.positions = newPositions;
+                            this.bot.unrealized_pnl = newPositions.reduce(
+                                (total, pos) => total + this.getPosUnrealizedPnl(pos),
+                                0,
+                            );
+                            this.bot.estimated_net_unrealized_pnl = newPositions.reduce(
+                                (total, pos) => total + this.getPosEstimatedNetPnl(pos),
+                                0,
+                            );
                         }
 
                         if (data.balance !== undefined) this.bot.balance = data.balance;
-                        if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
-                        if (data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
+                        if (data.realized_pnl !== undefined) this.bot.realized_pnl = data.realized_pnl;
+                        if (!data.positions && data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
+                        if (!data.positions && data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
                         this.bot.ticker_updated_at = incomingTickerTime;
                     } catch (e) {
                         console.error('Failed to fetch live prices', e);

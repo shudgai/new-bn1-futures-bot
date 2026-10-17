@@ -456,6 +456,42 @@ async def _process_wild_swing_symbol(
             frame,
             quote=quote,
         )
+        position_state_changed = False
+        for key in ("highest_price", "lowest_price"):
+            value = position.get(key)
+            if value is None:
+                continue
+            try:
+                price_extreme = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(price_extreme) or price_extreme <= 0:
+                continue
+            previous_extreme = position_meta.get(key)
+            if key == "highest_price":
+                updated_extreme = max(float(previous_extreme or 0.0), price_extreme)
+            else:
+                updated_extreme = min(
+                    float(previous_extreme or price_extreme),
+                    price_extreme,
+                )
+            if previous_extreme != updated_extreme:
+                position_meta[key] = updated_extreme
+                position_state_changed = True
+        if position.get("profit_floor_armed") is True:
+            if position_meta.get("profit_floor_armed") is not True:
+                position_meta["profit_floor_armed"] = True
+                position_state_changed = True
+        if position_state_changed:
+            save_state = getattr(engine.account, "save_state", None)
+            if callable(save_state):
+                save_state()
+            else:
+                logger.error(
+                    "WILD_SWING_PROFIT_LOCK_PERSISTENCE_BLOCK "
+                    "symbol=%s reason=ACCOUNT_SAVE_UNAVAILABLE",
+                    symbol,
+                )
         if exit_decision is not None:
             pending_ticket = position.get(CONFIRMED_PIVOT_PENDING_KEY)
             if isinstance(pending_ticket, dict):

@@ -833,7 +833,53 @@ class BinanceTestnetAccount:
             side = "LONG" if signed_qty > 0 else "SHORT"
             qty = abs(signed_qty)
             entry_price = float(row.get("entryPrice") or 0.0)
-            mark_price = float(row.get("markPrice") or entry_price)
+            raw_mark_price = row.get("markPrice")
+            try:
+                mark_price = float(raw_mark_price)
+            except (TypeError, ValueError, OverflowError):
+                mark_price = 0.0
+            ticker_keys = (
+                symbol,
+                f"{symbol}:USDT",
+                to_binance_usdm_symbol(symbol),
+                to_binance_usdm_symbol(symbol).removesuffix(":USDT"),
+            )
+            ticker_price = next(
+                (
+                    self.tickers[key]
+                    for key in ticker_keys
+                    if self.tickers.get(key) is not None
+                ),
+                None,
+            )
+            if ticker_price is not None:
+                try:
+                    ticker_price = float(ticker_price)
+                except (TypeError, ValueError, OverflowError):
+                    ticker_price = None
+                if (
+                    ticker_price is not None
+                    and (not math.isfinite(ticker_price) or ticker_price <= 0)
+                ):
+                    ticker_price = None
+            mark_price_is_missing = (
+                not math.isfinite(mark_price) or mark_price <= 0
+            )
+            mark_price_is_entry_fallback = (
+                mark_price > 0
+                and entry_price > 0
+                and math.isclose(mark_price, entry_price, rel_tol=1e-12, abs_tol=0.0)
+                and ticker_price is not None
+                and not math.isclose(
+                    ticker_price, mark_price, rel_tol=1e-12, abs_tol=0.0,
+                )
+            )
+            if ticker_price is not None and (
+                mark_price_is_missing or mark_price_is_entry_fallback
+            ):
+                mark_price = ticker_price
+            elif mark_price_is_missing:
+                mark_price = entry_price
             leverage = int(float(row.get("leverage") or get_leverage(symbol)))
             meta = self.position_meta.get(symbol, {})
             # 獲利了結參考提醒（純顯示，不影響三階段自動移動停利）：目前
@@ -867,9 +913,25 @@ class BinanceTestnetAccount:
                 **{key: meta.get(key) for key in ENTRY_CONTEXT_KEYS},
                 **{key: copy.deepcopy(meta[key]) for key in DUAL_TRACK_STATE_KEYS
                    if meta.get(key) is not None},
+                **{
+                    key: meta[key]
+                    for key in (
+                        "highest_price",
+                        "lowest_price",
+                        "profit_floor_armed",
+                    )
+                    if meta.get(key) is not None
+                },
                 "mark_price": mark_price,
                 "liquidation_price": float(row.get("liquidationPrice") or 0.0),
-                "unrealized_pnl": float(row.get("unRealizedProfit") or 0.0),
+                "unrealized_pnl": (
+                    (mark_price - entry_price) * qty
+                    * (1 if side == "LONG" else -1)
+                    if ticker_price is not None and (
+                        mark_price_is_missing or mark_price_is_entry_fallback
+                    )
+                    else float(row.get("unRealizedProfit") or 0.0)
+                ),
                 "peak_pnl_pct": peak_pnl_pct,
                 "profit_alert": profit_alert,
             }

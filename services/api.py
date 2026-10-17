@@ -108,16 +108,83 @@ def configured_trade_amount() -> float:
     fraction = 1.0 / effective_slots
     return min(TRADE_AMOUNT_USDT, wallet_balance * fraction)
 
+
+def _position_pnl(position: dict, current_price: float) -> tuple[float, float]:
+    entry = float(position.get("entry_price") or 0.0)
+    quantity = float(position.get("qty") or 0.0)
+    current_price = float(current_price)
+    if not all(
+        math.isfinite(value) and value > 0
+        for value in (entry, quantity, current_price)
+    ):
+        raise ValueError("Position PnL requires finite positive prices and quantity")
+
+    side = str(position.get("side") or "").upper()
+    if side == "LONG":
+        gross = (current_price - entry) * quantity
+    elif side == "SHORT":
+        gross = (entry - current_price) * quantity
+    else:
+        raise ValueError(f"Position PnL has invalid side: {side!r}")
+
+    fees = (entry + current_price) * quantity * TAKER_FEE_RATE
+    slippage = current_price * quantity * SLIPPAGE_PCT
+    return gross, gross - fees - slippage
+
+
+def _position_current_price(symbol: str, position: dict, tickers: dict) -> float:
+    mark_price = position.get("mark_price")
+    ticker_price = tickers.get(symbol)
+    entry_price = position.get("entry_price")
+    try:
+        numeric_mark = float(mark_price)
+        numeric_entry = float(entry_price)
+    except (TypeError, ValueError, OverflowError):
+        numeric_mark = 0.0
+        numeric_entry = 0.0
+
+    mark_is_entry_fallback = (
+        numeric_mark > 0
+        and numeric_entry > 0
+        and math.isclose(numeric_mark, numeric_entry, rel_tol=1e-12, abs_tol=0.0)
+    )
+    price = (
+        ticker_price
+        if ticker_price is not None and (numeric_mark <= 0 or mark_is_entry_fallback)
+        else mark_price
+    )
+    if price is None:
+        price = entry_price
+    try:
+        current_price = float(price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Position price is invalid for {symbol}") from exc
+    if not math.isfinite(current_price) or current_price <= 0:
+        raise ValueError(f"Position price is invalid for {symbol}")
+    return current_price
+
+
+def current_unrealized_pnl() -> float:
+    tickers = visible_tickers()
+    return sum(
+        _position_pnl(
+            position,
+            _position_current_price(symbol, position, tickers),
+        )[0]
+        for symbol, position in engine.account.positions.items()
+    )
+
+
 def estimated_net_unrealized_pnl() -> float:
-    """估算全部持倉此刻市價平倉後，扣雙邊手續費與平倉滑價的淨利。"""
-    total = 0.0
-    for pos in engine.account.positions.values():
-        entry = float(pos.get("entry_price") or 0.0)
-        mark = float(pos.get("mark_price") or entry)
-        qty = float(pos.get("qty") or 0.0)
-        raw = (mark - entry) * qty if pos.get("side") == "LONG" else (entry - mark) * qty
-        total += raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
-    return total
+    """估算持倉按最新牌面價格平倉後，扣雙邊手續費與平倉滑價的淨利。"""
+    tickers = visible_tickers()
+    return sum(
+        _position_pnl(
+            position,
+            _position_current_price(symbol, position, tickers),
+        )[1]
+        for symbol, position in engine.account.positions.items()
+    )
 
 
 def positions_with_triggers():
@@ -125,6 +192,7 @@ def positions_with_triggers():
     純參考用途，不影響自動止損止利。"""
     import math
     result = []
+    tickers = visible_tickers()
     for symbol, pos in engine.account.positions.items():
         merged = dict(pos)
         merged["trigger"] = engine.position_triggers.get(symbol, {"active": False, "reasons": []})
@@ -133,12 +201,18 @@ def positions_with_triggers():
         meta = engine.account.position_meta.get(symbol, {})
         if "channel_profit_protection" in meta:
             merged["channel_profit_protection"] = meta["channel_profit_protection"]
+        merged["trailing_profit_lock_armed"] = bool(
+            merged.get("profit_floor_armed") is True
+            or meta.get("profit_floor_armed") is True
+        )
             
         entry = float(merged.get("entry_price") or 0.0)
-        mark = float(merged.get("mark_price") or entry)
         qty = float(merged.get("qty") or 0.0)
-        raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
-        merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
+        current_price = _position_current_price(symbol, merged, tickers)
+        gross_pnl, net_pnl = _position_pnl(merged, current_price)
+        merged["pnl_price"] = current_price
+        merged["unrealized_pnl"] = gross_pnl
+        merged["estimated_net_unrealized_pnl"] = net_pnl
 
         # --- 開倉原因 ---
         meta = getattr(engine.account, "position_meta", {}).get(symbol, {})
@@ -450,7 +524,8 @@ async def get_status(response: Response):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     }
-    unrealized = await engine.account.update_positions(engine.tickers)
+    await engine.account.update_positions(engine.tickers)
+    unrealized = current_unrealized_pnl()
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
@@ -527,7 +602,8 @@ async def get_prices(response: Response):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     }
-    unrealized = await engine.account.update_positions(engine.tickers)
+    await engine.account.update_positions(engine.tickers)
+    unrealized = current_unrealized_pnl()
     payload = numpy_safe({
         "symbols": visible_symbols(),
         "symbol_directions": {
@@ -543,6 +619,7 @@ async def get_prices(response: Response):
         "positions": positions_with_triggers(),
         "unrealized_pnl": round(unrealized, 2),
         "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
+        "realized_pnl": round(engine.account.realized_pnl, 2),
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
     })
     return JSONResponse(content=payload, headers=headers)

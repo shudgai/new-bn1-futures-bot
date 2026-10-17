@@ -405,6 +405,7 @@ def check_long_exit(
 
     # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
     if peak_gain_pct >= 0.012:
+        position["profit_floor_armed"] = True
         pullback_pct = (highest_p - curr_price) / entry_p
         if pullback_pct >= 0.008:
             logger.info(f"[平倉觸發] {symbol} 多單 - 動態回撤止盈 (最高點={highest_p:.6g}, 回撤={pullback_pct:.2%})")
@@ -552,6 +553,7 @@ def check_short_exit(
 
     # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
     if peak_gain_pct >= 0.012:
+        position["profit_floor_armed"] = True
         rebound_pct = (curr_price - lowest_p) / entry_p
         if rebound_pct >= 0.008:
             logger.info(f"[平倉觸發] {symbol} 空單 - 動態低點回抽止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")

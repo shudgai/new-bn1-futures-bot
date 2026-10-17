@@ -53,6 +53,19 @@ def test_allows_positive_net_profit_only_with_armed_profit_lock():
     )
 
 
+def test_allows_wild_swing_trailing_exit_after_strategy_arms_lock():
+    active_position = {
+        **position("SHORT"),
+        "entry_mode": "WILD_SWING",
+        "profit_floor_armed": True,
+    }
+
+    assert automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {},
+        "Wild Swing EXIT_BY_TRAILING_PROFIT_LOCK", 99.0,
+    )
+
+
 def test_allows_only_identity_bound_confirmed_pivot_ticket():
     active_position = position()
     assert store_confirmed_pivot_exit(

@@ -1430,17 +1430,39 @@ class TradingEngine:
         announced = set()
         while self.is_running:
             try:
-                symbols = list(self.account.positions)
-                if not symbols:
+                position_symbols = list(self.account.positions)
+                if not position_symbols:
                     await asyncio.sleep(.1)
                     continue
+                exchange_symbols = list(dict.fromkeys(
+                    to_binance_usdm_symbol(symbol)
+                    for symbol in position_symbols
+                ))
+                position_by_exchange_symbol = {}
+                for symbol in position_symbols:
+                    exchange_symbol = to_binance_usdm_symbol(symbol)
+                    position_by_exchange_symbol[exchange_symbol] = symbol
+                    position_by_exchange_symbol[
+                        exchange_symbol.removesuffix(":USDT")
+                    ] = symbol
                 try:
                     trades = await asyncio.wait_for(
-                        self.ws_exchange.watch_trades_for_symbols(symbols, params={'name': 'aggTrade'}), timeout=1.)
+                        self.ws_exchange.watch_trades_for_symbols(
+                            exchange_symbols, params={'name': 'aggTrade'},
+                        ),
+                        timeout=1.,
+                    )
                 except asyncio.TimeoutError:
                     continue
                 for trade in sorted(trades, key=lambda t: t.get('timestamp') or 0):
-                    symbol = trade['symbol'].replace(':USDT', '')
+                    exchange_symbol = str(trade["symbol"])
+                    symbol = position_by_exchange_symbol.get(
+                        exchange_symbol,
+                        position_by_exchange_symbol.get(
+                            exchange_symbol.removesuffix(":USDT"),
+                            exchange_symbol.removesuffix(":USDT"),
+                        ),
+                    )
                     stamp = trade.get('timestamp')
                     if symbol not in announced and symbol in self.account.positions:
                         announced.add(symbol)
