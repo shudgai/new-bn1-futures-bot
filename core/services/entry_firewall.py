@@ -4,6 +4,8 @@ import time
 import logging
 import hashlib
 
+import numpy as np
+
 from core.gates.breakout_continuation_entry_gate import (
     PURE_MATH_ENTRY_CONFIRMATIONS,
 )
@@ -15,6 +17,13 @@ from core.services.entry_contract import (
 from core.services.wait_entry_authority import WaitEntryAuthority
 
 logger = logging.getLogger("uvicorn.error")
+
+MA_PARALLEL_GAP_ATR = 0.10
+MA_PARALLEL_GAP_PRICE_PCT = 0.0005
+MA_PARALLEL_FLAT_SLOPE_ATR = 0.10
+MA_PARALLEL_RELEASE_BODY_ATR = 0.50
+MA_PARALLEL_RELEASE_VOLUME_MULTIPLIER = 1.20
+MA_PARALLEL_RELEASE_VOLUME_BARS = 3
 
 
 class EntryFirewall:
@@ -40,7 +49,352 @@ def validate_entry_frame(frame, side, code, symbol=None):
     return EntryFirewall.verify_can_open(frame, side, code, symbol=symbol)
 
 
-def final_trend_alignment_problem(frame, side):
+def ma_parallel_chop_problem(frame, side, quote=None):
+    """Lock automatic entries on compressed/flat MAs until directional expansion."""
+    from core.services.candle_data import closed_entry_candles
+
+    side = str(side or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return "BLOCKED_MA_PARALLEL_SIDE_INVALID"
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2 or not {
+            "ma5", "ma15", "atr", "close", "open",
+        }.issubset(closed.columns):
+            return "BLOCKED_MA_PARALLEL_DATA_INVALID"
+
+        previous, current = closed.iloc[-2], closed.iloc[-1]
+        live = frame.iloc[-1]
+        live_is_closed = live.get("is_closed", False)
+        has_live = not (
+            live_is_closed is True
+            or (type(live_is_closed).__name__ == "bool_" and bool(live_is_closed))
+        )
+        quote_value = float(
+            quote if quote is not None
+            else live.get("close") if has_live
+            else current.get("close")
+        )
+        current_close = float(current["close"])
+        current_ma5 = float(current["ma5"])
+        current_ma15 = float(current["ma15"])
+        current_atr = float(current["atr"])
+        previous_ma5 = float(previous["ma5"])
+        previous_ma15 = float(previous["ma15"])
+        previous_atr = float(previous["atr"])
+        previous_close = float(previous["close"])
+        values = (
+            quote_value, current_close, current_ma5, current_ma15,
+            current_atr, previous_ma5, previous_ma15, previous_atr,
+            previous_close,
+        )
+        if (
+            not all(math.isfinite(value) and value > 0 for value in values)
+            or current_atr <= 0
+            or previous_atr <= 0
+        ):
+            return "BLOCKED_MA_PARALLEL_DATA_INVALID"
+
+        if has_live:
+            live_close = float(live.get("close"))
+            live_open = float(live.get("open"))
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (live_close, live_open)
+            ):
+                return "BLOCKED_MA_PARALLEL_DATA_INVALID"
+            current_ma5 += (quote_value - current_close) / 5.0
+            current_ma15 += (quote_value - current_close) / 15.0
+            entry_open = live_open
+            entry_close = quote_value
+            release_volume = live.get("volume")
+            release_volume_history = closed["volume"].tail(
+                MA_PARALLEL_RELEASE_VOLUME_BARS,
+            ) if "volume" in closed else ()
+            atr = current_atr
+        else:
+            entry_open = float(current["open"])
+            entry_close = quote_value
+            release_volume = current.get("volume")
+            release_volume_history = closed["volume"].iloc[
+                -(MA_PARALLEL_RELEASE_VOLUME_BARS + 1):-1
+            ] if "volume" in closed else ()
+            atr = current_atr
+
+        if not all(
+            math.isfinite(value) and value > 0
+            for value in (current_ma5, current_ma15, entry_open, entry_close)
+        ):
+            return "BLOCKED_MA_PARALLEL_DATA_INVALID"
+
+        gap = abs(current_ma5 - current_ma15)
+        previous_gap = abs(previous_ma5 - previous_ma15)
+        gap_threshold = max(
+            MA_PARALLEL_GAP_ATR * atr,
+            MA_PARALLEL_GAP_PRICE_PCT * quote_value,
+        )
+        ma5_slope = current_ma5 - previous_ma5
+        ma15_slope = current_ma15 - previous_ma15
+
+        def locked_status():
+            logger.info(
+                "MA_PARALLEL_GATE status=CHOP / PARALLEL_LOCKED side=%s "
+                "gap_atr=%.4f gap_pct=%.4f ma5_slope_atr=%.4f "
+                "ma15_slope_atr=%.4f",
+                side,
+                gap / atr,
+                gap / quote_value,
+                ma5_slope / atr,
+                ma15_slope / atr,
+            )
+            return "BLOCKED_MA_PARALLEL_CHOP"
+
+        def compressed(row_gap, row_threshold, slope5, slope15, row_atr):
+            return (
+                row_gap < row_threshold
+                or (
+                    abs(slope5) < MA_PARALLEL_FLAT_SLOPE_ATR * row_atr
+                    and abs(slope15) < MA_PARALLEL_FLAT_SLOPE_ATR * row_atr
+                )
+            )
+
+        def directional_release(
+            row_open, row_close, row_atr, row_gap, prior_gap,
+            slope5, row_volume, volume_history,
+        ):
+            try:
+                volume_values = [float(value) for value in volume_history]
+                row_volume = float(row_volume)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if (
+                len(volume_values) != MA_PARALLEL_RELEASE_VOLUME_BARS
+                or not all(math.isfinite(value) and value > 0 for value in volume_values)
+                or not math.isfinite(row_volume)
+                or row_volume <= 0
+            ):
+                return False
+            volume_average = sum(volume_values) / len(volume_values)
+            directional_body = (
+                row_close - row_open
+                if side == "LONG"
+                else row_open - row_close
+            )
+            ma5_aligned = slope5 > 0 if side == "LONG" else slope5 < 0
+            return (
+                row_gap > prior_gap
+                and ma5_aligned
+                and directional_body >= MA_PARALLEL_RELEASE_BODY_ATR * row_atr
+                and row_volume
+                >= MA_PARALLEL_RELEASE_VOLUME_MULTIPLIER * volume_average
+            )
+
+        locked = False
+        history_stop = len(closed) if has_live else len(closed) - 1
+        for index in range(1, history_stop):
+            row = closed.iloc[index]
+            row_ma5 = float(row["ma5"])
+            row_ma15 = float(row["ma15"])
+            row_atr = float(row["atr"])
+            row_close = float(row["close"])
+            row_gap = abs(row_ma5 - row_ma15)
+            row_threshold = max(
+                MA_PARALLEL_GAP_ATR * row_atr,
+                MA_PARALLEL_GAP_PRICE_PCT * row_close,
+            )
+            prior_gap = row_gap
+            slope5 = slope15 = 0.0
+            if index:
+                prior = closed.iloc[index - 1]
+                prior_ma5 = float(prior["ma5"])
+                prior_ma15 = float(prior["ma15"])
+                prior_gap = abs(prior_ma5 - prior_ma15)
+                slope5 = row_ma5 - prior_ma5
+                slope15 = row_ma15 - prior_ma15
+            row_locked = compressed(
+                row_gap, row_threshold, slope5, slope15, row_atr,
+            )
+            if row_locked:
+                locked = True
+            elif locked and index >= MA_PARALLEL_RELEASE_VOLUME_BARS:
+                volume_history = (
+                    closed["volume"].iloc[
+                        index - MA_PARALLEL_RELEASE_VOLUME_BARS:index
+                    ] if "volume" in closed else ()
+                )
+                if directional_release(
+                    float(row["open"]), row_close, row_atr, row_gap,
+                    prior_gap, slope5, row.get("volume"), volume_history,
+                ):
+                    locked = False
+
+        if compressed(gap, gap_threshold, ma5_slope, ma15_slope, atr):
+            locked = True
+        elif locked and directional_release(
+            entry_open, entry_close, atr, gap, previous_gap,
+            ma5_slope, release_volume, release_volume_history,
+        ):
+            locked = False
+        if locked:
+            return locked_status()
+
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return "BLOCKED_MA_PARALLEL_DATA_INVALID"
+
+
+def ma5_ma15_entry_gate_problem(frame, side, quote=None):
+    normalized_side = str(side or "").upper()
+    if normalized_side not in ("LONG", "SHORT"):
+        return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
+    structure_problem = market_structure_gate_problem(
+        frame, normalized_side, quote=quote,
+    )
+    if structure_problem:
+        return structure_problem
+    return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
+
+
+def market_structure_gate_problem(frame, side, quote=None):
+    from core.services.candle_data import closed_entry_candles
+
+    normalized_side = str(side or "").upper()
+    if normalized_side not in ("LONG", "SHORT"):
+        return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
+    diagnostics = {
+        "slopes": "unavailable",
+        "gap": "unavailable",
+        "min_gap": "unavailable",
+        "atr": "unavailable",
+        "price": "unavailable",
+    }
+
+    def veto(reason):
+        logger.warning(
+            "MARKET_STRUCTURE_GATE status=VETO reason=%s side=%s "
+            "slopes=%s ma_gap=%s min_gap=%s atr=%s price=%s",
+            reason,
+            normalized_side,
+            diagnostics["slopes"],
+            diagnostics["gap"],
+            diagnostics["min_gap"],
+            diagnostics["atr"],
+            diagnostics["price"],
+        )
+        return reason
+
+    try:
+        closed = closed_entry_candles(frame)
+        required = {
+            "close", "ma5", "ma15", "kc_upper", "kc_middle", "kc_lower", "atr",
+        }
+        if len(closed) < 15:
+            return veto("BLOCKED_INSUFFICIENT_DATA")
+        if not required.issubset(closed.columns):
+            return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+
+        recent = closed.tail(15)
+        values = {
+            name: recent[name].to_numpy(dtype=float)
+            for name in required
+        }
+        if any(not np.isfinite(series).all() or (series <= 0).any()
+               for series in values.values()):
+            return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+        current_atr = float(values["atr"][-1])
+        current_price = float(
+            quote if quote is not None else values["close"][-1]
+        )
+        diagnostics.update(atr=f"{current_atr:.8f}", price=f"{current_price:.8f}")
+        if not math.isfinite(current_price) or current_price <= 0:
+            return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+        if not (
+            values["kc_lower"][-1] < values["kc_middle"][-1]
+            < values["kc_upper"][-1]
+        ):
+            return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+
+        def normalized_slope(series):
+            window = series[-3:]
+            x = np.arange(3, dtype=float)
+            slope = float(np.polyfit(x, window, 1)[0])
+            return slope / current_price
+
+        slopes = {
+            "MA5": normalized_slope(values["ma5"]),
+            "MA15": normalized_slope(values["ma15"]),
+            "KC_UPPER": normalized_slope(values["kc_upper"]),
+            "KC_MIDDLE": normalized_slope(values["kc_middle"]),
+            "KC_LOWER": normalized_slope(values["kc_lower"]),
+        }
+        gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
+        min_gap = max(
+            0.15 * current_atr,
+            MA_PARALLEL_GAP_PRICE_PCT * current_price,
+        )
+        diagnostics.update(
+            slopes=",".join(f"{key}:{value:.8f}" for key, value in slopes.items()),
+            gap=f"{gap:.8f}",
+            min_gap=f"{min_gap:.8f}",
+        )
+
+        for name, slope in slopes.items():
+            if abs(slope) < 0.00015:
+                return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
+
+        if gap < min_gap:
+            return veto(
+                f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
+            )
+
+        window = 10
+        ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
+        crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
+        if len(crosses) > 1:
+            return veto(
+                f"VETO_FREQUENT_MA_CROSSES (count: {len(crosses)} in {window} bars)"
+            )
+        if len(crosses):
+            bars_since_last_cross = (window - 1) - int(crosses[-1])
+            if bars_since_last_cross < 4 and gap < current_atr * 0.25:
+                return veto(
+                    "VETO_CHOP_AFTER_CROSS "
+                    f"(bars_since_cross: {bars_since_last_cross})"
+                )
+
+        ma5_diffs = np.diff(values["ma5"][-12:])
+        direction_turns = np.flatnonzero(np.diff(np.sign(ma5_diffs)))
+        if len(direction_turns) >= 3:
+            return veto(
+                "VETO_REGULAR_WAVE_OSCILLATION "
+                f"(turns: {len(direction_turns)} in 12 bars)"
+            )
+
+        ma5_rising = slopes["MA5"] > 0
+        ma5_falling = slopes["MA5"] < 0
+        ma5 = float(values["ma5"][-1])
+        ma15 = float(values["ma15"][-1])
+        previous_ma5 = float(values["ma5"][-2])
+        if normalized_side == "LONG" and not (
+            ma5 > ma15 and ma5_rising and ma5 > previous_ma5
+        ):
+            return veto("VETO_LONG_MA_CONDITION_NOT_MET")
+        if normalized_side == "SHORT" and not (
+            ma5 < ma15 and ma5_falling and ma5 < previous_ma5
+        ):
+            return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
+        return None
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+        return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+
+
+def require_ma5_ma15_entry_gates(frame, side, quote=None):
+    problem = ma5_ma15_entry_gate_problem(frame, side, quote=quote)
+    if problem:
+        raise ValueError("[FORBIDDEN_ENTRY] " + problem)
+
+
+def final_trend_alignment_problem(frame, side, quote=None):
     """Fail closed unless completed KC and MA5/MA15 agree with the order side."""
     from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
     from core.services.candle_data import closed_entry_candles
@@ -61,30 +415,173 @@ def final_trend_alignment_problem(frame, side):
         if not all(math.isfinite(value) and value > 0 for value in values):
             return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
-        trend = resolve_kc_trend(closed)
+        ma_gate_problem = ma5_ma15_entry_gate_problem(
+            frame, normalized_side, quote=quote,
+        )
+        if ma_gate_problem:
+            return ma_gate_problem
+
+        trend = resolve_kc_trend(frame)
         if normalized_side == "LONG":
+            previous_ma5 = float(previous["ma5"])
+            previous_ma15 = float(previous["ma15"])
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (previous_ma5, previous_ma15)
+            ):
+                return "BLOCKED_FINAL_TREND_DATA_INVALID"
             if trend != "UP":
                 return "BLOCKED_LONG_KC_NOT_UP"
-            if ma5 <= ma15:
-                return "BLOCKED_LONG_MA5_NOT_ABOVE_MA15"
+            if previous_ma5 > previous_ma15:
+                return "BLOCKED_LONG_MA5_GOLDEN_CROSS_NOT_FRESH"
+            current_row = frame.iloc[-1]
+            current_middle = float(current_row.get("kc_middle", kc_middle))
+            current_price = float(
+                quote if quote is not None else current_row.get("close", 0.0)
+            )
+            if (not math.isfinite(current_middle) or current_middle <= 0
+                    or not math.isfinite(current_price) or current_price <= 0):
+                return "BLOCKED_LONG_KC_PRICE_DATA_INVALID"
+            if current_price < current_middle:
+                return "BLOCKED_LONG_PRICE_BELOW_KC_MIDDLE"
         else:
             if trend != "DOWN":
                 return "BLOCKED_SHORT_KC_NOT_DOWN"
-            if ma5 >= ma15:
-                return "BLOCKED_SHORT_MA5_NOT_BELOW_MA15"
+
+            latest_row = frame.iloc[-1]
+            live_bar = (
+                "is_closed" in frame
+                and not bool(latest_row.get("is_closed", True))
+            )
+            try:
+                atr = float(current["atr"])
+                candle_open = float(
+                    latest_row["open"] if live_bar else current["open"]
+                )
+                candle_price = float(
+                    quote if live_bar and quote is not None
+                    else latest_row.get("close", current["close"])
+                    if live_bar
+                    else current["close"]
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return "BLOCKED_SHORT_REVERSAL_DATA_INVALID"
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (atr, candle_open, candle_price)
+            ):
+                return "BLOCKED_SHORT_REVERSAL_DATA_INVALID"
+
+            from core.config import PIVOT_STRONG_BODY_ATR_MULT
+
+            if (
+                candle_price > candle_open
+                and candle_price - candle_open
+                >= PIVOT_STRONG_BODY_ATR_MULT * atr
+            ):
+                return "BLOCKED_SHORT_BULLISH_IMPULSE"
+
+            live_ma5 = latest_row.get("ma5", latest_row.get("_wild_ma5"))
+            if live_bar and live_ma5 is not None:
+                try:
+                    live_ma5 = float(live_ma5)
+                except (TypeError, ValueError, OverflowError):
+                    return "BLOCKED_SHORT_REVERSAL_DATA_INVALID"
+                if math.isnan(live_ma5):
+                    live_ma5 = None
+                elif not math.isfinite(live_ma5) or live_ma5 <= 0:
+                    return "BLOCKED_SHORT_REVERSAL_DATA_INVALID"
+                if live_ma5 is not None and live_ma5 > ma5:
+                    return "BLOCKED_SHORT_LIVE_MA5_TURNING_UP"
+
+            prior_close = float(previous["close"])
+            live_open = float(latest_row.get("open", current["open"]))
+            current_price = float(
+                quote if quote is not None else latest_row.get("close", current["close"])
+            )
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (prior_close, live_open, current_price)
+            ):
+                return "BLOCKED_SHORT_REVERSAL_DATA_INVALID"
+            for average in (ma5, ma15):
+                crossed_up_from_below = (
+                    prior_close <= average < current_price
+                    or (live_bar and live_open <= average < current_price)
+                )
+                if crossed_up_from_below:
+                    return "BLOCKED_SHORT_PRICE_CROSSED_UP_MA"
         return None
     except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
         return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
 
-def require_final_trend_alignment(frame, side, symbol):
+def require_final_trend_alignment(frame, side, symbol, quote=None):
     from core.symbol_aliases import is_auto_entry_symbol
 
     if not is_auto_entry_symbol(symbol):
         return
-    problem = final_trend_alignment_problem(frame, side)
+    problem = final_trend_alignment_problem(frame, side, quote=quote)
     if problem:
         raise ValueError("[FORBIDDEN_ENTRY] " + problem)
+
+
+def require_long_entry_gate(frame, side, symbol, quote=None):
+    if str(side or "").upper() != "LONG":
+        return
+    from core.symbol_aliases import is_auto_entry_symbol
+
+    if not is_auto_entry_symbol(symbol):
+        return
+    problem = final_trend_alignment_problem(frame, "LONG", quote=quote)
+    if problem:
+        raise ValueError("[FORBIDDEN_ENTRY] " + problem)
+
+
+def require_macro_candle_structure(
+    frame,
+    side,
+    quote,
+    symbol,
+    *,
+    entry_pattern,
+    structure_confirmation=None,
+    channel_expanding=False,
+):
+    from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+    from core.services.candle_data import closed_entry_candles
+
+    try:
+        closed = closed_entry_candles(frame)
+        current = frame.iloc[-1] if not bool(frame.iloc[-1].get("is_closed", True)) else closed.iloc[-1]
+        bar = {
+            "open": float(current["open"]),
+            "high": max(float(current["high"]), float(quote)),
+            "low": min(float(current["low"]), float(quote)),
+            "close": float(quote),
+        }
+        indicators = {
+            "kc_upper": float(current["kc_upper"]),
+            "kc_lower": float(current["kc_lower"]),
+            "kc_middle": float(current["kc_middle"]),
+            "ma15": float(current["ma15"]),
+            "atr": float(current["atr"]),
+        }
+        allowed, reason = MacroCandleStructureGate(max_bias_atr=1.2).can_open(
+            side,
+            bar,
+            indicators,
+            symbol=symbol,
+            entry_pattern=entry_pattern,
+            structure_confirmation=structure_confirmation,
+            channel_expanding=channel_expanding,
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "[FORBIDDEN_ENTRY] MACRO_CANDLE_STRUCTURE_DATA_INVALID"
+        ) from exc
+    if not allowed:
+        raise ValueError("[FORBIDDEN_ENTRY] MACRO_CANDLE_STRUCTURE_GATE: " + reason)
 
 
 async def validate_account_entry(account, symbol, side, context):
@@ -180,7 +677,6 @@ async def validate_account_entry(account, symbol, side, context):
             or fresh_frame.attrs.get("timeframe_ms") != 60_000
         ):
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_UNVERIFIED_MARKET_DATA")
-        require_final_trend_alignment(fresh_frame, side, symbol)
         try:
             quote_snapshot = quote_provider(symbol)
             quote = float(quote_snapshot["price"])
@@ -197,6 +693,7 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_INVALID") from exc
         if not quote_fresh:
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_STALE")
+        require_final_trend_alignment(fresh_frame, side, symbol, quote=quote)
 
         code = f"KC_2BAR_CONFIRM_{side}"
         decision = evaluate_entry_contract(
@@ -246,6 +743,15 @@ async def validate_account_entry(account, symbol, side, context):
             or not position_verified
         ):
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_SIGNAL_STALE_OR_INVALID")
+        require_macro_candle_structure(
+            fresh_frame,
+            side,
+            quote,
+            symbol,
+            entry_pattern="BREAKOUT",
+            structure_confirmation="KC_OUTER_BREAKOUT",
+            channel_expanding=True,
+        )
         logger.info(
             "KC2BAR_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
             symbol, side, claim_id,
@@ -355,6 +861,9 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_INVALID") from exc
         if not quote_fresh:
             raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_STALE")
+        require_final_trend_alignment(
+            fresh_frame, side, symbol, quote=quote,
+        )
         position_verified = isinstance(getattr(account, "positions", None), dict)
         if hasattr(account, "last_sync_at"):
             position_verified = (
@@ -381,6 +890,13 @@ async def validate_account_entry(account, symbol, side, context):
         latest_atr = finite_bar_id(closed.iloc[-1]["atr"])
         if latest_atr is None or latest_atr <= 0:
             raise ValueError("[FORBIDDEN_ENTRY] WAIT_ATR_INVALID")
+        require_macro_candle_structure(
+            fresh_frame,
+            side,
+            quote,
+            symbol,
+            entry_pattern="CONTINUATION",
+        )
         logger.info(
             "WAIT_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
             symbol, side, trigger_id,
@@ -614,8 +1130,8 @@ async def validate_account_entry(account, symbol, side, context):
         
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
-    require_final_trend_alignment(frame, side, symbol)
     quote = float(frame.iloc[-1]['close'])
+    require_final_trend_alignment(frame, side, symbol, quote=quote)
     from core.services.entry_contract import (
         evaluate_death_cross_fast_lane,
         evaluate_golden_cross_fast_lane,
@@ -903,6 +1419,23 @@ async def validate_account_entry(account, symbol, side, context):
         decision = evaluate_entry_contract(frame, code=code, account=account, symbol=symbol, diagnostics=diagnostics)
         if decision is None or decision['side'] != side:
             raise ValueError('[FORBIDDEN_ENTRY] 冷卻或最新入口行情不符: ' + diagnostics['reason'])
+    from core.gates.pipeline import (
+        STRATEGY_TYPE_BREAKOUT,
+        entry_strategy_type,
+    )
+    is_breakout = (
+        entry_strategy_type(decision.get("entry_phase"))
+        == STRATEGY_TYPE_BREAKOUT
+    )
+    require_macro_candle_structure(
+        frame,
+        side,
+        float(decision.get("price", frame.iloc[-1]["close"])),
+        symbol,
+        entry_pattern="BREAKOUT" if is_breakout else "CONTINUATION",
+        structure_confirmation="KC_OUTER_BREAKOUT" if is_breakout else None,
+        channel_expanding=is_breakout,
+    )
     from core.gates.pipeline import entry_market_structure_problem
     market_structure_problem = entry_market_structure_problem(
         frame, float(frame.iloc[-1]['close']), side,

@@ -34,6 +34,55 @@ def _signal(side="LONG"):
     }
 
 
+def _add_market_structure_history(frame, side):
+    frame = frame.copy()
+    closed = frame.loc[frame["is_closed"].astype(bool)]
+    if len(closed) >= 15 or len(closed) < 2:
+        return frame
+    previous = closed.iloc[-2]
+    current = closed.iloc[-1]
+    atr = float(current["atr"])
+    ma15 = float(current["ma15"])
+    ma5 = float(current["ma5"])
+    sign = 1.0 if side == "LONG" else -1.0
+    gap = ma5 - ma15 if side == "LONG" else ma15 - ma5
+    if gap > 0 and gap < 0.30 * atr:
+        frame.loc[current.name, "ma5"] = (
+            ma15 + 0.30 * atr if side == "LONG" else ma15 - 0.30 * atr
+        )
+    count = 15 - len(closed)
+    previous_middle = float(previous["kc_middle"])
+    upper_offset = float(previous["kc_upper"] - previous["kc_middle"])
+    lower_offset = float(previous["kc_middle"] - previous["kc_lower"])
+    base_ma5 = float(previous["ma5"])
+    base_ma15 = float(previous["ma15"])
+    base_close = float(previous["close"])
+    ma5_step = 0.5 if side == "LONG" else 1.0
+    ma15_step = 0.25 if side == "LONG" else 0.4
+    history = []
+    first_timestamp = int(closed.iloc[0]["timestamp"])
+    for offset in range(count, 0, -1):
+        middle = previous_middle - sign * 0.1 * offset
+        close = base_close - sign * 0.1 * offset
+        history.append({
+            "timestamp": first_timestamp - offset * 60_000,
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "atr": atr,
+            "ma5": base_ma5 - sign * ma5_step * offset,
+            "ma15": base_ma15 - sign * ma15_step * offset,
+            "kc_middle": middle,
+            "kc_upper": middle + upper_offset,
+            "kc_lower": middle - lower_offset,
+            "is_closed": True,
+        })
+    result = pd.concat([pd.DataFrame(history), frame], ignore_index=True)
+    result.attrs.update(frame.attrs)
+    return result
+
+
 def _claim(authority, symbol="CAP/USDT", side="LONG", signal=None):
     signal = signal or _signal(side)
     canonical = authority.canonical_symbol(symbol)
@@ -138,11 +187,54 @@ def test_kc2bar_final_firewall_revalidates_signal_and_claim(
     claim_id, client_order_id = _claim(
         authority, symbol="龍蝦/USDT", side=side, signal=signal,
     )
-    frame = pd.DataFrame([{"timestamp": 240_000, "is_closed": False}])
+    if side == "LONG":
+        rows = [
+            {
+                "timestamp": 180_000, "open": 99.2, "high": 100.1,
+                "low": 99.0, "close": 99.8, "kc_upper": 100.5,
+                "kc_lower": 98.5, "kc_middle": 99.5, "ma5": 99.8,
+                "ma15": 100.0, "atr": 2.0, "is_closed": True,
+            },
+            {
+                "timestamp": 240_000, "open": 100.0, "high": 101.3,
+                "low": 99.9, "close": 101.2, "kc_upper": 101.0,
+                "kc_lower": 99.0, "kc_middle": 100.0, "ma5": 100.5,
+                "ma15": 100.2, "atr": 2.0, "is_closed": True,
+            },
+            {
+                "timestamp": 300_000, "open": 100.8, "high": 101.3,
+                "low": 100.8, "close": 101.0, "kc_upper": 100.5,
+                "kc_lower": 98.5, "kc_middle": 99.5, "ma15": 100.0,
+                "atr": 2.0, "is_closed": False,
+            },
+        ]
+    else:
+        rows = [
+            {
+                "timestamp": 180_000, "open": 100.8, "high": 101.0,
+                "low": 99.9, "close": 100.2, "kc_upper": 102.0,
+                "kc_lower": 100.0, "kc_middle": 101.0, "ma5": 100.3,
+                "ma15": 100.6, "atr": 2.0, "is_closed": True,
+            },
+            {
+                "timestamp": 240_000, "open": 100.0, "high": 100.1,
+                "low": 98.7, "close": 99.0, "kc_upper": 101.0,
+                "kc_lower": 99.5, "kc_middle": 100.0, "ma5": 99.8,
+                "ma15": 100.2, "atr": 2.0, "is_closed": True,
+            },
+            {
+                "timestamp": 300_000, "open": 99.2, "high": 99.2,
+                "low": 98.7, "close": 99.0, "kc_upper": 101.5,
+                "kc_lower": 99.5, "kc_middle": 100.5, "ma15": 100.0,
+                "atr": 2.0, "is_closed": False,
+            },
+        ]
+    frame = pd.DataFrame(rows)
     frame.attrs.update({
         "entry_finality_verified": True,
         "timeframe_ms": 60_000,
     })
+    frame = _add_market_structure_history(frame, side)
     account = SimpleNamespace(
         positions={},
         closing_lock=set(),
@@ -378,11 +470,22 @@ def test_wait_testnet_submission_reconciles_fills_before_consuming_claim(
         quote_fresh=True, position_open=False,
         authoritative_position_state=True,
     )
-    frame = pd.DataFrame([first, setup, live])
+    frame = pd.DataFrame([
+        {
+            **row,
+            "kc_upper": 110.0,
+            "kc_lower": 90.0,
+            "kc_middle": 99.9 if row["timestamp"] == 60_000 else 100.1,
+            "ma15": 100.0,
+            "ma5": 99.0 if row["timestamp"] == 60_000 else 100.5,
+        }
+        for row in (first, setup, live)
+    ])
     frame.attrs.update({
         "entry_finality_verified": True,
         "timeframe_ms": 60_000,
     })
+    frame = _add_market_structure_history(frame, "LONG")
     account.entry_frame_provider = lambda _symbol: _resolved(frame)
     account.wait_quote_provider = lambda _symbol: {
         "price": 101.0,
@@ -461,11 +564,22 @@ def test_wait_runner_to_paper_account_revalidates_and_consumes_claim(
     )
     assert candidate["status"] == "TRIGGER_AVAILABLE"
 
-    frame = pd.DataFrame([first, setup, live])
+    frame = pd.DataFrame([
+        {
+            **row,
+            "kc_upper": 110.0,
+            "kc_lower": 90.0,
+            "kc_middle": 99.9 if row["timestamp"] == 60_000 else 100.1,
+            "ma15": 100.0,
+            "ma5": 99.0 if row["timestamp"] == 60_000 else 100.5,
+        }
+        for row in (first, setup, live)
+    ])
     frame.attrs.update({
         "entry_finality_verified": True,
         "timeframe_ms": 60_000,
     })
+    frame = _add_market_structure_history(frame, "LONG")
     account = paper_account.PaperAccount()
     account.balance = 200.0
     account.available_balance = 200.0
@@ -514,27 +628,49 @@ def test_kc2bar_runner_to_paper_account_revalidates_and_consumes_claim(
         entry_firewall, "evaluate_entry_contract",
         lambda _frame, **_kwargs: signal,
     )
+    if side == "LONG":
+        previous_middle, current_middle = 99.0, 100.3
+        previous_ma5, current_ma5 = 99.3, 100.2
+        previous_ma15, current_ma15 = 99.5, 99.8
+        confirmation_upper, confirmation_lower = 102.0, 100.2
+        live_upper, live_lower, live_middle = 100.5, 98.5, 99.5
+        live_high, live_low = 101.5, 99.5
+    else:
+        previous_middle, current_middle = 101.0, 99.0
+        previous_ma5, current_ma5 = 100.7, 99.8
+        previous_ma15, current_ma15 = 100.5, 100.2
+        confirmation_upper, confirmation_lower = 99.5, 98.5
+        live_upper, live_lower, live_middle = 101.5, 99.5, 100.5
+        live_high, live_low = 100.5, 98.5
     frame = pd.DataFrame([
         {
-            "timestamp": 120_000, "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.5 if side == "LONG" else 99.5,
-            "atr": 2.0, "is_closed": True,
+            "timestamp": 120_000, "open": 100.0, "high": 100.5,
+            "low": 99.5, "close": 100.0, "atr": 2.0,
+            "kc_upper": 101.0, "kc_lower": 97.0,
+            "kc_middle": previous_middle, "ma5": previous_ma5,
+            "ma15": previous_ma15, "is_closed": True,
         },
         {
-            "timestamp": 180_000, "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.5 if side == "LONG" else 99.5,
-            "atr": 2.0, "is_closed": True,
+            "timestamp": 180_000, "open": 100.0, "high": 101.2,
+            "low": 98.8, "close": 100.8 if side == "LONG" else 99.2,
+            "atr": 2.0, "kc_upper": confirmation_upper,
+            "kc_lower": confirmation_lower,
+            "kc_middle": current_middle, "ma5": current_ma5,
+            "ma15": current_ma15, "is_closed": True,
         },
         {
-            "timestamp": 240_000, "open": 100.0, "high": 101.5, "low": 98.5,
-            "close": 101.0 if side == "LONG" else 99.0,
-            "atr": 2.0, "is_closed": False,
+            "timestamp": 240_000, "open": 100.0, "high": live_high,
+            "low": live_low, "close": signal["price"], "atr": 2.0,
+            "kc_upper": live_upper, "kc_lower": live_lower,
+            "kc_middle": live_middle, "ma15": 100.0,
+            "is_closed": False,
         },
     ])
     frame.attrs.update({
         "entry_finality_verified": True,
         "timeframe_ms": 60_000,
     })
+    frame = _add_market_structure_history(frame, side)
     candidates = symbol_runner._kc2bar_candidates(
         frame, "CAP/USDT", signal["price"],
     )

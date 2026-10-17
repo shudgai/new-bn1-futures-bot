@@ -629,8 +629,15 @@ class PaperAccount:
 
 
         if is_manual:
-            # 手動訂單不需要自動策略訊號碼或行情 provider；持倉、金額、
-            # 餘額、數量精度等帳戶與交易所安全檢查仍在下方照常執行。
+            from core.services.entry_firewall import require_ma5_ma15_entry_gates
+
+            require_ma5_ma15_entry_gates(
+                entry_context.get("entry_gate_frame"),
+                side,
+                quote=entry_context.get("entry_gate_quote", price),
+            )
+            # Manual orders skip strategy-signal validation but still require
+            # the hard MA entry gates and the normal account safety checks.
             entry_decision = {}
         else:
             from core.services.entry_firewall import validate_account_entry

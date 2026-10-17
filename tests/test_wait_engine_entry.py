@@ -45,6 +45,38 @@ def _engine(authority):
     return engine
 
 
+def _valid_market_frame(side):
+    if side == "LONG":
+        middles = range(88, 103)
+        ma5 = [87.0 + index for index in range(12)] + [99.0, 101.0, 103.0]
+        ma15 = [88.0 + index for index in range(12)] + [100.0, 102.0, 102.0]
+        upper_offset, lower_offset = 6.0, 2.0
+    else:
+        middles = range(114, 99, -1)
+        ma5 = [113.0 - index for index in range(12)] + [101.0, 100.0, 99.0]
+        ma15 = [114.0 - index for index in range(12)] + [103.0, 102.0, 101.0]
+        upper_offset, lower_offset = 0.5, 8.0
+    frame = pd.DataFrame([
+        {
+            "timestamp": (index + 1) * 60_000,
+            "open": 100.0,
+            "high": 104.0,
+            "low": 96.0,
+            "close": float(middle) + 0.5,
+            "atr": 2.0,
+            "ma5": ma5[index],
+            "ma15": ma15[index],
+            "kc_middle": float(middle),
+            "kc_upper": float(middle) + upper_offset,
+            "kc_lower": float(middle) - lower_offset,
+            "is_closed": True,
+        }
+        for index, middle in enumerate(middles)
+    ])
+    frame.attrs["timeframe_ms"] = 60_000
+    return frame
+
+
 def _claimed_trigger(authority, symbol="CAP/USDT", side="LONG"):
     first = {
         "timestamp": 60_000, "open": 100.0, "high": 100.5, "low": 99.5,
@@ -86,7 +118,7 @@ def test_wait_entry_uses_shared_submit_lock_and_half_wallet_limit(tmp_path):
     trigger = _claimed_trigger(authority)
     result = asyncio.run(engine.execute_dual_tf_entry(
         symbol="CAP/USDT",
-        frame=pd.DataFrame([{"timestamp": 120_000, "atr": 2.0}]),
+        frame=_valid_market_frame("LONG"),
         price=101.0,
         side="LONG",
         mode_name="WAIT_LIVE_BIG_TRIGGER",
@@ -102,7 +134,7 @@ def test_wait_entry_uses_shared_submit_lock_and_half_wallet_limit(tmp_path):
         entry_mode="CHANNEL_SWING",
     ))
 
-    assert result is True
+    assert result is True, engine.account.logs
     assert engine.account.calls
     submitted = engine.account.calls[0]
     assert submitted["amount_usdt"] <= 100.0
@@ -148,7 +180,7 @@ def test_authority_entry_skips_strategy_only_gates(
 
     result = asyncio.run(engine.execute_dual_tf_entry(
         symbol=symbol,
-        frame=pd.DataFrame([{"timestamp": 120_000, "atr": 2.0}]),
+        frame=_valid_market_frame(side),
         price=101.0 if side == "LONG" else 99.0,
         side=side,
         mode_name="WAIT_LIVE_BIG_TRIGGER",
@@ -269,7 +301,7 @@ def test_kc2bar_engine_entry_uses_durable_claim_and_shared_capital_limit(tmp_pat
     })
     result = asyncio.run(engine.execute_dual_tf_entry(
         symbol="CAP/USDT",
-        frame=pd.DataFrame([{"timestamp": 240_000, "atr": 2.0}]),
+        frame=_valid_market_frame("LONG"),
         price=101.0,
         side="LONG",
         mode_name=signal["type"],
@@ -284,7 +316,7 @@ def test_kc2bar_engine_entry_uses_durable_claim_and_shared_capital_limit(tmp_pat
         entry_mode="CHANNEL_SWING",
     ))
 
-    assert result is True
+    assert result is True, engine.account.logs
     submitted = engine.account.calls[0]
     assert submitted["amount_usdt"] <= 100.0
     assert submitted["entry_context"]["source"] == "KC2BAR_1M"

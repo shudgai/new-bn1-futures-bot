@@ -2417,8 +2417,15 @@ class BinanceTestnetAccount:
 
 
         if is_manual:
-            # 手動開倉略過自動策略訊號/firewall；後續帳戶、餘額、數量與
-            # 交易所保護檢查仍照常執行，持倉會交由 Channel Swing 管理。
+            from core.services.entry_firewall import require_ma5_ma15_entry_gates
+
+            require_ma5_ma15_entry_gates(
+                entry_context.get("entry_gate_frame"),
+                side,
+                quote=entry_context.get("entry_gate_quote", price),
+            )
+            # Manual orders skip strategy-signal validation but still require
+            # the hard MA entry gates and normal account/exchange checks.
             entry_decision = {}
         else:
             from core.services.entry_firewall import validate_account_entry

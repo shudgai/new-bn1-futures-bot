@@ -102,6 +102,14 @@ async def process_manual_order(
         if cost > available_balance:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance"}
 
+        entry_gate_frame = getattr(engine, "data_frames", {}).get(symbol)
+        if entry_gate_frame is None or getattr(entry_gate_frame, "empty", True):
+            return {
+                "success": False,
+                "status_code": 400,
+                "detail": "MA5/MA15 entry gate unavailable: market data is not ready",
+            }
+
         # Get real ATR if available, else fallback
         atr = exec_price * 0.015
         if symbol in getattr(engine, "data_frames", {}):
@@ -133,6 +141,8 @@ async def process_manual_order(
                 "manual_favorable_rail_reached": False,
                 "channel_favorable_rail_reached": False,
                 "entry_atr": atr,
+                "entry_gate_frame": entry_gate_frame,
+                "entry_gate_quote": live_price,
             },
         )
         

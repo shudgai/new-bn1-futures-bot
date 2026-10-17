@@ -2450,6 +2450,16 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', direction_problem, bar)
                 return False
 
+            from core.services.entry_firewall import market_structure_gate_problem
+            structure_problem = market_structure_gate_problem(
+                snapshot["frame"], side, quote=price,
+            )
+            if structure_problem:
+                log_entry_gate(
+                    self, symbol, side, 'EXECUTION', structure_problem, bar,
+                )
+                return False
+
             context['entry_snapshot']['quote_price'] = price
             if pipeline_ttl_grace:
                 context['pipeline_ttl_grace'] = {
@@ -2896,6 +2906,18 @@ class TradingEngine:
             )
             self.account.log(submit_log, "INFO")
             print(submit_log, flush=True)
+
+            from core.services.entry_firewall import market_structure_gate_problem
+            structure_problem = market_structure_gate_problem(
+                frame, side, quote=price,
+            )
+            if structure_problem:
+                self.account.log(
+                    f"MARKET_STRUCTURE_GATE status=VETO reason={structure_problem} "
+                    f"symbol={symbol} side={side}",
+                    "WARNING",
+                )
+                return False
 
             opened = await self.account.open_position(
                 symbol=symbol,
