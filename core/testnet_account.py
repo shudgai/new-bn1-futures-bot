@@ -2587,6 +2587,7 @@ class BinanceTestnetAccount:
             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
             entry_context=entry_context, structural_stop=structural_stop,
         )
+        return success
 
     async def _prepare_leverage(self, symbol: str, leverage: int) -> None:
         # 強制逐倉保證金模式：專案從沒設定過保證金模式，代表可能一直用帳戶

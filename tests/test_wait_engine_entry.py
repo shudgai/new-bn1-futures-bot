@@ -139,6 +139,46 @@ def test_wait_engine_rejects_mismatched_trigger_before_account_submit(tmp_path):
     assert engine.account.calls == []
 
 
+def test_wait_engine_quarantines_other_unknown_claims_before_account_submit(tmp_path):
+    authority = WaitEntryAuthority(tmp_path / "wait.json")
+    engine = _engine(authority)
+    unknown = _claimed_trigger(authority, symbol="LOBSTER/USDT")
+    assert authority.resolve(
+        unknown["trigger_id"],
+        filled_qty=0.0,
+        position_present=False,
+        outcome="UNKNOWN",
+    ) == "UNKNOWN"
+    trigger = _claimed_trigger(authority)
+
+    result = asyncio.run(engine.execute_dual_tf_entry(
+        symbol="CAP/USDT",
+        frame=pd.DataFrame([{"timestamp": 120_000, "atr": 2.0}]),
+        price=101.0,
+        side="LONG",
+        mode_name="WAIT_LIVE_BIG_TRIGGER",
+        meta_dict={
+            "entry_authority": "WAIT",
+            "wait_trigger": trigger,
+            "wait_trigger_id": trigger["trigger_id"],
+            "wait_client_order_id": trigger["client_order_id"],
+            "entry_authority_claim_id": trigger["trigger_id"],
+            "entry_client_order_id": trigger["client_order_id"],
+            "position_uuid": authority.position_uuid_for_trigger(
+                trigger["trigger_id"],
+            ),
+        },
+        entry_mode="CHANNEL_SWING",
+    ))
+
+    assert result is False
+    assert engine.account.calls == []
+    assert any(
+        "ENTRY_AUTHORITY_BLOCK" in message
+        for message, _level in engine.account.logs
+    )
+
+
 def test_kc2bar_engine_entry_uses_durable_claim_and_shared_capital_limit(tmp_path):
     authority = WaitEntryAuthority(tmp_path / "wait.json")
     engine = _engine(authority)

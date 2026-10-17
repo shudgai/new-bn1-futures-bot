@@ -5,10 +5,17 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import ccxt.async_support as ccxt
 
 from core.services import entry_firewall, entry_contract, symbol_runner
 from core.services.entry_firewall import validate_account_entry
 from core.services.wait_entry_authority import WaitEntryAuthority
+from core.services.symbol_runner import (
+    _submit_kc2bar_entry,
+    _submit_wait_entry,
+)
+from core.engine import TradingEngine
+import core.paper_account as paper_account
 from core.testnet_account import BinanceTestnetAccount
 
 
@@ -222,3 +229,341 @@ def test_testnet_restart_reconciliation_requires_matching_position_identity(
 
 async def _refresh(*, force):
     assert force is True
+
+
+class _TestnetEntryExchange:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.position = None
+        self.order = None
+
+    async def load_markets(self):
+        return {}
+
+    def market(self, _symbol):
+        return {
+            "linear": True,
+            "contractSize": 1,
+            "info": {
+                "filters": [
+                    {
+                        "filterType": "LOT_SIZE",
+                        "stepSize": "0.001",
+                        "minQty": "0.001",
+                        "maxQty": "1000000",
+                    },
+                    {
+                        "filterType": "MARKET_LOT_SIZE",
+                        "stepSize": "0.001",
+                        "minQty": "0.001",
+                        "maxQty": "1000000",
+                    },
+                    {
+                        "filterType": "MIN_NOTIONAL",
+                        "notional": "5",
+                    },
+                ],
+            },
+        }
+
+    def amount_to_precision(self, _symbol, amount):
+        return f"{float(amount):.3f}"
+
+    def price_to_precision(self, _symbol, price):
+        return f"{float(price):.4f}"
+
+    async def set_leverage(self, _leverage, _symbol):
+        return None
+
+    async def set_margin_mode(self, _mode, _symbol):
+        return None
+
+    async def create_order(
+        self, symbol, _order_type, side, amount, _price=None, params=None,
+    ):
+        requested = float(amount)
+        filled = requested if self.outcome == "filled" else requested * 0.4
+        status = "closed" if self.outcome == "filled" else "open"
+        self.order = {
+            "id": "mock-order",
+            "symbol": symbol,
+            "side": side,
+            "amount": requested,
+            "filled": filled,
+            "average": 101.0,
+            "status": status,
+            "params": dict(params or {}),
+        }
+        if filled > 0:
+            self.position = {
+                "side": "LONG" if side == "buy" else "SHORT",
+                "qty": filled,
+                "entry_price": 101.0,
+            }
+        return dict(self.order)
+
+    async def cancel_order(self, _order_id, _symbol, _params=None):
+        if self.outcome == "ambiguous_partial":
+            raise ccxt.NetworkError("mock cancel acknowledgement unknown")
+        if self.order is not None:
+            self.order["status"] = "canceled"
+        return {}
+
+    async def fetch_order(self, _order_id, _symbol, _params=None):
+        if self.outcome == "ambiguous_partial":
+            raise ccxt.NetworkError("mock order reconciliation unavailable")
+        return dict(self.order)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "opened", "claim_status"),
+    [
+        ("filled", True, "CONSUMED"),
+        ("partial_terminal", True, "CONSUMED"),
+        ("ambiguous_partial", False, "UNKNOWN"),
+    ],
+)
+def test_wait_testnet_submission_reconciles_fills_before_consuming_claim(
+    tmp_path, monkeypatch, outcome, opened, claim_status,
+):
+    from core import config
+
+    monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
+    exchange = _TestnetEntryExchange(outcome)
+    account = BinanceTestnetAccount(
+        exchange,
+        state_file=str(tmp_path / f"testnet_{outcome}.json"),
+    )
+    account_logs = []
+    account.log = lambda message, *_args: account_logs.append(str(message))
+    account.balance = 200.0
+    account.available_balance = 200.0
+    account._is_live_mainnet = lambda: False
+    account._prepare_leverage = _async_noop
+    account._cancel_all_orders = _async_noop
+
+    async def refresh(*, force=False):
+        assert force is True
+        account.last_sync_at = time.time()
+        if exchange.position is not None:
+            account.positions["CAP/USDT"] = {
+                **account.position_meta.get("CAP/USDT", {}),
+                **exchange.position,
+            }
+        return 0.0
+
+    account.refresh = refresh
+    authority = WaitEntryAuthority(tmp_path / f"authority_{outcome}.json")
+    account.wait_entry_authority = authority
+    first = {
+        "timestamp": 60_000, "open": 100.0, "high": 100.5, "low": 99.5,
+        "close": 100.0, "atr": 2.0, "is_closed": True,
+    }
+    setup = {
+        "timestamp": 120_000, "open": 100.0, "high": 100.2, "low": 99.4,
+        "close": 99.6, "atr": 2.0, "is_closed": True,
+    }
+    live = {
+        "timestamp": 180_000, "open": 100.0, "high": 101.2, "low": 99.8,
+        "close": 100.2, "atr": 2.0, "is_closed": False,
+    }
+    authority.observe(
+        "CAP/USDT", [first],
+        {**first, "timestamp": 120_000, "is_closed": False},
+        100.0, quote_fresh=True, position_open=False,
+        authoritative_position_state=True,
+    )
+    candidate = authority.observe(
+        "CAP/USDT", [first, setup], live, 101.0,
+        quote_fresh=True, position_open=False,
+        authoritative_position_state=True,
+    )
+    frame = pd.DataFrame([first, setup, live])
+    frame.attrs.update({
+        "entry_finality_verified": True,
+        "timeframe_ms": 60_000,
+    })
+    account.entry_frame_provider = lambda _symbol: _resolved(frame)
+    account.wait_quote_provider = lambda _symbol: {
+        "price": 101.0,
+        "observed_at": time.monotonic(),
+    }
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = account
+    engine.wait_entry_authority = authority
+    engine.symbol_rotation = SimpleNamespace(
+        get_dynamic_leverage=lambda _symbol, _score: 5,
+    )
+
+    submitted = asyncio.run(
+        _submit_wait_entry(engine, "CAP/USDT", frame, candidate),
+    )
+
+    assert submitted is opened, account_logs
+    assert exchange.order["params"]["newClientOrderId"] == (
+        "WAIT" + candidate["trigger_id"][:32]
+    )
+    assert authority._data["claims"][candidate["trigger_id"]]["status"] == (
+        claim_status
+    )
+    if outcome == "ambiguous_partial":
+        assert "CAP/USDT" in account.positions
+        assert authority.has_unknown_claims()
+    else:
+        assert account.positions["CAP/USDT"]["position_uuid"] == (
+            authority.position_uuid_for_trigger(candidate["trigger_id"])
+        )
+
+
+async def _async_noop(*_args, **_kwargs):
+    return None
+
+
+def test_wait_runner_to_paper_account_revalidates_and_consumes_claim(
+    tmp_path, monkeypatch,
+):
+    from core import config
+
+    monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
+    monkeypatch.setattr(
+        paper_account, "STATE_FILE", str(tmp_path / "paper_account.json"),
+    )
+    authority = WaitEntryAuthority(tmp_path / "wait.json")
+    first = {
+        "timestamp": 60_000, "open": 100.0, "high": 100.5, "low": 99.5,
+        "close": 100.0, "atr": 2.0, "is_closed": True,
+    }
+    setup = {
+        "timestamp": 120_000, "open": 100.0, "high": 100.2, "low": 99.4,
+        "close": 99.6, "atr": 2.0, "is_closed": True,
+    }
+    live = {
+        "timestamp": 180_000, "open": 100.0, "high": 101.2, "low": 99.8,
+        "close": 100.2, "atr": 2.0, "is_closed": False,
+    }
+    assert authority.observe(
+        "CAP/USDT",
+        [first],
+        {**first, "timestamp": 120_000, "is_closed": False},
+        100.0,
+        quote_fresh=True,
+        position_open=False,
+        authoritative_position_state=True,
+    )["status"] == "WAIT_BASELINE_ESTABLISHED"
+    candidate = authority.observe(
+        "CAP/USDT",
+        [first, setup],
+        live,
+        101.0,
+        quote_fresh=True,
+        position_open=False,
+        authoritative_position_state=True,
+    )
+    assert candidate["status"] == "TRIGGER_AVAILABLE"
+
+    frame = pd.DataFrame([first, setup, live])
+    frame.attrs.update({
+        "entry_finality_verified": True,
+        "timeframe_ms": 60_000,
+    })
+    account = paper_account.PaperAccount()
+    account.balance = 200.0
+    account.available_balance = 200.0
+    account.entry_frame_provider = lambda _symbol: _resolved(frame)
+    account.wait_quote_provider = lambda _symbol: {
+        "price": 101.0,
+        "observed_at": time.monotonic(),
+    }
+    account.wait_entry_authority = authority
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = account
+    engine.wait_entry_authority = authority
+    engine.symbol_rotation = SimpleNamespace(
+        get_dynamic_leverage=lambda _symbol, _score: 5,
+    )
+
+    opened = asyncio.run(_submit_wait_entry(
+        engine, "CAP/USDT", frame, candidate,
+    ))
+
+    assert opened is True
+    position = account.positions["CAP/USDT"]
+    assert position["entry_authority_claim_id"] == candidate["trigger_id"]
+    assert position["position_uuid"] == authority.position_uuid_for_trigger(
+        candidate["trigger_id"],
+    )
+    assert authority._data["claims"][candidate["trigger_id"]]["status"] == "CONSUMED"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_kc2bar_runner_to_paper_account_revalidates_and_consumes_claim(
+    tmp_path, monkeypatch, side,
+):
+    from core import config
+
+    monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
+    monkeypatch.setattr(
+        paper_account, "STATE_FILE", str(tmp_path / f"paper_{side}.json"),
+    )
+    signal = _signal(side)
+    monkeypatch.setattr(
+        entry_contract, "evaluate_entry_contract",
+        lambda _frame, **_kwargs: signal,
+    )
+    monkeypatch.setattr(
+        entry_firewall, "evaluate_entry_contract",
+        lambda _frame, **_kwargs: signal,
+    )
+    frame = pd.DataFrame([
+        {
+            "timestamp": 120_000, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5 if side == "LONG" else 99.5,
+            "atr": 2.0, "is_closed": True,
+        },
+        {
+            "timestamp": 180_000, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5 if side == "LONG" else 99.5,
+            "atr": 2.0, "is_closed": True,
+        },
+        {
+            "timestamp": 240_000, "open": 100.0, "high": 101.5, "low": 98.5,
+            "close": 101.0 if side == "LONG" else 99.0,
+            "atr": 2.0, "is_closed": False,
+        },
+    ])
+    frame.attrs.update({
+        "entry_finality_verified": True,
+        "timeframe_ms": 60_000,
+    })
+    candidates = symbol_runner._kc2bar_candidates(
+        frame, "CAP/USDT", signal["price"],
+    )
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    authority = WaitEntryAuthority(tmp_path / f"wait_{side}.json")
+    account = paper_account.PaperAccount()
+    account.balance = 200.0
+    account.available_balance = 200.0
+    account.entry_frame_provider = lambda _symbol: _resolved(frame)
+    account.wait_quote_provider = lambda _symbol: {
+        "price": signal["price"],
+        "observed_at": time.monotonic(),
+    }
+    account.wait_entry_authority = authority
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = account
+    engine.wait_entry_authority = authority
+    engine.symbol_rotation = SimpleNamespace(
+        get_dynamic_leverage=lambda _symbol, _score: 5,
+    )
+
+    asyncio.run(_submit_kc2bar_entry(
+        engine, "CAP/USDT", frame, candidate,
+    ))
+
+    position = account.positions["CAP/USDT"]
+    assert position["entry_authority_claim_id"] == candidate["trigger_id"]
+    assert position["position_uuid"] == authority.position_uuid_for_trigger(
+        candidate["trigger_id"],
+    )
+    assert authority._data["claims"][candidate["trigger_id"]]["status"] == "CONSUMED"
