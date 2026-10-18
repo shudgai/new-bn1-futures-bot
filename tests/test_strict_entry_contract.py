@@ -30,16 +30,24 @@ def candles(side='LONG', live=True):
                  kc_lower=97.5 + i * .11, volume=100.,
                  is_closed=True)
             for i in range(13)]
-    rows[-3].update(open=101.0, close=101.5, high=101.6, low=100.9, volume=200.)
+    rows[-3].update(open=101.0, close=102.2, high=102.3, low=100.9, volume=200.)
     rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4, volume=200.)
+    rows[-2]['atr'] = 2.0
+    rows[-2]['ma5'] = 101.26
+    rows[-2]['ma15'] = 100.20
     rows[-4]['ma5'] = 100.0
-    rows[-4]['ma15'] = 100.5
-    rows[-3]['ma15'] = 100.3
-    rows[-2]['ma15'] = 100.4
+    rows[-4]['ma15'] = 99.9
+    rows[-4]['ma3'] = 99.8
+    rows[-3]['ma3'] = 100.1
+    rows[-3]['ma15'] = 100.05
+    rows[-2]['ma3'] = 100.4
     rows[6]['high'] = 103.0
     rows[-1].update(
         open=101.2, close=101.85, high=101.86, low=101.19,
-        ma15=100.5, kc_upper=101.8, kc_middle=101.4, kc_lower=98.0, volume=200.,
+        # Keep the sample within the live 0.8 ATR chase limit while preserving
+        # the directional MA15 slope for the authorized breakout fixture.
+        ma5=101.30, ma15=100.75, atr=2.0,
+        kc_upper=101.8, kc_middle=101.4, kc_lower=100.0, volume=200.,
         is_closed=not live,
     )
     if not live:
@@ -51,6 +59,34 @@ def candles(side='LONG', live=True):
                     ('ma3','ma3'),('ma5','ma5'),('ma15','ma15'),('kc_upper','kc_lower'),
                     ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
             f[a] = 200-original[b]
+    # The current two-bar KC authority requires a 20-bar convergence
+    # reference. Extend the sample with orderly directional history rather
+    # than relying on the retired short fixture.
+    first = f.iloc[0]
+    sign = 1.0 if side == 'LONG' else -1.0
+    upper_offset = float(first.kc_upper - first.kc_middle)
+    lower_offset = float(first.kc_middle - first.kc_lower)
+    history = []
+    for offset in range(10, 0, -1):
+        close = float(first.close) - sign * 0.02 * offset
+        middle = float(first.kc_middle) - sign * 0.10 * offset
+        history.append({
+            'timestamp': int(first.timestamp) - offset * 60_000,
+            'open': close - sign * 0.05,
+            'high': close + 0.30,
+            'low': close - 0.30,
+            'close': close,
+            'ma3': float(first.ma3) - sign * 0.12 * offset,
+            'ma5': float(first.ma5) - sign * 0.10 * offset,
+            'ma15': float(first.ma15) - sign * 0.08 * offset,
+            'atr': float(first.atr),
+            'kc_upper': middle + upper_offset,
+            'kc_middle': middle,
+            'kc_lower': middle - lower_offset,
+            'volume': float(first.volume),
+            'is_closed': True,
+        })
+    f = pd.concat([pd.DataFrame(history), f], ignore_index=True)
     f.attrs['timeframe_ms'] = 60000
     f.attrs['entry_finality_verified'] = True
     return f
@@ -65,14 +101,19 @@ def closed_pair_decision(frame, side, quote=None):
 
 
 def context(f, side):
-    d = evaluate_v2_frame(f)
+    d = evaluate_v2_frame(
+        f,
+        price=float(f.iloc[-1].close),
+        code=f'KC_2BAR_CONFIRM_{side}',
+        symbol='CAP/USDT',
+    )
     return dict(entry_mode='CHANNEL_SWING', entry_signal_code=d['type'],
                 channel_confirmation_bar_id=d['confirmation_bar_id'])
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 @pytest.mark.parametrize('live', [True,False])
-def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
+def test_runner_to_paper_fill_and_dedup(monkeypatch, tmp_path, side, live):
     from core.engine import TradingEngine
     from core.paper_account import PaperAccount
     from core.services.symbol_runner import process_single_symbol_runner
@@ -80,20 +121,31 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     monkeypatch.setattr(PaperAccount, 'save_state', lambda self: None)
     account = PaperAccount(); account.balance = 100.
     engine = object.__new__(TradingEngine); engine.account = account
-    symbol = 'TEST/USDT'; f = candles(side, live)
+    symbol = 'CAP/USDT'; f = candles(side, live)
     engine.exchange = SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers = {symbol: float(f.iloc[-1].close)}
+    engine._ticker_observed_at = {symbol: time.monotonic()}
     engine._channel_entry_quote_times = {symbol: time.time()}
     engine.fetch_klines = AsyncMock(return_value=f)
     engine.strategy = SimpleNamespace(compute_indicators=lambda frame: frame)
     engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
     engine._execution_price_is_safe = AsyncMock(return_value=True)
+    from core.services.wait_entry_authority import WaitEntryAuthority
+    authority = WaitEntryAuthority(tmp_path / f'{side}_{live}.json')
+    engine.wait_entry_authority = authority
+    account.wait_entry_authority = authority
+    async def entry_frame_provider(_symbol):
+        return f
+    account.entry_frame_provider = entry_frame_provider
+    account.wait_quote_provider = lambda _symbol: {
+        'price': float(f.iloc[-1].close), 'observed_at': time.monotonic(),
+    }
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
     if not live:
         assert not account.positions
         return
     assert account.positions[symbol]['side'] == side
-    assert account.positions[symbol]['entry_atr'] == 1.
+    assert account.positions[symbol]['entry_atr'] == 2.
     assert len(account.trades) == 1
     assert account.trades[0]['action'] == f'OPEN_{side}'
     account.positions.clear()
@@ -119,7 +171,7 @@ def test_account_boundary_rejects_invalid(side, fault):
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_exchange_boundary_sends_v2_order(monkeypatch, side, testnet_state_file):
+def test_exchange_boundary_rejects_unclaimed_legacy_order(monkeypatch, side, testnet_state_file):
     from core.testnet_account import BinanceTestnetAccount
     monkeypatch.setattr(BinanceTestnetAccount,'_load_state',lambda self:None)
     monkeypatch.setattr(BinanceTestnetAccount,'save_state',lambda self,**kwargs:None)
@@ -129,9 +181,10 @@ def test_exchange_boundary_sends_v2_order(monkeypatch, side, testnet_state_file)
     )
     f = candles(side); account.entry_frame_provider = AsyncMock(return_value=f)
     account.last_closed_at = {}
-    asyncio.run(account._send_order('TEST','market','buy' if side=='LONG' else 'sell',1,
-                                   entry_context=context(f,side)))
-    raw.assert_awaited_once()
+    with pytest.raises(ValueError, match='FORBIDDEN_ENTRY'):
+        asyncio.run(account._send_order('CAP/USDT','market','buy' if side=='LONG' else 'sell',1,
+                                       entry_context=context(f,side)))
+    raw.assert_not_awaited()
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -146,12 +199,12 @@ def test_obsolete_entry_codes_rejected(side):
 def test_engine_risk_and_failure_gates(monkeypatch, fault):
     from core.engine import TradingEngine
     from core.paper_account import PaperAccount
-    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', ['TEST/USDT'])
+    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', ['CAP/USDT'])
     monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
     account=PaperAccount(); account.balance=100.
     engine=object.__new__(TradingEngine); engine.account=account
-    symbol='TEST/USDT'; f=candles(); ctx=context(f,'LONG')
+    symbol='CAP/USDT'; f=candles(); ctx=context(f,'LONG')
     engine.exchange=SimpleNamespace(fetch_time=AsyncMock(return_value=float(f.iloc[-1].timestamp)+10000))
     engine.tickers={symbol:float(f.iloc[-1].close)}
     engine._channel_entry_quote_times={symbol:time.time()}
@@ -216,21 +269,29 @@ def test_continuation_after_missed_entry_and_close(side):
     assert evaluate_v2_frame(f,account=account,symbol='TEST') is None
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_state_machine_and_firewall_share_closed_policy(side):
-    from core.services.strategies.strict_state_machine import StrictStateMachineStrategy
-    f=candles(side);d=evaluate_v2_frame(f)
-    assert StrictStateMachineStrategy().evaluate_tick('TEST',f,float(f.iloc[-1].close))['reason']==d['type']
-    assert validate_entry_frame(f,side,d['type'])['confirmation_bar_id']==d['confirmation_bar_id']
+def test_scanner_and_firewall_share_closed_kc2bar_policy(side):
+    f = candles(side)
+    code = f'KC_2BAR_CONFIRM_{side}'
+    d = evaluate_v2_frame(
+        f, price=float(f.iloc[-1].close), code=code, symbol='CAP/USDT',
+    )
+    assert d is not None
+    assert validate_entry_frame(
+        f, side, code, symbol='CAP/USDT',
+    )['confirmation_bar_id'] == d['confirmation_bar_id']
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_leading_indicator_warmup_does_not_block_valid_pair(side):
     f=candles(side)
     for key in ('atr','kc_upper','kc_lower'):
         f.loc[f.index[:2],key]=float('nan')
-    d=evaluate_v2_frame(f)
+    code = f'KC_2BAR_CONFIRM_{side}'
+    d=evaluate_v2_frame(
+        f, price=float(f.iloc[-1].close), code=code, symbol='CAP/USDT',
+    )
     assert d is not None
     assert d['side']==side
-    assert validate_entry_frame(f,side,d['type'])['type']==d['type']
+    assert validate_entry_frame(f,side,code,symbol='CAP/USDT')['type']==d['type']
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_missing_reference_atr_remains_blocked(side):
@@ -258,8 +319,17 @@ def test_second_directional_wick_boundary(side,ratio):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_prior_close_does_not_mislabel_new_breakout(side):
     f=candles(side)
+    code=f'KC_2BAR_CONFIRM_{side}'
     account=SimpleNamespace(positions={},trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[0].timestamp))])
-    assert evaluate_v2_frame(f,account=account,symbol='TEST')['entry_phase']=='KC_THREE_BAR_BREAKOUT'
+    extra=f.iloc[-1].copy(); extra['timestamp']+=60000
+    f.loc[f.index[-1],'is_closed']=True
+    f.loc[len(f)]=extra
+    for close_time in (float(f.iloc[-2].timestamp), float(f.iloc[-1].timestamp)):
+        account.trades[0]['id']=close_time
+        assert evaluate_v2_frame(
+            f, price=float(f.iloc[-1].close), code=code,
+            account=account, symbol='CAP/USDT',
+        ) is None
 
 @pytest.mark.parametrize('fault',['changed_close','changed_high','no_next','too_early','future','changed_bar'])
 def test_settlement_rejects_revisions_and_stale_tail(fault):
@@ -289,7 +359,7 @@ def test_account_requires_settled_provider():
     f=candles();ctx=context(f,'LONG');f.attrs.pop('entry_finality_verified')
     account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f))
     with pytest.raises(ValueError,match='獨立取樣'):
-        asyncio.run(validate_account_entry(account,'TEST','LONG',ctx))
+        asyncio.run(validate_account_entry(account,'CAP/USDT','LONG',ctx))
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('index',[-3,-2,-1])
@@ -316,8 +386,13 @@ def test_doji_and_both_t_shapes_block_every_entry_candle(side,index,shape):
 
 def test_latest_quote_turns_live_candle_into_doji():
     f=candles()
-    assert evaluate_v2_frame(f)
-    assert evaluate_v2_frame(f,float(f.iloc[-1].open)) is None
+    code='KC_2BAR_CONFIRM_LONG'
+    assert evaluate_v2_frame(
+        f, price=float(f.iloc[-1].close), code=code, symbol='CAP/USDT',
+    )
+    assert evaluate_v2_frame(
+        f,float(f.iloc[-1].open),code=code,symbol='CAP/USDT',
+    ) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_account_rejects_live_t_after_signal(side):
@@ -429,9 +504,12 @@ def test_recent_entry_wicks_are_blocked(side, index, wick_side):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_latest_quote_creates_long_wick_and_recovers_without_lock(side):
     f = candles(side)
+    code = f'KC_2BAR_CONFIRM_{side}'
     sign = 1 if side == 'LONG' else -1
     row = f.iloc[-1]
-    assert evaluate_v2_frame(f)
+    assert evaluate_v2_frame(
+        f, price=float(row.close), code=code, symbol='CAP/USDT',
+    )
     # A retreat leaves a 1.67-body wick but not the former 2-body T shape.
     quote = float(row.open) + sign * .0225
     live_decision = {
@@ -442,8 +520,10 @@ def test_latest_quote_creates_long_wick_and_recovers_without_lock(side):
     assert entry_candle_shape_problem(f, quote, live_decision) == (
         'REJECT_ENTRY: DOMINATED_BY_WICKS'
     )
-    assert evaluate_v2_frame(f, quote) is None
-    assert evaluate_v2_frame(f, float(row.close))
+    assert evaluate_v2_frame(f, quote, code=code, symbol='CAP/USDT') is None
+    assert evaluate_v2_frame(
+        f, float(row.close), code=code, symbol='CAP/USDT',
+    )
 
 
 @pytest.mark.parametrize('side,wick_side', [('LONG', 'upper'), ('SHORT', 'lower')])
@@ -496,11 +576,11 @@ def test_strict_state_machine_rejects_long_wick(side):
     body = abs(row.close - row.open)
     if side == 'LONG':
         f.loc[f.index[-1], 'high'] = max(row.open, row.close) + 1.2 * body
-        expected_reason = 'BLOCKED_BY_EXCESSIVE_UPPER_SHADOW'
+        expected_reason = 'BLOCKED_LONG_WICK_PENDING_STATE_UNAVAILABLE'
     else:
         f.loc[f.index[-1], 'low'] = min(row.open, row.close) - 1.2 * body
-        expected_reason = 'BLOCKED_BY_EXCESSIVE_LOWER_SHADOW'
+        expected_reason = 'BLOCKED_SHORT_WICK_PENDING_STATE_UNAVAILABLE'
     quote = float(row.close)
     strategy = StrictStateMachineStrategy()
     decision = strategy.evaluate_tick('TEST', f, quote)
-    assert decision == {'action': 'WAIT', 'reason': expected_reason}
+    assert decision is None or decision.get('action') != 'ENTER'

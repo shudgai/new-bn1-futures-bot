@@ -231,19 +231,19 @@ def test_kc2bar_final_firewall_revalidates_signal_and_claim(
     if side == "LONG":
         rows = [
             {
-                "timestamp": 180_000, "open": 99.2, "high": 100.1,
-                "low": 99.0, "close": 99.8, "kc_upper": 100.5,
+                "timestamp": 120_000, "open": 99.2, "high": 100.7,
+                "low": 99.0, "close": 100.6, "kc_upper": 100.5,
                 "kc_lower": 98.5, "kc_middle": 99.5, "ma5": 99.8,
                 "ma15": 100.0, "atr": 2.0, "is_closed": True,
             },
             {
-                "timestamp": 240_000, "open": 100.0, "high": 101.3,
+                "timestamp": 180_000, "open": 100.0, "high": 101.3,
                 "low": 99.9, "close": 101.2, "kc_upper": 101.0,
                 "kc_lower": 99.0, "kc_middle": 100.0, "ma5": 100.5,
                 "ma15": 100.2, "atr": 2.0, "is_closed": True,
             },
             {
-                "timestamp": 300_000, "open": 100.8, "high": 101.3,
+                "timestamp": 240_000, "open": 100.8, "high": 101.3,
                 "low": 100.8, "close": 101.0, "kc_upper": 100.5,
                 "kc_lower": 98.5, "kc_middle": 99.5, "ma15": 100.0,
                 "atr": 2.0, "is_closed": False,
@@ -252,19 +252,19 @@ def test_kc2bar_final_firewall_revalidates_signal_and_claim(
     else:
         rows = [
             {
-                "timestamp": 180_000, "open": 100.8, "high": 101.0,
-                "low": 99.9, "close": 100.2, "kc_upper": 102.0,
+                "timestamp": 120_000, "open": 100.8, "high": 101.0,
+                "low": 99.7, "close": 99.8, "kc_upper": 102.0,
                 "kc_lower": 100.0, "kc_middle": 101.0, "ma5": 100.3,
                 "ma15": 100.6, "atr": 2.0, "is_closed": True,
             },
             {
-                "timestamp": 240_000, "open": 100.0, "high": 100.1,
+                "timestamp": 180_000, "open": 100.0, "high": 100.1,
                 "low": 98.7, "close": 99.0, "kc_upper": 101.0,
                 "kc_lower": 99.5, "kc_middle": 100.0, "ma5": 99.8,
                 "ma15": 100.2, "atr": 2.0, "is_closed": True,
             },
             {
-                "timestamp": 300_000, "open": 99.2, "high": 99.2,
+                "timestamp": 240_000, "open": 99.2, "high": 99.2,
                 "low": 98.7, "close": 99.0, "kc_upper": 101.5,
                 "kc_lower": 99.5, "kc_middle": 100.5, "ma15": 100.0,
                 "atr": 2.0, "is_closed": False,
@@ -498,7 +498,7 @@ def test_wait_testnet_submission_reconciles_fills_before_consuming_claim(
     }
     live = {
         "timestamp": 180_000, "open": 100.0, "high": 101.2, "low": 99.8,
-        "close": 100.2, "atr": 2.0, "is_closed": False,
+        "close": 101.0, "atr": 2.0, "is_closed": False,
     }
     authority.observe(
         "CAP/USDT", [first],
@@ -518,7 +518,10 @@ def test_wait_testnet_submission_reconciles_fills_before_consuming_claim(
             "kc_lower": 90.0,
             "kc_middle": 99.9 if row["timestamp"] == 60_000 else 100.1,
             "ma15": 100.0,
-            "ma5": 99.0 if row["timestamp"] == 60_000 else 100.5,
+            "ma5": (
+                99.0 if row["timestamp"] == 60_000 else
+                101.0 if row["timestamp"] == 180_000 else 100.5
+            ),
         }
         for row in (first, setup, live)
     ])
@@ -583,7 +586,7 @@ def test_wait_runner_to_paper_account_revalidates_and_consumes_claim(
     }
     live = {
         "timestamp": 180_000, "open": 100.0, "high": 101.2, "low": 99.8,
-        "close": 100.2, "atr": 2.0, "is_closed": False,
+        "close": 101.0, "atr": 2.0, "is_closed": False,
     }
     assert authority.observe(
         "CAP/USDT",
@@ -612,7 +615,10 @@ def test_wait_runner_to_paper_account_revalidates_and_consumes_claim(
             "kc_lower": 90.0,
             "kc_middle": 99.9 if row["timestamp"] == 60_000 else 100.1,
             "ma15": 100.0,
-            "ma5": 99.0 if row["timestamp"] == 60_000 else 100.5,
+            "ma5": (
+                99.0 if row["timestamp"] == 60_000 else
+                101.0 if row["timestamp"] == 180_000 else 100.5
+            ),
         }
         for row in (first, setup, live)
     ])
@@ -677,7 +683,7 @@ def test_kc2bar_runner_to_paper_account_revalidates_and_consumes_claim(
         live_upper, live_lower, live_middle = 100.5, 98.5, 99.5
         live_high, live_low = 101.5, 99.5
     else:
-        previous_middle, current_middle = 101.0, 99.0
+        previous_middle, current_middle = 101.0, 99.7
         previous_ma5, current_ma5 = 100.7, 99.8
         previous_ma15, current_ma15 = 100.5, 100.2
         confirmation_upper, confirmation_lower = 99.5, 98.5
@@ -685,25 +691,29 @@ def test_kc2bar_runner_to_paper_account_revalidates_and_consumes_claim(
         live_high, live_low = 100.5, 98.5
     frame = pd.DataFrame([
         {
-            "timestamp": 120_000, "open": 100.0, "high": 100.5,
-            "low": 99.5, "close": 100.0, "atr": 2.0,
-            "kc_upper": 101.0, "kc_lower": 97.0,
+                "timestamp": 120_000, "open": 100.0,
+                "high": 102.2 if side == "LONG" else 100.5,
+                "low": 99.5 if side == "LONG" else 97.8,
+                "close": 102.0 if side == "LONG" else 98.0, "atr": 2.0,
+                "kc_upper": 101.0, "kc_lower": 97.0 if side == "LONG" else 99.0,
             "kc_middle": previous_middle, "ma5": previous_ma5,
             "ma15": previous_ma15, "is_closed": True,
         },
         {
-            "timestamp": 180_000, "open": 100.0, "high": 101.2,
-            "low": 98.8, "close": 100.8 if side == "LONG" else 99.2,
-            "atr": 2.0, "kc_upper": confirmation_upper,
-            "kc_lower": confirmation_lower,
+                "timestamp": 180_000, "open": 100.0, "high": 101.2,
+                "low": 98.8, "close": 100.8 if side == "LONG" else 99.2,
+                "atr": 2.0, "kc_upper": 100.5 if side == "LONG" else 101.0,
+                "kc_lower": 99.0 if side == "LONG" else 99.5,
             "kc_middle": current_middle, "ma5": current_ma5,
             "ma15": current_ma15, "is_closed": True,
         },
         {
             "timestamp": 240_000, "open": 100.0, "high": live_high,
-            "low": live_low, "close": signal["price"], "atr": 2.0,
+                "low": live_low, "close": signal["price"], "atr": 2.0,
             "kc_upper": live_upper, "kc_lower": live_lower,
-            "kc_middle": live_middle, "ma15": 100.0,
+                "kc_middle": live_middle,
+                "ma5": current_ma5 + (0.3 if side == "LONG" else -0.3),
+                "ma15": 100.0,
             "is_closed": False,
         },
     ])

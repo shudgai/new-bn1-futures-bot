@@ -57,6 +57,13 @@ def _kc2bar_candidates(frame, symbol, quote):
             or live_bar_id != confirmation_bar_id + 60_000
         ):
             continue
+        # Claims hash canonical integer candle IDs. Normalize the signal copy
+        # too, otherwise an equivalent float ID (``123.0``) hashes differently
+        # at the engine's final authorization check (``123``).
+        decision = dict(decision)
+        decision["breakout_bar_id"] = breakout_bar_id
+        decision["pair_confirmation_bar_id"] = confirmation_bar_id
+        decision["confirmation_bar_id"] = live_bar_id
         signal_id = str(decision.get("pending_signal_id") or "")
         if signal_id != f"{side}:{breakout_bar_id}:{confirmation_bar_id}":
             continue

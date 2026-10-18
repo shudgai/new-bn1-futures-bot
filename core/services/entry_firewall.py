@@ -36,7 +36,14 @@ class EntryFirewall:
                 "[FORBIDDEN_ENTRY] AUTOMATIC_ENTRY_SYMBOL_DISABLED: "
                 + str(symbol)
             )
-        require_final_trend_alignment(frame, side, symbol)
+        require_final_trend_alignment(
+            frame,
+            side,
+            symbol,
+            entry_confirmation=(
+                "CONFIRMED_2BAR_BREAKOUT" if code in KC_PENDING_CODES else None
+            ),
+        )
         if code not in ENTRY_CODES:
             raise ValueError('[FORBIDDEN_ENTRY] 已停用的自動入口訊號')
         decision = evaluate_entry_contract(frame, code=code, symbol=symbol)

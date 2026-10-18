@@ -111,7 +111,7 @@ LEGACY_ROUTE_CODES = frozenset((
 ))
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 
-ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES | frozenset((
+ENTRY_CODES = NEW_TRIGGER_CODES | KC_PENDING_CODES | MEME_ENTRY_CODES | frozenset((
     GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
     *SWING_ORIGIN_CODES,
 ))
@@ -2928,7 +2928,7 @@ def pre_flight_safety_check(
             # 4. 【即時破軌開多嚴格限制條件（Live Body Breakout Strict Filter）】：
             is_breakout_long = (
                 decision_type in LIVE_BODY_BREAKOUT_CODES
-                or decision_type in ('TRIGGER_A_KC_BREAKOUT', 'AUTHORIZED_REALTIME_BREAKOUT', 'KC_2BAR_CONFIRM_LONG')
+                or decision_type in ('TRIGGER_A_KC_BREAKOUT', 'AUTHORIZED_REALTIME_BREAKOUT')
                 or entry_phase in ('KC_LIVE_OUTER_BREAKOUT', 'KC_THREE_BAR_BREAKOUT')
             )
             if is_breakout_long:
@@ -3488,7 +3488,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             )
         )
         if (forming_bar and is_meme_breakout_symbol(symbol)
-                and not live_swing_origin and live_cross is None):
+                and not live_swing_origin and live_cross is None
+                and code not in KC_PENDING_CODES):
             return reject("BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR")
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線（已知方向或指定訊號代碼）
