@@ -533,7 +533,7 @@ def test_bearish_ma_trend_suppresses_pending_short_pivot_exit(monkeypatch):
     asyncio.run(run())
 
 
-def test_paper_partial_close_updates_only_half_of_position(monkeypatch):
+def test_paper_oversold_partial_close_is_blocked_by_true_valley_only_policy(monkeypatch):
     from core.paper_account import PaperAccount
 
     monkeypatch.setattr(
@@ -571,15 +571,14 @@ def test_paper_partial_close_updates_only_half_of_position(monkeypatch):
         )
     )
 
-    assert closed is True
-    assert account.positions["CAP/USDT"]["qty"] == pytest.approx(0.5)
-    assert account.positions["CAP/USDT"]["margin"] == pytest.approx(5.0)
-    assert account.position_meta["CAP/USDT"][STATE_KEY]["partial_exit_done"] is True
-    assert account.trades[0]["action"] == "PARTIAL_CLOSE_SHORT"
-    assert account.trades[0]["status"] == "PARTIAL_CLOSED"
+    assert closed is False
+    assert account.positions["CAP/USDT"]["qty"] == pytest.approx(1.0)
+    assert account.positions["CAP/USDT"]["margin"] == pytest.approx(10.0)
+    assert account.position_meta["CAP/USDT"][STATE_KEY]["partial_exit_done"] is False
+    assert account.trades == []
 
 
-def test_testnet_partial_close_requires_confirmed_reduce_only_fill(monkeypatch):
+def test_testnet_oversold_partial_close_is_blocked_before_order_submission(monkeypatch):
     from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
     from core.testnet_account import BinanceTestnetAccount
 
@@ -627,8 +626,9 @@ def test_testnet_partial_close_requires_confirmed_reduce_only_fill(monkeypatch):
         )
     )
 
-    assert closed is True
-    assert account.positions["CAP/USDT"]["qty"] == pytest.approx(0.5)
-    assert account.position_meta["CAP/USDT"][STATE_KEY]["partial_exit_done"] is True
-    assert account.trades[0]["exchange_order_id"] == "order-1"
-    account.refresh.assert_awaited_once_with(force=True)
+    assert closed is False
+    assert account.positions["CAP/USDT"]["qty"] == pytest.approx(1.0)
+    assert account.position_meta["CAP/USDT"][STATE_KEY]["partial_exit_done"] is False
+    assert account.trades == []
+    AntiSlippageOrderExecutor.execute_confirmed_limit_close.assert_not_awaited()
+    account.refresh.assert_not_awaited()

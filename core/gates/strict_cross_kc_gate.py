@@ -91,7 +91,8 @@ class StrictCrossAndKcTrendGate:
 
     @classmethod
     def evaluate(
-        cls, frame: pd.DataFrame, side: str, quote: float = None, bypass_spatial_check: bool = False
+        cls, frame: pd.DataFrame, side: str, quote: float = None,
+        bypass_spatial_check: bool = False, allow_flat_channel: bool = False,
     ) -> tuple[bool, str]:
         if frame is None or len(frame) < 2:
             return False, "REJECT_ENTRY: INSUFFICIENT_DATA"
@@ -135,7 +136,9 @@ class StrictCrossAndKcTrendGate:
         # 通道帶寬與死水震盪過濾：帶寬小於 1.2% 或方向不明，嚴禁開倉
         if curr_kc_upper > 0 and curr_kc_lower > 0 and curr_kc_mid > 0:
             kc_width_ratio = ((curr_kc_upper - curr_kc_lower) / curr_kc_mid) * 100.0
-            if kc_width_ratio < 1.2 or kc_trend == 'FLAT':
+            if kc_width_ratio < 1.2 or (
+                kc_trend == 'FLAT' and not allow_flat_channel
+            ):
                 return False, "REJECT_ENTRY: CHOP_BANDWIDTH_TOO_NARROW"
 
         # ══════════════════════════════════════════════════════════════════════
@@ -143,7 +146,10 @@ class StrictCrossAndKcTrendGate:
         # ══════════════════════════════════════════════════════════════════════
         if side == 'LONG':
             # 1. 通道大方向共振：kc_trend 必須明確為 'UP'（KC向上）。若 kc_trend == 'DOWN' 或非 'UP' 一票否決
-            if kc_trend != 'UP' or curr_kc_mid < prev_kc_mid - 1e-6:
+            if (
+                (kc_trend != 'UP' and not (allow_flat_channel and kc_trend == 'FLAT'))
+                or curr_kc_mid < prev_kc_mid - 1e-6
+            ):
                 return False, "REJECT_ENTRY: KC_TREND_NOT_UP"
 
             # 2. 當前必須維持多頭排列：ma5_curr > ma15_curr
@@ -171,7 +177,10 @@ class StrictCrossAndKcTrendGate:
         # ══════════════════════════════════════════════════════════════════════
         elif side == 'SHORT':
             # 1. 通道大方向共振：kc_trend 必須明確為 'DOWN'（KC向下）。若 kc_trend == 'UP' 或非 'DOWN' 一票否決
-            if kc_trend != 'DOWN' or curr_kc_mid > prev_kc_mid + 1e-6:
+            if (
+                (kc_trend != 'DOWN' and not (allow_flat_channel and kc_trend == 'FLAT'))
+                or curr_kc_mid > prev_kc_mid + 1e-6
+            ):
                 return False, "REJECT_ENTRY: KC_TREND_NOT_DOWN"
 
             # 【絕對否決鐵律】：若當前 MA5 仍在 MA15 上方（ma5 >= ma15），100% 絕對禁止放行開空訊號

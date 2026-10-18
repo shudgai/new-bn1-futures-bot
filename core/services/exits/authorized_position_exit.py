@@ -119,6 +119,36 @@ def automated_position_exit_allowed(
             and short_exit_state.get("bearish_trend_hold_active") is True
         )
     )
+    if side == "SHORT" and entry_mode in {"CHANNEL_SWING", "WILD_SWING"}:
+        lock_reason = any(
+            token in normalized_reason for token in _PROFIT_LOCK_REASONS
+        ) or "BREAKEVEN" in normalized_reason
+        if lock_reason:
+            armed = _profit_lock_armed(position, meta) or any(
+                source.get(key) is True
+                for source in (position, meta)
+                for key in ("breakeven_locked", "is_breakeven_moved")
+            )
+            return bool(armed and _net_profit_positive(position, price))
+
+        from core.services.exits.kc_true_extreme_exit import (
+            STATE_KEY as KC_EXIT_STATE_KEY,
+            pending_kc_true_extreme_exit,
+        )
+
+        pending = pending_kc_true_extreme_exit(dict(position), dict(meta))
+        if pending is None or pending[0] != "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL":
+            return False
+        details = pending[1]
+        state = position.get(KC_EXIT_STATE_KEY) or meta.get(KC_EXIT_STATE_KEY)
+        return bool(
+            isinstance(state, Mapping)
+            and state.get("armed") is True
+            and details.get("cause") in {
+                "BULLISH_ENGULFING", "INTRADAY_TROUGH_REBOUND",
+            }
+            and "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL" in normalized_reason
+        )
     if side == "SHORT" and entry_mode == "CHANNEL_SWING":
         if trend_hold_active:
             lock_reason = any(

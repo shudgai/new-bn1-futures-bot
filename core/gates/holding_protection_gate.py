@@ -1648,8 +1648,12 @@ class HoldingProtectionExitGate:
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         ))
         is_profit_lock = _is_profit_lock_reason(clean_reason)
+        verified_profit_lock = (
+            _verified_profit_lock_details(position, quote)
+            if is_profit_lock else None
+        )
 
-        if side == 'SHORT' and not hard_exit and not is_profit_lock:
+        if side == 'SHORT' and not hard_exit and verified_profit_lock is None:
             lower_break = short_lower_break_exit_confirmation(
                 frame, quote, position,
             )
@@ -1661,10 +1665,9 @@ class HoldingProtectionExitGate:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
         if is_profit_lock:
-            lock = _verified_profit_lock_details(position, quote)
-            if lock is None:
+            if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
-            details.update(lock)
+            details.update(verified_profit_lock)
             return _auth(clean_reason)
 
         is_safety_exit = any(s in clean_reason.upper() for s in (

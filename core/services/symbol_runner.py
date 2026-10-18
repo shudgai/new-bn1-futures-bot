@@ -439,6 +439,20 @@ async def _process_wild_swing_symbol(
             wait_candidate = _observe_wait_entry(
                 engine, symbol, entry_frame, quote, False,
             )
+    if (
+        entry_frame is not None
+        and entry_frame.attrs.get("entry_finality_verified")
+        and entry_frame.attrs.get("timeframe_ms") == 60_000
+    ):
+        advisor_closed = closed_entry_candles(entry_frame)
+        if not advisor_closed.empty:
+            from core.services.ai_chart_advisor import ai_chart_advisor
+
+            ai_chart_advisor.schedule_update(
+                symbol,
+                advisor_closed.iloc[-1]["timestamp"],
+                advisor_closed,
+            )
     _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
     if position:
         meta_store = getattr(engine.account, "position_meta", None)
@@ -496,12 +510,37 @@ async def _process_wild_swing_symbol(
                     symbol,
                 )
         if exit_decision is not None:
+            live_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
+            logger.warning(
+                "POSITION_EXIT_DECISION symbol=%s side=%s reason=%s price=%s "
+                "bar_id=%s cause=%s details=%s live_open=%s live_close=%s "
+                "live_ma5=%s live_kc_middle=%s entry_mode=%s",
+                symbol,
+                exit_decision.get("side"),
+                exit_decision.get("reason"),
+                quote,
+                exit_decision.get("bar_id"),
+                (exit_decision.get("kc_exit") or {}).get("cause"),
+                json.dumps(exit_decision.get("kc_exit") or {}, sort_keys=True),
+                live_bar.get("open"),
+                quote,
+                live_bar.get("ma5"),
+                live_bar.get("kc_middle"),
+                exit_decision.get("entry_mode"),
+            )
             closed_ok = await engine.account.close_position(
                 symbol,
                 quote,
                 "Wild Swing " + exit_decision["reason"],
                 is_manual=True,
                 is_limit=False,
+            )
+            logger.warning(
+                "POSITION_EXIT_RESULT symbol=%s side=%s reason=%s accepted=%s",
+                symbol,
+                exit_decision.get("side"),
+                exit_decision.get("reason"),
+                closed_ok,
             )
             if closed_ok and symbol not in engine.account.positions:
                 exit_price = getattr(engine.account, "last_closed_price", {}).get(
@@ -1043,8 +1082,18 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         print(exit_log, flush=True)
         is_limit = bool((exit_details or {}).get('is_limit', False))
         limit_price = (exit_details or {}).get('limit_price', quote)
+        from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+        if not automated_position_exit_allowed(
+            symbol, position, engine.account.position_meta.get(symbol, {}),
+            f"DualTF {exit_reason}", quote, is_manual=True,
+        ):
+            logger.warning(
+                "POSITION_EXIT_BLOCK symbol=%s side=%s reason=%s authority=STRICT_SHORT_EXIT_GATE",
+                symbol, position.get("side"), exit_reason,
+            )
+            return [], []
         # 即時重置持倉狀態機，原子清除部位與標記
-        await engine.account.close_position(
+        closed_ok = await engine.account.close_position(
             symbol,
             quote,
             f"DualTF {exit_reason}",
@@ -1052,6 +1101,12 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             is_limit=is_limit,
             limit_price=limit_price,
         )
+        if not closed_ok:
+            logger.warning(
+                "POSITION_EXIT_RESULT symbol=%s side=%s reason=%s accepted=false",
+                symbol, position.get("side"), exit_reason,
+            )
+            return [], []
         engine.account.positions.pop(symbol, None)
         if hasattr(engine.account, 'position_meta'):
             engine.account.position_meta.pop(symbol, None)

@@ -17,11 +17,76 @@ def _kc_direction(row: pd.Series) -> str:
     return "RANGE"
 
 
+def ma_cross_gate_exempt_for_entry(
+    entry_type: Any = None,
+    entry_phase: Any = None,
+    strategy_type: Any = None,
+    entry_pattern: Any = None,
+    structure_confirmation: Any = None,
+) -> bool:
+    """Identify independently confirmed breakout and continuation authorities."""
+    from core.gates.pipeline import FLAT_LINE_BREAKOUT_TYPES, entry_strategy_type
+
+    normalized_type = str(entry_type or "").upper()
+    normalized_phase = str(entry_phase or "").upper()
+    normalized_strategy = str(strategy_type or "").upper()
+    normalized_pattern = str(entry_pattern or "").upper()
+    normalized_confirmation = str(structure_confirmation or "").upper()
+    cross_types = {
+        "KC_GOLDEN_CROSS_FAST_LONG",
+        "KC_DEATH_CROSS_FAST_SHORT",
+        "TRIGGER_B_MA_CROSS",
+    }
+    if normalized_type in cross_types:
+        return False
+    if (
+        normalized_strategy in {"BREAKOUT", "TREND_CONTINUATION"}
+        or entry_strategy_type(normalized_phase, normalized_strategy) is not None
+        or normalized_type in FLAT_LINE_BREAKOUT_TYPES
+        or normalized_type in {
+            "BEARISH_INSTANT_BREAKOUT",
+            "BULLISH_INSTANT_BREAKOUT",
+            "KC_LIVE_OUTER_LONG",
+            "KC_LIVE_OUTER_SHORT",
+            "KC_MIDDLE_TREND_LONG",
+            "KC_MIDDLE_TREND_SHORT",
+            "KC_OUTSIDE_LONG",
+            "KC_OUTSIDE_SHORT",
+            "KC_TREND_LONG",
+            "KC_TREND_SHORT",
+        }
+        or normalized_phase in {
+            "KC_2BAR_BREAKOUT",
+            "KC_2BAR_CLOSED_CONFIRM",
+            "KC_LIVE_OUTER_BREAKOUT",
+            "KC_LIVE_PATTERN_BREAKOUT",
+            "KC_THREE_BAR_BREAKOUT",
+            "POST_CLOSE_CONTINUATION_ENTRY",
+            "REALTIME_RAIL_BREACH",
+        }
+        or normalized_pattern in {
+            "BREAKOUT",
+            "CONFIRMED_2BAR_BREAKOUT",
+            "CONTINUATION",
+            "CONTINUATION_OUTSIDE_KC",
+        }
+        or normalized_confirmation in {
+            "BREAKOUT",
+            "CONFIRMED_2BAR_BREAKOUT",
+            "CONTINUATION",
+            "CONTINUATION_OUTSIDE_KC",
+        }
+    ):
+        return True
+    return False
+
+
 def validate_ma5_ma15_cross_entry(
     frame: Any,
     side: str,
+    price: Any = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
-    """Require a fresh completed-bar cross, aligned MA5 slope, KC direction and body."""
+    """Validate fresh MA crosses and veto late, extended long crossover entries."""
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
         return False, "BLOCKED_INVALID_SIDE", {}
@@ -32,7 +97,7 @@ def validate_ma5_ma15_cross_entry(
         closed = closed_entry_candles(frame)
     except (AttributeError, KeyError, TypeError, ValueError):
         return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", {}
-    if len(closed) < 2:
+    if len(closed) < 3:
         return False, "BLOCKED_MA_CROSS_INSUFFICIENT_CLOSED_BARS", {}
     previous, current = closed.iloc[-2], closed.iloc[-1]
     try:
@@ -46,6 +111,14 @@ def validate_ma5_ma15_cross_entry(
     except (KeyError, TypeError, ValueError, OverflowError):
         return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", {}
     if not all(math.isfinite(value) and value > 0 for value in values):
+        return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", {}
+
+    try:
+        observed = frame.iloc[-1]
+        quote = float(price if price is not None else observed["close"])
+    except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+        return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", {}
+    if not math.isfinite(quote) or quote <= 0:
         return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", {}
 
     direction = _kc_direction(current)
@@ -78,15 +151,121 @@ def validate_ma5_ma15_cross_entry(
         "open": opening,
         "close": close,
         "confirmation_bar_id": current.get("timestamp"),
+        "quote": quote,
     }
     if side == "LONG":
-        cross = ma5_prev <= ma15_prev and ma5_curr > ma15_curr
+        cross_events = []
+        try:
+            ma_pairs = [
+                (
+                    float(row.get("ma5", row.get("_wild_ma5"))),
+                    float(row["ma15"]),
+                )
+                for _, row in closed.iterrows()
+            ]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", details
+        if not all(
+            math.isfinite(ma5) and ma5 > 0
+            and math.isfinite(ma15) and ma15 > 0
+            for ma5, ma15 in ma_pairs
+        ):
+            return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", details
+        for index in range(1, len(ma_pairs)):
+            prior_spread = ma_pairs[index - 1][0] - ma_pairs[index - 1][1]
+            spread = ma_pairs[index][0] - ma_pairs[index][1]
+            if prior_spread <= 0 < spread:
+                cross_events.append((index, "LONG"))
+            elif prior_spread >= 0 > spread:
+                cross_events.append((index, "SHORT"))
+        last_cross = cross_events[-1] if cross_events else None
+        cross_age = (
+            len(ma_pairs) - 1 - last_cross[0]
+            if last_cross is not None else None
+        )
+        details["cross_age_bars"] = cross_age
+        cross = (
+            last_cross is not None
+            and last_cross[1] == "LONG"
+            and cross_age in (1, 2)
+        )
+        if not cross:
+            return False, (
+                "BLOCKED_MA5_MA15_CROSS_TOO_OLD"
+                if last_cross is not None and last_cross[1] == "LONG"
+                else "BLOCKED_MA5_MA15_GOLDEN_CROSS_REQUIRED"
+            ), details
+        try:
+            kc_upper = float(observed["kc_upper"])
+            current_ma15 = float(
+                observed.get("ma15", observed.get("_wild_ma15"))
+            )
+            reference_atr = float(current["atr"])
+            observed_close = float(observed["close"])
+            observed_is_closed = observed.get("is_closed", False)
+            if not (
+                observed_is_closed is True
+                or (
+                    type(observed_is_closed).__name__ == "bool_"
+                    and bool(observed_is_closed)
+                )
+            ):
+                current_ma15 += (quote - observed_close) / 15.0
+            if not all(math.isfinite(value) and value > 0 for value in (
+                kc_upper, current_ma15, reference_atr,
+            )):
+                raise ValueError("invalid anti-FOMO indicator")
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_ANTI_FOMO_MARKET_DATA_INVALID", details
+        long_bias_atr = abs(quote - current_ma15) / reference_atr
+        details.update({
+            "kc_upper": kc_upper,
+            "current_ma15": current_ma15,
+            "reference_atr": reference_atr,
+            "ma15_bias_atr": long_bias_atr,
+        })
+        if quote > kc_upper:
+            return False, "BLOCKED_LONG_ABOVE_KC_UPPER", details
+        if long_bias_atr > 0.5:
+            return False, "BLOCKED_LONG_MA15_BIAS", details
         valid = (
-            cross and ma5_curr > ma5_prev
-            and direction == "UP" and close > opening
+            cross and direction == "UP" and close > opening
         )
         failure_reason = "BLOCKED_MA5_MA15_GOLDEN_CROSS_REQUIRED"
     else:
+        try:
+            kc_lower = float(observed["kc_lower"])
+            current_ma15 = float(
+                observed.get("ma15", observed.get("_wild_ma15"))
+            )
+            reference_atr = float(current["atr"])
+            observed_close = float(observed["close"])
+            observed_is_closed = observed.get("is_closed", False)
+            if not (
+                observed_is_closed is True
+                or (
+                    type(observed_is_closed).__name__ == "bool_"
+                    and bool(observed_is_closed)
+                )
+            ):
+                current_ma15 += (quote - observed_close) / 15.0
+            if not all(math.isfinite(value) and value > 0 for value in (
+                kc_lower, current_ma15, reference_atr,
+            )):
+                raise ValueError("invalid anti-FOMO indicator")
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_ANTI_FOMO_MARKET_DATA_INVALID", details
+        short_bias_atr = abs(quote - current_ma15) / reference_atr
+        details.update({
+            "kc_lower": kc_lower,
+            "current_ma15": current_ma15,
+            "reference_atr": reference_atr,
+            "ma15_bias_atr": short_bias_atr,
+        })
+        if quote < kc_lower:
+            return False, "BLOCKED_SHORT_BELOW_KC_LOWER", details
+        if short_bias_atr > 0.5:
+            return False, "BLOCKED_SHORT_MA15_BIAS", details
         cross = ma5_prev >= ma15_prev and ma5_curr < ma15_curr
         valid = (
             cross and ma5_curr < ma5_prev
@@ -155,6 +334,14 @@ def validate_ma5_ma15_cross_entry(
             return False, "VETO_MACRO_SHORT_LOWER_WICK_EXHAUSTION", details
     except (KeyError, TypeError, ValueError, OverflowError):
         return False, "BLOCKED_MACRO_STRUCTURE_DATA_INVALID", details
+
+    if side == "LONG":
+        if quote > kc_upper:
+            return False, "BLOCKED_LONG_ABOVE_KC_UPPER", details
+        if long_bias_atr > 0.5:
+            return False, "BLOCKED_LONG_MA15_BIAS", details
+        if ma5_curr <= ma5_prev:
+            return False, "BLOCKED_LONG_MA5_NOT_RISING", details
 
     return (
         True,

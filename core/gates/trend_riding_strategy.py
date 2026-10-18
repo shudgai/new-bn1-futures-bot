@@ -168,9 +168,29 @@ def can_open_position(
             print(msg, flush=True)
             return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)", details
 
-        if last_closed_ts > 0:
-            curr_ts = float(last_closed.get("timestamp", time.time() * 1000.0))
-            ts_norm = last_closed_ts * 1000.0 if last_closed_ts < 1e11 else last_closed_ts
+        if bars_since_last_exit is None and last_closed_ts > 0:
+            curr_ts = float(
+                last_closed.get("timestamp", time.time() * 1000.0)
+            )
+            previous_ts = float(prev_closed.get("timestamp", curr_ts))
+            timestamp_step = curr_ts - previous_ts
+            timestamp_scale = (
+                1000.0
+                if math.isclose(
+                    timestamp_step,
+                    timeframe_ms / 1000.0,
+                    rel_tol=1e-6,
+                )
+                else 1.0
+            )
+            curr_ts *= timestamp_scale
+            close_scale = (
+                1000.0
+                if last_closed_ts < 1e11
+                and (timestamp_scale == 1000.0 or curr_ts >= 1e11)
+                else timestamp_scale
+            )
+            ts_norm = last_closed_ts * close_scale
             bars_since = (curr_ts - ts_norm) / timeframe_ms
             if bars_since < float(cooldown_bars):
                 msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"

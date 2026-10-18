@@ -1,6 +1,7 @@
 """Shared signal contract for scan, execution and account revalidation."""
 import math
 import time
+import logging
 
 import numpy as np
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
@@ -65,6 +66,8 @@ from core.gates.strict_cross_kc_gate import (
 )
 
 EntryGate = StrictCrossAndKcTrendGate
+
+logger = logging.getLogger(__name__)
 
 
 LONG_ENTRY_CODE = "CLOSED_BODY_BREAKOUT_LONG"
@@ -2522,7 +2525,9 @@ def detect_raw_triggers(closed_frame, account=None, symbol=None):
 
     return None, None
 
-def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
+def check_entry_gates(
+    account, symbol, closed_frame, side, trigger_type, *, live_frame=None, quote=None,
+):
     if len(closed_frame) < 2: return False, "WAIT_ENOUGH_DATA_FOR_GATES"
 
     # ══════════════════════════════════════════════════════════════════════
@@ -2548,8 +2553,14 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
         "RE_ENTRY_LONG",
         "RE_ENTRY_SHORT",
     )
+    cross_frame = live_frame if trigger_type in (
+        GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+    ) and live_frame is not None else closed_frame
     gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
-        closed_frame, side, bypass_spatial_check=spatial_bypass,
+        cross_frame, side, quote=quote, bypass_spatial_check=spatial_bypass,
+        allow_flat_channel=trigger_type in (
+            GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+        ),
     )
     if not gate_ok:
         return False, gate_reason
@@ -2559,8 +2570,9 @@ def check_entry_gates(account, symbol, closed_frame, side, trigger_type):
     prev = closed_frame.iloc[-2]
 
     # 【均線相對位置的絕對限制】第一道開倉閘門底線
+    alignment_frame = cross_frame if cross_frame is not closed_frame else closed_frame
     if trigger_type not in (REALTIME_RAIL_BREACH_SHORT_CODE, 'KC_REALTIME_RAIL_BREACH_SHORT'):
-        passed, reason = validate_ma_alignment(closed_frame, side)
+        passed, reason = validate_ma_alignment(alignment_frame, side, quote)
         if not passed:
             return False, reason
 
@@ -3004,6 +3016,71 @@ def _wick_pending_store(account):
     return store
 
 
+async def enforce_final_order_wick_gate(account, symbol, side):
+    """Hard-stop entries at the account boundary when the latest candle has a large adverse wick."""
+    side = str(side or "").upper()
+    provider = getattr(account, "entry_frame_provider", None)
+
+    def veto(reason, *, body=None, wick=None, atr=None, bar_id=None):
+        details = (
+            f"symbol={symbol} side={side} bar={bar_id} reason={reason}"
+        )
+        if body is not None and wick is not None and atr is not None:
+            details += f" wick={wick:.8f} body={body:.8f} atr={atr:.8f}"
+        message = f"[ENTRY_VETO] {details}"
+        logger.warning(message)
+        log = getattr(account, "log", None)
+        if callable(log):
+            log(message, "WARNING")
+        raise ValueError(message)
+
+    if side not in {"LONG", "SHORT"} or not callable(provider):
+        veto("BLOCKED_FINAL_WICK_MARKET_DATA_UNAVAILABLE")
+    try:
+        frame = await provider(symbol)
+        if (
+            frame is None or frame.empty
+            or not frame.attrs.get("entry_finality_verified")
+            or frame.attrs.get("timeframe_ms") != 60_000
+        ):
+            veto("BLOCKED_FINAL_WICK_FRAME_UNVERIFIED")
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            veto("BLOCKED_FINAL_WICK_ATR_UNAVAILABLE")
+        current = frame.iloc[-1]
+        opening = float(current["open"])
+        close = float(current["close"])
+        high = max(float(current["high"]), opening, close)
+        low = min(float(current["low"]), opening, close)
+        atr = float(closed.iloc[-1]["atr"])
+        bar_id = current.get("timestamp")
+        if (
+            not all(math.isfinite(value) for value in (opening, close, high, low, atr))
+            or min(opening, close, atr) <= 0 or high < low
+        ):
+            veto("BLOCKED_FINAL_WICK_DATA_INVALID", bar_id=bar_id)
+        body = abs(close - opening)
+        wick = (
+            high - max(opening, close)
+            if side == "LONG"
+            else min(opening, close) - low
+        )
+        if wick >= body and wick >= 0.25 * atr:
+            veto(
+                "BLOCKED_LONG_WICK_SAME_BAR",
+                body=body,
+                wick=wick,
+                atr=atr,
+                bar_id=bar_id,
+            )
+    except ValueError:
+        raise
+    except (AttributeError, KeyError, TypeError, OverflowError) as exc:
+        veto(f"BLOCKED_FINAL_WICK_DATA_INVALID_{type(exc).__name__}")
+
+
 def _wick_candle_confirmation(candle, side, midpoint):
     try:
         opening, high, low, close = (
@@ -3232,6 +3309,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             else ma5_ma15_cross_chop_problem(
                 frame, quote, symbol=symbol, log_result=True,
                 side=decision.get('side'),
+                allow_flat_ma15=is_fast_cross,
             )
         )
         if cross_chop_problem:
@@ -3379,6 +3457,20 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
         closed = closed_entry_candles(frame)
+        # MA cross is a quote-confirmed live entry lane. Validate its complete
+        # evidence before the generic meme-coin closed-bar restriction and
+        # reuse that result only to admit the candidate to downstream gates.
+        live_cross = None
+        if code in (None, GOLDEN_CROSS_FAST_LONG_CODE):
+            live_cross = evaluate_golden_cross_fast_lane(frame, quote, symbol)
+        if live_cross is None and code in (None, DEATH_CROSS_FAST_SHORT_CODE):
+            live_cross = evaluate_death_cross_fast_lane(frame, quote, symbol)
+        if code in (GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE) and live_cross is None:
+            return reject(
+                'BLOCKED_GOLDEN_CROSS_FAST_LANE_NOT_QUALIFIED'
+                if code == GOLDEN_CROSS_FAST_LONG_CODE
+                else 'BLOCKED_DEATH_CROSS_FAST_LANE_NOT_QUALIFIED'
+            )
         origin_codes_by_side = {
             'LONG': LONG_SWING_ORIGIN_CODE,
             'SHORT': SHORT_SWING_ORIGIN_CODE,
@@ -3396,7 +3488,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             )
         )
         if (forming_bar and is_meme_breakout_symbol(symbol)
-                and not live_swing_origin):
+                and not live_swing_origin and live_cross is None):
             return reject("BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR")
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線（已知方向或指定訊號代碼）
@@ -3558,7 +3650,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # The live scanner and final order firewall share this closed set of
         # entry authorities. Do not evaluate legacy, continuation, or reversal
         # candidates when no general breakout is present.
-        if code in (None, "TRIGGER_A_KC_BREAKOUT"):
+        if code == "TRIGGER_A_KC_BREAKOUT" or (code is None and live_cross is None):
             if not forming_bar:
                 return reject("BLOCKED_GENERAL_BREAKOUT_REQUIRES_LIVE_THIRD_BAR")
             candidate = evaluate_three_bar_outer_breakout(
@@ -3721,6 +3813,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     else 'SHORT' if code == DEATH_CROSS_FAST_SHORT_CODE
                     else None
                 ),
+                allow_flat_ma15=active_fast_cross is not None,
             )
         )
         if cross_chop_problem:
@@ -3743,6 +3836,28 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         if kc_problem:
             return reject(kc_problem)
+        # Resolve an already validated MA cross before code=None falls through
+        # to the slower generic three-bar breakout selector. The cross still
+        # passes check_entry_gates and the shared authorize() funnel below.
+        if active_fast_cross is not None:
+            closed = closed_entry_candles(frame)
+            fast_side = active_fast_cross['side']
+            fast_code = active_fast_cross['type']
+            passed, gate_reason = check_entry_gates(
+                account, symbol, closed, fast_side, fast_code,
+                live_frame=frame, quote=quote,
+            )
+            if not passed:
+                return reject(gate_reason)
+            if any(
+                trade.get('symbol') == symbol
+                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
+                    == active_fast_cross['pending_signal_id']
+                for trade in getattr(account, 'trades', [])
+            ):
+                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
+            return authorize(active_fast_cross, quote)
         if code == GOLDEN_CROSS_FAST_LONG_CODE and live_golden_cross is None:
             return reject('BLOCKED_GOLDEN_CROSS_FAST_LANE_NOT_QUALIFIED')
         if code == DEATH_CROSS_FAST_SHORT_CODE and live_death_cross is None:
@@ -3821,25 +3936,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if post_close_candidate is not None:
             return authorize(post_close_candidate, quote)
-
-        if active_fast_cross is not None:
-            closed = closed_entry_candles(frame)
-            fast_side = active_fast_cross['side']
-            fast_code = active_fast_cross['type']
-            passed, gate_reason = check_entry_gates(
-                account, symbol, closed, fast_side, fast_code,
-            )
-            if not passed:
-                return reject(gate_reason)
-            if any(
-                trade.get('symbol') == symbol
-                and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                and (trade.get('entry_snapshot') or {}).get('pending_signal_id')
-                    == active_fast_cross['pending_signal_id']
-                for trade in getattr(account, 'trades', [])
-            ):
-                return reject('BLOCKED_KC_BREAKOUT_ALREADY_FILLED')
-            return authorize(active_fast_cross, quote)
 
         if code in (
             'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',

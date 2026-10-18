@@ -75,3 +75,24 @@
 - **Modification Description**: WILD_SWING now authorizes ordinary exits only for trailing profit lock, breakeven protection, numeric hard stop, or a strict three-closed-candle true peak/valley confirmed after the entry bar. Ordinary MA/KC trend reversals, pullbacks, and an unconfirmed entry-bar wick no longer close the position. The shared defensive-exit helpers remain unchanged for other strategies.
 - **Trigger Reason & Requirement**: The Owner requested that LONG pullbacks during a continuing bullish move and SHORT pullbacks during a continuing bearish move must not close positions; exit only on profit lock or a confirmed true peak/valley.
 - **Verification & Test Status**: 59 focused WILD_SWING strategy, runner, and close-execution tests passed. Changed Python modules compiled and `git diff --check` passed. Changes are local only; no commit, push, deployment, or service restart.
+
+### [2026-10-18 10:37:00 CST] - Modification Phase: Display Effective Profit-Lock Conditions
+- **Author**: shudgai999 / Copilot SDK
+- **Target Files & Lines**: `web/index.html` (position lock badge, chart position summary, `getProfitLockStatusTitle`, `getProfitLockCondition`).
+- **Modification Description**: Replaced outdated 1.2% / 1.2 ATR UI claims with the effective net-ROE ladder and break-even conditions, and made the conditions visible under both the position list and chart summary.
+- **Trigger Reason & Requirement**: The Owner requested that the active profit-lock conditions be displayed.
+- **Verification & Test Status**: Python's HTML parser and targeted assertions for both UI placements and removal of stale thresholds passed; `git diff --check` passed. No service restart or deployment.
+
+### Modification Phase: Add asynchronous chart-label vetoes and strict outer-entry math checks
+- **Author**: shudgai999 / Copilot SDK
+- **Target Files**: `core/services/ai_chart_advisor.py`; `core/services/symbol_runner.py`; `core/services/entry_firewall.py`; `core/gates/ma5_ma15_cross_entry_gate.py`; `.env.example`; focused advisor, cross-entry, breakout, and firewall tests.
+- **Modification Description**: Added one background chart analysis per verified closed 1-minute candle, an in-memory per-symbol cache with a 90-second TTL, exact side/chop veto labels, and fail-open behavior for unavailable, malformed, stale, or expired advisor results. The final WILD_SWING and KC2BAR firewalls read only cached labels and never wait for inference; WAIT authority remains independent. Restored the symmetric MA15-bias / KC-rail Anti-FOMO checks for MA-cross entries. Confirmed outer entries bypass only the Anti-FOMO distance/location restriction and still require aligned MA direction and at least the existing 0.15 ATR MA gap.
+- **Trigger Reason & Requirement**: Implement the requested background visual-tag architecture while preserving mathematical and account safety gates and the approved two-bar breakout exception.
+- **Verification & Test Status**: Advisor, Anti-FOMO, outer-entry math, fresh AI-veto, true-extreme, and dual-confirmation break-even focused selectors passed (58 tests total). Broader legacy breakout/firewall and runner tests retain failures in assertions/fixtures that assume flat or misaligned outer-entry MAs, or use non-enabled `TEST` symbols; these cases are reported separately and were not weakened to make them pass. No commit, push, deployment, or service restart.
+
+### [2026-10-18 13:05:06 UTC+8] - Modification Phase: Add AI chart veto to MA5/MA15 crossover entries
+- **Author**: shudgai999 / Codex
+- **Target Files & Lines**: `core/services/entry_firewall.py` (`validate_account_entry`, final verified-fast-cross authorization); `docs/dev_logs/ai_chart_analysis.md`.
+- **Modification Description**: Before returning final authorization for a verified MA5/MA15 fast-cross entry, apply the existing fresh AI chart-label veto. AI inference remains asynchronous; a fresh chop/side rejection can veto, while missing or failed labels follow the advisor's existing fail-open behavior. Other entry paths and mathematical gates are unchanged.
+- **Trigger Reason & Requirement**: User requested that MA5/MA15 crossover entries also use AI chart analysis.
+- **Verification & Test Status**: Tests not run per the user's earlier instruction. `git diff --check` passed. Source change only; deployment and service restart not performed in this step.

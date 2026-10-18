@@ -38,8 +38,9 @@ def death_cross_frame(quote=99.7):
         "low": min(99.6, quote),
         "close": quote,
         "atr": 1.0,
-        "ma5": 100.8,
-        "ma15": 100.9,
+        # MA5 has crossed below a flat MA15; no upward MA15 veto on SHORT.
+        "ma5": 100.2,
+        "ma15": 100.3,
         "kc_upper": middle + 4.0,
         "kc_middle": middle,
         "kc_lower": middle - 4.0,
@@ -71,7 +72,7 @@ def fast_cross_frame(side, *, narrow_gap=False):
         if side == "LONG":
             frame.loc[live, ["ma5", "ma15"]] = [99.705, 99.7]
         else:
-            frame.loc[live, ["ma5", "ma15"]] = [100.895, 100.9]
+            frame.loc[live, ["ma5", "ma15"]] = [100.295, 100.3]
     return frame, quote
 
 

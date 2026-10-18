@@ -67,6 +67,78 @@ def test_allows_wild_swing_trailing_exit_after_strategy_arms_lock():
     )
 
 
+@pytest.mark.parametrize("entry_mode", ["WILD_SWING", "CHANNEL_SWING"])
+def test_short_true_valley_authority_accepts_only_the_two_confirmed_causes(entry_mode):
+    from core.services.exits.kc_true_extreme_exit import STATE_KEY
+
+    active_position = {
+        **position("SHORT"),
+        "entry_mode": entry_mode,
+        STATE_KEY: {
+            "version": 1,
+            "identity": ["SHORT", 60.0, 100.0, 1.0],
+            "armed": True,
+            "pending": {
+                "reason": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+                "details": {"cause": "BULLISH_ENGULFING"},
+            },
+        },
+    }
+    assert automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {},
+        "Wild Swing EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL", 99.0,
+    )
+
+    for cause in (
+        "SHORT_LOWER_WICK", "THREE_POINT_CONFIRMED_PIVOT",
+        "KC_MIDLINE_TOUCH", "MA5_PULLBACK_EXIT",
+    ):
+        active_position[STATE_KEY]["pending"]["details"]["cause"] = cause
+        assert not automated_position_exit_allowed(
+            "LOBSTER/USDT", active_position, {},
+            "Wild Swing EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL", 99.0,
+        )
+
+
+@pytest.mark.parametrize("reason", [
+    "Wild Swing EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+    "EXIT_BY_KC_MIDLINE_RETRACE",
+    "EXIT_SHORT_ON_KC_UPPER_BREACH",
+    "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
+    "EXIT_BY_REVERSE_CANDLE",
+    "REALTIME_SHORT_PULLBACK_EXIT",
+    "Channel Swing CHANNEL_SHORT_OVERSOLD_RATCHET_EXIT",
+    "DualTF EXIT_BY_REVERSAL_CANDLE",
+])
+def test_short_exit_boundary_rejects_non_lock_reasons_without_valid_valley_ticket(reason):
+    active_position = {**position("SHORT"), "entry_mode": "WILD_SWING"}
+    assert not automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {}, reason, 99.0,
+        is_manual=True,
+    )
+
+
+def test_short_breakeven_exit_requires_armed_lock_and_positive_net_pnl():
+    active_position = {
+        **position("SHORT"),
+        "entry_mode": "WILD_SWING",
+        "breakeven_locked": True,
+    }
+    assert automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {},
+        "Wild Swing EXIT_BY_BREAKEVEN", 99.0,
+    )
+    assert not automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {},
+        "Wild Swing EXIT_BY_BREAKEVEN", 101.0,
+    )
+    active_position["breakeven_locked"] = False
+    assert not automated_position_exit_allowed(
+        "LOBSTER/USDT", active_position, {},
+        "Wild Swing EXIT_BY_BREAKEVEN", 99.0,
+    )
+
+
 @pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "CAP/USDT"])
 @pytest.mark.parametrize(
     "reason",

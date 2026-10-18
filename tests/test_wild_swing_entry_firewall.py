@@ -96,6 +96,35 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     assert result["confirmation_bar_id"] == bar_id
 
 
+def test_wild_swing_firewall_applies_fresh_ai_chop_veto(monkeypatch):
+    from core.services import ai_chart_advisor
+
+    frame = _firewall_cross_frame()
+    bar_id = float(frame.iloc[-1]["timestamp"])
+    monkeypatch.setattr(
+        ai_chart_advisor.ai_chart_advisor,
+        "inspect_state",
+        lambda symbol, expected_bar: {
+            "is_chop": True,
+            "is_exhausted": False,
+            "allow_long": True,
+            "allow_short": True,
+            "reason": "flat channel",
+            "bar_id": expected_bar,
+        },
+    )
+
+    with pytest.raises(ValueError, match="VETO_AI_CHOP"):
+        asyncio.run(
+            validate_account_entry(
+                FakeAccount(frame),
+                "LOBSTER/USDT",
+                "SHORT",
+                _context(bar_id),
+            )
+        )
+
+
 def test_wild_swing_firewall_revalidates_long_wick_follow_through():
     from test_wild_swing_strategy import _wick_follow_through_frame
 
@@ -369,16 +398,32 @@ def test_wild_swing_firewall_does_not_depend_on_legacy_profit_lock_ticket():
 
 
 def test_engine_passes_signal_mode_into_account_entry_context():
-    account = FakeAccount(pd.DataFrame([{"timestamp": 660_000, "atr": 2.0}]))
+    from test_breakout_continuation_entry_gate import (
+        _frame_with_verified_structure_history,
+        _numeric_wild_swing_frame,
+    )
+
+    frame = _frame_with_verified_structure_history(
+        _numeric_wild_swing_frame("LONG", "INITIAL_2BAR_BREAKOUT"),
+        "LONG",
+    )
+    frame["kc_middle"] = 100.0
+    frame["kc_upper"] = 105.0
+    frame["kc_lower"] = 95.0
+    frame["ma5"] = 100.0
+    frame["ma15"] = 100.0
+    frame["atr"] = 2.0
+    account = FakeAccount(frame)
     engine = SimpleNamespace(
         account=account,
         symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args: 10),
         _full_wallet_entry_margin=lambda wallet, available, leverage, symbol=None: 10.0,
     )
     signal = {
-        "bar_id": 660_000,
+        "bar_id": float(frame.iloc[-1]["timestamp"]),
         "entry_pattern": "BREAKOUT",
         "entry_signal_mode": "BREAKOUT",
+        "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
     }
 
     result = asyncio.run(
@@ -386,7 +431,7 @@ def test_engine_passes_signal_mode_into_account_entry_context():
             engine,
             symbol="LOBSTER/USDT",
             frame=account.frame,
-            price=100.0,
+            price=106.5,
             side="LONG",
             mode_name="WILD_SWING_KC_OUTER_BAND_BREAKOUT",
             meta_dict=signal,

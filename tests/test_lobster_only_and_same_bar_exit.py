@@ -41,6 +41,10 @@ def test_entry_firewall_rejects_other_symbols_before_signal_evaluation():
 
 def test_entry_firewall_keeps_cap_enabled(monkeypatch):
     monkeypatch.setattr(
+        "core.services.entry_firewall.require_final_trend_alignment",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         "core.services.entry_firewall.evaluate_entry_contract",
         lambda *_args, **_kwargs: {"side": "LONG", "type": "TEST"},
     )
@@ -53,7 +57,7 @@ def test_entry_firewall_keeps_cap_enabled(monkeypatch):
     assert decision["side"] == "LONG"
 
 
-def test_wait_authority_rejects_cap(tmp_path):
+def test_wait_authority_keeps_cap_enabled_but_rejects_invalid_market_data(tmp_path):
     authority = WaitEntryAuthority(state_path=tmp_path / "wait-state.json")
     result = authority.observe(
         "CAP/USDT",
@@ -64,7 +68,7 @@ def test_wait_authority_rejects_cap(tmp_path):
         position_open=False,
         authoritative_position_state=True,
     )
-    assert result["status"] == "BLOCKED_SYMBOL"
+    assert result["status"] == "WAIT_INVALID_MARKET_DATA"
 
 
 def _cross_frame(side):
@@ -85,6 +89,17 @@ def _cross_frame(side):
                 "atr": 4.0,
             },
         ]
+        bars.append({
+            **bars[-1],
+            "timestamp": 180_000,
+            "open": 99.8,
+            "high": 100.3,
+            "low": 99.7,
+            "close": 100.2,
+            "ma5": 100.6,
+            "ma15": 100.05,
+            "kc_middle": 99.2,
+        })
     else:
         bars = [
             {
@@ -102,6 +117,18 @@ def _cross_frame(side):
                 "atr": 4.0,
             },
         ]
+        bars[-1]["ma5"] = 100.1
+        bars.append({
+            **bars[-1],
+            "timestamp": 180_000,
+            "open": 100.8,
+            "high": 101.0,
+            "low": 99.9,
+            "close": 100.0,
+            "ma5": 99.4,
+            "ma15": 100.0,
+            "kc_middle": 100.8,
+        })
     frame = pd.DataFrame(bars)
     frame.attrs["timeframe_ms"] = 60_000
     return frame
@@ -115,8 +142,9 @@ def test_completed_ma_cross_is_allowed_when_macro_structure_passes(side):
 
 def test_ma_cross_does_not_pass_when_macro_kc_position_is_extended():
     frame = _cross_frame("LONG")
-    frame.loc[1, "close"] = 106.0
-    frame.loc[1, "high"] = 106.1
+    frame.loc[frame.index[-1], "close"] = 106.0
+    frame.loc[frame.index[-1], "high"] = 106.1
+    frame.loc[:, "atr"] = 20.0
     allowed, reason, _ = validate_ma5_ma15_cross_entry(frame, "LONG")
     assert not allowed
     assert reason == "VETO_MACRO_KC_POSITION_LONG"
@@ -166,7 +194,7 @@ def test_same_bar_exit_does_not_apply_after_entry_candle():
     assert not should_exit
 
 
-def test_same_bar_net_profit_exit_closes_channel_position(monkeypatch):
+def test_same_bar_net_profit_exit_is_suppressed_for_restricted_channel_position(monkeypatch):
     class Account:
         def __init__(self, position):
             self.positions = {"LOBSTER/USDT": position}
@@ -223,9 +251,8 @@ def test_same_bar_net_profit_exit_closes_channel_position(monkeypatch):
             engine, symbol, 100.45, quote_ms,
         )
     )
-    assert closed
-    assert account.closed
-    assert "SAME_BAR_NET_PROFIT_EXIT" in account.closed[0][0][2]
+    assert not closed
+    assert account.closed == []
 
 
 def test_lobster_margin_sizing_uses_wallet_and_available_balance_caps():

@@ -414,10 +414,12 @@
                                             </span>
                                             <span v-else style="color: #94a3b8; margin-left: 4px;">
                                                 <template v-if="pos.trailing_profit_lock_armed">回撤止盈監控已啟動（非固定止損價）</template>
-                                                <template v-else-if="pos.entry_mode === 'WILD_SWING'">未啟動：等待峰值浮盈達 1.2%</template>
-                                                <template v-else>待啟動: 1.2 ATR / 8% ROE</template>
+                                                <template v-else>待啟動</template>
                                             </span>
                                         </span>
+                                        <div style="margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45;" :title="getProfitLockCondition(pos)">
+                                            {{ getProfitLockCondition(pos) }}
+                                        </div>
                                     </div>
                                 </td>
                                 <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
@@ -657,6 +659,9 @@
                                     <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
                             </span>
+                        </div>
+                        <div v-if="getPos(symbol)" style="margin: 4px 8px 2px; color: var(--muted); font-size: 10px; line-height: 1.45;" :title="getProfitLockCondition(getPos(symbol))">
+                            {{ getProfitLockCondition(getPos(symbol)) }}
                         </div>
                     </div>
                     <div v-if="(chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
@@ -1500,9 +1505,11 @@
                         const be = pos.breakeven_price || cpp.breakeven_price || pos.sl;
                         return `已啟動保本鎖利！保底鎖定: +${amt.toFixed(4)} USDT，防線價位: ${be ? this.formatPrice(be) : '-'}`;
                     }
-                    const peakAtr = cpp.peak_profit_atr !== undefined ? cpp.peak_profit_atr : (pos.peak_profit_atr || 0);
-                    const peakRoe = cpp.peak_roe_pct !== undefined ? cpp.peak_roe_pct : ((pos.peak_roe_pct || 0) * 100);
-                    return `待啟動保本 (門檻: 峰值 1.2 ATR 或 8% ROE | 當前峰值: ${peakAtr} ATR / ${Number(peakRoe).toFixed(1)}%)`;
+                    return this.getProfitLockCondition(pos);
+                },
+                getProfitLockCondition(pos) {
+                    if (!pos) return '';
+                    return '鎖利條件（淨 ROE）：峰值達 10% 啟動；峰值 10–<15% 鎖 3%，15–<20% 鎖 10%，≥20% 鎖 15%，之後峰值每增加 5% 再提高鎖利底線 5%。另峰值淨 ROE ≥8% 或順向移動 ≥1 ATR 會設保本線（多單開倉價 +0.05%，空單 −0.05%）；觸及鎖利底線才平倉。';
                 },
                 async fetchStatus() {
                     const pricesVersionAtStart = this._pricesVersion;

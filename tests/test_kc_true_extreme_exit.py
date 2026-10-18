@@ -19,9 +19,11 @@ def _frame(
     live_price=11.5,
     live_high=None,
     live_low=None,
+    live_open=None,
     closed_candle=None,
     previous_candle=None,
     kc_middle_values=(10.0, 10.0, 10.0),
+    ma5_values=(10.0, 10.0, 10.0),
 ):
     previous = previous_candle or {
         "open": 10.0, "high": 11.2, "low": 9.8, "close": 11.0,
@@ -31,12 +33,13 @@ def _frame(
     }
     lower, middle, upper = 8.0, 10.0, 12.0
     rows = []
-    for (timestamp, candle), middle_value in zip(
+    for (timestamp, candle), middle_value, ma5_value in zip(
         (
             (live_bar_ms - 120_000, previous),
             (live_bar_ms - 60_000, closed),
         ),
         kc_middle_values[:2],
+        ma5_values[:2],
     ):
         rows.append({
             "timestamp": timestamp,
@@ -44,10 +47,11 @@ def _frame(
             "atr": 1.0,
             "kc_upper": upper,
             "kc_middle": middle_value,
+            "ma5": ma5_value,
             "kc_lower": lower,
             "is_closed": True,
         })
-    opened = 11.0 if side == "LONG" else 9.0
+    opened = live_open if live_open is not None else (11.0 if side == "LONG" else 9.0)
     high = max(opened, live_price, live_high or live_price)
     low = min(opened, live_price, live_low or live_price)
     rows.append({
@@ -59,6 +63,7 @@ def _frame(
         "atr": 1.0,
         "kc_upper": upper,
         "kc_middle": kc_middle_values[2],
+        "ma5": ma5_values[2],
         "kc_lower": lower,
         "is_closed": False,
     })
@@ -215,8 +220,11 @@ def test_bullish_engulfing_after_prior_outer_extension_exits_short():
         live_bar_ms + 60_000,
         side="SHORT",
         live_price=8.6,
+        live_open=8.3,
         previous_candle=extended_red,
         closed_candle=bullish_engulfing,
+        kc_middle_values=(10.0, 8.7, 8.3),
+        ma5_values=(10.0, 8.8, 8.4),
     )
     decision, _ = evaluate_kc_true_extreme_exit(
         position, frame, 8.6, live_bar_ms + 62_000,
@@ -227,7 +235,7 @@ def test_bullish_engulfing_after_prior_outer_extension_exits_short():
     assert decision[1]["cause"] == "BULLISH_ENGULFING"
 
 
-def test_short_valley_uses_mirrored_extension_and_lower_wick():
+def test_short_lower_wick_alone_never_confirms_a_true_valley():
     live_bar_ms = 1_800_000_000_000
     frame = _frame(
         live_bar_ms,
@@ -242,9 +250,7 @@ def test_short_valley_uses_mirrored_extension_and_lower_wick():
         _position(live_bar_ms, side="SHORT"), frame, 8.1, live_bar_ms + 2_000,
     )
 
-    assert decision is not None
-    assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
-    assert decision[1]["cause"] == "SHORT_LOWER_WICK"
+    assert decision is None
 
 
 def test_short_lower_wick_without_urgent_rebound_is_suppressed_while_kc_middle_falls():
@@ -269,7 +275,7 @@ def test_short_lower_wick_without_urgent_rebound_is_suppressed_while_kc_middle_f
     assert position[STATE_KEY]["pending"] is None
 
 
-def test_short_rebound_beyond_lower_band_exits_during_falling_kc_middle():
+def test_short_rebound_holds_below_ma5_or_kc_middle_then_exits_after_reclaim():
     live_bar_ms = 1_800_000_000_000
     position = _position(live_bar_ms, side="SHORT")
     frame = _frame(
@@ -290,11 +296,26 @@ def test_short_rebound_beyond_lower_band_exits_during_falling_kc_middle():
         live_bar_ms,
         side="SHORT",
         live_price=8.3,
+        live_open=8.1,
         live_low=7.9,
         kc_middle_values=(10.3, 10.2, 10.1),
     )
     decision, _ = evaluate_kc_true_extreme_exit(
         position, frame, 8.3, live_bar_ms + 3_000,
+    )
+    assert decision is None
+
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=8.3,
+        live_open=8.1,
+        live_low=7.9,
+        kc_middle_values=(10.3, 8.1, 8.2),
+        ma5_values=(10.3, 8.2, 8.1),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.3, live_bar_ms + 4_000,
     )
     assert decision is not None
     assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
@@ -333,10 +354,12 @@ def test_short_bullish_engulfing_is_not_vetoed_by_falling_kc_middle():
         live_bar_ms + 60_000,
         side="SHORT",
         live_price=8.4,
+        live_open=8.0,
         live_low=8.3,
         previous_candle=bearish_candle,
         closed_candle=bullish_engulfing,
-        kc_middle_values=(10.3, 10.2, 10.1),
+        kc_middle_values=(10.3, 8.5, 8.3),
+        ma5_values=(10.3, 8.4, 8.2),
     )
     decision, _ = evaluate_kc_true_extreme_exit(
         position, frame, 8.4, live_bar_ms + 62_000,
@@ -393,21 +416,21 @@ def test_pending_short_pivot_is_cleared_when_kc_middle_falls():
     assert position[STATE_KEY]["pending"] is None
 
 
-@pytest.mark.parametrize(
-    ("side", "price"),
-    [("LONG", 10.0), ("SHORT", 10.0)],
-)
-def test_ordinary_retracement_exits_only_at_kc_midline(side, price):
+def test_long_retracement_can_exit_at_midline_but_short_retracement_holds():
     live_bar_ms = 1_800_000_000_000
-    frame = _frame(live_bar_ms, side=side, live_price=price)
-
-    decision, _ = evaluate_kc_true_extreme_exit(
-        _position(live_bar_ms, side=side), frame, price, live_bar_ms + 2_000,
+    long_frame = _frame(live_bar_ms, side="LONG", live_price=10.0)
+    long_decision, _ = evaluate_kc_true_extreme_exit(
+        _position(live_bar_ms), long_frame, 10.0, live_bar_ms + 2_000,
     )
+    assert long_decision is not None
+    assert long_decision[0] == "EXIT_BY_KC_MIDLINE_RETRACE"
 
-    assert decision is not None
-    assert decision[0] == "EXIT_BY_KC_MIDLINE_RETRACE"
-    assert decision[1]["cause"] == "KC_MIDLINE_TOUCH"
+    short_frame = _frame(live_bar_ms, side="SHORT", live_price=10.0)
+    short_decision, _ = evaluate_kc_true_extreme_exit(
+        _position(live_bar_ms, side="SHORT"), short_frame, 10.0,
+        live_bar_ms + 2_000,
+    )
+    assert short_decision is None
 
 
 def test_subthreshold_pullback_holds_until_midline():
@@ -428,6 +451,102 @@ def test_subthreshold_pullback_holds_until_midline():
     )
     assert decision is not None
     assert decision[0] == "EXIT_BY_KC_MIDLINE_RETRACE"
+
+
+def test_short_rebound_requires_bullish_live_bar_even_after_point_four_atr():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=7.9,
+        live_open=9.0,
+        live_low=7.4,
+    )
+    evaluate_kc_true_extreme_exit(position, frame, 7.9, live_bar_ms + 2_000)
+
+    # Rebound is >= 0.4 ATR, but the live candle remains bearish.
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=7.9,
+        live_open=9.0,
+        live_low=7.4,
+        kc_middle_values=(7.0, 7.0, 7.0),
+        ma5_values=(7.0, 7.0, 7.0),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 7.9, live_bar_ms + 3_000,
+    )
+    assert decision is None
+
+
+def test_short_live_rebound_below_either_hold_line_does_not_exit():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    frame = _frame(
+        live_bar_ms, side="SHORT", live_price=7.9, live_low=7.4,
+    )
+    evaluate_kc_true_extreme_exit(position, frame, 7.9, live_bar_ms + 2_000)
+    for middle, ma5 in ((8.0, 8.4), (8.4, 8.0)):
+        frame = _frame(
+            live_bar_ms, side="SHORT", live_price=8.2, live_open=8.0,
+            live_low=7.4, kc_middle_values=(10.0, middle, middle),
+            ma5_values=(10.0, ma5, ma5),
+        )
+        decision, _ = evaluate_kc_true_extreme_exit(
+            position, frame, 8.2, live_bar_ms + 3_000,
+        )
+        assert decision is None
+
+
+def test_short_rebound_uses_exact_point_four_atr_boundary():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    initial = _frame(
+        live_bar_ms, side="SHORT", live_price=7.4, live_low=7.4,
+    )
+    evaluate_kc_true_extreme_exit(
+        position, initial, 7.4, live_bar_ms + 2_000,
+    )
+
+    below_threshold = _frame(
+        live_bar_ms, side="SHORT", live_price=7.79, live_open=7.5,
+        live_low=7.4, kc_middle_values=(10.0, 7.7, 7.7),
+        ma5_values=(10.0, 7.6, 7.6),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, below_threshold, 7.79, live_bar_ms + 3_000,
+    )
+    assert decision is None
+
+    at_threshold = _frame(
+        live_bar_ms, side="SHORT", live_price=7.8, live_open=7.5,
+        live_low=7.4, kc_middle_values=(10.0, 7.7, 7.7),
+        ma5_values=(10.0, 7.6, 7.6),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, at_threshold, 7.8, live_bar_ms + 4_000,
+    )
+    assert decision is not None
+    assert decision[1]["cause"] == "INTRADAY_TROUGH_REBOUND"
+
+
+def test_stale_unapproved_short_pending_ticket_is_cleared():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    frame = _frame(live_bar_ms, side="SHORT", live_price=8.5)
+    evaluate_kc_true_extreme_exit(position, frame, 8.5, live_bar_ms + 2_000)
+    position[STATE_KEY]["armed"] = True
+    position[STATE_KEY]["pending"] = {
+        "reason": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+        "details": {"cause": "SHORT_LOWER_WICK"},
+    }
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.5, live_bar_ms + 3_000,
+    )
+    assert decision is None
+    assert position[STATE_KEY]["pending"] is None
 
 
 @pytest.mark.parametrize("entry_mode", ["CHANNEL_SWING", "WILD_SWING", "BREAKOUT"])

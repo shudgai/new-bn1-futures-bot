@@ -351,6 +351,27 @@ def test_wild_swing_single_bar_continuation_can_reenter_after_exit(side):
     assert signal["structure_confirmation"] == "CONTINUATION_OUTSIDE_KC"
 
 
+@pytest.mark.parametrize(
+    "elapsed_bars,expected_signal",
+    [(2, False), (3, True)],
+)
+def test_wild_swing_cooldown_advances_from_closed_bar_ids(
+    elapsed_bars, expected_signal,
+):
+    frame = _numeric_wild_swing_frame("SHORT", "INITIAL_2BAR_BREAKOUT")
+    strategy = WildSwingStrategy()
+    state = strategy.state_for("CAP/USDT")
+    bar_id = float(frame.iloc[-1]["timestamp"])
+    state.bars_since_last_exit = 0
+    state.last_exit_side = "SHORT"
+    state.last_exit_bar_id = bar_id - elapsed_bars * 60_000
+
+    signal = strategy.evaluate_entry("CAP/USDT", frame, "SHORT")
+
+    assert (signal is not None) is expected_signal
+    assert state.bars_since_last_exit == elapsed_bars
+
+
 def _frame_with_verified_structure_history(frame, side):
     frame = frame.copy()
     prefix = pd.concat([frame.iloc[[0]]] * 8, ignore_index=True)
@@ -358,25 +379,32 @@ def _frame_with_verified_structure_history(frame, side):
     frame["timestamp"] = frame["timestamp"].astype(float) + 8 * 60_000
     frame = pd.concat([prefix, frame], ignore_index=True)
     frame["ma5"] = [
-        110.0 - index * 0.3 if side == "LONG"
-        else 90.0 + index * 0.3
+        110.0 - index * 0.1 if side == "LONG"
+        else 90.0 + index * 0.1
         for index in range(len(frame))
     ]
     frame["ma15"] = [
-        115.0 + index * 0.3 if side == "LONG"
-        else 85.0 - index * 0.3
+        115.0 + index * 0.1 if side == "LONG"
+        else 85.0 - index * 0.1
         for index in range(len(frame))
     ]
+    frame["kc_middle"] = [
+        95.0 + index * 0.1 if side == "LONG"
+        else 105.0 - index * 0.1
+        for index in range(len(frame))
+    ]
+    frame["kc_upper"] = frame["kc_middle"] + 5.0
+    frame["kc_lower"] = frame["kc_middle"] - 5.0
     last = frame.index[-3:]
     if side == "LONG":
-        frame.loc[last, "ma5"] = [100.8, 100.5, 100.2]
-        frame.loc[last, "ma15"] = [101.5, 101.8, 102.1]
+        frame.loc[last, "ma5"] = [100.6, 100.4, 100.2]
+        frame.loc[last, "ma15"] = [101.2, 101.4, 101.6]
         frame.loc[last, "kc_middle"] = [100.6, 100.3, 100.0]
         frame.loc[last, "kc_upper"] = [104.8, 105.0, 105.5]
         frame.loc[last, "kc_lower"] = [94.5, 94.8, 95.0]
     else:
-        frame.loc[last, "ma5"] = [99.2, 99.5, 99.8]
-        frame.loc[last, "ma15"] = [98.5, 98.2, 97.9]
+        frame.loc[last, "ma5"] = [99.4, 99.6, 99.8]
+        frame.loc[last, "ma15"] = [98.8, 98.6, 98.4]
         frame.loc[last, "kc_middle"] = [99.4, 99.7, 100.0]
         frame.loc[last, "kc_upper"] = [105.5, 105.2, 105.0]
         frame.loc[last, "kc_lower"] = [95.3, 95.0, 94.5]
@@ -385,8 +413,20 @@ def _frame_with_verified_structure_history(frame, side):
     return frame
 
 
+def _align_outer_entry_mas(frame, side):
+    frame = frame.copy()
+    recent = frame.index[-3:]
+    if side == "LONG":
+        frame.loc[recent, "ma15"] = [99.0, 99.2, 99.4]
+        frame.loc[recent, "ma5"] = [99.4, 99.6, 99.8]
+    else:
+        frame.loc[recent, "ma15"] = [101.0, 100.8, 100.6]
+        frame.loc[recent, "ma5"] = [100.6, 100.4, 100.2]
+    return frame
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_two_bar_breakout_passes_final_trend_firewall_without_ma_alignment(side):
+def test_two_bar_breakout_requires_ma_alignment_at_final_firewall(side):
     frame = _frame_with_verified_structure_history(
         _numeric_wild_swing_frame(side, "INITIAL_2BAR_BREAKOUT"),
         side,
@@ -405,25 +445,23 @@ def test_two_bar_breakout_passes_final_trend_firewall_without_ma_alignment(side)
             assert symbol == "LOBSTER/USDT"
             return frame.copy()
 
-    result = asyncio.run(
-        validate_account_entry(
-            Account(),
-            "LOBSTER/USDT",
-            side,
-            {
-                "entry_mode": "WILD_SWING",
-                "source": "WILD_SWING_1M",
-                "entry_pattern": pattern,
-                "entry_signal_mode": pattern,
-                "entry_signal_code": f"WILD_SWING_{confirmation}_ENTRY",
-                "channel_confirmation_bar_id": bar_id,
-                "dual_tf_meta": {"bar_id": bar_id},
-            },
+    with pytest.raises(ValueError, match="VETO_"):
+        asyncio.run(
+            validate_account_entry(
+                Account(),
+                "LOBSTER/USDT",
+                side,
+                {
+                    "entry_mode": "WILD_SWING",
+                    "source": "WILD_SWING_1M",
+                    "entry_pattern": pattern,
+                    "entry_signal_mode": pattern,
+                    "entry_signal_code": f"WILD_SWING_{confirmation}_ENTRY",
+                    "channel_confirmation_bar_id": bar_id,
+                    "dual_tf_meta": {"bar_id": bar_id},
+                },
+            )
         )
-    )
-
-    assert result["side"] == side
-    assert result["entry_pattern"] == pattern
 
 
 @pytest.mark.parametrize(
@@ -459,7 +497,10 @@ def test_numeric_patterns_revalidate_without_qwen(
         return False, "unexpected visual review"
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", reject_if_called)
-    frame = _numeric_wild_swing_frame(side, pattern)
+    frame = _align_outer_entry_mas(
+        _numeric_wild_swing_frame(side, pattern),
+        side,
+    )
     signal = WildSwingStrategy().evaluate_entry("LOBSTER/USDT", frame, side)
 
     assert signal is not None
@@ -537,6 +578,91 @@ def test_outer_entries_do_not_require_ma5_ma15_order_or_kc_middle_direction(
     ) is not None
 
 
+@pytest.mark.parametrize(
+    "side,pattern,confirmation",
+    [
+        ("LONG", "INITIAL_2BAR_BREAKOUT", "CONFIRMED_2BAR_BREAKOUT"),
+        ("SHORT", "INITIAL_2BAR_BREAKOUT", "CONFIRMED_2BAR_BREAKOUT"),
+        ("LONG", "CONTINUATION_OUTSIDE_KC", "CONTINUATION_OUTSIDE_KC"),
+        ("SHORT", "CONTINUATION_OUTSIDE_KC", "CONTINUATION_OUTSIDE_KC"),
+    ],
+)
+@pytest.mark.parametrize("quote_outside", [True, False])
+def test_engine_blocks_outer_entry_with_flat_ma_structure(
+    side, pattern, confirmation, quote_outside,
+):
+    from types import SimpleNamespace
+
+    from core.engine import TradingEngine
+
+    frame = _frame_with_verified_structure_history(
+        _numeric_wild_swing_frame(side, pattern),
+        side,
+    )
+    frame["kc_middle"] = 100.0
+    frame["kc_upper"] = 105.0
+    frame["kc_lower"] = 95.0
+    frame["ma5"] = 100.0
+    frame["ma15"] = 100.0
+    frame["atr"] = 2.0
+    if confirmation == "CONTINUATION_OUTSIDE_KC":
+        ma5_column = frame.columns.get_loc("ma5")
+        frame.iat[-2, ma5_column] = 100.0
+        frame.iat[-1, ma5_column] = (
+            100.01 if side == "LONG" else 99.99
+        )
+    outside_quote = 106.5 if side == "LONG" else 93.5
+    quote = outside_quote if quote_outside else (105.0 if side == "LONG" else 95.0)
+    account = SimpleNamespace(
+        positions={},
+        closing_lock=set(),
+        pending_limit_orders={},
+        last_closed_side={},
+        last_closed_at={},
+        trades=[],
+        logs=[],
+        get_wallet_balance=lambda: 100.0,
+        get_available_balance=lambda: 100.0,
+    )
+    account.log = lambda *args: account.logs.append(args)
+    async def open_position(**kwargs):
+        account.entry_context = kwargs["entry_context"]
+        return True
+
+    account.open_position = open_position
+    engine = SimpleNamespace(
+        account=account,
+        symbol_rotation=SimpleNamespace(
+            get_dynamic_leverage=lambda *args: 10,
+        ),
+        _full_wallet_entry_margin=lambda *args: 10.0,
+    )
+
+    opened = asyncio.run(
+        TradingEngine.execute_dual_tf_entry(
+            engine,
+            symbol="CAP/USDT",
+            frame=frame,
+            price=quote,
+            side=side,
+            mode_name=f"WILD_SWING_{confirmation}_ENTRY",
+            meta_dict={
+                "bar_id": float(frame.iloc[-1]["timestamp"]),
+                "entry_pattern": (
+                    "BREAKOUT"
+                    if confirmation == "CONFIRMED_2BAR_BREAKOUT"
+                    else "CONTINUATION"
+                ),
+                "structure_confirmation": confirmation,
+            },
+            entry_mode="WILD_SWING",
+        )
+    )
+
+    assert opened is False
+    assert not hasattr(account, "entry_context")
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_outer_continuation_still_requires_directional_ma5(side):
     frame = _numeric_wild_swing_frame(side, "CONTINUATION_OUTSIDE_KC")
@@ -590,7 +716,8 @@ def test_additional_closed_candle_candidate_reaches_existing_macro_gate():
 
 def test_additional_candidate_is_revalidated_by_final_entry_firewall(monkeypatch):
     frame = _outside_continuation_frame()
-    frame.loc[10, "ma5"] = 100.1
+    frame.loc[9:11, "ma15"] = [99.6, 99.8, 100.0]
+    frame.loc[9:11, "ma5"] = [100.2, 101.0, 101.8]
     bar_id = float(frame.iloc[-1]["timestamp"])
 
     class Account:

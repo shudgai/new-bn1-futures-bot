@@ -1,8 +1,9 @@
 import pytest
 import pandas as pd
+from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 from core.services.exits.realtime_profit_exit import _evaluate_realtime_core_exit_gates
 
-def test_realtime_short_pullback_exit():
+def test_legacy_realtime_short_pullback_reason_is_blocked_for_auto_symbols():
     # 模擬 04:58 暴跌長紅K
     history_5 = [
         {'timestamp': 1000, 'o': 100, 'h': 101, 'l': 85, 'c': 86, 'kc_middle': 100, 'atr': 5, 'atr': 5},
@@ -14,7 +15,11 @@ def test_realtime_short_pullback_exit():
         'ma5': 90, 'kc_middle': 100, 'atr': 5,
     }
     
-    position = {'side': 'SHORT', 'qty': 1, 'margin': 10, 'leverage': 10}
+    position = {
+        'side': 'SHORT', 'qty': 1, 'margin': 10, 'leverage': 10,
+        'entry_price': 100, 'entry_mode': 'WILD_SWING',
+        'open_timestamp': 1.0,
+    }
     
     # 模擬 04:59 當前棒
     stamp = 2000
@@ -30,5 +35,8 @@ def test_realtime_short_pullback_exit():
         position, {}, price, stamp, snapshot, fee=0.0005, slippage=0.0005
     )
     
-    assert trigger == 'REALTIME_SHORT_PULLBACK_EXIT'
+    assert trigger == 'EXIT_SHORT_ON_KC_UPPER_BREACH'
+    assert not automated_position_exit_allowed(
+        'LOBSTER/USDT', position, {}, trigger, price, is_manual=True,
+    )
 

@@ -114,6 +114,38 @@ def short_kc_bearish_trend_active(
     )
 
 
+def _short_true_valley_exit_ready(
+    frame: Optional[pd.DataFrame], price: float,
+) -> bool:
+    """A short may exit only on a live bullish close above both hold lines."""
+    if (
+        frame is None
+        or frame.empty
+        or frame.attrs.get("timeframe_ms", 60_000) != 60_000
+    ):
+        return False
+    try:
+        live = frame.iloc[-1]
+        is_live = live.get("is_closed") is False or (
+            type(live.get("is_closed")).__name__ == "bool_"
+            and not bool(live.get("is_closed"))
+        )
+        opened = _number(live.get("open"))
+        middle = _number(live.get("kc_middle"))
+        ma5 = _number(live.get("ma5"))
+        current = _number(price)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        is_live
+        and opened is not None
+        and middle is not None
+        and ma5 is not None
+        and current is not None
+        and current > opened
+        and current > middle
+        and current > ma5
+    )
 def _state_for(
     position: dict[str, Any],
     metadata: dict[str, Any],
@@ -219,18 +251,20 @@ def evaluate_kc_true_extreme_exit(
 
     pending = pending_kc_true_extreme_exit(position, meta)
     if pending is not None:
-        bearish_short_exit_exception = (
-            side == "SHORT"
-            and pending[0] == _EXIT_REASONS["SHORT"]
-            and pending[1].get("cause") in (
-                "BULLISH_ENGULFING",
-                "INTRADAY_TROUGH_REBOUND",
-            )
+        short_cause = pending[1].get("cause")
+        valid_short_cause = short_cause in (
+            "BULLISH_ENGULFING", "INTRADAY_TROUGH_REBOUND",
         )
-        if (
-            side == "SHORT"
-            and short_kc_bearish_trend_active(frame, quote_ms)
-            and not bearish_short_exit_exception
+        pending_state = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
+        valley_armed = (
+            isinstance(pending_state, dict)
+            and pending_state.get("armed") is True
+        )
+        if side == "SHORT" and (
+            pending[0] != _EXIT_REASONS["SHORT"]
+            or not valid_short_cause
+            or not valley_armed
+            or not _short_true_valley_exit_ready(frame, price)
         ):
             state["pending"] = None
             state_changed = True
@@ -308,7 +342,11 @@ def evaluate_kc_true_extreme_exit(
         from core.services.exits.strict_true_pivot import confirmed_true_pivot_exit
 
         confirmed_pivot = confirmed_true_pivot_exit(position, frame)
-        if confirmed_pivot is not None and not bearish_kc_trend:
+        if (
+            confirmed_pivot is not None
+            and side != "SHORT"
+            and not bearish_kc_trend
+        ):
             pivot_reason, pivot_details = confirmed_pivot
             exit_reason = _EXIT_REASONS[side]
             details = {
@@ -433,22 +471,7 @@ def evaluate_kc_true_extreme_exit(
                     extension_detail = _number(state.get("outer_extension_atr"))
                     if extension_detail is None:
                         extension_detail = extension_atr
-                    wick_rejection = (
-                        prior_atr is not None
-                        and prior_atr > 0
-                        and lower_wick >= body
-                        and lower_wick >= 0.3 * prior_atr
-                    )
-                    if wick_rejection:
-                        closed_signal = (
-                            _EXIT_REASONS[side],
-                            {
-                                "cause": "SHORT_LOWER_WICK",
-                                "bar_ms": closed_bar_ms,
-                                "outer_extension_atr": extension_detail,
-                            },
-                        )
-                    elif engulfed:
+                    if engulfed:
                         closed_signal = (
                             _EXIT_REASONS[side],
                             {
@@ -465,8 +488,19 @@ def evaluate_kc_true_extreme_exit(
             and side == "SHORT"
             and closed_signal[1].get("cause") == "BULLISH_ENGULFING"
         )
+        closed_ma5 = _number(closed.iloc[-1].get("ma5"))
+        closed_middle = _number(closed.iloc[-1].get("kc_middle"))
+        short_closed_confirmation = bool(
+            side == "SHORT"
+            and closed_signal_is_bullish_engulfing
+            and closed_ma5 is not None
+            and closed_middle is not None
+            and close > closed_ma5
+            and close > closed_middle
+        )
         if closed_signal is not None and (
-            not bearish_kc_trend or closed_signal_is_bullish_engulfing
+            short_closed_confirmation
+            or (side != "SHORT" and not bearish_kc_trend)
         ):
             reason, details = closed_signal
             _set_pending(side, state, reason, details)
@@ -545,7 +579,9 @@ def evaluate_kc_true_extreme_exit(
                     reference_atr = _number(state.get("reference_atr"))
                     if (
                         reference_atr is not None
-                        and current_price - extreme >= 0.4 * reference_atr
+                        and current_price - extreme + 1e-12 * reference_atr
+                        >= 0.4 * reference_atr
+                        and _short_true_valley_exit_ready(frame, current_price)
                     ):
                         _set_pending(
                             side,
@@ -571,25 +607,18 @@ def evaluate_kc_true_extreme_exit(
                         "quote_price": current_price,
                     },
                 )
-            elif (
-                side == "SHORT"
-                and not bearish_kc_trend
-                and current_price >= live_middle
-            ):
-                _set_pending(
-                    side,
-                    state,
-                    _MIDLINE_REASON,
-                    {
-                        "cause": "KC_MIDLINE_TOUCH",
-                        "midline": live_middle,
-                        "quote_price": current_price,
-                    },
-                )
 
         state_changed = state_changed or previous_state != state
         _mirror_state(position, meta, state)
         pending = state.get("pending")
+        if (
+            side == "SHORT"
+            and isinstance(pending, dict)
+            and not _short_true_valley_exit_ready(frame, current_price)
+        ):
+            state["pending"] = None
+            pending = None
+            _mirror_state(position, meta, state)
         if isinstance(pending, dict):
             return (pending["reason"], dict(pending["details"])), state_changed
         return None, state_changed

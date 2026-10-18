@@ -249,14 +249,14 @@ def ma5_ma15_entry_gate_problem(
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
         return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
-    is_confirmed_outer_entry = _has_valid_wild_outer_confirmation(
+    is_confirmed_outer_entry = has_valid_wild_outer_confirmation(
         frame, normalized_side, entry_confirmation,
     )
     structure_problem = market_structure_gate_problem(
         frame,
         normalized_side,
         quote=quote,
-        enforce_ma_direction=not (is_confirmed_outer_entry or is_manual),
+        enforce_ma_direction=not is_manual,
         is_confirmed_outer_entry=is_confirmed_outer_entry,
         is_manual=is_manual,
     )
@@ -267,7 +267,7 @@ def ma5_ma15_entry_gate_problem(
     return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
 
 
-def _has_valid_wild_outer_confirmation(frame, side, confirmation):
+def has_valid_wild_outer_confirmation(frame, side, confirmation):
     from core.gates.breakout_continuation_entry_gate import (
         BreakoutContinuationEntryGate,
     )
@@ -322,7 +322,8 @@ def market_structure_gate_problem(
         required = {
             "close", "ma5", "ma15", "kc_upper", "kc_middle", "kc_lower", "atr",
         }
-        if len(closed) < 15:
+        minimum_bars = 3 if is_confirmed_outer_entry else 15
+        if len(closed) < minimum_bars:
             return veto("BLOCKED_INSUFFICIENT_DATA")
         if not required.issubset(closed.columns):
             return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
@@ -372,17 +373,19 @@ def market_structure_gate_problem(
             min_gap=f"{min_gap:.8f}",
         )
 
-        if not is_confirmed_outer_entry and not is_manual:
+        if not is_manual:
             for name, slope in slopes.items():
+                if is_confirmed_outer_entry and name not in {"MA5", "MA15"}:
+                    continue
                 if abs(slope) < 0.00015:
                     return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if not is_confirmed_outer_entry and not is_manual:
-            if gap < min_gap:
-                return veto(
-                    f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
-                )
+        if not is_manual and gap < min_gap:
+            return veto(
+                f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
+            )
 
+        if not is_confirmed_outer_entry and not is_manual:
             window = 10
             ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
             crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
@@ -458,11 +461,11 @@ def final_trend_alignment_problem(
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
         }
-        if is_confirmed_outer_entry and not _has_valid_wild_outer_confirmation(
+        if is_confirmed_outer_entry and not has_valid_wild_outer_confirmation(
             frame, normalized_side, entry_confirmation,
         ):
             return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
-        if len(closed) >= 15:
+        if is_confirmed_outer_entry or len(closed) >= 15:
             ma_gate_problem = ma5_ma15_entry_gate_problem(
                 frame,
                 normalized_side,
@@ -668,6 +671,52 @@ def require_macro_candle_structure(
         raise ValueError("[FORBIDDEN_ENTRY] MACRO_CANDLE_STRUCTURE_GATE: " + reason)
 
 
+def require_ai_chart_advisor(frame, side, symbol):
+    """Apply fresh AI veto labels without waiting for or depending on inference."""
+    from core.services.ai_chart_advisor import ai_chart_advisor
+    from core.services.candle_data import closed_entry_candles
+
+    closed = closed_entry_candles(frame)
+    if closed.empty:
+        logger.warning(
+            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s reason=NO_CLOSED_BAR",
+            symbol, side,
+        )
+        return
+    try:
+        bar_id = float(closed.iloc[-1]["timestamp"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        logger.warning(
+            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s "
+            "reason=INVALID_CLOSED_BAR_ID",
+            symbol, side,
+        )
+        return
+    state = ai_chart_advisor.inspect_state(symbol, bar_id)
+    if state is None:
+        logger.info(
+            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s bar=%s "
+            "reason=NO_FRESH_LABEL",
+            symbol, side, bar_id,
+        )
+        return
+    reason = state["reason"].replace("\n", " ").strip()[:160]
+    if state["is_chop"]:
+        logger.warning(
+            "AI_CHART_ADVISOR_VETO symbol=%s side=%s bar=%s "
+            "reason=VETO_AI_CHOP label=%s",
+            symbol, side, bar_id, reason,
+        )
+        raise ValueError("[FORBIDDEN_ENTRY] VETO_AI_CHOP: " + reason)
+    if not state[f"allow_{side.lower()}"]:
+        logger.warning(
+            "AI_CHART_ADVISOR_VETO symbol=%s side=%s bar=%s "
+            "reason=VETO_AI_SIDE label=%s",
+            symbol, side, bar_id, reason,
+        )
+        raise ValueError("[FORBIDDEN_ENTRY] VETO_AI_SIDE: " + reason)
+
+
 async def validate_account_entry(account, symbol, side, context):
     from core.symbol_aliases import is_auto_entry_symbol
     if not is_auto_entry_symbol(symbol):
@@ -777,7 +826,13 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_INVALID") from exc
         if not quote_fresh:
             raise ValueError("[FORBIDDEN_ENTRY] KC2BAR_QUOTE_STALE")
-        require_final_trend_alignment(fresh_frame, side, symbol, quote=quote)
+        require_final_trend_alignment(
+            fresh_frame,
+            side,
+            symbol,
+            quote=quote,
+            entry_confirmation="CONFIRMED_2BAR_BREAKOUT",
+        )
 
         code = f"KC_2BAR_CONFIRM_{side}"
         decision = evaluate_entry_contract(
@@ -836,6 +891,7 @@ async def validate_account_entry(account, symbol, side, context):
             structure_confirmation="KC_OUTER_BREAKOUT",
             channel_expanding=True,
         )
+        require_ai_chart_advisor(fresh_frame, side, symbol)
         logger.info(
             "KC2BAR_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
             symbol, side, claim_id,
@@ -1164,6 +1220,7 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_GATE: " + macro_reason
             )
+        require_ai_chart_advisor(fresh_frame, side, symbol)
         logger.info(
             "【GATE 通過: %s】symbol=%s side=%s bar=%s stage=final_firewall",
             signal_pattern, symbol, side, signal_bar_id,
@@ -1557,4 +1614,6 @@ async def validate_account_entry(account, symbol, side, context):
                         finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
                         evidence=entry_frame_evidence(frame))
         snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
+    if verified_fast_cross is not None:
+        require_ai_chart_advisor(frame, side, symbol)
     return decision

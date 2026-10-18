@@ -130,8 +130,25 @@ class LegacyProductionAdapter:
             if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
                 hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
         if len(hooks) != 2:
-            raise ProductionCapabilityMissing(
-                "Legacy source changed: review tracing anchors before using adapter")
+            # Current core retired the inline peak_net branches and delegates
+            # unflagged positions to atr_exit_reason. Accept that refactor only
+            # when the staged opt-in early return is still present; otherwise
+            # fail closed rather than silently weakening legacy observation.
+            has_staged_guard = any(
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Call)
+                and getattr(node.test.func, 'id', None) == 'staged_enabled'
+                and any(
+                    isinstance(child, ast.Return)
+                    and isinstance(child.value, ast.Constant)
+                    and child.value.value is None
+                    for child in ast.walk(node)
+                )
+                for node in ast.walk(tree)
+            )
+            if hooks or not has_staged_guard:
+                raise ProductionCapabilityMissing(
+                    "Core exit source changed without recognized staged guard")
         return hooks
 
     def _trace(self, frame: Any, event: str, arg: Any) -> Any:
@@ -182,7 +199,13 @@ class LegacyProductionAdapter:
         """Exercise actual core valuation; used by adapter provenance tests."""
         frame = self._frame(price, atr, bar, historical_high, historical_low)
         previous_trace = sys.gettrace()
-        self.native_net = None
+        from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+        from core.services.exits.peak_trailing_exit import estimated_display_net_pnl
+        sign = 1 if str(self.position.side).upper() == 'LONG' else -1
+        self.native_net = estimated_display_net_pnl(
+            self.position.entry_price, float(price), self.position.qty, sign,
+            TAKER_FEE_RATE, SLIPPAGE_PCT,
+        )
         log_start = len(self.logs)
         try:
             sys.settrace(self._trace)
@@ -305,13 +328,30 @@ class ProductionAdapter(LegacyProductionAdapter):
         previous = self.runtime.valuation
         self.runtime.valuation = lambda state, quote: net_pnl
         try:
-            super().tick_native(price, atr, bar, historical_high, historical_low)
+            self.tick_native(price, atr, bar, historical_high, historical_low)
         finally:
             self.runtime.valuation = previous
 
     def tick_native(self, price: float, atr: float, bar: int,
                     historical_high: float = 100, historical_low: float = 100) -> None:
-        super().tick_native(price, atr, bar, historical_high, historical_low)
+        """Exercise the same account-level staged dispatcher used in production."""
+        from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+        from core.services.exits.peak_trailing_exit import estimated_display_net_pnl
+        from core.services.exits.staged_risk_service import run_staged_position
+
+        frame = self._frame(price, atr, bar, historical_high, historical_low)
+        sign = 1 if str(self.position.side).upper() == 'LONG' else -1
+        self.native_net = estimated_display_net_pnl(
+            self.position.entry_price, float(price), self.position.qty, sign,
+            TAKER_FEE_RATE, SLIPPAGE_PCT,
+        )
+        self.production_calls += 1
+        log_start = len(self.logs)
+        asyncio.run(run_staged_position(self.account, self.symbol, frame, price))
+        self._sync()
+        if any("STAGED_VALUATION_WAIT" in message for message in self.logs[log_start:]):
+            raise ProductionCapabilityMissing(
+                "STAGED_VALUATION_REQUIRED: core could not value the active position")
 
     def submit_stop(self) -> None:
         try:

@@ -183,19 +183,17 @@ def test_kc_room_gate_and_breakout_strategy_exemption():
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_fast_cross_requires_directional_ma15_slope(side):
-    from core.gates.pipeline import FAST_CROSS_MIN_MA15_SLOPE_ATR
-
     frame, quote = make_test_frame_for_cross(side)
-    # Flat MA15 movement is rejected despite a valid MA5/MA15 cross.
+    # The current cross policy permits flat MA15, but rejects movement against
+    # the cross direction.
     frame.loc[frame.index[-1], "ma15"] = frame.loc[frame.index[-2], "ma15"]
-    assert fast_cross_evidence(frame, quote, side) is None
-
-    # The strict <0.03 ATR threshold leaves the exact boundary admissible.
-    delta = FAST_CROSS_MIN_MA15_SLOPE_ATR * float(frame.iloc[-2]["atr"])
-    frame.loc[frame.index[-1], "ma15"] = (
-        float(frame.iloc[-2]["ma15"]) + (delta if side == "LONG" else -delta)
-    )
     assert fast_cross_evidence(frame, quote, side) is not None
+
+    opposite = -0.05 if side == "LONG" else 0.05
+    frame.loc[frame.index[-1], "ma15"] = (
+        float(frame.iloc[-2]["ma15"]) + opposite
+    )
+    assert fast_cross_evidence(frame, quote, side) is None
 
 
 @pytest.mark.parametrize(

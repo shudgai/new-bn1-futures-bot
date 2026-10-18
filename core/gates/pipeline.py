@@ -208,6 +208,7 @@ def ma5_ma15_cross_chop_problem(
     frame: pd.DataFrame, quote: Optional[float] = None, *,
     symbol: str = '', log_result: bool = False,
     side: Optional[str] = None,
+    allow_flat_ma15: bool = False,
 ) -> Optional[str]:
     """Block entries during MA entanglement, post-cross compression, or flat slopes."""
     cross_count = None
@@ -328,12 +329,14 @@ def ma5_ma15_cross_chop_problem(
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'
         elif side == 'LONG' and not (
             current_ma5 > previous_ma5
-            and (meme_impulse or current_ma15 > previous_ma15)
+            and (meme_impulse or current_ma15 > previous_ma15
+                 or (allow_flat_ma15 and current_ma15 >= previous_ma15))
         ):
             problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
         elif side == 'SHORT' and not (
             current_ma5 < previous_ma5
-            and (meme_impulse or current_ma15 < previous_ma15)
+            and (meme_impulse or current_ma15 < previous_ma15
+                 or (allow_flat_ma15 and current_ma15 <= previous_ma15))
         ):
             problem = 'BLOCKED_MA5_MA15_SLOPE_MISALIGNED'
         else:
@@ -552,7 +555,7 @@ def is_ma_tangling(
 def fast_cross_ma15_slope_problem(
     frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
 ) -> Optional[str]:
-    """Reject a fast MA cross when live MA15 movement is flat relative to ATR."""
+    """Reject a fast MA cross only when MA15 moves against its trade direction."""
     try:
         if is_meme_breakout_symbol(symbol):
             return None
@@ -572,13 +575,12 @@ def fast_cross_ma15_slope_problem(
         if (not all(math.isfinite(value) and value > 0
                     for value in (quote, raw_close, previous_ma15, live_ma15, atr))):
             return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
-        slope_atr = abs(live_ma15 - previous_ma15) / atr
-        if (slope_atr < FAST_CROSS_MIN_MA15_SLOPE_ATR
-                and not math.isclose(
-                    slope_atr, FAST_CROSS_MIN_MA15_SLOPE_ATR,
-                    rel_tol=1e-12, abs_tol=0.0,
-                )):
-            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_FLAT'
+        slope = live_ma15 - previous_ma15
+        tolerance = max(1e-12, atr * 1e-12)
+        if side == 'LONG' and slope < -tolerance:
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_MISALIGNED'
+        if side == 'SHORT' and slope > tolerance:
+            return 'BLOCKED_FAST_CROSS_MA15_SLOPE_MISALIGNED'
         return None
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return 'BLOCKED_FAST_CROSS_MA15_SLOPE_INVALID'
@@ -2466,6 +2468,7 @@ class EntryGatePipeline:
                     decision.get('side') if isinstance(decision, dict)
                     else requested_side
                 ),
+                allow_flat_ma15=is_fast_cross,
             )
         )
         if cross_chop_problem:

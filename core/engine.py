@@ -2546,16 +2546,22 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
             from core.gates.ma5_ma15_cross_entry_gate import (
+                ma_cross_gate_exempt_for_entry,
                 validate_ma5_ma15_cross_entry,
             )
-            cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
-                snapshot['frame'], side,
-            )
-            if not cross_allowed:
-                log_entry_gate(
-                    self, symbol, side, 'EXECUTION', cross_reason, bar,
+            if not ma_cross_gate_exempt_for_entry(
+                decision.get('type'),
+                decision.get('entry_phase'),
+                decision.get('strategy_type'),
+            ):
+                cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
+                    snapshot['frame'], side, price=price,
                 )
-                return False
+                if not cross_allowed:
+                    log_entry_gate(
+                        self, symbol, side, 'EXECUTION', cross_reason, bar,
+                    )
+                    return False
             from core.services.entry_contract import (
                 entry_direction_problem, evaluate_entry_contract,
             )
@@ -2982,12 +2988,34 @@ class TradingEngine:
                 "BREAKOUT",
                 "CONTINUATION",
             }
-            if not is_wait_authority and not is_wild_outer:
+            from core.gates.ma5_ma15_cross_entry_gate import (
+                ma_cross_gate_exempt_for_entry,
+            )
+            entry_cross_exempt = (
+                is_authority_entry
+                or is_wild_outer
+                or ma_cross_gate_exempt_for_entry(
+                    entry_metadata.get("entry_type")
+                    or entry_metadata.get("signal_code")
+                    or entry_metadata.get("type"),
+                    entry_metadata.get("entry_phase")
+                    or (
+                        kc2bar_signal.get("entry_phase")
+                        if isinstance(kc2bar_signal, dict) else None
+                    ),
+                    entry_metadata.get("strategy_type"),
+                    entry_metadata.get("entry_pattern")
+                    or wild_signal.get("entry_pattern"),
+                    entry_metadata.get("structure_confirmation")
+                    or wild_signal.get("structure_confirmation"),
+                )
+            )
+            if not entry_cross_exempt:
                 from core.gates.ma5_ma15_cross_entry_gate import (
                     validate_ma5_ma15_cross_entry,
                 )
                 cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
-                    frame, side,
+                    frame, side, price=price,
                 )
                 if not cross_allowed:
                     self.account.log(
@@ -3074,9 +3102,44 @@ class TradingEngine:
             self.account.log(submit_log, "INFO")
             print(submit_log, flush=True)
 
-            from core.services.entry_firewall import market_structure_gate_problem
+            from core.services.entry_firewall import (
+                has_valid_wild_outer_confirmation,
+                market_structure_gate_problem,
+            )
+            is_confirmed_wild_outer = (
+                entry_mode == "WILD_SWING"
+                and has_valid_wild_outer_confirmation(
+                    frame,
+                    side,
+                    wild_signal.get("structure_confirmation"),
+                )
+            )
+            if is_confirmed_wild_outer:
+                try:
+                    latest_upper = float(frame.iloc[-1]["kc_upper"])
+                    latest_lower = float(frame.iloc[-1]["kc_lower"])
+                except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                    return False
+                if (
+                    not math.isfinite(price)
+                    or not math.isfinite(latest_upper)
+                    or not math.isfinite(latest_lower)
+                    or latest_upper <= latest_lower
+                    or (side == "LONG" and price <= latest_upper)
+                    or (side == "SHORT" and price >= latest_lower)
+                ):
+                    self.account.log(
+                        f"WILD_OUTER_QUOTE_BLOCK symbol={symbol} side={side} "
+                        f"price={price} upper={latest_upper} lower={latest_lower}",
+                        "WARNING",
+                    )
+                    return False
             structure_problem = market_structure_gate_problem(
-                frame, side, quote=price,
+                frame,
+                side,
+                quote=price,
+                enforce_ma_direction=not is_confirmed_wild_outer,
+                is_confirmed_outer_entry=is_confirmed_wild_outer,
             )
             if structure_problem:
                 self.account.log(
