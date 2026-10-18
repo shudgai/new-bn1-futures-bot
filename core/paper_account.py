@@ -215,6 +215,7 @@ class PaperAccount:
         self._rapid_drop_window: Dict[str, List[tuple]] = {}
         self._rapid_drop_cooldown: Dict[str, float] = {}
         self.breakout_qualification: Dict[str, dict] = {}
+        self.pending_next_bar_wick: Dict[str, dict] = {}
         self.last_consumed_breakout_signal_id: Dict[str, str] = {}
         self.failed_breakout_revalidation: Dict[str, dict] = {}
         self.d0_in_flight_state: Dict[str, dict] = {}
@@ -318,6 +319,7 @@ class PaperAccount:
         self.entry_filter_stats = data.get("entry_filter_stats", {})
         self.entry_filter_last = data.get("entry_filter_last", {})
         self.breakout_qualification = data.get("breakout_qualification", {})
+        self.pending_next_bar_wick = data.get("pending_next_bar_wick", {})
         self.last_consumed_breakout_signal_id = data.get("last_consumed_breakout_signal_id", {})
         self.failed_breakout_revalidation = data.get("failed_breakout_revalidation", {})
         self.d0_in_flight_state = data.get("d0_in_flight_state", {})
@@ -389,6 +391,7 @@ class PaperAccount:
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
             "breakout_qualification": self.breakout_qualification,
+            "pending_next_bar_wick": self.pending_next_bar_wick,
             "last_consumed_breakout_signal_id": self.last_consumed_breakout_signal_id,
             "failed_breakout_revalidation": self.failed_breakout_revalidation,
             "d0_in_flight_state": self.d0_in_flight_state,
@@ -430,6 +433,7 @@ class PaperAccount:
         self.entry_filter_stats = {}
         self.entry_filter_last = {}
         self.breakout_qualification = {}
+        self.pending_next_bar_wick = {}
         self.last_consumed_breakout_signal_id = {}
         self.failed_breakout_revalidation = {}
         self.shadow_parameter_stats = {}

@@ -123,7 +123,8 @@ ENTRY_EVIDENCE_KEYS = (
     "realtime_lower_shadow_ratio", "previous_lower_shadow_ratio",
     "strategy_type", "body_atr", "body_ratio", "midline_distance_atr",
     "upper_rail_space_ratio", "lower_rail_space_ratio",
-    "live_ma5", "live_ma15",
+    "live_ma5", "live_ma15", "pending_next_bar_long",
+    "pending_next_bar_short", "wick_reference_midpoint",
 )
 
 
@@ -488,6 +489,8 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
                 decision.get("breakout_bar_id"),
                 decision.get("confirmation_bar_id"),
             )
+        elif phase == "WICK_NEXT_BAR_CONFIRM":
+            bar_ids = (decision.get("confirmation_bar_id"),)
         elif phase == "KC_2BAR_CLOSED_CONFIRM":
             # Only the two closed candles authorize a confirmed rail breakout.
             # The live candle is checked by quote-vs-rail gates, not its shape.
@@ -559,6 +562,17 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
                     "BLOCKED_LIVE_LONG_WICK_OR_DOJI"
                     if is_live else "BLOCKED_ENTRY_WICK_OR_DOJI"
                 )
+            if phase == "WICK_NEXT_BAR_CONFIRM":
+                if not _wick_candle_confirmation(
+                    candle, decision.get('side'),
+                    decision.get('wick_reference_midpoint'),
+                ):
+                    return (
+                        'BLOCKED_LONG_WICK_NEXT_BAR_CONFIRMATION'
+                        if decision.get('side') == 'LONG'
+                        else 'BLOCKED_SHORT_WICK_NEXT_BAR_CONFIRMATION'
+                    )
+                continue
             side = decision.get("side") if decision else None
             if side in ("LONG", "SHORT"):
                 directional_wick = (
@@ -2969,6 +2983,35 @@ def pre_flight_safety_check(
         return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
 
 
+def _wick_pending_store(account):
+    if account is None:
+        return None
+    store = getattr(account, 'pending_next_bar_wick', None)
+    if not isinstance(store, dict):
+        store = {}
+        setattr(account, 'pending_next_bar_wick', store)
+    return store
+
+
+def _wick_candle_confirmation(candle, side, midpoint):
+    try:
+        opening, high, low, close = (
+            float(candle[key]) for key in ('open', 'high', 'low', 'close')
+        )
+        values = (opening, high, low, close, float(midpoint))
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return False
+        body = abs(close - opening)
+        wick = high - max(opening, close) if side == 'LONG' else min(opening, close) - low
+        return (
+            close > opening and body > wick and close > midpoint
+            if side == 'LONG' else
+            close < opening and body > wick and close < midpoint
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
     def reject(reason):
         if diagnostics is not None:
@@ -2985,6 +3028,74 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         confirmation_bar_id = decision.get('confirmation_bar_id')
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
+        side = decision.get('side')
+        if (side in ('LONG', 'SHORT')
+                and decision.get('entry_phase') != 'WICK_NEXT_BAR_CONFIRM'):
+            try:
+                wick_bar_id = (
+                    decision.get('pair_confirmation_bar_id')
+                    if decision.get('entry_phase') == 'KC_2BAR_CLOSED_CONFIRM'
+                    else confirmation_bar_id
+                )
+                candle_matches = frame.loc[frame['timestamp'] == wick_bar_id]
+                if candle_matches.empty:
+                    return reject('BLOCKED_INVALID_WICK_SIGNAL_CANDLE')
+                candle = candle_matches.iloc[-1]
+                opening = float(candle['open'])
+                raw_close = float(candle['close'])
+                is_live_bar = not bool(candle.get('is_closed', True))
+                signal_close = float(quote) if is_live_bar else raw_close
+                raw_high, raw_low = float(candle['high']), float(candle['low'])
+                high = max(raw_high, opening, signal_close)
+                low = min(raw_low, opening, signal_close)
+                body = abs(signal_close - opening)
+                wick = high - max(opening, signal_close) if side == 'LONG' else min(opening, signal_close) - low
+                atr = float(candle.get('atr') or decision.get('entry_atr') or 0.0)
+                if (not all(math.isfinite(value) and value > 0 for value in
+                            (opening, raw_close, raw_high, raw_low, signal_close, atr))
+                        or raw_low > min(opening, raw_close)
+                        or raw_high < max(opening, raw_close)):
+                    return reject('BLOCKED_INVALID_WICK_SIGNAL_CANDLE')
+                if wick >= body and wick >= 0.25 * atr:
+                    if account is None:
+                        return reject(
+                            'BLOCKED_LONG_WICK_PENDING_STATE_UNAVAILABLE'
+                            if side == 'LONG' else 'BLOCKED_SHORT_WICK_PENDING_STATE_UNAVAILABLE'
+                        )
+                    pending_store = _wick_pending_store(account)
+                    existing_pending = pending_store.get(symbol)
+                    if existing_pending:
+                        return reject(
+                            'BLOCKED_LONG_WICK_PENDING_NEXT_BAR'
+                            if existing_pending.get('side') == 'LONG'
+                            else 'BLOCKED_SHORT_WICK_PENDING_NEXT_BAR'
+                        )
+                    mid = (float(candle['high']) + max(opening, signal_close)) / 2.0 if side == 'LONG' else (min(opening, signal_close) + float(candle['low'])) / 2.0
+                    pending_store[symbol] = {
+                        'side': side,
+                        'signal_bar_id': float(wick_bar_id),
+                        'midpoint': mid,
+                        'entry_atr': atr,
+                        'type': decision.get('type'),
+                        'reason': decision.get('reason'),
+                        'entry_phase': decision.get('entry_phase'),
+                        'strategy_type': decision.get('strategy_type') or entry_strategy_type(decision.get('entry_phase')),
+                        'breakout_bar_id': decision.get('breakout_bar_id'),
+                        'pair_confirmation_bar_id': decision.get('pair_confirmation_bar_id'),
+                        'pending_signal_id': decision.get('pending_signal_id'),
+                        'profit_lock_fast_track': decision.get('profit_lock_fast_track') is True,
+                        'pending_next_bar_long': side == 'LONG',
+                        'pending_next_bar_short': side == 'SHORT',
+                    }
+                    save = getattr(account, 'save_state', None)
+                    if callable(save):
+                        save()
+                    return reject(
+                        'BLOCKED_LONG_WICK_PENDING_NEXT_BAR'
+                        if side == 'LONG' else 'BLOCKED_SHORT_WICK_PENDING_NEXT_BAR'
+                    )
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+                return reject('BLOCKED_INVALID_WICK_SIGNAL_CANDLE')
         passed, reason = validate_ma_alignment(frame, decision.get('side'), quote)
         if not passed:
             return reject(reason)
@@ -3026,8 +3137,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             decision.get('type') == 'TRIGGER_C_CONTINUATION'
             and decision.get('entry_phase') == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
+        is_wick_confirmation = decision.get('entry_phase') == 'WICK_NEXT_BAR_CONFIRM'
         if (decision.get('type') not in FLAT_LINE_BREAKOUT_TYPES
                 and not is_post_close_continuation
+                and not is_wick_confirmation
                 and decision.get('type') not in (
                     BEARISH_INSTANT_BREAKOUT_CODE,
                     BULLISH_INSTANT_BREAKOUT_CODE,
@@ -3133,6 +3246,104 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             diagnostics.update(decision)
         return decision
 
+
+    pending_wicks = _wick_pending_store(account)
+    pending_wick = pending_wicks.get(symbol) if pending_wicks is not None and symbol else None
+    if pending_wick:
+        try:
+            if symbol in getattr(account, 'positions', {}):
+                pending_wicks.pop(symbol, None)
+                account.save_state()
+                return reject('BLOCKED_WICK_CONFIRMATION_POSITION_ALREADY_OPEN')
+            closed_for_wick = closed_entry_candles(frame)
+            if closed_for_wick.empty:
+                return reject('WAIT_WICK_CONFIRMATION_CANDLE_CLOSE')
+            interval = int(frame.attrs.get('timeframe_ms', 60000))
+            signal_bar_id = float(pending_wick['signal_bar_id'])
+            latest_closed = closed_for_wick.iloc[-1]
+            latest_id = float(latest_closed['timestamp'])
+            expected_id = signal_bar_id + interval
+            if pending_wick.get('status') == 'ready':
+                confirm_id = float(pending_wick['confirmation_bar_id'])
+                if latest_id != confirm_id:
+                    pending_wicks.pop(symbol, None)
+                    account.save_state()
+                    return reject('BLOCKED_WICK_CONFIRMATION_EXPIRED')
+                confirmation = latest_closed
+            else:
+                if latest_id < signal_bar_id:
+                    return reject('WAIT_WICK_CONFIRMATION_NEXT_BAR')
+                if latest_id == signal_bar_id:
+                    opening = float(latest_closed['open'])
+                    close = float(latest_closed['close'])
+                    high = float(latest_closed['high'])
+                    low = float(latest_closed['low'])
+                    body = abs(close - opening)
+                    wick = high - max(opening, close) if pending_wick['side'] == 'LONG' else min(opening, close) - low
+                    atr = float(pending_wick['entry_atr'])
+                    if wick >= body and wick >= 0.25 * atr:
+                        final_midpoint = (
+                            (high + max(opening, close)) / 2.0
+                            if pending_wick['side'] == 'LONG'
+                            else (min(opening, close) + low) / 2.0
+                        )
+                        if float(pending_wick.get('midpoint') or 0.0) != final_midpoint:
+                            pending_wick['midpoint'] = final_midpoint
+                            account.save_state()
+                        return reject('WAIT_WICK_CONFIRMATION_NEXT_BAR')
+                    pending_wicks.pop(symbol, None)
+                    account.save_state()
+                    return evaluate_entry_contract(
+                        frame, price, code, account=account, symbol=symbol,
+                        diagnostics=diagnostics,
+                    )
+                if latest_id != expected_id:
+                    pending_wicks.pop(symbol, None)
+                    account.save_state()
+                    return reject('BLOCKED_WICK_CONFIRMATION_BAR_MISSED')
+                if not _wick_candle_confirmation(
+                    latest_closed, pending_wick['side'], pending_wick['midpoint'],
+                ):
+                    pending_wicks.pop(symbol, None)
+                    account.save_state()
+                    return reject(
+                        'BLOCKED_LONG_WICK_NEXT_BAR_FAILED'
+                        if pending_wick['side'] == 'LONG'
+                        else 'BLOCKED_SHORT_WICK_NEXT_BAR_FAILED'
+                    )
+                pending_wick.update(
+                    status='ready', confirmation_bar_id=latest_id,
+                )
+                account.save_state()
+                confirmation = latest_closed
+
+            side = pending_wick['side']
+            decision = {
+                'action': 'ENTER', 'side': side,
+                'type': pending_wick['type'],
+                'reason': 'LONG_WICK_NEXT_BAR_CONFIRMED',
+                'price': float(price if price is not None else frame.iloc[-1]['close']),
+                'close_price': float(confirmation['close']),
+                'entry_atr': float(pending_wick['entry_atr']),
+                'confirmation_bar_id': latest_id,
+                'breakout_bar_id': pending_wick.get('breakout_bar_id') or signal_bar_id,
+                'pair_confirmation_bar_id': pending_wick.get('pair_confirmation_bar_id') or signal_bar_id,
+                'pending_signal_id': f"{pending_wick.get('pending_signal_id')}:WICK_CONFIRM:{int(latest_id)}",
+                'entry_phase': 'WICK_NEXT_BAR_CONFIRM',
+                'strategy_type': pending_wick.get('strategy_type'),
+                'intrabar': False,
+                'pending_next_bar_long': side == 'LONG',
+                'pending_next_bar_short': side == 'SHORT',
+                'wick_reference_midpoint': float(pending_wick['midpoint']),
+                'profit_lock_fast_track': pending_wick.get('profit_lock_fast_track') is True,
+            }
+            return authorize(decision, decision['price'])
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            pending_wicks.pop(symbol, None)
+            save = getattr(account, 'save_state', None)
+            if callable(save):
+                save()
+            return reject('BLOCKED_WICK_CONFIRMATION_INVALID_DATA')
 
     reject("WAIT_VALID_ENTRY_DATA")
     try:
