@@ -251,7 +251,8 @@ def ma_parallel_chop_problem(frame, side, quote=None):
 
 
 def ma5_ma15_entry_gate_problem(
-    frame, side, quote=None, *, entry_confirmation=None, is_manual=False,
+    frame, side, quote=None, *, entry_confirmation=None,
+    is_continuation_entry=False, is_manual=False,
 ):
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
@@ -265,6 +266,14 @@ def ma5_ma15_entry_gate_problem(
         quote=quote,
         enforce_ma_direction=not is_manual,
         is_confirmed_outer_entry=is_confirmed_outer_entry,
+        is_continuation_entry=(
+            is_continuation_entry
+            or str(entry_confirmation or "").upper() in {
+                "CONTINUATION_OUTSIDE_KC", "CONFIRMED_2BAR_CONTINUATION",
+                "CONTINUATION", "KC_CONTINUATION_ENTRY",
+                "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
+            }
+        ),
         is_manual=is_manual,
     )
     if structure_problem:
@@ -295,7 +304,9 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation):
 
 
 def market_structure_gate_problem(
-    frame, side, quote=None, *, enforce_ma_direction=True, is_confirmed_outer_entry=False, is_manual=False,
+    frame, side, quote=None, *, enforce_ma_direction=True,
+    is_confirmed_outer_entry=False, is_continuation_entry=False,
+    is_manual=False,
 ):
     from core.services.candle_data import closed_entry_candles
 
@@ -370,8 +381,9 @@ def market_structure_gate_problem(
             "KC_LOWER": normalized_slope(values["kc_lower"]),
         }
         gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
+        relaxed_continuation = bool(is_continuation_entry)
         min_gap = (
-            0.15 * current_atr
+            (0.10 if relaxed_continuation else 0.15) * current_atr
             if current_atr > 0
             else (MA_PARALLEL_GAP_PRICE_PCT * current_price)
         )
@@ -382,26 +394,36 @@ def market_structure_gate_problem(
         )
 
         if not is_manual:
-            # Confirmed outer breakouts still need the channel itself to be
-            # moving with the trade. A sharp MA5 alone must not authorize a
-            # breakout into a flat KC regime.
-            kc_middle_slope = slopes["KC_MIDDLE"]
-            if is_confirmed_outer_entry:
+            if relaxed_continuation:
+                # Let a continuation through with a near-flat or slightly
+                # counter-sloped MA5, but retain directional KC confirmation
+                # and reject a material opposing MA5 turn.
+                kc_middle_slope = slopes["KC_MIDDLE"]
                 if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
                 if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
-            for name, slope in slopes.items():
-                if is_confirmed_outer_entry:
-                    if name != "MA5":
-                        continue
-                    if normalized_side == "LONG" and slope < 0.00015:
+                ma5_slope = slopes["MA5"]
+                if normalized_side == "LONG" and ma5_slope < -0.00005:
+                    return veto("VETO_CONTINUATION_MA5_OPPOSITE_SLOPE_LONG")
+                if normalized_side == "SHORT" and ma5_slope > 0.00005:
+                    return veto("VETO_CONTINUATION_MA5_OPPOSITE_SLOPE_SHORT")
+            elif is_confirmed_outer_entry:
+                # Confirmed breakouts keep their original strict MA5 slope.
+                kc_middle_slope = slopes["KC_MIDDLE"]
+                if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
+                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
+                if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
+                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
+                ma5_slope = slopes["MA5"]
+                if normalized_side == "LONG" and ma5_slope < 0.00015:
+                    return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
+                if normalized_side == "SHORT" and ma5_slope > -0.00015:
+                    return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
+            else:
+                for name, slope in slopes.items():
+                    if abs(slope) < 0.00015:
                         return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
-                    if normalized_side == "SHORT" and slope > -0.00015:
-                        return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
-                    continue
-                if abs(slope) < 0.00015:
-                    return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
         if not is_manual and gap < min_gap:
             return veto(
@@ -438,14 +460,22 @@ def market_structure_gate_problem(
         ma5 = float(values["ma5"][-1])
         ma15 = float(values["ma15"][-1])
         previous_ma5 = float(values["ma5"][-2])
-        if enforce_ma_direction and normalized_side == "LONG" and not (
-            ma5 > ma15 and ma5_rising and ma5 > previous_ma5
-        ):
-            return veto("VETO_LONG_MA_CONDITION_NOT_MET")
-        if enforce_ma_direction and normalized_side == "SHORT" and not (
-            ma5 < ma15 and ma5_falling and ma5 < previous_ma5
-        ):
-            return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
+        if enforce_ma_direction and normalized_side == "LONG":
+            long_ma_aligned = (
+                ma5 > ma15 and slopes["MA5"] >= -0.00005
+                if relaxed_continuation
+                else ma5 > ma15 and ma5_rising and ma5 > previous_ma5
+            )
+            if not long_ma_aligned:
+                return veto("VETO_LONG_MA_CONDITION_NOT_MET")
+        if enforce_ma_direction and normalized_side == "SHORT":
+            short_ma_aligned = (
+                ma5 < ma15 and slopes["MA5"] <= 0.00005
+                if relaxed_continuation
+                else ma5 < ma15 and ma5_falling and ma5 < previous_ma5
+            )
+            if not short_ma_aligned:
+                return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
         return None
     except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
         return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
@@ -484,6 +514,11 @@ def final_trend_alignment_problem(
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
         }
+        is_continuation_entry = entry_confirmation in {
+            "CONTINUATION_OUTSIDE_KC", "CONFIRMED_2BAR_CONTINUATION",
+            "CONTINUATION", "KC_CONTINUATION_ENTRY",
+            "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
+        }
         if is_confirmed_outer_entry and not has_valid_wild_outer_confirmation(
             frame, normalized_side, entry_confirmation,
         ):
@@ -496,6 +531,7 @@ def final_trend_alignment_problem(
                 entry_confirmation=(
                     entry_confirmation if is_confirmed_outer_entry else None
                 ),
+                is_continuation_entry=is_continuation_entry,
             )
             if ma_gate_problem:
                 return ma_gate_problem

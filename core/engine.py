@@ -2644,6 +2644,14 @@ class TradingEngine:
                 quote=price,
                 enforce_ma_direction=not is_confirmed_wild_outer,
                 is_confirmed_outer_entry=is_confirmed_wild_outer,
+                is_continuation_entry=str(confirmation or "").upper() in {
+                    "CONTINUATION_OUTSIDE_KC",
+                    "CONFIRMED_2BAR_CONTINUATION",
+                    "CONTINUATION",
+                    "KC_CONTINUATION_ENTRY",
+                    "TRIGGER_C_CONTINUATION",
+                    "POST_CLOSE_CONTINUATION_ENTRY",
+                },
             )
             if structure_problem:
                 log_entry_gate(
@@ -3169,6 +3177,18 @@ class TradingEngine:
                 quote=price,
                 enforce_ma_direction=not is_confirmed_wild_outer,
                 is_confirmed_outer_entry=is_confirmed_wild_outer,
+                is_continuation_entry=str(
+                    wild_signal.get("structure_confirmation")
+                    or wild_signal.get("entry_pattern")
+                    or ""
+                ).upper() in {
+                    "CONTINUATION_OUTSIDE_KC",
+                    "CONFIRMED_2BAR_CONTINUATION",
+                    "CONTINUATION",
+                    "KC_CONTINUATION_ENTRY",
+                    "TRIGGER_C_CONTINUATION",
+                    "POST_CLOSE_CONTINUATION_ENTRY",
+                },
             )
             if structure_problem:
                 self.account.log(
