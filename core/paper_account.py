@@ -570,6 +570,15 @@ class PaperAccount:
         elif is_wild_swing:
             entry_context['managed_by_bot'] = True
 
+        from core.services.math_execution_gate import validate_entry_at_execution
+        math_allowed, math_reason = await validate_entry_at_execution(
+            self, symbol, side, entry_context,
+        )
+        if not math_allowed:
+            message = f"[FORBIDDEN_ENTRY] {math_reason}"
+            self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
+            raise ValueError(message)
+
         if (
             not is_manual
             and entry_context.get("entry_authority") != "WAIT"
@@ -1208,16 +1217,14 @@ class PaperAccount:
 
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
-        from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+        from core.services.math_execution_gate import validate_exit_at_execution
+        math_allowed, math_reason, math_details = validate_exit_at_execution(
+            self, symbol, position, current_price, close_reason,
         )
-        if not automated_position_exit_allowed(
-            symbol, position, meta, close_reason, current_price,
-            is_manual=is_manual,
-        ):
+        if not math_allowed:
             self.log(
                 f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CHANNEL_SHORT_OVERSOLD_REVERSAL",
+                f"math_gate={math_reason} details={math_details}",
                 "WARNING",
             )
             return False
@@ -1303,19 +1310,20 @@ class PaperAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
-        from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+        from core.services.math_execution_gate import (
+            is_emergency_exit, validate_exit_at_execution,
         )
-        if not automated_position_exit_allowed(
-            symbol, position, meta, close_reason, current_price,
-            is_manual=is_manual,
-        ):
+        math_allowed, math_reason, math_details = validate_exit_at_execution(
+            self, symbol, position, current_price, close_reason,
+        )
+        if not math_allowed:
             self.log(
                 f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                f"math_gate={math_reason} details={math_details}",
                 "WARNING",
             )
             return False
+        emergency_exit = is_emergency_exit(close_reason)
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
         # Position loss stops are disabled; strategy exits, profit locks, and
         # explicit manual closes continue through their existing authorities.
@@ -1344,14 +1352,14 @@ class PaperAccount:
             self.position_meta.get(symbol, {}).get("profit_lock_usdt_armed")
             and close_reason == "觸發移動止利 (Trailing Take-Profit)"
         )
-        if DISABLE_STOP_LOSS and not is_manual and not profit_lock_close:
+        if DISABLE_STOP_LOSS and not is_manual and not profit_lock_close and not emergency_exit:
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
                 self._auto_close_reject_logged_at[reject_key] = now_ts
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
-        if not is_manual and ONLY_CLOSE_ON_PROFIT:
+        if not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit:
             pos = self.positions[symbol]
             side = pos["side"]
             entry_price = pos["entry_price"]
@@ -1503,6 +1511,12 @@ class PaperAccount:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         pos = self.positions[symbol]
+        from core.services.math_execution_gate import is_entry_bar
+        frame_provider = getattr(self, "channel_exit_frame_provider", None)
+        entry_frame = frame_provider(symbol) if callable(frame_provider) else None
+        if is_entry_bar(pos, entry_frame):
+            self.log(f"🛡️ {symbol} 開倉當根禁止收緊止損線", "WARNING")
+            return False
         meta = self.position_meta.setdefault(symbol, {})
         current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
         if not math.isfinite(new_sl_price) or new_sl_price <= 0:

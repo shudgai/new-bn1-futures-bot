@@ -24,8 +24,8 @@ def should_arm_breakeven_lock(peak_net_roe_pct, favorable_move_atr):
 
 def tiered_net_roe_floor(peak_net_roe_pct):
     """防震寬幅階梯鎖利（Net-ROE Ladder）：
-    - 淨 ROE 達 10% 時：鎖定保本 + 手續費底線（底線 ROE = 3.0%），給予足夠價格呼吸空間。
-    - 淨 ROE 達 15% 時：底線上推鎖定 10.0%。
+    - 淨 ROE 達 10% 時：鎖定 7.0%。
+    - 淨 ROE 達 15% 時：底線上推鎖定 12.0%。
     - 淨 ROE 達 20% 時：底線上推鎖定 15.0%，後續每 5% 步進同步上推 5%。
     """
     try:
@@ -34,9 +34,9 @@ def tiered_net_roe_floor(peak_net_roe_pct):
             return None, 0
 
         if peak < 15.0:
-            return 3.0, 1
+            return 7.0, 1
         elif peak < 20.0:
-            return 10.0, 2
+            return 12.0, 2
         else:
             completed_steps = math.floor((peak - 20.0) / 5.0 + 1e-12)
             tier = 3 + completed_steps

@@ -536,10 +536,10 @@ def test_tiered_profit_pullback_does_not_close_after_reload(side, monkeypatch):
 
 def test_net_roe_tier_floors():
     assert _tiered_net_roe_floor(9.9999) == (None, 0)
-    assert _tiered_net_roe_floor(10.0) == (3.0, 1)
-    assert _tiered_net_roe_floor(14.9999) == (3.0, 1)
-    assert _tiered_net_roe_floor(15.0) == (10.0, 2)
-    assert _tiered_net_roe_floor(19.9999) == (10.0, 2)
+    assert _tiered_net_roe_floor(10.0) == (7.0, 1)
+    assert _tiered_net_roe_floor(14.9999) == (7.0, 1)
+    assert _tiered_net_roe_floor(15.0) == (12.0, 2)
+    assert _tiered_net_roe_floor(19.9999) == (12.0, 2)
     assert _tiered_net_roe_floor(20.0) == (15.0, 3)
 
 

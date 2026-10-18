@@ -1,0 +1,326 @@
+"""Pure mathematical authorization for final entry and exit execution."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from typing import Any
+
+
+def _number(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _rows(frame: Any) -> list[dict[str, Any]]:
+    if frame is None:
+        return []
+    if isinstance(frame, Mapping):
+        candles = frame.get("candles")
+        if isinstance(candles, (list, tuple)):
+            return [dict(row) for row in candles if isinstance(row, Mapping)]
+        return []
+    if hasattr(frame, "to_dict") and hasattr(frame, "iloc"):
+        try:
+            return [dict(row) for row in frame.to_dict("records")]
+        except (TypeError, ValueError):
+            return []
+    if isinstance(frame, (list, tuple)):
+        return [dict(row) for row in frame if isinstance(row, Mapping)]
+    return []
+
+
+def validate_entry_math(
+    frame: Any,
+    side: str,
+    *,
+    profit_lock_fast_track: bool = False,
+) -> tuple[bool, str]:
+    """Authorize an entry from the latest candle and prior MA5 value only."""
+    side = str(side or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return False, "BLOCKED_ENTRY_MATH_INVALID_SIDE"
+    bars = _rows(frame)
+    if len(bars) < 2:
+        return False, "BLOCKED_ENTRY_MATH_INSUFFICIENT_BARS"
+    current, previous = bars[-1], bars[-2]
+    values = {
+        key: _number(current.get(key))
+        for key in ("open", "high", "low", "close", "ma5", "ma15", "atr", "kc_upper", "kc_lower")
+    }
+    previous_ma5 = _number(previous.get("ma5"))
+    if any(value is None for value in values.values()) or previous_ma5 is None:
+        return False, "BLOCKED_ENTRY_MATH_INVALID_DATA"
+    opened, high, low, close, ma5, ma15, atr, upper, lower = (
+        values[key]
+        for key in ("open", "high", "low", "close", "ma5", "ma15", "atr", "kc_upper", "kc_lower")
+    )
+    if min(opened, close, ma5, ma15, atr, upper, lower) <= 0 or high < low:
+        return False, "BLOCKED_ENTRY_MATH_INVALID_DATA"
+    if high < max(opened, close) or low > min(opened, close):
+        return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
+
+    body = abs(close - opened)
+    wick = high - max(opened, close) if side == "LONG" else min(opened, close) - low
+    if wick >= body and wick >= 0.25 * atr:
+        return False, "BLOCKED_ENTRY_MATH_LONG_WICK"
+
+    if profit_lock_fast_track:
+        if side == "LONG" and close > opened and close > upper:
+            return True, "ENTRY_MATH_PROFIT_LOCK_FAST_TRACK"
+        if side == "SHORT" and close < opened and close < lower:
+            return True, "ENTRY_MATH_PROFIT_LOCK_FAST_TRACK"
+        return False, "BLOCKED_ENTRY_MATH_FAST_TRACK_NOT_CONFIRMED"
+
+    if side == "LONG":
+        if not (ma5 > ma15 and ma5 > previous_ma5):
+            return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
+        if close - ma15 > 0.8 * atr:
+            return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
+    else:
+        if not (ma5 < ma15 and ma5 < previous_ma5):
+            return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
+        if ma15 - close > 0.8 * atr:
+            return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
+    return True, "ENTRY_MATH_APPROVED"
+
+
+def _net_roe_pct(position: Mapping[str, Any], price: float, sign: int, fee: float, slippage: float) -> float | None:
+    entry = _number(position.get("entry_price"))
+    qty = _number(position.get("qty") or position.get("quantity"))
+    margin = _number(position.get("margin"))
+    leverage = _number(position.get("leverage")) or 1.0
+    if entry is None or qty is None or entry <= 0 or qty <= 0:
+        return None
+    if margin is None or margin <= 0:
+        margin = entry * qty / leverage
+    if margin <= 0:
+        return None
+    gross = sign * (price - entry) * qty
+    costs = (entry + price) * qty * fee + price * qty * slippage
+    return (gross - costs) / margin * 100.0
+
+
+def is_emergency_exit(close_reason: Any) -> bool:
+    reason = str(close_reason or "").upper().replace(" ", "_")
+    return any(token in reason for token in (
+        "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP", "LIQUIDATION",
+        "MARGIN_LOSS", "MAXIMUM_LOSS", "OPPOSITE_KC_BAND_BREACH", "EXTREME_WATERFALL",
+        "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布",
+        "帳戶硬止損", "最大虧損", "熔斷", "反側KC", "STOP_LOSS", "STOP-LOSS", "停損",
+    ))
+
+
+def validate_exit_math(
+    position: Mapping[str, Any],
+    frame: Any,
+    price: float,
+    metadata: Mapping[str, Any] | None = None,
+    *,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0002,
+    close_reason: str = "",
+) -> tuple[bool, str, dict[str, Any]]:
+    """Return the only mathematical authorization for a full position exit."""
+    details: dict[str, Any] = {}
+    if is_emergency_exit(close_reason):
+        return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
+    side = str(position.get("side") or "").upper()
+    sign = 1 if side == "LONG" else -1 if side == "SHORT" else 0
+    quote = _number(price)
+    bars = _rows(frame)
+    if not sign or quote is None or quote <= 0 or len(bars) < 2:
+        return False, "BLOCKED_EXIT_MATH_DATA_UNAVAILABLE", details
+    entry_time = _number(position.get("open_timestamp") or position.get("entry_timestamp"))
+    if entry_time is not None:
+        entry_ms = entry_time * 1000.0 if entry_time < 1e11 else entry_time
+        in_trade = []
+        for row in bars:
+            timestamp = _number(row.get("timestamp"))
+            timestamp_ms = timestamp * 1000.0 if timestamp is not None and timestamp < 1e11 else timestamp
+            if timestamp_ms is None or timestamp_ms >= entry_ms:
+                in_trade.append(row)
+        bars = in_trade
+        if len(bars) < 2:
+            return False, "BLOCKED_EXIT_MATH_DATA_UNAVAILABLE", details
+    current, previous = bars[-1], bars[-2]
+    keys = ("open", "high", "low", "ma5", "atr", "kc_upper", "kc_middle", "kc_lower")
+    current_values = {key: _number(current.get(key)) for key in keys}
+    previous_upper = _number(previous.get("kc_upper"))
+    previous_lower = _number(previous.get("kc_lower"))
+    previous_middle = _number(previous.get("kc_middle"))
+    if any(value is None for value in current_values.values()) or any(
+        value is None for value in (previous_upper, previous_lower, previous_middle)
+    ):
+        return False, "BLOCKED_EXIT_MATH_DATA_UNAVAILABLE", details
+    opened, high, low, ma5, atr, upper, middle, lower = (
+        current_values[key] for key in keys
+    )
+    if min(opened, ma5, atr, upper, middle, lower, previous_upper, previous_lower, previous_middle) <= 0:
+        return False, "BLOCKED_EXIT_MATH_DATA_INVALID", details
+    close = quote
+    previous_close = _number(previous.get("close"))
+    previous_high = _number(previous.get("high"))
+    previous_low = _number(previous.get("low"))
+    if any(value is None for value in (previous_close, previous_high, previous_low)):
+        return False, "BLOCKED_EXIT_MATH_DATA_INVALID", details
+
+    # Path A: outer-rail extension followed by a mathematical exhaustion signal.
+    hold_veto: tuple[str, dict[str, Any]] | None = None
+    if side == "SHORT":
+        was_below_lower = low < lower or previous_low < previous_lower or previous_close < previous_lower
+        bullish_ma_reclaim = close > opened and close > ma5
+        historical_low = min(
+            _number(position.get("lowest_price")) or quote,
+            *(_number(row.get("low")) or quote for row in bars[-120:]),
+            quote,
+        )
+        rebound = close - historical_low >= 0.3 * atr
+        if was_below_lower and (bullish_ma_reclaim or rebound):
+            details.update(exit_type="TRUE_BOTTOM", historical_low=historical_low, atr=atr)
+            return True, "EXIT_MATH_TRUE_BOTTOM", details
+        middle_slope = middle - previous_middle
+        if middle_slope <= 0 and close < middle:
+            hold_veto = ("VETO_HOLD", {"exit_type": "VETO_HOLD", "kc_middle_slope": middle_slope})
+    else:
+        was_above_upper = high > upper or previous_high > previous_upper or previous_close > previous_upper
+        bearish_ma_break = close < opened and close < ma5
+        historical_high = max(
+            _number(position.get("highest_price")) or quote,
+            *(_number(row.get("high")) or quote for row in bars[-120:]),
+            quote,
+        )
+        pullback = historical_high - close >= 0.3 * atr
+        if was_above_upper and (bearish_ma_break or pullback):
+            details.update(exit_type="TRUE_PEAK", historical_high=historical_high, atr=atr)
+            return True, "EXIT_MATH_TRUE_PEAK", details
+        middle_slope = middle - previous_middle
+        if middle_slope >= 0 and close > middle:
+            hold_veto = ("VETO_HOLD", {"exit_type": "VETO_HOLD", "kc_middle_slope": middle_slope})
+
+    # Path B: fee-aware net-ROE breakeven and ratchet floors.
+    meta = metadata if isinstance(metadata, Mapping) else {}
+    state = position.get("profit_lock_state") or meta.get("profit_lock_state") or {}
+    state = state if isinstance(state, Mapping) else {}
+    fee = max(0.0, _number(fee_rate) or 0.0)
+    slip = max(0.0, _number(slippage) or 0.0)
+    current_roe = _net_roe_pct(position, quote, sign, fee, slip)
+    entry = _number(position.get("entry_price"))
+    if current_roe is not None and entry is not None:
+        favored = max(
+            _number(position.get("highest_price")) or entry,
+            *(_number(row.get("high")) or entry for row in bars[-120:]),
+        ) if side == "LONG" else min(
+            _number(position.get("lowest_price")) or entry,
+            *(_number(row.get("low")) or entry for row in bars[-120:]),
+        )
+        peak_roe = _number(state.get("peak_net_roe_pct"))
+        if peak_roe is None:
+            peak_roe = _net_roe_pct(position, favored, sign, fee, slip)
+        favorable_atr = (favored - entry) / atr if side == "LONG" else (entry - favored) / atr
+        if peak_roe is not None and peak_roe >= 6.0 and favorable_atr >= 0.5:
+            be_line = entry * (1.0005 if side == "LONG" else 0.9995)
+            if (side == "LONG" and quote <= be_line) or (side == "SHORT" and quote >= be_line):
+                details.update(exit_type="PROFIT_LOCK", lock_type="BREAKEVEN", peak_roe=peak_roe)
+                return True, "EXIT_MATH_PROFIT_LOCK", details
+        floor = _number(state.get("floor_net_roe_pct"))
+        if floor is None and peak_roe is not None:
+            from core.services.exits.net_roe_profit_lock import tiered_net_roe_floor
+            floor, _tier = tiered_net_roe_floor(peak_roe)
+        if floor is not None and current_roe <= floor + 1e-12:
+            details.update(exit_type="PROFIT_LOCK", floor_net_roe_pct=floor, current_net_roe_pct=current_roe)
+            return True, "EXIT_MATH_PROFIT_LOCK", details
+
+    if hold_veto is not None:
+        return False, hold_veto[0], hold_veto[1]
+    return False, "BLOCKED_EXIT_NO_MATH_TRIGGER", details
+
+
+async def validate_entry_at_execution(account: Any, symbol: str, side: str, context: Any = None) -> tuple[bool, str]:
+    """Load the latest permitted snapshot, then run the pure entry calculator."""
+    payload = context if isinstance(context, Mapping) else {}
+    frame = payload.get("entry_gate_frame")
+    if frame is None:
+        frame = payload.get("frame")
+    if frame is None:
+        snapshot = payload.get("snapshot")
+        if isinstance(snapshot, Mapping):
+            frame = snapshot
+    if frame is None:
+        provider = getattr(account, "entry_frame_provider", None)
+        if callable(provider):
+            frame = provider(symbol)
+            if hasattr(frame, "__await__"):
+                frame = await frame
+    if frame is None:
+        return False, "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE"
+
+    fast_track = False
+    bars = _rows(frame)
+    if bars:
+        raw_time = _number(bars[-1].get("timestamp"))
+        if raw_time is not None:
+            bar_ms = raw_time * 1000.0 if raw_time < 1e11 else raw_time
+            timeframe_ms = 60_000
+            if hasattr(frame, "attrs"):
+                timeframe_ms = int(frame.attrs.get("timeframe_ms") or timeframe_ms)
+            for trade in reversed(getattr(account, "trades", []) or []):
+                if trade.get("symbol") != symbol or not str(trade.get("action", "")).startswith("CLOSE_"):
+                    continue
+                reason = str(trade.get("reason") or "").upper()
+                close_ms = _number(trade.get("id") or trade.get("timestamp_ms"))
+                if close_ms is not None:
+                    if close_ms < 1e11:
+                        close_ms *= 1000.0
+                    elapsed_bars = max(0, int((bar_ms - close_ms) // timeframe_ms))
+                    fast_track = "PROFIT_LOCK" in reason and elapsed_bars <= 3
+                break
+    return validate_entry_math(frame, side, profit_lock_fast_track=fast_track)
+
+
+def validate_exit_at_execution(
+    account: Any,
+    symbol: str,
+    position: Mapping[str, Any],
+    price: float,
+    close_reason: str,
+) -> tuple[bool, str, dict[str, Any]]:
+    provider = getattr(account, "channel_exit_frame_provider", None)
+    frame = provider(symbol) if callable(provider) else None
+    if frame is None:
+        frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+    if frame is None:
+        engine = getattr(account, "engine", None)
+        frame = getattr(engine, "_channel_exit_frames", {}).get(symbol)
+    from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+    return validate_exit_math(
+        position,
+        frame,
+        price,
+        getattr(account, "position_meta", {}).get(symbol, {}),
+        fee_rate=TAKER_FEE_RATE,
+        slippage=SLIPPAGE_PCT,
+        close_reason=close_reason,
+    )
+
+
+def is_entry_bar(position: Mapping[str, Any], frame: Any) -> bool:
+    bars = _rows(frame)
+    if not bars:
+        return False
+    bar_ms = _number(bars[-1].get("timestamp"))
+    opened = _number(position.get("open_timestamp") or position.get("entry_timestamp"))
+    if bar_ms is None or opened is None:
+        return False
+    if opened < 1e11:
+        opened *= 1000.0
+    if bar_ms < 1e11:
+        bar_ms *= 1000.0
+    timeframe_ms = 60_000
+    frame_obj = frame
+    if hasattr(frame_obj, "attrs"):
+        timeframe_ms = int(frame_obj.attrs.get("timeframe_ms") or timeframe_ms)
+    return math.floor(opened / timeframe_ms) == math.floor(bar_ms / timeframe_ms)

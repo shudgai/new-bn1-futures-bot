@@ -180,6 +180,14 @@ class BinanceTestnetAccount:
                     )
                 if side not in ('buy', 'sell'):
                     raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+                from core.services.math_execution_gate import validate_entry_at_execution
+                math_allowed, math_reason = await validate_entry_at_execution(
+                    self, symbol, 'LONG' if side == 'buy' else 'SHORT', context,
+                )
+                if not math_allowed:
+                    message = f"[FORBIDDEN_ENTRY] {math_reason}"
+                    self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
+                    raise ValueError(message)
                 await validate_account_entry(
                     self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
                 from core.services.entry_contract import enforce_final_order_wick_gate
@@ -3299,16 +3307,14 @@ class BinanceTestnetAccount:
 
         position = self.positions[symbol]
         meta = self.position_meta.setdefault(symbol, {})
-        from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+        from core.services.math_execution_gate import validate_exit_at_execution
+        math_allowed, math_reason, math_details = validate_exit_at_execution(
+            self, symbol, position, current_price, close_reason,
         )
-        if not automated_position_exit_allowed(
-            symbol, position, meta, close_reason, current_price,
-            is_manual=is_manual,
-        ):
+        if not math_allowed:
             self.log(
                 f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CHANNEL_SHORT_OVERSOLD_REVERSAL",
+                f"math_gate={math_reason} details={math_details}",
                 "WARNING",
             )
             return False
@@ -3541,19 +3547,20 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
-        from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+        from core.services.math_execution_gate import (
+            is_emergency_exit, validate_exit_at_execution,
         )
-        if not automated_position_exit_allowed(
-            symbol, position, meta, close_reason, current_price,
-            is_manual=is_manual,
-        ):
+        math_allowed, math_reason, math_details = validate_exit_at_execution(
+            self, symbol, position, current_price, close_reason,
+        )
+        if not math_allowed:
             self.log(
                 f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                f"math_gate={math_reason} details={math_details}",
                 "WARNING",
             )
             return False
+        emergency_exit = is_emergency_exit(close_reason)
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"
@@ -3619,24 +3626,7 @@ class BinanceTestnetAccount:
         self.log(log_alarm, 'WARNING')
         print(log_alarm, flush=True)
 
-        # ──【出場鐵壁焊死 VETO】──
-        # 除 -1.5% 絕對硬停損（破產保護）外，
-        # 空單只要 5M 已確認收盤價 <= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
-        # 多單只要 5M 已確認收盤價 >= 5M MA15，不管後台有任何其他理由，一律 100% 行使 VETO 否決，不准下單平倉！
-        is_hard_stop = ('HARD_STOP' in str(close_reason)) or ('PRICE_LOSS' in str(close_reason)) or ('MARGIN_LOSS' in str(close_reason))
-        is_channel_oversold_exit = "CHANNEL_SHORT_OVERSOLD_" in str(close_reason)
-        if (not is_wild_swing and not is_hard_stop and not is_channel_oversold_exit
-                and c_5m_closed > 0 and ma15_5m > 0):
-            if position.get('side') == 'SHORT' and c_5m_closed <= ma15_5m:
-                veto_msg = f"[{symbol}] [鐵壁否決 VETO] 空單結構完好 (5M收盤 {c_5m_closed} <= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
-                self.log(veto_msg, 'WARNING')
-                print(veto_msg, flush=True)
-                return False
-            elif position.get('side') == 'LONG' and c_5m_closed >= ma15_5m:
-                veto_msg = f"[{symbol}] [鐵壁否決 VETO] 多單結構完好 (5M收盤 {c_5m_closed} >= MA15 {ma15_5m})，100% 否決平倉！來源: {trigger_source} 理由: {close_reason}"
-                self.log(veto_msg, 'WARNING')
-                print(veto_msg, flush=True)
-                return False
+        # Mathematical exit authorization replaces the retired 5m MA wall.
         if staged_enabled(position, meta):
             runtime = self.staged_risk_runtimes.get(symbol)
             if runtime is None or not is_manual or is_limit:
@@ -3650,14 +3640,14 @@ class BinanceTestnetAccount:
                 await self.refresh(force=True)
             return closed
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
-        if DISABLE_STOP_LOSS and not is_manual:
+        if DISABLE_STOP_LOSS and not is_manual and not emergency_exit:
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
                 self._auto_close_reject_logged_at[reject_key] = now_ts
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
-        if not is_manual and ONLY_CLOSE_ON_PROFIT:
+        if not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit:
             position = self.positions[symbol]
             side = position["side"]
             entry_price = position["entry_price"]
@@ -3930,6 +3920,12 @@ class BinanceTestnetAccount:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         position = self.positions[symbol]
+        from core.services.math_execution_gate import is_entry_bar
+        frame_provider = getattr(self, "channel_exit_frame_provider", None)
+        entry_frame = frame_provider(symbol) if callable(frame_provider) else None
+        if is_entry_bar(position, entry_frame):
+            self.log(f"🛡️ {symbol} 開倉當根禁止收緊止損線", "WARNING")
+            return False
         meta = self.position_meta.get(symbol, {})
         current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
         if not math.isfinite(new_sl_price) or new_sl_price <= 0:
