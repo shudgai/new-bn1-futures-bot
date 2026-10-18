@@ -7,7 +7,9 @@ from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
 
 from core.services.exits.peak_trailing_exit import (
     POLICY, STATE_KEY, STATE_KEYS, channel_initial_stop_disabled, evaluate_peak_trailing,
+    estimated_display_net_pnl,
 )
+from core.services.exits.net_roe_profit_lock import should_arm_breakeven_lock
 from core.services.candle_data import closed_entry_candles
 from core.services.gates.exit_gate import TrendHoldingImmunityGate
 DUAL_TRACK_STATE_KEYS = list(STATE_KEYS)
@@ -375,8 +377,11 @@ class DualTrackExitStrategy(IExitStrategy):
                 return None
             side = position.get('side')
             atr = float(position.get('entry_atr') or 0.0)
-            if frame is not None and not frame.empty and atr <= 0:
-                atr = float(frame.iloc[-1].get('atr') or 0.0)
+            current_atr = 0.0
+            if frame is not None and not frame.empty:
+                current_atr = float(frame.iloc[-1].get('atr') or 0.0)
+                if atr <= 0:
+                    atr = current_atr
 
             # 提取當前 1m K 棒指標
             kc_mid = 0.0
@@ -430,6 +435,11 @@ class DualTrackExitStrategy(IExitStrategy):
                     margin = (entry_p * qty / leverage) if leverage > 0 else (entry_p * qty)
                 peak_net_pnl = (peak_p - entry_p) * qty - (entry_p + peak_p) * qty * TAKER_FEE_RATE
                 peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
+                peak_net_roe = (
+                    estimated_display_net_pnl(
+                        entry_p, peak_p, qty, 1, TAKER_FEE_RATE, SLIPPAGE_PCT,
+                    ) / margin * 100.0
+                ) if margin > 0 else 0.0
 
                 # ──【第二道防線：真峰頂趨勢逆轉（Confirmed True Peak Exit）與敏銳逃頂】──
                 is_kc_down = (
@@ -475,9 +485,11 @@ class DualTrackExitStrategy(IExitStrategy):
                     if spike_reversal and current_price > entry_p:
                         return 'EXIT_BY_SPIKE_REVERSAL'
 
-                # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
-                # 浮盈曾達 >= 1.0 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price + 0.05%
-                is_be_locked = position.get('breakeven_locked', False) or ((atr > 0 and max_gain >= 1.0 * atr) or peak_roe >= 8.0)
+                # Both peak net ROE and favorable movement must clear their thresholds.
+                favorable_atr = max_gain / current_atr if current_atr > 0 else 0.0
+                is_be_locked = position.get('breakeven_locked', False) or should_arm_breakeven_lock(
+                    peak_net_roe, favorable_atr,
+                )
                 if is_be_locked:
                     position['breakeven_locked'] = True
                     be_price = entry_p * 1.0005
@@ -527,10 +539,17 @@ class DualTrackExitStrategy(IExitStrategy):
                     margin = (entry_p * qty / leverage) if leverage > 0 else (entry_p * qty)
                 peak_net_pnl = (entry_p - trough_p) * qty - (entry_p + trough_p) * qty * TAKER_FEE_RATE
                 peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
+                peak_net_roe = (
+                    estimated_display_net_pnl(
+                        entry_p, trough_p, qty, -1, TAKER_FEE_RATE, SLIPPAGE_PCT,
+                    ) / margin * 100.0
+                ) if margin > 0 else 0.0
 
                 # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
-                # 浮盈曾達 >= 1.2 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price - 0.05%
-                is_be_locked = position.get('breakeven_locked', False) or ((atr > 0 and max_gain >= 1.2 * atr) or peak_roe >= 8.0)
+                favorable_atr = max_gain / current_atr if current_atr > 0 else 0.0
+                is_be_locked = position.get('breakeven_locked', False) or should_arm_breakeven_lock(
+                    peak_net_roe, favorable_atr,
+                )
                 if is_be_locked:
                     position['breakeven_locked'] = True
                     be_price = entry_p * 0.9995

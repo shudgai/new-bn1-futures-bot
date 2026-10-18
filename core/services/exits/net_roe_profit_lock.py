@@ -3,6 +3,23 @@ import math
 
 
 NET_ROE_LOCK_START_PCT = 10.0
+BREAKEVEN_NET_ROE_TRIGGER_PCT = 6.0
+BREAKEVEN_FAVORABLE_ATR_MULTIPLE = 0.5
+
+
+def should_arm_breakeven_lock(peak_net_roe_pct, favorable_move_atr):
+    """Arm only after both the net-ROE and favorable ATR thresholds are met."""
+    try:
+        net_roe = float(peak_net_roe_pct)
+        favorable_atr = float(favorable_move_atr)
+        if not math.isfinite(net_roe) or not math.isfinite(favorable_atr):
+            return False
+        return (
+            net_roe >= BREAKEVEN_NET_ROE_TRIGGER_PCT
+            and favorable_atr >= BREAKEVEN_FAVORABLE_ATR_MULTIPLE
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def tiered_net_roe_floor(peak_net_roe_pct):

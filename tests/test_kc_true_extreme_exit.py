@@ -247,12 +247,12 @@ def test_short_valley_uses_mirrored_extension_and_lower_wick():
     assert decision[1]["cause"] == "SHORT_LOWER_WICK"
 
 
-def test_short_true_valley_is_suppressed_while_closed_kc_middle_falls():
+def test_short_lower_wick_without_urgent_rebound_is_suppressed_while_kc_middle_falls():
     live_bar_ms = 1_800_000_000_000
     frame = _frame(
         live_bar_ms,
         side="SHORT",
-        live_price=8.1,
+        live_price=7.7,
         closed_candle={
             "open": 8.5, "high": 8.6, "low": 7.4, "close": 8.2,
         },
@@ -261,12 +261,94 @@ def test_short_true_valley_is_suppressed_while_closed_kc_middle_falls():
     position = _position(live_bar_ms, side="SHORT")
 
     decision, changed = evaluate_kc_true_extreme_exit(
-        position, frame, 8.1, live_bar_ms + 2_000,
+        position, frame, 7.7, live_bar_ms + 2_000,
     )
 
     assert decision is None
     assert changed
     assert position[STATE_KEY]["pending"] is None
+
+
+def test_short_rebound_beyond_lower_band_exits_during_falling_kc_middle():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=7.9,
+        live_low=7.9,
+        kc_middle_values=(10.3, 10.2, 10.1),
+    )
+
+    first, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 7.9, live_bar_ms + 2_000,
+    )
+    assert first is None
+    assert position[STATE_KEY]["armed"] is True
+
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=8.3,
+        live_low=7.9,
+        kc_middle_values=(10.3, 10.2, 10.1),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.3, live_bar_ms + 3_000,
+    )
+    assert decision is not None
+    assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+    assert decision[1]["cause"] == "INTRADAY_TROUGH_REBOUND"
+
+    repeated, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.3, live_bar_ms + 4_000,
+    )
+    assert repeated == decision
+
+
+def test_short_bullish_engulfing_is_not_vetoed_by_falling_kc_middle():
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    bearish_candle = {
+        "open": 8.5, "high": 8.6, "low": 7.9, "close": 7.95,
+    }
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=8.0,
+        live_low=7.9,
+        closed_candle=bearish_candle,
+        kc_middle_values=(10.3, 10.2, 10.1),
+    )
+    first, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.0, live_bar_ms + 2_000,
+    )
+    assert first is None
+    assert position[STATE_KEY]["armed"] is True
+
+    bullish_engulfing = {
+        "open": 7.9, "high": 8.7, "low": 7.8, "close": 8.6,
+    }
+    frame = _frame(
+        live_bar_ms + 60_000,
+        side="SHORT",
+        live_price=8.4,
+        live_low=8.3,
+        previous_candle=bearish_candle,
+        closed_candle=bullish_engulfing,
+        kc_middle_values=(10.3, 10.2, 10.1),
+    )
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.4, live_bar_ms + 62_000,
+    )
+    assert decision is not None
+    assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+    assert decision[1]["cause"] == "BULLISH_ENGULFING"
+
+    repeated, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 8.4, live_bar_ms + 63_000,
+    )
+    assert repeated == decision
 
 
 def test_short_midline_retrace_is_suppressed_while_closed_kc_middle_falls():

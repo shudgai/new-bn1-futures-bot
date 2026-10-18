@@ -165,6 +165,43 @@ def test_short_hard_breakeven_lock():
     assert position.get('breakeven_locked') is True
 
 
+@pytest.mark.parametrize(
+    ('qty', 'margin', 'peak_price', 'expected_locked'),
+    [
+        (1.0, 20.0, 100.6, False),
+        (4.0, 10.0, 100.4, False),
+        (4.0, 10.0, 100.6, True),
+    ],
+)
+def test_dual_track_breakeven_requires_net_roe_and_current_half_atr(
+    qty, margin, peak_price, expected_locked,
+):
+    strategy = DualTrackExitStrategy()
+    position = {
+        'symbol': 'BTC/USDT',
+        'side': 'LONG',
+        'entry_price': 100.0,
+        'entry_atr': 1.0,
+        'highest_price': peak_price,
+        'open_timestamp': 1000,
+        'qty': qty,
+        'margin': margin,
+    }
+    frame = pd.DataFrame([
+        dict(timestamp=60000, is_closed=False, open=100.0, high=peak_price,
+             low=99.9, close=100.2, ma5=100.0, ma15=99.0,
+             kc_middle=100.0, atr=1.0),
+    ])
+
+    strategy._evaluate_raw_exit(
+        position, frame=frame, current_price=100.2, is_closed=False,
+    )
+
+    assert position.get('breakeven_locked', False) is expected_locked
+    if expected_locked:
+        assert position['sl'] == pytest.approx(100.05)
+
+
 def test_short_lock_exit_does_not_require_a_kc_middle_break():
     """階梯鎖利可獨立出場；KC 中軌不是平空前置條件。"""
     strategy = DualTrackExitStrategy()

@@ -1,6 +1,7 @@
 import copy
 import pytest
 from core.services.exits.peak_trailing_exit import evaluate_peak_trailing, STATE_KEY, migrate_peak_state
+from core.services.exits.net_roe_profit_lock import should_arm_breakeven_lock
 
 
 def position(side):
@@ -16,6 +17,20 @@ def price_for(side, roe, fee=.0005, slip=.0001):
 def tick(p, roe, stamp, fee=.0005, slip=.0001):
     return evaluate_peak_trailing(p, price_for(p['side'], roe, fee, slip),
                                   {'quote_ms': stamp}, fee=fee, slippage=slip)
+
+
+@pytest.mark.parametrize(
+    ('peak_net_roe', 'favorable_atr', 'expected'),
+    [
+        (5.99, 0.6, False),
+        (6.0, 0.49, False),
+        (6.0, 0.5, True),
+        (float('nan'), 0.5, False),
+        (6.0, float('inf'), False),
+    ],
+)
+def test_breakeven_requires_both_peak_net_roe_and_atr(peak_net_roe, favorable_atr, expected):
+    assert should_arm_breakeven_lock(peak_net_roe, favorable_atr) is expected
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

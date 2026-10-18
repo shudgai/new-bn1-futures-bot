@@ -21,6 +21,7 @@ from core.services.exits.entry_atr_protection import (
 )
 from core.services.exits.net_roe_profit_lock import (
     has_reached_net_roe_floor,
+    should_arm_breakeven_lock,
     tiered_net_roe_floor,
 )
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
@@ -283,6 +284,25 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         if not math.isfinite(current_roe):
             return None, state_updated
 
+        peak_p = max(
+            float(position.get('highest_price') or meta.get('highest_price')
+                  or position.get('peak_price') or entry),
+            quote if side == 'LONG' else entry,
+        )
+        trough_p = min(
+            float(position.get('lowest_price') or meta.get('lowest_price')
+                  or position.get('trough_price') or entry),
+            quote if side == 'SHORT' else entry,
+        )
+        favorable_peak_price = peak_p if side == 'LONG' else trough_p
+        peak_net_roe = (
+            estimated_display_net_pnl(
+                entry, favorable_peak_price, qty, sign, fee, slippage,
+            ) / margin * 100.0
+        )
+        if not math.isfinite(peak_net_roe):
+            return None, state_updated
+
         # --- HARD_STOP_LOSS / 緊急防爆 ---
         if side == 'SHORT' and (current_roe <= -2.0 or (quote - entry) >= 1.5 * atr):
             return 'HARD_STOP_LOSS', state_updated
@@ -290,16 +310,20 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         identity = _profit_lock_identity(position)
         state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
         if state.get('identity') != identity:
-            state = {'identity': identity, 'peak_net_roe_pct': current_roe,
+            state = {'identity': identity,
+                     'peak_net_roe_pct': max(current_roe, peak_net_roe),
                      'last_ms': stamp, 'tier': 0, 'floor_net_roe_pct': None}
         elif stamp < float(state.get('last_ms') or 0.):
             return None, state_updated
         else:
             state = copy.deepcopy(state)
             state['peak_net_roe_pct'] = max(
-                current_roe, float(state.get('peak_net_roe_pct', current_roe)),
+                current_roe, peak_net_roe,
+                float(state.get('peak_net_roe_pct', current_roe)),
             )
             state['last_ms'] = stamp
+        position['highest_price'] = meta['highest_price'] = peak_p
+        position['lowest_price'] = meta['lowest_price'] = trough_p
         floor, tier = _tiered_net_roe_floor(state['peak_net_roe_pct'])
         state.update(tier=tier, floor_net_roe_pct=floor,
                      current_net_roe_pct=current_roe)
@@ -311,12 +335,6 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         # 1. 盤中自最高點回撤 >= 1.2 ATR，或峰值浮盈回吐幅度 >= 40%
         # 2. 或當前 1m K 棒上影線長度佔比 >= (High - Low) * 0.50（明顯衝高受阻大跳水）
         # 執行動作：豁免所有均線防守等待，盤中當根立即市價平倉落袋（EXIT_BY_SPIKE_REVERSAL）！
-        peak_p = max(float(position.get('highest_price') or position.get('peak_price') or entry), quote if side == 'LONG' else entry)
-        trough_p = min(float(position.get('lowest_price') or position.get('trough_price') or entry), quote if side == 'SHORT' else entry)
-        position['highest_price'] = peak_p
-        position['lowest_price'] = trough_p
-        meta['highest_price'] = peak_p
-        meta['lowest_price'] = trough_p
 
         c_range = max(live_high - live_low, 1e-9)
         live_ma5 = float(snapshot.get('live_ma5') or snapshot.get('ma5') or 0.)
@@ -324,9 +342,15 @@ def _evaluate_realtime_core_exit_gates(position, meta, price, stamp, snapshot, f
         channel_state = str(snapshot.get('channel_state', '')).strip().upper()
 
         # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
-        # 浮盈曾達 >= 1.0 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price + 0.05%（空單 - 0.05%）
+        # Peak net ROE >= 6% and favorable movement >= 0.5 ATR are both required.
         max_pnl_atr = (peak_p - entry) / atr if (side == 'LONG' and atr > 0) else (entry - trough_p) / atr if (side == 'SHORT' and atr > 0) else 0.0
-        is_be_locked = position.get('breakeven_locked', False) or meta.get('breakeven_locked', False) or (max_pnl_atr >= 1.0 or state['peak_net_roe_pct'] >= 8.0)
+        is_be_locked = (
+            position.get('breakeven_locked', False)
+            or meta.get('breakeven_locked', False)
+            or should_arm_breakeven_lock(
+                state['peak_net_roe_pct'], max_pnl_atr,
+            )
+        )
         if is_be_locked:
             position['breakeven_locked'] = True
             meta['breakeven_locked'] = True
@@ -463,12 +487,36 @@ def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slip
         if not math.isfinite(current_roe):
             return None, False
 
+        atr = float(snapshot.get('atr') or 0.0)
+        peak_price = max(
+            float(position.get('highest_price') or meta.get('highest_price')
+                  or entry),
+            quote,
+        ) if side == 'LONG' else float(
+            position.get('highest_price') or meta.get('highest_price') or entry
+        )
+        trough_price = min(
+            float(position.get('lowest_price') or meta.get('lowest_price')
+                  or entry),
+            quote,
+        ) if side == 'SHORT' else float(
+            position.get('lowest_price') or meta.get('lowest_price') or entry
+        )
+        favorable_peak_price = peak_price if side == 'LONG' else trough_price
+        peak_net_roe = (
+            estimated_display_net_pnl(
+                entry, favorable_peak_price, qty, sign, fee, slippage,
+            ) / margin * 100.0
+        )
+        if not math.isfinite(peak_net_roe):
+            return None, False
+
         identity = _profit_lock_identity(position)
         state = position.get(PROFIT_LOCK_STATE_KEY) or meta.get(PROFIT_LOCK_STATE_KEY) or {}
         if state.get('identity') != identity:
             state = {
                 'identity': identity,
-                'peak_net_roe_pct': current_roe,
+                'peak_net_roe_pct': max(current_roe, peak_net_roe),
                 'last_ms': stamp,
                 'tier': 0,
                 'floor_net_roe_pct': None,
@@ -478,10 +526,13 @@ def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slip
         else:
             state = copy.deepcopy(state)
             state['peak_net_roe_pct'] = max(
-                current_roe, float(state.get('peak_net_roe_pct', current_roe)),
+                current_roe, peak_net_roe,
+                float(state.get('peak_net_roe_pct', current_roe)),
             )
             state['last_ms'] = stamp
 
+        position['highest_price'] = meta['highest_price'] = peak_price
+        position['lowest_price'] = meta['lowest_price'] = trough_price
         floor, tier = _tiered_net_roe_floor(state['peak_net_roe_pct'])
         state.update(
             tier=tier,
@@ -491,17 +542,6 @@ def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slip
         position[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
         meta[PROFIT_LOCK_STATE_KEY] = copy.deepcopy(state)
 
-        atr = float(snapshot.get('atr') or 0.0)
-        peak_price = max(
-            float(position.get('highest_price') or entry), quote,
-        ) if side == 'LONG' else float(position.get('highest_price') or entry)
-        trough_price = min(
-            float(position.get('lowest_price') or entry), quote,
-        ) if side == 'SHORT' else float(position.get('lowest_price') or entry)
-        position['highest_price'] = peak_price
-        position['lowest_price'] = trough_price
-        meta['highest_price'] = peak_price
-        meta['lowest_price'] = trough_price
         favorable_atr = (
             (peak_price - entry) / atr if side == 'LONG' and atr > 0
             else (entry - trough_price) / atr if side == 'SHORT' and atr > 0
@@ -510,8 +550,9 @@ def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slip
         if (
             position.get('breakeven_locked')
             or meta.get('breakeven_locked')
-            or favorable_atr >= 1.0
-            or state['peak_net_roe_pct'] >= 8.0
+            or should_arm_breakeven_lock(
+                state['peak_net_roe_pct'], favorable_atr,
+            )
         ):
             position['breakeven_locked'] = True
             meta['breakeven_locked'] = True

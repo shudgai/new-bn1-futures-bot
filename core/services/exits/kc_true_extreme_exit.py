@@ -219,7 +219,19 @@ def evaluate_kc_true_extreme_exit(
 
     pending = pending_kc_true_extreme_exit(position, meta)
     if pending is not None:
-        if side == "SHORT" and short_kc_bearish_trend_active(frame, quote_ms):
+        bearish_short_exit_exception = (
+            side == "SHORT"
+            and pending[0] == _EXIT_REASONS["SHORT"]
+            and pending[1].get("cause") in (
+                "BULLISH_ENGULFING",
+                "INTRADAY_TROUGH_REBOUND",
+            )
+        )
+        if (
+            side == "SHORT"
+            and short_kc_bearish_trend_active(frame, quote_ms)
+            and not bearish_short_exit_exception
+        ):
             state["pending"] = None
             state_changed = True
             _mirror_state(position, meta, state)
@@ -391,7 +403,7 @@ def evaluate_kc_true_extreme_exit(
                     and previous_atr > 0
                     and lower_band is not None
                     and lower_band > 0
-                    and lower_band - low >= 0.5 * prior_atr
+                    and low < lower_band
                 )
                 extension_atr = (
                     (lower_band - low) / prior_atr
@@ -448,7 +460,14 @@ def evaluate_kc_true_extreme_exit(
             state["last_closed_bar_ms"] = closed_bar_ms
             state_changed = True
 
-        if closed_signal is not None and not bearish_kc_trend:
+        closed_signal_is_bullish_engulfing = (
+            closed_signal is not None
+            and side == "SHORT"
+            and closed_signal[1].get("cause") == "BULLISH_ENGULFING"
+        )
+        if closed_signal is not None and (
+            not bearish_kc_trend or closed_signal_is_bullish_engulfing
+        ):
             reason, details = closed_signal
             _set_pending(side, state, reason, details)
         elif live_bar_ms > entry_bar_ms:
@@ -504,7 +523,7 @@ def evaluate_kc_true_extreme_exit(
                     and live_lower < live_middle
                     and closed_atr is not None
                     and closed_atr > 0
-                    and live_lower - observed_low >= 0.5 * closed_atr
+                    and observed_low < live_lower
                 ):
                     state.update(
                         armed=True,
@@ -525,8 +544,7 @@ def evaluate_kc_true_extreme_exit(
                         state_changed = True
                     reference_atr = _number(state.get("reference_atr"))
                     if (
-                        not bearish_kc_trend
-                        and reference_atr is not None
+                        reference_atr is not None
                         and current_price - extreme >= 0.4 * reference_atr
                     ):
                         _set_pending(

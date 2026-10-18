@@ -10,6 +10,7 @@ import pytest
 from core.engine import TradingEngine
 from core.services.exits.realtime_profit_exit import cached_tick_indicators
 from core.services.exits.realtime_profit_exit import (
+    PROFIT_LOCK_STATE_KEY, _evaluate_profit_lock_only,
     _evaluate_realtime_core_exit_gates, _tiered_net_roe_floor,
 )
 from core.services.exits.peak_trailing_exit import (
@@ -25,6 +26,106 @@ from core.services.exits.peak_trailing_exit import (
 from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.symbol_runner import process_single_symbol_runner
 from test_intraday_instant_exit import pos, observe
+
+
+@pytest.mark.parametrize(
+    ('qty', 'peak_price', 'expected_locked'),
+    [
+        (1.0, 100.6, False),
+        (2.0, 100.4, False),
+        (1.2, 100.6, True),
+    ],
+)
+def test_breakeven_requires_peak_net_roe_and_half_atr_move(
+    qty, peak_price, expected_locked,
+):
+    position = {
+        'symbol': 'SUI/USDT',
+        'side': 'LONG',
+        'entry_price': 100.0,
+        'qty': qty,
+        'margin': 10.0,
+        'open_timestamp': 60.0,
+        'highest_price': peak_price,
+    }
+    meta = {}
+
+    trigger, changed = _evaluate_profit_lock_only(
+        position, meta, 100.2, 61_000,
+        {'reason': None, 'atr': 1.0},
+        fee=0.0, slippage=0.0,
+    )
+
+    assert changed is True
+    assert trigger is None
+    assert position.get('breakeven_locked', False) is expected_locked
+    if expected_locked:
+        assert position['sl'] == pytest.approx(100.05)
+        assert position['stop_loss'] == pytest.approx(100.05)
+        assert position[PROFIT_LOCK_STATE_KEY]['peak_net_roe_pct'] >= 6.0
+
+
+def test_breakeven_line_only_tightens_after_activation():
+    position = {
+        'symbol': 'SUI/USDT',
+        'side': 'SHORT',
+        'entry_price': 100.0,
+        'qty': 1.2,
+        'margin': 10.0,
+        'open_timestamp': 60.0,
+        'lowest_price': 99.4,
+    }
+    meta = {}
+
+    _evaluate_profit_lock_only(
+        position, meta, 99.8, 61_000,
+        {'reason': None, 'atr': 1.0},
+        fee=0.0, slippage=0.0,
+    )
+    assert position['breakeven_locked'] is True
+    assert position['sl'] == pytest.approx(99.95)
+
+    position['sl'] = position['stop_loss'] = 99.8
+    _evaluate_profit_lock_only(
+        position, meta, 99.9, 62_000,
+        {'reason': None, 'atr': 1.0},
+        fee=0.0, slippage=0.0,
+    )
+    assert position['sl'] == pytest.approx(99.8)
+    assert position['stop_loss'] == pytest.approx(99.8)
+
+
+@pytest.mark.parametrize(
+    ('side', 'price', 'extreme_key', 'expected_stop'),
+    [
+        ('LONG', 100.6, 'highest_price', 100.05),
+        ('SHORT', 99.4, 'lowest_price', 99.95),
+    ],
+)
+def test_live_favorable_extreme_updates_peak_net_roe(
+    side, price, extreme_key, expected_stop,
+):
+    position = {
+        'symbol': 'SUI/USDT',
+        'side': side,
+        'entry_price': 100.0,
+        'qty': 1.2,
+        'margin': 10.0,
+        'open_timestamp': 60.0,
+    }
+
+    trigger, changed = _evaluate_profit_lock_only(
+        position, {}, price, 61_000,
+        {'reason': None, 'atr': 1.0},
+        fee=0.0, slippage=0.0,
+    )
+
+    assert trigger is None
+    assert changed is True
+    assert position['breakeven_locked'] is True
+    assert position[extreme_key] == pytest.approx(price)
+    assert position['sl'] == pytest.approx(expected_stop)
+
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_unarmed_small_peak_does_not_exit(side):
@@ -435,11 +536,11 @@ def test_tiered_profit_pullback_does_not_close_after_reload(side, monkeypatch):
 
 def test_net_roe_tier_floors():
     assert _tiered_net_roe_floor(9.9999) == (None, 0)
-    assert _tiered_net_roe_floor(10.0) == (8.0, 1)
-    assert _tiered_net_roe_floor(10.9999) == (8.0, 1)
-    assert _tiered_net_roe_floor(11.0) == (9.0, 2)
-    assert _tiered_net_roe_floor(12.0) == (10.0, 3)
-    assert _tiered_net_roe_floor(15.0) == (13.0, 6)
+    assert _tiered_net_roe_floor(10.0) == (3.0, 1)
+    assert _tiered_net_roe_floor(14.9999) == (3.0, 1)
+    assert _tiered_net_roe_floor(15.0) == (10.0, 2)
+    assert _tiered_net_roe_floor(19.9999) == (10.0, 2)
+    assert _tiered_net_roe_floor(20.0) == (15.0, 3)
 
 
 # Skipped tests for removed logic
