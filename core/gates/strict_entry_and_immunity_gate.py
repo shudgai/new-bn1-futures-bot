@@ -6,24 +6,10 @@ import pandas as pd
 
 
 def resolve_kc_trend(df: Any) -> str:
-    """判斷當前 KC 趨勢方向：'UP', 'DOWN', 或 'RANGE'。
-    完全對齊前端圖表 getChartCkTrend 及大趨勢標準：
-    - 若 channel_state/kc_trend 包含 'KC向下'/'DOWN'/'DOWNTREND'/'BEARISH'/'SHORT' -> 'DOWN'
-    - 若 channel_state/kc_trend 包含 'KC向上'/'UP'/'UPTREND'/'BULLISH'/'LONG' -> 'UP'
-    - 若最近已收線 bar 的 KC 中軌三連降或 (third < second 且 ma5 < ma15) -> 'DOWN'
-    - 若最近已收線 bar 的 KC 中軌三連升或 (third > second 且 ma5 > ma15) -> 'UP'
-    - 否則根據最近已收線兩根中軌斜率判定，無法判斷時返回 'RANGE'
-    """
+    """以最近兩根已收線 KC 中軌斜率判斷方向；派生標籤不覆蓋數值。"""
     if df is None or len(df) < 2:
         return 'RANGE'
     try:
-        curr = df.iloc[-1]
-        c_state = str(curr.get('channel_state', '') or curr.get('kc_trend', '')).strip().upper()
-        if any(w in c_state for w in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT', 'KC_TREND_DOWN')):
-            return 'DOWN'
-        if any(w in c_state for w in ('KC向上', 'UP', 'UPTREND', 'BULLISH', 'LONG', 'KC_TREND_UP')):
-            return 'UP'
-
         if 'is_closed' in df.columns:
             closed_df = df[df['is_closed'] == True]
             if len(closed_df) < 2:
@@ -40,24 +26,11 @@ def resolve_kc_trend(df: Any) -> str:
         p_mid = float(prev_closed.get('kc_middle', prev_closed.get('kc_basis', 0.0)))
 
         # 對齊前端圖表 getChartCkTrend（三棒邏輯）
-        if len(closed_df) >= 3:
-            first_closed = closed_df.iloc[-3]
-            f_mid = float(first_closed.get('kc_middle', first_closed.get('kc_basis', 0.0)))
-            ma5 = float(last_closed.get('ma5', 0.0))
-            ma15 = float(last_closed.get('ma15', 0.0))
-            if c_mid < p_mid and ma5 < ma15:
+        if all(pd.notna(value) and value > 0 for value in (c_mid, p_mid)):
+            tolerance = max(abs(p_mid) * 1e-12, 1e-12)
+            if c_mid < p_mid - tolerance:
                 return 'DOWN'
-            if c_mid > p_mid and ma5 > ma15:
-                return 'UP'
-            if f_mid > p_mid and p_mid > c_mid:
-                return 'DOWN'
-            if f_mid < p_mid and p_mid < c_mid:
-                return 'UP'
-
-        if c_mid > 0 and p_mid > 0:
-            if c_mid < p_mid - 1e-6:
-                return 'DOWN'
-            if c_mid > p_mid + 1e-6:
+            if c_mid > p_mid + tolerance:
                 return 'UP'
 
         return 'RANGE'

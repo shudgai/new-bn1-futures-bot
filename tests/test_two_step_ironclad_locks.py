@@ -51,6 +51,25 @@ def test_entry_veto_cannot_short_when_kc_up():
     assert reason == 'VETO_CANNOT_SHORT_WHEN_KC_UP'
 
 
+def test_conflicting_bullish_tag_cannot_override_falling_kc_midline():
+    df = make_frame([
+        {'open': 100.0, 'close': 101.0, 'high': 102.0, 'low': 99.0,
+         'ma5': 102.0, 'ma15': 101.0, 'kc_middle': 100.0,
+         'kc_upper': 105.0, 'kc_lower': 95.0, 'atr': 2.0,
+         'is_closed': True, 'channel_state': 'KC向上'},
+        {'open': 101.0, 'close': 100.5, 'high': 102.0, 'low': 99.5,
+         'ma5': 102.0, 'ma15': 101.0, 'kc_middle': 99.9,
+         'kc_upper': 104.9, 'kc_lower': 94.9, 'atr': 2.0,
+         'is_closed': True, 'channel_state': 'KC向上'},
+    ])
+    assert resolve_kc_trend(df) == 'DOWN'
+    passed, reason = check_entry_gates(
+        None, 'CAP/USDT', df, 'LONG', 'TRIGGER_A_KC_BREAKOUT',
+    )
+    assert passed is False
+    assert reason == 'VETO_CANNOT_LONG_WHEN_KC_DOWN'
+
+
 def test_entry_veto_choppy_market_squeezing():
     """驗證：通道扁平極窄震盪期，100% 一票否決開倉 (VETO_CHOPPY_MARKET_NO_ENTRY)"""
     # 構造帶寬佔價格比例極小 (< 0.6%) 的死水震盪

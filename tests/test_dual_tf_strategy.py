@@ -50,6 +50,22 @@ def test_15m_big_trend_veto_blocks_counter_entry():
     assert "15M_TREND_NOT_DOWN" in reason_short
 
 
+def test_15m_up_label_cannot_override_falling_kc_midline():
+    frame = make_candle_df([
+        {'open': 101.0, 'close': 100.5, 'high': 102.0, 'low': 100.0,
+         'ma5': 101.0, 'ma15': 101.0, 'kc_middle': 100.0,
+         'kc_upper': 104.0, 'kc_lower': 96.0, 'atr': 1.0,
+         'is_closed': True, 'channel_state': 'KC向上'},
+        {'open': 100.5, 'close': 99.0, 'high': 101.0, 'low': 98.0,
+         'ma5': 100.0, 'ma15': 100.5, 'kc_middle': 99.8,
+         'kc_upper': 103.8, 'kc_lower': 95.8, 'atr': 1.0,
+         'is_closed': True, 'channel_state': 'KC向上'},
+    ])
+    trend = DualTimeframeProvider.get_15m_trend(frame)
+    assert trend['15m_kc_trend'] == 'DOWN'
+    assert trend['15m_big_trend'] == 'DOWN'
+
+
 def test_5m_ma5_flat_or_reverse_slope_vetoes_entry():
     """2. 覆蓋 5M MA5 走平/彎折否決開倉：MA5 缺乏向上發散動能時，真交叉或破軌一票否決"""
     df_15m_up = make_candle_df([

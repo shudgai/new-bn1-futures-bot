@@ -99,25 +99,17 @@ class DualTimeframeProvider:
         upper_15m = float(curr_bar['kc_upper'])
         lower_15m = float(curr_bar['kc_lower'])
 
-        # 顯式 channel_state / kc_trend
-        c_state = str(curr_bar.get('channel_state', '') or curr_bar.get('kc_trend', '')).strip().upper()
-        if any(w in c_state for w in ('KC向下', 'DOWN', 'DOWNTREND', 'BEARISH', 'SHORT', 'KC_TREND_DOWN')):
-            kc_trend_15m = 'DOWN'
-        elif any(w in c_state for w in ('KC向上', 'UP', 'UPTREND', 'BULLISH', 'LONG', 'KC_TREND_UP')):
+        # Numeric closed KC midline slope is authoritative. Cached labels and MA
+        # alignment describe context, but must not reverse the channel direction.
+        mid_diff = mid_15m - prev_mid
+        atr_15m = float(curr_bar.get('atr', mid_15m * 0.01))
+        deadband = max(atr_15m * 0.04, mid_15m * 0.0001)
+        if mid_diff > deadband:
             kc_trend_15m = 'UP'
+        elif mid_diff < -deadband:
+            kc_trend_15m = 'DOWN'
         else:
-            # 中軌方向判定（加入死區，避免中軌水平走平微幅浮點抖動被誤判為單邊趨勢）
-            mid_diff = mid_15m - prev_mid
-            atr_15m = float(curr_bar.get('atr', mid_15m * 0.01))
-            deadband = max(atr_15m * 0.04, mid_15m * 0.0001)
-            is_mid_up = mid_diff > deadband
-            is_mid_down = mid_diff < -deadband
-            if is_mid_up and (prev_mid >= prev2_mid - deadband or ma5_15m > ma15_15m):
-                kc_trend_15m = 'UP'
-            elif is_mid_down and (prev_mid <= prev2_mid + deadband or ma5_15m < ma15_15m):
-                kc_trend_15m = 'DOWN'
-            else:
-                kc_trend_15m = 'RANGE'
+            kc_trend_15m = 'RANGE'
 
         # 15M 大趨勢判定 (15m_big_trend)
         is_bull = (close_15m >= ma15_15m) and (kc_trend_15m == 'UP') and (ma15_slope_15m >= -1e-6)
