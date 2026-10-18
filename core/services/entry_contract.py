@@ -1017,13 +1017,6 @@ def evaluate_post_close_continuation(frame, quote, symbol, account, diagnostics=
                 or latest_trade.get('status') != 'CLOSED'):
             return None
         side = 'LONG' if close_action == 'CLOSE_LONG' else 'SHORT'
-        if side == 'SHORT':
-            kc_problem = continuation_kc_problem(closed, side)
-            if kc_problem:
-                if diagnostics is not None:
-                    diagnostics['reason'] = kc_problem
-                return None
-
         close_id = float(latest_trade.get('id') or 0.)
         live = frame.iloc[-1]
         previous = closed.iloc[-1]
@@ -1033,6 +1026,63 @@ def evaluate_post_close_continuation(frame, quote, symbol, account, diagnostics=
         if not all(math.isfinite(value) and value > 0
                    for value in (close_id, stamp, previous_stamp, quote)):
             return None
+
+        # A realized profit lock may use a short same-direction continuation
+        # lane. Only the first three completed candles after the fill qualify;
+        # the common final-order safety checks still run in authorize().
+        if latest_trade.get('exit_type') == 'PROFIT_LOCK':
+            try:
+                lock_pnl = float(latest_trade.get('pnl') or 0.0)
+                bar_no = int(round((previous_stamp - math.floor(close_id / 60000.0) * 60000.0) / 60000.0))
+                opening, close = float(previous['open']), float(previous['close'])
+                upper, lower = float(previous['kc_upper']), float(previous['kc_lower'])
+                ma5, middle = float(previous['ma5']), float(previous['kc_middle'])
+                prior = closed.iloc[-2] if len(closed) >= 2 else None
+                prior_ma5 = float(prior['ma5']) if prior is not None else math.nan
+                prior_middle = float(prior['kc_middle']) if prior is not None else math.nan
+                candle_and_trend = (
+                    close > opening and close > upper and ma5 > prior_ma5 and middle > prior_middle
+                    if side == 'LONG' else
+                    close < opening and close < lower and ma5 < prior_ma5 and middle < prior_middle
+                )
+                live_ma5 = float(live['ma5']) + (quote - float(live['close'])) / 5.0
+                quote_aligned = (
+                    quote > float(live['kc_upper']) and quote > live_ma5
+                    if side == 'LONG' else
+                    quote < float(live['kc_lower']) and quote < live_ma5
+                )
+                if (lock_pnl > 0.0 and 1 <= bar_no <= 3 and candle_and_trend
+                        and quote_aligned and stamp == previous_stamp + 60000.0):
+                    signal_id = f'{symbol}:PROFIT_LOCK_FAST_TRACK:{int(previous_stamp)}:{int(close_id)}:{side}'
+                    if not any(
+                        trade.get('symbol') == symbol
+                        and trade.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
+                        and (trade.get('entry_snapshot') or {}).get('pending_signal_id') == signal_id
+                        for trade in getattr(account, 'trades', [])
+                    ):
+                        return dict(
+                            action='ENTER', side=side, type='TRIGGER_C_CONTINUATION',
+                            reason='PROFIT_LOCK_SAME_COLOR_OUTER_RAIL_FAST_TRACK',
+                            price=quote, entry_atr=float(previous['atr']),
+                            confirmation_bar_id=stamp, close_price=quote, intrabar=True,
+                            entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
+                            profit_lock_fast_track=True,
+                            post_close_continuation_close_id=close_id,
+                            post_close_bars_after_close=bar_no,
+                            continuation_entry_bar_id=stamp,
+                            continuation_entry_bar_low=min(float(live['low']), quote),
+                            continuation_entry_bar_high=max(float(live['high']), quote),
+                            pending_signal_id=signal_id,
+                            live_opening_context='PROFIT_LOCK_SAME_COLOR_OUTER_RAIL',
+                        )
+            except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+                pass
+        if side == 'SHORT':
+            kc_problem = continuation_kc_problem(closed, side)
+            if kc_problem:
+                if diagnostics is not None:
+                    diagnostics['reason'] = kc_problem
+                return None
 
         if side == 'LONG':
             opportunity = _post_close_long_opportunity(closed, close_id)
@@ -2956,7 +3006,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if not room_ok:
             return reject(room_reason)
 
-        if decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES:
+        if (decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES
+                and not decision.get('profit_lock_fast_track')):
             top_problem = long_top_chase_problem(frame, quote)
             if top_problem:
                 return reject(top_problem)
@@ -2996,7 +3047,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 'POST_CLOSE_CONTINUATION_ENTRY', 'KC_CONTINUATION_ENTRY',
             )
             or str(decision.get('type', '')).startswith('CLOSED_TREND_BREAKOUT_')
-        )
+        ) and not decision.get('profit_lock_fast_track')
         if requires_three_bar_gate:
             rail_problem = three_bar_rail_gate_problem(
                 frame, quote, decision.get('side'),

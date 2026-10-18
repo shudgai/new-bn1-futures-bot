@@ -714,6 +714,25 @@ class UnifiedEntryStrategy(IEntryStrategy):
         if kwargs.get('existing_pos'):
             return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
 
+        # Explicitly opted-in staged positions use the same ATR deviation
+        # authority at signal time as at final execution. Fail closed on
+        # missing staged inputs instead of letting unrelated candle gates mask it.
+        if kwargs.get('use_staged_risk_engine') is True:
+            try:
+                if frame is None or frame.empty:
+                    raise ValueError('missing frame')
+                live = frame.iloc[-1]
+                ma7 = float(kwargs.get('ma7', live.get('ma7')))
+                atr = float(kwargs.get('atr', frame.iloc[-2].get('atr')))
+                from core.services.exits.staged_risk_service import staged_entry_permission
+                allowed, staged_reason = staged_entry_permission(
+                    float(price), ma7, atr, str(side).upper(),
+                )
+                if not allowed:
+                    return False, staged_reason, {'action': 'WAIT', 'reason': staged_reason}
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+                return False, 'ENTRY_BLOCKED: invalid staged market data', {'action': 'WAIT'}
+
         # 【均線相對位置的絕對限制】第一道開倉閘門底線
         passed, reason = validate_ma_alignment(frame, side, price)
         if not passed:

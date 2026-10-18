@@ -4,6 +4,8 @@ import time
 
 LOCK_TRIGGERS = frozenset({
     'PROFIT_LOCK_T1', 'PROFIT_LOCK_T2', 'PROFIT_LOCK_T3',
+    'EXIT_BY_RATCHET_PROFIT_LOCK', 'EXIT_BY_TRAILING_PROFIT_LOCK',
+    'NET_ROE_THREE_TIER_GIVEBACK', 'EXIT_BY_BREAKEVEN_LOCK',
     'PROFIT_LOCK_SELL_PRESSURE', 'EXIT_DOJI_BEARISH_CONFIRMATION',
     'EXIT_DOJI_BULLISH_CONFIRMATION', 'LONG_EXIT_OVERBOUGHT_EXTREME_RATCHET',
     'LONG_EXIT_STRUCTURE_DEFENSE', 'SHORT_EXIT_OVERSOLD_WICK_REJECTION',
@@ -16,7 +18,16 @@ LOCK_TRIGGERS = frozenset({
 def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):
     state = position.get('peak_trailing_state') or {}
     trigger = state.get('trigger', '')
-    is_lock = trigger in LOCK_TRIGGERS and trigger in str(reason)
+    reason_text = str(reason)
+    is_lock = (
+        trigger in LOCK_TRIGGERS and trigger in reason_text
+    ) or any(
+        token in reason_text for token in (
+            'EXIT_BY_RATCHET_PROFIT_LOCK', 'EXIT_BY_TRAILING_PROFIT_LOCK',
+            'NET_ROE_THREE_TIER_GIVEBACK', 'EXIT_BY_BREAKEVEN_LOCK',
+            'RATCHET_PROFIT_LOCK', 'PROFIT_LOCK',
+        )
+    )
     is_pivot_profit = ('THREE_POINT_PIVOT' in str(reason)
                        and float(position.get('current_net_pnl_usd') or 0 if net_pnl is None else net_pnl) > 0)
     if not (is_lock or is_pivot_profit):
@@ -25,7 +36,11 @@ def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):
     if not math.isfinite(peak) or peak <= 0:
         peak = 0.  # Persist invalid evidence so reentry fails closed.
     return dict(last_profit_exit_timestamp=float(timestamp_ms),
-                last_profit_exit_side=position['side'],last_profit_exit_peak_price=peak)
+                last_profit_exit_side=position['side'],last_profit_exit_peak_price=peak,
+                exit_type=(
+                    'PROFIT_LOCK' if is_lock else
+                    'TRUE_PEAK' if position.get('side') == 'LONG' else 'TRUE_BOTTOM'
+                ))
 
 
 def post_profit_lock_reason(account, symbol, closed, side, now_ms=None):
