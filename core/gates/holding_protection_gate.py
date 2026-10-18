@@ -549,6 +549,72 @@ def _last_closed_close_at_or_above_kc_middle(frame):
         return None
 
 
+def _trend_midline_whipsaw_hold(frame, side):
+    """Require two closed structural-line breaches against an intact trend."""
+    side = str(side or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return None
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2 or not {"close", "kc_middle"}.issubset(closed.columns):
+            return None
+        recent = closed.tail(2)
+        closes = [float(value) for value in recent["close"]]
+        middles = [float(value) for value in recent["kc_middle"]]
+        ma15_values = (
+            [float(value) for value in recent["ma15"]]
+            if "ma15" in recent else []
+        )
+        if not all(
+            math.isfinite(value) and value > 0
+            for value in closes + middles + ma15_values
+        ):
+            return None
+
+        slope = middles[1] - middles[0]
+        two_above_kc = all(
+            close > middle for close, middle in zip(closes, middles)
+        )
+        two_below_kc = all(
+            close < middle for close, middle in zip(closes, middles)
+        )
+        two_above_ma15 = bool(ma15_values) and all(
+            close > ma for close, ma in zip(closes, ma15_values)
+        )
+        two_below_ma15 = bool(ma15_values) and all(
+            close < ma for close, ma in zip(closes, ma15_values)
+        )
+        if side == "SHORT" and slope < 0:
+            if not (two_above_kc or two_above_ma15):
+                return {
+                    "reason": "VETO_ANTI_WHIPSAW_SHORT_SINGLE_BAR_SPIKE",
+                    "kc_middle_slope": slope,
+                    "closed_above_kc": sum(
+                        close > middle for close, middle in zip(closes, middles)
+                    ),
+                    "closed_above_ma15": sum(
+                        close > ma for close, ma in zip(closes, ma15_values)
+                    ),
+                }
+        elif side == "LONG" and slope > 0:
+            if not (two_below_kc or two_below_ma15):
+                return {
+                    "reason": "VETO_ANTI_WHIPSAW_LONG_SINGLE_BAR_DUMP",
+                    "kc_middle_slope": slope,
+                    "closed_below_kc": sum(
+                        close < middle for close, middle in zip(closes, middles)
+                    ),
+                    "closed_below_ma15": sum(
+                        close < ma for close, ma in zip(closes, ma15_values)
+                    ),
+                }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+    return None
+
+
 def channel_peak_profit_exit_evidence(position, frame, quote):
     """Retired legacy ATR/giveback lock; net-ROE ladder is the sole profit lock."""
     return None, False
@@ -1672,10 +1738,24 @@ class HoldingProtectionExitGate:
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
-            'EMERGENCY_STOP', 'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
+            'EMERGENCY_STOP', 'EMERGENCY_DUMP', 'EMERGENCY_EXTREME_ADVERSE',
+            'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
             'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
             'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
         ))
+
+        # In a directional KC trend, a single completed counter-trend candle
+        # cannot authorize an ordinary exit. Confirm two closes across KC mid;
+        # verified profit locks and safety exits returned above keep priority.
+        active_profit_lock = (
+            None if is_profit_lock
+            else _verified_profit_lock_details(position, quote)
+        )
+        if not is_safety_exit and active_profit_lock is None:
+            whipsaw_hold = _trend_midline_whipsaw_hold(frame, side)
+            if whipsaw_hold is not None:
+                details.update(whipsaw_hold)
+                return _reject(reason=whipsaw_hold["reason"])
 
         # 妖幣專用 KC 外軌鎖定：只要價格維持在 KC 外軌外且守穩 MA5，一律死抱利潤，拒絕被洗盤震下車！
         from core.gates.meme_coin_gate import MemeCoinGate

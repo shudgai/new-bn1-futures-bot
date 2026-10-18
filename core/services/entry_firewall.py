@@ -382,6 +382,15 @@ def market_structure_gate_problem(
         )
 
         if not is_manual:
+            # Confirmed outer breakouts still need the channel itself to be
+            # moving with the trade. A sharp MA5 alone must not authorize a
+            # breakout into a flat KC regime.
+            kc_middle_slope = slopes["KC_MIDDLE"]
+            if is_confirmed_outer_entry:
+                if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
+                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
+                if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
+                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
             for name, slope in slopes.items():
                 if is_confirmed_outer_entry:
                     if name != "MA5":
