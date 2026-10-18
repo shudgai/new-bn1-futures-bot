@@ -1733,6 +1733,19 @@ class HoldingProtectionExitGate:
         if is_profit_lock:
             if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
+            # A profit floor is a protection signal, not an ordinary exit
+            # authorization. Preserve the position through pullbacks and
+            # false breakouts until a post-entry, closed-bar pivot is confirmed.
+            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
+                position, frame, quote,
+            )
+            if not has_pivot:
+                details.update(
+                    profit_lock_waiting_for_true_pivot=True,
+                    profit_lock_details=verified_profit_lock,
+                )
+                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+            details.update(true_pivot_type=pivot_type, true_pivot=pivot_info)
             details.update(verified_profit_lock)
             return _auth(clean_reason)
 
