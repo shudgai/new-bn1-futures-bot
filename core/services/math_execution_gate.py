@@ -105,13 +105,15 @@ def validate_entry_math(
     # 2. Outer chase limit: quote within 3 ATR from the outer rail.
     is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
     if is_outer:
+        if abs(ma5 - ma15) < 0.05 * atr:
+            return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
         if side == "LONG":
-            if not (ma5 > previous_ma5):
+            if not (ma5 > previous_ma5 and ma5 > ma15):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             if close - upper > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
         else:
-            if not (ma5 < previous_ma5):
+            if not (ma5 < previous_ma5 and ma5 < ma15):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
@@ -326,7 +328,7 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
         or payload.get("outer_rail")
         or "OUTSIDE_KC" in str(payload.get("entry_signal_code") or "")
         or "BREAKOUT" in str(payload.get("entry_signal_code") or "")
-        or payload.get("entry_authority") in {"KC2BAR", "WAIT", "CONTINUATION"}
+        or payload.get("entry_authority") in {"KC2BAR", "CONTINUATION"}
     )
     return validate_entry_math(
         frame,

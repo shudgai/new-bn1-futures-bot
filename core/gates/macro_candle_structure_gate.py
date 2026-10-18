@@ -200,14 +200,22 @@ class MacroCandleStructureGate:
                 and ma5_current >= ma5_previous
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5 方向未向下"
-            if side == "LONG" and confirmation == INITIAL_2BAR_BREAKOUT and not (
+            if side == "LONG" and not (
                 middle_current > middle_previous
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_LONG: MA5/KC 趨勢未向上"
-            if side == "SHORT" and confirmation == INITIAL_2BAR_BREAKOUT and not (
+            if side == "SHORT" and not (
                 middle_current < middle_previous
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5/KC 趨勢未向下"
+            if side == "LONG" and not (
+                ma5_current > ma15
+            ):
+                return False, "VETO_NUMERIC_KC_ENTRY_LONG: MA5 未高於 MA15，非多頭排列"
+            if side == "SHORT" and not (
+                ma5_current < ma15
+            ):
+                return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5 未低於 MA15，非空頭排列"
         if mode == "BREAKOUT":
             if side == "SHORT" and lower_wick / candle_range > 0.65:
                 return False, (

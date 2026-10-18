@@ -263,7 +263,7 @@ def ma5_ma15_entry_gate_problem(
         frame,
         normalized_side,
         quote=quote,
-        enforce_ma_direction=not (is_confirmed_outer_entry or is_manual),
+        enforce_ma_direction=not is_manual,
         is_confirmed_outer_entry=is_confirmed_outer_entry,
         is_manual=is_manual,
     )
@@ -395,10 +395,9 @@ def market_structure_gate_problem(
                     return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
         if not is_manual and gap < min_gap:
-            if not is_confirmed_outer_entry or enforce_ma_direction:
-                return veto(
-                    f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
-                )
+            return veto(
+                f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
+            )
 
         if not is_confirmed_outer_entry and not is_manual:
             window = 10

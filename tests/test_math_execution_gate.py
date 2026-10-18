@@ -44,6 +44,16 @@ def test_outer_rail_breakout_and_continuation_allows_entry():
     short_frame.loc[0, "kc_middle"] = 100
     assert validate_entry_math(short_frame, "SHORT") == (True, "ENTRY_MATH_APPROVED")
 
+    # Short outer with MA5 >= MA15 (countertrend MA alignment)
+    short_bad_ma = short_frame.copy()
+    short_bad_ma.loc[1, "ma5"] = 99.5
+    assert validate_entry_math(short_bad_ma, "SHORT") == (False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT")
+
+    # Short outer with MA5 and MA15 glued together (Chop)
+    short_chop = short_frame.copy()
+    short_chop.loc[1, ["ma5", "ma15"]] = [94.02, 94.0]
+    assert validate_entry_math(short_chop, "SHORT") == (False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE")
+
 
 def test_profit_lock_fast_track_requires_matching_outer_rail_candle():
     frame = _frame(open=101, close=106, high=106.2, ma5=102, ma15=101)
