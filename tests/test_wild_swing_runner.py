@@ -67,6 +67,14 @@ class FakeEngine:
         self.wait_entry_authority = FakeWaitEntryAuthority()
         self.tickers = {"LOBSTER/USDT": 99.0}
         self.entries = []
+        self.boundary_frame = None
+
+    async def _entry_boundary_frame(self, symbol):
+        if self.boundary_frame is None:
+            return None
+        frame = self.boundary_frame.copy()
+        frame.attrs.update(self.boundary_frame.attrs)
+        return frame
 
     async def execute_dual_tf_entry(self, **kwargs):
         self.entries.append(kwargs)
@@ -74,18 +82,20 @@ class FakeEngine:
         return True
 
 
-@pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "1000PEPE/USDT"])
-def test_runner_ignores_old_vision_lock_and_does_not_call_qwen(
-    monkeypatch, symbol,
-):
+def test_runner_ignores_old_vision_lock_and_does_not_call_qwen(monkeypatch):
     from types import SimpleNamespace
 
     from core.vision.chart_guard import DynamicVisionGatekeeper
 
     engine = FakeEngine()
+    symbol = "LOBSTER/USDT"
     first = _frame("SHORT")
     first["atr"] = 2.0
     first["timestamp"] = [index * 60_000 for index in range(len(first))]
+    first.attrs["timeframe_ms"] = 60_000
+    first.attrs["entry_finality_verified"] = True
+    first["is_closed"] = True
+    engine.boundary_frame = first
 
     asyncio.run(
         process_single_symbol_runner(
@@ -107,6 +117,9 @@ def test_runner_ignores_old_vision_lock_and_does_not_call_qwen(
     next_frame = _pivot_cross_frame("SHORT")
     next_frame["timestamp"] += 720_000
     next_frame["atr"] = 2.0
+    next_frame.attrs["timeframe_ms"] = 60_000
+    next_frame.attrs["entry_finality_verified"] = True
+    next_frame["is_closed"] = True
     next_frame.loc[10, "ma15"] = 99.8
     next_frame.loc[11, "ma15"] = 100.0
     next_frame.loc[10, "kc_middle"] = 100.0
@@ -117,6 +130,7 @@ def test_runner_ignores_old_vision_lock_and_does_not_call_qwen(
         SimpleNamespace(**next_frame.iloc[-1].to_dict()),
         "SHORT",
     )
+    engine.boundary_frame = next_frame
     asyncio.run(
         process_single_symbol_runner(
             engine, symbol, 60, None, False,

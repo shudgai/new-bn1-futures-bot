@@ -253,7 +253,7 @@ def ma_parallel_chop_problem(frame, side, quote=None):
 
 def ma5_ma15_entry_gate_problem(
     frame, side, quote=None, *, entry_confirmation=None,
-    is_continuation_entry=False, is_manual=False,
+    is_continuation_entry=False, is_manual=False, symbol=None,
 ):
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
@@ -276,6 +276,7 @@ def ma5_ma15_entry_gate_problem(
             }
         ),
         is_manual=is_manual,
+        symbol=symbol,
     )
     if structure_problem:
         return structure_problem
@@ -307,7 +308,7 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation):
 def market_structure_gate_problem(
     frame, side, quote=None, *, enforce_ma_direction=True,
     is_confirmed_outer_entry=False, is_continuation_entry=False,
-    is_manual=False,
+    is_manual=False, symbol=None,
 ):
     from core.services.candle_data import closed_entry_candles
 
@@ -383,10 +384,18 @@ def market_structure_gate_problem(
         }
         gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
         relaxed_continuation = bool(is_continuation_entry)
+        from core.symbol_aliases import is_meme_breakout_symbol
+        is_meme = is_meme_breakout_symbol(symbol)
+        gap_atr = (
+            (0.03 if relaxed_continuation else 0.04)
+            if is_meme
+            else (0.10 if relaxed_continuation else 0.15)
+        )
+        gap_price_pct = 0.0001 if is_meme else MA_PARALLEL_GAP_PRICE_PCT
         min_gap = (
-            (0.10 if relaxed_continuation else 0.15) * current_atr
+            max(gap_atr * current_atr, gap_price_pct * current_price)
             if current_atr > 0
-            else (MA_PARALLEL_GAP_PRICE_PCT * current_price)
+            else gap_price_pct * current_price
         )
         diagnostics.update(
             slopes=",".join(f"{key}:{value:.8f}" for key, value in slopes.items()),
@@ -489,6 +498,7 @@ def require_ma5_ma15_entry_gates(frame, side, quote=None, *, is_manual=False):
 
 def final_trend_alignment_problem(
     frame, side, quote=None, *, entry_confirmation=None,
+    symbol=None,
 ):
     """Fail closed unless completed KC and MA5/MA15 agree with the order side."""
     from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
@@ -519,6 +529,7 @@ def final_trend_alignment_problem(
             "CONTINUATION", "KC_CONTINUATION_ENTRY",
             "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
         }
+        is_live_big_trigger = entry_confirmation == "WAIT_LIVE_BIG_TRIGGER"
         if is_confirmed_outer_entry and not has_valid_wild_outer_confirmation(
             frame, normalized_side, entry_confirmation,
         ):
@@ -532,6 +543,7 @@ def final_trend_alignment_problem(
                     entry_confirmation if is_confirmed_outer_entry else None
                 ),
                 is_continuation_entry=is_continuation_entry,
+                symbol=symbol,
             )
             if ma_gate_problem:
                 return ma_gate_problem
@@ -571,7 +583,12 @@ def final_trend_alignment_problem(
                 return "BLOCKED_FINAL_TREND_DATA_INVALID"
             if trend != "UP":
                 return "BLOCKED_LONG_KC_NOT_UP"
-            if previous_ma5 > previous_ma15:
+            if (
+                previous_ma5 > previous_ma15
+                and entry_confirmation != "MA_CROSSOVER_WICK_FOLLOW_THROUGH"
+                and not is_live_big_trigger
+                and not is_continuation_entry
+            ):
                 return "BLOCKED_LONG_MA5_GOLDEN_CROSS_NOT_FRESH"
             current_row = frame.iloc[-1]
             current_middle = float(current_row.get("kc_middle", kc_middle))
@@ -667,6 +684,7 @@ def require_final_trend_alignment(
         side,
         quote=quote,
         entry_confirmation=entry_confirmation,
+        symbol=symbol,
     )
     if problem:
         raise ValueError("[FORBIDDEN_ENTRY] " + problem)
@@ -1080,7 +1098,11 @@ async def validate_account_entry(account, symbol, side, context):
         if not quote_fresh:
             raise ValueError("[FORBIDDEN_ENTRY] WAIT_QUOTE_STALE")
         require_final_trend_alignment(
-            fresh_frame, side, symbol, quote=quote,
+            fresh_frame,
+            side,
+            symbol,
+            quote=quote,
+            entry_confirmation="WAIT_LIVE_BIG_TRIGGER",
         )
         position_verified = isinstance(getattr(account, "positions", None), dict)
         if hasattr(account, "last_sync_at"):
@@ -1234,7 +1256,11 @@ async def validate_account_entry(account, symbol, side, context):
             side,
             symbol,
             quote=tick_price,
-            entry_confirmation=signal.get("structure_confirmation"),
+            entry_confirmation=(
+                "MA_CROSSOVER_WICK_FOLLOW_THROUGH"
+                if context.get("wick_trigger_bar_id") is not None
+                else signal.get("structure_confirmation")
+            ),
         )
 
         from core.gates.macro_candle_structure_gate import MacroCandleStructureGate

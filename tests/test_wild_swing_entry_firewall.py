@@ -14,11 +14,28 @@ from test_wild_swing_strategy import (
 @pytest.fixture(autouse=True)
 def forbid_final_qwen_check(monkeypatch):
     from core.vision import chart_guard
+    from core.services import ai_chart_advisor
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("WILD_SWING must not invoke Qwen")
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", forbidden)
+    # Final-firewall tests must not depend on the external local inference
+    # service. Supply a fresh label for the exact candle; AI-specific tests
+    # override this method when they need to exercise a veto.
+    monkeypatch.setattr(
+        ai_chart_advisor.ai_chart_advisor,
+        "inspect_state",
+        lambda symbol, expected_bar: {
+            "is_chop": False,
+            "is_exhausted": False,
+            "allow_long": True,
+            "allow_short": True,
+            "reason": "test fixture",
+            "trend": "UNKNOWN",
+            "bar_id": float(expected_bar),
+        },
+    )
 
 
 class FakeAccount:
@@ -332,6 +349,12 @@ def test_wild_swing_firewall_accepts_only_current_math_signal_after_profit_lock(
     frame["atr"] = 2.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
+    if side == "LONG":
+        frame.iloc[-1, frame.columns.get_loc("ma5")] = 100.5
+        frame.iloc[-1, frame.columns.get_loc("ma15")] = 99.8
+    else:
+        frame.iloc[-1, frame.columns.get_loc("ma5")] = 99.3
+        frame.iloc[-1, frame.columns.get_loc("ma15")] = 99.8
     bar_id = float(frame.iloc[-1]["timestamp"])
     close_id = timestamp_offset + 600_001
     account = FakeAccount(frame)
@@ -413,6 +436,13 @@ def test_engine_passes_signal_mode_into_account_entry_context():
     frame["ma5"] = 100.0
     frame["ma15"] = 100.0
     frame["atr"] = 2.0
+    frame.iloc[-3, frame.columns.get_loc("kc_middle")] = 99.7
+    frame.iloc[-2, frame.columns.get_loc("kc_middle")] = 99.9
+    frame.iloc[-1, frame.columns.get_loc("kc_middle")] = 100.1
+    frame.iloc[-2, frame.columns.get_loc("ma5")] = 99.7
+    frame.iloc[-2, frame.columns.get_loc("ma15")] = 99.8
+    frame.iloc[-1, frame.columns.get_loc("ma5")] = 100.5
+    frame.iloc[-1, frame.columns.get_loc("ma15")] = 100.0
     account = FakeAccount(frame)
     engine = SimpleNamespace(
         account=account,

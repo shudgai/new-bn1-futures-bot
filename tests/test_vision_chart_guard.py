@@ -13,6 +13,21 @@ from test_wild_swing_strategy import _frame, _pivot_cross_frame
 def disable_live_local_vision(monkeypatch):
     monkeypatch.setenv("USE_LOCAL_QWEN", "false")
     monkeypatch.setenv("VISION_FAIL_OPEN", "0")
+    from core.services import ai_chart_advisor
+
+    monkeypatch.setattr(
+        ai_chart_advisor.ai_chart_advisor,
+        "inspect_state",
+        lambda symbol, expected_bar: {
+            "is_chop": False,
+            "is_exhausted": False,
+            "allow_long": True,
+            "allow_short": True,
+            "reason": "test fixture",
+            "trend": "UNKNOWN",
+            "bar_id": float(expected_bar),
+        },
+    )
 
 
 def bars(n=50):
@@ -24,6 +39,25 @@ def bars(n=50):
         )
         for i in range(n)
     ]
+
+
+class FakeWaitEntryAuthority:
+    def arbitrate(self, authorities):
+        if not authorities:
+            return {"status": "NO_AUTHORITY"}
+        sides = {item["side"] for item in authorities}
+        if len(sides) > 1:
+            return {"status": "BLOCKED_OPPOSITE_AUTHORITIES"}
+        return {"status": "ONE_ORDER", "winner": authorities[0]}
+
+    def pending_events(self, symbol):
+        return []
+
+    def acknowledge_events(self, event_ids):
+        return None
+
+    def unknown_claims(self, symbol):
+        return []
 
 
 def test_render_is_png_bytes_and_writes_no_files(tmp_path, monkeypatch):
@@ -187,6 +221,11 @@ def test_wild_swing_runner_uses_math_gate_without_qwen(monkeypatch, side):
         def __init__(self):
             self.account = Account()
             self.entries = []
+            self.wait_entry_authority = FakeWaitEntryAuthority()
+            self.boundary_frame = None
+
+        async def _entry_boundary_frame(self, symbol):
+            return self.boundary_frame.copy()
 
         async def execute_dual_tf_entry(self, **kwargs):
             self.entries.append(kwargs)
@@ -204,16 +243,22 @@ def test_wild_swing_runner_uses_math_gate_without_qwen(monkeypatch, side):
     timestamp_offset = 1_740_000_000_000
     frame["timestamp"] += timestamp_offset
     frame["atr"] = 2.0
+    frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["entry_finality_verified"] = True
+    frame["is_closed"] = True
     if side == "LONG":
         frame.loc[10, "kc_middle"] = 100.0
         frame.loc[11, "kc_middle"] = 100.1
     else:
         frame.loc[10, "kc_middle"] = 100.0
         frame.loc[11, "kc_middle"] = 99.9
+    engine.boundary_frame = frame.iloc[:-1].copy()
+    engine.boundary_frame.attrs.update(frame.attrs)
     asyncio.run(_process_wild_swing_symbol(
         engine, "LOBSTER/USDT", frame.iloc[:-1], float(frame.iloc[-2]["close"]),
         False, False,
     ))
+    engine.boundary_frame = frame.copy()
     asyncio.run(_process_wild_swing_symbol(
         engine, "LOBSTER/USDT", frame, float(frame.iloc[-1]["close"]), False, False,
     ))
@@ -245,6 +290,7 @@ def test_mid_channel_pullback_without_pivot_cross_or_profit_lock_is_not_sent_to_
         def __init__(self):
             self.account = Account()
             self.entries = []
+            self.wait_entry_authority = FakeWaitEntryAuthority()
 
         async def execute_dual_tf_entry(self, **kwargs):
             self.entries.append(kwargs)

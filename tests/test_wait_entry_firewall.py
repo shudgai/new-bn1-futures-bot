@@ -9,6 +9,24 @@ from core.services.entry_firewall import validate_account_entry
 from core.services.wait_entry_authority import WaitEntryAuthority
 
 
+@pytest.fixture(autouse=True)
+def use_fresh_local_vision_labels(monkeypatch):
+    from core.services import ai_chart_advisor
+
+    monkeypatch.setattr(
+        ai_chart_advisor.ai_chart_advisor,
+        "inspect_state",
+        lambda symbol, expected_bar: {
+            "is_chop": False,
+            "is_exhausted": False,
+            "allow_long": True,
+            "allow_short": True,
+            "reason": "test fixture",
+            "bar_id": float(expected_bar),
+        },
+    )
+
+
 def _candle(timestamp, opening, closing, *, atr=2.0, span=1.0, is_closed=True):
     wick = (span - abs(closing - opening)) / 2
     return {
@@ -144,7 +162,6 @@ def test_final_wait_firewall_revalidates_claimed_live_trigger(
 @pytest.mark.parametrize(
     ("mutation", "expected_reason"),
     [
-        ("stale_cross", "BLOCKED_LONG_MA5_GOLDEN_CROSS_NOT_FRESH"),
         ("down_slope", "VETO_LONG_MA_CONDITION_NOT_MET"),
         ("below_middle", "BLOCKED_LONG_PRICE_BELOW_KC_MIDDLE"),
         ("kc_down", "BLOCKED_LONG_KC_NOT_UP"),
@@ -157,10 +174,7 @@ def test_final_wait_firewall_blocks_long_without_all_new_gates(
 
     monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
     account, candidate, frame = _wait_account(tmp_path)
-    if mutation == "stale_cross":
-        frame.loc[frame.index[-3], "ma5"] = 99.5
-        frame.loc[frame.index[-3], "ma15"] = 99.0
-    elif mutation == "down_slope":
+    if mutation == "down_slope":
         frame.loc[frame.index[-3], "ma5"] = 101.0
         frame.loc[frame.index[-3], "ma15"] = 102.0
         frame.loc[frame.index[-2], "ma5"] = 100.5
@@ -196,6 +210,39 @@ def test_final_wait_firewall_blocks_long_without_all_new_gates(
                 ),
             },
         ))
+
+
+def test_final_wait_continuation_does_not_require_a_fresh_ma_cross(
+    tmp_path, monkeypatch,
+):
+    from core import config
+
+    monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
+    account, candidate, frame = _wait_account(tmp_path)
+    frame.loc[frame.index[-3], "ma5"] = 99.5
+    frame.loc[frame.index[-3], "ma15"] = 99.0
+
+    result = asyncio.run(validate_account_entry(
+        account,
+        "CAP/USDT",
+        "LONG",
+        {
+            "entry_mode": "CHANNEL_SWING",
+            "entry_authority": "WAIT",
+            "source": "WAIT_1M",
+            "wait_trigger": candidate,
+            "wait_trigger_id": candidate["trigger_id"],
+            "wait_client_order_id": "WAIT" + candidate["trigger_id"][:32],
+            "entry_authority_claim_id": candidate["trigger_id"],
+            "entry_client_order_id": "WAIT" + candidate["trigger_id"][:32],
+            "position_uuid": account.wait_entry_authority.position_uuid_for_trigger(
+                candidate["trigger_id"],
+            ),
+        },
+    ))
+
+    assert result["type"] == "WAIT_LIVE_BIG_TRIGGER"
+    assert result["side"] == "LONG"
 
 
 def test_final_wait_firewall_blocks_short_when_ma5_turns_up(
