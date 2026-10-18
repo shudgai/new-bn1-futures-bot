@@ -121,6 +121,47 @@ def test_authority_arbitration_fails_closed_opposite_and_selects_one_same_side()
     assert opposite["status"] == "BLOCKED_OPPOSITE_AUTHORITIES"
 
 
+@pytest.mark.parametrize(
+    ("previous", "current", "expected"),
+    [(100.0, 101.0, "LONG"), (101.0, 100.0, "SHORT"), (100.0, 100.0, None)],
+)
+def test_conflicting_authorities_are_filtered_only_by_verified_kc_slope(
+    previous, current, expected,
+):
+    frame = pd.DataFrame([
+        {"timestamp": 60_000, "kc_middle": previous, "is_closed": True},
+        {"timestamp": 120_000, "kc_middle": current, "is_closed": True},
+    ])
+    frame.attrs.update({"entry_finality_verified": True, "timeframe_ms": 60_000})
+    authorities = [
+        {"authority": "WILD_SWING", "side": "LONG"},
+        {"authority": "KC2BAR", "side": "SHORT"},
+    ]
+
+    filtered, allowed_side = symbol_runner._filter_authorities_by_kc_direction(
+        authorities, frame,
+    )
+
+    assert allowed_side == expected
+    if expected is None:
+        assert filtered == authorities
+    else:
+        assert filtered == [next(item for item in authorities if item["side"] == expected)]
+
+
+def test_unverified_kc_frame_cannot_resolve_authority_conflict():
+    frame = pd.DataFrame([
+        {"timestamp": 60_000, "kc_middle": 100.0, "is_closed": True},
+        {"timestamp": 120_000, "kc_middle": 101.0, "is_closed": True},
+    ])
+    frame.attrs["timeframe_ms"] = 60_000
+    authorities = [{"side": "LONG"}, {"side": "SHORT"}]
+
+    assert symbol_runner._filter_authorities_by_kc_direction(
+        authorities, frame,
+    ) == (authorities, None)
+
+
 def test_kc2bar_producer_has_stable_identity_and_rejects_non_authorized_shape(
     monkeypatch,
 ):

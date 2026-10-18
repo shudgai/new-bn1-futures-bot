@@ -6,6 +6,7 @@ from core.services.candle_data import closed_entry_candles
 
 SETTLEMENT_MS = 3000
 READ_INTERVAL_SECONDS = 1.0
+SETTLEMENT_ATTEMPTS = 4
 
 
 def settled_pair(first, second, server_ms):
@@ -29,11 +30,10 @@ def settled_pair(first, second, server_ms):
 
 
 async def fetch_settled_entry_frame(engine, symbol):
-    # A pair can straddle a candle boundary, or the first server-time sample
-    # can precede the 3s settlement threshold even though the second sample is
-    # already settled. Retry a fresh pair once, measuring settlement after the
-    # two independent candle reads. Never relabel an unsettled candle.
-    for attempt in range(2):
+    # A pair can straddle a candle boundary, or server time can precede the
+    # 3s settlement threshold. Retry fresh independent pairs, never relabeling
+    # an unsettled candle.
+    for attempt in range(SETTLEMENT_ATTEMPTS):
         try:
             first = await engine.fetch_klines(
                 symbol, timeframe='1m', limit=200, keep_live=True,
@@ -56,6 +56,6 @@ async def fetch_settled_entry_frame(engine, symbol):
             second.attrs['entry_finality_server_ms'] = completed_ms
             return second
         except Exception:
-            if attempt == 1:
+            if attempt == SETTLEMENT_ATTEMPTS - 1:
                 return None
     return None

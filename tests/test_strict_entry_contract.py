@@ -352,6 +352,24 @@ def test_settlement_records_time_of_completed_verification():
     assert result.attrs['entry_finality_server_ms'] == start + 1000
 
 
+def test_settlement_retries_after_initial_settlement_window():
+    from core.services.entry_finality import fetch_settled_entry_frame
+    frame = candles()
+    start = float(frame.iloc[-1].timestamp)
+    engine = SimpleNamespace(
+        fetch_klines=AsyncMock(return_value=frame),
+        exchange=SimpleNamespace(fetch_time=AsyncMock(
+            side_effect=[start + 1000, start + 5000, start + 5000],
+        )),
+    )
+
+    result = asyncio.run(fetch_settled_entry_frame(engine, 'TEST'))
+
+    assert result is not None
+    assert result.attrs['entry_finality_verified'] is True
+    assert result.attrs['entry_finality_server_ms'] == start + 5000
+
+
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('index', [-3, -2, -1])
 @pytest.mark.parametrize('wick_side', ['upper', 'lower'])

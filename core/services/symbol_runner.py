@@ -81,6 +81,41 @@ def _kc2bar_candidates(frame, symbol, quote):
     return candidates
 
 
+def _filter_authorities_by_kc_direction(authorities, frame):
+    """Remove entry authorities opposed to the latest verified closed KC slope."""
+    from core.services.candle_data import closed_entry_candles
+
+    if (
+        frame is None
+        or frame.empty
+        or not frame.attrs.get("entry_finality_verified")
+        or frame.attrs.get("timeframe_ms") != 60_000
+    ):
+        return authorities, None
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2 or "kc_middle" not in closed:
+            return authorities, None
+        previous = float(closed.iloc[-2]["kc_middle"])
+        current = float(closed.iloc[-1]["kc_middle"])
+        if not math.isfinite(previous) or not math.isfinite(current):
+            return authorities, None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return authorities, None
+
+    # Flat/unknown KC is not permission to choose a side. Keep the existing
+    # conflict veto in that case; a directional closed KC can resolve only
+    # the authority that points against it.
+    if current > previous:
+        allowed_side = "LONG"
+    elif current < previous:
+        allowed_side = "SHORT"
+    else:
+        return authorities, None
+    filtered = [item for item in authorities if item.get("side") == allowed_side]
+    return filtered, allowed_side
+
+
 def _dispatch_wait_outbox(authority, symbol):
     events = authority.pending_events(symbol)
     if not events:
@@ -588,16 +623,29 @@ async def _process_wild_swing_symbol(
         {"side": signal["side"], "authority": "WILD_SWING", "signal": signal}
         for signal in signals
     )
+    authorities, kc_authorized_side = _filter_authorities_by_kc_direction(
+        authorities, entry_frame,
+    )
+    if kc_authorized_side is not None:
+        logger.info(
+            "ENTRY_AUTHORITY_KC_DIRECTION_FILTER symbol=%s side=%s remaining=%s",
+            symbol, kc_authorized_side,
+            sorted({item["side"] for item in authorities}),
+        )
     wait_authority = getattr(engine, "wait_entry_authority", None)
     if wait_authority is None:
-        if len(signals) != 1:
+        eligible_signals = [
+            item["signal"] for item in authorities
+            if item.get("authority") == "WILD_SWING"
+        ]
+        if len(eligible_signals) != 1:
             return [], []
         arbitration = {
             "status": "ONE_ORDER",
             "winner": {
                 "authority": "WILD_SWING",
-                "side": signals[0]["side"],
-                "signal": signals[0],
+                "side": eligible_signals[0]["side"],
+                "signal": eligible_signals[0],
             },
         }
     else:
