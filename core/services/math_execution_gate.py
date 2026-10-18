@@ -38,6 +38,7 @@ def validate_entry_math(
     side: str,
     *,
     profit_lock_fast_track: bool = False,
+    is_outer_entry: bool = False,
 ) -> tuple[bool, str]:
     """Authorize an entry from the latest candle and prior MA5 value only."""
     side = str(side or "").upper()
@@ -95,6 +96,26 @@ def validate_entry_math(
         if side == "SHORT" and close < opened and close < lower:
             return True, "ENTRY_MATH_PROFIT_LOCK_FAST_TRACK"
         return False, "BLOCKED_ENTRY_MATH_FAST_TRACK_NOT_CONFIRMED"
+
+    # Outer-rail breakout and continuation entries per AGENTS.md:
+    # When price is outside KC bands (or explicitly signaled as an outer entry),
+    # price naturally exceeds MA15 by the channel half-width.
+    # Enforce:
+    # 1. MA5 slope direction (LONG: ma5 > previous_ma5, SHORT: ma5 < previous_ma5)
+    # 2. Outer chase limit: quote within 3 ATR from the outer rail.
+    is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
+    if is_outer:
+        if side == "LONG":
+            if not (ma5 > previous_ma5):
+                return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
+            if close - upper > 3.0 * atr:
+                return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
+        else:
+            if not (ma5 < previous_ma5):
+                return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
+            if lower - close > 3.0 * atr:
+                return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
+        return True, "ENTRY_MATH_APPROVED"
 
     if side == "LONG":
         if not (ma5 > ma15 and ma5 > previous_ma5):
@@ -300,7 +321,19 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
                     elapsed_bars = max(0, int((bar_ms - close_ms) // timeframe_ms))
                     fast_track = "PROFIT_LOCK" in reason and elapsed_bars <= 3
                 break
-    return validate_entry_math(frame, side, profit_lock_fast_track=fast_track)
+    is_outer = bool(
+        payload.get("is_outer_entry")
+        or payload.get("outer_rail")
+        or "OUTSIDE_KC" in str(payload.get("entry_signal_code") or "")
+        or "BREAKOUT" in str(payload.get("entry_signal_code") or "")
+        or payload.get("entry_authority") in {"KC2BAR", "WAIT", "CONTINUATION"}
+    )
+    return validate_entry_math(
+        frame,
+        side,
+        profit_lock_fast_track=fast_track,
+        is_outer_entry=is_outer,
+    )
 
 
 def validate_exit_at_execution(

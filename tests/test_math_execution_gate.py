@@ -26,6 +26,25 @@ def test_entry_math_alignment_chase_and_wick_veto():
     assert validate_entry_math(frame, "LONG")[1] == "BLOCKED_ENTRY_MATH_LONG_WICK"
 
 
+def test_outer_rail_breakout_and_continuation_allows_entry():
+    # Outer rail long breakout: close > kc_upper (107 > 105), distance <= 3 ATR
+    frame = _frame(ma5=106, ma15=101, close=107, open=105.5, high=107.2, kc_upper=105, kc_middle=101, atr=2)
+    assert validate_entry_math(frame, "LONG") == (True, "ENTRY_MATH_APPROVED")
+
+    # Long outer chase over 3 ATR: close - kc_upper = 112 - 105 = 7 > 3 * 2 (6)
+    frame.loc[1, ["close", "high"]] = [112, 112.2]
+    assert validate_entry_math(frame, "LONG") == (False, "BLOCKED_ENTRY_MATH_LONG_CHASE")
+
+    # Long outer with MA5 downturn
+    frame.loc[1, ["close", "high", "ma5"]] = [107, 107.2, 98]
+    assert validate_entry_math(frame, "LONG") == (False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT")
+
+    # Outer rail short breakout: close < kc_lower (93 < 95), distance <= 3 ATR
+    short_frame = _frame(ma5=94, ma15=99, close=93, open=94.5, low=92.8, high=94.6, kc_lower=95, kc_middle=99, atr=2)
+    short_frame.loc[0, "kc_middle"] = 100
+    assert validate_entry_math(short_frame, "SHORT") == (True, "ENTRY_MATH_APPROVED")
+
+
 def test_profit_lock_fast_track_requires_matching_outer_rail_candle():
     frame = _frame(open=101, close=106, high=106.2, ma5=102, ma15=101)
     assert validate_entry_math(frame, "LONG", profit_lock_fast_track=True)[0]
