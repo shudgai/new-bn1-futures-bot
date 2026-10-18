@@ -2612,9 +2612,38 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', direction_problem, bar)
                 return False
 
-            from core.services.entry_firewall import market_structure_gate_problem
+            from core.services.entry_firewall import (
+                has_valid_wild_outer_confirmation,
+                market_structure_gate_problem,
+            )
+            confirmation = (
+                decision.get('confirmation')
+                or decision.get('type')
+                or signal.get('confirmation')
+                or signal.get('structure_confirmation')
+            )
+            is_confirmed_wild_outer = (
+                confirmation in {
+                    "CONFIRMED_2BAR_BREAKOUT",
+                    "CONFIRMED_2BAR_CONTINUATION",
+                    "CONTINUATION_OUTSIDE_KC",
+                    "KC_2BAR_CONFIRM_LONG",
+                    "KC_2BAR_CONFIRM_SHORT",
+                    *MEME_ENTRY_CODES,
+                }
+                and (
+                    has_valid_wild_outer_confirmation(
+                        snapshot["frame"], side, confirmation,
+                    )
+                    or decision.get('type') in MEME_ENTRY_CODES
+                )
+            )
             structure_problem = market_structure_gate_problem(
-                snapshot["frame"], side, quote=price,
+                snapshot["frame"],
+                side,
+                quote=price,
+                enforce_ma_direction=not is_confirmed_wild_outer,
+                is_confirmed_outer_entry=is_confirmed_wild_outer,
             )
             if structure_problem:
                 log_entry_gate(

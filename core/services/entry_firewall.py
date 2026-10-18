@@ -263,7 +263,7 @@ def ma5_ma15_entry_gate_problem(
         frame,
         normalized_side,
         quote=quote,
-        enforce_ma_direction=not is_manual,
+        enforce_ma_direction=not (is_confirmed_outer_entry or is_manual),
         is_confirmed_outer_entry=is_confirmed_outer_entry,
         is_manual=is_manual,
     )
@@ -370,9 +370,10 @@ def market_structure_gate_problem(
             "KC_LOWER": normalized_slope(values["kc_lower"]),
         }
         gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
-        min_gap = max(
-            0.15 * current_atr,
-            MA_PARALLEL_GAP_PRICE_PCT * current_price,
+        min_gap = (
+            0.15 * current_atr
+            if current_atr > 0
+            else (MA_PARALLEL_GAP_PRICE_PCT * current_price)
         )
         diagnostics.update(
             slopes=",".join(f"{key}:{value:.8f}" for key, value in slopes.items()),
@@ -382,15 +383,22 @@ def market_structure_gate_problem(
 
         if not is_manual:
             for name, slope in slopes.items():
-                if is_confirmed_outer_entry and name not in {"MA5", "MA15"}:
+                if is_confirmed_outer_entry:
+                    if name != "MA5":
+                        continue
+                    if normalized_side == "LONG" and slope < 0.00015:
+                        return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
+                    if normalized_side == "SHORT" and slope > -0.00015:
+                        return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
                     continue
                 if abs(slope) < 0.00015:
                     return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
         if not is_manual and gap < min_gap:
-            return veto(
-                f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
-            )
+            if not is_confirmed_outer_entry or enforce_ma_direction:
+                return veto(
+                    f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
+                )
 
         if not is_confirmed_outer_entry and not is_manual:
             window = 10
