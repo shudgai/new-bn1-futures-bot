@@ -101,12 +101,21 @@ def test_closed_midline_cross_cannot_authorize_late_entry(side, quote, opening):
         (0.01, 100.0, 100.0, 101.0, 100.0, "UP"),
     ],
 )
-def test_channel_direction_uses_slope_and_ma_alignment_without_atr_delay(
+def test_channel_direction_follows_kc_midline_slope_not_ma_alignment(
     slope, price, middle, ma5, ma15, expected,
 ):
     assert resolve_kc_direction(
         slope, price, middle, ma5, ma15, atr=10.0,
     ) == expected
+
+
+def test_channel_direction_does_not_allow_ma_alignment_to_reverse_kc_slope():
+    assert resolve_kc_direction(
+        -0.01, 101.0, 100.0, 102.0, 101.0, atr=10.0,
+    ) == "DOWN"
+    assert resolve_kc_direction(
+        0.01, 99.0, 100.0, 98.0, 99.0, atr=10.0,
+    ) == "UP"
 
 
 def _closed_exit_frame(side, close, middle, ma15):

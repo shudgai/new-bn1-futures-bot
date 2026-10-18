@@ -9,7 +9,7 @@ def _frame(**current_overrides):
              ma5=100, ma15=101, atr=2, kc_upper=105, kc_middle=100,
              kc_lower=95),
         dict(timestamp=120_000, open=100, high=101, low=99, close=100,
-             ma5=100, ma15=101, atr=2, kc_upper=105, kc_middle=100,
+             ma5=100, ma15=101, atr=2, kc_upper=105, kc_middle=101,
              kc_lower=95),
     ]
     bars[-2].update(ma5=99)
@@ -31,6 +31,54 @@ def test_profit_lock_fast_track_requires_matching_outer_rail_candle():
     assert validate_entry_math(frame, "LONG", profit_lock_fast_track=True)[0]
     frame.loc[1, "close"] = 104
     assert not validate_entry_math(frame, "LONG", profit_lock_fast_track=True)[0]
+
+
+def test_kc_midline_trend_vetoes_countertrend_and_cannot_be_bypassed():
+    bearish = _frame(
+        open=100, high=101, low=99, close=100,
+        ma5=102, ma15=101, kc_middle=99,
+    )
+    assert validate_entry_math(bearish, "LONG") == (
+        False, "BLOCKED_LONG_ON_BEARISH_TREND",
+    )
+    assert validate_entry_math(
+        bearish, "LONG", profit_lock_fast_track=True,
+    ) == (False, "BLOCKED_LONG_ON_BEARISH_TREND")
+
+    bullish = _frame(
+        open=100, high=101, low=99, close=100,
+        ma5=98, ma15=99, kc_middle=101,
+    )
+    assert validate_entry_math(bullish, "SHORT") == (
+        False, "BLOCKED_SHORT_ON_BULLISH_TREND",
+    )
+
+    flat = _frame(kc_middle=100)
+    assert validate_entry_math(flat, "LONG")[1] == "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
+
+
+def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache():
+    import asyncio
+
+    from core.services.math_execution_gate import validate_entry_at_execution
+
+    stale_bullish = _frame(
+        open=100, high=101, low=99, close=100,
+        ma5=102, ma15=101, kc_middle=101,
+    )
+    fresh_bearish = _frame(
+        open=100, high=101, low=99, close=100,
+        ma5=102, ma15=101, kc_middle=99,
+    )
+
+    class Account:
+        entry_frame_provider = staticmethod(lambda _symbol: fresh_bearish)
+
+    allowed, reason = asyncio.run(validate_entry_at_execution(
+        Account(), "CAP/USDT", "LONG", {"frame": stale_bullish},
+    ))
+    assert not allowed
+    assert reason == "BLOCKED_LONG_ON_BEARISH_TREND"
 
 
 def test_exit_math_true_peak_and_middle_trend_hold_veto():

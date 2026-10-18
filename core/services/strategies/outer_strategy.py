@@ -88,7 +88,7 @@ def resolve_kc_direction(
     atr: float,
     slope_threshold: float = 0.10,
 ) -> str:
-    """Resolve normalized KC slope, with a 0.25 ATR MA-alignment override."""
+    """Resolve KC direction from its normalized midline slope only."""
     try:
         slope, price, middle, fast, slow, scale, threshold = map(float, (
             kc_mid_slope, current_price, kc_mid, ma5, ma15, atr, slope_threshold
@@ -97,17 +97,11 @@ def resolve_kc_direction(
                     (slope, price, middle, fast, slow, scale, threshold))
                 or min(price, middle, fast, slow, scale) <= 0 or threshold < 0):
             return 'UNKNOWN'
-        if slope < 0 and fast < slow:
-            return 'DOWN'
-        if slope > 0 and fast > slow:
+        # MA alignment and price location may describe a pullback, but must not
+        # relabel a falling KC midline as upward (or vice versa).
+        if slope > 0:
             return 'UP'
-        if fast < slow and price < middle:
-            return 'DOWN'
-        if fast > slow and price > middle:
-            return 'UP'
-        if slope > threshold:
-            return 'UP'
-        if slope < -threshold:
+        if slope < 0:
             return 'DOWN'
         return 'UNKNOWN'
     except (TypeError, ValueError, OverflowError):

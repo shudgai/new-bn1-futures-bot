@@ -49,10 +49,21 @@ def validate_entry_math(
     current, previous = bars[-1], bars[-2]
     values = {
         key: _number(current.get(key))
-        for key in ("open", "high", "low", "close", "ma5", "ma15", "atr", "kc_upper", "kc_lower")
+        for key in (
+            "open", "high", "low", "close", "ma5", "ma15", "atr",
+            "kc_upper", "kc_middle", "kc_lower",
+        )
     }
     previous_ma5 = _number(previous.get("ma5"))
-    if any(value is None for value in values.values()) or previous_ma5 is None:
+    closed_bars = bars
+    if any("is_closed" in row for row in bars):
+        closed_bars = [row for row in bars if row.get("is_closed") == True]
+    if len(closed_bars) < 2:
+        return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
+    prior_middle = _number(closed_bars[-2].get("kc_middle"))
+    latest_middle = _number(closed_bars[-1].get("kc_middle"))
+    if (any(value is None for value in values.values()) or previous_ma5 is None
+            or prior_middle is None or latest_middle is None):
         return False, "BLOCKED_ENTRY_MATH_INVALID_DATA"
     opened, high, low, close, ma5, ma15, atr, upper, lower = (
         values[key]
@@ -62,6 +73,16 @@ def validate_entry_math(
         return False, "BLOCKED_ENTRY_MATH_INVALID_DATA"
     if high < max(opened, close) or low > min(opened, close):
         return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
+
+    # Final execution gate: numeric KC midline slope is authoritative. No
+    # continuation, oversold-reversal, or profit-lock fast track may override it.
+    kc_slope = latest_middle - prior_middle
+    if kc_slope == 0:
+        return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
+    if side == "LONG" and kc_slope < 0:
+        return False, "BLOCKED_LONG_ON_BEARISH_TREND"
+    if side == "SHORT" and kc_slope > 0:
+        return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     body = abs(close - opened)
     wick = high - max(opened, close) if side == "LONG" else min(opened, close) - low
@@ -242,19 +263,20 @@ def validate_exit_math(
 async def validate_entry_at_execution(account: Any, symbol: str, side: str, context: Any = None) -> tuple[bool, str]:
     """Load the latest permitted snapshot, then run the pure entry calculator."""
     payload = context if isinstance(context, Mapping) else {}
-    frame = payload.get("entry_gate_frame")
+    # A cached signal snapshot may be stale by the time a direct, continuation,
+    # or passive order reaches execution. Always prefer a fresh account snapshot.
+    provider = getattr(account, "entry_frame_provider", None)
+    frame = provider(symbol) if callable(provider) else None
+    if hasattr(frame, "__await__"):
+        frame = await frame
+    if frame is None:
+        frame = payload.get("entry_gate_frame")
     if frame is None:
         frame = payload.get("frame")
     if frame is None:
         snapshot = payload.get("snapshot")
         if isinstance(snapshot, Mapping):
             frame = snapshot
-    if frame is None:
-        provider = getattr(account, "entry_frame_provider", None)
-        if callable(provider):
-            frame = provider(symbol)
-            if hasattr(frame, "__await__"):
-                frame = await frame
     if frame is None:
         return False, "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE"
 

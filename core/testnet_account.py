@@ -3183,6 +3183,52 @@ class BinanceTestnetAccount:
             filled_qty = float(order_status.get("filled") or 0.0)
             close_side = "sell" if info["side"] == "LONG" else "buy"
 
+            # Recheck the current KC direction while an entry limit is resting.
+            # If the setup has turned countertrend, cancel it; if the race already
+            # filled any quantity, immediately reduce-only flatten that quantity.
+            try:
+                from core.services.math_execution_gate import validate_entry_at_execution
+                gate_allowed, gate_reason = await validate_entry_at_execution(
+                    self, symbol, info["side"], info.get("entry_context"),
+                )
+            except Exception as exc:
+                gate_allowed, gate_reason = False, f"BLOCKED_ENTRY_MATH_RECHECK_ERROR:{type(exc).__name__}"
+            if not gate_allowed:
+                self.log(
+                    f"PENDING_ENTRY_GATE_INVALID symbol={symbol} side={info['side']} "
+                    f"reason={gate_reason} status={status} filled={filled_qty}",
+                    "WARNING",
+                )
+                if str(status or "").lower() in {"open", "new", "partially_filled"}:
+                    try:
+                        await self.exchange.cancel_order(info["order_id"], symbol)
+                        order_status = await self.exchange.fetch_order(info["order_id"], symbol)
+                        status = order_status.get("status")
+                        filled_qty = float(order_status.get("filled") or 0.0)
+                    except Exception as exc:
+                        # Keep tracking the order. The next poll rechecks trend and
+                        # fill state, covering cancel/fill races without orphaning it.
+                        self.log(
+                            f"PENDING_ENTRY_CANCEL_RETRY symbol={symbol} "
+                            f"order={info.get('order_id')} error={type(exc).__name__}:{exc}",
+                            "WARNING",
+                        )
+                        continue
+                if filled_qty > 0:
+                    try:
+                        await self._emergency_flatten(symbol, info["side"], filled_qty)
+                    except Exception:
+                        # Keep the order in the pending map so the next cycle retries
+                        # the reduce-only flatten instead of treating it as managed.
+                        continue
+                    self.log(
+                        f"COUNTERTREND_PENDING_FILL_FLATTENED symbol={symbol} qty={filled_qty}",
+                        "DANGER",
+                    )
+                self.pending_limit_orders.pop(symbol, None)
+                self._pending_retry_streak.pop(symbol, None)
+                continue
+
             if status == "closed" and filled_qty > 0:
                 execution_price = float(order_status.get("average") or info["target_price"])
                 del self.pending_limit_orders[symbol]
