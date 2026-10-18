@@ -164,26 +164,39 @@ def test_install_and_runner_share_durable_runtime(tmp_path):
         asyncio.run(scenario(store))
 
 
-def test_legacy_entry_points_are_silent_only_under_new_flag():
+def test_legacy_entry_points_delegate_to_atr_only_when_staged_flag_is_off(monkeypatch):
+    from core.services.exits import entry_atr_protection
+    calls = []
+    monkeypatch.setattr(
+        entry_atr_protection, 'atr_exit_reason',
+        lambda position, price, frame=None: calls.append((position, price, frame)) or 'ATR_EXIT',
+    )
     p = dict(side='LONG', entry_price=100, qty=10, margin=1000, use_staged_risk_engine=True)
     assert protection(p, 103, 0.0005, 0.0005) is None
     assert 'channel_profit_protection' not in p
     assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) is None
+    assert calls == []
     p['use_staged_risk_engine'] = False
     result = protection(p, 103, 0.0005, 0.0005)
-    assert result['peak_net'] > 3
+    assert result['triggered'] is True and result['reason'] == 'ATR_EXIT'
+    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) == 'ATR_EXIT'
+    assert len(calls) == 2
+    assert all(call[0] is p and call[1] == 103 and call[2] is None for call in calls)
 
 
 def test_production_adapter_calls_staged_dispatcher_without_legacy(monkeypatch):
     from my_package import red_eye_adapter as adapter
-    real_runner = adapter.symbol_runner.process_single_symbol_runner
-    runner = AsyncMock(wraps=real_runner)
-    monkeypatch.setattr(adapter.symbol_runner, 'process_single_symbol_runner', runner)
+    from core.services.exits import staged_risk_service
+    dispatcher = AsyncMock(wraps=staged_risk_service.run_staged_position)
+    monkeypatch.setattr(staged_risk_service, 'run_staged_position', dispatcher)
     p, ex = PositionState(), MockExchange()
     legacy = Mock(side_effect=AssertionError('legacy must be silent'))
     sut = create_strategy(p, ex, legacy, legacy, RISK_PARAMS['B'])
     sut.tick(103, 1, 30, 1)
-    runner.assert_awaited_once()
+    dispatcher.assert_awaited_once()
+    assert dispatcher.await_args.args[0] is sut.account
+    assert dispatcher.await_args.args[1] == sut.symbol
+    assert dispatcher.await_args.args[2] is not None
     legacy.assert_not_called()
     assert sut.raw['use_staged_risk_engine'] is True
     assert sut.state.stage == p.stage == 3
