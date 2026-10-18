@@ -395,19 +395,26 @@ def market_structure_gate_problem(
 
         if not is_manual:
             if relaxed_continuation:
-                # Let a continuation through with a near-flat or slightly
-                # counter-sloped MA5, but retain directional KC confirmation
-                # and reject a material opposing MA5 turn.
+                # Continuations require the latest quote to remain strictly
+                # beyond the matching KC rail and MA5 to slope in that
+                # direction. Keep the relaxed MA spacing, not relaxed direction.
+                continuation_rail = float(
+                    values["kc_upper" if normalized_side == "LONG" else "kc_lower"][-1]
+                )
+                if normalized_side == "LONG" and current_price <= continuation_rail:
+                    return veto("VETO_CONTINUATION_NOT_OUTSIDE_KC_UPPER")
+                if normalized_side == "SHORT" and current_price >= continuation_rail:
+                    return veto("VETO_CONTINUATION_NOT_OUTSIDE_KC_LOWER")
                 kc_middle_slope = slopes["KC_MIDDLE"]
                 if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
                 if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
                 ma5_slope = slopes["MA5"]
-                if normalized_side == "LONG" and ma5_slope < -0.00005:
-                    return veto("VETO_CONTINUATION_MA5_OPPOSITE_SLOPE_LONG")
-                if normalized_side == "SHORT" and ma5_slope > 0.00005:
-                    return veto("VETO_CONTINUATION_MA5_OPPOSITE_SLOPE_SHORT")
+                if normalized_side == "LONG" and ma5_slope <= 0:
+                    return veto("VETO_CONTINUATION_MA5_NOT_RISING_LONG")
+                if normalized_side == "SHORT" and ma5_slope >= 0:
+                    return veto("VETO_CONTINUATION_MA5_NOT_FALLING_SHORT")
             elif is_confirmed_outer_entry:
                 # Confirmed breakouts keep their original strict MA5 slope.
                 kc_middle_slope = slopes["KC_MIDDLE"]
