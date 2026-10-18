@@ -549,8 +549,8 @@ def test_stale_unapproved_short_pending_ticket_is_cleared():
     assert position[STATE_KEY]["pending"] is None
 
 
-@pytest.mark.parametrize("entry_mode", ["CHANNEL_SWING", "WILD_SWING", "BREAKOUT"])
-def test_realtime_exit_uses_true_peak_authority_for_auto_positions(
+@pytest.mark.parametrize("entry_mode", ["CHANNEL_SWING", "WILD_SWING", "BREAKOUT", "MA_CROSS"])
+def test_realtime_exit_holds_single_bar_wick_for_auto_positions(
     monkeypatch, entry_mode,
 ):
     from core.services.exits import realtime_profit_exit
@@ -611,12 +611,11 @@ def test_realtime_exit_uses_true_peak_authority_for_auto_positions(
         )
     )
 
-    assert closed is True
-    assert len(account.closed) == 1
-    assert account.closed[0].endswith("EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL")
+    assert closed is False
+    assert account.closed == []
 
 
-def test_realtime_exit_retries_persisted_true_peak_without_market_frame(monkeypatch):
+def test_realtime_exit_does_not_retry_unconfirmed_intrabar_peak(monkeypatch):
     from core.services.exits import realtime_profit_exit
 
     live_bar_ms = 1_800_000_000_000
@@ -682,10 +681,42 @@ def test_realtime_exit_retries_persisted_true_peak_without_market_frame(monkeypa
         )
     )
 
-    assert first is True
-    assert second is True
-    assert len(account.close_reasons) == 2
-    assert account.close_reasons[0] == account.close_reasons[1]
+    assert first is False
+    assert second is False
+    assert account.close_reasons == []
+
+
+@pytest.mark.parametrize("symbol", ["CAP/USDT", "LOBSTER/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma_cross_auto_positions_exit_only_after_closed_true_pivot(symbol, side):
+    from core.gates.holding_protection_gate import HoldingProtectionExitGate
+    from core.gates.meme_coin_gate import MemeCoinGate
+
+    live_bar_ms = 1_800_000_000_000
+    quote = 11.9 if side == "LONG" else 8.1
+    reversal_candle = (
+        {"open": 11.5, "high": 12.6, "low": 11.4, "close": 11.8}
+        if side == "LONG"
+        else {"open": 8.5, "high": 8.6, "low": 7.4, "close": 8.2}
+    )
+    frame = _frame(
+        live_bar_ms, side=side, live_price=quote,
+        closed_candle=reversal_candle,
+    )
+    # The third point is eligible only after its candle has closed.
+    frame.loc[frame.index[-1], "is_closed"] = True
+    position = _position(live_bar_ms, side=side, entry_mode="MA_CROSS")
+
+    should_exit, reason = MemeCoinGate.evaluate_meme_exit(
+        frame, quote, side, symbol=symbol, position=position,
+    )
+    allowed, authorized_reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame, quote, reason or "", channel_swing=False,
+    )
+
+    assert should_exit is True
+    assert allowed is True
+    assert authorized_reason == reason
 
 
 def test_retired_three_point_pivot_cannot_authorize_exit():

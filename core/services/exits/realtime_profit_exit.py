@@ -473,21 +473,25 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 account.save_state()
             if kc_exit is not None:
                 exit_reason, exit_details = kc_exit
-                account.log(
-                    f'KC_STRUCTURE_EXIT symbol={symbol} reason={exit_reason} '
-                    f'quote_ms={stamp} price={price} details={exit_details}',
-                    'WARNING',
+                from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                allowed, authorized_reason, verified = HoldingProtectionExitGate.validate_exit(
+                    position, frame, price, exit_reason, exit_details,
+                    channel_swing=entry_m == 'CHANNEL_SWING',
                 )
-                closed = await account.close_position(
-                    symbol, price, f'{entry_m} {exit_reason}', is_manual=True,
-                )
-                if not closed:
+                if allowed:
                     account.log(
-                        f'KC_STRUCTURE_EXIT_RETRY_PENDING symbol={symbol} '
-                        f'reason={exit_reason} quote_ms={stamp}',
+                        f'KC_STRUCTURE_EXIT symbol={symbol} reason={authorized_reason} '
+                        f'quote_ms={stamp} price={price} details={verified}',
                         'WARNING',
                     )
-                return True
+                    return await account.close_position(
+                        symbol, price, f'{entry_m} {authorized_reason}', is_manual=True,
+                    )
+                account.log(
+                    f'KC_STRUCTURE_EXIT_BLOCKED symbol={symbol} reason={exit_reason} '
+                    f'gate_reason={authorized_reason}',
+                    'INFO',
+                )
 
         if restricted_exit_policy:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
@@ -500,65 +504,6 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 return False
 
             snapshot, _ = cached_tick_indicators(frame, price, stamp)
-            if entry_m == 'CHANNEL_SWING' and position.get('side') == 'SHORT':
-                from core.services.exits.short_oversold_exit import (
-                    REVERSAL_PARTIAL_TRIGGER,
-                    RATCHET_EXIT_TRIGGER,
-                    TREND_HOLD_STATE_KEY,
-                    evaluate_short_oversold_exit,
-                    short_bearish_trend_active,
-                )
-                from core.services.exits.kc_true_extreme_exit import (
-                    short_kc_bearish_trend_active,
-                )
-                kc_bearish_trend = short_kc_bearish_trend_active(frame, stamp)
-                trend_hold_active = kc_bearish_trend or (
-                    short_bearish_trend_active(snapshot) is not False
-                )
-                if (
-                    position.get(TREND_HOLD_STATE_KEY) is not trend_hold_active
-                    or meta.get(TREND_HOLD_STATE_KEY) is not trend_hold_active
-                ):
-                    position[TREND_HOLD_STATE_KEY] = trend_hold_active
-                    meta[TREND_HOLD_STATE_KEY] = trend_hold_active
-                    account.save_state()
-                oversold_trigger, oversold_state_changed = (
-                    evaluate_short_oversold_exit(
-                        position,
-                        meta,
-                        price,
-                        snapshot,
-                        kc_bearish_trend=kc_bearish_trend,
-                    )
-                )
-                if oversold_state_changed:
-                    account.save_state()
-                if oversold_trigger == REVERSAL_PARTIAL_TRIGGER:
-                    account.log(
-                        f'CHANNEL_SHORT_OVERSOLD_PARTIAL symbol={symbol} '
-                        f'quote_ms={stamp} price={price}',
-                        'WARNING',
-                    )
-                    return await account.partial_close_position(
-                        symbol,
-                        price,
-                        f'Channel Swing {REVERSAL_PARTIAL_TRIGGER}',
-                        fraction=0.5,
-                        is_manual=True,
-                    )
-                if oversold_trigger == RATCHET_EXIT_TRIGGER:
-                    account.log(
-                        f'CHANNEL_SHORT_OVERSOLD_RATCHET symbol={symbol} '
-                        f'quote_ms={stamp} price={price}',
-                        'WARNING',
-                    )
-                    return await account.close_position(
-                        symbol,
-                        price,
-                        f'Channel Swing {RATCHET_EXIT_TRIGGER}',
-                        is_manual=True,
-                    )
-
             from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
             lock_trigger, state_changed = _evaluate_profit_lock_only(
                 position, meta, price, stamp, snapshot,
@@ -566,7 +511,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
             )
             if state_changed:
                 account.save_state()
-            if lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER):
+            if (
+                lock_trigger == 'EXIT_BY_BREAKEVEN_LOCK'
+                or (lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER))
+            ):
                 closed = await account.close_position(
                     symbol, price, f'{entry_m} {lock_trigger}', is_manual=True,
                 )
@@ -578,17 +526,33 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     )
                 return bool(closed)
 
-            if entry_m == 'CHANNEL_SWING' and position.get('side') == 'SHORT':
-                from core.services.exits.short_oversold_exit import (
-                    short_bearish_trend_active,
+            from core.gates.meme_coin_gate import MemeCoinGate
+            side = str(position.get('side') or '').upper()
+            meme_exit, meme_reason = MemeCoinGate.evaluate_meme_exit(
+                frame, price, side, symbol=symbol, position=position,
+            )
+            if meme_exit and meme_reason:
+                from core.gates.holding_protection_gate import HoldingProtectionExitGate
+                allowed, authorized_reason, verified = HoldingProtectionExitGate.validate_exit(
+                    position, frame, price, meme_reason,
+                    channel_swing=entry_m == 'CHANNEL_SWING',
                 )
-                if short_bearish_trend_active(snapshot) is not False:
+                if allowed:
                     account.log(
-                        f'CHANNEL_SHORT_TREND_HOLD symbol={symbol} '
-                        'reason=BEARISH_MA_TREND_OR_INVALID_DATA',
-                        'INFO',
+                        f'MEME_CONFIRMED_PIVOT_EXIT symbol={symbol} '
+                        f'reason={authorized_reason} quote_ms={stamp} '
+                        f'price={price} details={verified}',
+                        'WARNING',
                     )
-                    return False
+                    return await account.close_position(
+                        symbol, price, f'{entry_m} {authorized_reason}',
+                        is_manual=True,
+                    )
+                account.log(
+                    f'MEME_PIVOT_EXIT_BLOCKED symbol={symbol} '
+                    f'reason={meme_reason} gate_reason={authorized_reason}',
+                    'INFO',
+                )
 
             return False
 

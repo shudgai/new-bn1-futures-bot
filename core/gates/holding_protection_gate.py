@@ -190,72 +190,6 @@ def has_confirmed_true_pivot(
                                 'prev_mid': prev_mid,
                             }
 
-        # ──【第二層：盤中即時真峰谷判定（遇真峰谷馬上平倉，不要等 1m 跑完才平倉！）】──
-        if len(frame) >= 3:
-            b_before = frame.iloc[-3]
-            b_pivot = frame.iloc[-2]
-            b_live = frame.iloc[-1]
-
-            ts_pivot = float(b_pivot.get('timestamp', 0.0))
-            ts_live = float(b_live.get('timestamp', 0.0))
-            # 盤中即時真峰谷：即時棒 ts_live 必須嚴格大於開倉當根（ts_live > entry_bar_floor_ms）
-            # 絕不允許在開倉當根拿開倉前的歷史 K 棒當成峰谷在盤中秒平倉！
-            if entry_bar_floor_ms > 0 and (ts_live <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
-                return False, None, {}
-
-            quote_f = float(quote)
-            live_high = max(float(b_live.get('high', quote_f)), quote_f)
-            live_low = min(float(b_live.get('low', quote_f)), quote_f)
-            atr_f = float(b_pivot.get('atr', b_live.get('atr', 0.001)))
-            if atr_f <= 0:
-                atr_f = 0.001
-
-            if side == 'LONG':
-                h_before = float(b_before['high'])
-                h_pivot = float(b_pivot['high'])
-                pivot_mid = (float(b_pivot['open']) + float(b_pivot['close'])) / 2.0
-
-                # 前棒形成最高峰，當前盤中未創新高，且價格已向下反轉確認包夾（跌破實體中點且回落 >= 0.35 ATR）
-                if h_pivot > h_before and live_high <= h_pivot:
-                    if (quote_f < pivot_mid) and (h_pivot - quote_f >= 0.35 * atr_f):
-                        return True, 'TRUE_PEAK_PIVOT_INTRABAR_CONFIRMED', {
-                            'pivot_high': h_pivot,
-                            'quote': quote_f,
-                            'intrabar_confirmed': True,
-                        }
-
-                # 盤中分形頂即時確認：跌破前棒實體中點且回落達標
-                if is_fractal_peak(frame.iloc[:-1]):
-                    if (quote_f < pivot_mid) and (h_pivot - quote_f >= 0.35 * atr_f):
-                        return True, 'TRUE_FRACTAL_PEAK_INTRABAR_CONFIRMED', {
-                            'quote': quote_f,
-                            'pivot_mid': pivot_mid,
-                            'intrabar_confirmed': True,
-                        }
-
-            elif side == 'SHORT':
-                l_before = float(b_before['low'])
-                l_pivot = float(b_pivot['low'])
-                pivot_mid = (float(b_pivot['open']) + float(b_pivot['close'])) / 2.0
-
-                # 前棒形成最低谷，當前盤中未創新低，且價格已向上反彈確認包夾（突破實體中點且反彈 >= 0.35 ATR）
-                if l_pivot < l_before and live_low >= l_pivot:
-                    if (quote_f > pivot_mid) and (quote_f - l_pivot >= 0.35 * atr_f):
-                        return True, 'TRUE_VALLEY_PIVOT_INTRABAR_CONFIRMED', {
-                            'pivot_low': l_pivot,
-                            'quote': quote_f,
-                            'intrabar_confirmed': True,
-                        }
-
-                # 盤中分形底即時確認：突破前棒實體中點且反彈達標
-                if is_fractal_valley(frame.iloc[:-1]):
-                    if (quote_f > pivot_mid) and (quote_f - l_pivot >= 0.35 * atr_f):
-                        return True, 'TRUE_FRACTAL_VALLEY_INTRABAR_CONFIRMED', {
-                            'quote': quote_f,
-                            'pivot_mid': pivot_mid,
-                            'intrabar_confirmed': True,
-                        }
-
         return False, None, {}
     except Exception:
         return False, None, {}
@@ -1753,7 +1687,16 @@ class HoldingProtectionExitGate:
             None if is_profit_lock
             else _verified_profit_lock_details(position, quote)
         )
-        if not is_safety_exit and active_profit_lock is None:
+        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
+            position, frame, quote,
+        )
+        is_pivot_candidate = any(p in clean_reason.upper() for p in (
+            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY',
+            'TOP_WATERFALL', 'CONFIRMED_TROUGH',
+        ))
+        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
+        if (not is_safety_exit and active_profit_lock is None
+                and not is_true_pivot_confirmed):
             whipsaw_hold = _trend_midline_whipsaw_hold(frame, side)
             if whipsaw_hold is not None:
                 details.update(whipsaw_hold)
@@ -1765,18 +1708,12 @@ class HoldingProtectionExitGate:
             should_hold, hold_reason = MemeCoinGate.should_hold_outer_rail(
                 frame, quote, side, symbol=symbol,
             )
-            if should_hold and not hard_exit and not is_profit_lock and clean_reason not in (
+            if (should_hold and not hard_exit and not is_profit_lock
+                    and not is_true_pivot_confirmed and clean_reason not in (
                 'EXIT_BY_EXTREME_WATERFALL', 'EMERGENCY_DUMP_EXIT',
                 'EMERGENCY_EXTREME_ADVERSE_BAR',
-            ):
+            )):
                 return _reject(reason=hold_reason)
-
-        is_profit_lock = _is_profit_lock_reason(clean_reason)
-        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, frame, quote)
-        is_pivot_candidate = any(p in clean_reason.upper() for p in (
-            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY', 'TOP_WATERFALL', 'CONFIRMED_TROUGH'
-        ))
-        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
 
         # ══════════════════════════════════════════════════════════════════════
         # 【鐵律二：出場端防護：未達 10% 浮盈階段，非收盤不判定，未破中軌/MA15 絕不平倉】
