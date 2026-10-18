@@ -155,8 +155,11 @@ def test_long_blocks_price_below_kc_midline_even_in_uptrend():
     ) == "BLOCKED_LONG_PRICE_BELOW_KC_MIDDLE"
 
 
-def test_long_blocks_live_kc_down_label():
+def test_long_blocks_when_kc_down_label_conflicts_with_numeric_slope():
     frame = trend_frame("UP", "LONG")
+    frame.loc[frame.index[-1], "kc_middle"] = (
+        frame.loc[frame.index[-2], "kc_middle"] - 0.1
+    )
     frame.loc[frame.index[-1], "channel_state"] = "KC向下"
     assert final_trend_alignment_problem(frame, "LONG") == (
         "BLOCKED_LONG_KC_NOT_UP"

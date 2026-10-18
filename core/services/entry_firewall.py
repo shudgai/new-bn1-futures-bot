@@ -1286,7 +1286,15 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
-    require_final_trend_alignment(frame, side, symbol, quote=quote)
+    require_final_trend_alignment(
+        frame,
+        side,
+        symbol,
+        quote=quote,
+        entry_confirmation=(
+            "CONFIRMED_2BAR_BREAKOUT" if code in KC_PENDING_CODES else None
+        ),
+    )
     from core.services.entry_contract import (
         evaluate_death_cross_fast_lane,
         evaluate_golden_cross_fast_lane,

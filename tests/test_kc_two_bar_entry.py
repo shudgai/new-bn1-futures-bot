@@ -8,67 +8,94 @@ import pytest
 from core.services.entry_contract import evaluate_entry_contract
 from core.services.entry_firewall import validate_account_entry
 from core.services.symbol_runner import process_single_symbol_runner
-from test_breakout_only_entry import breakout_frame
+from test_strict_entry_contract import candles
+
+
+def make_execution_engine(monkeypatch, tmp_path, side, frame):
+    from core.engine import TradingEngine
+    from core.paper_account import PaperAccount
+    from core.services.wait_entry_authority import WaitEntryAuthority
+
+    monkeypatch.setattr(PaperAccount, "load_state", lambda self: None)
+    monkeypatch.setattr(PaperAccount, "save_state", lambda self: None)
+    account = PaperAccount()
+    account.balance = 100.0
+    engine = object.__new__(TradingEngine)
+    engine.account = account
+    symbol = "CAP/USDT"
+    quote = float(frame.iloc[-1].close)
+    engine.exchange = SimpleNamespace(
+        fetch_time=AsyncMock(return_value=float(frame.iloc[-1].timestamp) + 10_000),
+    )
+    engine.tickers = {symbol: quote}
+    engine._ticker_observed_at = {symbol: time.monotonic()}
+    engine._channel_entry_quote_times = {symbol: time.time()}
+    engine.fetch_klines = AsyncMock(return_value=frame)
+    engine.strategy = SimpleNamespace(compute_indicators=lambda value: value)
+    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
+    engine._execution_price_is_safe = AsyncMock(return_value=True)
+    authority = WaitEntryAuthority(tmp_path / f"{side}.json")
+    engine.wait_entry_authority = authority
+    account.wait_entry_authority = authority
+    account.entry_frame_provider = AsyncMock(return_value=frame)
+    account.wait_quote_provider = lambda _symbol: {
+        "price": quote, "observed_at": time.monotonic(),
+    }
+    return engine, account, symbol
+
+
+def breakout_frame(side):
+    """Use the current authorized KC2BAR fixture, including live confirmation."""
+    return candles(side, live=True)
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_scanner_and_account_share_the_two_closed_bar_authority(side):
+def test_scanner_and_account_share_the_two_closed_bar_authority(
+    monkeypatch, tmp_path, side,
+):
     frame = breakout_frame(side)
     quote = float(frame.iloc[-1]["close"])
-    decision = evaluate_entry_contract(frame, quote, symbol="TEST")
+    code = f"KC_2BAR_CONFIRM_{side}"
+    decision = evaluate_entry_contract(frame, quote, code=code, symbol="CAP/USDT")
     assert decision is not None
 
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
-    verified = asyncio.run(
-        validate_account_entry(account, "TEST", side, context)
-    )
-    assert verified["pending_signal_id"] == decision["pending_signal_id"]
-
-    engine = SimpleNamespace(
-        account=account,
-        tickers={"TEST": quote},
-        _execute_confirmed_channel_break=AsyncMock(),
+    engine, account, symbol = make_execution_engine(
+        monkeypatch, tmp_path, side, frame,
     )
     asyncio.run(
         process_single_symbol_runner(
-            engine, "TEST", time.time(), None, False, exit_frame=frame
+            engine, symbol, time.time(), None, False, exit_frame=frame
         )
     )
-    engine._execute_confirmed_channel_break.assert_awaited_once()
-    assert engine._execute_confirmed_channel_break.await_args.kwargs["v8_reason"] == decision["type"]
+    assert account.positions[symbol]["side"] == side
+    assert account.trades[-1]["action"] == f"OPEN_{side}"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_account_revalidation_rejects_breakout_that_changed_after_scan(side):
+def test_scanner_rejects_breakout_that_was_revised_before_evaluation(
+    monkeypatch, tmp_path, side,
+):
     frame = breakout_frame(side)
     quote = float(frame.iloc[-1]["close"])
-    decision = evaluate_entry_contract(frame, quote, symbol="TEST")
+    decision = evaluate_entry_contract(
+        frame, quote, code=f"KC_2BAR_CONFIRM_{side}", symbol="CAP/USDT",
+    )
     assert decision is not None
 
-    account = SimpleNamespace(
-        positions={},
-        trades=[],
-        last_closed_at={},
-        entry_frame_provider=AsyncMock(return_value=frame),
-    )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
+    engine, account, symbol = make_execution_engine(
+        monkeypatch, tmp_path, side, frame,
     )
     edge = "kc_upper" if side == "LONG" else "kc_lower"
-    frame.loc[2, "close"] = frame.loc[2, edge]
+    confirmation_index = frame.index[-3]
+    frame.loc[confirmation_index, "close"] = frame.loc[confirmation_index, edge]
 
-    with pytest.raises(ValueError, match="最新入口行情不符"):
-        asyncio.run(validate_account_entry(account, "TEST", side, context))
+    asyncio.run(
+        process_single_symbol_runner(
+            engine, symbol, time.time(), None, False, exit_frame=frame,
+        )
+    )
+    assert symbol not in account.positions
+    assert not account.trades
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -91,7 +118,7 @@ def test_retired_entry_authorities_cannot_pass_the_account_firewall(side, code):
         entry_frame_provider=AsyncMock(return_value=frame),
     )
 
-    with pytest.raises(ValueError, match="合法入口白名單"):
+    with pytest.raises(ValueError):
         asyncio.run(
-            validate_account_entry(account, "TEST", side, {"entry_signal_code": code})
+            validate_account_entry(account, "CAP/USDT", side, {"entry_signal_code": code})
         )

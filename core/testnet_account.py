@@ -180,6 +180,18 @@ class BinanceTestnetAccount:
                     )
                 if side not in ('buy', 'sell'):
                     raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+                from core.services.entry_contract import KC_PENDING_CODES
+                signal_code = (
+                    context.get("entry_signal_code")
+                    if isinstance(context, dict) else None
+                )
+                if (
+                    signal_code in KC_PENDING_CODES
+                    and context.get("entry_authority") != "KC2BAR"
+                ):
+                    raise ValueError(
+                        "[FORBIDDEN_ENTRY] KC2BAR_AUTHORITY_CLAIM_REQUIRED"
+                    )
                 from core.services.math_execution_gate import validate_entry_at_execution
                 math_allowed, math_reason = await validate_entry_at_execution(
                     self, symbol, 'LONG' if side == 'buy' else 'SHORT', context,

@@ -170,7 +170,12 @@ def test_final_wait_firewall_blocks_long_without_all_new_gates(
             "observed_at": time.monotonic(),
         }
     else:
-        frame.loc[frame.index[-1], "channel_state"] = "KC向下"
+        closed_kc_index = frame.index[-2]
+        previous_closed_kc_index = frame.index[-3]
+        frame.loc[closed_kc_index, "kc_middle"] = (
+            frame.loc[previous_closed_kc_index, "kc_middle"] - 0.1
+        )
+        frame.loc[closed_kc_index, "channel_state"] = "KC向下"
 
     with pytest.raises(ValueError, match=expected_reason):
         asyncio.run(validate_account_entry(
