@@ -1285,7 +1285,11 @@ class BinanceTestnetAccount:
             entry_mode = str(
                 pos.get('entry_mode') or self.position_meta.get(symbol, {}).get('entry_mode') or ''
             ).upper()
-            if entry_mode == 'WILD_SWING':
+            from core.symbol_aliases import is_auto_entry_symbol
+            if (
+                entry_mode in ('WILD_SWING', 'CHANNEL_SWING')
+                or is_auto_entry_symbol(symbol)
+            ):
                 curr_p = (
                     ticker_prices.get(symbol)
                     or ticker_prices.get(f"{symbol}:USDT")
@@ -1293,10 +1297,10 @@ class BinanceTestnetAccount:
                 )
                 if curr_p is not None:
                     from core.services.exits.hard_stop_service import enforce_hard_stop
-                    await enforce_hard_stop(self, symbol, float(curr_p))
+                    stopped = await enforce_hard_stop(self, symbol, float(curr_p))
+                    if not stopped:
+                        await enforce_atr_protection(self, symbol, float(curr_p))
                 continue
-            if entry_mode == 'CHANNEL_SWING':
-                continue  # refresh() already values positions; no ticker exits
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
             if curr_p is None:
                 continue

@@ -7,11 +7,6 @@ from typing import Any, Mapping
 
 from core.symbol_aliases import is_auto_entry_symbol
 
-from core.services.exits.short_oversold_exit import (
-    STATE_KEY as _SHORT_OVERSOLD_STATE_KEY,
-    TREND_HOLD_STATE_KEY as _SHORT_TREND_HOLD_STATE_KEY,
-)
-
 _PROFIT_LOCK_REASONS = (
     "NET_ROE_THREE_TIER_GIVEBACK",
     "EXIT_BY_TRAILING_PROFIT_LOCK",
@@ -24,12 +19,6 @@ _PROFIT_LOCK_REASONS = (
     "獲利保護回吐",
     "最高淨利回吐",
 )
-_PIVOT_REASONS = {
-    "LONG": "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
-    "SHORT": "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
-}
-_OVERSOLD_REVERSAL_REASON = "CHANNEL_SHORT_OVERSOLD_REVERSAL_PARTIAL_50"
-_OVERSOLD_RATCHET_REASON = "CHANNEL_SHORT_OVERSOLD_RATCHET_EXIT"
 _LOCK_FLAGS = (
     "profit_lock_usdt_armed",
     "profit_lock_atr_armed",
@@ -95,7 +84,7 @@ def automated_position_exit_allowed(
     *,
     is_manual: bool = False,
 ) -> bool:
-    """Allow only explicit manual closes, locked net profit, or confirmed pivots."""
+    """Authorize only manual, safety, locked-profit, or validated KC exits."""
     if not is_auto_entry_symbol(symbol):
         return True
 
@@ -104,83 +93,84 @@ def automated_position_exit_allowed(
 
     meta = metadata if isinstance(metadata, Mapping) else {}
     normalized_reason = str(reason or "").upper()
+    if any(
+        token in normalized_reason
+        for token in (
+            "HARD_STOP",
+            "CIRCUIT_BREAKER",
+        )
+    ):
+        return True
+
     side = str(position.get("side") or "").upper()
-    state = (
-        position.get(_SHORT_OVERSOLD_STATE_KEY)
-        or meta.get(_SHORT_OVERSOLD_STATE_KEY)
+    entry_mode = str(
+        position.get("entry_mode") or meta.get("entry_mode") or ""
+    ).upper()
+    short_exit_state = (
+        position.get("channel_short_oversold_exit_state")
+        or meta.get("channel_short_oversold_exit_state")
         or {}
     )
     trend_hold_active = (
-        position.get(_SHORT_TREND_HOLD_STATE_KEY) is True
-        or meta.get(_SHORT_TREND_HOLD_STATE_KEY) is True
+        position.get("channel_short_bearish_trend_hold_active") is True
+        or meta.get("channel_short_bearish_trend_hold_active") is True
         or (
-            isinstance(state, Mapping)
-            and state.get("bearish_trend_hold_active") is True
+            isinstance(short_exit_state, Mapping)
+            and short_exit_state.get("bearish_trend_hold_active") is True
         )
     )
-    if (
-        side == "SHORT"
-        and str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
-        == "CHANNEL_SWING"
-        and trend_hold_active
-    ):
-        if any(
-            token in normalized_reason
-            for token in (
-                "HARD_STOP",
-                "CIRCUIT_BREAKER",
-                "EMERGENCY_DUMP",
-                "EMERGENCY_WATERFALL",
+    if side == "SHORT" and entry_mode == "CHANNEL_SWING":
+        if trend_hold_active:
+            lock_reason = any(
+                token in normalized_reason
+                for token in _PROFIT_LOCK_REASONS
             )
-        ):
-            return True
-        lock_reason = any(
-            token in normalized_reason
-            for token in _PROFIT_LOCK_REASONS
-        )
-        return bool(
-            lock_reason
-            and _profit_lock_armed(position, meta)
-            and _net_profit_positive(position, price)
-        )
-    if (
-        side == "SHORT"
-        and str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
-        == "CHANNEL_SWING"
-        and isinstance(state, Mapping)
-        and state.get("armed") is True
-    ):
+            return bool(
+                lock_reason
+                and _profit_lock_armed(position, meta)
+                and _net_profit_positive(position, price)
+            )
         if (
-            _OVERSOLD_REVERSAL_REASON in normalized_reason
-            and state.get("bearish_trend_hold_active") is False
-            and state.get("reversal_confirmed") is True
-            and state.get("partial_exit_pending") is True
-            and state.get("partial_exit_done") is not True
+            isinstance(short_exit_state, Mapping)
+            and short_exit_state.get("armed") is True
         ):
-            return True
-        if (
-            _OVERSOLD_RATCHET_REASON in normalized_reason
-            and state.get("bearish_trend_hold_active") is False
-            and state.get("full_exit_pending") is True
-        ):
-            return True
+            if (
+                "CHANNEL_SHORT_OVERSOLD_REVERSAL_PARTIAL_50"
+                in normalized_reason
+                and short_exit_state.get("reversal_confirmed") is True
+                and short_exit_state.get("partial_exit_pending") is True
+                and short_exit_state.get("partial_exit_done") is not True
+            ):
+                return True
+            if (
+                "CHANNEL_SHORT_OVERSOLD_RATCHET_EXIT" in normalized_reason
+                and short_exit_state.get("full_exit_pending") is True
+            ):
+                return True
 
-    if (
-        normalized_reason.endswith(_PIVOT_REASONS.get(side, "\0"))
-        and side in _PIVOT_REASONS
+    from core.services.exits.kc_true_extreme_exit import (
+        pending_kc_true_extreme_exit,
+    )
+
+    kc_exit = pending_kc_true_extreme_exit(dict(position), dict(meta))
+    if kc_exit is not None and kc_exit[0] in normalized_reason:
+        return True
+
+    if "BREAKEVEN" in normalized_reason and any(
+        source.get(key) is True
+        for source in (position, meta)
+        for key in ("breakeven_locked", "is_breakeven_moved")
     ):
-        from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
-
-        pending = pending_confirmed_pivot_exit(dict(position), dict(meta))
-        if pending is not None and pending[0] == _PIVOT_REASONS[side]:
-            return True
+        return True
 
     lock_reason = any(
         token in normalized_reason
         for token in _PROFIT_LOCK_REASONS
     )
-    return bool(
-        lock_reason
-        and _profit_lock_armed(position, meta)
-        and _net_profit_positive(position, price)
-    )
+    if lock_reason:
+        return bool(
+            _profit_lock_armed(position, meta)
+            and _net_profit_positive(position, price)
+        )
+
+    return False

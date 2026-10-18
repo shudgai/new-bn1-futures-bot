@@ -19,11 +19,6 @@ from core.services.exits.entry_atr_protection import (
     channel_strategy_exit_grace_active,
     clear_channel_strategy_exit_pending,
 )
-from core.services.exits.strict_true_pivot import (
-    CONFIRMED_PIVOT_PENDING_KEY,
-    pending_confirmed_pivot_exit,
-    store_confirmed_pivot_exit,
-)
 from core.services.exits.net_roe_profit_lock import (
     has_reached_net_roe_floor,
     tiered_net_roe_floor,
@@ -698,7 +693,10 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
     entry_m = str((position or {}).get('entry_mode', '')).upper()
     from core.symbol_aliases import is_auto_entry_symbol
     restricted_exit_policy = is_auto_entry_symbol(symbol)
-    if not position or entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN'):
+    if not position or (
+        entry_m in ('EXHAUSTION_SNIPER', 'PIVOT_TURN')
+        and not restricted_exit_policy
+    ):
         return False
     try:
         price = float(price)
@@ -714,48 +712,33 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if await enforce_hard_stop(account, symbol, price):
             return True
 
-        pending_pivot = pending_confirmed_pivot_exit(position, meta)
-        short_channel_position = (
-            restricted_exit_policy
-            and entry_m == 'CHANNEL_SWING'
-            and position.get('side') == 'SHORT'
-        )
-        if pending_pivot is not None and short_channel_position:
+        if restricted_exit_policy:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
-            if frame is None or frame.empty:
-                short_trend_hold = True
-            else:
-                pending_snapshot, _ = cached_tick_indicators(frame, price, stamp)
-                from core.services.exits.short_oversold_exit import (
-                    TREND_HOLD_STATE_KEY,
-                    short_bearish_trend_active,
-                )
-                short_trend_hold = (
-                    short_bearish_trend_active(pending_snapshot) is not False
-                )
-                position[TREND_HOLD_STATE_KEY] = short_trend_hold
-                meta[TREND_HOLD_STATE_KEY] = short_trend_hold
+            from core.services.exits.kc_true_extreme_exit import (
+                evaluate_kc_true_extreme_exit,
+            )
+            kc_exit, state_changed = evaluate_kc_true_extreme_exit(
+                position, frame, price, stamp, meta,
+            )
+            if state_changed:
                 account.save_state()
-            if short_trend_hold:
-                pending_pivot = None
-        if pending_pivot is not None:
-            pending_reason, pending_details = pending_pivot
-            account.log(
-                f'REALTIME_EXIT_RETRY symbol={symbol} reason={pending_reason} '
-                f'quote_ms={stamp} price={price} '
-                f'details={pending_details}',
-                'WARNING',
-            )
-            closed = await account.close_position(
-                symbol, price, f'{entry_m} {pending_reason}', is_manual=True,
-            )
-            if not closed:
+            if kc_exit is not None:
+                exit_reason, exit_details = kc_exit
                 account.log(
-                    f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
-                    f'reason={pending_reason} quote_ms={stamp}',
+                    f'KC_STRUCTURE_EXIT symbol={symbol} reason={exit_reason} '
+                    f'quote_ms={stamp} price={price} details={exit_details}',
                     'WARNING',
                 )
-            return bool(closed)
+                closed = await account.close_position(
+                    symbol, price, f'{entry_m} {exit_reason}', is_manual=True,
+                )
+                if not closed:
+                    account.log(
+                        f'KC_STRUCTURE_EXIT_RETRY_PENDING symbol={symbol} '
+                        f'reason={exit_reason} quote_ms={stamp}',
+                        'WARNING',
+                    )
+                return True
 
         if restricted_exit_policy:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
@@ -776,7 +759,11 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     evaluate_short_oversold_exit,
                     short_bearish_trend_active,
                 )
-                trend_hold_active = (
+                from core.services.exits.kc_true_extreme_exit import (
+                    short_kc_bearish_trend_active,
+                )
+                kc_bearish_trend = short_kc_bearish_trend_active(frame, stamp)
+                trend_hold_active = kc_bearish_trend or (
                     short_bearish_trend_active(snapshot) is not False
                 )
                 if (
@@ -787,7 +774,13 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     meta[TREND_HOLD_STATE_KEY] = trend_hold_active
                     account.save_state()
                 oversold_trigger, oversold_state_changed = (
-                    evaluate_short_oversold_exit(position, meta, price, snapshot)
+                    evaluate_short_oversold_exit(
+                        position,
+                        meta,
+                        price,
+                        snapshot,
+                        kc_bearish_trend=kc_bearish_trend,
+                    )
                 )
                 if oversold_state_changed:
                     account.save_state()
@@ -848,34 +841,7 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     )
                     return False
 
-            from core.services.exits.strict_true_pivot import (
-                confirmed_true_pivot_exit,
-            )
-            pivot = confirmed_true_pivot_exit(position, frame)
-            if pivot is None:
-                return False
-            pivot_reason, pivot_details = pivot
-            if not store_confirmed_pivot_exit(position, pivot):
-                account.log(
-                    f'REALTIME_EXIT_BLOCK symbol={symbol} '
-                    'reason=INVALID_CONFIRMED_PIVOT_TICKET',
-                    'ERROR',
-                )
-                return False
-            meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
-                position[CONFIRMED_PIVOT_PENDING_KEY]
-            )
-            account.save_state()
-            closed = await account.close_position(
-                symbol, price, f'{entry_m} {pivot_reason}', is_manual=True,
-            )
-            if not closed:
-                account.log(
-                    f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
-                    f'reason={pivot_reason} quote_ms={stamp}',
-                    'WARNING',
-                )
-            return bool(closed)
+            return False
 
         if entry_m in ('CHANNEL_SWING', 'WILD_SWING'):
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
@@ -925,39 +891,42 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                     )
                     return True
 
+            if not restricted_exit_policy:
                 from core.services.exits.strict_true_pivot import (
                     confirmed_true_pivot_exit,
+                    store_confirmed_pivot_exit,
+                    CONFIRMED_PIVOT_PENDING_KEY,
                 )
                 pivot = confirmed_true_pivot_exit(position, frame)
-                if pivot is not None:
-                    pivot_reason, pivot_details = pivot
-                    if not store_confirmed_pivot_exit(position, pivot):
-                        account.log(
-                            f'REALTIME_EXIT_BLOCK symbol={symbol} '
-                            'reason=INVALID_CONFIRMED_PIVOT_TICKET',
-                            'ERROR',
-                        )
-                        return False
-                    meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
-                        position[CONFIRMED_PIVOT_PENDING_KEY]
-                    )
-                    account.save_state()
+                if pivot is None:
+                    return False
+                pivot_reason, pivot_details = pivot
+                if not store_confirmed_pivot_exit(position, pivot):
                     account.log(
-                        f'REALTIME_EXIT symbol={symbol} reason={pivot_reason} '
-                        f'quote_ms={stamp} price={price} details={pivot_details}',
+                        f'REALTIME_EXIT_BLOCK symbol={symbol} '
+                        'reason=INVALID_CONFIRMED_PIVOT_TICKET',
+                        'ERROR',
+                    )
+                    return False
+                meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
+                    position[CONFIRMED_PIVOT_PENDING_KEY]
+                )
+                account.save_state()
+                account.log(
+                    f'REALTIME_EXIT symbol={symbol} reason={pivot_reason} '
+                    f'quote_ms={stamp} price={price} details={pivot_details}',
+                    'WARNING',
+                )
+                closed = await account.close_position(
+                    symbol, price, f'{entry_m} {pivot_reason}', is_manual=True,
+                )
+                if not closed:
+                    account.log(
+                        f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
+                        f'reason={pivot_reason} quote_ms={stamp}',
                         'WARNING',
                     )
-                    closed = await account.close_position(
-                        symbol, price, f'{entry_m} {pivot_reason}',
-                        is_manual=True,
-                    )
-                    if not closed:
-                        account.log(
-                            f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
-                            f'reason={pivot_reason} quote_ms={stamp}',
-                            'WARNING',
-                        )
-                    return bool(closed)
+                return bool(closed)
             return False
 
         try:

@@ -449,11 +449,8 @@ def test_runner_does_not_close_on_ratchet_alone():
     assert symbol in engine.account.positions
 
 
-def test_runner_persists_and_retries_confirmed_pivot_close_after_restore():
-    from core.services.exits.strict_true_pivot import (
-        CONFIRMED_PIVOT_PENDING_KEY,
-        store_confirmed_pivot_exit,
-    )
+def test_runner_persists_and_retries_kc_true_extreme_close_after_restore():
+    from core.services.exits.kc_true_extreme_exit import STATE_KEY
 
     class Account(FakeAccount):
         def __init__(self, symbol, position):
@@ -492,24 +489,31 @@ def test_runner_persists_and_retries_confirmed_pivot_close_after_restore():
     engine._wild_swing_strategy = strategy
 
     def confirmed_exit(_symbol, held_position, _frame, quote=None):
-        details = {
-            "pivot_bar_id": 660_000.0,
-            "confirm_bar_id": 720_000.0,
-            "pivot_high": 110.0,
-            "confirmation_close": 108.0,
-            "exit_bar_id": 780_000.0,
-        }
-        pivot = ("EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", details)
-        assert store_confirmed_pivot_exit(held_position, pivot)
+        state = held_position.get(STATE_KEY)
+        if not isinstance(state, dict):
+            state = {
+                "version": 1,
+                "identity": ["LONG", 600.0, 100.0, 1.0],
+                "pending": {
+                    "reason": "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+                    "details": {
+                        "cause": "INTRADAY_PEAK_PULLBACK",
+                        "peak_price": 110.0,
+                    },
+                },
+            }
+            held_position[STATE_KEY] = state
+        details = state["pending"]["details"]
+        reason = state["pending"]["reason"]
         return {
             "action": "CLOSE_LONG",
-            "type": pivot[0],
+            "type": reason,
             "side": "LONG",
-            "reason": pivot[0],
-            "bar_id": details["exit_bar_id"],
+            "reason": reason,
+            "bar_id": 780_000.0,
             "close": quote,
             "entry_mode": "WILD_SWING",
-            "pivot": details,
+            "kc_exit": details,
         }
 
     strategy.evaluate_exit = confirmed_exit
@@ -524,17 +528,18 @@ def test_runner_persists_and_retries_confirmed_pivot_close_after_restore():
     )
 
     assert engine.account.close_calls
-    assert CONFIRMED_PIVOT_PENDING_KEY in engine.account.position_meta[symbol]
+    assert STATE_KEY in engine.account.position_meta[symbol]
     assert engine.account.save_count == 1
 
     restored_position = json.loads(json.dumps(engine.account.positions[symbol]))
-    restored_position.pop(CONFIRMED_PIVOT_PENDING_KEY)
     restored_meta = json.loads(
         json.dumps(engine.account.position_meta[symbol])
     )
     engine.account.positions[symbol] = restored_position
     engine.account.position_meta[symbol] = restored_meta
-    engine._wild_swing_strategy = WildSwingStrategy()
+    restored_strategy = WildSwingStrategy()
+    restored_strategy.evaluate_exit = confirmed_exit
+    engine._wild_swing_strategy = restored_strategy
 
     asyncio.run(
         _process_wild_swing_symbol(
@@ -543,7 +548,7 @@ def test_runner_persists_and_retries_confirmed_pivot_close_after_restore():
     )
 
     assert len(engine.account.close_calls) == 2
-    assert "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" in engine.account.close_calls[1][2]
+    assert "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL" in engine.account.close_calls[1][2]
     assert symbol not in engine.account.positions
 
 

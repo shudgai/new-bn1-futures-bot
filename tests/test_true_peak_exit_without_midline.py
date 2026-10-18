@@ -4,6 +4,9 @@ import json
 import pandas as pd
 import pytest
 
+from core.services.exits.authorized_position_exit import (
+    automated_position_exit_allowed,
+)
 from core.services.exits.strict_true_pivot import (
     analyze_market_structure,
     confirmed_true_pivot_exit,
@@ -46,13 +49,13 @@ def _long_peak_frame(live_bar_ms, *, ma5_turning_down, bearish_confirm):
             },
             {
                 "timestamp": live_bar_ms - 180_000,
-                "open": 13.0, "high": 15.0, "low": 12.5, "close": 14.5,
+                "open": 13.0, "high": 14.5, "low": 12.5, "close": 14.2,
                 "ma5": 14.0, "ma15": 12.0, "kc_middle": 13.0,
                 "is_closed": True,
             },
             {
                 "timestamp": live_bar_ms - 120_000,
-                "open": 13.9, "high": 14.8, "low": 13.0, "close": 14.0,
+                "open": 13.9, "high": 15.0, "low": 13.0, "close": 14.0,
                 "ma5": 14.0, "ma15": 12.5, "kc_middle": 13.5,
                 "is_closed": True,
             },
@@ -109,20 +112,20 @@ def _short_valley_frame(live_bar_ms):
             },
             {
                 "timestamp": live_bar_ms - 180_000,
-                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.2,
                 "ma5": 10.0, "ma15": 11.5, "kc_middle": 11.0,
                 "is_closed": True,
             },
             {
                 "timestamp": live_bar_ms - 120_000,
-                "open": 10.4, "high": 10.9, "low": 9.2, "close": 10.0,
-                "ma5": 10.0, "ma15": 11.2, "kc_middle": 11.2,
+                "open": 10.4, "high": 10.9, "low": 7.4, "close": 8.0,
+                "ma5": 10.0, "ma15": 11.2, "kc_middle": 11.0,
                 "is_closed": True,
             },
             {
                 "timestamp": live_bar_ms - 60_000,
-                "open": 9.6, "high": 10.9, "low": 9.4, "close": 10.6,
-                "ma5": 10.2, "ma15": 11.0, "kc_middle": 11.0,
+                "open": 8.4, "high": 10.9, "low": 8.0, "close": 10.6,
+                "ma5": 10.2, "ma15": 11.0, "kc_middle": 11.2,
                 "is_closed": True,
             },
             {
@@ -158,6 +161,8 @@ def test_confirmed_peak_requires_body_break_and_ma5_turn_without_kc_middle():
     reason, details = decision
     assert reason == "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
     assert details["pivot_high"] == 15.0
+    assert details["pivot_bar_id"] == live_bar_ms - 120_000
+    assert details["confirm_bar_id"] == live_bar_ms - 60_000
     assert frame.iloc[-2]["close"] < frame.iloc[-2]["kc_middle"]
 
 
@@ -168,7 +173,7 @@ def test_peak_requires_a_higher_high_and_a_reversal_confirmation():
         ma5_turning_down=False,
         bearish_confirm=False,
     )
-    frame.loc[11, "high"] = 15.0
+    frame.loc[12, "high"] = 15.0
 
     assert confirmed_true_pivot_exit(
         _long_position(live_bar_ms), frame,
@@ -202,21 +207,65 @@ def test_confirmed_valley_exits_without_waiting_for_kc_middle():
     )
 
 
+def test_three_point_valley_uses_authorized_kc_exit_ticket():
+    from core.services.exits.kc_true_extreme_exit import (
+        evaluate_kc_true_extreme_exit,
+    )
+
+    live_bar_ms = 1_800_000_000_000
+    position = _short_position(live_bar_ms)
+    frame = _short_valley_frame(live_bar_ms)
+
+    decision, changed = evaluate_kc_true_extreme_exit(
+        position, frame, 10.6, live_bar_ms + 2_000,
+    )
+
+    assert changed is True
+    assert decision is not None
+    assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+    assert decision[1]["cause"] == "THREE_POINT_CONFIRMED_PIVOT"
+    assert decision[1]["pivot_bar_id"] == live_bar_ms - 120_000
+    assert decision[1]["confirm_bar_id"] == live_bar_ms - 60_000
+    assert automated_position_exit_allowed(
+        "LOBSTER/USDT",
+        position,
+        {},
+        f"WILD_SWING {decision[0]}",
+        10.6,
+    )
+
+
+def test_three_point_valley_does_not_exit_while_kc_middle_falls():
+    from core.services.exits.kc_true_extreme_exit import (
+        evaluate_kc_true_extreme_exit,
+    )
+
+    live_bar_ms = 1_800_000_000_000
+    position = _short_position(live_bar_ms)
+    frame = _short_valley_frame(live_bar_ms)
+    frame.loc[frame.index[-3], "kc_middle"] = 11.2
+    frame.loc[frame.index[-2], "kc_middle"] = 11.0
+
+    decision, _ = evaluate_kc_true_extreme_exit(
+        position, frame, 10.6, live_bar_ms + 2_000,
+    )
+
+    assert decision is None
+    assert position["kc_true_extreme_exit_state"]["pending"] is None
+
+
 def test_market_structure_requires_fifteen_completed_bars_and_classifies_pullback():
     live_bar_ms = 1_800_000_000_000
     frame = _short_valley_frame(live_bar_ms)
     assert analyze_market_structure(frame, "SHORT") == "TRUE_TROUGH"
     assert analyze_market_structure(frame.iloc[:-2], "SHORT") == "HOLD"
 
-    frame.loc[10, "low"] = 8.0
+    frame.loc[14, "ma5"] = 9.8
     assert analyze_market_structure(frame, "SHORT") == "PULLBACK"
     assert confirmed_true_pivot_exit(_short_position(live_bar_ms), frame) is None
 
 
-@pytest.mark.parametrize("close_result", [True, False])
-def test_confirmed_peak_closes_channel_position_without_kc_midline_gate(
-    monkeypatch, close_result,
-):
+def test_three_point_peak_authorizes_realtime_exit(monkeypatch):
     from core.services.exits import realtime_profit_exit
 
     class Account:
@@ -224,9 +273,7 @@ def test_confirmed_peak_closes_channel_position_without_kc_midline_gate(
             self.positions = {"LOBSTER/USDT": position}
             self.position_meta = {}
             self.closed = []
-            self.close_results = [close_result]
-            if not close_result:
-                self.close_results.append(True)
+            self.close_results = [True]
             self.logs = []
 
         def log(self, message, *_args):
@@ -288,24 +335,12 @@ def test_confirmed_peak_closes_channel_position_without_kc_midline_gate(
         )
     )
 
-    assert closed is close_result
+    assert closed is True
     assert len(account.closed) == 1
-    assert "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" in account.closed[0][0][2]
-    if not close_result:
-        assert any("REALTIME_EXIT_RETRY_PENDING" in message for message in account.logs)
-        retried = asyncio.run(
-            realtime_profit_exit.enforce_realtime_profit_exit(
-                engine, "LOBSTER/USDT", 14.0, quote_ms,
-            )
-        )
-        assert retried is True
-        assert len(account.closed) == 2
+    assert "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL" in account.closed[0][0][2]
 
 
-@pytest.mark.parametrize("close_result", [True, False])
-def test_confirmed_valley_closes_channel_position_without_kc_midline_gate(
-    monkeypatch, close_result,
-):
+def test_three_point_valley_authorizes_realtime_exit(monkeypatch):
     from core.services.exits import realtime_profit_exit
 
     class Account:
@@ -313,9 +348,7 @@ def test_confirmed_valley_closes_channel_position_without_kc_midline_gate(
             self.positions = {"LOBSTER/USDT": position}
             self.position_meta = {}
             self.closed = []
-            self.close_results = [close_result]
-            if not close_result:
-                self.close_results.append(True)
+            self.close_results = [True]
             self.logs = []
 
         def log(self, message, *_args):
@@ -373,116 +406,12 @@ def test_confirmed_valley_closes_channel_position_without_kc_midline_gate(
         )
     )
 
-    assert closed is close_result
+    assert closed is True
     assert len(account.closed) == 1
-    assert "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT" in account.closed[0][0][2]
-    if not close_result:
-        assert any("REALTIME_EXIT_RETRY_PENDING" in message for message in account.logs)
-        retried = asyncio.run(
-            realtime_profit_exit.enforce_realtime_profit_exit(
-                engine, "LOBSTER/USDT", 10.6, quote_ms,
-            )
-        )
-        assert retried is True
-        assert len(account.closed) == 2
+    assert "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL" in account.closed[0][0][2]
 
 
-def test_failed_confirmed_peak_close_retries_after_new_bar_and_state_restore(
-    monkeypatch,
-):
-    from core.services.exits import realtime_profit_exit
-
-    class Account:
-        def __init__(self, position, meta, close_results):
-            self.positions = {"LOBSTER/USDT": position}
-            self.position_meta = {"LOBSTER/USDT": meta}
-            self.close_results = close_results
-            self.closed = []
-            self.logs = []
-
-        def log(self, message, *_args):
-            self.logs.append(message)
-
-        def save_state(self):
-            pass
-
-        async def close_position(self, *args, **kwargs):
-            self.closed.append((args, kwargs))
-            return self.close_results.pop(0)
-
-    class Engine:
-        is_running = True
-
-    live_bar_ms = 1_800_000_000_000
-    quote_ms = live_bar_ms + 2_000
-    position = _long_position(live_bar_ms)
-    position["entry_mode"] = "CHANNEL_SWING"
-    first_account = Account(position, {}, [False])
-    first_engine = Engine()
-    first_engine.account = first_account
-    first_engine._channel_exit_frames = {
-        "LOBSTER/USDT": _long_peak_frame(
-            live_bar_ms,
-            ma5_turning_down=True,
-            bearish_confirm=True,
-        ),
-    }
-    clock_ms = [quote_ms]
-    monkeypatch.setattr(
-        realtime_profit_exit,
-        "cached_tick_indicators",
-        lambda *_args: ({"live_bar_ms": live_bar_ms, "timeframe_ms": 60_000}, 1.0),
-    )
-    monkeypatch.setattr(
-        realtime_profit_exit,
-        "enforce_hard_stop",
-        lambda *_args: asyncio.sleep(0, result=False),
-    )
-    monkeypatch.setattr(
-        realtime_profit_exit,
-        "_evaluate_profit_lock_only",
-        lambda *_args: (None, False),
-    )
-    monkeypatch.setattr(
-        realtime_profit_exit.time,
-        "time",
-        lambda: clock_ms[0] / 1_000,
-    )
-
-    first_result = asyncio.run(
-        realtime_profit_exit.enforce_realtime_profit_exit(
-            first_engine, "LOBSTER/USDT", 14.0, quote_ms,
-        )
-    )
-
-    assert first_result is False
-    pending_key = realtime_profit_exit.CONFIRMED_PIVOT_PENDING_KEY
-    assert pending_key in position
-    assert pending_key in first_account.position_meta["LOBSTER/USDT"]
-
-    restored_position = json.loads(json.dumps(position))
-    restored_meta = json.loads(
-        json.dumps(first_account.position_meta["LOBSTER/USDT"])
-    )
-    restored_account = Account(restored_position, restored_meta, [True])
-    restored_engine = Engine()
-    restored_engine.account = restored_account
-    restored_engine._channel_exit_frames = {}
-    clock_ms[0] += 60_000
-
-    retry_result = asyncio.run(
-        realtime_profit_exit.enforce_realtime_profit_exit(
-            restored_engine, "LOBSTER/USDT", 13.9, clock_ms[0],
-        )
-    )
-
-    assert retry_result is True
-    assert len(restored_account.closed) == 1
-    assert "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" in restored_account.closed[0][0][2]
-    assert any("REALTIME_EXIT_RETRY" in message for message in restored_account.logs)
-
-
-def test_wild_swing_exit_replays_pending_pivot_after_json_restore(monkeypatch):
+def test_wild_swing_exit_replays_kc_reversal_after_json_restore(monkeypatch):
     from core.services.strategies import defensive_trend_strategy
     from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
@@ -501,19 +430,30 @@ def test_wild_swing_exit_replays_pending_pivot_after_json_restore(monkeypatch):
         bearish_confirm=True,
     )
     for column, value in {
-        "kc_upper": 16.0,
+        "kc_upper": 12.0,
+        "kc_middle": 10.0,
         "kc_lower": 8.0,
         "ma15": 13.0,
+        "atr": 1.0,
         "volume": 1.0,
     }.items():
         frame[column] = value
+    frame.iloc[-2, frame.columns.get_loc("open")] = 11.5
+    frame.iloc[-2, frame.columns.get_loc("high")] = 12.6
+    frame.iloc[-2, frame.columns.get_loc("low")] = 11.4
+    frame.iloc[-2, frame.columns.get_loc("close")] = 11.8
+    frame.iloc[-1, frame.columns.get_loc("open")] = 11.0
+    frame.iloc[-1, frame.columns.get_loc("high")] = 11.9
+    frame.iloc[-1, frame.columns.get_loc("low")] = 11.0
+    frame.iloc[-1, frame.columns.get_loc("close")] = 11.9
+    frame.attrs["snapshot_ms"] = live_bar_ms + 2_000
 
     first_decision = strategy.evaluate_exit(
-        "LOBSTER/USDT", position, frame, quote=14.0,
+        "LOBSTER/USDT", position, frame, quote=11.9,
     )
 
     assert first_decision is not None
-    assert first_decision["reason"] == "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+    assert first_decision["reason"] == "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
     restored_position = json.loads(json.dumps(position))
 
     retry_decision = strategy.evaluate_exit(

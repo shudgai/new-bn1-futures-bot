@@ -576,27 +576,24 @@ def test_exit_short_trailing_profit_lock_survives_pullback_suppression():
 
 
 @pytest.mark.parametrize(
-    "side,entry_timestamp,quote,pivot_rows,expected_reason,pivot_key,pivot_value",
+    "side,entry_timestamp,quote,pivot_rows",
     [
         (
             "LONG", 9 * 60.0, 100.1,
-            [(100.0, 100.4, 99.7, 100.1),
-             (100.1, 100.8, 99.9, 100.5),
-             (100.5, 100.6, 99.8, 100.1)],
-            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "pivot_high", 100.8,
+            [            (100.0, 100.4, 99.7, 100.1),
+            (100.1, 100.8, 99.9, 100.5),
+            (100.5, 100.6, 99.8, 100.1)],
         ),
         (
             "SHORT", 9 * 60.0, 99.9,
-            [(100.0, 100.3, 99.6, 99.9),
-             (99.9, 100.1, 99.2, 99.5),
-             (99.5, 100.2, 99.4, 99.9)],
-            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "pivot_low", 99.2,
+            [            (100.0, 100.3, 99.6, 99.9),
+            (99.9, 100.1, 99.2, 99.5),
+            (99.5, 100.2, 99.4, 99.9)],
         ),
     ],
 )
-def test_exit_after_entry_only_on_confirmed_true_pivot(
-    side, entry_timestamp, quote, pivot_rows, expected_reason, pivot_key,
-    pivot_value,
+def test_legacy_confirmed_pivot_is_not_exit_authority(
+    side, entry_timestamp, quote, pivot_rows,
 ):
     frame = _frame(side)
     for index, values in zip((9, 10, 11), pivot_rows):
@@ -618,10 +615,7 @@ def test_exit_after_entry_only_on_confirmed_true_pivot(
         "LOBSTER/USDT", position, frame, quote=quote,
     )
 
-    assert result is not None
-    assert result["reason"] == expected_reason
-    assert result["pivot"][pivot_key] == pytest.approx(pivot_value)
-    assert result["pivot"]["confirm_bar_id"] == 11 * 60_000
+    assert result is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

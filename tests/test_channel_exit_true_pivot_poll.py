@@ -47,7 +47,7 @@ def _valley_frame(live_bar_ms):
             },
             {
                 "timestamp": live_bar_ms - 60_000,
-                "open": 9.6, "high": 10.9, "low": 9.4, "close": 10.6,
+                "open": 8.5, "high": 8.6, "low": 7.4, "close": 8.2,
                 "ma5": 10.2, "ma15": 11.2, "kc_middle": 11.0,
                 "is_closed": True,
             },
@@ -59,6 +59,10 @@ def _valley_frame(live_bar_ms):
             },
         ]
     )
+    frame["atr"] = 1.0
+    frame["kc_upper"] = 15.0
+    frame["kc_middle"] = 11.0
+    frame["kc_lower"] = 8.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["snapshot_ms"] = live_bar_ms + 2_000
     return frame
@@ -101,15 +105,21 @@ class _Account:
 
 
 @pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "CAP/USDT"])
-def test_channel_short_true_valley_closes_below_kc_middle_and_retries(symbol):
+def test_channel_short_true_valley_closes_and_retries_without_current_frame(
+    monkeypatch, symbol,
+):
     live_bar_ms = 1_800_000_000_000
     position = _short_position(live_bar_ms)
     frame = _valley_frame(live_bar_ms)
+    monkeypatch.setattr(
+        "core.services.exits.entry_atr_protection.time.time",
+        lambda: (live_bar_ms + 2_000) / 1_000,
+    )
     account = _Account(
         symbol,
         position,
         frame,
-        close_results=[False, True],
+        close_results=[False, False, True],
     )
 
     first = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
@@ -117,21 +127,21 @@ def test_channel_short_true_valley_closes_below_kc_middle_and_retries(symbol):
     assert first is True
     assert len(account.close_attempts) == 1
     assert account.close_attempts[0][2].endswith(
-        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
     )
-    assert position["confirmed_true_pivot_exit_pending"]["reason"] == (
-        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    assert position["kc_true_extreme_exit_state"]["pending"]["reason"] == (
+        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
     )
 
     account.channel_exit_frame_provider = lambda _symbol: None
     unavailable = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
-    assert unavailable is False
-    assert len(account.close_attempts) == 1
+    assert unavailable is True
+    assert len(account.close_attempts) == 2
 
     account.channel_exit_frame_provider = lambda _symbol: frame
     retried = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
     assert retried is True
-    assert len(account.close_attempts) == 2
+    assert len(account.close_attempts) == 3
 
 
 def test_unconfirmed_valley_does_not_authorize_a_kc_middle_exit(monkeypatch):
@@ -140,7 +150,9 @@ def test_unconfirmed_valley_does_not_authorize_a_kc_middle_exit(monkeypatch):
     live_bar_ms = 1_800_000_000_000
     position = _short_position(live_bar_ms)
     frame = _valley_frame(live_bar_ms)
-    frame.loc[12, "low"] = 12.1
+    frame.loc[14, ["open", "high", "low", "close"]] = [
+        9.6, 10.9, 9.4, 10.6,
+    ]
     account = _Account("LOBSTER/USDT", position, frame, close_results=[True])
     monkeypatch.setattr(
         peak_trailing_exit,
@@ -155,3 +167,25 @@ def test_unconfirmed_valley_does_not_authorize_a_kc_middle_exit(monkeypatch):
 
     assert closed is False
     assert account.close_attempts == []
+
+
+def test_channel_short_closes_on_actual_kc_midline_touch(monkeypatch):
+    live_bar_ms = 1_800_000_000_000
+    position = _short_position(live_bar_ms)
+    frame = _valley_frame(live_bar_ms)
+    frame.loc[14, ["open", "high", "low", "close"]] = [
+        9.6, 10.9, 9.4, 10.6,
+    ]
+    monkeypatch.setattr(
+        "core.services.exits.entry_atr_protection.time.time",
+        lambda: (live_bar_ms + 2_000) / 1_000,
+    )
+    account = _Account(
+        "CAP/USDT", position, frame, close_results=[True],
+    )
+
+    closed = asyncio.run(enforce_atr_protection(account, "CAP/USDT", 11.0))
+
+    assert closed is True
+    assert len(account.close_attempts) == 1
+    assert account.close_attempts[0][2].endswith("EXIT_BY_KC_MIDLINE_RETRACE")

@@ -82,20 +82,43 @@ async def enforce_atr_protection(account, symbol, price):
     short_trend_hold = False
     frame = None
     if is_auto_entry_symbol(symbol):
-        from core.services.exits.strict_true_pivot import (
-            CONFIRMED_PIVOT_PENDING_KEY,
-            confirmed_true_pivot_exit,
-            pending_confirmed_pivot_exit,
-            store_confirmed_pivot_exit,
+        frame_provider = getattr(account, "channel_exit_frame_provider", None)
+        frame = frame_provider(symbol) if callable(frame_provider) else None
+        if frame is None:
+            frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+        from core.services.exits.kc_true_extreme_exit import (
+            evaluate_kc_true_extreme_exit,
         )
+        kc_exit, state_changed = evaluate_kc_true_extreme_exit(
+            position, frame, price, time.time() * 1000, meta,
+        )
+        if state_changed:
+            account.save_state()
+        if kc_exit is not None:
+            exit_reason, exit_details = kc_exit
+            account.log(
+                f"KC_STRUCTURE_EXIT symbol={symbol} "
+                f"side={position.get('side')} reason={exit_reason} "
+                f"details={exit_details}",
+                "WARNING",
+            )
+            closed = await account.close_position(
+                symbol, price, f"{entry_mode} {exit_reason}", is_manual=True,
+            )
+            if not closed:
+                account.log(
+                    f"KC_STRUCTURE_EXIT_RETRY_PENDING symbol={symbol} "
+                    f"reason={exit_reason}",
+                    "WARNING",
+                )
+            return True
+
         if entry_mode == "CHANNEL_SWING" and position.get("side") == "SHORT":
             from core.services.exits.short_oversold_exit import (
                 STATE_KEY as SHORT_OVERSOLD_STATE_KEY,
                 TREND_HOLD_STATE_KEY,
                 short_bearish_trend_in_frame,
             )
-            frame_provider = getattr(account, "channel_exit_frame_provider", None)
-            frame = frame_provider(symbol) if callable(frame_provider) else None
             short_trend_hold = short_bearish_trend_in_frame(frame) is not False
             position[TREND_HOLD_STATE_KEY] = short_trend_hold
             meta[TREND_HOLD_STATE_KEY] = short_trend_hold
@@ -114,46 +137,6 @@ async def enforce_atr_protection(account, symbol, price):
                 position[SHORT_OVERSOLD_STATE_KEY] = copy.deepcopy(oversold_state)
                 meta[SHORT_OVERSOLD_STATE_KEY] = copy.deepcopy(oversold_state)
 
-        pivot = (
-            None if short_trend_hold
-            else pending_confirmed_pivot_exit(position, meta)
-        )
-        if pivot is None and not short_trend_hold:
-            if frame is None:
-                frame_provider = getattr(account, "channel_exit_frame_provider", None)
-                frame = frame_provider(symbol) if callable(frame_provider) else None
-            pivot = confirmed_true_pivot_exit(position, frame)
-            if pivot is not None and not store_confirmed_pivot_exit(position, pivot):
-                account.log(
-                    f"TREND_EXIT_BLOCK symbol={symbol} "
-                    "reason=INVALID_CONFIRMED_PIVOT_TICKET",
-                    "ERROR",
-                )
-                return False
-            if pivot is not None:
-                meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
-                    position[CONFIRMED_PIVOT_PENDING_KEY]
-                )
-                account.save_state()
-
-        if pivot is not None:
-            pivot_reason, pivot_details = pivot
-            account.log(
-                f"TRUE_PIVOT_EXIT symbol={symbol} side={position.get('side')} "
-                f"reason={pivot_reason} details={pivot_details}",
-                "WARNING",
-            )
-            closed = await account.close_position(
-                symbol, price, f"{entry_mode} {pivot_reason}", is_manual=True,
-            )
-            if not closed:
-                account.log(
-                    f"TRUE_PIVOT_EXIT_RETRY_PENDING symbol={symbol} "
-                    f"reason={pivot_reason}",
-                    "WARNING",
-                )
-            return True
-
     decision = None
     if entry_mode == "CHANNEL_SWING":
         from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
@@ -166,7 +149,7 @@ async def enforce_atr_protection(account, symbol, price):
     else:
         reason = atr_exit_reason(position, price)
 
-    if entry_mode == "CHANNEL_SWING" and is_auto_entry_symbol(symbol) and reason:
+    if is_auto_entry_symbol(symbol) and reason:
         from core.services.exits.authorized_position_exit import (
             automated_position_exit_allowed,
         )

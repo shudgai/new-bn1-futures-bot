@@ -528,13 +528,6 @@ class DualTrackExitStrategy(IExitStrategy):
                 peak_net_pnl = (entry_p - trough_p) * qty - (entry_p + trough_p) * qty * TAKER_FEE_RATE
                 peak_roe = (peak_net_pnl / margin * 100.0) if margin > 0 else 0.0
 
-                from core.services.exits.strict_true_pivot import (
-                    confirmed_true_pivot_exit,
-                )
-                true_pivot = confirmed_true_pivot_exit(position, frame)
-                if true_pivot is not None:
-                    return true_pivot[0]
-
                 # ──【第一道鐵律：利潤保本移損線（Breakeven Floor - 嚴禁大賺放成虧損）】──
                 # 浮盈曾達 >= 1.2 ATR 或淨 ROE >= 8.0% 時，強制鎖定底線在 entry_price - 0.05%
                 is_be_locked = position.get('breakeven_locked', False) or ((atr > 0 and max_gain >= 1.2 * atr) or peak_roe >= 8.0)

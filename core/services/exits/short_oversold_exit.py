@@ -154,6 +154,8 @@ def evaluate_short_oversold_exit(
     metadata: Dict[str, Any],
     quote: float,
     snapshot: Dict[str, Any],
+    *,
+    kc_bearish_trend: bool = False,
 ) -> Tuple[Optional[str], bool]:
     """Return a confirmed partial-reversal or trough-ratchet exit."""
     if (str(position.get("entry_mode") or metadata.get("entry_mode") or "").upper()
@@ -196,7 +198,7 @@ def evaluate_short_oversold_exit(
         changed = True
 
     bearish_trend = short_bearish_trend_active(snapshot)
-    hold_for_bearish_trend = bearish_trend is not False
+    hold_for_bearish_trend = kc_bearish_trend or bearish_trend is not False
     if state.get("bearish_trend_hold_active") is not hold_for_bearish_trend:
         state["bearish_trend_hold_active"] = hold_for_bearish_trend
         changed = True

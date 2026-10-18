@@ -378,7 +378,7 @@ async def _process_wild_swing_symbol(
     engine, symbol, frame, quote, daily_halt, exit_only,
 ):
     from core.services.candle_data import closed_entry_candles
-    from core.services.exits.strict_true_pivot import CONFIRMED_PIVOT_PENDING_KEY
+    from core.services.exits.kc_true_extreme_exit import STATE_KEY as KC_EXIT_STATE_KEY
     from core.gates.breakout_continuation_entry_gate import (
         PURE_MATH_ENTRY_CONFIRMATIONS,
     )
@@ -446,10 +446,6 @@ async def _process_wild_swing_symbol(
             meta_store = {}
             engine.account.position_meta = meta_store
         position_meta = meta_store.setdefault(symbol, {})
-        pending_ticket = position_meta.get(CONFIRMED_PIVOT_PENDING_KEY)
-        if (CONFIRMED_PIVOT_PENDING_KEY not in position
-                and isinstance(pending_ticket, dict)):
-            position[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(pending_ticket)
         exit_decision = strategy.evaluate_exit(
             symbol,
             position,
@@ -478,6 +474,13 @@ async def _process_wild_swing_symbol(
             if previous_extreme != updated_extreme:
                 position_meta[key] = updated_extreme
                 position_state_changed = True
+        kc_exit_state = position.get(KC_EXIT_STATE_KEY)
+        if (
+            isinstance(kc_exit_state, dict)
+            and position_meta.get(KC_EXIT_STATE_KEY) != kc_exit_state
+        ):
+            position_meta[KC_EXIT_STATE_KEY] = copy.deepcopy(kc_exit_state)
+            position_state_changed = True
         if position.get("profit_floor_armed") is True:
             if position_meta.get("profit_floor_armed") is not True:
                 position_meta["profit_floor_armed"] = True
@@ -493,21 +496,6 @@ async def _process_wild_swing_symbol(
                     symbol,
                 )
         if exit_decision is not None:
-            pending_ticket = position.get(CONFIRMED_PIVOT_PENDING_KEY)
-            if isinstance(pending_ticket, dict):
-                if position_meta.get(CONFIRMED_PIVOT_PENDING_KEY) != pending_ticket:
-                    position_meta[CONFIRMED_PIVOT_PENDING_KEY] = copy.deepcopy(
-                        pending_ticket
-                    )
-                    save_state = getattr(engine.account, "save_state", None)
-                    if callable(save_state):
-                        save_state()
-                    else:
-                        logger.error(
-                            "WILD_SWING_PIVOT_RETRY_PERSISTENCE_BLOCK "
-                            "symbol=%s reason=ACCOUNT_SAVE_UNAVAILABLE",
-                            symbol,
-                        )
             closed_ok = await engine.account.close_position(
                 symbol,
                 quote,
@@ -526,9 +514,9 @@ async def _process_wild_swing_symbol(
                     exit_decision["reason"],
                     exit_decision["bar_id"],
                 )
-            elif pending_ticket:
+            elif exit_decision.get("kc_exit") is not None:
                 logger.warning(
-                    "WILD_SWING_PIVOT_CLOSE_RETRY_PENDING symbol=%s reason=%s",
+                    "WILD_SWING_KC_EXIT_RETRY_PENDING symbol=%s reason=%s",
                     symbol, exit_decision["reason"],
                 )
         return [], []

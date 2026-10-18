@@ -25,6 +25,7 @@ def test_blocks_ordinary_and_loss_exits_for_lobster_and_cap():
         for reason in (
             "觸發止損 (Stop-Loss)",
             "急速逆向閃崩觸發平倉",
+            "Channel Swing WATERFALL_DROP",
             "EXIT_BY_SAME_BAR_PROFIT",
             "TAKE_PROFIT_50PCT",
             "碰觸 KC 上軌平倉",
@@ -66,7 +67,23 @@ def test_allows_wild_swing_trailing_exit_after_strategy_arms_lock():
     )
 
 
-def test_allows_only_identity_bound_confirmed_pivot_ticket():
+@pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "CAP/USDT"])
+@pytest.mark.parametrize(
+    "reason",
+    ["Wild Swing EXIT_BY_HARD_STOP_LOSS", "CIRCUIT_BREAKER_HARD_SL"],
+)
+def test_allows_safety_exit_for_restricted_symbols(symbol, reason):
+    active_position = {
+        **position("SHORT"),
+        "entry_mode": "WILD_SWING",
+    }
+
+    assert automated_position_exit_allowed(
+        symbol, active_position, {}, reason, 101.0,
+    )
+
+
+def test_retired_confirmed_pivot_ticket_no_longer_authorizes_exit():
     active_position = position()
     assert store_confirmed_pivot_exit(
         active_position,
@@ -76,7 +93,7 @@ def test_allows_only_identity_bound_confirmed_pivot_ticket():
         ),
     )
 
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "龙虾/USDT", active_position, {},
         "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", 100.0,
     )

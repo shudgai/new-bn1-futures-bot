@@ -119,7 +119,7 @@ def analyze_market_structure(
         closed = closed_entry_candles(frame)
         if len(closed) < 15:
             return "HOLD"
-        bars = closed.iloc[-5:]
+        bars = closed.iloc[-3:]
         if not {"open", "high", "low", "close", "ma5", "ma15"}.issubset(
             bars.columns
         ):
@@ -144,31 +144,27 @@ def analyze_market_structure(
         ):
             return "HOLD"
 
-        c4, c3, c2, c1, c0 = candles
+        c0, c1, c2 = candles
         ma5_slope = ma5[-1] - ma5[-2]
         if side == "LONG":
             if (
-                c2[1] > c4[1]
-                and c2[1] > c3[1]
-                and c2[1] > c1[1]
-                and c2[1] > c0[1]
-                and c0[3] < min(c2[0], c2[3])
+                c1[1] > c0[1]
+                and c1[1] > c2[1]
+                and c2[3] < min(c1[0], c1[3])
                 and ma5_slope < 0
             ):
                 return "TRUE_PEAK"
-            if c0[3] >= ma15[-1] and ma5[-1] > ma15[-1]:
+            if c2[3] >= ma15[-1] and ma5[-1] > ma15[-1]:
                 return "PULLBACK"
         else:
             if (
-                c2[2] < c4[2]
-                and c2[2] < c3[2]
-                and c2[2] < c1[2]
-                and c2[2] < c0[2]
-                and c0[3] > max(c2[0], c2[3])
+                c1[2] < c0[2]
+                and c1[2] < c2[2]
+                and c2[3] > max(c1[0], c1[3])
                 and ma5_slope > 0
             ):
                 return "TRUE_TROUGH"
-            if c0[3] <= ma15[-1] and ma5[-1] < ma15[-1]:
+            if c2[3] <= ma15[-1] and ma5[-1] < ma15[-1]:
                 return "PULLBACK"
         return "HOLD"
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
@@ -179,7 +175,7 @@ def confirmed_true_pivot_exit(
     position: Dict[str, Any],
     frame: Optional[pd.DataFrame],
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Return an exit only for a five-bar completed true peak or trough."""
+    """Return an exit when a three-bar completed true peak or trough confirms."""
     if not isinstance(position, dict) or frame is None or frame.empty:
         return None
     try:
@@ -190,7 +186,7 @@ def confirmed_true_pivot_exit(
         closed = closed_entry_candles(frame)
         if len(closed) < 15:
             return None
-        bars = closed.iloc[-5:]
+        bars = closed.iloc[-3:]
 
         timeframe_ms = float(frame.attrs.get("timeframe_ms", 60_000) or 60_000)
         timestamps = [float(value) for value in bars["timestamp"]]
@@ -222,30 +218,30 @@ def confirmed_true_pivot_exit(
 
         entry_ms = entry_timestamp * 1000.0 if entry_timestamp < 1e11 else entry_timestamp
         entry_bar_ms = math.floor(entry_ms / timeframe_ms) * timeframe_ms
-        pivot_ms = timestamps[2]
-        confirmation_ms = timestamps[4]
+        pivot_ms = timestamps[1]
+        confirmation_ms = timestamps[2]
         if pivot_ms <= entry_bar_ms or confirmation_ms <= entry_bar_ms:
             return None
 
         structure = analyze_market_structure(frame, side)
         if structure not in ("TRUE_PEAK", "TRUE_TROUGH"):
             return None
-        c2 = bars.iloc[2]
-        c0 = bars.iloc[4]
-        ma5_slope = float(c0["ma5"]) - float(bars.iloc[3]["ma5"])
+        pivot = bars.iloc[1]
+        confirmation = bars.iloc[2]
+        ma5_slope = float(confirmation["ma5"]) - float(bars.iloc[1]["ma5"])
         if side == "LONG":
             return "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", {
                 "pivot_bar_id": pivot_ms,
                 "confirm_bar_id": confirmation_ms,
-                "pivot_high": float(c2["high"]),
-                "confirmation_close": float(c0["close"]),
+                "pivot_high": float(pivot["high"]),
+                "confirmation_close": float(confirmation["close"]),
                 "ma5_slope": ma5_slope,
             }
         return "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", {
             "pivot_bar_id": pivot_ms,
             "confirm_bar_id": confirmation_ms,
-            "pivot_low": float(c2["low"]),
-            "confirmation_close": float(c0["close"]),
+            "pivot_low": float(pivot["low"]),
+            "confirmation_close": float(confirmation["close"]),
             "ma5_slope": ma5_slope,
         }
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

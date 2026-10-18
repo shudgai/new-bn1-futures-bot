@@ -18,11 +18,6 @@ from core.gates.breakout_continuation_entry_gate import (
 from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
 from core.gates.ma5_ma15_cross_entry_gate import validate_ma5_ma15_cross_entry
 from core.services.candle_data import closed_entry_candles
-from core.services.exits.strict_true_pivot import (
-    confirmed_true_pivot_exit,
-    pending_confirmed_pivot_exit,
-    store_confirmed_pivot_exit,
-)
 from core.symbol_aliases import is_auto_entry_symbol
 
 
@@ -207,6 +202,38 @@ class WildSwingStrategy:
         if bar_id is None or previous_bar_id is None:
             return None
         state = self.state_for(symbol)
+        if state.last_exit_bar_id is not None:
+            try:
+                timeframe_ms = float(
+                    frame.attrs.get("timeframe_ms", 60_000.0) or 60_000.0
+                )
+            except (TypeError, ValueError, OverflowError):
+                timeframe_ms = 0.0
+            timestamp_step = bar_id - previous_bar_id
+            timestamp_scale = (
+                1000.0
+                if math.isclose(
+                    timestamp_step,
+                    timeframe_ms / 1000.0,
+                    rel_tol=1e-6,
+                )
+                else 1.0
+            )
+            if (
+                math.isfinite(timeframe_ms)
+                and timeframe_ms > 0
+                and math.isfinite(state.last_exit_bar_id)
+                and math.isfinite(timestamp_step)
+                and timestamp_step > 0
+            ):
+                state.bars_since_last_exit = max(
+                    0,
+                    int(
+                        (bar_id - state.last_exit_bar_id)
+                        * timestamp_scale
+                        // timeframe_ms
+                    ),
+                )
         if (
             (state.reset_bar_id is not None and bar_id <= state.reset_bar_id)
             or (state.last_exit_bar_id is not None and bar_id <= state.last_exit_bar_id)
@@ -919,22 +946,43 @@ class WildSwingStrategy:
         side = str((position or {}).get("side", "")).upper()
         if side not in ("LONG", "SHORT"):
             return None
-        pending_pivot = pending_confirmed_pivot_exit(position)
-        if pending_pivot is not None:
-            reason, details = pending_pivot
-            close = float(quote) if quote is not None else float(
-                position.get("entry_price") or 0.0
+        current_price = float(quote) if quote is not None else 0.0
+        if current_price <= 0 and frame is not None and not frame.empty:
+            try:
+                current_price = float(frame.iloc[-1]["close"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+        if current_price > 0:
+            from core.services.exits.kc_true_extreme_exit import (
+                STATE_KEY as KC_EXIT_STATE_KEY,
+                evaluate_kc_true_extreme_exit,
             )
-            return {
-                "action": f"CLOSE_{side}",
-                "type": reason,
-                "side": side,
-                "reason": reason,
-                "bar_id": details.get("exit_bar_id", details["confirm_bar_id"]),
-                "close": close,
-                "entry_mode": "WILD_SWING",
-                "pivot": details,
-            }
+
+            quote_ms = frame.attrs.get("snapshot_ms") if frame is not None else None
+            if quote_ms is None:
+                quote_ms = time.time() * 1000
+            kc_exit, _ = evaluate_kc_true_extreme_exit(
+                position, frame, current_price, quote_ms,
+            )
+            if kc_exit is not None:
+                reason, details = kc_exit
+                bar_id = details.get("bar_ms")
+                if bar_id is None:
+                    try:
+                        bar_id = float(frame.iloc[-1]["timestamp"])
+                    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                        bar_id = None
+                return {
+                    "action": f"CLOSE_{side}",
+                    "type": reason,
+                    "side": side,
+                    "reason": reason,
+                    "bar_id": bar_id,
+                    "close": current_price,
+                    "entry_mode": "WILD_SWING",
+                    "kc_exit": details,
+                    "kc_exit_state_key": KC_EXIT_STATE_KEY,
+                }
         bars = self._closed_frame(frame)
         if len(bars) < 2:
             return None
@@ -980,7 +1028,6 @@ class WildSwingStrategy:
         allowed_exit_reasons = {
             "EXIT_BY_TRAILING_PROFIT_LOCK",
             "EXIT_BY_BREAKEVEN",
-            "EXIT_BY_PROFIT_EXHAUSTION_WICK",
             "EXIT_BY_HARD_STOP_LOSS",
         }
         if should_exit and reason in allowed_exit_reasons:
@@ -999,45 +1046,13 @@ class WildSwingStrategy:
                 "entry_mode": "WILD_SWING",
             }
 
-        pivot = self._confirmed_pivot_exit(position, bars, frame)
-        if pivot is None:
-            if should_exit:
-                logger.info(
-                    "WILD_SWING_NON_AUTHORIZED_EXIT_SUPPRESSED "
-                    "symbol=%s side=%s reason=%s",
-                    symbol, side, reason,
-                )
-            return None
-
-        reason, pivot_details = pivot
-        pending_details = {**pivot_details, "exit_bar_id": bar_id}
-        if not store_confirmed_pivot_exit(
-            position, (reason, pending_details),
-        ):
-            return None
-        close = float(current_price)
-        print(
-            f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}",
-            flush=True,
-        )
-        return {
-            "action": f"CLOSE_{side}",
-            "type": reason,
-            "side": side,
-            "reason": reason,
-            "bar_id": bar_id,
-            "close": close,
-            "entry_mode": "WILD_SWING",
-            "pivot": pivot_details,
-        }
-
-    def _confirmed_pivot_exit(
-        self,
-        position: dict,
-        bars: pd.DataFrame,
-        frame: pd.DataFrame,
-    ) -> Optional[tuple[str, dict[str, Any]]]:
-        return confirmed_true_pivot_exit(position, frame)
+        if should_exit:
+            logger.info(
+                "WILD_SWING_NON_AUTHORIZED_EXIT_SUPPRESSED "
+                "symbol=%s side=%s reason=%s",
+                symbol, side, reason,
+            )
+        return None
 
     @staticmethod
     def _position_entry_bar_floor(

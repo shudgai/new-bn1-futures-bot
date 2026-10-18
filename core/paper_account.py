@@ -1558,10 +1558,16 @@ class PaperAccount:
             side = pos["side"]
             meta = self.position_meta.get(symbol,{})
             entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
-            if entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+            from core.symbol_aliases import is_auto_entry_symbol
+            if (
+                entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                or is_auto_entry_symbol(symbol)
+            ):
                 if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
                     continue
                 if entry_m == "WILD_SWING":
+                    if await enforce_atr_protection(self, symbol, curr_p):
+                        continue
                     unrealized = (
                         (curr_p - float(pos["entry_price"]))
                         * float(pos["qty"])

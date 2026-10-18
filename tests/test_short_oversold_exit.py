@@ -186,6 +186,38 @@ def test_bearish_ma_trend_holds_short_through_oversold_exit_signals(trigger_type
     assert position[STATE_KEY]["lowest_price"] == 93.0
 
 
+@pytest.mark.parametrize("trigger_type", ["reversal", "ratchet"])
+def test_falling_kc_trend_holds_short_through_oversold_exit_signals(trigger_type):
+    position, meta = _position(), {}
+    _arm(position, meta)
+    history = [
+        _bar(120_000, 95.5, 95.8, 94.8, 95.0),
+        _bar(180_000, 94.0, 94.2, 93.0, 93.9),
+    ]
+    quote = 93.3 if trigger_type == "reversal" else 93.4
+    snapshot = _snapshot(
+        quote=quote,
+        live_bar_ms=240_000,
+        closed_bar_ms=180_000,
+        history=history,
+        live_low=93.0,
+    )
+
+    trigger, changed = evaluate_short_oversold_exit(
+        position,
+        meta,
+        quote,
+        snapshot,
+        kc_bearish_trend=True,
+    )
+
+    assert trigger is None
+    assert changed
+    assert position[STATE_KEY]["bearish_trend_hold_active"] is True
+    assert position[STATE_KEY]["partial_exit_pending"] is False
+    assert position[STATE_KEY]["full_exit_pending"] is False
+
+
 def test_missing_closed_ma_trend_data_fails_closed_for_oversold_exits():
     position, meta = _position(), {}
     _arm(position, meta)

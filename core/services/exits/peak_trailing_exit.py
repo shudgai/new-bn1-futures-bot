@@ -90,11 +90,30 @@ TRAILING_DISTANCE_ATR = None
 
 
 def channel_swing_exit_allowed(reason=None, trigger=None):
-    """Allow only a confirmed three-point pivot, net-ROE profit lock or hybrid dynamic exit."""
+    """Allow validated KC reversals, midline exits, profit locks, or hybrid exits."""
     for value in (reason, trigger):
         if not isinstance(value, str):
             continue
-        if (value == 'THREE_POINT_PIVOT'
+        if any(
+            token in value.upper()
+            for token in (
+                'HARD_STOP',
+                'CIRCUIT_BREAKER',
+                'EMERGENCY_DUMP',
+                'EMERGENCY_WATERFALL',
+                'FAIL_SAFE_EMERGENCY_EXIT',
+                'OPPOSITE_KC_BAND_BREACH',
+            )
+        ):
+            return True
+        if 'PROFIT_LOCK' in value.upper() or 'BREAKEVEN' in value.upper():
+            return True
+        if (value in (
+                'EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL',
+                'EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL',
+                'EXIT_BY_KC_MIDLINE_RETRACE',
+            )
+                or value == 'THREE_POINT_PIVOT'
                 or value.startswith('NET_ROE_THREE_TIER_GIVEBACK')
                 or value.startswith('HYBRID_DYNAMIC')
                 or value.startswith('EXIT_MEME_')):
