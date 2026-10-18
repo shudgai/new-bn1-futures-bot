@@ -17,6 +17,7 @@ from core.symbol_aliases import (  # noqa: F401 - re-exported for callers
     MEME_BREAKOUT_SYMBOLS,
     is_meme_breakout_symbol,
 )
+from core.gates.swing_origin_entry_gate import SWING_ORIGIN_CODES
 
 MAX_MA15_ENTRY_BIAS_ATR = 1.8
 CHOP_KC_SLOPE_EPSILON_ATR = 0.10
@@ -167,6 +168,7 @@ FLAT_LINE_BREAKOUT_TYPES = frozenset((
 ))
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 FLAT_LINE_BREAKOUT_TYPES = FLAT_LINE_BREAKOUT_TYPES | MEME_ENTRY_CODES
+FLAT_LINE_BREAKOUT_TYPES = FLAT_LINE_BREAKOUT_TYPES | SWING_ORIGIN_CODES
 
 PIPELINE_ENTRY_TYPES = frozenset((
     'AUTHORIZED_REALTIME_BREAKOUT',
@@ -199,7 +201,7 @@ PIPELINE_ENTRY_TYPES = frozenset((
     'TRIGGER_B_REENTRY_SUPPORT',
     'TRIGGER_B_REENTRY_BREAKOUT',
     *MEME_ENTRY_CODES,
-))
+)) | SWING_ORIGIN_CODES
 
 
 def ma5_ma15_cross_chop_problem(
@@ -836,6 +838,12 @@ def entry_market_structure_problem(frame: pd.DataFrame, quote: float,
     try:
         if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
             return 'BLOCKED_INVALID_ENTRY_STRUCTURE'
+        if entry_phase == 'KC_SWING_ORIGIN_BREAKOUT':
+            from core.gates.swing_origin_entry_gate import swing_origin_evidence
+            return (
+                None if swing_origin_evidence(frame, quote, side) is not None
+                else 'BLOCKED_SWING_ORIGIN_REVALIDATION'
+            )
         if entry_phase in ('MEME_BREAKOUT_ENTRY', 'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION'):
             return None
         if entry_phase == 'REALTIME_RAIL_BREACH':

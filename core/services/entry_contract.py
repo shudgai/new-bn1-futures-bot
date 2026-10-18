@@ -18,6 +18,14 @@ from core.symbol_aliases import (  # noqa: F401
     is_chop_filter_symbol,
 )
 from core.services.candle_data import closed_entry_candles
+from core.gates.swing_origin_entry_gate import (
+    LONG_SWING_ORIGIN_CODE,
+    SHORT_SWING_ORIGIN_CODE,
+    SWING_ORIGIN_CODES,
+    SWING_ORIGIN_PHASE,
+    late_entry_problem,
+    swing_origin_evidence,
+)
 from core.services.strategies.unified_entry_strategy import (
     anti_bottom_short_problem,
     validate_ma_alignment,
@@ -102,6 +110,7 @@ from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 
 ENTRY_CODES = NEW_TRIGGER_CODES | MEME_ENTRY_CODES | frozenset((
     GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+    *SWING_ORIGIN_CODES,
 ))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -123,6 +132,7 @@ ENTRY_EVIDENCE_KEYS = (
     "realtime_lower_shadow_ratio", "previous_lower_shadow_ratio",
     "strategy_type", "body_atr", "body_ratio", "midline_distance_atr",
     "upper_rail_space_ratio", "lower_rail_space_ratio",
+    "swing_origin_evidence", "ma15_bias_atr",
     "live_ma5", "live_ma15", "pending_next_bar_long",
     "pending_next_bar_short", "wick_reference_midpoint",
 )
@@ -2820,6 +2830,7 @@ def pre_flight_safety_check(
                 'KC_MOMENTUM_BURST_SHORT',
                 'KC_MIDLINE_BREAK_LONG',
                 'KC_MIDLINE_BREAK_SHORT',
+                SWING_ORIGIN_PHASE,
             )
             or entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY'
         )
@@ -3029,6 +3040,17 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
         side = decision.get('side')
+        extension_problem = late_entry_problem(frame, quote, side)
+        if extension_problem:
+            return reject(extension_problem)
+        if decision.get('entry_phase') == SWING_ORIGIN_PHASE:
+            origin = swing_origin_evidence(frame, quote, side)
+            if origin is None:
+                return reject('BLOCKED_SWING_ORIGIN_REVALIDATION')
+            decision.update({
+                'swing_origin_evidence': origin,
+                'ma15_bias_atr': origin['ma15_bias_atr'],
+            })
         if (side in ('LONG', 'SHORT')
                 and decision.get('entry_phase') != 'WICK_NEXT_BAR_CONFIRM'):
             try:
@@ -3160,7 +3182,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 'POST_CLOSE_CONTINUATION_ENTRY', 'KC_CONTINUATION_ENTRY',
             )
             or str(decision.get('type', '')).startswith('CLOSED_TREND_BREAKOUT_')
-        ) and not decision.get('profit_lock_fast_track')
+        ) and not decision.get('profit_lock_fast_track') and (
+            decision.get('entry_phase') != SWING_ORIGIN_PHASE
+        )
         if requires_three_bar_gate:
             rail_problem = three_bar_rail_gate_problem(
                 frame, quote, decision.get('side'),
@@ -3369,6 +3393,45 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if code is not None and code not in ENTRY_CODES:
             return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+
+        # Fresh KC direction turns may enter on the first real body close
+        # beyond the rail. This is still routed through `authorize`, so the
+        # final quote, wick, trend, AI, cooldown and account gates revalidate it.
+        if code is None or code in SWING_ORIGIN_CODES:
+            position_open = bool(
+                account is not None
+                and symbol in getattr(account, 'positions', {})
+            )
+            if not position_open:
+                origin_sides = (
+                    ['LONG'] if code == LONG_SWING_ORIGIN_CODE else
+                    ['SHORT'] if code == SHORT_SWING_ORIGIN_CODE else
+                    ['LONG', 'SHORT']
+                )
+                for origin_side in origin_sides:
+                    evidence = swing_origin_evidence(frame, quote, origin_side)
+                    if evidence is None:
+                        continue
+                    origin_code = (
+                        LONG_SWING_ORIGIN_CODE if origin_side == 'LONG'
+                        else SHORT_SWING_ORIGIN_CODE
+                    )
+                    bar_id = evidence['bar_id']
+                    decision = {
+                        'action': 'ENTER',
+                        'type': origin_code,
+                        'side': origin_side,
+                        'price': float(quote),
+                        'confirmation_bar_id': bar_id,
+                        'breakout_bar_id': bar_id,
+                        'pending_signal_id': f'{origin_code}:{bar_id}',
+                        'entry_phase': SWING_ORIGIN_PHASE,
+                        'reason': 'FRESH_KC_SWING_ORIGIN_BREAKOUT',
+                        'entry_atr': evidence['atr'],
+                        'swing_origin_evidence': evidence,
+                        '_is_authorized': True,
+                    }
+                    return authorize(decision, quote)
 
         # ── 妖幣專屬極速破軌、延續補倉與提前埋伏入口（Meme Coin Authority）──
         from core.gates.meme_coin_gate import MemeCoinGate
