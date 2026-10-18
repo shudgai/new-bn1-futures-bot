@@ -417,9 +417,6 @@
                                                 <template v-else>待啟動</template>
                                             </span>
                                         </span>
-                                        <div style="margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45;" :title="getProfitLockCondition(pos)">
-                                            {{ getProfitLockCondition(pos) }}
-                                        </div>
                                     </div>
                                 </td>
                                 <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
@@ -659,9 +656,6 @@
                                     <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
                             </span>
-                        </div>
-                        <div v-if="getPos(symbol)" style="margin: 4px 8px 2px; color: var(--muted); font-size: 10px; line-height: 1.45;" :title="getProfitLockCondition(getPos(symbol))">
-                            {{ getProfitLockCondition(getPos(symbol)) }}
                         </div>
                     </div>
                     <div v-if="(chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
@@ -1505,11 +1499,10 @@
                         const be = pos.breakeven_price || cpp.breakeven_price || pos.sl;
                         return `已啟動保本鎖利！保底鎖定: +${amt.toFixed(4)} USDT，防線價位: ${be ? this.formatPrice(be) : '-'}`;
                     }
-                    return this.getProfitLockCondition(pos);
+                    return '';
                 },
                 getProfitLockCondition(pos) {
-                    if (!pos) return '';
-                    return '鎖利條件（淨 ROE）：峰值達 10% 啟動；峰值 10–<15% 鎖 3%，15–<20% 鎖 10%，≥20% 鎖 15%，之後峰值每增加 5% 再提高鎖利底線 5%。另峰值淨 ROE ≥8% 或順向移動 ≥1 ATR 會設保本線（多單開倉價 +0.05%，空單 −0.05%）；觸及鎖利底線才平倉。';
+                    return '';
                 },
                 async fetchStatus() {
                     const pricesVersionAtStart = this._pricesVersion;
