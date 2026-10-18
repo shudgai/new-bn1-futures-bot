@@ -10,21 +10,18 @@ from core.services.wait_entry_authority import WaitEntryAuthority
 
 
 @pytest.fixture(autouse=True)
-def use_fresh_local_vision_labels(monkeypatch):
+def forbid_local_vision_in_entry_path(monkeypatch):
     from core.services import ai_chart_advisor
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("entry firewall must not invoke chart vision")
 
     monkeypatch.setattr(
         ai_chart_advisor.ai_chart_advisor,
         "inspect_state",
-        lambda symbol, expected_bar: {
-            "is_chop": False,
-            "is_exhausted": False,
-            "allow_long": True,
-            "allow_short": True,
-            "reason": "test fixture",
-            "bar_id": float(expected_bar),
-        },
+        forbidden,
     )
+    monkeypatch.setattr(ai_chart_advisor.ai_chart_advisor, "schedule_update", forbidden)
 
 
 def _candle(timestamp, opening, closing, *, atr=2.0, span=1.0, is_closed=True):

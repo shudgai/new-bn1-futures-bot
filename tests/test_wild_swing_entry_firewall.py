@@ -20,22 +20,15 @@ def forbid_final_qwen_check(monkeypatch):
         raise AssertionError("WILD_SWING must not invoke Qwen")
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", forbidden)
-    # Final-firewall tests must not depend on the external local inference
-    # service. Supply a fresh label for the exact candle; AI-specific tests
-    # override this method when they need to exercise a veto.
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("entry firewall must not invoke chart vision")
+
     monkeypatch.setattr(
         ai_chart_advisor.ai_chart_advisor,
         "inspect_state",
-        lambda symbol, expected_bar: {
-            "is_chop": False,
-            "is_exhausted": False,
-            "allow_long": True,
-            "allow_short": True,
-            "reason": "test fixture",
-            "trend": "UNKNOWN",
-            "bar_id": float(expected_bar),
-        },
+        forbidden,
     )
+    monkeypatch.setattr(ai_chart_advisor.ai_chart_advisor, "schedule_update", forbidden)
 
 
 class FakeAccount:
@@ -113,33 +106,20 @@ def test_wild_swing_firewall_revalidates_closed_signal_and_candle_identity():
     assert result["confirmation_bar_id"] == bar_id
 
 
-def test_wild_swing_firewall_applies_fresh_ai_chop_veto(monkeypatch):
+def test_wild_swing_firewall_does_not_wait_for_ai_chart_vision(monkeypatch):
     from core.services import ai_chart_advisor
 
     frame = _firewall_cross_frame()
     bar_id = float(frame.iloc[-1]["timestamp"])
-    monkeypatch.setattr(
-        ai_chart_advisor.ai_chart_advisor,
-        "inspect_state",
-        lambda symbol, expected_bar: {
-            "is_chop": True,
-            "is_exhausted": False,
-            "allow_long": True,
-            "allow_short": True,
-            "reason": "flat channel",
-            "bar_id": expected_bar,
-        },
-    )
-
-    with pytest.raises(ValueError, match="VETO_AI_CHOP"):
-        asyncio.run(
-            validate_account_entry(
-                FakeAccount(frame),
-                "LOBSTER/USDT",
-                "SHORT",
-                _context(bar_id),
-            )
+    result = asyncio.run(
+        validate_account_entry(
+            FakeAccount(frame),
+            "LOBSTER/USDT",
+            "SHORT",
+            _context(bar_id),
         )
+    )
+    assert result["side"] == "SHORT"
 
 
 def test_wild_swing_firewall_revalidates_long_wick_follow_through():
