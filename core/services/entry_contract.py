@@ -3139,7 +3139,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if not room_ok:
             return reject(room_reason)
 
-        if (decision.get('side') == 'LONG' and decision.get('type') not in MEME_ENTRY_CODES
+        if (decision.get('side') == 'LONG'
+                and decision.get('entry_phase') != SWING_ORIGIN_PHASE
+                and decision.get('type') not in MEME_ENTRY_CODES
                 and not decision.get('profit_lock_fast_track')):
             top_problem = long_top_chase_problem(frame, quote)
             if top_problem:
@@ -3377,7 +3379,24 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
         closed = closed_entry_candles(frame)
-        if forming_bar and is_meme_breakout_symbol(symbol):
+        origin_codes_by_side = {
+            'LONG': LONG_SWING_ORIGIN_CODE,
+            'SHORT': SHORT_SWING_ORIGIN_CODE,
+        }
+        has_open_position = bool(
+            account is not None
+            and symbol in getattr(account, 'positions', {})
+        )
+        live_swing_origin = (
+            not has_open_position
+            and any(
+                code in (None, origin_codes_by_side[side])
+                and swing_origin_evidence(frame, quote, side) is not None
+                for side in ('LONG', 'SHORT')
+            )
+        )
+        if (forming_bar and is_meme_breakout_symbol(symbol)
+                and not live_swing_origin):
             return reject("BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR")
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線（已知方向或指定訊號代碼）
