@@ -1,4 +1,5 @@
 """Fail-closed shared entry verification immediately before opening exposure."""
+import asyncio
 import math
 import time
 import logging
@@ -468,19 +469,11 @@ def market_structure_gate_problem(
         ma15 = float(values["ma15"][-1])
         previous_ma5 = float(values["ma5"][-2])
         if enforce_ma_direction and normalized_side == "LONG":
-            long_ma_aligned = (
-                ma5 > ma15 and slopes["MA5"] >= -0.00005
-                if relaxed_continuation
-                else ma5 > ma15 and ma5_rising and ma5 > previous_ma5
-            )
+            long_ma_aligned = ma5 > ma15 and ma5_rising and ma5 > previous_ma5
             if not long_ma_aligned:
                 return veto("VETO_LONG_MA_CONDITION_NOT_MET")
         if enforce_ma_direction and normalized_side == "SHORT":
-            short_ma_aligned = (
-                ma5 < ma15 and slopes["MA5"] <= 0.00005
-                if relaxed_continuation
-                else ma5 < ma15 and ma5_falling and ma5 < previous_ma5
-            )
+            short_ma_aligned = ma5 < ma15 and ma5_falling and ma5 < previous_ma5
             if not short_ma_aligned:
                 return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
         return None
@@ -737,35 +730,47 @@ def require_macro_candle_structure(
         raise ValueError("[FORBIDDEN_ENTRY] MACRO_CANDLE_STRUCTURE_GATE: " + reason)
 
 
-def require_ai_chart_advisor(frame, side, symbol):
-    """Apply fresh AI veto labels without waiting for or depending on inference."""
+async def require_ai_chart_advisor(frame, side, symbol):
+    """Require a fresh local vision review of the latest verified closed chart."""
     from core.services.ai_chart_advisor import ai_chart_advisor
     from core.services.candle_data import closed_entry_candles
 
     closed = closed_entry_candles(frame)
-    if closed.empty:
-        logger.warning(
-            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s reason=NO_CLOSED_BAR",
-            symbol, side,
-        )
-        return
+    if (
+        not ai_chart_advisor.enabled
+        or not ai_chart_advisor.endpoint
+        or closed.empty
+        or frame.attrs.get("timeframe_ms") != 60_000
+        or "is_closed" not in closed
+        or not bool(closed["is_closed"].all())
+    ):
+        raise ValueError("[FORBIDDEN_ENTRY] AI_VISION_INPUT_UNAVAILABLE")
     try:
         bar_id = float(closed.iloc[-1]["timestamp"])
-    except (KeyError, TypeError, ValueError, OverflowError):
+        if not math.isfinite(bar_id) or bar_id <= 0:
+            raise ValueError("invalid closed bar id")
+        state = ai_chart_advisor.inspect_state(symbol, bar_id)
+        if state is None or state.get("bar_id") != bar_id:
+            task_key = (ai_chart_advisor._symbol_key(symbol), bar_id)
+            task = ai_chart_advisor._tasks.get(task_key)
+            if task is None:
+                ai_chart_advisor.schedule_update(symbol, bar_id, closed)
+                task = ai_chart_advisor._tasks.get(task_key)
+            if task is None:
+                raise RuntimeError("local vision inference returned no result")
+            await asyncio.wait_for(
+                task,
+                timeout=ai_chart_advisor.timeout_seconds + 1.0,
+            )
+            state = ai_chart_advisor.inspect_state(symbol, bar_id)
+    except Exception as exc:
         logger.warning(
-            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s "
-            "reason=INVALID_CLOSED_BAR_ID",
-            symbol, side,
+            "AI_CHART_ADVISOR_BLOCK symbol=%s side=%s reason=INFERENCE_FAILED error=%s",
+            symbol, side, type(exc).__name__,
         )
-        return
-    state = ai_chart_advisor.inspect_state(symbol, bar_id)
-    if state is None:
-        logger.info(
-            "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s side=%s bar=%s "
-            "reason=NO_FRESH_LABEL",
-            symbol, side, bar_id,
-        )
-        return
+        raise ValueError("[FORBIDDEN_ENTRY] AI_VISION_UNAVAILABLE") from exc
+    if state is None or state.get("bar_id") != bar_id:
+        raise ValueError("[FORBIDDEN_ENTRY] AI_VISION_RESULT_STALE")
     reason = state["reason"].replace("\n", " ").strip()[:160]
     if state["is_chop"]:
         logger.warning(
@@ -774,6 +779,13 @@ def require_ai_chart_advisor(frame, side, symbol):
             symbol, side, bar_id, reason,
         )
         raise ValueError("[FORBIDDEN_ENTRY] VETO_AI_CHOP: " + reason)
+    if state["is_exhausted"]:
+        logger.warning(
+            "AI_CHART_ADVISOR_VETO symbol=%s side=%s bar=%s "
+            "reason=VETO_AI_EXHAUSTED label=%s",
+            symbol, side, bar_id, reason,
+        )
+        raise ValueError("[FORBIDDEN_ENTRY] VETO_AI_EXHAUSTED: " + reason)
     if not state[f"allow_{side.lower()}"]:
         logger.warning(
             "AI_CHART_ADVISOR_VETO symbol=%s side=%s bar=%s "
@@ -957,7 +969,7 @@ async def validate_account_entry(account, symbol, side, context):
             structure_confirmation="KC_OUTER_BREAKOUT",
             channel_expanding=True,
         )
-        require_ai_chart_advisor(fresh_frame, side, symbol)
+        await require_ai_chart_advisor(fresh_frame, side, symbol)
         logger.info(
             "KC2BAR_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
             symbol, side, claim_id,
@@ -1103,6 +1115,7 @@ async def validate_account_entry(account, symbol, side, context):
             symbol,
             entry_pattern="CONTINUATION",
         )
+        await require_ai_chart_advisor(fresh_frame, side, symbol)
         logger.info(
             "WAIT_ENTRY_FIREWALL_PASS symbol=%s side=%s trigger=%s",
             symbol, side, trigger_id,
@@ -1286,7 +1299,7 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_GATE: " + macro_reason
             )
-        require_ai_chart_advisor(fresh_frame, side, symbol)
+        await require_ai_chart_advisor(fresh_frame, side, symbol)
         logger.info(
             "【GATE 通過: %s】symbol=%s side=%s bar=%s stage=final_firewall",
             signal_pattern, symbol, side, signal_bar_id,
@@ -1688,6 +1701,5 @@ async def validate_account_entry(account, symbol, side, context):
                         finality_server_ms=frame.attrs.get('entry_finality_server_ms'),
                         evidence=entry_frame_evidence(frame))
         snapshot.update({key: decision[key] for key in ENTRY_EVIDENCE_KEYS if key in decision})
-    if verified_fast_cross is not None:
-        require_ai_chart_advisor(frame, side, symbol)
+    await require_ai_chart_advisor(frame, side, symbol)
     return decision

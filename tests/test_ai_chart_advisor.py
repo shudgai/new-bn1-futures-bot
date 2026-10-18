@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 import pandas as pd
 
@@ -26,14 +27,22 @@ def _labels(**overrides):
     return result
 
 
+def _png_bytes():
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 24), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_advisor_publishes_fresh_labels_for_the_analyzed_bar():
     advisor = AIChartAdvisor(endpoint="http://advisor.invalid/analyze")
 
     async def fake_render(frame):
-        return b"chart"
+        return _png_bytes()
 
     async def fake_request(image):
-        assert image == b"chart"
+        assert image.startswith(b"\xff\xd8")
         return _labels(is_chop=True)
 
     advisor._render_chart = fake_render
@@ -58,7 +67,7 @@ def test_advisor_fails_open_without_publishing_failed_inference():
     async def failed_request(_image):
         raise TimeoutError("inference timeout")
 
-    advisor._render_chart = lambda _frame: asyncio.sleep(0, result=b"chart")
+    advisor._render_chart = lambda _frame: asyncio.sleep(0, result=_png_bytes())
     advisor._request_labels = failed_request
 
     assert not asyncio.run(
@@ -106,3 +115,29 @@ def test_advisor_schedules_once_per_new_verified_closed_bar():
     asyncio.run(run())
 
     assert calls == [("LOBSTER/USDT", 60_000.0, 1)]
+
+
+def test_advisor_downscales_chart_before_multimodal_inference():
+    from PIL import Image
+
+    advisor = AIChartAdvisor(endpoint="http://advisor.invalid/v1")
+    source = io.BytesIO()
+    Image.new("RGB", (1200, 800), "white").save(source, format="PNG")
+    received = {}
+
+    async def render(_frame):
+        return source.getvalue()
+
+    async def request(image):
+        received["image"] = image
+        return _labels()
+
+    advisor._render_chart = render
+    advisor._request_labels = request
+
+    assert asyncio.run(
+        advisor.update_chart_async("CAP/USDT", 60_000, _closed_frame())
+    )
+    with Image.open(io.BytesIO(received["image"])) as chart:
+        assert chart.format == "JPEG"
+        assert chart.size == (576, 384)

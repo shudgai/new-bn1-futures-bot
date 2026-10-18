@@ -481,20 +481,6 @@ async def _process_wild_swing_symbol(
             wait_candidate = _observe_wait_entry(
                 engine, symbol, entry_frame, quote, False,
             )
-    if (
-        entry_frame is not None
-        and entry_frame.attrs.get("entry_finality_verified")
-        and entry_frame.attrs.get("timeframe_ms") == 60_000
-    ):
-        advisor_closed = closed_entry_candles(entry_frame)
-        if not advisor_closed.empty:
-            from core.services.ai_chart_advisor import ai_chart_advisor
-
-            ai_chart_advisor.schedule_update(
-                symbol,
-                advisor_closed.iloc[-1]["timestamp"],
-                advisor_closed,
-            )
     _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
     if position:
         meta_store = getattr(engine.account, "position_meta", None)

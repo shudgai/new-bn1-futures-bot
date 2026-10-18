@@ -39,6 +39,19 @@ def test_render_accepts_closed_candle_dataframe():
     assert out[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+def test_pillow_chart_fallback_treats_missing_volume_as_zero():
+    chart_bars = [
+        SimpleNamespace(
+            open=100.0 + i, high=102.0 + i, low=99.0 + i,
+            close=101.0 + i, ma5=100.0 + i, ma15=99.0 + i,
+            kc_upper=105.0 + i, kc_lower=95.0 + i,
+        )
+        for i in range(4)
+    ]
+    out = cg._render_chart_with_pillow(chart_bars, None)
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_parse_verdict():
     assert cg.parse_verdict('{"verdict": "REAL", "reason": "放量"}') == (True, "放量")
     assert cg.parse_verdict('```json\n{"verdict":"trap","reason":"x"}\n```') == (False, "x")

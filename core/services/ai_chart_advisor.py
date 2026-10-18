@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -13,13 +14,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 ADVISOR_TTL_SECONDS = 90.0
-ADVISOR_TIMEOUT_SECONDS = 2.5
-DEFAULT_ADVISOR_URL = "http://100.108.52.6:8888/analyze"
+ADVISOR_TIMEOUT_SECONDS = 45.0
+ADVISOR_LOOKBACK_BARS = 30
+ADVISOR_IMAGE_SIZE = (640, 384)
+DEFAULT_ADVISOR_URL = "http://100.108.52.6:8888/v1"
+DEFAULT_ADVISOR_MODEL = "Qwen3.8-27B-UD-IQ3_S.gguf"
 _PROMPT = (
-    "Analyze this 1-minute candlestick chart with MA5, MA15 and KC bands. "
-    "Return only JSON with boolean fields is_chop, is_exhausted, allow_long, "
-    "allow_short, and a short string reason. Treat your output as advisory "
-    "labels only; do not invent missing chart evidence."
+    "Read this 1-minute candlestick chart with MA5, MA15 and KC bands. "
+    "Use visible evidence only. Return one JSON object with boolean fields "
+    "is_chop, is_exhausted, allow_long, allow_short and reason (under 12 words). "
+    "No markdown or extra text."
 )
 
 
@@ -37,6 +41,7 @@ class AIChartAdvisor:
             if endpoint is not None
             else os.getenv("AI_CHART_ADVISOR_URL", DEFAULT_ADVISOR_URL)
         ).strip()
+        self.model = os.getenv("AI_CHART_ADVISOR_MODEL", DEFAULT_ADVISOR_MODEL).strip()
         self.enabled = (
             enabled
             if enabled is not None
@@ -50,6 +55,7 @@ class AIChartAdvisor:
         self._cache: dict[str, dict[str, Any]] = {}
         self._last_scheduled_bar: dict[str, float] = {}
         self._tasks: dict[tuple[str, float], asyncio.Task] = {}
+        self._inference_lock = asyncio.Lock()
 
     @staticmethod
     def _symbol_key(symbol: str) -> str:
@@ -194,14 +200,39 @@ class AIChartAdvisor:
 
     async def _request_labels(self, image: bytes) -> dict[str, Any]:
         payload = {
-            "image": base64.b64encode(image).decode("ascii"),
-            "prompt": _PROMPT,
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,"
+                            + base64.b64encode(image).decode("ascii"),
+                        },
+                    },
+                ],
+            }],
+            "temperature": 0.0,
+            "max_tokens": 64,
+            "thinking_budget_tokens": 16,
+            "response_format": {"type": "json_object"},
         }
-        timeout = httpx.Timeout(self.timeout_seconds)
+        timeout = httpx.Timeout(
+            self.timeout_seconds,
+            connect=3.0,
+            write=10.0,
+            pool=2.0,
+        )
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(self.endpoint, json=payload)
+            response = await client.post(
+                f"{self.endpoint.rstrip('/')}/chat/completions",
+                json=payload,
+            )
             response.raise_for_status()
-            return self._parse_labels(response.json())
+            content = response.json()["choices"][0]["message"]["content"]
+            return self._parse_labels(content)
 
     async def update_chart_async(
         self,
@@ -209,13 +240,31 @@ class AIChartAdvisor:
         closed_bar_id: float,
         closed_frame: Any,
     ) -> bool:
-        """Render and analyze in the background; failures leave math gates in control."""
+        """Render and analyze in the background; inference failures publish no labels."""
         try:
-            image = await self._render_chart(closed_frame)
-            labels = await self._request_labels(image)
+            image = await self._render_chart(
+                closed_frame.tail(ADVISOR_LOOKBACK_BARS),
+            )
+            from PIL import Image
+
+            with Image.open(io.BytesIO(image)) as chart:
+                chart.thumbnail(ADVISOR_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                chart.convert("RGB").save(
+                    buffer, format="JPEG", quality=82, optimize=True,
+                )
+                image = buffer.getvalue()
+            try:
+                await asyncio.wait_for(self._inference_lock.acquire(), timeout=2.0)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("local vision inference is busy") from exc
+            try:
+                labels = await self._request_labels(image)
+            finally:
+                self._inference_lock.release()
         except Exception as exc:
             logger.warning(
-                "AI_CHART_ADVISOR_FAIL_OPEN symbol=%s bar=%s error=%s",
+                "AI_CHART_ADVISOR_INFERENCE_FAILED symbol=%s bar=%s error=%s",
                 symbol, closed_bar_id, type(exc).__name__,
             )
             return False

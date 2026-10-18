@@ -298,10 +298,6 @@ def render_chart_bytes(
     watermark: Optional[str] = None,
 ) -> bytes:
     """Render the last `lookback` bars to PNG bytes entirely in memory with optional status watermark."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     iterrows = getattr(bars, "iterrows", None)
     if callable(iterrows):
         tail = bars.tail(lookback) if callable(getattr(bars, "tail", None)) else bars
@@ -310,6 +306,13 @@ def render_chart_bytes(
         data = list(bars)[-lookback:]
     if not data:
         raise ValueError("no bars to render")
+    try:
+        import matplotlib
+    except ModuleNotFoundError:
+        return _render_chart_with_pillow(data, watermark)
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     xs = list(range(len(data)))
     try:
         fig, (ax, axv) = plt.subplots(
@@ -344,6 +347,93 @@ def render_chart_bytes(
         return buf.getvalue()
     finally:
         plt.close("all")
+
+
+def _render_chart_with_pillow(data: list[Any], watermark: Optional[str]) -> bytes:
+    """Draw a compact candlestick chart when optional Matplotlib is unavailable."""
+    from PIL import Image, ImageDraw
+
+    def value(bar: Any, name: str) -> float:
+        try:
+            return float(bar[name])
+        except (TypeError, KeyError, IndexError):
+            if name == "volume":
+                return 0.0
+            return float(getattr(bar, name))
+
+    rows = [
+        {
+            name: value(bar, name)
+            for name in (
+                "open", "high", "low", "close", "volume", "ma5", "ma15",
+                "kc_upper", "kc_lower",
+            )
+        }
+        for bar in data
+    ]
+    prices = [row[name] for row in rows for name in (
+        "high", "low", "ma5", "ma15", "kc_upper", "kc_lower",
+    )]
+    low_price, high_price = min(prices), max(prices)
+    if high_price <= low_price:
+        high_price = low_price + max(abs(low_price) * 1e-6, 1e-9)
+
+    width, height = 1000, 620
+    left, right = 58, width - 20
+    top, bottom = 32, 450
+    volume_top, volume_bottom = 492, height - 35
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((left, top, right, bottom), outline="#bbbbbb")
+    draw.rectangle((left, volume_top, right, volume_bottom), outline="#bbbbbb")
+
+    def x_at(index: int) -> float:
+        return left + (right - left) * index / max(len(rows) - 1, 1)
+
+    def y_at(price: float) -> float:
+        return bottom - (price - low_price) * (bottom - top) / (high_price - low_price)
+
+    for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = top + (bottom - top) * fraction
+        draw.line((left, y, right, y), fill="#eeeeee", width=1)
+
+    colors = {
+        "kc_upper": "#777777", "kc_lower": "#777777",
+        "ma5": "#1565c0", "ma15": "#ef6c00",
+    }
+    for name, color in colors.items():
+        points = [(x_at(index), y_at(row[name])) for index, row in enumerate(rows)]
+        if len(points) > 1:
+            draw.line(points, fill=color, width=2)
+
+    max_volume = max(max(row["volume"], 0.0) for row in rows) or 1.0
+    candle_width = max(2, min(14, (right - left) / max(len(rows), 1) * 0.62))
+    for index, row in enumerate(rows):
+        x = x_at(index)
+        rising = row["close"] >= row["open"]
+        color = "#c62828" if rising else "#2e7d32"
+        draw.line((x, y_at(row["high"]), x, y_at(row["low"])), fill=color, width=1)
+        body_top = y_at(max(row["open"], row["close"]))
+        body_bottom = y_at(min(row["open"], row["close"]))
+        if body_bottom - body_top < 2:
+            body_bottom = body_top + 2
+        draw.rectangle(
+            (x - candle_width / 2, body_top, x + candle_width / 2, body_bottom),
+            fill=color,
+            outline=color,
+        )
+        volume_y = volume_bottom - max(row["volume"], 0.0) / max_volume * (
+            volume_bottom - volume_top
+        )
+        draw.rectangle((x - candle_width / 2, volume_y, x + candle_width / 2,
+                        volume_bottom), fill=color)
+
+    draw.text((left, 8), "1m candles | KC | MA5 | MA15", fill="#222222")
+    if watermark:
+        draw.text((left + 260, 8), str(watermark)[:80], fill="#e65100")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def parse_verdict(text: str) -> Tuple[bool, str]:
