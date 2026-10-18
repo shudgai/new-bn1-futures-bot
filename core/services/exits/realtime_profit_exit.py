@@ -247,7 +247,15 @@ def _evaluate_profit_lock_only(position, meta, price, stamp, snapshot, fee, slip
             else (entry - trough_price) / atr if side == 'SHORT' and atr > 0
             else 0.0
         )
-        if (
+        open_ms = float(position.get('open_timestamp') or position.get('entry_timestamp') or 0.0)
+        if open_ms < 1e11:
+            open_ms *= 1000.0
+        live_bar_ms = float(snapshot.get('live_bar_ms') or 0.0)
+        same_entry_bar = bool(
+            open_ms > 0 and live_bar_ms > 0
+            and math.floor(open_ms / 60000.0) == math.floor(live_bar_ms / 60000.0)
+        )
+        if not same_entry_bar and (
             position.get('breakeven_locked')
             or meta.get('breakeven_locked')
             or should_arm_breakeven_lock(

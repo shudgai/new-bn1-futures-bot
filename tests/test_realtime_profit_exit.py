@@ -95,6 +95,21 @@ def test_breakeven_line_only_tightens_after_activation():
     assert position['stop_loss'] == pytest.approx(99.8)
 
 
+def test_breakeven_stop_does_not_tighten_on_entry_bar():
+    position = {
+        'symbol': 'SUI/USDT', 'side': 'LONG', 'entry_price': 100.0,
+        'qty': 1.2, 'margin': 10.0, 'open_timestamp': 60.0,
+        'sl': 95.0, 'highest_price': 100.6,
+    }
+    _evaluate_profit_lock_only(
+        position, {}, 100.6, 61_000,
+        {'reason': None, 'atr': 1.0, 'live_bar_ms': 60_000.0},
+        fee=0.0, slippage=0.0,
+    )
+    assert position['sl'] == pytest.approx(95.0)
+    assert position.get('breakeven_locked') is not True
+
+
 @pytest.mark.parametrize(
     ('side', 'price', 'extreme_key', 'expected_stop'),
     [
