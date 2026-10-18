@@ -782,14 +782,44 @@ def _is_profit_lock_reason(reason: str) -> bool:
         or r.startswith('NET_ROE_THREE_TIER_GIVEBACK')
         or 'RATCHET' in r
         or 'BREAKEVEN' in r
-        or 'TAKE_PROFIT' in r
-        or 'SPIKE_REVERSAL' in r
-        or 'EXHAUSTION' in r
-        or 'LIGHTNING_ROD' in r
-        or 'FLOOR_PIN' in r
-        or 'HIGH_PROFIT_MA_CROSS' in r
-        or 'LOCK' in r
+        or 'PROFIT_FLOOR' in r
+        or 'PROFIT_LOCK' in r
     )
+
+
+def _verified_profit_lock_details(position, quote):
+    """Return evidence only when an armed profit floor is actually touched."""
+    details = _ratchet_lock_details(position, quote)
+    if details is not None:
+        return details
+
+    try:
+        side = str((position or {}).get('side', '')).upper()
+        entry = float((position or {}).get('entry_price') or 0.0)
+        price = float(quote)
+        if side not in ('LONG', 'SHORT') or entry <= 0 or price <= 0:
+            return None
+        lock_state = (position or {}).get('channel_profit_protection') or {}
+        is_armed = (
+            (position or {}).get('breakeven_locked') is True
+            or (position or {}).get('is_breakeven_moved') is True
+            or (position or {}).get('breakeven_price') is not None
+            or (isinstance(lock_state, dict) and lock_state.get('armed') is True)
+        )
+        floor = float(
+            (position or {}).get('breakeven_price')
+            or (position or {}).get('active_stop_price')
+            or (lock_state.get('breakeven_price') if isinstance(lock_state, dict) else 0.0)
+            or 0.0
+        )
+        touched = (
+            price <= floor if side == 'LONG' else price >= floor
+        )
+        if is_armed and floor > 0 and touched:
+            return {'lock_type': 'ARMED_BREAKEVEN_OR_PROFIT_FLOOR', 'lock_price': floor}
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    return None
 
 
 
@@ -1631,6 +1661,10 @@ class HoldingProtectionExitGate:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
         if is_profit_lock:
+            lock = _verified_profit_lock_details(position, quote)
+            if lock is None:
+                return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
+            details.update(lock)
             return _auth(clean_reason)
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
@@ -1839,7 +1873,7 @@ class HoldingProtectionExitGate:
         if ((channel_swing
              or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING')
                 and _is_profit_lock_reason(clean_reason)):
-            lock = _ratchet_lock_details(position, quote)
+            lock = _verified_profit_lock_details(position, quote)
             if lock is not None:
                 details.update(lock)
                 return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
@@ -1932,7 +1966,7 @@ class HoldingProtectionExitGate:
         # verified extreme V-reversal and the ROE ratchet lock.
         if frame is not None and not frame.empty and not _current_bar_is_closed(frame):
             if _is_profit_lock_reason(clean_reason):
-                lock = _ratchet_lock_details(position, quote)
+                lock = _verified_profit_lock_details(position, quote)
                 if lock is not None:
                     details.update(lock)
                     return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
@@ -2000,7 +2034,7 @@ class HoldingProtectionExitGate:
 
         # ── 3. 階梯鎖利回吐 (WHITELIST SCENARIO 3) ──
         if _is_profit_lock_reason(clean_reason):
-            lock = _ratchet_lock_details(position, quote)
+            lock = _verified_profit_lock_details(position, quote)
             if lock is not None:
                 details.update(lock)
                 return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
