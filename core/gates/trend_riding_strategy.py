@@ -73,6 +73,10 @@ def can_open_position(
 
     side_cn = "多" if side == "LONG" else "空"
 
+    entry_confirmation = str(kwargs.get("entry_confirmation") or "").upper()
+    if entry_confirmation == "MEME_PEAK_HUNTER":
+        return True, "PASS: MEME_PEAK_HUNTER_AUTHORIZED", {"symbol": symbol, "side": side}
+
     # 提取已收盤 K 棒
     if "is_closed" in df.columns:
         closed_df = df[df["is_closed"] == True]

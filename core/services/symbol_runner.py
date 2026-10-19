@@ -115,7 +115,7 @@ def _filter_authorities_by_kc_direction(authorities, frame):
         item for item in authorities
         if item.get("authority") == "WILD_SWING"
         and item.get("signal", {}).get("structure_confirmation")
-        == INSTANT_BREAKOUT_INSIDE
+        in {INSTANT_BREAKOUT_INSIDE, "MEME_PEAK_HUNTER"}
     ]
 
     # Flat/unknown KC is not permission to choose a side. Keep the existing
