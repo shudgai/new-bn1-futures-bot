@@ -152,6 +152,7 @@ class MemePeakHunterStrategy:
             above_ema40 = quote > ema40
             ema_crossover = (ema5 > ema13) and (prev_ema5 <= prev_ema13 or abs(ema5 - ema13) >= 0.05 * ind["atr"])
 
+            # 模式 1: 初始放量金叉開倉
             if above_vwap and above_ema40 and ema40_up and ema_crossover and is_vol_expanding:
                 reason = "MEME_PEAK_HUNTER_3M_EMA_LONG"
                 return {
@@ -172,11 +173,37 @@ class MemePeakHunterStrategy:
                     "ema40": ema40,
                 }
 
+            # 模式 2: 平倉後強勢趨勢延續開倉（強制上車 / Re-entry）
+            is_trend_intact = above_vwap and above_ema40 and ema40_up and (ema5 > ema13) and (ema5 >= prev_ema5)
+            is_bullish_action = (quote >= ind["open"]) and (quote > ema5) and ((quote - ema5) <= 2.0 * ind["atr"])
+            is_continuation_volume = (vol >= vol_ma * 0.6)  # 換手延續量
+
+            if is_trend_intact and is_bullish_action and is_continuation_volume:
+                reason = "MEME_PEAK_HUNTER_3M_CONTINUATION_LONG"
+                return {
+                    "side": "LONG",
+                    "reason": reason,
+                    "entry_label": reason,
+                    "entry_pattern": "CONTINUATION",
+                    "entry_signal_mode": "CONTINUATION",
+                    "structure_confirmation": "MEME_PEAK_HUNTER",
+                    "structure_confirmed": True,
+                    "is_intrabar": True,
+                    "channel_expanding": True,
+                    "ma5_current": ema5,
+                    "ma5_previous": prev_ema5,
+                    "volume_exhausted": False,
+                    "bar_id": ind["timestamp"],
+                    "vwap": vwap_val,
+                    "ema40": ema40,
+                }
+
         elif side == "SHORT":
             below_vwap = quote < vwap_val
             below_ema40 = quote < ema40
             ema_crossunder = (ema5 < ema13) and (prev_ema5 >= prev_ema13 or abs(ema13 - ema5) >= 0.05 * ind["atr"])
 
+            # 模式 1: 初始放量死叉開倉
             if below_vwap and below_ema40 and ema40_down and ema_crossunder and is_vol_expanding:
                 reason = "MEME_PEAK_HUNTER_3M_EMA_SHORT"
                 return {
@@ -185,6 +212,31 @@ class MemePeakHunterStrategy:
                     "entry_label": reason,
                     "entry_pattern": "BREAKOUT",
                     "entry_signal_mode": "BREAKOUT",
+                    "structure_confirmation": "MEME_PEAK_HUNTER",
+                    "structure_confirmed": True,
+                    "is_intrabar": True,
+                    "channel_expanding": True,
+                    "ma5_current": ema5,
+                    "ma5_previous": prev_ema5,
+                    "volume_exhausted": False,
+                    "bar_id": ind["timestamp"],
+                    "vwap": vwap_val,
+                    "ema40": ema40,
+                }
+
+            # 模式 2: 平倉後強勢趨勢延續開倉（空單順勢補上車 / Re-entry）
+            is_bearish_trend = below_vwap and below_ema40 and ema40_down and (ema5 < ema13) and (ema5 <= prev_ema5)
+            is_bearish_action = (quote <= ind["open"]) and (quote < ema5) and ((ema5 - quote) <= 2.0 * ind["atr"])
+            is_continuation_volume = (vol >= vol_ma * 0.6)
+
+            if is_bearish_trend and is_bearish_action and is_continuation_volume:
+                reason = "MEME_PEAK_HUNTER_3M_CONTINUATION_SHORT"
+                return {
+                    "side": "SHORT",
+                    "reason": reason,
+                    "entry_label": reason,
+                    "entry_pattern": "CONTINUATION",
+                    "entry_signal_mode": "CONTINUATION",
                     "structure_confirmation": "MEME_PEAK_HUNTER",
                     "structure_confirmed": True,
                     "is_intrabar": True,

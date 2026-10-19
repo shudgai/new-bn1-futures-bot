@@ -52,6 +52,25 @@ def test_meme_peak_hunter_3m_long_entry_rejected_if_low_volume():
     assert signal is None
 
 
+def test_meme_peak_hunter_3m_continuation_long_success():
+    """3m 多單延續開倉（平倉後重新上車）：大趨勢多頭排列，陽線起抽，成功觸發延續開倉"""
+    df = _create_base_df(70, base_price=1.0, trend=0.003)
+    last_idx = len(df) - 1
+    # 設置大趨勢良好（close > ema5 > ema13 > ema40 > vwap）
+    df.loc[last_idx, "open"] = 1.21
+    df.loc[last_idx, "close"] = 1.215
+    df.loc[last_idx, "high"] = 1.218
+    df.loc[last_idx, "low"] = 1.208
+    df.loc[last_idx, "volume"] = 70.0  # 70 >= 100 * 0.6 換手延續量
+
+    signal = MemePeakHunterStrategy.evaluate_entry("CAPUSDT", df, "LONG", tick_price=1.215)
+    assert signal is not None
+    assert signal["side"] == "LONG"
+    assert signal["structure_confirmation"] == "MEME_PEAK_HUNTER"
+    assert signal["reason"] == "MEME_PEAK_HUNTER_3M_CONTINUATION_LONG"
+    assert signal["entry_pattern"] == "CONTINUATION"
+
+
 def test_meme_peak_hunter_3m_short_entry_success():
     """3m 空單：現價 < VWAP + 現價 < EMA40 + EMA40向下 + EMA5 死叉 EMA13 + 放量下殺 1.1 倍"""
     df = _create_base_df(70, base_price=2.0, trend=-0.002)

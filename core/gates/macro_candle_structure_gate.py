@@ -145,21 +145,23 @@ class MacroCandleStructureGate:
         if confirmation in PURE_MATH_ENTRY_CONFIRMATIONS:
             if side not in {"LONG", "SHORT"}:
                 return False, "UNKNOWN_SIDE"
-            expected_mode = (
-                "BREAKOUT"
-                if confirmation in {
-                    INSTANT_BREAKOUT_INSIDE,
-                    INSTANT_BREAKOUT_OUTSIDE,
-                    CONFIRMED_2BAR_BREAKOUT,
-                    INSTANT_BURST_BREAKOUT,
-                    "MEME_PEAK_HUNTER",
-                }
-                else "CROSSOVER"
-                if confirmation == MA_CROSSOVER
-                else "DIP_SNIPER"
-                if confirmation in {"DIP_SNIPER", "PULLBACK"}
-                else "CONTINUATION"
-            )
+            if confirmation == "MEME_PEAK_HUNTER":
+                expected_mode = mode
+            else:
+                expected_mode = (
+                    "BREAKOUT"
+                    if confirmation in {
+                        INSTANT_BREAKOUT_INSIDE,
+                        INSTANT_BREAKOUT_OUTSIDE,
+                        CONFIRMED_2BAR_BREAKOUT,
+                        INSTANT_BURST_BREAKOUT,
+                    }
+                    else "CROSSOVER"
+                    if confirmation == MA_CROSSOVER
+                    else "DIP_SNIPER"
+                    if confirmation in {"DIP_SNIPER", "PULLBACK"}
+                    else "CONTINUATION"
+                )
             if not structure_confirmed or mode != expected_mode:
                 return False, "VETO_PURE_MATH_ENTRY: 訊號模式與結構確認不一致"
             if confirmation not in {
