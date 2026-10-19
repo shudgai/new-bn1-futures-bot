@@ -124,3 +124,40 @@ def test_valid_entries_allowed():
         kc_mid_slope=-0.1, ma15_slope=-0.08, avg_atr=2.0
     )
     assert allowed_s
+
+
+def test_low_priced_coin_downward_slope_not_blocked():
+    """低價幣 (如 CAP 0.069) 斜率微小但確實向下 (-0.00002)，不應被誤判為走平阻擋"""
+    kc = {"upper": 0.072, "lower": 0.067, "mid": 0.0695}
+    candle = {"open": 0.069, "high": 0.0692, "low": 0.0678, "close": 0.068}
+    allowed, reason = can_execute_entry(
+        signal_type="SHORT",
+        candle=candle,
+        kc=kc,
+        ma5=0.0685,
+        ma15=0.0695,
+        kc_mid_slope=-0.00002,
+        ma15_slope=-0.00001,
+        avg_atr=0.001,
+    )
+    assert allowed is True
+    assert "PASSED_ENTRY_PREFILTER" in reason
+
+
+def test_breakout_entry_allows_even_if_ma15_lagging():
+    """破軌開倉：價格已跌破下軌，即使 MA15 滯後走平，破軌依然允許開倉"""
+    kc = {"upper": 105.0, "lower": 95.0, "mid": 100.0}
+    candle = {"open": 95.2, "high": 95.5, "low": 92.5, "close": 93.0}
+    allowed, reason = can_execute_entry(
+        signal_type="SHORT",
+        candle=candle,
+        kc=kc,
+        ma5=94.0,
+        ma15=98.0,
+        kc_mid_slope=-0.05,
+        ma15_slope=0.0,  # MA15 滯後
+        avg_atr=2.0,
+        entry_pattern="BREAKOUT",
+    )
+    assert allowed is True
+    assert "PASSED_ENTRY_PREFILTER" in reason

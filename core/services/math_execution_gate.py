@@ -87,17 +87,19 @@ def validate_entry_math(
     if side == "SHORT" and kc_slope > 0:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
-    kc_width = upper - lower
-    if kc_width < (atr * 1.5):
-        return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
+    is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
+
+    # In-channel entries: reject squeeze chop
+    if not is_outer:
+        kc_width = upper - lower
+        if kc_width < (atr * 1.5):
+            return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
 
     # 做多必須站在中軌與 MA15 之上，做空必須在下方
     if side == "LONG" and (close < latest_middle or close < ma15):
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
     if side == "SHORT" and (close > latest_middle or close > ma15):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
-    if side == "SHORT" and (abs(kc_slope) < 0.00005 or kc_slope >= 0):
-        return False, "BLOCKED_SHORT_MA15_FLAT_OR_UP"
 
     if is_dip_sniper or is_meme_hunter:
         if side == "LONG":

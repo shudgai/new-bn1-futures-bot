@@ -71,6 +71,9 @@ class MacroCandleStructureGate:
             supplied_pattern
         )
 
+        if side not in {"LONG", "SHORT"}:
+            return False, "UNKNOWN_SIDE"
+
         required_bar = ("open", "high", "low", "close")
         required_indicators = ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
         if any(field not in closed_bar for field in required_bar) or any(
@@ -116,32 +119,41 @@ class MacroCandleStructureGate:
         ):
             return False, "VETO_INVALID_STRUCTURE_DATA"
 
+        confirmation = str(structure_confirmation or "").upper()
+
         # ═════════════════════════════════════════════════════════════════
         # 【進場前置過濾守衛 (Entry Pre-Filter)】
-        # 1. 通道收斂過濾 (kc_width < 1.5 * atr)
-        # 2. 多單禁止生命線 (KC中軌/MA15) 下方接刀，且 MA15 不能下傾
-        # 3. 空單禁止生命線上方做空，且 MA15/KC中軌走平或向上時嚴禁追空
+        # 僅對通道內/均線交叉/拉回開倉進行通道收斂與生命線方向過濾。
+        # 破軌與延續開倉（突破通道外軌）及反轉極值型態不在此限。
         # ═════════════════════════════════════════════════════════════════
-        from core.gates.entry_prefilter_gate import can_execute_entry
-        kc_mid_slope = float(indicators.get("kc_middle_current", kc_middle)) - float(indicators.get("kc_middle_previous", kc_middle))
-        ma15_prev = float(indicators.get("ma15_previous", indicators.get("prev_ma15", ma15)))
-        ma15_slope = ma15 - ma15_prev
-        ma5_val = float(indicators.get("ma5_current", indicators.get("ma5", close)))
-
-        prefilter_allowed, prefilter_reason = can_execute_entry(
-            signal_type=side,
-            candle=closed_bar,
-            kc={"upper": kc_upper, "lower": kc_lower, "mid": kc_middle},
-            ma5=ma5_val,
-            ma15=ma15,
-            kc_mid_slope=kc_mid_slope,
-            ma15_slope=ma15_slope,
-            avg_atr=atr,
+        has_kc_slope = ("kc_middle_previous" in indicators or "prev_kc_middle" in indicators)
+        has_ma15_slope = ("ma15_previous" in indicators or "prev_ma15" in indicators)
+        is_outer_entry = (
+            mode in {"BREAKOUT", "CONTINUATION"}
+            or confirmation in PURE_MATH_ENTRY_CONFIRMATIONS
+            or (side == "LONG" and close > kc_upper)
+            or (side == "SHORT" and close < kc_lower)
         )
-        if not prefilter_allowed:
-            return False, f"VETO_ENTRY_PREFILTER: {prefilter_reason}"
+        if not is_outer_entry and mode != "REVERSAL" and has_kc_slope and has_ma15_slope:
+            from core.gates.entry_prefilter_gate import can_execute_entry
+            kc_mid_slope = float(indicators.get("kc_middle_current", kc_middle)) - float(indicators.get("kc_middle_previous", indicators.get("prev_kc_middle", kc_middle)))
+            ma15_prev = float(indicators.get("ma15_previous", indicators.get("prev_ma15", ma15)))
+            ma15_slope = ma15 - ma15_prev
+            ma5_val = float(indicators.get("ma5_current", indicators.get("ma5", close)))
 
-        confirmation = str(structure_confirmation or "").upper()
+            prefilter_allowed, prefilter_reason = can_execute_entry(
+                signal_type=side,
+                candle=closed_bar,
+                kc={"upper": kc_upper, "lower": kc_lower, "mid": kc_middle},
+                ma5=ma5_val,
+                ma15=ma15,
+                kc_mid_slope=kc_mid_slope,
+                ma15_slope=ma15_slope,
+                avg_atr=atr,
+                entry_pattern=mode,
+            )
+            if not prefilter_allowed:
+                return False, f"VETO_ENTRY_PREFILTER: {prefilter_reason}"
         if confirmation in PURE_MATH_ENTRY_CONFIRMATIONS:
             if side not in {"LONG", "SHORT"}:
                 return False, "UNKNOWN_SIDE"

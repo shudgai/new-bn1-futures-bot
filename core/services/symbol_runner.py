@@ -763,9 +763,15 @@ async def _process_wild_swing_symbol(
                 field: float(current_bar[field])
                 for field in ("kc_upper", "kc_lower", "kc_middle", "ma15", "atr")
             }
+            if len(closed) >= 1:
+                prev_bar = closed.iloc[-2] if len(closed) >= 2 else closed.iloc[-1]
+                macro_indicators["ma15_previous"] = float(prev_bar.get("ma15", current_bar["ma15"]))
+                macro_indicators["kc_middle_previous"] = float(prev_bar.get("kc_middle", current_bar["kc_middle"]))
+                macro_indicators["ma5_previous"] = float(prev_bar.get("ma5", current_bar.get("ma5", current_bar["close"])))
             for field in (
                 "ma5_current", "ma5_previous",
                 "kc_middle_current", "kc_middle_previous",
+                "ma15_current", "ma15_previous",
             ):
                 if field in signal:
                     macro_indicators[field] = float(signal[field])
