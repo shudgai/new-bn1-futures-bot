@@ -383,6 +383,29 @@ class BreakoutContinuationEntryGate:
                     result["bar_id"] = live_timestamp
                     return result
 
+                # ── 即時當根 MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
+                if live_ma5 is not None and live_ma15 is not None and expanding_live:
+                    if closed_ma5 <= current_ma15 and live_ma5 > live_ma15 and live_ma5 > closed_ma5:
+                        result = signal(
+                            "OPEN_LONG", MA_CROSSOVER, tick,
+                            "即時 MA5/MA15 金叉向上且通道擴張",
+                            current_ma5=live_ma5, current_basis=live_middle,
+                            ma15_current=live_ma15, channel_expanding=True,
+                            is_intrabar=True,
+                        )
+                        result["bar_id"] = live_timestamp
+                        return result
+                    if closed_ma5 >= current_ma15 and live_ma5 < live_ma15 and live_ma5 < closed_ma5:
+                        result = signal(
+                            "OPEN_SHORT", MA_CROSSOVER, tick,
+                            "即時 MA5/MA15 死叉向下且通道擴張",
+                            current_ma5=live_ma5, current_basis=live_middle,
+                            ma15_current=live_ma15, channel_expanding=True,
+                            is_intrabar=True,
+                        )
+                        result["bar_id"] = live_timestamp
+                        return result
+
         if (
             previous_bullish
             and current_bullish
@@ -440,6 +463,34 @@ class BreakoutContinuationEntryGate:
                 "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, current["close"],
                 "收線下軌外順勢續跌：MA5 低於中軌並破前低",
             )
+
+        # ── 收線確認 MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
+        channel_expanding_closed = (upper - lower >= previous_upper - previous_lower)
+        # (A) 死叉開空
+        if (
+            previous_ma5 >= previous_ma15
+            and closed_ma5 < current_ma15
+            and ma5_down
+            and channel_expanding_closed
+        ):
+            return signal(
+                "OPEN_SHORT", MA_CROSSOVER, current["close"],
+                "MA5/MA15 死叉收線確認，通道擴張，評估均線交叉開空",
+                channel_expanding=True,
+            )
+        # (B) 金叉開多
+        if (
+            previous_ma5 <= previous_ma15
+            and closed_ma5 > current_ma15
+            and ma5_up
+            and channel_expanding_closed
+        ):
+            return signal(
+                "OPEN_LONG", MA_CROSSOVER, current["close"],
+                "MA5/MA15 金叉收線確認，通道擴張，評估均線交叉開多",
+                channel_expanding=True,
+            )
+
         return None
 
     @classmethod
@@ -457,6 +508,7 @@ class BreakoutContinuationEntryGate:
             CONFIRMED_2BAR_BREAKOUT,
             INSTANT_BREAKOUT_INSIDE,
             CONTINUATION_OUTSIDE_KC,
+            MA_CROSSOVER,
         }:
             return None
         try:
