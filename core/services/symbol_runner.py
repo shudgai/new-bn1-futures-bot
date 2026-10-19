@@ -685,6 +685,9 @@ async def _process_wild_swing_symbol(
         CONFIRMED_2BAR_BREAKOUT,
         INSTANT_BREAKOUT_INSIDE,
         CONTINUATION_OUTSIDE_KC,
+        "MA_CROSSOVER",
+        "FIVE_LINE_CONTINUATION",
+        "INSTANT_BURST_BREAKOUT",
         "MA5_MA15_1M_CROSS",
     }:
         logger.error(
@@ -789,13 +792,14 @@ async def _process_wild_swing_symbol(
         entry_confirmation=signal.get("structure_confirmation"),
     )
     if not gate_ok:
+        log_entry_gate(engine, symbol, signal['side'], 'GATE', gate_reason, float(frame.iloc[-1].get('timestamp', 0)))
         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Gatekeeper rejected {signal['side']}: {gate_reason}")
         print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {gate_reason}", flush=True)
         return [], []
 
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
-        frame=closed,
+        frame=frame,
         price=quote,
         side=signal["side"],
         mode_name=f"WILD_SWING_{signal['reason']}",
@@ -1046,12 +1050,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     bearish_continuation=bearish_continuation,
                 )
                 if not exh_ok:
+                    log_entry_gate(engine, symbol, candidate_side, 'GATE', exh_reason, float(frame.iloc[-1].get('timestamp', 0)))
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {exh_reason}")
                     print(f"[{symbol}] [進場攔截 VETO] {exh_reason}", flush=True)
                     continue
 
                 room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(frame, candidate_side, quote)
                 if not room_ok:
+                    log_entry_gate(engine, symbol, candidate_side, 'GATE', room_reason, float(frame.iloc[-1].get('timestamp', 0)))
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {room_reason}")
                     print(f"[{symbol}] [進場攔截 VETO] {room_reason}", flush=True)
                     continue
@@ -1059,11 +1065,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 if candidate_side == 'LONG':
                     price_ok = (quote >= ma5_v and quote >= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote >= min(ma5_v, kc_mid))
                     if ma5_s <= 0 or not price_ok:
+                        ma5_block_msg = f"MA5_SLOPE_NOT_POSITIVE_{ma5_s}" if ma5_s <= 0 else "PRICE_BELOW_MA5_OR_MID"
+                        log_entry_gate(engine, symbol, candidate_side, 'GATE', ma5_block_msg, float(frame.iloc[-1].get('timestamp', 0)))
                         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked LONG due to non-positive MA5 slope ({ma5_s}) or price < MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
                         continue
                 if candidate_side == 'SHORT':
                     price_ok = (quote <= ma5_v and quote <= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote <= max(ma5_v, kc_mid))
                     if ma5_s >= 0 or not price_ok:
+                        ma5_block_msg = f"MA5_SLOPE_NOT_NEGATIVE_{ma5_s}" if ma5_s >= 0 else "PRICE_ABOVE_MA5_OR_MID"
+                        log_entry_gate(engine, symbol, candidate_side, 'GATE', ma5_block_msg, float(frame.iloc[-1].get('timestamp', 0)))
                         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked SHORT due to non-negative MA5 slope ({ma5_s}) or price > MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
                         continue
 
@@ -1088,6 +1098,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     ),
                 )
                 if not fc_ok:
+                    log_entry_gate(engine, symbol, candidate_side, 'GATE', fc_reason, float(frame.iloc[-1].get('timestamp', 0)))
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {fc_reason}")
                     print(f"[{symbol}] [進場攔截 VETO] {fc_reason}", flush=True)
                     continue
@@ -1103,6 +1114,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     entry_ok, entry_reason, _ = check_short_entry(frame, symbol=symbol)
 
                 if not entry_ok:
+                    log_entry_gate(engine, symbol, candidate_side, 'GATE', entry_reason, float(frame.iloc[-1].get('timestamp', 0)))
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Defensive Entry Gate rejected {candidate_side} due to {entry_reason}")
                     print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {entry_reason}", flush=True)
                     continue

@@ -147,6 +147,10 @@ class MemeCoinGate:
     @classmethod
     def evaluate_meme_entry(
         cls, frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
+        last_closed_price: Optional[float] = None,
+        last_closed_side: Optional[str] = None,
+        last_closed_ts: Optional[float] = None,
+        **kwargs: Any,
     ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
         """妖幣進場審查（含極速捕捉與強制延續上車）。"""
         if not cls.is_meme_coin(symbol):
@@ -175,6 +179,27 @@ class MemeCoinGate:
             curr_kc_lower = kc_lower
             prev_kc_lower = float(prev.get('kc_lower', 0.0))
 
+            # ── 0. 動態開倉防刷保護（不鎖死時間，以突破與新 K 棒結構為準）──
+            if last_closed_side and str(last_closed_side).upper() == side:
+                curr_bar_ts = float(curr.get("timestamp") or 0.0)
+                if last_closed_ts and float(last_closed_ts) > 0:
+                    l_ts = float(last_closed_ts)
+                    if l_ts > 1e11 and curr_bar_ts < 1e11:
+                        l_ts /= 1000.0
+                    elif l_ts < 1e11 and curr_bar_ts > 1e11:
+                        l_ts *= 1000.0
+                    # 1. 同一根 1m K 棒內平倉後，禁止同向立即反覆秒開
+                    if abs(curr_bar_ts - l_ts) < 60000.0 or (curr_bar_ts > 0 and curr_bar_ts == l_ts):
+                        return False, 'BLOCKED_SAME_CANDLE_ANTI_CHOP', None
+
+                if last_closed_price and float(last_closed_price) > 0:
+                    l_price = float(last_closed_price)
+                    # 2. 如果上次平倉方向相同，必須等價格跌破上次平倉價或創近期新低，才准再度進場追空
+                    if side == 'SHORT' and quote >= l_price:
+                        return False, 'BLOCKED_REQUIRES_NEW_LOW_BELOW_LAST_EXIT', None
+                    elif side == 'LONG' and quote <= l_price:
+                        return False, 'BLOCKED_REQUIRES_NEW_HIGH_ABOVE_LAST_EXIT', None
+
             # ── 0. 順勢交易鐵律：如果趨勢是空頭不要開多，趨勢是多頭不要開空 ──
             from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend, check_kc_flat_or_squeezing
             kc_trend = resolve_kc_trend(frame)
@@ -183,7 +208,8 @@ class MemeCoinGate:
             if side == 'SHORT' and kc_trend == 'UP':
                 return False, 'VETO_CANNOT_SHORT_WHEN_KC_UP', None
 
-            if check_kc_flat_or_squeezing(frame, quote=quote):
+            is_outside = (side == 'LONG' and quote > kc_upper) or (side == 'SHORT' and quote < kc_lower)
+            if not is_outside and check_kc_flat_or_squeezing(frame, quote=quote):
                 return False, 'VETO_CHOPPY_MARKET_NO_ENTRY', None
 
             market_trend = cls.get_market_trend(frame, quote)
@@ -194,15 +220,8 @@ class MemeCoinGate:
 
             # ── 1. 極短線動能防護（MA5 嚴格禁令）與 KC 通道趨勢防護 ──
             if side == 'LONG':
-                from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
-                ma_ok, ma_reason = MemeSharedProtectionGate.validate_long_ma_condition(
-                    frame, min_gap_atr=0.20, min_up_slope_atr=0.05
-                )
-                if not ma_ok:
-                    return False, f"BLOCKED_BY_{ma_reason}", None
-
                 if live_ma5 <= prev_ma5:
-                    return False, 'BLOCKED_BY_MA5_DOWNWARD_SLOPE', None
+                    return False, 'BLOCKED_BY_MA5_SLOPE_FLAT_FOR_LONG', None
                 if quote <= live_ma5:
                     return False, 'BLOCKED_BY_PRICE_BELOW_MA5', None
 
@@ -227,7 +246,7 @@ class MemeCoinGate:
                         if c_mid_now > 0 and c_mid_prev > 0 and c_mid_now < c_mid_prev:
                             return False, 'BLOCKED_BY_KC_CLOSED_DOWNWARD', None
 
-                # ── 2. 初始破軌極速捕捉（大陽線爆出 KC 上軌）──
+                # ── 2. 初始破軌極速捕捉（大陽線爆出 KC 上軌，開盤在軌內或碰軌）──
                 body = quote - open_p
                 is_fresh_breakout = (
                     quote > kc_upper and body >= MEME_BREAKOUT_BODY_ATR * atr
@@ -240,8 +259,8 @@ class MemeCoinGate:
                         'price': quote,
                     }
 
-                # ── 3. 錯過初次破軌的延續開倉（強制上車）──
-                # 價格維持在 KC 上軌外狂奔，短暫整固且 MA5 昂揚向上，強制上車！
+                # ── 3. 錯過初次破軌的延續開倉（強制上車，妖幣專屬無限制解封）──
+                # 價格維持在 KC 上軌外狂奔，且 MA5 昂揚向上，強制上車！
                 is_outer_continuation = (
                     quote > kc_upper and quote > live_ma5
                     and live_ma5 > prev_ma5
@@ -254,13 +273,6 @@ class MemeCoinGate:
                     }
 
             elif side == 'SHORT':
-                from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
-                ma_ok, ma_reason = MemeSharedProtectionGate.validate_short_ma_condition(
-                    frame, min_gap_atr=0.20, min_down_slope_atr=-0.05
-                )
-                if not ma_ok:
-                    return False, f"BLOCKED_BY_{ma_reason}", None
-
                 if live_ma5 >= prev_ma5:
                     return False, 'BLOCKED_BY_MA5_UPWARD_SLOPE', None
                 if quote >= live_ma5:
@@ -288,7 +300,7 @@ class MemeCoinGate:
                         if c_mid_now > 0 and c_mid_prev > 0 and c_mid_now > c_mid_prev:
                             return False, 'BLOCKED_BY_KC_CLOSED_UPWARD', None
 
-                # 初始破軌極速捕捉（大陰線摜破 KC 下軌）
+                # 初始破軌極速捕捉（大陰線摜破 KC 下軌，開盤在軌內或碰軌）
                 body = open_p - quote
                 is_fresh_breakout = (
                     kc_lower > 0 and quote < kc_lower
@@ -301,7 +313,7 @@ class MemeCoinGate:
                         'price': quote,
                     }
 
-                # 錯過初次破軌的延續開倉（強制上車做空）
+                # ── 錯過初次破軌的延續開倉（強制上車做空，妖幣專屬無限制解封）──
                 is_outer_continuation = (
                     kc_lower > 0 and quote < kc_lower and quote < live_ma5
                     and live_ma5 < prev_ma5
@@ -389,10 +401,18 @@ class MemeCoinGate:
 
             if side == 'LONG':
                 # ── 妖幣多單出場鐵律：遇真峰頂要馬上平倉，不要等 1m 跑完才平倉！──
-                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                from core.gates.holding_protection_gate import (
+                    has_confirmed_true_pivot,
+                    detect_ma5_rail_parallel_exhaustion,
+                )
                 has_peak, _, _ = has_confirmed_true_pivot(pos, frame, quote)
                 if has_peak:
                     return True, 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
+
+                # ── 多單動能衰竭提前止盈（MA5走平轉折＋KC上軌平行鈍化＋跌破MA5）──
+                exhaustion = detect_ma5_rail_parallel_exhaustion(frame, quote, 'LONG', position=pos)
+                if exhaustion is not None:
+                    return True, 'EXIT_MEME_LONG_MOMENTUM_EXHAUSTION'
 
                 # ── 徹底禁止碰上軌就平多！衝破上軌要穩穩抱住 ──
                 # 真頂峰出場條件：必須創高後回落，收盤實體跌破 KC 中軌連續 2 根才出場！
@@ -413,10 +433,18 @@ class MemeCoinGate:
 
             elif side == 'SHORT':
                 # ── 妖幣空單出場鐵律（龍蝦 / 1000PEPE 專用）：開空後不要平倉，除非鎖利或真谷底出現，要不然一律不平倉 ──
-                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                from core.gates.holding_protection_gate import (
+                    has_confirmed_true_pivot,
+                    detect_ma5_rail_parallel_exhaustion,
+                )
                 has_valley, _, _ = has_confirmed_true_pivot(pos, frame, quote)
                 if has_valley:
                     return True, 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
+
+                # ── 空單動能衰竭提前止盈（MA5走平轉折＋KC下軌平行鈍化＋站上MA5）──
+                exhaustion = detect_ma5_rail_parallel_exhaustion(frame, quote, 'SHORT', position=pos)
+                if exhaustion is not None:
+                    return True, 'EXIT_MEME_SHORT_MOMENTUM_EXHAUSTION'
 
                 # ── 徹底禁止碰下軌就平空！衝破下軌要穩穩抱住 ──
                 # 真谷底出場條件：必須創低後回升，收盤實體站上 KC 中軌連續 2 根才出場！

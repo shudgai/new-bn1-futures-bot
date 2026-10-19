@@ -89,13 +89,71 @@ async def enforce_atr_protection(account, symbol, price):
         from core.services.exits.kc_true_extreme_exit import (
             evaluate_kc_true_extreme_exit,
         )
+        stamp_ms = (
+            float(frame.iloc[-1]["timestamp"]) + 2000
+            if frame is not None and len(frame) > 0 and "timestamp" in frame.iloc[-1]
+            else time.time() * 1000
+        )
         kc_exit, state_changed = evaluate_kc_true_extreme_exit(
-            position, frame, price, time.time() * 1000, meta,
+            position, frame, price, stamp_ms, meta,
         )
         if state_changed:
             account.save_state()
         if kc_exit is not None:
             exit_reason, exit_details = kc_exit
+            side = str(position.get("side", "")).upper()
+            exit_cause = str(exit_details.get("cause") or "")
+
+            # ═════════════════════════════════════════════════════════════════
+            # 【趨勢保護鎖 Trend Shield：趨勢向上/向下中途回踩強制不平倉】
+            # ═════════════════════════════════════════════════════════════════
+            trend_shield_hold = False
+            if frame is not None and len(frame) >= 1:
+                curr_bar = frame.iloc[-1]
+                prev_bar = frame.iloc[-2] if len(frame) >= 2 else curr_bar
+                close_p = float(curr_bar.get("close", price))
+                mid_p = float(curr_bar.get("kc_middle", curr_bar.get("kc_basis", 0.0)))
+                prev_mid_p = float(prev_bar.get("kc_middle", mid_p))
+                ma15_p = float(curr_bar.get("ma15", mid_p))
+                upper_p = float(curr_bar.get("kc_upper", 0.0))
+                lower_p = float(curr_bar.get("kc_lower", 0.0))
+
+                from core.services.market_signal_analyzer import evaluate_frame_market_signal
+                market_signal = evaluate_frame_market_signal(frame, price)
+                if side == "LONG":
+                    # 大趨勢依然向上：KC 中軌走平或向上，且收盤/即時價守在 KC 中軌與 MA15 之上
+                    is_trend_up = (mid_p >= prev_mid_p - 0.0001) and (close_p >= min(mid_p, ma15_p) or price >= min(mid_p, ma15_p))
+                    # 或者依然在 KC 上軌外狂飆
+                    is_outer_run = upper_p > 0 and (close_p > upper_p or price > upper_p)
+                    # 或者符合多頭健康回調續抱 (HOLD_LONG)
+                    is_market_hold = (market_signal.get("action") == "HOLD_LONG")
+                    if is_trend_up or is_outer_run or is_market_hold:
+                        trend_shield_hold = True
+                elif side == "SHORT":
+                    # 大趨勢依然向下：KC 中軌走平或向下，且收盤/即時價壓在 KC 中軌與 MA15 之下
+                    is_trend_down = (mid_p <= prev_mid_p + 0.0001) and (close_p <= max(mid_p, ma15_p) or price <= max(mid_p, ma15_p))
+                    # 或者依然在 KC 下軌外狂跌
+                    is_outer_run = lower_p > 0 and (close_p < lower_p or price < lower_p)
+                    # 或者符合空頭次級反彈續抱 (HOLD_SHORT)
+                    is_market_hold = (market_signal.get("action") == "HOLD_SHORT")
+                    if is_trend_down or is_outer_run or is_market_hold:
+                        trend_shield_hold = True
+
+            # 只要趨勢保護鎖生效，中途的盤中回踩或普通觸軌一律強制不平倉，繼續死抱主升/主跌段！
+            if trend_shield_hold and exit_cause in ("INTRADAY_PEAK_PULLBACK", "INTRADAY_TROUGH_REBOUND", "KC_MIDLINE_TOUCH"):
+                account.log(
+                    f"🛡️ [TREND_SHIELD] symbol={symbol} side={side} "
+                    f"大趨勢保持完整 ({market_signal.get('status', '')})，中途回踩強制不平倉！繼續抱牢主波段 (cause={exit_cause})",
+                    "INFO",
+                )
+                state = position.get("kc_true_extreme_exit_state")
+                if isinstance(state, dict):
+                    state["pending"] = None
+                meta_state = meta.get("kc_true_extreme_exit_state")
+                if isinstance(meta_state, dict):
+                    meta_state["pending"] = None
+                return False
+
             account.log(
                 f"KC_STRUCTURE_EXIT symbol={symbol} "
                 f"side={position.get('side')} reason={exit_reason} "

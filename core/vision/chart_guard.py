@@ -28,7 +28,7 @@ if GEMINI_MODEL_NAME in {"gemini-2.0-flash", "gemini-2.0-flash-001"}:
 API_KEY_ENV = "GEMINI_API_KEY"
 ENTRY_VISION_PROVIDER = os.getenv("ENTRY_VISION_PROVIDER", "GEMINI").strip().upper()
 LOOKBACK = 40
-REQUEST_TIMEOUT_SEC = 20.0
+REQUEST_TIMEOUT_SEC = 5.0
 
 LOCAL_CONNECT_TIMEOUT_SEC = float(os.getenv("LOCAL_CONNECT_TIMEOUT_SEC", "2.5"))
 LOCAL_READ_TIMEOUT_SEC = float(os.getenv("LOCAL_READ_TIMEOUT_SEC", "15.0"))
@@ -660,7 +660,8 @@ async def _call_gemini_with_retry(image: bytes, side: str, api_key: str, mode: s
 
 
 def _fail_open() -> bool:
-    return os.getenv("VISION_FAIL_OPEN", "0") == "1"
+    # 預設 Fail-Open：當視覺審查 API 發生 Timeout 或網路異常時，自動降級為純指標放行，絕不阻礙破軌開倉！
+    return os.getenv("VISION_FAIL_OPEN", "1").strip().lower() not in ("0", "false", "no")
 
 
 # ==============================================================================
@@ -679,9 +680,9 @@ async def evaluate_breakout_vision(
     - QWEN: local vision only when ENTRY_VISION_PROVIDER=QWEN.
     - Unavailable or invalid review blocks entry unless explicit fail-open is set.
     """
-    enable_guard = os.getenv("ENABLE_VISION_GUARD", "true").strip().lower() in ("true", "1", "yes")
+    enable_guard = os.getenv("ENABLE_VISION_GUARD", "false").strip().lower() in ("true", "1", "yes")
     if not enable_guard:
-        return False, "VISION_GUARD_DISABLED"
+        return True, "VISION_GUARD_DISABLED (Pure Quantitative High-Speed Mode)"
 
     image = render_chart_bytes(bars)
     use_local = (

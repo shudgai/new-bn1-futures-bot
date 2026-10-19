@@ -129,13 +129,14 @@ def can_open_position(
     }
 
     entry_confirmation = str(kwargs.get("entry_confirmation") or "").upper()
-    is_instant_breakout = entry_confirmation == "INSTANT_BREAKOUT_INSIDE"
+    is_instant_breakout = entry_confirmation in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}
     wild_outer_entry = False
     live = None
     if entry_confirmation in {
         "INSTANT_BREAKOUT_INSIDE",
         "CONFIRMED_2BAR_BREAKOUT",
         "CONTINUATION_OUTSIDE_KC",
+        "INSTANT_BURST_BREAKOUT",
     }:
         try:
             from core.gates.breakout_continuation_entry_gate import (
@@ -156,6 +157,15 @@ def can_open_position(
                 live["close"] = live_quote
                 live["high"] = max(float(live["high"]), live_quote)
                 live["low"] = min(float(live["low"]), live_quote)
+            elif kwargs.get("quote") is not None and df is not None and not df.empty:
+                live = df.iloc[-1].to_dict().copy()
+                live_quote = float(kwargs["quote"])
+                live["close"] = live_quote
+                live["high"] = max(float(live.get("high", live_quote)), live_quote)
+                live["low"] = min(float(live.get("low", live_quote)), live_quote)
+                live["is_closed"] = False
+                tf_ms = float(df.attrs.get("timeframe_ms", 60000.0) or 60000.0)
+                live["timestamp"] = float(live.get("timestamp", 0.0)) + tf_ms
             wild_outer_entry = (
                 BreakoutContinuationEntryGate.validate_closed_outer_entry(
                     closed.to_dict("records"),
@@ -166,68 +176,89 @@ def can_open_position(
                 )
                 is not None
             )
-        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError) as exc:
+            logger.warning("[trend_riding_strategy] validate_closed_outer_entry error: %s", exc)
             wild_outer_entry = False
         if not wild_outer_entry:
             return False, "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID", details
     has_live_breakout_confirmation = bool(
         wild_outer_entry
         and entry_confirmation in {
-            "INSTANT_BREAKOUT_INSIDE", "CONTINUATION_OUTSIDE_KC",
+            "INSTANT_BREAKOUT_INSIDE", "CONTINUATION_OUTSIDE_KC", "INSTANT_BURST_BREAKOUT",
         }
         and live is not None
     )
 
     # ══════════════════════════════════════════════════════════════════
-    # 二、 防刷單冷卻時間 (Anti-Chop Cooldown >= 3 根 K 棒)
+    # 二、 防刷單開倉保護 (不綁死固定冷卻時間，以突破與新 K 棒結構為準)
     # ══════════════════════════════════════════════════════════════════
     target_side = (
         "LONG" if ("LONG" in last_closed_action.upper() or last_closed_side == "LONG")
         else ("SHORT" if ("SHORT" in last_closed_action.upper() or last_closed_side == "SHORT") else "")
     )
-    if target_side == side and entry_confirmation != "CONTINUATION_OUTSIDE_KC":
-        if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
-            msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
-            logger.warning(msg)
-            print(msg, flush=True)
-            return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)", details
+    last_closed_price = float(kwargs.get("last_closed_price") or 0.0)
+    current_tick_price = float(quote or close_p or 0.0)
 
-        if bars_since_last_exit is None and last_closed_ts > 0:
-            curr_ts = float(
-                last_closed.get("timestamp", time.time() * 1000.0)
-            )
-            previous_ts = float(prev_closed.get("timestamp", curr_ts))
-            timestamp_step = curr_ts - previous_ts
-            timestamp_scale = (
-                1000.0
-                if math.isclose(
-                    timestamp_step,
-                    timeframe_ms / 1000.0,
-                    rel_tol=1e-6,
-                )
-                else 1.0
-            )
-            curr_ts *= timestamp_scale
-            close_scale = (
-                1000.0
-                if last_closed_ts < 1e11
-                and (timestamp_scale == 1000.0 or curr_ts >= 1e11)
-                else timestamp_scale
-            )
-            ts_norm = last_closed_ts * close_scale
-            bars_since = (curr_ts - ts_norm) / timeframe_ms
-            if bars_since < float(cooldown_bars):
-                msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"
+    if target_side == side:
+        # 1. 同一根 K 棒剛平倉，不立即追回同向單（等待新 K 棒或訊號確認）
+        curr_bar_ts = float(last_closed.get("timestamp", 0.0))
+        if last_closed_ts > 0 and curr_bar_ts > 0:
+            l_ts = float(last_closed_ts)
+            if l_ts > 1e11 and curr_bar_ts < 1e11:
+                l_ts /= 1000.0
+            elif l_ts < 1e11 and curr_bar_ts > 1e11:
+                l_ts *= 1000.0
+            if abs(curr_bar_ts - l_ts) < 60000.0 or curr_bar_ts == l_ts:
+                msg = f"[攔截開{side_cn}] {symbol} 同一根 K 棒剛平倉，禁止同向立即秒開"
                 logger.warning(msg)
-                print(msg, flush=True)
-                return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)", details
+                return False, "BLOCKED_SAME_CANDLE_ANTI_CHOP", details
+
+        # 2. 價格突破過濾：必須有新的突破才進場，有新突破立即解除冷卻！
+        if last_closed_price > 0 and current_tick_price > 0:
+            if side == "LONG":
+                # 多單：價格必須高於上次平倉價，確認發動續漲才追多
+                if current_tick_price <= last_closed_price:
+                    msg = f"[攔截開多] {symbol} 最新價 {current_tick_price} <= 上次平倉價 {last_closed_price}，未創出續漲新高禁止追多"
+                    logger.warning(msg)
+                    return False, "BLOCKED_REQUIRES_NEW_HIGH_ABOVE_LAST_EXIT", details
+                # 滿足突破高於上次平倉價，直接豁免固定冷卻門檻！
+            elif side == "SHORT":
+                # 空單：價格必須低於上次平倉價，確認發動續跌才追空
+                if current_tick_price >= last_closed_price:
+                    msg = f"[攔截開空] {symbol} 最新價 {current_tick_price} >= 上次平倉價 {last_closed_price}，未創出續跌新低禁止追空"
+                    logger.warning(msg)
+                    return False, "BLOCKED_REQUIRES_NEW_LOW_BELOW_LAST_EXIT", details
+                # 滿足突破低於上次平倉價，直接豁免固定冷卻門檻！
+        elif entry_confirmation != "CONTINUATION_OUTSIDE_KC":
+            if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
+                msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
+                logger.warning(msg)
+                return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)", details
+
+            if bars_since_last_exit is None and last_closed_ts > 0:
+                curr_ts = float(last_closed.get("timestamp", time.time() * 1000.0))
+                previous_ts = float(prev_closed.get("timestamp", curr_ts))
+                timestamp_step = curr_ts - previous_ts
+                timestamp_scale = (
+                    1000.0 if math.isclose(timestamp_step, timeframe_ms / 1000.0, rel_tol=1e-6) else 1.0
+                )
+                curr_ts *= timestamp_scale
+                close_scale = (
+                    1000.0 if last_closed_ts < 1e11 and (timestamp_scale == 1000.0 or curr_ts >= 1e11) else timestamp_scale
+                )
+                ts_norm = last_closed_ts * close_scale
+                bars_since = (curr_ts - ts_norm) / timeframe_ms
+                if bars_since < float(cooldown_bars):
+                    msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"
+                    logger.warning(msg)
+                    return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)", details
 
     # ══════════════════════════════════════════════════════════════════
     # 一、 開倉絕對門禁 (一票否決制，嚴禁繞過)
     # ══════════════════════════════════════════════════════════════════
     if side == "LONG":
-        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多)
-        if kc_trend != "UP":
+        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT 豁免滯後 KC 斜率)
+        if entry_confirmation != "INSTANT_BURST_BREAKOUT" and kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -277,8 +308,8 @@ def can_open_position(
             return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
 
     elif side == "SHORT":
-        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空！CAP 的 4 筆空單必須全被此條攔截！)
-        if kc_trend != "DOWN":
+        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT 豁免滯後 KC 斜率)
+        if entry_confirmation != "INSTANT_BURST_BREAKOUT" and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)

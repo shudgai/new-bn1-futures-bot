@@ -57,6 +57,29 @@ def log_entry_gate(engine, symbol, side, stage, reason, bar_id=None, **details):
     if cache.get(key) == fingerprint:
         return
     cache[key] = fingerprint
+
+    # 同步紀錄至 _intercept_events 供前端 K 線圖繪製攔截 Marker
+    if any(kw in str(reason) for kw in ("REJECT", "BLOCKED", "FAIL", "VETO", "CHOP", "WAIT_")):
+        events = getattr(engine, "_intercept_events", None)
+        if not isinstance(events, dict):
+            events = engine._intercept_events = {}
+        sym_events = events.setdefault(symbol, [])
+        import time as _t
+        try:
+            ev_ts = int(float(bar_id)) if bar_id and math.isfinite(float(bar_id)) and float(bar_id) > 1e11 else int(_t.time() * 1000)
+        except Exception:
+            ev_ts = int(_t.time() * 1000)
+        sym_events.append({
+            "timestamp": ev_ts,
+            "symbol": symbol,
+            "side": side,
+            "stage": stage,
+            "reason": str(reason),
+            "details": details,
+        })
+        if len(sym_events) > 100:
+            sym_events.pop(0)
+
     caller = sys._getframe(1)
     source = f"{caller.f_code.co_filename}:{caller.f_lineno}"
     text = f"ENTRY_GATE source={source} stage={stage} symbol={symbol} side={side} bar={bar_id} reason={reason}"

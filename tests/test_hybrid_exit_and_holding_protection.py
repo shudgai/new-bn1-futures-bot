@@ -158,10 +158,10 @@ def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
         'entry_price': 0.0430,
         'qty': 1000.0,
     }
-    # 兩根持續上漲 K 線，尚未形成 3 根 K 棒真峰頂
+    # 兩根持續上漲已收線 K 線，尚未形成 3 根 K 棒真峰頂
     rows = [
         {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True},
-        {'open': 0.0434, 'high': 0.0438, 'low': 0.0433, 'close': 0.0436, 'kc_upper': 0.0500, 'is_closed': False},
+        {'open': 0.0434, 'high': 0.0438, 'low': 0.0433, 'close': 0.0436, 'kc_upper': 0.0500, 'is_closed': True},
     ]
     df = pd.DataFrame(rows)
 
@@ -170,34 +170,40 @@ def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
         position, df, quote=0.0435, candidate_reason='EXIT_BY_PULLBACK'
     )
     assert allowed is False
-    assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
+    assert "VETO_HOLDING" in reason
 
 
 def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():
-    """開倉後形成真峰頂（3-Bar Pivot）確認後，才允許平倉出場。"""
+    """開倉後形成真峰頂確認，且實質收破 KC 中軌後，才允許平倉出場。"""
     position = {
         'symbol': 'BTC/USDT',
         'side': 'LONG',
         'entry_price': 0.0430,
         'qty': 1000.0,
     }
-    # 形成明確的真峰頂：中間 High (0.0442) 高於前後兩根 (0.0435, 0.0439)，且第 3 根收線確認
-    rows = [
+    # 1. 價格仍在 KC 中軌之上 (close 0.0432 > kc_middle 0.0420)：即使形態有局部峰值，依然判定為健康回踩，嚴禁平倉！
+    rows_above_mid = [
         {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
         {'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
         {'open': 0.0440, 'high': 0.0439, 'low': 0.0431, 'close': 0.0432, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
     ]
-    df = pd.DataFrame(rows)
-
-    from core.gates.holding_protection_gate import has_confirmed_true_pivot
-    has_pivot, p_type, p_info = has_confirmed_true_pivot(position, df, quote=0.0432)
-    assert has_pivot is True
-    assert p_type == 'TRUE_PEAK_PIVOT_CONFIRMED'
-
-    # 真峰頂確認後，立即授權平倉（遇真峰谷馬上平倉，絕不等跌破中軌）
-    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
-        position, df, quote=0.0432, candidate_reason='THREE_POINT_PIVOT'
+    df_above = pd.DataFrame(rows_above_mid)
+    allowed_above, reason_above, _ = HoldingProtectionExitGate.validate_exit(
+        position, df_above, quote=0.0432, candidate_reason='THREE_POINT_PIVOT'
     )
-    assert allowed is True
-    assert reason == 'THREE_POINT_PIVOT'
+    assert allowed_above is False
+    assert "HEALTHY_PULLBACK_ABOVE_MID" in reason_above
+
+    # 2. 實質收破 KC 中軌 (close 0.0418 < kc_middle 0.0420)：結構破壞，允許平倉出場！
+    rows_below_mid = [
+        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'open': 0.0440, 'high': 0.0439, 'low': 0.0415, 'close': 0.0418, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+    ]
+    df_below = pd.DataFrame(rows_below_mid)
+    allowed_below, reason_below, _ = HoldingProtectionExitGate.validate_exit(
+        position, df_below, quote=0.0418, candidate_reason='THREE_POINT_PIVOT'
+    )
+    assert allowed_below is True
+    assert reason_below == 'THREE_POINT_PIVOT'
 

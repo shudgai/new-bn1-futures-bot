@@ -206,10 +206,11 @@
         .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; font-size: 14px; font-weight: 800; }
         .chart-container { width: 100%; flex-grow: 1; height: 0; min-height: 0; }
         .chart-entry-notice {
-            min-height: 44px; padding: 6px 10px; background: #fffbeb;
-            color: #92400e; border-bottom: 1px solid #fde68a; font-size: 12px; flex-shrink: 0;
+            min-height: 44px; padding: 6px 12px; background: linear-gradient(135deg, #fffbeb, #fef3c7);
+            color: #92400e; border-bottom: 2px solid #f59e0b; font-size: 12px; flex-shrink: 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
-        .chart-entry-notice strong { display: block; font-size: 13px; }
+        .chart-entry-notice strong { display: block; font-size: 13.5px; font-weight: 800; color: #b45309; }
         .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
         .chart-pos-info-bar {
             display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -617,6 +618,9 @@
                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="即時 K 價格站上／跌破 KC 中軌，或觸及同側外軌時優先顯示方向；否則參考最近三根已收線中軌">
                                 {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
+                            <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" class="badge" style="background:#fef3c7; color:#b45309; border:1px solid #fde68a; font-weight:700;">
+                                {{ (chartModal.states[symbol] || {}).entryBlock.message }}
+                            </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
                         <div v-if="getPos(symbol)" class="chart-pos-info-bar">
@@ -658,7 +662,8 @@
                             </span>
                         </div>
                     </div>
-                    <div v-if="(chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
+                    <!-- 僅在未持倉時才顯示進場攔截原因 -->
+                    <div v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
                         <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
                         <span>{{ chartModal.states[symbol].entryBlock.detail }}</span>
                     </div>
@@ -961,7 +966,7 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
                     lastValueVisible: true, priceLineVisible: true
                 });
-                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: '', priceScaleId: 'right', lastValueVisible: false });
+                ctx.ma5Series = chart.addLineSeries({ color: '#FF0000', lineWidth: 2, title: '', priceScaleId: 'right', lastValueVisible: false, crosshairMarkerVisible: false });
                 ctx.ma5Series.applyOptions({
                     lastValueVisible: false,
                     priceFormat: {
@@ -970,11 +975,11 @@
                         minMove: 0.00000001
                     }
                 });
-                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: '', lastValueVisible: false });
+                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: '', lastValueVisible: false, crosshairMarkerVisible: false });
 
-                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
-                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: '', lastValueVisible: false });
-                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false });
+                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false, crosshairMarkerVisible: false });
+                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: '', lastValueVisible: false, crosshairMarkerVisible: false });
+                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: '', lastValueVisible: false, crosshairMarkerVisible: false });
                 this._charts = this._charts || {};
                 this._charts[symbol] = ctx;
 
@@ -1050,6 +1055,22 @@
                                     positionGroups[key] = { ...markerStyle };
                                 }
                             });
+
+                        // 處理攔截標記 (block_markers，直接標示在 K 棒上)
+                        [...(d.block_markers || [])].forEach(block => {
+                            const side = String(block.side || '').toUpperCase();
+                            const pos = side === 'SHORT' ? 'aboveBar' : side === 'LONG' ? 'belowBar' : 'aboveBar';
+                            const text = `🚫 攔截: ${block.short_reason || block.reason || '條件未符'}`;
+                            const color = '#f59e0b';
+                            const shape = 'circle';
+                            if (positionGroups[pos]) {
+                                if (!positionGroups[pos].text.includes(text)) {
+                                    positionGroups[pos].text += ` | ${text}`;
+                                }
+                            } else {
+                                positionGroups[pos] = { position: pos, color, shape, text };
+                            }
+                        });
                         
                         Object.values(positionGroups).forEach(m => {
                             tradeMarkers.push({

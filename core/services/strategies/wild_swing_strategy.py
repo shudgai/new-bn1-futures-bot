@@ -14,6 +14,8 @@ from core.gates.breakout_continuation_entry_gate import (
     INSTANT_BREAKOUT_INSIDE,
     INITIAL_2BAR_BREAKOUT,
     MA_CROSSOVER,
+    FIVE_LINE_CONTINUATION,
+    INSTANT_BURST_BREAKOUT,
     BreakoutContinuationEntryGate,
 )
 from core.gates.entry_pattern_permitted_gate import PERMITTED_ENTRY_PATTERNS
@@ -273,13 +275,15 @@ class WildSwingStrategy:
             INSTANT_BREAKOUT_INSIDE,
             CONTINUATION_OUTSIDE_KC,
             MA_CROSSOVER,
+            FIVE_LINE_CONTINUATION,
+            INSTANT_BURST_BREAKOUT,
         }
         if (
             candidate is None
             or candidate.get("action") != f"OPEN_{side}"
             or candidate.get("type") not in supported_types
         ):
-            legacy_signal = self._evaluate_legacy_entry(symbol, frame)
+            legacy_signal = self._evaluate_legacy_entry(symbol, frame, side)
             if (
                 legacy_signal is None
                 or legacy_signal.get("side") != side
@@ -354,13 +358,16 @@ class WildSwingStrategy:
         gate_confirmation = (
             candidate.get("confirmation", entry_type) if not delayed else None
         )
+        tick_quote = float(candidate.get("price") or (frame.iloc[-1]["close"] if frame is not None and not frame.empty else 0.0))
         can_open, gate_reason, _ = can_open_position(
             df=frame,
             side=side,
             symbol=symbol,
+            quote=tick_quote,
             bars_since_last_exit=state.bars_since_last_exit,
             last_closed_side=state.last_exit_side,
             last_closed_ts=state.last_exit_bar_id or 0.0,
+            last_closed_price=state.last_exit_price or 0.0,
             entry_confirmation=gate_confirmation,
         )
         if not can_open:
@@ -407,7 +414,7 @@ class WildSwingStrategy:
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
-        if entry_type == INSTANT_BREAKOUT_INSIDE:
+        if entry_type in (INSTANT_BREAKOUT_INSIDE, MA_CROSSOVER, FIVE_LINE_CONTINUATION, INSTANT_BURST_BREAKOUT):
             trend_aligned = True
         elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
             trend_aligned = (
@@ -457,6 +464,7 @@ class WildSwingStrategy:
                 INITIAL_2BAR_BREAKOUT,
                 "INSTANT_BREAKOUT_INSIDE",
                 "INSTANT_BREAKOUT_OUTSIDE",
+                INSTANT_BURST_BREAKOUT,
             }
             else ENTRY_MODE_CROSSOVER
             if entry_type == MA_CROSSOVER
@@ -1042,6 +1050,48 @@ class WildSwingStrategy:
             except (KeyError, TypeError, ValueError, OverflowError):
                 return None
         if current_price > 0:
+            # ── 1. 大利潤即時動態鎖利（利潤曾達標 5U 以上，動態回撤 25% 立即止盈）──
+            entry_p = float((position or {}).get("entry_price") or 0.0)
+            pos_amt = abs(float((position or {}).get("amount") or 0.0))
+            if entry_p > 0 and pos_amt > 0:
+                if side == "SHORT":
+                    unrealized_profit_usdt = (entry_p - current_price) * pos_amt
+                else:
+                    unrealized_profit_usdt = (current_price - entry_p) * pos_amt
+
+                prev_max = float((position or {}).get("max_profit") or 0.0)
+                if unrealized_profit_usdt > prev_max:
+                    prev_max = unrealized_profit_usdt
+                    position["max_profit"] = prev_max
+
+                # 利潤曾達到 5U 以上，當回跌到最大利潤的 75%（保留至少 3.75U+ 利潤）立即市價平倉
+                if prev_max >= 5.0 and unrealized_profit_usdt <= prev_max * 0.75:
+                    bar_id = None
+                    if frame is not None and not frame.empty:
+                        try:
+                            bar_id = float(frame.iloc[-1].get("timestamp", 0))
+                        except Exception:
+                            bar_id = None
+                    print(
+                        f"[5U動態鎖利平倉] {symbol} {side} - 峰值利潤: {prev_max:.2f}U, 當前回撤利潤: {unrealized_profit_usdt:.2f}U | 市價平倉",
+                        flush=True,
+                    )
+                    return {
+                        "action": f"CLOSE_{side}",
+                        "type": "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+                        "side": side,
+                        "reason": "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+                        "bar_id": bar_id,
+                        "close": current_price,
+                        "entry_mode": "WILD_SWING",
+                        "kc_exit": {
+                            "cause": "PROFIT_5U_TRAILING_75PCT_LOCK",
+                            "max_profit": prev_max,
+                            "current_profit": unrealized_profit_usdt,
+                        },
+                        "kc_exit_state_key": "KC_EXIT_STATE_KEY",
+                    }
+
             from core.services.exits.kc_true_extreme_exit import (
                 STATE_KEY as KC_EXIT_STATE_KEY,
                 evaluate_kc_true_extreme_exit,
@@ -1053,11 +1103,48 @@ class WildSwingStrategy:
             kc_exit, _ = evaluate_kc_true_extreme_exit(
                 position, frame, current_price, quote_ms,
             )
+
+            # ── 2. 趨勢平倉：結構破壞判定（KC 中軌防守鐵律，回踩/反彈不平倉）──
+            # 核心鐵律：
+            # 多單防守：只要收盤價依然在 KC 中軌之上，視為正常回踩，絕對不平倉！
+            # 只有實體收破 KC 中軌，且進一步跌破 MA15 或前波起漲低點，才判定結構破壞平多。
+            # 空單防守：只要收盤價依然在 KC 中軌之下，視為正常反彈，絕對不平倉！
+            # 只有實體收破 KC 中軌，且進一步漲破 MA15 或前波起跌高點，才判定結構破壞平空。
+            trend_broken = False
+            if frame is not None and not frame.empty:
+                last_candle = frame.iloc[-1]
+                c_close = float(last_candle.get("close", current_price))
+                c_open = float(last_candle.get("open", c_close))
+                c_ma15 = float(last_candle.get("ma15", 0.0))
+                c_mid = float(last_candle.get("kc_middle", last_candle.get("ema_20", 0.0)))
+                
+                prev_low = float(frame.iloc[-10:-1]["low"].min()) if len(frame) >= 3 else 0.0
+                prev_high = float(frame.iloc[-10:-1]["high"].max()) if len(frame) >= 3 else 0.0
+
+                if side == "LONG":
+                    if c_close >= c_mid:
+                        # 處於 KC 中軌上方，多頭結構完整（回踩不平倉）
+                        trend_broken = False
+                    else:
+                        is_ma_broken = c_close < c_ma15 if c_ma15 > 0 else True
+                        is_swing_broken = c_close < prev_low if prev_low > 0 else False
+                        if c_close < c_mid and (is_ma_broken or is_swing_broken):
+                            trend_broken = True
+                elif side == "SHORT":
+                    if c_close <= c_mid:
+                        # 處於 KC 中軌下方，空頭結構完整（反彈不平倉）
+                        trend_broken = False
+                    else:
+                        is_ma_broken = c_close > c_ma15 if c_ma15 > 0 else True
+                        is_swing_broken = c_close > prev_high if prev_high > 0 else False
+                        if c_close > c_mid and (is_ma_broken or is_swing_broken):
+                            trend_broken = True
+
             from core.services.exits.strict_true_pivot import (
                 confirmed_true_pivot_exit,
                 store_confirmed_pivot_exit,
             )
-            confirmed_pivot = confirmed_true_pivot_exit(position, frame)
+            confirmed_pivot = confirmed_true_pivot_exit(position, frame) if trend_broken else None
             if confirmed_pivot is not None and store_confirmed_pivot_exit(
                 position, confirmed_pivot,
             ):
@@ -1079,7 +1166,8 @@ class WildSwingStrategy:
             # Ignore ordinary pullbacks and wick signals. Shorts may also
             # exit on a completed bullish close back above KC midline.
             is_confirmed_pivot = bool(
-                kc_exit is not None
+                trend_broken
+                and kc_exit is not None
                 and kc_exit[1].get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
                 and kc_exit[0] in {
                     "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
@@ -1087,7 +1175,8 @@ class WildSwingStrategy:
                 }
             )
             is_short_midline_reversal = bool(
-                side == "SHORT"
+                trend_broken
+                and side == "SHORT"
                 and kc_exit is not None
                 and kc_exit[0] == "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
                 and kc_exit[1].get("cause") == "KC_MIDLINE_RECLAIM_CLOSE"
@@ -1159,6 +1248,12 @@ class WildSwingStrategy:
             "EXIT_BY_HARD_STOP_LOSS",
         }
         if should_exit and reason in allowed_exit_reasons:
+            if not trend_broken and reason != "EXIT_BY_HARD_STOP_LOSS":
+                logger.info(
+                    "WILD_SWING_TREND_INTACT_EXIT_BLOCKED symbol=%s side=%s reason=%s",
+                    symbol, side, reason,
+                )
+                return None
             close = float(details.get("close", current["close"]))
             print(
                 f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}",

@@ -245,11 +245,20 @@ class Test1000PepeParityWithLobster:
         assert can_exit_profit is True
         assert reason_profit == 'EXIT_BY_RATCHET_PROFIT_LOCK'
 
-        # 3. 真谷底成型時，授權平倉
-        has_v, _, _ = has_confirmed_true_pivot(position, df, quote=0.004172)
-        assert has_v is True
+        # 3. 價格仍在 KC 中軌之下 (0.004172 < kc_middle 0.004180)：判定為健康反彈，絕對禁止平空！
+        df_valley = df.copy()
+        df_valley.iloc[-1, df_valley.columns.get_loc('is_closed')] = True
         can_exit_valley, reason_valley, _ = HoldingProtectionExitGate.validate_exit(
-            position, df, quote=0.004172, candidate_reason='EXIT_BY_CONFIRMED_TRUE_VALLEY'
+            position, df_valley, quote=0.004172, candidate_reason='EXIT_BY_CONFIRMED_TRUE_VALLEY'
         )
-        assert can_exit_valley is True
-        assert reason_valley == 'EXIT_BY_CONFIRMED_TRUE_VALLEY'
+        assert can_exit_valley is False
+        assert "HEALTHY_PULLBACK_BELOW_MID" in reason_valley
+
+        # 4. 價格實質突破 KC 中軌 (0.004185 > kc_middle 0.004180)：結構破壞，授權平倉！
+        df_break = df_valley.copy()
+        df_break.iloc[-1, df_break.columns.get_loc('close')] = 0.004185
+        can_exit_break, reason_break, _ = HoldingProtectionExitGate.validate_exit(
+            position, df_break, quote=0.004185, candidate_reason='EXIT_BY_CONFIRMED_TRUE_VALLEY'
+        )
+        assert can_exit_break is True
+        assert reason_break == 'EXIT_BY_CONFIRMED_TRUE_VALLEY'

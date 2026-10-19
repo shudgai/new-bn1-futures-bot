@@ -145,11 +145,11 @@ def has_confirmed_true_pivot(
                             'confirm_close': c_confirm,
                         }
 
-                if is_fractal_peak(closed):
-                    ts_last = float(closed.iloc[-1].get('timestamp', 0.0))
+                if is_fractal_peak(target_df):
+                    ts_last = float(target_df.iloc[-1].get('timestamp', 0.0))
                     if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
-                        last_c = float(closed.iloc[-1]['close'])
-                        prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                        last_c = float(target_df.iloc[-1]['close'])
+                        prev_mid = (float(target_df.iloc[-2]['open']) + float(target_df.iloc[-2]['close'])) / 2.0
                         if last_c < prev_mid:
                             return True, 'TRUE_FRACTAL_PEAK_CONFIRMED', {
                                 'last_close': last_c,
@@ -179,11 +179,11 @@ def has_confirmed_true_pivot(
                             'confirm_close': c_confirm,
                         }
 
-                if is_fractal_valley(closed):
-                    ts_last = float(closed.iloc[-1].get('timestamp', 0.0))
+                if is_fractal_valley(target_df):
+                    ts_last = float(target_df.iloc[-1].get('timestamp', 0.0))
                     if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
-                        last_c = float(closed.iloc[-1]['close'])
-                        prev_mid = (float(closed.iloc[-2]['open']) + float(closed.iloc[-2]['close'])) / 2.0
+                        last_c = float(target_df.iloc[-1]['close'])
+                        prev_mid = (float(target_df.iloc[-2]['open']) + float(target_df.iloc[-2]['close'])) / 2.0
                         if last_c > prev_mid:
                             return True, 'TRUE_FRACTAL_VALLEY_CONFIRMED', {
                                 'last_close': last_c,
@@ -788,6 +788,9 @@ def _is_profit_lock_reason(reason: str) -> bool:
     r = str(reason or '').upper()
     return (
         r == 'EXIT_BY_RATCHET_PROFIT_LOCK'
+        or r == 'EXIT_BY_5U_DYNAMIC_TRAILING_LOCK'
+        or '5U_DYNAMIC' in r
+        or 'TRAILING_LOCK' in r
         or r.startswith('PROFIT_LOCK')
         or r.startswith('NET_ROE_THREE_TIER_GIVEBACK')
         or 'RATCHET' in r
@@ -1012,6 +1015,111 @@ def exhaustion_reversal_evidence(frame, side):
         }
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
+
+
+def detect_ma5_rail_parallel_exhaustion(frame, quote, side, position=None):
+    """
+    偵測 MA5 走平轉折、與 KC 軌道平行鈍化，且 K 棒收破/收回 MA5 的動能衰竭提前停利訊號。
+    - 空單：MA5 走平或拐頭向上，KC 下軌走平/趨緩，收盤價/最新價站上 MA5 (避免利潤在強彈時回吐)。
+    - 多單：MA5 走平或拐頭向下，KC 上軌走平/趨緩，收盤價/最新價跌破 MA5 (避免利潤在重挫時回吐)。
+    """
+    if frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT'):
+        return None
+
+    try:
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+
+        curr_close = float(curr.get('close', quote))
+        curr_open = float(curr.get('open', curr_close))
+        atr = float(prev.get('atr', curr.get('atr', 0.0)))
+        if atr <= 0:
+            atr = abs(curr_close) * 0.005 or 1.0
+
+        curr_ma5 = float(curr.get('ma5', 0.0))
+        prev_ma5 = float(prev.get('ma5', 0.0))
+        if curr_ma5 <= 0 or prev_ma5 <= 0:
+            return None
+
+        curr_upper = float(curr.get('kc_upper', 0.0))
+        prev_upper = float(prev.get('kc_upper', 0.0))
+        curr_lower = float(curr.get('kc_lower', 0.0))
+        prev_lower = float(prev.get('kc_lower', 0.0))
+
+        # 基礎持倉獲利防護：若開倉未滿 1 根且完全無浮盈，不進行提前平倉
+        bars_held = 0
+        if position:
+            bars_held = _calculate_bars_held(position, frame)
+            entry_p = float(position.get('entry_price', 0.0))
+            if entry_p > 0 and bars_held < 1:
+                in_profit = (quote > entry_p) if side == 'LONG' else (quote < entry_p)
+                if not in_profit:
+                    return None
+
+        slope_flat_threshold = 0.08 * atr
+
+        if side == 'SHORT':
+            # 1. MA5 斜率走平或拐頭向上
+            ma5_diff = curr_ma5 - prev_ma5
+            ma5_flattened_or_turning_up = ma5_diff >= -slope_flat_threshold
+
+            # 2. KC 下軌斜率趨緩或走平（不再劇烈向下擴張）
+            lower_diff = curr_lower - prev_lower
+            kc_lower_flattened = lower_diff >= -slope_flat_threshold
+
+            # 3. K 棒突破站上 MA5（收盤價或最新價明確站上 MA5）
+            effective_price = max(curr_close, quote)
+            reclaimed_ma5 = effective_price > curr_ma5
+
+            if ma5_flattened_or_turning_up and kc_lower_flattened and reclaimed_ma5:
+                return {
+                    'side': 'SHORT',
+                    'reason': 'EXIT_SHORT_ON_MA5_FLAT_REVERSAL',
+                    'curr_ma5': curr_ma5,
+                    'prev_ma5': prev_ma5,
+                    'curr_lower': curr_lower,
+                    'prev_lower': prev_lower,
+                    'close': curr_close,
+                    'quote': quote,
+                    'atr': atr,
+                    'ma5_diff': ma5_diff,
+                    'lower_diff': lower_diff,
+                    'bars_held': bars_held,
+                }
+
+        elif side == 'LONG':
+            # 1. MA5 斜率走平或拐頭向下
+            ma5_diff = curr_ma5 - prev_ma5
+            ma5_flattened_or_turning_down = ma5_diff <= slope_flat_threshold
+
+            # 2. KC 上軌斜率趨緩或走平（不再劇烈向上擴張）
+            upper_diff = curr_upper - prev_upper
+            kc_upper_flattened = upper_diff <= slope_flat_threshold
+
+            # 3. K 棒跌破 MA5（收盤價或最新價明確跌破 MA5）
+            effective_price = min(curr_close, quote)
+            broken_ma5 = effective_price < curr_ma5
+
+            if ma5_flattened_or_turning_down and kc_upper_flattened and broken_ma5:
+                return {
+                    'side': 'LONG',
+                    'reason': 'EXIT_LONG_ON_MA5_FLAT_REVERSAL',
+                    'curr_ma5': curr_ma5,
+                    'prev_ma5': prev_ma5,
+                    'curr_upper': curr_upper,
+                    'prev_upper': prev_upper,
+                    'close': curr_close,
+                    'quote': quote,
+                    'atr': atr,
+                    'ma5_diff': ma5_diff,
+                    'upper_diff': upper_diff,
+                    'bars_held': bars_held,
+                }
+
+    except Exception:
+        return None
+
+    return None
 
 
 def _short_reversal_body_evidence(frame, quote, atr):
@@ -1393,6 +1501,10 @@ class HoldingProtectionExitGate:
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
         'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
         'EXIT_LONG_ON_EXHAUSTION_REVERSAL',
+        'EXIT_SHORT_ON_MA5_FLAT_REVERSAL',
+        'EXIT_LONG_ON_MA5_FLAT_REVERSAL',
+        'EXIT_MEME_SHORT_MOMENTUM_EXHAUSTION',
+        'EXIT_MEME_LONG_MOMENTUM_EXHAUSTION',
         # Aliases
         'EXIT_LONG_ON_FRACTAL_PEAK',
         'EXIT_SHORT_ON_FRACTAL_VALLEY',
@@ -1508,6 +1620,11 @@ class HoldingProtectionExitGate:
                         peak_gain_atr=favorable_move / atr,
                     )
                     return f'EXIT_{side}_ON_EXHAUSTION_REVERSAL', exhaustion
+
+        # ── 2.5 MA5 走平轉折＋軌道平行鈍化動能衰竭提前停利（多空對稱）──
+        parallel_exhaustion = detect_ma5_rail_parallel_exhaustion(frame, quote, side, position=position)
+        if parallel_exhaustion is not None:
+            return parallel_exhaustion['reason'], parallel_exhaustion
 
         # ── 3. 階梯鎖利：以淨 ROE 峰值計算保護底線 ──
         # 鐵律：開倉後，不要平倉，要到真峰谷才平倉！未成型真峰谷前，禁止觸發階梯鎖利平倉！
@@ -1674,12 +1791,39 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        # ═════════════════════════════════════════════════════════════════
+        # 【用戶授權鐵律：analyze_market_signal 多頭回踩與空頭反彈防洗保護】
+        # ═════════════════════════════════════════════════════════════════
+        if frame is not None and len(frame) >= 1:
+            from core.services.market_signal_analyzer import evaluate_frame_market_signal
+            market_signal = evaluate_frame_market_signal(frame, quote)
+            if side == 'LONG' and market_signal.get('action') == 'HOLD_LONG':
+                if 'WATERFALL' not in clean_reason.upper() and 'HARD_SL' not in clean_reason.upper():
+                    return _reject(reason=f"REJECT_EXIT: BLOCKED_BY_MARKET_SIGNAL_HOLD_LONG ({market_signal.get('reason')})")
+            elif side == 'SHORT' and market_signal.get('action') == 'HOLD_SHORT':
+                if 'WATERFALL' not in clean_reason.upper() and 'HARD_SL' not in clean_reason.upper():
+                    return _reject(reason=f"REJECT_EXIT: BLOCKED_BY_MARKET_SIGNAL_HOLD_SHORT ({market_signal.get('reason')})")
+
         if is_profit_lock:
+            if verified_profit_lock is None:
+                if details and (details.get('floor_net_roe_pct') is not None or details.get('lock_type')):
+                    verified_profit_lock = details
+                elif position and position.get('entry_price'):
+                    entry_p = float(position.get('entry_price') or 0.0)
+                    is_in_profit = (float(quote) > entry_p) if side == 'LONG' else (float(quote) < entry_p)
+                    if is_in_profit:
+                        verified_profit_lock = {'lock_type': 'UPSTREAM_RATCHET_PROFIT_LOCK', 'entry_price': entry_p, 'quote': quote}
             if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
             # Explicit profit-lock exception: ordinary pullbacks still wait
             # for the side-correct, post-entry confirmed peak or valley.
             details.update(verified_profit_lock)
+            return _auth(clean_reason)
+
+        is_momentum_exhaustion = any(m in clean_reason.upper() for m in (
+            'MA5_FLAT_REVERSAL', 'MOMENTUM_EXHAUSTION',
+        ))
+        if is_momentum_exhaustion:
             return _auth(clean_reason)
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
@@ -1803,9 +1947,18 @@ class HoldingProtectionExitGate:
             if not is_profit_lock:
                 return _reject(reason='VETO_SAME_BAR_EXIT_NO_EXIT_ON_ENTRY_BAR')
 
-        # ──【核心鐵律二：真峰谷確認授權放行】──
-        # 若已確認成型真峰谷且 candidate 屬於峰谷出場，立即放行平倉！
+        # ──【核心鐵律二：真峰谷確認授權放行（必須以 KC 中軌為防守）】──
+        if clean_reason in ('EXIT_MEME_TRUE_PEAK_CONFIRMED', 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'):
+            return _auth(clean_reason)
+
         if is_true_pivot_confirmed:
+            curr_bar = frame.iloc[-1] if frame is not None and len(frame) >= 1 else {}
+            bar_close_price = float(curr_bar.get('close', quote))
+            kc_middle_val = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
+            if side == 'LONG' and kc_middle_val > 0 and (bar_close_price >= kc_middle_val or quote >= kc_middle_val):
+                return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_ABOVE_MID: PRICE_ABOVE_KC_MIDDLE")
+            elif side == 'SHORT' and kc_middle_val > 0 and (bar_close_price <= kc_middle_val or quote <= kc_middle_val):
+                return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_BELOW_MID: PRICE_BELOW_KC_MIDDLE")
             return _auth(clean_reason)
 
         # ──【核心鐵律三：持倉全週期防洗——除非剛好是真峰谷，否則除了鎖利外都不平倉】──
@@ -1883,6 +2036,7 @@ class HoldingProtectionExitGate:
                 or clean_reason in (
                     'MOMENTUM_STALLING_EXIT', 'CANDLE_CLOSE_DUMP_EXIT',
                     'CONFIRMED_MA5_CLOSE_BREAK', 'EXIT_BY_RATCHET_PROFIT_LOCK',
+                    'EXIT_BY_5U_DYNAMIC_TRAILING_LOCK', 'EXIT_BY_TRAILING_PROFIT_LOCK',
                     'RATCHET_BREAKEVEN_LOCK', 'EMERGENCY_DUMP_EXIT',
                     'TWO_BAR_DOJI_REVERSAL_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
                     'CANDLE_CLOSE_MA15_BREAK',

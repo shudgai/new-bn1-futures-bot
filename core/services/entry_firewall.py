@@ -1,6 +1,7 @@
 """Fail-closed shared entry verification immediately before opening exposure."""
 import asyncio
 import math
+import os
 import time
 import logging
 import hashlib
@@ -11,6 +12,7 @@ from core.gates.breakout_continuation_entry_gate import (
     CONFIRMED_2BAR_BREAKOUT,
     CONTINUATION_OUTSIDE_KC,
     INSTANT_BREAKOUT_INSIDE,
+    PURE_MATH_ENTRY_CONFIRMATIONS,
 )
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
@@ -397,7 +399,7 @@ def market_structure_gate_problem(
             "KC_MIDDLE": normalized_slope(values["kc_middle"]),
             "KC_LOWER": normalized_slope(values["kc_lower"]),
         }
-        if not is_manual:
+        if not is_manual and not is_confirmed_outer_entry:
             if normalized_side == "LONG" and slopes["MA15"] < 0:
                 return veto("VETO_BLOCKED_LONG_ON_FALLING_MA15")
             if normalized_side == "SHORT" and slopes["MA15"] > 0:
@@ -435,35 +437,20 @@ def market_structure_gate_problem(
                     return veto("VETO_CONTINUATION_NOT_OUTSIDE_KC_UPPER")
                 if normalized_side == "SHORT" and current_price >= continuation_rail:
                     return veto("VETO_CONTINUATION_NOT_OUTSIDE_KC_LOWER")
-                kc_middle_slope = slopes["KC_MIDDLE"]
-                if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
-                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
-                if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
-                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
                 ma5_slope = slopes["MA5"]
                 if normalized_side == "LONG" and ma5_slope <= 0:
                     return veto("VETO_CONTINUATION_MA5_NOT_RISING_LONG")
                 if normalized_side == "SHORT" and ma5_slope >= 0:
                     return veto("VETO_CONTINUATION_MA5_NOT_FALLING_SHORT")
             elif is_confirmed_outer_entry:
-                # Intrabar burst entries exempt MA5 slope only; keep KC trend.
-                kc_middle_slope = slopes["KC_MIDDLE"]
-                if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
-                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
-                if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
-                    return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
-                if not is_instant_breakout:
-                    ma5_slope = slopes["MA5"]
-                    if normalized_side == "LONG" and ma5_slope < 0.00015:
-                        return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
-                    if normalized_side == "SHORT" and ma5_slope > -0.00015:
-                        return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
+                # Outer band breakout entries verify live MA5 and outer rail
+                pass
             else:
                 for name, slope in slopes.items():
                     if abs(slope) < 0.00015:
                         return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if not is_manual and gap < min_gap:
+        if not is_manual and not is_confirmed_outer_entry and gap < min_gap:
             return veto(
                 f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
             )
@@ -545,6 +532,7 @@ def final_trend_alignment_problem(
             INSTANT_BREAKOUT_INSIDE,
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
+            "INSTANT_BURST_BREAKOUT",
         }
         is_continuation_entry = entry_confirmation in {
             "CONTINUATION_OUTSIDE_KC", "CONFIRMED_2BAR_CONTINUATION",
@@ -566,7 +554,7 @@ def final_trend_alignment_problem(
                 ),
                 is_continuation_entry=is_continuation_entry,
                 is_instant_breakout=(
-                    entry_confirmation == INSTANT_BREAKOUT_INSIDE
+                    entry_confirmation in (INSTANT_BREAKOUT_INSIDE, "INSTANT_BURST_BREAKOUT")
                 ),
                 symbol=symbol,
             )
@@ -1156,12 +1144,13 @@ async def validate_account_entry(account, symbol, side, context):
         )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
-        if signal.get("structure_confirmation") not in {
-            CONFIRMED_2BAR_BREAKOUT,
-            INSTANT_BREAKOUT_INSIDE,
-            CONTINUATION_OUTSIDE_KC,
+        allowed_confirmations = set(PURE_MATH_ENTRY_CONFIRMATIONS) | {
+            "KC_OUTER_BREAKOUT",
+            "OUTSIDE_CHANNEL_CONTINUATION",
+            "PROFIT_LOCK_CONTINUATION",
             "MA5_MA15_1M_CROSS",
-        }:
+        }
+        if signal.get("structure_confirmation") not in allowed_confirmations:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_TWO_BAR_KC_GATE_REQUIRED"
             )
@@ -1299,7 +1288,14 @@ async def validate_account_entry(account, symbol, side, context):
                 raise ValueError(
                     "[FORBIDDEN_ENTRY] WILD_SWING_OPPOSITE_RAIL_OPEN_BLOCK"
                 )
-            if direction_body < 0.5 * prior_atr:
+            # 【極速破軌與兩根流優化】：
+            # 1. 兩根流確認 (CONFIRMED_2BAR_BREAKOUT)：首根已破軌，次根同色延續 (direction_body > 0) 即授權進場
+            # 2. 即時破軌 (INSTANT_BREAKOUT_INSIDE / INSTANT_BURST_BREAKOUT)：剛穿出軌道達 0.25 ATR 即可先發開倉，防止追高
+            min_required_body = (
+                0.0 if confirmation == CONFIRMED_2BAR_BREAKOUT
+                else 0.25 * prior_atr
+            )
+            if direction_body <= min_required_body:
                 raise ValueError(
                     "[FORBIDDEN_ENTRY] WILD_SWING_BREAKOUT_BODY_BELOW_0_5_ATR"
                 )
@@ -1350,26 +1346,39 @@ async def validate_account_entry(account, symbol, side, context):
             INSTANT_BREAKOUT_INSIDE: "INSTANT_BREAK",
             CONFIRMED_2BAR_BREAKOUT: "NORMAL_BREAK",
             CONTINUATION_OUTSIDE_KC: "CONTINUATION",
+            "MA_CROSSOVER": "MA_CROSS",
+            "FIVE_LINE_CONTINUATION": "CONTINUATION",
             "MA5_MA15_1M_CROSS": "MA_CROSS",
-        }.get(confirmation)
+            "INSTANT_BURST_BREAKOUT": "INSTANT_BREAK",
+        }.get(confirmation, "CONTINUATION")
         if vision_mode is None:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_VISION_MODE_UNSUPPORTED"
             )
-        from core.vision.chart_guard import evaluate_breakout_vision
-
-        vision_allowed, vision_reason = await evaluate_breakout_vision(
-            fresh_frame, side, mode=vision_mode,
+        enable_guard = (
+            os.getenv("ENABLE_VISION_GUARD", "false").strip().lower()
+            in ("true", "1", "yes")
         )
-        logger.info(
-            "WILD_SWING_GEMINI_VISION symbol=%s side=%s mode=%s allowed=%s reason=%s",
-            symbol, side, vision_mode, vision_allowed, vision_reason,
-        )
-        if not vision_allowed:
-            raise ValueError(
-                "[FORBIDDEN_ENTRY] WILD_SWING_GEMINI_VETO: "
-                + str(vision_reason)
+        if not enable_guard:
+            logger.info(
+                "WILD_SWING_PURE_MATH_FAST_PASS symbol=%s side=%s mode=%s (純量化毫秒級極速開倉)",
+                symbol, side, vision_mode,
             )
+        else:
+            from core.vision.chart_guard import evaluate_breakout_vision
+
+            vision_allowed, vision_reason = await evaluate_breakout_vision(
+                fresh_frame, side, mode=vision_mode,
+            )
+            logger.info(
+                "WILD_SWING_GEMINI_VISION symbol=%s side=%s mode=%s allowed=%s reason=%s",
+                symbol, side, vision_mode, vision_allowed, vision_reason,
+            )
+            if not vision_allowed:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_GEMINI_VETO: "
+                    + str(vision_reason)
+                )
         logger.info(
             "【GATE 通過: %s】symbol=%s side=%s bar=%s stage=final_firewall",
             signal_pattern, symbol, side, signal_bar_id,

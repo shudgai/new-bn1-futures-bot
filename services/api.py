@@ -435,14 +435,86 @@ def visible_system_logs():
         or index == latest_progress_index
     ][-50:]
 
+def parse_intercept_info(reason: str) -> tuple[str, str]:
+    """將攔截代碼轉譯為 (簡短標籤, 詳細說明) 供 K 線圖 Marker 與橫幅使用"""
+    if not reason or reason in ("NONE", "PASSED", "FILLED"):
+        return "", ""
+    r = str(reason)
+    if "BLOCKED_SAME_CANDLE_ANTI_CHOP" in r:
+        return "同K棒防刷單", "同一根 1m K 棒平倉後防反覆秒開刷單保護"
+    if "BLOCKED_REQUIRES_NEW_LOW_BELOW_LAST_EXIT" in r:
+        return "等跌破前平倉價", "空單平倉後價格須實質跌破上次平倉點才准續追，防止原地追空"
+    if "BLOCKED_REQUIRES_NEW_HIGH_ABOVE_LAST_EXIT" in r:
+        return "等突破前平倉價", "多單平倉後價格須實質突破上次平倉點才准續追，防止原地追多"
+    if "5U_DYNAMIC_TRAILING_LOCK" in r:
+        return "5U動態鎖利", "浮盈曾達 5U 以上，動態回撤 25% 立即市價平倉獲利落袋"
+    if "BLOCKED_LONG_ON_BEARISH_TREND" in r:
+        return "空頭趨勢禁開多", "市場主趨勢為空頭 (KC向下/均線空頭排列)，順勢鐵律100%一票否決開多"
+    if "BLOCKED_SHORT_ON_BULLISH_TREND" in r:
+        return "多頭趨勢禁開空", "市場主趨勢為多頭 (KC向上/均線多頭排列)，順勢鐵律100%一票否決開空"
+    if "WAIT_NEW_KC_BREAKOUT" in r:
+        return "等待有效破軌", "尚未形成有效破軌或兩根實體確認 (WAIT_NEW_KC_BREAKOUT)"
+    if "BLOCKED_MA5_MA15_CROSS_CHOP" in r:
+        return "均線糾纏震盪", "近6根K棒均線頻繁交錯糾纏 (Chop Filter)，死水震盪一票否決"
+    if "KC_TREND_NOT_UP" in r:
+        return "KC中軌非向上", "KC通道中軌未向上發散，禁止開多"
+    if "KC_TREND_NOT_DOWN" in r:
+        return "KC中軌非向下", "KC通道中軌未向下發散，禁止開空"
+    if "MA5_SLOPE_FLAT_FOR_LONG" in r:
+        return "MA5走平未上翹", "MA5斜率走平未明顯向上發散，禁止開多"
+    if "MA5_HOOKING_DOWN" in r or "MA5_FLAT_OPPOSITE" in r or "BLOCKED_BY_MA5_DOWNWARD" in r:
+        return "MA5下彎熄火", "MA5即時斜率走平或向下彎折，動能熄火嚴禁開多"
+    if "MA5_HOOKING_UP" in r or "BLOCKED_BY_MA5_UPWARD" in r:
+        return "MA5上勾衰退", "MA5即時斜率走平或向上勾頭，空頭動能衰退嚴禁開空"
+    if "CANNOT_LONG_WHEN_KC_DOWN" in r:
+        return "KC通道向下禁多", "KC通道中軌下行，空頭走勢嚴禁開多"
+    if "CANNOT_SHORT_WHEN_KC_UP" in r:
+        return "KC通道向上禁空", "KC通道中軌上行，多頭走勢嚴禁開空"
+    if "NO_GOLDEN_CROSS" in r or "NO_VALID_GOLDEN_CROSS" in r:
+        return "未成實質金叉", "最近K棒未發生MA5向上實質穿越MA15"
+    if "NO_DEATH_CROSS" in r or "NO_VALID_DEATH_CROSS" in r:
+        return "未成實質死叉", "最近K棒未發生MA5向下實質貫穿MA15"
+    if "TOO_CLOSE_TO_UPPER" in r or "LONG_TOO_CLOSE_TO_UPPER_RAIL" in r:
+        return "貼近上軌空間不足", "距KC上軌不足20%空間，貼軌追多獲利空間狹小"
+    if "TOO_CLOSE_TO_LOWER" in r or "SHORT_TOO_CLOSE_TO_LOWER_RAIL" in r:
+        return "貼近下軌空間不足", "距KC下軌不足20%空間，貼軌追空獲利空間狹小"
+    if "CHOP_BANDWIDTH_TOO_NARROW" in r:
+        return "通道帶寬過窄", "KC通道帶寬 < 1.2%，市場處於死水窄幅震盪"
+    if "VETO: ABSOLUTE_BANDWIDTH_TOO_FLAT" in r or "EXTREME_VOLATILITY_COMPRESSION" in r:
+        return "波幅極度壓縮", "通道帶寬極度扁平或壓縮，缺乏波動度一票否決"
+    if "ROOF_CHASE" in r or "MACRO_CANDLE_STRUCTURE_ROOF_CHASE" in r:
+        return "天花板追多攔截", "全視角K線審查：價格處於結構天花板高位，防追高一票否決"
+    if "FLOOR_CHASE" in r or "MACRO_CANDLE_STRUCTURE_FLOOR_CHASE" in r:
+        return "地板追空攔截", "全視角K線審查：價格處於結構地板低位，防追低一票否決"
+    if "VETO_HOLDING_UNTIL_TRUE_PIVOT" in r:
+        return "未達真峰谷抱牢", "尚未形成並收線確認三點真峰谷樞紐，持倉防洗一票否決平倉"
+    if "VETO_HOLDING_HEALTHY_PULLBACK" in r:
+        return "健康回踩防洗", "價格仍守在關鍵均線之上/下，持倉防洗一票否決平倉"
+    if "BLOCKED_MAX_SLOTS" in r:
+        return "槽位已滿", "已達到系統最大持倉槽位限制 (MAX_SLOTS)"
+    if "BLOCKED_INSUFFICIENT_MARGIN" in r:
+        return "保證金不足", "錢包可用保證金不足以支付最低下單名義價值"
+    if "BLOCKED_DAILY_LOSS" in r:
+        return "每日虧損保護", "已達到當日虧損保護上限，自動熔斷"
+    if "already filled" in r or "重複開倉" in r:
+        return "重複開倉攔截", "該確認棒已有部位或委託，避免重複下單"
+    if "OPPOSITE_CLOSED_BODY" in r:
+        return "收線方向不符", "前一根已收線方向不符；即時破軌尚未收線確認"
+    
+    clean_r = r.replace("BLOCKED_", "").replace("REJECT_ENTRY: ", "").replace("VETO: ", "").replace("🛑 [ENTRY_GATE_FAIL] ", "")
+    short_r = clean_r[:16]
+    return short_r, r
+
 def map_block_reason(reason, close=None, last=None):
     if not reason or reason == "NONE": return "NONE"
+    short_text, full_detail = parse_intercept_info(reason)
+    if short_text:
+        return short_text
     
     if "REJECT_ENTRY" in reason and "門禁一未過" in reason and "< 0.5 ATR" in reason:
         return "實體未達起爆要求 (< 0.5 ATR)"
     if "WAIT_POST_EXIT_5_BAR" in reason:
         return "冷卻中 (WAIT_POST_EXIT_5_BAR)"
-    
     if reason == "BLOCKED_OPPOSITE_CLOSED_BODY":
         return "上一根已收線 K 棒方向不符；即時破軌尚未收線確認"
     if reason == "FILLED":
@@ -885,6 +957,98 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "timestamp": event_timestamp,
             })
 
+        block_markers = {}
+        # 1. 讀取 engine._entry_gate_diagnostics
+        gate_diagnostics = getattr(engine, "_entry_gate_diagnostics", {})
+        for (diag_sym, diag_side, diag_stage), diag_val in gate_diagnostics.items():
+            if diag_sym != symbol or not isinstance(diag_val, (tuple, list)) or len(diag_val) < 2:
+                continue
+            bar_ts, reason = diag_val[0], str(diag_val[1])
+            if not any(kw in reason for kw in ("REJECT", "BLOCKED", "FAIL", "VETO", "CHOP", "WAIT_")):
+                continue
+            if reason in ("NONE", "PASSED", "FILLED", "VALIDATING"):
+                continue
+            matching_bars = df.index[df["timestamp"] <= float(bar_ts or 0)]
+            if len(matching_bars) == 0:
+                continue
+            marker_idx = matching_bars[-1]
+            short_r, full_r = parse_intercept_info(reason)
+            block_markers.setdefault(marker_idx, []).append({
+                "action": "BLOCK",
+                "side": diag_side,
+                "stage": diag_stage,
+                "reason": full_r,
+                "short_reason": short_r,
+            })
+
+        # 2. 讀取 engine._intercept_events (若有)
+        for event in getattr(engine, "_intercept_events", {}).get(symbol, []):
+            event_ts = int(event.get("timestamp") or 0)
+            matching_bars = df.index[df["timestamp"] <= event_ts]
+            if len(matching_bars) == 0:
+                continue
+            marker_idx = matching_bars[-1]
+            reason = str(event.get("reason") or "")
+            short_r, full_r = parse_intercept_info(reason)
+            block_markers.setdefault(marker_idx, []).append({
+                "action": "BLOCK",
+                "side": event.get("side", "NONE"),
+                "stage": event.get("stage", "GATE"),
+                "reason": full_r,
+                "short_reason": short_r,
+            })
+
+        # 3. 即時狀態診斷與 entry_block 構建（持倉時不顯示進場攔截，顯示持倉橫幅）
+        entry_block = None
+        latest_reason = None
+        latest_side = None
+        active_pos = engine.account.positions.get(symbol)
+        has_active_pos = bool(active_pos and abs(float(active_pos.get("amount") or 0.0)) > 0)
+
+        if not has_active_pos:
+            for s in ("SHORT", "LONG", "NONE"):
+                val = gate_diagnostics.get((symbol, s, "SIGNAL")) or gate_diagnostics.get((symbol, s, "EXECUTION"))
+                if val and len(val) >= 2 and any(kw in str(val[1]) for kw in ("WAIT_", "BLOCKED_", "REJECT_", "VETO_", "CHOP")):
+                    latest_reason = str(val[1])
+                    latest_side = s
+                    break
+
+            # 若最新 K 棒處於軌外或有動能，即時比對通道與趨勢
+            if len(df) > 0:
+                last_row = df.iloc[-1]
+                last_close = float(last_row.get("close") or 0.0)
+                last_kc_up = float(indicators.iloc[-1].get("kc_upper") or 0.0)
+                last_kc_low = float(indicators.iloc[-1].get("kc_lower") or 0.0)
+                mid_now = float(indicators.iloc[-1].get("ema_20") or 0.0)
+                mid_prev = float(indicators.iloc[-2].get("ema_20") or mid_now) if len(indicators) > 1 else mid_now
+
+                if last_close > last_kc_up and last_kc_up > 0:
+                    if mid_now <= mid_prev:
+                        latest_reason = "BLOCKED_LONG_ON_BEARISH_TREND"
+                        latest_side = "LONG"
+                elif last_close < last_kc_low and last_kc_low > 0:
+                    if mid_now >= mid_prev:
+                        latest_reason = "BLOCKED_SHORT_ON_BULLISH_TREND"
+                        latest_side = "SHORT"
+
+            if latest_reason:
+                short_r, full_r = parse_intercept_info(latest_reason)
+                entry_block = {
+                    "message": f"🚫 攔截: {short_r}",
+                    "detail": full_r,
+                    "reason": latest_reason,
+                    "side": latest_side,
+                }
+                if len(df) > 0:
+                    last_idx = df.index[-1]
+                    block_markers.setdefault(last_idx, []).append({
+                        "action": "BLOCK",
+                        "side": latest_side or "NONE",
+                        "stage": "LIVE",
+                        "reason": full_r,
+                        "short_reason": short_r,
+                    })
+
         # 準備資料
         result = []
         for index, row in df.iterrows():
@@ -905,11 +1069,27 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "trade_markers": trade_markers.get(index, []),
                 "chop_markers": chop_markers.get(index, []),
                 "channel_markers": channel_markers.get(index, []),
+                "block_markers": block_markers.get(index, []),
                 "is_live": bool(include_live and index == df.index[-1]),
             })
-            
-        entry_block = None
-        return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
+
+        pos_info = None
+        if has_active_pos and active_pos:
+            pos_info = {
+                "side": str(active_pos.get("side", "")).upper(),
+                "amount": abs(float(active_pos.get("amount", 0.0))),
+                "entry_price": float(active_pos.get("entry_price", 0.0)),
+                "unrealized_pnl": float(active_pos.get("unrealized_pnl", 0.0)),
+                "pnl_pct": float(active_pos.get("pnl_pct", 0.0)),
+            }
+
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "data": result,
+            "entry_block": entry_block,
+            "current_position": pos_info,
+        }
     except HTTPException:
         raise
     except Exception as e:

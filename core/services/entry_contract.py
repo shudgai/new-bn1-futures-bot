@@ -27,6 +27,7 @@ from core.gates.swing_origin_entry_gate import (
     late_entry_problem,
     swing_origin_evidence,
 )
+from core.gates.meme_coin_gate import MemeCoinGate
 from core.services.strategies.unified_entry_strategy import (
     anti_bottom_short_problem,
     validate_ma_alignment,
@@ -2900,8 +2901,6 @@ def pre_flight_safety_check(
         is_explosive = (spatial_ctx.state == 'EXPLOSIVE_EXPANSION')
 
         is_shadow_retest = (decision_type == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
-
-        from core.gates.meme_coin_gate import MemeCoinGate
         is_meme = (decision_type in MEME_ENTRY_CODES) or (bool(symbol) and MemeCoinGate.is_meme_coin(symbol))
 
         if side == "LONG":
@@ -3117,9 +3116,23 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
         side = decision.get('side')
-        extension_problem = late_entry_problem(frame, quote, side)
-        if extension_problem:
-            return reject(extension_problem)
+        is_meme = (
+            (symbol and MemeCoinGate.is_meme_coin(symbol))
+            or str(decision.get('entry_phase', '')).startswith('MEME_')
+            or str(decision.get('type', '')).startswith('MEME_')
+        )
+        if not is_meme:
+            extension_problem = late_entry_problem(frame, quote, side)
+            if extension_problem:
+                return reject(extension_problem)
+        else:
+            # 妖幣最大距軌距離防護：距外軌不超過 3 ATR（超過 3 ATR 不追價）
+            kc_edge = float(frame.iloc[-1].get('kc_upper' if side == 'LONG' else 'kc_lower', 0.0))
+            atr = float(frame.iloc[-1].get('atr', 1.0))
+            if kc_edge > 0 and atr > 0:
+                dist = (quote - kc_edge) / atr if side == 'LONG' else (kc_edge - quote) / atr
+                if dist > 3.0:
+                    return reject('BLOCKED_BY_EXTENDED_BREAKOUT_OVER_3_ATR')
         if decision.get('entry_phase') == SWING_ORIGIN_PHASE:
             origin = swing_origin_evidence(frame, quote, side)
             if origin is None:
@@ -3200,7 +3213,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return reject(reason)
 
         # ──【順勢交易鐵律】趨勢是空頭不要開多，趨勢是多頭不要開空──
-        from core.gates.meme_coin_gate import MemeCoinGate
         market_trend = MemeCoinGate.get_market_trend(frame, quote)
         side = decision.get('side')
         if side == 'LONG' and market_trend == 'BEARISH':
@@ -3489,7 +3501,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         if (forming_bar and is_meme_breakout_symbol(symbol)
                 and not live_swing_origin and live_cross is None
-                and code not in KC_PENDING_CODES):
+                and code not in KC_PENDING_CODES
+                and code not in MEME_ENTRY_CODES
+                and code != 'TRIGGER_C_CONTINUATION'):
             return reject("BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR")
 
         # 【均線相對位置的絕對限制】第一道開倉閘門底線（已知方向或指定訊號代碼）
@@ -3546,9 +3560,14 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return authorize(decision, quote)
 
         # ── 妖幣專屬極速破軌、延續補倉與提前埋伏入口（Meme Coin Authority）──
-        from core.gates.meme_coin_gate import MemeCoinGate
         if symbol and MemeCoinGate.is_meme_coin(symbol):
-            if code is None or code in MEME_ENTRY_CODES:
+            meme_general_codes = frozenset((
+                'TRIGGER_C_CONTINUATION', 'TRIGGER_A_KC_BREAKOUT',
+                'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
+                'KC_BREAKOUT_LONG', 'KC_BREAKOUT_SHORT',
+                'KC_EXPANSION_OUTER_TREND_CONTINUATION',
+            ))
+            if code is None or code in MEME_ENTRY_CODES or code in meme_general_codes:
                 target_sides = ['LONG', 'SHORT']
                 if known_side:
                     target_sides = [known_side]
@@ -3566,7 +3585,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     pyr_passed, pyr_reason, pyr_meta = MemeCoinGate.evaluate_pyramid_addition(
                         frame, quote, pos_side, symbol=symbol,
                     )
-                    if pyr_passed and (code is None or code == pyr_reason):
+                    can_match_pyr = (code is None or code == pyr_reason or code in meme_general_codes)
+                    if pyr_passed and can_match_pyr:
                         cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
                         decision = {
                             'action': 'ENTER',
@@ -3586,11 +3606,20 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
                 # 2. 若無持倉，優先審查「兩根流極速破軌與延續開倉（強制上車）」
                 if not has_pos:
+                    last_meme_reason = None
+                    last_c_price = getattr(account, "last_closed_price", {}).get(symbol) if account else None
+                    last_c_side = getattr(account, "last_closed_side", {}).get(symbol) if account else None
+                    last_c_ts = getattr(account, "last_closed_ts", {}).get(symbol) if account else None
                     for s in target_sides:
                         m_passed, m_reason, m_meta = MemeCoinGate.evaluate_meme_entry(
                             frame, quote, s, symbol=symbol,
+                            last_closed_price=last_c_price,
+                            last_closed_side=last_c_side,
+                            last_closed_ts=last_c_ts,
                         )
-                        if m_passed and (code is None or code == m_reason):
+                        last_meme_reason = m_reason or last_meme_reason
+                        can_match_m = (code is None or code == m_reason or code in meme_general_codes)
+                        if m_passed and can_match_m:
                             cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
                             decision = {
                                 'action': 'ENTER',
@@ -3620,7 +3649,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         amb_passed, amb_reason, amb_meta = MemeCoinGate.evaluate_ambush_entry(
                             frame, quote, s, symbol=symbol,
                         )
-                        if amb_passed and (code is None or code == amb_reason):
+                        can_match_amb = (code is None or code == amb_reason or code in meme_general_codes)
+                        if amb_passed and can_match_amb:
                             cand_bar_id = float(frame.iloc[-1].get('timestamp', 0))
                             decision = {
                                 'action': 'ENTER',
@@ -3646,7 +3676,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                             return authorize(decision, quote)
 
                 if code is not None and code in MEME_ENTRY_CODES:
-                    return reject("WAIT_MEME_ENTRY_CONDITIONS")
+                    return reject(last_meme_reason or "WAIT_MEME_ENTRY_CONDITIONS")
 
         # The live scanner and final order firewall share this closed set of
         # entry authorities. Do not evaluate legacy, continuation, or reversal

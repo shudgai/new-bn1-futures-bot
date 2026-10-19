@@ -2447,6 +2447,24 @@ class BinanceTestnetAccount:
             ):
                 return False
 
+            # =========================================================================
+            # 【反向開單冷卻鎖】防止剛平倉立即反向開單（多轉空、空轉多冷卻與大趨勢確認）
+            # =========================================================================
+            target_action = f"OPEN_{side.upper()}"
+            last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
+            frame_provider = getattr(self, "channel_exit_frame_provider", None)
+            frame = frame_provider(symbol) if callable(frame_provider) else getattr(self, "_channel_exit_frames", {}).get(symbol)
+            from core.services.reverse_entry_cooldown_lock import evaluate_reverse_cooldown_guard
+            cooldown_allowed, _, cooldown_reason = evaluate_reverse_cooldown_guard(
+                symbol, target_action, price, last_trade, frame,
+            )
+            if not cooldown_allowed:
+                self.log(
+                    f"🛡️ [REVERSE_COOLDOWN_LOCK] {symbol} {cooldown_reason} -> 強制阻斷反手開倉",
+                    "WARNING",
+                )
+                return False
+
         if (
             not is_manual
             and entry_context.get("entry_authority") != "WAIT"
@@ -3868,6 +3886,16 @@ class BinanceTestnetAccount:
             net_pnl = raw_pnl - total_fee
             self.realized_pnl += net_pnl
             self.last_closed_price[symbol] = float(execution_price)
+            if not hasattr(self, "last_closed_trades"):
+                self.last_closed_trades = {}
+            self.last_closed_trades[symbol] = {
+                "side": str(position["side"]).lower(),
+                "price": float(execution_price),
+                "bar_index": int(time.time() * 1000 // 60_000),
+                "time": time.time(),
+                "timestamp_ms": int(time.time() * 1000),
+                "reason": str(close_reason),
+            }
             from core.services.post_profit_lock_gate import profit_exit_fields
             profit_exit_ms = int(time.time() * 1000)
             profit_fields = profit_exit_fields(position, close_reason, profit_exit_ms, net_pnl=net_pnl)
