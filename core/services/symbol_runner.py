@@ -685,6 +685,7 @@ async def _process_wild_swing_symbol(
         CONFIRMED_2BAR_BREAKOUT,
         INSTANT_BREAKOUT_INSIDE,
         CONTINUATION_OUTSIDE_KC,
+        "MA5_MA15_1M_CROSS",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",
@@ -772,12 +773,14 @@ async def _process_wild_swing_symbol(
     )
 
     logger.info(
-        "WILD_SWING_NUMERIC_VISION_BYPASS symbol=%s side=%s confirmation=%s bar=%s",
+        "WILD_SWING_FINAL_VISION_GATE_PENDING symbol=%s side=%s confirmation=%s bar=%s",
         symbol, signal["side"], signal["structure_confirmation"], signal_bar_id,
     )
     from core.gates.trend_riding_strategy import can_open_position
     gate_ok, gate_reason, _ = can_open_position(
-        df=closed if closed is not None and not closed.empty else frame,
+        # Keep the live candle for an intrabar WILD_SWING candidate. The gate
+        # re-derives the same pattern against the current quote before submit.
+        df=frame,
         side=signal["side"],
         quote=quote,
         symbol=symbol,

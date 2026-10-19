@@ -624,6 +624,10 @@ def intrabar_spike_rebound_evidence(position, frame, side, quote):
         if side == 'SHORT':
             if tracked_low >= lower:
                 return None
+            # 【影線不平倉，除非有利潤】：無明確利潤 (>= 0.5%) 時，下影線反抽一律不平倉！
+            profit_ratio = (entry_price - quote) / entry_price if entry_price > 0 else 0.0
+            if profit_ratio < 0.005:
+                return None
             rebound_ratio = (quote - tracked_low) / candle_range
             ratio_reached = (
                 rebound_ratio >= 0.35
@@ -637,9 +641,14 @@ def intrabar_spike_rebound_evidence(position, frame, side, quote):
                 'kc_lower': lower, 'rebound_ratio': rebound_ratio,
                 'bar_id': bar_id,
                 'intrabar_confirmation': True,
+                'profit_ratio': profit_ratio,
             }
 
         if tracked_high <= upper:
+            return None
+        # 【影線不平倉，除非有利潤】：無明確利潤 (>= 0.5%) 時，上影線回撤一律不平倉！
+        profit_ratio = (quote - entry_price) / entry_price if entry_price > 0 else 0.0
+        if profit_ratio < 0.005:
             return None
         retracement_ratio = (tracked_high - quote) / candle_range
         if (retracement_ratio < 0.35
@@ -650,6 +659,7 @@ def intrabar_spike_rebound_evidence(position, frame, side, quote):
             'quote': quote, 'curr_high': tracked_high, 'curr_low': tracked_low,
             'kc_upper': upper, 'retracement_ratio': retracement_ratio,
             'bar_id': bar_id, 'intrabar_confirmation': True,
+            'profit_ratio': profit_ratio,
         }
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return None
@@ -1847,7 +1857,7 @@ class HoldingProtectionExitGate:
 
             # 2. 檢驗是否收盤站上 KC 中軌逆轉
             last_closed_above = _last_closed_close_at_or_above_kc_middle(frame)
-            above_kc_mid = (last_closed_above is True) or (frame is not None and len(frame) > 0 and float(quote) > float(frame.iloc[-1].get('kc_middle', 0.0)))
+            above_kc_mid = (last_closed_above is True)  # 影線刺穿不平倉：必須看已收線實體價，嚴禁盤中即時 quote 誤判
 
             # 鐵律：若未確認真谷底且未站上 KC 中軌，在空頭走勢中一票否決平空！
             if not has_pivot and not above_kc_mid:

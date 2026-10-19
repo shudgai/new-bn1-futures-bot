@@ -186,22 +186,92 @@ class BreakoutContinuationEntryGate:
                 and live["low"] <= tick <= live["high"]
                 and count >= 4
             ):
-                # A genuine live cross from inside/touching the band is an
-                # immediate breakout entry. Do not wait for a second candle
-                # and do not gate this signal on MA5/KC slope.
-                if tick > live["open"] and live["open"] <= live_upper < tick:
+                average_bars = [
+                    valid_candle(row) for row in closed_klines[-14:]
+                ]
+                average_body = (
+                    sum(
+                        abs(candle["close"] - candle["open"])
+                        for candle in average_bars if candle is not None
+                    ) / len(average_bars)
+                    if len(average_bars) == 14 and all(
+                        candle is not None for candle in average_bars
+                    ) else 0.0
+                )
+                live_body = abs(tick - live["open"])
+
+                def is_small(candle: Optional[dict[str, float]]) -> bool:
+                    return bool(
+                        candle is not None
+                        and average_body > 0
+                        and abs(candle["close"] - candle["open"])
+                        <= average_body * 0.85
+                    )
+
+                prior_one = recent_closed[-1] if recent_closed else None
+                prior_two = recent_closed[-2] if len(recent_closed) >= 2 else None
+                prior_three = recent_closed[-3] if len(recent_closed) >= 3 else None
+                small_red_one = bool(
+                    is_small(prior_one) and prior_one["close"] < prior_one["open"]
+                )
+                small_green_one = bool(
+                    is_small(prior_one) and prior_one["close"] > prior_one["open"]
+                )
+                long_setup = small_red_one or bool(
+                    prior_two and prior_two["close"] < prior_two["open"]
+                    and is_small(prior_two)
+                    and prior_one and prior_one["close"] > prior_one["open"]
+                    and is_small(prior_one)
+                ) or bool(
+                    prior_three and prior_three["close"] < prior_three["open"]
+                    and is_small(prior_three)
+                    and prior_two and prior_two["close"] > prior_two["open"]
+                    and is_small(prior_two)
+                    and prior_one and prior_one["close"] > prior_one["open"]
+                    and is_small(prior_one)
+                )
+                short_setup = small_green_one or bool(
+                    prior_two and prior_two["close"] > prior_two["open"]
+                    and is_small(prior_two)
+                    and prior_one and prior_one["close"] < prior_one["open"]
+                    and is_small(prior_one)
+                ) or bool(
+                    prior_three and prior_three["close"] > prior_three["open"]
+                    and is_small(prior_three)
+                    and prior_two and prior_two["close"] < prior_two["open"]
+                    and is_small(prior_two)
+                    and prior_one and prior_one["close"] < prior_one["open"]
+                    and is_small(prior_one)
+                )
+
+                # Intrabar burst entry: require the requested buildup pattern
+                # and a directional body >= 1.2x recent average; MA5 slope is
+                # intentionally excluded from this branch.
+                if (
+                    average_body > 0
+                    and live_body >= average_body * 1.2
+                    and tick > live["open"]
+                    and live["open"] <= live_upper < tick
+                    and long_setup
+                ):
                     result = signal(
                         "OPEN_LONG", INSTANT_BREAKOUT_INSIDE, tick,
-                        "即時破上軌：當根由軌內穿出，直接評估開多",
+                        "即時大陽破上軌且符合小紅/小綠蓄勢組合",
                         current_ma5=closed_ma5, current_basis=live_middle,
                         ma15_current=live_ma15, is_intrabar=True,
                     )
                     result["bar_id"] = live_timestamp
                     return result
-                if tick < live["open"] and live["open"] >= live_lower > tick:
+                if (
+                    average_body > 0
+                    and live_body >= average_body * 1.2
+                    and tick < live["open"]
+                    and live["open"] >= live_lower > tick
+                    and short_setup
+                ):
                     result = signal(
                         "OPEN_SHORT", INSTANT_BREAKOUT_INSIDE, tick,
-                        "即時破下軌：當根由軌內穿出，直接評估開空",
+                        "即時大陰破下軌且符合小綠/小紅蓄勢組合",
                         current_ma5=closed_ma5, current_basis=live_middle,
                         ma15_current=live_ma15, is_intrabar=True,
                     )
@@ -224,7 +294,9 @@ class BreakoutContinuationEntryGate:
                     and tick > live_upper
                     and tick > live["open"]
                     and live_ma5 > closed_ma5
+                    and live_ma5 > live_middle
                     and live_middle > basis
+                    and tick > current["high"]
                 ):
                     result = signal(
                         "OPEN_LONG", CONTINUATION_OUTSIDE_KC, tick,
@@ -240,7 +312,9 @@ class BreakoutContinuationEntryGate:
                     and tick < live_lower
                     and tick < live["open"]
                     and live_ma5 < closed_ma5
+                    and live_ma5 < live_middle
                     and live_middle < basis
+                    and tick < current["low"]
                 ):
                     result = signal(
                         "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, tick,
@@ -255,11 +329,11 @@ class BreakoutContinuationEntryGate:
                 expanding_live = live_width > closed_width
                 long_first_break = (
                     current_bullish
-                    and current["open"] < upper < current["close"]
+            and current["open"] <= upper < current["close"]
                 )
                 short_first_break = (
                     current_bearish
-                    and current["open"] > lower > current["close"]
+            and current["open"] >= lower > current["close"]
                 )
                 if (
                     live_ma5 is not None
@@ -288,6 +362,7 @@ class BreakoutContinuationEntryGate:
                     and short_first_break
                     and tick < live["open"]
                     and tick < live_lower
+                    and expanding_live
                     and live_ma5 < closed_ma5
                     and live_middle < basis
                 ):
@@ -305,27 +380,9 @@ class BreakoutContinuationEntryGate:
                     return result
 
         if (
-            not open_live_bar_after_closed
-            and current_bullish
-            and current["open"] <= upper < current["close"]
-        ):
-            return signal(
-                "OPEN_LONG", INSTANT_BREAKOUT_INSIDE, current["close"],
-                "單根收線破上軌：直接評估開多",
-            )
-        if (
-            not open_live_bar_after_closed
-            and current_bearish
-            and current["open"] >= lower > current["close"]
-        ):
-            return signal(
-                "OPEN_SHORT", INSTANT_BREAKOUT_INSIDE, current["close"],
-                "單根收線破下軌：直接評估開空",
-            )
-        if (
             previous_bullish
             and current_bullish
-            and previous["open"] < previous_upper < previous["close"]
+            and previous["open"] <= previous_upper < previous["close"]
             and current["close"] > upper
             and upper - lower > previous_upper - previous_lower
             and ma5_up
@@ -342,8 +399,9 @@ class BreakoutContinuationEntryGate:
         if (
             previous_bearish
             and current_bearish
-            and previous["open"] > float(previous_lower) > previous["close"]
+            and previous["open"] >= float(previous_lower) > previous["close"]
             and current["close"] < lower
+            and upper - lower > float(previous_upper) - float(previous_lower)
             and ma5_down
             and basis < float(basis_values[0])
             and not open_live_bar_after_closed
@@ -353,6 +411,32 @@ class BreakoutContinuationEntryGate:
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
                 "兩根收線確認：首根實體跌破下軌，次根同色收在下軌外",
+            )
+        if (
+            current_bullish
+            and current["close"] > upper
+            and current["close"] > previous["high"]
+            and closed_ma5 > basis
+            and ma5_up
+            and basis > float(basis_values[0])
+            and not open_live_bar_after_closed
+        ):
+            return signal(
+                "OPEN_LONG", CONTINUATION_OUTSIDE_KC, current["close"],
+                "收線上軌外順勢續推：MA5 高於中軌並創前高",
+            )
+        if (
+            current_bearish
+            and current["close"] < lower
+            and current["close"] < previous["low"]
+            and closed_ma5 < basis
+            and ma5_down
+            and basis < float(basis_values[0])
+            and not open_live_bar_after_closed
+        ):
+            return signal(
+                "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, current["close"],
+                "收線下軌外順勢續跌：MA5 低於中軌並破前低",
             )
         return None
 

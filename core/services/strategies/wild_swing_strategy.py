@@ -268,16 +268,49 @@ class WildSwingStrategy:
         candidate = self._pure_math_candidate(
             bars, frame=frame, tick_price=tick_price,
         )
+        supported_types = {
+            CONFIRMED_2BAR_BREAKOUT,
+            INSTANT_BREAKOUT_INSIDE,
+            CONTINUATION_OUTSIDE_KC,
+            MA_CROSSOVER,
+        }
         if (
             candidate is None
-            or candidate["action"] != f"OPEN_{side}"
-            or candidate["type"] not in {
-                CONFIRMED_2BAR_BREAKOUT,
-                INSTANT_BREAKOUT_INSIDE,
-                CONTINUATION_OUTSIDE_KC,
-            }
+            or candidate.get("action") != f"OPEN_{side}"
+            or candidate.get("type") not in supported_types
         ):
-            return None
+            legacy_signal = self._evaluate_legacy_entry(symbol, frame)
+            if (
+                legacy_signal is None
+                or legacy_signal.get("side") != side
+            ):
+                return None
+            legacy_confirmation = legacy_signal.get("structure_confirmation")
+            if legacy_confirmation == "MA5_MA15_1M_CROSS":
+                candidate_type = MA_CROSSOVER
+            elif legacy_confirmation in {
+                CONFIRMED_2BAR_BREAKOUT, CONTINUATION_OUTSIDE_KC,
+            }:
+                candidate_type = legacy_confirmation
+            else:
+                return None
+            candidate = {
+                "action": f"OPEN_{side}",
+                "type": candidate_type,
+                "confirmation": legacy_confirmation,
+                "price": float(legacy_signal["close"]),
+                "is_intrabar": False,
+                "ma5_current": float(legacy_signal["ma5_current"]),
+                "ma5_previous": float(legacy_signal["ma5_previous"]),
+                "ma15_current": float(current["ma15"]),
+                "ma15_previous": float(previous["ma15"]),
+                "kc_upper": float(current["kc_upper"]),
+                "kc_lower": float(current["kc_lower"]),
+                "kc_basis": float(legacy_signal["kc_middle_current"]),
+                "channel_expanding": bool(legacy_signal["channel_expanding"]),
+                "bar_id": float(legacy_signal["bar_id"]),
+                "reason": legacy_signal.get("candidate_reason") or legacy_signal["reason"],
+            }
 
         # Breakouts can trigger immediately; an established outside-band move
         # can also enter through its separate trend-aligned continuation gate.
@@ -318,7 +351,9 @@ class WildSwingStrategy:
 
         from core.gates.trend_riding_strategy import can_open_position
         state = self.state_for(symbol)
-        gate_confirmation = entry_type if not delayed else None
+        gate_confirmation = (
+            candidate.get("confirmation", entry_type) if not delayed else None
+        )
         can_open, gate_reason, _ = can_open_position(
             df=frame,
             side=side,
@@ -372,30 +407,27 @@ class WildSwingStrategy:
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
-        if side == "LONG":
-            trend_aligned = entry_type == INSTANT_BREAKOUT_INSIDE or (
+        if entry_type == INSTANT_BREAKOUT_INSIDE:
+            trend_aligned = True
+        elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
+            trend_aligned = (
+                kc_middle_rising
+                and ma5_slope > 0
+                and current_ma5 > current_middle
+                and current_middle > float(previous["kc_middle"])
+                if side == "LONG"
+                else kc_middle_falling
+                and ma5_slope < 0
+                and current_ma5 < current_middle
+                and current_middle < float(previous["kc_middle"])
+            )
+        elif side == "LONG":
+            trend_aligned = (
                 channel_expanding
                 and ma5_slope > 0
                 and kc_middle_rising
                 and current_ma5 > current_ma15
                 and (not delayed or float(current["close"]) > current_ma5)
-            )
-        elif not delayed and entry_type in {
-            CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
-        }:
-            trend_aligned = (
-                entry_type == INSTANT_BREAKOUT_INSIDE
-                or (
-                    kc_middle_falling
-                    and current_ma5 < current_ma15
-                    and ma5_slope < 0
-                )
-            )
-        elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
-            trend_aligned = (
-                kc_middle_rising and ma5_slope > 0 and current_ma5 > current_ma15
-                if side == "LONG"
-                else kc_middle_falling and ma5_slope < 0 and current_ma5 < current_ma15
             )
         else:
             trend_aligned = (
@@ -447,7 +479,7 @@ class WildSwingStrategy:
             "entry_label": reason,
             "entry_pattern": entry_pattern,
             "entry_signal_mode": entry_pattern,
-            "structure_confirmation": entry_type,
+            "structure_confirmation": candidate.get("confirmation", entry_type),
             "structure_confirmed": True,
             "is_intrabar": is_intrabar,
             "channel_expanding": channel_expanding,
@@ -626,6 +658,7 @@ class WildSwingStrategy:
             bars["kc_lower"].tolist(),
             bars["kc_middle"].tolist(),
             ma5_series=bars["_wild_ma5"].tolist(),
+            ma15_series=bars["ma15"].tolist(),
         )
         if (
             numeric_candidate is not None
@@ -674,6 +707,7 @@ class WildSwingStrategy:
         if side == "LONG":
             valid_cross = (
                 cross_up
+                and channel_expanding
                 and ma5 > prev_ma5
                 and float(current["kc_middle"]) > prev_middle
                 and close > float(current["kc_middle"])
@@ -683,6 +717,7 @@ class WildSwingStrategy:
         else:
             valid_cross = (
                 cross_down
+                and channel_expanding
                 and ma5 < prev_ma5
                 and float(current["kc_middle"]) < prev_middle
                 and close < float(current["kc_middle"])

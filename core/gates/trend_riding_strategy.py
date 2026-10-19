@@ -129,7 +129,9 @@ def can_open_position(
     }
 
     entry_confirmation = str(kwargs.get("entry_confirmation") or "").upper()
+    is_instant_breakout = entry_confirmation == "INSTANT_BREAKOUT_INSIDE"
     wild_outer_entry = False
+    live = None
     if entry_confirmation in {
         "INSTANT_BREAKOUT_INSIDE",
         "CONFIRMED_2BAR_BREAKOUT",
@@ -168,6 +170,13 @@ def can_open_position(
             wild_outer_entry = False
         if not wild_outer_entry:
             return False, "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID", details
+    has_live_breakout_confirmation = bool(
+        wild_outer_entry
+        and entry_confirmation in {
+            "INSTANT_BREAKOUT_INSIDE", "CONTINUATION_OUTSIDE_KC",
+        }
+        and live is not None
+    )
 
     # ══════════════════════════════════════════════════════════════════
     # 二、 防刷單冷卻時間 (Anti-Chop Cooldown >= 3 根 K 棒)
@@ -218,35 +227,38 @@ def can_open_position(
     # ══════════════════════════════════════════════════════════════════
     if side == "LONG":
         # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多)
-        if not wild_outer_entry and kc_trend != "UP":
+        if kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_LONG: KC_TREND_NOT_UP ({kc_trend})", details
 
         # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
-        if not wild_outer_entry and ma5_curr <= ma15_curr:
+        if not is_instant_breakout and ma5_curr <= ma15_curr:
             msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
 
         # 3. ma5[-1] <= ma5[-2]: return False (MA5 未實質向上勾頭不開多)
-        if not wild_outer_entry and ma5_curr <= ma5_prev:
+        if not is_instant_breakout and ma5_curr <= ma5_prev:
             msg = f"[攔截開多] {symbol} MA5 未實質向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_LONG: MA5_SLOPE_NOT_POSITIVE", details
 
         # 4. 實體陰線禁止開多
-        if close_p <= open_p:
+        if close_p <= open_p and not has_live_breakout_confirmation:
             msg = f"[攔截開多] {symbol} 上一根為陰線實體，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_LONG: BEARISH_CANDLE", details
 
         # 5. 頂部上影線追多過濾 (嚴禁頂部上影線追多)
-        if upper_wick > 1.5 * max(body, 1e-9):
+        if (
+            upper_wick > 1.5 * max(body, 1e-9)
+            and not has_live_breakout_confirmation
+        ):
             msg = f"[攔截開多] {symbol} 上一根為長上影線竭盡避雷針，嚴禁頂部追多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -266,35 +278,38 @@ def can_open_position(
 
     elif side == "SHORT":
         # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空！CAP 的 4 筆空單必須全被此條攔截！)
-        if not wild_outer_entry and kc_trend != "DOWN":
+        if kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_SHORT: KC_TREND_NOT_DOWN ({kc_trend})", details
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
-        if not wild_outer_entry and ma5_curr >= ma15_curr:
+        if not is_instant_breakout and ma5_curr >= ma15_curr:
             msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
 
         # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
-        if not wild_outer_entry and ma5_curr >= ma5_prev:
+        if not is_instant_breakout and ma5_curr >= ma5_prev:
             msg = f"[攔截開空] {symbol} MA5 走平或向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_SHORT: MA5_SLOPE_NOT_NEGATIVE", details
 
         # 4. close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
-        if close_p >= open_p:
+        if close_p >= open_p and not has_live_breakout_confirmation:
             msg = f"[攔截開空] {symbol} 上一根為實體陽線，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_SHORT: BULLISH_CANDLE", details
 
         # 5. 底部下影線反彈過濾
-        if lower_wick > 1.5 * max(body, 1e-9):
+        if (
+            lower_wick > 1.5 * max(body, 1e-9)
+            and not has_live_breakout_confirmation
+        ):
             msg = f"[攔截開空] {symbol} 上一根為長下影線反彈棒，嚴禁底部追空"
             logger.warning(msg)
             print(msg, flush=True)

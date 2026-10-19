@@ -255,7 +255,8 @@ def ma_parallel_chop_problem(frame, side, quote=None):
 
 def ma5_ma15_entry_gate_problem(
     frame, side, quote=None, *, entry_confirmation=None,
-    is_continuation_entry=False, is_manual=False, symbol=None,
+    is_continuation_entry=False, is_instant_breakout=False,
+    is_manual=False, symbol=None,
 ):
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
@@ -267,7 +268,7 @@ def ma5_ma15_entry_gate_problem(
         frame,
         normalized_side,
         quote=quote,
-        enforce_ma_direction=not is_manual,
+        enforce_ma_direction=not is_manual and not is_instant_breakout,
         is_confirmed_outer_entry=is_confirmed_outer_entry,
         is_continuation_entry=(
             is_continuation_entry
@@ -277,6 +278,7 @@ def ma5_ma15_entry_gate_problem(
                 "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
             }
         ),
+        is_instant_breakout=is_instant_breakout,
         is_manual=is_manual,
         symbol=symbol,
     )
@@ -321,7 +323,7 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation):
 def market_structure_gate_problem(
     frame, side, quote=None, *, enforce_ma_direction=True,
     is_confirmed_outer_entry=False, is_continuation_entry=False,
-    is_manual=False, symbol=None,
+    is_instant_breakout=False, is_manual=False, symbol=None,
 ):
     from core.services.candle_data import closed_entry_candles
 
@@ -395,6 +397,11 @@ def market_structure_gate_problem(
             "KC_MIDDLE": normalized_slope(values["kc_middle"]),
             "KC_LOWER": normalized_slope(values["kc_lower"]),
         }
+        if not is_manual:
+            if normalized_side == "LONG" and slopes["MA15"] < 0:
+                return veto("VETO_BLOCKED_LONG_ON_FALLING_MA15")
+            if normalized_side == "SHORT" and slopes["MA15"] > 0:
+                return veto("VETO_BLOCKED_SHORT_ON_RISING_MA15")
         gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
         relaxed_continuation = bool(is_continuation_entry)
         from core.symbol_aliases import is_meme_breakout_symbol
@@ -439,17 +446,18 @@ def market_structure_gate_problem(
                 if normalized_side == "SHORT" and ma5_slope >= 0:
                     return veto("VETO_CONTINUATION_MA5_NOT_FALLING_SHORT")
             elif is_confirmed_outer_entry:
-                # Confirmed breakouts keep their original strict MA5 slope.
+                # Intrabar burst entries exempt MA5 slope only; keep KC trend.
                 kc_middle_slope = slopes["KC_MIDDLE"]
                 if normalized_side == "LONG" and kc_middle_slope <= 0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_RISING_LONG")
                 if normalized_side == "SHORT" and kc_middle_slope >= -0.00005:
                     return veto("VETO_KC_MIDDLE_FLAT_OR_NOT_FALLING_SHORT")
-                ma5_slope = slopes["MA5"]
-                if normalized_side == "LONG" and ma5_slope < 0.00015:
-                    return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
-                if normalized_side == "SHORT" and ma5_slope > -0.00015:
-                    return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
+                if not is_instant_breakout:
+                    ma5_slope = slopes["MA5"]
+                    if normalized_side == "LONG" and ma5_slope < 0.00015:
+                        return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
+                    if normalized_side == "SHORT" and ma5_slope > -0.00015:
+                        return veto("VETO_LINE_PARALLEL_OR_FLAT_MA5")
             else:
                 for name, slope in slopes.items():
                     if abs(slope) < 0.00015:
@@ -557,6 +565,9 @@ def final_trend_alignment_problem(
                     entry_confirmation if is_confirmed_outer_entry else None
                 ),
                 is_continuation_entry=is_continuation_entry,
+                is_instant_breakout=(
+                    entry_confirmation == INSTANT_BREAKOUT_INSIDE
+                ),
                 symbol=symbol,
             )
             if ma_gate_problem:
@@ -1149,6 +1160,7 @@ async def validate_account_entry(account, symbol, side, context):
             CONFIRMED_2BAR_BREAKOUT,
             INSTANT_BREAKOUT_INSIDE,
             CONTINUATION_OUTSIDE_KC,
+            "MA5_MA15_1M_CROSS",
         }:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_TWO_BAR_KC_GATE_REQUIRED"
@@ -1237,6 +1249,64 @@ async def validate_account_entry(account, symbol, side, context):
         )
         if any(field not in current for field in required):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_MISSING")
+        confirmation = str(signal.get("structure_confirmation") or "").upper()
+        if confirmation in {
+            INSTANT_BREAKOUT_INSIDE,
+            CONFIRMED_2BAR_BREAKOUT,
+            CONTINUATION_OUTSIDE_KC,
+        }:
+            try:
+                entry_open = float(current["open"])
+                entry_price = float(
+                    tick_price if signal.get("is_intrabar") is True
+                    else current["close"]
+                )
+                entry_upper = float(current["kc_upper"])
+                entry_lower = float(current["kc_lower"])
+                prior_atr = float(
+                    closed.iloc[-1]["atr"]
+                    if signal.get("is_intrabar") is True
+                    else closed.iloc[-2]["atr"]
+                )
+            except (IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_BREAKOUT_QUALITY_DATA_INVALID"
+                ) from exc
+            if (
+                not all(math.isfinite(value) and value > 0 for value in (
+                    entry_open, entry_price, entry_upper, entry_lower, prior_atr,
+                ))
+                or entry_upper <= entry_lower
+                or prior_atr <= 0
+            ):
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_BREAKOUT_QUALITY_DATA_INVALID"
+                )
+            direction_body = (
+                entry_price - entry_open
+                if side == "LONG" else entry_open - entry_price
+            )
+            same_side_rail = entry_upper if side == "LONG" else entry_lower
+            opposite_side_open = (
+                entry_open < entry_lower
+                if side == "LONG" else entry_open > entry_upper
+            )
+            rail_distance = (
+                entry_price - same_side_rail
+                if side == "LONG" else same_side_rail - entry_price
+            )
+            if opposite_side_open:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_OPPOSITE_RAIL_OPEN_BLOCK"
+                )
+            if direction_body < 0.5 * prior_atr:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_BREAKOUT_BODY_BELOW_0_5_ATR"
+                )
+            if rail_distance < 0 or rail_distance > 3.0 * prior_atr:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] WILD_SWING_BREAKOUT_OUTSIDE_3_ATR_LIMIT"
+                )
         try:
             macro_bar = {
                 field: float(current[field])
@@ -1275,6 +1345,30 @@ async def validate_account_entry(account, symbol, side, context):
         if not macro_allowed:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_MACRO_GATE: " + macro_reason
+            )
+        vision_mode = {
+            INSTANT_BREAKOUT_INSIDE: "INSTANT_BREAK",
+            CONFIRMED_2BAR_BREAKOUT: "NORMAL_BREAK",
+            CONTINUATION_OUTSIDE_KC: "CONTINUATION",
+            "MA5_MA15_1M_CROSS": "MA_CROSS",
+        }.get(confirmation)
+        if vision_mode is None:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_VISION_MODE_UNSUPPORTED"
+            )
+        from core.vision.chart_guard import evaluate_breakout_vision
+
+        vision_allowed, vision_reason = await evaluate_breakout_vision(
+            fresh_frame, side, mode=vision_mode,
+        )
+        logger.info(
+            "WILD_SWING_GEMINI_VISION symbol=%s side=%s mode=%s allowed=%s reason=%s",
+            symbol, side, vision_mode, vision_allowed, vision_reason,
+        )
+        if not vision_allowed:
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] WILD_SWING_GEMINI_VETO: "
+                + str(vision_reason)
             )
         logger.info(
             "【GATE 通過: %s】symbol=%s side=%s bar=%s stage=final_firewall",

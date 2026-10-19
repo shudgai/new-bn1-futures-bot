@@ -18,8 +18,15 @@ LONG = "LONG"
 SHORT = "SHORT"
 
 # --- 模型與端點設定 ---
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash").strip()
+if GEMINI_MODEL_NAME in {"gemini-2.0-flash", "gemini-2.0-flash-001"}:
+    logger.warning(
+        "GEMINI_MODEL_NAME=%s is shut down; using gemini-3.8-flash",
+        GEMINI_MODEL_NAME,
+    )
+    GEMINI_MODEL_NAME = "gemini-3.8-flash"
 API_KEY_ENV = "GEMINI_API_KEY"
+ENTRY_VISION_PROVIDER = os.getenv("ENTRY_VISION_PROVIDER", "GEMINI").strip().upper()
 LOOKBACK = 40
 REQUEST_TIMEOUT_SEC = 20.0
 
@@ -29,7 +36,7 @@ LOCAL_READ_TIMEOUT_SEC = float(os.getenv("LOCAL_READ_TIMEOUT_SEC", "15.0"))
 PROMPT = (
     "你是一位精通合約與妖幣/迷因幣（如龍蝦/CAP）爆發行情的量化審查員。"
     "這是一張 1M 級別的 K 線圖（包含 MA5、MA15、KC 通道與成交量），技術指標剛發出 {side} {signal_desc} 信號。\n"
-    "【重要認知：數值引擎已由後端精確計算並確認最新收盤已達成技術突破/延續】\n"
+    "【重要認知：數值引擎已由後端精確計算並產生本模式候選；盤中訊號不代表收線訊號】\n"
     "你的任務是進行宏觀形態防雷審查，防止天花板追多、地板追空、或極端假突破反轉陷阱。\n"
     "本訊號模式的結構檢查：{mode_criteria}\n"
     "【不可放寬的結構性否決條件；任一成立必須判 TRAP】\n"
@@ -42,6 +49,9 @@ PROMPT = (
 )
 
 SIGNAL_DESC = {
+    "INSTANT_BREAK": "即時盤中 KC 外軌突破",
+    "NORMAL_BREAK": "兩根收線確認 KC 外軌突破",
+    "MA_CROSS": "MA5/MA15 收線交叉",
     "BREAKOUT": "KC 外軌破軌開倉",
     "CONTINUATION": "KC 外軌延續或中軌回踩轉向",
     "CROSSOVER": "MA5/MA15 交叉開倉",
@@ -58,6 +68,18 @@ SIGNAL_DESC = {
 }
 
 MODE_CRITERIA = {
+    "INSTANT_BREAK": (
+        "當根尚未收線，價格由 KC 通道內穿出同側外軌，且順勢實體達近期平均實體 1.2 倍；"
+        "前方必須符合小反色棒蓄勢組合。此入口不檢查 MA5 斜率。"
+    ),
+    "NORMAL_BREAK": (
+        "首根已收線同色實體突破外軌，第二根同色且已收線仍在外軌外；"
+        "MA5 斜率順向且 KC 通道擴張。"
+    ),
+    "MA_CROSS": (
+        "已收線 MA5/MA15 剛完成同方向交叉，MA5 順向且 KC 通道擴張；"
+        "必須遵循數值 Gate 的趨勢、實體及風控結果。"
+    ),
     "BREAKOUT": (
         "數值系統已精確驗證收盤突破 KC 外軌且通道寬度擴張；"
         "審查重點在於防止假突破陷阱與反向極端天線，若無反向長針或嚴重逆勢，應判定合格。"
@@ -320,7 +342,8 @@ def render_chart_bytes(
         )
         for x, b in zip(xs, data):
             up = b.close >= b.open
-            color = "#d62728" if up else "#2ca02c"
+            # Match Binance's configured palette: green up candles, red down candles.
+            color = "#2ca02c" if up else "#d62728"
             ax.vlines(x, b.low, b.high, color=color, linewidth=1)
             lo, hi = sorted((b.open, b.close))
             ax.bar(x, max(hi - lo, 1e-12), bottom=lo, width=0.6, color=color)
@@ -636,19 +659,23 @@ async def evaluate_breakout_vision(
     timeout: Optional[float] = None,
     mode: str = "BREAKOUT_MOMENTUM",
 ) -> Tuple[bool, str]:
-    """雙軌視覺審查主入口 (本地優先 -> Gemini 備援 -> 純指標降級)。
+    """Review an entry chart using the selected vision provider.
 
     回傳：(approved, reason)
-    - 第一順位：若 USE_LOCAL_QWEN=true，嘗試本地 Qwen (8000 -> 11434)。
-    - 第二順位：若本地未開啟或連線失敗，無縫降級至雲端 Gemini Vision。
-    - 第三順位：若 Gemini 亦發生 429 或配額用罄，自動降級為純指標模式 (FALLBACK_INDICATOR_ONLY)。
+    - GEMINI (default): paid/Free Gemini API using GEMINI_API_KEY.
+    - QWEN: local vision only when ENTRY_VISION_PROVIDER=QWEN.
+    - Unavailable or invalid review blocks entry unless explicit fail-open is set.
     """
     enable_guard = os.getenv("ENABLE_VISION_GUARD", "true").strip().lower() in ("true", "1", "yes")
     if not enable_guard:
         return False, "VISION_GUARD_DISABLED"
 
     image = render_chart_bytes(bars)
-    use_local = os.getenv("USE_LOCAL_QWEN", "false").strip().lower() in ("true", "1", "yes")
+    use_local = (
+        ENTRY_VISION_PROVIDER in {"QWEN", "LOCAL_QWEN"}
+        and os.getenv("USE_LOCAL_QWEN", "false").strip().lower()
+        in ("true", "1", "yes")
+    )
 
     # --- 第一順位：本地 Qwen2-VL 審查 ---
     if use_local:
@@ -659,7 +686,7 @@ async def evaluate_breakout_vision(
                 logger.info("視覺審查來源 [本地Qwen]: %s (approved=%s)", reason, approved)
                 return approved, reason
         except Exception as exc:
-            logger.warning("本地 Qwen 審查過程異常: %s，自動降級至 Gemini 備援", type(exc).__name__)
+            logger.warning("本地 Qwen 審查失敗: %s", type(exc).__name__)
 
     # --- 第二順位：雲端 Gemini Vision 備援 ---
     api_key = os.getenv(API_KEY_ENV, "").strip()
@@ -678,9 +705,9 @@ async def evaluate_breakout_vision(
         logger.info("視覺審查來源 [雲端Gemini]: %s (approved=%s)", reason, approved)
         return approved, reason
     except Exception as exc:
-        # --- 第三順位：完全降級（純指標模式，不阻斷交易） ---
+        # Vision review is fail-closed by default; do not silently bypass it.
         logger.warning(
-            "⚠️ 雲端 Gemini Vision 異常 (%s: %s)，自動啟動第三順位：純技術指標降級運行",
+            "Gemini Vision review failed (%s: %s); entry remains blocked unless fail-open is explicitly enabled",
             type(exc).__name__, exc,
         )
         if _fail_open():
