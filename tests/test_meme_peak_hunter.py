@@ -12,7 +12,7 @@ def _create_base_df(num_bars: int = 70, base_price: float = 1.0, trend: float = 
     for i in range(num_bars):
         price += trend
         rows.append({
-            "timestamp": 1000.0 + i * 60.0,
+            "timestamp": 1000.0 + i * 180.0, # 3m bars
             "open": price - 0.001,
             "high": price + 0.002,
             "low": price - 0.002,
@@ -23,8 +23,8 @@ def _create_base_df(num_bars: int = 70, base_price: float = 1.0, trend: float = 
     return pd.DataFrame(rows)
 
 
-def test_meme_peak_hunter_long_entry_success():
-    """多單：站穩 VWAP + 站穩 60MA + 60MA向上 + 5MA金叉15MA + 伴隨放量 1.2 倍"""
+def test_meme_peak_hunter_3m_long_entry_success():
+    """3m 多單：現價 > VWAP + 現價 > EMA40 + EMA40向上 + EMA5 金叉 EMA13 + 伴隨放量 1.1 倍"""
     df = _create_base_df(70, base_price=1.0, trend=0.002)
     # 最後一根設置放量突破
     last_idx = len(df) - 1
@@ -32,45 +32,45 @@ def test_meme_peak_hunter_long_entry_success():
     df.loc[last_idx, "high"] = 1.26
     df.loc[last_idx, "low"] = 1.20
     df.loc[last_idx, "open"] = 1.21
-    df.loc[last_idx, "volume"] = 150.0  # 150 > 100 * 1.2
+    df.loc[last_idx, "volume"] = 120.0  # 120 >= 100 * 1.1
 
     signal = MemePeakHunterStrategy.evaluate_entry("CAPUSDT", df, "LONG", tick_price=1.25)
     assert signal is not None
     assert signal["side"] == "LONG"
     assert signal["structure_confirmation"] == "MEME_PEAK_HUNTER"
-    assert signal["reason"] == "MEME_PEAK_HUNTER_VOL_EXPANSION_LONG"
+    assert signal["reason"] == "MEME_PEAK_HUNTER_3M_EMA_LONG"
 
 
-def test_meme_peak_hunter_long_entry_rejected_if_low_volume():
-    """多單若未放量 (volume < 1.2 * vol_ma)，拒絕進場"""
+def test_meme_peak_hunter_3m_long_entry_rejected_if_low_volume():
+    """多單若未放量 (volume < 1.1 * vol_ma)，拒絕進場"""
     df = _create_base_df(70, base_price=1.0, trend=0.002)
     last_idx = len(df) - 1
     df.loc[last_idx, "close"] = 1.25
-    df.loc[last_idx, "volume"] = 80.0  # 未達 1.2 倍
+    df.loc[last_idx, "volume"] = 80.0  # 未達 1.1 倍
 
     signal = MemePeakHunterStrategy.evaluate_entry("CAPUSDT", df, "LONG", tick_price=1.25)
     assert signal is None
 
 
-def test_meme_peak_hunter_short_entry_success():
-    """空單：灌破 VWAP + 壓在 60MA下 + 60MA向下 + 5MA死叉15MA + 放量下殺 1.2 倍"""
+def test_meme_peak_hunter_3m_short_entry_success():
+    """3m 空單：現價 < VWAP + 現價 < EMA40 + EMA40向下 + EMA5 死叉 EMA13 + 放量下殺 1.1 倍"""
     df = _create_base_df(70, base_price=2.0, trend=-0.002)
     last_idx = len(df) - 1
     df.loc[last_idx, "close"] = 1.70
     df.loc[last_idx, "high"] = 1.75
     df.loc[last_idx, "low"] = 1.68
     df.loc[last_idx, "open"] = 1.74
-    df.loc[last_idx, "volume"] = 150.0
+    df.loc[last_idx, "volume"] = 120.0
 
     signal = MemePeakHunterStrategy.evaluate_entry("CAPUSDT", df, "SHORT", tick_price=1.70)
     assert signal is not None
     assert signal["side"] == "SHORT"
     assert signal["structure_confirmation"] == "MEME_PEAK_HUNTER"
-    assert signal["reason"] == "MEME_PEAK_HUNTER_VOL_EXPANSION_SHORT"
+    assert signal["reason"] == "MEME_PEAK_HUNTER_3M_EMA_SHORT"
 
 
 def test_meme_climax_top_exit():
-    """多單真見頂：天量射擊之星 / 爆量滯漲 (volume > 2.0 * vol_ma 且 上影線 > 1.5 * body) -> 秒平多單"""
+    """3m 多單真見頂：天量射擊之星倒貨 (volume > 1.8 * vol_ma 且 上影線 > 1.5 * body) -> 秒平多單"""
     df = _create_base_df(70, base_price=1.0, trend=0.005)
     last_idx = len(df) - 1
     # 爆量天量上影線
@@ -78,7 +78,7 @@ def test_meme_climax_top_exit():
     df.loc[last_idx, "close"] = 1.51  # body = 0.01
     df.loc[last_idx, "high"] = 1.55   # upper_wick = 1.55 - 1.51 = 0.04 > 1.5 * 0.01
     df.loc[last_idx, "low"] = 1.49
-    df.loc[last_idx, "volume"] = 250.0 # 250 > 100 * 2.0
+    df.loc[last_idx, "volume"] = 200.0 # 200 > 100 * 1.8
 
     pos = {"side": "LONG", "entry_price": 1.20, "highest_price": 1.55}
     exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=1.51)
@@ -89,7 +89,7 @@ def test_meme_climax_top_exit():
 
 
 def test_meme_trend_dead_exit():
-    """多單結構潰敗：收盤跌破 15MA 且跌破 VWAP -> 秒平"""
+    """3m 多單趨勢潰敗：收盤跌破 EMA13 且跌破 VWAP -> 秒平"""
     df = _create_base_df(70, base_price=1.0, trend=0.002)
     last_idx = len(df) - 1
     # 暴跌摜破均線與 VWAP
@@ -106,16 +106,15 @@ def test_meme_trend_dead_exit():
 
 
 def test_meme_atr_trailing_exit():
-    """動態防插針 ATR 移動鎖利：利潤達 1.5 ATR 以上，回吐超過 2.5 ATR 時觸發"""
+    """3m 動態防插針 ATR 移動鎖利：利潤達 1.5 ATR 以上，回吐超過 1.8 ATR 時觸發"""
     df = _create_base_df(70, base_price=1.0, trend=0.002)
-    # ATR 約 0.004
     ind = MemePeakHunterStrategy.calculate_indicators(df)
     atr = ind["atr"]
 
-    # 設置高利潤峰值: entry=1.0, highest=1.0 + 5*atr
-    peak = 1.0 + 5 * atr
-    # 當前價格從峰值回吐 2.6 ATR
-    current_quote = peak - 2.6 * atr
+    # 設置高利潤峰值: entry=1.0, highest=1.0 + 4*atr
+    peak = 1.0 + 4 * atr
+    # 當前價格從峰值回吐 1.9 ATR
+    current_quote = peak - 1.9 * atr
     pos = {"side": "LONG", "entry_price": 1.0, "highest_price": peak}
 
     # 確保不會先觸發 trend dead 或 climax top
@@ -124,7 +123,7 @@ def test_meme_atr_trailing_exit():
     df.loc[last_idx, "close"] = current_quote
     df.loc[last_idx, "high"] = current_quote + 0.0001
     df.loc[last_idx, "low"] = current_quote - 0.0001
-    df.loc[last_idx, "volume"] = 50.0 # 低量無射擊之星
+    df.loc[last_idx, "volume"] = 50.0
 
     exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=current_quote)
     if exit_res is not None:

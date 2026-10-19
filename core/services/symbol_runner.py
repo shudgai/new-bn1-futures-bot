@@ -23,7 +23,7 @@ def _kc2bar_candidates(frame, symbol, quote):
         frame is None
         or frame.empty
         or not frame.attrs.get("entry_finality_verified")
-        or frame.attrs.get("timeframe_ms") != 60_000
+        or frame.attrs.get("timeframe_ms") not in (60_000, 180_000)
     ):
         return []
     candidates = []
@@ -96,7 +96,7 @@ def _filter_authorities_by_kc_direction(authorities, frame):
         frame is None
         or frame.empty
         or not frame.attrs.get("entry_finality_verified")
-        or frame.attrs.get("timeframe_ms") != 60_000
+        or frame.attrs.get("timeframe_ms") not in (60_000, 180_000)
     ):
         return authorities, None
     try:
@@ -153,7 +153,7 @@ def _observe_wait_entry(engine, symbol, frame, quote, position_open):
     authority = getattr(engine, "wait_entry_authority", None)
     if authority is None or frame is None or frame.empty:
         return None
-    if frame.attrs.get("timeframe_ms") != 60_000:
+    if frame.attrs.get("timeframe_ms") not in (60_000, 180_000):
         return None
     closed = closed_entry_candles(frame)
     quote_provider = getattr(engine, "_wait_quote_snapshot", None)
@@ -483,7 +483,7 @@ async def _process_wild_swing_symbol(
             entry_frame is None
             or entry_frame.empty
             or not entry_frame.attrs.get("entry_finality_verified")
-            or entry_frame.attrs.get("timeframe_ms") != 60_000
+            or entry_frame.attrs.get("timeframe_ms") not in (60_000, 180_000)
         ):
             logger.warning(
                 "WAIT_ENTRY_BLOCK symbol=%s reason=UNVERIFIED_FINALITY_FRAME",
@@ -865,7 +865,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     frame = exit_frame
     if frame is None:
         from core.symbol_aliases import is_meme_breakout_symbol
-        timeframe = "1m" if is_meme_breakout_symbol(symbol) else "5m"
+        timeframe = "3m" if is_meme_breakout_symbol(symbol) else "5m"
         frame = await engine.fetch_klines(symbol, timeframe=timeframe, limit=150, keep_live=True)
         if frame is not None and not frame.empty:
             frame = engine.strategy.compute_indicators(frame.copy())
@@ -877,14 +877,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     wild_swing_symbol = is_meme_breakout_symbol(symbol)
     if wild_swing_symbol:
         timeframe_ms = frame.attrs.get("timeframe_ms")
-        if timeframe_ms is not None and float(timeframe_ms) != 60_000.0:
+        if timeframe_ms is not None and float(timeframe_ms) not in (180_000.0, 60_000.0):
             frame = await engine.fetch_klines(
-                symbol, timeframe="1m", limit=150, keep_live=True,
+                symbol, timeframe="3m", limit=150, keep_live=True,
             )
             if frame is None or frame.empty:
                 return [], []
             frame = engine.strategy.compute_indicators(frame.copy())
-            if float(frame.attrs.get("timeframe_ms", 0) or 0) != 60_000.0:
+            if float(frame.attrs.get("timeframe_ms", 0) or 0) not in (180_000.0, 60_000.0):
                 return [], []
         quote = float(
             exit_quote
