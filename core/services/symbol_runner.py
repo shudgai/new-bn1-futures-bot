@@ -434,6 +434,7 @@ async def _process_wild_swing_symbol(
     from core.services.exits.kc_true_extreme_exit import STATE_KEY as KC_EXIT_STATE_KEY
     from core.gates.breakout_continuation_entry_gate import (
         CONFIRMED_2BAR_BREAKOUT,
+        CONTINUATION_OUTSIDE_KC,
         INSTANT_BREAKOUT_INSIDE,
     )
     from core.services.strategies.wild_swing_strategy import WildSwingStrategy
@@ -681,10 +682,12 @@ async def _process_wild_swing_symbol(
 
     signal = winner["signal"]
     if signal.get("structure_confirmation") not in {
-        CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+        CONFIRMED_2BAR_BREAKOUT,
+        INSTANT_BREAKOUT_INSIDE,
+        CONTINUATION_OUTSIDE_KC,
     }:
         logger.error(
-            "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=TWO_BAR_GATE_REQUIRED",
+            "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",
             symbol, signal["side"], signal.get("structure_confirmation"),
         )
         return [], []

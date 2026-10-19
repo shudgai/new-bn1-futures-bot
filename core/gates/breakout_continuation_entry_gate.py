@@ -216,6 +216,40 @@ class BreakoutContinuationEntryGate:
                     if all(value is not None for value in recent_closes)
                     else None
                 )
+                # Continue an already established outer-band move only when
+                # price pushes farther outside and MA5/KC remain aligned.
+                if (
+                    live_ma5 is not None
+                    and live["open"] > live_upper
+                    and tick > live_upper
+                    and tick > live["open"]
+                    and live_ma5 > closed_ma5
+                    and live_middle > basis
+                ):
+                    result = signal(
+                        "OPEN_LONG", CONTINUATION_OUTSIDE_KC, tick,
+                        "上軌外同向續推，MA5/KC 同向，評估延續開多",
+                        current_ma5=live_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+                if (
+                    live_ma5 is not None
+                    and live["open"] < live_lower
+                    and tick < live_lower
+                    and tick < live["open"]
+                    and live_ma5 < closed_ma5
+                    and live_middle < basis
+                ):
+                    result = signal(
+                        "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, tick,
+                        "下軌外同向續跌，MA5/KC 同向，評估延續開空",
+                        current_ma5=live_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
                 live_width = live_upper - live_lower
                 closed_width = upper - lower
                 expanding_live = live_width > closed_width
@@ -333,7 +367,11 @@ class BreakoutContinuationEntryGate:
         live_candle: Optional[Mapping[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         """Re-derive the two-bar break, including a live second candle."""
-        if confirmation not in {CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE}:
+        if confirmation not in {
+            CONFIRMED_2BAR_BREAKOUT,
+            INSTANT_BREAKOUT_INSIDE,
+            CONTINUATION_OUTSIDE_KC,
+        }:
             return None
         try:
             ma5_key = (

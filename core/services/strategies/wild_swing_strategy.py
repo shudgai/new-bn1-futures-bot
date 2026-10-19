@@ -272,14 +272,15 @@ class WildSwingStrategy:
             candidate is None
             or candidate["action"] != f"OPEN_{side}"
             or candidate["type"] not in {
-                CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+                CONFIRMED_2BAR_BREAKOUT,
+                INSTANT_BREAKOUT_INSIDE,
+                CONTINUATION_OUTSIDE_KC,
             }
         ):
             return None
 
-        # Both directions are gated exclusively by the same two closed-bar
-        # breakout confirmation, or its same-color live second candle. No
-        # continuation, MA crossover, or post-exit shortcut may create entry.
+        # Breakouts can trigger immediately; an established outside-band move
+        # can also enter through its separate trend-aligned continuation gate.
         entry_type = candidate["type"]
         delayed = False
         post_exit_continuation = False
@@ -391,7 +392,11 @@ class WildSwingStrategy:
                 )
             )
         elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
-            trend_aligned = False
+            trend_aligned = (
+                kc_middle_rising and ma5_slope > 0 and current_ma5 > current_ma15
+                if side == "LONG"
+                else kc_middle_falling and ma5_slope < 0 and current_ma5 < current_ma15
+            )
         else:
             trend_aligned = (
                 kc_middle_falling
