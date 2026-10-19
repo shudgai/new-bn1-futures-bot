@@ -157,6 +157,7 @@ def test_meme_exits_approved_by_gates():
     assert "EXIT_BY_MEME_CLIMAX_BOTTOM" in HoldingProtectionExitGate.WHITELIST_CODES
     assert "EXIT_BY_MEME_TREND_DEAD" in HoldingProtectionExitGate.WHITELIST_CODES
     assert "EXIT_BY_MEME_ATR_TRAILING" in HoldingProtectionExitGate.WHITELIST_CODES
+    assert "EXIT_BY_MEME_ADVERSE_STOP_LOSS" in HoldingProtectionExitGate.WHITELIST_CODES
 
     # 2. math execution gate 放行
     pos = {"entry_price": 1.0, "side": "LONG"}
@@ -168,3 +169,42 @@ def test_meme_exits_approved_by_gates():
     )
     assert approved is True
     assert reason == "EXIT_MATH_MEME_HUNTER_APPROVED"
+
+    approved_sl, reason_sl, _ = validate_exit_math(
+        pos,
+        frame=None,
+        price=0.98,
+        close_reason="EXIT_BY_MEME_ADVERSE_STOP_LOSS",
+    )
+    assert approved_sl is True
+    assert reason_sl in ("EXIT_MATH_MEME_HUNTER_APPROVED", "EMERGENCY_EXIT_OVERRIDE")
+
+
+def test_meme_adverse_stop_loss_long():
+    """多單假突破初始逆向止損：逆行虧損達 1.5 ATR 立即止損逃命"""
+    df = _create_base_df(70, base_price=1.0, trend=0.002)
+    ind = MemePeakHunterStrategy.calculate_indicators(df)
+    atr = ind["atr"]
+
+    pos = {"side": "LONG", "entry_price": 1.0, "highest_price": 1.002}
+    adverse_price = 1.0 - 1.6 * atr
+
+    exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=adverse_price)
+    assert exit_res is not None
+    exit_code, reason, details = exit_res
+    assert exit_code in ("EXIT_BY_MEME_ADVERSE_STOP_LOSS", "EXIT_BY_MEME_TREND_DEAD")
+
+
+def test_meme_adverse_stop_loss_short():
+    """空單假跌破初始逆向止損：逆行虧損達 1.5 ATR 立即止損逃命"""
+    df = _create_base_df(70, base_price=1.0, trend=-0.002)
+    ind = MemePeakHunterStrategy.calculate_indicators(df)
+    atr = ind["atr"]
+
+    pos = {"side": "SHORT", "entry_price": 1.0, "lowest_price": 0.998}
+    adverse_price = 1.0 + 1.6 * atr
+
+    exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=adverse_price)
+    assert exit_res is not None
+    exit_code, reason, details = exit_res
+    assert exit_code in ("EXIT_BY_MEME_ADVERSE_STOP_LOSS", "EXIT_BY_MEME_SHORT_TREND_DEAD")

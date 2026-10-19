@@ -202,7 +202,7 @@ def validate_exit_math(
     is_meme_exit = any(token in norm_reason for token in (
         "MEME_CLIMAX_TOP", "MEME_CLIMAX_BOTTOM",
         "MEME_TREND_DEAD", "MEME_SHORT_TREND_DEAD",
-        "MEME_ATR_TRAILING",
+        "MEME_ATR_TRAILING", "MEME_ADVERSE_STOP",
     ))
     if is_meme_exit:
         details.update(exit_type="MEME_HUNTER_EXIT", close=price)

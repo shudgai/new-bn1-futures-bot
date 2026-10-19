@@ -1523,6 +1523,7 @@ class HoldingProtectionExitGate:
         'EXIT_BY_MEME_TREND_DEAD',
         'EXIT_BY_MEME_SHORT_TREND_DEAD',
         'EXIT_BY_MEME_ATR_TRAILING',
+        'EXIT_BY_MEME_ADVERSE_STOP_LOSS',
     }
 
     @classmethod
@@ -1845,6 +1846,7 @@ class HoldingProtectionExitGate:
             'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
             'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
             'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
+            'MEME_ADVERSE_STOP',
         ))
 
         # In a directional KC trend, a single completed counter-trend candle
@@ -1976,6 +1978,7 @@ class HoldingProtectionExitGate:
             'EXIT_BY_MEME_TREND_DEAD',
             'EXIT_BY_MEME_SHORT_TREND_DEAD',
             'EXIT_BY_MEME_ATR_TRAILING',
+            'EXIT_BY_MEME_ADVERSE_STOP_LOSS',
         ):
             return _auth(clean_reason)
 

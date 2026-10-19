@@ -352,18 +352,24 @@ class BreakoutContinuationEntryGate:
                 # ── 模式 C：即時破軌爆發開倉 (INSTANT_BURST_BREAKOUT) ──
                 # 解除中長線中軌與 MA15 滯後束縛，捕捉貫穿破軌或回踩蓄勢後的暴力穿軌爆發
                 if live_ma5 is not None:
+                    live_atr = float(current.get("atr", 0.0001)) if current is not None else 0.0001
+                    burst_body = abs(tick - float(live["open"]))
                     has_base_long = (
                         live["open"] <= live_upper  # 盤中從軌道內實體貫穿破上軌
                         or (prior_one is not None and prior_one.get("low", 0.0) >= live_middle * 0.998)
                         or (prior_two is not None and prior_two.get("low", 0.0) >= live_middle * 0.998)
                         or (current is not None and current.get("low", 0.0) >= basis * 0.998)
                     )
-                    if (
+                    long_upper_wick = max(0.0, float(live.get("high", tick)) - tick)
+                    is_valid_long_burst = (
                         tick > live_upper
                         and live_ma5 > closed_ma5
                         and tick > live["open"]
+                        and burst_body >= 0.25 * live_atr
+                        and (long_upper_wick <= 0.75 * burst_body or long_upper_wick <= 0.2 * live_atr)
                         and has_base_long
-                    ):
+                    )
+                    if is_valid_long_burst:
                         result = signal(
                             "OPEN_LONG", INSTANT_BURST_BREAKOUT, tick,
                             "即時穿透 KC 上軌，短線動能爆發開多",
@@ -379,12 +385,16 @@ class BreakoutContinuationEntryGate:
                         or (prior_two is not None and prior_two.get("high", 0.0) <= live_middle * 1.002)
                         or (current is not None and current.get("high", 0.0) <= basis * 1.002)
                     )
-                    if (
+                    short_lower_wick = max(0.0, tick - float(live.get("low", tick)))
+                    is_valid_short_burst = (
                         tick < live_lower
                         and live_ma5 < closed_ma5
                         and tick < live["open"]
+                        and burst_body >= 0.25 * live_atr
+                        and (short_lower_wick <= 0.75 * burst_body or short_lower_wick <= 0.2 * live_atr)
                         and has_base_short
-                    ):
+                    )
+                    if is_valid_short_burst:
                         result = signal(
                             "OPEN_SHORT", INSTANT_BURST_BREAKOUT, tick,
                             "即時摜破 KC 下軌，短線動能爆發開空",
