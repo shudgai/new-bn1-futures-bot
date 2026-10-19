@@ -46,7 +46,7 @@ class BreakoutContinuationEntryGate:
         tick_price: Optional[float] = None,
         live_candle: Optional[Mapping[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        """Return a signal only after a same-color, two-bar closed KC break."""
+        """Confirm the second same-color KC-break candle, including while live."""
         count = len(closed_klines)
         if count < 2 or any(
             len(values) != count
@@ -120,6 +120,8 @@ class BreakoutContinuationEntryGate:
             *,
             current_ma5: Optional[float] = None,
             current_basis: Optional[float] = None,
+            ma15_current: Optional[float] = None,
+            channel_expanding: bool = False,
             is_intrabar: bool = False,
         ) -> dict[str, Any]:
             return {
@@ -131,11 +133,14 @@ class BreakoutContinuationEntryGate:
                     effective_ma5 if current_ma5 is None else current_ma5
                 ),
                 "ma5_previous": effective_previous_ma5,
-                "ma15_current": current_ma15,
+                "ma15_current": (
+                    current_ma15 if ma15_current is None else ma15_current
+                ),
                 "ma15_previous": previous_ma15,
                 "kc_upper": upper,
                 "kc_lower": lower,
                 "kc_basis": basis if current_basis is None else current_basis,
+                "channel_expanding": channel_expanding,
                 "reason": reason,
             }
 
@@ -146,6 +151,104 @@ class BreakoutContinuationEntryGate:
         ma5_up = effective_ma5 > effective_previous_ma5
         ma5_down = effective_ma5 < effective_previous_ma5
 
+        open_live_bar_after_closed = False
+        if tick_price is not None and live_candle is not None:
+            live = valid_candle(live_candle)
+            tick = cls._number(tick_price)
+            live_upper = cls._number(live_candle.get("kc_upper"))
+            live_lower = cls._number(live_candle.get("kc_lower"))
+            live_middle = cls._number(live_candle.get("kc_middle"))
+            live_ma15 = cls._number(live_candle.get("ma15"))
+            live_timestamp = cls._number(live_candle.get("timestamp"))
+            closed_timestamp = cls._number(closed_klines[-1].get("timestamp"))
+            live_is_open = live_candle.get("is_closed") is False or (
+                type(live_candle.get("is_closed")).__name__ == "bool_"
+                and not bool(live_candle.get("is_closed"))
+            )
+            open_live_bar_after_closed = bool(
+                live_is_open
+                and live_timestamp is not None
+                and closed_timestamp is not None
+                and live_timestamp > closed_timestamp
+            )
+            if (
+                live is not None
+                and tick is not None
+                and live_upper is not None
+                and live_lower is not None
+                and live_middle is not None
+                and live_ma15 is not None
+                and live_timestamp is not None
+                and closed_timestamp is not None
+                and live_timestamp > closed_timestamp
+                and live_is_open
+                and live_lower < live_middle < live_upper
+                and live["low"] <= tick <= live["high"]
+                and count >= 4
+            ):
+                recent_closes = [
+                    cls._number(row.get("close"))
+                    for row in closed_klines[-4:]
+                ]
+                live_ma5 = (
+                    (sum(recent_closes) + tick) / 5.0
+                    if all(value is not None for value in recent_closes)
+                    else None
+                )
+                live_width = live_upper - live_lower
+                closed_width = upper - lower
+                expanding_live = live_width > closed_width
+                long_first_break = (
+                    current_bullish
+                    and current["open"] < upper < current["close"]
+                )
+                short_first_break = (
+                    current_bearish
+                    and current["open"] > lower > current["close"]
+                )
+                if (
+                    live_ma5 is not None
+                    and long_first_break
+                    and tick > live["open"]
+                    and tick > live_upper
+                    and expanding_live
+                    and live_ma5 > closed_ma5
+                    and live_middle > basis
+                ):
+                    result = signal(
+                        "OPEN_LONG",
+                        CONFIRMED_2BAR_BREAKOUT,
+                        tick,
+                        "第二根當根確認：首根實體破上軌，次根同色且最新價站在上軌外",
+                        current_ma5=live_ma5,
+                        current_basis=live_middle,
+                        ma15_current=live_ma15,
+                        channel_expanding=expanding_live,
+                        is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+                if (
+                    live_ma5 is not None
+                    and short_first_break
+                    and tick < live["open"]
+                    and tick < live_lower
+                    and live_ma5 < closed_ma5
+                    and live_middle < basis
+                ):
+                    result = signal(
+                        "OPEN_SHORT",
+                        CONFIRMED_2BAR_BREAKOUT,
+                        tick,
+                        "第二根當根確認：首根實體跌破下軌，次根同色且最新價站在下軌外",
+                        current_ma5=live_ma5,
+                        current_basis=live_middle,
+                        ma15_current=live_ma15,
+                        is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+
         if (
             previous_bullish
             and current_bullish
@@ -154,12 +257,14 @@ class BreakoutContinuationEntryGate:
             and upper - lower > previous_upper - previous_lower
             and ma5_up
             and basis > float(basis_values[0])
+            and not open_live_bar_after_closed
         ):
             return signal(
                 "OPEN_LONG",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
                 "兩根收線確認：首根實體突破上軌，次根同色收在上軌外",
+                channel_expanding=True,
             )
         if (
             previous_bearish
@@ -168,6 +273,7 @@ class BreakoutContinuationEntryGate:
             and current["close"] < lower
             and ma5_down
             and basis < float(basis_values[0])
+            and not open_live_bar_after_closed
         ):
             return signal(
                 "OPEN_SHORT",
@@ -183,8 +289,11 @@ class BreakoutContinuationEntryGate:
         closed_klines: Sequence[Mapping[str, Any]],
         side: str,
         confirmation: str,
+        *,
+        tick_price: Optional[float] = None,
+        live_candle: Optional[Mapping[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        """Re-derive a valid two-bar breakout from closed candles."""
+        """Re-derive the two-bar break, including a live second candle."""
         if confirmation != CONFIRMED_2BAR_BREAKOUT:
             return None
         try:
@@ -200,6 +309,8 @@ class BreakoutContinuationEntryGate:
                 [row["kc_middle"] for row in closed_klines],
                 [row[ma5_key] for row in closed_klines],
                 [row["ma15"] for row in closed_klines],
+                tick_price=tick_price,
+                live_candle=live_candle,
             )
         except (KeyError, TypeError, IndexError):
             return None

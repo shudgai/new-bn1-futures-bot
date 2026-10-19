@@ -293,9 +293,20 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation):
 
     try:
         closed = closed_entry_candles(frame)
+        live = None
+        tick_price = None
+        if (
+            frame is not None
+            and not frame.empty
+            and not bool(frame.iloc[-1].get("is_closed", True))
+        ):
+            live = frame.iloc[-1].to_dict()
+            tick_price = float(live.get("close") or 0.0)
         return (
             BreakoutContinuationEntryGate.validate_closed_outer_entry(
                 closed.to_dict("records"), side, confirmation,
+                tick_price=tick_price,
+                live_candle=live,
             )
             is not None
         )

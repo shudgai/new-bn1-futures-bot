@@ -264,7 +264,9 @@ class WildSwingStrategy:
         ):
             return None
 
-        candidate = self._pure_math_candidate(bars)
+        candidate = self._pure_math_candidate(
+            bars, frame=frame, tick_price=tick_price,
+        )
         if (
             candidate is None
             or candidate["action"] != f"OPEN_{side}"
@@ -273,11 +275,12 @@ class WildSwingStrategy:
             return None
 
         # Both directions are gated exclusively by the same two closed-bar
-        # breakout confirmation. No continuation, MA crossover, wick delay,
-        # or post-exit shortcut may create an entry.
+        # breakout confirmation, or its same-color live second candle. No
+        # continuation, MA crossover, or post-exit shortcut may create entry.
         entry_type = CONFIRMED_2BAR_BREAKOUT
         delayed = False
         post_exit_continuation = False
+        is_intrabar = bool(candidate.get("is_intrabar"))
         if not delayed and entry_type in {
             CONFIRMED_2BAR_BREAKOUT,
             CONTINUATION_OUTSIDE_KC,
@@ -337,21 +340,30 @@ class WildSwingStrategy:
                 return None
 
         current_ma5 = (
-            live_ma5 if post_exit_continuation
-            else float(current["_wild_ma5"])
+            float(candidate["ma5_current"])
+            if is_intrabar else float(current["_wild_ma5"])
         )
-        current_ma15 = float(current["ma15"])
-        current_middle = float(current["kc_middle"])
+        current_ma15 = (
+            float(candidate["ma15_current"])
+            if is_intrabar else float(current["ma15"])
+        )
+        current_middle = (
+            float(candidate["kc_basis"])
+            if is_intrabar else float(current["kc_middle"])
+        )
         previous_ma5 = (
-            prior_ma5 if post_exit_continuation
-            else float(previous["_wild_ma5"])
+            float(candidate["ma5_previous"])
+            if is_intrabar else float(previous["_wild_ma5"])
         )
-        previous_middle = float(previous["kc_middle"])
+        previous_middle = (
+            float(current["kc_middle"])
+            if is_intrabar else float(previous["kc_middle"])
+        )
         kc_middle_slope = current_middle - previous_middle
         kc_middle_rising = kc_middle_slope > 0
         kc_middle_falling = kc_middle_slope < 0
         ma5_slope = current_ma5 - previous_ma5
-        channel_expanding = (
+        channel_expanding = bool(candidate.get("channel_expanding")) if is_intrabar else (
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
@@ -423,17 +435,20 @@ class WildSwingStrategy:
             "entry_signal_mode": entry_pattern,
             "structure_confirmation": entry_type,
             "structure_confirmed": True,
-            "is_intrabar": post_exit_continuation,
+            "is_intrabar": is_intrabar,
             "channel_expanding": channel_expanding,
             "ma5_current": ma5_current,
             "ma5_previous": ma5_previous,
             "kc_middle_current": current_middle,
             "kc_middle_previous": previous_middle,
             "volume_exhausted": False,
-            "bar_id": evaluation_bar_id if post_exit_continuation else bar_id,
+            "bar_id": (
+                float(candidate["bar_id"]) if is_intrabar
+                else bar_id
+            ),
             "close": (
-                float(tick_price)
-                if post_exit_continuation and tick_price is not None
+                float(candidate["price"])
+                if is_intrabar
                 else float(current["close"])
             ),
             "entry_mode": "WILD_SWING",
@@ -444,7 +459,26 @@ class WildSwingStrategy:
         return signal
 
     @staticmethod
-    def _pure_math_candidate(bars: pd.DataFrame) -> Optional[dict[str, Any]]:
+    def _pure_math_candidate(
+        bars: pd.DataFrame,
+        *,
+        frame: Optional[pd.DataFrame] = None,
+        tick_price: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        live_candle = None
+        if frame is not None and not frame.empty:
+            live_candle = frame.iloc[-1].to_dict()
+            if (
+                tick_price is not None
+                and not bool(live_candle.get("is_closed", True))
+            ):
+                try:
+                    quote = float(tick_price)
+                    live_candle["close"] = quote
+                    live_candle["high"] = max(float(live_candle["high"]), quote)
+                    live_candle["low"] = min(float(live_candle["low"]), quote)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    return None
         return BreakoutContinuationEntryGate.evaluate_pure_math(
             bars.to_dict("records"),
             bars["kc_upper"].tolist(),
@@ -452,8 +486,8 @@ class WildSwingStrategy:
             bars["kc_middle"].tolist(),
             bars["_wild_ma5"].tolist(),
             bars["ma15"].tolist(),
-            tick_price=None,
-            live_candle=None,
+            tick_price=tick_price,
+            live_candle=live_candle,
         )
 
     @staticmethod

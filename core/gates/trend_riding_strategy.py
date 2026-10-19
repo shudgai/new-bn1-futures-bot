@@ -141,11 +141,25 @@ def can_open_position(
             from core.services.candle_data import closed_entry_candles
 
             closed = closed_entry_candles(df)
+            live = None
+            live_quote = None
+            if (
+                df is not None
+                and not df.empty
+                and not bool(df.iloc[-1].get("is_closed", True))
+            ):
+                live = df.iloc[-1].to_dict()
+                live_quote = float(kwargs.get("quote") or live.get("close") or 0.0)
+                live["close"] = live_quote
+                live["high"] = max(float(live["high"]), live_quote)
+                live["low"] = min(float(live["low"]), live_quote)
             wild_outer_entry = (
                 BreakoutContinuationEntryGate.validate_closed_outer_entry(
                     closed.to_dict("records"),
                     side,
                     entry_confirmation,
+                    tick_price=live_quote,
+                    live_candle=live,
                 )
                 is not None
             )
