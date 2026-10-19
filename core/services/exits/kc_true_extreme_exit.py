@@ -16,6 +16,7 @@ _EXIT_REASONS = {
     "SHORT": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
 }
 _MIDLINE_REASON = "EXIT_BY_KC_MIDLINE_RETRACE"
+_SHORT_MIDLINE_REASON = "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
 
 
 def _number(value: Any) -> Optional[float]:
@@ -193,7 +194,7 @@ def pending_kc_true_extreme_exit(
         if (
             not isinstance(pending, dict)
             or pending.get("reason")
-            not in (_EXIT_REASONS[identity[0]], _MIDLINE_REASON)
+            not in (_EXIT_REASONS[identity[0]], _MIDLINE_REASON, _SHORT_MIDLINE_REASON)
             or not isinstance(pending.get("details"), dict)
         ):
             continue
@@ -252,8 +253,12 @@ def evaluate_kc_true_extreme_exit(
     pending = pending_kc_true_extreme_exit(position, meta)
     if pending is not None:
         short_cause = pending[1].get("cause")
-        valid_short_cause = short_cause in (
-            "BULLISH_ENGULFING", "INTRADAY_TROUGH_REBOUND",
+        valid_short_cause = (
+            pending[0] == _SHORT_MIDLINE_REASON
+            and short_cause == "KC_MIDLINE_RECLAIM_CLOSE"
+        ) or (
+            pending[0] == _EXIT_REASONS["SHORT"]
+            and short_cause == "THREE_POINT_CONFIRMED_PIVOT"
         )
         pending_state = position.get(STATE_KEY) or meta.get(STATE_KEY) or {}
         valley_armed = (
@@ -261,10 +266,8 @@ def evaluate_kc_true_extreme_exit(
             and pending_state.get("armed") is True
         )
         if side == "SHORT" and (
-            pending[0] != _EXIT_REASONS["SHORT"]
-            or not valid_short_cause
-            or not valley_armed
-            or not _short_true_valley_exit_ready(frame, price)
+            not valid_short_cause
+            or (pending[0] == _EXIT_REASONS["SHORT"] and not valley_armed)
         ):
             state["pending"] = None
             state_changed = True
@@ -361,6 +364,7 @@ def evaluate_kc_true_extreme_exit(
 
         closed_bar_ms = _number(closed.iloc[-1].get("timestamp"))
         closed_signal = None
+        closed_middle = _number(closed.iloc[-1].get("kc_middle"))
         if (
             closed_bar_ms is not None
             and closed_bar_ms > entry_bar_ms
@@ -467,39 +471,21 @@ def evaluate_kc_true_extreme_exit(
                             prior_extension or 0.0,
                         ),
                     )
-                if state.get("armed"):
-                    extension_detail = _number(state.get("outer_extension_atr"))
-                    if extension_detail is None:
-                        extension_detail = extension_atr
-                    if engulfed:
-                        closed_signal = (
-                            _EXIT_REASONS[side],
-                            {
-                                "cause": "BULLISH_ENGULFING",
-                                "bar_ms": closed_bar_ms,
-                                "outer_extension_atr": extension_detail,
-                            },
-                        )
+                if close > opened and closed_middle is not None and close > closed_middle:
+                    closed_signal = (
+                        _SHORT_MIDLINE_REASON,
+                        {
+                            "cause": "KC_MIDLINE_RECLAIM_CLOSE",
+                            "bar_ms": closed_bar_ms,
+                            "close": close,
+                            "kc_middle": closed_middle,
+                        },
+                    )
             state["last_closed_bar_ms"] = closed_bar_ms
             state_changed = True
 
-        closed_signal_is_bullish_engulfing = (
-            closed_signal is not None
-            and side == "SHORT"
-            and closed_signal[1].get("cause") == "BULLISH_ENGULFING"
-        )
-        closed_ma5 = _number(closed.iloc[-1].get("ma5"))
-        closed_middle = _number(closed.iloc[-1].get("kc_middle"))
-        short_closed_confirmation = bool(
-            side == "SHORT"
-            and closed_signal_is_bullish_engulfing
-            and closed_ma5 is not None
-            and closed_middle is not None
-            and close > closed_ma5
-            and close > closed_middle
-        )
         if closed_signal is not None and (
-            short_closed_confirmation
+            (side == "SHORT" and closed_signal[0] == _SHORT_MIDLINE_REASON)
             or (side != "SHORT" and not bearish_kc_trend)
         ):
             reason, details = closed_signal
@@ -614,7 +600,11 @@ def evaluate_kc_true_extreme_exit(
         if (
             side == "SHORT"
             and isinstance(pending, dict)
-            and not _short_true_valley_exit_ready(frame, current_price)
+            and not (
+                pending.get("reason") == _SHORT_MIDLINE_REASON
+                and pending.get("details", {}).get("cause")
+                == "KC_MIDLINE_RECLAIM_CLOSE"
+            )
         ):
             state["pending"] = None
             pending = None

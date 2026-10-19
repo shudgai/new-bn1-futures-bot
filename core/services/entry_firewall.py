@@ -8,7 +8,7 @@ import hashlib
 import numpy as np
 
 from core.gates.breakout_continuation_entry_gate import (
-    PURE_MATH_ENTRY_CONFIRMATIONS,
+    CONFIRMED_2BAR_BREAKOUT,
 )
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
@@ -1131,9 +1131,9 @@ async def validate_account_entry(account, symbol, side, context):
         )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
-        if signal.get("structure_confirmation") not in PURE_MATH_ENTRY_CONFIRMATIONS:
+        if signal.get("structure_confirmation") != CONFIRMED_2BAR_BREAKOUT:
             raise ValueError(
-                "[FORBIDDEN_ENTRY] WILD_SWING_NON_MATHEMATICAL_ENTRY_DISABLED"
+                "[FORBIDDEN_ENTRY] WILD_SWING_TWO_BAR_KC_GATE_REQUIRED"
             )
         from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 

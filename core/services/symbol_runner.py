@@ -422,7 +422,7 @@ async def _process_wild_swing_symbol(
     from core.services.candle_data import closed_entry_candles
     from core.services.exits.kc_true_extreme_exit import STATE_KEY as KC_EXIT_STATE_KEY
     from core.gates.breakout_continuation_entry_gate import (
-        PURE_MATH_ENTRY_CONFIRMATIONS,
+        CONFIRMED_2BAR_BREAKOUT,
     )
     from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
@@ -444,10 +444,11 @@ async def _process_wild_swing_symbol(
     await _reconcile_wait_claims(engine, symbol)
     position = engine.account.positions.get(symbol)
     entry_frame = frame
+    # CAP/Lobster entry decisions must pass the strategy's live quote and
+    # structure checks. External WAIT and KC2BAR authorities can otherwise
+    # authorize entries without the same width/MA5 and two-bar short filters.
     if position:
-        wait_candidate = _observe_wait_entry(
-            engine, symbol, frame, quote, True,
-        )
+        wait_candidate = None
     else:
         boundary_provider = getattr(engine, "_entry_boundary_frame", None)
         if not callable(boundary_provider):
@@ -478,9 +479,7 @@ async def _process_wild_swing_symbol(
             entry_frame = None
             wait_candidate = None
         else:
-            wait_candidate = _observe_wait_entry(
-                engine, symbol, entry_frame, quote, False,
-            )
+            wait_candidate = None
     _dispatch_wait_outbox(engine.wait_entry_authority, symbol)
     if position:
         meta_store = getattr(engine.account, "position_meta", None)
@@ -574,12 +573,22 @@ async def _process_wild_swing_symbol(
                 exit_price = getattr(engine.account, "last_closed_price", {}).get(
                     symbol, quote,
                 )
+                exit_bar_id = exit_decision["bar_id"]
+                if frame is not None and not frame.empty:
+                    live_bar = frame.iloc[-1]
+                    live_bar_id = live_bar.get("timestamp")
+                    if (
+                        live_bar_id is not None
+                        and live_bar.get("is_closed") is not None
+                        and not bool(live_bar.get("is_closed"))
+                    ):
+                        exit_bar_id = float(live_bar_id)
                 strategy.record_exit(
                     symbol,
                     exit_decision["side"],
                     exit_price,
                     exit_decision["reason"],
-                    exit_decision["bar_id"],
+                    exit_bar_id,
                 )
             elif exit_decision.get("kc_exit") is not None:
                 logger.warning(
@@ -596,11 +605,7 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
-    kc2bar_candidates = (
-        _kc2bar_candidates(entry_frame, symbol, quote)
-        if entry_frame is not None
-        else []
-    )
+    kc2bar_candidates = []
     signals = [
         strategy.evaluate_entry(
             symbol, frame, side, tick_price=quote,
@@ -663,9 +668,9 @@ async def _process_wild_swing_symbol(
         return [], []
 
     signal = winner["signal"]
-    if signal.get("structure_confirmation") not in PURE_MATH_ENTRY_CONFIRMATIONS:
+    if signal.get("structure_confirmation") != CONFIRMED_2BAR_BREAKOUT:
         logger.error(
-            "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=NON_MATHEMATICAL_ENTRY_DISABLED",
+            "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=TWO_BAR_GATE_REQUIRED",
             symbol, signal["side"], signal.get("structure_confirmation"),
         )
         return [], []

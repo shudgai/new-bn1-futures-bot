@@ -106,6 +106,19 @@ def automated_position_exit_allowed(
     entry_mode = str(
         position.get("entry_mode") or meta.get("entry_mode") or ""
     ).upper()
+    from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
+
+    confirmed_pivot = pending_confirmed_pivot_exit(dict(position), dict(meta))
+    if confirmed_pivot is not None and confirmed_pivot[0] in normalized_reason:
+        expected_reason = (
+            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+            if side == "LONG"
+            else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+            if side == "SHORT"
+            else ""
+        )
+        return confirmed_pivot[0] == expected_reason
+
     short_exit_state = (
         position.get("channel_short_oversold_exit_state")
         or meta.get("channel_short_oversold_exit_state")
@@ -137,6 +150,16 @@ def automated_position_exit_allowed(
         )
 
         pending = pending_kc_true_extreme_exit(dict(position), dict(meta))
+        if (
+            pending is not None
+            and pending[0] == "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
+        ):
+            details = pending[1]
+            return bool(
+                details.get("cause") == "KC_MIDLINE_RECLAIM_CLOSE"
+                and "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
+                in normalized_reason
+            )
         if pending is None or pending[0] != "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL":
             return False
         details = pending[1]
@@ -144,9 +167,7 @@ def automated_position_exit_allowed(
         return bool(
             isinstance(state, Mapping)
             and state.get("armed") is True
-            and details.get("cause") in {
-                "BULLISH_ENGULFING", "INTRADAY_TROUGH_REBOUND",
-            }
+            and details.get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
             and "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL" in normalized_reason
         )
     if side == "SHORT" and entry_mode == "CHANNEL_SWING":
@@ -184,7 +205,23 @@ def automated_position_exit_allowed(
 
     kc_exit = pending_kc_true_extreme_exit(dict(position), dict(meta))
     if kc_exit is not None and kc_exit[0] in normalized_reason:
-        return True
+        details = kc_exit[1]
+        state = position.get("kc_true_extreme_exit_state") or meta.get(
+            "kc_true_extreme_exit_state"
+        )
+        expected_reason = (
+            "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
+            if side == "LONG"
+            else "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+            if side == "SHORT"
+            else ""
+        )
+        return bool(
+            kc_exit[0] == expected_reason
+            and details.get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
+            and isinstance(state, Mapping)
+            and state.get("armed") is True
+        )
 
     if "BREAKEVEN" in normalized_reason and any(
         source.get(key) is True

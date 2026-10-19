@@ -1,4 +1,4 @@
-"""Mathematical entry detector for WILD_SWING breakout and continuation modes."""
+"""Mathematical two-closed-candle KC breakout entry gate."""
 
 import math
 from collections.abc import Mapping, Sequence
@@ -46,7 +46,7 @@ class BreakoutContinuationEntryGate:
         tick_price: Optional[float] = None,
         live_candle: Optional[Mapping[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        """Evaluate the five MA5-directed modes from closed data and a live quote."""
+        """Return a signal only after a same-color, two-bar closed KC break."""
         count = len(closed_klines)
         if count < 2 or any(
             len(values) != count
@@ -139,127 +139,6 @@ class BreakoutContinuationEntryGate:
                 "reason": reason,
             }
 
-        if tick_price is not None and live_candle is not None:
-            live = valid_candle(live_candle)
-            tick = cls._number(tick_price)
-            live_upper = cls._number(live_candle.get("kc_upper"))
-            live_lower = cls._number(live_candle.get("kc_lower"))
-            live_basis = cls._number(live_candle.get("kc_middle"))
-            live_timestamp = cls._number(live_candle.get("timestamp"))
-            closed_timestamp = cls._number(closed_klines[-1].get("timestamp"))
-            live_is_closed = live_candle.get("is_closed")
-            if (
-                live is not None
-                and tick is not None
-                and tick > 0
-                and live_upper is not None
-                and live_lower is not None
-                and live_basis is not None
-                and live_upper > live_lower
-                and live_lower <= live_basis <= live_upper
-                and live_timestamp is not None
-                and closed_timestamp is not None
-                and live_timestamp > closed_timestamp
-                and live_is_closed is not None
-                and not bool(live_is_closed)
-                and live["low"] <= tick <= live["high"]
-            ):
-                close_history = [
-                    candle["close"] for candle in recent_closed[-4:]
-                ]
-                live_ma5 = (
-                    (sum(close_history) + tick) / 5.0
-                    if count >= 4
-                    and all(value is not None for value in close_history)
-                    else None
-                )
-                if live_ma5 is not None:
-                    effective_ma5 = live_ma5
-                    effective_previous_ma5 = closed_ma5
-                ma5_up = live_ma5 is not None and live_ma5 > closed_ma5
-                ma5_down = live_ma5 is not None and live_ma5 < closed_ma5
-                live_basis = float(live_basis)
-                live_bullish = tick > live["open"]
-                live_bearish = tick < live["open"]
-                if (
-                    live_bullish and ma5_up
-                    and live["open"] <= float(live_upper)
-                    and tick > float(live_upper)
-                ):
-                    return signal(
-                        "OPEN_LONG",
-                        INSTANT_BREAKOUT_INSIDE,
-                        tick,
-                        "即時突破：當根開盤在上軌內且最新價突破上軌，MA5 向上",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-                if (
-                    live_bullish and ma5_up
-                    and live["open"] > float(live_upper)
-                    and tick > float(live_upper)
-                    and tick > current["high"]
-                ):
-                    return signal(
-                        "OPEN_LONG",
-                        INSTANT_BREAKOUT_OUTSIDE,
-                        tick,
-                        "外軌加速：開盤在上軌外且最新價突破前 K 高點，MA5 向上",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-                if (
-                    live_bearish and ma5_down
-                    and live["open"] >= float(live_lower)
-                    and tick < float(live_lower)
-                ):
-                    return signal(
-                        "OPEN_SHORT",
-                        INSTANT_BREAKOUT_INSIDE,
-                        tick,
-                        "即時跌破：當根開盤在下軌內且最新價跌破下軌，MA5 向下",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-                if (
-                    live_bearish and ma5_down
-                    and live["open"] < float(live_lower)
-                    and tick < float(live_lower)
-                    and tick < current["low"]
-                ):
-                    return signal(
-                        "OPEN_SHORT",
-                        INSTANT_BREAKOUT_OUTSIDE,
-                        tick,
-                        "外軌加速：開盤在下軌外且最新價跌破前 K 低點，MA5 向下",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-                if live_bullish and ma5_up and tick > float(live_upper):
-                    return signal(
-                        "OPEN_LONG",
-                        CONTINUATION_OUTSIDE_KC,
-                        tick,
-                        "KC 上軌外即時延續且 MA5 向上",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-                if live_bearish and ma5_down and tick < float(live_lower):
-                    return signal(
-                        "OPEN_SHORT",
-                        CONTINUATION_OUTSIDE_KC,
-                        tick,
-                        "KC 下軌外即時延續且 MA5 向下",
-                        current_ma5=live_ma5,
-                        current_basis=live_basis,
-                        is_intrabar=True,
-                    )
-
         previous_bullish = previous["close"] > previous["open"]
         current_bullish = current["close"] > current["open"]
         previous_bearish = previous["close"] < previous["open"]
@@ -270,8 +149,11 @@ class BreakoutContinuationEntryGate:
         if (
             previous_bullish
             and current_bullish
-            and previous["open"] <= previous_upper < previous["close"]
+            and previous["open"] < previous_upper < previous["close"]
             and current["close"] > upper
+            and upper - lower > previous_upper - previous_lower
+            and ma5_up
+            and basis > float(basis_values[0])
         ):
             return signal(
                 "OPEN_LONG",
@@ -282,55 +164,16 @@ class BreakoutContinuationEntryGate:
         if (
             previous_bearish
             and current_bearish
-            and previous["open"] >= float(previous_lower) > previous["close"]
+            and previous["open"] > float(previous_lower) > previous["close"]
             and current["close"] < lower
+            and ma5_down
+            and basis < float(basis_values[0])
         ):
             return signal(
                 "OPEN_SHORT",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
                 "兩根收線確認：首根實體跌破下軌，次根同色收在下軌外",
-            )
-        if current_bullish and current["close"] > upper and ma5_up:
-            return signal(
-                "OPEN_LONG",
-                CONTINUATION_OUTSIDE_KC,
-                current["close"],
-                "KC 上軌外收線且 MA5 嚴格向上",
-            )
-        if current_bearish and current["close"] < lower and ma5_down:
-            return signal(
-                "OPEN_SHORT",
-                CONTINUATION_OUTSIDE_KC,
-                current["close"],
-                "KC 下軌外收線且 MA5 嚴格向下",
-            )
-
-        golden_cross = (
-            previous_ma5 <= previous_ma15
-            and closed_ma5 > current_ma15
-            and current["close"] > basis
-            and ma5_up
-        )
-        death_cross = (
-            previous_ma5 >= previous_ma15
-            and closed_ma5 < current_ma15
-            and current["close"] < basis
-            and ma5_down
-        )
-        if golden_cross:
-            return signal(
-                "OPEN_LONG",
-                MA_CROSSOVER,
-                current["close"],
-                "MA5 金叉 MA15，收盤在 KC 中軌上且 MA5 向上",
-            )
-        if death_cross:
-            return signal(
-                "OPEN_SHORT",
-                MA_CROSSOVER,
-                current["close"],
-                "MA5 死叉 MA15，收盤在 KC 中軌下且 MA5 向下",
             )
         return None
 
@@ -341,11 +184,8 @@ class BreakoutContinuationEntryGate:
         side: str,
         confirmation: str,
     ) -> Optional[dict[str, Any]]:
-        """Re-derive a confirmed breakout or continuation from closed candles."""
-        if confirmation not in {
-            CONFIRMED_2BAR_BREAKOUT,
-            CONTINUATION_OUTSIDE_KC,
-        }:
+        """Re-derive a valid two-bar breakout from closed candles."""
+        if confirmation != CONFIRMED_2BAR_BREAKOUT:
             return None
         try:
             ma5_key = (
@@ -606,7 +446,7 @@ class BreakoutContinuationEntryGate:
         ma5_series: Optional[Sequence[float]] = None,
         ma15_series: Optional[Sequence[float]] = None,
     ) -> Optional[dict[str, Any]]:
-        """Evaluate the closed-candle subset of the five authorized modes."""
+        """Evaluate the closed-candle two-bar KC breakout gate."""
         if has_position or ma5_series is None or ma15_series is None:
             return None
         return cls.evaluate_pure_math(

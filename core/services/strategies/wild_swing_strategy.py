@@ -202,6 +202,23 @@ class WildSwingStrategy:
         if bar_id is None or previous_bar_id is None:
             return None
         state = self.state_for(symbol)
+        live_bar = frame.iloc[-1] if frame is not None and not frame.empty else None
+        live_bar_id = self._bar_id(live_bar) if live_bar is not None else None
+        live_is_open = bool(
+            live_bar is not None
+            and live_bar.get("is_closed") is not None
+            and not bool(live_bar.get("is_closed"))
+            and live_bar_id is not None
+            and live_bar_id > bar_id
+        )
+        evaluation_bar_id = bar_id
+        if (
+            live_is_open
+            and state.last_exit_bar_id is not None
+            and live_bar_id is not None
+            and live_bar_id > state.last_exit_bar_id
+        ):
+            evaluation_bar_id = live_bar_id
         if state.last_exit_bar_id is not None:
             try:
                 timeframe_ms = float(
@@ -229,68 +246,38 @@ class WildSwingStrategy:
                 state.bars_since_last_exit = max(
                     0,
                     int(
-                        (bar_id - state.last_exit_bar_id)
+                        (evaluation_bar_id - state.last_exit_bar_id)
                         * timestamp_scale
                         // timeframe_ms
                     ),
                 )
         if (
             (state.reset_bar_id is not None and bar_id <= state.reset_bar_id)
-            or (state.last_exit_bar_id is not None and bar_id <= state.last_exit_bar_id)
+            or (
+                state.last_exit_bar_id is not None
+                and evaluation_bar_id <= state.last_exit_bar_id
+            )
             or (
                 state.last_processed_bar_id is not None
-                and bar_id <= state.last_processed_bar_id
+                and evaluation_bar_id <= state.last_processed_bar_id
             )
         ):
             return None
 
-        delayed = False
-        candidate = None
-        if expected_wick_bar_id is not None:
-            try:
-                expected_id = float(expected_wick_bar_id)
-            except (TypeError, ValueError, OverflowError):
-                return None
-            if not math.isfinite(expected_id):
-                return None
-            candidate = self._wick_follow_through_candidate(
-                bars, side, expected_id,
-            )
-            delayed = candidate is not None
-        else:
-            pending_id = state.pending_wick_bar_ids.get(side)
-            if pending_id is not None and bar_id > pending_id:
-                state.pending_wick_bar_ids.pop(side, None)
-                if bar_id == pending_id + 60_000:
-                    candidate = self._wick_follow_through_candidate(
-                        bars, side, pending_id,
-                    )
-                    if candidate is None:
-                        logger.info(
-                            "WILD_SWING_WICK_CONFIRMATION_BLOCK "
-                            "symbol=%s side=%s wick_bar=%s confirmation_bar=%s",
-                            symbol, side, pending_id, bar_id,
-                        )
-                        return None
-                    delayed = True
-
-            if candidate is None:
-                candidate = self._pure_math_candidate(bars)
-                if candidate is None or candidate["action"] != f"OPEN_{side}":
-                    return None
-                if self._has_directional_exhaustion_wick(current, side):
-                    state.pending_wick_bar_ids[side] = bar_id
-                    logger.info(
-                        "WILD_SWING_WICK_CONFIRMATION_WAIT "
-                        "symbol=%s side=%s wick_bar=%s",
-                        symbol, side, bar_id,
-                    )
-                    return None
-
-        if candidate is None or candidate["action"] != f"OPEN_{side}":
+        candidate = self._pure_math_candidate(bars)
+        if (
+            candidate is None
+            or candidate["action"] != f"OPEN_{side}"
+            or candidate["type"] != CONFIRMED_2BAR_BREAKOUT
+        ):
             return None
 
-        entry_type = str(candidate["type"])
+        # Both directions are gated exclusively by the same two closed-bar
+        # breakout confirmation. No continuation, MA crossover, wick delay,
+        # or post-exit shortcut may create an entry.
+        entry_type = CONFIRMED_2BAR_BREAKOUT
+        delayed = False
+        post_exit_continuation = False
         if not delayed and entry_type in {
             CONFIRMED_2BAR_BREAKOUT,
             CONTINUATION_OUTSIDE_KC,
@@ -349,26 +336,41 @@ class WildSwingStrategy:
             if not candle_directional:
                 return None
 
-        current_ma5 = float(current["_wild_ma5"])
+        current_ma5 = (
+            live_ma5 if post_exit_continuation
+            else float(current["_wild_ma5"])
+        )
         current_ma15 = float(current["ma15"])
         current_middle = float(current["kc_middle"])
-        previous_ma5 = float(previous["_wild_ma5"])
+        previous_ma5 = (
+            prior_ma5 if post_exit_continuation
+            else float(previous["_wild_ma5"])
+        )
         previous_middle = float(previous["kc_middle"])
         kc_middle_slope = current_middle - previous_middle
         kc_middle_rising = kc_middle_slope > 0
         kc_middle_falling = kc_middle_slope < 0
         ma5_slope = current_ma5 - previous_ma5
-        if not delayed and entry_type == CONFIRMED_2BAR_BREAKOUT:
-            trend_aligned = True
-        elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
-            trend_aligned = ma5_slope > 0 if side == "LONG" else ma5_slope < 0
-        elif side == "LONG":
+        channel_expanding = (
+            float(current["kc_upper"] - current["kc_lower"])
+            > float(previous["kc_upper"] - previous["kc_lower"])
+        )
+        if side == "LONG":
             trend_aligned = (
-                kc_middle_rising
-                and current_ma5 > current_ma15
+                channel_expanding
                 and ma5_slope > 0
+                and kc_middle_rising
+                and current_ma5 > current_ma15
                 and (not delayed or float(current["close"]) > current_ma5)
             )
+        elif not delayed and entry_type == CONFIRMED_2BAR_BREAKOUT:
+            trend_aligned = (
+                kc_middle_falling
+                and current_ma5 < current_ma15
+                and ma5_slope < 0
+            )
+        elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
+            trend_aligned = False
         else:
             trend_aligned = (
                 kc_middle_falling
@@ -421,15 +423,19 @@ class WildSwingStrategy:
             "entry_signal_mode": entry_pattern,
             "structure_confirmation": entry_type,
             "structure_confirmed": True,
-            "is_intrabar": False,
+            "is_intrabar": post_exit_continuation,
             "channel_expanding": channel_expanding,
             "ma5_current": ma5_current,
             "ma5_previous": ma5_previous,
             "kc_middle_current": current_middle,
             "kc_middle_previous": previous_middle,
             "volume_exhausted": False,
-            "bar_id": bar_id,
-            "close": float(current["close"]),
+            "bar_id": evaluation_bar_id if post_exit_continuation else bar_id,
+            "close": (
+                float(tick_price)
+                if post_exit_continuation and tick_price is not None
+                else float(current["close"])
+            ),
             "entry_mode": "WILD_SWING",
             "candidate_reason": candidate["reason"],
         }
@@ -964,7 +970,46 @@ class WildSwingStrategy:
             kc_exit, _ = evaluate_kc_true_extreme_exit(
                 position, frame, current_price, quote_ms,
             )
-            if kc_exit is not None:
+            from core.services.exits.strict_true_pivot import (
+                confirmed_true_pivot_exit,
+                store_confirmed_pivot_exit,
+            )
+            confirmed_pivot = confirmed_true_pivot_exit(position, frame)
+            if confirmed_pivot is not None and store_confirmed_pivot_exit(
+                position, confirmed_pivot,
+            ):
+                reason, details = confirmed_pivot
+                return {
+                    "action": f"CLOSE_{side}",
+                    "type": reason,
+                    "side": side,
+                    "reason": reason,
+                    "bar_id": details.get("confirm_bar_id"),
+                    "close": current_price,
+                    "entry_mode": "WILD_SWING",
+                    "kc_exit": {
+                        **details,
+                        "cause": "THREE_POINT_CONFIRMED_PIVOT",
+                    },
+                    "kc_exit_state_key": KC_EXIT_STATE_KEY,
+                }
+            # Ignore ordinary pullbacks and wick signals. Shorts may also
+            # exit on a completed bullish close back above KC midline.
+            is_confirmed_pivot = bool(
+                kc_exit is not None
+                and kc_exit[1].get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
+                and kc_exit[0] in {
+                    "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+                    "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+                }
+            )
+            is_short_midline_reversal = bool(
+                side == "SHORT"
+                and kc_exit is not None
+                and kc_exit[0] == "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
+                and kc_exit[1].get("cause") == "KC_MIDLINE_RECLAIM_CLOSE"
+            )
+            if is_confirmed_pivot or is_short_midline_reversal:
                 reason, details = kc_exit
                 bar_id = details.get("bar_ms")
                 if bar_id is None:
