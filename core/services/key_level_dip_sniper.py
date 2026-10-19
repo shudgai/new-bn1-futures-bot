@@ -104,6 +104,23 @@ class KeyLevelDipSniperService:
         if bar_id is None:
             bar_id = 0.0
 
+        # ──【進場前置過濾守衛前置審查】──
+        from core.gates.entry_prefilter_gate import can_execute_entry
+        kc_upper = cls._number(current_bar.get("kc_upper")) or (kc_middle + 2.0 * atr)
+        kc_lower = cls._number(current_bar.get("kc_lower")) or (kc_middle - 2.0 * atr)
+        prefilter_ok, _ = can_execute_entry(
+            signal_type=side,
+            candle={"open": open_p, "high": high_p, "low": low_p, "close": quote},
+            kc={"upper": kc_upper, "lower": kc_lower, "mid": kc_middle},
+            ma5=ma5,
+            ma15=ma15,
+            kc_mid_slope=kc_middle - prev_kc_middle,
+            ma15_slope=ma15 - prev_ma15,
+            avg_atr=atr,
+        )
+        if not prefilter_ok:
+            return None
+
         # =========================================================================
         # 1. 多單開在 K 線低點 (回踩低吸)
         # =========================================================================

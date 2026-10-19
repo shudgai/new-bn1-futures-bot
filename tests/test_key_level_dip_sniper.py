@@ -33,16 +33,16 @@ def _create_frame(
 
 
 def test_dip_sniper_long_success():
-    """多單回踩 MA5/KC中軌有守，位於K線低檔區 (pos_ratio <= 40%) 且起抽收陽，成功發出訊號"""
-    # 趨勢向上：kc_mid 0.0700 -> 0.0702, ma15 0.0698 -> 0.0700, ma5 0.0701 -> 0.0703
-    # 當前棒：open=0.07015, low=0.07000 (回踩到 kc_mid/ma5), high=0.07050
+    """多單回踩 MA5/KC中軌有守，位於K線低檔區 (pos_ratio <= 40%) 且起抽站上中軌收陽，成功發出訊號"""
+    # 趨勢向上：kc_mid 0.0700 -> 0.0701, ma15 0.0698 -> 0.0700, ma5 0.0701 -> 0.0703
+    # 當前棒：open=0.07012, low=0.07000 (回踩到 ma15/kc_mid 附近), high=0.07050
     # tick_price=0.07018 (pos_ratio = (0.07018 - 0.07000) / 0.00050 = 36% <= 40%)
-    # 現價 >= open (0.07018 >= 0.07015)，且下影線 = 0.07015 - 0.07000 = 0.00015 (>= 0.15*atr)
+    # 現價 >= open (0.07018 >= 0.07012)，且現價站在 KC中軌 (0.07010) 與 MA15 (0.07000) 之上！
     frame = _create_frame(
-        open_p=0.07015, high_p=0.07050, low_p=0.07000, close_p=0.07018,
+        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07018,
         ma5=0.07030, prev_ma5=0.07010,
         ma15=0.07000, prev_ma15=0.06980,
-        kc_mid=0.07020, prev_kc_mid=0.07000,
+        kc_mid=0.07010, prev_kc_mid=0.07000,
         atr=0.00050,
     )
     signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "LONG", tick_price=0.07018)
@@ -58,10 +58,10 @@ def test_dip_sniper_long_rejects_chase():
     """多單若追高 (pos_ratio > 40%)，即使回踩過，也嚴格禁止追價進場"""
     # tick_price 漲到 0.07035 (pos_ratio = 70% > 40%)
     frame = _create_frame(
-        open_p=0.07015, high_p=0.07050, low_p=0.07000, close_p=0.07035,
+        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07035,
         ma5=0.07030, prev_ma5=0.07010,
         ma15=0.07000, prev_ma15=0.06980,
-        kc_mid=0.07020, prev_kc_mid=0.07000,
+        kc_mid=0.07010, prev_kc_mid=0.07000,
         atr=0.00050,
     )
     signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "LONG", tick_price=0.07035)
@@ -72,7 +72,7 @@ def test_dip_sniper_long_rejects_on_bearish_trend():
     """順勢鐵律：空頭趨勢 (KC中軌下行) 嚴禁開多，即使回踩打針也一票否決"""
     # kc_mid 下行：0.0705 -> 0.0700
     frame = _create_frame(
-        open_p=0.07015, high_p=0.07050, low_p=0.07000, close_p=0.07018,
+        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07018,
         ma5=0.07030, prev_ma5=0.07010,
         ma15=0.07000, prev_ma15=0.06980,
         kc_mid=0.07000, prev_kc_mid=0.07050,  # 下行！
@@ -83,18 +83,16 @@ def test_dip_sniper_long_rejects_on_bearish_trend():
 
 
 def test_dip_sniper_short_success():
-    """空單反彈摸高遇阻 MA5/KC中軌，位於K線高檔區 (pos_ratio >= 60%) 且回落收陰，成功發出訊號"""
-    # 趨勢向下：kc_mid 0.0705 -> 0.0700, ma15 0.0708 -> 0.0702, ma5 0.0704 -> 0.0699
-    # 當前棒：open=0.07010, high=0.07035 (摸到 kc_mid/ma5), low=0.06980 (總長 0.00055)
-    # tick_price=0.07005 (pos_ratio = (0.07005 - 0.06980) / 0.00055 = 45.4%... 調整為 65%)
-    # 取 low=0.06950, high=0.07030, open=0.07010, tick_price=0.07005
-    # range = 0.00080, pos_ratio = (0.07005 - 0.06950) / 0.00080 = 68.75% >= 60%
-    # 現價 <= open (0.07005 <= 0.07010)，且上影線 = 0.07030 - 0.07010 = 0.00020 (>= 0.15*atr)
+    """空單反彈摸高遇阻 MA5/KC中軌，位於K線高檔區 (pos_ratio >= 60%) 且回落受壓中軌收陰，成功發出訊號"""
+    # 趨勢向下：kc_mid 0.0705 -> 0.0701, ma15 0.0708 -> 0.0702, ma5 0.0704 -> 0.0699
+    # 當前棒：open=0.07010, high=0.07030 (摸到 kc_mid/ma15), low=0.06950
+    # tick_price=0.07005 (pos_ratio = (0.07005 - 0.06950) / 0.00080 = 68.75% >= 60%)
+    # 現價 <= open (0.07005 <= 0.07010)，且現價受壓在 KC中軌 (0.07010) 與 MA15 (0.07020) 之下！
     frame = _create_frame(
         open_p=0.07010, high_p=0.07030, low_p=0.06950, close_p=0.07005,
         ma5=0.06990, prev_ma5=0.07040,
         ma15=0.07020, prev_ma15=0.07080,
-        kc_mid=0.07000, prev_kc_mid=0.07050,
+        kc_mid=0.07010, prev_kc_mid=0.07050,
         atr=0.00050,
     )
     signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "SHORT", tick_price=0.07005)
