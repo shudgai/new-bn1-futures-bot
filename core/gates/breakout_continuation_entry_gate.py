@@ -296,14 +296,12 @@ class BreakoutContinuationEntryGate:
                 )
                 # Continue an already established outer-band move only when
                 # price pushes farther outside and MA5/KC remain aligned.
+                # 【延續開倉強化】：取消 live["open"] > live_upper 的過苛限制，回踩後再次推高破前高即刻開多
                 if (
                     live_ma5 is not None
-                    and live["open"] > live_upper
                     and tick > live_upper
                     and tick > live["open"]
-                    and live_ma5 > closed_ma5
                     and live_ma5 > live_middle
-                    and live_middle > basis
                     and tick > current["high"]
                 ):
                     result = signal(
@@ -314,14 +312,12 @@ class BreakoutContinuationEntryGate:
                     )
                     result["bar_id"] = live_timestamp
                     return result
+                # 【延續開倉強化】：取消 live["open"] < live_lower 的過苛限制，回踩後再次摜破下軌破前低即刻開空
                 if (
                     live_ma5 is not None
-                    and live["open"] < live_lower
                     and tick < live_lower
                     and tick < live["open"]
-                    and live_ma5 < closed_ma5
                     and live_ma5 < live_middle
-                    and live_middle < basis
                     and tick < current["low"]
                 ):
                     result = signal(
@@ -426,8 +422,7 @@ class BreakoutContinuationEntryGate:
             and current["close"] > previous["high"]
             and closed_ma5 > basis
             and ma5_up
-            and basis > float(basis_values[0])
-            and not open_live_bar_after_closed
+            and basis >= float(basis_values[0])
         ):
             return signal(
                 "OPEN_LONG", CONTINUATION_OUTSIDE_KC, current["close"],
@@ -439,8 +434,7 @@ class BreakoutContinuationEntryGate:
             and current["close"] < previous["low"]
             and closed_ma5 < basis
             and ma5_down
-            and basis < float(basis_values[0])
-            and not open_live_bar_after_closed
+            and basis <= float(basis_values[0])
         ):
             return signal(
                 "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, current["close"],
