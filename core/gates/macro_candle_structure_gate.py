@@ -132,7 +132,9 @@ class MacroCandleStructureGate:
             )
             if not structure_confirmed or mode != expected_mode:
                 return False, "VETO_PURE_MATH_ENTRY: 訊號模式與結構確認不一致"
-            if confirmation != CONFIRMED_2BAR_BREAKOUT:
+            if confirmation not in {
+                CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+            }:
                 try:
                     ma5_current = float(indicators["ma5_current"])
                     ma5_previous = float(indicators["ma5_previous"])

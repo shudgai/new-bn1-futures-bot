@@ -186,6 +186,27 @@ class BreakoutContinuationEntryGate:
                 and live["low"] <= tick <= live["high"]
                 and count >= 4
             ):
+                # A genuine live cross from inside/touching the band is an
+                # immediate breakout entry. Do not wait for a second candle
+                # and do not gate this signal on MA5/KC slope.
+                if tick > live["open"] and live["open"] <= live_upper < tick:
+                    result = signal(
+                        "OPEN_LONG", INSTANT_BREAKOUT_INSIDE, tick,
+                        "即時破上軌：當根由軌內穿出，直接評估開多",
+                        current_ma5=closed_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+                if tick < live["open"] and live["open"] >= live_lower > tick:
+                    result = signal(
+                        "OPEN_SHORT", INSTANT_BREAKOUT_INSIDE, tick,
+                        "即時破下軌：當根由軌內穿出，直接評估開空",
+                        current_ma5=closed_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
                 recent_closes = [
                     cls._number(row.get("close"))
                     for row in closed_klines[-4:]
@@ -250,6 +271,24 @@ class BreakoutContinuationEntryGate:
                     return result
 
         if (
+            not open_live_bar_after_closed
+            and current_bullish
+            and current["open"] <= upper < current["close"]
+        ):
+            return signal(
+                "OPEN_LONG", INSTANT_BREAKOUT_INSIDE, current["close"],
+                "單根收線破上軌：直接評估開多",
+            )
+        if (
+            not open_live_bar_after_closed
+            and current_bearish
+            and current["open"] >= lower > current["close"]
+        ):
+            return signal(
+                "OPEN_SHORT", INSTANT_BREAKOUT_INSIDE, current["close"],
+                "單根收線破下軌：直接評估開空",
+            )
+        if (
             previous_bullish
             and current_bullish
             and previous["open"] < previous_upper < previous["close"]
@@ -294,7 +333,7 @@ class BreakoutContinuationEntryGate:
         live_candle: Optional[Mapping[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         """Re-derive the two-bar break, including a live second candle."""
-        if confirmation != CONFIRMED_2BAR_BREAKOUT:
+        if confirmation not in {CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE}:
             return None
         try:
             ma5_key = (

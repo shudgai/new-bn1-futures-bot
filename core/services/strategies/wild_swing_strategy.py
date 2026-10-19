@@ -11,6 +11,7 @@ import pandas as pd
 from core.gates.breakout_continuation_entry_gate import (
     CONFIRMED_2BAR_BREAKOUT,
     CONTINUATION_OUTSIDE_KC,
+    INSTANT_BREAKOUT_INSIDE,
     INITIAL_2BAR_BREAKOUT,
     MA_CROSSOVER,
     BreakoutContinuationEntryGate,
@@ -270,18 +271,21 @@ class WildSwingStrategy:
         if (
             candidate is None
             or candidate["action"] != f"OPEN_{side}"
-            or candidate["type"] != CONFIRMED_2BAR_BREAKOUT
+            or candidate["type"] not in {
+                CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+            }
         ):
             return None
 
         # Both directions are gated exclusively by the same two closed-bar
         # breakout confirmation, or its same-color live second candle. No
         # continuation, MA crossover, or post-exit shortcut may create entry.
-        entry_type = CONFIRMED_2BAR_BREAKOUT
+        entry_type = candidate["type"]
         delayed = False
         post_exit_continuation = False
         is_intrabar = bool(candidate.get("is_intrabar"))
         if not delayed and entry_type in {
+            INSTANT_BREAKOUT_INSIDE,
             CONFIRMED_2BAR_BREAKOUT,
             CONTINUATION_OUTSIDE_KC,
         }:
@@ -368,18 +372,23 @@ class WildSwingStrategy:
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
         if side == "LONG":
-            trend_aligned = (
+            trend_aligned = entry_type == INSTANT_BREAKOUT_INSIDE or (
                 channel_expanding
                 and ma5_slope > 0
                 and kc_middle_rising
                 and current_ma5 > current_ma15
                 and (not delayed or float(current["close"]) > current_ma5)
             )
-        elif not delayed and entry_type == CONFIRMED_2BAR_BREAKOUT:
+        elif not delayed and entry_type in {
+            CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+        }:
             trend_aligned = (
-                kc_middle_falling
-                and current_ma5 < current_ma15
-                and ma5_slope < 0
+                entry_type == INSTANT_BREAKOUT_INSIDE
+                or (
+                    kc_middle_falling
+                    and current_ma5 < current_ma15
+                    and ma5_slope < 0
+                )
             )
         elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
             trend_aligned = False

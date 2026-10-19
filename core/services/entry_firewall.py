@@ -9,6 +9,7 @@ import numpy as np
 
 from core.gates.breakout_continuation_entry_gate import (
     CONFIRMED_2BAR_BREAKOUT,
+    INSTANT_BREAKOUT_INSIDE,
 )
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
@@ -532,6 +533,7 @@ def final_trend_alignment_problem(
             return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
         is_confirmed_outer_entry = entry_confirmation in {
+            INSTANT_BREAKOUT_INSIDE,
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
         }
@@ -1142,7 +1144,9 @@ async def validate_account_entry(account, symbol, side, context):
         )
         if signal is None:
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
-        if signal.get("structure_confirmation") != CONFIRMED_2BAR_BREAKOUT:
+        if signal.get("structure_confirmation") not in {
+            CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE,
+        }:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_TWO_BAR_KC_GATE_REQUIRED"
             )

@@ -131,6 +131,7 @@ def can_open_position(
     entry_confirmation = str(kwargs.get("entry_confirmation") or "").upper()
     wild_outer_entry = False
     if entry_confirmation in {
+        "INSTANT_BREAKOUT_INSIDE",
         "CONFIRMED_2BAR_BREAKOUT",
         "CONTINUATION_OUTSIDE_KC",
     }:
