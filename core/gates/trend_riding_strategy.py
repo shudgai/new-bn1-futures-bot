@@ -261,8 +261,8 @@ def can_open_position(
     # 一、 開倉絕對門禁 (一票否決制，嚴禁繞過)
     # ══════════════════════════════════════════════════════════════════
     if side == "LONG":
-        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT 豁免滯後 KC 斜率)
-        if entry_confirmation != "INSTANT_BURST_BREAKOUT" and kc_trend != "UP":
+        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER 豁免滯後 KC 斜率)
+        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"} and kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -303,7 +303,7 @@ def can_open_position(
         is_golden_cross = (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
         is_first_bull_bar = (close_p > open_p and (prev_close <= prev_open or ma5_prev <= ma15_prev))
         is_strong_bull_aligned = (ma5_curr > ma15_curr and close_p > open_p and ma5_curr > ma5_prev)
-        if not wild_outer_entry and not (
+        if not wild_outer_entry and entry_confirmation not in {"DIP_SNIPER", "MA_CROSSOVER"} and not (
             is_golden_cross or is_first_bull_bar or is_strong_bull_aligned
         ):
             msg = f"[攔截開多] {symbol} 非金叉突破且非多頭排列首根收陽，禁止開多"
@@ -312,8 +312,8 @@ def can_open_position(
             return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
 
     elif side == "SHORT":
-        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT 豁免滯後 KC 斜率)
-        if entry_confirmation != "INSTANT_BURST_BREAKOUT" and kc_trend != "DOWN":
+        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER 豁免滯後 KC 斜率)
+        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"} and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)

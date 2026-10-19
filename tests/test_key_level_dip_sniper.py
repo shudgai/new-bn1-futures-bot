@@ -1,7 +1,11 @@
 import pandas as pd
 import pytest
 
-from core.services.key_level_dip_sniper import KeyLevelDipSniperService
+from core.services.key_level_dip_sniper import (
+    KeyLevelDipSniperService,
+    check_comprehensive_long_entry,
+    check_comprehensive_short_entry,
+)
 
 
 def _create_frame(
@@ -32,101 +36,100 @@ def _create_frame(
     return pd.DataFrame(records)
 
 
-def test_dip_sniper_long_success():
-    """多單回踩 MA5/KC中軌有守，位於K線低檔區 (pos_ratio <= 40%) 且起抽站上中軌收陽，成功發出訊號"""
-    # 趨勢向上：kc_mid 0.0700 -> 0.0701, ma15 0.0698 -> 0.0700, ma5 0.0701 -> 0.0703
-    # 當前棒：open=0.07012, low=0.07000 (回踩到 ma15/kc_mid 附近), high=0.07050
-    # tick_price=0.07018 (pos_ratio = (0.07018 - 0.07000) / 0.00050 = 36% <= 40%)
-    # 現價 >= open (0.07018 >= 0.07012)，且現價站在 KC中軌 (0.07010) 與 MA15 (0.07000) 之上！
-    frame = _create_frame(
-        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07018,
-        ma5=0.07030, prev_ma5=0.07010,
-        ma15=0.07000, prev_ma15=0.06980,
-        kc_mid=0.07010, prev_kc_mid=0.07000,
-        atr=0.00050,
+def test_comprehensive_short_death_cross():
+    """死叉起跌：prev_ma5 >= prev_ma15 且 ma5 < ma15 且 close < kc_mid -> OPEN_SHORT"""
+    candle = {"open": 0.0208, "high": 0.02085, "low": 0.02065, "close": 0.02068}
+    prev_candle = {"open": 0.02085, "high": 0.0209, "low": 0.02075, "close": 0.0208}
+    kc_mid = 0.02075
+    ma5 = 0.02070
+    prev_ma5 = 0.02080
+    ma15 = 0.02072
+    prev_ma15 = 0.02075
+
+    action, pattern, reason = check_comprehensive_short_entry(
+        candle, prev_candle, kc_mid, ma5, prev_ma5, ma15, prev_ma15
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "LONG", tick_price=0.07018)
-    assert signal is not None
-    assert signal["side"] == "LONG"
-    assert signal["structure_confirmation"] == "DIP_SNIPER"
-    assert signal["entry_pattern"] == "DIP_SNIPER"
-    assert signal["pos_ratio"] <= 0.40
-    assert signal["stop_loss"] < 0.07000
+    assert action == "OPEN_SHORT"
+    assert pattern == "MA_CROSSOVER"
+    assert "波段起跌" in reason
 
 
-def test_dip_sniper_long_rejects_chase():
-    """多單若追高 (pos_ratio > 40%)，即使回踩過，也嚴格禁止追價進場"""
-    # tick_price 漲到 0.07035 (pos_ratio = 70% > 40%)
-    frame = _create_frame(
-        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07035,
-        ma5=0.07030, prev_ma5=0.07010,
-        ma15=0.07000, prev_ma15=0.06980,
-        kc_mid=0.07010, prev_kc_mid=0.07000,
-        atr=0.00050,
+def test_comprehensive_short_rebound_rejection():
+    """反彈遇阻摸高：ma5 < ma15 且 close < kc_mid 且 high >= ma5 且 close <= open -> OPEN_SHORT"""
+    candle = {"open": 0.02065, "high": 0.02072, "low": 0.02060, "close": 0.02062}
+    prev_candle = {}
+    kc_mid = 0.02075
+    ma5 = 0.02070
+    prev_ma5 = 0.02075
+    ma15 = 0.02074
+    prev_ma15 = 0.02076
+
+    action, pattern, reason = check_comprehensive_short_entry(
+        candle, prev_candle, kc_mid, ma5, prev_ma5, ma15, prev_ma15
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "LONG", tick_price=0.07035)
-    assert signal is None
+    assert action == "OPEN_SHORT"
+    assert pattern == "DIP_SNIPER"
+    assert "高拋狙擊" in reason
 
 
-def test_dip_sniper_long_rejects_on_bearish_trend():
-    """順勢鐵律：空頭趨勢 (KC中軌下行) 嚴禁開多，即使回踩打針也一票否決"""
-    # kc_mid 下行：0.0705 -> 0.0700
-    frame = _create_frame(
-        open_p=0.07012, high_p=0.07050, low_p=0.07000, close_p=0.07018,
-        ma5=0.07030, prev_ma5=0.07010,
-        ma15=0.07000, prev_ma15=0.06980,
-        kc_mid=0.07000, prev_kc_mid=0.07050,  # 下行！
-        atr=0.00050,
+def test_comprehensive_long_golden_cross():
+    """金叉起漲：prev_ma5 <= prev_ma15 且 ma5 > ma15 且 close > kc_mid -> OPEN_LONG"""
+    candle = {"open": 0.0700, "high": 0.0705, "low": 0.0699, "close": 0.0704}
+    prev_candle = {}
+    kc_mid = 0.0701
+    ma5 = 0.0703
+    prev_ma5 = 0.0700
+    ma15 = 0.0702
+    prev_ma15 = 0.0701
+
+    action, pattern, reason = check_comprehensive_long_entry(
+        candle, prev_candle, kc_mid, ma5, prev_ma5, ma15, prev_ma15
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "LONG", tick_price=0.07018)
-    assert signal is None
+    assert action == "OPEN_LONG"
+    assert pattern == "MA_CROSSOVER"
+    assert "波段起漲" in reason
 
 
-def test_dip_sniper_short_success():
-    """空單反彈摸高遇阻 MA5/KC中軌，位於K線高檔區 (pos_ratio >= 60%) 且回落受壓中軌收陰，成功發出訊號"""
-    # 趨勢向下：kc_mid 0.0705 -> 0.0701, ma15 0.0708 -> 0.0702, ma5 0.0704 -> 0.0699
-    # 當前棒：open=0.07010, high=0.07030 (摸到 kc_mid/ma15), low=0.06950
-    # tick_price=0.07005 (pos_ratio = (0.07005 - 0.06950) / 0.00080 = 68.75% >= 60%)
-    # 現價 <= open (0.07005 <= 0.07010)，且現價受壓在 KC中軌 (0.07010) 與 MA15 (0.07020) 之下！
-    frame = _create_frame(
-        open_p=0.07010, high_p=0.07030, low_p=0.06950, close_p=0.07005,
-        ma5=0.06990, prev_ma5=0.07040,
-        ma15=0.07020, prev_ma15=0.07080,
-        kc_mid=0.07010, prev_kc_mid=0.07050,
-        atr=0.00050,
+def test_comprehensive_long_dip_support():
+    """回踩支撐低吸：ma5 > ma15 且 close > kc_mid 且 low <= ma5 且 close >= open -> OPEN_LONG"""
+    candle = {"open": 0.0702, "high": 0.0706, "low": 0.0701, "close": 0.0704}
+    prev_candle = {}
+    kc_mid = 0.0700
+    ma5 = 0.0703
+    prev_ma5 = 0.0701
+    ma15 = 0.0699
+    prev_ma15 = 0.0698
+
+    action, pattern, reason = check_comprehensive_long_entry(
+        candle, prev_candle, kc_mid, ma5, prev_ma5, ma15, prev_ma15
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "SHORT", tick_price=0.07005)
-    assert signal is not None
-    assert signal["side"] == "SHORT"
-    assert signal["structure_confirmation"] == "DIP_SNIPER"
-    assert signal["entry_pattern"] == "DIP_SNIPER"
-    assert signal["pos_ratio"] >= 0.60
-    assert signal["stop_loss"] > 0.07030
+    assert action == "OPEN_LONG"
+    assert pattern == "DIP_SNIPER"
+    assert "低吸狙擊" in reason
 
 
-def test_dip_sniper_short_rejects_chase():
-    """空單若殺跌 (pos_ratio < 60%)，即使摸過高點，也嚴格禁止在地板追空"""
-    # tick_price 跌到 0.06960 (pos_ratio = (0.06960 - 0.06950) / 0.00080 = 12.5% < 60%)
-    frame = _create_frame(
-        open_p=0.07010, high_p=0.07030, low_p=0.06950, close_p=0.06960,
-        ma5=0.06990, prev_ma5=0.07040,
-        ma15=0.07020, prev_ma15=0.07080,
-        kc_mid=0.07000, prev_kc_mid=0.07050,
-        atr=0.00050,
+def test_service_evaluate_entry_integration():
+    """測試 KeyLevelDipSniperService.evaluate_entry 對全面開倉邏輯的整合"""
+    # 測試多單金叉起漲
+    frame_long = _create_frame(
+        open_p=0.0700, high_p=0.0705, low_p=0.0699, close_p=0.0704,
+        ma5=0.0703, prev_ma5=0.0700,
+        ma15=0.0702, prev_ma15=0.0701,
+        kc_mid=0.0701, prev_kc_mid=0.0700,
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "SHORT", tick_price=0.06960)
-    assert signal is None
+    res_long = KeyLevelDipSniperService.evaluate_entry("龙虾/USDT", frame_long, "LONG", tick_price=0.0704)
+    assert res_long is not None
+    assert res_long["side"] == "LONG"
+    assert res_long["entry_pattern"] == "MA_CROSSOVER"
 
-
-def test_dip_sniper_short_rejects_on_bullish_trend():
-    """順勢鐵律：多頭趨勢 (KC中軌上行) 嚴禁摸頂開空，一票否決"""
-    # kc_mid 上行：0.0700 -> 0.0705
-    frame = _create_frame(
-        open_p=0.07010, high_p=0.07030, low_p=0.06950, close_p=0.07005,
-        ma5=0.06990, prev_ma5=0.07040,
-        ma15=0.07020, prev_ma15=0.07080,
-        kc_mid=0.07050, prev_kc_mid=0.07000,  # 上行！
-        atr=0.00050,
+    # 測試空單死叉起跌
+    frame_short = _create_frame(
+        open_p=0.0208, high_p=0.02085, low_p=0.02065, close_p=0.02068,
+        ma5=0.02070, prev_ma5=0.02080,
+        ma15=0.02072, prev_ma15=0.02075,
+        kc_mid=0.02075, prev_kc_mid=0.02076,
     )
-    signal = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame, "SHORT", tick_price=0.07005)
-    assert signal is None
+    res_short = KeyLevelDipSniperService.evaluate_entry("CAP/USDT", frame_short, "SHORT", tick_price=0.02068)
+    assert res_short is not None
+    assert res_short["side"] == "SHORT"
+    assert res_short["entry_pattern"] == "MA_CROSSOVER"

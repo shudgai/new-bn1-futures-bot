@@ -401,11 +401,11 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
         or payload.get("entry_authority") in {"KC2BAR", "CONTINUATION"}
     )
     is_dip = bool(
-        payload.get("entry_authority") == "DIP_SNIPER"
+        payload.get("entry_authority") in {"DIP_SNIPER", "KEY_LEVEL_DIP_SNIPER"}
         or "DIP_SNIPER" in str(payload.get("entry_signal_code") or "")
         or "DIP_SNIPER" in str(payload.get("reason") or "")
-        or payload.get("structure_confirmation") == "DIP_SNIPER"
-        or payload.get("entry_pattern") == "DIP_SNIPER"
+        or payload.get("structure_confirmation") in {"DIP_SNIPER", "MA_CROSSOVER"}
+        or payload.get("entry_pattern") in {"DIP_SNIPER", "MA_CROSSOVER"}
     )
     is_meme = bool(
         payload.get("entry_authority") == "MEME_PEAK_HUNTER"

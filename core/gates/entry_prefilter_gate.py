@@ -54,7 +54,7 @@ def can_execute_entry(
 
     pattern_str = str(entry_pattern or "").upper()
     is_outer_breakout = (
-        any(p in pattern_str for p in ("BREAKOUT", "CONTINUATION", "OUTER"))
+        any(p in pattern_str for p in ("BREAKOUT", "CONTINUATION", "OUTER", "DIP_SNIPER", "MA_CROSS"))
         or (signal_type == "LONG" and close_price > kc_upper)
         or (signal_type == "SHORT" and close_price < kc_lower)
     )
@@ -64,7 +64,7 @@ def can_execute_entry(
     # =========================================================================
     # 防護 1：通道收斂與走平過濾 (過濾震盪泥淖)
     # 若通道開口太窄 (小於基準 ATR 的 1.5 倍)，代表處於盤整泥淖。
-    # 破軌與延續開倉因價格已衝破外軌展開動能，擠壓即為起跑發動點，不在此限。
+    # 破軌、延續、波段起步與高拋低吸開倉因價格展開動能，擠壓即為起跑發動點，不在此限。
     # =========================================================================
     if not is_outer_breakout and kc_width < (atr_val * 1.5):
         return False, f"BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP: KC 通道嚴重收斂 (width={kc_width:.5f} < 1.5*ATR={1.5*atr_val:.5f})，處於無趨勢橫盤震盪，嚴禁開倉！"
@@ -77,9 +77,9 @@ def can_execute_entry(
         if close_price < kc_mid or close_price < ma15_val:
             return False, f"BLOCKED_LONG_BELOW_MIDLINE_OR_MA15: 價格 ({close_price}) 受壓於 KC 中軌 ({kc_mid}) 或 MA15 ({ma15_val}) 之下，嚴禁逆勢摸多！"
         # 趨勢方向：KC 中軌不能向下
-        if mid_slope < 0:
+        if mid_slope < -0.0001:
             return False, f"BLOCKED_LONG_ON_BEARISH_TREND: KC 中軌向下 (slope={mid_slope:.6f})，禁止逆勢做多！"
-        # 非破軌開倉時，MA15 不能向下傾斜
+        # 非破軌/波段起漲時，MA15 不能向下傾斜
         if not is_outer_breakout and m15_slope < 0:
             return False, f"BLOCKED_LONG_MA15_SLOPE_DOWN: MA15 均線仍向下傾斜 (slope={m15_slope:.6f} < 0)，多頭結構未確認，禁止做多！"
 
@@ -90,10 +90,10 @@ def can_execute_entry(
         # 價格必須受壓於 KC 中軌與 MA15 下方
         if close_price > kc_mid or close_price > ma15_val:
             return False, f"BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15: 價格 ({close_price}) 高於 KC 中軌 ({kc_mid}) 或 MA15 ({ma15_val})，嚴禁逆勢做空！"
-        # 趨勢方向：KC 中軌走平或向上時嚴禁做空
-        if mid_slope >= 0:
+        # 趨勢方向：KC 中軌走平或向上時嚴禁做空 (起跌與狙擊豁免滯後中軌)
+        if not is_outer_breakout and mid_slope >= 0:
             return False, f"BLOCKED_SHORT_KC_MID_FLAT_OR_UP: KC 中軌走平或向上 (slope={mid_slope:.6f}) 無下傾趨勢，禁止追空！"
-        # 非破軌開倉時，MA15 走平或向上嚴禁追空（破軌開倉因慢速 MA15 滯後，依據 AGENTS.md 不受 MA15 走平限制）
+        # 非破軌/波段起跌開倉時，MA15 走平或向上嚴禁追空
         if not is_outer_breakout and m15_slope >= 0:
             return False, f"BLOCKED_SHORT_MA15_FLAT_OR_UP: MA15 走平或向上 (slope={m15_slope:.6f}) 無下傾趨勢，禁止追空！"
 

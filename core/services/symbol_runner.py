@@ -113,9 +113,14 @@ def _filter_authorities_by_kc_direction(authorities, frame):
     from core.gates.breakout_continuation_entry_gate import INSTANT_BREAKOUT_INSIDE
     immediate_breakouts = [
         item for item in authorities
-        if item.get("authority") == "WILD_SWING"
-        and item.get("signal", {}).get("structure_confirmation")
-        in {INSTANT_BREAKOUT_INSIDE, "MEME_PEAK_HUNTER"}
+        if (
+            item.get("authority") == "KEY_LEVEL_DIP_SNIPER"
+            or (
+                item.get("authority") == "WILD_SWING"
+                and item.get("signal", {}).get("structure_confirmation")
+                in {INSTANT_BREAKOUT_INSIDE, "MEME_PEAK_HUNTER", "DIP_SNIPER", "MA_CROSSOVER"}
+            )
+        )
     ]
 
     # Flat/unknown KC is not permission to choose a side. Keep the existing
