@@ -1,4 +1,4 @@
-"""Chart Vision Guard: Dual-track (Local Qwen2-VL -> Cloud Gemini -> Fallback Indicator) with Dynamic Breakthrough Gatekeeper."""
+"""Fail-closed chart vision review for final WILD_SWING entry authorization."""
 from __future__ import annotations
 
 import asyncio
@@ -34,18 +34,18 @@ LOCAL_CONNECT_TIMEOUT_SEC = float(os.getenv("LOCAL_CONNECT_TIMEOUT_SEC", "2.5"))
 LOCAL_READ_TIMEOUT_SEC = float(os.getenv("LOCAL_READ_TIMEOUT_SEC", "15.0"))
 
 PROMPT = (
-    "你是一位精通合約與妖幣/迷因幣（如龍蝦/CAP）爆發行情的量化審查員。"
-    "這是一張 1M 級別的 K 線圖（包含 MA5、MA15、KC 通道與成交量），技術指標剛發出 {side} {signal_desc} 信號。\n"
-    "【重要認知：數值引擎已由後端精確計算並產生本模式候選；盤中訊號不代表收線訊號】\n"
-    "你的任務是進行宏觀形態防雷審查，防止天花板追多、地板追空、或極端假突破反轉陷阱。\n"
-    "本訊號模式的結構檢查：{mode_criteria}\n"
+    "你是一名嚴格的加密貨幣量化合約交易審核員。"
+    "請檢視 1M K 線圖中的 K 棒、KC 通道、MA5 與 MA15。\n"
+    "系統候選方向為【{side}】，進場模式為【{signal_desc}】。"
+    "數值 Gate 已確認候選；盤中訊號不代表 K 棒已收線。\n"
+    "【本模式視覺審核標準】\n{mode_criteria}\n"
     "【不可放寬的結構性否決條件；任一成立必須判 TRAP】\n"
     "1. 嚴重逆勢：嚴禁多單逆著暴跌主浪摸底，或空單逆著暴漲主浪摸頂。\n"
     "2. MA15 乖離：abs(close-ma15)/ATR > 2.8 時必須拒絕追單。\n"
     "3. K 棒衰竭：多單出現極端長上影線（upper_wick > body * 1.5 且 upper_wick 佔比 > 65%），或空單陰線下影線佔整根 K 棒全長 >65%，必須拒絕。\n"
-    "4. 資訊不足、重大缺失或方向不清時，才判 TRAP；模型判斷不得覆蓋任何程式化風控。\n"
-    "若未觸發上述任何否決條件、且圖表符合順勢動能推進，必須判 REAL。\n"
-    "只回傳 JSON：{{\"verdict\": \"REAL\" 或 \"TRAP\", \"reason\": \"一句話理由\"}}。"
+    "4. 資訊不足、重大缺失或方向不清時判拒絕；模型判斷不得覆蓋任何程式化風控。\n"
+    "若未觸發上述任何否決條件、且圖表符合順勢動能推進，應核准。\n"
+    "只回傳純 JSON：{{\"allow_trade\": true 或 false, \"reason\": \"簡述核准或否決理由\", \"confidence\": 0.0 到 1.0}}。"
 )
 
 SIGNAL_DESC = {
@@ -69,12 +69,14 @@ SIGNAL_DESC = {
 
 MODE_CRITERIA = {
     "INSTANT_BREAK": (
-        "當根尚未收線，價格由 KC 通道內穿出同側外軌，且順勢實體達近期平均實體 1.2 倍；"
-        "前方必須符合小反色棒蓄勢組合。此入口不檢查 MA5 斜率。"
+        "當根尚未收線，LONG 必須是大綠陽線由通道內穿出上軌，SHORT 必須是大紅陰線由通道內穿出下軌；"
+        "順勢實體至少為前 14 根已收線 K 棒平均實體的 1.2 倍。LONG 前方須有一根小紅，"
+        "或小紅後接 1 至 2 根小綠；SHORT 前方須有一根小綠，或小綠後接 1 至 2 根小紅。"
+        "此入口不檢查 MA5 斜率。"
     ),
     "NORMAL_BREAK": (
-        "首根已收線同色實體突破外軌，第二根同色且已收線仍在外軌外；"
-        "MA5 斜率順向且 KC 通道擴張。"
+        "首根已收線 K 棒的同色實體穿透 KC 外軌（不是只靠影線）；"
+        "第二根已收線同色，收盤仍穩站在相同外軌之外；KC 通道寬度正在擴張且 MA5 斜率順向。"
     ),
     "MA_CROSS": (
         "已收線 MA5/MA15 剛完成同方向交叉，MA5 順向且 KC 通道擴張；"
@@ -85,8 +87,8 @@ MODE_CRITERIA = {
         "審查重點在於防止假突破陷阱與反向極端天線，若無反向長針或嚴重逆勢，應判定合格。"
     ),
     "CONTINUATION": (
-        "順勢延續可位於多單 KC_Pos >= 0.35 或空單 KC_Pos <= 0.65，"
-        "涵蓋同側外軌推進及 0.35-0.65 中軌回踩區；拒絕極端反向長影線（>65%）。"
+        "無須重新穿軌；多單價格與 MA5 均在 KC 中軌上方且 MA5 向上，"
+        "空單價格與 MA5 均在 KC 中軌下方且 MA5 向下。"
     ),
     "CROSSOVER": (
         "必須有已收線 MA5/MA15 真正交叉及價格基準確認；"
@@ -460,14 +462,24 @@ def _render_chart_with_pillow(data: list[Any], watermark: Optional[str]) -> byte
 
 
 def parse_verdict(text: str) -> Tuple[bool, str]:
-    """REAL -> approve, TRAP -> veto; anything else raises (treated as outage)."""
+    """Parse explicit Gemini approval or legacy REAL/TRAP verdicts fail-closed."""
     raw = (text or "").strip()
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end < start:
         raise ValueError("unparseable verdict")
     obj = json.loads(raw[start:end + 1])
-    verdict = str(obj.get("decision") or obj.get("verdict") or "").strip().upper()
     reason = str(obj.get("reason", "")).strip()
+    if "allow_trade" in obj:
+        allowed = obj["allow_trade"]
+        if type(allowed) is not bool:
+            raise ValueError("allow_trade must be a boolean")
+        confidence = obj.get("confidence", 0.0)
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            raise ValueError("confidence must be numeric")
+        if not 0.0 <= float(confidence) <= 1.0:
+            raise ValueError("confidence outside [0, 1]")
+        return allowed, reason
+    verdict = str(obj.get("decision") or obj.get("verdict") or "").strip().upper()
     if verdict in ("REAL", "APPROVED"):
         return True, reason
     if verdict in ("TRAP", "REJECTED"):
@@ -623,7 +635,7 @@ def _call_gemini(image: bytes, side: str, api_key: str, mode: str = "BREAKOUT_MO
             types.Part.from_bytes(data=image, mime_type="image/png"),
             _vision_prompt(side, mode),
         ],
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
     )
     return resp.text or ""
 
