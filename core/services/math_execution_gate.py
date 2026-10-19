@@ -212,16 +212,45 @@ def validate_exit_math(
     if any(value is None for value in (previous_close, previous_high, previous_low)):
         return False, "BLOCKED_EXIT_MATH_DATA_INVALID", details
 
+    # Path 0: Structural KC midline reversal and confirmed pivot exits
+    norm_reason = str(close_reason or "").upper().replace(" ", "_")
+    is_midline_reversal = any(token in norm_reason for token in (
+        "CONFIRMED_KC_MIDLINE_REVERSAL", "KC_MIDLINE_RECLAIM_CLOSE",
+        "KC_MIDLINE_RETRACE", "KC_MIDLINE_BREAK", "MIDLINE_REVERSAL",
+        "WRONG_DIRECTION_CORRECTION",
+    ))
+    if is_midline_reversal:
+        if side == "SHORT" and (close >= middle or previous_close >= previous_middle or middle > previous_middle):
+            details.update(exit_type="MIDLINE_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
+            return True, "EXIT_MATH_SHORT_MIDLINE_REVERSAL", details
+        elif side == "LONG" and (close <= middle or previous_close <= previous_middle or middle < previous_middle):
+            details.update(exit_type="MIDLINE_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
+            return True, "EXIT_MATH_LONG_MIDLINE_REVERSAL", details
+
+    is_confirmed_pivot = any(token in norm_reason for token in (
+        "TRUE_VALLEY_EXTREME_REVERSAL", "TRUE_PEAK_EXTREME_REVERSAL",
+        "CONFIRMED_TRUE_PEAK_PIVOT", "CONFIRMED_TRUE_VALLEY_PIVOT",
+        "EXIT_MEME_TRUE_PEAK_CONFIRMED", "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
+    ))
+    if is_confirmed_pivot:
+        details.update(exit_type="CONFIRMED_PIVOT", close=close)
+        return True, "EXIT_MATH_CONFIRMED_PIVOT", details
+
     # Path A: outer-rail extension followed by a mathematical exhaustion signal.
     hold_veto: tuple[str, dict[str, Any]] | None = None
     if side == "SHORT":
-        was_below_lower = low < lower or previous_low < previous_lower or previous_close < previous_lower
-        bullish_ma_reclaim = close > opened and close > ma5
         historical_low = min(
             _number(position.get("lowest_price")) or quote,
             *(_number(row.get("low")) or quote for row in bars[-120:]),
             quote,
         )
+        was_below_lower = (
+            low < lower or previous_low < previous_lower or previous_close < previous_lower
+            or (historical_low < lower)
+            or any((_number(r.get("low")) or quote) < (_number(r.get("kc_lower")) or quote) for r in bars[-30:])
+            or bool((position.get("kc_true_extreme_exit_state") or {}).get("armed"))
+        )
+        bullish_ma_reclaim = close > opened and close > ma5
         rebound = close - historical_low >= 0.3 * atr
         if was_below_lower and (bullish_ma_reclaim or rebound):
             details.update(exit_type="TRUE_BOTTOM", historical_low=historical_low, atr=atr)
@@ -230,13 +259,18 @@ def validate_exit_math(
         if middle_slope <= 0 and close < middle:
             hold_veto = ("VETO_HOLD", {"exit_type": "VETO_HOLD", "kc_middle_slope": middle_slope})
     else:
-        was_above_upper = high > upper or previous_high > previous_upper or previous_close > previous_upper
-        bearish_ma_break = close < opened and close < ma5
         historical_high = max(
             _number(position.get("highest_price")) or quote,
             *(_number(row.get("high")) or quote for row in bars[-120:]),
             quote,
         )
+        was_above_upper = (
+            high > upper or previous_high > previous_upper or previous_close > previous_upper
+            or (historical_high > upper)
+            or any((_number(r.get("high")) or quote) > (_number(r.get("kc_upper")) or quote) for r in bars[-30:])
+            or bool((position.get("kc_true_extreme_exit_state") or {}).get("armed"))
+        )
+        bearish_ma_break = close < opened and close < ma5
         pullback = historical_high - close >= 0.3 * atr
         if was_above_upper and (bearish_ma_break or pullback):
             details.update(exit_type="TRUE_PEAK", historical_high=historical_high, atr=atr)

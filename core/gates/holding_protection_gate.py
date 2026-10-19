@@ -1510,6 +1510,14 @@ class HoldingProtectionExitGate:
         'EXIT_SHORT_ON_FRACTAL_VALLEY',
         'EXIT_LONG_ON_SELLING_PRESSURE',
         'EXIT_SHORT_ON_BUYING_PRESSURE',
+        'EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL',
+        'EXIT_BY_LONG_CONFIRMED_KC_MIDLINE_REVERSAL',
+        'EXIT_BY_KC_MIDLINE_RETRACE',
+        'EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL',
+        'EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL',
+        'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT',
+        'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT',
+        'WRONG_DIRECTION_CORRECTION',
     }
 
     @classmethod
@@ -1947,8 +1955,18 @@ class HoldingProtectionExitGate:
             if not is_profit_lock:
                 return _reject(reason='VETO_SAME_BAR_EXIT_NO_EXIT_ON_ENTRY_BAR')
 
-        # ──【核心鐵律二：真峰谷確認授權放行（必須以 KC 中軌為防守）】──
-        if clean_reason in ('EXIT_MEME_TRUE_PEAK_CONFIRMED', 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'):
+        # ──【核心鐵律二：真峰谷與中軌反轉確認授權放行】──
+        if clean_reason in (
+            'EXIT_MEME_TRUE_PEAK_CONFIRMED', 'EXIT_MEME_TRUE_VALLEY_CONFIRMED',
+            'EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL',
+            'EXIT_BY_LONG_CONFIRMED_KC_MIDLINE_REVERSAL',
+            'EXIT_BY_KC_MIDLINE_RETRACE',
+            'EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL',
+            'EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL',
+            'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT',
+            'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT',
+            'WRONG_DIRECTION_CORRECTION',
+        ):
             return _auth(clean_reason)
 
         if is_true_pivot_confirmed:

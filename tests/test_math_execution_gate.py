@@ -137,3 +137,34 @@ def test_exit_math_ratchet_and_emergency_override():
                                                    close_reason="CIRCUIT_BREAKER_HARD_SL")
     assert allowed and reason == "EMERGENCY_EXIT_OVERRIDE"
     assert metadata["exit_type"] == "EMERGENCY"
+
+
+def test_exit_math_confirmed_midline_reversal():
+    # Short position where price breaks back above KC middle
+    short_pos = dict(side="SHORT", entry_price=0.0702, qty=1000, margin=15,
+                     lowest_price=0.0694, highest_price=0.0702)
+    frame = _frame(open=0.0700, high=0.0702, low=0.0698, close=0.0701,
+                   ma5=0.0700, atr=0.0002, kc_upper=0.0706, kc_middle=0.0699,
+                   kc_lower=0.0692)
+    allowed, reason, metadata = validate_exit_math(
+        short_pos, frame, 0.0701,
+        close_reason="Wild Swing EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
+    )
+    assert allowed
+    assert reason == "EXIT_MATH_SHORT_MIDLINE_REVERSAL"
+    assert metadata["exit_type"] == "MIDLINE_REVERSAL"
+
+    # Long position where price breaks back below KC middle
+    long_pos = dict(side="LONG", entry_price=0.0700, qty=1000, margin=15,
+                    highest_price=0.0708, lowest_price=0.0700)
+    frame_long = _frame(open=0.0700, high=0.0701, low=0.0697, close=0.0698,
+                        ma5=0.0699, atr=0.0002, kc_upper=0.0706, kc_middle=0.0699,
+                        kc_lower=0.0692)
+    allowed_l, reason_l, metadata_l = validate_exit_math(
+        long_pos, frame_long, 0.0698,
+        close_reason="Wild Swing EXIT_BY_LONG_CONFIRMED_KC_MIDLINE_REVERSAL"
+    )
+    assert allowed_l
+    assert reason_l == "EXIT_MATH_LONG_MIDLINE_REVERSAL"
+    assert metadata_l["exit_type"] == "MIDLINE_REVERSAL"
+
