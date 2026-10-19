@@ -1208,7 +1208,7 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # variables cannot re-enable other contracts. Existing other positions remain
 # managed by the position-management loop.
 DEFAULT_SYMBOLS = [
-    symbol for symbol in ("LOBSTER/USDT", "CAP/USDT")
+    symbol for symbol in ("龙虾/USDT", "CAP/USDT")
     if not is_entry_disabled(symbol)
 ]
 

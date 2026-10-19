@@ -60,6 +60,10 @@ def is_pepe_symbol(symbol: Optional[str]) -> bool:
     }
 
 
+CANONICAL_LOBSTER_SYMBOL = '龙虾/USDT'
+CANONICAL_CAP_SYMBOL = 'CAP/USDT'
+
+
 def to_binance_usdm_symbol(symbol: str) -> str:
     """Map internal display aliases to Binance USD-M perpetual symbols."""
     if is_lobster_symbol(symbol):
@@ -69,6 +73,15 @@ def to_binance_usdm_symbol(symbol: str) -> str:
     if is_pepe_symbol(symbol):
         return '1000PEPE/USDT:USDT'
     return str(symbol).strip()
+
+
+def to_canonical_display_symbol(symbol: Optional[str]) -> str:
+    """Map any alias to standard internal display symbol (e.g. 龙虾/USDT)."""
+    if is_lobster_symbol(symbol):
+        return CANONICAL_LOBSTER_SYMBOL
+    if is_cap_symbol(symbol):
+        return CANONICAL_CAP_SYMBOL
+    return str(symbol or '').strip()
 
 
 def is_pivot_only_channel_symbol(symbol: Optional[str]) -> bool:

@@ -57,10 +57,10 @@ async def process_manual_order(
             return {
                 "success": False,
                 "status_code": 403,
-                "detail": "目前僅允許龍蝦 (LOBSTER/USDT) 與 CAP/USDT 開倉",
+                "detail": "目前僅允許龍蝦 (龙虾/USDT) 與 CAP/USDT 開倉",
             }
 
-        canonical_symbol = "LOBSTER/USDT" if is_lobster_symbol(symbol) else ("CAP/USDT" if is_cap_symbol(symbol) else symbol)
+        canonical_symbol = "龙虾/USDT" if is_lobster_symbol(symbol) else ("CAP/USDT" if is_cap_symbol(symbol) else symbol)
         aliases = [symbol, canonical_symbol]
         if is_lobster_symbol(symbol):
             aliases.extend(['龙虾/USDT', 'LOBSTER/USDT', '龙虾/USDT:USDT', 'LOBSTER/USDT:USDT'])

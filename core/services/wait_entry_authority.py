@@ -231,7 +231,7 @@ class WaitEntryAuthority:
     @staticmethod
     def _symbol_key(symbol: str) -> str:
         from core.symbol_aliases import is_lobster_symbol
-        return "LOBSTER/USDT" if is_lobster_symbol(symbol) else symbol
+        return "龙虾/USDT" if is_lobster_symbol(symbol) else symbol
 
     @staticmethod
     def canonical_symbol(symbol: str) -> str:

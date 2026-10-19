@@ -2805,7 +2805,7 @@ class TradingEngine:
         from core.symbol_aliases import is_auto_entry_symbol
         if not is_auto_entry_symbol(symbol):
             self.account.log(
-                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=LOBSTER/USDT,CAP/USDT",
+                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=龙虾/USDT,CAP/USDT",
                 "WARNING",
             )
             return False
@@ -3226,7 +3226,7 @@ class TradingEngine:
         from core.symbol_aliases import is_auto_entry_symbol
         if not is_auto_entry_symbol(symbol):
             self.account.log(
-                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=LOBSTER/USDT,CAP/USDT",
+                f"ENTRY_SYMBOL_BLOCK symbol={symbol} allowed=龙虾/USDT,CAP/USDT",
                 "WARNING",
             )
             return False

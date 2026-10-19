@@ -895,7 +895,11 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         quote = float(
             exit_quote
             if exit_quote is not None
-            else (getattr(engine, "tickers", {}).get(symbol) or frame.iloc[-1]["close"])
+            else (
+                getattr(engine, "tickers", {}).get(symbol)
+                or getattr(engine, "tickers", {}).get(to_binance_usdm_symbol(symbol))
+                or frame.iloc[-1]["close"]
+            )
         )
         if not math.isfinite(quote) or quote <= 0:
             return [], []
