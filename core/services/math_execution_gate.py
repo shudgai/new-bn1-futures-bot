@@ -39,6 +39,7 @@ def validate_entry_math(
     *,
     profit_lock_fast_track: bool = False,
     is_outer_entry: bool = False,
+    is_dip_sniper: bool = False,
 ) -> tuple[bool, str]:
     """Authorize an entry from the latest candle and prior MA5 value only."""
     side = str(side or "").upper()
@@ -84,6 +85,16 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
     if side == "SHORT" and kc_slope > 0:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
+
+    if is_dip_sniper:
+        if side == "LONG":
+            if ma5 < ma15:
+                return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
+            return True, "ENTRY_MATH_DIP_SNIPER_APPROVED"
+        else:
+            if ma5 > ma15:
+                return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
+            return True, "ENTRY_MATH_DIP_SNIPER_APPROVED"
 
     body = abs(close - opened)
     wick = high - max(opened, close) if side == "LONG" else min(opened, close) - low
@@ -364,11 +375,19 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
         or "BREAKOUT" in str(payload.get("entry_signal_code") or "")
         or payload.get("entry_authority") in {"KC2BAR", "CONTINUATION"}
     )
+    is_dip = bool(
+        payload.get("entry_authority") == "DIP_SNIPER"
+        or "DIP_SNIPER" in str(payload.get("entry_signal_code") or "")
+        or "DIP_SNIPER" in str(payload.get("reason") or "")
+        or payload.get("structure_confirmation") == "DIP_SNIPER"
+        or payload.get("entry_pattern") == "DIP_SNIPER"
+    )
     return validate_entry_math(
         frame,
         side,
         profit_lock_fast_track=fast_track,
         is_outer_entry=is_outer,
+        is_dip_sniper=is_dip,
     )
 
 

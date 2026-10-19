@@ -625,6 +625,13 @@ async def _process_wild_swing_symbol(
         )
         for side in ("LONG", "SHORT")
     ]
+    from core.services.key_level_dip_sniper import KeyLevelDipSniperService
+    for side in ("LONG", "SHORT"):
+        dip_sig = KeyLevelDipSniperService.evaluate_entry(
+            symbol, frame, side, tick_price=quote,
+        )
+        if dip_sig is not None:
+            signals.append(dip_sig)
     signals = [signal for signal in signals if signal is not None]
     authorities = []
     if wait_candidate is not None:
@@ -689,6 +696,7 @@ async def _process_wild_swing_symbol(
         "FIVE_LINE_CONTINUATION",
         "INSTANT_BURST_BREAKOUT",
         "MA5_MA15_1M_CROSS",
+        "DIP_SNIPER",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",
