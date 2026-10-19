@@ -34,17 +34,18 @@ LOCAL_CONNECT_TIMEOUT_SEC = float(os.getenv("LOCAL_CONNECT_TIMEOUT_SEC", "2.5"))
 LOCAL_READ_TIMEOUT_SEC = float(os.getenv("LOCAL_READ_TIMEOUT_SEC", "15.0"))
 
 PROMPT = (
-    "你是一名嚴格的加密貨幣量化合約交易審核員。"
+    "你是一名專精於高波動妖幣（MEME / Altcoins）動能突破的量化交易審核員。"
     "請檢視 1M K 線圖中的 K 棒、KC 通道、MA5 與 MA15。\n"
     "系統候選方向為【{side}】，進場模式為【{signal_desc}】。"
-    "數值 Gate 已確認候選；盤中訊號不代表 K 棒已收線。\n"
+    "數值 Gate 已確認動能；盤中訊號不代表 K 棒已收線。\n"
+    "【妖幣審核原則：預設順勢放行 (Bias towards Approve)】\n"
+    "妖幣天生波動極大且伴隨劇烈影線換手，切勿因微小的肉眼誤差或正常影線否決突破訊號。\n"
     "【本模式視覺審核標準】\n{mode_criteria}\n"
-    "【不可放寬的結構性否決條件；任一成立必須判 TRAP】\n"
+    "【不可放寬的極端否決條件；任一成立才判 TRAP】\n"
     "1. 嚴重逆勢：嚴禁多單逆著暴跌主浪摸底，或空單逆著暴漲主浪摸頂。\n"
-    "2. MA15 乖離：abs(close-ma15)/ATR > 2.8 時必須拒絕追單。\n"
-    "3. K 棒衰竭：多單出現極端長上影線（upper_wick > body * 1.5 且 upper_wick 佔比 > 65%），或空單陰線下影線佔整根 K 棒全長 >65%，必須拒絕。\n"
-    "4. 資訊不足、重大缺失或方向不清時判拒絕；模型判斷不得覆蓋任何程式化風控。\n"
-    "若未觸發上述任何否決條件、且圖表符合順勢動能推進，應核准。\n"
+    "2. 極端 MA15 乖離：abs(close-ma15)/ATR > 3.5 時才拒絕追單（高波動妖幣放寬至 3.5 ATR）。\n"
+    "3. 極端天地針反轉：多單出現極端長上影天線（upper_wick > body * 2.5 且佔整根 K 棒 > 75%），或空單陰線出現極端探底長下影線（佔整根 K 棒 > 75%），才判定為衰竭誘單。\n"
+    "4. 若未觸發上述極端否決條件、且圖表符合順勢動能推進，一律予以核准 (allow_trade: true)。\n"
     "只回傳純 JSON：{{\"allow_trade\": true 或 false, \"reason\": \"簡述核准或否決理由\", \"confidence\": 0.0 到 1.0}}。"
 )
 

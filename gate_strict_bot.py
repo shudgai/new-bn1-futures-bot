@@ -48,8 +48,8 @@ def is_small_bar(row, avg_body):
     return abs(row['close'] - row['open']) <= (avg_body * 0.85)
 
 def is_big_bar(current_price, open_price, avg_body):
-    """當前實體大於近期平均的 1.2 倍判定為大 K 棒（動能突破）"""
-    return abs(current_price - open_price) >= (avg_body * 1.2)
+    """【妖幣放寬】當前實體大於近期平均的 1.0 倍即可視為具備破軌動能"""
+    return abs(current_price - open_price) >= (avg_body * 1.0)
 
 # ==============================================================================
 # 3. 策略信號判斷核心 (純量化四大開倉模式)
@@ -88,11 +88,9 @@ def check_all_entry_signals(df: pd.DataFrame, current_price: float, position: in
     curr_breaks_lower = (curr_open >= curr_kc_lower) and (current_price < curr_kc_lower)
 
     if curr_is_big_red and curr_breaks_lower:
-        p1 = is_small_bar(prev_bar, avg_body) and is_bull(prev_bar)
-        p2a = (is_small_bar(b2, avg_body) and is_bull(b2)) and (is_small_bar(prev_bar, avg_body) and is_bear(prev_bar))
-        p2b = (is_small_bar(b3, avg_body) and is_bull(b3)) and (is_small_bar(b2, avg_body) and is_bear(b2)) and (is_small_bar(prev_bar, avg_body) and is_bear(prev_bar))
-
-        if p1 or p2a or p2b:
+        # 妖幣放寬：前一根只要不是反向超大實體吞噬 (>= 1.5 avg_body)，均放行破軌開空
+        prev_not_huge_bull = not (is_bull(prev_bar) and abs(prev_bar['close'] - prev_bar['open']) >= avg_body * 1.5)
+        if prev_not_huge_bull:
             return {"action": "SHORT", "type": "INSTANT_BREAK"}
 
     # (B) 多單即時破軌
@@ -100,11 +98,9 @@ def check_all_entry_signals(df: pd.DataFrame, current_price: float, position: in
     curr_breaks_upper = (curr_open <= curr_kc_upper) and (current_price > curr_kc_upper)
 
     if curr_is_big_green and curr_breaks_upper:
-        p1 = is_small_bar(prev_bar, avg_body) and is_bear(prev_bar)
-        p2a = (is_small_bar(b2, avg_body) and is_bear(b2)) and (is_small_bar(prev_bar, avg_body) and is_bull(prev_bar))
-        p2b = (is_small_bar(b3, avg_body) and is_bear(b3)) and (is_small_bar(b2, avg_body) and is_bull(b2)) and (is_small_bar(prev_bar, avg_body) and is_bull(prev_bar))
-
-        if p1 or p2a or p2b:
+        # 妖幣放寬：前一根只要不是反向超大實體吞噬 (>= 1.5 avg_body)，均放行破軌開多
+        prev_not_huge_bear = not (is_bear(prev_bar) and abs(prev_bar['close'] - prev_bar['open']) >= avg_body * 1.5)
+        if prev_not_huge_bear:
             return {"action": "LONG", "type": "INSTANT_BREAK"}
 
     # ---------------------------------------------------------

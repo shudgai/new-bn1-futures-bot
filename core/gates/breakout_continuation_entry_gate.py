@@ -247,12 +247,16 @@ class BreakoutContinuationEntryGate:
                 # Intrabar burst entry: require the requested buildup pattern
                 # and a directional body >= 1.2x recent average; MA5 slope is
                 # intentionally excluded from this branch.
+                # 【選項 A：妖幣放寬】動能門檻降至 1.0x，蓄勢結構放寬 (不被死板小紅卡住)
+                relaxed_long_setup = long_setup or (
+                    prior_one is None or not (prior_one["close"] < prior_one["open"] and abs(prior_one["close"] - prior_one["open"]) >= average_body * 1.5)
+                )
                 if (
                     average_body > 0
-                    and live_body >= average_body * 1.2
+                    and live_body >= average_body * 1.0
                     and tick > live["open"]
                     and live["open"] <= live_upper < tick
-                    and long_setup
+                    and relaxed_long_setup
                 ):
                     result = signal(
                         "OPEN_LONG", INSTANT_BREAKOUT_INSIDE, tick,
@@ -262,12 +266,16 @@ class BreakoutContinuationEntryGate:
                     )
                     result["bar_id"] = live_timestamp
                     return result
+                # 【選項 A：妖幣放寬】動能門檻降至 1.0x，蓄勢結構放寬 (不被死板小綠卡住)
+                relaxed_short_setup = short_setup or (
+                    prior_one is None or not (prior_one["close"] > prior_one["open"] and abs(prior_one["close"] - prior_one["open"]) >= average_body * 1.5)
+                )
                 if (
                     average_body > 0
-                    and live_body >= average_body * 1.2
+                    and live_body >= average_body * 1.0
                     and tick < live["open"]
                     and live["open"] >= live_lower > tick
-                    and short_setup
+                    and relaxed_short_setup
                 ):
                     result = signal(
                         "OPEN_SHORT", INSTANT_BREAKOUT_INSIDE, tick,
