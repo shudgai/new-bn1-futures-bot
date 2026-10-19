@@ -40,6 +40,7 @@ def validate_entry_math(
     profit_lock_fast_track: bool = False,
     is_outer_entry: bool = False,
     is_dip_sniper: bool = False,
+    is_meme_hunter: bool = False,
 ) -> tuple[bool, str]:
     """Authorize an entry from the latest candle and prior MA5 value only."""
     side = str(side or "").upper()
@@ -98,15 +99,15 @@ def validate_entry_math(
     if side == "SHORT" and (abs(kc_slope) < 0.00005 or kc_slope >= 0):
         return False, "BLOCKED_SHORT_MA15_FLAT_OR_UP"
 
-    if is_dip_sniper:
+    if is_dip_sniper or is_meme_hunter:
         if side == "LONG":
             if ma5 < ma15:
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
-            return True, "ENTRY_MATH_DIP_SNIPER_APPROVED"
+            return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
         else:
             if ma5 > ma15:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
-            return True, "ENTRY_MATH_DIP_SNIPER_APPROVED"
+            return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
 
     body = abs(close - opened)
     wick = high - max(opened, close) if side == "LONG" else min(opened, close) - low
@@ -195,6 +196,15 @@ def validate_exit_math(
     details: dict[str, Any] = {}
     if is_emergency_exit(close_reason):
         return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
+    norm_reason = str(close_reason or "").upper().replace(" ", "_")
+    is_meme_exit = any(token in norm_reason for token in (
+        "MEME_CLIMAX_TOP", "MEME_CLIMAX_BOTTOM",
+        "MEME_TREND_DEAD", "MEME_SHORT_TREND_DEAD",
+        "MEME_ATR_TRAILING",
+    ))
+    if is_meme_exit:
+        details.update(exit_type="MEME_HUNTER_EXIT", close=price)
+        return True, "EXIT_MATH_MEME_HUNTER_APPROVED", details
     side = str(position.get("side") or "").upper()
     sign = 1 if side == "LONG" else -1 if side == "SHORT" else 0
     quote = _number(price)
@@ -258,6 +268,7 @@ def validate_exit_math(
     if is_confirmed_pivot:
         details.update(exit_type="CONFIRMED_PIVOT", close=close)
         return True, "EXIT_MATH_CONFIRMED_PIVOT", details
+
 
     # Path A: outer-rail extension followed by a mathematical exhaustion signal.
     hold_veto: tuple[str, dict[str, Any]] | None = None
@@ -394,12 +405,20 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
         or payload.get("structure_confirmation") == "DIP_SNIPER"
         or payload.get("entry_pattern") == "DIP_SNIPER"
     )
+    is_meme = bool(
+        payload.get("entry_authority") == "MEME_PEAK_HUNTER"
+        or "MEME_PEAK_HUNTER" in str(payload.get("entry_signal_code") or "")
+        or "MEME_PEAK_HUNTER" in str(payload.get("reason") or "")
+        or payload.get("structure_confirmation") == "MEME_PEAK_HUNTER"
+        or payload.get("entry_pattern") == "MEME_PEAK_HUNTER"
+    )
     return validate_entry_math(
         frame,
         side,
         profit_lock_fast_track=fast_track,
         is_outer_entry=is_outer,
         is_dip_sniper=is_dip,
+        is_meme_hunter=is_meme,
     )
 
 

@@ -506,6 +506,20 @@ async def _process_wild_swing_symbol(
             frame,
             quote=quote,
         )
+        if exit_decision is None:
+            from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
+            from core.symbol_aliases import is_meme_breakout_symbol
+            if is_meme_breakout_symbol(symbol):
+                meme_exit = MemePeakHunterStrategy.evaluate_exit(symbol, position, frame, quote)
+                if meme_exit is not None:
+                    exit_code, exit_reason, exit_details = meme_exit
+                    exit_decision = {
+                        "side": position.get("side"),
+                        "reason": exit_code,
+                        "bar_id": frame.iloc[-1].get("timestamp", 0.0) if len(frame) > 0 else 0.0,
+                        "kc_exit": exit_details,
+                        "entry_mode": position.get("entry_mode", "WILD_SWING"),
+                    }
         position_state_changed = False
         for key in ("highest_price", "lowest_price"):
             value = position.get(key)
@@ -632,6 +646,13 @@ async def _process_wild_swing_symbol(
         )
         if dip_sig is not None:
             signals.append(dip_sig)
+    from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
+    for side in ("LONG", "SHORT"):
+        meme_sig = MemePeakHunterStrategy.evaluate_entry(
+            symbol, frame, side, tick_price=quote,
+        )
+        if meme_sig is not None:
+            signals.append(meme_sig)
     signals = [signal for signal in signals if signal is not None]
     authorities = []
     if wait_candidate is not None:
@@ -697,6 +718,7 @@ async def _process_wild_swing_symbol(
         "INSTANT_BURST_BREAKOUT",
         "MA5_MA15_1M_CROSS",
         "DIP_SNIPER",
+        "MEME_PEAK_HUNTER",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",

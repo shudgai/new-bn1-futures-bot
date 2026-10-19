@@ -1518,6 +1518,11 @@ class HoldingProtectionExitGate:
         'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT',
         'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT',
         'WRONG_DIRECTION_CORRECTION',
+        'EXIT_BY_MEME_CLIMAX_TOP',
+        'EXIT_BY_MEME_CLIMAX_BOTTOM',
+        'EXIT_BY_MEME_TREND_DEAD',
+        'EXIT_BY_MEME_SHORT_TREND_DEAD',
+        'EXIT_BY_MEME_ATR_TRAILING',
     }
 
     @classmethod
@@ -1966,6 +1971,11 @@ class HoldingProtectionExitGate:
             'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT',
             'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT',
             'WRONG_DIRECTION_CORRECTION',
+            'EXIT_BY_MEME_CLIMAX_TOP',
+            'EXIT_BY_MEME_CLIMAX_BOTTOM',
+            'EXIT_BY_MEME_TREND_DEAD',
+            'EXIT_BY_MEME_SHORT_TREND_DEAD',
+            'EXIT_BY_MEME_ATR_TRAILING',
         ):
             return _auth(clean_reason)
 
