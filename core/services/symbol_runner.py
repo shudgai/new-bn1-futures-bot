@@ -8,6 +8,8 @@ import json
 from core.services.strategies.strict_state_machine import StrictStateMachineStrategy, PositionState
 from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
 from core.gates.trend_holding_immunity_and_exit_gate import TrendHoldingAndExitManager
+from core.services.candle_data import log_entry_gate
+from core.symbol_aliases import to_binance_usdm_symbol
 
 logger = logging.getLogger("uvicorn.error")
 
