@@ -103,6 +103,9 @@ class MemePeakHunterStrategy:
             "atr": float(atr_s.iloc[-1]),
             "volume": float(vols.iloc[-1]),
             "vol_ma": float(vol_ma_s.iloc[-1]),
+            "kc_middle": float(curr.get("kc_middle", curr.get("kc_basis", 0.0)) or 0.0),
+            "kc_upper": float(curr.get("kc_upper", 0.0) or 0.0),
+            "kc_lower": float(curr.get("kc_lower", 0.0) or 0.0),
             "open": float(curr.get("open", closes.iloc[-1])),
             "high": float(curr.get("high", closes.iloc[-1])),
             "low": float(curr.get("low", closes.iloc[-1])),
@@ -287,54 +290,29 @@ class MemePeakHunterStrategy:
         candle_body = max(candle_body, 1e-8)
 
         # =====================================================================
-        # 1. 多單平倉判定
+        # 1. 多單平倉判定 (持多：嚴格以跌破 KC 中軌為結構出場標準)
         # =====================================================================
         if side == "LONG":
-            # 1.1 妖幣真逢頂偵測：3分鐘內爆天量（量大於 20 均量 1.8 倍）且收長上影線（射擊之星倒貨）
-            high_wick = high_p - max(open_p, close_p)
-            has_high_wick = high_wick > (candle_body * 1.5)
-            is_huge_volume = (volume >= vol_ma * cls.VOL_MULT)
-            is_above_ema13 = (close_p > ema13)
+            kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)) or 0.0)
+            if kc_mid_val <= 0:
+                kc_mid_val = float(ind.get("ema13", 0.0) or 0.0)
 
-            if is_huge_volume and has_high_wick and is_above_ema13:
-                details = {
-                    "cause": "CLIMAX_TOP",
-                    "high_wick": high_wick,
-                    "candle_body": candle_body,
-                    "volume": volume,
-                    "vol_ma": vol_ma,
-                }
-                return "EXIT_BY_MEME_CLIMAX_TOP", "妖幣天量見頂搶跑 (天量長上影線倒貨)", details
+            # 1.1 移除『突破/觸碰 KC 上軌平多』：
+            # 價格沿著 KC 上軌運行屬於強勢結構，不應被動止盈，禁止天量見頂搶跑！
 
-            # 1.2 趨勢徹底潰敗：實體收盤跌破 EMA13 且跌破 VWAP
-            if close_p < ema13 and close_p < vwap_val:
+            # 1.2 多頭結構徹底破壞：實體收盤跌破 KC 中軌 (close < kc_middle)
+            if kc_mid_val > 0 and close_p < kc_mid_val:
                 details = {
                     "cause": "TREND_DEAD",
                     "close": close_p,
+                    "kc_middle": kc_mid_val,
                     "ema13": ema13,
                     "vwap": vwap_val,
                 }
-                return "EXIT_BY_MEME_TREND_DEAD", "跌破VWAP與EMA13多頭趨勢潰敗平倉", details
+                return "EXIT_BY_MEME_TREND_DEAD", "【多頭結構瓦解】3M收盤實體跌破KC中軌全數平倉", details
 
-            # 1.3 防插針移動鎖利：使用 1.8 倍 ATR 動態追蹤止損
-            peak_price = float(position.get("highest_price") or position.get("peak_price") or entry_p)
-            peak_price = max(peak_price, high_p)
-            profit_reach_atr = (peak_price - entry_p) / atr
-            pullback_atr = (peak_price - close_p) / atr
-
-            # 當利潤曾達到 1.5 ATR 以上，且從最高點回吐超過 1.8 ATR 時觸發鎖利
-            if profit_reach_atr >= 1.5 and pullback_atr >= cls.ATR_MULT:
-                details = {
-                    "cause": "ATR_TRAILING_LOCK",
-                    "peak_price": peak_price,
-                    "pullback_atr": pullback_atr,
-                    "atr": atr,
-                }
-                return "EXIT_BY_MEME_ATR_TRAILING", f"妖幣1.8 ATR防插針移動鎖利 (回吐 {pullback_atr:.1f} ATR)", details
-
-            # 1.4 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命，嚴防硬扛巨額虧損
+            # 1.3 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命
             adverse_loss_atr = (entry_p - close_p) / atr
-            kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)))
             is_midline_breached = (kc_mid_val > 0 and close_p < kc_mid_val and adverse_loss_atr >= 1.0)
             if adverse_loss_atr >= 1.5 or is_midline_breached:
                 details = {

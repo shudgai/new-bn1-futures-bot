@@ -238,29 +238,16 @@ class TrendHoldingAndExitManager:
         c_15m = m15.get('15m_close', p)
 
         if side == 'LONG':
-            # 1. 高檔避雷針/長上影線主動收割（Exhaustion Upper Wick Exit）
-            # 多單持倉中，若處於顯著浮盈（Peak Profit >= 1.2 ATR 或 margin_roe >= 10%）：
-            # 當根 K 線出現巨幅上影線（上影線 >= 實體 1.5 倍，或上影線佔整根振幅 >= 60%）且收盤實體回落
-            upper_wick = max(0.0, h_5m - max(c_5m, o_5m))
-            has_wick_exhaustion = (upper_wick >= 0.5 * atr_5m) and (
-                (body_5m > 0 and upper_wick >= 1.5 * body_5m) or (range_5m > 0 and upper_wick >= 0.60 * range_5m)
-            )
-            if (peak_profit_atr >= 1.2 or margin_roe_pct >= 0.10) and has_wick_exhaustion:
-                return True, "EXIT_BY_EXHAUSTION_UPPER_WICK", {
-                    'peak_profit_atr': peak_profit_atr,
-                    'upper_wick': upper_wick,
-                    'body_5m': body_5m,
-                    'range_5m': range_5m,
-                    'upper_wick_ratio': upper_wick / range_5m if range_5m > 0 else 0.0,
-                }
-
-            # 2. 均線高檔高位死叉保護：若浮盈 >= 1.0 ATR，且 5M MA5 已經死叉 MA15
-            if (peak_profit_atr >= 1.0 or margin_roe_pct >= 0.08) and (cross_5m == 'DEATH' or (ma5_5m < ma15_5m and cross_5m != 'GOLDEN')):
+            # 1. 移除『突破/觸碰 KC 上軌或高檔上影線平多』：價格沿著 KC 上軌運行屬於強勢結構，不應被動止盈！
+            # 2. 嚴格以『多頭結構破壞』作為平多條件：只有當收盤實體跌破 KC 中軌時才平倉
+            mid_target = mid_15m if mid_15m > 0 else ma15_5m
+            if mid_target > 0 and c_5m < mid_target and (cross_5m == 'DEATH' or ma5_5m < ma15_5m):
                 return True, "EXIT_BY_HIGH_PROFIT_MA_CROSS_REVERSAL", {
                     'peak_profit_atr': peak_profit_atr,
                     'ma5_5m': ma5_5m,
                     'ma15_5m': ma15_5m,
                     'cross': cross_5m,
+                    'mid_target': mid_target,
                 }
 
             # 3. 5M 實體陰線摜破 5M MA15 且 MA5 死叉 MA15

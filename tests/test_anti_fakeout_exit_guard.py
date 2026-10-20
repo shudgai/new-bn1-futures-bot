@@ -21,12 +21,12 @@ def test_long_pullback_hold():
 
 
 def test_long_fakeout_wick_and_buffer_hold():
-    """多單防護 B：盤中下影線跌破但收盤在緩衝帶內（未達 0.15% 跌幅），判定為假跌破震盪，維持持倉"""
+    """多單防護 B：盤中下影線跌破但收盤在 KC 中軌緩衝帶內（未達 0.15% 跌幅），判定為假跌破震盪，維持持倉"""
     ema13 = 100.0
-    # 0.15% 緩衝帶 = 100.0 * (1 - 0.0015) = 99.85
+    # KC 中軌 = 100.0, 0.15% 緩衝帶 = 100.0 * (1 - 0.0015) = 99.85
     # 收盤 99.90 (僅微破 0.10% < 0.15%)
     candle = {"open": 100.1, "high": 100.2, "low": 99.5, "close": 99.90}
-    kc = {"mid": 99.5, "upper": 102.0, "lower": 97.0}
+    kc = {"mid": 100.0, "upper": 102.0, "lower": 97.0}
     ema5 = 99.95
     position = {"side": "long", "entry_price": 99.0, "amount": 10.0, "max_profit": 1.0}
 
@@ -36,11 +36,11 @@ def test_long_fakeout_wick_and_buffer_hold():
 
 
 def test_long_structural_break_close():
-    """多單真正平倉：收盤實體明確跌破 EMA13 且超過 0.15% 緩衝帶，多頭結構瓦解"""
+    """多單真正平倉：收盤實體明確跌破 KC 中軌且超過 0.15% 緩衝帶，多頭結構瓦解"""
     ema13 = 100.0
-    # 收盤 99.80 (< 99.85 緩衝防守線)
+    # KC 中軌 = 100.0, 收盤 99.80 (< 99.85 緩衝防守線)
     candle = {"open": 99.9, "high": 100.0, "low": 99.7, "close": 99.80}
-    kc = {"mid": 99.5, "upper": 102.0, "lower": 97.0}
+    kc = {"mid": 100.0, "upper": 102.0, "lower": 97.0}
     ema5 = 99.82
     position = {"side": "long", "entry_price": 99.0, "amount": 10.0, "max_profit": 1.0}
 

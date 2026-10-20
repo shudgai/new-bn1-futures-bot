@@ -9,6 +9,8 @@ from core.services.exits.anti_fakeout_exit_guard import (
     should_veto_short_exit,
     is_valid_short_climax_exit,
     is_valid_short_structural_reversal_exit,
+    should_veto_long_exit,
+    is_valid_long_structural_reversal_exit,
 )
 from core.services.key_level_dip_sniper import (
     check_comprehensive_short_entry,
@@ -213,3 +215,102 @@ def test_market_structure_gate_allows_breakout_short_without_lagging_ma15_veto()
         is_confirmed_outer_entry=True,
     )
     assert problem is None
+
+
+def test_long_exit_veto_when_breaking_kc_upper():
+    """
+    【移除突破/觸碰 KC 上軌平多測試】
+    價格強勢向上噴出、突破 KC 上軌時：
+    多單防洗盤硬守衛必須 100% 否決天量見頂、上影線力竭或被動平多！
+    """
+    candle = {
+        "close": 105.0,  # 噴出 KC 上軌 102.0
+        "open": 98.0,
+        "high": 105.5,
+        "low": 97.8,
+        "volume": 500.0,
+        "vol_ma": 100.0,
+        "atr": 2.0,
+        "kc_mid_slope": 0.005,
+    }
+    kc = {"mid": 98.0, "upper": 102.0, "lower": 94.0}
+    position = {"side": "LONG", "entry_price": 96.0}
+
+    # 模擬試圖觸發天量見頂搶跑或上影線被動平多
+    veto_needed, veto_reason = should_veto_long_exit(
+        candle=candle,
+        kc=kc,
+        ema13=99.0,
+        ema5=103.0,
+        position=position,
+        exit_reason="EXIT_BY_MEME_CLIMAX_TOP",
+        quote=105.0,
+    )
+    assert veto_needed is True
+    assert "VETO_LONG_EXIT" in veto_reason
+    assert "價格沿著 KC 上軌運行屬於強勢結構" in veto_reason
+
+
+def test_long_exit_veto_on_pullback_and_ma5_drop_when_mid_rising():
+    """
+    【回踩容忍與中軌防護測試】
+    在收盤價跌破中軌前，即使出現短線陰線回調或跌破 MA5，只要中軌依然斜率向上，均繼續持倉！
+    """
+    candle = {
+        "close": 99.5,  # 回調跌破 MA5 (101.0)，但在中軌 (98.0) 上方
+        "open": 102.0,
+        "high": 102.5,
+        "low": 99.0,
+        "volume": 80.0,
+        "vol_ma": 100.0,
+        "atr": 1.5,
+        "kc_mid_slope": 0.002,  # 中軌依然斜率向上
+    }
+    kc = {"mid": 98.0, "upper": 103.0, "lower": 93.0}
+    position = {"side": "LONG", "entry_price": 96.0}
+
+    # 模擬試圖觸發回調平倉或 MA 死叉或移動鎖利
+    veto_needed, veto_reason = should_veto_long_exit(
+        candle=candle,
+        kc=kc,
+        ema13=98.5,
+        ema5=101.0,
+        position=position,
+        exit_reason="EXIT_BY_TRAILING_PROFIT_LOCK",
+        quote=99.5,
+    )
+    assert veto_needed is True
+    assert "VETO_LONG_EXIT" in veto_reason
+    assert "仍在KC中軌" in veto_reason
+
+
+def test_long_exit_allowed_only_when_close_breaches_kc_middle():
+    """
+    【嚴格以多頭結構破壞作為平多條件】
+    只有當 3M 收盤價實體跌破 KC 中軌 (close < kc_middle) 時，才觸發多單全數平倉！
+    """
+    candle = {
+        "close": 97.5,  # 實質跌破中軌 98.0 (低於 98.0 * (1 - 0.0015) = 97.85)
+        "open": 98.5,
+        "high": 98.8,
+        "low": 97.2,
+        "volume": 150.0,
+        "vol_ma": 100.0,
+        "atr": 1.5,
+        "kc_mid_slope": -0.001,
+    }
+    kc = {"mid": 98.0, "upper": 103.0, "lower": 93.0}
+    position = {"side": "LONG", "entry_price": 96.0}
+
+    veto_needed, veto_reason = should_veto_long_exit(
+        candle=candle,
+        kc=kc,
+        ema13=98.2,
+        ema5=97.8,
+        position=position,
+        exit_reason="EXIT_BY_KC_MIDLINE_BREACH",
+        quote=97.5,
+    )
+    assert veto_needed is False
+    assert "多頭結構瓦解合法平多" in veto_reason
+

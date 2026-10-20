@@ -89,10 +89,10 @@ def test_meme_peak_hunter_3m_short_entry_success():
 
 
 def test_meme_climax_top_exit():
-    """3m 多單真見頂：天量射擊之星倒貨 (volume > 1.8 * vol_ma 且 上影線 > 1.5 * body) -> 秒平多單"""
+    """最新多單鐵律：移除『突破/觸碰 KC 上軌平多』，價格沿著 KC 上軌為強勢結構，嚴禁被動止盈！"""
     df = _create_base_df(70, base_price=1.0, trend=0.005)
     last_idx = len(df) - 1
-    # 爆量天量上影線
+    # 爆量長上影線穿出上軌，但收盤仍在 KC 中軌上方
     df.loc[last_idx, "open"] = 1.50
     df.loc[last_idx, "close"] = 1.51  # body = 0.01
     df.loc[last_idx, "high"] = 1.55   # upper_wick = 1.55 - 1.51 = 0.04 > 1.5 * 0.01
@@ -101,23 +101,21 @@ def test_meme_climax_top_exit():
 
     pos = {"side": "LONG", "entry_price": 1.20, "highest_price": 1.55}
     exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=1.51)
-    assert exit_res is not None
-    exit_code, reason, details = exit_res
-    assert exit_code == "EXIT_BY_MEME_CLIMAX_TOP"
-    assert details["cause"] == "CLIMAX_TOP"
+    # 最新規則：嚴禁在突破上軌時被動平多，此處必須 return None 繼續持倉！
+    assert exit_res is None
 
 
 def test_meme_trend_dead_exit():
-    """3m 多單趨勢潰敗：收盤跌破 EMA13 且跌破 VWAP -> 秒平"""
+    """3m 多單趨勢潰敗：收盤實體實質跌破 KC 中軌 -> 全數平倉離場"""
     df = _create_base_df(70, base_price=1.0, trend=0.002)
     last_idx = len(df) - 1
-    # 暴跌摜破均線與 VWAP
+    # 暴跌摜破 KC 中軌 (中軌約在 1.05 附近)
     df.loc[last_idx, "open"] = 1.15
     df.loc[last_idx, "close"] = 0.90
     df.loc[last_idx, "high"] = 1.15
     df.loc[last_idx, "low"] = 0.88
 
-    pos = {"side": "LONG", "entry_price": 1.05, "highest_price": 1.15}
+    pos = {"side": "LONG", "entry_price": 0.85, "highest_price": 1.15}
     exit_res = MemePeakHunterStrategy.evaluate_exit("CAPUSDT", pos, df, quote=0.90)
     assert exit_res is not None
     exit_code, reason, details = exit_res

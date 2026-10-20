@@ -571,19 +571,49 @@ async def _process_wild_swing_symbol(
                     symbol,
                 )
         if exit_decision is not None:
-            # ── 空單防洗盤硬守衛（Veto Exit）：只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，強制禁止平空！──
-            if str(exit_decision.get("side", "")).upper() == "SHORT":
+            side_decision = str(exit_decision.get("side", "")).upper()
+            last_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
+            kc_bundle = {
+                "mid": float(last_bar.get("kc_middle", last_bar.get("kc_basis", 0.0)) or 0.0),
+                "upper": float(last_bar.get("kc_upper", 0.0) or 0.0),
+                "lower": float(last_bar.get("kc_lower", 0.0) or 0.0),
+            }
+            ema13_val = float(last_bar.get("ema13", last_bar.get("ma15", 0.0)) or 0.0)
+            ema5_val = float(last_bar.get("ema5", last_bar.get("ma5", 0.0)) or 0.0)
+
+            # ── 多單防洗盤硬守衛（Veto Long Exit）：收盤跌破 KC 中軌前，只要中軌向上，強制禁止平多！──
+            if side_decision == "LONG":
+                from core.services.exits.anti_fakeout_exit_guard import should_veto_long_exit
+                veto_needed, veto_reason = should_veto_long_exit(
+                    candle=last_bar,
+                    kc=kc_bundle,
+                    ema13=ema13_val,
+                    ema5=ema5_val,
+                    position=position,
+                    exit_reason=exit_decision.get("reason", ""),
+                    details=exit_decision.get("kc_exit") or {},
+                    quote=quote,
+                    frame=frame,
+                )
+                if veto_needed:
+                    logger.warning(
+                        "[多單防洗盤硬守衛 VETO] %s 平多被一票否決！原因: %s | 擬平倉理由: %s | 報價: %s",
+                        symbol, veto_reason, exit_decision.get("reason"), quote,
+                    )
+                    print(
+                        f"[多單防洗盤硬守衛 VETO] {symbol} 平多被一票否決！原因: {veto_reason} | 擬平倉理由: {exit_decision.get('reason')} | 報價: {quote}",
+                        flush=True,
+                    )
+                    exit_decision = None
+
+            # ── 空單防洗盤硬守衛（Veto Short Exit）：只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，強制禁止平空！──
+            elif side_decision == "SHORT":
                 from core.services.exits.anti_fakeout_exit_guard import should_veto_short_exit
-                last_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
                 veto_needed, veto_reason = should_veto_short_exit(
                     candle=last_bar,
-                    kc={
-                        "mid": float(last_bar.get("kc_middle", last_bar.get("kc_basis", 0.0)) or 0.0),
-                        "upper": float(last_bar.get("kc_upper", 0.0) or 0.0),
-                        "lower": float(last_bar.get("kc_lower", 0.0) or 0.0),
-                    },
-                    ema13=float(last_bar.get("ema13", last_bar.get("ma15", 0.0)) or 0.0),
-                    ema5=float(last_bar.get("ema5", last_bar.get("ma5", 0.0)) or 0.0),
+                    kc=kc_bundle,
+                    ema13=ema13_val,
+                    ema5=ema5_val,
                     position=position,
                     exit_reason=exit_decision.get("reason", ""),
                     details=exit_decision.get("kc_exit") or {},
