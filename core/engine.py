@@ -3031,6 +3031,13 @@ class TradingEngine:
                 "CONTINUATION_OUTSIDE_KC",
                 "BREAKOUT",
                 "CONTINUATION",
+                "DIP_SNIPER",
+                "MID_LINE_BREAKDOWN",
+                "MID_LINE_BREAKOUT",
+                "MA_CROSSOVER",
+                "MEME_PEAK_HUNTER",
+                "INSTANT_BREAKOUT_INSIDE",
+                "INSTANT_BURST_BREAKOUT",
             }
             from core.gates.ma5_ma15_cross_entry_gate import (
                 ma_cross_gate_exempt_for_entry,
@@ -3188,6 +3195,10 @@ class TradingEngine:
                 "MID_LINE_BREAKOUT",
                 "DIP_SNIPER",
                 "MA_CROSSOVER",
+                "BREAKOUT",
+                "CONTINUATION",
+                "INSTANT_BREAKOUT_INSIDE",
+                "INSTANT_BURST_BREAKOUT",
             }
             structure_problem = market_structure_gate_problem(
                 frame,

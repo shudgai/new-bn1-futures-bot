@@ -69,12 +69,26 @@ def ma_cross_gate_exempt_for_entry(
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION",
             "CONTINUATION_OUTSIDE_KC",
+            "DIP_SNIPER",
+            "MID_LINE_BREAKDOWN",
+            "MID_LINE_BREAKOUT",
+            "MA_CROSSOVER",
+            "MEME_PEAK_HUNTER",
+            "INSTANT_BREAKOUT_INSIDE",
+            "INSTANT_BURST_BREAKOUT",
         }
         or normalized_confirmation in {
             "BREAKOUT",
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION",
             "CONTINUATION_OUTSIDE_KC",
+            "DIP_SNIPER",
+            "MID_LINE_BREAKDOWN",
+            "MID_LINE_BREAKOUT",
+            "MA_CROSSOVER",
+            "MEME_PEAK_HUNTER",
+            "INSTANT_BREAKOUT_INSIDE",
+            "INSTANT_BURST_BREAKOUT",
         }
     ):
         return True
