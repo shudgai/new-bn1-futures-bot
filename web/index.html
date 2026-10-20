@@ -1056,16 +1056,16 @@
                                 }
                             });
 
-                        // 處理攔截標記 (block_markers，直接標示在 K 棒上)
+                        // 處理攔截標記 (block_markers，直接標示在 K 棒上，僅顯示 🚫 圖樣，不顯示文字字樣)
                         [...(d.block_markers || [])].forEach(block => {
                             const side = String(block.side || '').toUpperCase();
                             const pos = side === 'SHORT' ? 'aboveBar' : side === 'LONG' ? 'belowBar' : 'aboveBar';
-                            const text = `🚫 攔截: ${block.short_reason || block.reason || '條件未符'}`;
-                            const color = '#f59e0b';
+                            const text = '🚫';
+                            const color = '#ef4444';
                             const shape = 'circle';
                             if (positionGroups[pos]) {
-                                if (!positionGroups[pos].text.includes(text)) {
-                                    positionGroups[pos].text += ` | ${text}`;
+                                if (!positionGroups[pos].text.includes('🚫')) {
+                                    positionGroups[pos].text += ' 🚫';
                                 }
                             } else {
                                 positionGroups[pos] = { position: pos, color, shape, text };
