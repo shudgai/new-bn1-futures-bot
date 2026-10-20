@@ -281,7 +281,7 @@ def test_long_exit_veto_on_pullback_and_ma5_drop_when_mid_rising():
     )
     assert veto_needed is True
     assert "VETO_LONG_EXIT" in veto_reason
-    assert "仍在KC中軌" in veto_reason
+    assert "多頭結構完整" in veto_reason
 
 
 def test_long_exit_allowed_only_when_close_breaches_kc_middle():

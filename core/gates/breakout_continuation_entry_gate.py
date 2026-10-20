@@ -353,6 +353,41 @@ class BreakoutContinuationEntryGate:
                     )
                     result["bar_id"] = live_timestamp
                     return result
+                # Continue an already established outer-band move only when
+                # price pushes farther outside and MA5/KC remain aligned.
+                if (
+                    live_ma5 is not None
+                    and tick > live_upper
+                    and tick > live["open"]
+                    and live_ma5 > closed_ma5
+                    and live_ma5 > live_middle
+                    and tick >= live_ma5
+                ):
+                    result = signal(
+                        "OPEN_LONG", CONTINUATION_OUTSIDE_KC, tick,
+                        "上軌外同向續推，MA5/KC 同向，評估延續開多",
+                        current_ma5=live_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+                if (
+                    live_ma5 is not None
+                    and tick < live_lower
+                    and tick < live["open"]
+                    and live_ma5 < closed_ma5
+                    and live_ma5 < live_middle
+                    and tick <= live_ma5
+                ):
+                    result = signal(
+                        "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, tick,
+                        "下軌外同向續跌，MA5/KC 同向，評估延續開空",
+                        current_ma5=live_ma5, current_basis=live_middle,
+                        ma15_current=live_ma15, is_intrabar=True,
+                    )
+                    result["bar_id"] = live_timestamp
+                    return result
+
                 # ── 模式 C：即時破軌爆發開倉 (INSTANT_BURST_BREAKOUT) ──
                 # 解除中長線中軌與 MA15 滯後束縛，捕捉貫穿破軌或回踩蓄勢後的暴力穿軌爆發
                 if live_ma5 is not None:
@@ -407,41 +442,6 @@ class BreakoutContinuationEntryGate:
                         )
                         result["bar_id"] = live_timestamp
                         return result
-
-                # Continue an already established outer-band move only when
-                # price pushes farther outside and MA5/KC remain aligned.
-                if (
-                    live_ma5 is not None
-                    and tick > live_upper
-                    and tick > live["open"]
-                    and live_ma5 > closed_ma5
-                    and live_ma5 > live_middle
-                    and tick >= live_ma5
-                ):
-                    result = signal(
-                        "OPEN_LONG", CONTINUATION_OUTSIDE_KC, tick,
-                        "上軌外同向續推，MA5/KC 同向，評估延續開多",
-                        current_ma5=live_ma5, current_basis=live_middle,
-                        ma15_current=live_ma15, is_intrabar=True,
-                    )
-                    result["bar_id"] = live_timestamp
-                    return result
-                if (
-                    live_ma5 is not None
-                    and tick < live_lower
-                    and tick < live["open"]
-                    and live_ma5 < closed_ma5
-                    and live_ma5 < live_middle
-                    and tick <= live_ma5
-                ):
-                    result = signal(
-                        "OPEN_SHORT", CONTINUATION_OUTSIDE_KC, tick,
-                        "下軌外同向續跌，MA5/KC 同向，評估延續開空",
-                        current_ma5=live_ma5, current_basis=live_middle,
-                        ma15_current=live_ma15, is_intrabar=True,
-                    )
-                    result["bar_id"] = live_timestamp
-                    return result
                 live_width = live_upper - live_lower
                 closed_width = upper - lower
                 expanding_live = live_width > closed_width
@@ -515,13 +515,11 @@ class BreakoutContinuationEntryGate:
                         result["bar_id"] = live_timestamp
                         return result
 
-                    is_safe_short_zone = tick > (live_lower * 0.997)
                     if (
                         closed_ma5 >= current_ma15
                         and live_ma5 < live_ma15
                         and live_ma5 < closed_ma5
                         and tick < live_middle
-                        and is_safe_short_zone
                     ):
                         result = signal(
                             "OPEN_SHORT", MA_CROSSOVER, tick,
@@ -566,10 +564,8 @@ class BreakoutContinuationEntryGate:
                         result["bar_id"] = live_timestamp
                         return result
 
-                    is_safe_short_zone = tick > (live_lower * 0.997)
                     if (
                         five_lines_down
-                        and is_safe_short_zone
                         and current["close"] > current["open"]
                         and tick < live["open"]
                         and tick < live_ma5
@@ -590,7 +586,7 @@ class BreakoutContinuationEntryGate:
         if (
             previous_bullish
             and current_bullish
-            and previous["close"] > previous_upper
+            and previous["open"] <= previous_upper < previous["close"]
             and current["close"] > upper
         ):
             return signal(
@@ -603,7 +599,7 @@ class BreakoutContinuationEntryGate:
         if (
             previous_bearish
             and current_bearish
-            and previous["close"] < float(previous_lower)
+            and previous["open"] >= float(previous_lower) > previous["close"]
             and current["close"] < lower
         ):
             return signal(
@@ -637,13 +633,11 @@ class BreakoutContinuationEntryGate:
 
         # ── 收線確認模式 A：MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
         channel_expanding_closed = (upper - lower >= previous_upper - previous_lower)
-        is_safe_short_zone_closed = current["close"] > (lower * 0.997)
         if (
             previous_ma5 >= previous_ma15
             and closed_ma5 < current_ma15
             and ma5_down
             and current["close"] < basis
-            and is_safe_short_zone_closed
             and channel_expanding_closed
         ):
             return signal(
@@ -698,7 +692,6 @@ class BreakoutContinuationEntryGate:
 
         if (
             five_lines_down_closed
-            and is_safe_short_zone_closed
             and previous["close"] > previous["open"]
             and current["close"] < current["open"]
             and current["close"] < closed_ma5

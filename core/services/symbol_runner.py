@@ -112,7 +112,12 @@ def _filter_authorities_by_kc_direction(authorities, frame):
     except (KeyError, TypeError, ValueError, OverflowError):
         return authorities, None
 
-    from core.gates.breakout_continuation_entry_gate import INSTANT_BREAKOUT_INSIDE
+    from core.gates.breakout_continuation_entry_gate import (
+        INSTANT_BREAKOUT_INSIDE,
+        INSTANT_BURST_BREAKOUT,
+        CONFIRMED_2BAR_BREAKOUT,
+        CONTINUATION_OUTSIDE_KC,
+    )
     immediate_breakouts = [
         item for item in authorities
         if (
@@ -120,7 +125,19 @@ def _filter_authorities_by_kc_direction(authorities, frame):
             or (
                 item.get("authority") == "WILD_SWING"
                 and item.get("signal", {}).get("structure_confirmation")
-                in {INSTANT_BREAKOUT_INSIDE, "MEME_PEAK_HUNTER", "DIP_SNIPER", "MA_CROSSOVER"}
+                in {
+                    INSTANT_BREAKOUT_INSIDE,
+                    INSTANT_BURST_BREAKOUT,
+                    CONFIRMED_2BAR_BREAKOUT,
+                    CONTINUATION_OUTSIDE_KC,
+                    "MEME_PEAK_HUNTER",
+                    "DIP_SNIPER",
+                    "MA_CROSSOVER",
+                    "MID_LINE_BREAKDOWN",
+                    "MID_LINE_BREAKOUT",
+                    "BREAKOUT",
+                    "CONTINUATION",
+                }
             )
         )
     ]
@@ -816,6 +833,8 @@ async def _process_wild_swing_symbol(
         "MEME_PEAK_HUNTER",
         "MID_LINE_BREAKDOWN",
         "MID_LINE_BREAKOUT",
+        "BREAKOUT",
+        "CONTINUATION",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",

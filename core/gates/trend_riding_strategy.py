@@ -333,15 +333,19 @@ def can_open_position(
             return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
 
     elif side == "SHORT":
-        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER / MID_LINE_BREAKDOWN 豁免滯後 KC 斜率)
-        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKDOWN"} and kc_trend != "DOWN":
+        exempt_short_modes = {
+            "INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER",
+            "MID_LINE_BREAKDOWN", "BREAKOUT", "CONTINUATION", "FIVE_LINE_CONTINUATION",
+        }
+        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；破軌/貫穿/延續模式豁免滯後 KC 斜率)
+        if entry_confirmation not in exempt_short_modes and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_SHORT: BLOCKED_SHORT_ON_BULL_TREND: KC_TREND_NOT_DOWN ({kc_trend})", details
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
-        if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKDOWN", "MA_CROSSOVER"} and ma5_curr >= ma15_curr:
+        if not is_instant_breakout and entry_confirmation not in exempt_short_modes and ma5_curr >= ma15_curr:
             if not (live_price < kc_mid and live_price < ma15_curr):
                 msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
                 logger.warning(msg)
@@ -349,12 +353,11 @@ def can_open_position(
                 return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
 
         # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
-        # 解除否決條件：當 MA5 重新拐頭向下且跌破 KC 中軌時，必須立即解除 Veto 否決，恢復開空權限！
         is_ma5_bearish_resumed = (
             (live_price < kc_mid or close_p < kc_mid)
             and (
                 live_price < ma5_curr
-                or entry_confirmation in {"MID_LINE_BREAKDOWN", "DIP_SNIPER", "MA_CROSSOVER"}
+                or entry_confirmation in exempt_short_modes
                 or abs(ma5_curr - ma5_prev) <= 1e-4
                 or live_price <= open_p
             )
@@ -368,7 +371,7 @@ def can_open_position(
         # 4. close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
         is_bearish_active = (
             has_live_breakout_confirmation
-            or entry_confirmation in {"MID_LINE_BREAKDOWN", "DIP_SNIPER"}
+            or entry_confirmation in exempt_short_modes
             or (live_price < open_p and live_price < kc_mid)
         )
         if close_p >= open_p and not is_bearish_active:
@@ -381,7 +384,7 @@ def can_open_position(
         if (
             lower_wick > 1.5 * max(body, 1e-9)
             and not has_live_breakout_confirmation
-            and entry_confirmation not in {"MID_LINE_BREAKDOWN"}
+            and entry_confirmation not in exempt_short_modes
         ):
             msg = f"[攔截開空] {symbol} 上一根為長下影線反彈棒，嚴禁底部追空"
             logger.warning(msg)
