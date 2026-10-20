@@ -401,21 +401,13 @@ class MemeCoinGate:
 
             if side == 'LONG':
                 # ── 妖幣多單出場鐵律：遇真峰頂要馬上平倉，不要等 1m 跑完才平倉！──
-                from core.gates.holding_protection_gate import (
-                    has_confirmed_true_pivot,
-                    detect_ma5_rail_parallel_exhaustion,
-                )
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
                 has_peak, _, _ = has_confirmed_true_pivot(pos, frame, quote)
                 if has_peak:
                     return True, 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
 
-                # ── 多單動能衰竭提前止盈（MA5走平轉折＋KC上軌平行鈍化＋跌破MA5）──
-                exhaustion = detect_ma5_rail_parallel_exhaustion(frame, quote, 'LONG', position=pos)
-                if exhaustion is not None:
-                    return True, 'EXIT_MEME_LONG_MOMENTUM_EXHAUSTION'
-
                 # ── 徹底禁止碰上軌就平多！衝破上軌要穩穩抱住 ──
-                # 真頂峰出場條件：必須創高後回落，收盤實體跌破 KC 中軌連續 2 根才出場！
+                # 唯一平多條件：收盤實體跌破 KC 中軌（或連續跌破中軌）才出場！
                 kc_middle = cls.calculate_kc_middle(curr)
                 if len(frame) >= 2 and kc_middle > 0:
                     c1 = frame.iloc[-1]
@@ -424,7 +416,7 @@ class MemeCoinGate:
                     mid2 = cls.calculate_kc_middle(c2)
                     c1_close = float(c1.get('close', quote))
                     c2_close = float(c2.get('close', c1_close))
-                    if c1_close < mid1 and c2_close < mid2 and quote < mid1:
+                    if (c1_close < mid1 and c2_close < mid2) or quote < mid1 * 0.9985:
                         return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
 
                 # 其餘情況（在 KC 中軌上方、碰觸上軌、沿上軌走、稍觸 MA5 等）：
@@ -432,27 +424,24 @@ class MemeCoinGate:
                 return False, None
 
             elif side == 'SHORT':
-                # ── 妖幣空單出場鐵律（龍蝦 / 1000PEPE 專用）：開空後不要平倉，除非鎖利或真谷底出現，要不然一律不平倉 ──
-                from core.gates.holding_protection_gate import (
-                    has_confirmed_true_pivot,
-                    detect_ma5_rail_parallel_exhaustion,
-                )
+                # ── 妖幣空單出場鐵律：開空後不要平倉，除非鎖利或真谷底出現，要不然一律不平倉 ──
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
                 has_valley, _, _ = has_confirmed_true_pivot(pos, frame, quote)
                 if has_valley:
                     return True, 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
 
-                # ── 空單動能衰竭提前止盈（MA5走平轉折＋KC下軌平行鈍化＋站上MA5）──
-                exhaustion = detect_ma5_rail_parallel_exhaustion(frame, quote, 'SHORT', position=pos)
-                if exhaustion is not None:
-                    return True, 'EXIT_MEME_SHORT_MOMENTUM_EXHAUSTION'
-
                 # ── 徹底禁止碰下軌就平空！衝破下軌要穩穩抱住 ──
-                # 真谷底出場條件：必須創低後回升，收盤實體站上 KC 中軌連續 2 根才出場！
+                # 唯一平空條件：收盤實體站上 KC 中軌（或連續站上中軌）才出場！
                 kc_middle = cls.calculate_kc_middle(curr)
                 if len(frame) >= 2 and kc_middle > 0:
                     c1 = frame.iloc[-1]
                     c2 = frame.iloc[-2]
                     mid1 = cls.calculate_kc_middle(c1)
+                    mid2 = cls.calculate_kc_middle(c2)
+                    c1_close = float(c1.get('close', quote))
+                    c2_close = float(c2.get('close', c1_close))
+                    if (c1_close > mid1 and c2_close > mid2) or quote > mid1 * 1.0015:
+                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
                     mid2 = cls.calculate_kc_middle(c2)
                     c1_close = float(c1.get('close', quote))
                     c2_close = float(c2.get('close', c1_close))

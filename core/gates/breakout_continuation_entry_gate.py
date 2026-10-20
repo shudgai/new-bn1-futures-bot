@@ -17,6 +17,10 @@ DIP_SNIPER = "DIP_SNIPER"
 MEME_PEAK_HUNTER = "MEME_PEAK_HUNTER"
 MID_LINE_BREAKDOWN = "MID_LINE_BREAKDOWN"
 MID_LINE_BREAKOUT = "MID_LINE_BREAKOUT"
+BREAK_STRONG = "BREAK_STRONG"
+BREAK_CONFIRM = "BREAK_CONFIRM"
+BREAK_CONFIRM_OPP = "BREAK_CONFIRM_OPP"
+BREAK_STRONG_ADD = "BREAK_STRONG_ADD"
 INSTANT_BREAKOUT_CONFIRMATIONS = frozenset({
     INSTANT_BREAKOUT_INSIDE,
     INSTANT_BREAKOUT_OUTSIDE,
@@ -34,6 +38,12 @@ PURE_MATH_ENTRY_CONFIRMATIONS = frozenset({
     MEME_PEAK_HUNTER,
     MID_LINE_BREAKDOWN,
     MID_LINE_BREAKOUT,
+    BREAK_STRONG,
+    BREAK_CONFIRM,
+    BREAK_CONFIRM_OPP,
+    BREAK_STRONG_ADD,
+    "BREAKOUT",
+    "CONTINUATION",
 })
 class BreakoutContinuationEntryGate:
     """Detect the approved mathematical WILD_SWING entry patterns."""
@@ -165,7 +175,8 @@ class BreakoutContinuationEntryGate:
         ma5_down = effective_ma5 < effective_previous_ma5
 
         open_live_bar_after_closed = False
-        if tick_price is not None and live_candle is not None:
+        DISABLE_INTRABAR_BREAKOUT = True
+        if not DISABLE_INTRABAR_BREAKOUT and tick_price is not None and live_candle is not None:
             live = valid_candle(live_candle)
             tick = cls._number(tick_price)
             live_upper = cls._number(live_candle.get("kc_upper"))
@@ -496,7 +507,7 @@ class BreakoutContinuationEntryGate:
                     return result
 
                 # ── 即時當根模式 A：MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
-                if live_ma5 is not None and live_ma15 is not None and expanding_live:
+                if live_ma5 is not None and live_ma15 is not None:
                     is_safe_long_zone = tick < (live_upper * 1.003)
                     if (
                         closed_ma5 <= current_ma15
@@ -580,7 +591,7 @@ class BreakoutContinuationEntryGate:
                         result["bar_id"] = live_timestamp
                         return result
 
-        if open_live_bar_after_closed:
+        if open_live_bar_after_closed and not DISABLE_INTRABAR_BREAKOUT:
             return None
 
         if (
@@ -634,11 +645,11 @@ class BreakoutContinuationEntryGate:
         # ── 收線確認模式 A：MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
         channel_expanding_closed = (upper - lower >= previous_upper - previous_lower)
         if (
-            previous_ma5 >= previous_ma15
+            current_bearish
+            and previous_ma5 >= previous_ma15
             and closed_ma5 < current_ma15
             and ma5_down
             and current["close"] < basis
-            and channel_expanding_closed
         ):
             return signal(
                 "OPEN_SHORT", MA_CROSSOVER, current["close"],
@@ -648,12 +659,12 @@ class BreakoutContinuationEntryGate:
 
         is_safe_long_zone_closed = current["close"] < (upper * 1.003)
         if (
-            previous_ma5 <= previous_ma15
+            current_bullish
+            and previous_ma5 <= previous_ma15
             and closed_ma5 > current_ma15
             and ma5_up
             and current["close"] > basis
             and is_safe_long_zone_closed
-            and channel_expanding_closed
         ):
             return signal(
                 "OPEN_LONG", MA_CROSSOVER, current["close"],

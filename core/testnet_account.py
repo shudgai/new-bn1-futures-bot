@@ -130,6 +130,7 @@ ENTRY_CONTEXT_KEYS = (
     "dca_stage", "dca_base_price", "dca_original_amount", "wave_regime",
     "channel_entry_profile", "channel_entry_profile_basis",
     "profit_lock_usdt_v2",
+    "entry_source",
 )
 
 
@@ -2450,20 +2451,22 @@ class BinanceTestnetAccount:
             # =========================================================================
             # 【反向開單冷卻鎖】防止剛平倉立即反向開單（多轉空、空轉多冷卻與大趨勢確認）
             # =========================================================================
-            target_action = f"OPEN_{side.upper()}"
-            last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
-            frame_provider = getattr(self, "channel_exit_frame_provider", None)
-            frame = frame_provider(symbol) if callable(frame_provider) else getattr(self, "_channel_exit_frames", {}).get(symbol)
-            from core.services.reverse_entry_cooldown_lock import evaluate_reverse_cooldown_guard
-            cooldown_allowed, _, cooldown_reason = evaluate_reverse_cooldown_guard(
-                symbol, target_action, price, last_trade, frame,
-            )
-            if not cooldown_allowed:
-                self.log(
-                    f"🛡️ [REVERSE_COOLDOWN_LOCK] {symbol} {cooldown_reason} -> 強制阻斷反手開倉",
-                    "WARNING",
+            is_ema_cross_entry = str(entry_context.get("entry_source", "")).startswith("EMA_CROSS") or entry_context.get("allow_flip") is True
+            if not is_ema_cross_entry:
+                target_action = f"OPEN_{side.upper()}"
+                last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
+                frame_provider = getattr(self, "channel_exit_frame_provider", None)
+                frame = frame_provider(symbol) if callable(frame_provider) else getattr(self, "_channel_exit_frames", {}).get(symbol)
+                from core.services.reverse_entry_cooldown_lock import evaluate_reverse_cooldown_guard
+                cooldown_allowed, _, cooldown_reason = evaluate_reverse_cooldown_guard(
+                    symbol, target_action, price, last_trade, frame,
                 )
-                return False
+                if not cooldown_allowed:
+                    self.log(
+                        f"🛡️ [REVERSE_COOLDOWN_LOCK] {symbol} {cooldown_reason} -> 強制阻斷反手開倉",
+                        "WARNING",
+                    )
+                    return False
 
         if (
             not is_manual
@@ -2486,7 +2489,7 @@ class BinanceTestnetAccount:
                     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                 ) and entry_context.get('entry_phase') == 'KC_TOP_WATERFALL_FLIP'
                 direction_override = bool(
-                    climax_flip or top_waterfall_flip or code in (
+                    climax_flip or top_waterfall_flip or is_ema_cross_entry or code in (
                         'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                         'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
                         'KC_GOLDEN_CROSS_FAST_LONG',
@@ -2501,6 +2504,7 @@ class BinanceTestnetAccount:
                         'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                         'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                         'AUTHORIZED_TOP_REVERSAL_SHORT',
+                        'MA_CROSSOVER',
                     )
                 )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━

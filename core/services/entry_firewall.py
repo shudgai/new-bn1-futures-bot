@@ -263,14 +263,18 @@ def ma5_ma15_entry_gate_problem(
     normalized_side = str(side or "").upper()
     if normalized_side not in ("LONG", "SHORT"):
         return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
-    is_confirmed_outer_entry = has_valid_wild_outer_confirmation(
+    is_relaxed_ma = str(entry_confirmation or "").upper() in {
+        "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER",
+        "MA_CROSSOVER", "MEME_PEAK_HUNTER", "BREAKOUT", "CONTINUATION",
+    }
+    is_confirmed_outer_entry = is_relaxed_ma or has_valid_wild_outer_confirmation(
         frame, normalized_side, entry_confirmation,
     )
     structure_problem = market_structure_gate_problem(
         frame,
         normalized_side,
         quote=quote,
-        enforce_ma_direction=not is_manual and not is_instant_breakout,
+        enforce_ma_direction=not is_manual and not is_instant_breakout and not is_relaxed_ma,
         is_confirmed_outer_entry=is_confirmed_outer_entry,
         is_continuation_entry=(
             is_continuation_entry
@@ -283,6 +287,7 @@ def ma5_ma15_entry_gate_problem(
         is_instant_breakout=is_instant_breakout,
         is_manual=is_manual,
         symbol=symbol,
+        is_relaxed_ma_entry=is_relaxed_ma,
     )
     if structure_problem:
         return structure_problem
@@ -326,6 +331,7 @@ def market_structure_gate_problem(
     frame, side, quote=None, *, enforce_ma_direction=True,
     is_confirmed_outer_entry=False, is_continuation_entry=False,
     is_instant_breakout=False, is_manual=False, symbol=None,
+    is_relaxed_ma_entry=False,
 ):
     from core.services.candle_data import closed_entry_candles
 
@@ -409,19 +415,20 @@ def market_structure_gate_problem(
             else (0.10 if relaxed_continuation else 0.15)
         )
         gap_price_pct = 0.0001 if is_meme else MA_PARALLEL_GAP_PRICE_PCT
+        min_mult = 0.5 if (is_relaxed_ma_entry or is_confirmed_outer_entry) else 1.0
         min_gap = (
             max(gap_atr * current_atr, gap_price_pct * current_price)
             if current_atr > 0
             else gap_price_pct * current_price
-        )
+        ) * min_mult
         diagnostics.update(
             slopes=",".join(f"{key}:{value:.8f}" for key, value in slopes.items()),
             gap=f"{gap:.8f}",
             min_gap=f"{min_gap:.8f}",
         )
 
-        if not is_manual and not is_confirmed_outer_entry and enforce_ma_direction:
-            # 破軌加速放行：若價格已破下軌且在 MA5 之下，或突破上軌且在 MA5 之上，絕不因滯後的 MA15 斜率阻斷！
+        if not is_manual and not is_confirmed_outer_entry and not is_relaxed_ma_entry and enforce_ma_direction:
+            # 破軌加速與中軌放行：若價格已破下軌且在 MA5 之下，或突破上軌且在 MA5 之上，絕不因滯後的 MA15 斜率阻斷！
             is_breakout_action = (
                 (normalized_side == "SHORT" and current_price <= values["kc_lower"][-1] and current_price <= values["ma5"][-1])
                 or (normalized_side == "LONG" and current_price >= values["kc_upper"][-1] and current_price >= values["ma5"][-1])
@@ -446,20 +453,20 @@ def market_structure_gate_problem(
                     return veto("VETO_CONTINUATION_MA5_NOT_RISING_LONG")
                 if normalized_side == "SHORT" and ma5_slope >= 0:
                     return veto("VETO_CONTINUATION_MA5_NOT_FALLING_SHORT")
-            elif is_confirmed_outer_entry:
-                # Outer band breakout entries verify live MA5 and outer rail
+            elif is_confirmed_outer_entry or is_relaxed_ma_entry:
+                # Outer band breakout and relaxed MA entries allow slow slope expansion
                 pass
             else:
                 for name, slope in slopes.items():
                     if abs(slope) < 0.00015:
                         return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if not is_manual and not is_confirmed_outer_entry and gap < min_gap:
+        if not is_manual and not is_confirmed_outer_entry and not is_relaxed_ma_entry and gap < min_gap:
             return veto(
                 f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
             )
 
-        if not is_confirmed_outer_entry and not is_manual:
+        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual:
             window = 10
             ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
             crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
@@ -475,7 +482,7 @@ def market_structure_gate_problem(
                         f"(bars_since_cross: {bars_since_last_cross})"
                     )
 
-        if not is_confirmed_outer_entry and not is_manual:
+        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual:
             ma5_diffs = np.diff(values["ma5"][-12:])
             direction_turns = np.flatnonzero(np.diff(np.sign(ma5_diffs)))
             if len(direction_turns) >= 3:
@@ -492,6 +499,7 @@ def market_structure_gate_problem(
         if enforce_ma_direction and normalized_side == "LONG":
             long_ma_aligned = (
                 (ma5 > ma15 and ma5_rising and ma5 > previous_ma5)
+                or (is_relaxed_ma_entry and current_price >= values["kc_middle"][-1] and ma5 >= ma15)
                 or (is_continuation_entry and current_price > values["kc_middle"][-1] and current_price >= ma5)
             )
             if not long_ma_aligned:
@@ -499,6 +507,7 @@ def market_structure_gate_problem(
         if enforce_ma_direction and normalized_side == "SHORT":
             short_ma_aligned = (
                 (ma5 < ma15 and ma5_falling and ma5 < previous_ma5)
+                or (is_relaxed_ma_entry and current_price <= values["kc_middle"][-1] and ma5 <= ma15)
                 or (is_continuation_entry and current_price < values["kc_middle"][-1] and current_price <= ma5)
             )
             if not short_ma_aligned:
@@ -538,7 +547,11 @@ def final_trend_alignment_problem(
         if not all(math.isfinite(value) and value > 0 for value in values):
             return "BLOCKED_FINAL_TREND_DATA_INVALID"
 
-        is_confirmed_outer_entry = entry_confirmation in {
+        is_relaxed_ma_entry = entry_confirmation in {
+            "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER", "MEME_PEAK_HUNTER",
+            "MA_CROSSOVER", "BREAKOUT", "CONTINUATION",
+        }
+        is_confirmed_outer_entry = is_relaxed_ma_entry or entry_confirmation in {
             INSTANT_BREAKOUT_INSIDE,
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
@@ -550,10 +563,7 @@ def final_trend_alignment_problem(
             "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
         }
         is_live_big_trigger = entry_confirmation == "WAIT_LIVE_BIG_TRIGGER"
-        is_relaxed_ma_entry = entry_confirmation in {
-            "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER", "MEME_PEAK_HUNTER",
-        }
-        if is_confirmed_outer_entry and not has_valid_wild_outer_confirmation(
+        if is_confirmed_outer_entry and not is_relaxed_ma_entry and not has_valid_wild_outer_confirmation(
             frame, normalized_side, entry_confirmation,
         ):
             return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
@@ -574,7 +584,7 @@ def final_trend_alignment_problem(
             if ma_gate_problem:
                 return ma_gate_problem
 
-        if is_confirmed_outer_entry:
+        if is_confirmed_outer_entry and not is_relaxed_ma_entry:
             latest_row = frame.iloc[-1]
             try:
                 latest_price = float(
@@ -608,7 +618,8 @@ def final_trend_alignment_problem(
             ):
                 return "BLOCKED_FINAL_TREND_DATA_INVALID"
             if trend != "UP":
-                return "BLOCKED_LONG_KC_NOT_UP"
+                if not (is_relaxed_ma_entry or is_confirmed_outer_entry) or trend == "DOWN":
+                    return "BLOCKED_LONG_KC_NOT_UP"
             if (
                 previous_ma5 > previous_ma15
                 and entry_confirmation != "MA_CROSSOVER_WICK_FOLLOW_THROUGH"
@@ -628,7 +639,8 @@ def final_trend_alignment_problem(
                 return "BLOCKED_LONG_PRICE_BELOW_KC_MIDDLE"
         else:
             if trend != "DOWN":
-                return "BLOCKED_SHORT_KC_NOT_DOWN"
+                if not (is_relaxed_ma_entry or is_confirmed_outer_entry) or trend == "UP":
+                    return "BLOCKED_SHORT_KC_NOT_DOWN"
 
             latest_row = frame.iloc[-1]
             live_bar = (
@@ -1156,12 +1168,39 @@ async def validate_account_entry(account, symbol, side, context):
             expected_wick_bar_id=context.get("wick_trigger_bar_id"),
         )
         if signal is None:
-            raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
+            confirmation = str(context.get("structure_confirmation") or context.get("entry_pattern") or "").upper()
+            if confirmation in {
+                "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER",
+                "MEME_PEAK_HUNTER", "MA_CROSSOVER", "BREAKOUT", "CONTINUATION",
+                "CONFIRMED_2BAR_BREAKOUT", "INSTANT_BREAKOUT_INSIDE", "CONTINUATION_OUTSIDE_KC",
+                "INSTANT_BURST_BREAKOUT",
+            }:
+                signal = {
+                    "side": side,
+                    "structure_confirmation": confirmation,
+                    "entry_pattern": context.get("entry_pattern", confirmation),
+                    "reason": context.get("entry_signal_code", confirmation),
+                    "is_intrabar": True,
+                    "bar_id": context.get("channel_confirmation_bar_id"),
+                }
+            else:
+                raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
         allowed_confirmations = set(PURE_MATH_ENTRY_CONFIRMATIONS) | {
             "KC_OUTER_BREAKOUT",
             "OUTSIDE_CHANNEL_CONTINUATION",
             "PROFIT_LOCK_CONTINUATION",
             "MA5_MA15_1M_CROSS",
+            "MID_LINE_BREAKDOWN",
+            "MID_LINE_BREAKOUT",
+            "DIP_SNIPER",
+            "MEME_PEAK_HUNTER",
+            "MA_CROSSOVER",
+            "BREAKOUT",
+            "CONTINUATION",
+            "INSTANT_BREAKOUT_INSIDE",
+            "CONFIRMED_2BAR_BREAKOUT",
+            "CONTINUATION_OUTSIDE_KC",
+            "INSTANT_BURST_BREAKOUT",
         }
         if signal.get("structure_confirmation") not in allowed_confirmations:
             raise ValueError(
@@ -1207,8 +1246,6 @@ async def validate_account_entry(account, symbol, side, context):
                     context.get("entry_signal_mode")
                 ) != signal_pattern
             )
-            or context.get("entry_signal_code")
-            != f"WILD_SWING_{signal.get('reason')}"
             or signal_bar_id is None
             or expected_bar_id != signal_bar_id
             or confirmation_bar_id != signal_bar_id

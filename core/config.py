@@ -1336,3 +1336,29 @@ def get_high_beta_config(symbol: str) -> dict:
     if symbol in HIGH_BETA_CONFIG:
         return HIGH_BETA_CONFIG[symbol]
     return HIGH_BETA_CONFIG["DEFAULT"]
+
+
+# ==========================================
+# 🚀 破軌兩段式進場系統參數配置 (3M K線，強突破一根 + 普通突破第二根)
+# ==========================================
+BREAKOUT_TWO_STAGE_CONFIG = {
+    "ENABLED": True,
+    # 強突破 (一根就進: BREAK_STRONG)
+    "STRONG_AVG_BODY_LOOKBACK": 10,     # 前 10 根平均實體
+    "STRONG_BODY_MULTIPLIER": 1.5,       # 實體 >= 平均實體的 1.5 倍
+    "STRONG_BODY_RATIO": 0.60,           # 實體占比 >= 60% (body / range >= 0.6)
+    "STRONG_MAX_ATR_DIST": 1.0,          # 收盤距軌道 <= 1.0 * ATR (不追過頭)
+    "STRONG_KC_WIDTH_LOOKBACK": 3,       # KC 寬度比前 3 根擴張 (kc_width[i] > kc_width[i-3])
+    "STRONG_INITIAL_SIZE_RATIO": 0.50,   # 首根強突破開 50% 倉位
+    "STRONG_ADD_SIZE_RATIO": 0.50,       # 次根仍在軌外同色補至 100% 倉位
+    "STRONG_SL_ATR_BUFFER": 0.3,         # 止損: 突破棒另一端外加 0.3 * ATR
+
+    # 普通突破 (第二根確認)
+    "CONFIRM_INITIAL_SIZE_RATIO": 1.0,   # 普通突破同色確認進場開 100% 倉位
+    "CONFIRM_OPP_MAX_BODY_RATIO": 0.60,  # 反色但實體 <= 0.6 * avg_body 仍放行
+    "CONFIRM_OPP_SIZE_RATIO": 0.50,      # 反色弱實體放行開 50% 倉位 (BREAK_CONFIRM_OPP)
+}
+
+def get_breakout_two_stage_config() -> dict:
+    return BREAKOUT_TWO_STAGE_CONFIG
+

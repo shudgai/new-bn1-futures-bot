@@ -611,15 +611,15 @@
                 </div>
             </div>
             <div class="chart-modal-body chart-grid">
-                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': (chartModal.states[symbol] || {}).entryBlock }">
+                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane">
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ formatSymbol(symbol) }}</span>
                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="即時 K 價格站上／跌破 KC 中軌，或觸及同側外軌時優先顯示方向；否則參考最近三根已收線中軌">
                                 {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
-                            <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" class="badge" style="background:#fef3c7; color:#b45309; border:1px solid #fde68a; font-weight:700;">
-                                {{ (chartModal.states[symbol] || {}).entryBlock.message }}
+                            <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" style="font-size: 16px; margin-left: 6px; cursor: default; vertical-align: middle;">
+                                🚫
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
@@ -661,11 +661,6 @@
                                 </span>
                             </span>
                         </div>
-                    </div>
-                    <!-- 僅在未持倉時才顯示進場攔截原因 -->
-                    <div v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
-                        <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
-                        <span>{{ chartModal.states[symbol].entryBlock.detail }}</span>
                     </div>
                     <div :id="'tv-chart-' + index" class="chart-container"></div>
                     <div v-if="chartModal.states[symbol] && chartModal.states[symbol].loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
@@ -1004,7 +999,7 @@
                 ctx.abortController = controller;
                 const timeoutId = setTimeout(() => controller.abort(), 8000);
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=200&include_live=true&_=${Date.now()}`, {
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=3m&limit=200&include_live=true&_=${Date.now()}`, {
                         cache: 'no-store', signal: controller.signal
                     });
                     if (!res.ok) throw new Error(`K 線服務暫時無法使用（HTTP ${res.status}）`);

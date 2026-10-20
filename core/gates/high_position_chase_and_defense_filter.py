@@ -94,7 +94,7 @@ class HighPositionChaseAndDefenseFilter:
         }
 
         # ── 1. 平倉冷卻期 (Cooldown) ──
-        # 若前一筆多單是在高位平多 (CLOSE_LONG)，且平倉距今不足 N 根 K 棒，禁止在同一個頂部連續進場！
+        # 若前一筆多單是在高位平多 (CLOSE_LONG / EXIT_LONG)，進行精準防禦：
         if last_closed_action in ('CLOSE_LONG', 'EXIT_LONG'):
             curr_ts = float(curr.get('timestamp', 0.0))
             if 0 < curr_ts < 1e11:
@@ -105,26 +105,61 @@ class HighPositionChaseAndDefenseFilter:
             if curr_ts > 0 and last_closed_ts > 0:
                 bars_since_close = (curr_ts - last_closed_ts) / timeframe_ms
                 details['bars_since_close'] = round(bars_since_close, 2)
-                if bars_since_close < self.cooldown_bars:
+
+                # 同一根 K 棒剛平倉，100% 阻斷立即同向開多 (同K棒防刷單)
+                if abs(curr_ts - last_closed_ts) < 60000.0 or bars_since_close < 0.5:
+                    reason = "VETO: SAME_CANDLE_ANTI_CHOP (同一根 K 棒剛平倉，禁止同向立即秒開)"
+                    return False, reason, details
+
+                # 破軌優先覆蓋 (Breakout Override) 與 趨勢回踩二次進場 (Trend Continuation Entry)
+                # 鐵律：必須大週期為 KC 向上 (KC 中軌斜率向上或強多頭格局)！
+                kc_rising = False
+                if len(df) >= 2 and kc_middle > 0:
+                    prev_kc_mid = float(df.iloc[-2].get('kc_middle', 0.0))
+                    kc_rising = kc_middle > prev_kc_mid
+                elif strong_trend:
+                    kc_rising = True
+
+                is_breakout_override = (
+                    kc_rising and
+                    kc_upper > 0 and
+                    ((c > kc_upper and c > o and (c - o) >= 0.2 * atr) or (p > kc_upper and p > ma5))
+                )
+                is_continuation_reentry = (
+                    kc_rising and
+                    kc_middle > 0 and (c >= kc_middle or p >= kc_middle) and
+                    (c > o and c > ma5 and (c - o) >= 0.2 * atr)
+                )
+
+                if is_breakout_override or is_continuation_reentry:
+                    details['cooldown_exempt'] = 'BREAKOUT_OVERRIDE' if is_breakout_override else 'TREND_CONTINUATION_REENTRY'
+                elif bars_since_close < self.cooldown_bars:
                     reason = (f"VETO: LONG_COOLDOWN_ACTIVE "
                               f"(Only {bars_since_close:.1f} bars since LastClose, must wait >= {self.cooldown_bars} bars)")
                     return False, reason, details
 
         # ── 2. 中軌正乖離檢驗 (KC Bias Check) ──
-        if not bypass_extension_check and kc_middle > 0:
+        if kc_middle > 0:
             bias_atr = (p - kc_middle) / atr
             bias_pct = (p - kc_middle) / kc_middle
             details['bias_atr'] = round(bias_atr, 2)
             details['bias_pct'] = round(bias_pct, 4)
 
-            bias_limit = min(
-                self.max_bias_atr,
-                self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
-            )
-            if bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct):
+            # 絕對安全閥值：即使帶有延續標記，若價格遠離中軌超過 2.5 ATR 或 3.5%，一律一票否決禁止天花板追多！
+            if bias_atr > 2.5 or bias_pct > 0.035:
                 reason = (f"VETO: OVEREXTENDED_BIAS_TOO_HIGH "
-                          f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} above KC Mid, max: {bias_limit:.1f} ATR)")
+                          f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} above KC Mid - Extreme Overbought Ceiling, chase prohibited)")
                 return False, reason, details
+
+            if not bypass_extension_check:
+                bias_limit = min(
+                    self.max_bias_atr,
+                    self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
+                )
+                if bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct):
+                    reason = (f"VETO: OVEREXTENDED_BIAS_TOO_HIGH "
+                              f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} above KC Mid, max: {bias_limit:.1f} ATR)")
+                    return False, reason, details
 
         # ── 3. 回踩健康度檢驗（禁止浮空進場）──
         # 鐵律：普通通道內進場必須回踩均線或中軌；但若處於破軌突破或外軌強勢延續（Breakout Flow），依授權手冊執行極速進場與延續開倉！
@@ -139,6 +174,17 @@ class HighPositionChaseAndDefenseFilter:
             reason = (f"VETO: FLOATING_CHASE_WITHOUT_PULLBACK "
                       f"(Recent low {min_low_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air)")
             return False, reason, details
+
+        # ── 4. 防追高與防假突破過濾 (頂部鈍化/避雷針力竭) ──
+        if not is_breakout_flow:
+            candle_len = max(h - l, 1e-9)
+            candle_body = abs(c - o)
+            upper_wick = max(0.0, h - max(c, o))
+            if kc_middle > 0 and (p - kc_middle) > 1.5 * atr:
+                if upper_wick / candle_len >= 0.50 and upper_wick > 1.5 * candle_body:
+                    reason = (f"VETO: PINBAR_EXHAUSTION_AT_HIGH (頂部避雷針力竭：遠離中軌出現極長上影線 {upper_wick:.6g}，"
+                              f"佔比 {upper_wick/candle_len:.1%}，禁止在鈍化區盲目追多)")
+                    return False, reason, details
 
         # ── 5. 順勢鐵律：KC 中軌下方或中軌下行嚴禁開多（嚴防陰跌接飛刀）──
         if kc_middle > 0:
@@ -207,8 +253,7 @@ class HighPositionChaseAndDefenseFilter:
         }
 
         # ── 1. 平空後強制冷卻期 (Cooldown Protection) ──
-        # 當系統剛觸發「平空」離場後 (CLOSE_SHORT / EXIT_SHORT)，必須強制等待 N 根 K 棒 (預設 5 根)，
-        # 期間嚴禁再次發出開空信號，徹底避免在同一個底部連續被巴！
+        # 當系統剛觸發「平空」離場後 (CLOSE_SHORT / EXIT_SHORT)，進行精準防禦：
         if last_closed_action in ('CLOSE_SHORT', 'EXIT_SHORT'):
             curr_ts = float(curr.get('timestamp', 0.0))
             if 0 < curr_ts < 1e11:
@@ -219,31 +264,67 @@ class HighPositionChaseAndDefenseFilter:
             if curr_ts > 0 and last_closed_ts > 0:
                 bars_since_close = (curr_ts - last_closed_ts) / timeframe_ms
                 details['bars_since_close'] = round(bars_since_close, 2)
-                if bars_since_close < self.cooldown_bars:
+
+                # 同一根 K 棒剛平倉，100% 阻斷立即同向開空 (同K棒防刷單)
+                if abs(curr_ts - last_closed_ts) < 60000.0 or bars_since_close < 0.5:
+                    reason = "VETO: SAME_CANDLE_ANTI_CHOP (同一根 K 棒剛平倉，禁止同向立即秒開)"
+                    return False, reason, details
+
+                # 破軌優先覆蓋 (Breakout Override) 與 趨勢回抽二次進場 (Trend Continuation Entry)
+                # 鐵律：必須大週期為 KC 向下 (KC 中軌斜率向下或強空頭格局)！
+                kc_falling = False
+                if len(df) >= 2 and kc_middle > 0:
+                    prev_kc_mid = float(df.iloc[-2].get('kc_middle', 0.0))
+                    kc_falling = kc_middle < prev_kc_mid
+                elif strong_trend:
+                    kc_falling = True
+
+                is_breakout_override = (
+                    kc_falling and
+                    kc_lower > 0 and
+                    ((c < kc_lower and c < o and (o - c) >= 0.2 * atr) or (p < kc_lower and p < ma5))
+                )
+                # 趨勢回抽二次進場：先前部位已出場但大週期仍為 KC 向下，回抽未衝破中軌且收黑跌破 MA5
+                is_continuation_reentry = (
+                    kc_falling and
+                    kc_middle > 0 and (c <= kc_middle or p <= kc_middle) and
+                    (c < o and c < ma5 and (o - c) >= 0.2 * atr)
+                )
+
+                if is_breakout_override or is_continuation_reentry:
+                    details['cooldown_exempt'] = 'BREAKOUT_OVERRIDE' if is_breakout_override else 'TREND_CONTINUATION_REENTRY'
+                elif bars_since_close < self.cooldown_bars:
                     reason = (f"VETO: SHORT_COOLDOWN_ACTIVE "
                               f"(Only {bars_since_close:.1f} bars since LastCloseShort, must wait >= {self.cooldown_bars} bars to prevent whipsaw)")
                     return False, reason, details
 
-        # ── 3. KC 下軌外負乖離過大（禁止地板追空）──
-        if not bypass_extension_check and kc_middle > 0:
+        # ── 2. KC 下軌外負乖離過大（禁止地板追空）──
+        if kc_middle > 0:
             bias_atr = (kc_middle - p) / atr
             bias_pct = (kc_middle - p) / kc_middle
             details['bias_atr'] = round(bias_atr, 2)
             details['bias_pct'] = round(bias_pct, 4)
 
-            bias_limit = min(
-                self.max_bias_atr,
-                self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
-            )
-            is_outside_lower = (kc_lower > 0 and p <= kc_lower) or (c <= kc_lower)
-            if is_outside_lower and (
-                bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct)
-            ):
+            # 絕對安全閥值：即使帶有延續標記，若價格遠離中軌超過 2.5 ATR 或 3.5%，一律一票否決禁止地板冒險追空！
+            if bias_atr > 2.5 or bias_pct > 0.035:
                 reason = (f"VETO: OVEREXTENDED_NEGATIVE_BIAS_TOO_HIGH "
-                          f"(Price: {p:.6g} is outside KC Lower with {bias_atr:.2f} ATR / {bias_pct:.2%} negative bias below KC Mid, max: {bias_limit:.1f} ATR)")
+                          f"(Price: {p:.6g} is {bias_atr:.2f} ATR / {bias_pct:.2%} below KC Mid - Extreme Oversold Floor, short chase prohibited)")
                 return False, reason, details
 
-        # ── 4. 回抽測試受阻收陰檢驗（禁止浮空追空）──
+            if not bypass_extension_check:
+                bias_limit = min(
+                    self.max_bias_atr,
+                    self.strong_trend_bias_atr if strong_trend else self.normal_trend_bias_atr,
+                )
+                is_outside_lower = (kc_lower > 0 and p <= kc_lower) or (c <= kc_lower)
+                if is_outside_lower and (
+                    bias_atr > bias_limit or (not strong_trend and bias_pct > self.max_bias_pct)
+                ):
+                    reason = (f"VETO: OVEREXTENDED_NEGATIVE_BIAS_TOO_HIGH "
+                              f"(Price: {p:.6g} is outside KC Lower with {bias_atr:.2f} ATR / {bias_pct:.2%} negative bias below KC Mid, max: {bias_limit:.1f} ATR)")
+                    return False, reason, details
+
+        # ── 3. 回抽測試受阻收陰檢驗（禁止浮空追空）──
         # 鐵律：普通通道內進場必須等待回抽受阻；但若處於破軌突破或外軌強勢延續（Breakout Flow），依授權手冊執行極速進場與延續開空！
         is_breakout_flow = (c < kc_lower and c < o and (o - c) >= 0.25 * atr) or (p < kc_lower and p < ma5)
         recent_3 = df.tail(3)
@@ -256,6 +337,17 @@ class HighPositionChaseAndDefenseFilter:
             reason = (f"VETO: FLOATING_SHORT_CHASE_WITHOUT_PULLBACK "
                       f"(Recent high {max_high_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air without resistance test)")
             return False, reason, details
+
+        # ── 4. 防抄底追空與防假跌破過濾 (底部力竭/長下影線力竭) ──
+        if not is_breakout_flow:
+            candle_len = max(h - l, 1e-9)
+            candle_body = abs(c - o)
+            lower_wick = max(0.0, min(c, o) - l)
+            if kc_middle > 0 and (kc_middle - p) > 1.5 * atr:
+                if lower_wick / candle_len >= 0.50 and lower_wick > 1.5 * candle_body:
+                    reason = (f"VETO: PINBAR_EXHAUSTION_AT_LOW (底部長下影線力竭：遠離中軌出現極長下影線 {lower_wick:.6g}，"
+                              f"佔比 {lower_wick/candle_len:.1%}，禁止在底部鈍化區盲目追空)")
+                    return False, reason, details
 
         # ── 5. 順勢鐵律：KC 中軌上方或中軌上行嚴禁開空（嚴防大陽線反轉摸頂被軋空）──
         if kc_middle > 0:

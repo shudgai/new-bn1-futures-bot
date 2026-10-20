@@ -165,6 +165,7 @@ ENTRY_CONTEXT_KEYS = (
     "profit_lock_usdt_v2",
     "channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
     "channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar",
+    "entry_source",
 )
 
 

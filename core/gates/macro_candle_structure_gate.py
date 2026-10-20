@@ -172,6 +172,7 @@ class MacroCandleStructureGate:
                         INSTANT_BURST_BREAKOUT,
                         MID_LINE_BREAKDOWN,
                         MID_LINE_BREAKOUT,
+                        "BREAKOUT",
                     }
                     else "CROSSOVER"
                     if confirmation == MA_CROSSOVER
@@ -185,6 +186,7 @@ class MacroCandleStructureGate:
                 CONFIRMED_2BAR_BREAKOUT,
                 INSTANT_BREAKOUT_INSIDE,
                 INSTANT_BURST_BREAKOUT,
+                "BREAKOUT",
                 "DIP_SNIPER",
                 "MEME_PEAK_HUNTER",
                 MID_LINE_BREAKDOWN,
@@ -222,9 +224,12 @@ class MacroCandleStructureGate:
             and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
             and mode in {"CROSSOVER", "REVERSAL"}
         )
-        if mode == "BREAKOUT" and (
-            not initial_two_bar_breakout
-            and (not channel_expanding or confirmation != "KC_OUTER_BREAKOUT")
+        if mode == "BREAKOUT" and not (
+            initial_two_bar_breakout
+            or channel_expanding
+            or confirmation in {"KC_OUTER_BREAKOUT", "BREAKOUT", INSTANT_BURST_BREAKOUT, INSTANT_BREAKOUT_INSIDE, INSTANT_BREAKOUT_OUTSIDE}
+            or (side == "LONG" and close > kc_upper)
+            or (side == "SHORT" and close < kc_lower)
         ):
             return False, "VETO_BREAKOUT: KC 通道未擴張或缺少有效破軌確認"
         if (
@@ -279,21 +284,24 @@ class MacroCandleStructureGate:
                     "VETO_BREAKOUT_SHORT: 下影線超過 K 棒區間 65%，"
                     "拒絕極端反彈長針"
                 )
+            min_body_ratio = 0.15 if confirmation in {"CONFIRMED_2BAR_BREAKOUT", "SLOW_TREND_BREAKOUT"} else 0.35
             if (
                 confirmation != CONFIRMED_2BAR_BREAKOUT
-                and body / candle_range <= 0.35
+                and body / candle_range <= min_body_ratio
             ):
-                return False, "VETO_BREAKOUT: 實體比例未超過 K 棒區間 35%"
+                return False, f"VETO_BREAKOUT: 實體比例未超過 K 棒區間 {int(min_body_ratio * 100)}%"
         if mode == "CROSSOVER" and (
             not structure_confirmed
             or confirmation not in {
                 "MA5_MA15_1M_CROSS",
                 "MA5_MA15_5M_CONVERGENCE",
                 "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+                "MA_CROSSOVER",
+                "CROSSOVER",
             }
         ):
             return False, "VETO_CROSSOVER: 缺少已確認的 1M 交叉或 5M 均線收斂"
-        if mode == "CROSSOVER" and confirmation == "MA5_MA15_1M_CROSS":
+        if mode == "CROSSOVER" and confirmation in {"MA5_MA15_1M_CROSS", "MA_CROSSOVER", "CROSSOVER"}:
             if side == "SHORT" and close >= kc_upper:
                 return False, "VETO_CROSSOVER_SHORT: 價格觸及 KC 上軌，禁止逆勢放空"
             if side == "LONG" and close <= kc_lower:
@@ -379,6 +387,8 @@ class MacroCandleStructureGate:
         # 多單審查（買多）
         # =====================================================================
         if side == 'LONG':
+            if mode in {"BREAKOUT", "CONTINUATION"} and close <= open_price:
+                return False, "VETO_BREAKOUT_LONG: CANDLE_NOT_BULLISH (破軌/延續必須收陽線，次根收陰非同色)"
             if mode == "BREAKOUT":
                 if close <= kc_upper:
                     return False, "VETO_BREAKOUT_LONG: 收盤未有效突破 KC 上軌"
@@ -449,6 +459,8 @@ class MacroCandleStructureGate:
         # 空單審查（賣空）
         # =====================================================================
         elif side == 'SHORT':
+            if mode in {"BREAKOUT", "CONTINUATION"} and close >= open_price:
+                return False, "VETO_BREAKOUT_SHORT: CANDLE_NOT_BEARISH (破軌/延續必須收陰線，次根收陽非同色)"
             if mode == "BREAKOUT":
                 if close >= kc_lower:
                     return False, "VETO_BREAKOUT_SHORT: 收盤未有效跌破 KC 下軌"

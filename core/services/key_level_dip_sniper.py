@@ -50,7 +50,19 @@ def check_comprehensive_short_entry(
     low_p = float(candle['low'])
     prev_close = float(prev_candle.get('close', open_p))
 
-    # 1. 貫穿中軌起跌判定 (抓 08:38 實體大陰棒由中軌上方灌破中軌與 13EMA，波段起跌點，不必等破下軌)
+    # ── 雙引擎獨立觸發架構 (OR 關係) ──
+    # 引擎 A：EMA 死叉 (抓波段起跌點，通常在通道內，絕不要求跌破 KC 下軌)
+    ema_short_signal = (ma5 < ma15) and (prev_ma5 >= prev_ma15)
+
+    # 引擎 B：強勢破軌 (抓加速下殺，實體放量摜穿 KC 下軌，破軌次根必須同色陰線)
+    is_kc_bearish = (kc_trend in ("DOWN", "向下", "DOWNTREND", "BEARISH", ""))
+    breakout_short_signal = (
+        (close_p <= kc_lower)
+        and close_p < open_p
+        and (is_kc_bearish or ma5 <= ma15)
+    )
+
+    # 引擎 C：貫穿中軌起跌 (抓實體大陰棒由中軌上方灌破中軌與均線)
     is_piercing_down = (
         (open_p >= kc_mid - 0.15 * atr or prev_close >= kc_mid)
         and close_p < kc_mid
@@ -58,33 +70,26 @@ def check_comprehensive_short_entry(
         and close_p < open_p
         and (open_p - close_p >= 0.20 * atr or close_p <= kc_mid - 0.10 * atr)
     )
+
+    # 1. 貫穿中軌起跌 (抓實體大陰棒由中軌上方灌破中軌與均線)
     if is_piercing_down:
-        return "OPEN_SHORT", "MID_LINE_BREAKDOWN", "【波段起跌】實體大陰棒直接由中軌上方灌破中軌與均線，第一時間進場吃波段！"
+        return "OPEN_SHORT", "MID_LINE_BREAKDOWN", "[觸發原因: 貫穿中軌起跌] 實體大陰棒灌破中軌與均線，第一時間進場吃波段！"
 
-    # 2. 均線死叉起跌判定 (抓波段大肉起點，不必等破下軌)
-    death_cross = (prev_ma5 >= prev_ma15) and (ma5 < ma15)
-    if death_cross and close_p < kc_mid:
-        return "OPEN_SHORT", "MA_CROSSOVER", "【波段起跌】MA5死叉MA15且跌破KC中軌，第一時間進場吃波段！"
+    # 2. 引擎 A 觸發：EMA 死叉起跌
+    if ema_short_signal and close_p <= kc_mid + 0.5 * atr:
+        return "OPEN_SHORT", "MA_CROSSOVER", "[觸發原因: EMA死叉] MA5死叉MA15起跌，雙引擎A獨立觸發開空！"
 
-    # 3. 破下軌順勢開空 (9:53/9:54 破軌爆發動能補單進場！)
-    # 3M K 棒出現實體大陰線跌破 KC 下軌，均線呈現空頭發散，立即開空！
-    is_lower_breakdown = (
-        close_p <= kc_lower
-        and close_p < open_p
-        and close_p <= ma5
-    )
-    if is_lower_breakdown:
-        return "OPEN_SHORT", "BREAKOUT", "【破軌爆發】實體陰線放量摜穿KC下軌，順勢追擊主跌浪！"
+    # 3. 引擎 B 觸發：強勢破軌
+    if breakout_short_signal:
+        return "OPEN_SHORT", "BREAKOUT", "[觸發原因: KC下軌突破] 實體放量摜穿KC下軌破軌爆發，雙引擎B獨立觸發加速開空！"
 
-    # 4. 均線空頭排列或 KC 向下，回踩/反彈觸碰 MA5/13EMA/KC中軌遇阻轉陰，或收陰中繼延續開空 (9:49 延續入口)
-    is_bearish = (ma5 <= ma15) or (close_p < kc_mid) or (kc_trend == "DOWN")
+    # 4. 輔助延續：均線空頭排列，回踩均線遇阻轉陰或中繼收陰延續
+    is_bearish = (ma5 <= ma15) or (close_p < kc_mid) or is_kc_bearish
     if is_bearish and close_p < kc_mid:
-        # A. 盤中反彈摸到均線 (high >= ma5 - 0.15 * atr)，收盤收陰被打回 (close <= open)
         if high_p >= (ma5 - 0.15 * atr) and close_p <= open_p:
-            return "OPEN_SHORT", "DIP_SNIPER", "【高拋延續】空頭排列中，反彈觸均線遇阻回落延續開空！"
-        # B. 均線死叉向下且在中軌下方收陰，即刻延續開空 (9:49 延續入口)
+            return "OPEN_SHORT", "DIP_SNIPER", "[觸發原因: 回踩均線遇阻] 空頭排列中反彈觸均線遇阻回落延續開空！"
         if close_p < open_p and ma5 <= ma15:
-            return "OPEN_SHORT", "CONTINUATION", "【中繼延續】均線向下排列且在中軌下方收陰，即刻延續開空！"
+            return "OPEN_SHORT", "CONTINUATION", "[觸發原因: 中繼延續] 均線空頭排列且在中軌下方收陰，即刻延續開空！"
 
     return "WAIT", "NONE", "無有效開空信號"
 
@@ -103,7 +108,7 @@ def check_comprehensive_long_entry(
     kc_trend: str = "",
 ) -> Tuple[str, str, str]:
     """
-    對稱的多單全面開倉邏輯：涵蓋「貫穿中軌起漲」、「均線金叉起漲」與「回踩均線延續追多」
+    對稱的多單全面開倉邏輯：雙引擎獨立觸發 (EMA金叉 OR 強勢破軌)
     :return: (action, pattern, reason)
     """
     close_p = float(candle['close'])
@@ -112,7 +117,19 @@ def check_comprehensive_long_entry(
     high_p = float(candle['high'])
     prev_close = float(prev_candle.get('close', open_p))
 
-    # 1. 貫穿中軌起漲判定 (實體大陽棒由中軌下方貫穿突破中軌與 13EMA，主升浪起漲點，不必等破上軌)
+    # ── 雙引擎獨立觸發架構 (OR 關係) ──
+    # 引擎 A：EMA 金叉 (抓主升浪起點，通常在通道內，絕不要求突破 KC 上軌)
+    ema_long_signal = (ma5 > ma15) and (prev_ma5 <= prev_ma15)
+
+    # 引擎 B：強勢破軌 (抓加速噴出，實體放量衝破 KC 上軌，破軌次根必須同色陽線)
+    is_kc_bullish = (kc_trend in ("UP", "向上", "UPTREND", "BULLISH", ""))
+    breakout_long_signal = (
+        (close_p >= kc_upper)
+        and close_p > open_p
+        and (is_kc_bullish or ma5 >= ma15)
+    )
+
+    # 引擎 C：貫穿中軌起漲 (抓實體大陽棒由中軌下方貫穿突破中軌與均線)
     is_piercing_up = (
         (open_p <= kc_mid + 0.15 * atr or prev_close <= kc_mid)
         and close_p > kc_mid
@@ -120,32 +137,26 @@ def check_comprehensive_long_entry(
         and close_p > open_p
         and (close_p - open_p >= 0.20 * atr or close_p >= kc_mid + 0.10 * atr)
     )
+
+    # 1. 貫穿中軌起漲
     if is_piercing_up:
-        return "OPEN_LONG", "MID_LINE_BREAKOUT", "【波段起漲】實體大陽棒直接由中軌下方貫穿中軌與均線，第一時間進場吃主升浪！"
+        return "OPEN_LONG", "MID_LINE_BREAKOUT", "[觸發原因: 貫穿中軌起漲] 實體大陽棒貫穿中軌與均線，第一時間進場吃主升浪！"
 
-    # 2. 均線金叉起漲判定 (抓主升浪起點，不必等破上軌)
-    golden_cross = (prev_ma5 <= prev_ma15) and (ma5 > ma15)
-    if golden_cross and close_p > kc_mid:
-        return "OPEN_LONG", "MA_CROSSOVER", "【波段起漲】MA5金叉MA15且站上KC中軌，第一時間進場吃主升浪！"
+    # 2. 引擎 A 觸發：EMA 金叉起漲
+    if ema_long_signal and close_p >= kc_mid - 0.5 * atr:
+        return "OPEN_LONG", "MA_CROSSOVER", "[觸發原因: EMA金叉] MA5金叉MA15起漲，雙引擎A獨立觸發開多！"
 
-    # 3. 破上軌順勢開多 (破軌爆發動能進場)
-    is_upper_breakout = (
-        close_p >= kc_upper
-        and close_p > open_p
-        and close_p >= ma5
-    )
-    if is_upper_breakout:
-        return "OPEN_LONG", "BREAKOUT", "【破軌爆發】實體陽線放量衝破KC上軌，順勢追擊主升浪！"
+    # 3. 引擎 B 觸發：強勢破軌
+    if breakout_long_signal:
+        return "OPEN_LONG", "BREAKOUT", "[觸發原因: KC上軌突破] 實體放量衝破KC上軌破軌爆發，雙引擎B獨立觸發加速開多！"
 
-    # 4. 均線多頭排列或 KC 向上，回踩觸碰 MA5/13EMA/KC中軌有守轉陽，或收陽中繼延續開多
-    is_bullish = (ma5 >= ma15) or (close_p > kc_mid) or (kc_trend == "UP")
+    # 4. 輔助延續：均線多頭排列，回踩均線有守轉陽或中繼收陽延續
+    is_bullish = (ma5 >= ma15) or (close_p > kc_mid) or is_kc_bullish
     if is_bullish and close_p > kc_mid:
-        # 盤中下探摸到均線/中軌，但收盤收陽轉強
         if low_p <= (ma5 + 0.15 * atr) and close_p >= open_p:
-            return "OPEN_LONG", "DIP_SNIPER", "【低吸延續】多頭排列中，回踩均線有守轉陽延續開多！"
-        # 均線金叉向上且在中軌上方收陽，即刻延續開多
+            return "OPEN_LONG", "DIP_SNIPER", "[觸發原因: 回踩均線有守] 多頭排列中回踩均線有守轉陽延續開多！"
         if close_p > open_p and ma5 >= ma15:
-            return "OPEN_LONG", "CONTINUATION", "【中繼延續】均線向上排列且在中軌上方收陽，即刻延續開多！"
+            return "OPEN_LONG", "CONTINUATION", "[觸發原因: 中繼延續] 均線多頭排列且在中軌上方收陽，即刻延續開多！"
 
     return "WAIT", "NONE", "無有效開多信號"
 

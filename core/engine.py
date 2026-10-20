@@ -3007,6 +3007,11 @@ class TradingEngine:
             'candidate_bar_id': cand_bar_id,
             'entry_atr': atr,
             'dual_tf_meta': meta_dict or {},
+            'entry_source': (
+                wild_signal.get('entry_source')
+                or ('EMA_CROSS' if 'MA_CROSSOVER' in str(wild_signal.get('structure_confirmation')) else 'WILD_SWING')
+            ),
+            'allow_flip': bool(wild_signal.get('needs_flip')),
         }
 
         reason = f"DualTF_{mode_name}_{side}"
@@ -3038,6 +3043,11 @@ class TradingEngine:
                 "MEME_PEAK_HUNTER",
                 "INSTANT_BREAKOUT_INSIDE",
                 "INSTANT_BURST_BREAKOUT",
+                "BREAK_STRONG",
+                "BREAK_CONFIRM",
+                "BREAK_CONFIRM_OPP",
+                "BREAK_STRONG_ADD",
+                "BREAK_SINGLE",
             }
             from core.gates.ma5_ma15_cross_entry_gate import (
                 ma_cross_gate_exempt_for_entry,
@@ -3138,6 +3148,9 @@ class TradingEngine:
             amount = self._full_wallet_entry_margin(
                 wallet, available, leverage, symbol,
             )
+            size_ratio = float(wild_signal.get("size_ratio", 1.0) or 1.0)
+            size_ratio = max(0.30, min(1.0, size_ratio))
+            amount = amount * size_ratio
             if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
                 self.account.log(
                     f"🛑 [EXECUTION_FAIL] {symbol} 可用保證金不足: "
@@ -3199,6 +3212,11 @@ class TradingEngine:
                 "CONTINUATION",
                 "INSTANT_BREAKOUT_INSIDE",
                 "INSTANT_BURST_BREAKOUT",
+                "BREAK_STRONG",
+                "BREAK_CONFIRM",
+                "BREAK_CONFIRM_OPP",
+                "BREAK_STRONG_ADD",
+                "BREAK_SINGLE",
             }
             structure_problem = market_structure_gate_problem(
                 frame,
@@ -3214,6 +3232,8 @@ class TradingEngine:
                     "TRIGGER_C_CONTINUATION",
                     "POST_CLOSE_CONTINUATION_ENTRY",
                 },
+                is_relaxed_ma_entry=is_relaxed_ma_pattern,
+                symbol=symbol,
             )
             if structure_problem:
                 self.account.log(

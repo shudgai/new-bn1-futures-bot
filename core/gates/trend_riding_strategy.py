@@ -112,6 +112,9 @@ def can_open_position(
         kc_trend = "DOWN"
 
     body = abs(close_p - open_p)
+    target_df = closed_df if "is_closed" in df.columns and len(closed_df) >= 2 else df
+    recent_bodies = (target_df["close"].iloc[-11:-1] - target_df["open"].iloc[-11:-1]).abs()
+    avg_body = float(recent_bodies.mean()) if len(recent_bodies) > 0 else max(body, 1e-9)
     upper_wick = max(0.0, high_p - max(close_p, open_p))
     lower_wick = max(0.0, min(close_p, open_p) - low_p)
 
@@ -136,6 +139,23 @@ def can_open_position(
     is_instant_breakout = entry_confirmation in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}
     wild_outer_entry = False
     live = None
+    live_quote = float(kwargs.get("quote") or 0.0)
+    if df is not None and not df.empty:
+        if not bool(df.iloc[-1].get("is_closed", True)):
+            live = df.iloc[-1].to_dict().copy()
+            if live_quote > 0:
+                live["close"] = live_quote
+                live["high"] = max(float(live.get("high", live_quote)), live_quote)
+                live["low"] = min(float(live.get("low", live_quote)), live_quote)
+        elif live_quote > 0:
+            live = df.iloc[-1].to_dict().copy()
+            live["close"] = live_quote
+            live["high"] = max(float(live.get("high", live_quote)), live_quote)
+            live["low"] = min(float(live.get("low", live_quote)), live_quote)
+            live["is_closed"] = False
+            tf_ms = float(df.attrs.get("timeframe_ms", 60000.0) or 60000.0)
+            live["timestamp"] = float(live.get("timestamp", 0.0)) + tf_ms
+
     if entry_confirmation in {
         "INSTANT_BREAKOUT_INSIDE",
         "CONFIRMED_2BAR_BREAKOUT",
@@ -149,33 +169,12 @@ def can_open_position(
             from core.services.candle_data import closed_entry_candles
 
             closed = closed_entry_candles(df)
-            live = None
-            live_quote = None
-            if (
-                df is not None
-                and not df.empty
-                and not bool(df.iloc[-1].get("is_closed", True))
-            ):
-                live = df.iloc[-1].to_dict()
-                live_quote = float(kwargs.get("quote") or live.get("close") or 0.0)
-                live["close"] = live_quote
-                live["high"] = max(float(live["high"]), live_quote)
-                live["low"] = min(float(live["low"]), live_quote)
-            elif kwargs.get("quote") is not None and df is not None and not df.empty:
-                live = df.iloc[-1].to_dict().copy()
-                live_quote = float(kwargs["quote"])
-                live["close"] = live_quote
-                live["high"] = max(float(live.get("high", live_quote)), live_quote)
-                live["low"] = min(float(live.get("low", live_quote)), live_quote)
-                live["is_closed"] = False
-                tf_ms = float(df.attrs.get("timeframe_ms", 60000.0) or 60000.0)
-                live["timestamp"] = float(live.get("timestamp", 0.0)) + tf_ms
             wild_outer_entry = (
                 BreakoutContinuationEntryGate.validate_closed_outer_entry(
                     closed.to_dict("records"),
                     side,
                     entry_confirmation,
-                    tick_price=live_quote,
+                    tick_price=live_quote if live_quote > 0 else None,
                     live_candle=live,
                 )
                 is not None
@@ -203,6 +202,33 @@ def can_open_position(
     last_closed_price = float(kwargs.get("last_closed_price") or 0.0)
     current_tick_price = float(quote or close_p or 0.0)
 
+    kc_up = float(last_closed.get("kc_upper", 0.0))
+    kc_low = float(last_closed.get("kc_lower", 0.0))
+    kc_mid_val = float(last_closed.get("kc_middle", last_closed.get("kc_basis", 0.0)))
+    ma5_val = float(last_closed.get("ma5", close_p))
+    atr_val = float(last_closed.get("atr", 0.0001) or 0.0001)
+
+    def veto_return(reason: str) -> Tuple[bool, str, Dict[str, Any]]:
+        is_breaking_rail = (
+            (side == "SHORT" and (current_tick_price < kc_low or close_p < kc_low))
+            or (side == "LONG" and (current_tick_price > kc_up or close_p > kc_up))
+        )
+        if is_breaking_rail:
+            logger.warning(
+                "🚨 [KC破軌開倉攔截診斷] symbol=%s side=%s price=%.6g kc_upper=%.6g kc_lower=%.6g "
+                "攔截原因=%s | 條件狀態: kc_trend=%s, ema5=%.6g, ema13=%.6g, ma5_slope=%+.6g, "
+                "bars_since_exit=%s, last_exit_price=%.6g, entry_confirmation=%s",
+                symbol, side, current_tick_price, kc_up, kc_low, reason,
+                kc_trend, ma5_curr, ma15_curr, (ma5_curr - ma5_prev),
+                bars_since_last_exit, last_closed_price, entry_confirmation,
+            )
+            print(
+                f"🚨 [KC破軌開倉攔截診斷] {symbol} {side} 價={current_tick_price:.6g} 破軌但被攔截: {reason} "
+                f"(趨勢={kc_trend}, MA5={ma5_curr:.6g}, MA15={ma15_curr:.6g}, 平倉冷卻={bars_since_last_exit})",
+                flush=True,
+            )
+        return False, reason, details
+
     if target_side == side:
         # 1. 同一根 K 棒剛平倉，不立即追回同向單（等待新 K 棒或訊號確認）
         curr_bar_ts = float(last_closed.get("timestamp", 0.0))
@@ -217,45 +243,110 @@ def can_open_position(
                 logger.warning(msg)
                 return False, "BLOCKED_SAME_CANDLE_ANTI_CHOP", details
 
-        # 2. 價格突破過濾：必須有新的突破才進場，有新突破立即解除冷卻！
-        if last_closed_price > 0 and current_tick_price > 0:
-            if side == "LONG":
-                # 多單：價格必須高於上次平倉價，確認發動續漲才追多
-                if current_tick_price <= last_closed_price:
-                    msg = f"[攔截開多] {symbol} 最新價 {current_tick_price} <= 上次平倉價 {last_closed_price}，未創出續漲新高禁止追多"
-                    logger.warning(msg)
-                    return False, "BLOCKED_REQUIRES_NEW_HIGH_ABOVE_LAST_EXIT", details
-                # 滿足突破高於上次平倉價，直接豁免固定冷卻門檻！
-            elif side == "SHORT":
-                # 空單：價格必須低於上次平倉價，確認發動續跌才追空
-                if current_tick_price >= last_closed_price:
-                    msg = f"[攔截開空] {symbol} 最新價 {current_tick_price} >= 上次平倉價 {last_closed_price}，未創出續跌新低禁止追空"
-                    logger.warning(msg)
-                    return False, "BLOCKED_REQUIRES_NEW_LOW_BELOW_LAST_EXIT", details
-                # 滿足突破低於上次平倉價，直接豁免固定冷卻門檻！
-        elif entry_confirmation != "CONTINUATION_OUTSIDE_KC":
-            if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
-                msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
-                logger.warning(msg)
-                return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)", details
+        # ── 破軌優先覆蓋 (Breakout Override) 與 趨勢回踩二次進場 (Trend Continuation Entry) ──
+        # 核心原則：大週期趨勢不變、二次破軌或強勢回踩時不被冷卻機制攔截！
+        is_breakout_override = False
+        is_continuation_reentry = False
 
-            if bars_since_last_exit is None and last_closed_ts > 0:
-                curr_ts = float(last_closed.get("timestamp", time.time() * 1000.0))
-                previous_ts = float(prev_closed.get("timestamp", curr_ts))
-                timestamp_step = curr_ts - previous_ts
-                timestamp_scale = (
-                    1000.0 if math.isclose(timestamp_step, timeframe_ms / 1000.0, rel_tol=1e-6) else 1.0
+
+        if side == "LONG":
+            is_outer_breakout = (kc_up > 0) and (current_tick_price > kc_up or close_p > kc_up)
+            has_breakout_mode = bool(
+                entry_confirmation in (
+                    "BREAKOUT_FLOW", "CONTINUATION_OUTSIDE_KC", "TWO_BAR_EXTREME_BREAKOUT",
+                    "INSTANT_BURST_BREAKOUT", "CONFIRMED_2BAR_BREAKOUT", "INSTANT_BREAKOUT_INSIDE",
+                    "BREAKOUT", "CONTINUATION", "MID_LINE_BREAKOUT",
                 )
-                curr_ts *= timestamp_scale
-                close_scale = (
-                    1000.0 if last_closed_ts < 1e11 and (timestamp_scale == 1000.0 or curr_ts >= 1e11) else timestamp_scale
+            )
+            # 破軌優先覆蓋：有明確破軌模式確認，且大週期為 KC 向上 (或破軌直接發動)，且突破 KC 上軌
+            is_breakout_override = (
+                has_breakout_mode
+                and (kc_trend in ("UP", "BULLISH", "") or is_outer_breakout)
+                and kc_up > 0
+                and (close_p > kc_up or current_tick_price > kc_up)
+            )
+            # 趨勢回踩二次進場：先前部位已出場，大週期仍為 KC 向上，回調未跌破中軌且收紅站回 MA5 之上
+            is_continuation_confirmed = (
+                entry_confirmation in ("PULLBACK_SUPPORT_CONFIRMED", "DIP_SNIPER", "MA_CROSSOVER", "CROSSOVER", "TREND_CONTINUATION_ENTRY")
+                or (bool(entry_confirmation) and close_p > open_p and close_p > ma5_val)
+            )
+            is_continuation_reentry = (
+                (kc_trend in ("UP", "BULLISH", ""))
+                and kc_mid_val > 0
+                and (close_p >= kc_mid_val or current_tick_price >= kc_mid_val)
+                and is_continuation_confirmed
+            )
+        elif side == "SHORT":
+            is_outer_breakout = (kc_low > 0) and (current_tick_price < kc_low or close_p < kc_low)
+            has_breakout_mode = bool(
+                entry_confirmation in (
+                    "BREAKOUT_FLOW", "CONTINUATION_OUTSIDE_KC", "TWO_BAR_EXTREME_BREAKOUT",
+                    "INSTANT_BURST_BREAKOUT", "CONFIRMED_2BAR_BREAKOUT", "INSTANT_BREAKOUT_INSIDE",
+                    "BREAKOUT", "CONTINUATION", "MID_LINE_BREAKDOWN",
                 )
-                ts_norm = last_closed_ts * close_scale
-                bars_since = (curr_ts - ts_norm) / timeframe_ms
-                if bars_since < float(cooldown_bars):
-                    msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"
+            )
+            is_breakout_override = (
+                has_breakout_mode
+                and (kc_trend in ("DOWN", "BEARISH", "") or is_outer_breakout)
+                and kc_low > 0
+                and (close_p < kc_low or current_tick_price < kc_low)
+            )
+            # 趨勢回抽二次進場：先前部位已出場，大週期仍為 KC 向下，回抽未衝破中軌且收黑跌破 MA5
+            is_continuation_confirmed = (
+                entry_confirmation in ("PULLBACK_RESISTANCE_CONFIRMED", "DIP_SNIPER", "MA_CROSSOVER", "CROSSOVER", "TREND_CONTINUATION_ENTRY")
+                or (bool(entry_confirmation) and close_p < open_p and close_p < ma5_val)
+            )
+            is_continuation_reentry = (
+                (kc_trend in ("DOWN", "BEARISH", ""))
+                and kc_mid_val > 0
+                and (close_p <= kc_mid_val or current_tick_price <= kc_mid_val)
+                and is_continuation_confirmed
+            )
+
+        if is_breakout_override or is_continuation_reentry:
+            exempt_tag = "BREAKOUT_OVERRIDE" if is_breakout_override else "TREND_CONTINUATION_REENTRY"
+            logger.info(f"[冷卻豁免] {symbol} 符合 {exempt_tag}，直接豁免冷卻期與平倉價限制，放行開{side_cn}！")
+            details["cooldown_exempt"] = exempt_tag
+        else:
+            # 2. 價格突破過濾：必須有新的突破才進場，有新突破立即解除冷卻！
+            if last_closed_price > 0 and current_tick_price > 0:
+                if side == "LONG":
+                    # 多單：價格必須高於上次平倉價，確認發動續漲才追多
+                    if current_tick_price <= last_closed_price:
+                        msg = f"[攔截開多] {symbol} 最新價 {current_tick_price} <= 上次平倉價 {last_closed_price}，未創出續漲新高禁止追多"
+                        logger.warning(msg)
+                        return veto_return("BLOCKED_REQUIRES_NEW_HIGH_ABOVE_LAST_EXIT")
+                    # 滿足突破高於上次平倉價，直接豁免固定冷卻門檻！
+                elif side == "SHORT":
+                    # 空單：價格必須低於上次平倉價，確認發動續跌才追空
+                    if current_tick_price >= last_closed_price:
+                        msg = f"[攔截開空] {symbol} 最新價 {current_tick_price} >= 上次平倉價 {last_closed_price}，未創出續跌新低禁止追空"
+                        logger.warning(msg)
+                        return veto_return("BLOCKED_REQUIRES_NEW_LOW_BELOW_LAST_EXIT")
+                    # 滿足突破低於上次平倉價，直接豁免固定冷卻門檻！
+            elif entry_confirmation != "CONTINUATION_OUTSIDE_KC":
+                if bars_since_last_exit is not None and bars_since_last_exit < cooldown_bars:
+                    msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (已過 {bars_since_last_exit} 根 < {cooldown_bars} 根冷卻門檻)，禁止再次開{side_cn}"
                     logger.warning(msg)
-                    return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)", details
+                    return veto_return(f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since_last_exit} 根，未滿 {cooldown_bars} 根)")
+
+                if bars_since_last_exit is None and last_closed_ts > 0:
+                    curr_ts = float(last_closed.get("timestamp", time.time() * 1000.0))
+                    previous_ts = float(prev_closed.get("timestamp", curr_ts))
+                    timestamp_step = curr_ts - previous_ts
+                    timestamp_scale = (
+                        1000.0 if math.isclose(timestamp_step, timeframe_ms / 1000.0, rel_tol=1e-6) else 1.0
+                    )
+                    curr_ts *= timestamp_scale
+                    close_scale = (
+                        1000.0 if last_closed_ts < 1e11 and (timestamp_scale == 1000.0 or curr_ts >= 1e11) else timestamp_scale
+                    )
+                    ts_norm = last_closed_ts * close_scale
+                    bars_since = (curr_ts - ts_norm) / timeframe_ms
+                    if bars_since < float(cooldown_bars):
+                        msg = f"[攔截開{side_cn}] {symbol} 處於平倉冷卻期 (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)，禁止再次開{side_cn}"
+                        logger.warning(msg)
+                        return veto_return(f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {cooldown_bars} 根)")
 
     # ══════════════════════════════════════════════════════════════════
     # 一、 開倉絕對門禁 (一票否決制，嚴禁繞過)
@@ -265,92 +356,151 @@ def can_open_position(
     atr_val = float(last_closed.get("atr", 0.0001)) or 0.0001
 
     if side == "LONG":
-        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER / MID_LINE_BREAKOUT 豁免滯後 KC 斜率)
-        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKOUT"} and kc_trend != "UP":
+        exempt_long_modes = {
+            "INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER",
+            "MID_LINE_BREAKOUT", "BREAKOUT", "CONTINUATION", "FIVE_LINE_CONTINUATION",
+            "BREAK_STRONG", "BREAK_CONFIRM", "BREAK_STRONG_ADD", "BREAK_CONFIRM_OPP",
+        }
+        is_rail_breakout_long = (kc_up > 0 and (live_price > kc_up or close_p > kc_up))
+        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；破軌/貫穿/延續模式豁免滯後 KC 斜率)
+        if entry_confirmation not in exempt_long_modes and not is_rail_breakout_long and kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, f"VETO_LONG: BLOCKED_LONG_ON_BEAR_TREND: KC_TREND_NOT_UP ({kc_trend})", details
+            return veto_return(f"VETO_LONG: BLOCKED_LONG_ON_BEAR_TREND: KC_TREND_NOT_UP ({kc_trend})")
 
         # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
-        if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKOUT", "MA_CROSSOVER"} and ma5_curr <= ma15_curr:
+        if not is_instant_breakout and entry_confirmation not in exempt_long_modes and not is_rail_breakout_long and ma5_curr <= ma15_curr:
             if not (live_price > kc_mid and live_price > ma15_curr):
                 msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
                 logger.warning(msg)
                 print(msg, flush=True)
-                return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
+                return veto_return("VETO_LONG: MA5_NOT_ABOVE_MA15")
 
         # 3. ma5[-1] <= ma5[-2]: return False (MA5 未實質向上勾頭不開多)
-        # 解除否決條件：當 MA5 重新拐頭向上且站上 KC 中軌時，必須立即解除 Veto 否決，恢復開多權限！
         is_ma5_bullish_resumed = (
             (live_price > kc_mid or close_p > kc_mid)
             and (
                 live_price > ma5_curr
-                or entry_confirmation in {"MID_LINE_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"}
+                or entry_confirmation in exempt_long_modes
+                or is_rail_breakout_long
                 or abs(ma5_curr - ma5_prev) <= 1e-4
                 or live_price >= open_p
             )
         )
-        if not is_instant_breakout and ma5_curr <= ma5_prev and not is_ma5_bullish_resumed:
+        if not is_instant_breakout and not is_rail_breakout_long and ma5_curr <= ma5_prev and not is_ma5_bullish_resumed:
             msg = f"[攔截開多] {symbol} MA5 未實質向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_LONG: MA5_SLOPE_NOT_POSITIVE", details
+            return veto_return("VETO_LONG: MA5_SLOPE_NOT_POSITIVE")
 
-        # 4. 實體陰線禁止開多
-        is_bullish_active = (
-            has_live_breakout_confirmation
-            or entry_confirmation in {"MID_LINE_BREAKOUT", "DIP_SNIPER"}
-            or (live_price > open_p and live_price > kc_mid)
+        # 4. 破軌第二根檢查 (首根破軌後，次根收盤仍在軌道外；同色放行；反色小實體 <= 0.6*avg_body 放行，否則大實體或收回軌內一票否決)
+        is_live_green = (
+            (live_price > float(live.get("open", open_p)))
+            if live is not None
+            else (close_p > open_p)
         )
-        if close_p <= open_p and not is_bullish_active:
-            msg = f"[攔截開多] {symbol} 上一根為陰線實體，禁止開多"
+        prev_kc_up = float(prev_closed.get("kc_upper", 0.0) or 0.0)
+        is_first_bar_breakout_long = (prev_kc_up > 0 and prev_close > prev_kc_up)
+        is_second_bar_opp_allowed = False
+
+        if is_first_bar_breakout_long:
+            dist_prev = prev_close - prev_kc_up
+            dist_curr = close_p - kc_up
+            prev_body = abs(prev_close - prev_open)
+            prev_color_str = "GREEN" if prev_close > prev_open else "RED"
+            curr_color_str = "GREEN" if (close_p > open_p or is_live_green) else "RED"
+
+            # a. 檢查收盤是否已回到 KC 軌道內
+            if close_p <= kc_up and not is_live_green:
+                msg = (
+                    f"[ENTRY_GATE_SECOND_BAR 否決] {symbol} side=LONG | "
+                    f"Bar1: {prev_color_str}, body={prev_body:.6g}, dist={dist_prev:+.6g} | "
+                    f"Bar2: {curr_color_str}, body={body:.6g}, dist={dist_curr:+.6g} | "
+                    f"avg_body={avg_body:.6g} | 原因: 次根收盤已跌回KC軌道內 (close={close_p:.6g} <= kc_up={kc_up:.6g})"
+                )
+                logger.warning(msg)
+                print(msg, flush=True)
+                return veto_return("VETO_LONG: BLOCKED_BREAKOUT_SECOND_BAR_RETURN_INSIDE_KC")
+
+            # b. 同色放行
+            if close_p > open_p or is_live_green:
+                logger.info(
+                    "[ENTRY_GATE_SECOND_BAR 同色放行 100%%] %s side=LONG | Bar1: %s, body=%.6g, dist=%+.6g | Bar2: %s, body=%.6g, dist=%+.6g | avg_body=%.6g",
+                    symbol, prev_color_str, prev_body, dist_prev, curr_color_str, body, dist_curr, avg_body,
+                )
+            else:
+                # c. 反色但實體 <= 0.6 * avg_body 放行 50%
+                ratio = body / max(1e-9, avg_body)
+                if body <= 0.60 * avg_body:
+                    is_second_bar_opp_allowed = True
+                    logger.info(
+                        "[ENTRY_GATE_SECOND_BAR 反色弱實體放行 50%%] %s side=LONG | Bar1: %s, body=%.6g, dist=%+.6g | Bar2: %s, body=%.6g, dist=%+.6g | avg_body=%.6g, ratio=%.2fx <= 0.60x",
+                        symbol, prev_color_str, prev_body, dist_prev, curr_color_str, body, dist_curr, avg_body, ratio,
+                    )
+                else:
+                    # d. 反色且大實體 -> 否決
+                    msg = (
+                        f"[ENTRY_GATE_SECOND_BAR 否決] {symbol} side=LONG | "
+                        f"Bar1: {prev_color_str}, body={prev_body:.6g}, dist={dist_prev:+.6g} | "
+                        f"Bar2: {curr_color_str}, body={body:.6g}, dist={dist_curr:+.6g} | "
+                        f"avg_body={avg_body:.6g}, ratio={ratio:.2f}x > 0.60x | 原因: 反色大實體"
+                    )
+                    logger.warning(msg)
+                    print(msg, flush=True)
+                    return veto_return("VETO_LONG: BLOCKED_BREAKOUT_SECOND_BAR_OPPOSITE_LARGE_BODY")
+
+        if close_p <= open_p and not is_live_green and not is_second_bar_opp_allowed and entry_confirmation not in {"BREAK_CONFIRM_OPP", "DIP_SNIPER"}:
+            msg = f"[攔截開多] {symbol} 收盤為陰線實體 (close={close_p:.6g} <= open={open_p:.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_LONG: BEARISH_CANDLE", details
+            return veto_return("VETO_LONG: BEARISH_CANDLE")
 
         # 5. 頂部上影線追多過濾 (嚴禁頂部上影線追多)
         if (
             upper_wick > 1.5 * max(body, 1e-9)
             and not has_live_breakout_confirmation
-            and entry_confirmation not in {"MID_LINE_BREAKOUT"}
+            and entry_confirmation not in exempt_long_modes
+            and not is_rail_breakout_long
         ):
             msg = f"[攔截開多] {symbol} 上一根為長上影線竭盡避雷針，嚴禁頂部追多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_LONG: EXHAUSTION_UPPER_WICK", details
+            return veto_return("VETO_LONG: EXHAUSTION_UPPER_WICK")
 
         # 6. 必須是上一根已收盤為「金叉突破」或「多頭排列首根收陽」
         is_golden_cross = (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
         is_first_bull_bar = (close_p > open_p and (prev_close <= prev_open or ma5_prev <= ma15_prev))
         is_strong_bull_aligned = (ma5_curr > ma15_curr and close_p > open_p and ma5_curr > ma5_prev)
-        if not wild_outer_entry and entry_confirmation not in {"DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKOUT"} and not (
+        if not wild_outer_entry and entry_confirmation not in exempt_long_modes and not is_rail_breakout_long and not (
             is_golden_cross or is_first_bull_bar or is_strong_bull_aligned
         ):
             msg = f"[攔截開多] {symbol} 非金叉突破且非多頭排列首根收陽，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
+            return veto_return("VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR")
 
     elif side == "SHORT":
         exempt_short_modes = {
             "INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER",
             "MID_LINE_BREAKDOWN", "BREAKOUT", "CONTINUATION", "FIVE_LINE_CONTINUATION",
+            "BREAK_STRONG", "BREAK_CONFIRM", "BREAK_STRONG_ADD", "BREAK_CONFIRM_OPP",
         }
+        is_rail_breakdown_short = (kc_low > 0 and (live_price < kc_low or close_p < kc_low))
         # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；破軌/貫穿/延續模式豁免滯後 KC 斜率)
-        if entry_confirmation not in exempt_short_modes and kc_trend != "DOWN":
+        if entry_confirmation not in exempt_short_modes and not is_rail_breakdown_short and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, f"VETO_SHORT: BLOCKED_SHORT_ON_BULL_TREND: KC_TREND_NOT_DOWN ({kc_trend})", details
+            return veto_return(f"VETO_SHORT: BLOCKED_SHORT_ON_BULL_TREND: KC_TREND_NOT_DOWN ({kc_trend})")
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
-        if not is_instant_breakout and entry_confirmation not in exempt_short_modes and ma5_curr >= ma15_curr:
+        if not is_instant_breakout and entry_confirmation not in exempt_short_modes and not is_rail_breakdown_short and ma5_curr >= ma15_curr:
             if not (live_price < kc_mid and live_price < ma15_curr):
                 msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
                 logger.warning(msg)
                 print(msg, flush=True)
-                return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
+                return veto_return("VETO_SHORT: MA5_NOT_BELOW_MA15")
 
         # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
         is_ma5_bearish_resumed = (
@@ -358,38 +508,90 @@ def can_open_position(
             and (
                 live_price < ma5_curr
                 or entry_confirmation in exempt_short_modes
+                or is_rail_breakdown_short
                 or abs(ma5_curr - ma5_prev) <= 1e-4
                 or live_price <= open_p
             )
         )
-        if not is_instant_breakout and ma5_curr >= ma5_prev and not is_ma5_bearish_resumed:
+        if not is_instant_breakout and not is_rail_breakdown_short and ma5_curr >= ma5_prev and not is_ma5_bearish_resumed:
             msg = f"[攔截開空] {symbol} MA5 走平或向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_SHORT: MA5_SLOPE_NOT_NEGATIVE", details
+            return veto_return("VETO_SHORT: MA5_SLOPE_NOT_NEGATIVE")
 
-        # 4. close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
-        is_bearish_active = (
-            has_live_breakout_confirmation
-            or entry_confirmation in exempt_short_modes
-            or (live_price < open_p and live_price < kc_mid)
+        # 4. 破軌第二根檢查 (首根跌破下軌後，次根收盤仍在下軌外；同色放行；反色小實體 <= 0.6*avg_body 放行，否則大實體或收回軌內一票否決)
+        is_live_red = (
+            (live_price < float(live.get("open", open_p)))
+            if live is not None
+            else (close_p < open_p)
         )
-        if close_p >= open_p and not is_bearish_active:
-            msg = f"[攔截開空] {symbol} 上一根為實體陽線，禁止開空"
+        prev_kc_low = float(prev_closed.get("kc_lower", 0.0) or 0.0)
+        is_first_bar_breakout_short = (prev_kc_low > 0 and prev_close < prev_kc_low)
+        is_second_bar_opp_allowed = False
+
+        if is_first_bar_breakout_short:
+            dist_prev = prev_close - prev_kc_low
+            dist_curr = close_p - kc_low
+            prev_body = abs(prev_close - prev_open)
+            prev_color_str = "RED" if prev_close < prev_open else "GREEN"
+            curr_color_str = "RED" if (close_p < open_p or is_live_red) else "GREEN"
+
+            # a. 檢查收盤是否已回到 KC 軌道內
+            if close_p >= kc_low and not is_live_red:
+                msg = (
+                    f"[ENTRY_GATE_SECOND_BAR 否決] {symbol} side=SHORT | "
+                    f"Bar1: {prev_color_str}, body={prev_body:.6g}, dist={dist_prev:+.6g} | "
+                    f"Bar2: {curr_color_str}, body={body:.6g}, dist={dist_curr:+.6g} | "
+                    f"avg_body={avg_body:.6g} | 原因: 次根收盤已漲回KC軌道內 (close={close_p:.6g} >= kc_low={kc_low:.6g})"
+                )
+                logger.warning(msg)
+                print(msg, flush=True)
+                return veto_return("VETO_SHORT: BLOCKED_BREAKOUT_SECOND_BAR_RETURN_INSIDE_KC")
+
+            # b. 同色放行
+            if close_p < open_p or is_live_red:
+                logger.info(
+                    "[ENTRY_GATE_SECOND_BAR 同色放行 100%%] %s side=SHORT | Bar1: %s, body=%.6g, dist=%+.6g | Bar2: %s, body=%.6g, dist=%+.6g | avg_body=%.6g",
+                    symbol, prev_color_str, prev_body, dist_prev, curr_color_str, body, dist_curr, avg_body,
+                )
+            else:
+                # c. 反色但實體 <= 0.6 * avg_body 放行 50%
+                ratio = body / max(1e-9, avg_body)
+                if body <= 0.60 * avg_body:
+                    is_second_bar_opp_allowed = True
+                    logger.info(
+                        "[ENTRY_GATE_SECOND_BAR 反色弱實體放行 50%%] %s side=SHORT | Bar1: %s, body=%.6g, dist=%+.6g | Bar2: %s, body=%.6g, dist=%+.6g | avg_body=%.6g, ratio=%.2fx <= 0.60x",
+                        symbol, prev_color_str, prev_body, dist_prev, curr_color_str, body, dist_curr, avg_body, ratio,
+                    )
+                else:
+                    # d. 反色且大實體 -> 否決
+                    msg = (
+                        f"[ENTRY_GATE_SECOND_BAR 否決] {symbol} side=SHORT | "
+                        f"Bar1: {prev_color_str}, body={prev_body:.6g}, dist={dist_prev:+.6g} | "
+                        f"Bar2: {curr_color_str}, body={body:.6g}, dist={dist_curr:+.6g} | "
+                        f"avg_body={avg_body:.6g}, ratio={ratio:.2f}x > 0.60x | 原因: 反色大實體"
+                    )
+                    logger.warning(msg)
+                    print(msg, flush=True)
+                    return veto_return("VETO_SHORT: BLOCKED_BREAKOUT_SECOND_BAR_OPPOSITE_LARGE_BODY")
+
+        if close_p >= open_p and not is_live_red and not is_second_bar_opp_allowed and entry_confirmation not in {"BREAK_CONFIRM_OPP", "DIP_SNIPER"}:
+            msg = f"[攔截開空] {symbol} 收盤為實體陽線 (close={close_p:.6g} >= open={open_p:.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_SHORT: BULLISH_CANDLE", details
+            return veto_return("VETO_SHORT: BULLISH_CANDLE")
 
         # 5. 底部下影線反彈過濾
         if (
             lower_wick > 1.5 * max(body, 1e-9)
             and not has_live_breakout_confirmation
             and entry_confirmation not in exempt_short_modes
+            and not is_rail_breakdown_short
         ):
             msg = f"[攔截開空] {symbol} 上一根為長下影線反彈棒，嚴禁底部追空"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, "VETO_SHORT: REBOUND_LOWER_WICK", details
+            return veto_return("VETO_SHORT: REBOUND_LOWER_WICK")
 
     return True, "PASS: GATEKEEPER_PERMIT", details
 
@@ -631,12 +833,12 @@ class TrendRidingStrategy:
             closed_above_support = (c >= min(ma5, ema3, basis))
 
             if tested_support and candle_is_bullish and closed_above_support:
-                # 檢查冷卻保護 (常規回踩需受平倉冷卻限制，若已過冷卻則放行)
+                # 檢查冷卻保護 (跨 K 棒回踩確認收陽直接放行二次進場，僅同根防刷單)
                 if last_closed_action in ('CLOSE_LONG', 'EXIT_LONG') and last_closed_ts > 0:
                     curr_ts = float(curr.get('timestamp', time.time() * 1000))
                     bars_since_close = (curr_ts - last_closed_ts) / timeframe_ms
-                    if bars_since_close < self.cooldown_bars:
-                        return False, f"VETO: COOLDOWN_ACTIVE (回踩確認但距上次平倉僅 {bars_since_close:.1f} 根 < {self.cooldown_bars} 根)", details
+                    if bars_since_close < 0.5:
+                        return False, "VETO: SAME_CANDLE_ANTI_CHOP (同一根 K 棒剛平倉，禁止同向立即秒開)", details
 
                 details['reentry_type'] = 'PULLBACK_SUPPORT_CONFIRMED'
                 return True, "PASS: SQUEEZE_PULLBACK_CONFIRMED_LONG (高位中繼回踩支撐未破收陽，確認再開多)", details
@@ -665,8 +867,8 @@ class TrendRidingStrategy:
                 if last_closed_action in ('CLOSE_SHORT', 'EXIT_SHORT') and last_closed_ts > 0:
                     curr_ts = float(curr.get('timestamp', time.time() * 1000))
                     bars_since_close = (curr_ts - last_closed_ts) / timeframe_ms
-                    if bars_since_close < self.cooldown_bars:
-                        return False, f"VETO: COOLDOWN_ACTIVE (回抽確認但距上次平倉僅 {bars_since_close:.1f} 根 < {self.cooldown_bars} 根)", details
+                    if bars_since_close < 0.5:
+                        return False, "VETO: SAME_CANDLE_ANTI_CHOP (同一根 K 棒剛平倉，禁止同向立即秒開)", details
 
                 details['reentry_type'] = 'PULLBACK_RESISTANCE_CONFIRMED'
                 return True, "PASS: SQUEEZE_PULLBACK_CONFIRMED_SHORT (下跌中繼回抽阻力未破收陰，確認再開空)", details
@@ -747,13 +949,18 @@ class TrendRidingStrategy:
             'atr': atr,
         }
 
-        # 1. 冷卻保護
+        # 1. 冷卻保護 (解除跨 K 棒破軌與回踩之死板冷卻，保留同 K 棒防刷單)
         target_close_actions = ('CLOSE_LONG', 'EXIT_LONG') if side == 'LONG' else ('CLOSE_SHORT', 'EXIT_SHORT')
         if last_closed_action in target_close_actions and last_closed_ts > 0:
             curr_ts = float(curr.get('timestamp', time.time() * 1000))
             bars_since = (curr_ts - last_closed_ts) / timeframe_ms
-            if bars_since < self.cooldown_bars:
-                return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {self.cooldown_bars} 根)", details
+            if bars_since < 0.5:
+                return False, "VETO: SAME_CANDLE_ANTI_CHOP (同一根 K 棒剛平倉，禁止同向立即秒開)", details
+            is_breakout = (c > kc_upper or (quote and quote > kc_upper)) if side == 'LONG' else (c < kc_lower or (quote and quote < kc_lower))
+            is_continuation = (c >= basis and c > float(curr.get('open', c)) and c > ma5) if side == 'LONG' else (c <= basis and c < float(curr.get('open', c)) and c < ma5)
+            if not (is_breakout or is_continuation):
+                if bars_since < self.cooldown_bars:
+                    return False, f"VETO: COOLDOWN_ACTIVE (平倉後僅 {bars_since:.1f} 根，未滿 {self.cooldown_bars} 根)", details
 
         # 2. 順勢鐵律
         if side == 'LONG':

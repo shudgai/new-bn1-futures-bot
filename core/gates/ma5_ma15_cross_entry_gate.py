@@ -336,15 +336,15 @@ def validate_ma5_ma15_cross_entry(
             return False, macro_reason, details
         kc_position = (close_price - kc_lower) / channel_width
         bias_atr = abs(close_price - ma15_curr) / atr
-        if side == "LONG" and kc_position > 0.35:
+        if side == "LONG" and kc_position > 0.98:
             return False, "VETO_MACRO_KC_POSITION_LONG", details
-        if side == "SHORT" and kc_position < 0.65:
+        if side == "SHORT" and kc_position < 0.02:
             return False, "VETO_MACRO_KC_POSITION_SHORT", details
-        if bias_atr > 1.2:
+        if bias_atr > 2.0:
             return False, "VETO_MACRO_MA15_BIAS", details
-        if side == "LONG" and upper_wick > body and close_price < float(row["high"]):
+        if side == "LONG" and upper_wick > body * 2.5 and upper_wick > 0.7 * atr and close_price < float(row["high"]):
             return False, "VETO_MACRO_LONG_UPPER_WICK_EXHAUSTION", details
-        if side == "SHORT" and lower_wick > body and close_price > float(row["low"]):
+        if side == "SHORT" and lower_wick > body * 2.5 and lower_wick > 0.7 * atr and close_price > float(row["low"]):
             return False, "VETO_MACRO_SHORT_LOWER_WICK_EXHAUSTION", details
     except (KeyError, TypeError, ValueError, OverflowError):
         return False, "BLOCKED_MACRO_STRUCTURE_DATA_INVALID", details

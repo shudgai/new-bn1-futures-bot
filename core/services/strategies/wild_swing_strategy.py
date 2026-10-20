@@ -272,12 +272,14 @@ class WildSwingStrategy:
         )
         supported_types = {
             CONFIRMED_2BAR_BREAKOUT,
-            INSTANT_BREAKOUT_INSIDE,
             CONTINUATION_OUTSIDE_KC,
             MA_CROSSOVER,
             FIVE_LINE_CONTINUATION,
-            INSTANT_BURST_BREAKOUT,
         }
+        if candidate and candidate.get("is_intrabar") is True and candidate.get("type") in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}:
+            # 鐵律：第一根實體破軌嚴禁用即時價搶開，必須等待第二根確認 (CONFIRMED_2BAR_BREAKOUT) 才允許進場
+            candidate = None
+
         if (
             candidate is None
             or candidate.get("action") != f"OPEN_{side}"
@@ -1050,6 +1052,112 @@ class WildSwingStrategy:
             except (KeyError, TypeError, ValueError, OverflowError):
                 return None
         if current_price > 0:
+            if frame is not None and not frame.empty:
+                last_candle = frame.iloc[-1].to_dict()
+                prev_candle = frame.iloc[-2].to_dict() if len(frame) > 1 else last_candle
+                c_close = float(last_candle.get("close", current_price))
+                c_ma5 = float(last_candle.get("ma5", last_candle.get("ema5", 0.0)))
+                p_ma5 = float(prev_candle.get("ma5", prev_candle.get("ema5", c_ma5)))
+                c_mid = float(last_candle.get("kc_middle", last_candle.get("kc_basis", 0.0)))
+                p_mid = float(prev_candle.get("kc_middle", prev_candle.get("kc_basis", c_mid)))
+
+                from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+                current_kc_trend = resolve_kc_trend(frame)
+                bar_id = float(last_candle.get("timestamp", 0))
+
+                # ── 獲利 R 值與配置參數 ──
+                entry_p = float((position or {}).get("entry_price") or 0.0)
+                atr = float(last_candle.get("atr", 0.0001) or 0.0001)
+                initial_sl = float((position or {}).get("initial_sl") or 0.0)
+                risk_r = abs(entry_p - initial_sl) if (initial_sl > 0 and entry_p > 0) else (1.5 * atr)
+                cur_pnl = (current_price - entry_p) if side == "LONG" else (entry_p - current_price)
+                profit_r = cur_pnl / risk_r if risk_r > 0 else 0.0
+
+                c_open = float(last_candle.get("open", current_price))
+                p_close = float(prev_candle.get("close", c_close))
+                p2_candle = frame.iloc[-3].to_dict() if len(frame) > 2 else prev_candle
+                p2_ma5 = float(p2_candle.get("ma5", p2_candle.get("ema5", p_ma5)))
+                c_kc_up = float(last_candle.get("kc_upper", 0.0))
+                p_kc_up = float(prev_candle.get("kc_upper", 0.0))
+                c_kc_low = float(last_candle.get("kc_lower", 0.0))
+                p_kc_low = float(prev_candle.get("kc_lower", 0.0))
+                p_ema13 = float(prev_candle.get("ema13", prev_candle.get("ma15", p_mid)))
+
+                c_ema13 = float(last_candle.get("ema13", last_candle.get("ma15", c_mid)))
+                p_ema13 = float(prev_candle.get("ema13", prev_candle.get("ma15", p_mid)))
+
+                if side == "LONG":
+                    # ── 多單 3 分鐘專業動量衰退平倉 SOP ──
+                    # 1. 【訊號 1】收盤實體跌破 EMA 13：代表短線主動買盤無力支撐，果斷平倉
+                    # （正常回踩：盤中影線瞬間刺穿但收盤收回在 EMA13 之上，一律視為回踩洗盤，嚴禁平倉）
+                    if c_ema13 > 0 and c_close < c_ema13:
+                        logger.info("[趨勢衰退平多] %s 3M 收盤實體跌破 EMA13 (close=%.6g < ema13=%.6g)，短線買盤無力，果斷平倉！", symbol, c_close, c_ema13)
+                        print(f"[趨勢衰退平多] {symbol} 3M 收盤實體跌破 EMA13，果斷平倉！", flush=True)
+                        return {
+                            "action": "CLOSE_LONG", "type": "EXIT_BY_EMA13_BREAKDOWN", "side": "LONG",
+                            "reason": "EXIT_BY_EMA13_BREAKDOWN", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "3M收盤實體跌破EMA13"},
+                        }
+
+                    # 2. 【訊號 2】均線走平／死叉 + 跌入 KC 通道中軌：趨勢徹底告一段落，果斷平倉
+                    is_dead_cross_or_flat = (c_ma5 <= c_ema13) or (c_ma5 <= p_ma5 and c_ma5 <= c_ema13 * 1.0005)
+                    is_kc_mid_pierced = (c_mid > 0 and c_close < c_mid)
+                    if is_dead_cross_or_flat and is_kc_mid_pierced:
+                        logger.info("[趨勢終結平多] %s EMA5死叉/走平下穿EMA13 且摜破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
+                        print(f"[趨勢終結平多] {symbol} EMA5死叉且摜破 KC 中軌，果斷平倉！", flush=True)
+                        return {
+                            "action": "CLOSE_LONG", "type": "EXIT_BY_DEAD_CROSS_KC_MID_BREAKDOWN", "side": "LONG",
+                            "reason": "EXIT_BY_DEAD_CROSS_KC_MID_BREAKDOWN", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "EMA5死叉且摜破KC中軌"},
+                        }
+
+                    # 3. 大週期趨勢強制平多：大週期轉為 KC 向下
+                    is_trend_bearish = (current_kc_trend in ("DOWN", "向下", "DOWNTREND", "BEARISH")) or (c_mid > 0 and p_mid > 0 and c_mid < p_mid and c_close < c_mid)
+                    if is_trend_bearish:
+                        logger.info("[強制平多] %s 大週期轉為 KC 向下，強制市價全平多單！", symbol)
+                        print(f"[強制平多] {symbol} 大週期轉為 KC 向下，強制市價全平多單！", flush=True)
+                        return {
+                            "action": "CLOSE_LONG", "type": "EXIT_BY_BEARISH_TREND_REVERSAL", "side": "LONG",
+                            "reason": "EXIT_BY_BEARISH_TREND_REVERSAL", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "KC_TREND_TURNED_BEARISH"},
+                        }
+
+                elif side == "SHORT":
+                    # ── 空單 3 分鐘專業動量衰退平倉 SOP (反向對稱) ──
+                    # 1. 【訊號 1】收盤實體突破 EMA 13：代表短線主動賣盤無力壓制，果斷平倉
+                    # （正常回踩：盤中影線瞬間刺穿但收盤壓回在 EMA13 之下，一律視為回踩洗盤，嚴禁平倉）
+                    if c_ema13 > 0 and c_close > c_ema13:
+                        logger.info("[趨勢衰退平空] %s 3M 收盤實體突破 EMA13 (close=%.6g > ema13=%.6g)，短線賣盤無力，果斷平倉！", symbol, c_close, c_ema13)
+                        print(f"[趨勢衰退平空] {symbol} 3M 收盤實體突破 EMA13，果斷平倉！", flush=True)
+                        return {
+                            "action": "CLOSE_SHORT", "type": "EXIT_BY_EMA13_BREAKOUT", "side": "SHORT",
+                            "reason": "EXIT_BY_EMA13_BREAKOUT", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "3M收盤實體突破EMA13"},
+                        }
+
+                    # 2. 【訊號 2】均線走平／金叉 + 衝入 KC 通道中軌：趨勢徹底告一段落，果斷平倉
+                    is_golden_cross_or_flat = (c_ma5 >= c_ema13) or (c_ma5 >= p_ma5 and c_ma5 >= c_ema13 * 0.9995)
+                    is_kc_mid_reclaimed = (c_mid > 0 and c_close > c_mid)
+                    if is_golden_cross_or_flat and is_kc_mid_reclaimed:
+                        logger.info("[趨勢終結平空] %s EMA5金叉/走平上穿EMA13 且衝破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
+                        print(f"[趨勢終結平空] {symbol} EMA5金叉且衝破 KC 中軌，果斷平倉！", flush=True)
+                        return {
+                            "action": "CLOSE_SHORT", "type": "EXIT_BY_GOLDEN_CROSS_KC_MID_BREAKOUT", "side": "SHORT",
+                            "reason": "EXIT_BY_GOLDEN_CROSS_KC_MID_BREAKOUT", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "EMA5金叉且衝破KC中軌"},
+                        }
+
+                    # 3. 大週期趨勢強制平空：大週期轉為 KC 向上
+                    is_trend_bullish = (current_kc_trend in ("UP", "向上", "UPTREND", "BULLISH")) or (c_mid > 0 and p_mid > 0 and c_mid > p_mid and c_close > c_mid)
+                    if is_trend_bullish:
+                        logger.info("[強制平空] %s 大週期轉為 KC 向上，強制市價全平空單！", symbol)
+                        print(f"[強制平空] {symbol} 大週期轉為 KC 向上，強制市價全平空單！", flush=True)
+                        return {
+                            "action": "CLOSE_SHORT", "type": "EXIT_BY_BULLISH_TREND_REVERSAL", "side": "SHORT",
+                            "reason": "EXIT_BY_BULLISH_TREND_REVERSAL", "bar_id": bar_id, "close": current_price,
+                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "KC_TREND_TURNED_BULLISH"},
+                        }
+
             # ── 1. 大利潤即時動態鎖利（利潤曾達標 5U 以上，動態回撤 25% 立即止盈）──
             entry_p = float((position or {}).get("entry_price") or 0.0)
             pos_amt = abs(float((position or {}).get("amount") or 0.0))

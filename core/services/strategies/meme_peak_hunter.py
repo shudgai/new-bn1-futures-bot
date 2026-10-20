@@ -289,32 +289,27 @@ class MemePeakHunterStrategy:
         candle_body = abs(open_p - close_p)
         candle_body = max(candle_body, 1e-8)
 
+        # 優先取得最新已收線 K 棒收盤價，防盤中 Tick 微秒毛刺誤平倉
+        closed_candle_close = close_p
+        try:
+            from core.services.candle_data import closed_entry_candles
+            closed = closed_entry_candles(frame)
+            if not closed.empty:
+                closed_candle_close = float(closed.iloc[-1].get("close", close_p))
+        except Exception:
+            closed_candle_close = close_p
+
         # =====================================================================
-        # 1. 多單平倉判定 (持多：嚴格以跌破 KC 中軌為結構出場標準)
+        # 1. 多單平倉判定 (持多：大週期向上時嚴禁提前平多，收盤跌破 KC 中軌才平倉)
         # =====================================================================
         if side == "LONG":
             kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)) or 0.0)
             if kc_mid_val <= 0:
                 kc_mid_val = float(ind.get("ema13", 0.0) or 0.0)
 
-            # 1.1 移除『突破/觸碰 KC 上軌平多』：
-            # 價格沿著 KC 上軌運行屬於強勢結構，不應被動止盈，禁止天量見頂搶跑！
-
-            # 1.2 多頭結構徹底破壞：實體收盤跌破 KC 中軌 (close < kc_middle)
-            if kc_mid_val > 0 and close_p < kc_mid_val:
-                details = {
-                    "cause": "TREND_DEAD",
-                    "close": close_p,
-                    "kc_middle": kc_mid_val,
-                    "ema13": ema13,
-                    "vwap": vwap_val,
-                }
-                return "EXIT_BY_MEME_TREND_DEAD", "【多頭結構瓦解】3M收盤實體跌破KC中軌全數平倉", details
-
-            # 1.3 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命
+            # 1.1 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命 (風控優先)
             adverse_loss_atr = (entry_p - close_p) / atr
-            is_midline_breached = (kc_mid_val > 0 and close_p < kc_mid_val and adverse_loss_atr >= 1.0)
-            if adverse_loss_atr >= 1.5 or is_midline_breached:
+            if adverse_loss_atr >= 1.5:
                 details = {
                     "cause": "ADVERSE_STOP_LOSS",
                     "entry_price": entry_p,
@@ -324,67 +319,32 @@ class MemePeakHunterStrategy:
                 }
                 return "EXIT_BY_MEME_ADVERSE_STOP_LOSS", f"妖幣假突破初始止損 (逆向 {adverse_loss_atr:.1f} ATR 斷尾求生)", details
 
-        # =====================================================================
-        # 2. 空單平倉判定
-        # =====================================================================
-        elif side == "SHORT":
-            kc_lower_val = float(ind.get("kc_lower", 0.0))
-            kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)))
+            # 1.2 移除『突破/觸碰 KC 上軌或回踩初期平多』：價格在 KC 中軌之上強制抱牢讓利潤奔跑！
+            if close_p >= kc_mid_val or closed_candle_close >= kc_mid_val:
+                return None
 
-            # 2.1 通道波段鎖利模式：KC 下軌穿透放量 / 出現長下影線的低點針尖才准鎖利平空
-            # 杜絕在半山腰或下軌不走、一路回吐到上軌才慌忙平倉的錯誤行為！
-            low_wick = min(open_p, close_p) - low_p
-            has_low_wick = (low_wick >= candle_body * 1.5) and (low_wick >= 0.35 * atr)
-            is_huge_volume = (volume >= vol_ma * cls.VOL_MULT)
-            is_at_kc_lower = (kc_lower_val > 0 and low_p <= kc_lower_val * 1.002 and close_p <= kc_mid_val)
-            has_substantial_profit = ((entry_p - close_p) >= 0.8 * atr)
-
-            if is_huge_volume and has_low_wick and is_at_kc_lower and has_substantial_profit:
+            # 1.3 多頭結構徹底破壞：必須已收線 K 棒實體跌破 KC 中軌達 0.15% 緩衝帶 (closed_close < kc_middle * 0.9985)
+            if kc_mid_val > 0 and closed_candle_close < (kc_mid_val * 0.9985):
                 details = {
-                    "cause": "CLIMAX_BOTTOM",
-                    "low_wick": low_wick,
-                    "candle_body": candle_body,
-                    "volume": volume,
-                    "vol_ma": vol_ma,
-                    "kc_lower": kc_lower_val,
-                }
-                return "EXIT_BY_MEME_CLIMAX_BOTTOM", "【通道波段鎖利】KC下軌穿透爆量長下影線針尖，平空落袋！", details
-
-            # 2.2 唯一合法結構平倉條件：實體收盤實質站上 EMA13+0.15% 緩衝帶且站回 VWAP
-            if close_p > (ema13 * 1.0015) and close_p > vwap_val:
-                details = {
-                    "cause": "SHORT_TREND_DEAD",
-                    "close": close_p,
+                    "cause": "TREND_DEAD",
+                    "close": closed_candle_close,
+                    "kc_middle": kc_mid_val,
                     "ema13": ema13,
                     "vwap": vwap_val,
                 }
-                return "EXIT_BY_MEME_SHORT_TREND_DEAD", "突破VWAP與13EMA+0.15%緩衝帶，空頭結構瓦解平倉", details
+                return "EXIT_BY_MEME_TREND_DEAD", "【多頭結構瓦解】3M收盤實體實質跌破KC中軌全數平倉", details
 
-            # 2.3 波段抱單模式：價格反抽至 KC 中軌/上軌時，只要 3M 13EMA 依然向下傾斜，嚴禁在此處觸發平空！
-            trough_price = float(position.get("lowest_price") or position.get("trough_price") or entry_p)
-            trough_price = min(trough_price, low_p)
-            profit_reach_atr = (entry_p - trough_price) / atr
-            pullback_atr = (close_p - trough_price) / atr
-
-            prev_ema13 = float(ind.get("prev_ema13", ema13))
-            is_ema13_falling = (ema13 <= prev_ema13)
-            # 若 13EMA 仍在向下傾斜，且價格受制於 13EMA*1.0015 之下，強制抱單不平倉
-            if is_ema13_falling and close_p <= (ema13 * 1.0015):
-                pass
-            elif profit_reach_atr >= 2.0 and pullback_atr >= cls.ATR_MULT and close_p > (ema13 * 1.0015):
-                details = {
-                    "cause": "ATR_TRAILING_LOCK",
-                    "trough_price": trough_price,
-                    "pullback_atr": pullback_atr,
-                    "atr": atr,
-                }
-                return "EXIT_BY_MEME_ATR_TRAILING", f"妖幣ATR移動鎖利 (結構轉折反彈 {pullback_atr:.1f} ATR)", details
-
-            # 2.4 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命，嚴防硬扛巨額虧損
-            adverse_loss_atr = (close_p - entry_p) / atr
+        # =====================================================================
+        # 2. 空單平倉判定 (持空：大週期與KC中軌向下時，未站上KC中軌前一律抱牢！)
+        # =====================================================================
+        elif side == "SHORT":
             kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)))
-            is_midline_breached = (kc_mid_val > 0 and close_p > kc_mid_val and adverse_loss_atr >= 1.0)
-            if adverse_loss_atr >= 1.5 or is_midline_breached:
+            if kc_mid_val <= 0:
+                kc_mid_val = float(ind.get("ema13", 0.0) or 0.0)
+
+            # 2.1 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命 (風控優先)
+            adverse_loss_atr = (close_p - entry_p) / atr
+            if adverse_loss_atr >= 1.5:
                 details = {
                     "cause": "ADVERSE_STOP_LOSS",
                     "entry_price": entry_p,
@@ -393,5 +353,25 @@ class MemePeakHunterStrategy:
                     "atr": atr,
                 }
                 return "EXIT_BY_MEME_ADVERSE_STOP_LOSS", f"妖幣假跌破初始止損 (逆向 {adverse_loss_atr:.1f} ATR 斷尾求生)", details
+
+            # 2.2 廢除 CLIMAX_BOTTOM：大趨勢主跌浪中，禁止因單根短線小陽線或下軌放量提前平空！
+            # 只要價格或收盤仍在 KC 中軌之下，空單一律抱牢，讓利潤持續延伸！
+            if close_p <= kc_mid_val or closed_candle_close <= kc_mid_val:
+                # 檢查大週期/中軌是否仍向下傾斜
+                prev_mid = float(ind.get("prev_ema13", kc_mid_val))
+                if kc_mid_val <= prev_mid * 1.0005:
+                    # 中軌向下或走平，嚴格持有！未站上 KC 中軌前，空單一律抱牢
+                    return None
+
+            # 2.3 唯一合法結構平倉條件：實體收盤實質站上 KC 中軌 / EMA13+0.15% 緩衝帶且站回 VWAP
+            if closed_candle_close > (kc_mid_val * 1.0015) and closed_candle_close > vwap_val:
+                details = {
+                    "cause": "SHORT_TREND_DEAD",
+                    "close": closed_candle_close,
+                    "ema13": ema13,
+                    "kc_middle": kc_mid_val,
+                    "vwap": vwap_val,
+                }
+                return "EXIT_BY_MEME_SHORT_TREND_DEAD", "突破VWAP與KC中軌+0.15%緩衝帶，空頭結構瓦解平倉", details
 
         return None

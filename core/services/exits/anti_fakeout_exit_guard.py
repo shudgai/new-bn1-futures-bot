@@ -58,9 +58,13 @@ def check_exit_with_anti_fakeout(
     short_defense_line = ema13 * (1.0 + buffer_ratio)
 
     # 計算或更新未實現盈虧與峰值利潤
+    entry_p = float(position.get("entry_price", 0.0) or 0.0)
+    pos_amt = abs(float(position.get("amount", 0.0) or position.get("size", 0.0) or 0.0))
+    profit_pct = 0.0
+    if entry_p > 0 and close_p > 0:
+        profit_pct = (close_p - entry_p) / entry_p if side == "long" else (entry_p - close_p) / entry_p
+
     if current_pnl_usdt is None:
-        entry_p = float(position.get("entry_price", 0.0) or 0.0)
-        pos_amt = abs(float(position.get("amount", 0.0) or position.get("size", 0.0) or 0.0))
         if entry_p > 0 and pos_amt > 0 and close_p > 0:
             if side == "long":
                 current_pnl_usdt = (close_p - entry_p) * pos_amt
@@ -74,6 +78,11 @@ def check_exit_with_anti_fakeout(
         max_profit = current_pnl_usdt
         position["max_profit"] = max_profit
 
+    max_profit_pct = float(position.get("max_profit_pct", 0.0) or 0.0)
+    if profit_pct > max_profit_pct:
+        max_profit_pct = profit_pct
+        position["max_profit_pct"] = max_profit_pct
+
     # =========================================================================
     # 0. 極端暴利鎖利守衛 (防天地針插針利潤全吐光)
     # =========================================================================
@@ -82,42 +91,60 @@ def check_exit_with_anti_fakeout(
             return "CLOSE_POSITION", "浮盈曾達 5U 以上，動態回撤鎖利離場"
 
     # =========================================================================
-    # 1. 多單平倉判定 (持多：與空單完全對稱，嚴格以跌破 13EMA 為結構出場標準)
+    # 0.1 保本鎖利機制 (獲利達 0.8%～1.0% 時，止損自動推移至成本價)
+    # =========================================================================
+    if max_profit_pct >= 0.008 and entry_p > 0:
+        if profit_pct <= 0.0005:  # 回落至成本價附近 (+0.05% 或以下)
+            return ("CLOSE_LONG" if side == "long" else "CLOSE_SHORT"), "【保本鎖利機制】浮盈曾達0.8%以上，價格回調至成本價，觸發保本出場"
+
+    # =========================================================================
+    # 0.2 時間停損 (Time Stop: 進場後連續 10 根 K 線仍在成本價附近橫盤，自動平倉)
+    # =========================================================================
+    holding_bars = int(position.get("holding_bars", 0)) + 1
+    position["holding_bars"] = holding_bars
+    if holding_bars >= 10 and entry_p > 0:
+        if abs(profit_pct) <= 0.0025:  # 浮動仍在成本價 ±0.25% 內死水橫盤
+            return ("CLOSE_LONG" if side == "long" else "CLOSE_SHORT"), f"【時間停損 Time Stop】進場已滿{holding_bars}根K線且在成本價附近橫盤，自動平倉避險"
+
+    # =========================================================================
+    # 1. 多單平倉判定 (持多：與空單完全對稱，以跌破 13EMA / KC 中軌為結構出場標準)
     # =========================================================================
     if side == "long":
         long_defense_line = ema13 * (1.0 - buffer_ratio)
 
         # --- 防護 A：回踩不平倉守衛 (Hard Guardrail) ---
-        # 只要 3M 收盤價在 13EMA 之上，強制禁止平多！徹底廢除任何微幅回撤、K 棒收陰、碰觸 5EMA 的偷平倉邏輯！
+        # 只要 3M 收盤價在 13EMA / 中軌之上，強制禁止平多！徹底廢除任何微幅回撤、K 棒收陰、碰觸 5EMA 的偷平倉邏輯！
         if close_p >= ema13:
             return "HOLD", "【多頭結構完整/多頭回踩有守】3M收盤穩居 13EMA 之上，回踩強制抱牢，嚴禁平多！"
 
         # --- 防護 B：假摔洗盤過濾 ---
-        # 雖然收盤微破 13EMA，但未跌破 0.15% 緩衝容忍線，視為假摔洗盤震盪
+        # 雖然收盤微破 13EMA/中軌，但未跌破 0.15% 緩衝容忍線，視為假摔洗盤震盪
         if close_p >= long_defense_line:
             return "HOLD", "【疑似假摔洗盤/疑似假跌破】跌破 13EMA 幅度未達 0.15% 緩衝，維持持倉"
 
-        # --- 真正平多條件：實體確認破位 ---
+        # --- 真正平多條件：實體確認破位 (破中軌止損) ---
         if close_p < long_defense_line:
-            return "CLOSE_LONG", "【實質跌破離場】3M收盤實體跌破13EMA與緩衝帶，多頭結構瓦解"
+            return "CLOSE_LONG", "【實質跌破離場】3M收盤實體跌破13EMA與KC中軌緩衝帶，多頭結構瓦解"
 
     # =========================================================================
-    # 2. 空單平倉判定 (持空)
+    # 2. 空單平倉判定 (持空：以衝破 13EMA / KC 中軌為結構出場標準)
     # =========================================================================
     elif side == "short":
+        short_defense_line = ema13 * (1.0 + buffer_ratio)
+
         # --- 防護 A：反彈不平倉守衛 ---
-        # 只要 3M 收盤價依然低於 EMA13，無論中間陽線反彈多高、上影線上刺多長，強制不平倉
+        # 只要 3M 收盤價依然低於 EMA13 / 中軌，無論中間陽線反彈多高、上影線上刺多長，強制不平倉
         if close_p <= ema13:
             return "HOLD", "【空頭反彈遇阻】3M收盤仍在EMA13之下，空頭趨勢完整，禁止平空！"
 
         # --- 防護 B：假突破過濾 ---
-        # 雖然收盤微破 EMA13，但未突破緩衝容忍線，視為假突破誘多
+        # 雖然收盤微破 EMA13/中軌，但未突破緩衝容忍線，視為假突破誘多
         if close_p <= short_defense_line:
             return "HOLD", "【疑似假突破】突破幅度未達 0.15% 緩衝，維持持倉"
 
-        # --- 真正平空條件：實體確認破位 ---
+        # --- 真正平空條件：實體確認破位 (站上中軌止損) ---
         if close_p > short_defense_line:
-            return "CLOSE_SHORT", "【實質突破離場】3M收盤實體衝破13EMA與緩衝帶，空頭結構瓦解"
+            return "CLOSE_SHORT", "【實質突破離場】3M收盤實體衝破13EMA與KC中軌緩衝帶，空頭結構瓦解"
 
 def is_valid_short_climax_exit(
     candle: Dict[str, Any],
@@ -211,38 +238,58 @@ def should_veto_long_exit(
     """
     reason_upper = str(exit_reason or "").upper()
 
-    # 1. 硬止損一律放行以保本金安全
-    if any(h in reason_upper for h in ("HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS")):
-        return False, "硬止損緊急避險放行"
+    # 1. 硬止損一律放行以保本金安全，同時放行保本鎖利、時間停損、大週期轉向、3M 破位與 5 大頂部動能反轉平多
+    if any(h in reason_upper for h in (
+        "HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS",
+        "BREAKEVEN_PROTECTION", "BREAKEVEN_STOP", "TIME_STOP_CHOP", "TIME_STOP",
+        "BEARISH_TREND_REVERSAL", "KC_MIDDLE_BREAKDOWN", "3M_KC_MIDDLE_BREAKDOWN",
+        "EMA13_BREAKDOWN", "DEAD_CROSS_KC_MID_BREAKDOWN",
+    )):
+        return False, f"風控守衛（{exit_reason}）放行"
+
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+    if frame is not None and not frame.empty:
+        trend = resolve_kc_trend(frame)
+        if trend in ("DOWN", "向下", "DOWNTREND", "BEARISH"):
+            return False, "大週期已轉為 KC 向下，放行平多"
 
     # 2. 5U 以上極端暴利鎖利放行 (曾達 5U 以上且自高點回吐 30%)
     if "5U_DYNAMIC" in reason_upper or "PROFIT_5U" in reason_upper:
         return False, "5U暴利防天地針鎖利放行"
 
-    close_p = float(candle.get("close", quote or 0.0))
-    if quote is not None and quote > 0:
-        close_p = float(quote)
+    # 優先取得已收線 K 棒收盤價，防止盤中即時插針 Tick 假跌破誤殺多單
+    eval_close = float(candle.get("close", 0.0) or 0.0)
+    if frame is not None and not frame.empty:
+        try:
+            from core.services.candle_data import closed_entry_candles
+            closed = closed_entry_candles(frame)
+            if not closed.empty:
+                eval_close = float(closed.iloc[-1].get("close", eval_close))
+        except Exception:
+            pass
+    if eval_close <= 0:
+        eval_close = float(quote or 0.0)
 
-    # 3. 檢查唯一合法多頭結構平倉條件：必須 3M 收盤實質跌破 13EMA + 0.15% 緩衝帶
-    if is_valid_long_structural_reversal_exit(close_p, ema13, buffer_ratio):
-        return False, "3M收盤實體實質跌破13EMA與緩衝帶，多頭結構瓦解合法平多"
+    # 3. 檢查唯一合法多頭結構平倉條件：必須已收線 K 棒實質跌破 KC 中軌 / 13EMA - 0.15% 緩衝帶
+    if is_valid_long_structural_reversal_exit(eval_close, ema13, buffer_ratio):
+        return False, "收盤實體實質跌破13EMA與緩衝帶，多頭結構瓦解合法平多"
 
-    # 4. 焊死多單一票否決守衛 (Hard Guardrail)：只要 3M 收盤價在 13EMA 之上，強制禁止平多！
-    if close_p >= ema13:
+    # 4. 焊死多單一票否決守衛 (大週期趨勢鎖定 + KC 中軌防守)：
+    # 當大週期趨勢為多頭（KC 向上）且當前 KC 中軌斜率向上時：
+    # 只要收盤在 KC 中軌之上，一律抱牢，嚴禁在 KC 上軌或回踩初期就執行平多！
+    if eval_close >= ema13:
         return True, (
-            f"VETO_LONG_EXIT: 【多頭結構完整】3M收盤 ({close_p:.6g}) 穩居 13EMA ({ema13:.6g}) 之上，"
-            f"價格沿著 KC 上軌運行屬於強勢結構，回踩強制抱牢，嚴禁平多 (擬平多理由: {exit_reason})！"
+            f"VETO_LONG_EXIT: 【大週期多頭趨勢鎖定/多頭結構完整】收盤 ({eval_close:.6g}) 穩居 KC 中軌/13EMA ({ema13:.6g}) 之上，"
+            f"價格沿著 KC 上軌運行屬於強勢結構，嚴禁在 KC 上軌或回踩初期提前平多 (擬平多理由: {exit_reason})！抱牢讓利潤奔跑！"
         )
 
-    # 5. 若微破 13EMA 但未跌破 0.15% 緩衝線，判定為假摔震盪，同樣一票否決
+    # 5. 若微破 13EMA 但未實質跌破 0.15% 緩衝線，判定為假摔震盪，同樣一票否決
     defense_line = ema13 * (1.0 - buffer_ratio)
-    if close_p >= defense_line:
+    if eval_close >= defense_line:
         return True, (
-            f"VETO_LONG_EXIT: 3M收盤未實質跌破 13EMA-0.15% 緩衝線 (收盤={close_p:.6g}, 防守線={defense_line:.6g})，"
+            f"VETO_LONG_EXIT: 收盤未實質跌破 KC 中軌/13EMA-0.15% 緩衝線 (收盤={eval_close:.6g}, 防守線={defense_line:.6g})，"
             f"假摔震盪嚴禁平多！"
         )
-
-    return False, "通過平多審查"
 
     return False, "通過平多審查"
 
@@ -274,46 +321,50 @@ def should_veto_short_exit(
     buffer_ratio: float = 0.0015,
 ) -> Tuple[bool, str]:
     """
-    空單防洗盤硬守衛（Veto Exit）：
-    只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，一律視為趨勢完整，
-    強制禁止觸發任何平空邏輯（return True, "VETO_SHORT_EXIT: ..."）。
-    
-    例外放行：
-    1. 帳戶/伺服器級硬止損 (HARD_STOP_LOSS / CIRCUIT_BREAKER_HARD_SL)
-    2. 5U 以上極端暴利鎖利 (曾達 5U 以上，動態回撤 30%)
-    3. 合法通道波段鎖利模式 (KC 下軌穿透放量 + 長下影線低點)
-    4. 唯一合法結構平倉條件 (3M 收盤實質衝破 13EMA + 0.15% 緩衝帶)
+    空單防洗盤硬守衛（大週期趨勢鎖定 + KC 中軌防守）：
+    當大週期趨勢為空頭（KC 方向 == 向下）且當前 KC 中軌斜率向下時：
+    禁止因單根短線小陽線、假底針尖或短線微幅反彈而提前平空。
+    唯一平倉條件：必須等待 K 棒收盤價實體站上 KC 中軌（close > kc_middle），或是大週期趨勢正式反轉向上時，才執行空單平倉。
     """
     reason_upper = str(exit_reason or "").upper()
 
-    # 1. 硬止損一律放行以保本金安全
-    if any(h in reason_upper for h in ("HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS")):
-        return False, "硬止損緊急避險放行"
+    # 1. 硬止損一律放行以保本金安全，同時放行保本鎖利、時間停損、大週期轉向、3M 破位與 5 大谷底動能反轉平空
+    if any(h in reason_upper for h in (
+        "HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS",
+        "BREAKEVEN_PROTECTION", "BREAKEVEN_STOP", "TIME_STOP_CHOP", "TIME_STOP",
+        "BULLISH_TREND_REVERSAL", "KC_MIDDLE_BREAKOUT", "3M_KC_MIDDLE_BREAKOUT",
+        "EMA13_BREAKOUT", "GOLDEN_CROSS_KC_MID_BREAKOUT",
+    )):
+        return False, f"風控守衛（{exit_reason}）放行"
+
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+    if frame is not None and not frame.empty:
+        trend = resolve_kc_trend(frame)
+        if trend in ("UP", "向上", "UPTREND", "BULLISH"):
+            return False, "大週期已轉為 KC 向上，放行平空"
 
     # 2. 5U 以上極端暴利鎖利放行
     if "5U_DYNAMIC" in reason_upper or "PROFIT_5U" in reason_upper:
         return False, "5U暴利防天地針鎖利放行"
 
-    close_p = float(candle.get("close", quote or 0.0))
-    if quote is not None and quote > 0:
-        close_p = float(quote)
+    # 優先取得已收線 K 棒收盤價，防止盤中即時插針 Tick 假反彈誤殺空單
+    eval_close = float(candle.get("close", 0.0) or 0.0)
+    if frame is not None and not frame.empty:
+        try:
+            from core.services.candle_data import closed_entry_candles
+            closed = closed_entry_candles(frame)
+            if not closed.empty:
+                eval_close = float(closed.iloc[-1].get("close", eval_close))
+        except Exception:
+            pass
+    if eval_close <= 0:
+        eval_close = float(quote or 0.0)
 
-    # 3. 檢查唯一合法結構平倉條件：必須 3M 收盤實質衝破 13EMA + 0.15% 緩衝帶
-    if is_valid_short_structural_reversal_exit(close_p, ema13, buffer_ratio):
-        return False, "3M收盤實體實質衝破13EMA與緩衝帶，結構轉折合法平空"
+    # 3. 檢查唯一合法結構平倉條件：必須收盤實體實質衝破 KC 中軌/13EMA + 0.15% 緩衝帶
+    if is_valid_short_structural_reversal_exit(eval_close, ema13, buffer_ratio):
+        return False, "收盤實體實質衝破13EMA與緩衝帶，結構轉折合法平空"
 
-    # 4. 檢查是否符合合法「通道波段鎖利模式」
-    is_climax, climax_msg = is_valid_short_climax_exit(
-        candle=candle,
-        kc=kc,
-        quote=close_p,
-        position=position,
-        details=details,
-    )
-    if is_climax:
-        return False, climax_msg
-
-    # 5. 其餘所有情況：只要 3M 收盤價仍受制於 13EMA 之下，且 KC 中軌或 13EMA 向下傾斜，一票否決！
+    # 4. 【大週期空頭趨勢鎖定】：只要收盤價仍受制於 13EMA 之下，且 KC 中軌或 13EMA 向下傾斜，一票否決！
     kc_mid = float(kc.get("mid", 0.0) or 0.0)
     kc_mid_slope = float(candle.get("kc_mid_slope", 0.0))
     if kc_mid_slope == 0.0 and frame is not None and len(frame) >= 2:
@@ -325,19 +376,20 @@ def should_veto_short_exit(
         except Exception:
             pass
 
-    # 若 13EMA 依然向下傾斜或走平偏下 (<= 0.0001)，或 KC 中軌向下傾斜
-    is_downtrend_intact = (kc_mid_slope <= 0.0001) or (close_p <= ema13)
+    # 若 13EMA 依然向下傾斜或走平偏下 (<= 0.0001)，或收盤在 13EMA / 中軌之下：
+    # 嚴禁因單根短線小陽線、假底針尖 (EXIT_BY_MEME_CLIMAX_BOTTOM) 提早平空！
+    is_downtrend_intact = (kc_mid_slope <= 0.0001) or (eval_close <= ema13)
 
-    if is_downtrend_intact:
+    if is_downtrend_intact or eval_close <= ema13:
         return True, (
-            f"VETO_SHORT_EXIT: 3M收盤 ({close_p:.6g}) 仍受制於13EMA ({ema13:.6g}) 之下且趨勢向下，"
-            f"嚴禁在次級回踩或反抽中平空 (理由: {exit_reason})！維持空單持倉！"
+            f"VETO_SHORT_EXIT: 【大週期空頭趨勢鎖定】收盤 ({eval_close:.6g}) 仍受制於13EMA/KC中軌 ({ema13:.6g}) 之下且趨勢向下，"
+            f"嚴禁因單根短線小陽線或假底針尖提早平空 (擬平倉理由: {exit_reason})！未站上KC中軌前空單一律抱牢讓利潤奔跑！"
         )
 
     # 若收盤未站上 13EMA + 緩衝帶，同樣否決
-    if close_p <= (ema13 * (1.0 + buffer_ratio)):
+    if eval_close <= (ema13 * (1.0 + buffer_ratio)):
         return True, (
-            f"VETO_SHORT_EXIT: 3M收盤未實質站穩 13EMA+0.15% 緩衝帶 (收盤={close_p:.6g}, 門檻={ema13 * (1.0 + buffer_ratio):.6g})，"
+            f"VETO_SHORT_EXIT: 收盤未實質站穩 KC 中軌/13EMA+0.15% 緩衝帶 (收盤={eval_close:.6g}, 門檻={ema13 * (1.0 + buffer_ratio):.6g})，"
             f"禁止慌忙平空！"
         )
 

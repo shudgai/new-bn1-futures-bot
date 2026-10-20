@@ -36,7 +36,9 @@ def compute_technical_indicators(
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df['atr'] = tr.rolling(window=atr_period).mean()
 
-    # EMAs
+    # EMAs (EMA5 極限動量線, EMA13 趨勢生命線/防守線)
+    df['ema5'] = close.ewm(span=5, adjust=False).mean()
+    df['ema13'] = close.ewm(span=13, adjust=False).mean()
     df['ema_10'] = close.ewm(span=10, adjust=False).mean()
     df['ema_20'] = close.ewm(span=20, adjust=False).mean()
     df['ema_50'] = close.ewm(span=50, adjust=False).mean()

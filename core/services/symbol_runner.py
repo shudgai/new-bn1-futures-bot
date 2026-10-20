@@ -720,8 +720,8 @@ async def _process_wild_swing_symbol(
     # ── 趨勢方向單向閥 (Trend Direction One-Way Valve) ──
     # 當市場處於明確趨勢時，鎖死單向，嚴禁逆勢掃描干擾日誌與圖表
     eval_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
-    c_ma5 = float(eval_bar.get("ma5", eval_bar.get("ema5", 0.0)) or 0.0)
-    c_ma15 = float(eval_bar.get("ma15", eval_bar.get("ema13", 0.0)) or 0.0)
+    c_ma5 = float(eval_bar.get("ema5", eval_bar.get("ma5", 0.0)) or 0.0)
+    c_ma15 = float(eval_bar.get("ema13", eval_bar.get("ma15", 0.0)) or 0.0)
     c_kc_mid = float(eval_bar.get("kc_middle", eval_bar.get("kc_basis", 0.0)) or 0.0)
 
     # 判斷 KC 中軌趨勢
@@ -744,26 +744,67 @@ async def _process_wild_swing_symbol(
         scan_sides = ("LONG", "SHORT")
 
     kc2bar_candidates = []
-    signals = [
-        strategy.evaluate_entry(
-            symbol, frame, side, tick_price=quote,
+
+    # ── 第一優先：EMA5 / EMA13 交叉獨立開倉服務 (能開就開) ──
+    from core.services.ema_cross_entry_service import EmaCrossEntryService
+    from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+    active_pos = engine.account.positions.get(symbol)
+    htf_trend_val = resolve_kc_trend(frame)
+    past_trades = getattr(engine.account, 'trade_records', []) or getattr(engine.account, 'trades', [])
+
+    ema_cross_signal = None
+    for s_side in ("LONG", "SHORT"):
+        e_sig, e_reason = EmaCrossEntryService.evaluate_entry(
+            symbol, frame, s_side,
+            position=active_pos,
+            last_closed_trades=past_trades,
+            htf_15m_trend=htf_trend_val,
         )
-        for side in scan_sides
-    ]
-    from core.services.key_level_dip_sniper import KeyLevelDipSniperService
-    for side in scan_sides:
-        dip_sig = KeyLevelDipSniperService.evaluate_entry(
-            symbol, frame, side, tick_price=quote,
-        )
-        if dip_sig is not None:
-            signals.append(dip_sig)
-    from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
-    for side in scan_sides:
-        meme_sig = MemePeakHunterStrategy.evaluate_entry(
-            symbol, frame, side, tick_price=quote,
-        )
-        if meme_sig is not None:
-            signals.append(meme_sig)
+        if e_sig is not None:
+            ema_cross_signal = e_sig
+            break
+
+    if ema_cross_signal is not None:
+        # EMA 交叉優先：直接採納，不執行破軌判定
+        signals = [ema_cross_signal]
+    else:
+        # 第二優先：EMA 無訊號或被擋時，才用破軌開倉 (Two-Stage Breakout)
+        from core.services.two_stage_breakout_service import TwoStageBreakoutService
+        breakout_signals = []
+        for side in scan_sides:
+            b_sig = TwoStageBreakoutService.evaluate(
+                frame, side,
+                symbol=symbol,
+                position=active_pos,
+                mode="HYBRID",
+            )
+            if b_sig is not None:
+                b_sig["entry_pattern"] = b_sig.get("entry_source", "BREAK_STRONG")
+                breakout_signals.append(b_sig)
+
+        if breakout_signals:
+            signals = breakout_signals
+        else:
+            signals = [
+                strategy.evaluate_entry(
+                    symbol, frame, side, tick_price=quote,
+                )
+                for side in scan_sides
+            ]
+            from core.services.key_level_dip_sniper import KeyLevelDipSniperService
+            for side in scan_sides:
+                dip_sig = KeyLevelDipSniperService.evaluate_entry(
+                    symbol, frame, side, tick_price=quote,
+                )
+                if dip_sig is not None:
+                    signals.append(dip_sig)
+            from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
+            for side in scan_sides:
+                meme_sig = MemePeakHunterStrategy.evaluate_entry(
+                    symbol, frame, side, tick_price=quote,
+                )
+                if meme_sig is not None:
+                    signals.append(meme_sig)
 
     signals = [signal for signal in signals if signal is not None]
     authorities = []
@@ -835,6 +876,11 @@ async def _process_wild_swing_symbol(
         "MID_LINE_BREAKOUT",
         "BREAKOUT",
         "CONTINUATION",
+        "BREAK_STRONG",
+        "BREAK_CONFIRM",
+        "BREAK_CONFIRM_OPP",
+        "BREAK_STRONG_ADD",
+        "BREAK_SINGLE",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",
@@ -842,6 +888,11 @@ async def _process_wild_swing_symbol(
         )
         return [], []
     signal_bar_id = float(signal["bar_id"])
+    if getattr(engine, "_last_attempt_signal_bars", None) is None:
+        engine._last_attempt_signal_bars = {}
+    if engine._last_attempt_signal_bars.get(symbol) == signal_bar_id:
+        return [], []
+    engine._last_attempt_signal_bars[symbol] = signal_bar_id
     if signal.get("is_intrabar") is True:
         live_bar = frame.iloc[-1]
         if (
@@ -915,12 +966,18 @@ async def _process_wild_swing_symbol(
                     channel_expanding=signal.get("channel_expanding") is True,
                 )
     if not macro_allowed:
-        logger.info(
-            "【純數學 Gate 拒絕】symbol=%s side=%s pattern=%s bar=%s signal=%s reason=%s",
-            symbol, signal["side"], signal["entry_pattern"],
-            signal_bar_id, signal["reason"], macro_reason,
-        )
-        return [], []
+        if signal.get("entry_source", "").startswith("EMA_CROSS"):
+            logger.info(
+                "【EMA交叉豁免 Macro Gate 否決】symbol=%s side=%s reason=%s (依使用者規則只調整倉位，最低保底 30%%)",
+                symbol, signal["side"], macro_reason,
+            )
+        else:
+            logger.info(
+                "【純數學 Gate 拒絕】symbol=%s side=%s pattern=%s bar=%s signal=%s reason=%s",
+                symbol, signal["side"], signal["entry_pattern"],
+                signal_bar_id, signal["reason"], macro_reason,
+            )
+            return [], []
     logger.info(
         "【純數學 Gate 通過: %s】symbol=%s side=%s mode=%s bar=%s",
         signal["entry_pattern"], symbol, signal["side"],
@@ -932,6 +989,8 @@ async def _process_wild_swing_symbol(
         symbol, signal["side"], signal["structure_confirmation"], signal_bar_id,
     )
     from core.gates.trend_riding_strategy import can_open_position
+    last_trade = getattr(engine.account, 'last_closed_trades', {}).get(symbol, {})
+    last_closed_p = float(last_trade.get('price') or 0.0) if isinstance(last_trade, dict) else 0.0
     gate_ok, gate_reason, _ = can_open_position(
         # Keep the live candle for an intrabar WILD_SWING candidate. The gate
         # re-derives the same pattern against the current quote before submit.
@@ -941,13 +1000,39 @@ async def _process_wild_swing_symbol(
         symbol=symbol,
         last_closed_side=getattr(engine.account, 'last_closed_side', {}).get(symbol, ''),
         last_closed_ts=getattr(engine.account, 'last_closed_at', {}).get(symbol, 0.0),
+        last_closed_price=last_closed_p,
         entry_confirmation=signal.get("structure_confirmation"),
     )
     if not gate_ok:
-        log_entry_gate(engine, symbol, signal['side'], 'GATE', gate_reason, float(frame.iloc[-1].get('timestamp', 0)))
-        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Gatekeeper rejected {signal['side']}: {gate_reason}")
-        print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {gate_reason}", flush=True)
-        return [], []
+        if signal.get("entry_source", "").startswith("EMA_CROSS"):
+            logger.info(
+                "【EMA交叉豁免趨勢門禁否決】symbol=%s side=%s reason=%s (依使用者規則只調整倉位)",
+                symbol, signal["side"], gate_reason,
+            )
+        else:
+            log_entry_gate(engine, symbol, signal['side'], 'GATE', gate_reason, float(frame.iloc[-1].get('timestamp', 0)))
+            logger.warning(f"[{symbol}] CRITICAL_BLOCK: Gatekeeper rejected {signal['side']}: {gate_reason}")
+            print(f"[{symbol}] [進場攔截 VETO] 防禦門禁一票否決: {gate_reason}", flush=True)
+            return [], []
+
+    # ── EMA 交叉先平再反手機制 (Rule 1) ──
+    if signal.get("needs_flip") is True and symbol in engine.account.positions:
+        cur_pos = engine.account.positions.get(symbol, {})
+        cur_side = cur_pos.get("side", "")
+        logger.warning(
+            "EMA_CROSS_FLIP: 持有反向倉位 %s %s，執行先平倉再反手開 %s",
+            symbol, cur_side, signal["side"]
+        )
+        closed_ok = await engine.account.close_position(
+            symbol,
+            quote,
+            f"EMA_CROSS_FLIP_EXIT_{cur_side}_TO_{signal['side']}",
+            is_manual=True,
+            is_limit=False,
+        )
+        if not closed_ok or symbol in engine.account.positions:
+            logger.error("EMA_CROSS_FLIP: 平倉現有反向部位失敗，取消反手開倉")
+            return [], []
 
     opened = await engine.execute_dual_tf_entry(
         symbol=symbol,
