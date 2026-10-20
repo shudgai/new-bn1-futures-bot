@@ -1985,11 +1985,16 @@ class HoldingProtectionExitGate:
         if is_true_pivot_confirmed:
             curr_bar = frame.iloc[-1] if frame is not None and len(frame) >= 1 else {}
             bar_close_price = float(curr_bar.get('close', quote))
-            kc_middle_val = float(curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))
-            if side == 'LONG' and kc_middle_val > 0 and (bar_close_price >= kc_middle_val or quote >= kc_middle_val):
-                return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_ABOVE_MID: PRICE_ABOVE_KC_MIDDLE")
-            elif side == 'SHORT' and kc_middle_val > 0 and (bar_close_price <= kc_middle_val or quote <= kc_middle_val):
-                return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_BELOW_MID: PRICE_BELOW_KC_MIDDLE")
+            defense_line = float(curr_bar.get('ema13', curr_bar.get('ma15', curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))))
+            buffer_ratio = 0.0015
+            if side == 'LONG' and defense_line > 0:
+                # 只有收盤實體確實跌破 EMA13 * (1 - 0.0015)，結構確認破壞才允許離場；否則一律視為回踩有守或假摔
+                if bar_close_price >= defense_line * (1.0 - buffer_ratio):
+                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_ABOVE_MID: PRICE_ABOVE_KC_MIDDLE")
+            elif side == 'SHORT' and defense_line > 0:
+                # 只有收盤實體確實衝破 EMA13 * (1 + 0.0015)，結構確認破壞才允許離場；否則一律視為反彈遇阻或假突破
+                if bar_close_price <= defense_line * (1.0 + buffer_ratio):
+                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_BELOW_MID: PRICE_BELOW_KC_MIDDLE")
             return _auth(clean_reason)
 
         # ──【核心鐵律三：持倉全週期防洗——除非剛好是真峰谷，否則除了鎖利外都不平倉】──

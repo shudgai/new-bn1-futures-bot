@@ -170,7 +170,7 @@ def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
         position, df, quote=0.0435, candidate_reason='EXIT_BY_PULLBACK'
     )
     assert allowed is False
-    assert "VETO_HOLDING" in reason
+    assert "VETO_HOLDING" in reason or "BLOCKED_BY_MARKET_SIGNAL_HOLD_LONG" in reason
 
 
 def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():

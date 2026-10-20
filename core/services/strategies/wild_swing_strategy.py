@@ -1064,8 +1064,8 @@ class WildSwingStrategy:
                     prev_max = unrealized_profit_usdt
                     position["max_profit"] = prev_max
 
-                # 利潤曾達到 5U 以上，當回跌到最大利潤的 75%（保留至少 3.75U+ 利潤）立即市價平倉
-                if prev_max >= 5.0 and unrealized_profit_usdt <= prev_max * 0.75:
+                # 利潤曾達到 5U 以上，當回跌到最大利潤的 70%（回撤達 30%）立即市價平倉
+                if prev_max >= 5.0 and unrealized_profit_usdt <= prev_max * 0.70:
                     bar_id = None
                     if frame is not None and not frame.empty:
                         try:
@@ -1073,7 +1073,7 @@ class WildSwingStrategy:
                         except Exception:
                             bar_id = None
                     print(
-                        f"[5U動態鎖利平倉] {symbol} {side} - 峰值利潤: {prev_max:.2f}U, 當前回撤利潤: {unrealized_profit_usdt:.2f}U | 市價平倉",
+                        f"[5U動態鎖利平倉] {symbol} {side} - 峰值利潤: {prev_max:.2f}U, 當前回撤利潤: {unrealized_profit_usdt:.2f}U (<= 70%) | 市價平倉",
                         flush=True,
                     )
                     return {
@@ -1085,7 +1085,7 @@ class WildSwingStrategy:
                         "close": current_price,
                         "entry_mode": "WILD_SWING",
                         "kc_exit": {
-                            "cause": "PROFIT_5U_TRAILING_75PCT_LOCK",
+                            "cause": "PROFIT_5U_TRAILING_70PCT_LOCK",
                             "max_profit": prev_max,
                             "current_profit": unrealized_profit_usdt,
                         },
@@ -1104,41 +1104,35 @@ class WildSwingStrategy:
                 position, frame, current_price, quote_ms,
             )
 
-            # ── 2. 趨勢平倉：結構破壞判定（KC 中軌防守鐵律，回踩/反彈不平倉）──
-            # 核心鐵律：
-            # 多單防守：只要收盤價依然在 KC 中軌之上，視為正常回踩，絕對不平倉！
-            # 只有實體收破 KC 中軌，且進一步跌破 MA15 或前波起漲低點，才判定結構破壞平多。
-            # 空單防守：只要收盤價依然在 KC 中軌之下，視為正常反彈，絕對不平倉！
-            # 只有實體收破 KC 中軌，且進一步漲破 MA15 或前波起跌高點，才判定結構破壞平空。
+            # ── 2. 趨勢平倉：防假突破與回踩震盪持倉保護（EMA13/MA15 + 0.15% 緩衝帶）──
+            from core.services.exits.anti_fakeout_exit_guard import check_exit_with_anti_fakeout
             trend_broken = False
             if frame is not None and not frame.empty:
-                last_candle = frame.iloc[-1]
+                last_candle = frame.iloc[-1].to_dict()
                 c_close = float(last_candle.get("close", current_price))
-                c_open = float(last_candle.get("open", c_close))
-                c_ma15 = float(last_candle.get("ma15", 0.0))
-                c_mid = float(last_candle.get("kc_middle", last_candle.get("ema_20", 0.0)))
-                
-                prev_low = float(frame.iloc[-10:-1]["low"].min()) if len(frame) >= 3 else 0.0
-                prev_high = float(frame.iloc[-10:-1]["high"].max()) if len(frame) >= 3 else 0.0
+                c_ma15 = float(last_candle.get("ma15", last_candle.get("ema13", 0.0)))
+                c_ma5 = float(last_candle.get("ma5", last_candle.get("ema5", 0.0)))
+                kc_dict = {
+                    "mid": float(last_candle.get("kc_middle", last_candle.get("kc_basis", 0.0))),
+                    "upper": float(last_candle.get("kc_upper", 0.0)),
+                    "lower": float(last_candle.get("kc_lower", 0.0)),
+                }
 
-                if side == "LONG":
-                    if c_close >= c_mid:
-                        # 處於 KC 中軌上方，多頭結構完整（回踩不平倉）
-                        trend_broken = False
-                    else:
-                        is_ma_broken = c_close < c_ma15 if c_ma15 > 0 else True
-                        is_swing_broken = c_close < prev_low if prev_low > 0 else False
-                        if c_close < c_mid and (is_ma_broken or is_swing_broken):
-                            trend_broken = True
-                elif side == "SHORT":
-                    if c_close <= c_mid:
-                        # 處於 KC 中軌下方，空頭結構完整（反彈不平倉）
-                        trend_broken = False
-                    else:
-                        is_ma_broken = c_close > c_ma15 if c_ma15 > 0 else True
-                        is_swing_broken = c_close > prev_high if prev_high > 0 else False
-                        if c_close > c_mid and (is_ma_broken or is_swing_broken):
-                            trend_broken = True
+                # 調用 anti-fakeout 檢查 (回踩有守或未達 0.15% 緩衝帶均判定為 HOLD 嚴禁平倉)
+                af_action, af_reason = check_exit_with_anti_fakeout(
+                    candle=last_candle,
+                    kc=kc_dict,
+                    ema5=c_ma5,
+                    ema13=c_ma15,
+                    position=position,
+                    current_pnl_usdt=unrealized_profit_usdt if (entry_p > 0 and pos_amt > 0) else None,
+                    buffer_ratio=0.0015,
+                )
+
+                if af_action in ("CLOSE_LONG", "CLOSE_SHORT"):
+                    trend_broken = True
+                else:
+                    trend_broken = False
 
             from core.services.exits.strict_true_pivot import (
                 confirmed_true_pivot_exit,
