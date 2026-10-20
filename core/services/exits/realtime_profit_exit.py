@@ -463,97 +463,37 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
 
         if restricted_exit_policy:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
-            from core.services.exits.kc_true_extreme_exit import (
-                evaluate_kc_true_extreme_exit,
-            )
-            kc_exit, state_changed = evaluate_kc_true_extreme_exit(
-                position, frame, price, stamp, meta,
-            )
-            if state_changed:
-                account.save_state()
-            if kc_exit is not None:
-                exit_reason, exit_details = kc_exit
-                from core.gates.holding_protection_gate import HoldingProtectionExitGate
-                allowed, authorized_reason, verified = HoldingProtectionExitGate.validate_exit(
-                    position, frame, price, exit_reason, exit_details,
-                    channel_swing=entry_m == 'CHANNEL_SWING',
-                )
-                if allowed:
-                    account.log(
-                        f'KC_STRUCTURE_EXIT symbol={symbol} reason={authorized_reason} '
-                        f'quote_ms={stamp} price={price} details={verified}',
-                        'WARNING',
-                    )
-                    return await account.close_position(
-                        symbol, price, f'{entry_m} {authorized_reason}', is_manual=True,
-                    )
-                account.log(
-                    f'KC_STRUCTURE_EXIT_BLOCKED symbol={symbol} reason={exit_reason} '
-                    f'gate_reason={authorized_reason}',
-                    'INFO',
-                )
-
-        if restricted_exit_policy:
-            frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is None or frame.empty:
                 account.log(
-                    f'REALTIME_EXIT_HOLD symbol={symbol} '
-                    'reason=EXIT_SNAPSHOT_UNAVAILABLE',
+                    f'REALTIME_EXIT_HOLD symbol={symbol} reason=EXIT_SNAPSHOT_UNAVAILABLE',
                     'WARNING',
                 )
                 return False
 
-            snapshot, _ = cached_tick_indicators(frame, price, stamp)
-            from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
-            lock_trigger, state_changed = _evaluate_profit_lock_only(
-                position, meta, price, stamp, snapshot,
-                TAKER_FEE_RATE, SLIPPAGE_PCT,
+            # ── 3M 體系持倉守衛：徹底拔除 1M 階梯鎖利與 1M 峰谷平倉，全面對齊 3M K 棒 ──
+            # 唯二允許平倉條件：
+            # 1. 結構反轉：3M K 棒收盤實體實質站上/跌破 3M 13EMA（且突破 0.15% 緩衝帶）
+            # 2. 極端暴利鎖利：持倉利潤曾達 >= 5U，且自最高利潤回吐達 30% 以上（即回落至 <= 70%）
+            from core.services.exits.anti_fakeout_exit_guard import AntiFakeoutExitGuard
+            should_exit, af_reason, af_details = AntiFakeoutExitGuard.evaluate(
+                position=position, frame=frame, quote=price,
             )
-            if state_changed:
-                account.save_state()
-            if (
-                lock_trigger == 'EXIT_BY_BREAKEVEN_LOCK'
-                or (lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER))
-            ):
-                closed = await account.close_position(
-                    symbol, price, f'{entry_m} {lock_trigger}', is_manual=True,
+            if should_exit:
+                exit_tag = (
+                    "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK"
+                    if "5U" in af_reason
+                    else "EXIT_BY_3M_CONFIRMED_STRUCTURAL_BREAK"
                 )
-                if not closed:
-                    account.log(
-                        f'REALTIME_EXIT_RETRY_PENDING symbol={symbol} '
-                        f'reason={lock_trigger} quote_ms={stamp}',
-                        'WARNING',
-                    )
-                return bool(closed)
-
-            from core.gates.meme_coin_gate import MemeCoinGate
-            side = str(position.get('side') or '').upper()
-            meme_exit, meme_reason = MemeCoinGate.evaluate_meme_exit(
-                frame, price, side, symbol=symbol, position=position,
-            )
-            if meme_exit and meme_reason:
-                from core.gates.holding_protection_gate import HoldingProtectionExitGate
-                allowed, authorized_reason, verified = HoldingProtectionExitGate.validate_exit(
-                    position, frame, price, meme_reason,
-                    channel_swing=entry_m == 'CHANNEL_SWING',
-                )
-                if allowed:
-                    account.log(
-                        f'MEME_CONFIRMED_PIVOT_EXIT symbol={symbol} '
-                        f'reason={authorized_reason} quote_ms={stamp} '
-                        f'price={price} details={verified}',
-                        'WARNING',
-                    )
-                    return await account.close_position(
-                        symbol, price, f'{entry_m} {authorized_reason}',
-                        is_manual=True,
-                    )
                 account.log(
-                    f'MEME_PIVOT_EXIT_BLOCKED symbol={symbol} '
-                    f'reason={meme_reason} gate_reason={authorized_reason}',
-                    'INFO',
+                    f'3M_STRUCTURAL_EXIT symbol={symbol} reason={af_reason} '
+                    f'quote_ms={stamp} price={price} details={af_details}',
+                    'WARNING',
+                )
+                return await account.close_position(
+                    symbol, price, f'{entry_m} {exit_tag}', is_manual=True,
                 )
 
+            # 只要 3M 收盤仍在 13EMA 之下（空單）或之上（多單），強制鎖死禁止任何平倉動作！
             return False
 
         if entry_m in ('CHANNEL_SWING', 'WILD_SWING'):

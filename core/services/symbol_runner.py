@@ -890,14 +890,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     wild_swing_symbol = is_meme_breakout_symbol(symbol)
     if wild_swing_symbol:
         timeframe_ms = frame.attrs.get("timeframe_ms")
-        if timeframe_ms is not None and float(timeframe_ms) not in (180_000.0, 60_000.0):
+        if timeframe_ms is None or float(timeframe_ms) != 180_000.0:
             frame = await engine.fetch_klines(
                 symbol, timeframe="3m", limit=150, keep_live=True,
             )
             if frame is None or frame.empty:
                 return [], []
             frame = engine.strategy.compute_indicators(frame.copy())
-            if float(frame.attrs.get("timeframe_ms", 0) or 0) not in (180_000.0, 60_000.0):
+            if float(frame.attrs.get("timeframe_ms", 0) or 0) != 180_000.0:
                 return [], []
         quote = float(
             exit_quote
