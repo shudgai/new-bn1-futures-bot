@@ -170,3 +170,60 @@ def test_macro_structure_gate_authorizes_mid_line_breakdown():
     )
     assert allowed is True
     assert "PASSED_MACRO_SHORT_GATE" in reason
+
+
+def test_can_enter_short_near_band_strong_downtrend_vs_chop():
+    """
+    測試修正後的貼軌過濾器：
+    1. 單邊下殺推軌時全力放行開空
+    2. 橫盤震盪走平時嚴格攔截防誘空
+    """
+    from core.gates.rail_protection_filter import can_enter_short_near_band, can_enter_long_near_band
+
+    # 1. 單邊強空頭格局 (KC中軌向下 slope=-0.0002, MA5 95.0 < MA15 98.0)
+    # 貼著下軌 94.0 收陰在 94.1 (open 94.5, close 94.1)
+    candle_strong_drop = {'open': 94.5, 'close': 94.1, 'high': 94.6, 'low': 94.0}
+    kc = {'upper': 100.0, 'lower': 94.0, 'mid': 97.0}
+    allowed, msg = can_enter_short_near_band(
+        candle_strong_drop, kc, ma5=95.0, ma15=98.0, kc_mid_slope=-0.0002,
+    )
+    assert allowed is True
+    assert "單邊主跌推軌" in msg
+
+    # 2. 震盪走平 (KC中軌走平 slope=0.0000, 通道走平無斜率)
+    # 貼著下軌 94.0 追空 (dist_to_lower 0.1 < candle_range * 0.2 或 kc_range * 0.2)
+    candle_chop = {'open': 94.5, 'close': 94.1, 'high': 95.0, 'low': 94.0}
+    allowed_chop, msg_chop = can_enter_short_near_band(
+        candle_chop, kc, ma5=96.0, ma15=96.1, kc_mid_slope=0.0,
+    )
+    assert allowed_chop is False
+    assert "震盪防誘空" in msg_chop
+
+
+def test_can_enter_long_near_band_strong_uptrend_vs_chop():
+    """
+    測試多單對稱貼軌過濾器：
+    1. 單邊主升推軌時全力放行開多
+    2. 橫盤震盪走平時嚴格攔截防誘多
+    """
+    from core.gates.rail_protection_filter import can_enter_long_near_band
+
+    # 1. 單邊強多頭格局 (KC中軌向上 slope=0.0002, MA5 105.0 > MA15 102.0)
+    # 貼著上軌 106.0 收陽在 105.9 (open 105.5, close 105.9)
+    candle_strong_rise = {'open': 105.5, 'close': 105.9, 'high': 106.0, 'low': 105.4}
+    kc = {'upper': 106.0, 'lower': 100.0, 'mid': 103.0}
+    allowed, msg = can_enter_long_near_band(
+        candle_strong_rise, kc, ma5=105.0, ma15=102.0, kc_mid_slope=0.0002,
+    )
+    assert allowed is True
+    assert "單邊主升推軌" in msg
+
+    # 2. 震盪走平 (KC中軌走平 slope=0.0000)
+    # 貼著上軌 106.0 追多
+    candle_chop = {'open': 105.5, 'close': 105.9, 'high': 106.0, 'low': 105.0}
+    allowed_chop, msg_chop = can_enter_long_near_band(
+        candle_chop, kc, ma5=103.5, ma15=103.4, kc_mid_slope=0.0,
+    )
+    assert allowed_chop is False
+    assert "震盪防誘多" in msg_chop
+

@@ -163,10 +163,20 @@ class StrictCrossAndKcTrendGate:
             if ma5_diff < -1e-5:
                 return False, "REJECT_ENTRY: MA5_HOOKING_DOWN_AFTER_CROSS"
 
-            # 4. 獲利空間與防貼軌追多：距上軌不足 20% 通道空間或超買貼軌，嚴禁開多（收線破軌/貫穿豁免 25% 空間門檻）
+            # 4. 獲利空間與防貼軌追多：只在橫盤時攔截，單邊上衝時全力放行開多
             if not bypass_spatial_check and curr_kc_mid > 0 and curr_kc_upper > curr_kc_mid:
-                too_close_upper = current_price >= (curr_kc_upper - (curr_kc_upper - curr_kc_mid) * 0.20)
-                if too_close_upper:
+                from core.gates.rail_protection_filter import can_enter_long_near_band
+                candle_dict = {
+                    'open': float(curr.get('open', current_price)),
+                    'close': current_price,
+                    'high': float(curr.get('high', current_price)),
+                    'low': float(curr.get('low', current_price)),
+                }
+                kc_dict = {'upper': curr_kc_upper, 'lower': curr_kc_lower, 'mid': curr_kc_mid}
+                allowed, _ = can_enter_long_near_band(
+                    candle_dict, kc_dict, curr_ma5, curr_ma15, curr_kc_mid - prev_kc_mid,
+                )
+                if not allowed:
                     return False, "REJECT_ENTRY: LONG_TOO_CLOSE_TO_UPPER_RAIL"
 
             return True, "PASSED"
@@ -195,10 +205,20 @@ class StrictCrossAndKcTrendGate:
             if ma5_diff > 1e-5:
                 return False, "REJECT_ENTRY: MA5_HOOKING_UP_AFTER_CROSS"
 
-            # 4. 獲利空間與防貼軌追空：距下軌不足 20% 通道空間或超賣貼軌（防追在波段最低點地板），嚴禁開空（收線跌破/貫穿豁免 25% 空間門檻）
+            # 4. 獲利空間與防貼軌追空：只在橫盤時攔截，單邊下殺時全力放行開空
             if not bypass_spatial_check and curr_kc_mid > 0 and curr_kc_lower > 0 and curr_kc_mid > curr_kc_lower:
-                too_close_lower = current_price <= (curr_kc_lower + (curr_kc_mid - curr_kc_lower) * 0.20)
-                if too_close_lower:
+                from core.gates.rail_protection_filter import can_enter_short_near_band
+                candle_dict = {
+                    'open': float(curr.get('open', current_price)),
+                    'close': current_price,
+                    'high': float(curr.get('high', current_price)),
+                    'low': float(curr.get('low', current_price)),
+                }
+                kc_dict = {'upper': curr_kc_upper, 'lower': curr_kc_lower, 'mid': curr_kc_mid}
+                allowed, _ = can_enter_short_near_band(
+                    candle_dict, kc_dict, curr_ma5, curr_ma15, curr_kc_mid - prev_kc_mid,
+                )
+                if not allowed:
                     return False, "REJECT_ENTRY: SHORT_TOO_CLOSE_TO_LOWER_RAIL"
 
             return True, "PASSED"

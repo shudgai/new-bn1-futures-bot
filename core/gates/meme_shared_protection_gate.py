@@ -271,25 +271,30 @@ class MemeSharedProtectionGate:
         if kc_range <= 0:
             return True, "PASS: INVALID_KC_RANGE"
 
-        from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
-        kc_trend = resolve_kc_trend(df)
+        prev = df.iloc[-2] if len(df) >= 2 else curr
+        kc_mid_slope = float(curr.get('kc_middle', curr.get('kc_basis', 0.0))) - float(prev.get('kc_middle', prev.get('kc_basis', 0.0)))
+        ma5_val = float(curr.get('ma5', curr.get('_wild_ma5', quote)))
+        ma15_val = float(curr.get('ma15', quote))
+        candle_dict = {
+            'open': float(curr.get('open', quote)),
+            'close': quote,
+            'high': float(curr.get('high', quote)),
+            'low': float(curr.get('low', quote)),
+        }
+        kc_dict = {
+            'upper': kc_upper,
+            'lower': kc_lower,
+            'mid': float(curr.get('kc_middle', curr.get('kc_basis', 0.0))),
+        }
 
         side = side.upper()
         if side == 'LONG':
-            room_price = kc_upper - quote
-            room_ratio = room_price / kc_range
-            # 如果在軌道內，但距上軌空間不足 20% 且不足 0.35 ATR
+            # 如果在軌道內，只在橫盤時攔截，單邊上衝時全力放行開多
             if quote < kc_upper:
-                is_kc_up = (kc_trend == "UP")
-                is_continuation = bool(
-                    kwargs.get("is_bullish_continuation")
-                    or kwargs.get("bullish_continuation")
-                    or kwargs.get("is_continuation")
-                    or kwargs.get("entry_confirmation") in {"DIP_SNIPER", "CONTINUATION_OUTSIDE_KC", "MID_LINE_BREAKOUT"}
-                )
-                if not (is_kc_up or is_continuation):
-                    if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
-                        return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_LONG (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
+                from core.gates.rail_protection_filter import can_enter_long_near_band
+                allowed, reason = can_enter_long_near_band(candle_dict, kc_dict, ma5_val, ma15_val, kc_mid_slope)
+                if not allowed:
+                    return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_LONG ({reason})"
             else:
                 # 若已突破上軌，但超出上軌過度延伸 (> 3.0 ATR)，天花板利潤空間耗盡且超過 3 ATR 追價上限
                 if (quote - kc_upper) > 3.0 * atr:
@@ -297,20 +302,12 @@ class MemeSharedProtectionGate:
             return True, "PASS"
 
         elif side == 'SHORT':
-            room_price = quote - kc_lower
-            room_ratio = room_price / kc_range
-            # 如果在軌道內，但距下軌空間不足 20% 且不足 0.35 ATR
+            # 如果在軌道內，只在橫盤時攔截，單邊下殺時全力放行開空
             if quote > kc_lower:
-                is_kc_down = (kc_trend == "DOWN")
-                is_continuation = bool(
-                    kwargs.get("is_bearish_continuation")
-                    or kwargs.get("bearish_continuation")
-                    or kwargs.get("is_continuation")
-                    or kwargs.get("entry_confirmation") in {"DIP_SNIPER", "CONTINUATION_OUTSIDE_KC", "MID_LINE_BREAKDOWN"}
-                )
-                if not (is_kc_down or is_continuation):
-                    if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
-                        return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_SHORT (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
+                from core.gates.rail_protection_filter import can_enter_short_near_band
+                allowed, reason = can_enter_short_near_band(candle_dict, kc_dict, ma5_val, ma15_val, kc_mid_slope)
+                if not allowed:
+                    return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_SHORT ({reason})"
             else:
                 # 若已跌破下軌，但跌出下軌過度延伸 (> 3.0 ATR)，地板利潤空間耗盡且超過 3 ATR 追價上限
                 if (kc_lower - quote) > 3.0 * atr:
