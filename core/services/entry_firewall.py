@@ -399,11 +399,6 @@ def market_structure_gate_problem(
             "KC_MIDDLE": normalized_slope(values["kc_middle"]),
             "KC_LOWER": normalized_slope(values["kc_lower"]),
         }
-        if not is_manual and not is_confirmed_outer_entry:
-            if normalized_side == "LONG" and slopes["MA15"] < 0:
-                return veto("VETO_BLOCKED_LONG_ON_FALLING_MA15")
-            if normalized_side == "SHORT" and slopes["MA15"] > 0:
-                return veto("VETO_BLOCKED_SHORT_ON_RISING_MA15")
         gap = abs(float(values["ma5"][-1] - values["ma15"][-1]))
         relaxed_continuation = bool(is_continuation_entry)
         from core.symbol_aliases import is_meme_breakout_symbol
@@ -425,11 +420,20 @@ def market_structure_gate_problem(
             min_gap=f"{min_gap:.8f}",
         )
 
+        if not is_manual and not is_confirmed_outer_entry and enforce_ma_direction:
+            # 破軌加速放行：若價格已破下軌且在 MA5 之下，或突破上軌且在 MA5 之上，絕不因滯後的 MA15 斜率阻斷！
+            is_breakout_action = (
+                (normalized_side == "SHORT" and current_price <= values["kc_lower"][-1] and current_price <= values["ma5"][-1])
+                or (normalized_side == "LONG" and current_price >= values["kc_upper"][-1] and current_price >= values["ma5"][-1])
+            )
+            if not is_breakout_action:
+                if normalized_side == "LONG" and slopes["MA15"] < 0:
+                    return veto("VETO_BLOCKED_LONG_ON_FALLING_MA15")
+                if normalized_side == "SHORT" and slopes["MA15"] > 0:
+                    return veto("VETO_BLOCKED_SHORT_ON_RISING_MA15")
+
         if not is_manual:
-            if relaxed_continuation:
-                # Continuations require the latest quote to remain strictly
-                # beyond the matching KC rail and MA5 to slope in that
-                # direction. Keep the relaxed MA spacing, not relaxed direction.
+            if relaxed_continuation and not is_confirmed_outer_entry:
                 continuation_rail = float(
                     values["kc_upper" if normalized_side == "LONG" else "kc_lower"][-1]
                 )
@@ -546,21 +550,24 @@ def final_trend_alignment_problem(
             "TRIGGER_C_CONTINUATION", "POST_CLOSE_CONTINUATION_ENTRY",
         }
         is_live_big_trigger = entry_confirmation == "WAIT_LIVE_BIG_TRIGGER"
+        is_relaxed_ma_entry = entry_confirmation in {
+            "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER", "MEME_PEAK_HUNTER",
+        }
         if is_confirmed_outer_entry and not has_valid_wild_outer_confirmation(
             frame, normalized_side, entry_confirmation,
         ):
             return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
-        if is_confirmed_outer_entry or len(closed) >= 15:
+        if is_confirmed_outer_entry or is_relaxed_ma_entry or len(closed) >= 15:
             ma_gate_problem = ma5_ma15_entry_gate_problem(
                 frame,
                 normalized_side,
                 quote=quote,
                 entry_confirmation=(
-                    entry_confirmation if is_confirmed_outer_entry else None
+                    entry_confirmation if (is_confirmed_outer_entry or is_relaxed_ma_entry) else None
                 ),
-                is_continuation_entry=is_continuation_entry,
+                is_continuation_entry=is_continuation_entry or is_relaxed_ma_entry,
                 is_instant_breakout=(
-                    entry_confirmation in (INSTANT_BREAKOUT_INSIDE, "INSTANT_BURST_BREAKOUT")
+                    entry_confirmation in (INSTANT_BREAKOUT_INSIDE, "INSTANT_BURST_BREAKOUT", "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT")
                 ),
                 symbol=symbol,
             )

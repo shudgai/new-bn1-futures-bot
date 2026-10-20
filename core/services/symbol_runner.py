@@ -571,6 +571,37 @@ async def _process_wild_swing_symbol(
                     symbol,
                 )
         if exit_decision is not None:
+            # ── 空單防洗盤硬守衛（Veto Exit）：只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，強制禁止平空！──
+            if str(exit_decision.get("side", "")).upper() == "SHORT":
+                from core.services.exits.anti_fakeout_exit_guard import should_veto_short_exit
+                last_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
+                veto_needed, veto_reason = should_veto_short_exit(
+                    candle=last_bar,
+                    kc={
+                        "mid": float(last_bar.get("kc_middle", last_bar.get("kc_basis", 0.0)) or 0.0),
+                        "upper": float(last_bar.get("kc_upper", 0.0) or 0.0),
+                        "lower": float(last_bar.get("kc_lower", 0.0) or 0.0),
+                    },
+                    ema13=float(last_bar.get("ema13", last_bar.get("ma15", 0.0)) or 0.0),
+                    ema5=float(last_bar.get("ema5", last_bar.get("ma5", 0.0)) or 0.0),
+                    position=position,
+                    exit_reason=exit_decision.get("reason", ""),
+                    details=exit_decision.get("kc_exit") or {},
+                    quote=quote,
+                    frame=frame,
+                )
+                if veto_needed:
+                    logger.warning(
+                        "[空單防洗盤硬守衛 VETO] %s 平空被一票否決！原因: %s | 擬平倉理由: %s | 報價: %s",
+                        symbol, veto_reason, exit_decision.get("reason"), quote,
+                    )
+                    print(
+                        f"[空單防洗盤硬守衛 VETO] {symbol} 平空被一票否決！原因: {veto_reason} | 擬平倉理由: {exit_decision.get('reason')} | 報價: {quote}",
+                        flush=True,
+                    )
+                    exit_decision = None
+
+        if exit_decision is not None:
             live_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
             logger.warning(
                 "POSITION_EXIT_DECISION symbol=%s side=%s reason=%s price=%s "
@@ -639,27 +670,54 @@ async def _process_wild_swing_symbol(
     ):
         return [], []
 
+    # ── 趨勢方向單向閥 (Trend Direction One-Way Valve) ──
+    # 當市場處於明確趨勢時，鎖死單向，嚴禁逆勢掃描干擾日誌與圖表
+    eval_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
+    c_ma5 = float(eval_bar.get("ma5", eval_bar.get("ema5", 0.0)) or 0.0)
+    c_ma15 = float(eval_bar.get("ma15", eval_bar.get("ema13", 0.0)) or 0.0)
+    c_kc_mid = float(eval_bar.get("kc_middle", eval_bar.get("kc_basis", 0.0)) or 0.0)
+
+    # 判斷 KC 中軌趨勢
+    kc_mid_slope = 0.0
+    if len(frame) >= 2:
+        try:
+            prev_mid = float(frame.iloc[-2].get("kc_middle", frame.iloc[-2].get("kc_basis", 0.0)) or 0.0)
+            if prev_mid > 0 and c_kc_mid > 0:
+                kc_mid_slope = (c_kc_mid - prev_mid) / prev_mid
+        except Exception:
+            pass
+
+    # 1. 單邊空頭主跌格局：KC 中軌向下 (kc_mid_slope < 0) 且均線空頭排列 (EMA5 < EMA13)，或價格在 KC 中軌下方受阻
+    if (kc_mid_slope < 0 or (c_ma5 < c_ma15 and quote < c_kc_mid)):
+        scan_sides = ("SHORT",)
+    # 2. 單邊多頭主升格局：KC 中軌向上 (kc_mid_slope > 0) 且均線多頭排列 (EMA5 > EMA13)，或價格在 KC 中軌上方衝刺
+    elif (kc_mid_slope > 0 or (c_ma5 > c_ma15 and quote > c_kc_mid)):
+        scan_sides = ("LONG",)
+    else:
+        scan_sides = ("LONG", "SHORT")
+
     kc2bar_candidates = []
     signals = [
         strategy.evaluate_entry(
             symbol, frame, side, tick_price=quote,
         )
-        for side in ("LONG", "SHORT")
+        for side in scan_sides
     ]
     from core.services.key_level_dip_sniper import KeyLevelDipSniperService
-    for side in ("LONG", "SHORT"):
+    for side in scan_sides:
         dip_sig = KeyLevelDipSniperService.evaluate_entry(
             symbol, frame, side, tick_price=quote,
         )
         if dip_sig is not None:
             signals.append(dip_sig)
     from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
-    for side in ("LONG", "SHORT"):
+    for side in scan_sides:
         meme_sig = MemePeakHunterStrategy.evaluate_entry(
             symbol, frame, side, tick_price=quote,
         )
         if meme_sig is not None:
             signals.append(meme_sig)
+
     signals = [signal for signal in signals if signal is not None]
     authorities = []
     if wait_candidate is not None:

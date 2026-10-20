@@ -1168,9 +1168,19 @@ class WildSwingStrategy:
                     "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
                 }
             )
+            # 波段抱單模式：只要 13EMA/MA15 依然向下傾斜，反抽至中軌/上軌嚴禁平空！
+            is_ma15_falling = False
+            if frame is not None and len(frame) >= 2:
+                prev_ma15 = float(frame.iloc[-2].get("ma15", frame.iloc[-2].get("ema13", 0.0)) or 0.0)
+                curr_ma15 = float(frame.iloc[-1].get("ma15", frame.iloc[-1].get("ema13", 0.0)) or 0.0)
+                if prev_ma15 > 0 and curr_ma15 <= prev_ma15:
+                    is_ma15_falling = True
+
             is_short_midline_reversal = bool(
                 trend_broken
                 and side == "SHORT"
+                and not is_ma15_falling
+                and current_price > (c_ma15 * 1.0015)
                 and kc_exit is not None
                 and kc_exit[0] == "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL"
                 and kc_exit[1].get("cause") == "KC_MIDLINE_RECLAIM_CLOSE"

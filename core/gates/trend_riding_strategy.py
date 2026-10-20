@@ -270,7 +270,7 @@ def can_open_position(
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, f"VETO_LONG: KC_TREND_NOT_UP ({kc_trend})", details
+            return False, f"VETO_LONG: BLOCKED_LONG_ON_BEAR_TREND: KC_TREND_NOT_UP ({kc_trend})", details
 
         # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
         if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKOUT", "MA_CROSSOVER"} and ma5_curr <= ma15_curr:
@@ -338,7 +338,7 @@ def can_open_position(
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
-            return False, f"VETO_SHORT: KC_TREND_NOT_DOWN ({kc_trend})", details
+            return False, f"VETO_SHORT: BLOCKED_SHORT_ON_BULL_TREND: KC_TREND_NOT_DOWN ({kc_trend})", details
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
         if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKDOWN", "MA_CROSSOVER"} and ma5_curr >= ma15_curr:
@@ -957,31 +957,11 @@ class TrendRidingStrategy:
         details['is_bull_trend'] = is_bull_trend
         details['above_count'] = above_count
 
-        # ──【回踩容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
-        entry_price = float(position.get("entry_price") or c)
-        pnl_pct = (p - entry_price) / entry_price if entry_price > 0 else 0.0
-        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
-        ma15_curr = float(curr.get("ma15", basis))
-        body = abs(c - o)
-        upper_wick = max(0.0, h - max(c, o))
-        lower_wick = max(0.0, min(c, o) - l)
-
-        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向下插針（長下影線）只要收盤在 MA15 上方且未死叉，一律視為洗盤，嚴禁平倉！
-        if pnl_pct < 0.008 and c >= ma15_curr and ma5_curr >= ma15_curr:
-            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，下影線洗盤尋求支撐，嚴禁慌張平多)", details
-
-        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：頂部長上影線力竭允許觸發保護性止盈
-        if pnl_pct >= 0.008 and upper_wick > 1.5 * max(body, 1e-9):
-            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下頂部長上影線力竭，保護性止盈平多)", details
-
-        # 3. 回踩容忍（Hold on Pullback）：只要 ma5 > ma15 且收盤價未跌破 ma15，一律判定為「多頭健康回踩」，【嚴禁平多】！
-        if ma5_curr > ma15_curr and c >= ma15_curr:
-            return False, "HOLD: BULL_HEALTHY_PULLBACK_TOLERANCE (MA5 > MA15 且收盤未破 MA15，多頭健康回踩嚴禁平多)", details
+        # 條件 1：結構被破 (Trend Invalidation): K 棒收盤價實體跌破並跌入 KC 中軌之下 (Close < KC_Basis)
+        if c < basis:
+            return True, "EXIT_LONG_STRUCTURE_BROKEN (K 棒實體跌破並收在 KC 中軌之下，多頭波段結構破壞，平多離場)", details
 
         # 條件 2：極端天量高位滯漲 (Climax Exit)
-        # ① 價格大幅脫離 KC 上軌 (超買正乖離過大)
-        # ② 該根 K 棒爆出 2.0~2.5 倍以上巨量 (確認天量換手)
-        # ③ 留下超過實體 2 倍長度的超長上影線 (確認高位滯漲出貨)
         body = abs(c - o)
         upper_wick = max(0.0, h - max(c, o))
         bar_range = max(h - l, 1e-9)
@@ -998,6 +978,28 @@ class TrendRidingStrategy:
             details['wick_to_body_ratio'] = round(upper_wick / max(body, 1e-9), 2)
             details['volume_ratio'] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 0.0
             return True, "EXIT_LONG_BLOW_OFF_TOP / CLIMAX_EXHAUSTION (KC上軌外超買 + 爆量換手 + 超長上影線，高位滯漲力竭離場)", details
+
+        # ──【回踩容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
+        entry_price = float(position.get("entry_price") or c)
+        pnl_pct = (p - entry_price) / entry_price if entry_price > 0 else 0.0
+        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
+        ma15_curr = float(curr.get("ma15", basis))
+        body = abs(c - o)
+        upper_wick = max(0.0, h - max(c, o))
+        lower_wick = max(0.0, min(c, o) - l)
+
+        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向下插針（長下影線）只要收盤在 MA15 上方且未死叉，一律視為洗盤，嚴禁平倉！
+        if pnl_pct < 0.008 and c >= ma15_curr and ma5_curr >= ma15_curr:
+            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE / BULL_TREND_LOCK_INTACT / TREND_RIDING_LOCK_BULL_INTACT (浮虧/無實質利潤中，下影線洗盤尋求支撐，嚴禁慌張平多)", details
+
+        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：頂部長上影線力竭允許觸發保護性止盈
+        if pnl_pct >= 0.008 and upper_wick > 1.5 * max(body, 1e-9):
+            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下頂部長上影線力竭，保護性止盈平多)", details
+
+        # 3. 回踩容忍（Hold on Pullback）：只要 ma5 > ma15 且收盤價未跌破 ma15，一律判定為「多頭健康回踩」，【嚴禁平多】！
+        if ma5_curr > ma15_curr and c >= ma15_curr:
+            return False, "HOLD: BULL_HEALTHY_PULLBACK_TOLERANCE / TREND_RIDING_LOCK_BULL_INTACT / BULL_TREND_LOCK_INTACT (MA5 > MA15 且收盤未破 MA15，多頭健康回踩嚴禁平多)", details
+
 
         # ──【平倉禁令：強制 HOLD，嚴禁中途被微幅回調洗出場】──
         long_ma_holding = (c >= ema3 or c >= ma5 or ema3 >= prev_ema3 or ma5 >= prev_ma5)
@@ -1196,37 +1198,16 @@ class TrendRidingStrategy:
         details['is_bear_trend'] = is_bear_trend
         details['below_count'] = below_count
 
-        # ──【回抽容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
-        entry_price = float(position.get("entry_price") or c)
-        pnl_pct = (entry_price - p) / entry_price if entry_price > 0 else 0.0
-        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
-        ma15_curr = float(curr.get("ma15", basis))
-        body = abs(c - o)
-        upper_wick = max(0.0, h - max(c, o))
-        lower_wick = max(0.0, min(c, o) - l)
-
-        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
-        if pnl_pct < 0.008 and c <= ma15_curr and ma5_curr <= ma15_curr:
-            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，上影線受阻確認阻力，嚴禁慌張平空)", details
-
-        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：底部長下影線探底回升允許觸發保護性止盈
-        if pnl_pct >= 0.008 and lower_wick > 1.5 * max(body, 1e-9):
-            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下底部長下影線力竭，保護性止盈平空)", details
-
-        # 3. 回抽容忍（Hold on Pullback）：只要 ma5 < ma15 且收盤價未突破 ma15，視為空頭回抽，【嚴禁平空】！
-        if ma5_curr < ma15_curr and c <= ma15_curr:
-            return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE (MA5 < MA15 且收盤未破 MA15，空頭健康回抽嚴禁平空)", details
+        # 條件 1：結構被破 (Trend Invalidation): K 棒收盤價實體突破並站穩 KC 中軌 (Close > KC_Basis)
+        if c > basis:
+            return True, "EXIT_SHORT_STRUCTURE_BROKEN (K 棒實體突破並收在 KC 中軌之上，空頭波段結構破壞，平空離場)", details
 
         # 條件 2：極端恐慌天量插針 (Panic Climax Bottom)
-        # ① 價格嚴重跌破 KC 下軌 (超賣負乖離過大)
-        # ② 該根 K 棒爆出 2.0~2.5 倍以上巨量 (確認天量換手，以過去 K 棒均量為基準)
-        # ③ 留下超過實體 2 倍長度的超長下影線 (確認針尖放量主力吃單)
         body = abs(c - o)
         lower_wick = max(0.0, min(c, o) - l)
         bar_range = max(h - l, 1e-9)
 
         curr_vol = float(curr.get('volume', 0.0))
-        # 計算前 10 根（不包含當前這根爆量棒）的平均成交量
         prev_bars = df.iloc[:-1] if len(df) > 1 else df
         avg_vol = float(prev_bars['volume'].tail(10).mean()) if 'volume' in prev_bars.columns and len(prev_bars) > 0 else 0.0
         is_climax_volume = (avg_vol > 0 and curr_vol >= min(2.5, self.climax_volume_multiplier) * avg_vol)
@@ -1238,6 +1219,28 @@ class TrendRidingStrategy:
             details['wick_to_body_ratio'] = round(lower_wick / max(body, 1e-9), 2)
             details['volume_ratio'] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 0.0
             return True, "EXIT_SHORT_PANIC_CLIMAX_BOTTOM (KC下軌外超賣 + 爆量換手 + 超長下影線，恐慌針尖換手獲利離場)", details
+
+        # ──【回抽容忍與影線利潤聯動規則 (徹底移除 KC 中軌平倉)】──
+        entry_price = float(position.get("entry_price") or c)
+        pnl_pct = (entry_price - p) / entry_price if entry_price > 0 else 0.0
+        ma5_curr = float(curr.get("ma5", curr.get("_wild_ma5", c)))
+        ma15_curr = float(curr.get("ma15", basis))
+        body = abs(c - o)
+        upper_wick = max(0.0, h - max(c, o))
+        lower_wick = max(0.0, min(c, o) - l)
+
+        # 1. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
+        if pnl_pct < 0.008 and c <= ma15_curr and ma5_curr <= ma15_curr:
+            return False, "HOLD: NO_PROFIT_WICK_TOLERANCE / BEAR_TREND_LOCK_INTACT / TREND_RIDING_LOCK_BEAR_INTACT (浮虧/無實質利潤中，上影線受阻確認阻力，嚴禁慌張平空)", details
+
+        # 2. 已有實質利潤狀態下 (浮盈 >= 0.8%)：底部長下影線探底回升允許觸發保護性止盈
+        if pnl_pct >= 0.008 and lower_wick > 1.5 * max(body, 1e-9):
+            return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK (實質利潤下底部長下影線力竭，保護性止盈平空)", details
+
+        # 3. 回抽容忍（Hold on Pullback）：只要 ma5 < ma15 且收盤價未突破 ma15，視為空頭回抽，【嚴禁平空】！
+        if ma5_curr < ma15_curr and c <= ma15_curr:
+            return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE / TREND_RIDING_LOCK_BEAR_INTACT / BEAR_TREND_LOCK_INTACT (MA5 < MA15 且收盤未破 MA15，空頭健康回抽嚴禁平空)", details
+
 
         # ──【平倉禁令：強制 HOLD，嚴禁中途被反彈洗出場】──
         # 1. 禁用微幅反彈鎖利：嚴禁 2%~3% 敏感反抽平空，盤中小綠棒/下影線一律視為「下跌中繼的正常呼吸」

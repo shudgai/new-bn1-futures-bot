@@ -350,47 +350,57 @@ class MemePeakHunterStrategy:
         # 2. 空單平倉判定
         # =====================================================================
         elif side == "SHORT":
-            # 2.1 妖幣真見底偵測：3分鐘內爆天量（量大於 20 均量 1.8 倍）且收長下影線（錘子線接盤）
-            low_wick = min(open_p, close_p) - low_p
-            has_low_wick = low_wick > (candle_body * 1.5)
-            is_huge_volume = (volume >= vol_ma * cls.VOL_MULT)
-            is_below_ema13 = (close_p < ema13)
+            kc_lower_val = float(ind.get("kc_lower", 0.0))
+            kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)))
 
-            if is_huge_volume and has_low_wick and is_below_ema13:
+            # 2.1 通道波段鎖利模式：KC 下軌穿透放量 / 出現長下影線的低點針尖才准鎖利平空
+            # 杜絕在半山腰或下軌不走、一路回吐到上軌才慌忙平倉的錯誤行為！
+            low_wick = min(open_p, close_p) - low_p
+            has_low_wick = (low_wick >= candle_body * 1.5) and (low_wick >= 0.35 * atr)
+            is_huge_volume = (volume >= vol_ma * cls.VOL_MULT)
+            is_at_kc_lower = (kc_lower_val > 0 and low_p <= kc_lower_val * 1.002 and close_p <= kc_mid_val)
+            has_substantial_profit = ((entry_p - close_p) >= 0.8 * atr)
+
+            if is_huge_volume and has_low_wick and is_at_kc_lower and has_substantial_profit:
                 details = {
                     "cause": "CLIMAX_BOTTOM",
                     "low_wick": low_wick,
                     "candle_body": candle_body,
                     "volume": volume,
                     "vol_ma": vol_ma,
+                    "kc_lower": kc_lower_val,
                 }
-                return "EXIT_BY_MEME_CLIMAX_BOTTOM", "妖幣天量見底回補 (天量長下影線接盤)", details
+                return "EXIT_BY_MEME_CLIMAX_BOTTOM", "【通道波段鎖利】KC下軌穿透爆量長下影線針尖，平空落袋！", details
 
-            # 2.2 空方結構被反噬：實體收盤站回 EMA13 且站回 VWAP
-            if close_p > ema13 and close_p > vwap_val:
+            # 2.2 唯一合法結構平倉條件：實體收盤實質站上 EMA13+0.15% 緩衝帶且站回 VWAP
+            if close_p > (ema13 * 1.0015) and close_p > vwap_val:
                 details = {
                     "cause": "SHORT_TREND_DEAD",
                     "close": close_p,
                     "ema13": ema13,
                     "vwap": vwap_val,
                 }
-                return "EXIT_BY_MEME_SHORT_TREND_DEAD", "突破VWAP與EMA13空頭趨勢潰敗平倉", details
+                return "EXIT_BY_MEME_SHORT_TREND_DEAD", "突破VWAP與13EMA+0.15%緩衝帶，空頭結構瓦解平倉", details
 
-            # 2.3 防插針移動鎖利：使用 1.8 倍 ATR 動態追蹤止損
+            # 2.3 波段抱單模式：價格反抽至 KC 中軌/上軌時，只要 3M 13EMA 依然向下傾斜，嚴禁在此處觸發平空！
             trough_price = float(position.get("lowest_price") or position.get("trough_price") or entry_p)
             trough_price = min(trough_price, low_p)
             profit_reach_atr = (entry_p - trough_price) / atr
             pullback_atr = (close_p - trough_price) / atr
 
-            # 當利潤曾達到 1.5 ATR 以上，且從最低點反彈超過 1.8 ATR 時觸發鎖利
-            if profit_reach_atr >= 1.5 and pullback_atr >= cls.ATR_MULT:
+            prev_ema13 = float(ind.get("prev_ema13", ema13))
+            is_ema13_falling = (ema13 <= prev_ema13)
+            # 若 13EMA 仍在向下傾斜，且價格受制於 13EMA*1.0015 之下，強制抱單不平倉
+            if is_ema13_falling and close_p <= (ema13 * 1.0015):
+                pass
+            elif profit_reach_atr >= 2.0 and pullback_atr >= cls.ATR_MULT and close_p > (ema13 * 1.0015):
                 details = {
                     "cause": "ATR_TRAILING_LOCK",
                     "trough_price": trough_price,
                     "pullback_atr": pullback_atr,
                     "atr": atr,
                 }
-                return "EXIT_BY_MEME_ATR_TRAILING", f"妖幣1.8 ATR防插針移動鎖利 (反彈 {pullback_atr:.1f} ATR)", details
+                return "EXIT_BY_MEME_ATR_TRAILING", f"妖幣ATR移動鎖利 (結構轉折反彈 {pullback_atr:.1f} ATR)", details
 
             # 2.4 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命，嚴防硬扛巨額虧損
             adverse_loss_atr = (close_p - entry_p) / atr

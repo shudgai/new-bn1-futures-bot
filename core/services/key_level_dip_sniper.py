@@ -66,12 +66,25 @@ def check_comprehensive_short_entry(
     if death_cross and close_p < kc_mid:
         return "OPEN_SHORT", "MA_CROSSOVER", "【波段起跌】MA5死叉MA15且跌破KC中軌，第一時間進場吃波段！"
 
-    # 3. 均線空頭排列或 KC 向下，回踩/反彈觸碰 MA5/13EMA/KC中軌遇阻轉陰延續開空 (DIP_SNIPER 高拋延續)
+    # 3. 破下軌順勢開空 (9:53/9:54 破軌爆發動能補單進場！)
+    # 3M K 棒出現實體大陰線跌破 KC 下軌，均線呈現空頭發散，立即開空！
+    is_lower_breakdown = (
+        close_p <= kc_lower
+        and close_p < open_p
+        and close_p <= ma5
+    )
+    if is_lower_breakdown:
+        return "OPEN_SHORT", "BREAKOUT", "【破軌爆發】實體陰線放量摜穿KC下軌，順勢追擊主跌浪！"
+
+    # 4. 均線空頭排列或 KC 向下，回踩/反彈觸碰 MA5/13EMA/KC中軌遇阻轉陰，或收陰中繼延續開空 (9:49 延續入口)
     is_bearish = (ma5 <= ma15) or (close_p < kc_mid) or (kc_trend == "DOWN")
     if is_bearish and close_p < kc_mid:
-        # 盤中反彈摸到均線 (high >= ma5 - 0.15 * atr)，收盤收陰被打回 (close <= open)
+        # A. 盤中反彈摸到均線 (high >= ma5 - 0.15 * atr)，收盤收陰被打回 (close <= open)
         if high_p >= (ma5 - 0.15 * atr) and close_p <= open_p:
             return "OPEN_SHORT", "DIP_SNIPER", "【高拋延續】空頭排列中，反彈觸均線遇阻回落延續開空！"
+        # B. 均線死叉向下且在中軌下方收陰，即刻延續開空 (9:49 延續入口)
+        if close_p < open_p and ma5 <= ma15:
+            return "OPEN_SHORT", "CONTINUATION", "【中繼延續】均線向下排列且在中軌下方收陰，即刻延續開空！"
 
     return "WAIT", "NONE", "無有效開空信號"
 
@@ -115,14 +128,27 @@ def check_comprehensive_long_entry(
     if golden_cross and close_p > kc_mid:
         return "OPEN_LONG", "MA_CROSSOVER", "【波段起漲】MA5金叉MA15且站上KC中軌，第一時間進場吃主升浪！"
 
-    # 3. 均線多頭排列或 KC 向上，回踩觸碰 MA5/13EMA/KC中軌有守轉陽延續開多 (DIP_SNIPER 低吸延續)
+    # 3. 破上軌順勢開多 (破軌爆發動能進場)
+    is_upper_breakout = (
+        close_p >= kc_upper
+        and close_p > open_p
+        and close_p >= ma5
+    )
+    if is_upper_breakout:
+        return "OPEN_LONG", "BREAKOUT", "【破軌爆發】實體陽線放量衝破KC上軌，順勢追擊主升浪！"
+
+    # 4. 均線多頭排列或 KC 向上，回踩觸碰 MA5/13EMA/KC中軌有守轉陽，或收陽中繼延續開多
     is_bullish = (ma5 >= ma15) or (close_p > kc_mid) or (kc_trend == "UP")
     if is_bullish and close_p > kc_mid:
         # 盤中下探摸到均線/中軌，但收盤收陽轉強
         if low_p <= (ma5 + 0.15 * atr) and close_p >= open_p:
             return "OPEN_LONG", "DIP_SNIPER", "【低吸延續】多頭排列中，回踩均線有守轉陽延續開多！"
+        # 均線金叉向上且在中軌上方收陽，即刻延續開多
+        if close_p > open_p and ma5 >= ma15:
+            return "OPEN_LONG", "CONTINUATION", "【中繼延續】均線向上排列且在中軌上方收陽，即刻延續開多！"
 
     return "WAIT", "NONE", "無有效開多信號"
+
 
 
 class KeyLevelDipSniperService:

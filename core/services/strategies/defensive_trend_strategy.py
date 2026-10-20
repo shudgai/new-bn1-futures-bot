@@ -551,25 +551,31 @@ def check_short_exit(
     body_last = abs(close_p - open_p)
     lower_wick_last = max(0.0, min(close_p, open_p) - low_p)
 
-    # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
-    if peak_gain_pct >= 0.012:
+    # 1. 動態回撤止盈 (波段抱單模式：只要 13EMA/MA15 依然向下傾斜，且未實質站上 MA15+0.15% 緩衝帶，嚴禁中途微幅回抽平空！)
+    if peak_gain_pct >= 0.03:  # 波段級別利潤才評估 (曾達 3% 以上)
         position["profit_floor_armed"] = True
         rebound_pct = (curr_price - lowest_p) / entry_p
-        if rebound_pct >= 0.008:
-            logger.info(f"[平倉觸發] {symbol} 空單 - 動態低點回抽止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")
+        # 必須確認 13EMA 已走平或向上，且價格實質站回 MA15*1.0015 之上，才准回撤止盈
+        if rebound_pct >= 0.015 and close_p > (ma15_curr * 1.0015):
+            logger.info(f"[平倉觸發] {symbol} 空單 - 結構轉折波段止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")
             return True, "EXIT_BY_TRAILING_PROFIT_LOCK", details
 
     # 2. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
     if pnl_pct < 0.008 and close_p <= ma15_curr and ma5_curr <= ma15_curr:
         return False, "HOLD: NO_PROFIT_WICK_TOLERANCE (浮虧/無實質利潤中，上影線受阻確認阻力，嚴禁慌張平空)", details
 
-    # 3. 回抽容忍（Hold on Pullback）：只要 ma5 < ma15 且收盤價未突破 ma15，視為空頭回抽，【嚴禁平空】！
-    if ma5_curr < ma15_curr and close_p <= ma15_curr:
-        return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE (MA5 < MA15 且收盤未破 MA15，空頭健康回抽嚴禁平空)", details
+    # 3. 回抽容忍（Hold on Pullback）：只要收盤價未突破 ma15*1.0015，視為空頭回抽，【嚴禁平空】！
+    if close_p <= (ma15_curr * 1.0015):
+        return False, "HOLD: BEAR_HEALTHY_REBOUND_TOLERANCE (收盤受制於MA15+0.15%緩衝帶下方，空頭趨勢完整嚴禁平空)", details
 
-    # 4. 已有實質利潤狀態下 (浮盈 >= 0.8% ~ 1.2%)：底部長下影線探底回升允許觸發保護性止盈
-    if pnl_pct >= 0.008 and lower_wick_last > 1.5 * max(body_last, 1e-9) and lower_wick_last >= 0.3 * atr:
-        logger.info(f"[保護性止盈] {symbol} 空單 - 實質浮盈 ({pnl_pct:.2%}) 且底部長下影線探底回升，平空落袋")
+    # 4. 通道波段鎖利模式：KC 下軌穿透放量 / 底部長下影線探底回升，平空落袋
+    if (
+        pnl_pct >= 0.008
+        and low_p <= (kc_lower * 1.002)
+        and lower_wick_last > 1.5 * max(body_last, 1e-9)
+        and lower_wick_last >= 0.35 * atr
+    ):
+        logger.info(f"[通道波段鎖利] {symbol} 空單 - KC下軌穿透且長下影線探底回升，平空落袋")
         return True, "EXIT_BY_PROFIT_EXHAUSTION_WICK", details
 
     # 5. MA5 金叉 (僅在突破 MA15 且非健康回抽時)
