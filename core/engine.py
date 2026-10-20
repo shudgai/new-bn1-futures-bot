@@ -2638,13 +2638,20 @@ class TradingEngine:
                     or decision.get('type') in MEME_ENTRY_CODES
                 )
             )
+            confirmation_upper = str(confirmation or "").upper()
+            is_relaxed_ma_pattern = confirmation_upper in {
+                "MID_LINE_BREAKDOWN",
+                "MID_LINE_BREAKOUT",
+                "DIP_SNIPER",
+                "MA_CROSSOVER",
+            }
             structure_problem = market_structure_gate_problem(
                 snapshot["frame"],
                 side,
                 quote=price,
-                enforce_ma_direction=not is_confirmed_wild_outer,
+                enforce_ma_direction=not (is_confirmed_wild_outer or is_relaxed_ma_pattern),
                 is_confirmed_outer_entry=is_confirmed_wild_outer,
-                is_continuation_entry=str(confirmation or "").upper() in {
+                is_continuation_entry=is_relaxed_ma_pattern or confirmation_upper in {
                     "CONTINUATION_OUTSIDE_KC",
                     "CONFIRMED_2BAR_CONTINUATION",
                     "CONTINUATION",
@@ -3171,17 +3178,24 @@ class TradingEngine:
                         "WARNING",
                     )
                     return False
+            confirmation_name = str(
+                wild_signal.get("structure_confirmation")
+                or wild_signal.get("entry_pattern")
+                or ""
+            ).upper()
+            is_relaxed_ma_pattern = confirmation_name in {
+                "MID_LINE_BREAKDOWN",
+                "MID_LINE_BREAKOUT",
+                "DIP_SNIPER",
+                "MA_CROSSOVER",
+            }
             structure_problem = market_structure_gate_problem(
                 frame,
                 side,
                 quote=price,
-                enforce_ma_direction=not is_confirmed_wild_outer,
+                enforce_ma_direction=not (is_confirmed_wild_outer or is_relaxed_ma_pattern),
                 is_confirmed_outer_entry=is_confirmed_wild_outer,
-                is_continuation_entry=str(
-                    wild_signal.get("structure_confirmation")
-                    or wild_signal.get("entry_pattern")
-                    or ""
-                ).upper() in {
+                is_continuation_entry=is_relaxed_ma_pattern or confirmation_name in {
                     "CONTINUATION_OUTSIDE_KC",
                     "CONFIRMED_2BAR_CONTINUATION",
                     "CONTINUATION",

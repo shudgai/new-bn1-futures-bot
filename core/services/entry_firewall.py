@@ -486,11 +486,17 @@ def market_structure_gate_problem(
         ma15 = float(values["ma15"][-1])
         previous_ma5 = float(values["ma5"][-2])
         if enforce_ma_direction and normalized_side == "LONG":
-            long_ma_aligned = ma5 > ma15 and ma5_rising and ma5 > previous_ma5
+            long_ma_aligned = (
+                (ma5 > ma15 and ma5_rising and ma5 > previous_ma5)
+                or (is_continuation_entry and current_price > values["kc_middle"][-1] and current_price >= ma5)
+            )
             if not long_ma_aligned:
                 return veto("VETO_LONG_MA_CONDITION_NOT_MET")
         if enforce_ma_direction and normalized_side == "SHORT":
-            short_ma_aligned = ma5 < ma15 and ma5_falling and ma5 < previous_ma5
+            short_ma_aligned = (
+                (ma5 < ma15 and ma5_falling and ma5 < previous_ma5)
+                or (is_continuation_entry and current_price < values["kc_middle"][-1] and current_price <= ma5)
+            )
             if not short_ma_aligned:
                 return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
         return None

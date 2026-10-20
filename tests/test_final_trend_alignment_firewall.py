@@ -60,7 +60,7 @@ def test_blocks_short_when_completed_kc_is_up(symbol):
 def test_blocks_short_when_ma5_is_above_ma15(symbol):
     frame = trend_frame("DOWN", "LONG")
 
-    with pytest.raises(ValueError, match="VETO_SHORT_MA_CONDITION_NOT_MET"):
+    with pytest.raises(ValueError, match="VETO_(SHORT_MA_CONDITION_NOT_MET|BLOCKED_SHORT_ON_RISING_MA15)"):
         require_final_trend_alignment(frame, "SHORT", symbol)
 
 

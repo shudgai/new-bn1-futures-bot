@@ -726,6 +726,8 @@ async def _process_wild_swing_symbol(
         "MA5_MA15_1M_CROSS",
         "DIP_SNIPER",
         "MEME_PEAK_HUNTER",
+        "MID_LINE_BREAKDOWN",
+        "MID_LINE_BREAKOUT",
     }:
         logger.error(
             "WILD_SWING_ENTRY_BLOCK symbol=%s side=%s mode=%s reason=ENTRY_GATE_REQUIRED",
@@ -1102,7 +1104,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                     print(f"[{symbol}] [進場攔截 VETO] {exh_reason}", flush=True)
                     continue
 
-                room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(frame, candidate_side, quote)
+                room_ok, room_reason = MemeSharedProtectionGate.validate_profit_room(
+                    frame,
+                    candidate_side,
+                    quote,
+                    entry_confirmation=mode_name,
+                    is_bearish_continuation=bearish_continuation,
+                    is_bullish_continuation=bullish_continuation,
+                )
                 if not room_ok:
                     log_entry_gate(engine, symbol, candidate_side, 'GATE', room_reason, float(frame.iloc[-1].get('timestamp', 0)))
                     logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {room_reason}")
@@ -1111,15 +1120,17 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
 
                 if candidate_side == 'LONG':
                     price_ok = (quote >= ma5_v and quote >= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote >= min(ma5_v, kc_mid))
-                    if ma5_s <= 0 or not price_ok:
-                        ma5_block_msg = f"MA5_SLOPE_NOT_POSITIVE_{ma5_s}" if ma5_s <= 0 else "PRICE_BELOW_MA5_OR_MID"
+                    is_ma5_long_ok = (ma5_s > 0) or (price_ok and (ma5_s >= -1e-4 or quote > ma5_v))
+                    if not is_ma5_long_ok or not price_ok:
+                        ma5_block_msg = f"MA5_SLOPE_NOT_POSITIVE_{ma5_s}" if not is_ma5_long_ok else "PRICE_BELOW_MA5_OR_MID"
                         log_entry_gate(engine, symbol, candidate_side, 'GATE', ma5_block_msg, float(frame.iloc[-1].get('timestamp', 0)))
                         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked LONG due to non-positive MA5 slope ({ma5_s}) or price < MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
                         continue
                 if candidate_side == 'SHORT':
                     price_ok = (quote <= ma5_v and quote <= kc_mid) if mode_name != 'MODE3_GUILLOTINE_CUT' else (quote <= max(ma5_v, kc_mid))
-                    if ma5_s >= 0 or not price_ok:
-                        ma5_block_msg = f"MA5_SLOPE_NOT_NEGATIVE_{ma5_s}" if ma5_s >= 0 else "PRICE_ABOVE_MA5_OR_MID"
+                    is_ma5_short_ok = (ma5_s < 0) or (price_ok and (ma5_s <= 1e-4 or quote < ma5_v))
+                    if not is_ma5_short_ok or not price_ok:
+                        ma5_block_msg = f"MA5_SLOPE_NOT_NEGATIVE_{ma5_s}" if not is_ma5_short_ok else "PRICE_ABOVE_MA5_OR_MID"
                         log_entry_gate(engine, symbol, candidate_side, 'GATE', ma5_block_msg, float(frame.iloc[-1].get('timestamp', 0)))
                         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked SHORT due to non-negative MA5 slope ({ma5_s}) or price > MA5/Middle (quote={quote}, ma5={ma5_v}, mid={kc_mid})")
                         continue

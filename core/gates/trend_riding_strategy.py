@@ -260,30 +260,50 @@ def can_open_position(
     # ══════════════════════════════════════════════════════════════════
     # 一、 開倉絕對門禁 (一票否決制，嚴禁繞過)
     # ══════════════════════════════════════════════════════════════════
+    live_price = float(quote or close_p or 0.0)
+    kc_mid = float(last_closed.get("kc_middle", last_closed.get("kc_basis", 0.0)))
+    atr_val = float(last_closed.get("atr", 0.0001)) or 0.0001
+
     if side == "LONG":
-        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER 豁免滯後 KC 斜率)
-        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"} and kc_trend != "UP":
+        # 1. kc_trend != 'UP': return False (KC 非向上絕對不開多；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER / MID_LINE_BREAKOUT 豁免滯後 KC 斜率)
+        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKOUT"} and kc_trend != "UP":
             msg = f"[攔截開多] {symbol} 當前 KC 為 {kc_trend}，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_LONG: KC_TREND_NOT_UP ({kc_trend})", details
 
         # 2. ma5[-1] <= ma15[-1]: return False (MA5 仍在 MA15 下方絕對不開多)
-        if not is_instant_breakout and ma5_curr <= ma15_curr:
-            msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
-            logger.warning(msg)
-            print(msg, flush=True)
-            return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
+        if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKOUT", "MA_CROSSOVER"} and ma5_curr <= ma15_curr:
+            if not (live_price > kc_mid and live_price > ma15_curr):
+                msg = f"[攔截開多] {symbol} MA5 ({ma5_curr:.6g}) <= MA15 ({ma15_curr:.6g})，禁止開多"
+                logger.warning(msg)
+                print(msg, flush=True)
+                return False, "VETO_LONG: MA5_NOT_ABOVE_MA15", details
 
         # 3. ma5[-1] <= ma5[-2]: return False (MA5 未實質向上勾頭不開多)
-        if not is_instant_breakout and ma5_curr <= ma5_prev:
+        # 解除否決條件：當 MA5 重新拐頭向上且站上 KC 中軌時，必須立即解除 Veto 否決，恢復開多權限！
+        is_ma5_bullish_resumed = (
+            (live_price > kc_mid or close_p > kc_mid)
+            and (
+                live_price > ma5_curr
+                or entry_confirmation in {"MID_LINE_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"}
+                or abs(ma5_curr - ma5_prev) <= 1e-4
+                or live_price >= open_p
+            )
+        )
+        if not is_instant_breakout and ma5_curr <= ma5_prev and not is_ma5_bullish_resumed:
             msg = f"[攔截開多] {symbol} MA5 未實質向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_LONG: MA5_SLOPE_NOT_POSITIVE", details
 
         # 4. 實體陰線禁止開多
-        if close_p <= open_p and not has_live_breakout_confirmation:
+        is_bullish_active = (
+            has_live_breakout_confirmation
+            or entry_confirmation in {"MID_LINE_BREAKOUT", "DIP_SNIPER"}
+            or (live_price > open_p and live_price > kc_mid)
+        )
+        if close_p <= open_p and not is_bullish_active:
             msg = f"[攔截開多] {symbol} 上一根為陰線實體，禁止開多"
             logger.warning(msg)
             print(msg, flush=True)
@@ -293,6 +313,7 @@ def can_open_position(
         if (
             upper_wick > 1.5 * max(body, 1e-9)
             and not has_live_breakout_confirmation
+            and entry_confirmation not in {"MID_LINE_BREAKOUT"}
         ):
             msg = f"[攔截開多] {symbol} 上一根為長上影線竭盡避雷針，嚴禁頂部追多"
             logger.warning(msg)
@@ -303,7 +324,7 @@ def can_open_position(
         is_golden_cross = (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
         is_first_bull_bar = (close_p > open_p and (prev_close <= prev_open or ma5_prev <= ma15_prev))
         is_strong_bull_aligned = (ma5_curr > ma15_curr and close_p > open_p and ma5_curr > ma5_prev)
-        if not wild_outer_entry and entry_confirmation not in {"DIP_SNIPER", "MA_CROSSOVER"} and not (
+        if not wild_outer_entry and entry_confirmation not in {"DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKOUT"} and not (
             is_golden_cross or is_first_bull_bar or is_strong_bull_aligned
         ):
             msg = f"[攔截開多] {symbol} 非金叉突破且非多頭排列首根收陽，禁止開多"
@@ -312,29 +333,45 @@ def can_open_position(
             return False, "VETO_LONG: NOT_GOLDEN_CROSS_OR_BULL_FIRST_BAR", details
 
     elif side == "SHORT":
-        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER 豁免滯後 KC 斜率)
-        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER"} and kc_trend != "DOWN":
+        # 1. kc_trend != 'DOWN': return False (KC 非向下絕對不開空；INSTANT_BURST_BREAKOUT / DIP_SNIPER / MA_CROSSOVER / MID_LINE_BREAKDOWN 豁免滯後 KC 斜率)
+        if entry_confirmation not in {"INSTANT_BURST_BREAKOUT", "DIP_SNIPER", "MA_CROSSOVER", "MID_LINE_BREAKDOWN"} and kc_trend != "DOWN":
             msg = f"[攔截開空] {symbol} 當前 KC 為 {kc_trend}，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, f"VETO_SHORT: KC_TREND_NOT_DOWN ({kc_trend})", details
 
         # 2. ma5[-1] >= ma15[-1]: return False (MA5 在 MA15 上方絕對不開空)
-        if not is_instant_breakout and ma5_curr >= ma15_curr:
-            msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
-            logger.warning(msg)
-            print(msg, flush=True)
-            return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
+        if not is_instant_breakout and entry_confirmation not in {"MID_LINE_BREAKDOWN", "MA_CROSSOVER"} and ma5_curr >= ma15_curr:
+            if not (live_price < kc_mid and live_price < ma15_curr):
+                msg = f"[攔截開空] {symbol} MA5 ({ma5_curr:.6g}) >= MA15 ({ma15_curr:.6g})，禁止開空"
+                logger.warning(msg)
+                print(msg, flush=True)
+                return False, "VETO_SHORT: MA5_NOT_BELOW_MA15", details
 
         # 3. ma5[-1] >= ma5[-2]: return False (MA5 走平或向上勾頭絕對不開空)
-        if not is_instant_breakout and ma5_curr >= ma5_prev:
+        # 解除否決條件：當 MA5 重新拐頭向下且跌破 KC 中軌時，必須立即解除 Veto 否決，恢復開空權限！
+        is_ma5_bearish_resumed = (
+            (live_price < kc_mid or close_p < kc_mid)
+            and (
+                live_price < ma5_curr
+                or entry_confirmation in {"MID_LINE_BREAKDOWN", "DIP_SNIPER", "MA_CROSSOVER"}
+                or abs(ma5_curr - ma5_prev) <= 1e-4
+                or live_price <= open_p
+            )
+        )
+        if not is_instant_breakout and ma5_curr >= ma5_prev and not is_ma5_bearish_resumed:
             msg = f"[攔截開空] {symbol} MA5 走平或向上勾頭 (斜率={ma5_curr - ma5_prev:+.6g})，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
             return False, "VETO_SHORT: MA5_SLOPE_NOT_NEGATIVE", details
 
         # 4. close[-1] >= open[-1]: return False (上一根為實體陽線絕對不開空)
-        if close_p >= open_p and not has_live_breakout_confirmation:
+        is_bearish_active = (
+            has_live_breakout_confirmation
+            or entry_confirmation in {"MID_LINE_BREAKDOWN", "DIP_SNIPER"}
+            or (live_price < open_p and live_price < kc_mid)
+        )
+        if close_p >= open_p and not is_bearish_active:
             msg = f"[攔截開空] {symbol} 上一根為實體陽線，禁止開空"
             logger.warning(msg)
             print(msg, flush=True)
@@ -344,6 +381,7 @@ def can_open_position(
         if (
             lower_wick > 1.5 * max(body, 1e-9)
             and not has_live_breakout_confirmation
+            and entry_confirmation not in {"MID_LINE_BREAKDOWN"}
         ):
             msg = f"[攔截開空] {symbol} 上一根為長下影線反彈棒，嚴禁底部追空"
             logger.warning(msg)

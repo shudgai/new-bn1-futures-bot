@@ -246,14 +246,15 @@ class MemeSharedProtectionGate:
         quote: float,
         min_room_ratio: float = 0.20,
         min_room_atr: float = 0.35,
+        **kwargs,
     ) -> Tuple[bool, str]:
         """驗證開倉是否具備足夠的獲利空間 (Profit Room Filter)。
         
         使用者鐵律：「開倉平倉後冷靜一下有利潤在開倉」！
         - 做多：當前價格到 KC 上軌必須至少有 20% 通道寬度或 0.35 ATR 剩餘空間。
-          若價格在通道內貼近上軌（剩餘空間不足）無利可圖嚴禁追多；若已突破上軌，距上軌超過 3.0 ATR 嚴禁追價！
+          在明確 KC向上 單邊漲勢或延續追多中，行情沿軌上衝，不因價格靠近上軌而一票否決！
         - 做空：當前價格到 KC 下軌必須至少有 20% 通道寬度或 0.35 ATR 剩餘空間。
-          若價格在通道內貼近下軌（剩餘空間不足）無利可圖嚴禁追空；若已跌破下軌，距下軌超過 3.0 ATR 嚴禁追價！
+          在明確 KC向下 單邊跌勢或延續追空中，行情沿軌下跌，不因價格靠近下軌而一票否決！
         """
         if df is None or len(df) < 2:
             return True, "PASS: INSUFFICIENT_DATA"
@@ -270,14 +271,25 @@ class MemeSharedProtectionGate:
         if kc_range <= 0:
             return True, "PASS: INVALID_KC_RANGE"
 
+        from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
+        kc_trend = resolve_kc_trend(df)
+
         side = side.upper()
         if side == 'LONG':
             room_price = kc_upper - quote
             room_ratio = room_price / kc_range
-            # 如果在軌道內，但距上軌空間不足 20% 且不足 0.35 ATR，判定為貼軌追多無利潤
+            # 如果在軌道內，但距上軌空間不足 20% 且不足 0.35 ATR
             if quote < kc_upper:
-                if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
-                    return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_LONG (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
+                is_kc_up = (kc_trend == "UP")
+                is_continuation = bool(
+                    kwargs.get("is_bullish_continuation")
+                    or kwargs.get("bullish_continuation")
+                    or kwargs.get("is_continuation")
+                    or kwargs.get("entry_confirmation") in {"DIP_SNIPER", "CONTINUATION_OUTSIDE_KC", "MID_LINE_BREAKOUT"}
+                )
+                if not (is_kc_up or is_continuation):
+                    if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
+                        return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_LONG (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
             else:
                 # 若已突破上軌，但超出上軌過度延伸 (> 3.0 ATR)，天花板利潤空間耗盡且超過 3 ATR 追價上限
                 if (quote - kc_upper) > 3.0 * atr:
@@ -287,10 +299,18 @@ class MemeSharedProtectionGate:
         elif side == 'SHORT':
             room_price = quote - kc_lower
             room_ratio = room_price / kc_range
-            # 如果在軌道內，但距下軌空間不足 20% 且不足 0.35 ATR，判定為貼軌追空無利潤
+            # 如果在軌道內，但距下軌空間不足 20% 且不足 0.35 ATR
             if quote > kc_lower:
-                if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
-                    return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_SHORT (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
+                is_kc_down = (kc_trend == "DOWN")
+                is_continuation = bool(
+                    kwargs.get("is_bearish_continuation")
+                    or kwargs.get("bearish_continuation")
+                    or kwargs.get("is_continuation")
+                    or kwargs.get("entry_confirmation") in {"DIP_SNIPER", "CONTINUATION_OUTSIDE_KC", "MID_LINE_BREAKDOWN"}
+                )
+                if not (is_kc_down or is_continuation):
+                    if room_ratio < min_room_ratio and room_price < min_room_atr * atr:
+                        return False, f"REJECT_ENTRY: INSUFFICIENT_PROFIT_ROOM_FOR_SHORT (Room: {room_ratio:.1%} < {min_room_ratio:.0%}, {room_price:.4f} < {min_room_atr} ATR)"
             else:
                 # 若已跌破下軌，但跌出下軌過度延伸 (> 3.0 ATR)，地板利潤空間耗盡且超過 3 ATR 追價上限
                 if (kc_lower - quote) > 3.0 * atr:

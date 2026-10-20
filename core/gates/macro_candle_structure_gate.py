@@ -15,6 +15,9 @@ from core.gates.breakout_continuation_entry_gate import (
     INITIAL_2BAR_BREAKOUT,
     MA_CROSSOVER,
     INSTANT_BURST_BREAKOUT,
+    DIP_SNIPER,
+    MID_LINE_BREAKDOWN,
+    MID_LINE_BREAKOUT,
     PURE_MATH_ENTRY_CONFIRMATIONS,
 )
 from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
@@ -167,6 +170,8 @@ class MacroCandleStructureGate:
                         INSTANT_BREAKOUT_OUTSIDE,
                         CONFIRMED_2BAR_BREAKOUT,
                         INSTANT_BURST_BREAKOUT,
+                        MID_LINE_BREAKDOWN,
+                        MID_LINE_BREAKOUT,
                     }
                     else "CROSSOVER"
                     if confirmation == MA_CROSSOVER
@@ -177,7 +182,13 @@ class MacroCandleStructureGate:
             if not structure_confirmed or mode != expected_mode:
                 return False, "VETO_PURE_MATH_ENTRY: 訊號模式與結構確認不一致"
             if confirmation not in {
-                CONFIRMED_2BAR_BREAKOUT, INSTANT_BREAKOUT_INSIDE, INSTANT_BURST_BREAKOUT, "DIP_SNIPER", "MEME_PEAK_HUNTER",
+                CONFIRMED_2BAR_BREAKOUT,
+                INSTANT_BREAKOUT_INSIDE,
+                INSTANT_BURST_BREAKOUT,
+                "DIP_SNIPER",
+                "MEME_PEAK_HUNTER",
+                MID_LINE_BREAKDOWN,
+                MID_LINE_BREAKOUT,
             }:
                 try:
                     ma5_current = float(indicators["ma5_current"])

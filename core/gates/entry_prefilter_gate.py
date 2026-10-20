@@ -54,7 +54,7 @@ def can_execute_entry(
 
     pattern_str = str(entry_pattern or "").upper()
     is_outer_breakout = (
-        any(p in pattern_str for p in ("BREAKOUT", "CONTINUATION", "OUTER", "DIP_SNIPER", "MA_CROSS"))
+        any(p in pattern_str for p in ("BREAKOUT", "CONTINUATION", "OUTER", "DIP_SNIPER", "MA_CROSS", "MID_LINE"))
         or (signal_type == "LONG" and close_price > kc_upper)
         or (signal_type == "SHORT" and close_price < kc_lower)
     )
