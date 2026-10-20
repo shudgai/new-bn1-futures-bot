@@ -1137,12 +1137,19 @@ async def validate_account_entry(account, symbol, side, context):
         provider = getattr(account, "entry_frame_provider", None)
         if not callable(provider):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MISSING_FRESH_MARKET_DATA")
-        fresh_frame = await provider(symbol)
+        fresh_frame = context.get("entry_gate_frame")
+        if fresh_frame is None:
+            timeframe_ms = int(context.get("entry_timeframe_ms") or 60_000)
+            try:
+                fresh_frame = await provider(symbol, timeframe_ms=timeframe_ms)
+            except TypeError:
+                fresh_frame = await provider(symbol)
         if (
             fresh_frame is None
             or fresh_frame.empty
             or not fresh_frame.attrs.get("entry_finality_verified")
-            or fresh_frame.attrs.get("timeframe_ms") != 60_000
+            or fresh_frame.attrs.get("timeframe_ms")
+            != int(context.get("entry_timeframe_ms") or 60_000)
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_UNVERIFIED_CLOSED_CANDLES")
 
@@ -1236,21 +1243,35 @@ async def validate_account_entry(account, symbol, side, context):
         signal_wick_bar_id = finite_bar_id(
             signal.get("wick_trigger_bar_id")
         )
+        stale_fields = []
+        if signal.get("side") != side:
+            stale_fields.append("side")
+        if signal_pattern is None or signal_pattern != expected_pattern:
+            stale_fields.append("pattern")
         if (
-            signal.get("side") != side
-            or signal_pattern is None
-            or signal_pattern != expected_pattern
-            or (
-                context.get("entry_signal_mode") is not None
-                and EntryPatternPermittedGate.normalize(
-                    context.get("entry_signal_mode")
-                ) != signal_pattern
-            )
-            or signal_bar_id is None
-            or expected_bar_id != signal_bar_id
-            or confirmation_bar_id != signal_bar_id
-            or expected_wick_bar_id != signal_wick_bar_id
+            context.get("entry_signal_mode") is not None
+            and EntryPatternPermittedGate.normalize(
+                context.get("entry_signal_mode")
+            ) != signal_pattern
         ):
+            stale_fields.append("signal_mode")
+        if signal_bar_id is None:
+            stale_fields.append("signal_bar_missing")
+        if expected_bar_id != signal_bar_id:
+            stale_fields.append("dual_tf_bar")
+        if confirmation_bar_id != signal_bar_id:
+            stale_fields.append("confirmation_bar")
+        if expected_wick_bar_id != signal_wick_bar_id:
+            stale_fields.append("wick_bar")
+        if stale_fields:
+            logger.warning(
+                "WILD_SWING_SIGNAL_STALE symbol=%s side=%s fields=%s "
+                "signal_pattern=%s expected_pattern=%s confirmation=%s "
+                "signal_bar=%s metadata_bar=%s confirmation_bar=%s",
+                symbol, side, ",".join(stale_fields), signal_pattern,
+                expected_pattern, signal.get("structure_confirmation"),
+                signal_bar_id, expected_bar_id, confirmation_bar_id,
+            )
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
 
         require_final_trend_alignment(
@@ -1379,11 +1400,30 @@ async def validate_account_entry(account, symbol, side, context):
             or macro_indicators["atr"] <= 0
         ):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_MACRO_DATA_INVALID")
+        macro_entry_pattern = (
+            "BREAKOUT"
+            if confirmation in {
+                INSTANT_BREAKOUT_INSIDE,
+                INSTANT_BREAKOUT_OUTSIDE,
+                CONFIRMED_2BAR_BREAKOUT,
+                INSTANT_BURST_BREAKOUT,
+                "MID_LINE_BREAKDOWN",
+                "MID_LINE_BREAKOUT",
+                "BREAKOUT",
+            }
+            else "CROSSOVER"
+            if confirmation == "MA_CROSSOVER"
+            else "DIP_SNIPER"
+            if confirmation in {"DIP_SNIPER", "PULLBACK"}
+            else signal_pattern
+        )
         macro_allowed, macro_reason = MacroCandleStructureGate().can_open(
             side,
             macro_bar,
             macro_indicators,
-            entry_pattern=signal_pattern,
+            # The actual, freshly revalidated structural confirmation is the
+            # source of truth if a legacy candidate label uses an alias.
+            entry_pattern=macro_entry_pattern,
             structure_confirmation=signal.get("structure_confirmation"),
             structure_confirmed=signal.get("structure_confirmed") is True,
             channel_expanding=signal.get("channel_expanding") is True,

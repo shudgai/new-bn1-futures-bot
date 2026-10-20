@@ -752,7 +752,8 @@ async def _process_wild_swing_symbol(
     htf_trend_val = resolve_kc_trend(frame)
     past_trades = getattr(engine.account, 'trade_records', []) or getattr(engine.account, 'trades', [])
 
-    ema_cross_signal = None
+    signals = []
+    ema_evaluations = []
     for s_side in ("LONG", "SHORT"):
         e_sig, e_reason = EmaCrossEntryService.evaluate_entry(
             symbol, frame, s_side,
@@ -760,53 +761,69 @@ async def _process_wild_swing_symbol(
             last_closed_trades=past_trades,
             htf_15m_trend=htf_trend_val,
         )
+        ema_evaluations.append(f"{s_side}:{e_reason}")
         if e_sig is not None:
-            ema_cross_signal = e_sig
-            break
+            signals.append(e_sig)
 
-    if ema_cross_signal is not None:
-        # EMA 交叉優先：直接採納，不執行破軌判定
-        signals = [ema_cross_signal]
-    else:
-        # 第二優先：EMA 無訊號或被擋時，才用破軌開倉 (Two-Stage Breakout)
-        from core.services.two_stage_breakout_service import TwoStageBreakoutService
-        breakout_signals = []
-        for side in scan_sides:
-            b_sig = TwoStageBreakoutService.evaluate(
-                frame, side,
-                symbol=symbol,
-                position=active_pos,
-                mode="HYBRID",
-            )
-            if b_sig is not None:
-                b_sig["entry_pattern"] = b_sig.get("entry_source", "BREAK_STRONG")
-                breakout_signals.append(b_sig)
+    # Evaluate both authorized entry families independently. Previously an
+    # EMA candidate suppressed breakout evaluation entirely, so a later veto
+    # of that EMA candidate also discarded a valid second-bar KC breakout.
+    from core.services.two_stage_breakout_service import TwoStageBreakoutService
+    breakout_signals = []
+    for side in scan_sides:
+        b_sig = TwoStageBreakoutService.evaluate(
+            frame, side,
+            symbol=symbol,
+            position=active_pos,
+            mode="HYBRID",
+        )
+        if b_sig is not None:
+            b_sig["entry_pattern"] = b_sig.get("entry_source", "BREAK_STRONG")
+            breakout_signals.append(b_sig)
+    signals.extend(breakout_signals)
 
-        if breakout_signals:
-            signals = breakout_signals
-        else:
-            signals = [
+    if not signals:
+        signals = [
                 strategy.evaluate_entry(
                     symbol, frame, side, tick_price=quote,
                 )
                 for side in scan_sides
             ]
-            from core.services.key_level_dip_sniper import KeyLevelDipSniperService
-            for side in scan_sides:
-                dip_sig = KeyLevelDipSniperService.evaluate_entry(
-                    symbol, frame, side, tick_price=quote,
-                )
-                if dip_sig is not None:
-                    signals.append(dip_sig)
-            from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
-            for side in scan_sides:
-                meme_sig = MemePeakHunterStrategy.evaluate_entry(
-                    symbol, frame, side, tick_price=quote,
-                )
-                if meme_sig is not None:
-                    signals.append(meme_sig)
+        from core.services.key_level_dip_sniper import KeyLevelDipSniperService
+        for side in scan_sides:
+            dip_sig = KeyLevelDipSniperService.evaluate_entry(
+                symbol, frame, side, tick_price=quote,
+            )
+            if dip_sig is not None:
+                signals.append(dip_sig)
+        from core.services.strategies.meme_peak_hunter import MemePeakHunterStrategy
+        for side in scan_sides:
+            meme_sig = MemePeakHunterStrategy.evaluate_entry(
+                symbol, frame, side, tick_price=quote,
+            )
+            if meme_sig is not None:
+                signals.append(meme_sig)
 
     signals = [signal for signal in signals if signal is not None]
+    scan_bar_id = float(closed.iloc[-1].get("timestamp", 0.0))
+    last_scan_by_symbol = getattr(engine, "_last_entry_scan_log_bar", None)
+    if not isinstance(last_scan_by_symbol, dict):
+        last_scan_by_symbol = engine._last_entry_scan_log_bar = {}
+    if last_scan_by_symbol.get(symbol) != scan_bar_id:
+        last_scan_by_symbol[symbol] = scan_bar_id
+        logger.info(
+            "ENTRY_SCAN_RESULT symbol=%s timeframe_ms=%s bar=%s ema=%s breakout=%s candidates=%s",
+            symbol,
+            frame.attrs.get("timeframe_ms"),
+            scan_bar_id,
+            ",".join(ema_evaluations),
+            ",".join(str(item.get("entry_source") or item.get("type") or "BREAKOUT") for item in breakout_signals)
+            or "NO_CLOSED_2BAR_SIGNAL",
+            ",".join(
+                f"{item.get('side')}:{item.get('entry_source') or item.get('structure_confirmation')}"
+                for item in signals
+            ) or "NONE",
+        )
     authorities = []
     if wait_candidate is not None:
         authorities.append({**wait_candidate, "authority": "WAIT"})

@@ -358,10 +358,16 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
     payload = context if isinstance(context, Mapping) else {}
     # A cached signal snapshot may be stale by the time a direct, continuation,
     # or passive order reaches execution. Always prefer a fresh account snapshot.
+    # open_position() supplies one freshly verified execution snapshot for all
+    # account-side gates. Re-fetching here and again in entry_firewall both
+    # wastes REST calls and can hold the global submit lock across settlement
+    # retries.
+    frame = payload.get("entry_gate_frame")
     provider = getattr(account, "entry_frame_provider", None)
-    frame = provider(symbol) if callable(provider) else None
-    if hasattr(frame, "__await__"):
-        frame = await frame
+    if frame is None and callable(provider):
+        frame = provider(symbol)
+        if hasattr(frame, "__await__"):
+            frame = await frame
     if frame is None:
         frame = payload.get("entry_gate_frame")
     if frame is None:

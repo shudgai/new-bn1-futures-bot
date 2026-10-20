@@ -2420,6 +2420,51 @@ class BinanceTestnetAccount:
             )
             return False
         entry_context = dict(entry_context or {})
+        is_manual_request = (
+            entry_context.get("is_manual") in [True, "true", "TRUE"]
+            or entry_context.get("manual_entry") in [True, "true", "TRUE"]
+            or entry_context.get("source") == "MANUAL"
+            or reason == "MANUAL"
+        )
+        if not is_manual_request:
+            provider = getattr(self, "entry_frame_provider", None)
+            if callable(provider) and entry_context.get("entry_gate_frame") is None:
+                import asyncio
+                import time
+                started = time.monotonic()
+                self.log(f"ENTRY_FINAL_SNAPSHOT_START symbol={symbol}", "INFO")
+                try:
+                    try:
+                        snapshot_request = provider(
+                            symbol,
+                            timeframe_ms=int(
+                                entry_context.get("entry_timeframe_ms") or 60_000
+                            ),
+                        )
+                    except TypeError:
+                        snapshot_request = provider(symbol)
+                    entry_context["entry_gate_frame"] = await asyncio.wait_for(
+                        snapshot_request, timeout=18.0,
+                    )
+                except asyncio.TimeoutError:
+                    self.log(
+                        f"ENTRY_FINAL_SNAPSHOT_TIMEOUT symbol={symbol} timeout_seconds=18",
+                        "WARNING",
+                    )
+                    return False
+                elapsed = time.monotonic() - started
+                snapshot = entry_context["entry_gate_frame"]
+                verified = bool(
+                    snapshot is not None
+                    and getattr(snapshot, "attrs", {}).get("entry_finality_verified")
+                )
+                self.log(
+                    f"ENTRY_FINAL_SNAPSHOT_RESULT symbol={symbol} verified={verified} "
+                    f"elapsed_seconds={elapsed:.2f}",
+                    "INFO" if verified else "WARNING",
+                )
+                if not verified:
+                    return False
         is_manual = (
             entry_context.get("is_manual") in [True, "true", "TRUE"]
             or entry_context.get("manual_entry") in [True, "true", "TRUE"]

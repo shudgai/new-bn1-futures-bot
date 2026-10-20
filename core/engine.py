@@ -2269,9 +2269,12 @@ class TradingEngine:
                 return {"price": float(price), "observed_at": float(observed_at)}
         return None
 
-    async def _entry_boundary_frame(self, symbol):
+    async def _entry_boundary_frame(self, symbol, timeframe_ms=60_000):
         from core.services.entry_finality import fetch_settled_entry_frame
-        frame = await fetch_settled_entry_frame(self, symbol)
+        timeframe_ms = int(timeframe_ms or 60_000)
+        if timeframe_ms not in (60_000, 180_000):
+            return None
+        frame = await fetch_settled_entry_frame(self, symbol, timeframe_ms)
         if frame is None or frame.empty:
             return None
         frame = frame.copy()
@@ -2293,7 +2296,7 @@ class TradingEngine:
         # Preserve the independently verified candle-finality evidence for
         # the account firewall's second validation.
         enriched.attrs.update(finality)
-        enriched.attrs["timeframe_ms"] = 60_000
+        enriched.attrs["timeframe_ms"] = timeframe_ms
         return enriched
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
@@ -3006,6 +3009,9 @@ class TradingEngine:
             ),
             'candidate_bar_id': cand_bar_id,
             'entry_atr': atr,
+            'entry_timeframe_ms': int(
+                getattr(frame, "attrs", {}).get("timeframe_ms") or 60_000
+            ),
             'dual_tf_meta': meta_dict or {},
             'entry_source': (
                 wild_signal.get('entry_source')

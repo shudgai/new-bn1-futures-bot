@@ -16,6 +16,7 @@ import logging
 import math
 from typing import Any, Dict, Optional, Tuple
 import pandas as pd
+from core.services.candle_data import closed_entry_candles
 
 logger = logging.getLogger("ema_cross_entry")
 
@@ -46,10 +47,21 @@ class EmaCrossEntryService:
             return None, "INVALID_SIDE"
 
         # ── 1. 必要條件：指標預熱完成 ──
-        if frame is None or len(frame) < 35:
+        if frame is None or frame.empty:
             return None, "WARMUP_NOT_READY"
 
-        bars = frame.copy()
+        # EMA crosses are candle-close events. Do not let the changing live
+        # tail create or erase a cross on every quote poll.
+        bars = (
+            closed_entry_candles(frame)
+            if "is_closed" in frame.columns
+            else frame.copy()
+        )
+        if len(bars) < 35:
+            return None, "WARMUP_NOT_READY"
+        timeframe_ms = frame.attrs.get("timeframe_ms")
+        if timeframe_ms is not None and float(timeframe_ms) != 180_000.0:
+            return None, "WRONG_TIMEFRAME_EXPECTED_3M"
         current_bar = bars.iloc[-1].to_dict()
         prev_bar = bars.iloc[-2].to_dict()
 
@@ -86,9 +98,15 @@ class EmaCrossEntryService:
         tracker = _ema_cross_tracker.setdefault(symbol, {
             "last_entry_bar_ts": 0.0,
             "pending_cross": None,
+            "last_evaluated_bar_ts": {},
         })
         if tracker["last_entry_bar_ts"] > 0 and tracker["last_entry_bar_ts"] == bar_ts:
             return None, "BLOCKED_SAME_BAR_DUPLICATE"
+        evaluated_bars = tracker.setdefault("last_evaluated_bar_ts", {})
+        if evaluated_bars.get(side) == bar_ts:
+            return None, "NO_NEW_CLOSED_BAR"
+        # Delayed-cross age is measured in distinct candles, not quote polls.
+        evaluated_bars[side] = bar_ts
 
         # ── 1. 必要條件：前後位置相反判定交叉 (或 2 根內補開) ──
         is_fresh_cross = False

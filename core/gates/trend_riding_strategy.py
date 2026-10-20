@@ -67,6 +67,16 @@ def can_open_position(
     if df is None or len(df) < 2:
         return False, "VETO: INSUFFICIENT_DATA", {}
 
+    # The dataframe's verified market interval is authoritative. The historic
+    # 1m default otherwise miscounts same-candle guards and cooldown bars for
+    # the meme-symbol 3m entry runner.
+    try:
+        frame_timeframe_ms = float(df.attrs.get("timeframe_ms", 0.0) or 0.0)
+        if math.isfinite(frame_timeframe_ms) and frame_timeframe_ms > 0:
+            timeframe_ms = frame_timeframe_ms
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        pass
+
     side = str(side).upper()
     if side not in ("LONG", "SHORT"):
         return False, f"VETO: INVALID_SIDE ({side})", {}
@@ -238,7 +248,7 @@ def can_open_position(
                 l_ts /= 1000.0
             elif l_ts < 1e11 and curr_bar_ts > 1e11:
                 l_ts *= 1000.0
-            if abs(curr_bar_ts - l_ts) < 60000.0 or curr_bar_ts == l_ts:
+            if abs(curr_bar_ts - l_ts) < timeframe_ms or curr_bar_ts == l_ts:
                 msg = f"[攔截開{side_cn}] {symbol} 同一根 K 棒剛平倉，禁止同向立即秒開"
                 logger.warning(msg)
                 return False, "BLOCKED_SAME_CANDLE_ANTI_CHOP", details
