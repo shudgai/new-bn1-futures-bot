@@ -83,11 +83,17 @@ class ExecutionManager:
 
         # 3. 若無持倉：只問 EntryGate (唯一裁決官)
         else:
-            # 偵測候選方向訊號 (快車道突破或均線方向)
+            # 偵測候選方向訊號 (主升浪突破或均線多頭回踩延續)
             candidate_signal = None
-            if market_data.current_price > market_data.kc_upper or (market_data.curr_k["close"] > market_data.kc_middle and market_data.ma5 > market_data.ma15):
+            if (
+                market_data.current_price > market_data.kc_upper
+                or (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast > market_data.ema_slow)
+            ):
                 candidate_signal = "BREAKOUT_LONG"
-            elif market_data.current_price < market_data.kc_lower or (market_data.curr_k["close"] < market_data.kc_middle and market_data.ma5 < market_data.ma15):
+            elif (
+                market_data.current_price < market_data.kc_lower
+                or (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast < market_data.ema_slow)
+            ):
                 candidate_signal = "BREAKDOWN_SHORT"
 
             if candidate_signal:

@@ -2,10 +2,8 @@
 core/gates/unified_pipeline_gates.py
 ====================================
 三層流水線之【裁決層 (Pure Math Gates)】
-職責：
-- 唯一決策仲裁官。
-- 純輸入純輸出，完全不與任何 API / 網路 / Broker 溝通。
-- 回傳格式標準化為 Tuple[bool, str, Dict[str, Any]]。
+依據 2026/10/21 盤面覆盤與最新防洗/防追急衝標準重構：
+- 解決「買在急衝頂部、平在盤整底部、主升浪全程踏空」的問題。
 """
 from typing import Dict, Any, Tuple, Optional, Union
 import pandas as pd
@@ -15,10 +13,9 @@ from core.services.data_pipeline import MarketDataSnapshot
 class ExitGate:
     """
     出場裁決唯一裁決官：
-    只有三種裁決可能：
-    1. 階梯鎖利/保本觸發 -> True (PROFIT_LOCK)
-    2. 純數學真峰谷力竭 (三點樞紐確立，且防單棒毛刺洗盤) -> True (TRUE_PEAK / TRUE_BOTTOM)
-    3. 趨勢結構未破 -> 強制 False (VETO_HOLD)
+    1. 階梯鎖利/保本底線 -> True (PROFIT_LOCK)
+    2. 純數學真峰谷力竭 (外軌大黑吞噬 / 確切三點樞紐力竭) -> True (TRUE_PEAK / TRUE_BOTTOM)
+    3. 盤整黏合嚴禁平多 (未達連續兩根收破 EMA40 強制 VETO_HOLD)
     """
 
     @staticmethod
@@ -41,7 +38,11 @@ class ExitGate:
             prev_k = market_data.prev_k
             ma5 = market_data.ma5
             ma15 = market_data.ma15
+            ema_fast = market_data.ema_fast
+            ema_slow = market_data.ema_slow
+            kc_up = market_data.kc_upper
             kc_mid = market_data.kc_middle
+            kc_low = market_data.kc_lower
             raw_df = market_data.raw_df
         else:
             quote = float(current_price or market_data.get("current_price", 0.0))
@@ -52,6 +53,10 @@ class ExitGate:
             ma5 = float(market_data.get("ma5", quote))
             ma15 = float(market_data.get("ma15", quote))
             kc_mid = float(market_data.get("kc_middle", quote))
+            ema_fast = float(market_data.get("ema_fast", ma15))
+            ema_slow = float(market_data.get("ema_slow", kc_mid))
+            kc_up = float(market_data.get("kc_upper", quote * 1.01))
+            kc_low = float(market_data.get("kc_lower", quote * 0.99))
             raw_df = market_data.get("raw_df")
 
         side = str(pos.get("side", "")).upper()
@@ -71,22 +76,23 @@ class ExitGate:
             "quote": quote,
             "atr": atr_val,
             "kc_slope": slope,
+            "ema_fast": ema_fast,
+            "ema_slow": ema_slow,
         }
 
-        # ── 1. 階梯鎖利 / 保本觸發 (PROFIT_LOCK) ──
-        # 若曾獲利超過 1.5 ATR 等值比例 (約 >= 1.5%)，自最高峰回撤超過 30% 鎖定利潤
-        atr_pct = (atr_val / entry_p) if entry_p > 0 else 0.01
-        high_profit_threshold = max(0.012, 1.5 * atr_pct)
-        if peak_roe >= high_profit_threshold:
-            giveback = peak_roe - unrealized_pct
-            max_tolerated_giveback = peak_roe * 0.30
-            if giveback >= max_tolerated_giveback:
+        # ── 1. 階梯鎖利 / 保本底線 (PROFIT_LOCK) ──
+        # 達標 10% 鎖 7% (利潤達到 10% 以上，保證留存 70% 利潤)
+        if peak_roe >= 0.10:
+            min_retained_pnl = peak_roe * 0.70
+            if unrealized_pct <= min_retained_pnl:
                 return True, "PROFIT_LOCK", {
                     **meta,
-                    "cause": f"階梯鎖利觸發: peak_roe={peak_roe:.2%}, curr={unrealized_pct:.2%}, giveback={giveback:.2%}",
+                    "cause": f"10%鎖7%階梯利潤觸發: peak_roe={peak_roe:.2%}, curr={unrealized_pct:.2%} <= floor={min_retained_pnl:.2%}",
                 }
 
-        # 帳戶級保命止損 (3.0 ATR 硬防守)
+        atr_pct = (atr_val / entry_p) if entry_p > 0 else 0.01
+
+        # 帳戶硬止損 (3.0 ATR 防穿倉)
         hard_loss_threshold = -3.0 * atr_pct
         if unrealized_pct <= hard_loss_threshold:
             return True, "PROFIT_LOCK", {
@@ -95,58 +101,81 @@ class ExitGate:
             }
 
         # ── 2. 純數學真峰谷力竭 (TRUE_PEAK / TRUE_BOTTOM) ──
-        # 需防單棒毛刺洗盤：三點確定性樞紐確認 (Three-Point Pivot)
-        if raw_df is not None and len(raw_df) >= 4:
-            c3 = raw_df.iloc[-1]  # 最新收線棒
-            c2 = raw_df.iloc[-2]  # 峰/谷棒
-            c1 = raw_df.iloc[-3]  # 前棒
+        # 需防單棒毛刺洗盤：外軌大黑吞噬 或 三點確定性樞紐確立
+        if raw_df is not None and len(raw_df) >= 3:
+            c_curr = raw_df.iloc[-1]
+            c_prev = raw_df.iloc[-2]
+            c_prev2 = raw_df.iloc[-3] if len(raw_df) >= 3 else c_prev
 
             if side == "LONG":
-                # 多單真峰頂：中間棒 High 嚴格高於前後兩棒 High，且最新棒收陰或跌破中間棒實體中點
-                is_pivot_peak = (c2["high"] > c1["high"]) and (c2["high"] > c3["high"])
-                c2_mid = (c2["open"] + c2["close"]) / 2.0
-                is_exhaustion = (c3["close"] < c2_mid) and (c3["close"] < c3["open"])
-                if is_pivot_peak and is_exhaustion and unrealized_pct > 0:
+                # 外軌大陰吞噬真峰頂：在高位（高於 KC 上軌或獲利中）收出實體巨黑棒跌破前棒低點
+                is_bearish_engulfing = (c_curr["close"] < c_curr["open"]) and (c_curr["close"] < c_prev["low"]) and ((c_curr["open"] - c_curr["close"]) >= 0.5 * atr_val)
+                # 三點真峰頂：中間棒 High 明確高於前後兩棒，且當前棒已跌破中間棒實體中點
+                is_pivot_peak = (c_prev["high"] > c_prev2["high"]) and (c_prev["high"] > c_curr["high"])
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_pivot_exhaustion = (c_curr["close"] < c_prev_mid) and (c_curr["close"] < c_curr["open"])
+
+                if (is_bearish_engulfing or (is_pivot_peak and is_pivot_exhaustion)) and unrealized_pct > 0.005:
                     return True, "TRUE_PEAK", {
                         **meta,
-                        "cause": f"純數學真峰頂確立: c2_high={c2['high']} > {c1['high']}, c3_close={c3['close']} < mid={c2_mid}",
+                        "cause": f"純數學真峰頂確立: engulfing={is_bearish_engulfing}, pivot={is_pivot_peak}",
                     }
+
             elif side == "SHORT":
-                # 空單真谷底：中間棒 Low 嚴格低於前後兩棒 Low，且最新棒收陽或突破中間棒實體中點
-                is_pivot_bottom = (c2["low"] < c1["low"]) and (c2["low"] < c3["low"])
-                c2_mid = (c2["open"] + c2["close"]) / 2.0
-                is_exhaustion = (c3["close"] > c2_mid) and (c3["close"] > c3["open"])
-                if is_pivot_bottom and is_exhaustion and unrealized_pct > 0:
+                # 外軌大陽吞噬真谷底：在低位收出實體巨紅棒衝破前棒高點
+                is_bullish_engulfing = (c_curr["close"] > c_curr["open"]) and (c_curr["close"] > c_prev["high"]) and ((c_curr["close"] - c_curr["open"]) >= 0.5 * atr_val)
+                # 三點真谷底：中間棒 Low 明確低於前後兩棒，且當前棒已衝破中間棒實體中點
+                is_pivot_bottom = (c_prev["low"] < c_prev2["low"]) and (c_prev["low"] < c_curr["low"])
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_pivot_exhaustion = (c_curr["close"] > c_prev_mid) and (c_curr["close"] > c_curr["open"])
+
+                if (is_bullish_engulfing or (is_pivot_bottom and is_pivot_exhaustion)) and unrealized_pct > 0.005:
                     return True, "TRUE_BOTTOM", {
                         **meta,
-                        "cause": f"純數學真谷底確立: c2_low={c2['low']} < {c1['low']}, c3_close={c3['close']} > mid={c2_mid}",
+                        "cause": f"純數學真谷底確立: engulfing={is_bullish_engulfing}, pivot={is_pivot_bottom}",
                     }
 
-        # ── 3. 趨勢結構未破 -> 強制抱牢 (VETO_HOLD) ──
-        # 多單只要收盤在 KC 中軌安全側或中軌未轉空，嚴禁因單根洗盤或微幅回踩平倉
+        # ── 3. 盤整黏合嚴禁平多（防 09:35 割肉）與主升浪一單到底 ──
+        # 鐵律：只要價格沒有實質「連續兩根收破 EMA40（慢線）」，一律禁止平多（強制 VETO_HOLD）！
         if side == "LONG":
-            if quote >= kc_mid or slope >= 0:
+            two_bars_below_ema_slow = False
+            if raw_df is not None and len(raw_df) >= 2:
+                bar1_close = float(raw_df.iloc[-1]["close"])
+                bar2_close = float(raw_df.iloc[-2]["close"])
+                two_bars_below_ema_slow = (bar1_close < ema_slow) and (bar2_close < ema_slow)
+
+            if not two_bars_below_ema_slow:
                 return False, "VETO_HOLD", {
                     **meta,
-                    "cause": "多頭趨勢結構未破 (穩居KC中軌或中軌向上)，強制抱牢！",
-                }
-        elif side == "SHORT":
-            if quote <= kc_mid or slope <= 0:
-                return False, "VETO_HOLD", {
-                    **meta,
-                    "cause": "空頭趨勢結構未破 (受制KC中軌或中軌向下)，強制抱牢！",
+                    "cause": "未達連續兩根收破EMA40慢線，盤整洗盤一律抱牢，嚴禁平多！",
                 }
 
-        # 預設強制抱牢，避免游離分支偷平倉
-        return False, "VETO_HOLD", {**meta, "cause": "趨勢結構未確認終結，強制抱牢"}
+        elif side == "SHORT":
+            two_bars_above_ema_slow = False
+            if raw_df is not None and len(raw_df) >= 2:
+                bar1_close = float(raw_df.iloc[-1]["close"])
+                bar2_close = float(raw_df.iloc[-2]["close"])
+                two_bars_above_ema_slow = (bar1_close > ema_slow) and (bar2_close > ema_slow)
+
+            if not two_bars_above_ema_slow:
+                return False, "VETO_HOLD", {
+                    **meta,
+                    "cause": "未達連續兩根收破EMA40慢線，反彈洗盤一律抱牢，嚴禁平空！",
+                }
+
+        # 滿足連續兩根實質跌破慢線，確認趨勢終結離場
+        return True, "TREND_TERMINATED_SLOW_BREAK", {
+            **meta,
+            "cause": "連續兩根收盤實質破位EMA40慢線，多/空趨勢徹底告一段落平倉",
+        }
 
 
 class EntryGate:
     """
     進場裁決唯一裁決官：
-    1. 快車道（鎖利延續 / 破軌放行）：同色K破軌且均線同向直接放行
-    2. 避震門禁：長影線一票否決延後下一根
-    3. 結構門禁：均線走平/黏合一票否決禁止開單
+    1. 禁止追急衝針（長影線 + 乖離過大一票否決，防 09:12 買在天花板）
+    2. 抓準 09:45 盤整突破的「主升浪起點」
+    3. 主升浪中途「回踩收腳延續開倉（模式三，吃 10:00 第二波主升段）」
     """
 
     @staticmethod
@@ -172,9 +201,13 @@ class EntryGate:
             prev_k = market_data.prev_k
             ma5 = market_data.ma5
             ma15 = market_data.ma15
+            ema_fast = market_data.ema_fast
+            ema_slow = market_data.ema_slow
+            ma_spread_pct = market_data.ma_spread_pct
             kc_up = market_data.kc_upper
             kc_mid = market_data.kc_middle
             kc_low = market_data.kc_lower
+            raw_df = market_data.raw_df
         else:
             quote = float(market_data.get("current_price", 0.0))
             atr_val = float(atr or market_data.get("atr", quote * 0.01))
@@ -183,9 +216,13 @@ class EntryGate:
             prev_k = market_data.get("prev_k", {})
             ma5 = float(market_data.get("ma5", quote))
             ma15 = float(market_data.get("ma15", quote))
-            kc_up = float(market_data.get("kc_upper", quote * 1.01))
             kc_mid = float(market_data.get("kc_middle", quote))
+            ema_fast = float(market_data.get("ema_fast", ma15))
+            ema_slow = float(market_data.get("ema_slow", kc_mid))
+            ma_spread_pct = float(market_data.get("ma_spread_pct", 0.1))
+            kc_up = float(market_data.get("kc_upper", quote * 1.01))
             kc_low = float(market_data.get("kc_lower", quote * 0.99))
+            raw_df = market_data.get("raw_df")
 
         meta = {
             "signal_type": signal_type,
@@ -193,83 +230,110 @@ class EntryGate:
             "quote": quote,
             "atr": atr_val,
             "kc_slope": slope,
+            "ema_fast": ema_fast,
+            "ema_slow": ema_slow,
+            "ma_spread_pct": ma_spread_pct,
         }
 
-        # ── 門禁 3：結構門禁（均線走平/黏合一票否決禁止開單）──
-        # MA5 與 MA15 間距過小 (黏合 < 0.15% 且中軌走平) 視為死水震盪
-        ma_spread_pct = abs(ma5 - ma15) / quote if quote > 0 else 0.0
-        if ma_spread_pct < 0.0015 and abs(slope) < (0.05 * atr_val):
-            return False, "VETO_CHOP_OR_CONVERGENCE", {
-                **meta,
-                "cause": f"結構門禁否決: 均線過度黏合 (spread={ma_spread_pct:.3%}) 且中軌走平",
-            }
-
-        # 方向一致性檢查：逆大趨勢一票否決
-        if signal_side == "LONG" and slope < -0.05 * atr_val:
-            return False, "VETO_CHOP_OR_CONVERGENCE", {
-                **meta,
-                "cause": "結構門禁否決: KC 中軌明確向下，嚴禁逆勢開多！",
-            }
-        if signal_side == "SHORT" and slope > 0.05 * atr_val:
-            return False, "VETO_CHOP_OR_CONVERGENCE", {
-                **meta,
-                "cause": "結構門禁否決: KC 中軌明確向上，嚴禁逆勢開空！",
-            }
-
-        # ── 門禁 2：避震門禁（長影線一票否決延後下一根）──
         c_open = curr_k.get("open", quote)
         c_close = curr_k.get("close", quote)
         c_high = curr_k.get("high", max(c_open, c_close))
         c_low = curr_k.get("low", min(c_open, c_close))
         body = abs(c_close - c_open)
 
+        # ══════════════════════════════════════════════════════════════════
+        # 門禁 1：禁止追急衝針（長影線一票否決，防 09:12 買在天花板）
+        # ══════════════════════════════════════════════════════════════════
         if signal_side == "LONG":
             upper_wick = c_high - max(c_open, c_close)
-            # 做多時：上影線超過實體的 1.2 倍且大於 0.4 ATR，代表衝高嚴重受阻
-            if upper_wick > max(body * 1.2, 0.4 * atr_val):
+            if upper_wick >= body and upper_wick >= 0.25 * atr_val:
                 return False, "VETO_WICK_REJECTION", {
                     **meta,
-                    "cause": f"避震門禁否決: 上影線過長 (wick={upper_wick:.4f} > 1.2*body)，衝高受阻延後下一根",
+                    "cause": f"長上影線一票否決: 上影線({upper_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，嚴防買在急衝頂部！",
+                }
+            # 距外軌過度延展防追高 (距 KC 上軌外超過 0.5 ATR 嚴禁追多)
+            if c_close > (kc_up + 0.5 * atr_val):
+                return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
+                    **meta,
+                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過上軌+0.5ATR({kc_up + 0.5*atr_val:.4f})，嚴禁追急衝天花板！",
                 }
         elif signal_side == "SHORT":
             lower_wick = min(c_open, c_close) - c_low
-            # 做空時：下影線超過實體的 1.2 倍且大於 0.4 ATR，代表探底強烈反彈
-            if lower_wick > max(body * 1.2, 0.4 * atr_val):
+            if lower_wick >= body and lower_wick >= 0.25 * atr_val:
                 return False, "VETO_WICK_REJECTION", {
                     **meta,
-                    "cause": f"避震門禁否決: 下影線過長 (wick={lower_wick:.4f} > 1.2*body)，探底受阻延後下一根",
+                    "cause": f"長下影線一票否決: 下影線({lower_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，嚴防空在地板針尖！",
+                }
+            # 距外軌過度延展防追低 (距 KC 下軌外超過 0.5 ATR 嚴禁追空)
+            if c_close < (kc_low - 0.5 * atr_val):
+                return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
+                    **meta,
+                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過下軌-0.5ATR({kc_low - 0.5*atr_val:.4f})，嚴禁追急跌地板！",
                 }
 
-        # ── 門禁 1：快車道（鎖利延續 / 破軌放行）──
-        # 做多：最新價突破 KC 上軌或當根收紅陽線破軌，且 MA5 向上發散
+        # ══════════════════════════════════════════════════════════════════
+        # 門禁 2：抓準 09:45 盤整突破的「主升浪起點」
+        # ══════════════════════════════════════════════════════════════════
+        # 盤整結束（EMA15/40 由黏合轉為發散，ma_spread_pct >= 0.08）
+        # 當根 1M 實體紅 K 收盤價衝破 KC 上軌，且高於 EMA15/40 -> 第一時間放行開多！
         if signal_side == "LONG":
-            is_breakout = (quote > kc_up) or (c_close > kc_up and c_close > c_open)
-            is_ma_aligned = (ma5 >= ma15) and (ma5 >= curr_k.get("open", quote))
-            if is_breakout and is_ma_aligned:
-                return True, "FAST_TRACK_CONTINUATION", {
+            is_breakout_candle = (c_close > kc_up) and (c_close > c_open)
+            is_above_emas = (c_close > ema_fast) and (c_close > ema_slow)
+            is_spreading = (ma_spread_pct >= 0.08) or (ema_fast > ema_slow and slope > 0)
+            if is_breakout_candle and is_above_emas and is_spreading:
+                return True, "BREAKOUT_MAIN_WAVE_START", {
                     **meta,
-                    "cause": "快車道放行: 同色K強勢破軌且均線多頭發散",
-                }
-            # 普通趨勢回踩入場
-            if c_close > kc_mid and ma5 > ma15 and c_close > c_open:
-                return True, "STANDARD_TREND_ENTRY", {
-                    **meta,
-                    "cause": "標準順勢進場: 價格在中軌上方且均線多頭排列",
+                    "cause": "主升浪起點突破放行: 實體紅K衝破KC上軌且站穩EMA15/40，盤整發散起漲點！",
                 }
 
         elif signal_side == "SHORT":
-            is_breakdown = (quote < kc_low) or (c_close < kc_low and c_close < c_open)
-            is_ma_aligned = (ma5 <= ma15) and (ma5 <= curr_k.get("open", quote))
-            if is_breakdown and is_ma_aligned:
-                return True, "FAST_TRACK_CONTINUATION", {
+            is_breakdown_candle = (c_close < kc_low) and (c_close < c_open)
+            is_below_emas = (c_close < ema_fast) and (c_close < ema_slow)
+            is_spreading = (ma_spread_pct >= 0.08) or (ema_fast < ema_slow and slope < 0)
+            if is_breakdown_candle and is_below_emas and is_spreading:
+                return True, "BREAKOUT_MAIN_WAVE_START", {
                     **meta,
-                    "cause": "快車道放行: 同色K強勢破軌且均線空頭發散",
-                }
-            # 普通趨勢反彈做空
-            if c_close < kc_mid and ma5 < ma15 and c_close < c_open:
-                return True, "STANDARD_TREND_ENTRY", {
-                    **meta,
-                    "cause": "標準順勢進場: 價格在中軌下方且均線空頭排列",
+                    "cause": "主跌浪起點突破放行: 實體黑K跌破KC下軌且壓制EMA15/40，盤整發散起跌點！",
                 }
 
-        return False, "VETO_ENTRY_CONDITIONS_NOT_MET", {**meta, "cause": "未達開倉條件"}
+        # ══════════════════════════════════════════════════════════════════
+        # 門禁 3：主升浪中途「回踩收腳延續開倉（模式三，吃 10:00 第二波主升段）」
+        # ══════════════════════════════════════════════════════════════════
+        if signal_side == "LONG":
+            is_bullish_trend = (ema_fast > ema_slow) and (c_close > ema_slow)
+            # 曾回踩至 EMA15~EMA40 支撐帶 (前棒或當棒最低價觸及均線口袋)
+            recent_lows = [curr_k.get("low", quote), prev_k.get("low", quote)]
+            touched_ema_pocket = any((l <= ema_fast * 1.005 and l >= ema_slow * 0.995) for l in recent_lows)
+            # 當根收紅 K 重新站上 EMA15
+            reclaimed_ema_fast = (c_close > ema_fast) and (c_close > c_open)
+            # 距 EMA40 乖離未失控
+            moderate_extension = abs(c_close - ema_slow) <= 1.2 * atr_val
+
+            if is_bullish_trend and touched_ema_pocket and reclaimed_ema_fast and moderate_extension:
+                return True, "PULLBACK_RECLAIM_CONTINUATION", {
+                    **meta,
+                    "cause": "回踩收腳延續開倉放行: 回踩EMA15/40均線帶有守，收紅K重新站穩EMA15發動第二波！",
+                }
+
+        elif signal_side == "SHORT":
+            is_bearish_trend = (ema_fast < ema_slow) and (c_close < ema_slow)
+            recent_highs = [curr_k.get("high", quote), prev_k.get("high", quote)]
+            touched_ema_pocket = any((h >= ema_fast * 0.995 and h <= ema_slow * 1.005) for h in recent_highs)
+            rejected_ema_fast = (c_close < ema_fast) and (c_close < c_open)
+            moderate_extension = abs(c_close - ema_slow) <= 1.2 * atr_val
+
+            if is_bearish_trend and touched_ema_pocket and rejected_ema_fast and moderate_extension:
+                return True, "PULLBACK_RECLAIM_CONTINUATION", {
+                    **meta,
+                    "cause": "反彈遇阻延續開空放行: 反彈EMA15/40均線帶受阻，收黑K重新跌破EMA15發動第二波！",
+                }
+
+        # 4. 非主升浪起點或回踩延續時，距慢線過大一票否決
+        dist_to_ema_slow = abs(c_close - ema_slow)
+        if dist_to_ema_slow > 0.8 * atr_val:
+            return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
+                **meta,
+                "cause": f"乖離過大一票否決: 距EMA40慢線={dist_to_ema_slow:.4f} > 0.8*ATR({0.8*atr_val:.4f})，嚴禁非起點追急衝！",
+            }
+
+        return False, "VETO_ENTRY_CONDITIONS_NOT_MET", {**meta, "cause": "未達有效主升浪突破或回踩延續條件"}

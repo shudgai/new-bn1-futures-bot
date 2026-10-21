@@ -20,6 +20,11 @@ class MarketDataSnapshot:
     prev_k: Dict[str, float]
     ma5: float
     ma15: float
+    ema_fast: float           # EMA 15
+    ema_slow: float           # EMA 40
+    ma_spread_pct: float      # |EMA15 - EMA40| / EMA40 * 100
+    fast_slope: float         # EMA15 斜率
+    slow_slope: float         # EMA40 斜率
     kc_upper: float
     kc_middle: float
     kc_lower: float
@@ -38,6 +43,11 @@ class MarketDataSnapshot:
             "prev_k": self.prev_k,
             "ma5": self.ma5,
             "ma15": self.ma15,
+            "ema_fast": self.ema_fast,
+            "ema_slow": self.ema_slow,
+            "ma_spread_pct": self.ma_spread_pct,
+            "fast_slope": self.fast_slope,
+            "slow_slope": self.slow_slope,
             "kc_upper": self.kc_upper,
             "kc_middle": self.kc_middle,
             "kc_lower": self.kc_lower,
@@ -73,6 +83,13 @@ class DataPipeline:
         # 均線 MA5, MA15
         ma5_series = close.rolling(window=5).mean()
         ma15_series = close.rolling(window=15).mean()
+
+        # EMA 15 (快線) 與 EMA 40 (慢線)
+        ema_fast_series = close.ewm(span=15, adjust=False).mean()
+        ema_slow_series = close.ewm(span=40, adjust=False).mean()
+
+        # 均線間距比例 (%)
+        ma_spread_series = ((ema_fast_series - ema_slow_series).abs() / ema_slow_series) * 100.0
 
         # ATR 14
         tr = np.maximum(
@@ -114,6 +131,17 @@ class DataPipeline:
 
         ma5 = float(ma5_series.iloc[-1]) if not pd.isna(ma5_series.iloc[-1]) else curr_k["close"]
         ma15 = float(ma15_series.iloc[-1]) if not pd.isna(ma15_series.iloc[-1]) else curr_k["close"]
+
+        ema_fast = float(ema_fast_series.iloc[-1]) if not pd.isna(ema_fast_series.iloc[-1]) else curr_k["close"]
+        ema_slow = float(ema_slow_series.iloc[-1]) if not pd.isna(ema_slow_series.iloc[-1]) else curr_k["close"]
+
+        fast_prev3 = float(ema_fast_series.iloc[-4]) if len(ema_fast_series) >= 4 else ema_fast
+        slow_prev3 = float(ema_slow_series.iloc[-4]) if len(ema_slow_series) >= 4 else ema_slow
+        fast_slope = ema_fast - fast_prev3
+        slow_slope = ema_slow - slow_prev3
+
+        ma_spread_pct = float(ma_spread_series.iloc[-1]) if not pd.isna(ma_spread_series.iloc[-1]) else 0.0
+
         kc_up = float(kc_upper_series.iloc[-1]) if not pd.isna(kc_upper_series.iloc[-1]) else curr_k["close"]
         kc_mid = float(kc_basis.iloc[-1]) if not pd.isna(kc_basis.iloc[-1]) else curr_k["close"]
         kc_low = float(kc_lower_series.iloc[-1]) if not pd.isna(kc_lower_series.iloc[-1]) else curr_k["close"]
@@ -145,6 +173,11 @@ class DataPipeline:
             prev_k=prev_k,
             ma5=ma5,
             ma15=ma15,
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            ma_spread_pct=ma_spread_pct,
+            fast_slope=fast_slope,
+            slow_slope=slow_slope,
             kc_upper=kc_up,
             kc_middle=kc_mid,
             kc_lower=kc_low,

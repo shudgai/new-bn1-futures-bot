@@ -2,8 +2,8 @@
 tests/test_unified_pipeline.py
 ==============================
 驗證極簡「三層流水線架構」：
-1. 數據層 (DataPipeline): 純數值物件計算
-2. 裁決層 (ExitGate & EntryGate): 純數學裁決官
+1. 數據層 (DataPipeline): 純數值物件計算 (EMA15, EMA40, ma_spread_pct)
+2. 裁決層 (ExitGate & EntryGate): 依 2026/10/21 盤面覆盤精確門禁
 3. 執行層 (ExecutionManager): 單一通道執行
 """
 import pytest
@@ -55,104 +55,95 @@ def test_data_pipeline_snapshot_calculation():
     assert snapshot.current_price == 125.0
     assert snapshot.atr > 0
     assert snapshot.kc_upper > snapshot.kc_middle > snapshot.kc_lower
-    assert snapshot.kc_middle_slope > 0
+    assert snapshot.ema_fast > 0
+    assert snapshot.ema_slow > 0
     assert snapshot.peak_roe >= 0.20
 
 
-def test_exit_gate_veto_hold_on_intact_trend():
-    """測試出場裁決：趨勢結構未破時強制 VETO_HOLD 抱牢"""
+def test_entry_gate_veto_over_extension():
+    """測試進場門禁 1-A：距 EMA40 乖離過大一票否決 (|close - ema_slow| > 0.8*ATR)"""
     df = _generate_sample_df(30, trend="UP")
-    snapshot = DataPipeline.calculate_snapshot(
-        symbol="LOBSTER/USDT",
-        df=df,
-        current_price=120.0,
-        position={"side": "LONG", "entry_price": 115.0, "peak_roe": 0.05},
-    )
-    should_exit, reason, meta = ExitGate.evaluate(
-        pos={"side": "LONG", "entry_price": 115.0},
-        market_data=snapshot,
-    )
-    assert not should_exit
-    assert reason == "VETO_HOLD"
-    assert "強制抱牢" in meta.get("cause", "")
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=135.0)
+    # 人工拉大乖離
+    snapshot.ema_slow = 100.0
+    snapshot.atr = 5.0
+    snapshot.curr_k["close"] = 135.0  # diff=35 > 0.8*5=4.0
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert not should_entry
+    assert reason == "VETO_OVER_EXTENSION_FROM_SLOW_MA"
 
 
-def test_exit_gate_profit_lock_on_deep_giveback():
-    """測試出場裁決：高額利潤大幅回撤時觸發 PROFIT_LOCK 階梯鎖利"""
+def test_entry_gate_veto_long_upper_wick():
+    """測試進場門禁 1-B：長上影線一票否決 (防 09:12 買在急衝頂部)"""
     df = _generate_sample_df(30, trend="UP")
-    snapshot = DataPipeline.calculate_snapshot(
-        symbol="LOBSTER/USDT",
-        df=df,
-        current_price=110.0,
-    )
-    # entry=100, 曾獲利至 125 (+25%), 當前跌到 110 (+10%), 回撤達 15% (超過 30% of peak)
-    pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.25}
-    should_exit, reason, meta = ExitGate.evaluate(
-        pos=pos,
-        market_data=snapshot,
-        current_price=110.0,
-    )
-    assert should_exit
-    assert reason == "PROFIT_LOCK"
-    assert "階梯鎖利" in meta.get("cause", "")
-
-
-def test_exit_gate_true_peak_three_point_pivot():
-    """測試出場裁決：純數學三點樞紐確立時觸發 TRUE_PEAK"""
-    df = _generate_sample_df(30, trend="UP")
-    # 人工構造最後三棒形成確定性頂部樞紐
-    df.loc[df.index[-3], ["open", "high", "low", "close"]] = [118.0, 120.0, 117.0, 119.0]
-    df.loc[df.index[-2], ["open", "high", "low", "close"]] = [119.0, 125.0, 118.5, 124.0] # 峰頂
-    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [124.0, 124.5, 119.0, 120.0] # 跌破中點
-    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=120.0)
-
-    pos = {"side": "LONG", "entry_price": 110.0, "peak_roe": 0.12}
-    should_exit, reason, meta = ExitGate.evaluate(pos=pos, market_data=snapshot)
-    assert should_exit
-    assert reason == "TRUE_PEAK"
-    assert "純數學真峰頂確立" in meta.get("cause", "")
-
-
-def test_entry_gate_fast_track_breakout():
-    """測試進場裁決：同色K強勢破軌快車道放行"""
-    df = _generate_sample_df(30, trend="UP")
-    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=130.0)
-    should_entry, reason, meta = EntryGate.evaluate(
-        signal_type="BREAKOUT_LONG",
-        market_data=snapshot,
-    )
-    assert should_entry
-    assert reason in ("FAST_TRACK_CONTINUATION", "STANDARD_TREND_ENTRY")
-
-
-def test_entry_gate_veto_on_long_wick():
-    """測試進場裁決：避震門禁（長影線一票否決）"""
-    df = _generate_sample_df(30, trend="UP")
-    # 最新 K 棒留巨大上影線
-    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [120.0, 128.0, 119.5, 120.5]
-    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=120.5)
-    should_entry, reason, meta = EntryGate.evaluate(
-        signal_type="BREAKOUT_LONG",
-        market_data=snapshot,
-    )
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=110.0)
+    snapshot.ema_slow = 109.8
+    snapshot.atr = 1.0
+    # 衝高留長上影線
+    snapshot.curr_k = {"open": 109.9, "high": 111.0, "low": 109.8, "close": 110.0}
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
     assert not should_entry
     assert reason == "VETO_WICK_REJECTION"
 
 
-def test_entry_gate_veto_on_chop_convergence():
-    """測試進場裁決：結構門禁（均線走平/黏合一票否決）"""
-    df = _generate_sample_df(30, trend="CHOP")
-    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=100.0)
-    # 人工模擬黏合走平
-    snapshot.ma5 = 100.0
-    snapshot.ma15 = 100.01
-    snapshot.kc_middle_slope = 0.0
-    should_entry, reason, meta = EntryGate.evaluate(
-        signal_type="BREAKOUT_LONG",
-        market_data=snapshot,
-    )
-    assert not should_entry
-    assert reason == "VETO_CHOP_OR_CONVERGENCE"
+def test_entry_gate_0945_breakout_main_wave_start():
+    """測試進場門禁 2：09:45 實體紅K衝破KC上軌且發散放行主升浪起點"""
+    df = _generate_sample_df(30, trend="UP")
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=125.0)
+    snapshot.kc_upper = 124.0
+    snapshot.ema_fast = 123.0
+    snapshot.ema_slow = 122.0
+    snapshot.ma_spread_pct = 0.15
+    snapshot.atr = 3.0
+    # 飽滿紅陽線突破上軌
+    snapshot.curr_k = {"open": 123.5, "high": 125.2, "low": 123.4, "close": 125.0}
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry
+    assert reason == "BREAKOUT_MAIN_WAVE_START"
+
+
+def test_entry_gate_1000_pullback_reclaim_continuation():
+    """測試進場門禁 3：10:00 回踩均線帶收紅K延續開倉放行 (第二波主升段)"""
+    df = _generate_sample_df(30, trend="UP")
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=121.0)
+    snapshot.ema_fast = 120.0
+    snapshot.ema_slow = 118.0
+    snapshot.kc_upper = 124.0
+    snapshot.atr = 3.0
+    # 前一根回踩至 119.5 (在 EMA15~40 之間)，當前棒收紅站上 EMA15 (121.0 > 120.0)
+    snapshot.prev_k = {"open": 121.0, "high": 121.5, "low": 119.5, "close": 120.0}
+    snapshot.curr_k = {"open": 120.0, "high": 121.2, "low": 119.8, "close": 121.0}
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry
+    assert reason == "PULLBACK_RECLAIM_CONTINUATION"
+
+
+def test_exit_gate_hold_through_consolidation():
+    """測試出場門禁 1：盤整黏合嚴禁平多 (未達連續兩根收破 EMA40 強制 VETO_HOLD)"""
+    df = _generate_sample_df(30, trend="UP")
+    # 設定最近兩根為在 EMA40 (118.0) 之上的正常盤整洗盤小K線 (非大黑吞噬)
+    df.loc[df.index[-2], ["open", "high", "low", "close"]] = [118.1, 118.6, 118.0, 118.3]
+    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [118.6, 118.8, 118.3, 118.5]
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=118.5)
+    snapshot.ema_slow = 118.0
+    # 價格在 EMA40 附近洗盤但未連續兩根破位
+    pos = {"side": "LONG", "entry_price": 115.0, "peak_roe": 0.05}
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=118.5)
+    assert not should_exit
+    assert reason == "VETO_HOLD"
+    assert "未達連續兩根收破EMA40慢線" in meta.get("cause", "")
+
+
+def test_exit_gate_10pct_lock_7pct_profit():
+    """測試出場門禁 2：達標 10% 鎖 7% 階梯保護"""
+    df = _generate_sample_df(30, trend="UP")
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=106.0)
+    # entry=100, 最高達 112 (+12%), 當前跌到 106 (+6%), 跌破 70% 保證線 (12% * 0.7 = 8.4%)
+    pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.12}
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=106.0)
+    assert should_exit
+    assert reason == "PROFIT_LOCK"
+    assert "10%鎖7%" in meta.get("cause", "")
 
 
 def test_execution_manager_pipeline_flow():
