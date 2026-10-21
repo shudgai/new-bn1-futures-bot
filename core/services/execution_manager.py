@@ -150,23 +150,70 @@ class ExecutionManager:
     ) -> bool:
         """全系統唯一開倉執行管道"""
         try:
-            if hasattr(engine_or_account, "execute_direct_entry"):
-                return await engine_or_account.execute_direct_entry(
-                    symbol=symbol,
-                    side=side,
-                    quote=price,
-                    entry_mode="WILD_SWING",
-                    meta_dict=meta or {},
-                )
             account = getattr(engine_or_account, "account", engine_or_account)
+            # 檢查持倉與鎖定
+            if symbol in getattr(account, "positions", {}):
+                logger.info(f"[EXECUTION] {symbol} 已有持倉，跳過開倉")
+                return False
+            if symbol in getattr(account, "closing_lock", set()):
+                return False
+
+            # 計算保證金與槓桿
+            wallet = float(getattr(account, "get_wallet_balance", lambda: 100.0)())
+            available = float(getattr(account, "get_available_balance", lambda: wallet)())
+
+            engine = engine_or_account if hasattr(engine_or_account, "account") else None
+            leverage = 5
+            if engine and hasattr(engine, "symbol_rotation"):
+                try:
+                    leverage = engine.symbol_rotation.get_dynamic_leverage(symbol, 100)
+                except Exception:
+                    leverage = 5
+
+            amount_usdt = 0.0
+            if engine and hasattr(engine, "_full_wallet_entry_margin"):
+                try:
+                    amount_usdt = engine._full_wallet_entry_margin(wallet, available, leverage, symbol)
+                except Exception:
+                    amount_usdt = min(available * 0.49, 73.0)
+            else:
+                amount_usdt = min(available * 0.49, 73.0)
+
+            if amount_usdt < 5.0:
+                logger.warning(f"[EXECUTION] {symbol} 可用保證金不足: {amount_usdt:.2f}U (available={available:.2f}U)")
+                return False
+
+            atr = float((meta or {}).get("atr") or (price * 0.015))
+            entry_context = {
+                "is_manual": True,
+                "managed_by_bot": True,
+                "entry_mode": "WILD_SWING",
+                "source": "UNIFIED_PIPELINE",
+                "entry_pattern": "BREAKOUT",
+                "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
+                "is_outer_entry": True,
+                "meta": meta or {},
+            }
+
             if hasattr(account, "open_position"):
-                return await account.open_position(
+                opened = await account.open_position(
                     symbol=symbol,
                     side=side,
                     price=price,
+                    amount_usdt=amount_usdt,
+                    sl=0.0,
+                    tp=0.0,
                     reason=reason,
+                    atr=atr,
+                    leverage=leverage,
+                    signal_score=100,
+                    entry_context=entry_context,
                 )
+                if opened:
+                    logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
+                    print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
+                return opened
             return False
         except Exception as exc:
-            logger.error(f"[EXECUTION] open_position 異常 {symbol}: {exc}")
+            logger.error(f"[EXECUTION] open_position 異常 {symbol}: {exc}", exc_info=True)
             return False

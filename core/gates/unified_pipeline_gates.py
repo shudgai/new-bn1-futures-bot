@@ -242,8 +242,9 @@ class EntryGate:
         body = abs(c_close - c_open)
 
         # ══════════════════════════════════════════════════════════════════
-        # 門禁 1：禁止追急衝針（長影線一票否決，防 09:12 買在天花板）
+        # 門禁 1：禁止追急衝針（長影線一票否決，防 09:12 買在天花板 / 地板追空）
         # ══════════════════════════════════════════════════════════════════
+        dist_to_ema_slow = abs(c_close - ema_slow)
         if signal_side == "LONG":
             upper_wick = c_high - max(c_open, c_close)
             if upper_wick >= body and upper_wick >= 0.25 * atr_val:
@@ -251,11 +252,11 @@ class EntryGate:
                     **meta,
                     "cause": f"長上影線一票否決: 上影線({upper_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，嚴防買在急衝頂部！",
                 }
-            # 距外軌過度延展防追高 (距 KC 上軌外超過 0.5 ATR 嚴禁追多)
-            if c_close > (kc_up + 0.5 * atr_val):
+            # 距外軌過度延展防追高 (距 KC 上軌外超過 3.0 ATR 嚴禁追多，符合 AGENTS.md 規範)
+            if c_close > (kc_up + 3.0 * atr_val):
                 return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
                     **meta,
-                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過上軌+0.5ATR({kc_up + 0.5*atr_val:.4f})，嚴禁追急衝天花板！",
+                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過上軌+3.0ATR({kc_up + 3.0*atr_val:.4f})，嚴禁追急衝天花板！",
                 }
         elif signal_side == "SHORT":
             lower_wick = min(c_open, c_close) - c_low
@@ -264,22 +265,20 @@ class EntryGate:
                     **meta,
                     "cause": f"長下影線一票否決: 下影線({lower_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，嚴防空在地板針尖！",
                 }
-            # 距外軌過度延展防追低 (距 KC 下軌外超過 0.5 ATR 嚴禁追空)
-            if c_close < (kc_low - 0.5 * atr_val):
+            # 距外軌過度延展防追低 (距 KC 下軌外超過 3.0 ATR 嚴禁追空，符合 AGENTS.md 規範)
+            if c_close < (kc_low - 3.0 * atr_val):
                 return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
                     **meta,
-                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過下軌-0.5ATR({kc_low - 0.5*atr_val:.4f})，嚴禁追急跌地板！",
+                    "cause": f"破軌乖離過大一票否決: 收盤={c_close:.4f} 超過下軌-3.0ATR({kc_low - 3.0*atr_val:.4f})，嚴禁追急跌地板！",
                 }
 
         # ══════════════════════════════════════════════════════════════════
-        # 門禁 2：抓準 09:45 盤整突破的「主升浪起點」
+        # 門禁 2：抓準 09:45 盤整突破的「主升浪起點」/ 主跌浪起點
         # ══════════════════════════════════════════════════════════════════
-        # 盤整結束（EMA15/40 由黏合轉為發散，ma_spread_pct >= 0.08）
-        # 當根 1M 實體紅 K 收盤價衝破 KC 上軌，且高於 EMA15/40 -> 第一時間放行開多！
         if signal_side == "LONG":
             is_breakout_candle = (c_close > kc_up) and (c_close > c_open)
             is_above_emas = (c_close > ema_fast) and (c_close > ema_slow)
-            is_spreading = (ma_spread_pct >= 0.08) or (ema_fast > ema_slow and slope > 0)
+            is_spreading = (ma_spread_pct >= 0.05) or (ema_fast > ema_slow and slope > 0)
             if is_breakout_candle and is_above_emas and is_spreading:
                 return True, "BREAKOUT_MAIN_WAVE_START", {
                     **meta,
@@ -289,7 +288,7 @@ class EntryGate:
         elif signal_side == "SHORT":
             is_breakdown_candle = (c_close < kc_low) and (c_close < c_open)
             is_below_emas = (c_close < ema_fast) and (c_close < ema_slow)
-            is_spreading = (ma_spread_pct >= 0.08) or (ema_fast < ema_slow and slope < 0)
+            is_spreading = (ma_spread_pct >= 0.05) or (ema_fast < ema_slow and slope < 0)
             if is_breakdown_candle and is_below_emas and is_spreading:
                 return True, "BREAKOUT_MAIN_WAVE_START", {
                     **meta,
@@ -297,22 +296,19 @@ class EntryGate:
                 }
 
         # ══════════════════════════════════════════════════════════════════
-        # 門禁 3：主升浪中途「回踩收腳延續開倉（模式三，吃 10:00 第二波主升段）」
+        # 門禁 3：主升/主跌浪中途「回踩收腳 / 反彈遇阻延續開倉（模式三）」
         # ══════════════════════════════════════════════════════════════════
         if signal_side == "LONG":
             is_bullish_trend = (ema_fast > ema_slow) and (c_close > ema_slow)
-            # 曾回踩至 EMA15~EMA40 支撐帶 (前棒或當棒最低價觸及均線口袋)
             recent_lows = [curr_k.get("low", quote), prev_k.get("low", quote)]
             touched_ema_pocket = any((l <= ema_fast * 1.005 and l >= ema_slow * 0.995) for l in recent_lows)
-            # 當根收紅 K 重新站上 EMA15
             reclaimed_ema_fast = (c_close > ema_fast) and (c_close > c_open)
-            # 距 EMA40 乖離未失控
-            moderate_extension = abs(c_close - ema_slow) <= 1.2 * atr_val
+            moderate_extension = dist_to_ema_slow <= 2.0 * atr_val
 
-            if is_bullish_trend and touched_ema_pocket and reclaimed_ema_fast and moderate_extension:
+            if is_bullish_trend and (touched_ema_pocket or c_close >= kc_up) and reclaimed_ema_fast and moderate_extension:
                 return True, "PULLBACK_RECLAIM_CONTINUATION", {
                     **meta,
-                    "cause": "回踩收腳延續開倉放行: 回踩EMA15/40均線帶有守，收紅K重新站穩EMA15發動第二波！",
+                    "cause": "回踩收腳延續開倉放行: 回踩EMA15/40均線帶有守或強勢推進，收紅K重新站穩EMA15發動第二波！",
                 }
 
         elif signal_side == "SHORT":
@@ -320,20 +316,22 @@ class EntryGate:
             recent_highs = [curr_k.get("high", quote), prev_k.get("high", quote)]
             touched_ema_pocket = any((h >= ema_fast * 0.995 and h <= ema_slow * 1.005) for h in recent_highs)
             rejected_ema_fast = (c_close < ema_fast) and (c_close < c_open)
-            moderate_extension = abs(c_close - ema_slow) <= 1.2 * atr_val
+            moderate_extension = dist_to_ema_slow <= 2.0 * atr_val
 
-            if is_bearish_trend and touched_ema_pocket and rejected_ema_fast and moderate_extension:
+            if is_bearish_trend and (touched_ema_pocket or c_close <= kc_low) and rejected_ema_fast and moderate_extension:
                 return True, "PULLBACK_RECLAIM_CONTINUATION", {
                     **meta,
-                    "cause": "反彈遇阻延續開空放行: 反彈EMA15/40均線帶受阻，收黑K重新跌破EMA15發動第二波！",
+                    "cause": "反彈遇阻延續開空放行: 均線空頭排列，收黑K壓制在EMA15/40之下發動主跌段！",
                 }
 
-        # 4. 非主升浪起點或回踩延續時，距慢線過大一票否決
-        dist_to_ema_slow = abs(c_close - ema_slow)
+        # 門禁 4：非起點或延續開倉時，若距 EMA40 慢線過大一票否決
         if dist_to_ema_slow > 0.8 * atr_val:
             return False, "VETO_OVER_EXTENSION_FROM_SLOW_MA", {
                 **meta,
                 "cause": f"乖離過大一票否決: 距EMA40慢線={dist_to_ema_slow:.4f} > 0.8*ATR({0.8*atr_val:.4f})，嚴禁非起點追急衝！",
             }
 
-        return False, "VETO_ENTRY_CONDITIONS_NOT_MET", {**meta, "cause": "未達有效主升浪突破或回踩延續條件"}
+        return False, "VETO_ENTRY_CONDITIONS_NOT_MET", {
+            **meta,
+            "cause": "未達有效主升浪/主跌浪突破或均線延續條件",
+        }

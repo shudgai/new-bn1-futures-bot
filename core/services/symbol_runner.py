@@ -509,8 +509,8 @@ async def _process_wild_swing_symbol(
         klines_df=frame,
         quote=quote,
     )
-    # 若 ExitGate 判定 HOLD (強制抱牢) 或已完成平倉/開倉，直接返回，嚴禁後續舊規則介入
-    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "HOLD"):
+    # 依使用者重構指示：三層流水線為唯一通道，嚴禁任何舊規則介入或掉落舊分支
+    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "HOLD", "VETO", "IDLE"):
         return [], []
 
     await _reconcile_wait_claims(engine, symbol)
