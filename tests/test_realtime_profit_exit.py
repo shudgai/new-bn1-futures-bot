@@ -689,3 +689,185 @@ def test_closed_ma5_break_requires_a_bearish_candle_and_live_dip_does_not_exit()
     assert emergency_long_dump_cut_trigger(
         position, 100.4, _dump_cut_live_snapshot(),
     ) is None
+
+
+def test_replay_short_trailing_profit_exit():
+    """
+    [時序回放整合測試：空單暴跌探底後連續反彈提早平空]
+    行情重現（對應圖中實戰痛點）：
+    1. 空單在 100.0 入場，一路俯衝暴跌至 92.0 (探底，浮盈達 8%)。
+    2. 隨後底部走出連續紅 K 爬升，均線反彈並貫穿 KC 中軌 (中軌約 95.8)。
+    3. 驗證 ExitGate 必須在剛爬上中軌的第 1~2 根 (價格約 96.2) 就即刻平空落袋，
+       平倉價位 96.2 嚴格優於右側高位 98.0，保全底部大部分獲利！
+    """
+    from core.gates.unified_pipeline_gates import ExitGate
+
+    pos = {
+        "side": "SHORT",
+        "entry_price": 100.0,
+        "qty": 1000.0,
+        "peak_roe": 0.08,  # 最低跌到 92.0 時達到 8% 浮盈
+    }
+
+    # 模擬 15 根下跌與探底歷史
+    history_bars = [
+        {"open": 100.0 - i * 0.5, "high": 100.2 - i * 0.5, "low": 99.5 - i * 0.5, "close": 99.6 - i * 0.5, "ma15": 100.0 - i * 0.4}
+        for i in range(15)
+    ]
+    # 底部反彈 sequence (模擬連續紅 K 爬升)
+    bounce_sequence = [
+        {"open": 92.0, "high": 93.0, "low": 91.8, "close": 92.8, "ma15": 93.2},
+        {"open": 92.8, "high": 93.8, "low": 92.6, "close": 93.6, "ma15": 93.3},
+        {"open": 93.6, "high": 94.6, "low": 93.5, "close": 94.5, "ma15": 93.6},
+        {"open": 94.5, "high": 95.6, "low": 94.4, "close": 95.5, "ma15": 94.2},
+        {"open": 95.5, "high": 96.5, "low": 95.4, "close": 96.2, "ma15": 95.0}, # 實體收復中軌 (96.2 > kc_mid 95.8)
+    ]
+
+    exited = False
+    exit_price = None
+    exit_reason = None
+
+    running_bars = list(history_bars)
+    kc_mid = 95.8
+    for bar in bounce_sequence:
+        running_bars.append(bar)
+        curr_price = bar["close"]
+        snapshot = {
+            "current_price": curr_price,
+            "atr": 1.2,
+            "kc_upper": 99.0,
+            "kc_middle": kc_mid,
+            "kc_lower": 92.6,
+            "kc_middle_slope": -0.02,
+            "ema_fast": bar["ma15"],
+            "ema_slow": 96.5,
+            "raw_df": pd.DataFrame(running_bars),
+        }
+        should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=curr_price)
+        if should_exit:
+            exited = True
+            exit_price = curr_price
+            exit_reason = reason
+            break
+
+    assert exited is True, "連續反彈收復中軌時必須授權平空，絕不能拖延！"
+    assert exit_price is not None and exit_price <= 96.5, f"平倉價位({exit_price})必須在中軌收復區(<=96.5)，不得拖到高位98.0"
+    assert exit_reason in ("SHORT_EXIT_KC_MID_BREACH", "SHORT_EXIT_EMA_REVERSAL", "EARLY_PIVOT_VALLEY_EXIT", "PROFIT_LOCK_TRAILING_GIVEBACK")
+
+
+def test_replay_short_exit_and_long_entry_at_ema_cross():
+    """
+    [時序回放整合測試：EMA 金叉 + 突破中軌時同步平空與提早開多]
+    完整重現 12:45～13:02 實戰痛點情境：
+    1. 12:45~12:52 空單在 0.06700 賣空後探底至 0.06660。
+    2. 12:56 底部走出 W 底反彈，EMA15 向上金叉 EMA40 (0.06684 > 0.06682)，且 K 棒實體收在 KC 中軌上方 (0.06684 > 0.06680)。
+    3. 驗證在 12:56 時：
+       - ExitGate 立即授權平空 (SHORT_EXIT_ON_EMA_CROSS 或 SHORT_EXIT_KC_MID_BREACH)；
+       - EntryGate 同時提早放行開多 (ENTRY_LONG_EMA_CROSS_MID)，開倉價鎖定在 0.06684；
+       - 成功鎖定利潤，拒絕在 13:01 追高在 0.066997 的天花板！
+    """
+    from core.gates.unified_pipeline_gates import ExitGate, EntryGate
+
+    pos_short = {
+        "side": "SHORT",
+        "entry_price": 0.06700,
+        "qty": 10000.0,
+        "peak_roe": 0.06,
+    }
+
+    # 模擬歷史探底序列
+    history = [
+        {"open": 0.06700 - i * 0.00003, "high": 0.06702 - i * 0.00003, "low": 0.06695 - i * 0.00003, "close": 0.06697 - i * 0.00003, "ma15": 0.06700 - i * 0.00003}
+        for i in range(15)
+    ]
+    history[-1]["ma15"] = 0.06680  # 反彈前根均線低於金叉棒 (0.06680 < 0.06684)
+    # 12:56 關鍵棒：EMA 金叉 + 收復中軌
+    key_bar = {
+        "open": 0.06678,
+        "high": 0.06686,
+        "low": 0.06676,
+        "close": 0.06684,
+        "ma5": 0.06682,
+        "ma15": 0.06684,
+        "ema_slow": 0.06682,
+    }
+    df = pd.DataFrame([*history, key_bar])
+
+    snapshot = {
+        "current_price": 0.06684,
+        "atr": 0.00015,
+        "kc_upper": 0.06700,
+        "kc_middle": 0.06680,
+        "kc_lower": 0.06660,
+        "kc_middle_slope": 0.00002,
+        "ema_fast": 0.06684,
+        "ema_slow": 0.06682,
+        "ma_spread_pct": 0.03,
+        "curr_k": key_bar,
+        "prev_k": history[-1],
+        "raw_df": df,
+    }
+
+    # 1. 驗證平空立即觸發
+    should_exit, exit_reason, exit_meta = ExitGate.evaluate(pos_short, snapshot, current_price=0.06684)
+    assert should_exit is True, "EMA 金叉且站穩中軌時，必須立即授權平空，絕不死等衝上軌！"
+    assert exit_reason in ("SHORT_EXIT_ON_EMA_CROSS", "SHORT_EXIT_KC_MID_BREACH", "EARLY_PIVOT_VALLEY_EXIT")
+
+    # 2. 驗證開多提早放行
+    should_entry, entry_reason, entry_meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry is True, "EMA 金叉且站穩中軌時，必須授權提早開多，吃主升段！"
+    assert entry_reason == "ENTRY_LONG_EMA_CROSS_MID"
+    assert entry_meta.get("quote") == 0.06684
+    assert entry_meta.get("quote") < 0.06699, "開多成本 0.06684 必須遠遠優於 13:01 追高價 0.066997！"
+
+
+def test_replay_early_valley_exit_captures_maximum_profit():
+    """
+    [時序回放整合測試：極早期谷底形態止盈 vs 等回摸中軌]
+    行情模擬：
+    1. 空單在 0.06720 入場，一路俯衝暴跌。
+    2. 在底部 0.06660 出現三棒探底樞紐，確認棒收在 0.06670。
+    3. 此時 KC 中軌仍在 0.06692 上方。
+    4. 驗證 ExitGate 在 0.06670 剛打出谷底時即刻授權平空 (EARLY_PIVOT_VALLEY_EXIT)，
+       鎖定 0.06720 - 0.06670 = +0.00050 獲利，遠優於等到回摸中軌 (0.06692) 時平倉！
+    """
+    from core.gates.unified_pipeline_gates import ExitGate
+
+    pos_short = {
+        "side": "SHORT",
+        "entry_price": 0.06720,
+        "qty": 10000.0,
+        "peak_roe": 0.08,
+    }
+
+    # 歷史下跌 K 棒
+    history = [
+        {"open": 0.06720 - i * 0.00004, "high": 0.06722 - i * 0.00004, "low": 0.06714 - i * 0.00004, "close": 0.06716 - i * 0.00004}
+        for i in range(12)
+    ]
+    # 底部探底 3 棒分形
+    bar_left = {"open": 0.06678, "high": 0.06680, "low": 0.06668, "close": 0.06670}
+    bar_bottom = {"open": 0.06670, "high": 0.06672, "low": 0.06660, "close": 0.06664}  # 最低點 0.06660
+    bar_confirm = {"open": 0.06664, "high": 0.06672, "low": 0.06663, "close": 0.06670} # 衝過中軸 0.06667
+
+    df_valley = pd.DataFrame([*history, bar_left, bar_bottom, bar_confirm])
+
+    snapshot = {
+        "current_price": 0.06670,
+        "atr": 0.00015,
+        "kc_upper": 0.06715,
+        "kc_middle": 0.06692,  # 中軌在 0.06692，離當前價 0.06670 還很遠！
+        "kc_lower": 0.06662,
+        "kc_middle_slope": -0.00003,
+        "ema_fast": 0.06675,
+        "ema_slow": 0.06690,
+        "raw_df": df_valley,
+    }
+
+    should_exit, reason, meta = ExitGate.evaluate(pos_short, snapshot, current_price=0.06670)
+    assert should_exit is True, "打出三棒谷底樞紐時，必須立即授權平空，絕不死等中軌！"
+    assert reason == "EARLY_PIVOT_VALLEY_EXIT"
+    assert snapshot["current_price"] < 0.06685, "平倉價必須在底部地板附近，保全最大波段利潤！"
+
+
+

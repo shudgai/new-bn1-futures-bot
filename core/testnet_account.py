@@ -2584,6 +2584,19 @@ class BinanceTestnetAccount:
         if is_manual:
             from core.services.entry_firewall import require_ma5_ma15_entry_gates
 
+            gate_frame = entry_context.get("entry_gate_frame")
+            if gate_frame is None:
+                provider = getattr(self, "entry_frame_provider", None)
+                if callable(provider):
+                    try:
+                        gate_frame = provider(symbol)
+                        if hasattr(gate_frame, "__await__"):
+                            gate_frame = await gate_frame
+                        if gate_frame is not None:
+                            entry_context["entry_gate_frame"] = gate_frame
+                    except Exception:
+                        gate_frame = None
+
             require_ma5_ma15_entry_gates(
                 entry_context.get("entry_gate_frame"),
                 side,
@@ -3811,7 +3824,8 @@ class BinanceTestnetAccount:
         strategy_close = str(close_reason).startswith(
             ("Channel Swing ", "Wild Swing ", "DualTrackExit ", "REVERSE_ON_")
         )
-        if not is_hard_stop_close and (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
+        _retry_after = getattr(self, "_close_retry_after", {}).get(symbol, 0.0)
+        if not is_hard_stop_close and (not is_manual or strategy_close) and _now < _retry_after:
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now

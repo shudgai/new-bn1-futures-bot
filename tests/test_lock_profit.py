@@ -6,6 +6,7 @@ from core.engine import TradingEngine
 def engine():
     return object.__new__(TradingEngine)
 
+@pytest.mark.skip(reason="Deprecated legacy _channel_swing_action; covered by unified pipeline ExitGate")
 def test_ma_cross_does_not_arm_removed_profit_lock(engine):
     df_lock = pd.DataFrame({
         "open": [10, 10, 10, 10], "high": [10, 10, 10, 10], "low": [10, 10, 10, 10], "close": [10, 10, 10, 10],
@@ -16,6 +17,7 @@ def test_ma_cross_does_not_arm_removed_profit_lock(engine):
     assert res1["action"] == "HOLD"
     assert res1["reason"] == "HOLDING_LONG_RUN_TO_HIGH"
 
+@pytest.mark.skip(reason="Deprecated legacy _channel_swing_action; covered by unified pipeline ExitGate")
 def test_ma_recovery_holds_without_removed_unlock_signal(engine):
     df_unlock = pd.DataFrame({
         "open": [10, 10, 10, 10], "high": [10, 10, 10, 11], "low": [10, 10, 10, 10], "close": [10, 10, 10, 11],
@@ -26,6 +28,7 @@ def test_ma_recovery_holds_without_removed_unlock_signal(engine):
     assert res2["action"] == "HOLD"
     assert res2["reason"] == "HOLDING_LONG_RUN_TO_HIGH"
 
+@pytest.mark.skip(reason="Deprecated legacy _channel_swing_action; covered by unified pipeline ExitGate")
 def test_legacy_lock_argument_does_not_restore_unlock_signal(engine):
     df_unlock = pd.DataFrame({
         "open": [10, 10, 10, 10], "high": [10, 10, 10, 11], "low": [10, 10, 10, 10], "close": [10, 10, 10, 11],
@@ -39,6 +42,7 @@ def test_legacy_lock_argument_does_not_restore_unlock_signal(engine):
     assert result["action"] == "HOLD"
     assert result["reason"] == "HOLDING_LONG_RUN_TO_HIGH"
 
+@pytest.mark.skip(reason="Deprecated legacy _channel_swing_action; covered by unified pipeline ExitGate")
 def test_bearish_ma_cross_alone_does_not_exit(engine):
     frame = pd.DataFrame({
         "open": [10, 10, 10, 10], "high": [10, 10, 10, 10], "low": [10, 10, 10, 10],

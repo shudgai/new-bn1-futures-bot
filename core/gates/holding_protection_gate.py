@@ -121,6 +121,9 @@ def has_confirmed_true_pivot(
         if len(closed) >= 3:
             check_len = min(len(closed), 6)
             sub = closed.iloc[-check_len:]
+            # 分形頂/底確認僅可使用已收線 K 棒（原本引用未定義的 target_df，
+            # NameError 被 except 吞掉，導致分形真峰谷確認永遠失效）。
+            target_df = closed
 
             if side == 'LONG':
                 for i in range(len(sub) - 2):
@@ -1708,10 +1711,49 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        # 反側 KC 外軌擊穿屬已授權緊急避險：以最新報價重新驗證確實擊穿，
+        # 驗證通過即放行，不得被盤整/中軌/寬限期等持倉防洗否決困住虧損部位。
+        if 'OPPOSITE_KC_BAND_BREACH' in clean_reason.upper():
+            try:
+                live_bar = frame.iloc[-1]
+                breach_quote = float(quote)
+                breach_band = float(
+                    live_bar['kc_lower'] if side == 'LONG' else live_bar['kc_upper']
+                )
+                if (side in ('LONG', 'SHORT')
+                        and math.isfinite(breach_quote) and breach_quote > 0
+                        and math.isfinite(breach_band) and breach_band > 0
+                        and (breach_quote < breach_band if side == 'LONG'
+                             else breach_quote > breach_band)):
+                    details.update(
+                        opposite_band=breach_band, quote=breach_quote, side=side,
+                    )
+                    return _auth('OPPOSITE_KC_BAND_BREACH')
+            except (AttributeError, KeyError, TypeError, ValueError,
+                    IndexError, OverflowError):
+                pass
+
+        # 【動能衰竭出場（2026-10-21 使用者授權）】動能衰竭不再續抱，但只在
+        # 開倉後已收線確認的真峰頂（多）/真谷底（空）平倉；峰谷成型即平倉，
+        # 不受市場訊號續抱否決。尚未成型真峰谷 → 否決，繼續持有。
+        is_momentum_exhaustion = any(m in clean_reason.upper() for m in (
+            'MA5_FLAT_REVERSAL', 'MOMENTUM_EXHAUSTION',
+        ))
+        if is_momentum_exhaustion:
+            exhaustion_pivot, exhaustion_pivot_type, exhaustion_pivot_info = (
+                has_confirmed_true_pivot(position, frame, quote)
+            )
+            if not exhaustion_pivot:
+                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+            details.update(
+                true_pivot_type=exhaustion_pivot_type, **exhaustion_pivot_info,
+            )
+            return _auth(clean_reason)
+
         # ═════════════════════════════════════════════════════════════════
         # 【用戶授權鐵律：analyze_market_signal 多頭回踩與空頭反彈防洗保護】
         # ═════════════════════════════════════════════════════════════════
-        if frame is not None and len(frame) >= 1:
+        if not is_profit_lock and frame is not None and len(frame) >= 1:
             from core.services.market_signal_analyzer import evaluate_frame_market_signal
             market_signal = evaluate_frame_market_signal(frame, quote)
             if side == 'LONG' and market_signal.get('action') == 'HOLD_LONG':
@@ -1722,25 +1764,22 @@ class HoldingProtectionExitGate:
                     return _reject(reason=f"REJECT_EXIT: BLOCKED_BY_MARKET_SIGNAL_HOLD_SHORT ({market_signal.get('reason')})")
 
         if is_profit_lock:
-            if verified_profit_lock is None:
-                if details and (details.get('floor_net_roe_pct') is not None or details.get('lock_type')):
-                    verified_profit_lock = details
-                elif position and position.get('entry_price'):
-                    entry_p = float(position.get('entry_price') or 0.0)
-                    is_in_profit = (float(quote) > entry_p) if side == 'LONG' else (float(quote) < entry_p)
-                    if is_in_profit:
-                        verified_profit_lock = {'lock_type': 'UPSTREAM_RATCHET_PROFIT_LOCK', 'entry_price': entry_p, 'quote': quote}
+            # 【鎖利須真正達標（2026-10-21 使用者決議 B）】不再以「任何浮盈」或
+            # 只有標籤的上游 details 放行；上游須同時提供 floor 與 current 淨 ROE
+            # 且 current 確實已觸及 floor。
+            if verified_profit_lock is None and details:
+                floor_roe = details.get('floor_net_roe_pct')
+                current_roe = details.get('current_net_roe_pct')
+                if (floor_roe is not None and current_roe is not None
+                        and has_reached_net_roe_floor(current_roe, floor_roe)):
+                    verified_profit_lock = {
+                        'lock_type': details.get('lock_type') or 'UPSTREAM_NET_ROE_FLOOR',
+                        'floor_net_roe_pct': floor_roe,
+                        'current_net_roe_pct': current_roe,
+                    }
             if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
-            # Explicit profit-lock exception: ordinary pullbacks still wait
-            # for the side-correct, post-entry confirmed peak or valley.
             details.update(verified_profit_lock)
-            return _auth(clean_reason)
-
-        is_momentum_exhaustion = any(m in clean_reason.upper() for m in (
-            'MA5_FLAT_REVERSAL', 'MOMENTUM_EXHAUSTION',
-        ))
-        if is_momentum_exhaustion:
             return _auth(clean_reason)
 
         is_safety_exit = any(s in clean_reason.upper() for s in (

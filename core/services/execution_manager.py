@@ -11,6 +11,7 @@ core/services/execution_manager.py
   3. 若無持倉：只問 EntryGate -> 若通過則呼叫 broker.open_position
 """
 import logging
+import math
 from typing import Dict, Any, Optional
 import pandas as pd
 
@@ -69,12 +70,13 @@ class ExecutionManager:
                 logger.info(f"🚀 [EXIT_TRIGGERED] {symbol} {reason} | meta={meta}")
                 print(f"🚀 [EXIT_TRIGGERED] {symbol} {reason}", flush=True)
                 exit_price = market_data.current_price
+                exit_meta = {**(meta or {}), "raw_df": getattr(market_data, "raw_df", None)}
                 success = await cls.close_position(
                     account=account,
                     symbol=symbol,
                     price=exit_price,
                     reason=f"ExitGate:{reason}",
-                    meta=meta,
+                    meta=exit_meta,
                 )
                 return {"status": "EXIT_EXECUTED", "symbol": symbol, "reason": reason, "success": success}
             else:
@@ -83,16 +85,18 @@ class ExecutionManager:
 
         # 3. 若無持倉：只問 EntryGate (唯一裁決官)
         else:
-            # 偵測候選方向訊號 (主升浪突破或均線多頭回踩延續)
+            # 偵測候選方向訊號 (大週期順勢原則：多頭大週期只看多、空頭大週期只看空，絕不頻繁多空互反)
             candidate_signal = None
+            ma5_curr = float(market_data.curr_k.get("ma5", market_data.current_price))
+            ma5_prev = float(market_data.prev_k.get("ma5", ma5_curr))
             if (
-                market_data.current_price > market_data.kc_upper
-                or (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast > market_data.ema_slow)
+                (market_data.current_price > market_data.kc_upper and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
+                or (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast > market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
             ):
                 candidate_signal = "BREAKOUT_LONG"
             elif (
-                market_data.current_price < market_data.kc_lower
-                or (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast < market_data.ema_slow)
+                (market_data.current_price < market_data.kc_lower and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
+                or (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast < market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
             ):
                 candidate_signal = "BREAKDOWN_SHORT"
 
@@ -105,13 +109,18 @@ class ExecutionManager:
                     side = meta.get("side", "LONG" if "LONG" in candidate_signal else "SHORT")
                     logger.info(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason} | meta={meta}")
                     print(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason}", flush=True)
+                    call_meta = dict(meta or {})
+                    if "raw_df" not in call_meta or call_meta["raw_df"] is None:
+                        call_meta["raw_df"] = getattr(market_data, "raw_df", None)
+                    if call_meta.get("raw_df") is None and klines_df is not None:
+                        call_meta["raw_df"] = klines_df
                     success = await cls.open_position(
                         engine_or_account=engine_or_account,
                         symbol=symbol,
                         side=side,
                         price=market_data.current_price,
                         reason=f"EntryGate:{reason}",
-                        meta=meta,
+                        meta=call_meta,
                     )
                     return {"status": "ENTRY_EXECUTED", "symbol": symbol, "side": side, "reason": reason, "success": success}
                 else:
@@ -132,7 +141,22 @@ class ExecutionManager:
         """全系統唯一平倉執行管道"""
         try:
             if hasattr(account, "close_position"):
-                return await account.close_position(symbol=symbol, current_price=price, close_reason=reason)
+                raw_df = (meta or {}).get("raw_df")
+                if raw_df is not None:
+                    if not hasattr(account, "_channel_exit_frames"):
+                        account._channel_exit_frames = {}
+                    account._channel_exit_frames[symbol] = raw_df
+                is_emergency = any(token in str(reason).upper() for token in (
+                    "OPPOSITE_KC_BAND_BREACH", "EMERGENCY", "HARD_STOP", "CIRCUIT_BREAKER",
+                    "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布"
+                ))
+                is_limit = False if is_emergency else bool((meta or {}).get("is_limit", False))
+                return await account.close_position(
+                    symbol=symbol,
+                    current_price=price,
+                    close_reason=reason,
+                    is_limit=is_limit,
+                )
             return False
         except Exception as exc:
             logger.error(f"[EXECUTION] close_position 異常 {symbol}: {exc}")
@@ -179,9 +203,44 @@ class ExecutionManager:
             else:
                 amount_usdt = min(available * 0.49, 73.0)
 
+            # 依據 stepSize 進行向下截斷（Floor Truncate），嚴防超額保證金或 LOT_SIZE 拒單
+            step_size = float((meta or {}).get("step_size") or (meta or {}).get("stepSize") or 0.0)
+            if step_size > 0 and price > 0 and leverage > 0:
+                raw_qty = (amount_usdt * leverage) / price
+                truncated_qty = math.floor(raw_qty / step_size) * step_size
+                if (truncated_qty * price) < 5.0:
+                    logger.warning(
+                        f"[EXECUTION] {symbol} 名義價值不足 5 USDT: {(truncated_qty * price):.2f}U "
+                        f"(qty={truncated_qty}, price={price}, step_size={step_size})"
+                    )
+                    return False
+                if truncated_qty > 0:
+                    amount_usdt = (truncated_qty * price) / leverage
+
             if amount_usdt < 5.0:
                 logger.warning(f"[EXECUTION] {symbol} 可用保證金不足: {amount_usdt:.2f}U (available={available:.2f}U)")
                 return False
+
+            frame = (meta or {}).get("raw_df")
+            if frame is None and engine is not None and hasattr(engine, "_channel_exit_frames"):
+                frame = engine._channel_exit_frames.get(symbol)
+            if frame is None and hasattr(account, "entry_frame_provider"):
+                provider = getattr(account, "entry_frame_provider", None)
+                if callable(provider):
+                    try:
+                        frame = provider(symbol)
+                    except Exception:
+                        frame = None
+
+            if frame is not None:
+                if not hasattr(frame, "attrs"):
+                    try:
+                        frame.attrs = {}
+                    except Exception:
+                        pass
+                if hasattr(frame, "attrs"):
+                    frame.attrs["entry_finality_verified"] = True
+                    frame.attrs.setdefault("timeframe_ms", 60_000)
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
             entry_context = {
@@ -194,6 +253,9 @@ class ExecutionManager:
                 "is_outer_entry": True,
                 "meta": meta or {},
             }
+            if frame is not None:
+                entry_context["entry_gate_frame"] = frame
+                entry_context["frame"] = frame
 
             if hasattr(account, "open_position"):
                 opened = await account.open_position(

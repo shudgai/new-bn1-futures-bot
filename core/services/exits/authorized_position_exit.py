@@ -98,6 +98,13 @@ def automated_position_exit_allowed(
         for token in (
             "HARD_STOP",
             "CIRCUIT_BREAKER",
+            "EXITGATE",
+            "MID_BREACH",
+            "MID_BAND",
+            "EMA_REVERSAL",
+            "SHORT_EXIT",
+            "EMA_CROSS",
+            "EARLY_PIVOT",
         )
     ):
         return True

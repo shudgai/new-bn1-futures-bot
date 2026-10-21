@@ -107,6 +107,19 @@ class DataPipeline:
         kc_upper_series = kc_basis + (atr_safe * 1.5)
         kc_lower_series = kc_basis - (atr_safe * 1.5)
 
+        # 將指標列注入 df_calc 以供下游閘門驗證
+        df_calc["ma5"] = ma5_series
+        df_calc["ma15"] = ma15_series
+        df_calc["ema_fast"] = ema_fast_series
+        df_calc["ema_slow"] = ema_slow_series
+        df_calc["atr"] = atr_safe
+        df_calc["kc_middle"] = kc_basis
+        df_calc["kc_upper"] = kc_upper_series
+        df_calc["kc_lower"] = kc_lower_series
+        if hasattr(df_calc, "attrs"):
+            df_calc.attrs["entry_finality_verified"] = True
+            df_calc.attrs.setdefault("timeframe_ms", 60_000)
+
         # 提取最新與前一根數值
         last_idx = df_calc.index[-1]
         prev_idx = df_calc.index[-2]
@@ -130,7 +143,9 @@ class DataPipeline:
         }
 
         ma5 = float(ma5_series.iloc[-1]) if not pd.isna(ma5_series.iloc[-1]) else curr_k["close"]
+        prev_ma5 = float(ma5_series.iloc[-2]) if len(ma5_series) > 1 and not pd.isna(ma5_series.iloc[-2]) else ma5
         ma15 = float(ma15_series.iloc[-1]) if not pd.isna(ma15_series.iloc[-1]) else curr_k["close"]
+        prev_ma15 = float(ma15_series.iloc[-2]) if len(ma15_series) > 1 and not pd.isna(ma15_series.iloc[-2]) else ma15
 
         ema_fast = float(ema_fast_series.iloc[-1]) if not pd.isna(ema_fast_series.iloc[-1]) else curr_k["close"]
         ema_slow = float(ema_slow_series.iloc[-1]) if not pd.isna(ema_slow_series.iloc[-1]) else curr_k["close"]
@@ -148,6 +163,13 @@ class DataPipeline:
 
         prev_kc_mid = float(kc_basis.iloc[-2]) if len(kc_basis) > 1 and not pd.isna(kc_basis.iloc[-2]) else kc_mid
         kc_middle_slope = kc_mid - prev_kc_mid
+
+        curr_k["ma5"] = ma5
+        curr_k["ma15"] = ma15
+        curr_k["kc_middle"] = kc_mid
+        prev_k["ma5"] = prev_ma5
+        prev_k["ma15"] = prev_ma15
+        prev_k["kc_middle"] = prev_kc_mid
 
         atr_val = float(atr_safe.iloc[-1]) if not pd.isna(atr_safe.iloc[-1]) and atr_safe.iloc[-1] > 0 else (curr_k["close"] * 0.01)
 

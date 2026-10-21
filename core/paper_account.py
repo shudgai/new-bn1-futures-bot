@@ -211,6 +211,7 @@ class PaperAccount:
         self.last_closed_at: Dict[str, float] = {}
         self.last_closed_side: Dict[str, str] = {}
         self.channel_profit_reentries: Dict[str, dict] = {}
+        self._close_retry_after: Dict[str, float] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         self._rapid_drop_last_price: Dict[str, float] = {}
         self._rapid_drop_window: Dict[str, List[tuple]] = {}
@@ -689,6 +690,19 @@ class PaperAccount:
 
         if is_manual:
             from core.services.entry_firewall import require_ma5_ma15_entry_gates
+
+            gate_frame = entry_context.get("entry_gate_frame")
+            if gate_frame is None:
+                provider = getattr(self, "entry_frame_provider", None)
+                if callable(provider):
+                    try:
+                        gate_frame = provider(symbol)
+                        if hasattr(gate_frame, "__await__"):
+                            gate_frame = await gate_frame
+                        if gate_frame is not None:
+                            entry_context["entry_gate_frame"] = gate_frame
+                    except Exception:
+                        gate_frame = None
 
             require_ma5_ma15_entry_gates(
                 entry_context.get("entry_gate_frame"),
@@ -1629,6 +1643,7 @@ class PaperAccount:
             total_unrealized += unrealized
 
             # 純數值更新最高利潤紀錄，嚴禁在此觸發任何平倉
+            meta = self.position_meta.setdefault(symbol, {})
             pnl_pct = (curr_p - entry_p) / entry_p * sign if entry_p > 0 else 0.0
             highest_pnl = float(meta.get("highest_pnl_pct", pnl_pct) or pnl_pct)
             if pnl_pct > highest_pnl:

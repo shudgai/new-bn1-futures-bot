@@ -110,12 +110,17 @@ class BreakoutContinuationEntryGate:
         band = cls._number(candidate.get("kc_upper" if is_long else "kc_lower"))
         ma5 = cls._number(candidate.get("ma5_current"))
         prices = [cls._number(candidate.get("price"))]
-        tick = cls._number(tick_price)
-        if tick is not None and tick > 0:
+        if tick_price is not None:
+            # 已提供最新報價卻無效（NaN/0/負數/非數字）時無法重驗位置，Fail-Closed。
+            tick = cls._number(tick_price)
+            if tick is None or tick <= 0:
+                return "LATE_CHASE_DATA_INVALID"
             prices.append(tick)
         if atr is None or band is None or ma5 is None or any(
-            price is None for price in prices
+            price is None or price <= 0 for price in prices
         ):
+            return "LATE_CHASE_DATA_INVALID"
+        if len(kc_upper) != len(closed_klines) or len(kc_lower) != len(closed_klines):
             return "LATE_CHASE_DATA_INVALID"
         # Use the most extended of (signal close, latest quote) so a quote
         # that has already run away is also rejected at final revalidation.
@@ -637,7 +642,10 @@ class BreakoutContinuationEntryGate:
 
                 # ── 即時當根模式 A：MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
                 if live_ma5 is not None and live_ma15 is not None:
-                    is_safe_long_zone = tick < (live_upper * 1.003)
+                    live_bw = live_upper - live_lower
+                    kc_pos_live = (tick - live_lower) / live_bw if live_bw > 0 else 0.5
+                    is_safe_long_zone = tick < (live_upper * 1.003) and kc_pos_live <= 0.80
+                    is_safe_short_zone = tick > (live_lower * 0.997) and kc_pos_live >= 0.20
                     if (
                         closed_ma5 <= current_ma15
                         and live_ma5 > live_ma15
@@ -660,6 +668,7 @@ class BreakoutContinuationEntryGate:
                         and live_ma5 < live_ma15
                         and live_ma5 < closed_ma5
                         and tick < live_middle
+                        and is_safe_short_zone
                     ):
                         result = signal(
                             "OPEN_SHORT", MA_CROSSOVER, tick,
@@ -773,12 +782,17 @@ class BreakoutContinuationEntryGate:
 
         # ── 收線確認模式 A：MA5 / MA15 交叉開倉 (MA_CROSSOVER) ──
         channel_expanding_closed = (upper - lower >= previous_upper - previous_lower)
+        closed_bw = upper - lower
+        kc_pos_closed = (current["close"] - lower) / closed_bw if closed_bw > 0 else 0.5
+        is_safe_long_zone_closed = current["close"] < (upper * 1.003) and kc_pos_closed <= 0.80
+        is_safe_short_zone_closed = current["close"] > (lower * 0.997) and kc_pos_closed >= 0.20
         if (
             current_bearish
             and previous_ma5 >= previous_ma15
             and closed_ma5 < current_ma15
             and ma5_down
             and current["close"] < basis
+            and is_safe_short_zone_closed
         ):
             return signal(
                 "OPEN_SHORT", MA_CROSSOVER, current["close"],
@@ -786,7 +800,6 @@ class BreakoutContinuationEntryGate:
                 channel_expanding=True,
             )
 
-        is_safe_long_zone_closed = current["close"] < (upper * 1.003)
         if (
             current_bullish
             and previous_ma5 <= previous_ma15

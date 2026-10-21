@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -41,6 +42,8 @@ def validate_entry_math(
     is_outer_entry: bool = False,
     is_dip_sniper: bool = False,
     is_meme_hunter: bool = False,
+    now_ms: float | None = None,
+    max_staleness_ms: float = 180_000.0,
 ) -> tuple[bool, str]:
     """Authorize an entry from the latest candle and prior MA5 value only."""
     side = str(side or "").upper()
@@ -50,6 +53,17 @@ def validate_entry_math(
     if len(bars) < 2:
         return False, "BLOCKED_ENTRY_MATH_INSUFFICIENT_BARS"
     current, previous = bars[-1], bars[-2]
+
+    # 數據層防禦：過期舊資料攔截（Stale Data Veto）
+    # 比對最後一根 K 棒的時間戳（timestamp）與當前系統時間（UTC/毫秒）：
+    # 若時間落差超過 3 分鐘（180,000 毫秒），Fail-Closed 一票否決並返回 BLOCKED_STALE_DATA
+    raw_ts = _number(current.get("timestamp"))
+    if raw_ts is not None:
+        ts_ms = raw_ts * 1000.0 if (1e8 < raw_ts < 1e11) else raw_ts
+        if ts_ms >= 1e11 or now_ms is not None:
+            current_ms = now_ms if now_ms is not None else (time.time() * 1000.0)
+            if (current_ms - ts_ms) > max_staleness_ms:
+                return False, "BLOCKED_STALE_DATA"
     values = {
         key: _number(current.get(key))
         for key in (
@@ -58,6 +72,9 @@ def validate_entry_math(
         )
     }
     previous_ma5 = _number(previous.get("ma5"))
+    previous_ma15 = _number(previous.get("ma15"))
+    prev_opened = _number(previous.get("open"))
+    prev_closed = _number(previous.get("close"))
     closed_bars = bars
     if any("is_closed" in row for row in bars):
         closed_bars = [row for row in bars if row.get("is_closed") == True]
@@ -86,6 +103,27 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
     if side == "SHORT" and kc_slope > 0:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
+    # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
+    funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
+    if funding_rate is not None and abs(funding_rate) >= 0.015:
+        now_ts = time.time()
+        time_to_settle = 3600 - (int(now_ts) % 3600)
+        if time_to_settle <= 300:
+            if (side == "LONG" and funding_rate > 0) or (side == "SHORT" and funding_rate < 0):
+                return False, "BLOCKED_FUNDING_RATE_SPIKE"
+
+    # ─── 均線斜率（EMA Slope）絕對順勢一票否決（Hard Veto） ───
+    # 做多鐵律：若 EMA15 下拐或走平 (ema15[-1] <= ema15[-2] 或 ema15_slope <= 0)，一律 100% 阻斷開多接飛刀！
+    # 做空鐵律：若 EMA15 上翹或走平 (ema15[-1] >= ema15[-2] 或 ema15_slope >= 0)，一律 100% 阻斷開空摸頂！
+    curr_ema15 = _number(current.get("ema15")) or _number(current.get("ema_fast")) or values.get("ma15")
+    prev_ema15 = _number(previous.get("ema15")) or _number(previous.get("ema_fast")) or previous_ma15
+
+    if curr_ema15 is not None and prev_ema15 is not None:
+        ema15_slope = curr_ema15 - prev_ema15
+        if side == "LONG" and (curr_ema15 <= prev_ema15 or ema15_slope <= 0):
+            return False, "BLOCKED_LONG_ON_EMA_FALLING"
+        if side == "SHORT" and (curr_ema15 >= prev_ema15 or ema15_slope >= 0):
+            return False, "BLOCKED_SHORT_ON_EMA_RISING"
 
     is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
@@ -96,9 +134,11 @@ def validate_entry_math(
             return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
 
     # 做多必須站在中軌與 MA15 之上，做空必須在下方
-    if side == "LONG" and (close < latest_middle or close < ma15):
+    # 放寬中軌/MA15 緩衝區（0.15 ATR）：允許反抽假刺穿或短暫回測中軌/MA15 時，不被直接 1 票秒殺
+    retest_buffer = 0.15 * atr
+    if side == "LONG" and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
-    if side == "SHORT" and (close > latest_middle or close > ma15):
+    if side == "SHORT" and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
 
     if is_dip_sniper or is_meme_hunter:
@@ -123,6 +163,95 @@ def validate_entry_math(
             return True, "ENTRY_MATH_PROFIT_LOCK_FAST_TRACK"
         return False, "BLOCKED_ENTRY_MATH_FAST_TRACK_NOT_CONFIRMED"
 
+    # ─── 規則 1：假突破 / 長黑吞噬反轉提早開空 (Bearish Engulfing Reversal) ───
+    if (
+        not is_outer
+        and side == "SHORT"
+        and prev_opened is not None
+        and prev_closed is not None
+        and (prev_closed > prev_opened)
+        and (close < opened)
+        and (close < prev_opened)
+        and (close < ma15)
+        and (close <= latest_middle)
+    ):
+        if body >= 0.3 * atr and (previous_ma5 is None or ma5 <= previous_ma5 + 1e-6):
+            return True, "ENTRY_SHORT_ENGULFING_REVERSAL"
+
+    # ─── 規則 1-LONG：假跌破 / 長紅吞噬反轉提早開多 (Bullish Engulfing Reversal) ───
+    if (
+        not is_outer
+        and side == "LONG"
+        and prev_opened is not None
+        and prev_closed is not None
+        and (prev_closed < prev_opened)
+        and (close > opened)
+        and (close > prev_opened)
+        and (close > ma15)
+        and (close >= latest_middle - retest_buffer)
+    ):
+        if body >= 0.3 * atr and (previous_ma5 is None or ma5 >= previous_ma5 - 1e-6):
+            return True, "ENTRY_LONG_ENGULFING_REVERSAL"
+
+    # ─── 規則 3：EMA15 金叉 EMA40 + 站上 KC 中軌提早開多 (ENTRY_LONG_EMA_CROSS_MID) ───
+    ema_slow = _number(current.get("ema_slow")) or _number(current.get("ema40")) or latest_middle
+    if (
+        not is_outer
+        and side == "LONG"
+        and (close >= latest_middle - retest_buffer)
+        and (close - ma15 <= 1.2 * atr)
+        and (ma15 >= ema_slow - 0.05 * atr)
+        and previous_ma15 is not None
+        and (ma15 >= previous_ma15 - 1e-6)
+    ):
+        upper_wick = high - max(opened, close)
+        if not (upper_wick >= body and upper_wick >= 0.25 * atr):
+            return True, "ENTRY_LONG_EMA_CROSS_MID"
+
+    # ─── 規則 4：EMA15 死叉 EMA40 + 跌破 KC 中軌提早開空 (ENTRY_SHORT_EMA_CROSS_MID) ───
+    if (
+        not is_outer
+        and side == "SHORT"
+        and (close <= latest_middle + retest_buffer)
+        and (ma15 - close <= 1.2 * atr)
+        and (ma15 <= ema_slow + 0.05 * atr)
+        and previous_ma15 is not None
+        and (ma15 <= previous_ma15 + 1e-6)
+    ):
+        lower_wick = min(opened, close) - low
+        if not (lower_wick >= body and lower_wick >= 0.25 * atr):
+            return True, "ENTRY_SHORT_EMA_CROSS_MID"
+
+    # ─── 規則 2：破中軌 + 均線下拐提早進場開空 (Mid Band Break) ───
+    # 支援在跌破中軌後、回踩中軌遇阻收黑或弱勢盤整時提早開出主跌浪起點空單
+    prev_c_val = _number(previous.get("close"))
+    prev_mid_val = _number(previous.get("kc_middle"))
+    prev_below_mid = (prev_c_val is not None and prev_mid_val is not None and prev_c_val < prev_mid_val)
+    if (
+        not is_outer
+        and side == "SHORT"
+        and (close < latest_middle or (prev_below_mid and close <= latest_middle + retest_buffer))
+        and (ma15 - close <= 1.2 * atr)
+        and (close < opened or close <= ma5)
+        and previous_ma15 is not None
+        and (ma15 <= previous_ma15 + 1e-6)
+    ):
+        return True, "ENTRY_SHORT_MID_BAND_BREAK"
+
+    # ─── 規則 2-LONG：站上中軌 + 均線上拐提早進場開多 (Mid Band Break / Bounce) ───
+    # 支援在突破中軌後、回踩中軌有守收紅或強勢盤整時提早開出主升浪起點多單
+    prev_above_mid = (prev_c_val is not None and prev_mid_val is not None and prev_c_val > prev_mid_val)
+    if (
+        not is_outer
+        and side == "LONG"
+        and (close > latest_middle or (prev_above_mid and close >= latest_middle - retest_buffer))
+        and (close - ma15 <= 1.2 * atr)
+        and (close > opened or close >= ma5)
+        and previous_ma15 is not None
+        and (ma15 >= previous_ma15 - 1e-6)
+    ):
+        return True, "ENTRY_LONG_MID_BAND_BREAK"
+
     # Outer-rail breakout and continuation entries per AGENTS.md:
     # When price is outside KC bands (or explicitly signaled as an outer entry),
     # price naturally exceeds MA15 by the channel half-width.
@@ -143,18 +272,38 @@ def validate_entry_math(
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
+        
+        funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
+        if funding_rate is not None and abs(funding_rate) >= 0.015:
+            now_ts = time.time()
+            time_to_settle = 3600 - (int(now_ts) % 3600)
+            if time_to_settle <= 300:
+                if (side == "LONG" and funding_rate > 0) or (side == "SHORT" and funding_rate < 0):
+                    return False, "BLOCKED_FUNDING_RATE_SPIKE"
+
         return True, "ENTRY_MATH_APPROVED"
 
     if side == "LONG":
-        if not (ma5 > ma15 and ma5 > previous_ma5):
+        # 開多允許：MA5 > MA15，且 MA5 向上發散；或者當前價已站上 MA15 且 MA15 處於上行狀態
+        if not (ma5 >= ma15 - 0.05 * atr and (ma5 > previous_ma5 or (close > ma15 and ma15 > previous_ma15))):
             return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
-        if close - ma15 > 0.8 * atr:
+        if close - ma15 > 1.2 * atr:
             return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
     else:
-        if not (ma5 < ma15 and ma5 < previous_ma5):
+        # 開空允許：MA5 < MA15，且 MA5 向下發散；或者當前價已跌破 MA15 且 MA15 處於下行狀態
+        if not (ma5 <= ma15 + 0.05 * atr and (ma5 < previous_ma5 or (close < ma15 and ma15 < previous_ma15))):
             return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
-        if ma15 - close > 0.8 * atr:
+        if ma15 - close > 1.2 * atr:
             return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
+
+    funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
+    if funding_rate is not None and abs(funding_rate) >= 0.015:
+        now_ts = time.time()
+        time_to_settle = 3600 - (int(now_ts) % 3600)
+        if time_to_settle <= 300:
+            if (side == "LONG" and funding_rate > 0) or (side == "SHORT" and funding_rate < 0):
+                return False, "BLOCKED_FUNDING_RATE_SPIKE"
+
     return True, "ENTRY_MATH_APPROVED"
 
 
@@ -193,6 +342,8 @@ def validate_exit_math(
     fee_rate: float = 0.0004,
     slippage: float = 0.0002,
     close_reason: str = "",
+    now_ms: float | None = None,
+    max_staleness_ms: float = 180_000.0,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return the only mathematical authorization for a full position exit."""
     details: dict[str, Any] = {}
@@ -226,6 +377,15 @@ def validate_exit_math(
         if len(bars) < 2:
             return False, "BLOCKED_EXIT_MATH_DATA_UNAVAILABLE", details
     current, previous = bars[-1], bars[-2]
+
+    # 數據層防禦：過期舊資料攔截（Stale Data Veto）
+    raw_ts = _number(current.get("timestamp"))
+    if raw_ts is not None:
+        ts_ms = raw_ts * 1000.0 if (1e8 < raw_ts < 1e11) else raw_ts
+        if ts_ms >= 1e11 or now_ms is not None:
+            current_ms = now_ms if now_ms is not None else (time.time() * 1000.0)
+            if (current_ms - ts_ms) > max_staleness_ms:
+                return False, "BLOCKED_STALE_DATA", {"exit_type": "BLOCKED", "reason": "BLOCKED_STALE_DATA"}
     keys = ("open", "high", "low", "ma5", "atr", "kc_upper", "kc_middle", "kc_lower")
     current_values = {key: _number(current.get(key)) for key in keys}
     previous_upper = _number(previous.get("kc_upper"))
@@ -247,12 +407,13 @@ def validate_exit_math(
     if any(value is None for value in (previous_close, previous_high, previous_low)):
         return False, "BLOCKED_EXIT_MATH_DATA_INVALID", details
 
-    # Path 0: Structural KC midline reversal and confirmed pivot exits
+    # Path 0: Structural KC midline reversal, EMA reversal, and confirmed pivot exits
     norm_reason = str(close_reason or "").upper().replace(" ", "_")
     is_midline_reversal = any(token in norm_reason for token in (
         "CONFIRMED_KC_MIDLINE_REVERSAL", "KC_MIDLINE_RECLAIM_CLOSE",
         "KC_MIDLINE_RETRACE", "KC_MIDLINE_BREAK", "MIDLINE_REVERSAL",
-        "WRONG_DIRECTION_CORRECTION",
+        "WRONG_DIRECTION_CORRECTION", "SHORT_EXIT_KC_MID_BREACH",
+        "MID_BREACH", "MID_BAND_EXIT",
     ))
     if is_midline_reversal:
         if side == "SHORT" and (close >= middle or previous_close >= previous_middle or middle > previous_middle):
@@ -261,6 +422,53 @@ def validate_exit_math(
         elif side == "LONG" and (close <= middle or previous_close <= previous_middle or middle < previous_middle):
             details.update(exit_type="MIDLINE_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
             return True, "EXIT_MATH_LONG_MIDLINE_REVERSAL", details
+
+    curr_ma15 = _number(current.get("ma15")) or _number(current.get("ema15"))
+    prev_ma15 = _number(previous.get("ma15")) or _number(previous.get("ema15"))
+    is_ema_reversal = any(token in norm_reason for token in (
+        "EMA_REVERSAL", "SHORT_EXIT_EMA_REVERSAL", "EMA_BULLISH_CROSS"
+    ))
+    if side == "SHORT" and (
+        is_ema_reversal
+        or (curr_ma15 is not None and prev_ma15 is not None and curr_ma15 > prev_ma15 and close > curr_ma15 and previous_close > prev_ma15)
+    ):
+        details.update(exit_type="EMA_REVERSAL", close=close, ma15=curr_ma15)
+        return True, "EXIT_MATH_EMA_REVERSAL", details
+
+    # ── Path 0.5: 早期真峰頂 / 真谷底樞紐識別 (Early Pivot Exit) ──
+    is_early_pivot = any(token in norm_reason for token in (
+        "EARLY_PIVOT", "EARLY_PIVOT_VALLEY", "EARLY_PIVOT_PEAK",
+        "PIVOT_VALLEY", "PIVOT_PEAK", "EARLY_VALLEY", "EARLY_PEAK",
+    ))
+    if len(bars) >= 3:
+        b1, b2, b3 = bars[-3], bars[-2], bars[-1]
+        l1, l2, l3 = _number(b1.get("low")), _number(b2.get("low")), _number(b3.get("low"))
+        h1, h2, h3 = _number(b1.get("high")), _number(b2.get("high")), _number(b3.get("high"))
+        o2, c2 = _number(b2.get("open")), _number(b2.get("close"))
+        c3_val, o3_val = _number(b3.get("close")), _number(b3.get("open"))
+        if side == "SHORT":
+            is_pivot_low = (l2 is not None and l1 is not None and l3 is not None and l2 < l1 and l2 < l3)
+            mid2 = ((o2 or 0) + (c2 or 0)) / 2.0 if o2 and c2 else None
+            is_valley_confirmed = is_pivot_low and (
+                (c3_val is not None and mid2 is not None and c3_val > mid2 and c3_val > (o3_val or 0))
+                or (c3_val is not None and c2 is not None and c3_val > c2)
+            )
+            if is_early_pivot or is_valley_confirmed:
+                details.update(exit_type="EARLY_PIVOT", close=close, pivot_low=l2)
+                return True, "EXIT_MATH_EARLY_PIVOT", details
+        elif side == "LONG":
+            is_pivot_high = (h2 is not None and h1 is not None and h3 is not None and h2 > h1 and h2 > h3)
+            mid2 = ((o2 or 0) + (c2 or 0)) / 2.0 if o2 and c2 else None
+            is_peak_confirmed = is_pivot_high and (
+                (c3_val is not None and mid2 is not None and c3_val < mid2 and c3_val < (o3_val or 0))
+                or (c3_val is not None and c2 is not None and c3_val < c2)
+            )
+            if is_early_pivot or is_peak_confirmed:
+                details.update(exit_type="EARLY_PIVOT", close=close, pivot_high=h2)
+                return True, "EXIT_MATH_EARLY_PIVOT", details
+    elif is_early_pivot:
+        details.update(exit_type="EARLY_PIVOT", close=close)
+        return True, "EXIT_MATH_EARLY_PIVOT", details
 
     is_confirmed_pivot = any(token in norm_reason for token in (
         "TRUE_VALLEY_EXTREME_REVERSAL", "TRUE_PEAK_EXTREME_REVERSAL",
