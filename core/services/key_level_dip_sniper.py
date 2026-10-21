@@ -251,7 +251,12 @@ class KeyLevelDipSniperService:
             )
 
         if action == f"OPEN_{side}":
-            norm_pattern = "BREAKOUT" if "BREAK" in pattern else ("CROSSOVER" if "CROSS" in pattern else "DIP_SNIPER")
+            norm_pattern = (
+                "BREAKOUT" if "BREAK" in pattern
+                else "CROSSOVER" if "CROSS" in pattern
+                else "CONTINUATION" if pattern == "CONTINUATION"
+                else "DIP_SNIPER"
+            )
             return {
                 "side": side,
                 "reason": reason,

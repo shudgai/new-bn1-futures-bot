@@ -103,11 +103,11 @@ def validate_entry_math(
 
     if is_dip_sniper or is_meme_hunter:
         if side == "LONG":
-            if ma5 < ma15:
+            if ma5 < ma15 - (0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
         else:
-            if ma5 > ma15:
+            if ma5 > ma15 + (0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
 
@@ -134,12 +134,12 @@ def validate_entry_math(
         if abs(ma5 - ma15) < 0.05 * atr:
             return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
         if side == "LONG":
-            if not (ma5 > previous_ma5 and ma5 > ma15):
+            if not ((ma5 >= previous_ma5 or close > upper) and ma5 >= ma15 - 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             if close - upper > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
         else:
-            if not (ma5 < previous_ma5 and ma5 < ma15):
+            if not ((ma5 <= previous_ma5 or close < lower) and ma5 <= ma15 + 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"

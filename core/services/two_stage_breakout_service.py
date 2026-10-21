@@ -46,7 +46,17 @@ class TwoStageBreakoutService:
     """破軌兩段式進場評估器"""
 
     @classmethod
-    def evaluate(
+    def evaluate(cls, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        res = cls._evaluate_raw(*args, **kwargs)
+        if res is not None:
+            res.setdefault("entry_pattern", "BREAKOUT")
+            res.setdefault("entry_signal_mode", "BREAKOUT")
+            res.setdefault("structure_confirmed", True)
+            res.setdefault("channel_expanding", True)
+        return res
+
+    @classmethod
+    def _evaluate_raw(
         cls,
         df: pd.DataFrame,
         side: str,

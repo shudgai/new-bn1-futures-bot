@@ -389,20 +389,33 @@ def check_long_exit(
         "is_entry_bar": is_entry_bar,
     }
 
-    # 0. 移除『突破/觸碰 KC 上軌平多』：價格沿著 KC 上軌運行屬於強勢結構，不應被動止盈！
-    # 嚴格以『多頭結構破壞』作為平多條件：只有當收盤價實體跌破 KC 中軌 (close < kc_middle) 時才觸發多單全數平倉。
+    # 0. 開倉當根呼吸保護 (Entry Bar Lifecycle <= 60s)
+    if is_entry_bar:
+        return False, "HOLD: ENTRY_BAR_BREATHING", details
 
-    # 1. 伺服器級硬止損緊急避險
+    # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
+    if peak_gain_pct >= 0.012:
+        position["profit_floor_armed"] = True
+        drawdown_pct = (highest_p - curr_price) / entry_p
+        if drawdown_pct >= 0.008:
+            logger.info(f"[平倉觸發] {symbol} 多單 - 動態回撤止盈 (最高點={highest_p:.6g}, 回撤={drawdown_pct:.2%})")
+            return True, "EXIT_BY_TRAILING_PROFIT_LOCK", details
+        fee_buffer = entry_p * 0.0015
+        if curr_price <= entry_p + fee_buffer:
+            logger.info(f"[平倉觸發] {symbol} 多單 - 跌破成本線保本平多 (成本={entry_p:.6g}, 現價={curr_price:.6g})")
+            return True, "EXIT_BY_BREAKEVEN", details
+
+    # 2. 伺服器級硬止損緊急避險
     if pnl_pct <= -0.015 or (entry_p - curr_price) >= 2.2 * atr:
         logger.info(f"[平倉觸發] {symbol} 多單 - 達到伺服器硬止損門檻 (虧損={pnl_pct:.2%})")
         return True, "EXIT_BY_HARD_STOP_LOSS", details
 
-    # 2. 結構破壞平多判定：只有收盤實體跌破 KC 中軌才平倉
+    # 3. 結構破壞平多判定：只有收盤實體跌破 KC 中軌才平倉
     if close_p < kc_mid_curr:
         logger.info(f"[結構破壞平多] {symbol} 多單 - 3M收盤實體跌破KC中軌 (收盤={close_p:.6g} < 中軌={kc_mid_curr:.6g})，多頭瓦解平多")
         return True, "EXIT_BY_KC_MIDLINE_BREACH", details
 
-    # 3. 在收盤價跌破中軌前，即使出現短線陰線回調或跌破 MA5，只要中軌依然斜率向上，均繼續持倉！
+    # 4. 在收盤價跌破中軌前，即使出現短線陰線回調或跌破 MA5，只要中軌依然斜率向上，均繼續持倉！
     return False, "HOLD: KC_MIDDLE_SUPPORTED (收盤仍在KC中軌之上且中軌向上，抱牢主升浪嚴禁平多)", details
 
 
@@ -520,14 +533,17 @@ def check_short_exit(
     body_last = abs(close_p - open_p)
     lower_wick_last = max(0.0, min(close_p, open_p) - low_p)
 
-    # 1. 動態回撤止盈 (波段抱單模式：只要 13EMA/MA15 依然向下傾斜，且未實質站上 MA15+0.15% 緩衝帶，嚴禁中途微幅回抽平空！)
-    if peak_gain_pct >= 0.03:  # 波段級別利潤才評估 (曾達 3% 以上)
+    # 1. 動態回撤止盈 (Trailing Stop - 階梯式鎖利第一優先)
+    if peak_gain_pct >= 0.012:
         position["profit_floor_armed"] = True
         rebound_pct = (curr_price - lowest_p) / entry_p
-        # 必須確認 13EMA 已走平或向上，且價格實質站回 MA15*1.0015 之上，才准回撤止盈
-        if rebound_pct >= 0.015 and close_p > (ma15_curr * 1.0015):
-            logger.info(f"[平倉觸發] {symbol} 空單 - 結構轉折波段止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")
+        if rebound_pct >= 0.008:
+            logger.info(f"[平倉觸發] {symbol} 空單 - 動態低點回抽止盈 (最低點={lowest_p:.6g}, 反彈={rebound_pct:.2%})")
             return True, "EXIT_BY_TRAILING_PROFIT_LOCK", details
+        fee_buffer = entry_p * 0.0015
+        if curr_price >= entry_p - fee_buffer:
+            logger.info(f"[平倉觸發] {symbol} 空單 - 跌破成本線保本平空 (成本={entry_p:.6g}, 現價={curr_price:.6g})")
+            return True, "EXIT_BY_BREAKEVEN", details
 
     # 2. 無利潤 / 浮虧狀態下 (浮盈 < 0.8%)：向上插針（長上影線）只要收盤在 MA15 下方且未金叉，一律視為阻力確認，嚴禁平倉！
     if pnl_pct < 0.008 and close_p <= ma15_curr and ma5_curr <= ma15_curr:

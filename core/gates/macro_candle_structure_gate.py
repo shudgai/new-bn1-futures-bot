@@ -18,6 +18,10 @@ from core.gates.breakout_continuation_entry_gate import (
     DIP_SNIPER,
     MID_LINE_BREAKDOWN,
     MID_LINE_BREAKOUT,
+    BREAK_STRONG,
+    BREAK_CONFIRM,
+    BREAK_CONFIRM_OPP,
+    BREAK_STRONG_ADD,
     PURE_MATH_ENTRY_CONFIRMATIONS,
 )
 from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
@@ -160,8 +164,20 @@ class MacroCandleStructureGate:
         if confirmation in PURE_MATH_ENTRY_CONFIRMATIONS:
             if side not in {"LONG", "SHORT"}:
                 return False, "UNKNOWN_SIDE"
+            norm_mode = (
+                "BREAKOUT"
+                if mode in {
+                    "BREAKOUT",
+                    BREAK_STRONG,
+                    BREAK_CONFIRM,
+                    BREAK_CONFIRM_OPP,
+                    BREAK_STRONG_ADD,
+                    "BREAK_SINGLE",
+                }
+                else mode
+            )
             if confirmation == "MEME_PEAK_HUNTER":
-                expected_mode = mode
+                expected_mode = norm_mode
             else:
                 expected_mode = (
                     "BREAKOUT"
@@ -173,20 +189,38 @@ class MacroCandleStructureGate:
                         MID_LINE_BREAKDOWN,
                         MID_LINE_BREAKOUT,
                         "BREAKOUT",
+                        BREAK_STRONG,
+                        BREAK_CONFIRM,
+                        BREAK_CONFIRM_OPP,
+                        BREAK_STRONG_ADD,
+                        "BREAK_SINGLE",
                     }
                     else "CROSSOVER"
-                    if confirmation == MA_CROSSOVER
+                    if confirmation in {
+                        MA_CROSSOVER,
+                        "MA_CROSSOVER_WICK_FOLLOW_THROUGH",
+                        "EMA_CROSS",
+                    }
                     else "DIP_SNIPER"
                     if confirmation in {"DIP_SNIPER", "PULLBACK"}
                     else "CONTINUATION"
                 )
-            if not structure_confirmed or mode != expected_mode:
+            mode_matches = (
+                norm_mode == expected_mode
+                or (expected_mode in {"DIP_SNIPER", "CONTINUATION"} and norm_mode in {"DIP_SNIPER", "CONTINUATION"})
+            )
+            if not structure_confirmed or not mode_matches:
                 return False, "VETO_PURE_MATH_ENTRY: 訊號模式與結構確認不一致"
             if confirmation not in {
                 CONFIRMED_2BAR_BREAKOUT,
                 INSTANT_BREAKOUT_INSIDE,
                 INSTANT_BURST_BREAKOUT,
                 "BREAKOUT",
+                BREAK_STRONG,
+                BREAK_CONFIRM,
+                BREAK_CONFIRM_OPP,
+                BREAK_STRONG_ADD,
+                "BREAK_SINGLE",
                 "DIP_SNIPER",
                 "MEME_PEAK_HUNTER",
                 MID_LINE_BREAKDOWN,

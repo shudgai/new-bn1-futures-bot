@@ -243,7 +243,7 @@ def should_veto_long_exit(
         "HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS",
         "BREAKEVEN_PROTECTION", "BREAKEVEN_STOP", "TIME_STOP_CHOP", "TIME_STOP",
         "BEARISH_TREND_REVERSAL", "KC_MIDDLE_BREAKDOWN", "3M_KC_MIDDLE_BREAKDOWN",
-        "EMA13_BREAKDOWN", "DEAD_CROSS_KC_MID_BREAKDOWN",
+        "DEAD_CROSS_KC_MID_BREAKDOWN",
     )):
         return False, f"風控守衛（{exit_reason}）放行"
 
@@ -333,7 +333,7 @@ def should_veto_short_exit(
         "HARD_STOP_LOSS", "CIRCUIT_BREAKER", "ADVERSE_STOP_LOSS",
         "BREAKEVEN_PROTECTION", "BREAKEVEN_STOP", "TIME_STOP_CHOP", "TIME_STOP",
         "BULLISH_TREND_REVERSAL", "KC_MIDDLE_BREAKOUT", "3M_KC_MIDDLE_BREAKOUT",
-        "EMA13_BREAKOUT", "GOLDEN_CROSS_KC_MID_BREAKOUT",
+        "GOLDEN_CROSS_KC_MID_BREAKOUT",
     )):
         return False, f"風控守衛（{exit_reason}）放行"
 

@@ -60,8 +60,8 @@ class EmaCrossEntryService:
         if len(bars) < 35:
             return None, "WARMUP_NOT_READY"
         timeframe_ms = frame.attrs.get("timeframe_ms")
-        if timeframe_ms is not None and float(timeframe_ms) != 180_000.0:
-            return None, "WRONG_TIMEFRAME_EXPECTED_3M"
+        if timeframe_ms is not None and float(timeframe_ms) not in (60_000.0, 180_000.0):
+            return None, "WRONG_TIMEFRAME"
         current_bar = bars.iloc[-1].to_dict()
         prev_bar = bars.iloc[-2].to_dict()
 
@@ -150,9 +150,9 @@ class EmaCrossEntryService:
             return None, "NO_CROSS"
 
         # ── 2. 最低限度過濾 (Minimum Viable Filters) ──
-        # (a) EMA 距離 >= 0.07 * ATR
+        # (a) EMA 距離 >= 0.07 * ATR (僅針對延遲補開；新鮮交叉當根兩線剛交錯，不予阻斷)
         ema_dist = abs(c_ma5 - c_ma13)
-        if ema_dist < 0.07 * atr:
+        if not is_fresh_cross and ema_dist < 0.07 * atr:
             reason = f"EMA_SPREAD_TOO_SMALL({ema_dist:.5g} < {0.07 * atr:.5g})"
             logger.info("[EMA交叉攔截] %s %s 條件未達: %s", symbol, side, reason)
             return None, reason

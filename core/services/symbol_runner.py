@@ -124,20 +124,41 @@ def _filter_authorities_by_kc_direction(authorities, frame):
             item.get("authority") == "KEY_LEVEL_DIP_SNIPER"
             or (
                 item.get("authority") == "WILD_SWING"
-                and item.get("signal", {}).get("structure_confirmation")
-                in {
-                    INSTANT_BREAKOUT_INSIDE,
-                    INSTANT_BURST_BREAKOUT,
-                    CONFIRMED_2BAR_BREAKOUT,
-                    CONTINUATION_OUTSIDE_KC,
-                    "MEME_PEAK_HUNTER",
-                    "DIP_SNIPER",
-                    "MA_CROSSOVER",
-                    "MID_LINE_BREAKDOWN",
-                    "MID_LINE_BREAKOUT",
-                    "BREAKOUT",
-                    "CONTINUATION",
-                }
+                and (
+                    item.get("signal", {}).get("structure_confirmation")
+                    in {
+                        INSTANT_BREAKOUT_INSIDE,
+                        INSTANT_BURST_BREAKOUT,
+                        CONFIRMED_2BAR_BREAKOUT,
+                        CONTINUATION_OUTSIDE_KC,
+                        "MEME_PEAK_HUNTER",
+                        "DIP_SNIPER",
+                        "MA_CROSSOVER",
+                        "MID_LINE_BREAKDOWN",
+                        "MID_LINE_BREAKOUT",
+                        "BREAKOUT",
+                        "CONTINUATION",
+                        "BREAK_STRONG",
+                        "BREAK_CONFIRM",
+                        "BREAK_CONFIRM_OPP",
+                        "BREAK_STRONG_ADD",
+                        "BREAK_SINGLE",
+                        "EMA_CROSS",
+                        "EMA_CROSS_DELAYED",
+                        "EMA_CROSS_FLIP",
+                    }
+                    or item.get("signal", {}).get("entry_source")
+                    in {
+                        "BREAK_STRONG",
+                        "BREAK_CONFIRM",
+                        "BREAK_CONFIRM_OPP",
+                        "BREAK_STRONG_ADD",
+                        "BREAK_SINGLE",
+                        "EMA_CROSS",
+                        "EMA_CROSS_DELAYED",
+                        "EMA_CROSS_FLIP",
+                    }
+                )
             )
         )
     ]
@@ -478,6 +499,20 @@ async def _process_wild_swing_symbol(
         engine._channel_exit_frames = {}
     engine._channel_exit_frames[symbol] = frame.copy()
 
+    # ══════════════════════════════════════════════════════════════════════
+    # 【三層流水線唯一通道】：數據層 -> 裁決層 (ExitGate/EntryGate) -> 執行層 (ExecutionManager)
+    # ══════════════════════════════════════════════════════════════════════
+    from core.services.execution_manager import ExecutionManager
+    pipeline_res = await ExecutionManager.process_symbol_pipeline(
+        symbol=symbol,
+        engine_or_account=engine,
+        klines_df=frame,
+        quote=quote,
+    )
+    # 若 ExitGate 判定 HOLD (強制抱牢) 或已完成平倉/開倉，直接返回，嚴禁後續舊規則介入
+    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "HOLD"):
+        return [], []
+
     await _reconcile_wait_claims(engine, symbol)
     position = engine.account.positions.get(symbol)
     entry_frame = frame
@@ -623,6 +658,19 @@ async def _process_wild_swing_symbol(
                     )
                     exit_decision = None
 
+            if side_decision == "LONG" and exit_decision is not None:
+                from core.services.chart_1m_scalper import is_scalping_1m_pullback_holding
+                if is_scalping_1m_pullback_holding(frame, "LONG"):
+                    logger.warning(
+                        "[1M回踩蓄勢防洗 VETO] %s 價格在慢線之上觸及快線但未破慢線，同趨勢蓄勢保持持倉！擬平倉理由: %s",
+                        symbol, exit_decision.get("reason"),
+                    )
+                    print(
+                        f"[1M回踩蓄勢防洗 VETO] {symbol} 價格在慢線(EMA40)之上觸及快線(EMA15)但未破慢線，同趨勢蓄勢保持持倉，禁止平倉！",
+                        flush=True,
+                    )
+                    exit_decision = None
+
             # ── 空單防洗盤硬守衛（Veto Short Exit）：只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，強制禁止平空！──
             elif side_decision == "SHORT":
                 from core.services.exits.anti_fakeout_exit_guard import should_veto_short_exit
@@ -644,6 +692,19 @@ async def _process_wild_swing_symbol(
                     )
                     print(
                         f"[空單防洗盤硬守衛 VETO] {symbol} 平空被一票否決！原因: {veto_reason} | 擬平倉理由: {exit_decision.get('reason')} | 報價: {quote}",
+                        flush=True,
+                    )
+                    exit_decision = None
+
+            if side_decision == "SHORT" and exit_decision is not None:
+                from core.services.chart_1m_scalper import is_scalping_1m_pullback_holding
+                if is_scalping_1m_pullback_holding(frame, "SHORT"):
+                    logger.warning(
+                        "[1M反彈蓄勢防洗 VETO] %s 價格在慢線之下觸及快線但未破慢線，同趨勢蓄勢保持持倉！擬平倉理由: %s",
+                        symbol, exit_decision.get("reason"),
+                    )
+                    print(
+                        f"[1M反彈蓄勢防洗 VETO] {symbol} 價格在慢線(EMA40)之下觸及快線(EMA15)但未破慢線，同趨勢蓄勢保持持倉，禁止平空！",
                         flush=True,
                     )
                     exit_decision = None
@@ -778,8 +839,30 @@ async def _process_wild_swing_symbol(
             mode="HYBRID",
         )
         if b_sig is not None:
-            b_sig["entry_pattern"] = b_sig.get("entry_source", "BREAK_STRONG")
-            breakout_signals.append(b_sig)
+            b_sig["entry_pattern"] = "BREAKOUT"
+            b_sig["entry_signal_mode"] = "BREAKOUT"
+            b_sig["structure_confirmed"] = True
+            b_sig["channel_expanding"] = True
+    from core.services.chart_1m_scalper import evaluate_scalping_1m_signal
+    for s_side in scan_sides:
+        s_ok, s_reason, s_meta = evaluate_scalping_1m_signal(frame, s_side)
+        if s_ok:
+            bar_ts = float(frame.iloc[-1].get("timestamp", 0.0))
+            s_cand = {
+                "symbol": symbol,
+                "side": s_side,
+                "entry_pattern": "BREAKOUT",
+                "entry_signal_mode": "BREAKOUT",
+                "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
+                "structure_confirmed": True,
+                "channel_expanding": True,
+                "reason": s_reason,
+                "bar_id": bar_ts,
+                "entry_source": "SCALPING_1M_BREAKOUT",
+                "entry_price": quote,
+                "size_ratio": 1.0,
+            }
+            breakout_signals.append(s_cand)
     signals.extend(breakout_signals)
 
     if not signals:
@@ -1089,7 +1172,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     frame = exit_frame
     if frame is None:
         from core.symbol_aliases import is_meme_breakout_symbol
-        timeframe = "3m" if is_meme_breakout_symbol(symbol) else "5m"
+        timeframe = "1m" if is_meme_breakout_symbol(symbol) else "5m"
         frame = await engine.fetch_klines(symbol, timeframe=timeframe, limit=150, keep_live=True)
         if frame is not None and not frame.empty:
             frame = engine.strategy.compute_indicators(frame.copy())
@@ -1101,14 +1184,14 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     wild_swing_symbol = is_meme_breakout_symbol(symbol)
     if wild_swing_symbol:
         timeframe_ms = frame.attrs.get("timeframe_ms")
-        if timeframe_ms is None or float(timeframe_ms) != 180_000.0:
+        if timeframe_ms is None or float(timeframe_ms) != 60_000.0:
             frame = await engine.fetch_klines(
-                symbol, timeframe="3m", limit=150, keep_live=True,
+                symbol, timeframe="1m", limit=150, keep_live=True,
             )
             if frame is None or frame.empty:
                 return [], []
             frame = engine.strategy.compute_indicators(frame.copy())
-            if float(frame.attrs.get("timeframe_ms", 0) or 0) != 180_000.0:
+            if float(frame.attrs.get("timeframe_ms", 0) or 0) != 60_000.0:
                 return [], []
         quote = float(
             exit_quote

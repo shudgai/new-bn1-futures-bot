@@ -45,6 +45,19 @@ PURE_MATH_ENTRY_CONFIRMATIONS = frozenset({
     "BREAKOUT",
     "CONTINUATION",
 })
+
+# ── 防追高/追低：開倉位置精確度限制（2026-10-20 使用者授權） ──
+# 延續開倉只允許在剛破軌的前 N 根已收線內；延續與兩根確認破軌開倉，
+# 最新價距同側外軌不得超過 0.5 ATR、距 MA5 不得超過 1 ATR，超過即不追。
+LATE_CHASE_GUARDED_TYPES = frozenset({
+    CONTINUATION_OUTSIDE_KC,
+    CONFIRMED_2BAR_BREAKOUT,
+})
+CONTINUATION_MAX_BARS_OUTSIDE = 2
+MAX_BAND_EXTENSION_ATR = 0.5
+MAX_MA5_DISTANCE_ATR = 1.0
+
+
 class BreakoutContinuationEntryGate:
     """Detect the approved mathematical WILD_SWING entry patterns."""
 
@@ -57,7 +70,123 @@ class BreakoutContinuationEntryGate:
         return number if math.isfinite(number) else None
 
     @classmethod
+    def _reference_atr(
+        cls, closed_klines: Sequence[Mapping[str, Any]],
+    ) -> Optional[float]:
+        atr = cls._number(closed_klines[-1].get("atr")) if closed_klines else None
+        if atr is not None and atr > 0:
+            return atr
+        ranges = []
+        for row in closed_klines[-14:]:
+            high = cls._number(row.get("high"))
+            low = cls._number(row.get("low"))
+            if high is None or low is None or high < low:
+                return None
+            ranges.append(high - low)
+        if not ranges:
+            return None
+        average = sum(ranges) / len(ranges)
+        return average if average > 0 else None
+
+    @classmethod
+    def late_chase_block_reason(
+        cls,
+        candidate: Mapping[str, Any],
+        closed_klines: Sequence[Mapping[str, Any]],
+        kc_upper: Sequence[float],
+        kc_lower: Sequence[float],
+        *,
+        tick_price: Optional[float] = None,
+    ) -> Optional[str]:
+        """Return a block reason when the entry is too late/extended, else None."""
+        entry_type = candidate.get("type")
+        if entry_type not in LATE_CHASE_GUARDED_TYPES:
+            return None
+        action = str(candidate.get("action") or "")
+        is_long = action == "OPEN_LONG"
+        if not is_long and action != "OPEN_SHORT":
+            return "LATE_CHASE_INVALID_ACTION"
+        atr = cls._reference_atr(closed_klines)
+        band = cls._number(candidate.get("kc_upper" if is_long else "kc_lower"))
+        ma5 = cls._number(candidate.get("ma5_current"))
+        prices = [cls._number(candidate.get("price"))]
+        tick = cls._number(tick_price)
+        if tick is not None and tick > 0:
+            prices.append(tick)
+        if atr is None or band is None or ma5 is None or any(
+            price is None for price in prices
+        ):
+            return "LATE_CHASE_DATA_INVALID"
+        # Use the most extended of (signal close, latest quote) so a quote
+        # that has already run away is also rejected at final revalidation.
+        price = max(prices) if is_long else min(prices)
+        band_extension = (price - band) if is_long else (band - price)
+        if band_extension > MAX_BAND_EXTENSION_ATR * atr:
+            return (
+                f"LATE_CHASE_BAND_EXTENSION {band_extension / atr:.2f}ATR"
+                f" > {MAX_BAND_EXTENSION_ATR}ATR"
+            )
+        ma5_distance = abs(price - ma5)
+        if ma5_distance > MAX_MA5_DISTANCE_ATR * atr:
+            return (
+                f"LATE_CHASE_MA5_DISTANCE {ma5_distance / atr:.2f}ATR"
+                f" > {MAX_MA5_DISTANCE_ATR}ATR"
+            )
+        if entry_type == CONTINUATION_OUTSIDE_KC:
+            bars_outside = 0
+            for index in range(len(closed_klines) - 1, -1, -1):
+                close = cls._number(closed_klines[index].get("close"))
+                rail = cls._number(
+                    kc_upper[index] if is_long else kc_lower[index]
+                )
+                if close is None or rail is None:
+                    return "LATE_CHASE_DATA_INVALID"
+                outside = close > rail if is_long else close < rail
+                if not outside:
+                    break
+                bars_outside += 1
+            if bars_outside > CONTINUATION_MAX_BARS_OUTSIDE:
+                return (
+                    f"LATE_CHASE_STALE_CONTINUATION bars_outside={bars_outside}"
+                    f" > {CONTINUATION_MAX_BARS_OUTSIDE}"
+                )
+        return None
+
+    @classmethod
     def evaluate_pure_math(
+        cls,
+        closed_klines: Sequence[Mapping[str, Any]],
+        kc_upper: Sequence[float],
+        kc_lower: Sequence[float],
+        kc_basis: Sequence[float],
+        ma5_series: Sequence[float],
+        ma15_series: Sequence[float],
+        *,
+        tick_price: Optional[float] = None,
+        live_candle: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Evaluate entry patterns, then reject late/over-extended chases."""
+        candidate = cls._evaluate_pure_math_raw(
+            closed_klines, kc_upper, kc_lower, kc_basis, ma5_series, ma15_series,
+            tick_price=tick_price, live_candle=live_candle,
+        )
+        if candidate is None:
+            return None
+        block_reason = cls.late_chase_block_reason(
+            candidate, closed_klines, kc_upper, kc_lower, tick_price=tick_price,
+        )
+        if block_reason is not None:
+            import logging
+            logging.getLogger(__name__).info(
+                "ENTRY_LATE_CHASE_BLOCK type=%s action=%s price=%s reason=%s",
+                candidate.get("type"), candidate.get("action"),
+                candidate.get("price"), block_reason,
+            )
+            return None
+        return candidate
+
+    @classmethod
+    def _evaluate_pure_math_raw(
         cls,
         closed_klines: Sequence[Mapping[str, Any]],
         kc_upper: Sequence[float],
@@ -175,7 +304,7 @@ class BreakoutContinuationEntryGate:
         ma5_down = effective_ma5 < effective_previous_ma5
 
         open_live_bar_after_closed = False
-        DISABLE_INTRABAR_BREAKOUT = True
+        DISABLE_INTRABAR_BREAKOUT = False
         if not DISABLE_INTRABAR_BREAKOUT and tick_price is not None and live_candle is not None:
             live = valid_candle(live_candle)
             tick = cls._number(tick_price)

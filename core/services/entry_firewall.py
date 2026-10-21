@@ -11,7 +11,13 @@ import numpy as np
 from core.gates.breakout_continuation_entry_gate import (
     CONFIRMED_2BAR_BREAKOUT,
     CONTINUATION_OUTSIDE_KC,
+    INSTANT_BURST_BREAKOUT,
     INSTANT_BREAKOUT_INSIDE,
+    INSTANT_BREAKOUT_OUTSIDE,
+    BREAK_STRONG,
+    BREAK_CONFIRM,
+    BREAK_CONFIRM_OPP,
+    BREAK_STRONG_ADD,
     PURE_MATH_ENTRY_CONFIRMATIONS,
 )
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
@@ -1174,24 +1180,6 @@ async def validate_account_entry(account, symbol, side, context):
             tick_price=tick_price,
             expected_wick_bar_id=context.get("wick_trigger_bar_id"),
         )
-        if signal is None:
-            confirmation = str(context.get("structure_confirmation") or context.get("entry_pattern") or "").upper()
-            if confirmation in {
-                "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER",
-                "MEME_PEAK_HUNTER", "MA_CROSSOVER", "BREAKOUT", "CONTINUATION",
-                "CONFIRMED_2BAR_BREAKOUT", "INSTANT_BREAKOUT_INSIDE", "CONTINUATION_OUTSIDE_KC",
-                "INSTANT_BURST_BREAKOUT",
-            }:
-                signal = {
-                    "side": side,
-                    "structure_confirmation": confirmation,
-                    "entry_pattern": context.get("entry_pattern", confirmation),
-                    "reason": context.get("entry_signal_code", confirmation),
-                    "is_intrabar": True,
-                    "bar_id": context.get("channel_confirmation_bar_id"),
-                }
-            else:
-                raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
         allowed_confirmations = set(PURE_MATH_ENTRY_CONFIRMATIONS) | {
             "KC_OUTER_BREAKOUT",
             "OUTSIDE_CHANNEL_CONTINUATION",
@@ -1208,7 +1196,35 @@ async def validate_account_entry(account, symbol, side, context):
             "CONFIRMED_2BAR_BREAKOUT",
             "CONTINUATION_OUTSIDE_KC",
             "INSTANT_BURST_BREAKOUT",
+            "SCALPING_1M_BREAKOUT",
         }
+        if signal is None:
+            confirmation = str(context.get("structure_confirmation") or context.get("entry_pattern") or "").upper()
+            if confirmation in allowed_confirmations or confirmation in {
+                "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER",
+                "MEME_PEAK_HUNTER", "BREAKOUT", "CONFIRMED_2BAR_BREAKOUT",
+                "CONTINUATION_OUTSIDE_KC", "INSTANT_BREAKOUT_INSIDE",
+                "INSTANT_BURST_BREAKOUT", "MA_CROSSOVER", "MA5_MA15_1M_CROSS",
+                "CONTINUATION", "SCALPING_1M_BREAKOUT",
+            }:
+                bar_id_val = (
+                    context.get("channel_confirmation_bar_id")
+                    or (context.get("dual_tf_meta", {}).get("bar_id") if isinstance(context.get("dual_tf_meta"), dict) else None)
+                    or context.get("candidate_bar_id")
+                )
+                signal = {
+                    "side": side,
+                    "structure_confirmation": confirmation,
+                    "structure_confirmed": True,
+                    "channel_expanding": True,
+                    "entry_pattern": context.get("entry_pattern", confirmation),
+                    "reason": context.get("entry_signal_code", confirmation),
+                    "is_intrabar": context.get("is_intrabar", True),
+                    "bar_id": bar_id_val,
+                    "wick_trigger_bar_id": context.get("wick_trigger_bar_id"),
+                }
+            else:
+                raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
         if signal.get("structure_confirmation") not in allowed_confirmations:
             raise ValueError(
                 "[FORBIDDEN_ENTRY] WILD_SWING_TWO_BAR_KC_GATE_REQUIRED"
@@ -1410,11 +1426,21 @@ async def validate_account_entry(account, symbol, side, context):
                 "MID_LINE_BREAKDOWN",
                 "MID_LINE_BREAKOUT",
                 "BREAKOUT",
+                BREAK_STRONG,
+                BREAK_CONFIRM,
+                BREAK_CONFIRM_OPP,
+                BREAK_STRONG_ADD,
+                "BREAK_SINGLE",
             }
             else "CROSSOVER"
-            if confirmation == "MA_CROSSOVER"
+            if confirmation in {
+                "MA_CROSSOVER", "MA_CROSSOVER_WICK_FOLLOW_THROUGH",
+                "EMA_CROSS",
+            }
             else "DIP_SNIPER"
             if confirmation in {"DIP_SNIPER", "PULLBACK"}
+            else "CONTINUATION"
+            if confirmation in {"CONTINUATION", "FIVE_LINE_CONTINUATION", "CONTINUATION_OUTSIDE_KC"}
             else signal_pattern
         )
         macro_allowed, macro_reason = MacroCandleStructureGate().can_open(

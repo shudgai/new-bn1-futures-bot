@@ -116,12 +116,19 @@ class WildSwingStrategy:
             "kc_upper", "kc_middle", "kc_lower", "ma15",
         ):
             closed[column] = pd.to_numeric(closed[column], errors="coerce")
-        closed = closed.dropna(
-            subset=[
-                "open", "high", "low", "close", "volume", "kc_upper",
-                "kc_middle", "kc_lower", "ma15", "_wild_ma5",
-            ],
-        )
+
+        subset_cols = [
+            "open", "high", "low", "close", "volume", "kc_upper",
+            "kc_middle", "kc_lower", "ma15", "_wild_ma5",
+        ]
+        recent_count = self.volume_lookback + 2
+        if len(closed) >= recent_count:
+            if closed.tail(recent_count)[subset_cols].isna().any().any():
+                return closed.iloc[:0]
+        elif closed[subset_cols].isna().any().any():
+            return closed.iloc[:0]
+
+        closed = closed.dropna(subset=subset_cols)
         if closed.empty:
             return closed
         valid = (
@@ -267,18 +274,63 @@ class WildSwingStrategy:
         ):
             return None
 
-        candidate = self._pure_math_candidate(
-            bars, frame=frame, tick_price=tick_price,
-        )
+        delayed = False
+        candidate = None
         supported_types = {
             CONFIRMED_2BAR_BREAKOUT,
             CONTINUATION_OUTSIDE_KC,
             MA_CROSSOVER,
             FIVE_LINE_CONTINUATION,
         }
-        if candidate and candidate.get("is_intrabar") is True and candidate.get("type") in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}:
-            # 鐵律：第一根實體破軌嚴禁用即時價搶開，必須等待第二根確認 (CONFIRMED_2BAR_BREAKOUT) 才允許進場
-            candidate = None
+        if expected_wick_bar_id is not None:
+            try:
+                expected_id = float(expected_wick_bar_id)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(expected_id):
+                return None
+            candidate = self._wick_follow_through_candidate(
+                bars, side, expected_id,
+            )
+            delayed = candidate is not None
+        else:
+            pending_id = state.pending_wick_bar_ids.get(side)
+            if pending_id is not None and bar_id > pending_id:
+                state.pending_wick_bar_ids.pop(side, None)
+                if bar_id == pending_id + 60_000:
+                    candidate = self._wick_follow_through_candidate(
+                        bars, side, pending_id,
+                    )
+                    if candidate is None:
+                        logger.info(
+                            "WILD_SWING_WICK_CONFIRMATION_BLOCK "
+                            "symbol=%s side=%s wick_bar=%s confirmation_bar=%s",
+                            symbol, side, pending_id, bar_id,
+                        )
+                        return None
+                    delayed = True
+
+            if candidate is None:
+                candidate = self._pure_math_candidate(
+                    bars, frame=frame, tick_price=tick_price,
+                )
+                if candidate and candidate.get("is_intrabar") is True and candidate.get("type") in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}:
+                    # 鐵律：第一根實體破軌嚴禁用即時價搶開，必須等待第二根確認 (CONFIRMED_2BAR_BREAKOUT) 才允許進場
+                    candidate = None
+
+                if (
+                    candidate is not None
+                    and candidate.get("action") == f"OPEN_{side}"
+                    and candidate.get("type") in supported_types
+                ):
+                    if self._has_directional_exhaustion_wick(current, side):
+                        state.pending_wick_bar_ids[side] = bar_id
+                        logger.info(
+                            "WILD_SWING_WICK_CONFIRMATION_WAIT "
+                            "symbol=%s side=%s wick_bar=%s",
+                            symbol, side, bar_id,
+                        )
+                        return None
 
         if (
             candidate is None
@@ -321,7 +373,7 @@ class WildSwingStrategy:
         # Breakouts can trigger immediately; an established outside-band move
         # can also enter through its separate trend-aligned continuation gate.
         entry_type = candidate["type"]
-        delayed = False
+        delayed = bool(delayed)
         post_exit_continuation = False
         is_intrabar = bool(candidate.get("is_intrabar"))
         if not delayed and entry_type in {
@@ -416,8 +468,24 @@ class WildSwingStrategy:
             float(current["kc_upper"] - current["kc_lower"])
             > float(previous["kc_upper"] - previous["kc_lower"])
         )
-        if entry_type in (INSTANT_BREAKOUT_INSIDE, MA_CROSSOVER, FIVE_LINE_CONTINUATION, INSTANT_BURST_BREAKOUT):
+        if entry_type in (INSTANT_BREAKOUT_INSIDE, FIVE_LINE_CONTINUATION, INSTANT_BURST_BREAKOUT):
             trend_aligned = True
+        elif entry_type == MA_CROSSOVER or entry_type == "MA_CROSSOVER_WICK_FOLLOW_THROUGH":
+            # MA 交叉鐵律：KC 中軌方向必須與開倉方向同步
+            # 金叉開多：KC 中軌走平或向上（kc_middle_slope >= 0）
+            # 死叉開空：KC 中軌走平或向下（kc_middle_slope <= 0）
+            if side == "LONG":
+                trend_aligned = (
+                    kc_middle_slope >= 0  # KC 中軌走平或向上
+                    and ma5_slope > 0     # MA5 必須向上
+                    and current_ma5 > current_ma15  # MA5 在 MA15 上方
+                )
+            else:
+                trend_aligned = (
+                    kc_middle_slope <= 0  # KC 中軌走平或向下
+                    and ma5_slope < 0     # MA5 必須向下
+                    and current_ma5 < current_ma15  # MA5 在 MA15 下方
+                )
         elif not delayed and entry_type == CONTINUATION_OUTSIDE_KC:
             trend_aligned = (
                 kc_middle_rising
@@ -469,7 +537,10 @@ class WildSwingStrategy:
                 INSTANT_BURST_BREAKOUT,
             }
             else ENTRY_MODE_CROSSOVER
-            if entry_type == MA_CROSSOVER
+            if entry_type in {
+                MA_CROSSOVER,
+                "MA_CROSSOVER_WICK_FOLLOW_THROUGH",
+            }
             else ENTRY_MODE_CONTINUATION
         )
         ma5_current = current_ma5
@@ -1084,25 +1155,18 @@ class WildSwingStrategy:
                 p_ema13 = float(prev_candle.get("ema13", prev_candle.get("ma15", p_mid)))
 
                 c_ema13 = float(last_candle.get("ema13", last_candle.get("ma15", c_mid)))
-                p_ema13 = float(prev_candle.get("ema13", prev_candle.get("ma15", p_mid)))
+                open_time = float((position or {}).get("open_timestamp") or (position or {}).get("timestamp") or (position or {}).get("entry_timestamp") or 0.0)
+                if open_time > 1e11:
+                    open_time /= 1000.0
+                is_entry_bar = (open_time > 0 and (time.time() - open_time) < 60.0)
 
                 if side == "LONG":
-                    # ── 多單 3 分鐘專業動量衰退平倉 SOP ──
-                    # 1. 【訊號 1】收盤實體跌破 EMA 13：代表短線主動買盤無力支撐，果斷平倉
-                    # （正常回踩：盤中影線瞬間刺穿但收盤收回在 EMA13 之上，一律視為回踩洗盤，嚴禁平倉）
-                    if c_ema13 > 0 and c_close < c_ema13:
-                        logger.info("[趨勢衰退平多] %s 3M 收盤實體跌破 EMA13 (close=%.6g < ema13=%.6g)，短線買盤無力，果斷平倉！", symbol, c_close, c_ema13)
-                        print(f"[趨勢衰退平多] {symbol} 3M 收盤實體跌破 EMA13，果斷平倉！", flush=True)
-                        return {
-                            "action": "CLOSE_LONG", "type": "EXIT_BY_EMA13_BREAKDOWN", "side": "LONG",
-                            "reason": "EXIT_BY_EMA13_BREAKDOWN", "bar_id": bar_id, "close": current_price,
-                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "3M收盤實體跌破EMA13"},
-                        }
-
-                    # 2. 【訊號 2】均線走平／死叉 + 跌入 KC 通道中軌：趨勢徹底告一段落，果斷平倉
+                    # ── 多單 1M 專業持倉防洗盤與動量衰退平倉 SOP ──
+                    # 1. 【回踩蓄勢防洗保護】：只要價格仍在 KC 中軌或慢線之上，且中軌未轉空，視為回踩蓄勢，嚴禁平多！
+                    # 2. 【真正平多條件】：均線死叉（或走平向下）且實質跌破 KC 中軌／慢線
                     is_dead_cross_or_flat = (c_ma5 <= c_ema13) or (c_ma5 <= p_ma5 and c_ma5 <= c_ema13 * 1.0005)
                     is_kc_mid_pierced = (c_mid > 0 and c_close < c_mid)
-                    if is_dead_cross_or_flat and is_kc_mid_pierced:
+                    if not is_entry_bar and is_dead_cross_or_flat and is_kc_mid_pierced:
                         logger.info("[趨勢終結平多] %s EMA5死叉/走平下穿EMA13 且摜破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
                         print(f"[趨勢終結平多] {symbol} EMA5死叉且摜破 KC 中軌，果斷平倉！", flush=True)
                         return {
@@ -1123,22 +1187,12 @@ class WildSwingStrategy:
                         }
 
                 elif side == "SHORT":
-                    # ── 空單 3 分鐘專業動量衰退平倉 SOP (反向對稱) ──
-                    # 1. 【訊號 1】收盤實體突破 EMA 13：代表短線主動賣盤無力壓制，果斷平倉
-                    # （正常回踩：盤中影線瞬間刺穿但收盤壓回在 EMA13 之下，一律視為回踩洗盤，嚴禁平倉）
-                    if c_ema13 > 0 and c_close > c_ema13:
-                        logger.info("[趨勢衰退平空] %s 3M 收盤實體突破 EMA13 (close=%.6g > ema13=%.6g)，短線賣盤無力，果斷平倉！", symbol, c_close, c_ema13)
-                        print(f"[趨勢衰退平空] {symbol} 3M 收盤實體突破 EMA13，果斷平倉！", flush=True)
-                        return {
-                            "action": "CLOSE_SHORT", "type": "EXIT_BY_EMA13_BREAKOUT", "side": "SHORT",
-                            "reason": "EXIT_BY_EMA13_BREAKOUT", "bar_id": bar_id, "close": current_price,
-                            "entry_mode": "WILD_SWING", "kc_exit": {"cause": "3M收盤實體突破EMA13"},
-                        }
-
-                    # 2. 【訊號 2】均線走平／金叉 + 衝入 KC 通道中軌：趨勢徹底告一段落，果斷平倉
+                    # ── 空單 1M 專業持倉防洗盤與動量衰退平倉 SOP (反向對稱) ──
+                    # 1. 【反彈蓄勢防洗保護】：只要價格仍在 KC 中軌或慢線之下，且中軌未轉多，視為反彈遇阻蓄勢，嚴禁平空！
+                    # 2. 【真正平空條件】：均線金叉（或走平向上）且實質衝破 KC 中軌／慢線
                     is_golden_cross_or_flat = (c_ma5 >= c_ema13) or (c_ma5 >= p_ma5 and c_ma5 >= c_ema13 * 0.9995)
                     is_kc_mid_reclaimed = (c_mid > 0 and c_close > c_mid)
-                    if is_golden_cross_or_flat and is_kc_mid_reclaimed:
+                    if not is_entry_bar and is_golden_cross_or_flat and is_kc_mid_reclaimed:
                         logger.info("[趨勢終結平空] %s EMA5金叉/走平上穿EMA13 且衝破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
                         print(f"[趨勢終結平空] {symbol} EMA5金叉且衝破 KC 中軌，果斷平倉！", flush=True)
                         return {
@@ -1360,12 +1414,6 @@ class WildSwingStrategy:
             "EXIT_BY_HARD_STOP_LOSS",
         }
         if should_exit and reason in allowed_exit_reasons:
-            if not trend_broken and reason != "EXIT_BY_HARD_STOP_LOSS":
-                logger.info(
-                    "WILD_SWING_TREND_INTACT_EXIT_BLOCKED symbol=%s side=%s reason=%s",
-                    symbol, side, reason,
-                )
-                return None
             close = float(details.get("close", current["close"]))
             print(
                 f"[平倉觸發] {symbol} {side} - 原因: {reason} | 價格: {close}",

@@ -158,22 +158,9 @@ class RatchetNetProfitManager:
 
         print(f"發送限價防滑平倉單: 方向={close_side}, 數量={amount}, 限價={limit_price}", flush=True)
 
-        try:
-            params = {'reduceOnly': True}
-            if hasattr(self.exchange, 'create_order'):
-                order = self.exchange.create_order(
-                    symbol=self.symbol,
-                    type='limit',
-                    side=close_side,
-                    amount=amount,
-                    price=limit_price,
-                    params=params
-                )
-                self.active_order_id = order.get('id')
-                # 啟動保護監控：確保單子在 3 秒內完全成交
-                self._ensure_order_filled(self.active_order_id, close_side, amount)
-        except Exception as e:
-            print(f"下單異常: {e}", flush=True)
+        # 【三層流水線重構】封鎖 Gate 直接下單後門，所有下單必須統一由 ExecutionManager 執行！
+        print(f"[RatchetNetProfitGate] 鎖利條件觸發建議 (已封鎖分散下單): 方向={close_side}, 數量={amount}, 限價={limit_price}", flush=True)
+        return
 
     def _ensure_order_filled(self, order_id: str, side: str, amount: float, timeout_sec: float = 3.0):
         """逾時監控：若 3 秒內未完全成交，進行盤口追價或應變"""
@@ -240,34 +227,9 @@ class RatchetNetProfitManager:
             amount = abs(position_amount)
 
         print(f"[Async] 發送限價防滑平倉單: 方向={close_side}, 數量={amount}, 限價={limit_price}", flush=True)
-        try:
-            params = {'reduceOnly': True}
-            if hasattr(self.exchange, '_send_order'):
-                # 專案內部 testnet_account / paper_account 接口
-                order = await self.exchange._send_order(
-                    self.symbol,
-                    "limit",
-                    close_side,
-                    amount,
-                    limit_price,
-                    params,
-                )
-                self.active_order_id = (order or {}).get('id') or (order or {}).get('orderId')
-                await self._ensure_order_filled_async(self.active_order_id, close_side, amount, limit_price)
-            elif hasattr(ex, 'create_order'):
-                res = ex.create_order(
-                    symbol=self.symbol,
-                    type='limit',
-                    side=close_side,
-                    amount=amount,
-                    price=limit_price,
-                    params=params,
-                )
-                order = await res if asyncio.iscoroutine(res) else res
-                self.active_order_id = (order or {}).get('id')
-                await self._ensure_order_filled_async(self.active_order_id, close_side, amount, limit_price)
-        except Exception as e:
-            print(f"[Async] 下單異常: {e}", flush=True)
+        # 【三層流水線重構】封鎖 Gate 直接下單後門，所有下單必須統一由 ExecutionManager 執行！
+        print(f"[Async][RatchetNetProfitGate] 鎖利條件觸發建議 (已封鎖分散下單): 方向={close_side}, 數量={amount}, 限價={limit_price}", flush=True)
+        return
 
     async def _ensure_order_filled_async(self, order_id: str, side: str, amount: float, current_limit: float, timeout_sec: float = 3.0):
         """非同步逾時監控：3 秒內檢查，未成交則改掛最佳盤口價"""

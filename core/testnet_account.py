@@ -158,73 +158,74 @@ class BinanceTestnetAccount:
         # ==================================================
         # [MASTER_BREAKER] 物理總電閘：強制攔截違規送單
         # ==================================================
-        self._raw_create_order = self.exchange.create_order
-        
-        async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
-            from core.services.entry_firewall import validate_account_entry
-            from core.config import ENTRY_SUBMISSION_ENABLED
-            params = dict(params or {})
-            context = params.pop('_entry_context', None)
-            is_live_mainnet = self._is_live_mainnet()
+        if hasattr(self.exchange, "create_order"):
+            self._raw_create_order = self.exchange.create_order
+            
+            async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
+                from core.services.entry_firewall import validate_account_entry
+                from core.config import ENTRY_SUBMISSION_ENABLED
+                params = dict(params or {})
+                context = params.pop('_entry_context', None)
+                is_live_mainnet = self._is_live_mainnet()
 
-            # Hard safety: on Live Mainnet only an exchange-position-verified
-            # reducing order may bypass the account circuit breaker gate.
-            is_reducing = self._is_verified_reducing_order(symbol, side, amount, params)
-            if is_live_mainnet and not is_reducing:
-                self._assert_live_entry_allowed()
+                # Hard safety: on Live Mainnet only an exchange-position-verified
+                # reducing order may bypass the account circuit breaker gate.
+                is_reducing = self._is_verified_reducing_order(symbol, side, amount, params)
+                if is_live_mainnet and not is_reducing:
+                    self._assert_live_entry_allowed()
 
-            is_reduce = is_reducing or (not is_live_mainnet and (params.get('reduceOnly') in (True, 'true', 'TRUE') or params.get('closePosition') in (True, 'true', 'TRUE')))
-            if not is_reduce:
-                if not ENTRY_SUBMISSION_ENABLED:
-                    raise ValueError(
-                        "[FORBIDDEN_ENTRY] BLOCKED_ENTRY_SUBMISSION_DISABLED"
+                is_reduce = is_reducing or (not is_live_mainnet and (params.get('reduceOnly') in (True, 'true', 'TRUE') or params.get('closePosition') in (True, 'true', 'TRUE')))
+                if not is_reduce:
+                    if not ENTRY_SUBMISSION_ENABLED:
+                        raise ValueError(
+                            "[FORBIDDEN_ENTRY] BLOCKED_ENTRY_SUBMISSION_DISABLED"
+                        )
+                    if side not in ('buy', 'sell'):
+                        raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+                    from core.services.entry_contract import KC_PENDING_CODES
+                    signal_code = (
+                        context.get("entry_signal_code")
+                        if isinstance(context, dict) else None
                     )
-                if side not in ('buy', 'sell'):
-                    raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
-                from core.services.entry_contract import KC_PENDING_CODES
-                signal_code = (
-                    context.get("entry_signal_code")
-                    if isinstance(context, dict) else None
-                )
-                if (
-                    signal_code in KC_PENDING_CODES
-                    and context.get("entry_authority") != "KC2BAR"
-                ):
-                    raise ValueError(
-                        "[FORBIDDEN_ENTRY] KC2BAR_AUTHORITY_CLAIM_REQUIRED"
+                    if (
+                        signal_code in KC_PENDING_CODES
+                        and context.get("entry_authority") != "KC2BAR"
+                    ):
+                        raise ValueError(
+                            "[FORBIDDEN_ENTRY] KC2BAR_AUTHORITY_CLAIM_REQUIRED"
+                        )
+                    from core.services.math_execution_gate import validate_entry_at_execution
+                    math_allowed, math_reason = await validate_entry_at_execution(
+                        self, symbol, 'LONG' if side == 'buy' else 'SHORT', context,
                     )
-                from core.services.math_execution_gate import validate_entry_at_execution
-                math_allowed, math_reason = await validate_entry_at_execution(
-                    self, symbol, 'LONG' if side == 'buy' else 'SHORT', context,
-                )
-                if not math_allowed:
-                    message = f"[FORBIDDEN_ENTRY] {math_reason}"
-                    self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
-                    raise ValueError(message)
-                await validate_account_entry(
-                    self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
-                from core.services.entry_contract import enforce_final_order_wick_gate
-                await enforce_final_order_wick_gate(
-                    self, symbol, 'LONG' if side == 'buy' else 'SHORT',
-                )
-            # Internal strategy metadata must never reach Binance parameters.
-            self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
-            try:
-                result = await self._raw_create_order(
-                    to_binance_usdm_symbol(symbol),
-                    order_type,
-                    side,
-                    amount,
-                    price,
-                    params,
-                )
-            except Exception as exc:
-                self.log(f'[ORDER_REJECT] symbol={symbol} {type(exc).__name__}: {exc}', 'ERROR')
-                raise
-            self.log(f'[ORDER_ACK] symbol={symbol} id={result.get("id")} status={result.get("status")}', 'INFO')
-            return result
+                    if not math_allowed:
+                        message = f"[FORBIDDEN_ENTRY] {math_reason}"
+                        self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
+                        raise ValueError(message)
+                    await validate_account_entry(
+                        self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
+                    from core.services.entry_contract import enforce_final_order_wick_gate
+                    await enforce_final_order_wick_gate(
+                        self, symbol, 'LONG' if side == 'buy' else 'SHORT',
+                    )
+                # Internal strategy metadata must never reach Binance parameters.
+                self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
+                try:
+                    result = await self._raw_create_order(
+                        to_binance_usdm_symbol(symbol),
+                        order_type,
+                        side,
+                        amount,
+                        price,
+                        params,
+                    )
+                except Exception as exc:
+                    self.log(f'[ORDER_REJECT] symbol={symbol} {type(exc).__name__}: {exc}', 'ERROR')
+                    raise
+                self.log(f'[ORDER_ACK] symbol={symbol} id={result.get("id")} status={result.get("status")}', 'INFO')
+                return result
 
-        self.exchange.create_order = _master_breaker_create_order
+            self.exchange.create_order = _master_breaker_create_order
         # ==================================================
         self.balance = 0.0
         self.available_balance = 0.0
@@ -1303,6 +1304,7 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
+        from core.services.exits.hard_stop_service import enforce_hard_stop
         self.tickers = ticker_prices
         await self.refresh()
 
@@ -1324,7 +1326,6 @@ class BinanceTestnetAccount:
                     or ticker_prices.get(symbol.replace('/USDT', ''))
                 )
                 if curr_p is not None:
-                    from core.services.exits.hard_stop_service import enforce_hard_stop
                     stopped = await enforce_hard_stop(self, symbol, float(curr_p))
                     if not stopped:
                         await enforce_atr_protection(self, symbol, float(curr_p))
@@ -1406,16 +1407,11 @@ class BinanceTestnetAccount:
             )
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
+                pos["peak_roe"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
-                
-            # =========================================================================
-            # 🔥 獨立極值利潤回撤保護 (Extreme Profit Giveback Protection) 🔥
-            # =========================================================================
-            curr_unrealized = pos.get("unrealized_pnl", 0.0)
-            max_unrealized = max(float(meta.get("max_unrealized_pnl", curr_unrealized)), curr_unrealized)
-            meta["max_unrealized_pnl"] = max_unrealized
-            
-            # 【大週期架構防幽靈平倉】tick-level 極值回撤與浮盈保本已收歸 TrendHoldingAndExitManager，此處不再偷跑平倉
+
+            # 【三層流水線重構】純數值更新，嚴禁在 update_prices 內部直接執行平倉
+            continue
                 
             # --- 動態 ATR 防禦錨點計算 (0.75 ATR 邏輯對齊) ---
             atr_val = float(meta.get("atr") or entry_p * 0.015)
@@ -2426,7 +2422,16 @@ class BinanceTestnetAccount:
             or entry_context.get("source") == "MANUAL"
             or reason == "MANUAL"
         )
-        if not is_manual_request:
+        # WILD_SWING entries are already guarded by Vision Gate + multi-layer
+        # entry firewalls inside symbol_runner. Re-running fetch_settled_entry_frame
+        # here costs 4-5 s and almost always fails on 3m timeframes because the
+        # strict settled_pair() window is rarely satisfied mid-candle, causing every
+        # WILD_SWING order to be silently rejected with DUAL_TF_ORDER_FAILED.
+        _is_wild_swing_source = (
+            str(entry_context.get("entry_mode") or "").upper() == "WILD_SWING"
+            and entry_context.get("source") == "WILD_SWING_1M"
+        )
+        if not is_manual_request and not _is_wild_swing_source:
             provider = getattr(self, "entry_frame_provider", None)
             if callable(provider) and entry_context.get("entry_gate_frame") is None:
                 import asyncio

@@ -1102,7 +1102,7 @@ class TradingEngine:
 
 
 
-    async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
+    async def fetch_klines(self, symbol: str, timeframe: str = "1m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
         """Use cached WILD_SWING candles and throttle any REST fallback."""
         from core.symbol_aliases import is_meme_breakout_symbol
 
@@ -3000,6 +3000,7 @@ class TradingEngine:
                 wild_signal.get('entry_pattern')
                 if entry_mode == "WILD_SWING" else None
             ),
+            'structure_confirmation': wild_signal.get('structure_confirmation'),
             'entry_signal_code': mode_name,
             'managed_by_bot': True,
             'channel_confirmation_bar_id': cand_bar_id,
@@ -3019,6 +3020,23 @@ class TradingEngine:
             ),
             'allow_flip': bool(wild_signal.get('needs_flip')),
         }
+
+        # ─── WILD_SWING: 預置 entry_gate_frame 避免二次 fetch ──────────────────
+        # validate_account_entry (entry_firewall.py) 在 entry_gate_frame 為 None
+        # 時會重新呼叫 fetch_settled_entry_frame(3m)，但 settled_pair() 的嚴格視窗
+        # 在 K 棒中途幾乎不可能通過，導致每次 WILD_SWING 下單都被
+        # WILD_SWING_UNVERIFIED_CLOSED_CANDLES 靜默拒絕。
+        # 解法：WILD_SWING 已在 symbol_runner 完整驗證，直接使用 engine 的 frame。
+        if entry_mode == "WILD_SWING" and frame is not None and not frame.empty:
+            import copy
+            _ws_frame = frame.copy()
+            _ws_frame.attrs = dict(getattr(frame, "attrs", {}))
+            _ws_frame.attrs["entry_finality_verified"] = True
+            _ws_frame.attrs.setdefault(
+                "timeframe_ms",
+                int(entry_context.get("entry_timeframe_ms") or 60_000),
+            )
+            entry_context["entry_gate_frame"] = _ws_frame
 
         reason = f"DualTF_{mode_name}_{side}"
         submit_lock = getattr(self, "_account_entry_submit_lock", None)
@@ -3249,19 +3267,25 @@ class TradingEngine:
                 )
                 return False
 
-            opened = await self.account.open_position(
-                symbol=symbol,
-                side=side,
-                price=price,
-                amount_usdt=amount,
-                sl=0.0,
-                tp=0.0,
-                reason=reason,
-                atr=atr,
-                leverage=leverage,
-                signal_score=100,
-                entry_context=entry_context,
-            )
+            opened = False
+            try:
+                opened = await self.account.open_position(
+                    symbol=symbol,
+                    side=side,
+                    price=price,
+                    amount_usdt=amount,
+                    sl=0.0,
+                    tp=0.0,
+                    reason=reason,
+                    atr=atr,
+                    leverage=leverage,
+                    signal_score=100,
+                    entry_context=entry_context,
+                )
+            except Exception as exc:
+                self.account.log(f"🛑 [OPEN_POSITION_EXCEPTION] {symbol} {side} 開倉失敗: {exc}", "CRITICAL")
+                print(f"🛑 [OPEN_POSITION_EXCEPTION] {symbol} {side} 開倉失敗: {exc}", flush=True)
+                opened = False
         if opened:
             fill_log = f"🎉 [DUAL_TF_ORDER_FILLED_SUCCESS] Symbol: {symbol} | Side: {side} | Price: {price} | Margin: {amount:.2f}U"
             self.account.log(fill_log, "SUCCESS")

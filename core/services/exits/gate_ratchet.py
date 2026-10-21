@@ -91,21 +91,9 @@ class GateFuturesRatchetManager:
             'reduceOnly': True,  # 僅平倉，防止反向開倉
         }
         
-        try:
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side=close_side,
-                amount=amount,
-                price=None,
-                params=params
-            )
-            self.last_order_id = order.get('id')
-            print(f"[Gate.io] 成功掛入階梯鎖利單 | ID: {self.last_order_id} | 觸發價: {stop_price} | 方向: {close_side}")
-            return order
-        except Exception as e:
-            print(f"[Gate.io] 下單失敗: {e}")
-            return None
+        # 【三層流水線重構】封鎖直接下單後門，所有下單必須統一由 ExecutionManager 執行！
+        print(f"[gate_ratchet] 觸發價: {stop_price} | 方向: {close_side} (已封鎖分散下單)")
+        return None
 
     def update_position_stop(
         self,
@@ -156,19 +144,8 @@ def execute_retracement_close_on_gate(
     # 3. 觸及回踩價格，立即向 Gate.io 送出市價平多單
     if current_price <= trigger_price:
         print(f"[觸發回踩平倉] 最高點: {highest_price}, 當前價: {current_price} <= 觸發價: {trigger_price}")
-        try:
-            # 向 Gate.io 發送市價平倉單 (多單平倉方向為 sell，加 reduceOnly 確保只平倉不反開)
-            order = exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='sell',
-                amount=amount,
-                params={'reduceOnly': True}
-            )
-            print(f"[Gate.io] 成功平倉並結算利潤！訂單編號: {order.get('id')}")
-            return True
-        except Exception as e:
-            print(f"[Gate.io] 平倉下單失敗: {e}")
-            return False
+        # 【三層流水線重構】封鎖直接下單後門，所有下單必須統一由 ExecutionManager 執行！
+        print(f"[gate_ratchet] 觸發回踩平倉建議 (已封鎖分散下單): 最高點: {highest_price}, 當前價: {current_price}")
+        return False
 
     return False

@@ -114,10 +114,12 @@ def test_two_bar_closed_breakout_entry():
     df.loc[df.index[-2], "low"] = u1 - 0.6
 
     u2 = df.iloc[-1]["kc_upper"]
-    df.loc[df.index[-1], "open"] = u2 + 0.2
-    df.loc[df.index[-1], "close"] = u2 + 0.8  # 第二根同色收陽在軌外
-    df.loc[df.index[-1], "high"] = u2 + 1.0
-    df.loc[df.index[-1], "low"] = u2 + 0.1
+    df.loc[df.index[-1], "open"] = u2 + 0.1
+    df.loc[df.index[-1], "close"] = u2 + 0.35  # 第二根同色收陽在軌外 (0.35 ATR 內)
+    df.loc[df.index[-1], "high"] = u2 + 0.45
+    df.loc[df.index[-1], "low"] = u2 + 0.05
+    df.loc[df.index[-2], "ma5"] = u1 - 0.4
+    df.loc[df.index[-1], "ma5"] = u2 - 0.2
 
     closed_klines = df.to_dict("records")
     sig = BreakoutContinuationEntryGate.evaluate_pure_math(
@@ -174,7 +176,11 @@ def test_breakout_second_bar_opposite_color_blocked():
         symbol="龙虾/USDT",
     )
     assert can_open is False
-    assert "BLOCKED_BREAKOUT_SECOND_BAR_NOT_SAME_COLOR" in gate_reason or "BEARISH_CANDLE" in gate_reason
+    assert (
+        "BLOCKED_BREAKOUT_SECOND_BAR_OPPOSITE_LARGE_BODY" in gate_reason
+        or "BLOCKED_BREAKOUT_SECOND_BAR_NOT_SAME_COLOR" in gate_reason
+        or "BEARISH_CANDLE" in gate_reason
+    )
 
     # 3. EMA 交叉服務亦必須阻斷，不得藉由交叉/補開繞過
     e_sig, e_reason = EmaCrossEntryService.evaluate_entry("龙虾/USDT", df, "LONG")

@@ -107,13 +107,13 @@ def test_gate_fails_closed_for_positions_and_invalid_data():
         (
             "LONG", 100.0, 100.2,
             _candle(99.8, 100.1, 100.2, 99.7),
-            _candle(100.5, 100.8, 100.9, 100.4),
+            _candle(100.22, 100.28, 100.30, 100.20),
             [100.0, 100.1],
         ),
         (
             "SHORT", 100.0, 99.8,
             _candle(100.2, 99.9, 100.3, 99.8),
-            _candle(99.5, 99.2, 99.6, 99.1),
+            _candle(99.78, 99.72, 99.80, 99.70),
             [100.0, 99.9],
         ),
     ],
@@ -121,7 +121,7 @@ def test_gate_fails_closed_for_positions_and_invalid_data():
 def test_gate_detects_two_bar_breakout_without_ma_trend_alignment(
     side, previous_rail, current_rail, previous_bar, current_bar, ma5,
 ):
-    ma5 = [100.1, 100.0] if side == "LONG" else [99.9, 100.0]
+    ma5 = [100.26, 100.25] if side == "LONG" else [99.74, 99.75]
     klines = [_candle(100.0, 100.0)] * 3 + [previous_bar, current_bar]
     upper = [110.0] * 3 + [previous_rail, current_rail]
     lower = [90.0] * 5
@@ -146,8 +146,8 @@ def test_gate_detects_two_bar_breakout_without_ma_trend_alignment(
 @pytest.mark.parametrize(
     "side,current_close,current_upper,current_lower,ma5_current,ma5_previous",
     [
-        ("LONG", 101.0, 100.0, 90.0, 100.2, 100.1),
-        ("SHORT", 89.0, 110.0, 90.0, 99.8, 99.9),
+        ("LONG", 100.08, 100.0, 90.0, 100.06, 100.03),
+        ("SHORT", 89.92, 110.0, 90.0, 89.94, 89.97),
     ],
 )
 def test_gate_detects_outside_continuation_with_directional_ma5(

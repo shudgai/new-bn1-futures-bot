@@ -201,7 +201,7 @@ def validate_ma5_ma15_cross_entry(
         cross = (
             last_cross is not None
             and last_cross[1] == "LONG"
-            and cross_age in (1, 2)
+            and cross_age in (0, 1, 2)
         )
         if not cross:
             return False, (
@@ -243,7 +243,7 @@ def validate_ma5_ma15_cross_entry(
         if long_bias_atr > 0.5:
             return False, "BLOCKED_LONG_MA15_BIAS", details
         valid = (
-            cross and direction == "UP" and close > opening
+            cross and (direction == "UP" or current_middle >= previous_middle) and close > opening
         )
         failure_reason = "BLOCKED_MA5_MA15_GOLDEN_CROSS_REQUIRED"
     else:
@@ -283,7 +283,7 @@ def validate_ma5_ma15_cross_entry(
         cross = ma5_prev >= ma15_prev and ma5_curr < ma15_curr
         valid = (
             cross and ma5_curr < ma5_prev
-            and direction == "DOWN" and close < opening
+            and (direction == "DOWN" or current_middle <= previous_middle) and close < opening
         )
         failure_reason = "BLOCKED_MA5_MA15_DEATH_CROSS_REQUIRED"
     if not valid:

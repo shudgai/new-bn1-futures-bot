@@ -40,6 +40,11 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
+## 防追高追低：開倉位置精確度限制（2026-10-20 最新授權，優先於舊「單一軌外延續不限制／3 ATR 內可追」）
+- **延續開倉新鮮度**：`CONTINUATION_OUTSIDE_KC` 只允許在剛破軌後連續軌外收線的前 2 根內評估；同側軌外已連續收線超過 2 根，一律 `LATE_CHASE_STALE_CONTINUATION` 拒絕。
+- **乖離上限**：`CONTINUATION_OUTSIDE_KC` 與 `CONFIRMED_2BAR_BREAKOUT`，訊號收盤價與最新報價（取較極端者）距同側 KC 外軌不得超過 0.5 ATR，距 MA5 不得超過 1 ATR；超過即不追（`LATE_CHASE_BAND_EXTENSION` / `LATE_CHASE_MA5_DISTANCE`）。ATR 或資料無效時 Fail-Closed。
+- 掃描與最終送單重驗共用 `BreakoutContinuationEntryGate.evaluate_pure_math` 單一漏斗。
+
 ## 順勢交易鐵律：趨勢是空頭不要開多，趨勢是多頭不要開空（2026-10-13 最新授權）
 
 ### 【核心戰術與認知】

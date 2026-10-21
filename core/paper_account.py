@@ -1622,37 +1622,19 @@ class PaperAccount:
                 continue
             curr_p = float(curr_p)
             side = pos["side"]
-            meta = self.position_meta.get(symbol,{})
-            entry_m = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
-            from core.symbol_aliases import is_auto_entry_symbol
-            if (
-                entry_m not in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
-                or is_auto_entry_symbol(symbol)
-            ):
-                if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
-                    continue
-                if entry_m == "WILD_SWING":
-                    if await enforce_atr_protection(self, symbol, curr_p):
-                        continue
-                    unrealized = (
-                        (curr_p - float(pos["entry_price"]))
-                        * float(pos["qty"])
-                        * (1 if side == "LONG" else -1)
-                    )
-                    pos.update(mark_price=curr_p, unrealized_pnl=unrealized)
-                    total_unrealized += unrealized
-                    continue
-                if await enforce_atr_protection(self, symbol, curr_p):
-                    continue
-                unrealized = (curr_p-float(pos['entry_price']))*float(pos['qty'])*(1 if side == 'LONG' else -1)
-                pos.update(mark_price=curr_p,unrealized_pnl=unrealized)
-                total_unrealized += unrealized
-                continue
-            self._rapid_drop_last_price[symbol] = curr_p
+            sign = 1 if side == "LONG" else -1
             entry_p = float(pos["entry_price"])
-            meta = self.position_meta.setdefault(symbol, {})
-            signal_low = float(pos.get("signal_candle_low") or meta.get("signal_candle_low") or entry_p)
-            signal_high = float(pos.get("signal_candle_high") or meta.get("signal_candle_high") or entry_p)
+            unrealized = (curr_p - entry_p) * float(pos["qty"]) * sign
+            pos.update(mark_price=curr_p, unrealized_pnl=unrealized)
+            total_unrealized += unrealized
+
+            # 純數值更新最高利潤紀錄，嚴禁在此觸發任何平倉
+            pnl_pct = (curr_p - entry_p) / entry_p * sign if entry_p > 0 else 0.0
+            highest_pnl = float(meta.get("highest_pnl_pct", pnl_pct) or pnl_pct)
+            if pnl_pct > highest_pnl:
+                meta["highest_pnl_pct"] = pnl_pct
+                pos["peak_roe"] = pnl_pct
+            continue
             position_atr = max(float(pos.get("atr") or meta.get("atr") or 0.0), entry_p * 1e-12)
             failure_buffer = max(position_atr * PIVOT_FAILURE_BUFFER_ATR, entry_p * PIVOT_FAILURE_MIN_PCT)
             failure_level = signal_low - failure_buffer if side == "LONG" else signal_high + failure_buffer

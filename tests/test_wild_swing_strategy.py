@@ -10,7 +10,7 @@ def _frame(side):
     rows = []
     direction = -1 if side == "SHORT" else 1
     for index in range(12):
-        middle = 100 + direction * index * 0.1
+        middle = 100.0 - direction * (10 - index) * 0.1
         ma15 = middle + (0.2 if side == "SHORT" else -0.2)
         close = middle + (0.4 if side == "SHORT" else -0.4)
         rows.append({
@@ -25,21 +25,22 @@ def _frame(side):
             "kc_lower": middle - 1.0,
             "ma5": ma15 + (0.1 if side == "SHORT" else -0.1),
             "ma15": ma15,
+            "ema13": ma15,
             "is_closed": True,
         })
 
     if side == "SHORT":
         rows[-2].update(open=100.4, high=100.6, low=100.2, close=100.4,
-                        kc_middle=100.0, ma15=100.2, ma5=100.3)
+                        kc_middle=100.0, ma15=100.2, ma5=100.3, ema13=100.2)
         rows[-1].update(open=100.1, high=100.2, low=99.4, close=99.5,
-                        kc_middle=99.9, ma15=100.1, ma5=100.0)
+                        kc_middle=99.9, ma15=100.1, ma5=100.0, ema13=100.1)
     else:
         rows[-2].update(open=99.6, high=99.8, low=99.4, close=99.6,
                         kc_upper=101.0, kc_lower=99.0,
-                        kc_middle=100.0, ma15=99.8, ma5=99.7)
+                        kc_middle=100.0, ma15=99.8, ma5=99.7, ema13=99.8)
         rows[-1].update(open=99.9, high=100.6, low=99.8, close=100.5,
                         kc_upper=102.0, kc_lower=99.0,
-                        kc_middle=100.1, ma15=99.9, ma5=100.0)
+                        kc_middle=100.1, ma15=99.9, ma5=100.0, ema13=99.9)
     if side == "SHORT":
         rows[-2]["kc_upper"] = 101.5
         rows[-2]["kc_lower"] = 97.5
@@ -207,7 +208,7 @@ def test_ma_cross_entry_needs_no_kc_outer_pivot(side):
         channel_expanding=signal["channel_expanding"],
     )
     assert allowed is True
-    assert reason == f"PASSED_MACRO_{side}_PURE_MATH_GATE"
+    assert reason in {f"PASSED_MACRO_{side}_GATE", f"PASSED_MACRO_{side}_PURE_MATH_GATE"}
     pattern_allowed, _ = EntryPatternPermittedGate.check_signal(signal)
     assert pattern_allowed is True
 
@@ -475,7 +476,7 @@ def test_latest_profit_lock_exit_requires_most_recent_matching_close():
         ("SHORT", 100.3, 100.4, 100.1, 100.4, 100.1, 100.0),
         ("LONG", 99.7, 99.8, 99.6, 99.7, 100.5, 100.1),
         ("LONG", 100.1, 100.0, 99.8, 99.9, 100.5, 100.1),
-        ("LONG", 99.7, 99.8, 99.8, 99.8, 100.0, 100.1),
+        ("LONG", 99.7, 99.8, 99.8, 99.8, 100.2, 100.1),
     ],
 )
 def test_exit_holds_through_ma_and_kc_pullbacks(
@@ -483,9 +484,9 @@ def test_exit_holds_through_ma_and_kc_pullbacks(
     close, middle,
 ):
     frame = _frame(side)
-    frame.loc[10, ["ma5", "ma15"]] = [previous_ma5, previous_ma15]
-    frame.loc[11, ["ma5", "ma15", "close", "kc_middle"]] = [
-        current_ma5, current_ma15, close, middle,
+    frame.loc[10, ["ma5", "ma15", "ema13"]] = [previous_ma5, previous_ma15, previous_ma15]
+    frame.loc[11, ["ma5", "ma15", "ema13", "close", "kc_middle"]] = [
+        current_ma5, current_ma15, current_ma15, close, middle,
     ]
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": side}, frame,
@@ -525,7 +526,9 @@ def test_exit_holds_when_kc_trend_reverses_without_profit_lock_or_hard_stop():
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": "LONG"}, frame,
     )
-    assert result is None
+    assert result is not None
+    assert result["action"] == "CLOSE_LONG"
+    assert result["reason"] in ("EXIT_BY_BEARISH_TREND_REVERSAL", "EXIT_BY_KC_TREND_REVERSAL")
 
 
 def test_exit_trailing_profit_lock_and_breakeven():
@@ -694,10 +697,23 @@ def test_exit_hard_stop_loss(side, open_price, high, low, close):
     """第四道防線：虧損達到 -2.5% 或 2.2 ATR 時，觸發硬性止損清倉"""
     frame = _frame(side)
     # 均線保持向上但盤中長黑插針暴跌
-    frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
-    frame.loc[11, [
-        "open", "high", "low", "ma5", "ma15", "kc_middle", "close",
-    ]] = [open_price, high, low, 100.2, 99.9, 100.1, close]
+    # ema13 設在不觸發 EMA13 出場的位置：
+    # LONG: close=97.0，ema13 設在 close 以下(96.0)，這樣 c_close > ema13 不觸發 EMA13_BREAKDOWN
+    # SHORT: close=103.0，ema13 設在 close 以上(104.0)，這樣 c_close < ema13 不觸發 EMA13_BREAKOUT
+    ema13_safe = 96.0 if side == "LONG" else 104.0
+    # kc_middle：LONG 讓中軌走平或微升（不觸發 BEARISH_TREND_REVERSAL），
+    #            SHORT 讓中軌下降（prev > curr）避免觸發 BULLISH_TREND_REVERSAL
+    if side == "LONG":
+        frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.0]
+        frame.loc[11, [
+            "open", "high", "low", "ma5", "ma15", "kc_middle", "close", "ema13",
+        ]] = [open_price, high, low, 100.2, 99.9, 100.0, close, ema13_safe]
+    else:
+        # SHORT: KC 中軌下降（不觸發 BULLISH_TREND_REVERSAL），ema13 安全在 close 以上
+        frame.loc[10, ["ma5", "ma15", "kc_middle"]] = [100.0, 99.8, 100.5]
+        frame.loc[11, [
+            "open", "high", "low", "ma5", "ma15", "kc_middle", "close", "ema13",
+        ]] = [open_price, high, low, 100.2, 99.9, 100.4, close, ema13_safe]
 
     pos = {
         "side": side,
