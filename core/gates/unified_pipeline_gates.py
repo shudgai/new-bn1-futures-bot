@@ -199,13 +199,17 @@ class ExitGate:
                 pivot_peak_found = False
                 pivot_peak_meta = {}
 
-                # 1. 優先檢查短序列 3 根 (中間棒為衝頂陽棒或觸及KC上軌，第三棒收黑跌破實體中點)
+                # 1. 短序列 3 根判定：中間棒衝頂累積利潤，第三棒收黑跌破中點，且具備動能跌破前低或跌破 MA5
                 is_3bar_pivot = (c_prev["high"] > c_prev2["high"]) and (c_prev["high"] >= c_curr["high"]) and ((c_prev["close"] > c_prev["open"]) or (c_prev["high"] >= kc_up))
                 c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
                 is_3bar_exhaust = (c_curr["close"] < c_prev_mid) and (c_curr["close"] < c_curr["open"])
-                if is_3bar_pivot and is_3bar_exhaust:
+                c_curr_body_long = abs(c_curr["close"] - c_curr["open"])
+                had_gain_long = (c_prev["high"] - entry_p >= 0.4 * atr_val) or (peak_roe >= 0.003)
+                drop_long = c_prev["high"] - quote
+                is_real_drop_confirmed = (quote < ma5_curr) or (c_curr["close"] < ma5_curr) or ((c_curr["close"] < c_prev["low"]) and (c_curr_body_long >= 0.35 * atr_val) and (drop_long >= 0.35 * atr_val))
+                if is_3bar_pivot and is_3bar_exhaust and had_gain_long and is_real_drop_confirmed:
                     pivot_peak_found = True
-                    pivot_peak_meta = {"peak_high": c_prev["high"], "conf_close": c_curr["close"]}
+                    pivot_peak_meta = {"peak_high": c_prev["high"], "conf_close": c_curr["close"], "peak_roe": peak_roe}
 
                 # 2. 若為長序列，回溯最近 3 根已收線棒 (排除最後一根盤中棒)
                 if not pivot_peak_found and len(raw_df) >= 4:
@@ -236,6 +240,15 @@ class ExitGate:
                 upper_wick_prev = c_prev["high"] - max(c_prev["open"], c_prev["close"])
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
+
+                # ── 單邊強勢主升浪死抱走到最後保護 ──
+                # 若大趨勢強烈多頭 (slope >= 0 且 ema_fast >= ema_slow)，且價格守穩在 MA5 之上且未確認峰頂回落
+                if not pivot_peak_found and not is_bearish_engulfing and not is_shooting_star:
+                    if slope >= 0 and ema_fast >= ema_slow and quote >= ma5_curr:
+                        return False, "VETO_HOLD", {
+                            **meta,
+                            "cause": f"多單單邊主升浪強勢延伸中，價格守穩於MA5防守線之上 (quote={quote:.6f} >= ma5={ma5_curr:.6f})，KC中軌依然向上 (slope={slope:.6f})，未到多頭趨勢末端，未破MA5前嚴禁平多！健康回踩中，維持死抱！堅定死抱走到最後！",
+                        }
 
                 if (pivot_peak_found or is_bearish_engulfing or is_shooting_star) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
                     return True, "EARLY_PIVOT_PEAK_EXIT", {
@@ -285,13 +298,17 @@ class ExitGate:
                 pivot_valley_found = False
                 pivot_valley_meta = {}
 
-                # 1. 優先檢查短序列 3 根 (中間棒為探底陰棒或觸及KC下軌，第三棒收紅衝破實體中點)
+                # 1. 短序列 3 根判定：中間棒探底累積利潤，第三棒收紅突破中點，且具備動能突破前高或收復 MA5
                 is_3bar_pivot_low = (c_prev["low"] < c_prev2["low"]) and (c_prev["low"] <= c_curr["low"]) and ((c_prev["close"] < c_prev["open"]) or (c_prev["low"] <= kc_low))
                 c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
                 is_3bar_exhaust_low = (c_curr["close"] > c_prev_mid) and (c_curr["close"] > c_curr["open"])
-                if is_3bar_pivot_low and is_3bar_exhaust_low:
+                c_curr_body_short = abs(c_curr["close"] - c_curr["open"])
+                had_gain_short = (entry_p - c_prev["low"] >= 0.4 * atr_val) or (peak_roe >= 0.003)
+                bounce_short = quote - c_prev["low"]
+                is_real_bounce_confirmed = (quote > ma5_curr) or (c_curr["close"] > ma5_curr) or ((c_curr["close"] > c_prev["high"]) and (c_curr_body_short >= 0.35 * atr_val) and (bounce_short >= 0.35 * atr_val))
+                if is_3bar_pivot_low and is_3bar_exhaust_low and had_gain_short and is_real_bounce_confirmed:
                     pivot_valley_found = True
-                    pivot_valley_meta = {"valley_low": c_prev["low"], "conf_close": c_curr["close"]}
+                    pivot_valley_meta = {"valley_low": c_prev["low"], "conf_close": c_curr["close"], "peak_roe": peak_roe}
 
                 # 2. 若為長序列，回溯已收線棒
                 if not pivot_valley_found and len(raw_df) >= 4:
@@ -322,6 +339,15 @@ class ExitGate:
                 lower_wick_prev = min(c_prev["open"], c_prev["close"]) - c_prev["low"]
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_hammer = (c_prev["low"] < c_prev2["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"])
+
+                # ── 單邊強勢主跌浪死抱走到最後保護 ──
+                # 若大趨勢強烈空頭 (slope <= 0 且 ema_fast <= ema_slow)，且價格受壓在 MA5 之下且未確認谷底反彈
+                if not pivot_valley_found and not is_bullish_engulfing and not is_hammer:
+                    if slope <= 0 and ema_fast <= ema_slow and quote <= ma5_curr:
+                        return False, "VETO_HOLD", {
+                            **meta,
+                            "cause": f"空單單邊主跌浪強勢延伸中，價格受壓於MA5防守線之下 (quote={quote:.6f} <= ma5={ma5_curr:.6f})，KC中軌依然向下 (slope={slope:.6f})，未到空頭趨勢末端，未收復MA5前嚴禁平空！健康反抽中，維持死抱！堅定死抱走到最後！",
+                        }
 
                 if (pivot_valley_found or is_bullish_engulfing or is_hammer) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
                     return True, "EARLY_PIVOT_VALLEY_EXIT", {
