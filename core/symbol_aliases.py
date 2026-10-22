@@ -44,7 +44,7 @@ def is_lobster_symbol(symbol: Optional[str]) -> bool:
 
 def is_auto_entry_symbol(symbol: Optional[str]) -> bool:
     """Return whether automatic and manual entry is currently enabled."""
-    return is_lobster_symbol(symbol) or is_cap_symbol(symbol)
+    return is_lobster_symbol(symbol)
 
 
 def is_cap_symbol(symbol: Optional[str]) -> bool:

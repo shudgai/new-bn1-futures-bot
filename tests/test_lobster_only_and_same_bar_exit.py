@@ -15,18 +15,18 @@ from core.symbol_aliases import (
 )
 
 
-def test_only_lobster_and_cap_are_enabled_for_entry():
+def test_only_lobster_is_enabled_for_entry():
+    """2026-10-21：只保留 LOBSTER，CAP 已停用自動開倉。"""
     from core.config import DEFAULT_SYMBOLS
 
     assert is_auto_entry_symbol("LOBSTER/USDT")
     assert is_auto_entry_symbol("龍蝦/USDT:USDT")
-    assert is_auto_entry_symbol("CAP/USDT")
-    assert is_auto_entry_symbol("CAP/USDT:USDT")
+    # CAP 已停用 —— is_auto_entry_symbol 應回傳 False
+    assert not is_auto_entry_symbol("CAP/USDT")
+    assert not is_auto_entry_symbol("CAP/USDT:USDT")
     assert not is_auto_entry_symbol("BTC/USDT")
     assert is_meme_breakout_symbol("CAP/USDT")
     assert "LOBSTER/USDT" in DEFAULT_SYMBOLS
-    assert "CAP/USDT" in DEFAULT_SYMBOLS
-    assert all(is_auto_entry_symbol(symbol) for symbol in DEFAULT_SYMBOLS)
     assert to_binance_usdm_symbol("CAP/USDT") == "CAP/USDT:USDT"
     assert to_binance_usdm_symbol("CAP/USDT:USDT") == "CAP/USDT:USDT"
 
@@ -39,22 +39,15 @@ def test_entry_firewall_rejects_other_symbols_before_signal_evaluation():
         )
 
 
-def test_entry_firewall_keeps_cap_enabled(monkeypatch):
-    monkeypatch.setattr(
-        "core.services.entry_firewall.require_final_trend_alignment",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        "core.services.entry_firewall.evaluate_entry_contract",
-        lambda *_args, **_kwargs: {"side": "LONG", "type": "TEST"},
-    )
-    decision = EntryFirewall.verify_can_open(
-        pd.DataFrame(),
-        "LONG",
-        "KC_GOLDEN_CROSS_FAST_LONG",
-        symbol="CAP/USDT",
-    )
-    assert decision["side"] == "LONG"
+def test_entry_firewall_rejects_cap_now_disabled(monkeypatch):
+    """2026-10-21：CAP 已從 auto_entry_symbol 移除，防火牆應拒絕 CAP 開倉。"""
+    with pytest.raises(ValueError, match="AUTOMATIC_ENTRY_SYMBOL_DISABLED"):
+        EntryFirewall.verify_can_open(
+            pd.DataFrame(),
+            "LONG",
+            "KC_GOLDEN_CROSS_FAST_LONG",
+            symbol="CAP/USDT",
+        )
 
 
 def test_wait_authority_keeps_cap_enabled_but_rejects_invalid_market_data(tmp_path):
@@ -255,12 +248,23 @@ def test_same_bar_net_profit_exit_is_suppressed_for_restricted_channel_position(
     assert account.closed == []
 
 
-def test_lobster_margin_sizing_uses_wallet_and_available_balance_caps():
+def test_lobster_margin_sizing_uses_full_wallet():
+    """2026-10-21：1槽模式，保證金使用帳戶餘額 98%（扣手續費緩衝）。"""
     from core.engine import TradingEngine
+    import core.config as config
 
+    leverage = 5
+    fee_buffer = 1.0 + leverage * config.TAKER_FEE_RATE
+    # 1槽時 per_slot_budget = wallet * 0.98，fee_safe = available / fee_buffer * 0.98
+    expected_full = min(
+        1_000.0 * 0.98,
+        (1_000.0 / fee_buffer) * 0.98,
+        1_000.0 * config.WILD_SWING_SYMBOL_MARGIN_FRACTION,
+    )
     assert TradingEngine._full_wallet_entry_margin(
-        1_000.0, 1_000.0, 5, "LOBSTER/USDT",
-    ) == pytest.approx(490.0)
+        1_000.0, 1_000.0, leverage, "LOBSTER/USDT",
+    ) == pytest.approx(expected_full)
+    # available < wallet 時，受 fee_safe_available 約束
     assert TradingEngine._full_wallet_entry_margin(
-        1_000.0, 100.0, 5, "LOBSTER/USDT",
+        1_000.0, 100.0, leverage, "LOBSTER/USDT",
     ) < 100.0

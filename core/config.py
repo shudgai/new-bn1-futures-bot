@@ -79,7 +79,7 @@ def get_effective_slot_count(wallet_balance: float, configured_max: int = None) 
     return slot_cap
 
 
-WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.50
+WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.98
 
 
 def get_wild_swing_margin_fraction(symbol: str) -> float | None:

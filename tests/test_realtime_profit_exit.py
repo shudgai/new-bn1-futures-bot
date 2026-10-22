@@ -870,4 +870,85 @@ def test_replay_early_valley_exit_captures_maximum_profit():
     assert snapshot["current_price"] < 0.06685, "平倉價必須在底部地板附近，保全最大波段利潤！"
 
 
+def test_restricted_exit_policy_lobster_triggers_tiered_profit_lock():
+    """
+    驗證被 restricted_exit_policy 管制的幣種 (如 LOBSTER/USDT, CAP/USDT)：
+    當淨 ROE 曾衝至 15% 以上（觸發第二階鎖利底線 12%），
+    若行情回吐至 12% 底線時，必須順利觸發 NET_ROE_THREE_TIER_GIVEBACK_TIER_2 平倉！
+    """
+    from core.services.exits import realtime_profit_exit
+
+    async def run():
+        symbol = 'LOBSTER/USDT'
+        entry_price = 0.0200
+        qty = 50000.0
+        leverage = 5.0
+        margin = entry_price * qty / leverage  # 200 USDT
+
+        position = {
+            'symbol': symbol,
+            'side': 'LONG',
+            'entry_price': entry_price,
+            'qty': qty,
+            'margin': margin,
+            'leverage': leverage,
+            'entry_mode': 'CHANNEL_SWING',
+            'open_timestamp': time.time() - 300,
+        }
+        account = SimpleNamespace(
+            positions={symbol: position},
+            position_meta={},
+            save_state=Mock(),
+            close_position=AsyncMock(return_value=True),
+            log=Mock(),
+        )
+        stamp = time.time() * 1000 - 500
+        bar_curr = int((stamp // 60000) * 60000)
+        frame_data = {
+            'timestamp': [bar_curr - 120000, bar_curr - 60000, bar_curr],
+            'open': [0.0198, 0.0200, 0.0205],
+            'high': [0.0200, 0.0206, 0.0208],
+            'low': [0.0197, 0.0199, 0.0204],
+            'close': [0.0199, 0.0205, 0.0206],
+            'atr': [0.0005, 0.0005, 0.0005],
+            'ma3': [0.0201, 0.0203, 0.0205],
+            'ma5': [0.0200, 0.0202, 0.0204],
+            'ma15': [0.0199, 0.0201, 0.0202],
+            'kc_upper': [0.0210, 0.0210, 0.0210],
+            'kc_middle': [0.0200, 0.0200, 0.0200],
+            'kc_lower': [0.0190, 0.0190, 0.0190],
+            'is_closed': [True, True, False],
+        }
+        frame = pd.DataFrame(frame_data)
+        engine = SimpleNamespace(
+            account=account,
+            is_running=True,
+            _channel_exit_frames={symbol: frame},
+        )
+
+        # 1. 價格衝高至 0.02065 (未實現 ROE 約 (0.02065-0.020)/0.020 * 5 = 15.69% > 15%)
+        # 應更新 peak_net_roe_pct 並將 floor 設為 12% (Tier 2)
+        peak_price = 0.02065
+        await realtime_profit_exit.enforce_realtime_profit_exit(
+            engine, symbol, peak_price, stamp,
+        )
+        account.close_position.assert_not_awaited()
+
+        # 2. 價格回吐至 0.02045 (未實現 ROE 回落至低於 12% 底線)
+        # 應觸發 NET_ROE_THREE_TIER_GIVEBACK_TIER_2 平倉！
+        giveback_price = 0.02045
+        closed = await realtime_profit_exit.enforce_realtime_profit_exit(
+            engine, symbol, giveback_price, stamp + 100,
+        )
+        assert closed is True
+        account.close_position.assert_awaited_once()
+        close_args = account.close_position.call_args[0]
+        assert close_args[0] == symbol
+        assert close_args[1] == giveback_price
+        assert 'NET_ROE_THREE_TIER_GIVEBACK_TIER_2' in close_args[2]
+
+    asyncio.run(run())
+
+
+
 

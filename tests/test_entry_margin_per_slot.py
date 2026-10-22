@@ -73,14 +73,24 @@ def test_entry_margin_never_exceeds_available_balance_after_fee(monkeypatch):
     "symbol",
     [LOBSTER, "龙虾/USDT", "LOBSTER/USDT", PEPE, "1000PEPEUSDT"],
 )
-def test_wild_swing_symbols_are_individually_capped_at_half_wallet(
+def test_wild_swing_symbols_use_full_wallet_in_one_slot(
     monkeypatch, symbol
 ):
+    """2026-10-21：WILD_SWING_SYMBOL_MARGIN_FRACTION 改為 0.98，1槽使用帳戶餘額而非 50%。"""
     monkeypatch.setattr(config, "MAX_SLOTS", 1)
+    monkeypatch.setattr(config, "WILD_SWING_SYMBOL_MARGIN_FRACTION", 0.98)
 
-    amount = TradingEngine._full_wallet_entry_margin(100., 100., 2., symbol)
+    leverage = 2.
+    fee_buffer = 1.0 + leverage * config.TAKER_FEE_RATE
+    expected = min(
+        100. * 0.98,                        # per_slot_budget (1 slot)
+        (100. / fee_buffer) * 0.98,          # fee_safe_available
+        100. * 0.98,                          # symbol_budget = wallet * 0.98
+    )
+    amount = TradingEngine._full_wallet_entry_margin(100., 100., leverage, symbol)
 
-    assert amount == pytest.approx(50.)
+    assert amount == pytest.approx(expected)
+
 
 
 @pytest.mark.parametrize("symbol", [LOBSTER, PEPE])
@@ -146,6 +156,7 @@ def test_concurrent_wild_swing_entries_share_two_slots_and_wallet_safely(
     assert {order["symbol"] for order in engine.account.opened} == {
         LOBSTER, PEPE,
     }
+    # 2 槽時每槽 budget = wallet * 0.98 / 2 = 75，各符合 <= 75
     assert all(order["amount_usdt"] <= 75. for order in engine.account.opened)
     assert engine.account.available >= 0.
 

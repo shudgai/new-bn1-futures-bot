@@ -470,6 +470,29 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
                 )
                 return False
 
+            # ── 階梯鎖利保護：評估 net-ROE 階梯鎖利（10% 鎖 7%、15% 鎖 12%、20% 鎖 15%、保本鎖）──
+            snapshot, atr = cached_tick_indicators(frame, price, stamp)
+            from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+            lock_trigger, state_changed = _evaluate_profit_lock_only(
+                position, meta, price, stamp, snapshot,
+                TAKER_FEE_RATE, SLIPPAGE_PCT,
+            )
+            if state_changed:
+                account.save_state()
+            if (
+                lock_trigger == 'EXIT_BY_BREAKEVEN_LOCK'
+                or (lock_trigger and lock_trigger.startswith(PROFIT_LOCK_TRIGGER))
+            ):
+                account.log(
+                    f'REALTIME_EXIT symbol={symbol} reason={lock_trigger} '
+                    f'quote_ms={stamp} price={price}',
+                    'WARNING',
+                )
+                return await account.close_position(
+                    symbol, price, f'{entry_m} {lock_trigger}',
+                    is_manual=True,
+                )
+
             # ── 3M 體系持倉守衛：徹底拔除 1M 階梯鎖利與 1M 峰谷平倉，全面對齊 3M K 棒 ──
             # 唯二允許平倉條件：
             # 1. 結構反轉：3M K 棒收盤實體實質站上/跌破 3M 13EMA（且突破 0.15% 緩衝帶）

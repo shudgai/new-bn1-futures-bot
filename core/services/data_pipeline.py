@@ -33,6 +33,9 @@ class MarketDataSnapshot:
     peak_roe: float = 0.0
     min_price: float = 0.0
     max_price: float = 0.0
+    macro_trend: str = "NEUTRAL"      # "BULLISH", "BEARISH", "NEUTRAL"
+    macro_slope: float = 0.0          # EMA60 長週期斜率 (1小時級別波段)
+    slow_slope_5: float = 0.0         # EMA40 過去 5 根斜率
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,6 +59,9 @@ class MarketDataSnapshot:
             "peak_roe": self.peak_roe,
             "min_price": self.min_price,
             "max_price": self.max_price,
+            "macro_trend": self.macro_trend,
+            "macro_slope": self.macro_slope,
+            "slow_slope_5": self.slow_slope_5,
         }
 
 
@@ -188,6 +194,23 @@ class DataPipeline:
                 stored_peak = float(position.get("peak_roe", 0.0) or position.get("highest_pnl_pct", 0.0) or 0.0)
                 peak_roe = max(stored_peak, cur_roe)
 
+        # ─── 大週期宏觀趨勢判定 (HTF Macro Trend) ───
+        # 使用長週期 EMA60 (1 小時級別波段) 與過去 5 根 EMA40 走向，杜絕單根 1m 毛刺騙線
+        ema60_series = close.ewm(span=60, adjust=False).mean()
+        ema60 = float(ema60_series.iloc[-1]) if not pd.isna(ema60_series.iloc[-1]) else curr_k["close"]
+        prev_ema60_5 = float(ema60_series.iloc[-6]) if len(ema60_series) >= 6 else ema60
+        macro_slope = ema60 - prev_ema60_5
+
+        prev_ema_slow_5 = float(ema_slow_series.iloc[-6]) if len(ema_slow_series) >= 6 else ema_slow
+        slow_slope_5 = ema_slow - prev_ema_slow_5
+
+        if ema_fast >= ema_slow and (slow_slope_5 >= 0 or kc_middle_slope >= 0):
+            macro_trend = "BULLISH"
+        elif ema_fast <= ema_slow and (slow_slope_5 <= 0 or kc_middle_slope <= 0):
+            macro_trend = "BEARISH"
+        else:
+            macro_trend = "NEUTRAL"
+
         return MarketDataSnapshot(
             symbol=symbol,
             current_price=quote,
@@ -208,5 +231,8 @@ class DataPipeline:
             peak_roe=peak_roe,
             min_price=min_price,
             max_price=max_price,
+            macro_trend=macro_trend,
+            macro_slope=macro_slope,
+            slow_slope_5=slow_slope_5,
             raw_df=df_calc,
         )

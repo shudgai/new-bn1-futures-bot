@@ -12,6 +12,7 @@ core/services/execution_manager.py
 """
 import logging
 import math
+import time
 from typing import Dict, Any, Optional
 import pandas as pd
 
@@ -89,12 +90,30 @@ class ExecutionManager:
             candidate_signal = None
             ma5_curr = float(market_data.curr_k.get("ma5", market_data.current_price))
             ma5_prev = float(market_data.prev_k.get("ma5", ma5_curr))
-            if (
+            macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
+
+            # 順勢鐵律：大週期為空頭嚴禁做多；大週期為多頭嚴禁做空
+            can_long = (macro_trend != "BEARISH")
+            can_short = (macro_trend != "BULLISH")
+
+            # 反向開倉冷卻防抽搐 (Anti-Whipsaw Flip Lock)：
+            # 若最近剛平倉，冷卻期內 (180秒) 嚴禁在無大週期反轉確認下立刻反手開相反方向！
+            last_exit = cls._last_exit_record.get(symbol)
+            if last_exit:
+                elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
+                last_side = last_exit.get("side")
+                if elapsed_sec < 180:
+                    if last_side == "LONG" and macro_trend != "BEARISH":
+                        can_short = False
+                    elif last_side == "SHORT" and macro_trend != "BULLISH":
+                        can_long = False
+
+            if can_long and (
                 (market_data.current_price > market_data.kc_upper and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
                 or (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast > market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
             ):
                 candidate_signal = "BREAKOUT_LONG"
-            elif (
+            elif can_short and (
                 (market_data.current_price < market_data.kc_lower and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
                 or (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast < market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
             ):
@@ -129,6 +148,8 @@ class ExecutionManager:
 
         return {"status": "IDLE", "symbol": symbol}
 
+    _last_exit_record: Dict[str, Dict[str, Any]] = {}
+
     @classmethod
     async def close_position(
         cls,
@@ -141,6 +162,11 @@ class ExecutionManager:
         """全系統唯一平倉執行管道"""
         try:
             if hasattr(account, "close_position"):
+                closed_side = None
+                positions_dict = getattr(account, "positions", {})
+                if isinstance(positions_dict, dict) and symbol in positions_dict:
+                    closed_side = positions_dict[symbol].get("side")
+
                 raw_df = (meta or {}).get("raw_df")
                 if raw_df is not None:
                     if not hasattr(account, "_channel_exit_frames"):
@@ -151,12 +177,20 @@ class ExecutionManager:
                     "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布"
                 ))
                 is_limit = False if is_emergency else bool((meta or {}).get("is_limit", False))
-                return await account.close_position(
+                success = await account.close_position(
                     symbol=symbol,
                     current_price=price,
                     close_reason=reason,
                     is_limit=is_limit,
                 )
+                if success and closed_side:
+                    cls._last_exit_record[symbol] = {
+                        "side": closed_side,
+                        "timestamp": time.time(),
+                        "price": price,
+                        "reason": reason,
+                    }
+                return success
             return False
         except Exception as exc:
             logger.error(f"[EXECUTION] close_position 異常 {symbol}: {exc}")
@@ -195,13 +229,15 @@ class ExecutionManager:
                     leverage = 5
 
             amount_usdt = 0.0
+            fee_buffer = 1.0 + leverage * 0.0005
+            fee_safe_available = (available / fee_buffer) * 0.98
             if engine and hasattr(engine, "_full_wallet_entry_margin"):
                 try:
                     amount_usdt = engine._full_wallet_entry_margin(wallet, available, leverage, symbol)
                 except Exception:
-                    amount_usdt = min(available * 0.49, 73.0)
+                    amount_usdt = fee_safe_available
             else:
-                amount_usdt = min(available * 0.49, 73.0)
+                amount_usdt = fee_safe_available
 
             # 依據 stepSize 進行向下截斷（Floor Truncate），嚴防超額保證金或 LOT_SIZE 拒單
             step_size = float((meta or {}).get("step_size") or (meta or {}).get("stepSize") or 0.0)
