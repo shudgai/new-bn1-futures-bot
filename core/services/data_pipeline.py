@@ -189,10 +189,18 @@ class DataPipeline:
         if position:
             entry_p = float(position.get("entry_price") or 0.0)
             side = str(position.get("side", "")).upper()
+            leverage = float(position.get("leverage", 5.0))
             if entry_p > 0:
-                cur_roe = ((quote - entry_p) / entry_p) if side == "LONG" else ((entry_p - quote) / entry_p)
-                stored_peak = float(position.get("peak_roe", 0.0) or position.get("highest_pnl_pct", 0.0) or 0.0)
-                peak_roe = max(stored_peak, cur_roe)
+                cur_move = ((quote - entry_p) / entry_p) if side == "LONG" else ((entry_p - quote) / entry_p)
+                cur_roe = cur_move * leverage
+                stored_peak_roe = float(position.get("peak_roe", 0.0) or 0.0)
+                stored_peak_move = float(position.get("peak_price_move", 0.0) or position.get("highest_pnl_pct", 0.0) or 0.0)
+                if stored_peak_roe <= 0 and stored_peak_move > 0:
+                    stored_peak_roe = stored_peak_move * leverage
+                peak_roe = max(stored_peak_roe, cur_roe)
+                position["peak_roe"] = peak_roe
+                position["unrealized_roe"] = cur_roe
+                position["peak_price_move"] = peak_roe / leverage
 
         # ─── 大週期宏觀趨勢判定 (HTF Macro Trend) ───
         # 使用長週期 EMA60 (1 小時級別波段) 與過去 5 根 EMA40 走向，杜絕單根 1m 毛刺騙線

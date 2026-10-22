@@ -133,24 +133,23 @@ class ExecutionManager:
             can_long = not is_bearish_wave
             can_short = not is_bullish_wave
 
-            # 同向平倉後防重複追高 (用戶痛點4：第二個買多不應再開)：
-            # 剛平多後，若價格依然貼在外軌高位且未回到均線帶充分蓄勢，嚴禁在噴發末端追第二個多單！
-            last_exit = cls._last_exit_record.get(symbol)
+            # 1. 平倉後強制冷卻至少 3 根 1m K 棒 (180 秒，不論同向或反向一律禁止開倉)
+            acc_key = cls._get_account_key(account, symbol)
+            last_exit = cls._last_exit_record.get(acc_key)
             if last_exit:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
-                last_side = last_exit.get("side")
-                # 同向平倉冷卻：剛平多 180 秒內，若價格仍在軌外且未回踩中軌，拒絕追高開第二個買多！
-                if last_side == "LONG" and elapsed_sec < 180 and market_data.current_price >= market_data.kc_upper:
-                    can_long = False
-                elif last_side == "SHORT" and elapsed_sec < 180 and market_data.current_price <= market_data.kc_lower:
-                    can_short = False
+                if elapsed_sec < 180:
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
-                # 反向冷卻：但若出現明確順勢破軌或MA交叉反轉，允許順勢開倉！
-                if elapsed_sec < 120:
-                    if last_side == "LONG" and not (is_breakdown_short or is_ma_cross_short):
-                        can_short = False
-                    elif last_side == "SHORT" and not (is_breakout_long or is_ma_cross_long):
-                        can_long = False
+            # 2. 單一合約 1 小時內開倉次數上限 (3～4 次，預設 3 次)
+            now_ts = time.time()
+            entry_history = [t for t in cls._hourly_entry_records.get(acc_key, cls._hourly_entry_records.get(symbol, [])) if (now_ts - t) < 3600.0]
+            cls._hourly_entry_records[acc_key] = entry_history
+            cls._hourly_entry_records[symbol] = entry_history
+            if len(entry_history) >= cls.MAX_ENTRIES_PER_HOUR:
+                logger.info(f"🚫 [RATE_LIMIT] {symbol} 1 小時內已開倉 {len(entry_history)} 次，達到上限 ({cls.MAX_ENTRIES_PER_HOUR} 次)，禁止開倉！")
+                return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
             if can_long:
                 if is_breakout_long:
@@ -169,9 +168,15 @@ class ExecutionManager:
                     candidate_signal = "BREAKDOWN_SHORT"
 
             if candidate_signal:
+                last_exit_context = {
+                    **(last_exit or {}),
+                    "hourly_entry_count": len(entry_history),
+                    "current_time": now_ts,
+                }
                 should_entry, reason, meta = EntryGate.evaluate(
                     signal_type=candidate_signal,
                     market_data=market_data,
+                    last_exit_context=last_exit_context,
                 )
                 if should_entry:
                     side = meta.get("side", "LONG" if "LONG" in candidate_signal else "SHORT")
@@ -198,6 +203,13 @@ class ExecutionManager:
         return {"status": "IDLE", "symbol": symbol}
 
     _last_exit_record: Dict[str, Dict[str, Any]] = {}
+    _hourly_entry_records: Dict[str, list] = {}
+    MAX_ENTRIES_PER_HOUR: int = 3
+
+    @classmethod
+    def _get_account_key(cls, account: Any, symbol: str) -> str:
+        acc_id = getattr(account, "account_id", None) or getattr(account, "id", None) or id(account)
+        return f"{acc_id}:{symbol}"
 
     @classmethod
     async def close_position(
@@ -233,12 +245,18 @@ class ExecutionManager:
                     is_limit=is_limit,
                 )
                 if success and closed_side:
-                    cls._last_exit_record[symbol] = {
+                    acc_key = cls._get_account_key(account, symbol)
+                    record = {
                         "side": closed_side,
                         "timestamp": time.time(),
                         "price": price,
+                        "exit_price": price,
+                        "exit_high": float((meta or {}).get("pivot_meta", {}).get("peak_high") or (meta or {}).get("highest_price") or price),
+                        "exit_low": float((meta or {}).get("pivot_meta", {}).get("valley_low") or (meta or {}).get("lowest_price") or price),
                         "reason": reason,
                     }
+                    cls._last_exit_record[acc_key] = record
+                    cls._last_exit_record[symbol] = record
                 return success
             return False
         except Exception as exc:
@@ -357,6 +375,7 @@ class ExecutionManager:
                     entry_context=entry_context,
                 )
                 if opened:
+                    cls._hourly_entry_records.setdefault(symbol, []).append(time.time())
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 return opened

@@ -347,3 +347,112 @@ def test_second_long_blocked_by_stale_continuation():
     assert should_entry is False, "延續開倉軌外超過2根或乖離過大，必須拒絕追第二個買多！"
     assert reason in ("LATE_CHASE_STALE_CONTINUATION", "LATE_CHASE_BAND_EXTENSION")
 
+
+# ==============================================================================
+# 業務場景 11：【最新實盤覆盤圖】中間巨型大陰線砸爛結構，反彈第二個買多一票否決
+# ==============================================================================
+def test_image_giant_bearish_bar_breakdown_blocks_subsequent_long():
+    """
+    [商業場景：最新用戶圖 - 中間長黑貫穿上下軌後，右側假反彈第二個買多被套]
+    中間出現長黑實體陰線 (body >= 2.0 ATR) 破壞多頭通道結構。
+    隨後反彈碰上軌，但冷卻期未滿 10 根 K 棒，
+    系統必須強制一票否決 BLOCKED_RECENT_WATERFALL_BREAKDOWN，嚴禁接刀追多！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    # 人工在倒數第 4 根插入一根巨型長黑柱 (body = 0.00015 >= 2.0 * atr 0.00005)
+    atr_val = 0.00005
+    giant_idx = df.index[-4]
+    df.loc[giant_idx, "open"] = 0.02050
+    df.loc[giant_idx, "close"] = 0.02035  # body = 0.00015 = 3 * ATR
+    df.loc[giant_idx, "high"] = 0.02052
+    df.loc[giant_idx, "low"] = 0.02034
+    df.loc[giant_idx, "atr"] = atr_val
+
+    # 最新這根假反彈至上軌
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02046)
+    snap.atr = atr_val
+    snap.kc_upper = 0.02044
+    snap.curr_k["open"] = 0.02040
+    snap.curr_k["close"] = 0.02046
+    snap.curr_k["high"] = 0.02047
+    snap.curr_k["low"] = 0.02039
+    snap.curr_k["ma5"] = 0.02043
+    snap.prev_k["ma5"] = 0.02038
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snap)
+    assert should_entry is False, f"巨型大陰線破壞結構後，必須一票否決開多！actual={reason}"
+    assert reason == "BLOCKED_RECENT_WATERFALL_BREAKDOWN"
+    assert "巨型" in meta.get("cause", "") or "結構受創" in meta.get("cause", "")
+
+
+def test_two_bar_breakout_no_new_high_blocks_long():
+    """
+    [商業場景：兩根破軌確認 - 第 2 根未突破第 1 根高點拒絕開多]
+    第 1 根已破軌收在軌外 (high=0.02050, close=0.02048)。
+    第 2 根雖然也在軌外，但高點僅 0.02049 (未過前高)，實體偏小且帶上影線。
+    系統必須強制一票否決 BLOCKED_BREAKOUT_NO_NEW_HIGH，防止誘多！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02047)
+    snap.raw_df = None
+    snap.kc_upper = 0.020455
+    snap.atr = 0.00010
+    # 第 1 根破軌已在軌外
+    snap.prev_k = {
+        "open": 0.02042,
+        "high": 0.02050,
+        "low": 0.02041,
+        "close": 0.02048,
+        "kc_upper": 0.020455,
+        "ma5": 0.02044,
+    }
+    # 第 2 根未突破前高 (high 0.02049 < 0.02050, close 0.02048 <= 0.02048)
+    snap.curr_k = {
+        "open": 0.02044,
+        "high": 0.02049,
+        "low": 0.02043,
+        "close": 0.02048,
+        "kc_upper": 0.020455,
+        "ma5": 0.02045,
+    }
+
+    should_entry, reason, meta = EntryGate.evaluate("CONFIRMED_2BAR_BREAKOUT", snap)
+    assert should_entry is False, f"兩根破軌未創新高，必須一票否決！actual={reason}"
+    assert reason == "BLOCKED_BREAKOUT_NO_NEW_HIGH"
+
+
+# ==============================================================================
+# 業務場景 12：【最新實盤覆盤圖】空單主跌浪中，弱勢綠棒摸 MA5 留長上影線嚴禁平空
+# ==============================================================================
+def test_image_bear_run_minor_bounce_touches_ma5_strictly_holds_short():
+    """
+    [商業場景：最新用戶圖 - 空單主跌浪中，兩根弱勢綠棒摸紅線 MA5 卻觸發錯誤平空]
+    空單主跌浪中，兩根綠棒反彈僅摸到紅色短期均線 (MA5)，留下很長上影線，
+    收盤依然受壓於 MA5 之下，完全沒有摸到上方中軌與慢線，且 MA5 斜率依然向下。
+    【預期商業行為】：
+    系統必須強制判定為「良性回抽/空中換手」，觸發 VETO_HOLD 死抱到底，絕不允許被微小反抽洗下車！
+    """
+    df = _build_trend_df(30, start_price=0.0210, trend="DOWN", step=0.00004)
+    # 前一根下探陰線
+    df.loc[df.index[-2], ["open", "high", "low", "close"]] = [0.02060, 0.02061, 0.02048, 0.02050]
+    # 當前綠棒反彈：最高摸到 0.02056 (摸 MA5)，但收盤僅 0.02052，留長上影線且受壓於 MA5=0.02054
+    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [0.02050, 0.02056, 0.02049, 0.02052]
+
+    quote = 0.02052
+    pos = {"symbol": "龙虾/USDT", "side": "SHORT", "entry_price": 0.0210, "qty": 10000.0, "leverage": 5.0, "peak_roe": 0.04}
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=quote, position=pos)
+    snap.raw_df = None
+    snap.kc_upper = 0.02080
+    snap.kc_lower = 0.02040
+    snap.curr_k["ma5"] = 0.02054
+    snap.prev_k["ma5"] = 0.02058  # MA5 依然陡峭向下
+    snap.kc_middle = 0.02065       # 遠在上方中軌
+    snap.kc_middle_slope = -0.00001
+    snap.ema_fast = 0.02068
+    snap.ema_slow = 0.02075       # 大週期均線空頭排列
+
+    should_exit, reason, meta = ExitGate.evaluate(pos, snap, current_price=quote)
+    assert should_exit is False, f"空頭主跌浪中摸 MA5 留長上影線，嚴禁平空！actual={reason}, meta={meta}"
+    assert reason == "VETO_HOLD"
+    assert any(k in meta.get("cause", "") for k in ("MA5", "死抱", "健康反抽", "呼吸", "大週期"))
+
