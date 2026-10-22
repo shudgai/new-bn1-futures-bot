@@ -1289,17 +1289,26 @@
 
                 getChartCkTrend(data) {
                     if (!Array.isArray(data) || data.length === 0) return 'wait';
-                    const closed = data.filter(bar => bar.is_live === false).slice(-3);
-                    if (closed.length !== 3) return 'wait';
-                    const thirdBar = closed[2];
-                    const [first, second, third] = closed.map(bar => Number(bar.kc_middle));
-                    const ma5 = Number(thirdBar.ma5);
-                    const ma15 = Number(thirdBar.ma15);
-                    if ([first, second, third].some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
-                    if (third < second && ma5 < ma15) return 'bear';
-                    if (third > second && ma5 > ma15) return 'bull';
-                    if (first < second && second < third) return 'bull';
-                    if (first > second && second > third) return 'bear';
+                    const closed = data.filter(bar => bar.is_live === false);
+                    if (closed.length < 5) {
+                        const tail = closed.slice(-3);
+                        if (tail.length < 3) return 'wait';
+                        const [f, s, t] = tail.map(b => Number(b.kc_middle));
+                        if (f < s && s < t) return 'bull';
+                        if (f > s && s > t) return 'bear';
+                        return 'range';
+                    }
+                    const lastBar = closed[closed.length - 1];
+                    const bar5Ago = closed[closed.length - 5];
+                    const kcMidNow = Number(lastBar.kc_middle);
+                    const kcMid5Ago = Number(bar5Ago.kc_middle);
+                    const emaFast = Number(lastBar.ema_fast || lastBar.ma15 || kcMidNow);
+                    const emaSlow = Number(lastBar.ema_slow || lastBar.ma40 || kcMidNow);
+                    if (!Number.isFinite(kcMidNow) || !Number.isFinite(kcMid5Ago)) return 'wait';
+                    
+                    const slope5 = kcMidNow - kcMid5Ago;
+                    if (slope5 > 0.000005 || (emaFast >= emaSlow && slope5 >= -0.000005)) return 'bull';
+                    if (slope5 < -0.000005 || (emaFast <= emaSlow && slope5 <= 0.000005)) return 'bear';
                     return 'range';
                 },
                 getChartMarketMode(symbol) {

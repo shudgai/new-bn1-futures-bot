@@ -168,7 +168,9 @@ class DataPipeline:
         kc_low = float(kc_lower_series.iloc[-1]) if not pd.isna(kc_lower_series.iloc[-1]) else curr_k["close"]
 
         prev_kc_mid = float(kc_basis.iloc[-2]) if len(kc_basis) > 1 and not pd.isna(kc_basis.iloc[-2]) else kc_mid
-        kc_middle_slope = kc_mid - prev_kc_mid
+        prev_kc_mid_5 = float(kc_basis.iloc[-6]) if len(kc_basis) >= 6 and not pd.isna(kc_basis.iloc[-6]) else prev_kc_mid
+        n_kc_step = 5 if len(kc_basis) >= 6 else 1
+        kc_middle_slope = (kc_mid - prev_kc_mid_5) / n_kc_step
 
         curr_k["ma5"] = ma5
         curr_k["ma15"] = ma15
@@ -203,18 +205,23 @@ class DataPipeline:
                 position["peak_price_move"] = peak_roe / leverage
 
         # ─── 大週期宏觀趨勢判定 (HTF Macro Trend) ───
-        # 使用長週期 EMA60 (1 小時級別波段) 與過去 5 根 EMA40 走向，杜絕單根 1m 毛刺騙線
+        # 使用長週期 EMA60 (1 小時級別波段) 與過去 10 根長均線走向，杜絕單根 1m 毛刺騙線
         ema60_series = close.ewm(span=60, adjust=False).mean()
         ema60 = float(ema60_series.iloc[-1]) if not pd.isna(ema60_series.iloc[-1]) else curr_k["close"]
-        prev_ema60_5 = float(ema60_series.iloc[-6]) if len(ema60_series) >= 6 else ema60
-        macro_slope = ema60 - prev_ema60_5
+        prev_ema60_10 = float(ema60_series.iloc[-11]) if len(ema60_series) >= 11 else ema60
+        macro_slope_10 = ema60 - prev_ema60_10
 
-        prev_ema_slow_5 = float(ema_slow_series.iloc[-6]) if len(ema_slow_series) >= 6 else ema_slow
-        slow_slope_5 = ema_slow - prev_ema_slow_5
+        prev_ema_slow_10 = float(ema_slow_series.iloc[-11]) if len(ema_slow_series) >= 11 else ema_slow
+        slow_slope_10 = ema_slow - prev_ema_slow_10
+        macro_slope = macro_slope_10
+        slow_slope_5 = slow_slope_10
 
-        if ema_fast >= ema_slow and (slow_slope_5 >= 0 or kc_middle_slope >= 0):
+        is_htf_bull = (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0 or kc_middle_slope >= 0)) or (quote > ema60 and macro_slope_10 > 0)
+        is_htf_bear = (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0 or kc_middle_slope <= 0)) or (quote < ema60 and macro_slope_10 < 0)
+
+        if is_htf_bull and not is_htf_bear:
             macro_trend = "BULLISH"
-        elif ema_fast <= ema_slow and (slow_slope_5 <= 0 or kc_middle_slope <= 0):
+        elif is_htf_bear and not is_htf_bull:
             macro_trend = "BEARISH"
         else:
             macro_trend = "NEUTRAL"

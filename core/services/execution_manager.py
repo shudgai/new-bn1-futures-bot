@@ -124,11 +124,33 @@ class ExecutionManager:
                 and market_data.curr_k["close"] <= market_data.kc_middle
             )
 
-            # 順勢鐵律（用戶最新授權：你這一路，是可不能賣空，要一路開多！）：
-            # 主升浪：KC中軌向上且價格在中軌之上，或大週期為BULLISH，100% 絕對禁止賣空！一路只做多！
-            # 主跌浪：KC中軌向下且價格在中軌之下，或大週期為BEARISH，100% 絕對禁止開多！一路只做空！
-            is_bullish_wave = (market_data.kc_middle_slope >= -0.000005 and market_data.curr_k["close"] >= market_data.kc_middle) or (macro_trend == "BULLISH")
-            is_bearish_wave = (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle) or (macro_trend == "BEARISH")
+            # 順勢鐵律（大週期趨勢濾網 Trend Bias Filter，2026-10-22 最新授權）：
+            # 1. 棕色慢線(EMA40)與中軌方向定生死：
+            #    大趨勢向上（EMA15 >= EMA40 多頭排列，或價格在慢線上方，或慢線向上發散，或大週期為 BULLISH）：
+            #    策略模式強制鎖定為 LONG_ONLY（只做多、絕對禁止賣空！），遇到頂部下殺只能平多，絕不准反手開空！
+            # 2. 空頭主跌浪鏡像：
+            #    大趨勢向下（EMA15 <= EMA40 空頭排列，或價格在慢線下方，或慢線向下，或大週期為 BEARISH）：
+            #    策略模式強制鎖定為 SHORT_ONLY（只做空、絕對禁止開多！）。
+            is_above_slow_ma = (market_data.curr_k["close"] >= market_data.ema_slow or market_data.current_price >= market_data.ema_slow)
+            is_slow_ma_up = getattr(market_data, "slow_slope", 0.0) >= 0
+            is_bull_alignment = (market_data.ema_fast >= market_data.ema_slow)
+
+            is_below_slow_ma = (market_data.curr_k["close"] <= market_data.ema_slow or market_data.current_price <= market_data.ema_slow)
+            is_slow_ma_down = getattr(market_data, "slow_slope", 0.0) <= 0
+            is_bear_alignment = (market_data.ema_fast <= market_data.ema_slow)
+
+            is_bullish_wave = (
+                macro_trend == "BULLISH"
+                or is_bull_alignment
+                or (is_above_slow_ma and is_slow_ma_up)
+                or (market_data.kc_middle_slope >= -0.000005 and market_data.curr_k["close"] >= market_data.kc_middle)
+            )
+            is_bearish_wave = (
+                macro_trend == "BEARISH"
+                or is_bear_alignment
+                or (is_below_slow_ma and is_slow_ma_down)
+                or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
+            )
 
             can_long = not is_bearish_wave
             can_short = not is_bullish_wave

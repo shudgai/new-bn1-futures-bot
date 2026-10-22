@@ -714,10 +714,11 @@ class EntryGate:
             slope = market_data.kc_middle_slope
             curr_k = market_data.curr_k
             prev_k = market_data.prev_k
-            ma5 = market_data.ma5
-            ma15 = market_data.ma15
+            ma5 = float(curr_k.get("ma5", market_data.ma5))
+            ma15 = float(curr_k.get("ma15", market_data.ma15))
             ema_fast = market_data.ema_fast
             ema_slow = market_data.ema_slow
+            slow_slope = float(getattr(market_data, "slow_slope", 0.0))
             ma_spread_pct = market_data.ma_spread_pct
             kc_up = market_data.kc_upper
             kc_mid = market_data.kc_middle
@@ -729,11 +730,12 @@ class EntryGate:
             slope = float(kc_slope or market_data.get("kc_middle_slope", 0.0))
             curr_k = market_data.get("curr_k", {})
             prev_k = market_data.get("prev_k", {})
-            ma5 = float(market_data.get("ma5", quote))
-            ma15 = float(market_data.get("ma15", quote))
+            ma5 = float(curr_k.get("ma5", market_data.get("ma5", quote)))
+            ma15 = float(curr_k.get("ma15", market_data.get("ma15", quote)))
             kc_mid = float(market_data.get("kc_middle", quote))
             ema_fast = float(market_data.get("ema_fast", ma15))
             ema_slow = float(market_data.get("ema_slow", kc_mid))
+            slow_slope = float(market_data.get("slow_slope", 0.0))
             ma_spread_pct = float(market_data.get("ma_spread_pct", 0.1))
             kc_up = float(market_data.get("kc_upper", quote * 1.01))
             kc_low = float(market_data.get("kc_lower", quote * 0.99))
@@ -747,6 +749,7 @@ class EntryGate:
             "kc_slope": slope,
             "ema_fast": ema_fast,
             "ema_slow": ema_slow,
+            "slow_slope": slow_slope,
             "ma_spread_pct": ma_spread_pct,
         }
 
@@ -756,9 +759,9 @@ class EntryGate:
         c_low = curr_k.get("low", min(c_open, c_close))
         body = abs(c_close - c_open)
         # ══════════════════════════════════════════════════════════════════
-        # 門禁 0：順勢交易鐵律（大趨勢一票否決，AGENTS.md 最高準則）
-        # 空頭趨勢嚴禁開多：大週期為 BEARISH，或 KC 中軌下行且受壓，100% 阻斷開多接飛刀！
-        # 多頭趨勢嚴禁開空：大週期為 BULLISH，或 KC 中軌上行且站穩，100% 阻斷開空摸頂！
+        # 門禁 0：順勢交易鐵律（大趨勢一票否決，AGENTS.md 最高準則，2026-10-22 最新授權）
+        # 空頭趨勢嚴禁開多：大週期為 BEARISH，均線空頭排列，或價格在慢線下方，100% 阻斷開多接飛刀！
+        # 多頭趨勢嚴禁開空：大週期為 BULLISH，均線多頭排列，或價格在慢線上方，100% 阻斷開空摸頂！
         # ══════════════════════════════════════════════════════════════════
         macro_trend = str(getattr(market_data, "macro_trend", None) or (market_data.get("macro_trend") if isinstance(market_data, dict) else "NEUTRAL") or "NEUTRAL").upper()
         if signal_side == "LONG":
@@ -768,15 +771,23 @@ class EntryGate:
                     "macro_trend": macro_trend,
                     "cause": "順勢交易鐵律一票否決: 市場大週期為空頭 (BEARISH)，哪怕盤中暴拉突破，100% 嚴禁開多接飛刀！",
                 }
+            # 棕色慢線(EMA40)定生死：價格在慢線之下且慢線或中軌下行，嚴禁開多！
+            is_below_slow = (c_close <= ema_slow or quote <= ema_slow)
+            is_slow_down = (slow_slope <= -0.000002)
+            if (is_below_slow and is_slow_down) or (slope < -0.000005 and is_below_slow):
+                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)空頭壓制中 (close={c_close:.5f} <= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向下嚴禁開多！要一路開空！",
+                }
+            if ema_fast <= ema_slow and is_below_slow and slope <= 0:
+                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 均線空頭排列且受壓於慢線與中軌 (ema_fast={ema_fast:.5f} <= ema_slow={ema_slow:.5f})，嚴禁開多接飛刀！",
+                }
             if slope < -0.000005 and (c_close <= kc_mid or quote <= kc_mid):
                 return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
                     **meta,
                     "cause": f"順勢交易鐵律一票否決: 主跌浪KC中軌下行 (kc_slope={slope:.6f} < 0) 且價格在中軌之下 (close={c_close:.6f} <= mid={kc_mid:.6f})，嚴禁逆勢摸底開多！要一路開空！",
-                }
-            if ema_fast < ema_slow and slope < -0.00001:
-                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 大週期均線空頭排列且中軌持續向下 (slope={slope:.6f})，嚴禁開多接飛刀！",
                 }
 
         if signal_side == "SHORT":
@@ -786,15 +797,23 @@ class EntryGate:
                     "macro_trend": macro_trend,
                     "cause": "順勢交易鐵律一票否決: 市場大週期為多頭 (BULLISH)，哪怕盤中暴跌破位，100% 嚴禁開空摸頂！要一路開多！",
                 }
+            # 棕色慢線(EMA40)定生死：價格在慢線之上且慢線或中軌上行，或者大週期多頭發散，嚴禁開空！
+            is_above_slow = (c_close >= ema_slow or quote >= ema_slow)
+            is_slow_up = (slow_slope >= 0.000002)
+            if (is_above_slow and is_slow_up) or (slope > 0.000005 and is_above_slow):
+                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)多頭護航中 (close={c_close:.5f} >= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向上嚴禁開空！要一路開多！",
+                }
+            if ema_fast >= ema_slow and (is_above_slow or slope >= 0 or c_close >= kc_mid):
+                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 大週期均線多頭排列且守穩結構 (ema_fast={ema_fast:.5f} >= ema_slow={ema_slow:.5f})，大趨勢向上嚴禁開空！要一路開多！",
+                }
             if slope > 0.000005 and (c_close >= kc_mid or quote >= kc_mid):
                 return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
                     **meta,
                     "cause": f"順勢交易鐵律一票否決: 主升浪中軌上行 (kc_slope={slope:.6f} > 0) 且價格在中軌之上 (close={c_close:.6f} >= mid={kc_mid:.6f})，多頭波段中100%嚴禁賣空！要一路開多！",
-                }
-            if ema_fast > ema_slow and slope > 0.00001:
-                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 大週期均線多頭排列且中軌持續向上 (slope={slope:.6f})，嚴禁開空摸頂！",
                 }
 
         # ─── 延續開倉新鮮度防追高 (AGENTS.md 2026-10-20 最新授權) ───
@@ -1256,18 +1275,30 @@ class EntryGate:
         # 門禁 3-B：均線金叉/死叉 + 突破/跌破中軌提早開倉 (ENTRY_LONG_EMA_CROSS_MID / ENTRY_SHORT_EMA_CROSS_MID)
         # ══════════════════════════════════════════════════════════════════
         if signal_side == "LONG":
-            is_ma_cross_mid = (ma5_curr >= ma15 or ema_fast >= ema_slow) and (c_close >= kc_mid or quote >= kc_mid) and (c_close >= c_open) and (slope >= -0.000005) and (ma5_curr > ma5_prev)
+            is_ma_cross_mid = (
+                (ma5_curr >= ma15 and ema_fast >= ema_slow)
+                and (c_close >= kc_mid or quote >= kc_mid)
+                and (c_close >= c_open)
+                and (slope >= -0.000005)
+                and (ma5_curr > ma5_prev)
+            )
             if is_ma_cross_mid:
                 return True, "ENTRY_LONG_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "MA5金叉MA15且收紅站上KC中軌提早放行開多，領先外軌追高天花板！",
+                    "cause": "MA5金叉MA15且均線多頭發散、收紅站上KC中軌提早放行開多，領先外軌追高天花板！",
                 }
         elif signal_side == "SHORT":
-            is_ma_cross_mid = (ma5_curr <= ma15 or ema_fast <= ema_slow) and (c_close <= kc_mid or quote <= kc_mid) and (c_close <= c_open) and (slope <= 0.000005) and (ma5_curr < ma5_prev)
+            is_ma_cross_mid = (
+                (ma5_curr <= ma15 and ema_fast <= ema_slow)
+                and (c_close <= kc_mid or quote <= kc_mid)
+                and (c_close <= c_open)
+                and (slope <= 0.000005)
+                and (ma5_curr < ma5_prev)
+            )
             if is_ma_cross_mid:
                 return True, "ENTRY_SHORT_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "MA5死叉MA15且收黑跌破KC中軌提早放行開空，領先外軌追低地板！",
+                    "cause": "MA5死叉MA15且均線空頭發散、收黑跌破KC中軌提早放行開空，領先外軌追低地板！",
                 }
 
         # 門禁 4：非起點或延續開倉時，若距 EMA40 慢線過大一票否決

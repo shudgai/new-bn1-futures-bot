@@ -500,3 +500,42 @@ def test_image_1918_lobster_breakout_breath_candle_holds_position():
     assert meta.get("ma5_slope_shield") is True or "MA5" in meta.get("cause", "")
 
 
+# ==============================================================================
+# 業務場景 14：【用戶 19:18 龍蝦半山腰開空回歸測試】大週期多頭趨勢中嚴禁開空 (消除 0.021328 追空被套)
+# ==============================================================================
+def test_image_1918_lobster_blocks_short_at_021328_on_bullish_trend():
+    """
+    [商業場景：用戶 19:18 龍蝦截圖 - 19:14 逆大級別趨勢在 0.021328 追空被套痛點]
+    龍蝦在 0.02070 打底後巨幅拉出大陽線暴衝到 0.02240，隨後頂部下殺回調至 0.021328。
+    此時雖然短期 K 棒急殺跌破中軌，但大週期均線依然為多頭排列 (EMA15 > EMA40 棕色慢線，EMA60 向上)，
+    且價格依然在棕色慢線之上。
+    【預期商業行為】：
+    1. 大週期 Trend Bias Filter 強制生效，大趨勢向上時禁用做空按鈕 (LONG_ONLY 模式)！
+    2. EntryGate 收到任何空頭進場訊號 (ENTRY_SHORT_EMA_CROSS_MID 或 BREAKDOWN_SHORT)，
+       100% 觸發 BLOCKED_SHORT_ON_BULLISH_TREND 予以一票否決，徹底杜絕半山腰逆勢做空！
+    """
+    df = _build_trend_df(40, start_price=0.02070, trend="UP", step=0.00004)
+    # 頂部回踩 K 棒 (19:14 報價 0.021328)
+    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [0.02135, 0.02137, 0.02131, 0.021328]
+
+    quote = 0.021328
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=quote)
+    snap.ema_fast = 0.02143
+    snap.ema_slow = 0.02135  # EMA15 > EMA40 棕色慢線 (多頭排列)
+    snap.slow_slope = 0.00001
+    snap.macro_trend = "BULLISH"
+    snap.kc_middle = 0.02143
+    snap.kc_middle_slope = -0.000007 # 單根短線回踩雜訊
+
+    # 1. 驗證交叉開空訊號被 100% 阻斷
+    should_entry, reason, meta = EntryGate.evaluate("ENTRY_SHORT_EMA_CROSS_MID", snap)
+    assert should_entry is False, f"大週期多頭趨勢中，絕對嚴禁開空！actual={reason}, meta={meta}"
+    assert reason == "BLOCKED_SHORT_ON_BULLISH_TREND"
+
+    # 2. 驗證破軌下殺開空訊號亦被 100% 阻斷
+    should_entry_b, reason_b, meta_b = EntryGate.evaluate("BREAKDOWN_SHORT", snap)
+    assert should_entry_b is False, f"大週期多頭趨勢中，破軌下殺亦嚴禁開空！actual={reason_b}, meta={meta_b}"
+    assert reason_b == "BLOCKED_SHORT_ON_BULLISH_TREND"
+
+
+
