@@ -272,11 +272,18 @@ class ExitGate:
                         "cause": f"多單主升浪健康回踩中，KC中軌依然向上 (kc_middle_slope={slope:.6f}) 且 close={c_curr['close']:.4f} >= ema_fast={ema_fast:.4f} > kc_mid={kc_mid:.4f}，維持續抱，嚴禁平多！",
                     }
 
-                # ── 觸發器 0-C：EMA15 向下死叉 EMA40 平多 ──
-                if ema_fast < ema_slow:
+                # ── 外軌鎖定機制：價格仍運行在KC上軌強勢區，絕對禁止提早平倉！──
+                if quote >= kc_up or c_curr["close"] >= kc_up:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "cause": f"多單處於KC上軌外暴走段 (quote={quote:.6f} >= kc_up={kc_up:.6f})，外軌鎖定抱牢主升浪，嚴禁提早平多！",
+                    }
+
+                # ── 觸發器 0-C：均線死叉且實質跌破KC中軌平多 ──
+                if ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid):
                     return True, "LONG_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"EMA15向下死叉EMA40 (ema_fast={ema_fast:.4f} < ema_slow={ema_slow:.4f})，波段反轉立即平多！",
+                        "cause": f"EMA15向下死叉EMA40且跌破KC中軌 (quote={quote:.6f} < kc_mid={kc_mid:.6f})，波段反轉立即平多！",
                     }
 
                 # ── 觸發器 0-D：跌破 KC 中軌平多 (LONG_EXIT_KC_MID_BREACH) ──
@@ -371,11 +378,18 @@ class ExitGate:
                         "cause": f"空單主跌浪健康反抽中，KC中軌依然向下 (kc_middle_slope={slope:.6f}) 且 close={c_curr['close']:.4f} <= ema_fast={ema_fast:.4f} < kc_mid={kc_mid:.4f}，維持續抱，嚴禁平空！",
                     }
 
-                # ── 觸發器 2-C：EMA15 向上金叉 EMA40 平空 ──
-                if ema_fast > ema_slow:
+                # ── 外軌鎖定機制：價格仍運行在KC下軌強勢區，絕對禁止提早平倉！──
+                if quote <= kc_low or c_curr["close"] <= kc_low:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "cause": f"空單處於KC下軌外暴跌段 (quote={quote:.6f} <= kc_low={kc_low:.6f})，外軌鎖定抱牢主跌浪，嚴禁提早平空！",
+                    }
+
+                # ── 觸發器 2-C：均線金叉且實質突破KC中軌平空 ──
+                if ema_fast > ema_slow and (c_curr["close"] > kc_mid or quote > kc_mid):
                     return True, "SHORT_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"EMA15向上金叉EMA40 (ema_fast={ema_fast:.4f} > ema_slow={ema_slow:.4f})，波段反轉立即平空！",
+                        "cause": f"EMA15向上金叉EMA40且突破收復KC中軌 (quote={quote:.6f} > kc_mid={kc_mid:.6f})，波段反轉立即平空！",
                     }
 
                 # ── 觸發器 2-D：收復突破 KC 中軌平空 (SHORT_EXIT_KC_MID_BREACH) ──
@@ -535,35 +549,52 @@ class EntryGate:
         body = abs(c_close - c_open)
         # ══════════════════════════════════════════════════════════════════
         # 門禁 0：順勢交易鐵律（大趨勢一票否決）
-        # 空頭趨勢嚴禁開多：當 KC 中軌向下 (slope < 0) 或 EMA空頭排列 (ema_fast < ema_slow)，100% 阻斷開多！
-        # 多頭趨勢嚴禁開空：當 KC 中軌向上 (slope > 0) 或 EMA多頭排列 (ema_fast > ema_slow)，100% 阻斷開空！
+        # 空頭趨勢嚴禁開多：KC中軌下行 (slope < -0.000005) 且價格受壓在中軌之下，100% 阻斷開多接飛刀！
+        # 多頭趨勢嚴禁開空：KC中軌上行 (slope > 0.000005) 且價格站穩在中軌之上，100% 阻斷開空摸頂！
+        # 破軌衝擊與MA5/MA15交叉：若價格站穩中軌之上且中軌走平向上，允許順勢啟動新主浪！
         # ══════════════════════════════════════════════════════════════════
-        if signal_side == "LONG" and (slope < 0 or ema_fast < ema_slow):
-            return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
-                **meta,
-                "cause": f"順勢交易鐵律一票否決: 大週期為空頭趨勢 (kc_slope={slope:.6f}, ema_fast={ema_fast:.4f} < ema_slow={ema_slow:.4f})，嚴禁在空頭主浪中開多接飛刀！",
-            }
-        if signal_side == "SHORT" and (slope > 0 or ema_fast > ema_slow):
-            return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
-                **meta,
-                "cause": f"順勢交易鐵律一票否決: 大週期為多頭趨勢 (kc_slope={slope:.6f}, ema_fast={ema_fast:.4f} > ema_slow={ema_slow:.4f})，嚴禁在多頭主浪中摸頂開空！",
-            }
+        if signal_side == "LONG":
+            is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "CROSS"))
+            if slope < -0.000005 and (c_close < kc_mid or not is_breakout_mode):
+                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 主通道KC中軌下行 (kc_slope={slope:.6f} < 0) 且在通道內，嚴禁逆勢摸底開多！",
+                }
+            if ema_fast < ema_slow and slope < -0.00001:
+                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 大週期均線空頭排列且中軌持續向下 (slope={slope:.6f})，嚴禁開多接飛刀！",
+                }
+
+        if signal_side == "SHORT":
+            is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKDOWN", "CONTINUATION", "CROSS"))
+            if slope > 0.000005 and (c_close > kc_mid or not is_breakout_mode):
+                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 主通道KC中軌上行 (kc_slope={slope:.6f} > 0) 且在通道內，嚴禁逆勢摸頂開空！",
+                }
+            if ema_fast > ema_slow and slope > 0.00001:
+                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                    **meta,
+                    "cause": f"順勢交易鐵律一票否決: 大週期均線多頭排列且中軌持續向上 (slope={slope:.6f})，嚴禁開空摸頂！",
+                }
 
         # ─── 均線斜率（EMA Slope）絕對順勢一票否決（Hard Veto） ───
         # 做多鐵律：若 EMA15 下拐或走平 (ema15[-1] <= ema15[-2])，一律 100% 阻斷開多接飛刀！
         # 做空鐵律：若 EMA15 上翹或走平 (ema15[-1] >= ema15[-2])，一律 100% 阻斷開空摸頂！
-        prev_ma15_val = float(prev_k.get("ma15", prev_k.get("ema_fast", prev_k.get("ema15", 0.0)))) if prev_k else 0.0
-        if prev_ma15_val > 0:
-            ema15_slope = ema_fast - prev_ma15_val
-            if signal_side == "LONG" and (ema_fast <= prev_ma15_val or ema15_slope <= 0):
+        prev_ema_val = float(prev_k.get("ema_fast", prev_k.get("ema15", 0.0))) if prev_k else 0.0
+        is_breakout_or_cross = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "CROSS"))
+        if prev_ema_val > 0 and not is_breakout_or_cross:
+            ema15_slope = ema_fast - prev_ema_val
+            if signal_side == "LONG" and (ema_fast < prev_ema_val or ema15_slope < -0.000005):
                 return False, "BLOCKED_LONG_ON_EMA_FALLING", {
                     **meta,
-                    "cause": f"均線下拐嚴禁開多接刀: EMA15當前={ema_fast:.5f} <= 前根={prev_ma15_val:.5f} (斜率={ema15_slope:.6f} <= 0)！",
+                    "cause": f"均線下拐嚴禁開多接刀: EMA15當前={ema_fast:.5f} < 前根={prev_ema_val:.5f} (斜率={ema15_slope:.6f} < 0)！",
                 }
-            if signal_side == "SHORT" and (ema_fast >= prev_ma15_val or ema15_slope >= 0):
+            if signal_side == "SHORT" and (ema_fast > prev_ema_val or ema15_slope > 0.000005):
                 return False, "BLOCKED_SHORT_ON_EMA_RISING", {
                     **meta,
-                    "cause": f"均線上翹嚴禁開空摸頂: EMA15當前={ema_fast:.5f} >= 前根={prev_ma15_val:.5f} (斜率={ema15_slope:.6f} >= 0)！",
+                    "cause": f"均線上翹嚴禁開空摸頂: EMA15當前={ema_fast:.5f} > 前根={prev_ema_val:.5f} (斜率={ema15_slope:.6f} > 0)！",
                 }
 
         # ══════════════════════════════════════════════════════════════════
@@ -615,7 +646,7 @@ class EntryGate:
         # ─── 通道相對位置 (KC %B) 與破軌乖離門禁 ───
         bw = kc_up - kc_low
         kc_pos = (quote - kc_low) / bw if bw > 0 else 0.5
-        is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "OUTSIDE", "BURST", "BREAKDOWN"))
+        is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "OUTSIDE", "BURST", "BREAKDOWN", "CROSS_MID"))
         is_late_chase = any(b in signal_type.upper() for b in ("CONTINUATION", "CONFIRMED_2BAR"))
         max_ext_allowed = 0.5 if is_late_chase else 3.0
 
@@ -671,28 +702,28 @@ class EntryGate:
                         }
 
         # ══════════════════════════════════════════════════════════════════
-        # 門禁 2：抓準 09:45 盤整突破的「主升浪起點」/ 主跌浪起點
+        # 門禁 2：妖幣/破軌「主升浪起點」/ 主跌浪起點（外軌突破放行）
         # ══════════════════════════════════════════════════════════════════
         if signal_side == "LONG":
-            is_breakout_candle = (c_close > kc_up) and (c_close > c_open)
-            is_above_emas = (c_close > ema_fast) and (c_close > ema_slow)
-            is_spreading = (ema_fast > ema_slow) and (slope >= 0) and ((ma_spread_pct >= 0.05) or (c_close > kc_up))
-            if is_breakout_candle and is_above_emas and is_spreading:
+            is_breakout_candle = (c_close > kc_up or quote > kc_up) and (c_close >= c_open)
+            is_ma5_upward = ma5_curr > ma5_prev
+            is_kc_mid_aligned = slope >= -0.000005
+            if is_breakout_candle and is_ma5_upward and is_kc_mid_aligned:
                 ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR_BREAKOUT" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
                 return True, ret_reason, {
                     **meta,
-                    "cause": "主升浪起點突破放行: 實體紅K衝破KC上軌且站穩EMA15/40，盤整發散起漲點！",
+                    "cause": "主升浪起點突破放行: 實體紅K衝破KC上軌且MA5強勁向上，破軌動能發起點！",
                 }
 
         elif signal_side == "SHORT":
-            is_breakdown_candle = (c_close < kc_low) and (c_close < c_open)
-            is_below_emas = (c_close < ema_fast) and (c_close < ema_slow)
-            is_spreading = (ema_fast < ema_slow) and (slope <= 0) and ((ma_spread_pct >= 0.05) or (c_close < kc_low))
-            if is_breakdown_candle and is_below_emas and is_spreading:
+            is_breakdown_candle = (c_close < kc_low or quote < kc_low) and (c_close <= c_open)
+            is_ma5_downward = ma5_curr < ma5_prev
+            is_kc_mid_aligned = slope <= 0.000005
+            if is_breakdown_candle and is_ma5_downward and is_kc_mid_aligned:
                 ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR_BREAKOUT" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
                 return True, ret_reason, {
                     **meta,
-                    "cause": "主跌浪起點突破放行: 實體黑K跌破KC下軌且壓制EMA15/40，盤整發散起跌點！",
+                    "cause": "主跌浪起點突破放行: 實體黑K跌破KC下軌且MA5強勁向下，破軌動能發跌點！",
                 }
 
         # ══════════════════════════════════════════════════════════════════
@@ -728,18 +759,18 @@ class EntryGate:
         # 門禁 3-B：均線金叉/死叉 + 突破/跌破中軌提早開倉 (ENTRY_LONG_EMA_CROSS_MID / ENTRY_SHORT_EMA_CROSS_MID)
         # ══════════════════════════════════════════════════════════════════
         if signal_side == "LONG":
-            is_ema_cross_mid = (ema_fast >= ema_slow) and (c_close >= kc_mid or quote >= kc_mid) and (c_close >= c_open)
-            if is_ema_cross_mid:
+            is_ma_cross_mid = (ma5_curr >= ma15 or ema_fast >= ema_slow) and (c_close >= kc_mid or quote >= kc_mid) and (c_close >= c_open) and (slope >= -0.000005) and (ma5_curr > ma5_prev)
+            if is_ma_cross_mid:
                 return True, "ENTRY_LONG_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "EMA15金叉EMA40且站上KC中軌提早放行開多，領先外軌追高天花板！",
+                    "cause": "MA5金叉MA15且收紅站上KC中軌提早放行開多，領先外軌追高天花板！",
                 }
         elif signal_side == "SHORT":
-            is_ema_cross_mid = (ema_fast <= ema_slow) and (c_close <= kc_mid or quote <= kc_mid) and (c_close <= c_open)
-            if is_ema_cross_mid:
+            is_ma_cross_mid = (ma5_curr <= ma15 or ema_fast <= ema_slow) and (c_close <= kc_mid or quote <= kc_mid) and (c_close <= c_open) and (slope <= 0.000005) and (ma5_curr < ma5_prev)
+            if is_ma_cross_mid:
                 return True, "ENTRY_SHORT_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "EMA15死叉EMA40且跌破KC中軌提早放行開空，領先外軌追低地板！",
+                    "cause": "MA5死叉MA15且收黑跌破KC中軌提早放行開空，領先外軌追低地板！",
                 }
 
         # 門禁 4：非起點或延續開倉時，若距 EMA40 慢線過大一票否決

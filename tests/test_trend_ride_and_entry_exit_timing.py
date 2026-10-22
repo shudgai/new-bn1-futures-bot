@@ -197,3 +197,70 @@ def test_exit_timing_blocks_short_exit_on_intrabar_flutter_at_1149():
     assert should_exit is False, f"11:49:02 未收復 MA5 且未突破前高，嚴禁平空！actual={reason}"
     assert reason == "VETO_HOLD"
     assert "MA5" in meta.get("cause", "") or "死抱" in meta.get("cause", "")
+
+
+# ==============================================================================
+# 業務場景 7：【MA 交叉後開倉】MA5 金叉 MA15 且站穩中軌，及時開多
+# ==============================================================================
+def test_entry_timing_ma_cross_and_midline_reclaim_allows_long():
+    """
+    [商業場景：用戶問題 1 - 可以在 MA 交叉後開倉嗎？]
+    在 11:58 附近，MA5 向上金叉 MA15，K 棒收紅陽線明確站穩 KC 中軌之上，中軌走平。
+    【預期商業行為】：
+    系統必須放行 ENTRY_LONG_EMA_CROSS_MID 開多，及時捕捉波段發起點！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02040)
+    snap.curr_k["open"] = 0.02035
+    snap.curr_k["close"] = 0.02040
+    snap.curr_k["high"] = 0.02041
+    snap.curr_k["low"] = 0.02034
+    snap.kc_middle = 0.02036
+    snap.kc_middle_slope = 0.000002
+    snap.curr_k["ma5"] = 0.02038
+    snap.prev_k["ma5"] = 0.02034
+    snap.curr_k["ma15"] = 0.02036
+    snap.prev_k["ma15"] = 0.02035
+
+    should_entry, reason, meta = EntryGate.evaluate("ENTRY_LONG_EMA_CROSS_MID", snap)
+    assert should_entry is True, f"MA5向上金叉MA15且站穩中軌，必須放行開多！actual={reason}, meta={meta}"
+    assert "CROSS" in reason or "BREAKOUT" in reason or "ENTRY" in reason
+
+
+# ==============================================================================
+# 業務場景 8：【破軌開倉與外軌鎖定抱牢】破軌及時開倉，外軌暴走嚴禁提早秒平
+# ==============================================================================
+def test_entry_and_hold_timing_breakout_allows_entry_and_locks_outside_kc():
+    """
+    [商業場景：用戶問題 2 - 破軌也沒開倉？請修正]
+    在 12:02 ~ 12:04，價格強勢衝破 KC 上軌之外。
+    【預期商業行為】：
+    1. EntryGate 必須放行 BREAKOUT_LONG 開多，絕不卡死在遲鈍的大週期慢線上！
+    2. 開多進場後，價格仍在 KC 上軌之外狂飆，ExitGate 必須外軌鎖定死抱 (VETO_HOLD)，
+       絕對嚴禁因大週期 EMA 慢線滯後而在 3 秒內惡意秒平！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02046)
+    snap.atr = 0.00006
+    snap.kc_upper = 0.02042
+    snap.kc_middle = 0.02036
+    snap.kc_middle_slope = 0.000005
+    snap.curr_k["ma5"] = 0.02044
+    snap.prev_k["ma5"] = 0.02038
+    snap.curr_k["open"] = 0.02040
+    snap.curr_k["close"] = 0.02046
+    snap.curr_k["high"] = 0.02047
+    snap.curr_k["low"] = 0.02039
+    snap.ema_fast = 0.02038
+    snap.ema_slow = 0.02040 # 大週期慢線仍在延遲中
+
+    # 1. 驗證破軌及時開倉放行
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snap)
+    assert should_entry is True, f"破軌向上時必須放行開多！actual={reason}"
+
+    # 2. 驗證進場後外軌鎖定抱牢 (絕不被 ema_fast < ema_slow 秒平)
+    pos_long = {"symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.02045, "qty": 38000.0, "peak_roe": 0.002}
+    should_exit, exit_reason, exit_meta = ExitGate.evaluate(pos_long, snap, current_price=0.02046)
+    assert should_exit is False, f"價格在KC上軌外狂飆，嚴禁提早秒平！actual={exit_reason}, meta={exit_meta}"
+    assert exit_reason == "VETO_HOLD"
+    assert "外軌" in exit_meta.get("cause", "") or "暴走" in exit_meta.get("cause", "") or "抱牢" in exit_meta.get("cause", "")

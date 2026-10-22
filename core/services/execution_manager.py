@@ -90,34 +90,71 @@ class ExecutionManager:
             candidate_signal = None
             ma5_curr = float(market_data.curr_k.get("ma5", market_data.current_price))
             ma5_prev = float(market_data.prev_k.get("ma5", ma5_curr))
+            ma15_curr = float(market_data.curr_k.get("ma15", getattr(market_data, "ma15", ma5_curr)))
+            ma15_prev = float(market_data.prev_k.get("ma15", ma15_curr))
             macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
 
-            # 順勢鐵律：大週期為空頭嚴禁做多；大週期為多頭嚴禁做空
-            can_long = (macro_trend != "BEARISH")
-            can_short = (macro_trend != "BULLISH")
+            # 破軌衝擊信號（外軌突破優先，通道走平或向上即刻發動）：
+            is_breakout_long = (
+                (market_data.current_price > market_data.kc_upper or market_data.curr_k["close"] > market_data.kc_upper)
+                and market_data.kc_middle_slope >= -0.000005
+                and ma5_curr > ma5_prev
+            )
+            is_breakdown_short = (
+                (market_data.current_price < market_data.kc_lower or market_data.curr_k["close"] < market_data.kc_lower)
+                and market_data.kc_middle_slope <= 0.000005
+                and ma5_curr < ma5_prev
+            )
+
+            # MA5 / MA15 交叉條件開倉：
+            # 做多：MA5 向上金叉或多頭發散於 MA15，MA5向上，KC中軌走平或向上，K棒收紅站上中軌
+            is_ma_cross_long = (
+                (ma5_curr >= ma15_curr)
+                and ma5_curr > ma5_prev
+                and market_data.kc_middle_slope >= -0.000005
+                and market_data.curr_k["close"] > market_data.curr_k["open"]
+                and market_data.curr_k["close"] >= market_data.kc_middle
+            )
+            # 做空：MA5 向下死叉或空頭發散於 MA15，MA5向下，KC中軌走平或向下，K棒收黑跌破中軌
+            is_ma_cross_short = (
+                (ma5_curr <= ma15_curr)
+                and ma5_curr < ma5_prev
+                and market_data.kc_middle_slope <= 0.000005
+                and market_data.curr_k["close"] < market_data.curr_k["open"]
+                and market_data.curr_k["close"] <= market_data.kc_middle
+            )
+
+            # 順勢鐵律：大週期為空頭嚴禁做多；大週期為多頭嚴禁做空 (破軌暴衝時除外)
+            can_long = (macro_trend != "BEARISH") or is_breakout_long
+            can_short = (macro_trend != "BULLISH") or is_breakdown_short
 
             # 反向開倉冷卻防抽搐 (Anti-Whipsaw Flip Lock)：
-            # 若最近剛平倉，冷卻期內 (180秒) 嚴禁在無大週期反轉確認下立刻反手開相反方向！
+            # 若最近剛平倉，冷卻期內 (180秒) 嚴禁在無反轉確認下反手；但破軌大主浪或明確MA金叉豁免冷卻！
             last_exit = cls._last_exit_record.get(symbol)
             if last_exit:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 last_side = last_exit.get("side")
                 if elapsed_sec < 180:
-                    if last_side == "LONG" and macro_trend != "BEARISH":
+                    if last_side == "LONG" and not (is_breakdown_short or is_ma_cross_short):
                         can_short = False
-                    elif last_side == "SHORT" and macro_trend != "BULLISH":
+                    elif last_side == "SHORT" and not (is_breakout_long or is_ma_cross_long):
                         can_long = False
 
-            if can_long and (
-                (market_data.current_price > market_data.kc_upper and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
-                or (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast > market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev)
-            ):
-                candidate_signal = "BREAKOUT_LONG"
-            elif can_short and (
-                (market_data.current_price < market_data.kc_lower and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
-                or (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast < market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev)
-            ):
-                candidate_signal = "BREAKDOWN_SHORT"
+            if can_long:
+                if is_breakout_long:
+                    candidate_signal = "BREAKOUT_LONG"
+                elif is_ma_cross_long:
+                    candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
+                elif (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev):
+                    candidate_signal = "BREAKOUT_LONG"
+
+            elif can_short:
+                if is_breakdown_short:
+                    candidate_signal = "BREAKDOWN_SHORT"
+                elif is_ma_cross_short:
+                    candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
+                elif (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev):
+                    candidate_signal = "BREAKDOWN_SHORT"
 
             if candidate_signal:
                 should_entry, reason, meta = EntryGate.evaluate(
