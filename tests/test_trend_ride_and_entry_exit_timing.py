@@ -772,6 +772,97 @@ def test_can_open_long_optimized_three_green_candles_bypasses_cooldown():
     assert allowed is True, f"強動能實體大陽線破軌，必須豁免冷卻期放行開多！actual={reason}, meta={meta}"
 
 
+# ==============================================================================
+# 業務場景 19：【模式 1 趨勢啟動進場】EMA5 向上穿越 EMA13/MA15，站穩中軌及時開多
+# ==============================================================================
+def test_mode1_trend_start_cross_midline_allows_entry_without_midline_veto():
+    """
+    [商業場景：趨勢啟動進場 - 提早捕捉波段起點]
+    EMA5 剛向上穿越 EMA13 (金叉)，K 棒收紅實體站穩 KC 中軌之上。
+    此時價格正在通道中軌 (kc_pos 約 0.50~0.55)，系統絕不可被 VETO_AT_KC_MIDDLE 擋死，
+    必須放行 ENTRY_LONG_EMA_CROSS_MID 及時開多！
+    """
+    df = _build_trend_df(30, start_price=0.0200, trend="UP", step=0.00002)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02052)
+    snap.kc_middle = 0.02050
+    snap.kc_upper = 0.02070
+    snap.kc_lower = 0.02030
+    snap.kc_middle_slope = 0.000005
+    snap.curr_k["open"] = 0.02048
+    snap.curr_k["close"] = 0.02052  # 收在 KC 中軌之上
+    snap.curr_k["high"] = 0.02054
+    snap.curr_k["low"] = 0.02047
+    snap.curr_k["ma5"] = 0.02051
+    snap.prev_k["ma5"] = 0.02048   # MA5 向上
+    snap.curr_k["ma15"] = 0.02049  # EMA5 > EMA13 金叉
+    snap.ema_fast = 0.02050
+    snap.ema_slow = 0.02046
+
+    allowed, reason, meta = EntryGate.evaluate("ENTRY_LONG_EMA_CROSS_MID", snap)
+    assert allowed is True, f"EMA5 金叉站穩中軌，必須及時放行開多！actual={reason}, meta={meta}"
+    assert "CROSS_MID" in reason or "TREND_START" in reason
+
+
+# ==============================================================================
+# 業務場景 20：【模式 2 趨勢回踩進場】多頭結構回踩均線帶守穩轉強及時進場
+# ==============================================================================
+def test_mode2_trend_pullback_reclaim_allows_entry():
+    """
+    [商業場景：趨勢回踩進場 - 拒絕追高，等回踩轉強進場]
+    多頭結構完好 (ema_fast > ema_slow 且中軌向上)。
+    價格回踩 EMA5/EMA13 均線帶有守，隨後當根收紅陽線重新站上 EMA5，
+    不必等到價格衝破 KC 上軌，系統放行 TREND_PULLBACK_LONG 提早進場！
+    """
+    df = _build_trend_df(30, start_price=0.0200, trend="UP", step=0.00003)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02065)
+    snap.ema_fast = 0.02060
+    snap.ema_slow = 0.02050
+    snap.kc_middle = 0.02055
+    snap.kc_middle_slope = 0.00001
+    snap.kc_upper = 0.02080
+    snap.kc_lower = 0.02030
+    snap.curr_k["open"] = 0.02058
+    snap.curr_k["close"] = 0.02065 # 收陽站上 MA5
+    snap.curr_k["high"] = 0.02066
+    snap.curr_k["low"] = 0.02055  # 下探回踩均線帶
+    snap.curr_k["ma5"] = 0.02062
+    snap.prev_k["ma5"] = 0.02060
+    snap.curr_k["ma15"] = 0.02058
+
+    allowed, reason, meta = EntryGate.evaluate("TREND_PULLBACK_LONG", snap)
+    assert allowed is True, f"多頭結構回踩轉強，必須放行開多！actual={reason}, meta={meta}"
+    assert "PULLBACK" in reason
+
+
+# ==============================================================================
+# 業務場景 21：【第一級絕對風險退出】1.5 ATR 巨型瀑布貫穿中軌，絕不被 VETO_HOLD 阻擋
+# ==============================================================================
+def test_exit_priority1_extreme_waterfall_exits_immediately_without_veto():
+    """
+    [商業場景：第一級絕對風險退出 - 極端瀑布暴跌立即平倉避險]
+    持有多單時，盤面突然遭遇單根巨型大陰線暴跌 (>= 1.5 ATR 且開盤在中軌上、收盤在中軌下)。
+    ExitGate 必須在第一級立刻觸發 EXIT_BY_EXTREME_WATERFALL 平倉，
+    絕不允許被任何 VETO_HOLD (如慢線向上或健康回踩) 阻擋！
+    """
+    df = _build_trend_df(30, start_price=0.0200, trend="UP", step=0.00003)
+    atr = 0.00006
+    # 最後一根構造巨幅大陰棒 (實體 0.00012 = 2.0 ATR，開在 0.02075，跌破中軌收在 0.02060)
+    df.loc[df.index[-1], "open"] = 0.02075
+    df.loc[df.index[-1], "close"] = 0.02060
+    df.loc[df.index[-1], "high"] = 0.02076
+    df.loc[df.index[-1], "low"] = 0.02058
+
+    pos_long = {"symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.02068, "qty": 30000.0, "peak_roe": 0.015}
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02060, position=pos_long)
+    snap.atr = atr
+    snap.kc_middle = 0.02068
+    snap.macro_trend = "BULLISH" # 即便大週期是多頭
+
+    should_exit, reason, meta = ExitGate.evaluate(pos_long, snap, current_price=0.02060)
+    assert should_exit is True, "遭遇 1.5 ATR 巨型瀑布貫穿中軌，必須立即平倉避險！"
+    assert reason == "EXIT_BY_EXTREME_WATERFALL"
+
+
 
 
 
