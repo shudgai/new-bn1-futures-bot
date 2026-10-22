@@ -295,3 +295,55 @@ def test_image2_pullback_above_ma5_strictly_holds_long():
     assert should_exit is False, f"圖二場景：價格守穩在 MA5 之上，嚴禁平多！actual={reason}, meta={meta}"
     assert reason == "VETO_HOLD"
     assert "MA5" in meta.get("cause", "") or "呼吸" in meta.get("cause", "") or "死抱" in meta.get("cause", "")
+
+
+# ==============================================================================
+# 業務場景 10：【用戶問題 4 & 5 回歸測試】空頭大週期嚴禁開多，第二個買多拒絕追高
+# ==============================================================================
+def test_bearish_macro_trend_strictly_blocks_long():
+    """
+    [商業場景：用戶問題 5 - 如果這是空頭大週期是不是都不要開倉才對]
+    在空頭大週期 (macro_trend == 'BEARISH') 下，哪怕盤中突破破軌或金叉，
+    順勢交易鐵律一票否決，100% 嚴禁開多接飛刀！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02046)
+    snap.macro_trend = "BEARISH"
+    snap.kc_upper = 0.02042
+    snap.curr_k["open"] = 0.02040
+    snap.curr_k["close"] = 0.02046
+    snap.curr_k["ma5"] = 0.02044
+    snap.prev_k["ma5"] = 0.02038
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snap)
+    assert should_entry is False, "空頭大週期下嚴禁開多！"
+    assert reason == "BLOCKED_LONG_ON_BEARISH_TREND"
+    assert "空頭" in meta.get("cause", "") or "BEARISH" in meta.get("cause", "")
+
+
+def test_second_long_blocked_by_stale_continuation():
+    """
+    [商業場景：用戶問題 4 - 第二個買多不應再開]
+    行情已在 KC 上軌外連續收線超過 2 根，或屬於延續追高，
+    系統必須強制觸發 LATE_CHASE_STALE_CONTINUATION 拒絕開倉，嚴禁追在天花板！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    # 人工構造過去多根收在上軌外
+    for idx in range(-5, -1):
+        df.loc[df.index[idx], "close"] = 0.02045
+        df.loc[df.index[idx], "kc_upper"] = 0.02040
+
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02046)
+    snap.kc_upper = 0.02040
+    snap.atr = 0.00005
+    snap.curr_k["open"] = 0.02044
+    snap.curr_k["close"] = 0.02046
+    snap.curr_k["high"] = 0.02046
+    snap.curr_k["low"] = 0.02043
+    snap.curr_k["ma5"] = 0.02045
+    snap.prev_k["ma5"] = 0.02042
+
+    should_entry, reason, meta = EntryGate.evaluate("CONTINUATION_OUTSIDE_KC_LONG", snap)
+    assert should_entry is False, "延續開倉軌外超過2根或乖離過大，必須拒絕追第二個買多！"
+    assert reason in ("LATE_CHASE_STALE_CONTINUATION", "LATE_CHASE_BAND_EXTENSION")
+

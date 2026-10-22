@@ -124,17 +124,24 @@ class ExecutionManager:
                 and market_data.curr_k["close"] <= market_data.kc_middle
             )
 
-            # 順勢鐵律：大週期為空頭嚴禁做多；大週期為多頭嚴禁做空 (破軌暴衝時除外)
-            can_long = (macro_trend != "BEARISH") or is_breakout_long
-            can_short = (macro_trend != "BULLISH") or is_breakdown_short
+            # 順勢鐵律（用戶鐵律5）：空頭大週期嚴禁開多，多頭大週期嚴禁開空！
+            can_long = (macro_trend != "BEARISH")
+            can_short = (macro_trend != "BULLISH")
 
-            # 反向開倉冷卻防抽搐 (Anti-Whipsaw Flip Lock)：
-            # 若最近剛平倉，冷卻期內 (180秒) 嚴禁在無反轉確認下反手；但破軌大主浪或明確MA金叉豁免冷卻！
+            # 同向平倉後防重複追高 (用戶痛點4：第二個買多不應再開)：
+            # 剛平多後，若價格依然貼在外軌高位且未回到均線帶充分蓄勢，嚴禁在噴發末端追第二個多單！
             last_exit = cls._last_exit_record.get(symbol)
             if last_exit:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 last_side = last_exit.get("side")
-                if elapsed_sec < 180:
+                # 同向平倉冷卻：剛平多 180 秒內，若價格仍在軌外且未回踩中軌，拒絕追高開第二個買多！
+                if last_side == "LONG" and elapsed_sec < 180 and market_data.current_price >= market_data.kc_upper:
+                    can_long = False
+                elif last_side == "SHORT" and elapsed_sec < 180 and market_data.current_price <= market_data.kc_lower:
+                    can_short = False
+
+                # 反向冷卻：但若出現明確順勢破軌或MA交叉反轉，允許順勢開倉！
+                if elapsed_sec < 120:
                     if last_side == "LONG" and not (is_breakdown_short or is_ma_cross_short):
                         can_short = False
                     elif last_side == "SHORT" and not (is_breakout_long or is_ma_cross_long):
