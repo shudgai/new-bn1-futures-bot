@@ -1690,3 +1690,94 @@ def can_open_long(
     return True
 
 
+# ==============================================================================
+# 四、 敏捷停損離場檢驗函數 (should_close_short / should_close_long)
+# ==============================================================================
+def should_close_short(
+    bar_t: Any,
+    bar_prev: Any,
+    entry_price: float,
+    current_price: float,
+    atr: float,
+) -> bool:
+    """
+    空單離場檢驗：
+    1. 緊急止損 / 敏捷反轉離場 (防止太晚平倉被大軋)
+    2. 常規動能衰竭離場
+    """
+    try:
+        c_t = float(bar_t['close'])
+        o_t = float(bar_t['open'])
+        ma5_t = float(bar_t['ma5'])
+        ma5_prev = float(bar_prev['ma5'])
+        mid_band = float(bar_t.get('middle_band', bar_t.get('kc_middle', bar_t.get('ma15', c_t))))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+    # ---------------------------------------------
+    # 規則 A：敏捷停損 (防守反彈 V 轉，絕不能拖)
+    # ---------------------------------------------
+    # 1. 價格站上 MA5 且 MA5 向上拐頭
+    ma5_reversal = (c_t > ma5_t) and (ma5_t > ma5_prev)
+
+    # 2. 連續出現實體反彈陽線 (收盤 > 開盤) 且收復進場點
+    strong_bullish_reaction = (c_t > o_t) and (c_t > float(entry_price))
+
+    # 3. 硬性 ATR 停損 (盤中打到即撤，例如 1.5 ATR)
+    hard_stop_loss = float(current_price) >= (float(entry_price) + 1.5 * float(atr))
+
+    if ma5_reversal or (strong_bullish_reaction and ma5_reversal) or hard_stop_loss:
+        return True  # 判定為多頭強勢反攻，立刻平空！
+
+    # ---------------------------------------------
+    # 規則 B：原本的常規出場 (趨勢自然結束)
+    # ---------------------------------------------
+    # 例如：收盤突破通道中軌、或多頭進場條件達成等
+    normal_exit = c_t > mid_band
+    if normal_exit:
+        return True
+
+    return False
+
+
+def should_close_long(
+    bar_t: Any,
+    bar_prev: Any,
+    entry_price: float,
+    current_price: float,
+    atr: float,
+) -> bool:
+    """
+    多單離場檢驗：
+    1. 緊急止損 / 敏捷反轉離場 (防守斷頭跳水)
+    2. 常規動能衰竭離場
+    """
+    try:
+        c_t = float(bar_t['close'])
+        o_t = float(bar_t['open'])
+        ma5_t = float(bar_t['ma5'])
+        ma5_prev = float(bar_prev['ma5'])
+        mid_band = float(bar_t.get('middle_band', bar_t.get('kc_middle', bar_t.get('ma15', c_t))))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+    # ---------------------------------------------
+    # 規則 A：敏捷停損 (防守跳水瀑布)
+    # ---------------------------------------------
+    ma5_reversal = (c_t < ma5_t) and (ma5_t < ma5_prev)
+    strong_bearish_reaction = (c_t < o_t) and (c_t < float(entry_price))
+    hard_stop_loss = float(current_price) <= (float(entry_price) - 1.5 * float(atr))
+
+    if ma5_reversal or (strong_bearish_reaction and ma5_reversal) or hard_stop_loss:
+        return True
+
+    # ---------------------------------------------
+    # 規則 B：常規出場 (收盤跌破通道中軌)
+    # ---------------------------------------------
+    normal_exit = c_t < mid_band
+    if normal_exit:
+        return True
+
+    return False
+
+

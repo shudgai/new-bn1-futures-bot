@@ -239,3 +239,96 @@ def test_can_open_long_cooldown_exemption():
     df.loc[df.index[-1], ["open", "high", "low", "close", "ma5", "kc_upper"]] = [100.0, 101.7, 99.9, 101.5, 100.8, 100.5]
     res_strong_long = can_open_long(df, current_bar_index=29, avg_atr=1.0, last_exit_idx=28, min_cooldown=3)
     assert res_strong_long is True, "強勢大陽K衝破上軌，必須立刻豁免冷卻期直接開多！"
+
+
+# ==============================================================================
+# 測試 7：敏捷停損離場檢驗 (should_close_short / should_close_long)
+# ==============================================================================
+from core.gates.unified_pipeline_gates import (
+    should_close_short,
+    should_close_long,
+)
+
+
+def test_should_close_short_rules():
+    entry_price = 100.0
+    atr = 1.0
+
+    # 1. 常態良性回抽：受壓於 MA5 之下，MA5 向下，未破中軌 -> 不平空 (False)
+    bar_prev = {"ma5": 99.5}
+    bar_t = {
+        "open": 98.8,
+        "close": 99.0,   # 綠棒小反彈
+        "ma5": 99.2,     # ma5_t < ma5_prev (仍向下) 且 close < ma5 (受壓)
+        "middle_band": 100.5,
+    }
+    assert should_close_short(bar_t, bar_prev, entry_price, current_price=99.0, atr=atr) is False
+
+    # 2. 規則 A-1: 價格站上 MA5 且 MA5 向上拐頭 -> 立刻平空 (True)
+    bar_v_turn = {
+        "open": 99.0,
+        "close": 99.8,
+        "ma5": 99.6,     # ma5_t (99.6) > ma5_prev (99.5), 且 close (99.8) > ma5 (99.6)
+        "middle_band": 100.5,
+    }
+    assert should_close_short(bar_v_turn, bar_prev, entry_price, current_price=99.8, atr=atr) is True
+
+    # 3. 規則 A-2: 實體陽線收復進場價且均線反轉 -> 立刻平空 (True)
+    bar_reclaim = {
+        "open": 99.5,
+        "close": 100.2,  # > entry_price 100.0
+        "ma5": 99.8,
+        "middle_band": 100.5,
+    }
+    assert should_close_short(bar_reclaim, bar_prev, entry_price, current_price=100.2, atr=atr) is True
+
+    # 4. 規則 A-3: 硬性 1.5 ATR 停損打到 (current_price >= 100 + 1.5 = 101.5) -> 立刻平空 (True)
+    bar_hard = {
+        "open": 98.5,
+        "close": 99.0,
+        "ma5": 99.0,
+        "middle_band": 102.0,
+    }
+    assert should_close_short(bar_hard, bar_prev, entry_price, current_price=101.6, atr=atr) is True
+
+    # 5. 規則 B: 常規動能衰竭出場 (收盤突破通道中軌) -> 平空 (True)
+    bar_mid_break = {
+        "open": 99.8,
+        "close": 100.6,
+        "ma5": 99.4,
+        "middle_band": 100.5, # close (100.6) > middle_band (100.5)
+    }
+    assert should_close_short(bar_mid_break, bar_prev, entry_price, current_price=100.6, atr=atr) is True
+
+
+def test_should_close_long_rules():
+    entry_price = 100.0
+    atr = 1.0
+
+    # 1. 跌破 MA5 且 MA5 向下拐頭 -> 立刻平多 (True)
+    bar_prev = {"ma5": 100.5}
+    bar_v_drop = {
+        "open": 100.5,
+        "close": 100.1,
+        "ma5": 100.3,    # ma5_t < ma5_prev 且 close < ma5
+        "middle_band": 99.5,
+    }
+    assert should_close_long(bar_v_drop, bar_prev, entry_price, current_price=100.1, atr=atr) is True
+
+    # 2. 硬性 1.5 ATR 停損打到 (current_price <= 100 - 1.5 = 98.5) -> 立刻平多 (True)
+    bar_hard = {
+        "open": 100.0,
+        "close": 99.8,
+        "ma5": 100.6,
+        "middle_band": 98.0,
+    }
+    assert should_close_long(bar_hard, bar_prev, entry_price, current_price=98.4, atr=atr) is True
+
+    # 3. 跌破通道中軌 -> 平多 (True)
+    bar_mid_lost = {
+        "open": 99.8,
+        "close": 99.2,
+        "ma5": 100.6,
+        "middle_band": 99.5, # close < middle_band
+    }
+    assert should_close_long(bar_mid_lost, bar_prev, entry_price, current_price=99.2, atr=atr) is True
