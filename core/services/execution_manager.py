@@ -152,20 +152,30 @@ class ExecutionManager:
                 return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
             if can_long:
+                p_up = market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper
+                p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakout_long:
-                    candidate_signal = "BREAKOUT_LONG"
+                    candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
                 elif is_ma_cross_long:
                     candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
                 elif (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev):
-                    candidate_signal = "BREAKOUT_LONG"
+                    if market_data.curr_k["close"] > market_data.kc_upper:
+                        candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
+                    else:
+                        candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
 
             elif can_short:
+                p_low = market_data.prev_k.get("kc_lower", market_data.kc_lower) if market_data.prev_k else market_data.kc_lower
+                p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakdown_short:
-                    candidate_signal = "BREAKDOWN_SHORT"
+                    candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
                 elif is_ma_cross_short:
                     candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
                 elif (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev):
-                    candidate_signal = "BREAKDOWN_SHORT"
+                    if market_data.curr_k["close"] < market_data.kc_lower:
+                        candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
+                    else:
+                        candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
 
             if candidate_signal:
                 last_exit_context = {

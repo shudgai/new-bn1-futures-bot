@@ -1031,6 +1031,17 @@ class EntryGate:
         kc_pos = (quote - kc_low) / bw if bw > 0 else 0.5
         is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "OUTSIDE", "BURST", "BREAKDOWN", "CROSS_MID"))
         is_late_chase = any(b in signal_type.upper() for b in ("CONTINUATION", "CONFIRMED_2BAR"))
+        is_current_outside = (c_close > kc_up or quote > kc_up) if signal_side == "LONG" else (c_close < kc_low or quote < kc_low)
+
+        # 前根是否已經收在軌道外（判斷是否為新鮮的第一根突破起點）
+        p_up = float(prev_k.get("kc_upper", kc_up)) if prev_k else kc_up
+        p_low_band = float(prev_k.get("kc_lower", kc_low)) if prev_k else kc_low
+        has_prev_close = bool(prev_k and prev_k.get("close") is not None)
+        p_close = float(prev_k["close"]) if has_prev_close else (quote if not is_breakout_mode else (kc_up if signal_side == "LONG" else kc_low))
+        is_prev_outside = (p_close > p_up) if (signal_side == "LONG" and has_prev_close) else ((p_close < p_low_band) if (signal_side == "SHORT" and has_prev_close) else False)
+        is_reentry = bool(last_exit_context and ((signal_side == "LONG" and last_exit_context.get("exit_high") and quote > float(last_exit_context["exit_high"])) or (signal_side == "SHORT" and last_exit_context.get("exit_low") and quote < float(last_exit_context["exit_low"]))))
+
+        # 延續開倉（CONTINUATION / 2BAR）外軌乖離上限 0.5 ATR；首根突破上限 3.0 ATR (符合 AGENTS.md 規範)
         max_ext_allowed = 0.5 if is_late_chase else 3.0
 
         if not is_breakout_mode:
@@ -1052,8 +1063,8 @@ class EntryGate:
                     "cause": f"價格位於KC中軌附近 (KC_Pos={kc_pos:.2f})，非破軌區且處通道中性區，嚴禁開倉！",
                 }
         else:
-            # 破軌模式：收盤自然在軌外 (KC_Pos >= 1.0)，改由「距同側外軌乖離」與「距 MA5 不得超過 1.0 ATR」獨立把關
-            if signal_side == "LONG":
+            # 破軌模式：若價格已在軌外，由「距同側外軌乖離」與「距 MA5 不得超過 1.0 ATR」獨立把關
+            if signal_side == "LONG" and is_current_outside:
                 band_extension = max(quote, c_close) - kc_up
                 if band_extension > max_ext_allowed * atr_val:
                     return False, "LATE_CHASE_BAND_EXTENSION", {
@@ -1068,7 +1079,7 @@ class EntryGate:
                             **meta,
                             "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.0*ATR({1.0*atr_val:.4f})，拒絕追高！",
                         }
-            elif signal_side == "SHORT":
+            elif signal_side == "SHORT" and is_current_outside:
                 band_extension = kc_low - min(quote, c_close)
                 if band_extension > max_ext_allowed * atr_val:
                     return False, "LATE_CHASE_BAND_EXTENSION", {
@@ -1083,9 +1094,10 @@ class EntryGate:
                             **meta,
                             "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.0*ATR({1.0*atr_val:.4f})，拒絕追低！",
                         }
-        # ─── 延續開倉新鮮度防追高 (AGENTS.md 2026-10-20 最新授權) ───
-        # 延續開倉時，同側軌外已連續收線超過 2 根，一律 LATE_CHASE_STALE_CONTINUATION 拒絕開倉，嚴防天花板追第二個買多！
-        if is_late_chase and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+
+        # ─── 破軌新鮮度防追高 (AGENTS.md 2026-10-20 最新授權) ───
+        # 延續開倉（CONTINUATION / 2BAR），若軌外已連續收線超過 2 根，一律拒絕開倉（除非有平倉後前高/前低 Re-entry 授權）
+        if is_late_chase and is_current_outside and not is_reentry and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
             closed_bars = raw_df.iloc[:-1]
             consecutive_outside = 0
             if signal_side == "LONG":
@@ -1108,7 +1120,7 @@ class EntryGate:
                 return False, "LATE_CHASE_STALE_CONTINUATION", {
                     **meta,
                     "consecutive_outside": consecutive_outside,
-                    "cause": f"軌外已連續收線 {consecutive_outside} 根 (>2 根)，破軌新鮮度已過，嚴防天花板追開第二個多單！",
+                    "cause": f"軌外已連續收線 {consecutive_outside} 根 (>2 根)，破軌新鮮度已過，嚴防天花板追開多單或地板追空！",
                 }
 
         # ══════════════════════════════════════════════════════════════════
@@ -1122,19 +1134,20 @@ class EntryGate:
             # 兩根破軌動能確認 (高點突破確認)：針對兩根破軌確認訊號，第 2 根高點必須突破第 1 根高點
             if "CONFIRMED_2BAR" in signal_type.upper() and prev_k and prev_k.get("high") is not None:
                 p_high = float(prev_k["high"])
-                p_close = float(prev_k.get("close", p_high))
-                p_up = float(prev_k.get("kc_upper", kc_up))
                 if p_close > p_up and c_high <= p_high and c_close <= p_close:
                     return False, "BLOCKED_BREAKOUT_NO_NEW_HIGH", {
                         **meta,
                         "cause": f"兩根破軌確認動能衰竭一票否決: 第2根高點({c_high:.5f})未突破第1根高點({p_high:.5f})，頂部動能不足且帶上影線，拒絕追多！",
                     }
 
+            # 突破放行：平倉後前高突破 Re-entry 或兩根確認放行；未在同側外軌連續收線超過 2 根
             if is_breakout_candle and is_ma5_upward and is_kc_mid_aligned:
-                ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR_BREAKOUT" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
+                is_reentry = bool(last_exit_context and last_exit_context.get("exit_high") and quote > float(last_exit_context["exit_high"]))
+                ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
                 return True, ret_reason, {
                     **meta,
-                    "cause": "主升浪起點突破放行: 實體紅K衝破KC上軌且MA5強勁向上，破軌動能發起點！",
+                    "is_reentry": is_reentry,
+                    "cause": "主升浪起點/延續突破放行: 實體紅K衝破KC上軌且MA5強勁向上，動能充足！",
                 }
 
         elif signal_side == "SHORT":
@@ -1145,19 +1158,20 @@ class EntryGate:
             # 兩根跌破動能確認：針對兩根跌破確認訊號，第 2 根低點必須跌破第 1 根低點
             if "CONFIRMED_2BAR" in signal_type.upper() and prev_k and prev_k.get("low") is not None:
                 p_low = float(prev_k["low"])
-                p_close = float(prev_k.get("close", p_low))
-                p_low_band = float(prev_k.get("kc_lower", kc_low))
                 if p_close < p_low_band and c_low >= p_low and c_close >= p_close:
                     return False, "BLOCKED_BREAKDOWN_NO_NEW_LOW", {
                         **meta,
                         "cause": f"兩根跌破確認動能衰竭一票否決: 第2根低點({c_low:.5f})未跌破第1根低點({p_low:.5f})，底部動能不足且帶下影線，拒絕追空！",
                     }
 
+            # 跌破放行：平倉後前低跌破 Re-entry 或兩根確認放行；未在同側外軌連續收線超過 2 根
             if is_breakdown_candle and is_ma5_downward and is_kc_mid_aligned:
-                ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR_BREAKOUT" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
+                is_reentry = bool(last_exit_context and last_exit_context.get("exit_low") and quote < float(last_exit_context["exit_low"]))
+                ret_reason = "CONFIRMED_2BAR_BREAKOUT" if "CONFIRMED_2BAR" in signal_type.upper() else "BREAKOUT_MAIN_WAVE_START"
                 return True, ret_reason, {
                     **meta,
-                    "cause": "主跌浪起點突破放行: 實體黑K跌破KC下軌且MA5強勁向下，破軌動能發跌點！",
+                    "is_reentry": is_reentry,
+                    "cause": "主跌浪起點/延續跌破放行: 實體黑K跌破KC下軌且MA5強勁向下，動能充足！",
                 }
 
         # ══════════════════════════════════════════════════════════════════
