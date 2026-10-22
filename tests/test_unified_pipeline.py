@@ -140,11 +140,11 @@ def test_exit_gate_10pct_lock_7pct_profit():
     df = _generate_sample_df(30, trend="UP")
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=106.0)
     # entry=100, 最高達 112 (+12%), 當前跌到 106 (+6%), 跌破 70% 保證線 (12% * 0.7 = 8.4%)
-    pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.12}
+    pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.12, "leverage": 1.0}
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=106.0)
     assert should_exit
     assert reason == "PROFIT_LOCK"
-    assert "10%鎖7%" in meta.get("cause", "")
+    assert "10%鎖70%" in meta.get("cause", "")
 
 
 def test_execution_manager_pipeline_flow():
@@ -318,7 +318,7 @@ async def test_exit_gate_no_stall_on_bearish_exhaustion():
         quote=100.5,
     )
     assert res["status"] == "EXIT_EXECUTED"
-    assert res["reason"] in ("SHORT_EXIT_KC_MID_BREACH", "SHORT_EXIT_EMA_REVERSAL", "SHORT_EXIT_ON_EMA_CROSS", "EARLY_PIVOT_VALLEY_EXIT", "PROFIT_LOCK_TRAILING_GIVEBACK", "OPPOSITE_KC_BAND_BREACH")
+    assert res["reason"] in ("SHORT_EXIT_KC_MID_BREACH", "SHORT_EXIT_EMA_REVERSAL", "SHORT_EXIT_ON_EMA_CROSS", "EARLY_PIVOT_VALLEY_EXIT", "PROFIT_LOCK", "PROFIT_LOCK_TRAILING_GIVEBACK", "OPPOSITE_KC_BAND_BREACH")
     assert "CAP/USDT" not in account.positions
 
 

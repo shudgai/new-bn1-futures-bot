@@ -40,6 +40,16 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
+## 峰谷三點及時平倉鐵律（2026-10-22 最新授權，解決「平倉位置太晚、砍在反側外軌阿呆谷」）
+- **真峰谷三點樞紐最高優先平倉**：開倉波段獲利後，一旦回溯最近已收線 K 棒確認出現三點樞紐（多單真峰頂中間棒 High 鶴立雞群且確認棒收陰跌破實體中點；空單真谷底中間棒 Low 探底且確認棒收陽突破實體中點），由 `ExitGate` 立即放行 `EARLY_PIVOT_PEAK_EXIT` 或 `EARLY_PIVOT_VALLEY_EXIT` 市價平倉獲利了結！
+- **嚴禁健康回踩誤吞峰谷**：三點峰谷確立時，**一票否決「健康回踩續抱 (VETO_HOLD)」**，絕不允許因大週期均線多頭/空頭排列而死扛回調，徹底杜絕「賺錢不跑、坐過山車回到成本價甚至反側破軌割肉」的惡劣痛點！
+- 實作：`unified_pipeline_gates.py` 之 `ExitGate`；回歸測試：`tests/test_three_point_pivot_real_trades.py`。
+
+## 反側 KC 外軌擊穿：大週期同向須收線確認（2026-10-22 最新授權，優先於舊「最新價擊穿反側外軌立刻 OPPOSITE_KC_BAND_BREACH」）
+- **大週期仍與持倉同向**（多單 `macro_trend=BULLISH`／空單 `BEARISH`，取 `DataPipeline` 快照之大週期判定）：盤中報價毛刺擊穿反側 KC 外軌**不平倉**，須最近一根**已收線** 1m 收盤在反側外軌外且深度 `>= 0.5 ATR`，且最新報價仍在外軌外，才放行 `OPPOSITE_KC_BAND_BREACH`；未確認時記錄 `VETO_OPPOSITE_BREACH_MACRO_ALIGNED_UNCONFIRMED` 並繼續評估其他出口。
+- **大週期已中性或反向**、或已收線資料無效：維持最新報價擊穿即緊急平倉。
+- 帳戶硬止損（3 ATR）、瀑布、真峰谷等出口照常生效。實作：`ExitGate._closed_bar_opposite_breach`；回歸案例：龙虾/USDT 2026-10-22 09:01 毛刺洗出場。
+
 ## 防追高追低：開倉位置精確度限制（2026-10-20 最新授權，優先於舊「單一軌外延續不限制／3 ATR 內可追」）
 - **延續開倉新鮮度**：`CONTINUATION_OUTSIDE_KC` 只允許在剛破軌後連續軌外收線的前 2 根內評估；同側軌外已連續收線超過 2 根，一律 `LATE_CHASE_STALE_CONTINUATION` 拒絕。
 - **乖離上限**：`CONTINUATION_OUTSIDE_KC` 與 `CONFIRMED_2BAR_BREAKOUT`，訊號收盤價與最新報價（取較極端者）距同側 KC 外軌不得超過 0.5 ATR，距 MA5 不得超過 1 ATR；超過即不追（`LATE_CHASE_BAND_EXTENSION` / `LATE_CHASE_MA5_DISTANCE`）。ATR 或資料無效時 Fail-Closed。

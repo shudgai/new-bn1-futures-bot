@@ -1204,11 +1204,11 @@ SYMBOL_CANDIDATE_POOL[:] = [
     symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS
 ]
 
-# Automatic trading is restricted to Lobster and CAP; symbol-list environment
-# variables cannot re-enable other contracts. Existing other positions remain
-# managed by the position-management loop.
+# Automatic trading is restricted to Lobster only (CAP removed 2026-10-22);
+# symbol-list environment variables cannot re-enable other contracts. Existing
+# other positions remain managed by the position-management loop.
 DEFAULT_SYMBOLS = [
-    symbol for symbol in ("龙虾/USDT", "CAP/USDT")
+    symbol for symbol in ("龙虾/USDT",)
     if not is_entry_disabled(symbol)
 ]
 

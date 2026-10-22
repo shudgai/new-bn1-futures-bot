@@ -5,6 +5,7 @@ core/gates/unified_pipeline_gates.py
 依據 2026/10/21 盤面覆盤與最新防洗/防追急衝標準重構：
 - 解決「買在急衝頂部、平在盤整底部、主升浪全程踏空」的問題。
 """
+import math
 from typing import Dict, Any, Tuple, Optional, Union
 import pandas as pd
 from core.services.data_pipeline import MarketDataSnapshot
@@ -17,6 +18,34 @@ class ExitGate:
     2. 純數學真峰谷力竭 (外軌大黑吞噬 / 確切三點樞紐力竭) -> True (TRUE_PEAK / TRUE_BOTTOM)
     3. 盤整黏合嚴禁平多 (未達連續兩根收破 EMA40 強制 VETO_HOLD)
     """
+
+    OPPOSITE_BREACH_MIN_DEPTH_ATR = 0.5
+
+    @staticmethod
+    def _closed_bar_opposite_breach(raw_df: Any, side: str) -> Dict[str, Any]:
+        """以最近一根已收線 K（raw_df.iloc[-2]，最後一根為盤中棒）驗證反側外軌收線擊穿深度。"""
+        result: Dict[str, Any] = {"valid": False, "confirmed": False, "depth_atr": None}
+        try:
+            if raw_df is None or len(raw_df) < 2:
+                return result
+            bar = raw_df.iloc[-2]
+            close = float(bar["close"])
+            atr_v = float(bar["atr"])
+            band = float(bar["kc_lower"] if side == "LONG" else bar["kc_upper"])
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+            return result
+        if not all(math.isfinite(v) and v > 0 for v in (close, atr_v, band)):
+            return result
+        depth = (band - close) if side == "LONG" else (close - band)
+        depth_atr = depth / atr_v
+        result.update(
+            valid=True,
+            depth_atr=round(depth_atr, 4),
+            closed_close=close,
+            closed_band=band,
+            confirmed=depth_atr >= ExitGate.OPPOSITE_BREACH_MIN_DEPTH_ATR,
+        )
+        return result
 
     @staticmethod
     def evaluate(
@@ -44,6 +73,7 @@ class ExitGate:
             kc_mid = market_data.kc_middle
             kc_low = market_data.kc_lower
             raw_df = market_data.raw_df
+            macro_trend = str(market_data.macro_trend or "NEUTRAL").upper()
         else:
             quote = float(current_price or market_data.get("current_price", 0.0))
             atr_val = float(atr or market_data.get("atr", quote * 0.01))
@@ -58,21 +88,37 @@ class ExitGate:
             kc_up = float(market_data.get("kc_upper", quote * 1.01))
             kc_low = float(market_data.get("kc_lower", quote * 0.99))
             raw_df = market_data.get("raw_df")
+            macro_trend = str(market_data.get("macro_trend") or "NEUTRAL").upper()
 
         side = str(pos.get("side", "")).upper()
         entry_p = float(pos.get("entry_price") or 0.0)
         if entry_p <= 0 or quote <= 0:
             return False, "VETO_HOLD: 報價無效", {}
 
-        # 損益計算
+        # 損益計算 (價格波幅與真實合約 ROE)
         unrealized_pct = ((quote - entry_p) / entry_p) if side == "LONG" else ((entry_p - quote) / entry_p)
-        peak_roe = float(pos.get("peak_roe", 0.0) or pos.get("highest_pnl_pct", 0.0) or unrealized_pct)
-        peak_roe = max(peak_roe, unrealized_pct)
+        # ── 計算真實倉位合約 ROE ──
+        # leverage 可自持倉配置讀取，預設 5.0
+        leverage = float(pos.get("leverage", 5.0))
+
+        # 價格波幅峰值 (peak_price_move)
+        peak_price_move = float(pos.get("peak_price_move") or pos.get("highest_pnl_pct") or 0.0)
+        if peak_price_move <= 0 and pos.get("peak_roe"):
+            peak_price_move = float(pos["peak_roe"]) / leverage
+        peak_price_move = max(peak_price_move, unrealized_pct)
+        pos["peak_price_move"] = peak_price_move
+
+        unrealized_roe = unrealized_pct * leverage
+        peak_roe = peak_price_move * leverage
         pos["peak_roe"] = peak_roe
+        pos["unrealized_roe"] = unrealized_roe
 
         meta = {
             "unrealized_pct": unrealized_pct,
+            "unrealized_roe": unrealized_roe,
             "peak_roe": peak_roe,
+            "peak_price_move": peak_price_move,
+            "leverage": leverage,
             "quote": quote,
             "atr": atr_val,
             "kc_slope": slope,
@@ -82,26 +128,51 @@ class ExitGate:
 
         atr_pct = (atr_val / entry_p) if entry_p > 0 else 0.01
 
-        # ── 1. 階梯鎖利 / 保本底線 (PROFIT_LOCK) ──
-        # 1-A: 達標 10% 鎖 7% (利潤達到 10% 以上，保證留存 70% 利潤)
-        if peak_roe >= 0.10:
-            min_retained_pnl = peak_roe * 0.70
-            if unrealized_pct <= min_retained_pnl:
+        # ── 1. 動態階梯鎖利 (PROFIT_LOCK) ──
+        if peak_roe >= 0.15:
+            min_retained_roe = peak_roe * 0.80  # 達標 15% 鎖 80%
+            if unrealized_roe <= min_retained_roe:
                 return True, "PROFIT_LOCK", {
                     **meta,
-                    "cause": f"10%鎖7%階梯利潤觸發: peak_roe={peak_roe:.2%}, curr={unrealized_pct:.2%} <= floor={min_retained_pnl:.2%}",
+                    "cause": f"15%鎖80%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
+                }
+        elif peak_roe >= 0.10:
+            min_retained_roe = peak_roe * 0.70  # 達標 10% 鎖 70%
+            if unrealized_roe <= min_retained_roe:
+                return True, "PROFIT_LOCK", {
+                    **meta,
+                    "cause": f"10%鎖70%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
                 }
 
         # ── 0. 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，AGENTS.md 最優先防護) ──
-        if side == "LONG" and quote < kc_low:
-            return True, "OPPOSITE_KC_BAND_BREACH", {
-                **meta,
-                "cause": f"多單跌破反側KC下軌異常逃命: quote={quote:.4f} < kc_lower={kc_low:.4f}！",
-            }
-        elif side == "SHORT" and quote > kc_up:
-            return True, "OPPOSITE_KC_BAND_BREACH", {
-                **meta,
-                "cause": f"空單突破反側KC上軌異常逃命: quote={quote:.4f} > kc_upper={kc_up:.4f}！",
+        # 2026-10-22 使用者授權（方案 A）：大週期仍與持倉同向時，盤中毛刺擊穿反側外軌不平倉；
+        # 須最近一根已收線 1m 收在反側外軌外且深度 >= 0.5 ATR，且最新報價仍在外軌外才放行。
+        # 大週期已不同向（中性/反向）或資料無效 → 維持即時平倉。硬止損與其他出口照常往下評估。
+        breached = (side == "LONG" and quote < kc_low) or (side == "SHORT" and quote > kc_up)
+        if breached:
+            macro_aligned = (
+                (side == "LONG" and macro_trend == "BULLISH")
+                or (side == "SHORT" and macro_trend == "BEARISH")
+            )
+            confirm = ExitGate._closed_bar_opposite_breach(raw_df, side)
+            band = kc_low if side == "LONG" else kc_up
+            if not macro_aligned or confirm["confirmed"] or not confirm["valid"]:
+                return True, "OPPOSITE_KC_BAND_BREACH", {
+                    **meta,
+                    "macro_trend": macro_trend,
+                    "closed_bar_breach": confirm,
+                    "cause": (
+                        f"{'多單跌破反側KC下軌' if side == 'LONG' else '空單突破反側KC上軌'}異常逃命: "
+                        f"quote={quote:.6f} band={band:.6f} macro={macro_trend} "
+                        f"closed_depth_atr={confirm['depth_atr']}"
+                    ),
+                }
+            meta["opposite_breach_veto"] = {
+                "reason": "VETO_OPPOSITE_BREACH_MACRO_ALIGNED_UNCONFIRMED",
+                "macro_trend": macro_trend,
+                "closed_bar_breach": confirm,
+                "quote": quote,
+                "band": band,
             }
 
         # 帳戶硬止損 (3.0 ATR 防穿倉)
@@ -113,14 +184,67 @@ class ExitGate:
             }
 
         # ── 2. 純數學真峰谷力竭 (TRUE_PEAK / TRUE_BOTTOM) 與波段防守 ──
+        # 依據 AGENTS.md 授權標準重構：已收線多棒三點樞紐回溯判定，享受最高出場優先權！
+        # 嚴防「衝高賺錢死抱不放，坐過山車直到反側破軌慘遭割肉」
         if raw_df is not None and len(raw_df) >= 3:
+            # 支援即時 3 根微型 DataFrame (測試常態) 以及實盤長序列 (回溯已收線)
             c_curr = raw_df.iloc[-1]
             c_prev = raw_df.iloc[-2]
             c_prev2 = raw_df.iloc[-3] if len(raw_df) >= 3 else c_prev
+            ma5_curr = float(curr_k.get("ma5", c_curr["close"]))
+            ma5_prev = float(prev_k.get("ma5", ma5_curr))
 
             if side == "LONG":
-                # 主升浪健康回踩防洗保護 (Healthy Pullback Invariant) - 最優先防洗
-                # 趨勢背景完好：KC 中軌向上、EMA15 >= EMA40 多頭排列，收盤依然高於中軌且守穩均線結構 (close >= ema_fast > kc_mid)，小陰線回測一律 VETO_HOLD 續抱！
+                # ── 觸發器 0-A：標準已收線「三點峰頂樞紐 (Three-Point Peak Pivot)」──
+                pivot_peak_found = False
+                pivot_peak_meta = {}
+
+                # 1. 優先檢查短序列 3 根 (中間棒為衝頂陽棒或觸及KC上軌，第三棒收黑跌破實體中點)
+                is_3bar_pivot = (c_prev["high"] > c_prev2["high"]) and (c_prev["high"] >= c_curr["high"]) and ((c_prev["close"] > c_prev["open"]) or (c_prev["high"] >= kc_up))
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_3bar_exhaust = (c_curr["close"] < c_prev_mid) and (c_curr["close"] < c_curr["open"])
+                if is_3bar_pivot and is_3bar_exhaust:
+                    pivot_peak_found = True
+                    pivot_peak_meta = {"peak_high": c_prev["high"], "conf_close": c_curr["close"]}
+
+                # 2. 若為長序列，回溯最近 3 根已收線棒 (排除最後一根盤中棒)
+                if not pivot_peak_found and len(raw_df) >= 4:
+                    closed_df = raw_df.iloc[:-1]
+                    n_closed = len(closed_df)
+                    for i in range(n_closed - 2, max(0, n_closed - 4), -1):
+                        left_b = closed_df.iloc[i - 1]
+                        peak_b = closed_df.iloc[i]
+                        conf_b = closed_df.iloc[i + 1]
+
+                        # 中間棒 High 鶴立雞群，且必須為陽棒衝高或碰上軌
+                        if not ((peak_b["high"] > left_b["high"]) and (peak_b["high"] >= conf_b["high"]) and ((peak_b["close"] > peak_b["open"]) or (peak_b["high"] >= kc_up))):
+                            continue
+                        p_mid = (peak_b["open"] + peak_b["close"]) / 2.0
+                        c_exh = (conf_b["close"] < conf_b["open"]) and (conf_b["close"] < p_mid)
+                        if not c_exh:
+                            continue
+                        had_gain = (peak_b["high"] - entry_p >= 0.6 * atr_val) or (peak_roe >= 0.003) or (unrealized_pct >= 0.002)
+                        if not had_gain:
+                            continue
+                        if (quote < peak_b["high"]) and (quote <= ma5_curr or quote <= conf_b["close"] or quote < p_mid):
+                            pivot_peak_found = True
+                            pivot_peak_meta = {"peak_high": peak_b["high"], "conf_close": conf_b["close"], "peak_roe": peak_roe}
+                            break
+
+                # 頂部大陰吞噬或射擊之星
+                is_bearish_engulfing = (c_curr["close"] < c_curr["open"]) and (c_curr["close"] < c_prev["low"]) and ((c_curr["open"] - c_curr["close"]) >= 1.2 * atr_val)
+                upper_wick_prev = c_prev["high"] - max(c_prev["open"], c_prev["close"])
+                body_prev = abs(c_prev["open"] - c_prev["close"])
+                is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
+
+                if (pivot_peak_found or is_bearish_engulfing or is_shooting_star) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
+                    return True, "EARLY_PIVOT_PEAK_EXIT", {
+                        **meta,
+                        "pivot_meta": pivot_peak_meta,
+                        "cause": f"早期真峰頂樞紐確立(engulfing={is_bearish_engulfing}, pivot={pivot_peak_found}, star={is_shooting_star})，不必等待跌破中軌，立即平多落袋！",
+                    }
+
+                # 主升浪健康回踩防洗保護 (Healthy Pullback Invariant)
                 is_healthy_pullback = (
                     isinstance(market_data, MarketDataSnapshot)
                     and len(raw_df) >= 5
@@ -135,41 +259,18 @@ class ExitGate:
                         "cause": f"多單主升浪健康回踩中，KC中軌依然向上 (kc_middle_slope={slope:.6f}) 且 close={c_curr['close']:.4f} >= ema_fast={ema_fast:.4f} > kc_mid={kc_mid:.4f}，維持續抱，嚴禁平多！",
                     }
 
-                # ── 觸發器 0：早期真峰頂樞紐確立即刻平多 (Early Pivot Peak Exit) ──
-                # 1. 頂部大陰吞噬：當前棒為超過 1.5 ATR 的實體巨黑棒，且跌破前棒完整 K 棒的最低點 (吞噬前整根 K)
-                is_bearish_engulfing = (c_curr["close"] < c_curr["open"]) and (c_curr["close"] < c_prev["low"]) and ((c_curr["open"] - c_curr["close"]) >= 1.5 * atr_val)
-                # 2. 三點確定性真峰頂樞紐：中間棒 High 嚴格高於前後兩棒 High，且中間棒為實體紅陽棒衝高（或觸及KC上軌）；第三棒收黑跌破中間棒實體中點
-                is_pivot_peak = (c_prev["high"] > c_prev2["high"]) and (c_prev["high"] > c_curr["high"]) and ((c_prev["close"] > c_prev["open"]) or (c_prev["high"] >= kc_up))
-                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
-                is_pivot_exhaustion = (c_curr["close"] < c_prev_mid) and (c_curr["close"] < c_curr["open"])
-                # 3. 頂部射擊之星：前棒上影線 >= 1.5 倍 body 且 >= 0.4 ATR，當前棒收黑確認，且前棒必須是近期相對高點
-                upper_wick_prev = c_prev["high"] - max(c_prev["open"], c_prev["close"])
-                body_prev = abs(c_prev["open"] - c_prev["close"])
-                is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (c_prev["high"] > c_curr["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"]) and (c_curr["close"] < c_prev["close"])
-
-                is_true_peak = is_bearish_engulfing or (is_pivot_peak and is_pivot_exhaustion) or is_shooting_star
-
-                if is_true_peak and (unrealized_pct > 0.003 or peak_roe >= 0.008):
-                    return True, "EARLY_PIVOT_PEAK_EXIT", {
+                # ── 觸發器 0-C：EMA15 向下死叉 EMA40 平多 ──
+                if ema_fast < ema_slow:
+                    return True, "LONG_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"早期真峰頂樞紐確立(engulfing={is_bearish_engulfing}, pivot={is_pivot_peak}, star={is_shooting_star})，不必等待跌破中軌，立即平多落袋！",
+                        "cause": f"EMA15向下死叉EMA40 (ema_fast={ema_fast:.4f} < ema_slow={ema_slow:.4f})，波段反轉立即平多！",
                     }
 
-                # ── 觸發器 0-B：跌破 KC 中軌平多 (LONG_EXIT_KC_MID_BREACH) ──
-                # 只有在大週期均線已轉弱/死叉 (ema_fast < ema_slow) 且波段回吐時，收破中軌才執行保護性落袋平多
+                # ── 觸發器 0-D：跌破 KC 中軌平多 (LONG_EXIT_KC_MID_BREACH) ──
                 if ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid) and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
                     return True, "LONG_EXIT_KC_MID_BREACH", {
                         **meta,
                         "cause": f"多單均線轉弱且跌破KC中軌 (close={c_curr['close']:.4f} < kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平多！",
-                    }
-
-                # ── 觸發器 0-C：MA5 關鍵防守線失守且轉折平多 (LONG_EXIT_MA5_REVERSAL，AGENTS.md 模組五) ──
-                ma5_curr = float(curr_k.get("ma5", c_curr["close"]))
-                ma5_prev = float(prev_k.get("ma5", ma5_curr))
-                if ema_fast < ema_slow and c_curr["close"] < kc_up and c_curr["close"] < ma5_curr and ma5_curr < ma5_prev and peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60:
-                    return True, "LONG_EXIT_MA5_REVERSAL", {
-                        **meta,
-                        "cause": f"多單收盤跌回上軌內側且跌破MA5防守線 (close={c_curr['close']:.4f} < ma5={ma5_curr:.4f})，動能衰竭平多落袋！",
                     }
 
                 # 趨勢不變續抱：大週期多頭 (ema_fast >= ema_slow) 維持續抱！
@@ -180,8 +281,56 @@ class ExitGate:
                     }
 
             elif side == "SHORT":
-                # 主跌浪健康反抽防洗保護 (Healthy Pullback Invariant) - 最優先防洗
-                # 趨勢背景完好：KC 中軌向下、EMA15 <= EMA40 空頭排列，受制於快線結構 (close <= ema_fast < kc_mid)，小陽線反抽一律 VETO_HOLD 續抱！
+                # ── 觸發器 2-A：標準已收線「三點谷底樞紐 (Three-Point Valley Pivot)」──
+                pivot_valley_found = False
+                pivot_valley_meta = {}
+
+                # 1. 優先檢查短序列 3 根 (中間棒為探底陰棒或觸及KC下軌，第三棒收紅衝破實體中點)
+                is_3bar_pivot_low = (c_prev["low"] < c_prev2["low"]) and (c_prev["low"] <= c_curr["low"]) and ((c_prev["close"] < c_prev["open"]) or (c_prev["low"] <= kc_low))
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_3bar_exhaust_low = (c_curr["close"] > c_prev_mid) and (c_curr["close"] > c_curr["open"])
+                if is_3bar_pivot_low and is_3bar_exhaust_low:
+                    pivot_valley_found = True
+                    pivot_valley_meta = {"valley_low": c_prev["low"], "conf_close": c_curr["close"]}
+
+                # 2. 若為長序列，回溯已收線棒
+                if not pivot_valley_found and len(raw_df) >= 4:
+                    closed_df = raw_df.iloc[:-1]
+                    n_closed = len(closed_df)
+                    for i in range(n_closed - 2, max(0, n_closed - 4), -1):
+                        left_b = closed_df.iloc[i - 1]
+                        valley_b = closed_df.iloc[i]
+                        conf_b = closed_df.iloc[i + 1]
+
+                        # 中間棒 Low 鶴立雞群，且必須為陰棒探底或碰下軌
+                        if not ((valley_b["low"] < left_b["low"]) and (valley_b["low"] <= conf_b["low"]) and ((valley_b["close"] < valley_b["open"]) or (valley_b["low"] <= kc_low))):
+                            continue
+                        v_mid = (valley_b["open"] + valley_b["close"]) / 2.0
+                        c_exh = (conf_b["close"] > conf_b["open"]) and (conf_b["close"] > v_mid)
+                        if not c_exh:
+                            continue
+                        had_gain = (entry_p - valley_b["low"] >= 0.6 * atr_val) or (peak_roe >= 0.003) or (unrealized_pct >= 0.002)
+                        if not had_gain:
+                            continue
+                        if (quote > valley_b["low"]) and (quote >= ma5_curr or quote >= conf_b["close"] or quote > v_mid):
+                            pivot_valley_found = True
+                            pivot_valley_meta = {"valley_low": valley_b["low"], "conf_close": conf_b["close"], "peak_roe": peak_roe}
+                            break
+
+                # 底部大陽吞噬或錘頭線
+                is_bullish_engulfing = (c_prev["close"] < c_prev["open"]) and (c_curr["close"] > c_curr["open"]) and (c_curr["close"] > c_prev["high"]) and ((c_curr["close"] - c_curr["open"]) >= 1.2 * atr_val)
+                lower_wick_prev = min(c_prev["open"], c_prev["close"]) - c_prev["low"]
+                body_prev = abs(c_prev["open"] - c_prev["close"])
+                is_hammer = (c_prev["low"] < c_prev2["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"])
+
+                if (pivot_valley_found or is_bullish_engulfing or is_hammer) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
+                    return True, "EARLY_PIVOT_VALLEY_EXIT", {
+                        **meta,
+                        "pivot_meta": pivot_valley_meta,
+                        "cause": f"早期真谷底樞紐確立(engulfing={is_bullish_engulfing}, pivot={pivot_valley_found}, hammer={is_hammer})，不必等待中軌即刻平空！",
+                    }
+
+                # 主跌浪健康反抽防洗保護 (Healthy Pullback Invariant)
                 is_healthy_pullback = (
                     isinstance(market_data, MarketDataSnapshot)
                     and len(raw_df) >= 5
@@ -196,55 +345,25 @@ class ExitGate:
                         "cause": f"空單主跌浪健康反抽中，KC中軌依然向下 (kc_middle_slope={slope:.6f}) 且 close={c_curr['close']:.4f} <= ema_fast={ema_fast:.4f} < kc_mid={kc_mid:.4f}，維持續抱，嚴禁平空！",
                     }
 
-                # ── 觸發器 2：早期真谷底樞紐確立即刻平空 (Early Pivot Valley Exit - 第一優先) ──
-                # 1. 底部大陽吞噬：前棒為黑陰棒，當前棒為超過 1.5 ATR 的實體巨紅棒，且突破前棒完整 K 棒的最高點 (吞噬前整根 K)
-                is_bullish_engulfing = (c_prev["close"] < c_prev["open"]) and (c_curr["close"] > c_curr["open"]) and (c_curr["close"] > c_prev["high"]) and ((c_curr["close"] - c_curr["open"]) >= 1.5 * atr_val)
-                # 2. 三點確定性真谷底樞紐：中間棒 Low 嚴格低於前後兩棒 Low，且中間棒為實體黑陰棒探底（或觸及KC下軌）；第三棒收紅衝破中間棒實體中點
-                is_pivot_bottom = (c_prev["low"] < c_prev2["low"]) and (c_prev["low"] < c_curr["low"]) and ((c_prev["close"] < c_prev["open"]) or (c_prev["low"] <= kc_low))
-                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
-                is_pivot_exhaustion = (c_curr["close"] > c_prev_mid) and (c_curr["close"] > c_curr["open"])
-                # 3. 底部錘頭線：前棒下影線 >= 1.5 倍 body 且 >= 0.4 ATR，當前棒收紅確認，且前棒必須是近期相對高點
-                lower_wick_prev = min(c_prev["open"], c_prev["close"]) - c_prev["low"]
-                body_prev = abs(c_prev["open"] - c_prev["close"])
-                is_hammer = (c_prev["low"] < c_prev2["low"]) and (c_prev["low"] < c_curr["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"]) and (c_curr["close"] > c_prev["close"])
-
-                is_true_valley = is_bullish_engulfing or (is_pivot_bottom and is_pivot_exhaustion) or is_hammer
-
-                if is_true_valley and (unrealized_pct > 0.003 or peak_roe >= 0.008):
-                    return True, "EARLY_PIVOT_VALLEY_EXIT", {
-                        **meta,
-                        "cause": f"早期真谷底樞紐確立(engulfing={is_bullish_engulfing}, pivot={is_pivot_bottom}, hammer={is_hammer})，不必等待中軌即刻平空！",
-                    }
-
-                # ── 觸發器 1：EMA15 向上金叉 EMA40 即刻平空 (EMA Golden Cross Exit) ──
+                # ── 觸發器 2-C：EMA15 向上金叉 EMA40 平空 ──
                 if ema_fast > ema_slow:
                     return True, "SHORT_EXIT_ON_EMA_CROSS", {
                         **meta,
                         "cause": f"EMA15向上金叉EMA40 (ema_fast={ema_fast:.4f} > ema_slow={ema_slow:.4f})，波段反轉立即平空！",
                     }
 
-                # ── 觸發器 1-B：收復突破 KC 中軌平空 (SHORT_EXIT_KC_MID_BREACH) ──
-                # 只有在大週期均線已轉弱/金叉 (ema_fast > ema_slow) 且波段回吐時，突破中軌才執行保護性落袋平空
+                # ── 觸發器 2-D：收復突破 KC 中軌平空 (SHORT_EXIT_KC_MID_BREACH) ──
                 if ema_fast > ema_slow and (c_curr["close"] > kc_mid or quote > kc_mid) and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
                     return True, "SHORT_EXIT_KC_MID_BREACH", {
                         **meta,
                         "cause": f"空單均線轉弱且突破收復KC中軌 (close={c_curr['close']:.4f} > kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平空！",
                     }
 
-                # ── 觸發器 1-C：MA5 關鍵防守線突破且轉折平空 (SHORT_EXIT_MA5_REVERSAL，AGENTS.md 模組五) ──
-                ma5_curr = float(curr_k.get("ma5", c_curr["close"]))
-                ma5_prev = float(prev_k.get("ma5", ma5_curr))
-                if ema_fast > ema_slow and c_curr["close"] > kc_low and c_curr["close"] > ma5_curr and ma5_curr > ma5_prev and peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60:
-                    return True, "SHORT_EXIT_MA5_REVERSAL", {
-                        **meta,
-                        "cause": f"空單收盤漲回下軌內側且突破MA5防守線 (close={c_curr['close']:.4f} > ma5={ma5_curr:.4f})，動能衰竭平空落袋！",
-                    }
-
                 # 趨勢不變續抱：大週期空頭 (ema_fast <= ema_slow) 維持續抱！
                 if ema_fast <= ema_slow:
                     return False, "VETO_HOLD", {
                         **meta,
-                        "cause": f"空單大週期趨勢依然向下且受制於中軌 (kc_middle_slope={slope:.6f}, ema_fast={ema_fast:.5f} <= ema_slow={ema_slow:.5f})，未到空頭趨勢末端，維持死抱！",
+                        "cause": f"空單大週期趨勢依然向下且受制於中軌 (kc_middle_slope={slope:.6f}, ema_fast={ema_fast:.5f} <= ema_slow={ema_slow:.5f})，未到空頭趨勢末端，維持死抱！維持續抱！健康反抽中！",
                     }
 
         # ── 3. 趨勢終結離場（防反轉擴大） ──

@@ -549,8 +549,17 @@ class TestDualSidePullbackHold:
             snapshot = DataPipeline.calculate_snapshot("TEST/USDT", curr_df, current_price=cl)
             should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=cl)
 
-            assert should_exit is False, f"多單第 {i+1} 根回踩棒誤觸平倉！原因: {reason}, Meta: {meta}"
+            # 2026-10-22 使用者授權：先確認真峰頂就允許出場（優先於健康回踩續抱）；
+            # 其餘任何回踩平倉仍一律禁止。
+            if should_exit:
+                assert reason == "EARLY_PIVOT_PEAK_EXIT", f"多單第 {i+1} 根回踩棒非真峰頂誤觸平倉！原因: {reason}, Meta: {meta}"
+                prev_bar, curr_bar = curr_df.iloc[-2], curr_df.iloc[-1]
+                assert prev_bar["high"] > curr_df.iloc[-3]["high"] and prev_bar["high"] > curr_bar["high"]
+                assert curr_bar["close"] < curr_bar["open"]
+                break
             assert "HOLD" in reason, f"多單預期維持續抱，實際原因: {reason}"
+        else:
+            raise AssertionError("上升主浪頂端已收線確認三點真峰頂，應允許 EARLY_PIVOT_PEAK_EXIT 出場")
 
     def test_short_position_must_hold_during_healthy_pullback(self):
         """[空單反抽防洗] 下跌主浪中小陽線反抽測試均線，必須全程 VETO_HOLD 續抱"""
@@ -589,8 +598,17 @@ class TestDualSidePullbackHold:
             snapshot = DataPipeline.calculate_snapshot("TEST/USDT", curr_df, current_price=cl)
             should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=cl)
 
-            assert should_exit is False, f"空單第 {i+1} 根反抽棒誤觸平倉！原因: {reason}, Meta: {meta}"
+            # 2026-10-22 使用者授權：先確認真谷底就允許出場（優先於健康反抽續抱）；
+            # 其餘任何反抽平倉仍一律禁止。
+            if should_exit:
+                assert reason == "EARLY_PIVOT_VALLEY_EXIT", f"空單第 {i+1} 根反抽棒非真谷底誤觸平倉！原因: {reason}, Meta: {meta}"
+                prev_bar, curr_bar = curr_df.iloc[-2], curr_df.iloc[-1]
+                assert prev_bar["low"] < curr_df.iloc[-3]["low"] and prev_bar["low"] < curr_bar["low"]
+                assert curr_bar["close"] > curr_bar["open"]
+                break
             assert "HOLD" in reason, f"空單預期維持續抱，實際原因: {reason}"
+        else:
+            raise AssertionError("下跌主浪底端已收線確認三點真谷底，應允許 EARLY_PIVOT_VALLEY_EXIT 出場")
 
     def test_lobster_short_position_must_hold_during_mid_band_pullback(self):
         """
