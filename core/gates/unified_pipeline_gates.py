@@ -241,8 +241,16 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
 
+                # ── 持倉防洗鐵律：價格守穩在 MA5 之上且未達展開空間，給予充分呼吸空間嚴禁提早平多！──
+                # 圖二場景：剛進場波段延伸中，回踩甚至連 MA5 都沒跌破，一律視為空中換手，死抱主升浪！
+                is_above_ma5_safe = (quote >= ma5_curr) and (c_curr["close"] >= ma5_curr)
+                if is_above_ma5_safe and peak_roe < 0.015 and not is_bearish_engulfing:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "cause": f"多單主升浪強勢延伸中，外軌鎖定且價格穩穩守在MA5防守線之上 (quote={quote:.6f} >= ma5={ma5_curr:.6f})，空中換手給予呼吸空間，抱牢主升浪嚴禁提早平多！堅定死抱走到最後！",
+                    }
+
                 # ── 單邊強勢主升浪死抱走到最後保護 ──
-                # 若大趨勢強烈多頭 (slope >= 0 且 ema_fast >= ema_slow)，且價格守穩在 MA5 之上且未確認峰頂回落
                 if not pivot_peak_found and not is_bearish_engulfing and not is_shooting_star:
                     if slope >= 0 and ema_fast >= ema_slow and quote >= ma5_curr:
                         return False, "VETO_HOLD", {
@@ -347,8 +355,16 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_hammer = (c_prev["low"] < c_prev2["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"])
 
+                # ── 持倉防洗鐵律：價格受壓在 MA5 之下且未達展開空間，給予充分呼吸空間嚴禁提早平空！──
+                # 圖一問題4場景：空頭主趨勢下，價格受壓在 MA5 之下，微弱反抽連 MA5 都沒摸到，一律死抱到底！
+                is_below_ma5_safe = (quote <= ma5_curr) and (c_curr["close"] <= ma5_curr)
+                if is_below_ma5_safe and peak_roe < 0.015 and not is_bullish_engulfing:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "cause": f"空單主跌浪強勢延伸中，外軌鎖定且價格受壓於MA5防守線之下 (quote={quote:.6f} <= ma5={ma5_curr:.6f})，健康反抽給予呼吸空間，抱牢主跌浪嚴禁提早平空！堅定死抱走到最後！",
+                    }
+
                 # ── 單邊強勢主跌浪死抱走到最後保護 ──
-                # 若大趨勢強烈空頭 (slope <= 0 且 ema_fast <= ema_slow)，且價格受壓在 MA5 之下且未確認谷底反彈
                 if not pivot_valley_found and not is_bullish_engulfing and not is_hammer:
                     if slope <= 0 and ema_fast <= ema_slow and quote <= ma5_curr:
                         return False, "VETO_HOLD", {

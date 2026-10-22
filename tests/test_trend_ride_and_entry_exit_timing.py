@@ -264,3 +264,34 @@ def test_entry_and_hold_timing_breakout_allows_entry_and_locks_outside_kc():
     assert should_exit is False, f"價格在KC上軌外狂飆，嚴禁提早秒平！actual={exit_reason}, meta={exit_meta}"
     assert exit_reason == "VETO_HOLD"
     assert "外軌" in exit_meta.get("cause", "") or "暴走" in exit_meta.get("cause", "") or "抱牢" in exit_meta.get("cause", "")
+
+
+# ==============================================================================
+# 業務場景 9：【圖二回歸測試】主升浪中途收小黑棒回踩，守穩 MA5 嚴禁平多，必須繼續走
+# ==============================================================================
+def test_image2_pullback_above_ma5_strictly_holds_long():
+    """
+    [商業場景：用戶圖二 - 平多不應發生，應該要繼續走]
+    在 12:04 買多後，行情沿著 KC 上軌延伸。
+    在 12:06 出現一根小陰棒回踩，但該棒收盤價依然穩穩踩在 MA5 之上 (甚至在 KC 上軌外)，
+    持倉尚未展開至高額止盈門檻。
+    【預期商業行為】：
+    系統必須強制判定為「空中換手/健康回踩」，觸發 VETO_HOLD 死抱到底，絕不允許被洗下車！
+    """
+    df = _build_trend_df(30, start_price=0.02030, trend="UP", step=0.000008)
+    # 前一根衝頂陽線
+    df.loc[df.index[-2], ["open", "high", "low", "close"]] = [0.02042, 0.02048, 0.02041, 0.02046]
+    # 當前小陰棒回踩 (收盤價 0.02044，穩穩踩在 MA5 0.02039 之上)
+    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [0.02046, 0.02047, 0.02043, 0.02044]
+
+    quote = 0.02044
+    pos = {"symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.02045, "qty": 38000.0, "peak_roe": 0.007}
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=quote, position=pos)
+    snap.curr_k["ma5"] = 0.02040
+    snap.prev_k["ma5"] = 0.02036
+    snap.kc_upper = 0.02042
+
+    should_exit, reason, meta = ExitGate.evaluate(pos, snap, current_price=quote)
+    assert should_exit is False, f"圖二場景：價格守穩在 MA5 之上，嚴禁平多！actual={reason}, meta={meta}"
+    assert reason == "VETO_HOLD"
+    assert "MA5" in meta.get("cause", "") or "呼吸" in meta.get("cause", "") or "死抱" in meta.get("cause", "")
