@@ -124,9 +124,14 @@ class ExecutionManager:
                 and market_data.curr_k["close"] <= market_data.kc_middle
             )
 
-            # 順勢鐵律（用戶鐵律5）：空頭大週期嚴禁開多，多頭大週期嚴禁開空！
-            can_long = (macro_trend != "BEARISH")
-            can_short = (macro_trend != "BULLISH")
+            # 順勢鐵律（用戶最新授權：你這一路，是可不能賣空，要一路開多！）：
+            # 主升浪：KC中軌向上且價格在中軌之上，或大週期為BULLISH，100% 絕對禁止賣空！一路只做多！
+            # 主跌浪：KC中軌向下且價格在中軌之下，或大週期為BEARISH，100% 絕對禁止開多！一路只做空！
+            is_bullish_wave = (market_data.kc_middle_slope >= -0.000005 and market_data.curr_k["close"] >= market_data.kc_middle) or (macro_trend == "BULLISH")
+            is_bearish_wave = (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle) or (macro_trend == "BEARISH")
+
+            can_long = not is_bearish_wave
+            can_short = not is_bullish_wave
 
             # 同向平倉後防重複追高 (用戶痛點4：第二個買多不應再開)：
             # 剛平多後，若價格依然貼在外軌高位且未回到均線帶充分蓄勢，嚴禁在噴發末端追第二個多單！

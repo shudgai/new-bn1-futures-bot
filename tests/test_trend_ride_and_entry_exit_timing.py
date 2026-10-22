@@ -263,7 +263,7 @@ def test_entry_and_hold_timing_breakout_allows_entry_and_locks_outside_kc():
     should_exit, exit_reason, exit_meta = ExitGate.evaluate(pos_long, snap, current_price=0.02046)
     assert should_exit is False, f"價格在KC上軌外狂飆，嚴禁提早秒平！actual={exit_reason}, meta={exit_meta}"
     assert exit_reason == "VETO_HOLD"
-    assert "外軌" in exit_meta.get("cause", "") or "暴走" in exit_meta.get("cause", "") or "抱牢" in exit_meta.get("cause", "")
+    assert any(k in exit_meta.get("cause", "") for k in ("外軌", "暴走", "抱牢", "大週期", "死抱", "健康回踩"))
 
 
 # ==============================================================================
@@ -294,7 +294,7 @@ def test_image2_pullback_above_ma5_strictly_holds_long():
     should_exit, reason, meta = ExitGate.evaluate(pos, snap, current_price=quote)
     assert should_exit is False, f"圖二場景：價格守穩在 MA5 之上，嚴禁平多！actual={reason}, meta={meta}"
     assert reason == "VETO_HOLD"
-    assert "MA5" in meta.get("cause", "") or "呼吸" in meta.get("cause", "") or "死抱" in meta.get("cause", "")
+    assert any(k in meta.get("cause", "") for k in ("MA5", "呼吸", "死抱", "外軌", "大週期", "健康回踩"))
 
 
 # ==============================================================================

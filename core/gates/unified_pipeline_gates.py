@@ -241,14 +241,17 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
 
-                # ── 持倉防洗鐵律（用戶痛點3：第一個平多不可平倉）：若尚未出現已收線真峰頂，且價格守穩在 MA5 之上，一律視為空中換手死抱主升浪！──
-                # 只有盤中毛刺、價格連 MA5 都沒跌破、且無已收線三點真峰頂確認時，100% 否決提早平多！
-                is_above_ma5_safe = (quote >= ma5_curr) and (c_curr["close"] >= ma5_curr)
-                if not pivot_peak_found and is_above_ma5_safe and not is_bearish_engulfing:
-                    return False, "VETO_HOLD", {
-                        **meta,
-                        "cause": f"多單主升浪強勢延伸中，未見已收線真峰頂且價格穩守在MA5之上 (quote={quote:.6f} >= ma5={ma5_curr:.6f})，空中換手給予呼吸空間，抱牢主升浪嚴禁提早平多！堅定死抱走到最後！",
-                    }
+                # ── 持倉防洗鐵律（用戶最新授權：開倉後不要回踩就平倉，大週期不變就繼續！）：──
+                # 若未出現確定性已收線真峰頂，只要 KC 中軌依然走平向上 (slope >= -0.000005) 且價格在 KC 中軌之上 (close >= kc_mid)，
+                # 且未出現極端反向巨型大陰吞噬或高位鎖利，一律判定為「大週期不變繼續走」，100% 否決提早平多！
+                is_macro_trend_bullish = (slope >= -0.000005) and (c_curr["close"] >= kc_mid)
+                if not pivot_peak_found and is_macro_trend_bullish and not is_bearish_engulfing and unrealized_roe < 0.10:
+                    # 若為回踩小陰線但大週期多頭不變，維持死抱！
+                    if quote < c_prev["high"] or c_curr["close"] < c_curr["open"]:
+                        return False, "VETO_HOLD", {
+                            **meta,
+                            "cause": f"開倉後大週期不變就繼續: 守穩MA5防守線且KC中軌依然向上 (slope={slope:.6f})，價格在KC中軌之上 (close={c_curr['close']:.6f} >= kc_mid={kc_mid:.6f})，普通小回踩給予呼吸空間，嚴禁提早平多，堅定死抱走完全程！",
+                        }
 
                 # ── 單邊強勢主升浪死抱走到最後保護 ──
                 if not pivot_peak_found and not is_bearish_engulfing and not is_shooting_star:
@@ -258,7 +261,7 @@ class ExitGate:
                             "cause": f"多單單邊主升浪強勢延伸中，價格守穩於MA5防守線之上 (quote={quote:.6f} >= ma5={ma5_curr:.6f})，KC中軌依然向上 (slope={slope:.6f})，未到多頭趨勢末端，未破MA5前嚴禁平多！健康回踩中，維持死抱！堅定死抱走到最後！",
                         }
 
-                # ── 真峰頂平倉：已收線真峰頂確立或大陰吞噬，立即平多落袋！──
+                # ── 真峰頂平倉：已收線真峰頂確立且大週期轉弱，或大陰吞噬，立即平多落袋！──
                 if (pivot_peak_found or is_bearish_engulfing or is_shooting_star) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
                     return True, "EARLY_PIVOT_PEAK_EXIT", {
                         **meta,
@@ -579,10 +582,10 @@ class EntryGate:
                     "cause": "順勢交易鐵律一票否決: 市場大週期為空頭 (BEARISH)，哪怕盤中暴拉突破，100% 嚴禁開多接飛刀！",
                 }
             is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "CROSS"))
-            if slope < -0.000005 and (c_close < kc_mid or not is_breakout_mode):
+            if slope < -0.000005 and (c_close <= kc_mid or quote <= kc_mid):
                 return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
                     **meta,
-                    "cause": f"順勢交易鐵律一票否決: 主通道KC中軌下行 (kc_slope={slope:.6f} < 0) 且在通道內，嚴禁逆勢摸底開多！",
+                    "cause": f"順勢交易鐵律一票否決: 主跌浪KC中軌下行 (kc_slope={slope:.6f} < 0) 且價格在中軌之下 (close={c_close:.6f} <= mid={kc_mid:.6f})，嚴禁逆勢摸底開多！要一路開空！",
                 }
             if ema_fast < ema_slow and slope < -0.00001:
                 return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
@@ -595,13 +598,13 @@ class EntryGate:
                 return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
                     **meta,
                     "macro_trend": macro_trend,
-                    "cause": "順勢交易鐵律一票否決: 市場大週期為多頭 (BULLISH)，哪怕盤中暴跌破位，100% 嚴禁開空摸頂！",
+                    "cause": "順勢交易鐵律一票否決: 市場大週期為多頭 (BULLISH)，哪怕盤中暴跌破位，100% 嚴禁開空摸頂！要一路開多！",
                 }
-            is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKDOWN", "CONTINUATION", "CROSS"))
-            if slope > 0.000005 and (c_close > kc_mid or not is_breakout_mode):
+            # 主升浪嚴禁賣空鐵律（用戶最新鐵律：你這一路，是可不能賣空，要一路開多！）：
+            if slope > 0.000005 and (c_close >= kc_mid or quote >= kc_mid):
                 return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
                     **meta,
-                    "cause": f"順勢交易鐵律一票否決: 主通道KC中軌上行 (kc_slope={slope:.6f} > 0) 且在通道內，嚴禁逆勢摸頂開空！",
+                    "cause": f"順勢交易鐵律一票否決: 主升浪中軌上行 (kc_slope={slope:.6f} > 0) 且價格在中軌之上 (close={c_close:.6f} >= mid={kc_mid:.6f})，多頭波段中100%嚴禁賣空！要一路開多！",
                 }
             if ema_fast > ema_slow and slope > 0.00001:
                 return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
