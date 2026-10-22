@@ -4,6 +4,7 @@ tests/test_trend_ride_and_entry_exit_timing.py
 專門針對「new bn」多空開倉位置與平倉位置（太晚開倉、太早平倉、太晚平倉）之 QA 補充測試套件。
 涵蓋技術邊際 (極小值、盤中毛刺、收線確認) 與商業邊際 (手續費磨損、單邊趨勢死抱、假突破追高攔截)。
 """
+import time
 import pytest
 import pandas as pd
 import numpy as np
@@ -14,6 +15,8 @@ from core.gates.unified_pipeline_gates import (
     should_close_short_optimized,
     can_open_long_optimized,
     should_close_long_optimized,
+    should_close_long_trend,
+    should_close_short_trend,
 )
 from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 
@@ -653,6 +656,121 @@ def test_should_close_short_optimized_narrow_band_consolidation():
     assert should_exit is False, f"19:33 假摸上軌但未站上慢線，嚴禁誤平空！actual={exit_reason}, meta={exit_meta}"
     assert exit_reason == "VETO_HOLD"
     assert exit_meta.get("narrow_band_consolidation_shield") is True or "19:33" in exit_meta.get("cause", "")
+
+
+# ==============================================================================
+# 業務場景 17：【用戶多頭趨勢圖】回踩棕色慢線嚴禁太早平多，死抱主升浪到底
+# ==============================================================================
+def test_should_close_long_trend_holds_through_brown_line_pullbacks():
+    """
+    [商業場景：用戶多頭圖 - 回踩棕線嚴禁太早平多]
+    1. 慢線強勢向上 (ma_slow_trending_up)，無視跌破 MA5 的小回調，should_close_long_trend 返回 False 繼續抱牢！
+    2. 只有當利潤大幅拉開 (> 3*ATR) 且出現極致頂部反轉 (如超長上影線吞噬)，才提早止盈 (True)
+    3. 慢線走平或向下且收盤跌破慢線 (trend_broken)，返回 True
+    4. ExitGate.evaluate 整合驗證：慢線向上且回踩慢線時，VETO_HOLD 拒絕微型頂部樞紐誤平！
+    """
+    df = _build_trend_df(30, start_price=0.0200, trend="UP", step=0.00003)
+    df["ma_slow"] = df["close"] - 0.00005 # 棕色慢線在下方
+    atr = 0.00005
+    entry_p = 0.02050
+
+    # 1. 模擬回踩棕線：收盤回落跌破 MA5，但守在慢線之上，慢線向上
+    df.loc[df.index[-2], "ma_slow"] = 0.02080
+    df.loc[df.index[-1], "ma_slow"] = 0.02082 # 慢線向上
+    df.loc[df.index[-1], "open"] = 0.02088
+    df.loc[df.index[-1], "close"] = 0.02085 # 小跌棒回踩
+    df.loc[df.index[-1], "high"] = 0.02089
+    df.loc[df.index[-1], "low"] = 0.02083
+    curr_p = 0.02085
+    # 浮盈僅 0.00035 (7 * 0.00005 = 7 ATR? 不，0.02085 - 0.02050 = 0.00035)
+    # 設 entry_p = 0.02075，浮盈 0.00010 = 2 ATR (< 3 ATR)
+    entry_p = 0.02075
+    assert should_close_long_trend(df, entry_p, curr_p, atr) is False
+
+    # 2. 模擬利潤大幅拉開 (> 3 ATR) 且出現超長上影線吞噬 (is_climax_reversal)
+    climax_p = entry_p + (3.5 * atr)
+    df.loc[df.index[-1], "open"] = climax_p + 0.00002
+    df.loc[df.index[-1], "close"] = climax_p
+    df.loc[df.index[-1], "high"] = climax_p + 0.00008 # 上影線 0.00008 > 1.5 * body 0.00002
+    assert should_close_long_trend(df, entry_p, climax_p, atr) is True
+
+    # 3. 模擬趨勢跌破 (trend_broken: 跌破慢線且慢線走平或向下)
+    df.loc[df.index[-1], "ma_slow"] = 0.02080
+    df.loc[df.index[-2], "ma_slow"] = 0.02080 # 走平
+    df.loc[df.index[-1], "close"] = 0.02075 # 跌破慢線
+    assert should_close_long_trend(df, entry_p, curr_p, atr) is True
+
+    # 4. ExitGate.evaluate 整合驗證：慢線強勢向上回踩，一票否決平多 (VETO_HOLD)
+    pos_long = {"symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.02075, "qty": 30000.0, "peak_roe": 0.006}
+    # 構造小回調棒回踩慢線 (未成型真峰頂)
+    df.loc[df.index[-3], "high"] = 0.02089
+    df.loc[df.index[-2], "high"] = 0.02088
+    df.loc[df.index[-1], "high"] = 0.02085
+    df.loc[df.index[-1], "open"] = 0.02085
+    df.loc[df.index[-1], "close"] = 0.02084
+    df.loc[df.index[-1], "ma_slow"] = 0.02081
+    df.loc[df.index[-2], "ma_slow"] = 0.02079
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02084, position=pos_long)
+    snap.macro_trend = "BULLISH"
+    snap.ema_slow = 0.02081
+    snap.slow_slope = 0.00002
+
+    should_exit, reason, meta = ExitGate.evaluate(pos_long, snap, current_price=0.02084)
+    assert should_exit is False, f"慢線強勢向上回踩，必須死抱到底！actual={reason}, meta={meta}"
+    assert reason == "VETO_HOLD"
+    assert any(k in meta.get("cause", "") for k in ("回踩", "死抱", "慢線", "防守線", "中軌"))
+
+
+# ==============================================================================
+# 業務場景 18：【用戶 3 根大陽線噴發】強動能豁免冷卻期，放寬兩根破軌確認
+# ==============================================================================
+def test_can_open_long_optimized_three_green_candles_bypasses_cooldown():
+    """
+    [商業場景：連續 3 根飽滿大綠陽線強勢突破，系統必須放行開多]
+    1. 在冷卻期內 (in_cooldown=True)，實體大陽線 (> 1.0 ATR) 灌破上軌，強制豁免冷卻放行！
+    2. 兩根確認放寬基準：前棒有極端長上影線 (High拉很高)，第二根收盤在軌外且收盤高於前收，
+       不看前棒影線，順利放行！
+    3. EntryGate.evaluate 整合驗證：冷卻期內強動能突破放行開多！
+    """
+    df = _build_trend_df(30, start_price=0.0200, trend="UP", step=0.00003)
+    atr = 0.00005
+    df["upper_band"] = 0.02080
+    df["lower_band"] = 0.02060
+    df["middle_band"] = 0.02070
+    df["bandwidth"] = 0.015
+    df["ma5"] = 0.02082
+
+    # 1. 驗證強動能大陽線在冷卻期內豁免放行
+    df.loc[df.index[-2], "ma5"] = 0.02078
+    df.loc[df.index[-1], "ma5"] = 0.02085 # MA5 向上
+    df.loc[df.index[-1], "open"] = 0.02080
+    df.loc[df.index[-1], "close"] = 0.02087 # 實體 0.00007 > 1.0 ATR (0.00005) 且 > upper_band
+    assert can_open_long_optimized(df, -1, atr, in_cooldown=True) is True
+
+    # 2. 驗證兩根破軌放寬基準：前一根留超長上影線 (High 0.02095)，第二根收盤 0.02086 < High1
+    df.loc[df.index[-2], "open"] = 0.02078
+    df.loc[df.index[-2], "close"] = 0.02082 # 收在上軌外
+    df.loc[df.index[-2], "high"] = 0.02095 # 超長上影線
+    df.loc[df.index[-1], "open"] = 0.02082
+    df.loc[df.index[-1], "close"] = 0.02086 # 收盤 > 上軌 且 > 前收 (但小於前高 0.02095)
+    # 兩根收盤都在軌外，順利放行！
+    assert can_open_long_optimized(df, -1, atr, in_cooldown=False) is True
+
+    # 3. EntryGate.evaluate 整合驗證：冷卻期內強動能突破放行
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02087)
+    snap.curr_k["open"] = 0.02080
+    snap.curr_k["close"] = 0.02087
+    snap.curr_k["high"] = 0.02088
+    snap.curr_k["low"] = 0.02079
+    snap.curr_k["ma5"] = 0.02085
+    snap.prev_k["ma5"] = 0.02078
+    snap.kc_upper = 0.02080
+    snap.atr = 0.00005
+
+    last_exit = {"timestamp": time.time() - 30, "bars_since_exit": 1, "side": "LONG"} # 剛平多 30 秒
+    allowed, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snap, last_exit_context=last_exit)
+    assert allowed is True, f"強動能實體大陽線破軌，必須豁免冷卻期放行開多！actual={reason}, meta={meta}"
+
 
 
 
