@@ -456,3 +456,47 @@ def test_image_bear_run_minor_bounce_touches_ma5_strictly_holds_short():
     assert reason == "VETO_HOLD"
     assert any(k in meta.get("cause", "") for k in ("MA5", "死抱", "健康反抽", "呼吸", "大週期"))
 
+
+# ==============================================================================
+# 業務場景 13：【用戶 19:18 龍蝦暴賺回歸測試】首根大陽噴出後收小紅跌棒，MA5向上且守穩中軸嚴禁平多！
+# ==============================================================================
+def test_image_1918_lobster_breakout_breath_candle_holds_position():
+    """
+    [商業場景：用戶 19:18 龍蝦截圖 - 首根大陽噴發後小紅跌棒，不應提早平多被洗出場]
+    在 18:54 龍蝦大陽棒暴衝 (open=0.02127, close=0.02177, high=0.02183)，峰值 ROE 達 18%。
+    在 18:55 出現一根小跌棒微幅喘息 (open=0.02175, close=0.02171)，
+    若只看階梯鎖利 (PROFIT_LOCK) 或單根小跌棒恐慌，會在這裡提早平多，踏空後面 18:57~18:58 暴衝到 0.02240+ 的主升段！
+    【預期商業行為】：
+    MA5 依然強烈向上抬頭 (0.021404 > 0.021286)，且收盤遠在起漲棒中軸 (0.02152) 之上，
+    階梯鎖利與一般平多訊號必須 100% 被一票否決 (VETO_HOLD)，一路死抱到真正的頂部反轉！
+    """
+    df = _build_trend_df(30, start_price=0.02080, trend="UP", step=0.00003)
+    # 18:54 大陽線衝刺
+    df.loc[df.index[-2], ["open", "high", "low", "close"]] = [0.02127, 0.02183, 0.02127, 0.02177]
+    # 18:55 小跌棒喘息 (中軸 0.02152，當前收盤 0.02171 遠高於中軸)
+    df.loc[df.index[-1], ["open", "high", "low", "close"]] = [0.02175, 0.02177, 0.02162, 0.02171]
+
+    quote = 0.02171
+    pos = {
+        "symbol": "龙虾/USDT",
+        "side": "LONG",
+        "entry_price": 0.02100,
+        "qty": 35000.0,
+        "leverage": 5.0,
+        "peak_roe": 0.18,  # 峰值ROE達18%
+    }
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=quote, position=pos)
+    snap.curr_k["ma5"] = 0.021404
+    snap.prev_k["ma5"] = 0.021286
+    snap.kc_upper = 0.02160
+    snap.kc_middle = 0.02115
+    snap.kc_middle_slope = 0.00001
+    snap.ema_fast = 0.02120
+    snap.ema_slow = 0.02100
+
+    should_exit, reason, meta = ExitGate.evaluate(pos, snap, current_price=quote)
+    assert should_exit is False, f"MA5抬頭且守穩起漲棒中軸，嚴禁階梯鎖利或小跌棒提早平多！actual={reason}, meta={meta}"
+    assert reason == "VETO_HOLD"
+    assert meta.get("ma5_slope_shield") is True or "MA5" in meta.get("cause", "")
+
+

@@ -164,21 +164,49 @@ class ExitGate:
 
         atr_pct = (atr_val / entry_p) if entry_p > 0 else 0.01
 
+        ma5_curr = float(curr_k.get("ma5", quote))
+        ma5_prev = float(prev_k.get("ma5", ma5_curr))
+        has_candle_history = raw_df is not None and len(raw_df) >= 2
+        c_curr = raw_df.iloc[-1] if has_candle_history else None
+        c_prev = raw_df.iloc[-2] if has_candle_history else None
+
+        # ── 核心鐵律：MA5 向上抬頭且未破起漲棒實體中軸，嚴禁階梯鎖利/提早平多！(2026-10-22 最新授權) ──
+        # 解決痛點：第一根噴出大陽線收完、接著出現一根小跌棒正常微幅喘息，MA5 依然強烈向上翹起，
+        # 且價格守穩在起漲棒實體中軸之上，此時階梯鎖利 (PROFIT_LOCK) 與短線雜訊一律一票否決，
+        # 堅決抱牢部位，讓利潤奔跑吃到後續大暴衝！
+        is_above_mid_and_ma5_up = False
+        is_below_mid_and_ma5_down = False
+        if has_candle_history and c_curr is not None and c_prev is not None:
+            if side == "LONG":
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_above_mid_and_ma5_up = (quote >= c_prev_mid and c_curr["close"] >= c_prev_mid) and (ma5_curr > ma5_prev)
+            elif side == "SHORT":
+                c_prev_mid = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_below_mid_and_ma5_down = (quote <= c_prev_mid and c_curr["close"] <= c_prev_mid) and (ma5_curr < ma5_prev)
+
         # ── 1. 動態雙階梯鎖利 (真實合約 ROE 納入槓桿，達標 10% 鎖 70%、達標 15% 鎖 80%) ──
-        if peak_roe >= 0.15:
-            min_retained_roe = peak_roe * 0.80  # 達標 15% 鎖 80%
-            if unrealized_roe <= min_retained_roe:
-                return True, "PROFIT_LOCK", {
-                    **meta,
-                    "cause": f"15%鎖80%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 峰值ROE: {peak_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
-                }
-        elif peak_roe >= 0.10:
-            min_retained_roe = peak_roe * 0.70  # 達標 10% 鎖 70%
-            if unrealized_roe <= min_retained_roe:
-                return True, "PROFIT_LOCK", {
-                    **meta,
-                    "cause": f"10%鎖70%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 峰值ROE: {peak_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
-                }
+        # 鐵律：若 MA5 依然順向強烈抬頭/俯衝且未破實體中軸，嚴禁階梯鎖利提早平倉！
+        allow_profit_lock = True
+        if side == "LONG" and is_above_mid_and_ma5_up:
+            allow_profit_lock = False
+        elif side == "SHORT" and is_below_mid_and_ma5_down:
+            allow_profit_lock = False
+
+        if allow_profit_lock:
+            if peak_roe >= 0.15:
+                min_retained_roe = peak_roe * 0.80  # 達標 15% 鎖 80%
+                if unrealized_roe <= min_retained_roe:
+                    return True, "PROFIT_LOCK", {
+                        **meta,
+                        "cause": f"15%鎖80%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 峰值ROE: {peak_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
+                    }
+            elif peak_roe >= 0.10:
+                min_retained_roe = peak_roe * 0.70  # 達標 10% 鎖 70%
+                if unrealized_roe <= min_retained_roe:
+                    return True, "PROFIT_LOCK", {
+                        **meta,
+                        "cause": f"10%鎖70%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 峰值ROE: {peak_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
+                    }
 
         # ── 0. 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，AGENTS.md 最優先防護) ──
         # 2026-10-22 使用者授權（方案 A）：大週期仍與持倉同向時，盤中毛刺擊穿反側外軌不平倉；
@@ -277,6 +305,18 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
 
+                # ── 核心鐵律：MA5 向上抬頭且未破前棒實體中軸，嚴禁提早平多！(2026-10-22 最新授權) ──
+                # 第一根小跌棒若未跌破起漲陽棒實體中軸，且 MA5 強烈向上抬頭 (ma5_curr > ma5_prev)，
+                # 視為單邊主升浪強勢換手，除極端大陰吞噬外，100% 強制一票否決平多，死抱主升浪到底！
+                c_prev_mid_protect = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_above_mid_and_ma5_up = (quote >= c_prev_mid_protect and c_curr["close"] >= c_prev_mid_protect) and (ma5_curr > ma5_prev)
+                if is_above_mid_and_ma5_up and not is_bearish_engulfing:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "ma5_slope_shield": True,
+                        "cause": f"MA5斜率強烈向上抬頭保護 (ma5_curr={ma5_curr:.6f} > ma5_prev={ma5_prev:.6f}) 且未破前棒實體中軸 (close={c_curr['close']:.6f} >= mid={c_prev_mid_protect:.6f})，多頭趨勢完好無損，小跌棒視為良性空中換手，一票否決平多，死抱主升浪到底！",
+                    }
+
                 # ── 核心鐵律：開倉後回踩絕對不平倉（第一重：開倉初期呼吸保護）──
                 # 剛進場部位處於波段展開期 (未達實質展開 0.75% ROE 且衝高未達 0.5*ATR)
                 # 任何回踩 MA5、回踩 KC 中軌或小陰線洗盤，100% 強制一票否決平倉，堅定死抱主升浪！
@@ -305,19 +345,17 @@ class ExitGate:
                             "cause": f"開倉後回踩不平倉鐵律: 價格守穩KC中軌防守線 (close={c_curr['close']:.6f} >= mid={kc_mid:.6f}, slope={slope:.6f})，未見確定性已收線真峰頂，開倉後回踩給予充足呼吸空間，100% 一票否決平多，堅定死抱主升浪！",
                         }
 
-                # ── 真峰頂平倉：已收線真峰頂確立且大週期轉弱，或大陰吞噬，立即平多落袋！──
-                if (pivot_peak_found or is_bearish_engulfing or is_shooting_star) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
+                # ── 真峰頂平倉：已收線真峰頂確立，或大陰吞噬/射擊之星確認，立即平多落袋！──
+                # 若為吞噬/射擊之星，須伴隨 MA5 走平/下拐或跌破 MA5；已收線真峰頂樞紐具最高優先級！
+                is_pivot_valid = pivot_peak_found or (
+                    (is_bearish_engulfing or is_shooting_star)
+                    and ((ma5_curr <= ma5_prev) or (c_curr["close"] < ma5_curr) or is_bearish_engulfing)
+                )
+                if is_pivot_valid and (unrealized_pct > 0.001 or peak_roe >= 0.003):
                     return True, "EARLY_PIVOT_PEAK_EXIT", {
                         **meta,
                         "pivot_meta": pivot_peak_meta,
                         "cause": f"早期真峰頂樞紐確立(engulfing={is_bearish_engulfing}, pivot={pivot_peak_found}, star={is_shooting_star})，不必等待跌破中軌，立即平多落袋！",
-                    }
-
-                # ── 外軌鎖定機制：價格仍運行在KC上軌強勢區，絕對禁止提早平倉！──
-                if quote >= kc_up or c_curr["close"] >= kc_up:
-                    return False, "VETO_HOLD", {
-                        **meta,
-                        "cause": f"多單處於KC上軌外暴走段 (quote={quote:.6f} >= kc_up={kc_up:.6f})，外軌鎖定抱牢主升浪，嚴禁提早平多！",
                     }
 
                 # ── 主升浪健康回踩保護（is_healthy_pullback，未達趨勢衰退強制續抱一票否決）──
@@ -415,6 +453,19 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_hammer = (c_prev["low"] < c_prev2["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"])
 
+                # ── 核心鐵律：MA5 向下俯衝且未破前棒實體中軸，嚴禁提早平空！(2026-10-22 最新授權) ──
+                # 第一根小陽棒若未收復起跌陰棒實體中軸，且 MA5 強烈向下俯衝 (ma5_curr < ma5_prev)，
+                # 視為單邊主跌浪強勢換手，除極端大陽吞噬外，100% 強制一票否決平空，死抱主跌浪到底！
+                c_prev_mid_protect_s = (c_prev["open"] + c_prev["close"]) / 2.0
+                is_below_mid_and_ma5_down = (quote <= c_prev_mid_protect_s and c_curr["close"] <= c_prev_mid_protect_s) and (ma5_curr < ma5_prev)
+                if is_below_mid_and_ma5_down and not is_bullish_engulfing:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "ma5_slope_shield": True,
+                        "cause": f"MA5斜率強烈向下俯衝保護 (ma5_curr={ma5_curr:.6f} < ma5_prev={ma5_prev:.6f}) 且未破前棒實體中軸 (close={c_curr['close']:.6f} <= mid={c_prev_mid_protect_s:.6f})，空頭趨勢完好無損，小陽棒視為良性空中換手，一票否決平空，死抱主跌浪到底！",
+                    }
+
+
                 # ── 核心鐵律：開倉後反抽絕對不平空（第一重：開倉初期呼吸保護）──
                 # 剛進場部位處於波段展開期 (未達實質展開 0.75% ROE 且探底未達 0.5*ATR)
                 # 任何反彈回抽 MA5、回踩 KC 中軌或小陽線洗盤，100% 強制一票否決平空，堅定死抱主跌浪！
@@ -451,19 +502,17 @@ class ExitGate:
                             "cause": f"開倉後反抽不平空鐵律: 價格受壓於KC中軌防守線 (close={c_curr['close']:.6f} <= mid={kc_mid:.6f}, slope={slope:.6f})，未見確定性已收線真谷底，開倉後反抽給予充足呼吸空間，100% 一票否決平空，堅定死抱主跌浪！",
                         }
 
-                # ── 真谷底平倉：已收線真谷底確立或大陽吞噬，立即平空落袋！──
-                if (pivot_valley_found or is_bullish_engulfing or is_hammer) and (unrealized_pct > 0.001 or peak_roe >= 0.003):
+                # ── 真谷底平倉：已收線真谷底確立，或大陽吞噬/錘頭線確認，立即平空落袋！──
+                # 若為吞噬/錘頭線，須伴隨 MA5 走平/上勾或突破 MA5；已收線真谷底樞紐具最高優先級！
+                is_valley_valid = pivot_valley_found or (
+                    (is_bullish_engulfing or is_hammer)
+                    and ((ma5_curr >= ma5_prev) or (c_curr["close"] > ma5_curr) or is_bullish_engulfing)
+                )
+                if is_valley_valid and (unrealized_pct > 0.001 or peak_roe >= 0.003):
                     return True, "EARLY_PIVOT_VALLEY_EXIT", {
                         **meta,
                         "pivot_meta": pivot_valley_meta,
                         "cause": f"早期真谷底樞紐確立(engulfing={is_bullish_engulfing}, pivot={pivot_valley_found}, hammer={is_hammer})，立即平空落袋！",
-                    }
-
-                # ── 外軌鎖定機制：價格仍運行在KC下軌強勢區，絕對禁止提早平倉！──
-                if quote <= kc_low or c_curr["close"] <= kc_low:
-                    return False, "VETO_HOLD", {
-                        **meta,
-                        "cause": f"空單處於KC下軌外暴跌段 (quote={quote:.6f} <= kc_low={kc_low:.6f})，外軌鎖定抱牢主跌浪，嚴禁提早平空！",
                     }
 
                 # ── 主跌浪健康反抽保護（is_healthy_pullback，未達趨勢衰退強制續抱一票否決）──
