@@ -173,3 +173,69 @@ def test_unified_exit_gate_ma15_lost_exit():
     should_exit, code, reason = gate.evaluate_exit(pos, df, current_bar_index=30)
     assert should_exit is True
     assert code == "LONG_EXIT_MA15_LOST"
+
+
+# ==============================================================================
+# 測試 6：強勢大確認棒判定與冷卻豁免機制 (can_open_short / can_open_long)
+# ==============================================================================
+from core.gates.unified_pipeline_gates import (
+    is_strong_bearish_breakout,
+    is_strong_bullish_breakout,
+    can_open_short,
+    can_open_long,
+)
+
+
+def test_is_strong_bearish_breakout_criteria():
+    prev_bar = {"low": 100.0}
+    # 1. 符合標準強勢大黑K：實體 1.5 ATR (>=1.2), 下影線 0.2 (<=0.5*body), 跌破前低 100, 灌破下軌 99.5
+    strong_bar = {
+        "open": 100.2,
+        "close": 98.7,    # body = 1.5 >= 1.2 * 1.0 ATR
+        "high": 100.3,
+        "low": 98.5,      # lower_shadow = 0.2 <= 0.75
+        "kc_lower": 99.5,
+    }
+    assert is_strong_bearish_breakout(strong_bar, prev_bar, avg_atr=1.0) is True
+
+    # 2. 實體動能不足 (< 1.2 ATR) -> False
+    weak_bar = {**strong_bar, "open": 99.6, "close": 98.7}  # body = 0.9 < 1.2
+    assert is_strong_bearish_breakout(weak_bar, prev_bar, avg_atr=1.0) is False
+
+    # 3. 下影線過長 (插針假跌破，下影線 > 0.5 * body) -> False
+    pin_bar = {**strong_bar, "low": 97.0}  # lower_shadow = 1.7 > 0.75
+    assert is_strong_bearish_breakout(pin_bar, prev_bar, avg_atr=1.0) is False
+
+
+def test_can_open_short_cooldown_exemption():
+    df = _build_test_df(30, start_price=100.0)
+    # 構造最後兩根：前一根收在 99.0，下軌 99.5
+    df.loc[df.index[-2], ["open", "high", "low", "close", "ma5", "kc_lower"]] = [100.0, 100.2, 98.8, 99.0, 99.5, 99.5]
+
+    # 場景 A：冷卻期內 (平倉在 bar 28，當前 bar 29，僅隔 1 根 <= 3)
+    # A-1: 普通小碎步陰線 (body=0.5 < 1.2 ATR)
+    df.loc[df.index[-1], ["open", "high", "low", "close", "ma5", "kc_lower"]] = [99.0, 99.1, 98.4, 98.5, 99.2, 99.5]
+    res = can_open_short(df, current_bar_index=29, avg_atr=1.0, last_exit_idx=28, min_cooldown=3)
+    assert res is False, "冷卻期內普通碎步陰線必須被阻擋！"
+
+    # A-2: 強勢大黑K灌破下軌 (open=100.0, close=98.5, body=1.5 >= 1.2 ATR, 下破前低 98.8)
+    df.loc[df.index[-1], ["open", "high", "low", "close", "ma5", "kc_lower"]] = [100.0, 100.1, 98.3, 98.5, 99.2, 99.5]
+    res_strong = can_open_short(df, current_bar_index=29, avg_atr=1.0, last_exit_idx=28, min_cooldown=3)
+    assert res_strong is True, "強勢大黑K灌破下軌，必須立刻豁免冷卻期直接開空！"
+
+    # 場景 B：已過冷卻期 (平倉在 bar 20，當前 bar 25)
+    # 普通兩根破軌小碎步 -> 順利放行！
+    df.loc[df.index[-1], ["open", "high", "low", "close", "ma5", "kc_lower"]] = [99.0, 99.1, 98.4, 98.5, 99.2, 99.5]
+    res_passed = can_open_short(df, current_bar_index=25, avg_atr=1.0, last_exit_idx=20, min_cooldown=3)
+    assert res_passed is True, "已過冷卻期且兩根破下軌，必須放行！"
+
+
+def test_can_open_long_cooldown_exemption():
+    df = _build_test_df(30, start_price=100.0)
+    # 前一根
+    df.loc[df.index[-2], ["open", "high", "low", "close", "ma5", "kc_upper"]] = [100.0, 101.2, 99.8, 101.0, 100.5, 100.5]
+
+    # 冷卻期內強勢大陽K衝破上軌 (open=100.0, close=101.5, body=1.5 >= 1.2 ATR)
+    df.loc[df.index[-1], ["open", "high", "low", "close", "ma5", "kc_upper"]] = [100.0, 101.7, 99.9, 101.5, 100.8, 100.5]
+    res_strong_long = can_open_long(df, current_bar_index=29, avg_atr=1.0, last_exit_idx=28, min_cooldown=3)
+    assert res_strong_long is True, "強勢大陽K衝破上軌，必須立刻豁免冷卻期直接開多！"

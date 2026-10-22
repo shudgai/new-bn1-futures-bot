@@ -1254,9 +1254,16 @@ class PositionStateMachine:
             exit_reason=reason,
         )
 
-    def validate_entry_cooldown(self, candidate_side: str, current_bar_index: int, current_price: float) -> Tuple[bool, str]:
+    def validate_entry_cooldown(
+        self,
+        candidate_side: str,
+        current_bar_index: int,
+        current_price: float,
+        is_strong: bool = False,
+    ) -> Tuple[bool, str]:
         """
         開倉前置過濾：檢查冷卻 K 棒數與原地追單限制
+        - 支援強訊號豁免冷卻 (is_strong=True 時豁免 K 棒冷卻期)
         返回: (是否放行, 原因說明)
         """
         if self.last_exit is None:
@@ -1265,9 +1272,13 @@ class PositionStateMachine:
         bars_passed = current_bar_index - self.last_exit.exit_bar_index
         candidate_side = candidate_side.upper()
 
-        # 1. 強制 K 棒冷卻期檢查 (多空皆適用)
+        # 1. 強制 K 棒冷卻期檢查 (若為強勢破軌則豁免冷卻)
         if bars_passed < self.cooldown_bars:
-            return False, f"COOLDOWN_VETO: 平倉冷卻中 (已過 {bars_passed}/{self.cooldown_bars} 根 K 棒)"
+            if is_strong:
+                # 觸發強勢大確認棒，立刻豁免冷卻！
+                pass
+            else:
+                return False, f"COOLDOWN_VETO: 平倉冷卻中 (已過 {bars_passed}/{self.cooldown_bars} 根 K 棒，非強勢大確認棒嚴禁開倉)"
 
         # 2. 禁止同向原地追單檢查
         if candidate_side == self.last_exit.side:
@@ -1476,5 +1487,206 @@ class UnifiedExitGate:
             return True, "三點樞紐真谷底成型且確認棒衝破實體中點，空單獲利離場"
 
         return False, ""
+
+
+# ==============================================================================
+# 三、 強勢大確認棒判定與開倉綜合檢驗函數 (can_open_short / can_open_long)
+# ==============================================================================
+def is_strong_bearish_breakout(bar: Any, prev_bar: Any, avg_atr: float) -> bool:
+    """
+    判定是否為『極確定之強勢空方根線』：
+    1. 必須是實體陰線
+    2. 實體長度需達到強動能標準 (>= 1.2 * ATR)
+    3. 收在相對低點 (下影線不能過長 <= 0.5 * 實體長度，避免遇到長針假跌破)
+    4. 強勢跌破前一根的最低點
+    5. 實體直接灌破下軌 (開在下軌之上/內，收在下軌外)
+    """
+    try:
+        o = float(bar['open'])
+        c = float(bar['close'])
+        l = float(bar['low'])
+        prev_l = float(prev_bar['low'])
+        lower_band = float(bar.get('lower_band', bar.get('kc_lower', 0.0)))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+    body_size = o - c
+    lower_shadow = c - l
+
+    # 1. 必須是實體陰線
+    if body_size <= 0:
+        return False
+
+    # 2. 實體長度需達到強動能標準 (例如大於 1.2 倍 ATR)
+    strong_momentum = body_size >= (1.2 * float(avg_atr))
+
+    # 3. 收在相對低點 (下影線不能過長，避免遇到長針假跌破)
+    clean_close = lower_shadow <= (0.5 * body_size)
+
+    # 4. 強勢跌破前一根的最低點
+    breaks_previous_low = c < prev_l
+
+    # 5. 實體直接灌破下軌 (開在下軌內/上，收在下軌外)
+    decisive_break_band = (c < lower_band) and (o > lower_band)
+
+    return bool(strong_momentum and clean_close and breaks_previous_low and decisive_break_band)
+
+
+def is_strong_bullish_breakout(bar: Any, prev_bar: Any, avg_atr: float) -> bool:
+    """
+    判定是否為『極確定之強勢多方根線』：
+    1. 必須是實體陽線
+    2. 實體長度需達到強動能標準 (>= 1.2 * ATR)
+    3. 收在相對高點 (上影線不能過長 <= 0.5 * 實體長度，避免遇到長針假突破)
+    4. 強勢突破前一根的最高點
+    5. 實體直接衝破上軌 (開在上軌內/下，收在上軌外)
+    """
+    try:
+        o = float(bar['open'])
+        c = float(bar['close'])
+        h = float(bar['high'])
+        prev_h = float(prev_bar['high'])
+        upper_band = float(bar.get('upper_band', bar.get('kc_upper', 0.0)))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+    body_size = c - o
+    upper_shadow = h - c
+
+    # 1. 必須是實體陽線
+    if body_size <= 0:
+        return False
+
+    # 2. 實體長度需達到強動能標準 (大於 1.2 倍 ATR)
+    strong_momentum = body_size >= (1.2 * float(avg_atr))
+
+    # 3. 收在相對高點 (上影線不能過長，避免長針假突破)
+    clean_close = upper_shadow <= (0.5 * body_size)
+
+    # 4. 強勢突破前一根的最高點
+    breaks_previous_high = c > prev_h
+
+    # 5. 實體直接衝破上軌 (開在上軌內/下，收在上軌外)
+    decisive_break_band = (c > upper_band) and (o < upper_band)
+
+    return bool(strong_momentum and clean_close and breaks_previous_high and decisive_break_band)
+
+
+MIN_COOLDOWN_BARS = 3
+last_exit_bar_index = -999
+
+
+def can_open_short(
+    df: pd.DataFrame,
+    current_bar_index: int,
+    avg_atr: Optional[float] = None,
+    last_exit_idx: Optional[int] = None,
+    min_cooldown: int = MIN_COOLDOWN_BARS,
+) -> bool:
+    """
+    空單進場綜合檢驗：
+    1. 平倉冷卻檢查 (強訊號豁免冷卻判定)
+    2. 收盤定型與 K 棒顏色確認 (嚴禁未定型搶進，必須是實體陰線)
+    3. MA5 短期均線方向與相對位置 (MA5 必須向下且收盤價壓制在 MA5 之下)
+    4. 兩根破下軌確認 (或強勢大黑 K 灌破下軌)
+    """
+    global last_exit_bar_index
+    exit_idx = last_exit_idx if last_exit_idx is not None else last_exit_bar_index
+
+    if df is None or len(df) < 2:
+        return False
+
+    # 取得剛收盤定型的最後兩根 K 棒
+    bar_t = df.iloc[-1]
+    bar_prev = df.iloc[-2]
+
+    # --- 基礎方向過濾 (任何情況都必須符合) ---
+    # 剛收完必須是黑 K
+    if float(bar_t['close']) >= float(bar_t['open']):
+        return False
+
+    # MA5 必須向下，且收盤價壓制在 MA5 之下 (絕不逆勢)
+    ma5_trending_down = float(bar_t['ma5']) < float(bar_prev['ma5'])
+    price_below_ma5 = float(bar_t['close']) < float(bar_t['ma5'])
+    if not (ma5_trending_down and price_below_ma5):
+        return False
+
+    atr_val = float(avg_atr if avg_atr is not None else bar_t.get('atr', abs(float(bar_t['high']) - float(bar_t['low']))))
+    lower_band = float(bar_t.get('lower_band', bar_t.get('kc_lower', 0.0)))
+    prev_lower_band = float(bar_prev.get('lower_band', bar_prev.get('kc_lower', lower_band)))
+
+    # --- 核心：強訊號豁免冷卻判定 ---
+    is_strong = is_strong_bearish_breakout(bar_t, bar_prev, atr_val)
+
+    # 檢查是否在冷卻期內
+    in_cooldown = (current_bar_index - exit_idx) <= min_cooldown
+
+    if in_cooldown:
+        if is_strong:
+            # 觸發強勢大黑 K，立刻豁免冷卻，允許直接開空！
+            pass
+        else:
+            # 一般小碎步、反彈後弱跌，維持冷卻，禁止進場
+            return False
+    else:
+        # 已過冷卻期：採一般常規進場標準 (例如兩根破下軌) 或強勢大黑 K
+        two_bars_break = (float(bar_t['close']) < lower_band) and (float(bar_prev['close']) < prev_lower_band)
+        if not two_bars_break and not is_strong:
+            return False
+
+    return True
+
+
+def can_open_long(
+    df: pd.DataFrame,
+    current_bar_index: int,
+    avg_atr: Optional[float] = None,
+    last_exit_idx: Optional[int] = None,
+    min_cooldown: int = MIN_COOLDOWN_BARS,
+) -> bool:
+    """
+    多單進場綜合檢驗：
+    1. 平倉冷卻檢查 (強訊號豁免冷卻判定)
+    2. 收盤定型與 K 棒顏色確認 (必須是實體陽線)
+    3. MA5 短期均線方向與相對位置 (MA5 必須向上且收盤價穩踩在 MA5 之上)
+    4. 兩根破上軌確認 (或強勢大陽 K 衝破上軌)
+    """
+    global last_exit_bar_index
+    exit_idx = last_exit_idx if last_exit_idx is not None else last_exit_bar_index
+
+    if df is None or len(df) < 2:
+        return False
+
+    bar_t = df.iloc[-1]
+    bar_prev = df.iloc[-2]
+
+    # --- 基礎方向過濾 ---
+    if float(bar_t['close']) <= float(bar_t['open']):
+        return False
+
+    ma5_trending_up = float(bar_t['ma5']) > float(bar_prev['ma5'])
+    price_above_ma5 = float(bar_t['close']) > float(bar_t['ma5'])
+    if not (ma5_trending_up and price_above_ma5):
+        return False
+
+    atr_val = float(avg_atr if avg_atr is not None else bar_t.get('atr', abs(float(bar_t['high']) - float(bar_t['low']))))
+    upper_band = float(bar_t.get('upper_band', bar_t.get('kc_upper', 0.0)))
+    prev_upper_band = float(bar_prev.get('upper_band', bar_prev.get('kc_upper', upper_band)))
+
+    is_strong = is_strong_bullish_breakout(bar_t, bar_prev, atr_val)
+
+    in_cooldown = (current_bar_index - exit_idx) <= min_cooldown
+
+    if in_cooldown:
+        if is_strong:
+            pass
+        else:
+            return False
+    else:
+        two_bars_break = (float(bar_t['close']) > upper_band) and (float(bar_prev['close']) > prev_upper_band)
+        if not two_bars_break and not is_strong:
+            return False
+
+    return True
 
 
