@@ -7,7 +7,14 @@ tests/test_trend_ride_and_entry_exit_timing.py
 import pytest
 import pandas as pd
 import numpy as np
-from core.gates.unified_pipeline_gates import EntryGate, ExitGate
+from core.gates.unified_pipeline_gates import (
+    EntryGate,
+    ExitGate,
+    can_open_short_optimized,
+    should_close_short_optimized,
+    can_open_long_optimized,
+    should_close_long_optimized,
+)
 from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 
 
@@ -536,6 +543,117 @@ def test_image_1918_lobster_blocks_short_at_021328_on_bullish_trend():
     should_entry_b, reason_b, meta_b = EntryGate.evaluate("BREAKDOWN_SHORT", snap)
     assert should_entry_b is False, f"大週期多頭趨勢中，破軌下殺亦嚴禁開空！actual={reason_b}, meta={meta_b}"
     assert reason_b == "BLOCKED_SHORT_ON_BULLISH_TREND"
+
+
+# ==============================================================================
+# 業務場景 15：【用戶 19:45 截圖驗證】死魚盤/收縮禁止追空，破位起跌點及時進場
+# ==============================================================================
+def test_can_open_short_optimized_momentum_vs_dead_fish():
+    """
+    [商業場景：用戶 19:45 追空痛點 vs 19:05 破位起跌點及時進場]
+    1. 19:45 行情末端通道嚴重收窄扁平、動能枯竭，can_open_short_optimized 必須 100% 返回 False
+    2. MA5 向上拐頭時，必須 100% 返回 False
+    3. 19:05 出現實體大陰線灌破下軌 (> 1.0 ATR)，立即放行開空！
+    4. 常規兩根破軌確認放行開空
+    """
+    # 構造 35 根 K 線數據
+    df = _build_trend_df(35, start_price=0.0210, trend="DOWN", step=0.00002)
+    df["upper_band"] = df["close"] + 0.00008
+    df["lower_band"] = df["close"] - 0.00008
+    df["middle_band"] = df["close"]
+    df["bandwidth"] = (df["upper_band"] - df["lower_band"]) / df["middle_band"]
+    df["body_size"] = (df["close"] - df["open"]).abs()
+    df["ma5"] = df["close"].rolling(5).mean()
+    atr = 0.00005
+
+    # 1. 模擬 19:45 死魚盤：最後 3 根蠟燭極小 (< 0.4 ATR) 且 bandwidth 暴跌
+    df.loc[df.index[-3:], "body_size"] = 0.00001 # 0.2 ATR
+    df.loc[df.index[-1], "bandwidth"] = 0.0001
+    assert can_open_short_optimized(df, -1, atr) is False
+
+    # 2. 模擬 MA5 向上拐頭
+    df.loc[df.index[-3:], "body_size"] = 0.00004
+    df.loc[df.index[-1], "ma5"] = 0.02100
+    df.loc[df.index[-2], "ma5"] = 0.02095
+    assert can_open_short_optimized(df, -1, atr) is False
+
+    # 3. 模擬 19:05 破位起跌點：實體陰線 > 1.0 ATR 且灌破下軌，MA5 急跌
+    df.loc[df.index[-2], "ma5"] = 0.02100
+    df.loc[df.index[-1], "ma5"] = 0.02090
+    df.loc[df.index[-1], "open"] = 0.02100
+    df.loc[df.index[-1], "close"] = 0.02093 # 跌 0.00007 > 1.0 * atr (0.00005)
+    df.loc[df.index[-1], "body_size"] = 0.00007
+    df.loc[df.index[-1], "lower_band"] = 0.02095 # close < lower_band
+    df.loc[df.index[-1], "bandwidth"] = 0.015 # 正常帶寬
+    assert can_open_short_optimized(df, -1, atr) is True
+
+    # 4. 驗證 EntryGate 整合門禁：在死魚盤下觸發 BLOCKED_DEAD_FISH_FLAT_BANDWIDTH
+    snap_dead = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=0.02093)
+    snap_dead.raw_df.loc[snap_dead.raw_df.index[-3:], "body_size"] = 0.00001 # 極微小實體
+    snap_dead.raw_df.loc[snap_dead.raw_df.index[-1], "bandwidth"] = 0.00001
+    # 給予非 momentum 訊號
+    snap_dead.curr_k["open"] = 0.02093
+    snap_dead.curr_k["close"] = 0.020925 # 實體僅 0.000005 < 0.4 ATR
+    allowed, veto_reason, veto_meta = EntryGate.evaluate("BREAKDOWN_SHORT", snap_dead)
+    assert allowed is False
+    assert veto_reason == "BLOCKED_DEAD_FISH_FLAT_BANDWIDTH"
+
+
+# ==============================================================================
+# 業務場景 16：【用戶 19:33 截圖驗證】通道收窄假觸碰防洗鐵律，未破棕色慢線一票否決平空 (VETO_HOLD)
+# ==============================================================================
+def test_should_close_short_optimized_narrow_band_consolidation():
+    """
+    [商業場景：用戶 19:33 截圖 - 橫盤收窄被洗出場防護]
+    1. 當通道正在收窄 (bandwidth < rolling(20).mean())，價格摸到上軌但收盤未站上棕色慢線，
+       判定為良性盤整，should_close_short_optimized 必須返回 False (不平倉)！
+    2. 棕色慢線強勢突破 (close > ma_slow 且 ma_slow_slope > 0)，返回 True 平倉。
+    3. 硬性追蹤止損 (current_price >= entry + 1.8 ATR)，返回 True 平倉。
+    4. ExitGate.evaluate 整合驗證：觸發 VETO_HOLD，阻斷 OPPOSITE_KC_BAND_BREACH 誤平！
+    """
+    df = _build_trend_df(30, start_price=0.0215, trend="DOWN", step=0.00003)
+    df["upper_band"] = df["close"] + 0.00008
+    df["lower_band"] = df["close"] - 0.00008
+    df["middle_band"] = df["close"]
+    df["bandwidth"] = (df["upper_band"] - df["lower_band"]) / df["middle_band"]
+    df["ma_slow"] = df["close"] + 0.00005 # 棕色慢線在上方
+    df["ma_slow_slope"] = -0.00001 # 棕色慢線向下
+    entry_p = 0.02150
+    atr = 0.00005
+
+    # 1. 模擬通道收窄 (bandwidth < mean(20))
+    mean_bw = df["bandwidth"].rolling(20).mean().iloc[-1]
+    df.loc[df.index[-1], "bandwidth"] = mean_bw * 0.8 # 收窄中
+    df.loc[df.index[-1], "close"] = df.loc[df.index[-1], "upper_band"] # 摸到上軌
+    curr_p = df.loc[df.index[-1], "close"]
+    # 收盤 0.02108 < ma_slow 0.02113，未站上慢線
+    assert should_close_short_optimized(df, entry_p, curr_p, atr) is False
+
+    # 2. 模擬棕色慢線強勢突破
+    df.loc[df.index[-1], "close"] = df.loc[df.index[-1], "ma_slow"] + 0.00002
+    df.loc[df.index[-1], "ma_slow_slope"] = 0.00002
+    assert should_close_short_optimized(df, entry_p, curr_p, atr) is True
+
+    # 3. 模擬硬性 ATR 追蹤止損 (1.8 ATR)
+    df.loc[df.index[-1], "close"] = 0.02100
+    df.loc[df.index[-1], "ma_slow_slope"] = -0.00001
+    hard_sl_price = entry_p + (1.8 * atr) + 0.00001
+    assert should_close_short_optimized(df, entry_p, hard_sl_price, atr) is True
+
+    # 4. ExitGate.evaluate 整合驗證：19:33 假觸碰上軌，觸發 VETO_HOLD
+    pos_short = {"symbol": "龙虾/USDT", "side": "SHORT", "entry_price": entry_p, "qty": 30000.0, "peak_roe": 0.005}
+    snap = DataPipeline.calculate_snapshot("龙虾/USDT", df, current_price=curr_p, position=pos_short)
+    snap.macro_trend = "BEARISH"
+    snap.ema_slow = df.loc[df.index[-1], "ma_slow"]
+    snap.slow_slope = -0.00001
+    snap.raw_df.loc[snap.raw_df.index[-1], "bandwidth"] = mean_bw * 0.8
+    snap.kc_upper = df.loc[df.index[-1], "upper_band"]
+
+    should_exit, exit_reason, exit_meta = ExitGate.evaluate(pos_short, snap, current_price=curr_p)
+    assert should_exit is False, f"19:33 假摸上軌但未站上慢線，嚴禁誤平空！actual={exit_reason}, meta={exit_meta}"
+    assert exit_reason == "VETO_HOLD"
+    assert exit_meta.get("narrow_band_consolidation_shield") is True or "19:33" in exit_meta.get("cause", "")
+
 
 
 

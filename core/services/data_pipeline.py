@@ -36,6 +36,7 @@ class MarketDataSnapshot:
     macro_trend: str = "NEUTRAL"      # "BULLISH", "BEARISH", "NEUTRAL"
     macro_slope: float = 0.0          # EMA60 長週期斜率 (1小時級別波段)
     slow_slope_5: float = 0.0         # EMA40 過去 5 根斜率
+    bandwidth: float = 0.0            # 通道帶寬 (kc_upper - kc_lower) / kc_middle
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -122,6 +123,13 @@ class DataPipeline:
         df_calc["kc_middle"] = kc_basis
         df_calc["kc_upper"] = kc_upper_series
         df_calc["kc_lower"] = kc_lower_series
+        df_calc["bandwidth"] = (df_calc["kc_upper"] - df_calc["kc_lower"]) / df_calc["kc_middle"]
+        df_calc["ma_slow"] = ema_slow_series
+        df_calc["ma_slow_slope"] = ema_slow_series - ema_slow_series.shift(2)
+        df_calc["body_size"] = (df_calc["close"] - df_calc["open"]).abs()
+        df_calc["upper_band"] = kc_upper_series
+        df_calc["lower_band"] = kc_lower_series
+        df_calc["middle_band"] = kc_basis
         if hasattr(df_calc, "attrs"):
             df_calc.attrs["entry_finality_verified"] = True
             df_calc.attrs.setdefault("timeframe_ms", 60_000)
@@ -249,5 +257,6 @@ class DataPipeline:
             macro_trend=macro_trend,
             macro_slope=macro_slope,
             slow_slope_5=slow_slope_5,
+            bandwidth=((kc_up - kc_low) / kc_mid if kc_mid > 0 else 0.0),
             raw_df=df_calc,
         )

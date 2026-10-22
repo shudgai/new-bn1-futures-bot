@@ -104,6 +104,7 @@ class ExitGate:
             ma15 = market_data.ma15
             ema_fast = market_data.ema_fast
             ema_slow = market_data.ema_slow
+            slow_slope = float(getattr(market_data, "slow_slope", 0.0))
             kc_up = market_data.kc_upper
             kc_mid = market_data.kc_middle
             kc_low = market_data.kc_lower
@@ -120,10 +121,17 @@ class ExitGate:
             kc_mid = float(market_data.get("kc_middle", quote))
             ema_fast = float(market_data.get("ema_fast", ma15))
             ema_slow = float(market_data.get("ema_slow", kc_mid))
+            slow_slope = float(market_data.get("slow_slope", 0.0))
             kc_up = float(market_data.get("kc_upper", quote * 1.01))
             kc_low = float(market_data.get("kc_lower", quote * 0.99))
             raw_df = market_data.get("raw_df")
             macro_trend = str(market_data.get("macro_trend") or "NEUTRAL").upper()
+
+        if slow_slope == 0.0 and raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            if "ma_slow" in raw_df.columns:
+                slow_slope = float(raw_df["ma_slow"].iloc[-1]) - float(raw_df["ma_slow"].iloc[-3])
+            elif "ema_slow" in raw_df.columns:
+                slow_slope = float(raw_df["ema_slow"].iloc[-1]) - float(raw_df["ema_slow"].iloc[-3])
 
         side = str(pos.get("side", "")).upper()
         entry_p = float(pos.get("entry_price") or 0.0)
@@ -207,6 +215,50 @@ class ExitGate:
                         **meta,
                         "cause": f"10%鎖70%階梯觸發 (當前ROE: {unrealized_roe*100:.2f}%, 峰值ROE: {peak_roe*100:.2f}%, 底線: {min_retained_roe*100:.2f}%)",
                     }
+
+        # ── 0-B. 通道收窄橫盤假觸碰防洗鐵律（防 19:33 誤平空 / 誤平多）──
+        # 如果通道正在縮小（bandwidth < rolling(20).mean()），價格只是摸到反側外軌但收盤未實質站上/跌破棕色慢線，
+        # 一律視為盤整，100% 一票否決平倉 (VETO_HOLD)！
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 20:
+            df_bw = raw_df["bandwidth"] if "bandwidth" in raw_df.columns else (
+                (raw_df["kc_upper"] - raw_df["kc_lower"]) / raw_df["kc_middle"].replace(0, 1.0)
+                if ("kc_upper" in raw_df.columns and "kc_lower" in raw_df.columns and "kc_middle" in raw_df.columns)
+                else None
+            )
+            if df_bw is not None and len(df_bw) >= 20:
+                bw_mean20 = float(df_bw.rolling(20).mean().iloc[-1])
+                curr_bw = float(df_bw.iloc[-1])
+                is_narrow_band = curr_bw < bw_mean20
+                if is_narrow_band:
+                    c_close_val = float(raw_df.iloc[-1]["close"])
+                    # 空單：摸上軌但收盤未站上棕色慢線 (且慢線斜率未翻揚向上)
+                    if side == "SHORT":
+                        touch_upper = (c_close_val >= kc_up) or (quote >= kc_up)
+                        trend_reversal_s = (c_close_val > ema_slow) and (slow_slope > 0)
+                        if touch_upper and not trend_reversal_s and unrealized_pct > -1.8 * atr_pct:
+                            return False, "VETO_HOLD", {
+                                **meta,
+                                "narrow_band_consolidation_shield": True,
+                                "cause": (
+                                    f"通道收窄假觸碰防洗鐵律 (防 19:33 誤平空): 通道收窄中 (bw={curr_bw:.5f} < mean20={bw_mean20:.5f})，"
+                                    f"價格摸到KC上軌但收盤未站上棕色慢線 (close={c_close_val:.6f} <= slow={ema_slow:.6f}, slow_slope={slow_slope:.6f})，"
+                                    f"判定為空頭趨勢良性橫盤盤整，一票否決平空，嚴防在主跌浪前夕被洗下車！"
+                                ),
+                            }
+                    # 多單：摸下軌但收盤未跌破棕色慢線 (且慢線斜率未翻跌向下)
+                    elif side == "LONG":
+                        touch_lower = (c_close_val <= kc_low) or (quote <= kc_low)
+                        trend_reversal_l = (c_close_val < ema_slow) and (slow_slope < 0)
+                        if touch_lower and not trend_reversal_l and unrealized_pct > -1.8 * atr_pct:
+                            return False, "VETO_HOLD", {
+                                **meta,
+                                "narrow_band_consolidation_shield": True,
+                                "cause": (
+                                    f"通道收窄假觸碰防洗鐵律 (防橫盤收窄誤平多): 通道收窄中 (bw={curr_bw:.5f} < mean20={bw_mean20:.5f})，"
+                                    f"價格摸到KC下軌但收盤未跌破棕色慢線 (close={c_close_val:.6f} >= slow={ema_slow:.6f}, slow_slope={slow_slope:.6f})，"
+                                    f"判定為多頭趨勢良性橫盤盤整，一票否決平多，嚴防在主升浪前夕被洗下車！"
+                                ),
+                            }
 
         # ── 0. 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，AGENTS.md 最優先防護) ──
         # 2026-10-22 使用者授權（方案 A）：大週期仍與持倉同向時，盤中毛刺擊穿反側外軌不平倉；
@@ -988,6 +1040,53 @@ class EntryGate:
                         "max_bw_20": max_bw,
                         "bw_ratio": current_bw / max_bw,
                         "cause": f"通道極度收斂一票否決: 當前 KC 通道寬度比 ({current_bw/max_bw:.1%}) <= 25%，處於極度收縮死水區，嚴禁假突破開倉！",
+                    }
+
+        # ══════════════════════════════════════════════════════════════════
+        # 前置門禁 C-2：行情末端死魚盤 / 走平收縮禁開防線 (Flat Bandwidth & Tiny Candles Filter，防 19:45 追空)
+        # ══════════════════════════════════════════════════════════════════
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 30:
+            df_slice = raw_df
+            bw_series = df_slice["bandwidth"] if "bandwidth" in df_slice.columns else (
+                (df_slice["kc_upper"] - df_slice["kc_lower"]) / df_slice["kc_middle"].replace(0, 1.0)
+                if ("kc_upper" in df_slice.columns and "kc_lower" in df_slice.columns and "kc_middle" in df_slice.columns)
+                else None
+            )
+
+            if bw_series is not None and len(bw_series) >= 30:
+                q25 = float(bw_series.rolling(30).quantile(0.25).iloc[-1])
+                curr_bw = float(bw_series.iloc[-1])
+
+                body_series = df_slice["body_size"] if "body_size" in df_slice.columns else (
+                    (df_slice["close"] - df_slice["open"]).abs()
+                    if ("close" in df_slice.columns and "open" in df_slice.columns)
+                    else None
+                )
+                # 當前棒若具備即時動能 (body >= 0.6 * atr_val)，納入綜合動能判定
+                prev_bodies = list(body_series.iloc[-2:].values) if body_series is not None and len(body_series) >= 2 else [body, body]
+                all_3_bodies = [float(b) for b in prev_bodies] + [float(body)]
+                mean_body_3 = sum(all_3_bodies) / len(all_3_bodies)
+
+                is_flat_bandwidth = bool(curr_bw < q25)
+                is_tiny_candles = bool(mean_body_3 < 0.4 * atr_val or body < 0.4 * atr_val)
+
+                # 判定是否為破位起跌/起漲點 (momentum_breakout: 實體大於 0.8 ATR 且灌破外軌)
+                is_momentum_breakout = False
+                if signal_side == "SHORT":
+                    is_momentum_breakout = (c_close < c_open) and (body >= 0.8 * atr_val) and (c_close < kc_low)
+                elif signal_side == "LONG":
+                    is_momentum_breakout = (c_close > c_open) and (body >= 0.8 * atr_val) and (c_close > kc_up)
+
+                if (is_flat_bandwidth or is_tiny_candles) and not is_momentum_breakout and body < 0.6 * atr_val:
+                    return False, "BLOCKED_DEAD_FISH_FLAT_BANDWIDTH", {
+                        **meta,
+                        "current_bandwidth": curr_bw,
+                        "bandwidth_q25": q25,
+                        "mean_body_3": mean_body_3,
+                        "threshold_body": 0.4 * atr_val,
+                        "is_flat_bandwidth": is_flat_bandwidth,
+                        "is_tiny_candles": is_tiny_candles,
+                        "cause": f"行情末端死魚盤一票否決 (防 19:45 追空/追多): 帶寬收窄扁平(bw={curr_bw:.5f} < q25={q25:.5f}:{is_flat_bandwidth}) 或近3根動能枯竭(均實體={mean_body_3:.5f} < 0.4*ATR={0.4*atr_val:.5f}:{is_tiny_candles})，通道收窄末端嚴禁追單！",
                     }
 
         # ══════════════════════════════════════════════════════════════════
@@ -1873,5 +1972,179 @@ def should_close_long(
         return True
 
     return False
+
+
+# ==============================================================================
+# 用戶授權最新優化：兼顧「即時動能」與「末端禁開」的開平倉函數 (2026-10-22 最新授權)
+# ==============================================================================
+def can_open_short_optimized(df: pd.DataFrame, current_bar_idx: int = -1, atr: float = 0.0) -> bool:
+    """
+    開空邏輯優化：兼顧「即時動能」與「末端禁開」
+    - 禁開防線 1：行情末端死魚盤 / 走平收縮時，絕對不開倉 (防 19:45 追空)
+    - 禁開防線 2：MA5 已向上拐頭，禁止開空
+    - 進場機制 A：破位起跌點（提早進場，防 19:05 錯過）
+    - 進場機制 B：常規兩根破軌確認 (用於溫和推動行情)
+    """
+    if df is None or len(df) < 2:
+        return False
+    bar_t = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    # 計算 atr 如果未給定
+    if atr <= 0:
+        atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df.iloc[-1].get('atr', 0.0001))
+
+    # --- 禁開防線 1：行情末端死魚盤 / 走平收縮時，絕對不開倉 (防 19:45 追空) ---
+    if 'bandwidth' in df.columns and len(df) >= 30:
+        is_flat_bandwidth = bool(bar_t['bandwidth'] < df['bandwidth'].rolling(30).quantile(0.25).iloc[-1])
+    else:
+        is_flat_bandwidth = False
+
+    body_series = df['body_size'] if 'body_size' in df.columns else (df['close'] - df['open']).abs()
+    is_tiny_candles = bool(body_series.tail(3).mean() < (0.4 * atr)) if len(body_series) >= 3 else False
+    if is_flat_bandwidth or is_tiny_candles:
+        return False  # 通道已嚴重收窄扁平、動能枯竭，禁止末端追空！
+
+    # --- 禁開防線 2：MA5 已向上拐頭，禁止開空 ---
+    if float(bar_t['ma5']) >= float(prev_bar['ma5']):
+        return False
+
+    # --- 進場機制 A：破位起跌點（提早進場，防 19:05 錯過）---
+    # 只要出現實體大陰線貫穿下軌，MA5 急跌，立即開空，不需拖延！
+    lower_band = float(bar_t.get('lower_band', bar_t.get('kc_lower', 0.0)))
+    momentum_breakout = (
+        (float(bar_t['close']) < float(bar_t['open'])) and
+        ((float(bar_t['open']) - float(bar_t['close'])) > 1.0 * atr) and
+        (float(bar_t['close']) < lower_band)
+    )
+
+    # --- 進場機制 B：常規兩根破軌確認 (用於溫和推動行情) ---
+    prev_lower = float(prev_bar.get('lower_band', prev_bar.get('kc_lower', lower_band)))
+    regular_breakout = (float(bar_t['close']) < lower_band) and (float(prev_bar['close']) < prev_lower)
+
+    return bool(momentum_breakout or regular_breakout)
+
+
+def should_close_short_optimized(df: pd.DataFrame, entry_price: float, current_price: float, atr: float) -> bool:
+    """
+    平空邏輯優化：防止橫盤收窄被洗出場 (防 19:33 誤平)
+    1. 棕色慢線強勢突破（真正的趨勢扭轉才離場）
+    2. 通道收窄時的假觸碰過濾：通道收窄時摸上軌未站上慢線，一律視為盤整，【不平倉】！
+    3. 硬性追蹤移動止損 (ATR 防守)
+    """
+    if df is None or len(df) < 2:
+        return False
+    bar_t = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    # 1. 棕色慢線強勢突破（真正的趨勢扭轉才離場）
+    ma_slow = float(bar_t.get('ma_slow', bar_t.get('ema_slow', bar_t.get('kc_middle', 0.0))))
+    if 'ma_slow_slope' in bar_t:
+        ma_slow_slope = float(bar_t['ma_slow_slope'])
+    elif 'ma_slow' in df.columns and len(df) >= 3:
+        ma_slow_slope = float(bar_t['ma_slow']) - float(df['ma_slow'].iloc[-3])
+    else:
+        ma_slow_slope = 0.0
+
+    trend_reversal = (float(bar_t['close']) > ma_slow) and (ma_slow_slope > 0)
+    if trend_reversal:
+        return True
+
+    # 2. 通道收窄時的假觸碰過濾：
+    # 如果通道正在縮小（帶寬小），價格只是摸到上軌但收盤未站上慢線，一律視為盤整，【不平倉】！
+    if 'bandwidth' in df.columns and len(df) >= 20:
+        is_narrow_band = bool(bar_t['bandwidth'] < df['bandwidth'].rolling(20).mean().iloc[-1])
+    else:
+        is_narrow_band = False
+
+    upper_band = float(bar_t.get('upper_band', bar_t.get('kc_upper', 0.0)))
+    touch_upper_band = float(bar_t['close']) >= upper_band
+
+    if touch_upper_band and not is_narrow_band:
+        # 只有在通道開口正常時，摸上軌才算動能衰竭離場
+        return True
+
+    # 3. 硬性追蹤移動止損 (ATR 防守)
+    if float(current_price) >= (float(entry_price) + 1.8 * float(atr)):
+        return True
+
+    return False
+
+
+def can_open_long_optimized(df: pd.DataFrame, current_bar_idx: int = -1, atr: float = 0.0) -> bool:
+    """
+    開多邏輯優化（多空對稱）：兼顧「即時動能」與「末端禁開」
+    """
+    if df is None or len(df) < 2:
+        return False
+    bar_t = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    if atr <= 0:
+        atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df.iloc[-1].get('atr', 0.0001))
+
+    if 'bandwidth' in df.columns and len(df) >= 30:
+        is_flat_bandwidth = bool(bar_t['bandwidth'] < df['bandwidth'].rolling(30).quantile(0.25).iloc[-1])
+    else:
+        is_flat_bandwidth = False
+
+    body_series = df['body_size'] if 'body_size' in df.columns else (df['close'] - df['open']).abs()
+    is_tiny_candles = bool(body_series.tail(3).mean() < (0.4 * atr)) if len(body_series) >= 3 else False
+    if is_flat_bandwidth or is_tiny_candles:
+        return False
+
+    if float(bar_t['ma5']) <= float(prev_bar['ma5']):
+        return False
+
+    upper_band = float(bar_t.get('upper_band', bar_t.get('kc_upper', 0.0)))
+    momentum_breakout = (
+        (float(bar_t['close']) > float(bar_t['open'])) and
+        ((float(bar_t['close']) - float(bar_t['open'])) > 1.0 * atr) and
+        (float(bar_t['close']) > upper_band)
+    )
+
+    prev_upper = float(prev_bar.get('upper_band', prev_bar.get('kc_upper', upper_band)))
+    regular_breakout = (float(bar_t['close']) > upper_band) and (float(prev_bar['close']) > prev_upper)
+
+    return bool(momentum_breakout or regular_breakout)
+
+
+def should_close_long_optimized(df: pd.DataFrame, entry_price: float, current_price: float, atr: float) -> bool:
+    """
+    平多邏輯優化（多空對稱）：防止橫盤收窄被洗出場
+    """
+    if df is None or len(df) < 2:
+        return False
+    bar_t = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    ma_slow = float(bar_t.get('ma_slow', bar_t.get('ema_slow', bar_t.get('kc_middle', 0.0))))
+    if 'ma_slow_slope' in bar_t:
+        ma_slow_slope = float(bar_t['ma_slow_slope'])
+    elif 'ma_slow' in df.columns and len(df) >= 3:
+        ma_slow_slope = float(bar_t['ma_slow']) - float(df['ma_slow'].iloc[-3])
+    else:
+        ma_slow_slope = 0.0
+
+    trend_reversal = (float(bar_t['close']) < ma_slow) and (ma_slow_slope < 0)
+    if trend_reversal:
+        return True
+
+    if 'bandwidth' in df.columns and len(df) >= 20:
+        is_narrow_band = bool(bar_t['bandwidth'] < df['bandwidth'].rolling(20).mean().iloc[-1])
+    else:
+        is_narrow_band = False
+
+    lower_band = float(bar_t.get('lower_band', bar_t.get('kc_lower', 0.0)))
+    touch_lower_band = float(bar_t['close']) <= lower_band
+
+    if touch_lower_band and not is_narrow_band:
+        return True
+
+    if float(current_price) <= (float(entry_price) - 1.8 * float(atr)):
+        return True
+
+    return False
+
 
 
