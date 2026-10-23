@@ -85,8 +85,69 @@ class ExitGate:
                 )
         return False, ""
 
+    # 第一級絕對風險出口與淨 ROE 鎖利：優先於中軌 MA3 規則
+    PRIORITY_EXIT_REASONS = frozenset({
+        "CIRCUIT_BREAKER_HARD_SL",
+        "EXIT_BY_EXTREME_WATERFALL",
+        "OPPOSITE_KC_BAND_BREACH",
+        "EXIT_BY_RATCHET_PROFIT_LOCK",
+    })
+    # 中軌 MA3 暫緩期間仍然放行的真峰谷三點出口
+    PIVOT_EXIT_REASONS = frozenset({"EARLY_PIVOT_PEAK_EXIT", "EARLY_PIVOT_VALLEY_EXIT"})
+
     @staticmethod
     def evaluate(
+        pos: Dict[str, Any],
+        market_data: Union[MarketDataSnapshot, Dict[str, Any]],
+        current_price: Optional[float] = None,
+        atr: Optional[float] = None,
+        kc_slope: Optional[float] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        出場總裁決（2026-10-23 中軌 MA3 對稱平倉規則）：
+        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）與淨 ROE 鎖利最優先。
+        2. 中軌 MA3 規則（僅已收線）優先於所有 VETO_HOLD 與一般出口。
+        3. 暫緩期間 (HOLD_WAIT) 只放行真峰谷三點出口，其餘一般出口暫停。
+        """
+        result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
+        should_exit, reason, meta = result
+        if should_exit and reason in ExitGate.PRIORITY_EXIT_REASONS:
+            return result
+        if not pos or not market_data:
+            return result
+        try:
+            if float(pos.get("entry_price") or 0.0) <= 0:
+                return result
+        except (TypeError, ValueError):
+            return result
+
+        from core.gates.mid_band_ma3_exit import (
+            ACTION_EXIT, ACTION_HOLD_WAIT, evaluate_mid_band_ma3_exit,
+        )
+        raw_df = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df")
+        )
+        action, mid_reason, mid_meta = evaluate_mid_band_ma3_exit(
+            pos.get("side"),
+            raw_df,
+            entry_timestamp=pos.get("open_timestamp") or pos.get("entry_timestamp"),
+        )
+        if action == ACTION_EXIT:
+            return True, mid_reason, {**(meta or {}), "mid_band_ma3": mid_meta, "cause": mid_meta.get("cause")}
+        if action == ACTION_HOLD_WAIT:
+            if should_exit and reason in ExitGate.PIVOT_EXIT_REASONS:
+                return result
+            return False, mid_reason, {
+                **(meta or {}),
+                "mid_band_ma3": mid_meta,
+                "suppressed_reason": reason,
+                "cause": mid_meta.get("cause"),
+            }
+        return result
+
+    @staticmethod
+    def _evaluate_core(
         pos: Dict[str, Any],
         market_data: Union[MarketDataSnapshot, Dict[str, Any]],
         current_price: Optional[float] = None,
