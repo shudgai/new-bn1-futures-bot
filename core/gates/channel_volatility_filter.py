@@ -57,19 +57,12 @@ class ChannelVolatilityFilter:
             lower = df['bb_lower']
             middle = df['bb_middle']
         else:
-            # 即時動態推導 Keltner Channel (中軌: EMA20, 寬度: 2.0 * ATR)
-            close = df['close'] if 'close' in df.columns else df['c']
-            high = df['high'] if 'high' in df.columns else df['h']
-            low = df['low'] if 'low' in df.columns else df['l']
-            
-            middle = close.rolling(window=20, min_periods=1).mean()
-            tr1 = high - low
-            tr2 = (high - close.shift(1)).abs()
-            tr3 = (low - close.shift(1)).abs()
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.rolling(window=14, min_periods=1).mean().fillna(1e-4)
-            upper = middle + 2.0 * atr
-            lower = middle - 2.0 * atr
+            # 即時動態推導 Keltner Channel (中軌: EMA20, 寬度: 1.5 * ATR14，統一單一真理來源)
+            from core.services.technical_indicators import compute_keltner_channels
+            kc_df = compute_keltner_channels(df, ema_period=20, atr_period=14, multiplier=1.5)
+            middle = kc_df['kc_middle']
+            upper = kc_df['kc_upper']
+            lower = kc_df['kc_lower']
 
         # 2. 計算帶寬 Bandwidth = (Upper - Lower) / Middle
         bandwidth = (upper - lower) / middle.replace(0, float('nan'))

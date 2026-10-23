@@ -59,7 +59,44 @@ class ExecutionManager:
             position=current_position if has_position else None,
         )
         if not market_data:
-            return {"status": "SNAPSHOT_FAILED", "symbol": symbol}
+            if not has_position:
+                return {"status": "SNAPSHOT_FAILED", "symbol": symbol}
+
+            # 既有持倉：快照失敗不得盲目停止風險管理！啟用緊急防禦判斷
+            logger.warning(f"⚠️ [DATA_OUTAGE] {symbol} 快照計算失敗但有既有持倉，啟動持倉安全處置通道！")
+            pos_entry = float(current_position.get("entry_price") or 0.0)
+            pos_side = str(current_position.get("side") or "").upper()
+            pos_leverage = float(current_position.get("leverage") or 1.0)
+
+            # 核對是否具備可信報價
+            if quote and quote > 0 and pos_entry > 0:
+                pnl_pct = (quote - pos_entry) / pos_entry if pos_side == "LONG" else (pos_entry - quote) / pos_entry
+                unrealized_roe = pnl_pct * pos_leverage
+
+                # 保守估計 3 ATR 止損距離
+                fallback_atr = pos_entry * 0.015
+                hard_sl_threshold = -3.0 * (fallback_atr / pos_entry)
+
+                # 若虧損超過硬止損底線，立即緊急平倉避險
+                if pnl_pct <= hard_sl_threshold or unrealized_roe <= -0.5:
+                    logger.critical(
+                        f"🚨 [EMERGENCY_DATA_OUTAGE_CLOSE] {symbol} 快照失效期間觸發緊急硬止損！"
+                        f"pnl_pct={pnl_pct:.2%}, roe={unrealized_roe:.2%}"
+                    )
+                    success = await cls.close_position(
+                        account=account,
+                        symbol=symbol,
+                        price=quote,
+                        reason="CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
+                        meta={"cause": "Snapshot failed with emergency loss threshold breach"}
+                    )
+                    return {"status": "EMERGENCY_EXIT_EXECUTED", "symbol": symbol, "success": success}
+
+                logger.info(f"🛡️ [DATA_OUTAGE_HOLD] {symbol} 資料快照失敗，但即時報價未觸發緊急硬止損 (roe={unrealized_roe:.2%})，依交易所原生保護單守護持倉")
+                return {"status": "DATA_OUTAGE_HOLD", "symbol": symbol, "quote": quote}
+            else:
+                logger.critical(f"🛑 [CRITICAL_DATA_OUTAGE] {symbol} 快照與即時報價均失效！嚴禁增加風險，請依交易所原生止損守護持倉")
+                return {"status": "CRITICAL_DATA_OUTAGE", "symbol": symbol}
 
         # 2. 若有持倉：只問 ExitGate (唯一裁決官)
         if has_position:
@@ -94,16 +131,34 @@ class ExecutionManager:
             ma15_prev = float(market_data.prev_k.get("ma15", ma15_curr))
             macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
 
-            # 破軌衝擊信號（外軌突破優先，通道走平或向上即刻發動）：
+            # 破軌衝擊信號（收線突破外軌，通道走平或向上即刻發動，杜絕盤中毛刺）：
             is_breakout_long = (
-                (market_data.current_price > market_data.kc_upper or market_data.curr_k["close"] > market_data.kc_upper)
+                market_data.curr_k["close"] > market_data.kc_upper
                 and market_data.kc_middle_slope >= -0.000005
                 and ma5_curr > ma5_prev
             )
             is_breakdown_short = (
-                (market_data.current_price < market_data.kc_lower or market_data.curr_k["close"] < market_data.kc_lower)
+                market_data.curr_k["close"] < market_data.kc_lower
                 and market_data.kc_middle_slope <= 0.000005
                 and ma5_curr < ma5_prev
+            )
+
+            # 模式 2：趨勢回踩均線帶守穩轉強信號
+            is_pullback_long = (
+                float(market_data.curr_k.get("low", market_data.current_price)) <= ma5_curr * 1.002
+                and market_data.curr_k["close"] >= ma5_curr
+                and market_data.curr_k["close"] >= market_data.curr_k["open"]
+                and ma5_curr >= ma5_prev
+                and market_data.kc_middle_slope >= -0.000005
+                and market_data.curr_k["close"] >= market_data.ema_slow
+            )
+            is_pullback_short = (
+                float(market_data.curr_k.get("high", market_data.current_price)) >= ma5_curr * 0.998
+                and market_data.curr_k["close"] <= ma5_curr
+                and market_data.curr_k["close"] <= market_data.curr_k["open"]
+                and ma5_curr <= ma5_prev
+                and market_data.kc_middle_slope <= 0.000005
+                and market_data.curr_k["close"] <= market_data.ema_slow
             )
 
             # MA5 / MA15 交叉條件開倉：
@@ -125,12 +180,6 @@ class ExecutionManager:
             )
 
             # 順勢鐵律（大週期趨勢濾網 Trend Bias Filter，2026-10-22 最新授權）：
-            # 1. 棕色慢線(EMA40)與中軌方向定生死：
-            #    大趨勢向上（EMA15 >= EMA40 多頭排列，或價格在慢線上方，或慢線向上發散，或大週期為 BULLISH）：
-            #    策略模式強制鎖定為 LONG_ONLY（只做多、絕對禁止賣空！），遇到頂部下殺只能平多，絕不准反手開空！
-            # 2. 空頭主跌浪鏡像：
-            #    大趨勢向下（EMA15 <= EMA40 空頭排列，或價格在慢線下方，或慢線向下，或大週期為 BEARISH）：
-            #    策略模式強制鎖定為 SHORT_ONLY（只做空、絕對禁止開多！）。
             is_above_slow_ma = (market_data.curr_k["close"] >= market_data.ema_slow or market_data.current_price >= market_data.ema_slow)
             is_slow_ma_up = getattr(market_data, "slow_slope", 0.0) >= 0
             is_bull_alignment = (market_data.ema_fast >= market_data.ema_slow)
@@ -155,10 +204,17 @@ class ExecutionManager:
             can_long = not is_bearish_wave
             can_short = not is_bullish_wave
 
-            # 1. 平倉後強制冷卻至少 3 根 1m K 棒 (180 秒，不論同向或反向一律禁止開倉)
+            # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)
+            c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
+            is_strong_breakout = (
+                (is_breakout_long and c_body >= 0.8 * market_data.atr)
+                or (is_breakdown_short and c_body >= 0.8 * market_data.atr)
+            )
+
+            # 1. 平倉後強制冷卻檢查 (強動能突破放行交由 EntryGate 統一裁決)
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
-            if last_exit:
+            if last_exit and not is_strong_breakout:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 if elapsed_sec < 180:
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
@@ -178,6 +234,8 @@ class ExecutionManager:
                 p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakout_long:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
+                elif is_pullback_long:
+                    candidate_signal = "TREND_PULLBACK_LONG"
                 elif is_ma_cross_long:
                     candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
                 elif (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev):
@@ -191,6 +249,8 @@ class ExecutionManager:
                 p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakdown_short:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
+                elif is_pullback_short:
+                    candidate_signal = "TREND_PULLBACK_SHORT"
                 elif is_ma_cross_short:
                     candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
                 elif (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev):
@@ -289,6 +349,20 @@ class ExecutionManager:
                     }
                     cls._last_exit_record[acc_key] = record
                     cls._last_exit_record[symbol] = record
+                    if hasattr(account, "position_meta") and isinstance(account.position_meta, dict):
+                        pos_meta = account.position_meta.get(symbol, {})
+                        if isinstance(pos_meta, dict):
+                            pos_meta.pop("three_tier_net_roe_lock_state", None)
+                            pos_meta.pop("highest_net_roe", None)
+                            pos_meta.pop("peak_net_roe_pct", None)
+                            pos_meta.pop("profit_lock_armed", None)
+                            pos_meta.pop("peak_roe", None)
+                    # 徹底撤銷交易所端殘留的所有條件委託單，防範孤兒止損單
+                    try:
+                        if hasattr(account, "_cancel_all_orders"):
+                            await account._cancel_all_orders(symbol)
+                    except Exception as cancel_exc:
+                        logger.warning(f"⚠️ [EXECUTION] 平倉後撤單警告 {symbol}: {cancel_exc}")
                 return success
             return False
         except Exception as exc:
@@ -378,6 +452,11 @@ class ExecutionManager:
                     frame.attrs.setdefault("timeframe_ms", 60_000)
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
+            if str(side).upper() == "LONG":
+                initial_sl = max(0.0, price - 3.0 * atr)
+            else:
+                initial_sl = price + 3.0 * atr
+
             entry_context = {
                 "is_manual": True,
                 "managed_by_bot": True,
@@ -386,6 +465,7 @@ class ExecutionManager:
                 "entry_pattern": "BREAKOUT",
                 "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
                 "is_outer_entry": True,
+                "initial_sl": initial_sl,
                 "meta": meta or {},
             }
             if frame is not None:
@@ -398,7 +478,7 @@ class ExecutionManager:
                     side=side,
                     price=price,
                     amount_usdt=amount_usdt,
-                    sl=0.0,
+                    sl=initial_sl,
                     tp=0.0,
                     reason=reason,
                     atr=atr,
@@ -408,6 +488,22 @@ class ExecutionManager:
                 )
                 if opened:
                     cls._hourly_entry_records.setdefault(symbol, []).append(time.time())
+                    if hasattr(account, "position_meta") and isinstance(account.position_meta, dict):
+                        pos_meta = account.position_meta.get(symbol, {})
+                        if isinstance(pos_meta, dict):
+                            pos_meta.pop("three_tier_net_roe_lock_state", None)
+                            pos_meta.pop("highest_net_roe", None)
+                            pos_meta.pop("peak_net_roe_pct", None)
+                            pos_meta.pop("profit_lock_armed", None)
+                            pos_meta.pop("peak_roe", None)
+                    if hasattr(account, "positions") and isinstance(account.positions, dict) and symbol in account.positions:
+                        pos = account.positions[symbol]
+                        if isinstance(pos, dict):
+                            pos.pop("three_tier_net_roe_lock_state", None)
+                            pos.pop("highest_net_roe", None)
+                            pos.pop("peak_net_roe_pct", None)
+                            pos.pop("profit_lock_armed", None)
+                            pos.pop("peak_roe", None)
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 return opened

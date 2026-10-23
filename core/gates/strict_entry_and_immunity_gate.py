@@ -1,8 +1,11 @@
 """StrictEntryAndImmunityGate
 整合「3 根平滑斜率防走平開倉」、「逆向大趨勢與震盪一票否決」與「未破中軌/MA15 趨勢護航全程死抱否決權」之核心閘門。
 """
+import logging
 from typing import Tuple, Dict, Any, Optional
 import pandas as pd
+
+logger = logging.getLogger("strategy.entry_gate")
 
 
 def resolve_kc_trend(df: Any) -> str:
@@ -91,14 +94,41 @@ class StrictEntryAndImmunityGate:
     # 一、 進場前置審查：逆向大趨勢一票否決、通道扁平震盪過濾、MA5 走平/弧頂 100% 一票否決 (VETO)
     # =========================================================================
     def can_open(self, side: str, df: Any, current_bar_index: int = 0, quote: Optional[float] = None) -> Tuple[bool, str]:
-        # 1. 冷卻期檢核 (防連環刷單)
-        if current_bar_index - self.last_exit_bar_index <= self.cooldown_bars:
-            return False, f"VETO: 平倉冷卻中 (已過 {current_bar_index - self.last_exit_bar_index}/{self.cooldown_bars} 根)，禁止開倉"
-
         if df is None or len(df) < 2:
             return False, "VETO: K 棒數量不足，拒絕開倉"
 
         norm_side = 'LONG' if side in ('LONG', 'OPEN_LONG') else ('SHORT' if side in ('SHORT', 'OPEN_SHORT') else side)
+        bars_since_exit = current_bar_index - self.last_exit_bar_index
+        in_cooldown = bars_since_exit <= self.cooldown_bars
+
+        # 1. 冷卻期檢核 (防連環刷單，支援強動能大陽/大陰線豁免)
+        if in_cooldown:
+            can_bypass = False
+            bar_t = df.iloc[-1]
+            prev_bar = df.iloc[-2]
+            atr = float(bar_t.get('atr', 0.0) if hasattr(bar_t, 'get') else bar_t['atr'])
+            if atr > 0:
+                kc_trend = resolve_kc_trend(df)
+                if norm_side == 'LONG':
+                    body_size = float(bar_t['close']) - float(bar_t['open'])
+                    upper_wick = float(bar_t['high']) - max(float(bar_t['close']), float(bar_t['open']))
+                    upper_band = float(bar_t.get('kc_upper', bar_t.get('upper_band', 0.0)) if hasattr(bar_t, 'get') else bar_t['kc_upper'])
+                    ma5_up = float(bar_t['ma5']) > float(prev_bar['ma5']) and float(bar_t['close']) >= float(bar_t['ma5'])
+                    if (body_size >= 1.0 * atr and float(bar_t['close']) > upper_band and upper_wick <= 0.4 * body_size and kc_trend != 'DOWN' and ma5_up):
+                        logger.info(f"⚡ [冷卻豁免] 觸發強動能大陽線突破 (實體={body_size:.4f} >= 1.0 ATR)，打斷冷卻期強制放行開多！")
+                        can_bypass = True
+                elif norm_side == 'SHORT':
+                    body_size = float(bar_t['open']) - float(bar_t['close'])
+                    lower_wick = min(float(bar_t['close']), float(bar_t['open'])) - float(bar_t['low'])
+                    lower_band = float(bar_t.get('kc_lower', bar_t.get('lower_band', 0.0)) if hasattr(bar_t, 'get') else bar_t['kc_lower'])
+                    ma5_down = float(bar_t['ma5']) < float(prev_bar['ma5']) and float(bar_t['close']) <= float(bar_t['ma5'])
+                    if (body_size >= 1.0 * atr and float(bar_t['close']) < lower_band and lower_wick <= 0.4 * body_size and kc_trend != 'UP' and ma5_down):
+                        logger.info(f"⚡ [冷卻豁免] 觸發強動能大陰線貫穿 (實體={body_size:.4f} >= 1.0 ATR)，打斷冷卻期強制放行開空！")
+                        can_bypass = True
+
+            if not can_bypass:
+                logger.info(f"⛔ [開{norm_side}攔截] 原因: 處於平倉冷卻期內 (已過 {bars_since_exit}/{self.cooldown_bars} 根，剩餘 {self.cooldown_bars - bars_since_exit + 1} 根 K 棒)")
+                return False, f"VETO: 平倉冷卻中 (已過 {bars_since_exit}/{self.cooldown_bars} 根)，禁止開倉"
 
         # 2. 逆向大趨勢一票否決（順勢原則）
         kc_trend = resolve_kc_trend(df)
@@ -193,4 +223,205 @@ class StrictEntryAndImmunityGate:
 
 # 全域單例
 default_strict_gate = StrictEntryAndImmunityGate()
+
+
+def check_long_entry_gate(
+    df: Any,
+    current_bar_idx: int,
+    last_exit_bar_idx: int,
+    min_cooldown_bars: int = 3
+) -> Tuple[bool, str]:
+    """
+    多單進場綜合檢驗門禁 (含強動能豁免冷卻與顯式攔截日誌)
+    回傳: (allow_entry: bool, reason: str)
+    """
+    if df is None or len(df) < 2:
+        return False, "INVALID_DATA_LENGTH"
+
+    bar_t = df.iloc[-1]      # 剛收盤定型的 K 棒
+    prev_bar = df.iloc[-2]   # 前一根收盤 K 棒
+
+    atr = float(bar_t.get('atr', 0.0) if hasattr(bar_t, 'get') else bar_t['atr'])
+    if atr <= 0:
+        return False, "INVALID_ATR"
+
+    body_size = float(bar_t['close']) - float(bar_t['open'])
+    upper_wick = float(bar_t['high']) - max(float(bar_t['close']), float(bar_t['open']))
+    bars_since_exit = current_bar_idx - last_exit_bar_idx
+    in_cooldown = bars_since_exit <= min_cooldown_bars
+
+    upper_band = float(bar_t.get('kc_upper', bar_t.get('upper_band', 0.0)) if hasattr(bar_t, 'get') else bar_t['kc_upper'])
+    prev_upper = float(prev_bar.get('kc_upper', prev_bar.get('upper_band', 0.0)) if hasattr(prev_bar, 'get') else prev_bar['kc_upper'])
+
+    # -------------------------------------------------------------
+    # 防線 1：大趨勢方向一票否決 (禁止在 KC 向下時逆勢做多)
+    # -------------------------------------------------------------
+    kc_slope = float(bar_t.get('kc_middle_slope', 0.0) if hasattr(bar_t, 'get') else 0.0)
+    if kc_slope == 0.0 and ('kc_middle' in bar_t or hasattr(bar_t, 'get') and bar_t.get('kc_middle') is not None):
+        c_mid = float(bar_t.get('kc_middle', 0.0) if hasattr(bar_t, 'get') else bar_t['kc_middle'])
+        p_mid = float(prev_bar.get('kc_middle', 0.0) if hasattr(prev_bar, 'get') else prev_bar['kc_middle'])
+        kc_slope = c_mid - p_mid
+
+    if kc_slope < 0:
+        logger.info(f"⛔ [開多攔截] 原因: KC中軌下行 (Slope={kc_slope:+.5f})，嚴禁逆勢做多")
+        return False, "BLOCKED_KC_MIDDLE_SLOPE_DOWN"
+
+    # -------------------------------------------------------------
+    # 防線 2：MA5 短期動能檢驗
+    # -------------------------------------------------------------
+    ma5_t = float(bar_t['ma5'])
+    ma5_prev = float(prev_bar['ma5'])
+    close_t = float(bar_t['close'])
+    ma5_trending_up = ma5_t > ma5_prev
+    if not ma5_trending_up or (close_t < ma5_t):
+        logger.info(f"⛔ [開多攔截] 原因: MA5未抬頭或收盤未站上 MA5 (MA5_t={ma5_t:.4f}, Prev={ma5_prev:.4f}, Close={close_t:.4f})")
+        return False, "BLOCKED_MA5_NOT_UPWARD"
+
+    # -------------------------------------------------------------
+    # 防線 3：高檔插針出貨檢驗 (長上影線攔截)
+    # -------------------------------------------------------------
+    if body_size > 0 and upper_wick > (0.6 * body_size) and upper_wick > (0.3 * atr):
+        logger.info(f"⛔ [開多攔截] 原因: 上影線過長存在出貨賣壓 (上影線={upper_wick:.4f}, 實體={body_size:.4f})")
+        return False, "BLOCKED_BY_EXCESSIVE_UPPER_WICK"
+
+    # -------------------------------------------------------------
+    # 判定：是否觸發「強動能脈衝 (Super Impulse)」
+    # -------------------------------------------------------------
+    is_super_impulse = (
+        (body_size >= 1.0 * atr) and                   # 實體大陽線
+        (close_t > upper_band) and                     # 收盤實體站上外軌
+        (upper_wick <= 0.4 * body_size)                 # 收在相對高點
+    )
+
+    # -------------------------------------------------------------
+    # 防線 4：冷卻期檢查 (強動能可直接豁免)
+    # -------------------------------------------------------------
+    if in_cooldown:
+        if is_super_impulse:
+            logger.info(f"⚡ [冷卻豁免] 觸發強動能大陽線突破 (實體={body_size:.4f} >= 1.0 ATR)，打斷冷卻期強制放行！")
+        else:
+            logger.info(f"⛔ [開多攔截] 原因: 處於平倉冷卻期內 (已過 {bars_since_exit}/{min_cooldown_bars} 根，剩餘 {min_cooldown_bars - bars_since_exit + 1} 根 K 棒)")
+            return False, "BLOCKED_BY_COOLDOWN"
+
+    # -------------------------------------------------------------
+    # 防線 5：兩根破軌確認 (收盤價比對，不卡長影線高點)
+    # -------------------------------------------------------------
+    prev_close = float(prev_bar['close'])
+    two_bars_break = (close_t > upper_band) and (prev_close > prev_upper)
+
+    if not two_bars_break and not is_super_impulse:
+        logger.info(f"⛔ [開多攔截] 原因: 未滿足兩根收盤破軌確認 (當前收={close_t:.4f}, 上軌={upper_band:.4f})")
+        return False, "BLOCKED_BREAKOUT_NOT_CONFIRMED"
+
+    # -------------------------------------------------------------
+    # 全數通過
+    # -------------------------------------------------------------
+    logger.info(f"✅ [開多放行] 條件全數滿足 (強動能豁免={is_super_impulse}, KC斜率={kc_slope:+.5f})")
+    return True, "ENTRY_APPROVED"
+
+
+def check_short_entry_gate(
+    df: Any,
+    current_bar_idx: int,
+    last_exit_bar_idx: int,
+    min_cooldown_bars: int = 3
+) -> Tuple[bool, str]:
+    """
+    空單進場綜合檢驗門禁 (含強動能豁免冷卻與顯式攔截日誌)
+    回傳: (allow_entry: bool, reason: str)
+    """
+    if df is None or len(df) < 2:
+        return False, "INVALID_DATA_LENGTH"
+
+    bar_t = df.iloc[-1]      # 剛收盤定型的 K 棒
+    prev_bar = df.iloc[-2]   # 前一根收盤 K 棒
+
+    atr = float(bar_t.get('atr', 0.0) if hasattr(bar_t, 'get') else bar_t['atr'])
+    if atr <= 0:
+        return False, "INVALID_ATR"
+
+    body_size = float(bar_t['open']) - float(bar_t['close'])  # 陰線實體
+    lower_wick = min(float(bar_t['close']), float(bar_t['open'])) - float(bar_t['low'])
+    bars_since_exit = current_bar_idx - last_exit_bar_idx
+    in_cooldown = bars_since_exit <= min_cooldown_bars
+
+    lower_band = float(bar_t.get('kc_lower', bar_t.get('lower_band', 0.0)) if hasattr(bar_t, 'get') else bar_t['kc_lower'])
+    prev_lower = float(prev_bar.get('kc_lower', prev_bar.get('lower_band', 0.0)) if hasattr(prev_bar, 'get') else prev_bar['kc_lower'])
+
+    # -------------------------------------------------------------
+    # 防線 1：大趨勢方向一票否決 (禁止在 KC 向上時逆勢做空)
+    # -------------------------------------------------------------
+    kc_slope = float(bar_t.get('kc_middle_slope', 0.0) if hasattr(bar_t, 'get') else 0.0)
+    if kc_slope == 0.0 and ('kc_middle' in bar_t or hasattr(bar_t, 'get') and bar_t.get('kc_middle') is not None):
+        c_mid = float(bar_t.get('kc_middle', 0.0) if hasattr(bar_t, 'get') else bar_t['kc_middle'])
+        p_mid = float(prev_bar.get('kc_middle', 0.0) if hasattr(prev_bar, 'get') else prev_bar['kc_middle'])
+        kc_slope = c_mid - p_mid
+
+    if kc_slope > 0:
+        logger.info(f"⛔ [開空攔截] 原因: KC中軌上行 (Slope={kc_slope:+.5f})，嚴禁逆勢做空")
+        return False, "BLOCKED_KC_MIDDLE_SLOPE_UP"
+
+    # -------------------------------------------------------------
+    # 防線 2：MA5 短期動能檢驗
+    # -------------------------------------------------------------
+    ma5_t = float(bar_t['ma5'])
+    ma5_prev = float(prev_bar['ma5'])
+    close_t = float(bar_t['close'])
+    ma5_trending_down = ma5_t < ma5_prev
+    if not ma5_trending_down or (close_t > ma5_t):
+        logger.info(f"⛔ [開空攔截] 原因: MA5未下探或收盤未壓制在 MA5 之下 (MA5_t={ma5_t:.4f}, Prev={ma5_prev:.4f}, Close={close_t:.4f})")
+        return False, "BLOCKED_MA5_NOT_DOWNWARD"
+
+    # -------------------------------------------------------------
+    # 防線 3：低檔插針反彈檢驗 (長下影線攔截)
+    # -------------------------------------------------------------
+    if body_size > 0 and lower_wick > (0.6 * body_size) and lower_wick > (0.3 * atr):
+        logger.info(f"⛔ [開空攔截] 原因: 下影線過長存在支撐買盤 (下影線={lower_wick:.4f}, 實體={body_size:.4f})")
+        return False, "BLOCKED_BY_EXCESSIVE_LOWER_WICK"
+
+    # -------------------------------------------------------------
+    # 判定：是否觸發「強動能脈衝 (Super Impulse)」
+    # -------------------------------------------------------------
+    is_super_impulse = (
+        (body_size >= 1.0 * atr) and                   # 實體大陰線
+        (close_t < lower_band) and                     # 收盤實體摜破下軌
+        (lower_wick <= 0.4 * body_size)                 # 收在相對低點
+    )
+
+    # -------------------------------------------------------------
+    # 防線 4：冷卻期檢查 (強動能可直接豁免)
+    # -------------------------------------------------------------
+    if in_cooldown:
+        if is_super_impulse:
+            logger.info(f"⚡ [冷卻豁免] 觸發強動能大陰線貫穿 (實體={body_size:.4f} >= 1.0 ATR)，打斷冷卻期強制放行開空！")
+        else:
+            logger.info(f"⛔ [開空攔截] 原因: 處於平倉冷卻期內 (已過 {bars_since_exit}/{min_cooldown_bars} 根，剩餘 {min_cooldown_bars - bars_since_exit + 1} 根 K 棒)")
+            return False, "BLOCKED_BY_COOLDOWN"
+
+    # -------------------------------------------------------------
+    # 防線 5：兩根破軌確認 (收盤價比對，不卡長影線低點)
+    # -------------------------------------------------------------
+    prev_close = float(prev_bar['close'])
+    two_bars_break = (close_t < lower_band) and (prev_close < prev_lower)
+
+    if not two_bars_break and not is_super_impulse:
+        logger.info(f"⛔ [開空攔截] 原因: 未滿足兩根收盤破軌確認 (當前收={close_t:.4f}, 下軌={lower_band:.4f})")
+        return False, "BLOCKED_BREAKOUT_NOT_CONFIRMED"
+
+    # -------------------------------------------------------------
+    # 全數通過
+    # -------------------------------------------------------------
+    logger.info(f"✅ [開空放行] 條件全數滿足 (強動能豁免={is_super_impulse}, KC斜率={kc_slope:+.5f})")
+    return True, "ENTRY_APPROVED"
+
+
+__all__ = [
+    "StrictEntryAndImmunityGate",
+    "default_strict_gate",
+    "resolve_kc_trend",
+    "check_kc_flat_or_squeezing",
+    "check_long_entry_gate",
+    "check_short_entry_gate",
+]
+
 

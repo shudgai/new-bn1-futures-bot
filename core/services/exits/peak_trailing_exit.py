@@ -64,7 +64,8 @@ RETIRED_KEYS = (
 STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl_usd',
               'peak_gain_atr', 'peak_unrealized_profit_usd', 'current_unrealized_pnl_usd',
               'current_net_pnl_usd', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
-              'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk')
+              'atr_tp', 'atr_protection_version', 'initial_sl', 'initial_risk',
+              'three_tier_net_roe_lock_state', 'highest_net_roe', 'peak_net_roe_pct', 'profit_lock_armed')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
     'NET_ROE_THREE_TIER_GIVEBACK',

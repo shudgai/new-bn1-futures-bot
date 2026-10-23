@@ -1530,7 +1530,7 @@ def test_exit_gate_case_b_short_upper_wick_pullback_blocked():
 
 
 def test_exit_gate_case_c_short_ratchet_profit_lock_triggers():
-    """用例 C：空單浮盈達 5%，隨後回吐至鎖利線，斷言【順暢觸發 EXIT_BY_RATCHET_PROFIT_LOCK】。"""
+    """用例 C：空單淨 ROE 達 15%，隨後回吐至鎖利線 12%，斷言【順暢觸發 EXIT_BY_RATCHET_PROFIT_LOCK】。"""
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
     atr = 1.0
     bars = [
@@ -1539,19 +1539,19 @@ def test_exit_gate_case_c_short_ratchet_profit_lock_triggers():
         {'timestamp': 3000, 'open': 96.4, 'high': 97.6, 'low': 95.0, 'close': 97.5, 'is_closed': True, 'atr': atr, 'kc_middle': 96.5, 'kc_upper': 100.5, 'kc_lower': 95.0, 'ma5': 96.2, 'ma15': 99.0},
     ]
     df = pd.DataFrame(bars)
-    # Include position sizing so the net-ROE ratchet can be evaluated.
+    # 5 倍槓桿，lowest 97.0 -> 淨 ROE 峰值 ~15%
     position = {
-        'side': 'SHORT', 'entry_price': 100.0, 'lowest_price': 95.0,
-        'qty': 1.0, 'margin': 100.0, 'symbol': 'CAP/USDT',
+        'side': 'SHORT', 'entry_price': 100.0, 'lowest_price': 97.0,
+        'qty': 1.0, 'margin': 20.0, 'leverage': 5.0, 'symbol': 'CAP/USDT',
+        'three_tier_net_roe_lock_state': {'peak_net_roe_pct': 15.0, 'armed': True},
     }
-    # After the 4% tier arms, the profit lock waits for a confirmed KC-mid cross.
-    quote = 97.5
+    # 價格回吐至淨 ROE 12% (100 - 2.4/20 = 12%)
+    quote = 97.6
 
     # 1. 斷言 evaluate 直接檢測出 EXIT_BY_RATCHET_PROFIT_LOCK
     eval_reason, eval_info = HoldingProtectionExitGate.evaluate(position, df, quote)
     assert eval_reason == 'EXIT_BY_RATCHET_PROFIT_LOCK'
-    assert eval_info.get('peak_net_roe_pct') >= 3.5
-    assert eval_info.get('giveback_ratio') > 0.25
+    assert eval_info.get('peak_net_roe_pct') >= 10.0
 
     # 2. 斷言 validate_exit 順暢放行 EXIT_BY_RATCHET_PROFIT_LOCK
     allowed, validated_reason, _ = HoldingProtectionExitGate.validate_exit(
@@ -1563,7 +1563,7 @@ def test_exit_gate_case_c_short_ratchet_profit_lock_triggers():
 
 @pytest.mark.parametrize(
     ('peak_roe', 'quote', 'expected_floor', 'expected_tier'),
-    [(2.0, 99.0, 0.0, 1), (4.0, 102.0, 2.5, 2), (7.0, 104.0, 5.25, 3)],
+    [(10.0, 99.0, 4.0, 1), (15.0, 102.0, 11.0, 2), (20.0, 104.0, 16.0, 2)],
 )
 def test_holding_gate_ratchet_lock_uses_authorized_roe_tiers(
     peak_roe, quote, expected_floor, expected_tier,

@@ -2,7 +2,12 @@
 Integrates StrictEntryAndImmunityGate, StrictCrossAndKcTrendGate, etc.
 """
 from core.gates.breakout_continuation_entry_gate import BreakoutContinuationEntryGate
-from core.gates.strict_entry_and_immunity_gate import StrictEntryAndImmunityGate, default_strict_gate
+from core.gates.strict_entry_and_immunity_gate import (
+    StrictEntryAndImmunityGate,
+    default_strict_gate,
+    check_long_entry_gate,
+    check_short_entry_gate,
+)
 from core.services.gates.entry_gate import (
     StrictCrossAndKcTrendGate,
     MemeSharedProtectionGate,
@@ -56,6 +61,8 @@ __all__ = [
     "default_strict_gate",
     "strict_gate",
     "evaluate_entry_candidate",
+    "check_long_entry_gate",
+    "check_short_entry_gate",
     "StrictCrossAndKcTrendGate",
     "MemeSharedProtectionGate",
     "MacroCandleStructureGate",

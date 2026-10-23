@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 import pandas as pd
 import numpy as np
+from core.services.technical_indicators import compute_keltner_channels
 
 
 @dataclass
@@ -37,6 +38,8 @@ class MarketDataSnapshot:
     macro_slope: float = 0.0          # EMA60 長週期斜率 (1小時級別波段)
     slow_slope_5: float = 0.0         # EMA40 過去 5 根斜率
     bandwidth: float = 0.0            # 通道帶寬 (kc_upper - kc_lower) / kc_middle
+    ema5: float = 0.0                 # EMA 5
+    ema13: float = 0.0                # EMA 13
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -47,6 +50,8 @@ class MarketDataSnapshot:
             "prev_k": self.prev_k,
             "ma5": self.ma5,
             "ma15": self.ma15,
+            "ema5": self.ema5,
+            "ema13": self.ema13,
             "ema_fast": self.ema_fast,
             "ema_slow": self.ema_slow,
             "ma_spread_pct": self.ma_spread_pct,
@@ -63,6 +68,7 @@ class MarketDataSnapshot:
             "macro_trend": self.macro_trend,
             "macro_slope": self.macro_slope,
             "slow_slope_5": self.slow_slope_5,
+            "bandwidth": self.bandwidth,
         }
 
 
@@ -91,6 +97,10 @@ class DataPipeline:
         ma5_series = close.rolling(window=5).mean()
         ma15_series = close.rolling(window=15).mean()
 
+        # EMA5 (極限動能線) 與 EMA13 (防守線)
+        ema5_series = close.ewm(span=5, adjust=False).mean()
+        ema13_series = close.ewm(span=13, adjust=False).mean()
+
         # EMA 15 (快線) 與 EMA 40 (慢線)
         ema_fast_series = close.ewm(span=15, adjust=False).mean()
         ema_slow_series = close.ewm(span=40, adjust=False).mean()
@@ -98,32 +108,40 @@ class DataPipeline:
         # 均線間距比例 (%)
         ma_spread_series = ((ema_fast_series - ema_slow_series).abs() / ema_slow_series) * 100.0
 
-        # ATR 14
-        tr = np.maximum(
-            high - low,
-            np.maximum(
-                (high - close.shift(1)).abs(),
-                (low - close.shift(1)).abs(),
-            ),
+        # KC 通道與 ATR14 計算 (統一標準單一來源，杜絕前視偏差)
+        kc_res = compute_keltner_channels(
+            df_calc,
+            ema_period=20,
+            atr_period=14,
+            multiplier=1.5,
         )
-        atr_series = tr.rolling(window=14).mean()
+        atr_series = kc_res["atr"]
+        kc_basis = kc_res["kc_middle"]
+        kc_upper_series = kc_res["kc_upper"]
+        kc_lower_series = kc_res["kc_lower"]
 
-        # KC 通道 (basis=EMA20, mult=1.5)
-        kc_basis = close.ewm(span=20, adjust=False).mean()
-        atr_safe = atr_series.bfill().fillna(close * 0.01)
-        kc_upper_series = kc_basis + (atr_safe * 1.5)
-        kc_lower_series = kc_basis - (atr_safe * 1.5)
+        # 暖機檢查：嚴禁用 bfill() 將未來資料向前回填
+        # 若最新 K 棒或前一根 K 棒的 ATR 尚未就緒 (NaN 或 <= 0)，則視為指標尚未準備好
+        if (
+            len(atr_series) < 14
+            or pd.isna(atr_series.iloc[-1])
+            or pd.isna(atr_series.iloc[-2])
+            or float(atr_series.iloc[-1]) <= 0
+        ):
+            return None
 
-        # 將指標列注入 df_calc 以供下游閘門驗證
+        # 將指標列注入 df_calc 以供下游閘門驗證 (前 13 根保持 NaN，杜絕前視偏差)
         df_calc["ma5"] = ma5_series
         df_calc["ma15"] = ma15_series
+        df_calc["ema5"] = ema5_series
+        df_calc["ema13"] = ema13_series
         df_calc["ema_fast"] = ema_fast_series
         df_calc["ema_slow"] = ema_slow_series
-        df_calc["atr"] = atr_safe
+        df_calc["atr"] = atr_series
         df_calc["kc_middle"] = kc_basis
         df_calc["kc_upper"] = kc_upper_series
         df_calc["kc_lower"] = kc_lower_series
-        df_calc["bandwidth"] = (df_calc["kc_upper"] - df_calc["kc_lower"]) / df_calc["kc_middle"]
+        df_calc["bandwidth"] = kc_res["bandwidth"]
         df_calc["ma_slow"] = ema_slow_series
         df_calc["ma_slow_slope"] = ema_slow_series - ema_slow_series.shift(2)
         df_calc["body_size"] = (df_calc["close"] - df_calc["open"]).abs()
@@ -180,14 +198,23 @@ class DataPipeline:
         n_kc_step = 5 if len(kc_basis) >= 6 else 1
         kc_middle_slope = (kc_mid - prev_kc_mid_5) / n_kc_step
 
+        ema5_val = float(ema5_series.iloc[-1]) if not pd.isna(ema5_series.iloc[-1]) else curr_k["close"]
+        ema13_val = float(ema13_series.iloc[-1]) if not pd.isna(ema13_series.iloc[-1]) else curr_k["close"]
+        prev_ema5 = float(ema5_series.iloc[-2]) if len(ema5_series) > 1 and not pd.isna(ema5_series.iloc[-2]) else ema5_val
+        prev_ema13 = float(ema13_series.iloc[-2]) if len(ema13_series) > 1 and not pd.isna(ema13_series.iloc[-2]) else ema13_val
+
         curr_k["ma5"] = ma5
         curr_k["ma15"] = ma15
+        curr_k["ema5"] = ema5_val
+        curr_k["ema13"] = ema13_val
         curr_k["kc_middle"] = kc_mid
         prev_k["ma5"] = prev_ma5
         prev_k["ma15"] = prev_ma15
+        prev_k["ema5"] = prev_ema5
+        prev_k["ema13"] = prev_ema13
         prev_k["kc_middle"] = prev_kc_mid
 
-        atr_val = float(atr_safe.iloc[-1]) if not pd.isna(atr_safe.iloc[-1]) and atr_safe.iloc[-1] > 0 else (curr_k["close"] * 0.01)
+        atr_val = float(atr_series.iloc[-1])
 
         quote = float(current_price) if current_price is not None and current_price > 0 else curr_k["close"]
 
@@ -258,5 +285,7 @@ class DataPipeline:
             macro_slope=macro_slope,
             slow_slope_5=slow_slope_5,
             bandwidth=((kc_up - kc_low) / kc_mid if kc_mid > 0 else 0.0),
+            ema5=ema5_val,
+            ema13=ema13_val,
             raw_df=df_calc,
         )

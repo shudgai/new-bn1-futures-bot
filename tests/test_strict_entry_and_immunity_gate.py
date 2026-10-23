@@ -82,3 +82,66 @@ def test_strict_entry_slope_blocks_flat_and_bottom_short():
     can_open_short, reason_short = gate.can_open('SHORT', df_strong_short, current_bar_index=20)
     assert can_open_short is True
     assert reason_short == "PASSED_ENTRY_SHORT"
+
+
+def test_check_long_entry_gate_five_defense_lines():
+    from core.gates.strict_entry_and_immunity_gate import check_long_entry_gate, check_short_entry_gate
+
+    # 1. 測試防線 1: KC 中軌下行 (Slope < 0) 100% 阻斷
+    df_kc_down = pd.DataFrame([
+        {'open': 99.0, 'high': 100.5, 'low': 98.8, 'close': 100.0, 'ma5': 99.5, 'atr': 1.0, 'kc_upper': 100.2, 'kc_middle': 99.5, 'kc_middle_slope': -0.05},
+        {'open': 100.0, 'high': 102.5, 'low': 99.9, 'close': 102.3, 'ma5': 101.5, 'atr': 1.0, 'kc_upper': 101.0, 'kc_middle': 99.0, 'kc_middle_slope': -0.10},
+    ])
+    ok, reason = check_long_entry_gate(df_kc_down, current_bar_idx=10, last_exit_bar_idx=5)
+    assert ok is False
+    assert reason == "BLOCKED_KC_MIDDLE_SLOPE_DOWN"
+
+    # 2. 測試防線 2: MA5 未抬頭或未站上 MA5
+    df_ma5_not_up = pd.DataFrame([
+        {'open': 99.0, 'high': 100.5, 'low': 98.8, 'close': 100.0, 'ma5': 102.0, 'atr': 1.0, 'kc_upper': 100.2, 'kc_middle': 99.5, 'kc_middle_slope': 0.1},
+        {'open': 100.0, 'high': 101.5, 'low': 99.9, 'close': 101.2, 'ma5': 101.8, 'atr': 1.0, 'kc_upper': 101.0, 'kc_middle': 99.6, 'kc_middle_slope': 0.1},
+    ])
+    ok, reason = check_long_entry_gate(df_ma5_not_up, current_bar_idx=10, last_exit_bar_idx=5)
+    assert ok is False
+    assert reason == "BLOCKED_MA5_NOT_UPWARD"
+
+    # 3. 測試防線 3: 高檔插針出貨 (長上影線攔截)
+    # body = 101.5 - 100.0 = 1.5, high = 103.0 -> upper_wick = 1.5 > 0.6 * body (0.9) and > 0.3 * atr (0.3)
+    df_upper_wick = pd.DataFrame([
+        {'open': 99.0, 'high': 100.5, 'low': 98.8, 'close': 100.0, 'ma5': 99.5, 'atr': 1.0, 'kc_upper': 100.2, 'kc_middle': 99.5, 'kc_middle_slope': 0.1},
+        {'open': 100.0, 'high': 103.0, 'low': 99.9, 'close': 101.5, 'ma5': 101.0, 'atr': 1.0, 'kc_upper': 101.0, 'kc_middle': 99.6, 'kc_middle_slope': 0.1},
+    ])
+    ok, reason = check_long_entry_gate(df_upper_wick, current_bar_idx=10, last_exit_bar_idx=5)
+    assert ok is False
+    assert reason == "BLOCKED_BY_EXCESSIVE_UPPER_WICK"
+
+    # 4. 測試防線 4: 冷卻期阻斷普通兩根突破
+    # prev_bar close 101.5 > upper 101.0, bar_t close 102.0 > upper 101.5, 但 body = 0.5 < 1.0 atr
+    df_normal_in_cooldown = pd.DataFrame([
+        {'open': 100.0, 'high': 101.6, 'low': 99.8, 'close': 101.5, 'ma5': 100.5, 'atr': 1.0, 'kc_upper': 101.0, 'kc_middle': 99.5, 'kc_middle_slope': 0.1},
+        {'open': 101.5, 'high': 102.1, 'low': 101.4, 'close': 102.0, 'ma5': 101.2, 'atr': 1.0, 'kc_upper': 101.5, 'kc_middle': 99.6, 'kc_middle_slope': 0.1},
+    ])
+    # 剛平倉 (current=10, last_exit=9 -> 差 1 根 <= 3)
+    ok, reason = check_long_entry_gate(df_normal_in_cooldown, current_bar_idx=10, last_exit_bar_idx=9, min_cooldown_bars=3)
+    assert ok is False
+    assert reason == "BLOCKED_BY_COOLDOWN"
+
+    # 5. 測試防線 4 豁免: 觸發「強動能脈衝 (Super Impulse)」成功打斷冷卻期放行！
+    # body = 103.5 - 101.0 = 2.5 >= 1.0 atr (1.0), high = 103.8 (wick = 0.3 <= 0.4 * 2.5 = 1.0), close 103.5 > upper 101.5
+    df_super_impulse = pd.DataFrame([
+        {'open': 100.0, 'high': 101.2, 'low': 99.8, 'close': 101.0, 'ma5': 100.5, 'atr': 1.0, 'kc_upper': 101.0, 'kc_middle': 99.5, 'kc_middle_slope': 0.1},
+        {'open': 101.0, 'high': 103.8, 'low': 100.9, 'close': 103.5, 'ma5': 102.5, 'atr': 1.0, 'kc_upper': 101.5, 'kc_middle': 99.7, 'kc_middle_slope': 0.2},
+    ])
+    ok, reason = check_long_entry_gate(df_super_impulse, current_bar_idx=10, last_exit_bar_idx=9, min_cooldown_bars=3)
+    assert ok is True
+    assert reason == "ENTRY_APPROVED"
+
+    # 6. 測試空單強動能豁免
+    df_super_impulse_short = pd.DataFrame([
+        {'open': 101.0, 'high': 101.2, 'low': 99.8, 'close': 100.0, 'ma5': 100.5, 'atr': 1.0, 'kc_lower': 100.5, 'kc_middle': 101.5, 'kc_middle_slope': -0.1},
+        {'open': 100.0, 'high': 100.1, 'low': 97.2, 'close': 97.5, 'ma5': 98.5, 'atr': 1.0, 'kc_lower': 99.5, 'kc_middle': 101.2, 'kc_middle_slope': -0.2},
+    ])
+    ok_s, reason_s = check_short_entry_gate(df_super_impulse_short, current_bar_idx=10, last_exit_bar_idx=9, min_cooldown_bars=3)
+    assert ok_s is True
+    assert reason_s == "ENTRY_APPROVED"
+

@@ -38,22 +38,13 @@ def prepare_indicators_1m(df: pd.DataFrame) -> pd.DataFrame:
         (df["ema_fast"] - df["ema_slow"]).abs() / df["ema_slow"]
     ) * 100
 
-    # Keltner Channel (KC 週期 20, ATR 乘數 1.5)
-    tr = np.maximum(
-        df["high"] - df["low"],
-        np.maximum(
-            (df["high"] - df["close"].shift(1)).abs(),
-            (df["low"] - df["close"].shift(1)).abs(),
-        ),
-    )
-    df["atr"] = tr.rolling(window=20).mean()
-    # 填補 ATR 前期 NaN
-    if df["atr"].isna().any():
-        df["atr"] = df["atr"].bfill().fillna(df["close"] * 0.01)
-
-    df["kc_basis"] = df["close"].ewm(span=20, adjust=False).mean()
-    df["kc_upper"] = df["kc_basis"] + (df["atr"] * 1.5)
-    df["kc_lower"] = df["kc_basis"] - (df["atr"] * 1.5)
+    # Keltner Channel (KC 週期 20, ATR 14, 乘數 1.5，統一單一真理來源，無前視偏差)
+    from core.services.technical_indicators import compute_keltner_channels
+    kc_df = compute_keltner_channels(df, ema_period=20, atr_period=14, multiplier=1.5)
+    df["atr"] = kc_df["atr"]
+    df["kc_basis"] = kc_df["kc_middle"]
+    df["kc_upper"] = kc_df["kc_upper"]
+    df["kc_lower"] = kc_df["kc_lower"]
 
     return df
 

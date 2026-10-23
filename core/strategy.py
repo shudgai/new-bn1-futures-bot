@@ -702,7 +702,7 @@ class SuperTrendKeltnerStrategy:
     3. 90+ 使用現價 Post-Only Maker；其餘達標訊號按分數等待回踩與二次確認。
     KC 突破後動量可能已接近末段，不因分數高而在突破高點市價追入。
     """
-    def __init__(self, atr_period=10, atr_multiplier=3.0, adx_period=ADX_PERIOD):
+    def __init__(self, atr_period=14, atr_multiplier=3.0, adx_period=ADX_PERIOD):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.adx_period = adx_period

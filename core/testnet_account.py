@@ -253,6 +253,7 @@ class BinanceTestnetAccount:
         self.last_closed_at: Dict[str, float] = {}
         self.last_closed_side: Dict[str, str] = {}
         self.last_closed_price: Dict[str, float] = {}
+        self.last_closed_trades: Dict[str, dict] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
         self.pullback_outcome_stats: Dict[str, int] = {}
@@ -579,6 +580,11 @@ class BinanceTestnetAccount:
             self.last_closed_side = {
                 str(k): str(v) for k, v in data.get("last_closed_side", {}).items()
             }
+            details = data.get("last_closed_trade_details", {})
+            if isinstance(details, dict):
+                self.last_closed_trades = {
+                    str(k): v for k, v in details.items() if isinstance(v, dict)
+                }
             self.pullback_outcome_stats = {
                 str(k): int(v) for k, v in data.get("pullback_outcome_stats", {}).items()
             }
@@ -622,6 +628,26 @@ class BinanceTestnetAccount:
             symbol: ts for symbol, ts in self.last_closed_at.items()
             if now_ts - ts < 3600
         }
+        last_closed_trade_details = {}
+        for symbol, trade in getattr(self, "last_closed_trades", {}).items():
+            if not isinstance(trade, dict):
+                continue
+            try:
+                last_closed_trade_details[str(symbol)] = {
+                    "side": str(trade["side"]).lower(),
+                    "price": float(trade["price"]),
+                    "bar_index": int(trade.get("bar_index", 0)),
+                    "time": float(trade["time"]),
+                    "timestamp_ms": int(
+                        trade.get(
+                            "timestamp_ms",
+                            float(trade["time"]) * 1000,
+                        )
+                    ),
+                    "reason": str(trade.get("reason", "")),
+                }
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
         payload = {
             "environment": "binance_usdm_legacy_testnet",
             "realized_pnl": self.realized_pnl,
@@ -635,6 +661,7 @@ class BinanceTestnetAccount:
             "daily_halt_logged": self.daily_halt_logged,
             "last_closed_at": last_closed_at,
             "last_closed_side": {k: self.last_closed_side[k] for k in last_closed_at if k in self.last_closed_side},
+            "last_closed_trade_details": last_closed_trade_details,
             "pullback_outcome_stats": self.pullback_outcome_stats,
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
@@ -1291,6 +1318,17 @@ class BinanceTestnetAccount:
                 "exit_type": exit_type,
                 **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
             })
+            if not hasattr(self, "last_closed_trades"):
+                self.last_closed_trades = {}
+            self.last_closed_trades[symbol] = {
+                "side": str(position["side"]).lower(),
+                "price": float(close_price),
+                "bar_index": int(time.time() * 1000 // 60_000),
+                "time": time.time(),
+                "timestamp_ms": int(time.time() * 1000),
+                "reason": str(exit_reason),
+            }
+            self.save_state()
             self.log(
                 f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | {exit_reason} | "
                 f"損益: {net_pnl:+.2f} USDT (手續費: {total_fee:.4f})",
@@ -2162,7 +2200,9 @@ class BinanceTestnetAccount:
                 await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
-            if not DISABLE_TAKE_PROFIT:
+            entry_mode_chk = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+            is_trend_or_wild = entry_mode_chk in ("WILD_SWING", "CHANNEL_SWING", "UNIFIED_PIPELINE") or meta.get("source") == "UNIFIED_PIPELINE"
+            if not DISABLE_TAKE_PROFIT and not is_trend_or_wild:
                 await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
             meta["tp"] = 0.0
@@ -2205,7 +2245,7 @@ class BinanceTestnetAccount:
             entry_mode = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper()
-            if entry_mode in ('CHANNEL_SWING', 'WILD_SWING'):
+            if entry_mode == 'CHANNEL_SWING':
                 continue
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
@@ -2429,7 +2469,7 @@ class BinanceTestnetAccount:
         # WILD_SWING order to be silently rejected with DUAL_TF_ORDER_FAILED.
         _is_wild_swing_source = (
             str(entry_context.get("entry_mode") or "").upper() == "WILD_SWING"
-            and entry_context.get("source") == "WILD_SWING_1M"
+            or entry_context.get("source") in ("WILD_SWING_1M", "UNIFIED_PIPELINE")
         )
         if not is_manual_request and not _is_wild_swing_source:
             provider = getattr(self, "entry_frame_provider", None)
@@ -2478,7 +2518,7 @@ class BinanceTestnetAccount:
         )
         is_wild_swing = (
             str(entry_context.get("entry_mode") or "").upper() == "WILD_SWING"
-            and entry_context.get("source") == "WILD_SWING_1M"
+            or entry_context.get("source") in ("WILD_SWING_1M", "UNIFIED_PIPELINE")
         )
         if is_manual and not is_wild_swing:
             # Manual fills enter the same bot-managed Channel Swing lifecycle
@@ -2498,13 +2538,58 @@ class BinanceTestnetAccount:
             ):
                 return False
 
+            target_action = f"OPEN_{side.upper()}"
+            last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
+
             # =========================================================================
-            # 【反向開單冷卻鎖】防止剛平倉立即反向開單（多轉空、空轉多冷卻與大趨勢確認）
+            # 【第一層：同方向重新進場冷卻鎖】防止剛平倉同方向秒進場（例如平空後 48 秒再次開空）
+            # 不允許 EMA_CROSS 或 allow_flip 繞過！
+            # =========================================================================
+            from core.services.reverse_entry_cooldown_lock import (
+                check_same_direction_reentry_cooldown,
+            )
+            same_dir_allowed, same_dir_reason = check_same_direction_reentry_cooldown(
+                target_action=target_action,
+                last_closed_trade=last_trade,
+                cooldown_seconds=120.0,
+            )
+            if not same_dir_allowed:
+                self.log(
+                    f"🛡️ [SAME_DIRECTION_COOLDOWN] {symbol} {same_dir_reason} -> 強制阻斷同向重進",
+                    "WARNING",
+                )
+                return False
+
+            # =========================================================================
+            # 【第二層：行情資料新鮮度檢查】驗證最新確認收盤 K 棒時間戳是否過期
+            # =========================================================================
+            gate_frame = entry_context.get("entry_gate_frame")
+            if gate_frame is not None and hasattr(gate_frame, "empty") and not gate_frame.empty:
+                try:
+                    from core.services.reverse_entry_cooldown_lock import check_closed_candle_freshness
+                    timeframe_ms = int(entry_context.get("entry_timeframe_ms") or 60_000)
+                    last_bar = gate_frame.iloc[-1]
+                    stamp = float(last_bar.get("timestamp", 0))
+                    if stamp > 0:
+                        fresh, fresh_reason = check_closed_candle_freshness(
+                            last_candle_timestamp_ms=stamp,
+                            timeframe_ms=timeframe_ms,
+                            timestamp_is_open_time=True,
+                        )
+                        if not fresh:
+                            self.log(
+                                f"🛡️ [DATA_FRESHNESS_GATE] {symbol} {fresh_reason} -> 拒絕過期行情開倉",
+                                "WARNING",
+                            )
+                            return False
+                except Exception as ex:
+                    self.log(f"⚠️ [DATA_FRESHNESS_GATE] {symbol} 檢查異常: {ex}", "WARNING")
+
+            # =========================================================================
+            # 【第三層：反向開單冷卻鎖】防止剛平倉立即反向開單（多轉空、空轉多冷卻與大趨勢確認）
             # =========================================================================
             is_ema_cross_entry = str(entry_context.get("entry_source", "")).startswith("EMA_CROSS") or entry_context.get("allow_flip") is True
             if not is_ema_cross_entry:
-                target_action = f"OPEN_{side.upper()}"
-                last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
                 frame_provider = getattr(self, "channel_exit_frame_provider", None)
                 frame = frame_provider(symbol) if callable(frame_provider) else getattr(self, "_channel_exit_frames", {}).get(symbol)
                 from core.services.reverse_entry_cooldown_lock import evaluate_reverse_cooldown_guard
@@ -2645,7 +2730,9 @@ class BinanceTestnetAccount:
                 return False
             tp = 0.0
         elif entry_mode == "WILD_SWING":
-            sl = 0.0
+            if not sl or sl <= 0.0:
+                atr_v = atr if atr > 0 else price * 0.015
+                sl = (price - 3.0 * atr_v) if side == "LONG" else (price + 3.0 * atr_v)
             tp = 0.0
         else:
             try:
@@ -2907,7 +2994,12 @@ class BinanceTestnetAccount:
                 )
             # Ensure SL sits on correct side and respect a minimum distance
             if is_wild_swing:
-                sl_price = 0.0
+                atr_value = atr if atr > 0 else execution_price * 0.015
+                target_sl = sl if (sl and sl > 0) else ((execution_price - 3.0 * atr_value) if side == "LONG" else (execution_price + 3.0 * atr_value))
+                sl_price = float(self._price_to_precision(symbol, target_sl))
+                if not DISABLE_STOP_LOSS:
+                    sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
+                    sl_price = float(self._price_to_precision(symbol, sl_price))
             elif is_channel_swing and (DISABLE_STOP_LOSS or sl <= 0):
                 sl_price = 0.0
             elif not DISABLE_STOP_LOSS or is_exhaustion_sniper:
@@ -2952,7 +3044,7 @@ class BinanceTestnetAccount:
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
                 if (POSITION_HARD_STOPS_ENABLED and ENABLE_EXCHANGE_INITIAL_STOP_LOSS
-                        and sl_price > 0 and not (is_channel_swing or is_wild_swing)):
+                        and sl_price > 0 and not is_channel_swing):
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )

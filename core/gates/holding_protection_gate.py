@@ -1327,6 +1327,14 @@ def _ratchet_lock_details(position, quote):
             if math.isfinite(saved_peak):
                 peak_roe = max(peak_roe, saved_peak)
         floor, tier = tiered_net_roe_floor(peak_roe)
+        if isinstance(saved_state, dict):
+            saved_state['peak_net_roe_pct'] = peak_roe
+            saved_state['floor_net_roe_pct'] = floor
+            saved_state['armed'] = floor is not None
+        position['highest_net_roe'] = peak_roe
+        position['peak_net_roe_pct'] = peak_roe
+        position['profit_lock_armed'] = floor is not None
+
         if floor is None:
             return None
         if not has_reached_net_roe_floor(current_roe, floor):

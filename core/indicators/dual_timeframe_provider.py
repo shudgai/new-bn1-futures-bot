@@ -26,26 +26,23 @@ class DualTimeframeProvider:
             if 'ma15' not in df.columns or df['ma15'].isna().all():
                 df['ma15'] = df['close'].rolling(window=15, min_periods=1).mean()
 
-        # ATR 計算 (預設 14)
-        if 'atr' not in df.columns or df['atr'].isna().all():
-            high = df['high']
-            low = df['low']
-            close_prev = df['close'].shift(1)
-            tr1 = high - low
-            tr2 = (high - close_prev).abs()
-            tr3 = (low - close_prev).abs()
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            df['atr'] = tr.rolling(window=14, min_periods=1).mean()
-            # 若仍有 NaN，以 high - low 或 1e-4 填充
-            df['atr'] = df['atr'].fillna(tr).fillna(1e-4)
-
-        # KC 通道 (Keltner Channel: Middle=EMA20/SMA20, Range=2.0 * ATR)
-        if 'kc_middle' not in df.columns or df['kc_middle'].isna().all():
-            df['kc_middle'] = df['close'].rolling(window=20, min_periods=1).mean()
-        if 'kc_upper' not in df.columns or df['kc_upper'].isna().all():
-            df['kc_upper'] = df['kc_middle'] + 2.0 * df['atr']
-        if 'kc_lower' not in df.columns or df['kc_lower'].isna().all():
-            df['kc_lower'] = df['kc_middle'] - 2.0 * df['atr']
+        # KC 通道與 ATR 計算 (統一標準: Middle=EMA20, Mult=1.5, ATR=14)
+        if (
+            'kc_middle' not in df.columns or df['kc_middle'].isna().all()
+            or 'kc_upper' not in df.columns or df['kc_upper'].isna().all()
+            or 'kc_lower' not in df.columns or df['kc_lower'].isna().all()
+            or 'atr' not in df.columns or df['atr'].isna().all()
+        ):
+            from core.services.technical_indicators import compute_keltner_channels
+            kc_df = compute_keltner_channels(df, ema_period=20, atr_period=14, multiplier=1.5)
+            if 'atr' not in df.columns or df['atr'].isna().all():
+                df['atr'] = kc_df['atr']
+            if 'kc_middle' not in df.columns or df['kc_middle'].isna().all():
+                df['kc_middle'] = kc_df['kc_middle']
+            if 'kc_upper' not in df.columns or df['kc_upper'].isna().all():
+                df['kc_upper'] = kc_df['kc_upper']
+            if 'kc_lower' not in df.columns or df['kc_lower'].isna().all():
+                df['kc_lower'] = kc_df['kc_lower']
 
         return df
 

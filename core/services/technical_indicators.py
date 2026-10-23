@@ -4,6 +4,52 @@ import numpy as np
 import pandas as pd
 
 
+def compute_keltner_channels(
+    df: pd.DataFrame,
+    *,
+    ema_period: int = 20,
+    atr_period: int = 14,
+    multiplier: float = 1.5,
+) -> pd.DataFrame:
+    """計算統一標準規格的 Keltner Channels (KC) 與 True Range/ATR。
+
+    規格標準：
+    - KC 中線：EMA20 (以已收線 close 計算，close.ewm(span=20, adjust=False).mean())
+    - True Range：max(high - low, |high - close_prev|, |low - close_prev|)
+    - ATR：TR 的 14 週期簡單移動平均 (tr.rolling(14).mean())
+    - KC 上軌：EMA20 + ATR14 * 1.5
+    - KC 下軌：EMA20 - ATR14 * 1.5
+    - 嚴禁使用 bfill() 向前回填未來 ATR，前視偏差防護：前 atr_period 根保持 NaN。
+    """
+    high = df['high'] if 'high' in df.columns else df['h']
+    low = df['low'] if 'low' in df.columns else df['l']
+    if 'close_price_spike_filtered' in df.columns:
+        close = df['close_price_spike_filtered'].fillna(df['close'])
+    elif 'close' in df.columns:
+        close = df['close']
+    else:
+        close = df['c']
+
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=atr_period).mean()
+
+    kc_middle = close.ewm(span=ema_period, adjust=False).mean()
+    kc_upper = kc_middle + (atr * multiplier)
+    kc_lower = kc_middle - (atr * multiplier)
+
+    res = pd.DataFrame(index=df.index)
+    res['tr'] = tr
+    res['atr'] = atr
+    res['kc_middle'] = kc_middle
+    res['kc_upper'] = kc_upper
+    res['kc_lower'] = kc_lower
+    res['bandwidth'] = (kc_upper - kc_lower) / kc_middle.replace(0, np.nan)
+    return res
+
+
 def compute_technical_indicators(
     df: pd.DataFrame,
     *,
@@ -29,18 +75,25 @@ def compute_technical_indicators(
 
     volume = df['volume']
 
-    # ATR 計算
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df['atr'] = tr.rolling(window=atr_period).mean()
+    # ATR 與 KC 統一計算 (無前視偏差)
+    kc_res = compute_keltner_channels(
+        df,
+        ema_period=20,
+        atr_period=atr_period,
+        multiplier=keltner_atr_multiplier,
+    )
+    tr = kc_res['tr']
+    df['atr'] = kc_res['atr']
+    df['kc_middle'] = kc_res['kc_middle']
+    df['kc_upper'] = kc_res['kc_upper']
+    df['kc_lower'] = kc_res['kc_lower']
+    df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
     # EMAs (EMA5 極限動量線, EMA13 趨勢生命線/防守線)
     df['ema5'] = close.ewm(span=5, adjust=False).mean()
     df['ema13'] = close.ewm(span=13, adjust=False).mean()
     df['ema_10'] = close.ewm(span=10, adjust=False).mean()
-    df['ema_20'] = close.ewm(span=20, adjust=False).mean()
+    df['ema_20'] = kc_res['kc_middle']
     df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
     # MA3 負責快速峰谷轉折，MA5 負責中短線方向。
@@ -85,12 +138,6 @@ def compute_technical_indicators(
     minus_di = 100 * (minus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
     df['adx'] = dx.ewm(alpha=1 / adx_period, adjust=False).mean()
-
-    # Keltner Channels
-    df['kc_upper'] = df['ema_20'] + (df['atr'] * keltner_atr_multiplier)
-    df['kc_lower'] = df['ema_20'] - (df['atr'] * keltner_atr_multiplier)
-    df['kc_middle'] = df['ema_20']
-    df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
     # SuperTrend
     hl2 = (high + low) / 2

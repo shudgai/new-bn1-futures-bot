@@ -24,3 +24,13 @@ nohup.out
 # IDE
 .idea/
 .vscode/
+
+# Local artifacts & scratch
+scratch/
+*.zip
+data/*.tmp
+data/golden_dataset*
+reports/RUN_*
+*.png
+*.csv
+
