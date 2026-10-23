@@ -85,15 +85,19 @@ class ExitGate:
                 )
         return False, ""
 
-    # 第一級絕對風險出口與淨 ROE 鎖利：優先於中軌 MA3 規則
-    PRIORITY_EXIT_REASONS = frozenset({
+    # 第一級絕對安全避險出口（3 ATR 硬止損、極端瀑布、反側破軌）：優先於頂底平倉
+    ABSOLUTE_SAFETY_REASONS = frozenset({
         "CIRCUIT_BREAKER_HARD_SL",
         "EXIT_BY_EXTREME_WATERFALL",
         "OPPOSITE_KC_BAND_BREACH",
-        "EXIT_BY_RATCHET_PROFIT_LOCK",
     })
-    # 中軌 MA3 暫緩期間仍然放行的真峰谷三點出口
-    PIVOT_EXIT_REASONS = frozenset({"EARLY_PIVOT_PEAK_EXIT", "EARLY_PIVOT_VALLEY_EXIT"})
+    # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
+    PIVOT_EXIT_REASONS = frozenset({
+        "EARLY_PIVOT_PEAK_EXIT",
+        "EARLY_PIVOT_VALLEY_EXIT",
+        "CLOSE_SHORT_AT_BOTTOM",
+        "CLOSE_LONG_AT_TOP",
+    })
 
     @staticmethod
     def evaluate(
@@ -104,14 +108,16 @@ class ExitGate:
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        出場總裁決（2026-10-23 中軌 MA3 對稱平倉規則）：
-        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）與淨 ROE 鎖利最優先。
-        2. 中軌 MA3 規則（僅已收線）優先於所有 VETO_HOLD 與一般出口。
-        3. 暫緩期間 (HOLD_WAIT) 只放行真峰谷三點出口，其餘一般出口暫停。
+        出場總裁決（2026-10-23 最新授權）：
+        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）最優先。
+        2. 極值轉折點見頂/見底即平倉 (CLOSE_SHORT_AT_BOTTOM / CLOSE_LONG_AT_TOP)：
+           MA3 勾頭、下影線插針打底或陽包陰吞噬，不等回摸中軌立即平倉鎖利！一票否決 VETO_HOLD！
+        3. 淨 ROE 階梯鎖利與中軌 MA3 規則（僅已收線）優先於一般 VETO_HOLD 與普通均線出口。
+        4. 暫緩期間 (HOLD_WAIT) 只放行真峰谷轉折出口，其餘一般出口暫停。
         """
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
-        if should_exit and reason in ExitGate.PRIORITY_EXIT_REASONS:
+        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
             return result
         if not pos or not market_data:
             return result
@@ -121,12 +127,28 @@ class ExitGate:
         except (TypeError, ValueError):
             return result
 
-        from core.gates.mid_band_ma3_exit import (
-            ACTION_EXIT, ACTION_HOLD_WAIT, evaluate_mid_band_ma3_exit,
-        )
         raw_df = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("raw_df")
+        )
+
+        # ── 2. 極值轉折點見頂/見底即平倉（鎖住最大波段利潤，不等回踩/回摸中軌）──
+        from core.gates.top_bottom_reversal_exit import evaluate_top_bottom_reversal_exit
+        atr_val = (
+            market_data.atr if isinstance(market_data, MarketDataSnapshot)
+            else float(atr or market_data.get("atr", 0.0))
+        )
+        tb_exit, tb_reason, tb_meta = evaluate_top_bottom_reversal_exit(pos, raw_df, atr_val=atr_val)
+        if tb_exit and tb_reason:
+            return True, tb_reason, {
+                **(meta or {}),
+                "top_bottom_reversal": tb_meta,
+                "cause": tb_meta.get("cause"),
+            }
+
+        # ── 3. 中軌 + MA3 方向對稱平倉與暫緩機制 ──
+        from core.gates.mid_band_ma3_exit import (
+            ACTION_EXIT, ACTION_HOLD_WAIT, evaluate_mid_band_ma3_exit,
         )
         action, mid_reason, mid_meta = evaluate_mid_band_ma3_exit(
             pos.get("side"),

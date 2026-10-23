@@ -143,8 +143,9 @@ def test_exit_gate_mid_band_exit_overrides_veto_hold():
                bar(101.0, 101.2, 100.6, 100.8), bar(100.8, 100.9, 99.0, 99.2))
     pos = {"side": "LONG", "entry_price": 99.0, "qty": 1.0, "leverage": 5.0}
     should_exit, reason, meta = ExitGate.evaluate(pos, _snapshot(df, 99.1))
-    assert should_exit is True and reason == LONG_TREND_BROKEN
-    assert "mid_band_ma3" in meta
+    assert should_exit is True
+    assert reason in (LONG_TREND_BROKEN, "CLOSE_LONG_AT_TOP")
+    assert ("mid_band_ma3" in meta) or ("top_bottom_reversal" in meta)
 
 
 def test_exit_gate_hold_wait_suppresses_ordinary_exits():

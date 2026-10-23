@@ -439,6 +439,8 @@ def validate_exit_math(
     is_early_pivot = any(token in norm_reason for token in (
         "EARLY_PIVOT", "EARLY_PIVOT_VALLEY", "EARLY_PIVOT_PEAK",
         "PIVOT_VALLEY", "PIVOT_PEAK", "EARLY_VALLEY", "EARLY_PEAK",
+        "CLOSE_SHORT_AT_BOTTOM", "CLOSE_LONG_AT_TOP", "AT_BOTTOM", "AT_TOP",
+        "TOP_BOTTOM_EXIT",
     ))
     if len(bars) >= 3:
         b1, b2, b3 = bars[-3], bars[-2], bars[-1]
