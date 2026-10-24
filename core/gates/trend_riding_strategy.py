@@ -280,6 +280,34 @@ def can_open_position(
     prev_kc_up = float(prev_closed.get("kc_upper", 0.0) or 0.0)
     prev_kc_low = float(prev_closed.get("kc_lower", 0.0) or 0.0)
 
+    MIN_TRADABLE_BANDWIDTH = 0.0025
+    is_breakout_candle = (close_p > kc_up or close_p < kc_low) and abs(close_p - open_p) >= 0.8 * atr_val
+    is_cross_mid_ignition = (
+        (side == "LONG" and close_p >= kc_mid_val + 0.3 * atr_val and ma3_slope_val > 0)
+        or (side == "SHORT" and close_p <= kc_mid_val - 0.3 * atr_val and ma3_slope_val < 0)
+    )
+
+    if (kc_bw < MIN_TRADABLE_BANDWIDTH) and not (is_breakout_candle or is_cross_mid_ignition):
+        return veto_return(f"VETO_KC_SQUEEZE_DEAD (bw={kc_bw:.5f} < {MIN_TRADABLE_BANDWIDTH})")
+
+    if is_hist_squeeze_local and not (is_breakout_candle or is_cross_mid_ignition):
+        return veto_return(f"BLOCKED_KC_SQUEEZE (hist_squeeze=True)")
+
+    if df is not None and len(df) >= 8 and "ma15" in df.columns:
+        ma15_s = df["ma15"].dropna().iloc[-8:]
+        if len(ma15_s) >= 8:
+            ma15_range = float(ma15_s.max() - ma15_s.min())
+            if atr_val > 0 and ma15_range < 0.25 * atr_val and not (is_breakout_candle or is_cross_mid_ignition):
+                return veto_return(f"VETO_MA15_LONG_FLAT (ma15_range={ma15_range:.4f} < 0.25*atr={0.25*atr_val:.4f})")
+
+    if df is not None and len(df) >= 5:
+        s_ma3 = df["ma3"].dropna() if "ma3" in df.columns else df["close"].rolling(3).mean().dropna()
+        s_ma15 = df["ma15"].dropna() if "ma15" in df.columns else df["close"].rolling(15).mean().dropna()
+        if len(s_ma3) >= 5 and len(s_ma15) >= 5:
+            ma_gap_avg = float((s_ma3.iloc[-5:] - s_ma15.iloc[-5:]).abs().mean())
+            if atr_val > 0 and ma_gap_avg < 0.15 * atr_val and not (is_breakout_candle or is_cross_mid_ignition):
+                return veto_return(f"VETO_MA_ENTANGLEMENT (ma_gap_avg={ma_gap_avg:.4f} < 0.15*atr={0.15*atr_val:.4f})")
+
     if side == "LONG":
         # 禁令一：中軌斜率向下，100% 禁止做多
         if kc_mid_slope_val <= 0:

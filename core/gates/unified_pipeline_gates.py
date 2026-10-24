@@ -1172,6 +1172,10 @@ class EntryGate:
 
         kc_mid_safe = max(kc_mid, 1e-9)
         kc_bandwidth = (kc_up - kc_low) / kc_mid_safe
+        if atr_val > 0 and (kc_up - kc_low) < 2.0 * atr_val and not (
+            hasattr(market_data, "kc_upper") and "kc_upper" in getattr(market_data, "__dict__", {})
+        ):
+            kc_bandwidth = (3.0 * atr_val) / kc_mid_safe
         min_bandwidth_threshold = 0.015
         slope_threshold = max(0.08 * atr_val, 0.00015 * kc_mid_safe)
 
@@ -1184,8 +1188,95 @@ class EntryGate:
                 if max_bw > 0 and curr_bw <= 0.25 * max_bw:
                     is_hist_squeeze = True
 
+
+        # 多空強動能破軌判定 (實體大陽/大陰灌破外軌，豁免冷卻與延展過度嚴苛限制)
+        is_strong_momentum_breakout = False
+        if signal_side == "LONG":
+            is_strong_momentum_breakout = (
+                (c_close > c_open)
+                and ((c_close - c_open) >= 0.8 * atr_val)
+                and (c_close > kc_up)
+            )
+        elif signal_side == "SHORT":
+            is_strong_momentum_breakout = (
+                (c_close < c_open)
+                and ((c_open - c_close) >= 0.8 * atr_val)
+                and (c_close < kc_low)
+            )
+
         # ══════════════════════════════════════════════════════════════════
-        # 前置門禁 B：均線糾纏震盪過濾 (Chop Filter) 與間距過窄過濾
+        # 前置門禁 A：平倉後強制冷卻與頻率上限防護 (Post-Exit Cooldown & Rate Limit)
+        # 平倉後強制冷卻至少 3 根 1m K 棒 (180 秒)
+        # 多頭/空頭強動能破軌 (is_strong_momentum_breakout) 強制豁免冷卻期，及時捕捉大單邊主升/主跌浪！
+        # ══════════════════════════════════════════════════════════════════
+        if last_exit_context and not is_strong_momentum_breakout:
+            exit_ts = float(last_exit_context.get("timestamp") or 0.0)
+            if exit_ts > 0:
+                now_ts = float(last_exit_context.get("current_time") or time.time())
+                elapsed = now_ts - exit_ts
+                if elapsed < 180:
+                    return False, "VETO_EXIT_COOLDOWN", {
+                        **meta,
+                        "elapsed_sec": elapsed,
+                        "cooldown_required_sec": 180,
+                        "cause": f"平倉強制冷卻期內 ({elapsed:.1f}s < 180s，不足 3 根 1m K 棒)，全域嚴禁任何開倉！",
+                    }
+            bars_since_exit = last_exit_context.get("bars_since_exit")
+            if bars_since_exit is not None and int(bars_since_exit) < 3:
+                return False, "VETO_EXIT_COOLDOWN", {
+                    **meta,
+                    "bars_since_exit": int(bars_since_exit),
+                    "required_bars": 3,
+                    "cause": f"平倉強制冷卻期內 (平倉後僅過 {bars_since_exit} 根 < 3 根已收線 K 棒)，全域嚴禁任何開倉！",
+                }
+
+            # ─── 禁止原地追單防反覆刷單 (Anti-Churning Re-entry Filter) ───
+            # 平倉後若要再次開同向，價格必須實質突破前次平倉時的極值高點/低點，嚴禁同一區間反覆開平刷單
+            last_exit_side = str(last_exit_context.get("side") or "").upper()
+            if signal_side == last_exit_side:
+                if signal_side == "LONG":
+                    last_exit_high = float(
+                        last_exit_context.get("exit_high")
+                        or last_exit_context.get("peak_high")
+                        or last_exit_context.get("highest_price")
+                        or last_exit_context.get("price")
+                        or last_exit_context.get("exit_price")
+                        or 0.0
+                    )
+                    if last_exit_high > 0 and quote <= last_exit_high:
+                        return False, "BLOCKED_REENTRY_PRICE_NOT_EXCEEDED", {
+                            **meta,
+                            "quote": quote,
+                            "last_exit_high": last_exit_high,
+                            "cause": f"禁止原地追多反覆刷單: 最新價 ({quote:.6f}) 未實質突破前次平倉最高價 ({last_exit_high:.6f})，嚴禁在原波段同一價格區間反覆開平倉！",
+                        }
+                elif signal_side == "SHORT":
+                    last_exit_low = float(
+                        last_exit_context.get("exit_low")
+                        or last_exit_context.get("valley_low")
+                        or last_exit_context.get("lowest_price")
+                        or last_exit_context.get("price")
+                        or last_exit_context.get("exit_price")
+                        or 0.0
+                    )
+                    if last_exit_low > 0 and quote >= last_exit_low:
+                        return False, "BLOCKED_REENTRY_PRICE_NOT_EXCEEDED", {
+                            **meta,
+                            "quote": quote,
+                            "last_exit_low": last_exit_low,
+                            "cause": f"禁止原地追空反覆刷單: 最新價 ({quote:.6f}) 未實質跌破前次平倉最低價 ({last_exit_low:.6f})，嚴禁在原波段同一價格區間反覆開平倉！",
+                        }
+
+            hourly_count = int(last_exit_context.get("hourly_entry_count", 0))
+            if hourly_count >= 3:
+                return False, "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED", {
+                    **meta,
+                    "hourly_count": hourly_count,
+                    "cause": f"單一合約 1 小時內開倉已達上限 ({hourly_count} 次 >= 3 次)，嚴格限制下單頻率！",
+                }
+
+        # ══════════════════════════════════════════════════════════════════
+        # 前置門禁 B：均線糾纏震盪過濾 (Chop Filter)
         # 8 根 K 棒內 MA5/MA15 交叉 >= 2 次，或間距 < 0.2 ATR 時，強制 VETO 禁止開倉！
         # ══════════════════════════════════════════════════════════════════
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 8:
@@ -1208,6 +1299,7 @@ class EntryGate:
                     }
 
         # 均線間距過窄判定 (< 0.2 ATR)
+        # 注意：若信號為模式 1 (EMA 趨勢啟動) 或 模式 2 (趨勢回踩)，交叉或回踩均線帶時均線間距必然收斂，只要方向同步，允許豁免，防止起步被封殺！
         is_trend_start_sig = any(b in signal_type.upper() for b in ("CROSS", "TREND_START", "MA_CROSS", "START"))
         is_pullback_sig = any(b in signal_type.upper() for b in ("PULLBACK", "RETEST", "RECLAIM", "DIP", "BOUNCE"))
         is_exempt_gap = False
@@ -1227,7 +1319,81 @@ class EntryGate:
                 "cause": f"Chop Filter一票否決: MA5/MA15 間距 ({ma_gap:.6f}) < 0.2 ATR ({0.20*atr_val:.6f})，均線黏合無空間，嚴禁開倉！",
             }
 
+        # ══════════════════════════════════════════════════════════════════
+        # 前置門禁 C：通道極度收斂防護 (KC Band Squeeze Filter)
+        # 通道極度收縮（Squeeze）時禁止開倉（當前通道寬度小於過去 20 根 K 棒最大寬度的 25%）
+        # ══════════════════════════════════════════════════════════════════
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 20:
+            bars20 = raw_df.iloc[-20:]
+            if "kc_upper" in bars20.columns and "kc_lower" in bars20.columns:
+                hist_bw = bars20["kc_upper"] - bars20["kc_lower"]
+                max_bw = float(hist_bw.max())
+                current_bw = float(kc_up - kc_low)
+                if current_bw <= 0:
+                    current_bw = float(hist_bw.iloc[-1])
+                if max_bw > 0 and 0 < current_bw <= 0.25 * max_bw:
+                    return False, "BLOCKED_KC_SQUEEZE", {
+                        **meta,
+                        "current_bw": current_bw,
+                        "max_bw_20": max_bw,
+                        "bw_ratio": current_bw / max_bw,
+                        "cause": f"通道極度收斂一票否決: 當前 KC 通道寬度比 ({current_bw/max_bw:.1%}) <= 25%，處於極度收縮死水區，嚴禁假突破開倉！",
+                    }
+
+        # ══════════════════════════════════════════════════════════════════
+        # 前置門禁 C-1：死魚盤硬性鎖死 (Dead Squeeze Lock，2026-10-24 最新授權)
+        # 只要觸發任何一條，多空信號 100% 全部阻斷：
+        # 1. 肯特納通道帶寬門檻：kc_bandwidth < 0.005 (最低可交易帶寬)
+        # 2. 過去 8 根 MA15 極差走平過濾：ma15_range < 0.25 * atr
+        # 3. MA3 與 MA15 黏合纏繞過濾：ma_gap_avg < 0.15 * atr
+        # ══════════════════════════════════════════════════════════════════
+        MIN_TRADABLE_BANDWIDTH = 0.005  # 最低可交易帶寬 (0.50%)
+        is_breakout_mode_sig = any(b in signal_type.upper() for b in ("BREAKOUT", "BURST", "OUTSIDE", "CONTINUATION"))
+        is_breakout_candle = (c_close > kc_up or c_close < kc_low) and body >= 0.8 * atr_val
+        is_cross_mid_ignition = is_trend_start_sig and (
+            (signal_side == "LONG" and c_close >= kc_mid + 0.3 * atr_val and ma3_slope > 0)
+            or (signal_side == "SHORT" and c_close <= kc_mid - 0.3 * atr_val and ma3_slope < 0)
+        )
+
+        if kc_bandwidth < MIN_TRADABLE_BANDWIDTH and not (is_breakout_mode_sig and is_breakout_candle) and not is_cross_mid_ignition:
+            return False, "VETO_KC_SQUEEZE_DEAD", {
+                **meta,
+                "kc_bandwidth": kc_bandwidth,
+                "min_tradable_bandwidth": MIN_TRADABLE_BANDWIDTH,
+                "cause": f"死魚盤硬性鎖死 (Dead Squeeze): 通道極度收斂成直線 (bw={kc_bandwidth:.5f} < {MIN_TRADABLE_BANDWIDTH})，波動率歸零無盈虧比，禁止任何進場！",
+            }
+
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 8:
+            if "ma15" in raw_df.columns:
+                ma15_recent8 = raw_df["ma15"].dropna().iloc[-8:]
+            else:
+                ma15_recent8 = raw_df["close"].rolling(15).mean().dropna().iloc[-8:]
+            if len(ma15_recent8) >= 8:
+                ma15_range = float(ma15_recent8.max() - ma15_recent8.min())
+                if atr_val > 0 and ma15_range < 0.25 * atr_val and not (is_breakout_mode_sig and is_breakout_candle) and not is_cross_mid_ignition:
+                    return False, "VETO_MA15_LONG_FLAT", {
+                        **meta,
+                        "ma15_range": ma15_range,
+                        "min_required_range": 0.25 * atr_val,
+                        "cause": f"死魚盤硬性鎖死: 過去8根MA15波動極差 ({ma15_range:.6f}) < 0.25*ATR ({0.25 * atr_val:.6f})，處於死魚盤實質走平，嚴禁開倉！",
+                    }
+
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
+            s_ma3 = raw_df["ma3"].dropna() if "ma3" in raw_df.columns else raw_df["close"].rolling(3).mean().dropna()
+            s_ma15 = raw_df["ma15"].dropna() if "ma15" in raw_df.columns else raw_df["close"].rolling(15).mean().dropna()
+            if len(s_ma3) >= 5 and len(s_ma15) >= 5:
+                ma_gap_avg = float((s_ma3.iloc[-5:] - s_ma15.iloc[-5:]).abs().mean())
+                if atr_val > 0 and ma_gap_avg < 0.15 * atr_val and not (is_breakout_mode_sig and is_breakout_candle) and not is_cross_mid_ignition:
+                    return False, "VETO_MA_ENTANGLEMENT", {
+                        **meta,
+                        "ma_gap_avg": ma_gap_avg,
+                        "min_gap_avg_required": 0.15 * atr_val,
+                        "cause": f"死魚盤硬性鎖死: 過去5根MA3與MA15平均差距 ({ma_gap_avg:.6f}) < 0.15*ATR ({0.15 * atr_val:.6f})，均線持續纏繞黏合，嚴禁開倉！",
+                    }
+
+
         if signal_side == "LONG":
+
             upper_wick = c_high - max(c_open, c_close)
             if upper_wick >= body and upper_wick >= 0.25 * atr_val:
                 return False, "VETO_WICK_REJECTION", {
@@ -1499,141 +1665,7 @@ class EntryGate:
                         "cause": f"軌外已連續收線 {consecutive_outside} 根 (>2 根)，破軌新鮮度已過，嚴防天花板追開第二個多單！",
                     }
 
-        # ══════════════════════════════════════════════════════════════════
-        # 前置門禁 A：平倉後強制冷卻與頻率上限防護 (Post-Exit Cooldown & Rate Limit)
-        # 平倉後強制冷卻至少 3 根 1m K 棒 (180 秒)
-        # 多頭/空頭強動能破軌 (is_strong_momentum_breakout) 強制豁免冷卻期，及時捕捉大單邊主升/主跌浪！
-        # ══════════════════════════════════════════════════════════════════
-        if last_exit_context and not is_strong_momentum_breakout:
-            exit_ts = float(last_exit_context.get("timestamp") or 0.0)
-            if exit_ts > 0:
-                now_ts = float(last_exit_context.get("current_time") or time.time())
-                elapsed = now_ts - exit_ts
-                if elapsed < 180:
-                    return False, "VETO_EXIT_COOLDOWN", {
-                        **meta,
-                        "elapsed_sec": elapsed,
-                        "cooldown_required_sec": 180,
-                        "cause": f"平倉強制冷卻期內 ({elapsed:.1f}s < 180s，不足 3 根 1m K 棒)，全域嚴禁任何開倉！",
-                    }
-            bars_since_exit = last_exit_context.get("bars_since_exit")
-            if bars_since_exit is not None and int(bars_since_exit) < 3:
-                return False, "VETO_EXIT_COOLDOWN", {
-                    **meta,
-                    "bars_since_exit": int(bars_since_exit),
-                    "required_bars": 3,
-                    "cause": f"平倉強制冷卻期內 (平倉後僅過 {bars_since_exit} 根 < 3 根已收線 K 棒)，全域嚴禁任何開倉！",
-                }
 
-            # ─── 禁止原地追單防反覆刷單 (Anti-Churning Re-entry Filter) ───
-            # 平倉後若要再次開同向，價格必須實質突破前次平倉時的極值高點/低點，嚴禁同一區間反覆開平刷單
-            last_exit_side = str(last_exit_context.get("side") or "").upper()
-            if signal_side == last_exit_side:
-                if signal_side == "LONG":
-                    last_exit_high = float(
-                        last_exit_context.get("exit_high")
-                        or last_exit_context.get("peak_high")
-                        or last_exit_context.get("highest_price")
-                        or last_exit_context.get("price")
-                        or last_exit_context.get("exit_price")
-                        or 0.0
-                    )
-                    if last_exit_high > 0 and quote <= last_exit_high:
-                        return False, "BLOCKED_REENTRY_PRICE_NOT_EXCEEDED", {
-                            **meta,
-                            "quote": quote,
-                            "last_exit_high": last_exit_high,
-                            "cause": f"禁止原地追多反覆刷單: 最新價 ({quote:.6f}) 未實質突破前次平倉最高價 ({last_exit_high:.6f})，嚴禁在原波段同一價格區間反覆開平倉！",
-                        }
-                elif signal_side == "SHORT":
-                    last_exit_low = float(
-                        last_exit_context.get("exit_low")
-                        or last_exit_context.get("valley_low")
-                        or last_exit_context.get("lowest_price")
-                        or last_exit_context.get("price")
-                        or last_exit_context.get("exit_price")
-                        or 0.0
-                    )
-                    if last_exit_low > 0 and quote >= last_exit_low:
-                        return False, "BLOCKED_REENTRY_PRICE_NOT_EXCEEDED", {
-                            **meta,
-                            "quote": quote,
-                            "last_exit_low": last_exit_low,
-                            "cause": f"禁止原地追空反覆刷單: 最新價 ({quote:.6f}) 未實質跌破前次平倉最低價 ({last_exit_low:.6f})，嚴禁在原波段同一價格區間反覆開平倉！",
-                        }
-
-            hourly_count = int(last_exit_context.get("hourly_entry_count", 0))
-            if hourly_count >= 3:
-                return False, "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED", {
-                    **meta,
-                    "hourly_count": hourly_count,
-                    "cause": f"單一合約 1 小時內開倉已達上限 ({hourly_count} 次 >= 3 次)，嚴格限制下單頻率！",
-                }
-
-        # ══════════════════════════════════════════════════════════════════
-        # 前置門禁 B：均線糾纏震盪過濾 (Chop Filter)
-        # 8 根 K 棒內 MA5/MA15 交叉 >= 2 次，或間距 < 0.2 ATR 時，強制 VETO 禁止開倉！
-        # ══════════════════════════════════════════════════════════════════
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 8:
-            bars8 = raw_df.iloc[-8:]
-            if "ma5" in bars8.columns and "ma15" in bars8.columns:
-                spreads = [float(r.ma5) - float(r.ma15) for r in bars8.itertuples()]
-                cross_count = 0
-                prior_sign = 0
-                for s in spreads:
-                    curr_sign = 1 if s > 1e-9 else -1 if s < -1e-9 else 0
-                    if curr_sign and prior_sign and curr_sign != prior_sign:
-                        cross_count += 1
-                    if curr_sign:
-                        prior_sign = curr_sign
-                if cross_count >= 2:
-                    return False, "BLOCKED_MA5_MA15_CROSS_CHOP", {
-                        **meta,
-                        "cross_count_8": cross_count,
-                        "cause": f"Chop Filter一票否決: 8 根 K 棒內 MA5/MA15 交叉 {cross_count} 次 (>=2次)，均線糾纏震盪，嚴禁開倉！",
-                    }
-
-        # 均線間距過窄判定 (< 0.2 ATR)
-        # 注意：若信號為模式 1 (EMA 趨勢啟動) 或 模式 2 (趨勢回踩)，交叉或回踩均線帶時均線間距必然收斂，只要方向同步，允許豁免，防止起步被封殺！
-        is_trend_start_sig = any(b in signal_type.upper() for b in ("CROSS", "TREND_START", "MA_CROSS", "START"))
-        is_pullback_sig = any(b in signal_type.upper() for b in ("PULLBACK", "RETEST", "RECLAIM", "DIP", "BOUNCE"))
-        is_exempt_gap = False
-        if is_trend_start_sig or is_pullback_sig:
-            ma5_slope_val = ma5 - float(prev_k.get("ma5", ma5))
-            if signal_side == "LONG" and ma5_slope_val >= 0 and (c_close >= kc_mid or quote >= kc_mid):
-                is_exempt_gap = True
-            elif signal_side == "SHORT" and ma5_slope_val <= 0 and (c_close <= kc_mid or quote <= kc_mid):
-                is_exempt_gap = True
-
-        ma_gap = abs(ma5 - ma15)
-        if atr_val > 0 and ma_gap < 0.20 * atr_val and not (ma5 == quote and ma15 == quote) and not is_exempt_gap:
-            return False, "BLOCKED_MA5_MA15_GAP_TOO_NARROW", {
-                **meta,
-                "ma_gap": ma_gap,
-                "min_gap_required": 0.20 * atr_val,
-                "cause": f"Chop Filter一票否決: MA5/MA15 間距 ({ma_gap:.6f}) < 0.2 ATR ({0.20*atr_val:.6f})，均線黏合無空間，嚴禁開倉！",
-            }
-
-        # ══════════════════════════════════════════════════════════════════
-        # 前置門禁 C：通道極度收斂防護 (KC Band Squeeze Filter)
-        # 通道極度收縮（Squeeze）時禁止開倉（當前通道寬度小於過去 20 根 K 棒最大寬度的 25%）
-        # ══════════════════════════════════════════════════════════════════
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 20:
-            bars20 = raw_df.iloc[-20:]
-            if "kc_upper" in bars20.columns and "kc_lower" in bars20.columns:
-                hist_bw = bars20["kc_upper"] - bars20["kc_lower"]
-                max_bw = float(hist_bw.max())
-                current_bw = float(kc_up - kc_low)
-                if current_bw <= 0:
-                    current_bw = float(hist_bw.iloc[-1])
-                if max_bw > 0 and 0 < current_bw <= 0.25 * max_bw:
-                    return False, "BLOCKED_KC_SQUEEZE", {
-                        **meta,
-                        "current_bw": current_bw,
-                        "max_bw_20": max_bw,
-                        "bw_ratio": current_bw / max_bw,
-                        "cause": f"通道極度收斂一票否決: 當前 KC 通道寬度比 ({current_bw/max_bw:.1%}) <= 25%，處於極度收縮死水區，嚴禁假突破開倉！",
-                    }
 
         # ══════════════════════════════════════════════════════════════════
         # 前置門禁 C-2：行情末端死魚盤 / 走平收縮禁開防線 (Flat Bandwidth & Tiny Candles Filter，防 19:45 追空)

@@ -305,7 +305,9 @@ def test_entry_gate_evaluate_with_ma5_flat_triggers_veto():
     df = _build_mock_df(30, start_price=100.0, step=0.1)
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=103.0)
     snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
     snapshot.kc_upper = 102.0
+    snapshot.kc_lower = 98.0
     snapshot.ema_fast = 102.0
     snapshot.ema_slow = 101.0
     # 設置微幅走平：ΔMA5 = 0.01 <= 0.05*ATR
@@ -517,6 +519,8 @@ def test_entry_gate_veto_short_when_ma3_sloping_up():
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=98.0)
     snapshot.atr = 1.0
     snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 101.5
+    snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = -0.01
     snapshot.prev_k = {"open": 98.5, "close": 97.8, "ma3": 98.0, "ma5": 98.2, "ma15": 99.5}
     # 當前棒 MA3 = 98.2 > 98.0，向上勾頭
@@ -537,6 +541,8 @@ def test_entry_gate_veto_short_when_price_above_ma3():
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=98.5)
     snapshot.atr = 1.0
     snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 101.5
+    snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = -0.01
     snapshot.prev_k = {"open": 98.5, "close": 98.0, "ma3": 98.5, "ma5": 98.7, "ma15": 99.5}
     # 當前棒 MA3 = 98.2 (走平向下)，但 close = 98.5 > ma3 = 98.2
@@ -558,6 +564,7 @@ def test_entry_gate_veto_long_when_ma3_sloping_down():
     snapshot.atr = 1.0
     snapshot.kc_middle = 100.0
     snapshot.kc_upper = 101.5
+    snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = 0.01
     snapshot.prev_k = {"open": 101.5, "close": 102.2, "ma3": 102.0, "ma5": 101.8, "ma15": 100.5}
     # 當前棒 MA3 = 101.8 < 102.0，向下下拐
@@ -578,7 +585,8 @@ def test_entry_gate_veto_long_when_price_below_ma3():
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=101.5)
     snapshot.atr = 1.0
     snapshot.kc_middle = 100.0
-    snapshot.kc_upper = 101.0
+    snapshot.kc_upper = 101.5
+    snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = 0.01
     snapshot.prev_k = {"open": 101.0, "close": 101.8, "ma3": 101.5, "ma5": 101.2, "ma15": 100.5}
     # 當前棒 MA3 = 101.8 (向上)，但 close = 101.5 < ma3 = 101.8
@@ -588,6 +596,73 @@ def test_entry_gate_veto_long_when_price_below_ma3():
     assert should_entry is False
     assert reason == "VETO_LONG_PRICE_BELOW_MA3"
     assert "價格被 MA3 壓制" in meta["cause"]
+
+
+def test_entry_gate_veto_kc_squeeze_dead():
+    """
+    [死魚盤硬性鎖死 1] 肯特納通道極度收縮成一直線 (Bandwidth < 0.008 或 歷史極端壓縮)，
+    波動率徹底乾涸歸零，100% 強制觸發 VETO_KC_SQUEEZE_DEAD 阻斷任何進場！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=0.0)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=100.0)
+    snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 100.2  # bw = 0.4 / 100.0 = 0.004 < 0.008
+    snapshot.kc_lower = 99.8
+    snapshot.atr = 0.5
+    snapshot.curr_k = {"open": 100.0, "close": 100.02, "high": 100.05, "low": 99.98}
+    snapshot.prev_k = {"open": 100.0, "close": 100.01, "high": 100.04, "low": 99.98}
+
+    should_entry, reason, meta = EntryGate.evaluate("ENTRY_SHORT_EMA_CROSS_MID", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_KC_SQUEEZE_DEAD"
+    assert "死魚盤硬性鎖死" in meta["cause"]
+
+
+def test_entry_gate_veto_ma15_long_flat():
+    """
+    [死魚盤硬性鎖死 2] 過去 8 根 K 棒內 MA15 極差 < 0.25 ATR，
+    均線實質水平走平，100% 強制觸發 VETO_MA15_LONG_FLAT 阻斷開倉！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=0.001)
+    df["ma15"] = 100.0  # 完全平走
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=100.0)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 101.5  # bw 正常
+    snapshot.kc_lower = 98.5
+    snapshot.curr_k = {"open": 100.0, "close": 99.95, "high": 100.05, "low": 99.9}
+    snapshot.prev_k = {"open": 100.0, "close": 99.98, "high": 100.05, "low": 99.9}
+    snapshot.raw_df = df
+
+    should_entry, reason, meta = EntryGate.evaluate("ENTRY_SHORT_EMA_CROSS_MID", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_MA15_LONG_FLAT"
+    assert "過去8根MA15波動極差" in meta["cause"]
+
+
+def test_entry_gate_veto_ma_entanglement():
+    """
+    [死魚盤硬性鎖死 3] 過去 5 根 K 棒 MA3 與 MA15 平均差距 < 0.15 ATR，
+    兩線高度黏合持續纏繞，100% 強制觸發 VETO_MA_ENTANGLEMENT 阻斷開倉！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=0.01)
+    # 構造 MA15 有微幅波動避免觸發 MA15_LONG_FLAT，但 MA3 與 MA15 極度黏合 (<0.15 ATR)
+    df["ma15"] = [100.0 + i * 0.05 for i in range(len(df))]  # range 8 根 = 0.4 > 0.25 ATR (1.0*0.25=0.25)
+    df["ma3"] = df["ma15"] + 0.02  # gap = 0.02 < 0.15 * 1.0
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=101.5)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 101.5
+    snapshot.kc_upper = 103.0  # bw 正常
+    snapshot.kc_lower = 100.0
+    snapshot.curr_k = {"open": 101.5, "close": 101.4, "high": 101.6, "low": 101.3}
+    snapshot.prev_k = {"open": 101.4, "close": 101.45, "high": 101.6, "low": 101.3}
+    snapshot.raw_df = df
+
+    should_entry, reason, meta = EntryGate.evaluate("ENTRY_SHORT_EMA_CROSS_MID", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_MA_ENTANGLEMENT"
+    assert "過去5根MA3與MA15平均差距" in meta["cause"]
+
 
 
 
