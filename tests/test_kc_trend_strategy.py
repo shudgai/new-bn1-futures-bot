@@ -1,0 +1,82 @@
+import time
+import pytest
+from core.strategies.kc_trend_strategy import Bar, KCTrendStrategy, StrategyConfig
+
+def test_bar_counter_monotonic_growth():
+    """驗證長時間運行時，計數器超越 maxlen=500 仍持續單調遞增"""
+    strat = KCTrendStrategy(StrategyConfig(min_bars_for_indicators=20))
+    now = time.time() - 40000
+    for i in range(550):
+        bar = Bar(now + i * 60, 100.0, 101.0, 99.0, 100.0, 10.0)
+        strat.on_bar_close(bar)
+    
+    assert len(strat.bars) == 500
+    assert strat.bar_index == 550
+
+def test_two_bar_breakout_strict_color_and_ma():
+    """驗證第2根非同色不進場；第2根同色且站穩 MA3/MA15 才准進場"""
+    cfg = StrategyConfig(min_bars_for_indicators=20, require_ma15_direction=False)
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    # 建立基準平穩行情
+    for i in range(25):
+        strat.on_bar_close(Bar(now + i * 60, 100.0, 100.5, 99.5, 100.0, 50.0))
+
+    snap = strat._indicator_snapshot()
+    kc_up = snap["kc_upper"]
+    t = time.time()
+
+    # 1. Bar1 突破上軌
+    strat.on_bar_close(Bar(t - 120, 100.0, kc_up + 1.0, 99.8, kc_up + 0.5, 100.0))
+    
+    # 2. Bar2 站上軌但為陰線 (Close < Open) -> 兩根破軌確認必須拒絕
+    strat.on_bar_close(Bar(t - 60, kc_up + 1.2, kc_up + 1.5, kc_up + 0.2, kc_up + 0.3, 100.0))
+    bar2_reasons = []
+    while True:
+        s = strat.pop_pending_entry()
+        if not s:
+            break
+        bar2_reasons.append(s.reason)
+    assert "two_bar_kc_upper_breakout_confirmed" not in bar2_reasons
+
+    # 3. Bar1 再次突破上軌
+    curr_kc_up = strat._last_closed_snapshot["kc_upper"]
+    strat.on_bar_close(Bar(t - 40, 100.0, curr_kc_up + 2.0, 99.8, curr_kc_up + 1.5, 100.0))
+    
+    # 4. Bar2 為陽線 (Close > Open) 且高於 KC/MA -> 順利進場
+    curr_kc_up2 = strat._last_closed_snapshot["kc_upper"]
+    strat.on_bar_close(Bar(t - 10, curr_kc_up2 + 0.2, curr_kc_up2 + 2.0, curr_kc_up2 + 0.1, curr_kc_up2 + 1.5, 100.0))
+    bar4_signals = []
+    while True:
+        s = strat.pop_pending_entry()
+        if not s:
+            break
+        bar4_signals.append(s)
+    sig = next((s for s in bar4_signals if s.reason == "two_bar_kc_upper_breakout_confirmed"), None)
+    assert sig is not None
+    assert sig.side == "long"
+
+def test_pending_entries_fifo_queue():
+    """驗證多個訊號不會被覆蓋，依序以 FIFO 取出"""
+    strat = KCTrendStrategy(StrategyConfig(min_bars_for_indicators=5, require_ma15_direction=False))
+    # 手動注入訊號至佇列
+    from core.strategies.kc_trend_strategy import EntrySignal
+    s1 = EntrySignal("long", "reason_1", time.time(), 100.0)
+    s2 = EntrySignal("short", "reason_2", time.time(), 95.0)
+    strat._pending_entries.append(s1)
+    strat._pending_entries.append(s2)
+
+    assert strat.pop_pending_entry().reason == "reason_1"
+    assert strat.pop_pending_entry().reason == "reason_2"
+    assert strat.pop_pending_entry() is None
+
+def test_independent_cooldown_by_side():
+    """驗證做多平倉的冷卻鎖不會阻礙做空訊號"""
+    strat = KCTrendStrategy(StrategyConfig(cooldown_bars_after_exit=2))
+    strat._bar_counter = 10
+    strat.notify_position_closed("long")
+
+    assert strat.bar_index - strat.last_exit_bar_index["long"] <= 2
+    # 做空應不受影響 (初始為 -10^9)
+    assert strat.bar_index - strat.last_exit_bar_index["short"] > 2
