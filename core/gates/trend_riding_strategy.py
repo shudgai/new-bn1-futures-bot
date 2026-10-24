@@ -251,6 +251,21 @@ def can_open_position(
     else:
         kc_mid_slope_val = float(last_closed.get("kc_middle_slope", 0.0))
 
+    ma3_curr = float(last_closed.get("ma3", 0.0))
+    if ma3_curr == 0.0:
+        if df is not None and len(df) >= 3 and "ma3" in df.columns:
+            ma3_curr = float(df["ma3"].iloc[-1])
+        else:
+            ma3_curr = ma5_curr
+
+    ma3_prev = float(prev_closed.get("ma3", 0.0))
+    if ma3_prev == 0.0:
+        if df is not None and len(df) >= 4 and "ma3" in df.columns:
+            ma3_prev = float(df["ma3"].iloc[-2])
+        else:
+            ma3_prev = ma5_prev
+    ma3_slope_val = ma3_curr - ma3_prev
+
     kc_bw = (kc_up - kc_low) / max(kc_mid_val, 1e-9) if kc_mid_val > 0 else 0.0
     slope_thresh = max(0.08 * atr_val, 0.00015 * max(kc_mid_val, 1e-9))
     min_bw_thresh = 0.015
@@ -285,6 +300,14 @@ def can_open_position(
         # 禁令五：嚴禁因碰觸下軌而做多（買多唯一合法區域必須在中軌之上）
         if close_p <= (kc_low + 0.5 * atr_val) or current_tick_price <= (kc_low + 0.5 * atr_val):
             return veto_return(f"VETO_KC_LOWER_ZONE_FORBIDDEN_FOR_LONG (price={current_tick_price:.4f} <= kc_low+0.5*atr={kc_low + 0.5 * atr_val:.4f})")
+
+        # 禁令六：MA3 斜率向下時，100% 禁止開多（短期均線動能一票否決）
+        if ma3_slope_val < 0:
+            return veto_return(f"VETO_LONG_MA3_SLOPING_DOWN (curr={ma3_curr:.4f} < prev={ma3_prev:.4f})")
+
+        # 禁令七：價格被 MA3 壓制時，100% 禁止開多
+        if close_p < ma3_curr or current_tick_price < ma3_curr:
+            return veto_return(f"VETO_LONG_PRICE_BELOW_MA3 (close={close_p:.4f}, tick={current_tick_price:.4f} < ma3={ma3_curr:.4f})")
 
         # 1. 第一根必須收盤破上軌
         long_bar1_break = (prev_kc_up > 0) and (prev_close > prev_kc_up)
@@ -326,6 +349,14 @@ def can_open_position(
         # 禁令五：嚴禁因碰觸上軌而做空（買空唯一合法區域必須在中軌之下）
         if close_p >= (kc_up - 0.5 * atr_val) or current_tick_price >= (kc_up - 0.5 * atr_val):
             return veto_return(f"VETO_KC_UPPER_ZONE_FORBIDDEN_FOR_SHORT (price={current_tick_price:.4f} >= kc_up-0.5*atr={kc_up - 0.5 * atr_val:.4f})")
+
+        # 禁令六：MA3 斜率向上時，100% 禁止開空（短期均線動能一票否決）
+        if ma3_slope_val > 0:
+            return veto_return(f"VETO_SHORT_MA3_SLOPING_UP (curr={ma3_curr:.4f} > prev={ma3_prev:.4f})")
+
+        # 禁令七：價格站上 MA3 之上時，100% 禁止開空
+        if close_p > ma3_curr or current_tick_price > ma3_curr:
+            return veto_return(f"VETO_SHORT_PRICE_ABOVE_MA3 (close={close_p:.4f}, tick={current_tick_price:.4f} > ma3={ma3_curr:.4f})")
 
         # 1. 第一根必須收盤破下軌
         short_bar1_break = (prev_kc_low > 0) and (prev_close < prev_kc_low)

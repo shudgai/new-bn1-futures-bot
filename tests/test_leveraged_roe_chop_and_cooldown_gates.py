@@ -508,4 +508,87 @@ def test_exit_gate_strictly_holds_on_early_bounce_after_entry_short():
     assert "開倉後反抽不平空鐵律" in meta.get("cause", "")
 
 
+def test_entry_gate_veto_short_when_ma3_sloping_up():
+    """
+    [MA3 短均線動能鐵律] MA3 明顯向上勾頭 (curr_ma3 > prev_ma3)，
+    短期反彈動能抬頭，100% 強制觸發 VETO_SHORT_MA3_SLOPING_UP 否決開空！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=-0.05)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=98.0)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
+    snapshot.kc_middle_slope = -0.01
+    snapshot.prev_k = {"open": 98.5, "close": 97.8, "ma3": 98.0, "ma5": 98.2, "ma15": 99.5}
+    # 當前棒 MA3 = 98.2 > 98.0，向上勾頭
+    snapshot.curr_k = {"open": 97.8, "close": 98.0, "ma3": 98.2, "ma5": 98.1, "ma15": 99.3}
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_SHORT_MA3_SLOPING_UP"
+    assert "MA3 明顯向上勾頭" in meta["cause"]
+
+
+def test_entry_gate_veto_short_when_price_above_ma3():
+    """
+    [MA3 短均線動能鐵律] 價格收在 MA3 之上 (close > ma3)，
+    短期多頭動能占優，迎面撞上反彈波，100% 強制觸發 VETO_SHORT_PRICE_ABOVE_MA3 否決開空！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=-0.05)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=98.5)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
+    snapshot.kc_middle_slope = -0.01
+    snapshot.prev_k = {"open": 98.5, "close": 98.0, "ma3": 98.5, "ma5": 98.7, "ma15": 99.5}
+    # 當前棒 MA3 = 98.2 (走平向下)，但 close = 98.5 > ma3 = 98.2
+    snapshot.curr_k = {"open": 98.0, "close": 98.5, "ma3": 98.2, "ma5": 98.3, "ma15": 99.3}
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_SHORT_PRICE_ABOVE_MA3"
+    assert "價格站上 MA3 之上" in meta["cause"]
+
+
+def test_entry_gate_veto_long_when_ma3_sloping_down():
+    """
+    [MA3 短均線動能鐵律] MA3 明顯向下下拐 (curr_ma3 < prev_ma3)，
+    短期動能向下，100% 強制觸發 VETO_LONG_MA3_SLOPING_DOWN 否決開多！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=0.05)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=102.0)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 101.5
+    snapshot.kc_middle_slope = 0.01
+    snapshot.prev_k = {"open": 101.5, "close": 102.2, "ma3": 102.0, "ma5": 101.8, "ma15": 100.5}
+    # 當前棒 MA3 = 101.8 < 102.0，向下下拐
+    snapshot.curr_k = {"open": 102.2, "close": 102.0, "ma3": 101.8, "ma5": 101.9, "ma15": 100.8}
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_LONG_MA3_SLOPING_DOWN"
+    assert "MA3 明顯向下下拐" in meta["cause"]
+
+
+def test_entry_gate_veto_long_when_price_below_ma3():
+    """
+    [MA3 短均線動能鐵律] 價格被 MA3 壓制 (close < ma3)，
+    短期多頭未確立，100% 強制觸發 VETO_LONG_PRICE_BELOW_MA3 否決開多！
+    """
+    df = _build_mock_df(30, start_price=100.0, step=0.05)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=101.5)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.0
+    snapshot.kc_upper = 101.0
+    snapshot.kc_middle_slope = 0.01
+    snapshot.prev_k = {"open": 101.0, "close": 101.8, "ma3": 101.5, "ma5": 101.2, "ma15": 100.5}
+    # 當前棒 MA3 = 101.8 (向上)，但 close = 101.5 < ma3 = 101.8
+    snapshot.curr_k = {"open": 101.8, "close": 101.5, "ma3": 101.8, "ma5": 101.6, "ma15": 100.8}
+
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_LONG_PRICE_BELOW_MA3"
+    assert "價格被 MA3 壓制" in meta["cause"]
+
+
+
 

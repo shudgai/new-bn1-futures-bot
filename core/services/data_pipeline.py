@@ -40,6 +40,9 @@ class MarketDataSnapshot:
     bandwidth: float = 0.0            # 通道帶寬 (kc_upper - kc_lower) / kc_middle
     ema5: float = 0.0                 # EMA 5
     ema13: float = 0.0                # EMA 13
+    ma3: float = 0.0                  # MA 3 短期動能線
+    prev_ma3: float = 0.0             # 前一根 MA 3
+    ma3_slope: float = 0.0            # MA 3 斜率 (當前 - 前一根)
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -48,6 +51,9 @@ class MarketDataSnapshot:
             "current_price": self.current_price,
             "curr_k": self.curr_k,
             "prev_k": self.prev_k,
+            "ma3": self.ma3,
+            "prev_ma3": self.prev_ma3,
+            "ma3_slope": self.ma3_slope,
             "ma5": self.ma5,
             "ma15": self.ma15,
             "ema5": self.ema5,
@@ -93,7 +99,8 @@ class DataPipeline:
         high = df_calc["high"]
         low = df_calc["low"]
 
-        # 均線 MA5, MA15
+        # 均線 MA3, MA5, MA15
+        ma3_series = close.rolling(window=3).mean()
         ma5_series = close.rolling(window=5).mean()
         ma15_series = close.rolling(window=15).mean()
 
@@ -131,6 +138,7 @@ class DataPipeline:
             return None
 
         # 將指標列注入 df_calc 以供下游閘門驗證 (前 13 根保持 NaN，杜絕前視偏差)
+        df_calc["ma3"] = ma3_series
         df_calc["ma5"] = ma5_series
         df_calc["ma15"] = ma15_series
         df_calc["ema5"] = ema5_series
@@ -174,6 +182,10 @@ class DataPipeline:
             "volume": float(prev_row.get("volume", 0.0)),
         }
 
+        ma3 = float(ma3_series.iloc[-1]) if not pd.isna(ma3_series.iloc[-1]) else curr_k["close"]
+        prev_ma3 = float(ma3_series.iloc[-2]) if len(ma3_series) > 1 and not pd.isna(ma3_series.iloc[-2]) else ma3
+        ma3_slope = ma3 - prev_ma3
+
         ma5 = float(ma5_series.iloc[-1]) if not pd.isna(ma5_series.iloc[-1]) else curr_k["close"]
         prev_ma5 = float(ma5_series.iloc[-2]) if len(ma5_series) > 1 and not pd.isna(ma5_series.iloc[-2]) else ma5
         ma15 = float(ma15_series.iloc[-1]) if not pd.isna(ma15_series.iloc[-1]) else curr_k["close"]
@@ -203,11 +215,15 @@ class DataPipeline:
         prev_ema5 = float(ema5_series.iloc[-2]) if len(ema5_series) > 1 and not pd.isna(ema5_series.iloc[-2]) else ema5_val
         prev_ema13 = float(ema13_series.iloc[-2]) if len(ema13_series) > 1 and not pd.isna(ema13_series.iloc[-2]) else ema13_val
 
+        curr_k["ma3"] = ma3
+        curr_k["ma3_slope"] = ma3_slope
         curr_k["ma5"] = ma5
         curr_k["ma15"] = ma15
         curr_k["ema5"] = ema5_val
         curr_k["ema13"] = ema13_val
         curr_k["kc_middle"] = kc_mid
+        prev_k["ma3"] = prev_ma3
+        prev_k["ma3_slope"] = ma3_slope
         prev_k["ma5"] = prev_ma5
         prev_k["ma15"] = prev_ma15
         prev_k["ema5"] = prev_ema5
@@ -266,6 +282,9 @@ class DataPipeline:
             current_price=quote,
             curr_k=curr_k,
             prev_k=prev_k,
+            ma3=ma3,
+            prev_ma3=prev_ma3,
+            ma3_slope=ma3_slope,
             ma5=ma5,
             ma15=ma15,
             ema_fast=ema_fast,

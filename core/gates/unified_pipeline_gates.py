@@ -1064,6 +1064,8 @@ class EntryGate:
             prev_k = market_data.prev_k
             ma5 = float(curr_k.get("ma5", market_data.ma5))
             ma15 = float(curr_k.get("ma15", market_data.ma15))
+            ma3_curr = float(curr_k.get("ma3", getattr(market_data, "ma3", ma5)))
+            ma3_prev = float(prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
             ema_fast = market_data.ema_fast
             ema_slow = market_data.ema_slow
             slow_slope = float(getattr(market_data, "slow_slope", 0.0))
@@ -1080,6 +1082,8 @@ class EntryGate:
             prev_k = market_data.get("prev_k", {})
             ma5 = float(curr_k.get("ma5", market_data.get("ma5", quote)))
             ma15 = float(curr_k.get("ma15", market_data.get("ma15", quote)))
+            ma3_curr = float(curr_k.get("ma3", market_data.get("ma3", ma5)))
+            ma3_prev = float(prev_k.get("ma3", market_data.get("prev_ma3", ma3_curr)))
             kc_mid = float(market_data.get("kc_middle", quote))
             ema_fast = float(market_data.get("ema_fast", ma15))
             ema_slow = float(market_data.get("ema_slow", kc_mid))
@@ -1089,12 +1093,57 @@ class EntryGate:
             kc_low = float(market_data.get("kc_lower", quote * 0.99))
             raw_df = market_data.get("raw_df")
 
+        # 若 curr_k 未包含 ma3，優先嘗試從 curr_k 提取或推導；若 curr_k 被外部手動 mock 覆蓋，避免誤讀舊的 raw_df
+        curr_k_close = float(curr_k.get("close", quote))
+        is_mocked_curr_k = (raw_df is not None and len(raw_df) > 0 and curr_k_close != float(raw_df.iloc[-1]["close"]))
+        if "ma3" in curr_k:
+            ma3_curr = float(curr_k["ma3"])
+        elif "ma5" in curr_k:
+            ma3_curr = float(curr_k["ma5"])
+        elif is_mocked_curr_k:
+            ma3_curr = curr_k_close
+        elif hasattr(market_data, "ma3") and getattr(market_data, "ma3", 0.0) > 0:
+            ma3_curr = float(market_data.ma3)
+        elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            if "ma3" in raw_df.columns:
+                ma3_curr = float(raw_df["ma3"].iloc[-1])
+            elif "close" in raw_df.columns:
+                ma3_curr = float(raw_df["close"].iloc[-3:].mean())
+            else:
+                ma3_curr = ma5
+        else:
+            ma3_curr = ma5
+
+        prev_k_close = float(prev_k.get("close", ma3_curr))
+        is_mocked_prev_k = (raw_df is not None and len(raw_df) > 1 and prev_k_close != float(raw_df.iloc[-2]["close"]))
+        if "ma3" in prev_k:
+            ma3_prev = float(prev_k["ma3"])
+        elif "ma5" in prev_k:
+            ma3_prev = float(prev_k["ma5"])
+        elif is_mocked_prev_k:
+            ma3_prev = prev_k_close
+        elif hasattr(market_data, "prev_ma3") and getattr(market_data, "prev_ma3", 0.0) > 0:
+            ma3_prev = float(market_data.prev_ma3)
+        elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 4:
+            if "ma3" in raw_df.columns:
+                ma3_prev = float(raw_df["ma3"].iloc[-2])
+            elif "close" in raw_df.columns:
+                ma3_prev = float(raw_df["close"].iloc[-4:-1].mean())
+            else:
+                ma3_prev = ma3_curr
+        else:
+            ma3_prev = ma3_curr
+        ma3_slope = ma3_curr - ma3_prev
+
         meta = {
             "signal_type": signal_type,
             "side": signal_side,
             "quote": quote,
             "atr": atr_val,
             "kc_slope": slope,
+            "ma3": ma3_curr,
+            "prev_ma3": ma3_prev,
+            "ma3_slope": ma3_slope,
             "ema_fast": ema_fast,
             "ema_slow": ema_slow,
             "slow_slope": slow_slope,
@@ -1236,6 +1285,26 @@ class EntryGate:
                     "cause": f"順勢交易鐵律一票否決: 價格處於KC下軌區域 (quote={quote:.6f}, close={c_close:.6f} <= kc_low+0.5*atr={kc_low + 0.5 * atr_val:.6f})，嚴禁將下軌當成超跌反彈買多！",
                 }
 
+            # ── 禁令六：MA3 斜率向下時，100% 禁止開多（短期均線動能一票否決） ──
+            if ma3_slope < 0:
+                return False, "VETO_LONG_MA3_SLOPING_DOWN", {
+                    **meta,
+                    "ma3": ma3_curr,
+                    "prev_ma3": ma3_prev,
+                    "ma3_slope": ma3_slope,
+                    "cause": f"短期均線動能一票否決: MA3 明顯向下下拐 (curr={ma3_curr:.6f} < prev={ma3_prev:.6f}, slope={ma3_slope:.6f} < 0)，短期動能向下嚴禁開多！",
+                }
+
+            # ── 禁令七：價格被 MA3 壓制時，100% 禁止開多 ──
+            if c_close < ma3_curr or quote < ma3_curr:
+                return False, "VETO_LONG_PRICE_BELOW_MA3", {
+                    **meta,
+                    "close": c_close,
+                    "quote": quote,
+                    "ma3": ma3_curr,
+                    "cause": f"短期均線動能一票否決: 價格被 MA3 壓制 (close={c_close:.6f}, quote={quote:.6f} < ma3={ma3_curr:.6f})，短期多頭未確立嚴禁開多！",
+                }
+
             if macro_trend == "BEARISH":
                 return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
                     **meta,
@@ -1317,6 +1386,26 @@ class EntryGate:
                     "quote": quote,
                     "kc_up": kc_up,
                     "cause": f"順勢交易鐵律一票否決: 價格處於KC上軌區域 (quote={quote:.6f}, close={c_close:.6f} >= kc_up-0.5*atr={kc_up - 0.5 * atr_val:.6f})，嚴禁將上軌當成超買阻力摸頂開空！",
+                }
+
+            # ── 禁令六：MA3 斜率向上時，100% 禁止開空（短期均線動能一票否決） ──
+            if ma3_slope > 0:
+                return False, "VETO_SHORT_MA3_SLOPING_UP", {
+                    **meta,
+                    "ma3": ma3_curr,
+                    "prev_ma3": ma3_prev,
+                    "ma3_slope": ma3_slope,
+                    "cause": f"短期均線動能一票否決: MA3 明顯向上勾頭 (curr={ma3_curr:.6f} > prev={ma3_prev:.6f}, slope={ma3_slope:.6f} > 0)，短期反彈動能抬頭嚴禁開空！",
+                }
+
+            # ── 禁令七：價格站上 MA3 之上時，100% 禁止開空 ──
+            if c_close > ma3_curr or quote > ma3_curr:
+                return False, "VETO_SHORT_PRICE_ABOVE_MA3", {
+                    **meta,
+                    "close": c_close,
+                    "quote": quote,
+                    "ma3": ma3_curr,
+                    "cause": f"短期均線動能一票否決: 價格站上 MA3 之上 (close={c_close:.6f}, quote={quote:.6f} > ma3={ma3_curr:.6f})，迎面撞上反彈波嚴禁開空！",
                 }
 
             if macro_trend == "BULLISH":

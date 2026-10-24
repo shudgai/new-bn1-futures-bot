@@ -201,8 +201,22 @@ class ExecutionManager:
                 or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
             )
 
-            can_long = not is_bearish_wave
-            can_short = not is_bullish_wave
+            ma3_curr = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", ma5_curr)))
+            ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
+            ma3_slope = ma3_curr - ma3_prev
+
+            can_long = (
+                not is_bearish_wave
+                and (ma3_slope >= 0)
+                and (market_data.curr_k["close"] >= ma3_curr)
+                and (market_data.current_price >= ma3_curr)
+            )
+            can_short = (
+                not is_bullish_wave
+                and (ma3_slope <= 0)
+                and (market_data.curr_k["close"] <= ma3_curr)
+                and (market_data.current_price <= ma3_curr)
+            )
 
             # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
