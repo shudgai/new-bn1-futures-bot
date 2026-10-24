@@ -130,9 +130,9 @@ def test_veto_kc_outer_overextension():
 
 def test_veto_kc_bandwidth_too_narrow():
     df = _build_valid_long_frame()
-    # 帶寬僅 0.5% (upper=100.25, lower=99.75, middle=100.0) -> width=0.5 / 100 = 0.005 < 0.01
-    df.loc[df.index[-1], "kc_upper"] = 100.25
-    df.loc[df.index[-1], "kc_lower"] = 99.75
+    # 帶寬僅 0.2% (upper=100.10, lower=99.90, middle=100.0) -> width=0.2 / 100 = 0.002 < 0.0035
+    df.loc[df.index[-1], "kc_upper"] = 100.10
+    df.loc[df.index[-1], "kc_lower"] = 99.90
     df.loc[df.index[-1], "kc_middle"] = 100.0
     res = CentralEntryGate.verify_and_authorize(
         symbol="BTC/USDT",
@@ -188,3 +188,155 @@ def test_veto_volume_insufficient():
     )
     assert res.passed is False
     assert res.reason == "VETO_VOLUME_INSUFFICIENT"
+
+
+def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
+    """均線死叉轉折做空：中軌走平 (斜率 0.0，不足 0.1 ATR) 但在中軌下方，放行做空"""
+    rows = []
+    for i in range(15):
+        rows.append({
+            "timestamp": 1700000000 + i * 60,
+            "open": 101.0,
+            "high": 101.5,
+            "low": 100.5,
+            "close": 101.0,
+            "volume": 1000.0,
+            "is_closed": True,
+            "atr": 2.0,
+            "kc_upper": 104.0,
+            "kc_lower": 96.0,
+            "kc_middle": 100.0,
+            "kc_middle_slope": 0.0,
+            "ma5": 100.5,
+        })
+    # 頂部轉折死叉棒：收黑陰線 (open=100.0, close=98.5, low=98.2, high=100.2)，在 KC 中軌 (100.0) 下方
+    # 中軌斜率僅 -0.02 (不足 0.1 * 2.0 = 0.2)，MA5 拐頭向下 (99.0 < 100.5)
+    rows[-1] = {
+        "timestamp": 1700000000 + 14 * 60,
+        "open": 100.0,
+        "high": 100.2,
+        "low": 98.2,
+        "close": 98.5,
+        "volume": 1500.0,
+        "is_closed": True,
+        "atr": 2.0,
+        "kc_upper": 105.0,
+        "kc_lower": 95.0,
+        "kc_middle": 100.0,
+        "kc_middle_slope": -0.02,  # 接近 0，破軌單會被擋，但死叉轉折單放行
+        "ma5": 99.0,  # 下彎
+    }
+    df = pd.DataFrame(rows)
+    # 常規破軌追空：被擋
+    res_breakout = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="SHORT",
+        price=98.5,
+        klines_or_snapshot=df,
+        source="BREAKDOWN_SHORT",
+    )
+    assert res_breakout.passed is False
+    assert res_breakout.reason == "VETO_KC_SLOPE_INSUFFICIENT"
+
+    # 均線死叉轉折開空：動態放寬放行！
+    res_cross = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="SHORT",
+        price=98.5,
+        klines_or_snapshot=df,
+        source="ENTRY_SHORT_EMA_CROSS_MID",
+    )
+    assert res_cross.passed is True
+
+
+def test_cross_mid_short_veto_if_above_midline():
+    """做空安全底線：若價格仍在 KC 中軌上方，哪怕死叉也一票否決 VETO_SHORT_ABOVE_KC_MIDDLE"""
+    rows = []
+    for i in range(15):
+        rows.append({
+            "timestamp": 1700000000 + i * 60,
+            "open": 102.0,
+            "high": 103.0,
+            "low": 101.5,
+            "close": 102.5,
+            "volume": 1000.0,
+            "is_closed": True,
+            "atr": 2.0,
+            "kc_upper": 106.0,
+            "kc_lower": 94.0,
+            "kc_middle": 100.0,
+            "kc_middle_slope": -0.01,
+            "ma5": 102.0,
+        })
+    # 價格 101.5 仍在 KC 中軌 100.0 上方
+    rows[-1] = {
+        "timestamp": 1700000000 + 14 * 60,
+        "open": 102.5,
+        "high": 102.6,
+        "low": 101.0,
+        "close": 101.5,
+        "volume": 1500.0,
+        "is_closed": True,
+        "atr": 2.0,
+        "kc_upper": 106.0,
+        "kc_lower": 94.0,
+        "kc_middle": 100.0,
+        "kc_middle_slope": -0.01,
+        "ma5": 101.0,
+    }
+    df = pd.DataFrame(rows)
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="SHORT",
+        price=101.5,
+        klines_or_snapshot=df,
+        source="ENTRY_SHORT_EMA_CROSS_MID",
+    )
+    assert res.passed is False
+    assert res.reason == "VETO_SHORT_ABOVE_KC_MIDDLE"
+
+
+def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
+    """均線金叉轉折做多：中軌走平 (斜率 0.0) 但在中軌上方，放行做多"""
+    rows = []
+    for i in range(15):
+        rows.append({
+            "timestamp": 1700000000 + i * 60,
+            "open": 99.0,
+            "high": 99.5,
+            "low": 98.5,
+            "close": 99.0,
+            "volume": 1000.0,
+            "is_closed": True,
+            "atr": 2.0,
+            "kc_upper": 104.0,
+            "kc_lower": 96.0,
+            "kc_middle": 100.0,
+            "kc_middle_slope": 0.0,
+            "ma5": 99.5,
+        })
+    # 底部轉折金叉棒：收紅陽線 (open=100.0, close=101.5, low=99.8, high=101.8)，在 KC 中軌 (100.0) 上方
+    rows[-1] = {
+        "timestamp": 1700000000 + 14 * 60,
+        "open": 100.0,
+        "high": 101.8,
+        "low": 99.8,
+        "close": 101.5,
+        "volume": 1500.0,
+        "is_closed": True,
+        "atr": 2.0,
+        "kc_upper": 105.0,
+        "kc_lower": 95.0,
+        "kc_middle": 100.0,
+        "kc_middle_slope": 0.02,  # 走平微翹，不足 0.2
+        "ma5": 101.0,  # 上翹
+    }
+    df = pd.DataFrame(rows)
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="LONG",
+        price=101.5,
+        klines_or_snapshot=df,
+        source="ENTRY_LONG_EMA_CROSS_MID",
+    )
+    assert res.passed is True

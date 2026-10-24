@@ -63,7 +63,7 @@ class CentralEntryGate:
     KC_SLOPE_MIN_ATR: float = 0.10          # KC 中軌斜率門檻 >= 0.1 ATR
     MAX_BAND_EXTENSION_ATR: float = 0.50    # 距 KC 同側外軌最大乖離 <= 0.5 ATR
     MAX_MA5_EXTENSION_ATR: float = 1.00     # 距 MA5 最大乖離 <= 1.0 ATR
-    MIN_KC_BANDWIDTH_PCT: float = 0.01      # 通道帶寬門檻 >= 1.0%
+    MIN_KC_BANDWIDTH_PCT: float = 0.0035    # 通道帶寬門檻 >= 0.35% (防極度死水，放寬至正常 1m 波動)
     MIN_KC_EXPANSION_RATIO: float = 0.05    # 通道擴張門檻 >= 5.0%
     MIN_VOLUME_MULTIPLIER: float = 1.20     # 量能門檻 >= 1.2 倍均量
     MIN_BODY_ATR: float = 0.35              # 實體最小動能 >= 0.35 ATR
@@ -140,19 +140,46 @@ class CentralEntryGate:
         checks["closed_bar"] = {"status": "PASS", "actual": True, "expected": True}
 
         # -------------------------------------------------------------
-        # 條件 2：KC 中軌斜率 (KC Middle Slope >= 0.1 ATR)
+        # 區分訊號類型：均線轉折類 (CROSS_MID) vs 常規破軌追單類 (BREAKOUT)
+        # -------------------------------------------------------------
+        src_upper = str(source or "").upper()
+        is_cross_mid = bool(
+            "CROSS_MID" in src_upper
+            or "MA_CROSS" in src_upper
+            or "EMA_CROSS" in src_upper
+            or "MID_LINE" in src_upper
+            or "REVERSAL" in src_upper
+            or (isinstance(klines_or_snapshot, dict) and (klines_or_snapshot.get("allow_kc_internal") or klines_or_snapshot.get("is_cross_mid") or klines_or_snapshot.get("entry_type") == "CROSS_MID"))
+        )
+
+        # -------------------------------------------------------------
+        # 條件 2：KC 中軌斜率 (動態門檻)
         # -------------------------------------------------------------
         kc_mid_slope = float(parsed["kc_middle_slope"])
         required_slope = cls.KC_SLOPE_MIN_ATR * atr
-        if side == "LONG":
-            slope_pass = kc_mid_slope >= required_slope
+
+        if is_cross_mid:
+            # 均線轉折類訊號：頂底轉折初期通道剛走平，放寬斜率要求 (只要不逆向擴張即可)
+            # 做多：走平或微幅上翹即可 (kc_mid_slope >= 0)
+            # 做空：走平或微幅下彎即可 (kc_mid_slope <= 0)
+            if side == "LONG":
+                slope_pass = kc_mid_slope >= -0.000005
+            else:
+                slope_pass = kc_mid_slope <= 0.000005
+            req_target = 0.0
         else:
-            slope_pass = kc_mid_slope <= -required_slope
+            # 常規破軌追單類：維持原有的嚴格斜率審核 (>= 0.1 ATR)
+            if side == "LONG":
+                slope_pass = kc_mid_slope >= required_slope
+            else:
+                slope_pass = kc_mid_slope <= -required_slope
+            req_target = required_slope if side == "LONG" else -required_slope
 
         checks["kc_middle_slope"] = {
             "status": "PASS" if slope_pass else "FAIL",
             "actual_slope": kc_mid_slope,
-            "required_slope": required_slope if side == "LONG" else -required_slope,
+            "required_slope": req_target,
+            "signal_mode": "CROSS_MID" if is_cross_mid else "BREAKOUT_RIDE",
             "atr": atr,
             "side": side,
         }
@@ -161,9 +188,33 @@ class CentralEntryGate:
                 passed=False,
                 reason="VETO_KC_SLOPE_INSUFFICIENT",
                 signal_id=sig_id,
-                details={"kc_mid_slope": kc_mid_slope, "required": required_slope, "side": side},
+                details={"kc_mid_slope": kc_mid_slope, "required": req_target, "is_cross_mid": is_cross_mid, "side": side},
                 checks=checks,
             )
+
+        # -------------------------------------------------------------
+        # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下)
+        # -------------------------------------------------------------
+        kc_mid = float(parsed["kc_middle"])
+        if side == "LONG" and curr_price < kc_mid:
+            checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
+            return GateCheckResult(
+                passed=False,
+                reason="VETO_LONG_BELOW_KC_MIDDLE",
+                signal_id=sig_id,
+                details={"price": curr_price, "kc_middle": kc_mid},
+                checks=checks,
+            )
+        elif side == "SHORT" and curr_price > kc_mid:
+            checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
+            return GateCheckResult(
+                passed=False,
+                reason="VETO_SHORT_ABOVE_KC_MIDDLE",
+                signal_id=sig_id,
+                details={"price": curr_price, "kc_middle": kc_mid},
+                checks=checks,
+            )
+        checks["midline_side"] = {"status": "PASS", "price": curr_price, "kc_middle": kc_mid}
 
         # -------------------------------------------------------------
         # 條件 3：MA 斜率與乖離 (MA Slope & Extension)
@@ -232,15 +283,18 @@ class CentralEntryGate:
             )
 
         # -------------------------------------------------------------
-        # 條件 4：通道帶寬 (Bandwidth >= 1%)
+        # 條件 4：通道帶寬 (Bandwidth >= 0.35% 或 通道寬度 >= 2.0 ATR)
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
-        bandwidth = (kc_upper - kc_lower) / kc_mid if kc_mid > 0 else 0.0
-        bw_pass = bandwidth >= cls.MIN_KC_BANDWIDTH_PCT
+        kc_width = kc_upper - kc_lower
+        bandwidth = kc_width / kc_mid if kc_mid > 0 else 0.0
+        bw_pass = (bandwidth >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr) or is_cross_mid
 
         checks["bandwidth"] = {
             "status": "PASS" if bw_pass else "FAIL",
             "bandwidth": bandwidth,
+            "kc_width": kc_width,
+            "atr": atr,
             "min_required": cls.MIN_KC_BANDWIDTH_PCT,
         }
         if not bw_pass:
