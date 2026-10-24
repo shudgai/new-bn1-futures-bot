@@ -86,6 +86,16 @@ class StrategyConfig:
     ma3_oscillation_crosses_min: int = 3
     ma3_oscillation_slope_flip_min: int = 4
 
+    # Keltner Channel trend / location / contraction filters
+    require_kc_mid_direction: bool = True
+    kc_mid_slope_lookback: int = 3
+    kc_mid_slope_min_atr: float = 0.01
+    require_close_clear_of_kc_mid: bool = True
+    close_kc_mid_buffer_atr: float = 0.20
+    block_rapid_kc_contraction: bool = True
+    kc_width_contraction_lookback: int = 3
+    kc_width_contraction_min_ratio: float = 0.05  # 5% narrower over lookback
+
     # 大趨勢方向過濾
     require_ma15_direction: bool = True
     ma15_direction_slope_atr: float = 0.015
@@ -203,6 +213,24 @@ class KCTrendStrategy:
         kc_upper = kc_mid + self.cfg.kc_atr_multiplier * atr
         kc_lower = kc_mid - self.cfg.kc_atr_multiplier * atr
 
+        # KC middle-line slope, normalized by current ATR.
+        kc_slope_n = max(1, self.cfg.kc_mid_slope_lookback)
+        kc_mid_old = self._ema(closes[:-kc_slope_n], self.cfg.kc_ema_period)
+        kc_mid_slope_atr = 0.0 if kc_mid_old is None else (kc_mid - kc_mid_old) / atr
+
+        # Compare raw KC width now with width several bars ago to detect fast contraction.
+        width_n = max(1, self.cfg.kc_width_contraction_lookback)
+        old_closes = closes[:-width_n]
+        old_true_ranges = true_ranges[:-width_n]
+        old_mid = self._ema(old_closes, self.cfg.kc_ema_period)
+        old_atr = self._sma(old_true_ranges, self.cfg.atr_period)
+        old_width = (2.0 * self.cfg.kc_atr_multiplier * old_atr) if old_atr is not None else None
+        current_width = kc_upper - kc_lower
+        contraction_ratio = (
+            (old_width - current_width) / old_width
+            if old_width is not None and old_width > 0 else 0.0
+        )
+
         slope_n = max(1, self.cfg.slope_lookback)
         ma3_now = self._sma(closes, self.cfg.ma_fast_period)
         ma15_now = self._sma(closes, self.cfg.ma_slow_period)
@@ -245,9 +273,32 @@ class KCTrendStrategy:
             "range_atr": range_atr, "ma3_slope_flips": float(slope_flips),
             "ma3_price_crosses": float(crosses),
             "avg_volume": float(avg_vol or 0.0),
+            "close": closes[-1],
+            "kc_mid_slope_atr": kc_mid_slope_atr,
+            "kc_width_contraction_ratio": contraction_ratio,
         }
 
     def _global_filter_reason(self, side: Side, snap: Dict[str, float]) -> Optional[str]:
+        # Reject entries against the KC middle-line direction.
+        if self.cfg.require_kc_mid_direction:
+            if side == "long" and snap["kc_mid_slope_atr"] <= self.cfg.kc_mid_slope_min_atr:
+                return "blocked_kc_mid_not_rising"
+            if side == "short" and snap["kc_mid_slope_atr"] >= -self.cfg.kc_mid_slope_min_atr:
+                return "blocked_kc_mid_not_falling"
+
+        # Require a close sufficiently clear of the middle band, symmetrically.
+        if self.cfg.require_close_clear_of_kc_mid:
+            buffer = self.cfg.close_kc_mid_buffer_atr * snap["atr"]
+            if side == "long" and snap["close"] <= snap["kc_mid"] + buffer:
+                return "blocked_long_not_clear_of_kc_mid"
+            if side == "short" and snap["close"] >= snap["kc_mid"] - buffer:
+                return "blocked_short_not_clear_of_kc_mid"
+
+        # Avoid entries while the channel is rapidly narrowing.
+        if (self.cfg.block_rapid_kc_contraction and
+                snap["kc_width_contraction_ratio"] >= self.cfg.kc_width_contraction_min_ratio):
+            return "blocked_rapid_kc_contraction"
+
         if (snap["kc_width_atr"] <= self.cfg.consolidation_kc_width_atr_max and
                 snap["range_atr"] <= self.cfg.consolidation_range_atr_max):
             return "blocked_consolidation"

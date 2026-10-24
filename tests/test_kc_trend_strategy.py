@@ -104,3 +104,62 @@ def test_continuation_hard_reset_on_rebound_into_channel():
     # 狀態機必須硬性重置為 None 與 0
     assert strat.breakout_side is None
     assert strat.continuation_count == 0
+
+def test_kc_mid_slope_and_clearance_filters():
+    """驗證 KC 中軌方向過濾、中軌安全緩衝與快速縮口過濾"""
+    cfg = StrategyConfig(
+        min_bars_for_indicators=20,
+        require_kc_mid_direction=True,
+        require_close_clear_of_kc_mid=True,
+        close_kc_mid_buffer_atr=0.20,
+        block_rapid_kc_contraction=True,
+    )
+    strat = KCTrendStrategy(cfg)
+
+    # 模擬 KC 中軌下行時嘗試開多 -> 應被 blocked_kc_mid_not_rising 拒絕
+    snap_falling = {
+        "kc_mid_slope_atr": -0.05,
+        "close": 105.0,
+        "kc_mid": 100.0,
+        "atr": 1.0,
+        "kc_width_contraction_ratio": 0.01,
+        "kc_width_atr": 3.0,
+        "range_atr": 3.0,
+        "ma3_slope_atr": 0.1,
+        "ma15_slope_atr": 0.1,
+        "ma3_slope_flips": 0.0,
+        "ma3_price_crosses": 0.0,
+    }
+    assert strat._global_filter_reason("long", snap_falling) == "blocked_kc_mid_not_rising"
+
+    # 模擬價格緊貼中軌未拉開緩衝 (close <= kc_mid + 0.2*atr) -> 應被 blocked_long_not_clear_of_kc_mid 拒絕
+    snap_near_mid = {
+        "kc_mid_slope_atr": 0.05,
+        "close": 100.1,
+        "kc_mid": 100.0,
+        "atr": 1.0,
+        "kc_width_contraction_ratio": 0.01,
+        "kc_width_atr": 3.0,
+        "range_atr": 3.0,
+        "ma3_slope_atr": 0.1,
+        "ma15_slope_atr": 0.1,
+        "ma3_slope_flips": 0.0,
+        "ma3_price_crosses": 0.0,
+    }
+    assert strat._global_filter_reason("long", snap_near_mid) == "blocked_long_not_clear_of_kc_mid"
+
+    # 模擬通道急遽縮口 (contraction >= 5%) -> 應被 blocked_rapid_kc_contraction 拒絕
+    snap_contracting = {
+        "kc_mid_slope_atr": 0.05,
+        "close": 102.0,
+        "kc_mid": 100.0,
+        "atr": 1.0,
+        "kc_width_contraction_ratio": 0.08,
+        "kc_width_atr": 3.0,
+        "range_atr": 3.0,
+        "ma3_slope_atr": 0.1,
+        "ma15_slope_atr": 0.1,
+        "ma3_slope_flips": 0.0,
+        "ma3_price_crosses": 0.0,
+    }
+    assert strat._global_filter_reason("long", snap_contracting) == "blocked_rapid_kc_contraction"
