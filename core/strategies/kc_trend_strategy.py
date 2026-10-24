@@ -376,7 +376,8 @@ class KCTrendStrategy:
             self.continuation_count += 1
         return signal
 
-    def _liquidation_proxy_signal(self, price: float, volume: float, timestamp: float) -> Optional[EntrySignal]:
+    def _liquidation_proxy_signal(self, price: float, timestamp: float) -> Optional[EntrySignal]:
+        """Use accumulated current-candle volume against historical candle volume."""
         if not self.cfg.liquidation_proxy_enabled or self.current_bar is None:
             return None
         snap = self._indicator_snapshot(include_current=True)
@@ -386,44 +387,77 @@ class KCTrendStrategy:
         previous_close = self.bars[-1].close if self.bars else self.current_bar.open
         drop = previous_close - price
         avg_volume = snap["avg_volume"]
-        volume_spike = avg_volume > 0 and volume >= avg_volume * self.cfg.liquidation_volume_multiple_min
+        current_candle_volume = self.current_bar.volume
+        volume_spike = (
+            avg_volume > 0
+            and current_candle_volume >= avg_volume * self.cfg.liquidation_volume_multiple_min
+        )
         sharp_drop = drop >= snap["atr"] * self.cfg.liquidation_return_atr_min
 
         if sharp_drop and volume_spike:
             return self._make_entry(
                 "short", "suspected_liquidation_drop_proxy", price, timestamp, snap,
                 strength=0.7,
-                metadata={"confirmed_liquidation": False, "drop": drop, "atr": snap["atr"]}
+                metadata={
+                    "confirmed_liquidation": False,
+                    "drop": drop,
+                    "atr": snap["atr"],
+                    "volume": current_candle_volume,
+                    "avg_volume": avg_volume,
+                }
             )
         return None
 
     def on_tick(self, price: float, volume: float, timestamp: Optional[float] = None) -> Optional[EntrySignal]:
-        now_ts = self._normalize_timestamp(timestamp if timestamp is not None else time.time())
-        if not math.isfinite(price) or price <= 0:
+        """
+        Update the current candle and evaluate intrabar entry signals.
+
+        `volume` must be the incremental volume for this tick, not cumulative
+        volume for the whole candle. Cumulative candle volume must be converted
+        to a non-negative delta by the caller before calling this method.
+        """
+        timestamp = time.time() if timestamp is None else self._normalize_timestamp(timestamp)
+        if not math.isfinite(price) or price <= 0 or not math.isfinite(timestamp):
+            return None
+        age = time.time() - timestamp
+        if age > self.cfg.max_bar_age_seconds or age < -5.0:
             return None
 
         if self.current_bar is None:
-            self.current_bar = Bar(now_ts, price, price, price, price, volume)
+            self.current_bar = Bar(timestamp, price, price, price, price, volume)
         else:
             self.current_bar.high = max(self.current_bar.high, price)
             self.current_bar.low = min(self.current_bar.low, price)
             self.current_bar.close = price
             self.current_bar.volume += max(0.0, volume)
 
-        sig = self._candle_pattern_signal(price, now_ts)
+        sig = self._candle_pattern_signal(price, timestamp)
         if sig:
             self.breakout_side = sig.side
             self.continuation_count = 0
             return sig
 
-        sig = self._continuation_signal(price, now_ts)
+        sig = self._continuation_signal(price, timestamp)
         if sig:
             return sig
 
-        return self._liquidation_proxy_signal(price, volume, now_ts)
+        return self._liquidation_proxy_signal(price, timestamp)
 
     def on_bar_close(self, bar: Bar) -> List[ExitSignal]:
-        bar.timestamp = self._normalize_timestamp(bar.timestamp)
+        normalized_ts = self._normalize_timestamp(bar.timestamp)
+        if normalized_ts > time.time() + 5.0:
+            return []
+
+        prev_snapshot = self._last_closed_snapshot
+        bar = Bar(
+            timestamp=normalized_ts,
+            open=bar.open, high=bar.high, low=bar.low, close=bar.close, volume=bar.volume
+        )
+        if not all(math.isfinite(v) for v in (bar.open, bar.high, bar.low, bar.close, bar.volume)):
+            return []
+        if bar.low <= 0 or bar.high < bar.low or bar.volume < 0:
+            return []
+
         self.bars.append(bar)
         self._bar_counter += 1
         self.current_bar = None
@@ -435,6 +469,7 @@ class KCTrendStrategy:
 
         snap = self._indicator_snapshot()
         if snap is None:
+            self._last_closed_snapshot = None
             return exits
 
         # 1. 兩根確認機制 (使用 _last_closed_snapshot 防視角偏差)
