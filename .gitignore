@@ -14,6 +14,7 @@ env/
 # Logs and runtime data
 data/binance-futures-bot.lock
 *.log
+logs/*.jsonl
 data/paper_account.json
 data/ai_trade_analysis.json
 data/testnet_account.json

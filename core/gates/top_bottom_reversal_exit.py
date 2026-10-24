@@ -66,7 +66,7 @@ def evaluate_top_bottom_reversal_exit(
         return False, None, meta
 
     closed = _closed_bars(raw_df)
-    if closed is None or len(closed) < 4:
+    if closed is None or len(closed) < 3:
         return False, None, meta
     if any(col not in closed.columns for col in _REQUIRED):
         return False, None, meta
@@ -135,7 +135,7 @@ def evaluate_top_bottom_reversal_exit(
     )
 
     # ==========================
-    # 1. 空單檢查：出現「谷底」立即平空
+    # 1. 空單檢查：出現「真谷底」（階段 A 超賣/獲利 + 階段 B 連續 2 根收陽且突破 MA3）平空
     # ==========================
     if side == "SHORT":
         lowest_since_entry = min(
@@ -144,65 +144,42 @@ def evaluate_top_bottom_reversal_exit(
             c_low,
         )
         max_favorable = entry_p - lowest_since_entry
-        favorable_roe = (max_favorable / entry_p) * leverage if entry_p > 0 else 0.0
-        peak_roe = max(stored_peak_roe, favorable_roe)
+        min_kc_lower = float(closed["kc_lower"].min()) if "kc_lower" in closed.columns else lower_band
 
-        recent_low = min(c_low, p_low)
-        has_trend_unfolded = (
-            (lowest_since_entry <= (lower_band * 1.002) and recent_low <= (lower_band * 1.005))
-            or (max_favorable >= (0.25 * atr) and recent_low <= (lower_band * 1.002))
-        )
-        if not has_trend_unfolded:
-            meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
+        # 階段 A（進入獲利保護期）：持倉最低價曾灌破 KC 下軌 或 曾獲得大於 1.5 * ATR 的浮盈
+        stage_a_met = (lowest_since_entry <= min_kc_lower) or (max_favorable >= (1.5 * atr))
+        if not stage_a_met:
+            meta["skipped"] = "STAGE_A_NOT_MET: 未曾灌破KC下軌且浮盈未達門檻(1.5*ATR)，禁止猜底平空"
             return False, None, meta
 
-        # 條件 1: MA3 明顯轉折向上 且 收盤實體站上 MA3 (谷底 V 轉)
-        ma3_bending_up = (
-            ma3_curr is not None and ma3_prev is not None and ma3_prev2 is not None
-            and (ma3_curr > ma3_prev) and (ma3_prev <= ma3_prev2)
-        )
+        # 階段 B（反轉確認）：必須同時滿足：
+        # 1. 出現「連續 2 根 Completed Bar 收陽」（當根收陽 + 前根收陽）
+        # 2. 最新一根收盤價必須「實體站穩突破 MA3 之上」（close > ma3）
+        # 3. 實體無長上影回吐（upper_wick < body 且 upper_wick <= 0.35 * span）
+        middle_band = float(curr.get("kc_middle", (lower_band + upper_band) / 2.0))
+        two_bars_bullish = (c_close > c_open) and (p_close > p_open)
         close_above_ma3 = (ma3_curr is not None and c_close > ma3_curr)
+        curr_span = max(c_high - c_low, 1e-6)
+        no_upper_wick_rejection = (curr_upper_wick < curr_body) and (curr_upper_wick <= 0.35 * curr_span)
+        at_bottom_zone = (c_close <= middle_band)
 
-        # 條件 2: 下影線探底回升 (長下影線 >= 1.5 倍實體 且 探破或逼近 KC 下軌)
-        # 防線一：MA3 向下且收盤受壓於 MA3 之下時，嚴禁因普通下影線平空 (VETO_EXIT_MA3_STRONG_DOWN)
-        is_ma3_down_thrust = (ma3_curr is not None and ma3_prev is not None and (ma3_curr < ma3_prev) and (c_close <= ma3_curr))
-        # 唯有超巨型探底針（下影線 >= 3.0 倍實體 且 下影線 >= 0.8*ATR 且 收盤被抽回上半部），才視為極端插針反轉
-        is_extreme_needle_bottom = (
-            (curr_lower_wick >= curr_body * 3.0)
-            and (curr_lower_wick >= 0.8 * atr)
-            and (c_close >= c_low + curr_lower_wick * 0.5)
-        )
-        pin_bar_bottom = (
-            (curr_lower_wick >= curr_body * 1.5)
-            and (c_low < lower_band)
-            and (c_close >= c_low + curr_lower_wick * 0.4)
-            and (is_extreme_needle_bottom or (not is_ma3_down_thrust and c_close > c_open and c_close > p_high))
-        )
-
-        # 條件 3: 低檔陽包陰吞噬反轉 (Bullish Engulfing)
-        bullish_engulfing = (
-            (p_close < p_open)
-            and (c_close > c_open)
-            and (c_close >= p_open)
-            and (c_open <= p_close)
-            and (recent_low <= lower_band * 1.002)
-        )
-
-        if (ma3_bending_up and close_above_ma3) or pin_bar_bottom or bullish_engulfing:
-            triggers = []
-            if ma3_bending_up and close_above_ma3:
-                triggers.append(f"MA3_V_BOTTOM(ma3={ma3_curr:.6f}>{ma3_prev:.6f}<=prev2,close={c_close:.6f}>ma3)")
-            if pin_bar_bottom:
-                triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>=1.5*body,close={c_close:.6f},low={c_low:.6f}<lower={lower_band:.6f})")
-            if bullish_engulfing:
-                triggers.append(f"BULLISH_ENGULFING(c_close={c_close:.6f}>=p_open={p_open:.6f})")
-
-            meta["cause"] = f"空單谷底轉折確立，不等回摸中軌立即平空鎖利！觸發特徵: {', '.join(triggers)}"
+        if two_bars_bullish and close_above_ma3 and no_upper_wick_rejection and at_bottom_zone:
+            triggers = [
+                f"STAGE_A_OVERSOLD(lowest={lowest_since_entry:.4f}<=lower={min_kc_lower:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
+                f"TWO_BARS_BULLISH(curr={c_close:.4f}>{c_open:.4f},prev={p_close:.4f}>{p_open:.4f})",
+                f"MA3_BREAKOUT(close={c_close:.4f}>ma3={ma3_curr:.4f})",
+                f"SOLID_BODY(upper_wick={curr_upper_wick:.4f}<body={curr_body:.4f})",
+                f"AT_BOTTOM_ZONE(close={c_close:.4f}<=mid={middle_band:.4f})",
+            ]
+            meta["cause"] = f"空單真谷底轉折確立（二根收陽+突破MA3實體站穩），平空鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_SHORT_AT_BOTTOM, meta
+        else:
+            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 未達連續2根收陽或未突破MA3或有長上影回吐，視為良性整理雜訊"
+            return False, None, meta
 
     # ==========================
-    # 2. 多單檢查：出現「峰頂」立即平多
+    # 2. 多單檢查：出現「真峰頂」（階段 A 超買/獲利 + 階段 B 連續 2 根收陰且跌破 MA3）平多
     # ==========================
     elif side == "LONG":
         highest_since_entry = max(
@@ -211,61 +188,40 @@ def evaluate_top_bottom_reversal_exit(
             c_high,
         )
         max_favorable = highest_since_entry - entry_p
-        favorable_roe = (max_favorable / entry_p) * leverage if entry_p > 0 else 0.0
-        peak_roe = max(stored_peak_roe, favorable_roe)
+        max_kc_upper = float(closed["kc_upper"].max()) if "kc_upper" in closed.columns else upper_band
 
-        recent_high = max(c_high, p_high)
-        has_trend_unfolded = (
-            (highest_since_entry >= (upper_band * 0.998) and recent_high >= (upper_band * 0.995))
-            or (max_favorable >= (0.25 * atr) and recent_high >= (upper_band * 0.998))
-        )
-        if not has_trend_unfolded:
-            meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
+        # 階段 A（進入獲利保護期）：持倉最高價曾衝破 KC 上軌 或 曾獲得大於 1.5 * ATR 的浮盈
+        stage_a_met = (highest_since_entry >= max_kc_upper) or (max_favorable >= (1.5 * atr))
+        if not stage_a_met:
+            meta["skipped"] = "STAGE_A_NOT_MET: 未曾衝破KC上軌且浮盈未達門檻(1.5*ATR)，禁止猜頂平多"
             return False, None, meta
 
-        # 條件 1: MA3 明顯轉折下彎 且 收盤實體跌破 MA3 (盤中碰觸不計，解決 21:06 提早平倉問題)
-        ma3_bending_down = (
-            ma3_curr is not None and ma3_prev is not None and ma3_prev2 is not None
-            and (ma3_curr < ma3_prev) and (ma3_prev >= ma3_prev2)
-        )
+        # 階段 B（反轉確認）：必須同時滿足：
+        # 1. 出現「連續 2 根 Completed Bar 收陰」（當根收陰 + 前根收陰）
+        # 2. 最新一根收盤價必須「實體跌破 MA3 之下」（close < ma3）
+        # 3. 實體無長下影回抽（lower_wick < body 且 lower_wick <= 0.35 * span）
+        # 4. 價格位於中軌上方之頂部區域（避免跌到反側外軌阿呆谷誤判為峰頂）
+        middle_band = float(curr.get("kc_middle", (lower_band + upper_band) / 2.0))
+        two_bars_bearish = (c_close < c_open) and (p_close < p_open)
         close_below_ma3 = (ma3_curr is not None and c_close < ma3_curr)
+        curr_span = max(c_high - c_low, 1e-6)
+        no_lower_wick_rejection = (curr_lower_wick < curr_body) and (curr_lower_wick <= 0.35 * curr_span)
+        at_top_zone = (c_close >= middle_band)
 
-        # 條件 2: 上影線避雷針轉折衝高受阻 (長上影線 >= 1.5 倍實體 且 衝破或逼近 KC 上軌)
-        # 防線一：MA3 向上且收盤穩站 MA3 之上時，嚴禁因普通上影線平多 (VETO_EXIT_MA3_STRONG_UP)
-        is_ma3_up_thrust = (ma3_curr is not None and ma3_prev is not None and (ma3_curr > ma3_prev) and (c_close >= ma3_curr))
-        # 唯有超巨型避雷針（上影線 >= 3.0 倍實體 且 上影線 >= 0.8*ATR 且 收盤被砸回下半部），才視為極端插針反轉
-        is_extreme_needle_top = (
-            (curr_upper_wick >= curr_body * 3.0)
-            and (curr_upper_wick >= 0.8 * atr)
-            and (c_close <= c_high - curr_upper_wick * 0.5)
-        )
-        pin_bar_top = (
-            (curr_upper_wick >= curr_body * 1.5)
-            and (c_high > upper_band)
-            and (c_close <= c_high - curr_upper_wick * 0.4)
-            and (is_extreme_needle_top or (not is_ma3_up_thrust and c_close < c_open and c_close < p_low))
-        )
-
-        # 條件 3: 高檔陰包陽吞噬反轉 (Bearish Engulfing)
-        bearish_engulfing = (
-            (p_close > p_open)
-            and (c_close < c_open)
-            and (c_close <= p_open or (c_open - c_close) >= (p_close - p_open) * 0.8)
-            and (recent_high >= upper_band * 0.998)
-        )
-
-        # 峰頂平倉核心：只有在「MA3 明顯轉折下彎」且「收盤跌破 MA3」，或「出現明確衝高回落避雷針/陰包陽吞噬」才平倉
-        if (ma3_bending_down and close_below_ma3) or pin_bar_top or bearish_engulfing:
-            triggers = []
-            if ma3_bending_down and close_below_ma3:
-                triggers.append(f"MA3_A_TOP(ma3={ma3_curr:.6f}<{ma3_prev:.6f}>=prev2,close={c_close:.6f}<ma3)")
-            if pin_bar_top:
-                triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>=1.5*body,close={c_close:.6f},high={c_high:.6f}>upper={upper_band:.6f})")
-            if bearish_engulfing:
-                triggers.append(f"BEARISH_ENGULFING(c_close={c_close:.6f}<=p_open={p_open:.6f})")
-
-            meta["cause"] = f"多單峰頂轉折確立，不等回踩中軌立即平多鎖利！觸發特徵: {', '.join(triggers)}"
+        if two_bars_bearish and close_below_ma3 and no_lower_wick_rejection and at_top_zone:
+            triggers = [
+                f"STAGE_A_OVERBOUGHT(highest={highest_since_entry:.4f}>=upper={max_kc_upper:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
+                f"TWO_BARS_BEARISH(curr={c_close:.4f}<{c_open:.4f},prev={p_close:.4f}<{p_open:.4f})",
+                f"MA3_BREAKDOWN(close={c_close:.4f}<ma3={ma3_curr:.4f})",
+                f"SOLID_BODY(lower_wick={curr_lower_wick:.4f}<body={curr_body:.4f})",
+                f"AT_TOP_ZONE(close={c_close:.4f}>=mid={middle_band:.4f})",
+            ]
+            meta["cause"] = f"多單真峰頂轉折確立（二根收陰+跌破MA3實體下破），平多鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_LONG_AT_TOP, meta
+        else:
+            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 未達連續2根收陰或未跌破MA3或有長下影回抽，視為良性回踩雜訊"
+            return False, None, meta
 
     return False, None, meta
+

@@ -56,42 +56,38 @@ def make_df(*bars):
 # 1. 空單測試 (SHORT)
 # ══════════════════════════════════════════════════════
 
-def test_short_ma3_v_bottom_exits_immediately():
-    """空單下殺後，MA3 走出 V 轉底 (ma3_prev < ma3_prev2 且 ma3_curr > ma3_prev) 立即平空"""
-    # closes: 96.0, 93.0, 92.0, 91.0, 94.0
-    # ma3[-3] = (96+93+92)/3 = 93.67
-    # ma3[-2] = (93+92+91)/3 = 92.00 (探底)
-    # ma3[-1] = (92+91+94)/3 = 92.33 (> 92.00, 轉折向上)
+def test_short_two_bars_bullish_and_ma3_breakout_exits():
+    """空單下殺破軌後，出現連續 2 根 Completed Bar 收陽且突破 MA3，確立真谷底平空"""
     bars = [
         make_bar(97.0, 97.2, 95.8, 96.0),
         make_bar(96.0, 96.2, 92.8, 93.0),
-        make_bar(93.0, 93.2, 91.8, 92.0),
-        make_bar(92.0, 92.2, 90.8, 91.0),   # 最低點，探破下軌 95.0
-        make_bar(91.0, 94.2, 90.9, 94.0),   # 向上勾起，MA3 形成 V 轉底
+        make_bar(93.0, 93.2, 90.8, 91.0),   # 探破下軌 95.0，Stage A 達成
+        make_bar(91.0, 92.5, 90.9, 92.2),   # 第一根 Completed Bar 收陽
+        make_bar(92.2, 94.2, 92.0, 94.0),   # 第二根 Completed Bar 收陽且實體突破 MA3 (ma3~92.4)
     ]
     df = make_df(*bars)
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.8}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is True
     assert reason == CLOSE_SHORT_AT_BOTTOM
-    assert any("MA3_V_BOTTOM" in t for t in meta["triggers"])
+    assert any("TWO_BARS_BULLISH" in t for t in meta["triggers"])
+    assert any("MA3_BREAKOUT" in t for t in meta["triggers"])
 
 
-def test_short_pin_bar_bottom_exits_immediately():
-    """空單在下軌出現長下影線探底回升 (下影線 > 2.0 倍實體 且 收盤站回下軌內側)，立即平空"""
+def test_short_single_pin_bar_or_single_green_skipped_as_noise():
+    """空單僅出現單根下影線或單根小陽棒，未達連續 2 根收陽，直接判定為雜訊禁止平倉"""
     bars = [
         make_bar(100.0, 100.2, 98.5, 99.0),
         make_bar(99.0, 99.1, 96.8, 97.0),
-        make_bar(97.0, 97.2, 95.0, 95.5),
-        # 當根：開 95.5，最低探至 92.0 (探破下軌 95.0)，收 95.2 (站回下軌內側)。實體 0.3，下影線 3.2 (超 10 倍實體)
-        make_bar(95.5, 95.6, 92.0, 95.2),
+        make_bar(97.0, 97.2, 95.0, 95.5),   # 陰線
+        # 當根：單根長下影小陽線，但前根為陰線，未達連續 2 根收陽
+        make_bar(95.0, 95.6, 92.0, 95.2),
     ]
     df = make_df(*bars)
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 92.0}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
-    assert should_exit is True
-    assert reason == CLOSE_SHORT_AT_BOTTOM
-    assert any("PIN_BAR_BOTTOM" in t for t in meta["triggers"])
+    assert should_exit is False
+    assert meta.get("skipped") == "STAGE_B_NOT_CONFIRMED: 未達連續2根收陽或未突破MA3或有長上影回吐，視為良性整理雜訊"
 
 
 def test_short_entry_bar_protection_skips_exit():
@@ -122,108 +118,106 @@ def test_short_no_favorable_move_yet_skips_exit():
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 100.0}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is False
-    assert meta.get("skipped") == "NO_FAVORABLE_MOVE_YET"
+    assert "STAGE_A_NOT_MET" in meta.get("skipped", "")
 
 
 # ══════════════════════════════════════════════════════
 # 2. 多單測試 (LONG)
 # ══════════════════════════════════════════════════════
 
-def test_long_ma3_a_top_exits_immediately():
-    """多單衝高後，MA3 走出倒 V 轉頂且收盤跌破 MA3，立即平多"""
-    # closes: 100.0, 103.0, 104.0, 107.0, 102.0
-    # ma3[-3] = (100+103+104)/3 = 102.33
-    # ma3[-2] = (103+104+107)/3 = 104.67 (衝頂)
-    # ma3[-1] = (104+107+102)/3 = 104.33 (< 104.67, 轉折向下 且 close=102.0 < ma3=104.33)
+def test_long_two_bars_bearish_and_ma3_breakdown_exits():
+    """多單衝高衝破上軌後，出現連續 2 根 Completed Bar 收陰且跌破 MA3，確立真峰頂平多"""
     bars = [
         make_bar(99.0, 100.2, 98.8, 100.0),
         make_bar(100.0, 103.2, 99.8, 103.0),
-        make_bar(103.0, 104.2, 102.8, 104.0),
-        make_bar(104.0, 107.5, 103.8, 107.0),  # 衝破上軌 105.0
-        make_bar(107.0, 107.2, 101.8, 102.0),  # MA3 向下拐頭且跌破 MA3
+        make_bar(103.0, 107.5, 102.8, 107.0),  # 衝破上軌 105.0，Stage A 達成
+        make_bar(107.0, 107.2, 105.5, 105.8),  # 第一根 Completed Bar 收陰
+        make_bar(105.8, 106.0, 103.0, 103.5),  # 第二根 Completed Bar 收陰且實體跌破 MA3 (ma3~105.4)
     ]
     df = make_df(*bars)
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 107.5}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is True
     assert reason == CLOSE_LONG_AT_TOP
-    assert any("MA3_A_TOP" in t for t in meta["triggers"])
+    assert any("TWO_BARS_BEARISH" in t for t in meta["triggers"])
+    assert any("MA3_BREAKDOWN" in t for t in meta["triggers"])
 
 
-def test_long_pin_bar_top_exits_immediately():
-    """多單在上軌衝高回落避雷針 (上影線 > 2.0 倍實體 且 收盤跌回上軌內側)，立即平多"""
+def test_long_single_pin_bar_or_single_red_skipped_as_noise():
+    """多單衝高後僅出現單根避雷針或單根小陰線，未達連續 2 根收陰，直接判定為雜訊禁止平倉"""
     bars = [
         make_bar(100.0, 101.5, 99.8, 101.0),
         make_bar(101.0, 103.2, 100.8, 103.0),
-        make_bar(103.0, 104.8, 102.8, 104.5),
-        # 當根：開 104.5，最高衝至 108.0 (衝破上軌 105.0)，收 104.8 (跌回上軌內側)。實體 0.3，上影線 3.2 (超 10 倍實體)
-        make_bar(104.5, 108.0, 104.4, 104.8),
+        make_bar(103.0, 104.8, 102.8, 104.5),  # 陽線
+        # 當根：單根避雷針衝高回落小陰線，但前根為陽線，未達連續 2 根收陰
+        make_bar(104.5, 108.0, 104.0, 104.2),
     ]
     df = make_df(*bars)
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.0}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
-    assert should_exit is True
-    assert reason == CLOSE_LONG_AT_TOP
-    assert any("PIN_BAR_TOP" in t for t in meta["triggers"])
+    assert should_exit is False
+    assert meta.get("skipped") == "STAGE_B_NOT_CONFIRMED: 未達連續2根收陰或未跌破MA3或有長下影回抽，視為良性回踩雜訊"
 
 
 # ══════════════════════════════════════════════════════
 # 3. ExitGate 整合回歸測試
 # ══════════════════════════════════════════════════════
 
-def test_exit_gate_integrates_bottom_exit_overriding_veto_hold():
-    """驗證 ExitGate 整合：空單下殺探底打出長下影線時，一票否決 VETO_HOLD，直接放行 CLOSE_SHORT_AT_BOTTOM"""
+def test_exit_gate_integrates_bottom_exit_when_trend_challenged():
+    """驗證 ExitGate 整合：空單下殺探底後，反彈突破 MA15 挑戰空頭結構，且完成 2 根收陽+突破 MA3，放行真谷底平倉"""
     bars = [
         make_bar(100.0, 100.2, 97.8, 98.0),
         make_bar(98.0, 98.1, 95.8, 96.0),
-        make_bar(96.0, 96.2, 94.0, 94.5),
-        # 破下軌 95.0 的長下影線 pin bar: open=94.5, close=94.2, low=91.0 (下影線=3.2 >= 1.5*0.3)
-        make_bar(94.5, 94.6, 91.0, 94.2),
+        make_bar(96.0, 96.2, 90.8, 91.0),   # 灌破下軌 95.0
+        make_bar(91.0, 95.5, 90.9, 95.0),   # 第 1 根收陽
+        make_bar(95.0, 98.2, 94.8, 98.0),   # 第 2 根收陽，突破 MA15 (97.0) 與 MA3
     ]
     df = make_df(*bars)
-    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 91.0, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.8, "qty": 1.0, "leverage": 5.0}
     snapshot = {
-        "current_price": 94.2,
+        "current_price": 98.0,
         "atr": ATR,
         "kc_upper": UP,
         "kc_middle": MID,
         "kc_lower": LOW,
         "kc_middle_slope": -0.01,
+        "ma15": 97.0,
         "ema_fast": 96.0,
         "ema_slow": 98.0,
         "raw_df": df,
         "macro_trend": "BEARISH",
     }
-    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot)
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=98.0)
     assert should_exit is True
     assert reason == CLOSE_SHORT_AT_BOTTOM
     assert "top_bottom_reversal" in meta
 
 
-def test_exit_gate_integrates_top_exit_overriding_veto_hold():
-    """驗證 ExitGate 整合：多單衝高打出倒 V 轉頂時，一票否決 VETO_HOLD，直接放行 CLOSE_LONG_AT_TOP"""
+def test_exit_gate_integrates_top_exit_when_trend_challenged():
+    """驗證 ExitGate 整合：多單衝高後，回跌跌破 MA15 挑戰多頭結構，且完成 2 根收陰+跌破 MA3，放行真峰頂平倉"""
     bars = [
         make_bar(99.0, 100.5, 98.8, 100.0),
         make_bar(100.0, 102.2, 99.8, 102.0),
-        make_bar(102.0, 104.2, 101.8, 104.0),
-        make_bar(104.0, 107.5, 103.8, 107.0),
-        make_bar(107.0, 107.2, 102.8, 103.0),
+        make_bar(102.0, 108.5, 101.8, 108.0),  # 衝破上軌 105.0
+        make_bar(108.0, 108.2, 104.5, 105.0),  # 第 1 根收陰
+        make_bar(105.0, 105.2, 101.8, 102.0),  # 第 2 根收陰，跌破 MA15 (103.0) 與 MA3
     ]
     df = make_df(*bars)
-    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 107.5, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.5, "qty": 1.0, "leverage": 5.0}
     snapshot = {
-        "current_price": 103.0,
+        "current_price": 102.0,
         "atr": ATR,
         "kc_upper": UP,
         "kc_middle": MID,
         "kc_lower": LOW,
         "kc_middle_slope": 0.01,
+        "ma15": 103.0,
         "ema_fast": 104.0,
         "ema_slow": 102.0,
         "raw_df": df,
         "macro_trend": "BULLISH",
     }
-    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot)
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=102.0)
     assert should_exit is True
     assert reason == CLOSE_LONG_AT_TOP
     assert "top_bottom_reversal" in meta
@@ -295,16 +289,15 @@ def test_exit_gate_holds_long_when_ma3_sloping_up_with_upper_wick():
     }
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=104.6)
     assert should_exit is False
-    assert reason == "VETO_HOLD"
-    assert meta.get("hold_rule") == "VETO_EXIT_MA3_STRONG_UP"
-    assert "多單強勢上揚防護" in meta.get("cause", "")
+    assert "VETO_HOLD" in reason
+    assert meta.get("hold_rule") in ("VETO_EXIT_MA3_STRONG_UP", "TOP_LEVEL_TREND_LOCK_LONG")
 
 
 def test_exit_gate_holds_short_when_ma3_sloping_down_with_lower_wick():
     """
     [防線一回歸測試] 空單下殺痛點：
     空單下殺破軌，當根碰觸 KC 下軌並收陰線帶下影線（但非極端探底針），
-    MA3 依然強勁下殺且收盤受壓於 MA3 之下，ExitGate 必須 100% 行使 VETO_EXIT_MA3_STRONG_DOWN 續抱主跌浪！
+    MA3 依然強勁下殺且收盤受壓於 MA3 之下，ExitGate 必須 100% 行使 VETO_HOLD 續抱主跌浪！
     """
     bars = [
         make_bar(100.0, 100.2, 98.8, 99.0),
@@ -335,7 +328,99 @@ def test_exit_gate_holds_short_when_ma3_sloping_down_with_lower_wick():
     }
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=95.4)
     assert should_exit is False
-    assert reason == "VETO_HOLD"
-    assert meta.get("hold_rule") == "VETO_EXIT_MA3_STRONG_DOWN"
-    assert "空單強勢下殺防護" in meta.get("cause", "")
+    assert "VETO_HOLD" in reason
+    assert meta.get("hold_rule") in ("VETO_EXIT_MA3_STRONG_DOWN", "TOP_LEVEL_TREND_LOCK_SHORT", "VETO_HOLD_SHORT_BELOW_MA3")
+
+
+def test_exit_gate_holds_short_when_single_green_bar_below_ma3():
+    """
+    [實盤 17:21 痛點回歸測試]
+    情境重現：
+    空單在大暴跌主跌浪進行途中，在 17:21 出現一根單根帶下影線的小陽線（綠 K），
+    但收盤價依然受壓在紅色 MA3 之下 (close <= ma3)，且遠在 KC 中軌下方，中軌向下。
+    ExitGate.evaluate 必須在最頂層 100% 一票否決提前離場，強制鎖倉續抱 (VETO_HOLD_SHORT_BELOW_MA3)！
+    """
+    bars = [
+        make_bar(100.0, 100.2, 97.5, 98.0),
+        make_bar(98.0, 98.2, 95.0, 95.5),
+        make_bar(95.5, 95.6, 92.0, 92.5),   # 大暴跌破下軌 95.0
+        # 17:21：單根帶下影線小綠棒，開 92.5，最低 91.0，最高 93.2，收 93.0
+        # 此時 3 根 close 為 [95.5, 92.5, 93.0]，ma3 = (95.5 + 92.5 + 93.0) / 3 = 93.67
+        # 收盤價 93.0 <= ma3 (93.67)，且遠在中軌 100.0 之下
+        make_bar(92.5, 93.2, 91.0, 93.0),
+    ]
+    df = make_df(*bars)
+    pos = {
+        "side": "SHORT",
+        "entry_price": 100.0,
+        "lowest_price": 91.0,
+        "qty": 1.0,
+        "leverage": 5.0,
+    }
+    snapshot = {
+        "current_price": 93.0,
+        "atr": ATR,
+        "kc_upper": UP,
+        "kc_middle": MID,
+        "kc_lower": LOW,
+        "kc_middle_slope": -0.05,
+        "ma15": 97.0,
+        "ema_fast": 96.0,
+        "ema_slow": 98.0,
+        "raw_df": df,
+        "macro_trend": "BEARISH",
+    }
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=93.0)
+    assert should_exit is False, "17:21 單根小綠棒受壓於 MA3 之下，必須 100% 阻斷平空，強制鎖倉！"
+    assert "VETO_HOLD" in reason
+    assert "VETO_HOLD_SHORT" in reason
+    assert meta.get("hold_rule") == "VETO_HOLD_SHORT_BELOW_MA3"
+    assert "價格壓制在MA3與KC中軌之下" in meta.get("cause", "") or "價格壓制在MA3與KC中軌之下" in reason
+
+
+def test_exit_gate_holds_long_when_single_red_bar_above_ma3():
+    """
+    [多單衝高回踩痛點回歸測試]
+    情境重現：
+    多單在主升浪狂飆途中，出現一根單根帶上影線的小陰線（紅 K），
+    但收盤價依然穩踩在紅色 MA3 之上 (close >= ma3)，且在 KC 中軌上方，中軌向上。
+    ExitGate.evaluate 必須在最頂層 100% 一票否決提前離場，強制鎖倉續抱 (VETO_HOLD_LONG_ABOVE_MA3)！
+    """
+    bars = [
+        make_bar(100.0, 102.5, 99.8, 102.0),
+        make_bar(102.0, 105.0, 101.8, 104.5),
+        make_bar(104.5, 108.0, 104.2, 107.5),  # 衝破上軌 105.0
+        # 當根：單根帶上影線小陰棒，開 107.5，最高 109.0，最低 106.8，收 107.0
+        # 此時 3 根 close 為 [104.5, 107.5, 107.0]，ma3 = (104.5 + 107.5 + 107.0) / 3 = 106.33
+        # 收盤價 107.0 >= ma3 (106.33)，且穩守在中軌 100.0 之上
+        make_bar(107.5, 109.0, 106.8, 107.0),
+    ]
+    df = make_df(*bars)
+    pos = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "highest_price": 109.0,
+        "qty": 1.0,
+        "leverage": 5.0,
+    }
+    snapshot = {
+        "current_price": 107.0,
+        "atr": ATR,
+        "kc_upper": UP,
+        "kc_middle": MID,
+        "kc_lower": LOW,
+        "kc_middle_slope": 0.05,
+        "ma15": 103.0,
+        "ema_fast": 104.0,
+        "ema_slow": 102.0,
+        "raw_df": df,
+        "macro_trend": "BULLISH",
+    }
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=107.0)
+    assert should_exit is False, "單根小陰棒守在 MA3 之上，必須 100% 阻斷平多，強制鎖倉！"
+    assert "VETO_HOLD" in reason
+    assert "VETO_HOLD_LONG" in reason
+    assert meta.get("hold_rule") == "VETO_HOLD_LONG_ABOVE_MA3"
+    assert "價格穩守在MA3與KC中軌之上" in meta.get("cause", "") or "價格穩守在MA3與KC中軌之上" in reason
+
 

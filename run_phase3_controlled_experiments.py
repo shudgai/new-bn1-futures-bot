@@ -185,27 +185,37 @@ def evaluate_entry_gate(
     # 均線與通道數據
     ma3 = float(row["ma3"]) if "ma3" in row and not pd.isna(row["ma3"]) else float(row["ma5"])
     ma3_prev = float(prev_row["ma3"]) if "ma3" in prev_row and not pd.isna(prev_row["ma3"]) else float(prev_row["ma5"])
-    ma15 = float(row["ma15"])
-    ma15_prev3 = float(prev3_row["ma15"])
-    kc_mid = float(row["kc_middle"])
-    kc_up = float(row["kc_upper"])
-    kc_low = float(row["kc_lower"])
-
-    ma3_slope = ma3 - ma3_prev
-    ma15_slope = ma15 - ma15_prev3
-    kc_mid_slope = kc_mid - float(prev3_row["kc_middle"])
-
-    trace_meta = {
-        "actual_idx": current_idx, "direction": direction, "close": close,
-        "open": open_p, "atr": atr, "ma3": ma3, "ma3_slope": ma3_slope,
-        "ma15": ma15, "ma15_slope": ma15_slope, "kc_mid": kc_mid, "kc_mid_slope": kc_mid_slope,
-    }
+       # =========================================================
+    # 破位起跌 / 起漲即進場觸發器 (Breakout / Breakdown Trigger)
+    # 解決「太晚開倉追地板/追天花板」問題：
+    # 當 Completed Bar 實體大陰線收破 KC 中軌且 MA3 向下拐頭，只要中長均線未強烈上漲，立即允許開空！
+    # 當 Completed Bar 實體大陽線收破 KC 中軌且 MA3 向上拐頭，只要中長均線未強烈下跌，立即允許開多！
+    # =========================================================
+    p_close_val = float(prev_row["close"])
+    is_breakdown_trigger = (
+        direction == "SHORT"
+        and (close < open_p)
+        and (body_size >= 0.35 * atr)
+        and (close <= kc_mid)
+        and (open_p >= kc_mid - 0.25 * atr or p_close_val >= kc_mid)
+        and (ma3_slope < 0)
+        and (ma15_slope <= 0.05 * atr and kc_mid_slope <= 0.05 * atr)
+    )
+    is_breakout_trigger = (
+        direction == "LONG"
+        and (close > open_p)
+        and (body_size >= 0.35 * atr)
+        and (close >= kc_mid)
+        and (open_p <= kc_mid + 0.25 * atr or p_close_val <= kc_mid)
+        and (ma3_slope > 0)
+        and (ma15_slope >= -0.05 * atr and kc_mid_slope >= -0.05 * atr)
+    )
 
     # =========================================================
     # 第一層：全域環境硬性禁令 (Hard Veto)
     # =========================================================
 
-    # 禁令 A：均線走平/糾纏麻花捲過濾
+    # 禁令 A：均線走平/糾纏麻花捲過濾 (起漲/起跌破位點豁免)
     ma15_window = df["ma15"].iloc[current_idx - 7 : current_idx + 1]
     ma15_range_8 = float(ma15_window.max() - ma15_window.min())
     is_ma15_strictly_flat = ma15_range_8 < (0.25 * atr)
@@ -214,7 +224,7 @@ def evaluate_entry_gate(
     ma15_slice = df["ma15"].iloc[current_idx - 4 : current_idx + 1]
     ma_gap_avg = float((ma3_slice - ma15_slice).abs().mean())
 
-    if is_ma15_strictly_flat and (ma_gap_avg < 0.15 * atr):
+    if is_ma15_strictly_flat and (ma_gap_avg < 0.15 * atr) and not (is_breakdown_trigger or is_breakout_trigger):
         trace_meta.update(ma15_range_8=ma15_range_8, ma_gap_avg=ma_gap_avg)
         return GateDecision(False, f"VETO_MA_ENTANGLED: 過去8根均線實質走平且黏合(極差={ma15_range_8:.4f},間距={ma_gap_avg:.4f})，排除垃圾盤整", trace_meta)
 
@@ -224,29 +234,35 @@ def evaluate_entry_gate(
     is_breakout_long_surge = (close > kc_up) and (body_size >= 0.8 * atr)
     is_breakout_short_surge = (close < kc_low) and (body_size >= 0.8 * atr)
 
-    if kc_bandwidth < min_bandwidth_threshold:
+    if kc_bandwidth < min_bandwidth_threshold and not (is_breakdown_trigger or is_breakout_trigger):
         if direction == "LONG" and not is_breakout_long_surge:
             return GateDecision(False, f"VETO_KC_SQUEEZE_DEAD: 通道極度收斂(bw={kc_bandwidth:.5f}<{min_bandwidth_threshold})且未見強勢破軌大陽棒", trace_meta)
         elif direction == "SHORT" and not is_breakout_short_surge:
             return GateDecision(False, f"VETO_KC_SQUEEZE_DEAD: 通道極度收斂(bw={kc_bandwidth:.5f}<{min_bandwidth_threshold})且未見強勢破軌大陰棒", trace_meta)
 
-    # 禁令 C：防天花板追高 / 地板追空 (乖離率極限防護)
+    # 禁令 C：防天花板追高 / 地板追空 (乖離率極限防護與貼軌硬鎖，2026-10-24 最新授權)
     if direction == "LONG":
         dist_from_mid = close - kc_mid
         dist_above_upper = close - kc_up
-        trace_meta.update(dist_from_mid=dist_from_mid, dist_above_upper=dist_above_upper)
-        if dist_from_mid > (1.8 * atr):
-            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 距中軌過度延展(乖離={dist_from_mid:.4f} > 1.8*ATR={1.8*atr:.4f})，嚴防天花板站崗", trace_meta)
-        if dist_above_upper > (0.4 * atr):
-            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 突破上軌過遠(超軌={dist_above_upper:.4f} > 0.4*ATR={0.4*atr:.4f})，嚴重超買拒絕追多", trace_meta)
+        dist_to_upper = kc_up - close
+        trace_meta.update(dist_from_mid=dist_from_mid, dist_above_upper=dist_above_upper, dist_to_upper=dist_to_upper)
+        if dist_from_mid > (1.5 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 距中軌過度延展(乖離={dist_from_mid:.4f} > 1.5*ATR={1.5*atr:.4f})，嚴防天花板站崗", trace_meta)
+        if close <= kc_up and dist_to_upper <= (0.2 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 價格緊貼上軌(距上軌={dist_to_upper:.4f} <= 0.2*ATR={0.2*atr:.4f})，天花板無利可圖拒絕追多", trace_meta)
+        if dist_above_upper > (0.3 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 突破上軌過遠(超軌={dist_above_upper:.4f} > 0.3*ATR={0.3*atr:.4f})，嚴重超買拒絕追多", trace_meta)
     elif direction == "SHORT":
         dist_below_mid = kc_mid - close
         dist_below_lower = kc_low - close
-        trace_meta.update(dist_below_mid=dist_below_mid, dist_below_lower=dist_below_lower)
-        if dist_below_mid > (1.8 * atr):
-            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 距中軌過度延展(負乖離={dist_below_mid:.4f} > 1.8*ATR={1.8*atr:.4f})，嚴防殺在地板阿呆谷", trace_meta)
-        if dist_below_lower > (0.4 * atr):
-            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 跌破下軌過遠(超軌={dist_below_lower:.4f} > 0.4*ATR={0.4*atr:.4f})，嚴重超賣拒絕追空", trace_meta)
+        dist_to_lower = close - kc_low
+        trace_meta.update(dist_below_mid=dist_below_mid, dist_below_lower=dist_below_lower, dist_to_lower=dist_to_lower)
+        if dist_below_mid > (1.5 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 距中軌過度延展(負乖離={dist_below_mid:.4f} > 1.5*ATR={1.5*atr:.4f})，嚴防殺在地板阿呆谷", trace_meta)
+        if close >= kc_low and dist_to_lower <= (0.2 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 價格緊貼下軌(距下軌={dist_to_lower:.4f} <= 0.2*ATR={0.2*atr:.4f})，地板無利可圖拒絕追空", trace_meta)
+        if dist_below_lower > (0.3 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 跌破下軌過遠(超軌={dist_below_lower:.4f} > 0.3*ATR={0.3*atr:.4f})，嚴重超買拒絕追空", trace_meta)
 
     # =========================================================
     # 第二層：當根方向與動能同向審查
@@ -255,6 +271,9 @@ def evaluate_entry_gate(
         # 1. 當根同向性：必須為實體陽線（拒絕黑棒與十字星）
         if close <= open_p:
             return GateDecision(False, f"VETO_BUY_OPPOSITE_BAR: 當根收陰或平盤(Close={close:.4f} <= Open={open_p:.4f})，嚴禁接飛刀", trace_meta)
+
+        if body_size < (0.35 * atr):
+            return GateDecision(False, f"VETO_BUY_WEAK_BODY: 陽線實體過小(Body={body_size:.4f} < 0.35*ATR={0.35*atr:.4f})，微小十字星拒絕追多", trace_meta)
 
         # 2. 假同向影線過濾：上影線不可超過整根總幅度的 60% 且不可大量回吐
         upper_wick = high - close
@@ -267,7 +286,7 @@ def evaluate_entry_gate(
             return GateDecision(False, f"VETO_MA3_NOT_UP: MA3向下或走平(斜率={ma3_slope:.6f} <= 0)，短線無上攻動能", trace_meta)
 
         # 4. 中長均線健康度：MA15 與 KC 中軌「不再深挫」，斜率大於安全下限
-        if ma15_slope < -(0.03 * atr) or kc_mid_slope < -(0.03 * atr):
+        if not is_breakout_trigger and (ma15_slope < -(0.03 * atr) or kc_mid_slope < -(0.03 * atr)):
             return GateDecision(False, f"VETO_MA15_PLUNGING: 中長均線仍在重挫下傾(MA15={ma15_slope:.5f},KC_mid={kc_mid_slope:.5f} < -0.03*ATR)，禁止逆勢抄底", trace_meta)
 
         # 5. 結構站位：收盤價必須穩穩收在 KC 中軌之上
@@ -281,6 +300,9 @@ def evaluate_entry_gate(
         if close >= open_p:
             return GateDecision(False, f"VETO_SELL_OPPOSITE_BAR: 當根收陽或平盤(Close={close:.4f} >= Open={open_p:.4f})，嚴禁頂風開空", trace_meta)
 
+        if body_size < (0.35 * atr):
+            return GateDecision(False, f"VETO_SELL_WEAK_BODY: 陰線實體過小(Body={body_size:.4f} < 0.35*ATR={0.35*atr:.4f})，微小十字星拒絕追空", trace_meta)
+
         # 2. 假同向影線過濾：下影線不可超過整根總幅度的 60%
         lower_wick = close - low
         if lower_wick > (0.6 * bar_range) and (lower_wick >= body_size or close > (high - 0.5 * bar_range)):
@@ -292,7 +314,7 @@ def evaluate_entry_gate(
             return GateDecision(False, f"VETO_MA3_RISING: MA3抬頭或走平(斜率={ma3_slope:.6f} >= 0)，嚴禁逆勢做空", trace_meta)
 
         # 4. 中長均線健康度：MA15 與 KC 中軌「不再強烈飆漲」，斜率小於安全上限
-        if ma15_slope > (0.03 * atr) or kc_mid_slope > (0.03 * atr):
+        if not is_breakdown_trigger and (ma15_slope > (0.03 * atr) or kc_mid_slope > (0.03 * atr)):
             return GateDecision(False, f"VETO_MA15_SOARING: 中長均線仍處於強推升狀態(MA15={ma15_slope:.5f},KC_mid={kc_mid_slope:.5f} > 0.03*ATR)，禁止迎頭摸頂", trace_meta)
 
         # 5. 結構站位：收盤價必須壓制在 KC 中軌之下

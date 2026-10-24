@@ -549,7 +549,76 @@ class PaperAccount:
             self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
             return False
 
+        import time
+        from core.gates.central_entry_gate import CentralEntryGate
+        from core.services.order_audit_trail import OrderAuditTrail
+
         entry_context = dict(entry_context or {})
+        signal_id = entry_context.get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, str(reason or "OPEN"))
+        entry_context["signal_id"] = signal_id
+
+        # ──【全鏈路審計階段 1：訊號產生】──
+        OrderAuditTrail.record_signal_generated(
+            symbol=symbol,
+            side=side,
+            price=price,
+            source=str(entry_context.get("source") or reason or "STRATEGY"),
+            bar_timestamp=float(entry_context.get("channel_confirmation_bar_id") or entry_context.get("bar_timestamp") or time.time()),
+            signal_id=signal_id,
+            account=self,
+        )
+
+        # ──【基礎帳戶狀態硬攔截：持倉、平倉鎖、待成交掛單】──
+        if symbol in self.positions:
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 已有持倉，拒絕重複開倉 | signal_id={signal_id}", "WARNING")
+            return False
+        if symbol in getattr(self, "closing_lock", set()):
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 處於平倉鎖定中，拒絕開倉 | signal_id={signal_id}", "WARNING")
+            return False
+        if symbol in getattr(self, "pending_limit_orders", {}):
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 已有待成交掛單，拒絕重複開倉 | signal_id={signal_id}", "WARNING")
+            return False
+
+        # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
+        is_ui_force_manual = entry_context.get("force_manual_ui_override") is True
+        if not is_ui_force_manual:
+            eval_frame = entry_context.get("frame")
+            if eval_frame is None:
+                eval_frame = entry_context.get("entry_gate_frame")
+            if eval_frame is None:
+                eval_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+            if eval_frame is None and hasattr(self, "entry_frame_provider"):
+                provider = getattr(self, "entry_frame_provider", None)
+                if callable(provider):
+                    try:
+                        eval_frame = provider(symbol)
+                    except Exception:
+                        eval_frame = None
+
+            if eval_frame is not None:
+                gate_res = CentralEntryGate.verify_and_authorize(
+                    symbol=symbol,
+                    side=side,
+                    price=price,
+                    klines_or_snapshot=eval_frame,
+                    signal_id=signal_id,
+                    source=str(entry_context.get("source") or reason),
+                )
+                OrderAuditTrail.record_entry_gate_eval(
+                    symbol=symbol,
+                    side=side,
+                    signal_id=signal_id,
+                    gate_result=gate_res,
+                    account=self,
+                )
+                if not gate_res.passed:
+                    self.log(
+                        f"🛑 [CENTRAL_ENTRY_GATE_VETO] {symbol} {side} 拒絕開倉: {gate_res.reason} | signal_id={signal_id}",
+                        "WARNING",
+                    )
+                    return False
+                entry_context["_central_gate_passed"] = True
+
         is_manual_request = (
             entry_context.get("is_manual") in [True, "true", "TRUE"]
             or entry_context.get("manual_entry") in [True, "true", "TRUE"]
@@ -980,6 +1049,14 @@ class PaperAccount:
             "SUCCESS",
         )
         self.save_state()
+        # ──【全鏈路審計階段 5：持倉狀態同步】──
+        OrderAuditTrail.record_position_sync(
+            symbol=symbol,
+            side=side,
+            signal_id=signal_id,
+            actual_positions=self.positions,
+            account=self,
+        )
         return True
 
     async def place_limit_entry(

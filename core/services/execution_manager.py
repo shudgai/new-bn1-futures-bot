@@ -471,15 +471,37 @@ class ExecutionManager:
             else:
                 initial_sl = price + 3.0 * atr
 
+            bar_id = None
+            if frame is not None and len(frame) > 0:
+                try:
+                    bar_id = float(frame.iloc[-1].get("timestamp", frame.iloc[-1].get("time", 0.0)))
+                except (ValueError, TypeError):
+                    bar_id = None
+            if bar_id is None:
+                bar_id = float((meta or {}).get("bar_timestamp") or time.time())
+
+            confirmation = (
+                "MID_LINE_BREAKDOWN" if "MID" in str(reason).upper() and side == "SHORT"
+                else "MID_LINE_BREAKOUT" if "MID" in str(reason).upper() and side == "LONG"
+                else (meta or {}).get("structure_confirmation") or (meta or {}).get("entry_pattern") or "BREAKOUT"
+            )
+
+            from core.gates.central_entry_gate import CentralEntryGate
+            signal_id = (meta or {}).get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, "UNIFIED_PIPELINE")
             entry_context = {
                 "is_manual": True,
                 "managed_by_bot": True,
                 "entry_mode": "WILD_SWING",
                 "source": "UNIFIED_PIPELINE",
-                "entry_pattern": "BREAKOUT",
-                "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
+                "entry_pattern": confirmation,
+                "structure_confirmation": confirmation,
                 "is_outer_entry": True,
                 "initial_sl": initial_sl,
+                "signal_id": signal_id,
+                "channel_confirmation_bar_id": bar_id,
+                "bar_id": bar_id,
+                "dual_tf_meta": {"bar_id": bar_id},
+                "is_intrabar": False,
                 "meta": meta or {},
             }
             if frame is not None:

@@ -297,3 +297,113 @@ def test_fallback_to_kc_middle_when_no_pivot():
     assert len(mid_exits) == 1
     assert mid_exits[0].side == "long"
 
+
+def test_veto_hold_blocks_valley_exit_when_suppressed_by_ma3_and_mid():
+    """
+    驗證「頂層鎖倉鐵律 (VETO_HOLD)」：
+    大暴跌主跌浪途中，雖然出現小陽反彈 K 棒或微幅毛刺，
+    但收盤價仍受制於 MA3 與 KC 中軌之下，100% 一票否決反轉平倉，強制鎖倉續抱！
+    """
+    cfg = StrategyConfig(
+        min_bars_for_indicators=20,
+        require_ma15_direction=False,
+        emergency_single_bar_move_atr=10.0,
+        veto_hold_enabled=True,
+    )
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    # 1. 建立基準下殺行情
+    for i in range(25):
+        base = 120.0 - i * 0.8
+        strat.on_bar_close(Bar(now + i * 60, base + 0.3, base + 0.4, base - 0.5, base - 0.4, 50.0))
+
+    snap = strat._indicator_snapshot()
+    strat.notify_position_opened("short", avg_price=snap["close"])
+    t = now + 25 * 60
+
+    # b1: 100.0 -> 98.0
+    strat.on_bar_close(Bar(t + 60, 100.0, 100.5, 97.5, 98.0, 50.0))
+    # b2: 98.0 -> 96.0 (Low=95.5)
+    strat.on_bar_close(Bar(t + 120, 98.0, 98.2, 95.5, 96.0, 50.0))
+    # b3: 微幅小陽反抽 96.0 -> 96.8 (突破 b2 實體中點 97.0 附近，但 MA3 約為 96.93，收盤 96.8 依然壓制在 MA3 與中軌之下)
+    # 此時收盤價受制於 MA3，觸發 VETO_HOLD，不允許平空！
+    exits = strat.on_bar_close(Bar(t + 180, 96.0, 97.1, 95.8, 96.8, 40.0))
+
+    valley_exits = [e for e in exits if "true_pivot_valley_exit" in e.reason]
+    assert len(valley_exits) == 0, "收盤價受制於 MA3 與中軌之下，必須被 VETO_HOLD 一票否決！"
+    assert strat.position_entry_price["short"] is not None
+
+
+def test_dynamic_profit_lock_10pct_activation_and_30pct_pullback():
+    """
+    驗證「10% 啟動 + 30% 回吐動態淨利鎖利機制」：
+    持倉最高淨利率達標 10% (如 14.9%)，鎖利保護啟動；
+    當利潤自最高點回吐超過 30% (跌破 70% 水位) 時，觸發市價全平鎖利落袋！
+    """
+    cfg = StrategyConfig(
+        min_bars_for_indicators=20,
+        require_ma15_direction=False,
+        profit_lock_enabled=True,
+        profit_lock_activation_pct=0.10,
+        profit_lock_preservation_ratio=0.70,
+        trading_fee_rate=0.0005,
+        emergency_single_bar_move_atr=20.0,
+    )
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    for i in range(25):
+        strat.on_bar_close(Bar(now + i * 60, 100.0, 100.5, 99.5, 100.0, 50.0))
+
+    # 開多單於 100.0
+    strat.notify_position_opened("long", avg_price=100.0)
+    t = now + 25 * 60
+
+    # 1. 行情暴噴至 115.0 (High=115.5，淨利率約 15% - 0.1% = 14.9% > 10%)
+    # 觸發鎖利啟動，平倉門檻鎖定在 14.9% * 0.70 = 10.43%
+    exits = strat.on_bar_close(Bar(t + 60, 100.0, 115.5, 99.8, 115.0, 100.0))
+    assert len(exits) == 0
+    assert strat.profit_lock_activated["long"] is True
+
+    # 2. 行情大幅回吐至 109.0 (未實現淨利回吐至 8.9% < 10.43%)
+    # 立即發出 profit_lock_preservation_exit 全平止盈！
+    exits = strat.on_bar_close(Bar(t + 120, 115.0, 115.0, 108.5, 109.0, 80.0))
+    lock_exits = [e for e in exits if e.reason == "profit_lock_preservation_exit"]
+    assert len(lock_exits) == 1
+    assert lock_exits[0].side == "long"
+    assert lock_exits[0].fraction == 1.0
+    assert lock_exits[0].price == 109.0
+    assert strat.position_entry_price["long"] is None
+
+
+def test_zonal_protection_prevents_misfire():
+    """
+    驗證「頂底分區防呆」：
+    持有多單時若價格暴跌至通道下半部 (Close < KC_Mid)，即使微觀上有反抽，
+    絕不允許誤判為「真峰頂」，防止砍在反側外軌阿呆谷！
+    """
+    cfg = StrategyConfig(
+        min_bars_for_indicators=20,
+        require_ma15_direction=False,
+        veto_hold_enabled=False,  # 即使暫時關閉 veto_hold，分區防呆依然能嚴格防守
+        emergency_single_bar_move_atr=10.0,
+    )
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    for i in range(25):
+        strat.on_bar_close(Bar(now + i * 60, 100.0, 100.5, 99.5, 100.0, 50.0))
+
+    strat.notify_position_opened("long", avg_price=100.0)
+    snap = strat._indicator_snapshot()
+    kc_mid = snap["kc_mid"]
+
+    # 構造位於通道下半部 (price < kc_mid) 的微觀樞紐形態
+    snap_below_mid = dict(snap)
+    snap_below_mid["close"] = kc_mid - 2.0  # 深度處於中軌下方
+
+    is_peak, _, _ = strat._detect_true_pivot_peak(snap_below_mid)
+    assert is_peak is False, "價格在通道下半部，嚴禁誤判為多單峰頂！"
+
+

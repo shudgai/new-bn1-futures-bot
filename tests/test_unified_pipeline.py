@@ -229,7 +229,7 @@ async def test_early_short_execution_pipeline_flow():
             "high": max(o, c) + 0.2,
             "low": min(o, c) - 0.2,
             "close": c,
-            "volume": 100.0,
+            "volume": 150.0 if i == n - 1 else 100.0,
         })
     df = pd.DataFrame(data)
 

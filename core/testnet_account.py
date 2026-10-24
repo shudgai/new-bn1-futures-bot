@@ -2455,18 +2455,83 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+        import time
+        from core.gates.central_entry_gate import CentralEntryGate
+        from core.services.order_audit_trail import OrderAuditTrail
+
         entry_context = dict(entry_context or {})
+        signal_id = entry_context.get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, str(reason or "OPEN"))
+        entry_context["signal_id"] = signal_id
+
+        # ──【全鏈路審計階段 1：訊號產生】──
+        OrderAuditTrail.record_signal_generated(
+            symbol=symbol,
+            side=side,
+            price=price,
+            source=str(entry_context.get("source") or reason or "STRATEGY"),
+            bar_timestamp=float(entry_context.get("channel_confirmation_bar_id") or entry_context.get("bar_timestamp") or time.time()),
+            signal_id=signal_id,
+            account=self,
+        )
+
+        # ──【基礎帳戶狀態硬攔截：持倉、平倉鎖、待成交掛單】──
+        if symbol in self.positions:
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 已有持倉，拒絕重複開倉 | signal_id={signal_id}", "WARNING")
+            return False
+        if symbol in getattr(self, "closing_lock", set()):
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 處於平倉鎖定中，拒絕開倉 | signal_id={signal_id}", "WARNING")
+            return False
+        if symbol in getattr(self, "pending_limit_orders", {}):
+            self.log(f"🛑 [CENTRAL_GATE_BLOCK] {symbol} 已有待成交掛單，拒絕重複開倉 | signal_id={signal_id}", "WARNING")
+            return False
+
+        # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
+        # 僅允許真正的 UI 人工強制操作 (force_manual_ui_override=True) 豁免，自動策略一律強制受審
+        is_ui_force_manual = entry_context.get("force_manual_ui_override") is True
+        if not is_ui_force_manual:
+            eval_frame = entry_context.get("frame")
+            if eval_frame is None:
+                eval_frame = entry_context.get("entry_gate_frame")
+            if eval_frame is None:
+                eval_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+            if eval_frame is None and hasattr(self, "entry_frame_provider"):
+                provider = getattr(self, "entry_frame_provider", None)
+                if callable(provider):
+                    try:
+                        eval_frame = provider(symbol)
+                    except Exception:
+                        eval_frame = None
+
+            if eval_frame is not None:
+                gate_res = CentralEntryGate.verify_and_authorize(
+                    symbol=symbol,
+                    side=side,
+                    price=price,
+                    klines_or_snapshot=eval_frame,
+                    signal_id=signal_id,
+                    source=str(entry_context.get("source") or reason),
+                )
+                OrderAuditTrail.record_entry_gate_eval(
+                    symbol=symbol,
+                    side=side,
+                    signal_id=signal_id,
+                    gate_result=gate_res,
+                    account=self,
+                )
+                if not gate_res.passed:
+                    self.log(
+                        f"🛑 [CENTRAL_ENTRY_GATE_VETO] {symbol} {side} 拒絕開倉: {gate_res.reason} | signal_id={signal_id}",
+                        "WARNING",
+                    )
+                    return False
+                entry_context["_central_gate_passed"] = True
+
         is_manual_request = (
             entry_context.get("is_manual") in [True, "true", "TRUE"]
             or entry_context.get("manual_entry") in [True, "true", "TRUE"]
             or entry_context.get("source") == "MANUAL"
             or reason == "MANUAL"
         )
-        # WILD_SWING entries are already guarded by Vision Gate + multi-layer
-        # entry firewalls inside symbol_runner. Re-running fetch_settled_entry_frame
-        # here costs 4-5 s and almost always fails on 3m timeframes because the
-        # strict settled_pair() window is rarely satisfied mid-candle, causing every
-        # WILD_SWING order to be silently rejected with DUAL_TF_ORDER_FAILED.
         _is_wild_swing_source = (
             str(entry_context.get("entry_mode") or "").upper() == "WILD_SWING"
             or entry_context.get("source") in ("WILD_SWING_1M", "UNIFIED_PIPELINE")
@@ -2799,8 +2864,17 @@ class BinanceTestnetAccount:
                 entry_context.get("entry_client_order_id")
                 or entry_context.get("wait_client_order_id")
             )
-            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
-                order_params["newClientOrderId"] = authority_client_order_id
+            # ──【全鏈路審計階段 3：下單入口二次校驗與分發】──
+            OrderAuditTrail.record_order_dispatch(
+                symbol=symbol,
+                side=side,
+                signal_id=signal_id,
+                amount_usdt=amount_usdt,
+                leverage=leverage,
+                quote_price=price,
+                in_position=symbol in self.positions,
+                account=self,
+            )
 
             entry_order = await self._send_order(
                 symbol,
@@ -2812,6 +2886,18 @@ class BinanceTestnetAccount:
                 entry_context=entry_context,
             )
             execution_price = float(entry_order.get("average") or price)
+
+            # ──【全鏈路審計階段 4：交易所訂單回報】──
+            OrderAuditTrail.record_exchange_return(
+                symbol=symbol,
+                side=side,
+                signal_id=signal_id,
+                order_id=entry_order.get("id"),
+                status=str(entry_order.get("status") or "FILLED"),
+                filled_qty=float(entry_order.get("filled") or qty),
+                avg_price=execution_price,
+                account=self,
+            )
             if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
                 try:
                     filled_qty = float(entry_order.get("filled") or 0.0)
@@ -2905,6 +2991,15 @@ class BinanceTestnetAccount:
             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
             entry_context=entry_context, structural_stop=structural_stop,
         )
+        if success:
+            # ──【全鏈路審計階段 5：持倉狀態同步】──
+            OrderAuditTrail.record_position_sync(
+                symbol=symbol,
+                side=side,
+                signal_id=signal_id,
+                actual_positions=self.positions,
+                account=self,
+            )
         return success
 
     async def _prepare_leverage(self, symbol: str, leverage: int) -> None:

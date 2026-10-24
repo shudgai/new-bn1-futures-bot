@@ -1130,7 +1130,7 @@ async def validate_account_entry(account, symbol, side, context):
         }
 
     if str(context.get("entry_mode") or "").upper() == "WILD_SWING":
-        if context.get("source") != "WILD_SWING_1M":
+        if context.get("source") not in ("WILD_SWING_1M", "UNIFIED_PIPELINE"):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SOURCE_INVALID")
         if side not in ("LONG", "SHORT"):
             raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_INVALID_SIDE")
@@ -1222,6 +1222,7 @@ async def validate_account_entry(account, symbol, side, context):
                     "is_intrabar": context.get("is_intrabar", True),
                     "bar_id": bar_id_val,
                     "wick_trigger_bar_id": context.get("wick_trigger_bar_id"),
+                    "close": float(fresh_frame.iloc[-1]["close"]),
                 }
             else:
                 raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
@@ -1511,8 +1512,8 @@ async def validate_account_entry(account, symbol, side, context):
             "entry_signal_mode": signal_pattern,
             "entry_phase": "WILD_SWING_1M",
             "confirmation_bar_id": signal_bar_id,
-            "close_price": float(signal["close"]),
-            "price": float(signal["close"]),
+            "close_price": float(signal.get("close") or fresh_frame.iloc[-1]["close"]),
+            "price": float(signal.get("close") or fresh_frame.iloc[-1]["close"]),
         }
 
     code = context.get('entry_signal_code')

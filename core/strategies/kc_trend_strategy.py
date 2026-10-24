@@ -115,12 +115,22 @@ class StrategyConfig:
     middle_band_exit_buffer_atr: float = 0.05
     emergency_single_bar_move_atr: float = 3.0
     emergency_volume_multiple: float = 4.0
+    enable_partial_take_profit: bool = False
     partial_take_profit_fraction: float = 0.50
     partial_take_profit_atr: float = 1.5
 
     # 真峰谷優先退場參數 (2026-10-24 最新授權：真峰谷確認立即平倉，不等 KC 中軌)
     enable_true_pivot_exit: bool = True
     pivot_min_profit_atr: float = 0.20  # 最低波段展開或獲利要求 (0.2 ATR)
+
+    # 頂層鎖倉鐵律參數 (趨勢結構未破，一票否決提前離場)
+    veto_hold_enabled: bool = True
+
+    # 10% 啟動 + 30% 回吐動態淨利鎖利參數 (最高優先級保護)
+    profit_lock_enabled: bool = True
+    profit_lock_activation_pct: float = 0.10      # 歷史最高淨利達 10% 啟動
+    profit_lock_preservation_ratio: float = 0.70  # 保留 70% 利潤 (回吐 30% 全平)
+    trading_fee_rate: float = 0.0005              # 單邊手續費與滑點 0.05% (來回 0.10%)
 
     # 資料新鮮度過濾
     max_bar_age_seconds: float = 180.0
@@ -146,6 +156,7 @@ class KCTrendStrategy:
 
         # 持倉同步追蹤 (嚴格由撮合回報驅動)
         self.partial_taken: Dict[Side, bool] = {"long": False, "short": False}
+        self.profit_lock_activated: Dict[Side, bool] = {"long": False, "short": False}
         self.position_entry_price: Dict[Side, Optional[float]] = {"long": None, "short": None}
         self.position_entry_atr: Dict[Side, Optional[float]] = {"long": None, "short": None}
         self.position_entry_bar_index: Dict[Side, int] = {"long": -10**9, "short": -10**9}
@@ -610,14 +621,63 @@ class KCTrendStrategy:
                     if sig:
                         self._pending_entries.append(sig)
 
-        # 3. 出場評估：真峰谷優先平倉，未確認時保留 KC 中軌出場防線
+        # 3. 出場評估：鎖利優先 -> 鎖倉否決 -> 真峰谷平倉 -> KC 中軌破位防線
         for side in ("long", "short"):
             entry_p = self.position_entry_price[side]
             if entry_p is None:
                 continue
 
-            # (A) 真峰谷已確認：優先立即平倉，不必等價格回到 KC 中軌！
-            if self.cfg.enable_true_pivot_exit:
+            # (A) 利潤保護期：10% 啟動 + 30% 回吐動態淨利鎖利 (最高優先級鎖利)
+            if self.cfg.profit_lock_enabled:
+                fee_deduction = 2.0 * self.cfg.trading_fee_rate
+                favorable_p = self.position_favorable_extreme[side] or entry_p
+                if side == "long":
+                    gross_peak = (favorable_p - entry_p) / entry_p
+                    curr_gross = (bar.close - entry_p) / entry_p
+                else:
+                    gross_peak = (entry_p - favorable_p) / entry_p
+                    curr_gross = (entry_p - bar.close) / entry_p
+
+                net_peak = max(0.0, gross_peak - fee_deduction)
+                curr_net = curr_gross - fee_deduction
+
+                # 達到 10% 啟動門檻，啟用鎖利保護
+                if net_peak >= self.cfg.profit_lock_activation_pct:
+                    self.profit_lock_activated[side] = True
+
+                if self.profit_lock_activated[side]:
+                    stop_profit_pct = net_peak * self.cfg.profit_lock_preservation_ratio
+                    if curr_net < stop_profit_pct:
+                        exits.append(ExitSignal(
+                            side=side,
+                            reason="profit_lock_preservation_exit",
+                            timestamp=bar.timestamp,
+                            price=bar.close,
+                            fraction=1.0,
+                            metadata={
+                                "net_peak_pct": round(net_peak * 100, 2),
+                                "curr_net_pct": round(curr_net * 100, 2),
+                                "stop_profit_pct": round(stop_profit_pct * 100, 2),
+                                "cause": "未實現淨利自最高點回吐達 30%，觸發 70% 保守線市價全平鎖利！",
+                            }
+                        ))
+                        self._mark_exit(side)
+                        continue
+
+            # (B) 頂層鎖倉鐵律：趨勢結構未破，一票否決提前離場 (VETO_HOLD)
+            veto_hold = False
+            if self.cfg.veto_hold_enabled:
+                if side == "short":
+                    # 空單：收盤價仍壓制在 MA3 與 KC 中軌之下，且中軌下行或走平，空頭結構完好，一票否決任何頂底平倉
+                    if bar.close <= snap["kc_mid"] and bar.close <= snap["ma3"] and snap["kc_mid_slope_atr"] <= 0.005:
+                        veto_hold = True
+                elif side == "long":
+                    # 多單：收盤價仍穩守在 MA3 與 KC 中軌之上，且中軌上行或走平，多頭結構完好，一票否決任何頂底平倉
+                    if bar.close >= snap["kc_mid"] and bar.close >= snap["ma3"] and snap["kc_mid_slope_atr"] >= -0.005:
+                        veto_hold = True
+
+            # (C) 真峰谷平倉：受 VETO_HOLD 約束！若 VETO_HOLD 成立，絕不允許被微觀雜訊洗出場
+            if self.cfg.enable_true_pivot_exit and not veto_hold:
                 if side == "long":
                     is_peak, peak_reason, peak_meta = self._detect_true_pivot_peak(snap)
                     if is_peak:
@@ -643,7 +703,7 @@ class KCTrendStrategy:
                         self._mark_exit(side)
                         continue
 
-            # (B) 正常回檔繼續持有；真峰谷尚未確認時，保留原有 KC 中軌出場防線
+            # (D) 正常回檔繼續持有；真峰谷尚未確認時，保留原有 KC 中軌出場防線
             buffer = self.cfg.middle_band_exit_buffer_atr * snap["atr"]
 
             # 多單：實體收盤明確跌破 KC 中軌 - 緩衝區，才判定多頭破位出場
@@ -668,17 +728,18 @@ class KCTrendStrategy:
                 self._mark_exit(side)
                 continue
 
-            # 分批止盈 (達到目標獲利後才鎖定利潤，非微幅回調斬倉)
-            entry_atr = self.position_entry_atr[side] or snap["atr"]
-            if not self.partial_taken[side]:
-                if side == "long" and bar.close >= entry_p + self.cfg.partial_take_profit_atr * entry_atr:
-                    exits.append(ExitSignal(side, "partial_take_profit", bar.timestamp, bar.close,
-                                            self.cfg.partial_take_profit_fraction))
-                    self.partial_taken[side] = True
-                elif side == "short" and bar.close <= entry_p - self.cfg.partial_take_profit_atr * entry_atr:
-                    exits.append(ExitSignal(side, "partial_take_profit", bar.timestamp, bar.close,
-                                            self.cfg.partial_take_profit_fraction))
-                    self.partial_taken[side] = True
+            # (E) 分批止盈 (達到目標獲利後才鎖定利潤，非微幅回調斬倉)
+            if self.cfg.enable_partial_take_profit:
+                entry_atr = self.position_entry_atr[side] or snap["atr"]
+                if not self.partial_taken[side]:
+                    if side == "long" and bar.close >= entry_p + self.cfg.partial_take_profit_atr * entry_atr:
+                        exits.append(ExitSignal(side, "partial_take_profit", bar.timestamp, bar.close,
+                                                self.cfg.partial_take_profit_fraction))
+                        self.partial_taken[side] = True
+                    elif side == "short" and bar.close <= entry_p - self.cfg.partial_take_profit_atr * entry_atr:
+                        exits.append(ExitSignal(side, "partial_take_profit", bar.timestamp, bar.close,
+                                                self.cfg.partial_take_profit_fraction))
+                        self.partial_taken[side] = True
 
         # 4. 異常波動緊急警示退場
         if self._last_emergency_bar_timestamp != bar.timestamp:
@@ -723,6 +784,10 @@ class KCTrendStrategy:
         # 必須有實質波段展開 (曾獲利 >= 0.2 ATR，或最高價曾觸及/突破 KC 上軌)
         unfolded = (favorable_gain >= self.cfg.pivot_min_profit_atr * entry_atr) or (highest >= snap["kc_upper"] * 0.998)
         if not unfolded:
+            return False, "", {}
+
+        # 分區防呆：多單峰頂平倉必須嚴格處於通道上半部，杜絕跌至反側外軌阿呆谷誤判為真峰頂
+        if snap["close"] < snap["kc_mid"]:
             return False, "", {}
 
         b1, b2, b3 = self.bars[-3], self.bars[-2], self.bars[-1]
@@ -796,6 +861,10 @@ class KCTrendStrategy:
         if not unfolded:
             return False, "", {}
 
+        # 分區防呆：空單谷底平倉必須嚴格處於通道下半部，杜絕暴漲至反側外軌高點誤判為真谷底
+        if snap["close"] > snap["kc_mid"]:
+            return False, "", {}
+
         b1, b2, b3 = self.bars[-3], self.bars[-2], self.bars[-1]
 
         # 條件 1: 純數學三點樞紐谷底 (b2 最低價探底，b3 確認收陽突破 b2 實體中點或最高價)
@@ -855,6 +924,7 @@ class KCTrendStrategy:
         self.position_entry_bar_index[side] = self.bar_index
         self.position_favorable_extreme[side] = avg_price
         self.partial_taken[side] = False
+        self.profit_lock_activated[side] = False
 
     def notify_position_closed(self, side: Side, timestamp: Optional[float] = None) -> None:
         self._mark_exit(side)
@@ -865,4 +935,5 @@ class KCTrendStrategy:
         self.position_entry_bar_index[side] = -10**9
         self.position_favorable_extreme[side] = None
         self.partial_taken[side] = False
+        self.profit_lock_activated[side] = False
         self.last_exit_bar_index[side] = self.bar_index
