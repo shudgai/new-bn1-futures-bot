@@ -149,7 +149,14 @@ class CentralEntryGate:
             or "EMA_CROSS" in src_upper
             or "MID_LINE" in src_upper
             or "REVERSAL" in src_upper
-            or (isinstance(klines_or_snapshot, dict) and (klines_or_snapshot.get("allow_kc_internal") or klines_or_snapshot.get("is_cross_mid") or klines_or_snapshot.get("entry_type") == "CROSS_MID"))
+            or "AGILE" in src_upper
+            or (isinstance(klines_or_snapshot, dict) and (
+                klines_or_snapshot.get("allow_kc_internal")
+                or klines_or_snapshot.get("is_cross_mid")
+                or klines_or_snapshot.get("direction_override")
+                or klines_or_snapshot.get("strategy_mode") == "AGILE_MOMENTUM"
+                or klines_or_snapshot.get("entry_type") == "CROSS_MID"
+            ))
         )
 
         # -------------------------------------------------------------
@@ -339,7 +346,8 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        if enforce_volume and vol_curr > 0 and vol_avg > 0:
+        # 敏捷轉折模式 (is_cross_mid) 豁免均量門檻，以小止損搶佔成本優勢
+        if enforce_volume and not is_cross_mid and vol_curr > 0 and vol_avg > 0:
             vol_ratio = vol_curr / vol_avg
             vol_pass = vol_ratio >= cls.MIN_VOLUME_MULTIPLIER
             checks["volume"] = {
@@ -358,7 +366,7 @@ class CentralEntryGate:
                     checks=checks,
                 )
         else:
-            checks["volume"] = {"status": "SKIPPED_OR_PASS", "vol_curr": vol_curr, "vol_avg": vol_avg}
+            checks["volume"] = {"status": "SKIPPED_OR_PASS", "vol_curr": vol_curr, "vol_avg": vol_avg, "is_cross_mid": is_cross_mid}
 
         # -------------------------------------------------------------
         # 條件 7：實體突破與反向大陰線/插針防護
@@ -369,19 +377,20 @@ class CentralEntryGate:
         c_low = float(parsed["low"])
         c_body = abs(c_close - c_open)
 
-        # 實體最小動能
-        if c_body < cls.MIN_BODY_ATR * atr:
+        # 實體最小動能 (敏捷轉折模式放寬至 0.20 ATR，常規破軌維持 0.35 ATR)
+        req_body_atr = 0.20 if is_cross_mid else cls.MIN_BODY_ATR
+        if c_body < req_body_atr * atr:
             checks["candle_body"] = {
                 "status": "FAIL",
                 "c_body": c_body,
-                "min_required": cls.MIN_BODY_ATR * atr,
+                "min_required": req_body_atr * atr,
                 "reason": "K 棒實體動能過小 (十字星/假突破)",
             }
             return GateCheckResult(
                 passed=False,
                 reason="VETO_BODY_TOO_SMALL",
                 signal_id=sig_id,
-                details={"c_body": c_body, "min_required": cls.MIN_BODY_ATR * atr},
+                details={"c_body": c_body, "min_required": req_body_atr * atr},
                 checks=checks,
             )
 

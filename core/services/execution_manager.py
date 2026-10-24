@@ -161,25 +161,29 @@ class ExecutionManager:
                 and market_data.curr_k["close"] <= market_data.ema_slow
             )
 
-            # MA5 / MA15 交叉條件開倉：
-            # 做多：MA5 向上金叉或多頭發散於 MA15，MA5向上，KC中軌走平或向上，K棒收紅站上中軌
+            # MA3 / MA5 交叉中軌敏捷轉折開倉 (AGILE_MOMENTUM)：
+            # 做多：MA3 或 MA5 向上金叉/發散於 MA15，斜率向上，KC 中軌走平或微揚，K 棒實體陽線且站穩中軌之上
+            ma3_curr = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", ma5_curr)))
+            ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
+            ma3_slope = ma3_curr - ma3_prev
+
             is_ma_cross_long = (
-                (ma5_curr >= ma15_curr)
-                and ma5_curr > ma5_prev
+                (ma3_curr >= ma15_curr or ma5_curr >= ma15_curr)
+                and (ma3_slope >= 0 or ma5_curr > ma5_prev)
                 and market_data.kc_middle_slope >= -0.000005
                 and market_data.curr_k["close"] > market_data.curr_k["open"]
                 and market_data.curr_k["close"] >= market_data.kc_middle
             )
-            # 做空：MA5 向下死叉或空頭發散於 MA15，MA5向下，KC中軌走平或向下，K棒收黑跌破中軌
+            # 做空：MA3 或 MA5 向下死叉/發散於 MA15，斜率向下，KC 中軌走平或微垂，K 棒實體陰線且壓制在中軌之下
             is_ma_cross_short = (
-                (ma5_curr <= ma15_curr)
-                and ma5_curr < ma5_prev
+                (ma3_curr <= ma15_curr or ma5_curr <= ma15_curr)
+                and (ma3_slope <= 0 or ma5_curr < ma5_prev)
                 and market_data.kc_middle_slope <= 0.000005
                 and market_data.curr_k["close"] < market_data.curr_k["open"]
                 and market_data.curr_k["close"] <= market_data.kc_middle
             )
 
-            # 順勢鐵律（大週期趨勢濾網 Trend Bias Filter，2026-10-22 最新授權）：
+            # 順勢鐵律與波段判定 (常規追單防護)
             is_above_slow_ma = (market_data.curr_k["close"] >= market_data.ema_slow or market_data.current_price >= market_data.ema_slow)
             is_slow_ma_up = getattr(market_data, "slow_slope", 0.0) >= 0
             is_bull_alignment = (market_data.ema_fast >= market_data.ema_slow)
@@ -201,17 +205,14 @@ class ExecutionManager:
                 or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
             )
 
-            ma3_curr = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", ma5_curr)))
-            ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
-            ma3_slope = ma3_curr - ma3_prev
-
-            can_long = (
+            # 敏捷進攻架構：轉折交叉訊號自中軌直接發動，豁免大週期趨勢鎖定；常規追單仍依循順勢波段
+            can_long = is_ma_cross_long or (
                 not is_bearish_wave
                 and (ma3_slope >= 0)
                 and (market_data.curr_k["close"] >= ma3_curr)
                 and (market_data.current_price >= ma3_curr)
             )
-            can_short = (
+            can_short = is_ma_cross_short or (
                 not is_bullish_wave
                 and (ma3_slope <= 0)
                 and (market_data.curr_k["close"] <= ma3_curr)
@@ -289,6 +290,12 @@ class ExecutionManager:
                     logger.info(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason} | meta={meta}")
                     print(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason}", flush=True)
                     call_meta = dict(meta or {})
+                    if any(k in candidate_signal for k in ("CROSS_MID", "MA_CROSS", "MID_LINE", "PULLBACK", "AGILE")):
+                        call_meta["is_cross_mid"] = True
+                        call_meta["allow_kc_internal"] = True
+                        call_meta["direction_override"] = True
+                        call_meta["strategy_mode"] = "AGILE_MOMENTUM"
+                        call_meta["entry_type"] = "CROSS_MID"
                     if "raw_df" not in call_meta or call_meta["raw_df"] is None:
                         call_meta["raw_df"] = getattr(market_data, "raw_df", None)
                     if call_meta.get("raw_df") is None and klines_df is not None:
@@ -488,14 +495,26 @@ class ExecutionManager:
 
             from core.gates.central_entry_gate import CentralEntryGate
             signal_id = (meta or {}).get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, "UNIFIED_PIPELINE")
+            is_cross_mid = bool(
+                (meta or {}).get("is_cross_mid")
+                or (meta or {}).get("allow_kc_internal")
+                or (meta or {}).get("strategy_mode") == "AGILE_MOMENTUM"
+                or any(k in str(reason).upper() for k in ("CROSS_MID", "MA_CROSS", "EMA_CROSS", "MID_LINE", "PULLBACK", "AGILE"))
+                or any(k in str(confirmation).upper() for k in ("MID_LINE", "CROSS", "AGILE"))
+            )
+
             entry_context = {
                 "is_manual": True,
                 "managed_by_bot": True,
                 "entry_mode": "WILD_SWING",
+                "strategy_mode": "AGILE_MOMENTUM" if is_cross_mid else "CONSERVATIVE",
                 "source": "UNIFIED_PIPELINE",
                 "entry_pattern": confirmation,
                 "structure_confirmation": confirmation,
-                "is_outer_entry": True,
+                "is_outer_entry": not is_cross_mid,
+                "allow_kc_internal": is_cross_mid,
+                "direction_override": is_cross_mid,
+                "entry_type": "CROSS_MID" if is_cross_mid else "BREAKOUT",
                 "initial_sl": initial_sl,
                 "signal_id": signal_id,
                 "channel_confirmation_bar_id": bar_id,

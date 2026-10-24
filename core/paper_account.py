@@ -716,7 +716,14 @@ class PaperAccount:
                     'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT', 'TOP_WATERFALL_FLIP',
                 ) and entry_context.get('entry_phase') == 'KC_TOP_WATERFALL_FLIP'
                 direction_override = bool(
-                    climax_flip or top_waterfall_flip or code in (
+                    (entry_context and (
+                        entry_context.get('direction_override')
+                        or entry_context.get('allow_kc_internal')
+                        or entry_context.get('is_cross_mid')
+                        or entry_context.get('strategy_mode') == 'AGILE_MOMENTUM'
+                        or entry_context.get('entry_type') == 'CROSS_MID'
+                    ))
+                    or climax_flip or top_waterfall_flip or code in (
                         'AUTHORIZED_BY_MIDLINE_BREAK_SHORT',
                         'AUTHORIZED_BY_MIDLINE_BREAK_LONG',
                         'KC_GOLDEN_CROSS_FAST_LONG',
@@ -731,28 +738,40 @@ class PaperAccount:
                         'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                         'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                         'AUTHORIZED_TOP_REVERSAL_SHORT',
+                        'MA_CROSSOVER',
+                        'ENTRY_LONG_EMA_CROSS_MID',
+                        'ENTRY_SHORT_EMA_CROSS_MID',
                     )
+                    or any(k in str(reason).upper() for k in ('CROSS_MID', 'EMA_CROSS', 'MA_CROSS', 'AGILE'))
                 )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
+                # 1. 通道外軌突破限制（若為均線金叉/死叉敏捷轉折單，豁免破軌限制，允許通道內提早佈局）
                 if not direction_override and side == 'LONG' and price <= kc_upper:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌強制拒單！執行價({price}) <= 上軌({kc_upper})", 'CRITICAL')
                     raise RuntimeError(f"嚴禁通道內開多！執行價({price}) <= 上軌({kc_upper})")
                 if not direction_override and side == 'SHORT' and price >= kc_lower:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破下軌強制拒單！執行價({price}) >= 下軌({kc_lower})", 'CRITICAL')
                     raise RuntimeError(f"嚴禁通道內開空！執行價({price}) >= 下軌({kc_lower})")
-                if not direction_override and side == 'SHORT' and price >= kc_middle:
-                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})", 'CRITICAL')
-                    raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})")
-                if len(snapshot['candles']) >= 2:
+
+                # 2. 中軌正向側底線安全防線（金叉做多必須在 KC 中軌上方，死叉做空必須在 KC 中軌下方）
+                if side == 'LONG' and price < kc_middle:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌下方嚴禁開多！執行價({price}) < 中軌({kc_middle})", 'CRITICAL')
+                    raise RuntimeError(f"中軌下方嚴禁開多！執行價({price}) < 中軌({kc_middle})")
+                if side == 'SHORT' and price > kc_middle:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})", 'CRITICAL')
+                    raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})")
+
+                # 3. 大週期 CK 趨勢防線（敏捷動能轉折單豁免跨週期鎖定，交由當前週期結構性止損保護）
+                if not direction_override and len(snapshot['candles']) >= 2:
                     prev_bar = snapshot['candles'][-2]
                     ck_up = (current_bar['kc_middle'] > prev_bar['kc_middle']
                              and current_bar['kc_upper'] >= prev_bar['kc_upper'])
-                    if not direction_override and side == 'SHORT' and ck_up:
+                    if side == 'SHORT' and ck_up:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↑CK 向上趨勢，嚴禁逆勢開空！", 'CRITICAL')
                         raise RuntimeError("大週期向上嚴禁開空！")
                     ck_down = (current_bar['kc_middle'] < prev_bar['kc_middle']
                                and current_bar['kc_lower'] <= prev_bar['kc_lower'])
-                    if not direction_override and side == 'LONG' and ck_down:
+                    if side == 'LONG' and ck_down:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↓CK 向下趨勢，嚴禁逆勢開多！", 'CRITICAL')
                         raise RuntimeError("大週期向下嚴禁開多！")
 
