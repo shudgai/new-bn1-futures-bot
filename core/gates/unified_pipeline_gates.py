@@ -138,15 +138,21 @@ class ExitGate:
         pos_side_val = str(pos.get("side", "")).upper()
         kc_mid_val = float(market_data.kc_middle if isinstance(market_data, MarketDataSnapshot) else market_data.get("kc_middle", 0.0))
         ema_slow_val = float(market_data.ema_slow if isinstance(market_data, MarketDataSnapshot) else market_data.get("ema_slow", 0.0))
+        ma15_val = float(market_data.ma15 if isinstance(market_data, MarketDataSnapshot) else market_data.get("ma15", ema_slow_val))
         quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0)))
 
+        latest_c = quote_p
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0:
+            latest_c = float(raw_df["close"].iloc[-1])
+        ref_price = quote_p if quote_p > 0 else latest_c
+
         allow_tb_reversal = True
-        if quote_p > 0:
-            if pos_side_val == "LONG" and (quote_p >= kc_mid_val or (ema_slow_val > 0 and quote_p >= ema_slow_val)):
-                # 依然在 KC 中軌或棕色慢線上方，多頭結構完好，不因小幅抖動過敏平多
+        if ref_price > 0:
+            if pos_side_val == "LONG" and (ref_price >= kc_mid_val or (ema_slow_val > 0 and ref_price >= ema_slow_val) or (ma15_val > 0 and ref_price >= ma15_val)):
+                # 依然在 KC 中軌或棕色慢線/MA15上方，多頭結構完好，不因小幅抖動過敏平多
                 allow_tb_reversal = False
-            elif pos_side_val == "SHORT" and (quote_p <= kc_mid_val or (ema_slow_val > 0 and quote_p <= ema_slow_val)):
-                # 依然在 KC 中軌或棕色慢線下方，空頭結構完好，不因底部毛刺反抽過敏平空
+            elif pos_side_val == "SHORT" and (ref_price <= kc_mid_val or (ema_slow_val > 0 and ref_price <= ema_slow_val) or (ma15_val > 0 and ref_price <= ma15_val)):
+                # 依然在 KC 中軌或棕色慢線/MA15下方，空頭結構完好，不因底部毛刺反抽過敏平空
                 allow_tb_reversal = False
 
         if allow_tb_reversal:
@@ -664,6 +670,12 @@ class ExitGate:
                 )
 
                 if is_pivot_valid:
+                    # 鐵律：只要收盤價未實體跌破 KC 中軌與 MA15 之下，嚴禁觸發見頂平多！
+                    if float(c_curr["close"]) >= kc_mid or (ma15 > 0 and float(c_curr["close"]) >= ma15):
+                        return False, "VETO_HOLD", {
+                            **meta,
+                            "cause": f"未實體跌破中軌與MA15嚴禁平多: 收盤價(close={float(c_curr['close']):.6f})仍在KC中軌(mid={kc_mid:.6f})或MA15(ma15={ma15:.6f})之上，耐受上軌震盪回踩，一票否決平多，抱牢主升浪！",
+                        }
                     if unrealized_pct >= 0.002 or peak_roe >= 0.008:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
                             **meta,
@@ -871,6 +883,12 @@ class ExitGate:
                 )
 
                 if is_valley_valid:
+                    # 鐵律：只要收盤價未實體站穩 KC 中軌與 MA15 之上，嚴禁觸發見底平空！
+                    if float(c_curr["close"]) <= kc_mid or (ma15 > 0 and float(c_curr["close"]) <= ma15):
+                        return False, "VETO_HOLD", {
+                            **meta,
+                            "cause": f"未實體站穩中軌與MA15嚴禁平空: 收盤價(close={float(c_curr['close']):.6f})仍在KC中軌(mid={kc_mid:.6f})或MA15(ma15={ma15:.6f})之下，耐受下軌震盪反抽，一票否決平空，抱牢主跌浪！",
+                        }
                     if unrealized_pct >= 0.002 or peak_roe >= 0.008:
                         return True, "EARLY_PIVOT_VALLEY_EXIT", {
                             **meta,

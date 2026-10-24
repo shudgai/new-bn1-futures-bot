@@ -135,9 +135,29 @@ def evaluate_top_bottom_reversal_exit(
     )
 
     # ==========================
+    # 0. 結構破位門禁（2026-10 最新鐵律）:
+    # 平倉端必須嚴格鎖定：
+    # - 空單：收盤價未實體站穩 KC 中軌 / MA15 之上，嚴禁觸發見底平空！
+    # - 多單：收盤價未實體跌破 KC 中軌 / MA15 之下，嚴禁觸發見頂平多！
+    # 耐受軌道外/邊緣的微幅毛刺、下影線與 MA3 短暫勾頭，堅決抱牢主趨勢！
+    # ==========================
+    kc_mid = float(curr.get("kc_middle", (upper_band + lower_band) / 2.0))
+    ma15_val = float(curr.get("ma15", curr.get("ema_slow", 0.0)))
+    if ma15_val <= 0 and len(closes) >= 15:
+        ma15_val = float(closes.rolling(window=15).mean().iloc[-1])
+
+    # ==========================
     # 1. 空單檢查：出現「谷底」立即平空
     # ==========================
     if side == "SHORT":
+        if c_close <= kc_mid or (ma15_val > 0 and c_close <= ma15_val):
+            meta["skipped"] = "BELOW_KC_MID_OR_MA15_HOLD_SHORT"
+            meta["cause"] = (
+                f"未實體站穩中軌與MA15嚴禁平空: 收盤價(close={c_close:.6f})仍在KC中軌(mid={kc_mid:.6f})"
+                f"或MA15(ma15={ma15_val:.6f})之下，耐受下軌微幅震盪反抽，一票否決平空，抱牢主跌浪！"
+            )
+            return False, None, meta
+
         lowest_since_entry = min(
             float(pos.get("lowest_price") or entry_p),
             float(closed["low"].min()),
@@ -173,7 +193,7 @@ def evaluate_top_bottom_reversal_exit(
             if pin_bar_bottom:
                 triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>2.0*body,close={c_close:.6f}>lower={lower_band:.6f})")
 
-            meta["cause"] = f"空單谷底轉折確立，不等回摸中軌立即平空鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"空單谷底轉折且實體收復中軌/MA15確立，及時平空鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_SHORT_AT_BOTTOM, meta
 
@@ -181,6 +201,14 @@ def evaluate_top_bottom_reversal_exit(
     # 2. 多單檢查：出現「峰頂」立即平多
     # ==========================
     elif side == "LONG":
+        if c_close >= kc_mid or (ma15_val > 0 and c_close >= ma15_val):
+            meta["skipped"] = "ABOVE_KC_MID_OR_MA15_HOLD_LONG"
+            meta["cause"] = (
+                f"未實體跌破中軌與MA15嚴禁平多: 收盤價(close={c_close:.6f})仍在KC中軌(mid={kc_mid:.6f})"
+                f"或MA15(ma15={ma15_val:.6f})之上，耐受上軌微幅震盪回踩，一票否決平多，抱牢主升浪！"
+            )
+            return False, None, meta
+
         highest_since_entry = max(
             float(pos.get("highest_price") or entry_p),
             float(closed["high"].max()),
@@ -217,7 +245,7 @@ def evaluate_top_bottom_reversal_exit(
             if pin_bar_top:
                 triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>2.0*body,close={c_close:.6f}<upper={upper_band:.6f})")
 
-            meta["cause"] = f"多單峰頂轉折確立，不等回踩中軌立即平多鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"多單峰頂轉折且實體跌破中軌/MA15確立，及時平多鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_LONG_AT_TOP, meta
 
