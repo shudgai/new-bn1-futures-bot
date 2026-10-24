@@ -239,6 +239,54 @@ def can_open_position(
             )
         return False, reason, details
 
+    # ══════════════════════════════════════════════════════════════════
+    # 【核心硬門禁：第一根破軌，第二根同色且站穩 KC 與 MA 線外】
+    # ══════════════════════════════════════════════════════════════════
+    prev_kc_up = float(prev_closed.get("kc_upper", 0.0) or 0.0)
+    prev_kc_low = float(prev_closed.get("kc_lower", 0.0) or 0.0)
+
+    if side == "LONG":
+        # 1. 第一根必須收盤破上軌
+        long_bar1_break = (prev_kc_up > 0) and (prev_close > prev_kc_up)
+        # 2. 第二根必須為陽線 (同色)
+        long_bar2_color = close_p > open_p
+        # 3. 第二根必須站穩在 KC 上軌、MA5 與 MA15 之上
+        long_bar2_outside = (
+            (kc_up > 0 and close_p > kc_up and current_tick_price > kc_up)
+            and (close_p > ma5_curr)
+            and (close_p > ma15_curr)
+        )
+
+        if not (long_bar1_break and long_bar2_color and long_bar2_outside):
+            reason_msg = (
+                f"VETO: LONG_CONFIRMATION_FAILED ("
+                f"Bar1破軌={long_bar1_break}, "
+                f"Bar2同色陽線={long_bar2_color}, "
+                f"Bar2線外={long_bar2_outside} [C>{kc_up:.4g}, C>{ma5_curr:.4g}, C>{ma15_curr:.4g}])"
+            )
+            return veto_return(reason_msg)
+
+    elif side == "SHORT":
+        # 1. 第一根必須收盤破下軌
+        short_bar1_break = (prev_kc_low > 0) and (prev_close < prev_kc_low)
+        # 2. 第二根必須為陰線 (同色)
+        short_bar2_color = close_p < open_p
+        # 3. 第二根必須站穩在 KC 下軌、MA5 與 MA15 之下
+        short_bar2_outside = (
+            (kc_low > 0 and close_p < kc_low and current_tick_price < kc_low)
+            and (close_p < ma5_curr)
+            and (close_p < ma15_curr)
+        )
+
+        if not (short_bar1_break and short_bar2_color and short_bar2_outside):
+            reason_msg = (
+                f"VETO: SHORT_CONFIRMATION_FAILED ("
+                f"Bar1破軌={short_bar1_break}, "
+                f"Bar2同色陰線={short_bar2_color}, "
+                f"Bar2線外={short_bar2_outside} [C<{kc_low:.4g}, C<{ma5_curr:.4g}, C<{ma15_curr:.4g}])"
+            )
+            return veto_return(reason_msg)
+
     if target_side == side:
         # 1. 同一根 K 棒剛平倉，不立即追回同向單（等待新 K 棒或訊號確認）
         curr_bar_ts = float(last_closed.get("timestamp", 0.0))

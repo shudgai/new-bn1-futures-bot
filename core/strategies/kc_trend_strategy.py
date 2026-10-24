@@ -505,22 +505,37 @@ class KCTrendStrategy:
                     if sig:
                         self._pending_entries.append(sig)
 
-        # 3. KC 中線緩衝退場
+        # 3. 趨勢鎖倉防洗盤退場：回踩不平倉，僅在實體收盤翻越 KC 中軌時才平倉
         for side in ("long", "short"):
             entry_p = self.position_entry_price[side]
             if entry_p is None:
                 continue
 
-            if side == "long" and bar.close < snap["kc_mid"] - self.cfg.middle_band_exit_buffer_atr * snap["atr"]:
-                exits.append(ExitSignal(side, "kc_middle_band_close_exit", bar.timestamp, bar.close))
+            buffer = self.cfg.middle_band_exit_buffer_atr * snap["atr"]
+
+            # 多單：實體收盤明確跌破 KC 中軌 - 緩衝區，才判定多頭破位出場
+            if side == "long" and bar.close < (snap["kc_mid"] - buffer):
+                exits.append(ExitSignal(
+                    side=side,
+                    reason="kc_middle_band_trend_invalidation",
+                    timestamp=bar.timestamp,
+                    price=bar.close
+                ))
                 self._mark_exit(side)
                 continue
 
-            if side == "short" and bar.close > snap["kc_mid"] + self.cfg.middle_band_exit_buffer_atr * snap["atr"]:
-                exits.append(ExitSignal(side, "kc_middle_band_close_exit", bar.timestamp, bar.close))
+            # 空單：實體收盤明確突破 KC 中軌 + 緩衝區，才判定空頭破位出場（回踩 MA3/MA5/下軌一律 HOLD）
+            if side == "short" and bar.close > (snap["kc_mid"] + buffer):
+                exits.append(ExitSignal(
+                    side=side,
+                    reason="kc_middle_band_trend_invalidation",
+                    timestamp=bar.timestamp,
+                    price=bar.close
+                ))
                 self._mark_exit(side)
                 continue
 
+            # 分批止盈 (達到目標獲利後才鎖定利潤，非微幅回調斬倉)
             entry_atr = self.position_entry_atr[side] or snap["atr"]
             if not self.partial_taken[side]:
                 if side == "long" and bar.close >= entry_p + self.cfg.partial_take_profit_atr * entry_atr:
