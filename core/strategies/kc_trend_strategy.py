@@ -321,12 +321,12 @@ class KCTrendStrategy:
         if not (self.cfg.pattern_small_bars_min <= small_count <= self.cfg.pattern_small_bars_max):
             return None
 
-        if cur.bullish and price > snap["kc_upper"] and price > cur.open and price > snap["ma3"]:
+        if cur.bullish and price > snap["kc_upper"] and price > cur.open and price > snap["ma3"] and price > snap["ma15"]:
             return self._make_entry(
                 "long", "immediate_large_bull_body_kc_break", price, timestamp, snap,
                 metadata={"small_bars": small_count, "atr": atr, "kc_upper": snap["kc_upper"]}
             )
-        if cur.bearish and price < snap["kc_lower"] and price < cur.open and price < snap["ma3"]:
+        if cur.bearish and price < snap["kc_lower"] and price < cur.open and price < snap["ma3"] and price < snap["ma15"]:
             return self._make_entry(
                 "short", "immediate_large_bear_body_kc_break", price, timestamp, snap,
                 metadata={"small_bars": small_count, "atr": atr, "kc_lower": snap["kc_lower"]}
@@ -336,33 +336,41 @@ class KCTrendStrategy:
     def _continuation_signal(self, price: float, timestamp: float) -> Optional[EntrySignal]:
         if not self.cfg.continuation_enabled or self.breakout_side is None or self.current_bar is None:
             return None
-        if self.continuation_count >= self.cfg.continuation_max_entries_per_breakout:
-            return None
 
         snap = self._indicator_snapshot(include_current=True)
         if snap is None:
             return None
 
         side = self.breakout_side
-        if side == "long" and price > snap["kc_upper"] and price > snap["ma3"]:
+
+        # 硬性中斷：只要價格回到軌道內或站上/跌破 MA，立即強制清空破軌狀態與計數
+        if side == "long" and (price <= snap["kc_upper"] or price <= snap["ma3"] or price <= snap["ma15"]):
+            self.breakout_side = None
+            self.continuation_count = 0
+            return None
+
+        if side == "short" and (price >= snap["kc_lower"] or price >= snap["ma3"] or price >= snap["ma15"]):
+            self.breakout_side = None
+            self.continuation_count = 0
+            return None
+
+        if self.continuation_count >= self.cfg.continuation_max_entries_per_breakout:
+            return None
+
+        if side == "long":
             if self.cfg.continuation_require_candle_direction and price <= self.current_bar.open:
                 return None
             signal = self._make_entry(
                 "long", "kc_outside_continuation", price, timestamp, snap,
                 metadata={"continuation_index": self.continuation_count + 1}
             )
-        elif side == "short" and price < snap["kc_lower"] and price < snap["ma3"]:
+        else:  # side == "short"
             if self.cfg.continuation_require_candle_direction and price >= self.current_bar.open:
                 return None
             signal = self._make_entry(
                 "short", "kc_outside_continuation", price, timestamp, snap,
                 metadata={"continuation_index": self.continuation_count + 1}
             )
-        else:
-            if (side == "long" and price <= snap["kc_upper"]) or (side == "short" and price >= snap["kc_lower"]):
-                self.breakout_side = None
-                self.continuation_count = 0
-            return None
 
         if signal:
             self.continuation_count += 1
@@ -470,6 +478,14 @@ class KCTrendStrategy:
                 )
                 if sig:
                     self._pending_entries.append(sig)
+
+        # 破軌延續狀態收盤重置：只要收盤回到軌道內，即刻解除延續開倉資格
+        if self.breakout_side == "long" and bar.close <= snap["kc_upper"]:
+            self.breakout_side = None
+            self.continuation_count = 0
+        elif self.breakout_side == "short" and bar.close >= snap["kc_lower"]:
+            self.breakout_side = None
+            self.continuation_count = 0
 
         # 2. MA3 / MA15 交叉確認
         if len(self.bars) >= 2:

@@ -80,3 +80,27 @@ def test_independent_cooldown_by_side():
     assert strat.bar_index - strat.last_exit_bar_index["long"] <= 2
     # 做空應不受影響 (初始為 -10^9)
     assert strat.bar_index - strat.last_exit_bar_index["short"] > 2
+
+def test_continuation_hard_reset_on_rebound_into_channel():
+    """驗證價格一旦回縮到下軌以內，立即清空 breakout_side 與 continuation_count，不准再開延續空單"""
+    cfg = StrategyConfig(min_bars_for_indicators=20, require_ma15_direction=False)
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+    for i in range(25):
+        strat.on_bar_close(Bar(now + i * 60, 100.0, 100.5, 99.5, 100.0, 50.0))
+
+    # 模擬空頭破軌
+    strat.breakout_side = "short"
+    strat.continuation_count = 1
+    snap = strat._indicator_snapshot()
+    kc_lower = snap["kc_lower"]
+
+    # 1. 價格反彈回下軌內側（price >= kc_lower）
+    strat.current_bar = Bar(time.time(), 100.0, 100.5, 99.5, 100.0, 10.0)
+    rebound_price = kc_lower + 0.1
+    sig = strat._continuation_signal(rebound_price, time.time())
+
+    assert sig is None
+    # 狀態機必須硬性重置為 None 與 0
+    assert strat.breakout_side is None
+    assert strat.continuation_count == 0
