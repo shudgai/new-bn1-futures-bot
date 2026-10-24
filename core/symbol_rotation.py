@@ -280,22 +280,22 @@ class SymbolRotation:
 
         side = str(direction or "").upper()
         if side == "LONG":
+            # 順勢做多：唯一合法區域在 KC 上軌突破或通道上半部，嚴禁碰觸下軌逆勢抄底！
+            if price <= kc_lower + atr * 0.5:
+                return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
             if kc_upper <= price <= kc_upper + atr * 0.8:
                 distance = (price - kc_upper) / atr
                 return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
-            if kc_lower - atr * 0.8 <= price <= kc_lower + atr * 0.5:
-                distance = abs(price - kc_lower) / atr
-                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
             if kc_upper - atr * 1.5 <= price < kc_upper:
                 distance = (kc_upper - price) / atr
                 return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}
         elif side == "SHORT":
+            # 順勢做空：唯一合法區域在 KC 下軌跌破或通道下半部，嚴禁碰觸上軌逆勢摸頂！
+            if price >= kc_upper - atr * 0.5:
+                return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
             if kc_lower - atr * 0.8 <= price <= kc_lower:
                 distance = (kc_lower - price) / atr
                 return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
-            if kc_upper - atr * 0.5 <= price <= kc_upper + atr * 0.8:
-                distance = abs(price - kc_upper) / atr
-                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
             if kc_lower < price <= kc_lower + atr * 1.5:
                 distance = (price - kc_lower) / atr
                 return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}

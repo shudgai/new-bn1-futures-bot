@@ -110,6 +110,8 @@ def test_entry_gate_1000_pullback_reclaim_continuation():
     snapshot.ema_fast = 120.0
     snapshot.ema_slow = 118.0
     snapshot.kc_upper = 124.0
+    snapshot.kc_middle = 120.0
+    snapshot.kc_lower = 116.0
     snapshot.atr = 3.0
     # 前一根回踩至 119.5 (在 EMA15~40 之間)，當前棒收紅站上 EMA15 (121.0 > 120.0)
     snapshot.prev_k = {"open": 121.0, "high": 121.5, "low": 119.5, "close": 120.0}

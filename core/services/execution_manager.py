@@ -234,10 +234,10 @@ class ExecutionManager:
                 p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakout_long:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
-                elif is_pullback_long:
-                    candidate_signal = "TREND_PULLBACK_LONG"
                 elif is_ma_cross_long:
                     candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
+                elif is_pullback_long:
+                    candidate_signal = "TREND_PULLBACK_LONG"
                 elif (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev):
                     if market_data.curr_k["close"] > market_data.kc_upper:
                         candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
@@ -249,10 +249,10 @@ class ExecutionManager:
                 p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakdown_short:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
-                elif is_pullback_short:
-                    candidate_signal = "TREND_PULLBACK_SHORT"
                 elif is_ma_cross_short:
                     candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
+                elif is_pullback_short:
+                    candidate_signal = "TREND_PULLBACK_SHORT"
                 elif (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev):
                     if market_data.curr_k["close"] < market_data.kc_lower:
                         candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"

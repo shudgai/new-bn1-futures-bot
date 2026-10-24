@@ -90,7 +90,7 @@ def evaluate_mid_band_ma3_exit(
     entry_ms = _to_ms(entry_timestamp)
     if entry_ms is not None and "timestamp" in closed.columns:
         last_ts = _to_ms(closed["timestamp"].iloc[-1])
-        if last_ts is not None and last_ts < entry_ms:
+        if last_ts is not None and last_ts <= entry_ms:
             meta["skipped"] = "NO_CLOSED_BAR_AFTER_ENTRY"
             return None, None, meta
 

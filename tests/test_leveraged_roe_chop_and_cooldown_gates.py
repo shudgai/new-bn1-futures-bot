@@ -366,6 +366,9 @@ def test_exit_gate_trend_decay_exit_on_long():
     df.loc[df.index[-2], ["open", "high", "low", "close"]] = [102.2, 102.3, 101.5, 101.8]
     df.loc[df.index[-1], ["open", "high", "low", "close"]] = [101.8, 101.9, 100.7, 100.8]
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=100.8)
+    snapshot.atr = 1.0
+    snapshot.kc_middle = 100.5
+    snapshot.kc_middle_slope = -0.01
     snapshot.ma15 = 102.0
     snapshot.ema_fast = 101.5
     snapshot.ema_slow = 102.5  # 大週期均線死叉

@@ -240,12 +240,52 @@ def can_open_position(
         return False, reason, details
 
     # ══════════════════════════════════════════════════════════════════
-    # 【核心硬門禁：第一根破軌，第二根同色且站穩 KC 與 MA 線外】
+    # 【核心硬門禁：四大開倉禁令 (VETO) 與兩根破軌確認】
     # ══════════════════════════════════════════════════════════════════
+    kc_mid_slope_val = 0.0
+    if df is not None and len(df) >= 3:
+        if "kc_middle" in df.columns:
+            kc_mid_slope_val = float(df["kc_middle"].iloc[-1]) - float(df["kc_middle"].iloc[-3])
+        elif "kc_basis" in df.columns:
+            kc_mid_slope_val = float(df["kc_basis"].iloc[-1]) - float(df["kc_basis"].iloc[-3])
+    else:
+        kc_mid_slope_val = float(last_closed.get("kc_middle_slope", 0.0))
+
+    kc_bw = (kc_up - kc_low) / max(kc_mid_val, 1e-9) if kc_mid_val > 0 else 0.0
+    slope_thresh = max(0.08 * atr_val, 0.00015 * max(kc_mid_val, 1e-9))
+    min_bw_thresh = 0.015
+    is_hist_squeeze_local = False
+    if df is not None and len(df) >= 20 and "kc_upper" in df.columns and "kc_lower" in df.columns:
+        hist_bws = df["kc_upper"] - df["kc_lower"]
+        max_bw_hist = float(hist_bws.tail(20).max())
+        curr_bw_hist = float(kc_up - kc_low)
+        if max_bw_hist > 0 and curr_bw_hist <= 0.25 * max_bw_hist:
+            is_hist_squeeze_local = True
+
     prev_kc_up = float(prev_closed.get("kc_upper", 0.0) or 0.0)
     prev_kc_low = float(prev_closed.get("kc_lower", 0.0) or 0.0)
 
     if side == "LONG":
+        # 禁令一：中軌斜率向下，100% 禁止做多
+        if kc_mid_slope_val <= 0:
+            return veto_return(f"VETO_KC_SLOPE_DOWN (kc_middle_slope={kc_mid_slope_val:.6f} <= 0)")
+
+        # 禁令二：收盤價未實體站上中軌之上
+        if close_p < (kc_mid_val + 0.1 * atr_val):
+            return veto_return(f"VETO_BELOW_KC_MIDDLE (close={close_p:.4f} < mid+0.1*atr={kc_mid_val + 0.1 * atr_val:.4f})")
+
+        # 禁令三：通道壓縮走平期
+        if (kc_bw < min_bw_thresh or is_hist_squeeze_local) and abs(kc_mid_slope_val) < slope_thresh:
+            return veto_return(f"VETO_CONSOLIDATION_SQUEEZE (bw={kc_bw:.4f}, slope={kc_mid_slope_val:.6f})")
+
+        # 禁令四：長陰貫穿下軌時禁止抄底
+        if close_p < open_p and (open_p - close_p) > (0.8 * atr_val):
+            return veto_return(f"VETO_BEARISH_BREAKDOWN (bear_body={open_p - close_p:.4f} > 0.8*atr={0.8 * atr_val:.4f})")
+
+        # 禁令五：嚴禁因碰觸下軌而做多（買多唯一合法區域必須在中軌之上）
+        if close_p <= (kc_low + 0.5 * atr_val) or current_tick_price <= (kc_low + 0.5 * atr_val):
+            return veto_return(f"VETO_KC_LOWER_ZONE_FORBIDDEN_FOR_LONG (price={current_tick_price:.4f} <= kc_low+0.5*atr={kc_low + 0.5 * atr_val:.4f})")
+
         # 1. 第一根必須收盤破上軌
         long_bar1_break = (prev_kc_up > 0) and (prev_close > prev_kc_up)
         # 2. 第二根必須為陽線 (同色)
@@ -267,6 +307,26 @@ def can_open_position(
             return veto_return(reason_msg)
 
     elif side == "SHORT":
+        # 禁令一：中軌斜率向上，100% 禁止做空
+        if kc_mid_slope_val >= 0:
+            return veto_return(f"VETO_KC_SLOPE_UP (kc_middle_slope={kc_mid_slope_val:.6f} >= 0)")
+
+        # 禁令二：收盤價未實體壓制在中軌之下
+        if close_p > (kc_mid_val - 0.1 * atr_val):
+            return veto_return(f"VETO_ABOVE_KC_MIDDLE (close={close_p:.4f} > mid-0.1*atr={kc_mid_val - 0.1 * atr_val:.4f})")
+
+        # 禁令三：通道壓縮走平期
+        if (kc_bw < min_bw_thresh or is_hist_squeeze_local) and abs(kc_mid_slope_val) < slope_thresh:
+            return veto_return(f"VETO_CONSOLIDATION_SQUEEZE (bw={kc_bw:.4f}, slope={kc_mid_slope_val:.6f})")
+
+        # 禁令四：長陽貫穿上軌時禁止摸頂
+        if close_p > open_p and (close_p - open_p) > (0.8 * atr_val):
+            return veto_return(f"VETO_BULLISH_BREAKOUT (bull_body={close_p - open_p:.4f} > 0.8*atr={0.8 * atr_val:.4f})")
+
+        # 禁令五：嚴禁因碰觸上軌而做空（買空唯一合法區域必須在中軌之下）
+        if close_p >= (kc_up - 0.5 * atr_val) or current_tick_price >= (kc_up - 0.5 * atr_val):
+            return veto_return(f"VETO_KC_UPPER_ZONE_FORBIDDEN_FOR_SHORT (price={current_tick_price:.4f} >= kc_up-0.5*atr={kc_up - 0.5 * atr_val:.4f})")
+
         # 1. 第一根必須收盤破下軌
         short_bar1_break = (prev_kc_low > 0) and (prev_close < prev_kc_low)
         # 2. 第二根必須為陰線 (同色)

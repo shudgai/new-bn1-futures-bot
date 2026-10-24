@@ -156,29 +156,22 @@ def evaluate_top_bottom_reversal_exit(
             meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
             return False, None, meta
 
-        # 條件 1: MA3 走出 V 轉（前一根是最低點，當前根勾頭向上）
-        ma3_v_bottom = (
+        # 條件 1: MA3 明顯轉折向上 且 收盤實體站上 MA3 (谷底 V 轉)
+        ma3_bending_up = (
             ma3_curr is not None and ma3_prev is not None and ma3_prev2 is not None
-            and (ma3_prev < ma3_prev2) and (ma3_curr > ma3_prev)
+            and (ma3_curr > ma3_prev) and (ma3_prev <= ma3_prev2)
         )
+        close_above_ma3 = (ma3_curr is not None and c_close > ma3_curr)
 
-        # 條件 2: 下影線探底回升（當根或前根低點探至下軌外或附近，長下影線 >= 實體 1.5 倍）
-        pin_bar_bottom = (
-            (c_low <= lower_band * 1.002 and curr_lower_wick >= curr_body * 1.5 and curr_lower_wick >= 0.25 * atr)
-            or (p_low <= prev_lower_band * 1.002 and prev_lower_wick >= prev_body * 1.5 and prev_lower_wick >= 0.25 * atr)
-        )
+        # 條件 2: 下影線探底回升 (長下影線 > 2.0 倍實體 且 收盤站回 KC 下軌內側)
+        pin_bar_bottom = (curr_lower_wick > curr_body * 2.0) and (c_close > lower_band)
 
-        # 條件 3: 底部破位後強勢反彈綠棒（實體完全吞噬前一根黑棒）
-        bullish_engulfing = (c_close > c_open) and (c_close > p_high)
-
-        if ma3_v_bottom or pin_bar_bottom or bullish_engulfing:
+        if (ma3_bending_up and close_above_ma3) or pin_bar_bottom:
             triggers = []
-            if ma3_v_bottom:
-                triggers.append(f"MA3_V_BOTTOM(ma3={ma3_curr:.6f}>{ma3_prev:.6f}<{ma3_prev2:.6f})")
+            if ma3_bending_up and close_above_ma3:
+                triggers.append(f"MA3_V_BOTTOM(ma3={ma3_curr:.6f}>{ma3_prev:.6f}<=prev2,close={c_close:.6f}>ma3)")
             if pin_bar_bottom:
-                triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>=1.5*body)")
-            if bullish_engulfing:
-                triggers.append(f"BULLISH_ENGULFING(close={c_close:.6f}>prev_high={p_high:.6f})")
+                triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>2.0*body,close={c_close:.6f}>lower={lower_band:.6f})")
 
             meta["cause"] = f"空單谷底轉折確立，不等回摸中軌立即平空鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
@@ -206,29 +199,23 @@ def evaluate_top_bottom_reversal_exit(
             meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
             return False, None, meta
 
-        # 條件 1: MA3 走出倒 V 轉（前一根是最高點，當前根勾頭向下）
-        ma3_a_top = (
+        # 條件 1: MA3 明顯轉折下彎 且 收盤實體跌破 MA3 (盤中碰觸不計，解決 21:06 提早平倉問題)
+        ma3_bending_down = (
             ma3_curr is not None and ma3_prev is not None and ma3_prev2 is not None
-            and (ma3_prev > ma3_prev2) and (ma3_curr < ma3_prev)
+            and (ma3_curr < ma3_prev) and (ma3_prev >= ma3_prev2)
         )
+        close_below_ma3 = (ma3_curr is not None and c_close < ma3_curr)
 
-        # 條件 2: 上影線衝高回落（當根或前根高點探至上軌外或附近，長上影線 >= 實體 1.5 倍）
-        pin_bar_top = (
-            (c_high >= upper_band * 0.998 and curr_upper_wick >= curr_body * 1.5 and curr_upper_wick >= 0.25 * atr)
-            or (p_high >= prev_upper_band * 0.998 and prev_upper_wick >= prev_body * 1.5 and prev_upper_wick >= 0.25 * atr)
-        )
+        # 條件 2: 上影線避雷針轉折衝高受阻 (長上影線 > 2.0 倍實體 且 收盤跌回 KC 上軌內側)
+        pin_bar_top = (curr_upper_wick > curr_body * 2.0) and (c_close < upper_band)
 
-        # 條件 3: 頂部強勢黑棒（實體完全跌破前一根紅棒低點）
-        bearish_engulfing = (c_close < c_open) and (c_close < p_low)
-
-        if ma3_a_top or pin_bar_top or bearish_engulfing:
+        # 峰頂平倉核心：只有在「MA3 明顯轉折下彎」且「收盤跌破 MA3」，或「出現明確衝高回落避雷針」才平倉
+        if (ma3_bending_down and close_below_ma3) or pin_bar_top:
             triggers = []
-            if ma3_a_top:
-                triggers.append(f"MA3_A_TOP(ma3={ma3_curr:.6f}<{ma3_prev:.6f}>{ma3_prev2:.6f})")
+            if ma3_bending_down and close_below_ma3:
+                triggers.append(f"MA3_A_TOP(ma3={ma3_curr:.6f}<{ma3_prev:.6f}>=prev2,close={c_close:.6f}<ma3)")
             if pin_bar_top:
-                triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>=1.5*body)")
-            if bearish_engulfing:
-                triggers.append(f"BEARISH_ENGULFING(close={c_close:.6f}<prev_low={p_low:.6f})")
+                triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>2.0*body,close={c_close:.6f}<upper={upper_band:.6f})")
 
             meta["cause"] = f"多單峰頂轉折確立，不等回踩中軌立即平多鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers

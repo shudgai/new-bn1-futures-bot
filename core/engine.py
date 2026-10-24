@@ -2925,7 +2925,7 @@ class TradingEngine:
             return False
 
         wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
-        if not is_wait_authority and frame is not None and len(frame) >= 2:
+        if frame is not None and len(frame) >= 2:
             from core.gates.trend_riding_strategy import can_open_position
             can_open, gate_reason, _ = can_open_position(
                 df=frame,

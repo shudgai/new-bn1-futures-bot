@@ -78,13 +78,13 @@ def test_short_ma3_v_bottom_exits_immediately():
 
 
 def test_short_pin_bar_bottom_exits_immediately():
-    """空單在下軌出現長下影線插針 (下影線 >= 1.5 倍實體)，不等回摸中軌立即平空"""
+    """空單在下軌出現長下影線探底回升 (下影線 > 2.0 倍實體 且 收盤站回下軌內側)，立即平空"""
     bars = [
         make_bar(100.0, 100.2, 98.5, 99.0),
         make_bar(99.0, 99.1, 96.8, 97.0),
         make_bar(97.0, 97.2, 95.0, 95.5),
-        # 當根：開 95.5，最低探至 92.0 (破下軌 95.0)，收 95.0。實體 0.5，下影線 95.0 - 92.0 = 3.0 (6 倍實體)
-        make_bar(95.5, 95.6, 92.0, 95.0),
+        # 當根：開 95.5，最低探至 92.0 (探破下軌 95.0)，收 95.2 (站回下軌內側)。實體 0.3，下影線 3.2 (超 10 倍實體)
+        make_bar(95.5, 95.6, 92.0, 95.2),
     ]
     df = make_df(*bars)
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 92.0}
@@ -92,23 +92,6 @@ def test_short_pin_bar_bottom_exits_immediately():
     assert should_exit is True
     assert reason == CLOSE_SHORT_AT_BOTTOM
     assert any("PIN_BAR_BOTTOM" in t for t in meta["triggers"])
-
-
-def test_short_bullish_engulfing_exits_immediately():
-    """空單低檔出現大陽包小陰吞噬，立即平空"""
-    bars = [
-        make_bar(100.0, 100.2, 98.5, 99.0),
-        make_bar(99.0, 99.1, 96.5, 97.0),
-        make_bar(97.0, 97.1, 93.8, 94.0),   # 陰線，最高 97.1
-        # 陽線吞噬：開 93.9，收 97.5 (高於前棒 high 97.1)
-        make_bar(93.9, 97.8, 93.7, 97.5),
-    ]
-    df = make_df(*bars)
-    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 93.8}
-    should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
-    assert should_exit is True
-    assert reason == CLOSE_SHORT_AT_BOTTOM
-    assert any("BULLISH_ENGULFING" in t for t in meta["triggers"])
 
 
 def test_short_entry_bar_protection_skips_exit():
@@ -147,17 +130,17 @@ def test_short_no_favorable_move_yet_skips_exit():
 # ══════════════════════════════════════════════════════
 
 def test_long_ma3_a_top_exits_immediately():
-    """多單衝高後，MA3 走出倒 V 轉頂 (ma3_prev > ma3_prev2 且 ma3_curr < ma3_prev) 立即平多"""
+    """多單衝高後，MA3 走出倒 V 轉頂且收盤跌破 MA3，立即平多"""
     # closes: 100.0, 103.0, 104.0, 107.0, 102.0
     # ma3[-3] = (100+103+104)/3 = 102.33
     # ma3[-2] = (103+104+107)/3 = 104.67 (衝頂)
-    # ma3[-1] = (104+107+102)/3 = 104.33 (< 104.67, 轉折向下)
+    # ma3[-1] = (104+107+102)/3 = 104.33 (< 104.67, 轉折向下 且 close=102.0 < ma3=104.33)
     bars = [
         make_bar(99.0, 100.2, 98.8, 100.0),
         make_bar(100.0, 103.2, 99.8, 103.0),
         make_bar(103.0, 104.2, 102.8, 104.0),
         make_bar(104.0, 107.5, 103.8, 107.0),  # 衝破上軌 105.0
-        make_bar(107.0, 107.2, 101.8, 102.0),  # MA3 向下拐頭
+        make_bar(107.0, 107.2, 101.8, 102.0),  # MA3 向下拐頭且跌破 MA3
     ]
     df = make_df(*bars)
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 107.5}
@@ -168,13 +151,13 @@ def test_long_ma3_a_top_exits_immediately():
 
 
 def test_long_pin_bar_top_exits_immediately():
-    """多單在上軌衝高回落 (長上影線 >= 1.5 倍實體)，不等回踩中軌立即平多"""
+    """多單在上軌衝高回落避雷針 (上影線 > 2.0 倍實體 且 收盤跌回上軌內側)，立即平多"""
     bars = [
         make_bar(100.0, 101.5, 99.8, 101.0),
         make_bar(101.0, 103.2, 100.8, 103.0),
         make_bar(103.0, 104.8, 102.8, 104.5),
-        # 當根：開 104.5，最高衝至 108.0 (破上軌 105.0)，收 105.0。實體 0.5，上影線 108.0 - 105.0 = 3.0 (6 倍實體)
-        make_bar(104.5, 108.0, 104.4, 105.0),
+        # 當根：開 104.5，最高衝至 108.0 (衝破上軌 105.0)，收 104.8 (跌回上軌內側)。實體 0.3，上影線 3.2 (超 10 倍實體)
+        make_bar(104.5, 108.0, 104.4, 104.8),
     ]
     df = make_df(*bars)
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.0}
@@ -182,23 +165,6 @@ def test_long_pin_bar_top_exits_immediately():
     assert should_exit is True
     assert reason == CLOSE_LONG_AT_TOP
     assert any("PIN_BAR_TOP" in t for t in meta["triggers"])
-
-
-def test_long_bearish_engulfing_exits_immediately():
-    """多單高檔出現大陰包小陽吞噬，立即平多"""
-    bars = [
-        make_bar(100.0, 101.5, 99.8, 101.0),
-        make_bar(101.0, 103.5, 100.8, 103.0),
-        make_bar(103.0, 106.2, 102.9, 106.0),  # 陽線，最低 102.9
-        # 陰線吞噬：開 106.1，收 102.5 (低於前棒 low 102.9)
-        make_bar(106.1, 106.3, 102.2, 102.5),
-    ]
-    df = make_df(*bars)
-    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 106.2}
-    should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
-    assert should_exit is True
-    assert reason == CLOSE_LONG_AT_TOP
-    assert any("BEARISH_ENGULFING" in t for t in meta["triggers"])
 
 
 # ══════════════════════════════════════════════════════
@@ -261,3 +227,34 @@ def test_exit_gate_integrates_top_exit_overriding_veto_hold():
     assert should_exit is True
     assert reason == CLOSE_LONG_AT_TOP
     assert "top_bottom_reversal" in meta
+
+
+def test_long_hold_when_ma3_still_rising_or_close_above_ma3():
+    """驗證 21:06 痛點：MA3 仍陡峭向上或收盤價仍穩站 MA3 之上時，絕不平多，防止提早平倉！"""
+    # 當根收盤 106.0，MA3 仍在向上
+    bars = [
+        make_bar(100.0, 101.5, 99.8, 101.0),
+        make_bar(101.0, 103.5, 100.8, 103.0),
+        make_bar(103.0, 105.2, 102.8, 105.0),
+        make_bar(105.0, 107.0, 104.8, 106.5),  # MA3 向上
+        make_bar(106.5, 107.2, 105.8, 106.8),  # 收紅陽線，MA3 繼續向上
+    ]
+    df = make_df(*bars)
+    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 107.2}
+    should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
+    assert should_exit is False
+
+
+def test_short_hold_when_ma3_still_falling_or_close_below_ma3():
+    """驗證空單下殺時：MA3 仍陡峭向下或收盤價仍壓制在 MA3 之下時，絕不平空，防止被小反彈洗下車！"""
+    bars = [
+        make_bar(100.0, 100.2, 98.8, 99.0),
+        make_bar(99.0, 99.2, 96.8, 97.0),
+        make_bar(97.0, 97.2, 94.8, 95.0),
+        make_bar(95.0, 95.2, 93.0, 93.5),
+        make_bar(93.5, 93.8, 92.0, 92.5),  # 繼續破底，MA3 向下
+    ]
+    df = make_df(*bars)
+    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 92.0}
+    should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
+    assert should_exit is False
