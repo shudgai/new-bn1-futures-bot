@@ -118,6 +118,10 @@ class StrategyConfig:
     partial_take_profit_fraction: float = 0.50
     partial_take_profit_atr: float = 1.5
 
+    # 真峰谷優先退場參數 (2026-10-24 最新授權：真峰谷確認立即平倉，不等 KC 中軌)
+    enable_true_pivot_exit: bool = True
+    pivot_min_profit_atr: float = 0.20  # 最低波段展開或獲利要求 (0.2 ATR)
+
     # 資料新鮮度過濾
     max_bar_age_seconds: float = 180.0
     min_bars_for_indicators: int = 25
@@ -144,6 +148,8 @@ class KCTrendStrategy:
         self.partial_taken: Dict[Side, bool] = {"long": False, "short": False}
         self.position_entry_price: Dict[Side, Optional[float]] = {"long": None, "short": None}
         self.position_entry_atr: Dict[Side, Optional[float]] = {"long": None, "short": None}
+        self.position_entry_bar_index: Dict[Side, int] = {"long": -10**9, "short": -10**9}
+        self.position_favorable_extreme: Dict[Side, Optional[float]] = {"long": None, "short": None}
 
         # 待提取進場訊號佇列
         self._pending_entries: Deque[EntrySignal] = deque()
@@ -512,6 +518,19 @@ class KCTrendStrategy:
         self.bars.append(bar)
         self._bar_counter += 1
         self.current_bar = None
+
+        # 更新持倉極值追蹤
+        for s in ("long", "short"):
+            if self.position_entry_price[s] is not None:
+                if s == "long":
+                    self.position_favorable_extreme[s] = max(
+                        self.position_favorable_extreme[s] or bar.high, bar.high
+                    )
+                elif s == "short":
+                    self.position_favorable_extreme[s] = min(
+                        self.position_favorable_extreme[s] or bar.low, bar.low
+                    )
+
         exits: List[ExitSignal] = []
 
         # 淘汰 5 根 Bar 以前的過期訊號 key
@@ -591,12 +610,40 @@ class KCTrendStrategy:
                     if sig:
                         self._pending_entries.append(sig)
 
-        # 3. 趨勢鎖倉防洗盤退場：回踩不平倉，僅在實體收盤翻越 KC 中軌時才平倉
+        # 3. 出場評估：真峰谷優先平倉，未確認時保留 KC 中軌出場防線
         for side in ("long", "short"):
             entry_p = self.position_entry_price[side]
             if entry_p is None:
                 continue
 
+            # (A) 真峰谷已確認：優先立即平倉，不必等價格回到 KC 中軌！
+            if self.cfg.enable_true_pivot_exit:
+                if side == "long":
+                    is_peak, peak_reason, peak_meta = self._detect_true_pivot_peak(snap)
+                    if is_peak:
+                        exits.append(ExitSignal(
+                            side=side,
+                            reason=f"true_pivot_peak_exit:{peak_reason}",
+                            timestamp=bar.timestamp,
+                            price=bar.close,
+                            metadata=peak_meta,
+                        ))
+                        self._mark_exit(side)
+                        continue
+                elif side == "short":
+                    is_valley, valley_reason, valley_meta = self._detect_true_pivot_valley(snap)
+                    if is_valley:
+                        exits.append(ExitSignal(
+                            side=side,
+                            reason=f"true_pivot_valley_exit:{valley_reason}",
+                            timestamp=bar.timestamp,
+                            price=bar.close,
+                            metadata=valley_meta,
+                        ))
+                        self._mark_exit(side)
+                        continue
+
+            # (B) 正常回檔繼續持有；真峰谷尚未確認時，保留原有 KC 中軌出場防線
             buffer = self.cfg.middle_band_exit_buffer_atr * snap["atr"]
 
             # 多單：實體收盤明確跌破 KC 中軌 - 緩衝區，才判定多頭破位出場
@@ -610,7 +657,7 @@ class KCTrendStrategy:
                 self._mark_exit(side)
                 continue
 
-            # 空單：實體收盤明確突破 KC 中軌 + 緩衝區，才判定空頭破位出場（回踩 MA3/MA5/下軌一律 HOLD）
+            # 空單：實體收盤明確突破 KC 中軌 + 緩衝區，才判定空頭破位出場
             if side == "short" and bar.close > (snap["kc_mid"] + buffer):
                 exits.append(ExitSignal(
                     side=side,
@@ -654,6 +701,148 @@ class KCTrendStrategy:
         self._last_closed_snapshot = snap
         return exits
 
+    def _detect_true_pivot_peak(self, snap: Dict[str, float]) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        多單真峰頂偵測：波段形成局部高點，反轉得到確認時立即平多，不等待跌回 KC 中軌。
+        """
+        if len(self.bars) < 3:
+            return False, "", {}
+
+        entry_p = self.position_entry_price["long"]
+        if entry_p is None:
+            return False, "", {}
+
+        # 開倉初期防抖：最新已收線棒必須在開倉之後，不在進場當根誤平
+        if self.bar_index <= self.position_entry_bar_index["long"]:
+            return False, "", {}
+
+        entry_atr = self.position_entry_atr["long"] or snap["atr"]
+        highest = self.position_favorable_extreme["long"] or entry_p
+        favorable_gain = highest - entry_p
+
+        # 必須有實質波段展開 (曾獲利 >= 0.2 ATR，或最高價曾觸及/突破 KC 上軌)
+        unfolded = (favorable_gain >= self.cfg.pivot_min_profit_atr * entry_atr) or (highest >= snap["kc_upper"] * 0.998)
+        if not unfolded:
+            return False, "", {}
+
+        b1, b2, b3 = self.bars[-3], self.bars[-2], self.bars[-1]
+
+        # 條件 1: 純數學三點樞紐峰頂 (b2 最高價鶴立雞群，b3 確認收陰跌破 b2 實體中點或最低價)
+        b2_mid = (b2.open + b2.close) / 2.0
+        is_three_point_pivot = (
+            b2.high > b1.high and
+            b2.high > b3.high and
+            b3.bearish and
+            (b3.close < b2_mid or b3.close < b2.low)
+        )
+        if is_three_point_pivot:
+            return True, "three_point_pivot_peak", {
+                "b2_high": b2.high,
+                "b3_close": b3.close,
+                "b2_mid": b2_mid,
+                "highest": highest,
+                "cause": "純數學真峰頂確立: 中間棒High居頂，確認棒收陰跌破實體中點，立即平多落袋！",
+            }
+
+        # 條件 2: MA3 明確下拐且價格實體收陰破壞短線結構 (長上影線黑心陽或反轉大陰棒)
+        closes = [b.close for b in self.bars]
+        ma3_curr = snap["ma3"]
+        ma3_prev = self._sma(closes[:-1], self.cfg.ma_fast_period)
+        ma3_prev2 = self._sma(closes[:-2], self.cfg.ma_fast_period) if len(closes) >= self.cfg.ma_fast_period + 2 else ma3_prev
+
+        if None not in (ma3_curr, ma3_prev, ma3_prev2):
+            ma3_hooking_down = (ma3_curr < ma3_prev) and (ma3_prev >= ma3_prev2)
+            close_below_ma3 = b3.close < ma3_curr
+            b3_body = b3.body
+            b3_upper_wick = b3.high - max(b3.open, b3.close)
+
+            reversal_momentum = (
+                (b3.bearish and b3_body >= 0.35 * snap["atr"]) or
+                (b3_upper_wick >= 1.5 * b3_body and b3_upper_wick >= 0.25 * snap["atr"] and b3.high >= snap["kc_upper"]) or
+                (b2.bullish and b3.bearish and b3.close <= b2.open)
+            )
+
+            if ma3_hooking_down and close_below_ma3 and reversal_momentum:
+                return True, "ma3_reversal_peak", {
+                    "ma3_curr": ma3_curr,
+                    "ma3_prev": ma3_prev,
+                    "b3_close": b3.close,
+                    "cause": "MA3見頂下拐且收盤跌破均線結構，反轉確認立即平多！",
+                }
+
+        return False, "", {}
+
+    def _detect_true_pivot_valley(self, snap: Dict[str, float]) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        空單真谷底偵測：波段形成局部低點，反轉得到確認時立即平空，不等待漲回 KC 中軌。
+        """
+        if len(self.bars) < 3:
+            return False, "", {}
+
+        entry_p = self.position_entry_price["short"]
+        if entry_p is None:
+            return False, "", {}
+
+        # 開倉初期防抖：最新已收線棒必須在開倉之後，不在進場當根誤平
+        if self.bar_index <= self.position_entry_bar_index["short"]:
+            return False, "", {}
+
+        entry_atr = self.position_entry_atr["short"] or snap["atr"]
+        lowest = self.position_favorable_extreme["short"] or entry_p
+        favorable_gain = entry_p - lowest
+
+        # 必須有實質波段展開 (曾獲利 >= 0.2 ATR，或最低價曾觸及/跌破 KC 下軌)
+        unfolded = (favorable_gain >= self.cfg.pivot_min_profit_atr * entry_atr) or (lowest <= snap["kc_lower"] * 1.002)
+        if not unfolded:
+            return False, "", {}
+
+        b1, b2, b3 = self.bars[-3], self.bars[-2], self.bars[-1]
+
+        # 條件 1: 純數學三點樞紐谷底 (b2 最低價探底，b3 確認收陽突破 b2 實體中點或最高價)
+        b2_mid = (b2.open + b2.close) / 2.0
+        is_three_point_pivot = (
+            b2.low < b1.low and
+            b2.low < b3.low and
+            b3.bullish and
+            (b3.close > b2_mid or b3.close > b2.high)
+        )
+        if is_three_point_pivot:
+            return True, "three_point_pivot_valley", {
+                "b2_low": b2.low,
+                "b3_close": b3.close,
+                "b2_mid": b2_mid,
+                "lowest": lowest,
+                "cause": "純數學真谷底確立: 中間棒Low探底，確認棒收陽突破實體中點，立即平空鎖利！",
+            }
+
+        # 條件 2: MA3 觸底上拐且價格實體收陽站上短線結構 (長下影線倒灌陰或反轉大陽棒)
+        closes = [b.close for b in self.bars]
+        ma3_curr = snap["ma3"]
+        ma3_prev = self._sma(closes[:-1], self.cfg.ma_fast_period)
+        ma3_prev2 = self._sma(closes[:-2], self.cfg.ma_fast_period) if len(closes) >= self.cfg.ma_fast_period + 2 else ma3_prev
+
+        if None not in (ma3_curr, ma3_prev, ma3_prev2):
+            ma3_hooking_up = (ma3_curr > ma3_prev) and (ma3_prev <= ma3_prev2)
+            close_above_ma3 = b3.close > ma3_curr
+            b3_body = b3.body
+            b3_lower_wick = min(b3.open, b3.close) - b3.low
+
+            reversal_momentum = (
+                (b3.bullish and b3_body >= 0.35 * snap["atr"]) or
+                (b3_lower_wick >= 1.5 * b3_body and b3_lower_wick >= 0.25 * snap["atr"] and b3.low <= snap["kc_lower"]) or
+                (b2.bearish and b3.bullish and b3.close >= b2.open)
+            )
+
+            if ma3_hooking_up and close_above_ma3 and reversal_momentum:
+                return True, "ma3_reversal_valley", {
+                    "ma3_curr": ma3_curr,
+                    "ma3_prev": ma3_prev,
+                    "b3_close": b3.close,
+                    "cause": "MA3觸底上拐且收盤站上均線結構，反轉確認立即平空！",
+                }
+
+        return False, "", {}
+
     def pop_pending_entry(self) -> Optional[EntrySignal]:
         if self._pending_entries:
             return self._pending_entries.popleft()
@@ -663,6 +852,8 @@ class KCTrendStrategy:
         self.position_entry_price[side] = avg_price
         snap = self._indicator_snapshot()
         self.position_entry_atr[side] = atr_at_entry or (snap["atr"] if snap else None)
+        self.position_entry_bar_index[side] = self.bar_index
+        self.position_favorable_extreme[side] = avg_price
         self.partial_taken[side] = False
 
     def notify_position_closed(self, side: Side, timestamp: Optional[float] = None) -> None:
@@ -671,5 +862,7 @@ class KCTrendStrategy:
     def _mark_exit(self, side: Side) -> None:
         self.position_entry_price[side] = None
         self.position_entry_atr[side] = None
+        self.position_entry_bar_index[side] = -10**9
+        self.position_favorable_extreme[side] = None
         self.partial_taken[side] = False
         self.last_exit_bar_index[side] = self.bar_index

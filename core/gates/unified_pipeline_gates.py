@@ -119,6 +119,10 @@ class ExitGate:
         should_exit, reason, meta = result
         if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
             return result
+        # 開倉初期呼吸保護：最高優先續抱 (防剛開倉微幅震盪被洗)
+        if not should_exit and meta.get("early_pullback_shield"):
+            return result
+
         if not pos or not market_data:
             return result
         try:
@@ -132,41 +136,143 @@ class ExitGate:
             else market_data.get("raw_df")
         )
 
-        # ── 2. 極值轉折點見頂/見底平倉：唯認 KC 中軌破位，回踩不平倉 ──
-        # 空單：價格尚未收盤實體翻上 KC 中軌，嚴禁在跌深反彈/最低點下影線處過敏誤平倉！
-        # 多單：價格尚未收盤實體跌破 KC 中軌，嚴禁在正常回踩/MA3抖動處過敏誤平倉！
-        pos_side_val = str(pos.get("side", "")).upper()
-        kc_mid_val = float(market_data.kc_middle if isinstance(market_data, MarketDataSnapshot) else market_data.get("kc_middle", 0.0))
-        ema_slow_val = float(market_data.ema_slow if isinstance(market_data, MarketDataSnapshot) else market_data.get("ema_slow", 0.0))
-        ma15_val = float(market_data.ma15 if isinstance(market_data, MarketDataSnapshot) else market_data.get("ma15", ema_slow_val))
+        pos_side = str(pos.get("side", "")).upper()
         quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0)))
+        atr_val = (
+            market_data.atr if isinstance(market_data, MarketDataSnapshot)
+            else float(atr or market_data.get("atr", 0.0))
+        )
+        kc_mid_val = float(market_data.kc_middle if isinstance(market_data, MarketDataSnapshot) else market_data.get("kc_middle", 0.0))
+        kc_slope_val = float(market_data.kc_middle_slope if isinstance(market_data, MarketDataSnapshot) else (kc_slope or market_data.get("kc_middle_slope", 0.0)))
 
-        latest_c = quote_p
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0:
-            latest_c = float(raw_df["close"].iloc[-1])
-        ref_price = quote_p if quote_p > 0 else latest_c
+        closed_df = raw_df
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and "is_closed" in raw_df.columns:
+            cdf = raw_df[raw_df["is_closed"] == True]
+            if len(cdf) > 0:
+                closed_df = cdf
 
-        allow_tb_reversal = True
-        if ref_price > 0:
-            if pos_side_val == "LONG" and (ref_price >= kc_mid_val or (ema_slow_val > 0 and ref_price >= ema_slow_val) or (ma15_val > 0 and ref_price >= ma15_val)):
-                # 依然在 KC 中軌或棕色慢線/MA15上方，多頭結構完好，不因小幅抖動過敏平多
-                allow_tb_reversal = False
-            elif pos_side_val == "SHORT" and (ref_price <= kc_mid_val or (ema_slow_val > 0 and ref_price <= ema_slow_val) or (ma15_val > 0 and ref_price <= ma15_val)):
-                # 依然在 KC 中軌或棕色慢線/MA15下方，空頭結構完好，不因底部毛刺反抽過敏平空
-                allow_tb_reversal = False
+        latest_close = quote_p
+        if closed_df is not None and isinstance(closed_df, pd.DataFrame) and len(closed_df) > 0:
+            latest_close = float(closed_df["close"].iloc[-1])
+        ref_c = quote_p if quote_p > 0 else latest_close
 
-        if allow_tb_reversal:
+        # 僅考慮進場之後產生的波段高點/低點
+        entry_ts = float(pos.get("open_timestamp") or pos.get("entry_timestamp") or 0.0)
+        entry_p = float(pos.get("entry_price") or 0.0)
+        bars_since = None
+        if entry_ts > 0 and raw_df is not None and isinstance(raw_df, pd.DataFrame) and "timestamp" in raw_df.columns:
+            bars_since = raw_df[raw_df["timestamp"] >= entry_ts]
+
+        ma3_curr_val = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", quote_p)) if isinstance(market_data, MarketDataSnapshot) else market_data.get("ma3", quote_p))
+        ma3_prev_val = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr_val)) if isinstance(market_data, MarketDataSnapshot) else market_data.get("prev_ma3", ma3_curr_val))
+        if closed_df is not None and isinstance(closed_df, pd.DataFrame) and len(closed_df) >= 4:
+            if "ma3" in closed_df.columns:
+                ma3_curr_val = float(closed_df["ma3"].iloc[-1])
+                ma3_prev_val = float(closed_df["ma3"].iloc[-2])
+            else:
+                ma3_curr_val = float(closed_df["close"].iloc[-3:].mean())
+                ma3_prev_val = float(closed_df["close"].iloc[-4:-1].mean())
+
+        # ── 1. 極值轉折點見頂/見底平倉 (V轉/倒V轉及時平倉鎖利，高於一般利潤階梯鎖利) ──
+        cause_str = str(meta.get("cause", ""))
+        is_structure_protected = (
+            meta.get("early_pullback_shield")
+            or meta.get("trend_structure_intact")
+            or meta.get("slow_ma_trend_shield")
+            or "守穩KC中軌" in cause_str
+            or "受壓於KC中軌" in cause_str
+            or "未達連續兩根收破EMA40慢線" in cause_str
+            or "價格守在MA5防守線之上" in cause_str
+            or "價格受壓於MA5防守線之下" in cause_str
+        )
+        if not is_structure_protected:
             from core.gates.top_bottom_reversal_exit import evaluate_top_bottom_reversal_exit
-            atr_val = (
-                market_data.atr if isinstance(market_data, MarketDataSnapshot)
-                else float(atr or market_data.get("atr", 0.0))
-            )
             tb_exit, tb_reason, tb_meta = evaluate_top_bottom_reversal_exit(pos, raw_df, atr_val=atr_val)
             if tb_exit and tb_reason:
                 return True, tb_reason, {
                     **(meta or {}),
                     "top_bottom_reversal": tb_meta,
                     "cause": tb_meta.get("cause"),
+                }
+
+        # ── 2. 授權特定淨 ROE 階梯鎖利 (PROFIT_LOCK)：放行 ──
+        if should_exit and reason == "PROFIT_LOCK":
+            return result
+
+        # ══════════════════════════════════════════════════════════════════
+        # 核心防守線：守穩向上的 KC 中軌回踩不平倉鐵律（唯認中軌實體跌破）
+        # 只要 1m K 棒收盤價依然在 KC 中軌之上，且中軌斜率向上，強制一票否決任何回踩平多！
+        # 除非：高點實質回撤 Trailing Stop (回吐 >= 1.5 ATR)
+        # ══════════════════════════════════════════════════════════════════
+        # 防線一：MA3 強勢向上/向下時，嚴禁因影線摸頂/摸底平倉 (VETO_EXIT_MA3_STRONG_UP / DOWN)
+        # 只要 MA3 依然處於強勢上揚（斜率 > 0）且收盤穩踩 MA3 之上，即便碰觸上軌有上影線，一律禁止平多！
+        # 只要 MA3 依然處於強勢下行（斜率 < 0）且收盤受壓於 MA3 之下，即便碰觸下軌有下影線，一律禁止平空！
+        # ══════════════════════════════════════════════════════════════════
+        if pos_side == "LONG" and ma3_curr_val > ma3_prev_val and ref_c >= ma3_curr_val:
+            return False, "VETO_HOLD", {
+                **(meta or {}),
+                "hold_rule": "VETO_EXIT_MA3_STRONG_UP",
+                "close": ref_c,
+                "ma3": ma3_curr_val,
+                "prev_ma3": ma3_prev_val,
+                "cause": "多單強勢上揚防護 (VETO_EXIT_MA3_STRONG_UP): MA3強勢向上且收盤穩踩MA3之上，即便觸軌出現上影線，一律禁止平多 (一票否決微型峰頂)，死抱主升浪！",
+            }
+
+        elif pos_side == "SHORT" and ma3_curr_val < ma3_prev_val and ref_c <= ma3_curr_val:
+            return False, "VETO_HOLD", {
+                **(meta or {}),
+                "hold_rule": "VETO_EXIT_MA3_STRONG_DOWN",
+                "close": ref_c,
+                "ma3": ma3_curr_val,
+                "prev_ma3": ma3_prev_val,
+                "cause": "空單強勢下殺防護 (VETO_EXIT_MA3_STRONG_DOWN): MA3強勢向下且收盤受壓於MA3之下，即便觸軌出現下影線，一律禁止平空 (一票否決微型谷底)，死抱主跌浪！",
+            }
+
+        # ══════════════════════════════════════════════════════════════════
+        # 核心防守線：守穩向上的 KC 中軌回踩不平倉鐵律（唯認中軌實體跌破）
+        # 只要 1m K 棒收盤價依然在 KC 中軌之上，且中軌斜率向上，強制一票否決任何回踩平多！
+        # 除非：高點實質回撤 Trailing Stop (回吐 >= 1.5 ATR)
+        # ══════════════════════════════════════════════════════════════════
+        if pos_side == "LONG":
+            highest_p = float(pos.get("highest_price") or entry_p or 0.0)
+            if bars_since is not None and not bars_since.empty:
+                highest_p = max(highest_p, float(bars_since["high"].max()))
+            elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0 and entry_p > 0:
+                highest_p = max(highest_p, float(pos.get("highest_price") or entry_p))
+            pullback_dist = highest_p - ref_c
+            is_trailing_stop_triggered = (atr_val > 0 and pullback_dist >= 1.5 * atr_val)
+
+            # 只要收盤與報價均在 KC 中軌之上，且中軌斜率向上，未達 1.5 ATR 高點回撤前，一票否決任何平多！
+            if (ref_c >= kc_mid_val or latest_close >= kc_mid_val) and kc_slope_val > 0 and not is_trailing_stop_triggered:
+                return False, "VETO_HOLD", {
+                    **(meta or {}),
+                    "hold_rule": "VETO_EXIT_HOLD_ABOVE_KC_MIDDLE",
+                    "close": ref_c,
+                    "kc_middle": kc_mid_val,
+                    "kc_middle_slope": kc_slope_val,
+                    "pullback_atr": pullback_dist / atr_val if atr_val > 0 else 0.0,
+                    "cause": f"開倉後回踩不平倉鐵律 (中軌防守線 VETO_EXIT_HOLD_ABOVE_KC_MIDDLE): 收盤價(close={ref_c:.6f})穩守向上的KC中軌(mid={kc_mid_val:.6f}, slope={kc_slope_val:.6f})之上，高點回吐未達1.5*ATR，屬良性回踩換手，一票否決平多 (一票否決微型峰頂)，死抱主升浪！",
+                }
+
+        elif pos_side == "SHORT":
+            lowest_p = float(pos.get("lowest_price") or entry_p or 0.0)
+            if bars_since is not None and not bars_since.empty:
+                lowest_p = min(lowest_p, float(bars_since["low"].min()))
+            elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0 and entry_p > 0:
+                lowest_p = min(lowest_p, float(pos.get("lowest_price") or entry_p))
+            bounce_dist = ref_c - lowest_p
+            is_trailing_stop_triggered_s = (atr_val > 0 and bounce_dist >= 1.5 * atr_val)
+
+            # 只要收盤與報價均在 KC 中軌之下，且中軌斜率向下，未達 1.5 ATR 低點反抽前，一票否決任何平空！
+            if (ref_c <= kc_mid_val or latest_close <= kc_mid_val) and kc_slope_val < 0 and not is_trailing_stop_triggered_s:
+                return False, "VETO_HOLD", {
+                    **(meta or {}),
+                    "hold_rule": "VETO_EXIT_HOLD_BELOW_KC_MIDDLE",
+                    "close": ref_c,
+                    "kc_middle": kc_mid_val,
+                    "kc_middle_slope": kc_slope_val,
+                    "bounce_atr": bounce_dist / atr_val if atr_val > 0 else 0.0,
+                    "cause": f"開倉後反抽不平空鐵律 (中軌防守線 VETO_EXIT_HOLD_BELOW_KC_MIDDLE): 收盤價(close={ref_c:.6f})受壓於向下的KC中軌(mid={kc_mid_val:.6f}, slope={kc_slope_val:.6f})之下，低點反彈未達1.5*ATR，屬良性反抽消化，一票否決平空 (一票否決微型谷底)，死抱主跌浪！",
                 }
 
         # ── 3. 中軌 + MA3 方向對稱平倉與暫緩機制 ──
@@ -670,12 +776,6 @@ class ExitGate:
                 )
 
                 if is_pivot_valid:
-                    # 鐵律：只要收盤價未實體跌破 KC 中軌與 MA15 之下，嚴禁觸發見頂平多！
-                    if float(c_curr["close"]) >= kc_mid or (ma15 > 0 and float(c_curr["close"]) >= ma15):
-                        return False, "VETO_HOLD", {
-                            **meta,
-                            "cause": f"未實體跌破中軌與MA15嚴禁平多: 收盤價(close={float(c_curr['close']):.6f})仍在KC中軌(mid={kc_mid:.6f})或MA15(ma15={ma15:.6f})之上，耐受上軌震盪回踩，一票否決平多，抱牢主升浪！",
-                        }
                     if unrealized_pct >= 0.002 or peak_roe >= 0.008:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
                             **meta,
@@ -883,12 +983,6 @@ class ExitGate:
                 )
 
                 if is_valley_valid:
-                    # 鐵律：只要收盤價未實體站穩 KC 中軌與 MA15 之上，嚴禁觸發見底平空！
-                    if float(c_curr["close"]) <= kc_mid or (ma15 > 0 and float(c_curr["close"]) <= ma15):
-                        return False, "VETO_HOLD", {
-                            **meta,
-                            "cause": f"未實體站穩中軌與MA15嚴禁平空: 收盤價(close={float(c_curr['close']):.6f})仍在KC中軌(mid={kc_mid:.6f})或MA15(ma15={ma15:.6f})之下，耐受下軌震盪反抽，一票否決平空，抱牢主跌浪！",
-                        }
                     if unrealized_pct >= 0.002 or peak_roe >= 0.008:
                         return True, "EARLY_PIVOT_VALLEY_EXIT", {
                             **meta,
@@ -1168,11 +1262,61 @@ class EntryGate:
             "ma_spread_pct": ma_spread_pct,
         }
 
-        c_open = curr_k.get("open", quote)
-        c_close = curr_k.get("close", quote)
-        c_high = curr_k.get("high", max(c_open, c_close))
-        c_low = curr_k.get("low", min(c_open, c_close))
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0:
+            last_r = raw_df.iloc[-1]
+            c_open = float(curr_k.get("open", last_r.get("open", quote)))
+            c_close = float(curr_k.get("close", last_r.get("close", quote)))
+            c_high = float(curr_k.get("high", last_r.get("high", max(c_open, c_close))))
+            c_low = float(curr_k.get("low", last_r.get("low", min(c_open, c_close))))
+        else:
+            c_open = float(curr_k.get("open", quote))
+            c_close = float(curr_k.get("close", quote))
+            c_high = float(curr_k.get("high", max(c_open, c_close)))
+            c_low = float(curr_k.get("low", min(c_open, c_close)))
         body = abs(c_close - c_open)
+        candle_span = c_high - c_low
+
+        # ══════════════════════════════════════════════════════════════════
+        # 核心門禁 0-A：順勢動能一致性鐵律（當根反向線 100% 一票否決，2026-10-24 最新授權）
+        # 1. 買多（LONG）：當根 K 棒必須是實體紅棒 (Close > Open)；若是黑棒或十字星 (Close <= Open)，100% 一票否決禁止做多接飛刀！
+        # 2. 賣空（SHORT）：當根 K 棒必須是實體黑棒 (Close < Open)；若是紅棒或十字星 (Close >= Open)，100% 一票否決禁止做空頂風作案！
+        # 3. 進階強化防假同向長影線：
+        #    - 買多：嚴禁「長上影線黑心陽線」（上影線 >= 1.5*實體 且 上影線 >= 0.25*ATR 且 收盤落在下半部）
+        #    - 賣空：嚴禁「長下影線倒灌陰線」（下影線 >= 1.5*實體 且 下影線 >= 0.25*ATR 且 收盤落在上半部）
+        # ══════════════════════════════════════════════════════════════════
+        if signal_side == "LONG":
+            if c_close <= c_open:
+                return False, "VETO_BUY_OPPOSITE_BAR", {
+                    **meta,
+                    "c_open": c_open,
+                    "c_close": c_close,
+                    "cause": "VETO_BUY_OPPOSITE_BAR: 當根為黑棒/十字星(Close <= Open)，順勢動能不一致，禁止做多接飛刀！",
+                }
+            upper_wick = c_high - c_close
+            if upper_wick >= body and upper_wick >= 0.25 * atr_val:
+                return False, "VETO_WICK_REJECTION", {
+                    **meta,
+                    "upper_wick": upper_wick,
+                    "body": body,
+                    "cause": f"長上影線黑心陽線一票否決: 上影線({upper_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，買盤動能衰竭受阻，禁止做多摸頂！",
+                }
+        elif signal_side == "SHORT":
+            if c_close >= c_open:
+                return False, "VETO_SELL_OPPOSITE_BAR", {
+                    **meta,
+                    "c_open": c_open,
+                    "c_close": c_close,
+                    "cause": "VETO_SELL_OPPOSITE_BAR: 當根為紅棒/十字星(Close >= Open)，順勢動能不一致，禁止做空頂風作案！",
+                }
+            lower_wick = c_close - c_low
+            if lower_wick >= body and lower_wick >= 0.25 * atr_val:
+                return False, "VETO_WICK_REJECTION", {
+                    **meta,
+                    "lower_wick": lower_wick,
+                    "body": body,
+                    "cause": f"長下影線倒灌陰線一票否決: 下影線({lower_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，賣盤動能衰竭見底，禁止做空地板殺跌！",
+                }
+
         # ══════════════════════════════════════════════════════════════════
         # 門禁 0：順勢交易鐵律（大趨勢一票否決，AGENTS.md 最高準則，2026-10-24 最新授權）
         # 空頭趨勢嚴禁開多：大週期為 BEARISH，均線空頭排列，或價格在慢線下方，100% 阻斷開多接飛刀！

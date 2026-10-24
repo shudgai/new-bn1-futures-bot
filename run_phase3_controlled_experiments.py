@@ -17,8 +17,8 @@ import json
 import urllib.request
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional, Tuple
 
 from core.services.data_pipeline import MarketDataSnapshot
 from core.gates.unified_pipeline_gates import EntryGate, ExitGate
@@ -93,6 +93,7 @@ def precompute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     high = df_calc["high"]
     low = df_calc["low"]
 
+    df_calc["ma3"] = close.rolling(window=3).mean()
     df_calc["ma5"] = close.rolling(window=5).mean()
     df_calc["ma15"] = close.rolling(window=15).mean()
     df_calc["ema_fast"] = close.ewm(span=15, adjust=False).mean()
@@ -123,6 +124,186 @@ def precompute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df_calc
 
 
+@dataclass(frozen=True)
+class GateDecision:
+    """開倉裁決結果物件 (支援 Tuple 解包以維持相容性: allow, reason = decision)"""
+    allow_entry: bool
+    reason: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __iter__(self):
+        yield self.allow_entry
+        yield self.reason
+
+
+def evaluate_entry_gate(
+    df: pd.DataFrame,
+    signal_type: str,
+    current_idx: int = -1,
+    min_bandwidth_threshold: float = 0.008,
+) -> GateDecision:
+    """
+    EntryGate 完整防呆開倉審查 (雙層漏斗架構，2026-10-24 授權版)
+
+    參數:
+        df: 包含 OHLCV、MA3、MA5、MA15、KC、ATR 等欄位的 DataFrame
+        signal_type: "BUY", "LONG", "SELL", "SHORT"
+        current_idx: 時間錨點 (預設 -1 已收線 K 棒)
+        min_bandwidth_threshold: 判定死魚帶寬閥值
+    回傳:
+        GateDecision: 支援 (allow_entry, reason) 解包
+    """
+    sig_norm = str(signal_type).upper().strip()
+    if sig_norm in ("BUY", "LONG"):
+        direction = "LONG"
+    elif sig_norm in ("SELL", "SHORT"):
+        direction = "SHORT"
+    else:
+        return GateDecision(False, f"VETO_INVALID_SIGNAL: 未知開倉方向 '{signal_type}'")
+
+    n_bars = len(df)
+    actual_idx = (n_bars + current_idx) if current_idx < 0 else current_idx
+    if actual_idx < 7 or n_bars < 8:
+        return GateDecision(False, "VETO_NOT_ENOUGH_BARS: 歷史K棒數量不足8根")
+    current_idx = actual_idx
+
+    row = df.iloc[current_idx]
+    prev_row = df.iloc[current_idx - 1]
+    prev3_row = df.iloc[current_idx - 3]
+
+    atr = float(row["atr"])
+    if not math.isfinite(atr) or atr <= 0:
+        atr = max(float(row["high"]) - float(row["low"]), float(row["close"]) * 0.01)
+
+    open_p = float(row["open"])
+    close = float(row["close"])
+    high = float(row["high"])
+    low = float(row["low"])
+    bar_range = max(high - low, 1e-8)
+    body_size = abs(close - open_p)
+
+    # 均線與通道數據
+    ma3 = float(row["ma3"]) if "ma3" in row and not pd.isna(row["ma3"]) else float(row["ma5"])
+    ma3_prev = float(prev_row["ma3"]) if "ma3" in prev_row and not pd.isna(prev_row["ma3"]) else float(prev_row["ma5"])
+    ma15 = float(row["ma15"])
+    ma15_prev3 = float(prev3_row["ma15"])
+    kc_mid = float(row["kc_middle"])
+    kc_up = float(row["kc_upper"])
+    kc_low = float(row["kc_lower"])
+
+    ma3_slope = ma3 - ma3_prev
+    ma15_slope = ma15 - ma15_prev3
+    kc_mid_slope = kc_mid - float(prev3_row["kc_middle"])
+
+    trace_meta = {
+        "actual_idx": current_idx, "direction": direction, "close": close,
+        "open": open_p, "atr": atr, "ma3": ma3, "ma3_slope": ma3_slope,
+        "ma15": ma15, "ma15_slope": ma15_slope, "kc_mid": kc_mid, "kc_mid_slope": kc_mid_slope,
+    }
+
+    # =========================================================
+    # 第一層：全域環境硬性禁令 (Hard Veto)
+    # =========================================================
+
+    # 禁令 A：均線走平/糾纏麻花捲過濾
+    ma15_window = df["ma15"].iloc[current_idx - 7 : current_idx + 1]
+    ma15_range_8 = float(ma15_window.max() - ma15_window.min())
+    is_ma15_strictly_flat = ma15_range_8 < (0.25 * atr)
+
+    ma3_slice = df["ma3"].iloc[current_idx - 4 : current_idx + 1] if "ma3" in df.columns else df["ma5"].iloc[current_idx - 4 : current_idx + 1]
+    ma15_slice = df["ma15"].iloc[current_idx - 4 : current_idx + 1]
+    ma_gap_avg = float((ma3_slice - ma15_slice).abs().mean())
+
+    if is_ma15_strictly_flat and (ma_gap_avg < 0.15 * atr):
+        trace_meta.update(ma15_range_8=ma15_range_8, ma_gap_avg=ma_gap_avg)
+        return GateDecision(False, f"VETO_MA_ENTANGLED: 過去8根均線實質走平且黏合(極差={ma15_range_8:.4f},間距={ma_gap_avg:.4f})，排除垃圾盤整", trace_meta)
+
+    # 禁令 B：死魚盤判斷與「收斂破位」例外放行
+    kc_bandwidth = (kc_up - kc_low) / kc_mid if kc_mid > 0 else 0.0
+    trace_meta.update(kc_bandwidth=kc_bandwidth, min_bandwidth_threshold=min_bandwidth_threshold)
+    is_breakout_long_surge = (close > kc_up) and (body_size >= 0.8 * atr)
+    is_breakout_short_surge = (close < kc_low) and (body_size >= 0.8 * atr)
+
+    if kc_bandwidth < min_bandwidth_threshold:
+        if direction == "LONG" and not is_breakout_long_surge:
+            return GateDecision(False, f"VETO_KC_SQUEEZE_DEAD: 通道極度收斂(bw={kc_bandwidth:.5f}<{min_bandwidth_threshold})且未見強勢破軌大陽棒", trace_meta)
+        elif direction == "SHORT" and not is_breakout_short_surge:
+            return GateDecision(False, f"VETO_KC_SQUEEZE_DEAD: 通道極度收斂(bw={kc_bandwidth:.5f}<{min_bandwidth_threshold})且未見強勢破軌大陰棒", trace_meta)
+
+    # 禁令 C：防天花板追高 / 地板追空 (乖離率極限防護)
+    if direction == "LONG":
+        dist_from_mid = close - kc_mid
+        dist_above_upper = close - kc_up
+        trace_meta.update(dist_from_mid=dist_from_mid, dist_above_upper=dist_above_upper)
+        if dist_from_mid > (1.8 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 距中軌過度延展(乖離={dist_from_mid:.4f} > 1.8*ATR={1.8*atr:.4f})，嚴防天花板站崗", trace_meta)
+        if dist_above_upper > (0.4 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_LONG: 突破上軌過遠(超軌={dist_above_upper:.4f} > 0.4*ATR={0.4*atr:.4f})，嚴重超買拒絕追多", trace_meta)
+    elif direction == "SHORT":
+        dist_below_mid = kc_mid - close
+        dist_below_lower = kc_low - close
+        trace_meta.update(dist_below_mid=dist_below_mid, dist_below_lower=dist_below_lower)
+        if dist_below_mid > (1.8 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 距中軌過度延展(負乖離={dist_below_mid:.4f} > 1.8*ATR={1.8*atr:.4f})，嚴防殺在地板阿呆谷", trace_meta)
+        if dist_below_lower > (0.4 * atr):
+            return GateDecision(False, f"VETO_OVEREXTENDED_SHORT: 跌破下軌過遠(超軌={dist_below_lower:.4f} > 0.4*ATR={0.4*atr:.4f})，嚴重超賣拒絕追空", trace_meta)
+
+    # =========================================================
+    # 第二層：當根方向與動能同向審查
+    # =========================================================
+    if direction == "LONG":
+        # 1. 當根同向性：必須為實體陽線（拒絕黑棒與十字星）
+        if close <= open_p:
+            return GateDecision(False, f"VETO_BUY_OPPOSITE_BAR: 當根收陰或平盤(Close={close:.4f} <= Open={open_p:.4f})，嚴禁接飛刀", trace_meta)
+
+        # 2. 假同向影線過濾：上影線不可超過整根總幅度的 60% 且不可大量回吐
+        upper_wick = high - close
+        if upper_wick > (0.6 * bar_range) and (upper_wick >= body_size or close < (low + 0.5 * bar_range)):
+            trace_meta.update(upper_wick=upper_wick, bar_range=bar_range)
+            return GateDecision(False, f"VETO_WICK_REJECTION: 長上影衝高回落(上影={upper_wick:.4f} > 60%振幅={0.6*bar_range:.4f})，疑似誘多", trace_meta)
+
+        # 3. 短均線動能：MA3 必須明確抬頭向上
+        if ma3_slope <= 0:
+            return GateDecision(False, f"VETO_MA3_NOT_UP: MA3向下或走平(斜率={ma3_slope:.6f} <= 0)，短線無上攻動能", trace_meta)
+
+        # 4. 中長均線健康度：MA15 與 KC 中軌「不再深挫」，斜率大於安全下限
+        if ma15_slope < -(0.03 * atr) or kc_mid_slope < -(0.03 * atr):
+            return GateDecision(False, f"VETO_MA15_PLUNGING: 中長均線仍在重挫下傾(MA15={ma15_slope:.5f},KC_mid={kc_mid_slope:.5f} < -0.03*ATR)，禁止逆勢抄底", trace_meta)
+
+        # 5. 結構站位：收盤價必須穩穩收在 KC 中軌之上
+        if close < kc_mid:
+            return GateDecision(False, f"VETO_BELOW_KC_MIDDLE: 價格在中軌下方受壓(Close={close:.4f} < KC_mid={kc_mid:.4f})，不可做多", trace_meta)
+
+        return GateDecision(True, "PASS_LONG: 陽線確認 + 上影健康 + MA3翻揚 + 站上中軌 + 均線非暴跌", trace_meta)
+
+    elif direction == "SHORT":
+        # 1. 當根同向性：必須為實體陰線（拒絕紅棒與十字星）
+        if close >= open_p:
+            return GateDecision(False, f"VETO_SELL_OPPOSITE_BAR: 當根收陽或平盤(Close={close:.4f} >= Open={open_p:.4f})，嚴禁頂風開空", trace_meta)
+
+        # 2. 假同向影線過濾：下影線不可超過整根總幅度的 60%
+        lower_wick = close - low
+        if lower_wick > (0.6 * bar_range) and (lower_wick >= body_size or close > (high - 0.5 * bar_range)):
+            trace_meta.update(lower_wick=lower_wick, bar_range=bar_range)
+            return GateDecision(False, f"VETO_WICK_REJECTION: 長下影探底回抽(下影={lower_wick:.4f} > 60%振幅={0.6*bar_range:.4f})，疑似誘空", trace_meta)
+
+        # 3. 短均線動能：MA3 必須向下壓制，抬頭直接一票否決
+        if ma3_slope >= 0:
+            return GateDecision(False, f"VETO_MA3_RISING: MA3抬頭或走平(斜率={ma3_slope:.6f} >= 0)，嚴禁逆勢做空", trace_meta)
+
+        # 4. 中長均線健康度：MA15 與 KC 中軌「不再強烈飆漲」，斜率小於安全上限
+        if ma15_slope > (0.03 * atr) or kc_mid_slope > (0.03 * atr):
+            return GateDecision(False, f"VETO_MA15_SOARING: 中長均線仍處於強推升狀態(MA15={ma15_slope:.5f},KC_mid={kc_mid_slope:.5f} > 0.03*ATR)，禁止迎頭摸頂", trace_meta)
+
+        # 5. 結構站位：收盤價必須壓制在 KC 中軌之下
+        if close > kc_mid:
+            return GateDecision(False, f"VETO_ABOVE_KC_MIDDLE: 價格在中軌上方強勢(Close={close:.4f} > KC_mid={kc_mid:.4f})，不可做空", trace_meta)
+
+        return GateDecision(True, "PASS_SHORT: 陰線確認 + 下影健康 + MA3下壓 + 壓在中軌下 + 均線非暴漲", trace_meta)
+
+    return GateDecision(False, f"VETO_UNKNOWN_SIGNAL: 未知訊號類型 {signal_type}")
+
+
 def build_snapshot_from_precomputed(symbol: str, df_calc: pd.DataFrame, i: int, quote: float, position: Optional[Dict[str, Any]] = None) -> MarketDataSnapshot:
     """使用預計算數據極速構建 MarketDataSnapshot (與 DataPipeline.calculate_snapshot 輸出完全一致)"""
     last_row = df_calc.iloc[i]
@@ -131,13 +312,15 @@ def build_snapshot_from_precomputed(symbol: str, df_calc: pd.DataFrame, i: int, 
     curr_k = {
         "open": float(last_row["open"]), "high": float(last_row["high"]),
         "low": float(last_row["low"]), "close": float(last_row["close"]),
-        "volume": float(last_row["volume"]), "ma5": float(last_row["ma5"]),
+        "volume": float(last_row["volume"]), "ma3": float(last_row["ma3"]),
+        "ma5": float(last_row["ma5"]),
         "ma15": float(last_row["ma15"]), "kc_middle": float(last_row["kc_middle"]),
     }
     prev_k = {
         "open": float(prev_row["open"]), "high": float(prev_row["high"]),
         "low": float(prev_row["low"]), "close": float(prev_row["close"]),
-        "volume": float(prev_row["volume"]), "ma5": float(prev_row["ma5"]),
+        "volume": float(prev_row["volume"]), "ma3": float(prev_row["ma3"]),
+        "ma5": float(prev_row["ma5"]),
         "ma15": float(prev_row["ma15"]), "kc_middle": float(prev_row["kc_middle"]),
     }
 
@@ -453,16 +636,20 @@ def run_experiment(df: pd.DataFrame, symbol: str, cfg: ExperimentConfig, period_
                         detected_mode = "MODE_1_TREND_START"
 
             if candidate_signal:
-                last_exit_ctx = {
-                    **(last_exit_record or {}),
-                    "hourly_entry_count": len(hourly_entries),
-                    "current_time": bar_ts,
-                }
-                should_entry, entry_reason, entry_meta = EntryGate.evaluate(
-                    signal_type=candidate_signal,
-                    market_data=snapshot,
-                    last_exit_context=last_exit_ctx
-                )
+                gate_side = "BUY" if "LONG" in candidate_signal else "SELL"
+                gate_ok, gate_reason = evaluate_entry_gate(df, signal_type=gate_side, current_idx=i)
+                should_entry = False
+                if gate_ok:
+                    last_exit_ctx = {
+                        **(last_exit_record or {}),
+                        "hourly_entry_count": len(hourly_entries),
+                        "current_time": bar_ts,
+                    }
+                    should_entry, entry_reason, entry_meta = EntryGate.evaluate(
+                        signal_type=candidate_signal,
+                        market_data=snapshot,
+                        last_exit_context=last_exit_ctx
+                    )
 
                 if should_entry:
                     side = entry_meta.get("side", "LONG" if "LONG" in candidate_signal else "SHORT")

@@ -63,11 +63,14 @@ def test_data_pipeline_snapshot_calculation():
 def test_entry_gate_veto_over_extension():
     """測試進場門禁 1-A：距 EMA40 乖離過大一票否決 (|close - ema_slow| > 0.8*ATR)"""
     df = _generate_sample_df(30, trend="UP")
-    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=135.0)
+    snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=146.0)
     # 人工拉大乖離
     snapshot.ema_slow = 100.0
     snapshot.atr = 5.0
-    snapshot.curr_k["close"] = 135.0  # diff=35 > 0.8*5=4.0
+    snapshot.curr_k["open"] = 145.0
+    snapshot.curr_k["high"] = 146.2
+    snapshot.curr_k["low"] = 144.8
+    snapshot.curr_k["close"] = 146.0  # diff > 3.0*ATR (超過上軌+3.0ATR)
     should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
     assert not should_entry
     assert reason == "VETO_OVER_EXTENSION_FROM_SLOW_MA"
@@ -451,6 +454,38 @@ def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
     assert should_entry_s is True, f"兩根破軌開空被誤殺！reason: {reason_s}, meta: {meta_s}"
     assert reason_s in ("CONFIRMED_2BAR_BREAKOUT", "BREAKOUT_MAIN_WAVE_START")
     assert meta_s.get("side") == "SHORT"
+
+
+def test_exit_gate_holds_long_above_ascending_kc_middle():
+    """
+    驗證核心防守線：唯認 KC 中軌收盤實體跌破。
+    多單開倉衝高後，回踩測試向上的 KC 中軌，未跌破中軌前強制一票否決回踩平多 (VETO_EXIT_HOLD_ABOVE_KC_MIDDLE)！
+    """
+    pos = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "highest_price": 104.0,
+        "qty": 1.0,
+        "leverage": 5.0,
+    }
+    # 衝高至 104.0 後回踩至 102.5，KC 中軌為 101.5 且向上 (slope=0.05)，ATR=2.0
+    # 回撤 = 104.0 - 102.5 = 1.5 < 1.5 * 2.0 = 3.0 ATR
+    snapshot = {
+        "current_price": 102.5,
+        "atr": 2.0,
+        "kc_upper": 105.0,
+        "kc_middle": 101.5,
+        "kc_lower": 98.0,
+        "kc_middle_slope": 0.05,
+        "ema_fast": 102.8,
+        "ema_slow": 101.5,
+    }
+    should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=102.5)
+    assert should_exit is False
+    assert reason == "VETO_HOLD"
+    assert meta.get("hold_rule") == "VETO_EXIT_HOLD_ABOVE_KC_MIDDLE"
+    assert "穩守向上的KC中軌" in meta.get("cause", "")
+
 
 
 

@@ -369,7 +369,7 @@ def test_exit_gate_trend_decay_exit_on_long():
     df.loc[df.index[-1], ["open", "high", "low", "close"]] = [101.8, 101.9, 100.7, 100.8]
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=100.8)
     snapshot.atr = 1.0
-    snapshot.kc_middle = 101.0
+    snapshot.kc_middle = 100.5
     snapshot.kc_middle_slope = -0.01
     snapshot.ma15 = 102.0
     snapshot.ema_fast = 101.5
@@ -523,8 +523,8 @@ def test_entry_gate_veto_short_when_ma3_sloping_up():
     snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = -0.01
     snapshot.prev_k = {"open": 98.5, "close": 97.8, "ma3": 98.0, "ma5": 98.2, "ma15": 99.5}
-    # 當前棒 MA3 = 98.2 > 98.0，向上勾頭
-    snapshot.curr_k = {"open": 97.8, "close": 98.0, "ma3": 98.2, "ma5": 98.1, "ma15": 99.3}
+    # 當前棒 MA3 = 98.2 > 98.0，向上勾頭 (同向黑棒)
+    snapshot.curr_k = {"open": 98.1, "close": 98.0, "ma3": 98.2, "ma5": 98.1, "ma15": 99.3}
 
     should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
     assert should_entry is False
@@ -545,8 +545,8 @@ def test_entry_gate_veto_short_when_price_above_ma3():
     snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = -0.01
     snapshot.prev_k = {"open": 98.5, "close": 98.0, "ma3": 98.5, "ma5": 98.7, "ma15": 99.5}
-    # 當前棒 MA3 = 98.2 (走平向下)，但 close = 98.5 > ma3 = 98.2
-    snapshot.curr_k = {"open": 98.0, "close": 98.5, "ma3": 98.2, "ma5": 98.3, "ma15": 99.3}
+    # 當前棒 MA3 = 98.2 (走平向下)，但 close = 98.5 > ma3 = 98.2 (同向黑棒)
+    snapshot.curr_k = {"open": 98.6, "close": 98.5, "ma3": 98.2, "ma5": 98.3, "ma15": 99.3}
 
     should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
     assert should_entry is False
@@ -567,8 +567,8 @@ def test_entry_gate_veto_long_when_ma3_sloping_down():
     snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = 0.01
     snapshot.prev_k = {"open": 101.5, "close": 102.2, "ma3": 102.0, "ma5": 101.8, "ma15": 100.5}
-    # 當前棒 MA3 = 101.8 < 102.0，向下下拐
-    snapshot.curr_k = {"open": 102.2, "close": 102.0, "ma3": 101.8, "ma5": 101.9, "ma15": 100.8}
+    # 當前棒 MA3 = 101.8 < 102.0，向下下拐 (同向紅棒)
+    snapshot.curr_k = {"open": 101.9, "close": 102.0, "ma3": 101.8, "ma5": 101.9, "ma15": 100.8}
 
     should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
     assert should_entry is False
@@ -589,8 +589,8 @@ def test_entry_gate_veto_long_when_price_below_ma3():
     snapshot.kc_lower = 98.5
     snapshot.kc_middle_slope = 0.01
     snapshot.prev_k = {"open": 101.0, "close": 101.8, "ma3": 101.5, "ma5": 101.2, "ma15": 100.5}
-    # 當前棒 MA3 = 101.8 (向上)，但 close = 101.5 < ma3 = 101.8
-    snapshot.curr_k = {"open": 101.8, "close": 101.5, "ma3": 101.8, "ma5": 101.6, "ma15": 100.8}
+    # 當前棒 MA3 = 101.8 (向上)，但 close = 101.5 < ma3 = 101.8 (同向紅棒)
+    snapshot.curr_k = {"open": 101.4, "close": 101.5, "ma3": 101.8, "ma5": 101.6, "ma15": 100.8}
 
     should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
     assert should_entry is False
@@ -609,7 +609,7 @@ def test_entry_gate_veto_kc_squeeze_dead():
     snapshot.kc_upper = 100.2  # bw = 0.4 / 100.0 = 0.004 < 0.008
     snapshot.kc_lower = 99.8
     snapshot.atr = 0.5
-    snapshot.curr_k = {"open": 100.0, "close": 100.02, "high": 100.05, "low": 99.98}
+    snapshot.curr_k = {"open": 100.0, "close": 99.98, "high": 100.05, "low": 99.95}
     snapshot.prev_k = {"open": 100.0, "close": 100.01, "high": 100.04, "low": 99.98}
 
     should_entry, reason, meta = EntryGate.evaluate("ENTRY_SHORT_EMA_CROSS_MID", snapshot)
@@ -662,6 +662,191 @@ def test_entry_gate_veto_ma_entanglement():
     assert should_entry is False
     assert reason == "VETO_MA_ENTANGLEMENT"
     assert "過去5根MA3與MA15平均差距" in meta["cause"]
+
+
+# ==============================================================================
+# 測試 8：順勢動能一致性鐵律 (當根反向棒 100% 一票否決)
+# ==============================================================================
+def test_entry_gate_veto_buy_on_opposite_bearish_bar():
+    """
+    [順勢動能一致性 1] 買多時若當根 K 棒為黑棒 (Close <= Open)，
+    賣方力量佔據主導，嚴禁接下墜飛刀，100% 一票否決 VETO_BUY_OPPOSITE_BAR！
+    """
+    snapshot = {
+        "current_price": 102.0,
+        "atr": 1.0,
+        "kc_middle": 100.0,
+        "kc_middle_slope": 0.02,
+        "kc_upper": 103.0,
+        "kc_lower": 97.0,
+        "ema_fast": 102.5,
+        "ema_slow": 100.5,
+        "curr_k": {"open": 102.5, "close": 102.0, "high": 102.8, "low": 101.8},
+        "prev_k": {"open": 101.5, "close": 102.5, "high": 102.6, "low": 101.2},
+    }
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_BUY_OPPOSITE_BAR"
+    assert "當根為黑棒/十字星" in meta["cause"]
+
+
+def test_entry_gate_veto_sell_on_opposite_bullish_bar():
+    """
+    [順勢動能一致性 2] 賣空時若當根 K 棒為紅棒 (Close >= Open)，
+    買方力量向上反彈，嚴禁迎面撞上反抽，100% 一票否決 VETO_SELL_OPPOSITE_BAR！
+    """
+    snapshot = {
+        "current_price": 98.0,
+        "atr": 1.0,
+        "kc_middle": 100.0,
+        "kc_middle_slope": -0.02,
+        "kc_upper": 103.0,
+        "kc_lower": 97.0,
+        "ema_fast": 97.5,
+        "ema_slow": 99.5,
+        "curr_k": {"open": 97.5, "close": 98.0, "high": 98.2, "low": 97.2},
+        "prev_k": {"open": 98.5, "close": 97.5, "high": 98.8, "low": 97.4},
+    }
+    should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_SELL_OPPOSITE_BAR"
+    assert "當根為紅棒/十字星" in meta["cause"]
+
+
+def test_entry_gate_veto_buy_on_fake_bullish_long_upper_wick():
+    """
+    [順勢動能一致性 3] 買多時雖為陽線但帶有長上影線（衝高被大幅砸回開盤價，收在下半部），
+    買盤動能衰竭受阻，100% 一票否決 VETO_WICK_REJECTION！
+    """
+    snapshot = {
+        "current_price": 100.3,
+        "atr": 1.0,
+        "kc_middle": 98.0,
+        "kc_middle_slope": 0.02,
+        "kc_upper": 102.0,
+        "kc_lower": 96.0,
+        "ema_fast": 100.0,
+        "ema_slow": 98.5,
+        # open=100.0, high=102.0, low=99.9, close=100.3
+        # body=0.3, upper_wick=1.7 >= 1.5*0.3 且 >= 0.25*1.0，close 落在下半部
+        "curr_k": {"open": 100.0, "close": 100.3, "high": 102.0, "low": 99.9},
+        "prev_k": {"open": 99.0, "close": 100.0, "high": 100.2, "low": 98.8},
+    }
+    should_entry, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_WICK_REJECTION"
+    assert "長上影線" in meta["cause"]
+
+
+def test_entry_gate_veto_sell_on_fake_bearish_long_lower_wick():
+    """
+    [順勢動能一致性 4] 賣空時雖為陰線但帶有長下影線（探底被強力抽回開盤價，收在上半部），
+    賣盤動能衰竭見底，100% 一票否決 VETO_WICK_REJECTION！
+    """
+    snapshot = {
+        "current_price": 99.7,
+        "atr": 1.0,
+        "kc_middle": 102.0,
+        "kc_middle_slope": -0.02,
+        "kc_upper": 104.0,
+        "kc_lower": 98.0,
+        "ema_fast": 100.0,
+        "ema_slow": 101.5,
+        # open=100.0, high=100.1, low=98.0, close=99.7
+        # body=0.3, lower_wick=1.7 >= 1.5*0.3 且 >= 0.25*1.0，close 落在上半部
+        "curr_k": {"open": 100.0, "close": 99.7, "high": 100.1, "low": 98.0},
+        "prev_k": {"open": 101.0, "close": 100.0, "high": 101.2, "low": 99.8},
+    }
+    should_entry, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", snapshot)
+    assert should_entry is False
+    assert reason == "VETO_WICK_REJECTION"
+    assert "長下影線" in meta["cause"]
+
+
+def test_evaluate_entry_gate_strict_vetoes():
+    """驗證 evaluate_entry_gate 的各項防呆一票否決"""
+    from run_phase3_controlled_experiments import evaluate_entry_gate
+
+    # 構造基準行情
+    data = []
+    base = 100.0
+    for i in range(12):
+        data.append({
+            "open": base, "high": base + 1.0, "low": base - 1.0, "close": base + 0.5,
+            "atr": 1.0, "ma3": base + 0.2, "ma15": base, "kc_middle": base,
+            "kc_upper": base + 1.5, "kc_lower": base - 1.5,
+        })
+    df = pd.DataFrame(data)
+
+    # 1. 買多時收黑線否決
+    df.loc[df.index[-1], ["open", "close", "high", "low"]] = [101.0, 100.5, 101.2, 100.4]
+    ok, reason = evaluate_entry_gate(df, "BUY", -1)
+    assert ok is False
+    assert "VETO_BUY_OPPOSITE_BAR" in reason
+
+    # 2. 買多時長上影線否決
+    df.loc[df.index[-1], ["open", "close", "high", "low"]] = [100.0, 100.2, 102.0, 99.9]
+    ok, reason = evaluate_entry_gate(df, "BUY", -1)
+    assert ok is False
+    assert "VETO_WICK_REJECTION" in reason
+
+    # 3. 買多時 MA3 下彎否決
+    df.loc[df.index[-1], ["open", "close", "high", "low", "ma3"]] = [100.0, 100.8, 101.0, 99.9, 100.1]
+    df.loc[df.index[-2], "ma3"] = 100.3  # ma3_slope = -0.2 <= 0
+    ok, reason = evaluate_entry_gate(df, "BUY", -1)
+    assert ok is False
+    assert "VETO_MA3_NOT_UP" in reason
+
+    # 4. 買多時價格在中軌下方否決 (MA3向上但價格在KC中軌下方)
+    df.loc[df.index[-1], ["open", "close", "high", "low", "ma3", "kc_middle"]] = [98.0, 98.8, 99.0, 97.9, 100.5, 100.0]
+    df.loc[df.index[-2], "ma3"] = 100.0  # ma3_slope = +0.5 > 0
+    ok, reason = evaluate_entry_gate(df, "BUY", -1)
+    assert ok is False
+    assert "VETO_BELOW_KC_MIDDLE" in reason
+
+    # 5. 賣空時收紅線否決
+    df.loc[df.index[-1], ["open", "close", "high", "low"]] = [99.0, 99.5, 99.6, 98.9]
+    ok, reason = evaluate_entry_gate(df, "SELL", -1)
+    assert ok is False
+    assert "VETO_SELL_OPPOSITE_BAR" in reason
+
+    # 6. 賣空時 MA3 抬頭否決
+    df.loc[df.index[-1], ["open", "close", "high", "low", "ma3"]] = [100.5, 99.8, 100.6, 99.7, 100.2]
+    df.loc[df.index[-2], "ma3"] = 100.0  # ma3_slope = +0.2 >= 0
+    ok, reason = evaluate_entry_gate(df, "SELL", -1)
+    assert ok is False
+    assert "VETO_MA3_RISING" in reason
+
+
+def test_evaluate_entry_gate_passes():
+    """驗證 evaluate_entry_gate 條件完全滿足時正確放行"""
+    from run_phase3_controlled_experiments import evaluate_entry_gate
+
+    data = []
+    base = 100.0
+    for i in range(12):
+        data.append({
+            "open": base, "high": base + 1.0, "low": base - 1.0, "close": base + 0.5,
+            "atr": 1.0, "ma3": base + i * 0.1, "ma15": base, "kc_middle": base,
+            "kc_upper": base + 2.0, "kc_lower": base - 2.0,
+        })
+    df = pd.DataFrame(data)
+
+    # 做多放行
+    df.loc[df.index[-1], ["open", "close", "high", "low", "ma3", "kc_middle"]] = [100.0, 101.0, 101.2, 99.8, 101.5, 100.0]
+    df.loc[df.index[-2], "ma3"] = 101.0
+    ok, reason = evaluate_entry_gate(df, "BUY", -1)
+    assert ok is True
+    assert "PASS_LONG" in reason
+
+    # 做空放行
+    df.loc[df.index[-1], ["open", "close", "high", "low", "ma3", "kc_middle"]] = [100.0, 99.0, 100.2, 98.8, 98.5, 100.0]
+    df.loc[df.index[-2], "ma3"] = 99.0
+    ok, reason = evaluate_entry_gate(df, "SELL", -1)
+    assert ok is True
+    assert "PASS_SHORT" in reason
+
+
 
 
 

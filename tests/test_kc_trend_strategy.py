@@ -163,3 +163,137 @@ def test_kc_mid_slope_and_clearance_filters():
         "ma3_price_crosses": 0.0,
     }
     assert strat._global_filter_reason("long", snap_contracting) == "blocked_rapid_kc_contraction"
+
+
+def test_true_pivot_peak_immediate_exit_without_kc_middle():
+    """
+    驗證多單「真峰頂確立立即平倉」：
+    持倉衝高獲利後，頂部三點樞紐確立 (b2 High鶴立雞群，b3 確認收陰跌破實體中點)，
+    立即發出 true_pivot_peak_exit 平倉，完全不必等到跌回 KC 中軌！
+    """
+    cfg = StrategyConfig(min_bars_for_indicators=20, require_ma15_direction=False, emergency_single_bar_move_atr=5.0)
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    # 1. 建立 25 根基準上漲 K 棒
+    for i in range(25):
+        base = 100.0 + i * 0.5
+        strat.on_bar_close(Bar(now + i * 60, base - 0.2, base + 0.4, base - 0.3, base + 0.2, 50.0))
+
+    snap = strat._indicator_snapshot()
+    strat.notify_position_opened("long", avg_price=snap["close"])
+    kc_mid = snap["kc_mid"]  # 約在 107~108 附近
+
+    # 2. 構造頂部三點樞紐 (b1, b2, b3)
+    t = now + 25 * 60
+    # b1: 112.2 -> 113.0
+    strat.on_bar_close(Bar(t + 60, 112.2, 113.2, 112.0, 113.0, 50.0))
+    # b2: 113.0 -> 114.5 (峰頂，High=114.8)
+    strat.on_bar_close(Bar(t + 120, 113.0, 114.8, 112.9, 114.5, 60.0))
+    # b3: 確認棒，收陰黑棒 114.5 -> 113.2 (跌破 b2 實體中點 113.75)，但此時遠高於 KC 中軌
+    exits = strat.on_bar_close(Bar(t + 180, 114.5, 114.6, 113.0, 113.2, 50.0))
+
+    peak_exits = [e for e in exits if "true_pivot_peak_exit" in e.reason]
+    assert len(peak_exits) == 1
+    assert peak_exits[0].side == "long"
+    assert peak_exits[0].price == 113.2
+    assert peak_exits[0].price > kc_mid  # 遠在中軌之上，鎖住頂部利潤！
+    # 持倉已被標記清空，防重複發布
+    assert strat.position_entry_price["long"] is None
+
+
+def test_true_pivot_valley_immediate_exit_without_kc_middle():
+    """
+    驗證空單「真谷底確立立即平倉」：
+    持倉急跌獲利後，底部三點樞紐確立 (b2 Low探底，b3 確認收陽突破實體中點)，
+    立即發出 true_pivot_valley_exit 平倉，完全不必等到漲回 KC 中軌！
+    """
+    cfg = StrategyConfig(min_bars_for_indicators=20, require_ma15_direction=False, emergency_single_bar_move_atr=5.0)
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    # 1. 建立 25 根基準下跌 K 棒
+    for i in range(25):
+        base = 120.0 - i * 0.5
+        strat.on_bar_close(Bar(now + i * 60, base + 0.2, base + 0.3, base - 0.4, base - 0.2, 50.0))
+
+    snap = strat._indicator_snapshot()
+    strat.notify_position_opened("short", avg_price=snap["close"])
+    kc_mid = snap["kc_mid"]
+
+    # 2. 構造底部三點樞紐 (b1, b2, b3)
+    t = now + 25 * 60
+    # b1: 107.8 -> 107.0
+    strat.on_bar_close(Bar(t + 60, 107.8, 108.0, 106.8, 107.0, 50.0))
+    # b2: 107.0 -> 105.5 (谷底，Low=105.2)
+    strat.on_bar_close(Bar(t + 120, 107.0, 107.1, 105.2, 105.5, 60.0))
+    # b3: 確認棒，收陽紅棒 105.5 -> 106.8 (突破 b2 實體中點 106.25)，但此時遠低於 KC 中軌
+    exits = strat.on_bar_close(Bar(t + 180, 105.5, 107.0, 105.4, 106.8, 50.0))
+
+    valley_exits = [e for e in exits if "true_pivot_valley_exit" in e.reason]
+    assert len(valley_exits) == 1
+    assert valley_exits[0].side == "short"
+    assert valley_exits[0].price == 106.8
+    assert valley_exits[0].price < kc_mid  # 遠在中軌之下，鎖住底部利潤！
+    # 持倉已被標記清空，防重複發布
+    assert strat.position_entry_price["short"] is None
+
+
+def test_normal_pullback_holds_position():
+    """
+    驗證「正常微幅回調繼續持有」：
+    上漲途中出現單根小陰棒或短暫回調，未形成真峰頂反轉結構，系統維持續抱，絕不提前被洗出場！
+    """
+    cfg = StrategyConfig(min_bars_for_indicators=20, require_ma15_direction=False, emergency_single_bar_move_atr=5.0)
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    for i in range(25):
+        base = 100.0 + i * 0.5
+        strat.on_bar_close(Bar(now + i * 60, base - 0.2, base + 0.4, base - 0.3, base + 0.2, 50.0))
+
+    strat.notify_position_opened("long", avg_price=112.0)
+    t = now + 25 * 60
+
+    # 連續兩根正常推進
+    strat.on_bar_close(Bar(t + 60, 112.5, 113.2, 112.3, 113.0, 50.0))
+    strat.on_bar_close(Bar(t + 120, 113.0, 114.0, 112.8, 113.8, 50.0))
+
+    # 出現一根小陰線微幅回檔 (113.8 -> 113.5，High 創新高達 114.2，未形成被包夾三點樞紐)
+    exits = strat.on_bar_close(Bar(t + 180, 113.8, 114.2, 113.3, 113.5, 30.0))
+
+    # 沒有真峰頂，不發出任何出場訊號，多單穩穩續抱
+    assert len(exits) == 0
+    assert strat.position_entry_price["long"] == 112.0
+
+
+def test_fallback_to_kc_middle_when_no_pivot():
+    """
+    驗證「真峰谷未確認時，保留原有 KC 中軌出場防線」：
+    若行情橫盤或緩慢滑落未觸發真峰頂，但實體收盤跌破 KC 中軌，依然由 KC 中軌防線執行破位出場。
+    """
+    cfg = StrategyConfig(
+        min_bars_for_indicators=20,
+        require_ma15_direction=False,
+        enable_true_pivot_exit=False,
+        emergency_single_bar_move_atr=5.0
+    )
+    strat = KCTrendStrategy(cfg)
+    now = time.time() - 3600
+
+    for i in range(25):
+        base = 100.0 + i * 0.2
+        strat.on_bar_close(Bar(now + i * 60, base - 0.1, base + 0.2, base - 0.2, base + 0.1, 50.0))
+
+    snap = strat._indicator_snapshot()
+    strat.notify_position_opened("long", avg_price=snap["close"])
+    kc_mid = snap["kc_mid"]
+
+    t = now + 25 * 60
+    # 價格連續跌破 KC 中軌
+    strat.on_bar_close(Bar(t + 60, 104.9, 105.0, 103.5, 103.8, 50.0))
+    exits = strat.on_bar_close(Bar(t + 120, 103.8, 103.9, 101.8, 102.0, 50.0))
+    mid_exits = [e for e in exits if e.reason == "kc_middle_band_trend_invalidation"]
+    assert len(mid_exits) == 1
+    assert mid_exits[0].side == "long"
+

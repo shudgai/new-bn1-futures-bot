@@ -135,29 +135,9 @@ def evaluate_top_bottom_reversal_exit(
     )
 
     # ==========================
-    # 0. 結構破位門禁（2026-10 最新鐵律）:
-    # 平倉端必須嚴格鎖定：
-    # - 空單：收盤價未實體站穩 KC 中軌 / MA15 之上，嚴禁觸發見底平空！
-    # - 多單：收盤價未實體跌破 KC 中軌 / MA15 之下，嚴禁觸發見頂平多！
-    # 耐受軌道外/邊緣的微幅毛刺、下影線與 MA3 短暫勾頭，堅決抱牢主趨勢！
-    # ==========================
-    kc_mid = float(curr.get("kc_middle", (upper_band + lower_band) / 2.0))
-    ma15_val = float(curr.get("ma15", curr.get("ema_slow", 0.0)))
-    if ma15_val <= 0 and len(closes) >= 15:
-        ma15_val = float(closes.rolling(window=15).mean().iloc[-1])
-
-    # ==========================
     # 1. 空單檢查：出現「谷底」立即平空
     # ==========================
     if side == "SHORT":
-        if c_close <= kc_mid or (ma15_val > 0 and c_close <= ma15_val):
-            meta["skipped"] = "BELOW_KC_MID_OR_MA15_HOLD_SHORT"
-            meta["cause"] = (
-                f"未實體站穩中軌與MA15嚴禁平空: 收盤價(close={c_close:.6f})仍在KC中軌(mid={kc_mid:.6f})"
-                f"或MA15(ma15={ma15_val:.6f})之下，耐受下軌微幅震盪反抽，一票否決平空，抱牢主跌浪！"
-            )
-            return False, None, meta
-
         lowest_since_entry = min(
             float(pos.get("lowest_price") or entry_p),
             float(closed["low"].min()),
@@ -167,10 +147,10 @@ def evaluate_top_bottom_reversal_exit(
         favorable_roe = (max_favorable / entry_p) * leverage if entry_p > 0 else 0.0
         peak_roe = max(stored_peak_roe, favorable_roe)
 
+        recent_low = min(c_low, p_low)
         has_trend_unfolded = (
-            max_favorable >= (0.25 * atr)
-            or lowest_since_entry <= (lower_band * 1.002)
-            or peak_roe >= 0.004
+            (lowest_since_entry <= (lower_band * 1.002) and recent_low <= (lower_band * 1.005))
+            or (max_favorable >= (0.25 * atr) and recent_low <= (lower_band * 1.002))
         )
         if not has_trend_unfolded:
             meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
@@ -183,17 +163,41 @@ def evaluate_top_bottom_reversal_exit(
         )
         close_above_ma3 = (ma3_curr is not None and c_close > ma3_curr)
 
-        # 條件 2: 下影線探底回升 (長下影線 > 2.0 倍實體 且 收盤站回 KC 下軌內側)
-        pin_bar_bottom = (curr_lower_wick > curr_body * 2.0) and (c_close > lower_band)
+        # 條件 2: 下影線探底回升 (長下影線 >= 1.5 倍實體 且 探破或逼近 KC 下軌)
+        # 防線一：MA3 向下且收盤受壓於 MA3 之下時，嚴禁因普通下影線平空 (VETO_EXIT_MA3_STRONG_DOWN)
+        is_ma3_down_thrust = (ma3_curr is not None and ma3_prev is not None and (ma3_curr < ma3_prev) and (c_close <= ma3_curr))
+        # 唯有超巨型探底針（下影線 >= 3.0 倍實體 且 下影線 >= 0.8*ATR 且 收盤被抽回上半部），才視為極端插針反轉
+        is_extreme_needle_bottom = (
+            (curr_lower_wick >= curr_body * 3.0)
+            and (curr_lower_wick >= 0.8 * atr)
+            and (c_close >= c_low + curr_lower_wick * 0.5)
+        )
+        pin_bar_bottom = (
+            (curr_lower_wick >= curr_body * 1.5)
+            and (c_low < lower_band)
+            and (c_close >= c_low + curr_lower_wick * 0.4)
+            and (is_extreme_needle_bottom or (not is_ma3_down_thrust and c_close > c_open and c_close > p_high))
+        )
 
-        if (ma3_bending_up and close_above_ma3) or pin_bar_bottom:
+        # 條件 3: 低檔陽包陰吞噬反轉 (Bullish Engulfing)
+        bullish_engulfing = (
+            (p_close < p_open)
+            and (c_close > c_open)
+            and (c_close >= p_open)
+            and (c_open <= p_close)
+            and (recent_low <= lower_band * 1.002)
+        )
+
+        if (ma3_bending_up and close_above_ma3) or pin_bar_bottom or bullish_engulfing:
             triggers = []
             if ma3_bending_up and close_above_ma3:
                 triggers.append(f"MA3_V_BOTTOM(ma3={ma3_curr:.6f}>{ma3_prev:.6f}<=prev2,close={c_close:.6f}>ma3)")
             if pin_bar_bottom:
-                triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>2.0*body,close={c_close:.6f}>lower={lower_band:.6f})")
+                triggers.append(f"PIN_BAR_BOTTOM(wick={curr_lower_wick:.6f}>=1.5*body,close={c_close:.6f},low={c_low:.6f}<lower={lower_band:.6f})")
+            if bullish_engulfing:
+                triggers.append(f"BULLISH_ENGULFING(c_close={c_close:.6f}>=p_open={p_open:.6f})")
 
-            meta["cause"] = f"空單谷底轉折且實體收復中軌/MA15確立，及時平空鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"空單谷底轉折確立，不等回摸中軌立即平空鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_SHORT_AT_BOTTOM, meta
 
@@ -201,14 +205,6 @@ def evaluate_top_bottom_reversal_exit(
     # 2. 多單檢查：出現「峰頂」立即平多
     # ==========================
     elif side == "LONG":
-        if c_close >= kc_mid or (ma15_val > 0 and c_close >= ma15_val):
-            meta["skipped"] = "ABOVE_KC_MID_OR_MA15_HOLD_LONG"
-            meta["cause"] = (
-                f"未實體跌破中軌與MA15嚴禁平多: 收盤價(close={c_close:.6f})仍在KC中軌(mid={kc_mid:.6f})"
-                f"或MA15(ma15={ma15_val:.6f})之上，耐受上軌微幅震盪回踩，一票否決平多，抱牢主升浪！"
-            )
-            return False, None, meta
-
         highest_since_entry = max(
             float(pos.get("highest_price") or entry_p),
             float(closed["high"].max()),
@@ -218,10 +214,10 @@ def evaluate_top_bottom_reversal_exit(
         favorable_roe = (max_favorable / entry_p) * leverage if entry_p > 0 else 0.0
         peak_roe = max(stored_peak_roe, favorable_roe)
 
+        recent_high = max(c_high, p_high)
         has_trend_unfolded = (
-            max_favorable >= (0.25 * atr)
-            or highest_since_entry >= (upper_band * 0.998)
-            or peak_roe >= 0.004
+            (highest_since_entry >= (upper_band * 0.998) and recent_high >= (upper_band * 0.995))
+            or (max_favorable >= (0.25 * atr) and recent_high >= (upper_band * 0.998))
         )
         if not has_trend_unfolded:
             meta["skipped"] = "NO_FAVORABLE_MOVE_YET"
@@ -234,18 +230,41 @@ def evaluate_top_bottom_reversal_exit(
         )
         close_below_ma3 = (ma3_curr is not None and c_close < ma3_curr)
 
-        # 條件 2: 上影線避雷針轉折衝高受阻 (長上影線 > 2.0 倍實體 且 收盤跌回 KC 上軌內側)
-        pin_bar_top = (curr_upper_wick > curr_body * 2.0) and (c_close < upper_band)
+        # 條件 2: 上影線避雷針轉折衝高受阻 (長上影線 >= 1.5 倍實體 且 衝破或逼近 KC 上軌)
+        # 防線一：MA3 向上且收盤穩站 MA3 之上時，嚴禁因普通上影線平多 (VETO_EXIT_MA3_STRONG_UP)
+        is_ma3_up_thrust = (ma3_curr is not None and ma3_prev is not None and (ma3_curr > ma3_prev) and (c_close >= ma3_curr))
+        # 唯有超巨型避雷針（上影線 >= 3.0 倍實體 且 上影線 >= 0.8*ATR 且 收盤被砸回下半部），才視為極端插針反轉
+        is_extreme_needle_top = (
+            (curr_upper_wick >= curr_body * 3.0)
+            and (curr_upper_wick >= 0.8 * atr)
+            and (c_close <= c_high - curr_upper_wick * 0.5)
+        )
+        pin_bar_top = (
+            (curr_upper_wick >= curr_body * 1.5)
+            and (c_high > upper_band)
+            and (c_close <= c_high - curr_upper_wick * 0.4)
+            and (is_extreme_needle_top or (not is_ma3_up_thrust and c_close < c_open and c_close < p_low))
+        )
 
-        # 峰頂平倉核心：只有在「MA3 明顯轉折下彎」且「收盤跌破 MA3」，或「出現明確衝高回落避雷針」才平倉
-        if (ma3_bending_down and close_below_ma3) or pin_bar_top:
+        # 條件 3: 高檔陰包陽吞噬反轉 (Bearish Engulfing)
+        bearish_engulfing = (
+            (p_close > p_open)
+            and (c_close < c_open)
+            and (c_close <= p_open or (c_open - c_close) >= (p_close - p_open) * 0.8)
+            and (recent_high >= upper_band * 0.998)
+        )
+
+        # 峰頂平倉核心：只有在「MA3 明顯轉折下彎」且「收盤跌破 MA3」，或「出現明確衝高回落避雷針/陰包陽吞噬」才平倉
+        if (ma3_bending_down and close_below_ma3) or pin_bar_top or bearish_engulfing:
             triggers = []
             if ma3_bending_down and close_below_ma3:
                 triggers.append(f"MA3_A_TOP(ma3={ma3_curr:.6f}<{ma3_prev:.6f}>=prev2,close={c_close:.6f}<ma3)")
             if pin_bar_top:
-                triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>2.0*body,close={c_close:.6f}<upper={upper_band:.6f})")
+                triggers.append(f"PIN_BAR_TOP(wick={curr_upper_wick:.6f}>=1.5*body,close={c_close:.6f},high={c_high:.6f}>upper={upper_band:.6f})")
+            if bearish_engulfing:
+                triggers.append(f"BEARISH_ENGULFING(c_close={c_close:.6f}<=p_open={p_open:.6f})")
 
-            meta["cause"] = f"多單峰頂轉折且實體跌破中軌/MA15確立，及時平多鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"多單峰頂轉折確立，不等回踩中軌立即平多鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_LONG_AT_TOP, meta
 
