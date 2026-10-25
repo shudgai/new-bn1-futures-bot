@@ -59,15 +59,15 @@ class GateCheckResult:
 class CentralEntryGate:
     """中央開倉物理閘門：唯一開倉授權機構"""
 
-    # 門檻常數
-    KC_SLOPE_MIN_ATR: float = 0.10          # KC 中軌斜率門檻 >= 0.1 ATR
-    MAX_BAND_EXTENSION_ATR: float = 0.50    # 距 KC 同側外軌最大乖離 <= 0.5 ATR
-    MAX_MA5_EXTENSION_ATR: float = 1.00     # 距 MA5 最大乖離 <= 1.0 ATR
-    MIN_KC_BANDWIDTH_PCT: float = 0.0035    # 通道帶寬門檻 >= 0.35% (防極度死水，放寬至正常 1m 波動)
-    MIN_KC_EXPANSION_RATIO: float = -0.05   # 通道擴張與防崩縮門檻 (>= -5.0%，容許 1m ATR 正常平滑波動，防範通道急縮死水)
-    MIN_VOLUME_MULTIPLIER: float = 1.20     # 量能門檻 >= 1.2 倍均量
-    MIN_BODY_ATR: float = 0.35              # 實體最小動能 >= 0.35 ATR
-    MAX_OPPOSITE_WICK_RATIO: float = 0.70   # 反向影線不得超過實體的 70%
+    # 門檻常數 (針對妖幣 meme coin 波動特性全面放寬)
+    KC_SLOPE_MIN_ATR: float = 0.05          # KC 中軌斜率門檻 >= 0.05 ATR (妖幣放寬，由 0.10 調降)
+    MAX_BAND_EXTENSION_ATR: float = 0.80    # 距 KC 同側外軌最大乖離 <= 0.80 ATR (妖幣放寬，由 0.50 調升至 0.80)
+    MAX_MA5_EXTENSION_ATR: float = 1.50     # 距 MA5 最大乖離 <= 1.50 ATR (妖幣放寬，由 1.00 調升)
+    MIN_KC_BANDWIDTH_PCT: float = 0.0025    # 通道帶寬門檻 >= 0.25% (防極度死水，妖幣放寬至 0.25%)
+    MIN_KC_EXPANSION_RATIO: float = -0.10   # 通道擴張與防崩縮門檻 (>= -10.0%，容許 1m ATR 正常平滑波動)
+    MIN_VOLUME_MULTIPLIER: float = 1.00     # 量能門檻 >= 1.0 倍均量 (妖幣放寬，由 1.20 調降)
+    MIN_BODY_ATR: float = 0.25              # 實體最小動能 >= 0.25 ATR (妖幣放寬，由 0.35 調降)
+    MAX_OPPOSITE_WICK_RATIO: float = 1.00   # 反向影線不得超過實體的 100% (妖幣頻繁插針，由 0.70 放寬至 1.00)
 
     @classmethod
     def generate_signal_id(cls, symbol: str, side: str, source: str) -> str:

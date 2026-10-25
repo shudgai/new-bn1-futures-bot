@@ -205,14 +205,14 @@ class ExecutionManager:
                 or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
             )
 
-            # 敏捷進攻架構：轉折交叉訊號自中軌直接發動，豁免大週期趨勢鎖定；常規追單仍依循順勢波段
-            can_long = is_ma_cross_long or (
+            # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號豁免大週期波段鎖定；常規追單仍依循順勢波段
+            can_long = is_breakout_long or is_ma_cross_long or (
                 not is_bearish_wave
                 and (ma3_slope >= 0)
                 and (market_data.curr_k["close"] >= ma3_curr)
                 and (market_data.current_price >= ma3_curr)
             )
-            can_short = is_ma_cross_short or (
+            can_short = is_breakdown_short or is_ma_cross_short or (
                 not is_bullish_wave
                 and (ma3_slope <= 0)
                 and (market_data.curr_k["close"] <= ma3_curr)
@@ -222,8 +222,8 @@ class ExecutionManager:
             # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
             is_strong_breakout = (
-                (is_breakout_long and c_body >= 0.8 * market_data.atr)
-                or (is_breakdown_short and c_body >= 0.8 * market_data.atr)
+                (is_breakout_long and c_body >= 0.5 * market_data.atr)
+                or (is_breakdown_short and c_body >= 0.5 * market_data.atr)
             )
 
             # 1. 平倉後強制冷卻檢查 (強動能突破放行交由 EntryGate 統一裁決)

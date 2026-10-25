@@ -2526,18 +2526,18 @@ class EntryGate:
         is_prev_outside = (p_close > p_up) if (signal_side == "LONG" and has_prev_close) else ((p_close < p_low_band) if (signal_side == "SHORT" and has_prev_close) else False)
         is_reentry = bool(last_exit_context and ((signal_side == "LONG" and last_exit_context.get("exit_high") and quote > float(last_exit_context["exit_high"])) or (signal_side == "SHORT" and last_exit_context.get("exit_low") and quote < float(last_exit_context["exit_low"]))))
 
-        # 延續開倉（CONTINUATION / 2BAR）外軌乖離上限 0.5 ATR；首根突破或強動能上限 3.0 ATR
-        max_ext_allowed = 0.5 if is_late_chase else 3.0
+        # 延續開倉（CONTINUATION / 2BAR）外軌乖離上限放寬至 1.0 ATR (妖幣放寬)；首根突破或強動能上限 3.0 ATR
+        max_ext_allowed = 1.0 if is_late_chase else 3.0
 
         # ══════════════════════════════════════════════════════════════════
         # 核心頂層硬鎖：嚴格激活「負乖離硬鎖（Overextended Veto，2026-10-24 最新授權）」
         # 徹底杜絕 19:31 地板空與天花板多！
         # 1. 解決開倉太晚追地板：
-        #    當價格距 KC 中軌大於 1.5 * ATR 或已緊貼 KC 下軌（0.2 * ATR 內）時，
-        #    100% 一票否決開空，寧可錯過也不准地板追單！
+        #    當價格距 KC 中軌大於 1.5 * ATR (常規模式) 或已緊貼 KC 下軌（0.2 * ATR 內）時，
+        #    100% 一票否決開空，寧可錯過也不准地板追單！(妖幣動能突破模式放寬至 2.5 ATR)
         # 2. 解決開倉追天花板：
-        #    當價格距 KC 中軌大於 1.5 * ATR 或已緊貼 KC 上軌（0.2 * ATR 內）時，
-        #    100% 一票否決開多，寧可錯過也不准天花板追多！
+        #    當價格距 KC 中軌大於 1.5 * ATR (常規模式) 或已緊貼 KC 上軌（0.2 * ATR 內）時，
+        #    100% 一票否決開多，寧可錯過也不准天花板追多！(妖幣動能突破模式放寬至 2.5 ATR)
         # ══════════════════════════════════════════════════════════════════
         if atr_val > 0:
             if signal_side in ("SHORT", "SELL"):
@@ -2547,13 +2547,14 @@ class EntryGate:
                 min_close = min(c_close, quote)
                 dist_to_lower = c_close - kc_low
                 is_near_lower = (c_close >= kc_low and dist_to_lower <= 0.2 * atr_val) or (quote >= kc_low and (quote - kc_low) <= 0.2 * atr_val)
-                # 剛從通道內穿出、兩根破軌或延續開倉確認模式才允許在軌外（且延展不得大於 0.5 ATR）
+                # 剛從通道內穿出、兩根破軌、首根突破或延續開倉確認模式才允許在軌外（且妖幣延展不得大於 3.0 ATR，符合 AGENTS.md 規範）
                 is_fresh_outer_breakout = (
                     (not is_prev_outside)
-                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION"))
-                ) and (c_close < kc_low) and (body >= 0.25 * atr_val) and (kc_low - min_close <= 0.5 * atr_val)
+                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION", "BREAKOUT", "BREAKDOWN"))
+                ) and (c_close < kc_low) and (body >= 0.20 * atr_val) and (kc_low - min_close <= 3.0 * atr_val)
 
-                if (eff_middle_gap > 1.5 * atr_val or is_near_lower or min_close < (kc_low - 0.3 * atr_val)) and not is_fresh_outer_breakout:
+                max_middle_gap = 4.5 * atr_val if (is_breakout_mode or is_fresh_outer_breakout) else 1.5 * atr_val
+                if (eff_middle_gap > max_middle_gap or is_near_lower or min_close < (kc_low - 3.0 * atr_val)) and not is_fresh_outer_breakout:
                     return False, "VETO_OVEREXTENDED_SHORT: 距中軌過遠(>1.5 ATR)或緊貼/深破下軌，嚴禁地板追空", {
                         **meta,
                         "middle_gap": eff_middle_gap,
@@ -2563,7 +2564,7 @@ class EntryGate:
                         "kc_lower": kc_low,
                         "dist_to_lower": dist_to_lower,
                         "atr": atr_val,
-                        "cause": f"負乖離硬鎖一票否決 (VETO_OVEREXTENDED_SHORT): 距中軌乖離={eff_middle_gap:.4f} > 1.5*ATR({1.5*atr_val:.4f}) 或 緊貼下軌(距下軌={dist_to_lower:.4f} <= 0.2*ATR)，極度超賣嚴禁地板追空！",
+                        "cause": f"負乖離硬鎖一票否決 (VETO_OVEREXTENDED_SHORT): 距中軌乖離={eff_middle_gap:.4f} > {max_middle_gap:.4f} 或 緊貼下軌(距下軌={dist_to_lower:.4f} <= 0.2*ATR)，極度超賣嚴禁地板追空！",
                     }
             elif signal_side in ("LONG", "BUY"):
                 middle_gap = c_close - kc_mid
@@ -2572,13 +2573,14 @@ class EntryGate:
                 max_close = max(c_close, quote)
                 dist_to_upper = kc_up - c_close
                 is_near_upper = (c_close <= kc_up and dist_to_upper <= 0.2 * atr_val) or (quote <= kc_up and (kc_up - quote) <= 0.2 * atr_val)
-                # 剛從通道內穿出、兩根破軌或延續開倉確認模式才允許在軌外（且延展不得大於 0.5 ATR）
+                # 剛從通道內穿出、兩根破軌、首根突破或延續開倉確認模式才允許在軌外（且妖幣延展不得大於 3.0 ATR，符合 AGENTS.md 規範）
                 is_fresh_outer_breakout = (
                     (not is_prev_outside)
-                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION"))
-                ) and (c_close > kc_up) and (body >= 0.25 * atr_val) and (max_close - kc_up <= 0.5 * atr_val)
+                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION", "BREAKOUT", "BREAKDOWN"))
+                ) and (c_close > kc_up) and (body >= 0.20 * atr_val) and (max_close - kc_up <= 3.0 * atr_val)
 
-                if (eff_middle_gap > 1.5 * atr_val or is_near_upper or max_close > (kc_up + 0.3 * atr_val)) and not is_fresh_outer_breakout:
+                max_middle_gap = 4.5 * atr_val if (is_breakout_mode or is_fresh_outer_breakout) else 1.5 * atr_val
+                if (eff_middle_gap > max_middle_gap or is_near_upper or max_close > (kc_up + 3.0 * atr_val)) and not is_fresh_outer_breakout:
                     return False, "VETO_OVEREXTENDED_LONG: 距中軌過遠(>1.5 ATR)或緊貼/高出上軌，嚴禁天花板追多", {
                         **meta,
                         "middle_gap": eff_middle_gap,
@@ -2588,7 +2590,7 @@ class EntryGate:
                         "kc_upper": kc_up,
                         "dist_to_upper": dist_to_upper,
                         "atr": atr_val,
-                        "cause": f"正乖離硬鎖一票否決 (VETO_OVEREXTENDED_LONG): 距中軌乖離={eff_middle_gap:.4f} > 1.5*ATR({1.5*atr_val:.4f}) 或 緊貼上軌(距上軌={dist_to_upper:.4f} <= 0.2*ATR)，極度超買嚴禁天花板追多！",
+                        "cause": f"正乖離硬鎖一票否決 (VETO_OVEREXTENDED_LONG): 距中軌乖離={eff_middle_gap:.4f} > {max_middle_gap:.4f} 或 緊貼上軌(距上軌={dist_to_upper:.4f} <= 0.2*ATR)，極度超買嚴禁天花板追多！",
                     }
 
         # 通道天花板/地板與中軌禁開防守 (僅限震盪模式)
@@ -2611,7 +2613,7 @@ class EntryGate:
                     "cause": f"價格位於KC中軌附近 (KC_Pos={kc_pos:.2f})，非趨勢啟動亦非回踩，通道中性死水區嚴禁開倉！",
                 }
         elif is_breakout_mode:
-            # 破軌模式：若價格已在軌外，由「距同側外軌乖離」與「距 MA5 不得超過 1.0 ATR」獨立把關
+            # 破軌模式：若價格已在軌外，由「距同側外軌乖離」與「距 MA5 不得超過 1.5 ATR」獨立把關 (妖幣放寬)
             if signal_side == "LONG" and is_current_outside:
                 band_extension = max(quote, c_close) - kc_up
                 if band_extension > max_ext_allowed * atr_val:
@@ -2622,10 +2624,10 @@ class EntryGate:
                 if is_late_chase:
                     ma5_val = float(curr_k.get("ma5", c_close))
                     ma5_dist = abs(quote - ma5_val)
-                    if ma5_dist > 1.0 * atr_val:
+                    if ma5_dist > 1.5 * atr_val:
                         return False, "LATE_CHASE_MA5_DISTANCE", {
                             **meta,
-                            "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.0*ATR({1.0*atr_val:.4f})，拒絕追高！",
+                            "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.5*ATR({1.5*atr_val:.4f})，拒絕追高！",
                         }
             elif signal_side == "SHORT" and is_current_outside:
                 band_extension = kc_low - min(quote, c_close)
@@ -2637,10 +2639,10 @@ class EntryGate:
                 if is_late_chase:
                     ma5_val = float(curr_k.get("ma5", c_close))
                     ma5_dist = abs(quote - ma5_val)
-                    if ma5_dist > 1.0 * atr_val:
+                    if ma5_dist > 1.5 * atr_val:
                         return False, "LATE_CHASE_MA5_DISTANCE", {
                             **meta,
-                            "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.0*ATR({1.0*atr_val:.4f})，拒絕追低！",
+                            "cause": f"破軌距MA5過度延展一票否決: 距MA5={ma5_dist:.4f} > 1.5*ATR({1.5*atr_val:.4f})，拒絕追低！",
                         }
 
         # ─── 破軌新鮮度防追高 (AGENTS.md 2026-10-20 最新授權) ───
