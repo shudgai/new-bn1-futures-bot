@@ -1758,6 +1758,19 @@ class HoldingProtectionExitGate:
             )
             return _auth(clean_reason)
 
+        is_pivot_candidate = any(p in clean_reason.upper() for p in (
+            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY',
+            'TOP_WATERFALL', 'CONFIRMED_TROUGH', 'AT_TOP', 'AT_BOTTOM',
+            'CLIMAX_TOP', 'CLIMAX_BOTTOM',
+        ))
+        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
+            position, frame, quote,
+        )
+        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
+        if is_true_pivot_confirmed:
+            details.update(true_pivot_type=pivot_type, **pivot_info)
+            return _auth(clean_reason)
+
         # ═════════════════════════════════════════════════════════════════
         # 【用戶授權鐵律：analyze_market_signal 多頭回踩與空頭反彈防洗保護】
         # ═════════════════════════════════════════════════════════════════
@@ -1806,14 +1819,19 @@ class HoldingProtectionExitGate:
             None if is_profit_lock
             else _verified_profit_lock_details(position, quote)
         )
-        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
-            position, frame, quote,
+        # Channel Swing may close only on a verified net-profit lock, a real
+        # post-entry peak/valley, or an emergency safety exit. This check must
+        # precede legacy meme-reason allowlists (trend-dead and ATR trailing
+        # labels alone are not confirmation that a swing has topped/bottomed).
+        is_channel_swing = (
+            channel_swing
+            or str((position or {}).get('entry_mode') or '').upper()
+            == 'CHANNEL_SWING'
         )
-        is_pivot_candidate = any(p in clean_reason.upper() for p in (
-            'PIVOT', 'FRACTAL_PEAK', 'FRACTAL_VALLEY', 'TRUE_PEAK', 'TRUE_VALLEY',
-            'TOP_WATERFALL', 'CONFIRMED_TROUGH',
-        ))
-        is_true_pivot_confirmed = has_pivot and is_pivot_candidate
+        if (is_channel_swing and not hard_exit and not is_safety_exit
+                and not is_profit_lock and not is_true_pivot_confirmed):
+            return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+
         if (not is_safety_exit and active_profit_lock is None
                 and not is_true_pivot_confirmed):
             whipsaw_hold = _trend_midline_whipsaw_hold(frame, side)

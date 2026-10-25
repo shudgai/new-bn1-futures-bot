@@ -262,3 +262,10 @@
 - `.venv/bin/pytest -q --tb=short tests/test_entry_margin_per_slot.py tests/test_unified_net_roe_profit_lock.py tests/test_net_roe_profit_lock.py`：**80 passed**。
 - `.venv/bin/pytest --collect-only -q --tb=short`：**5,214 collected，8 collection errors**，原因仍為上列缺失測試 helper／舊 API。嘗試把三個遺失 fixture 的匯入改接到另一個測試 fixture 後，語意與資料欄位不相容且造成 46 個舊案例失敗，因此已還原該試改；這些測試需要按現行策略重寫，不能用錯誤 fixture 掩蓋。
 - `git diff --check`：通過。
+
+## 追加：持倉過早平倉防護
+
+依使用者最新要求，持倉尚未形成進場後確認的真峰／真谷時，普通均線破位、中軌轉折、meme 趨勢衰竭與 ATR 回吐標籤一律不可直接平倉。只有已驗證的淨 ROE 鎖利、已確認峰谷，以及硬止損／緊急風控出口可放行。`ExitGate` 與 `HoldingProtectionExitGate` 均加入此最後授權檢查；原始訊號可留作診斷，但不得直接執行。
+
+- 新增 `tests/test_channel_swing_pivot_or_lock_only.py`，覆蓋普通退出標籤阻擋、真峰確認放行、已驗證鎖利放行、緊急止損保留，以及 `ExitGate.evaluate` 整合檢查。
+- 本次聚焦執行：**88 passed**（鎖利、峰谷及新增出場授權測試）；Python 編譯與 `git diff --check` 通過。

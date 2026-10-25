@@ -88,8 +88,18 @@ class ExitGate:
     # 第一級絕對安全避險出口（3 ATR 硬止損、極端瀑布、反側破軌）：優先於頂底平倉
     ABSOLUTE_SAFETY_REASONS = frozenset({
         "CIRCUIT_BREAKER_HARD_SL",
+        "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
+        "HARD_STOP_LOSS",
+        "CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
         "EXIT_BY_EXTREME_WATERFALL",
+        "EMERGENCY_DUMP_EXIT",
+        "EMERGENCY_EXTREME_ADVERSE_BAR",
+        "EXIT_LONG_ON_TOP_WATERFALL_DUMP",
+        "FAIL_SAFE_EMERGENCY_EXIT",
         "OPPOSITE_KC_BAND_BREACH",
+        "EXIT_LONG_ON_KC_LOWER_BREACH",
+        "EXIT_SHORT_ON_KC_UPPER_BREACH",
+        "EXIT_BY_MEME_ADVERSE_STOP_LOSS",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
@@ -101,7 +111,44 @@ class ExitGate:
         "EARLY_PIVOT_VALLEY_EXIT",
         "CLOSE_SHORT_AT_BOTTOM",
         "CLOSE_LONG_AT_TOP",
+        "EXIT_BY_VERIFIED_FRACTAL_PEAK",
+        "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
+        "EXIT_BY_CONFIRMED_TRUE_PEAK",
+        "EXIT_BY_CONFIRMED_TRUE_VALLEY",
+        "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
+        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
+        "EXIT_MEME_TRUE_PEAK_CONFIRMED",
+        "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
+        "THREE_POINT_PIVOT",
     })
+    GENERAL_EXIT_VETO_REASON = "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+
+    @staticmethod
+    def _gate_unconfirmed_exit(result):
+        """Only locks, confirmed swing pivots, and emergency protection may close."""
+        should_exit, reason, meta = result
+        if not should_exit:
+            return result
+        reason = str(reason or "")
+        reason_upper = reason.upper()
+        is_profit_lock = (
+            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or any(token in reason_upper for token in (
+                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
+                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
+            ))
+        )
+        if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+                or reason in ExitGate.PIVOT_EXIT_REASONS
+                or is_profit_lock):
+            return result
+        return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
+            **(meta or {}),
+            "suppressed_exit_reason": reason,
+            "exit_policy": "PROFIT_LOCK_OR_CONFIRMED_TRUE_PIVOT_ONLY",
+        }
 
     @staticmethod
     def evaluate(
@@ -191,6 +238,7 @@ class ExitGate:
         if should_exit and (
             reason in ExitGate.ABSOLUTE_SAFETY_REASONS
             or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or reason in ExitGate.PIVOT_EXIT_REASONS
         ):
             return result
 
@@ -369,7 +417,11 @@ class ExitGate:
                 entry_timestamp=pos.get("open_timestamp") or pos.get("entry_timestamp"),
             )
             if action == ACTION_EXIT:
-                return True, mid_reason, {**(meta or {}), "mid_band_ma3": mid_meta, "cause": mid_meta.get("cause")}
+                return ExitGate._gate_unconfirmed_exit((
+                    True, mid_reason,
+                    {**(meta or {}), "mid_band_ma3": mid_meta,
+                     "cause": mid_meta.get("cause")},
+                ))
             if action == ACTION_HOLD_WAIT:
                 if should_exit and reason in ExitGate.PIVOT_EXIT_REASONS:
                     return result
@@ -379,7 +431,7 @@ class ExitGate:
                     "suppressed_reason": reason,
                     "cause": mid_meta.get("cause"),
                 }
-        return result
+        return ExitGate._gate_unconfirmed_exit(result)
 
     @staticmethod
     def _evaluate_core(
