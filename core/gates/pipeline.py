@@ -369,7 +369,7 @@ def ma5_ma15_cross_chop_problem(
 def fast_cross_evidence(
     frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
 ) -> Optional[Dict[str, float]]:
-    """Return symmetric evidence for a fresh, directional MA5/MA15 fast cross."""
+    """Return evidence for a fresh MA3/MA15 cross with MA5 momentum confirmation."""
     try:
         if (side not in ('LONG', 'SHORT') or frame is None or len(frame) < 2
                 or 'is_closed' not in frame.columns):
@@ -392,13 +392,15 @@ def fast_cross_evidence(
         atr = float(previous['atr'])
         previous_ma5 = float(previous['ma5'])
         previous_ma15 = float(previous['ma15'])
+        previous_ma3 = float(previous['ma3'])
+        live_ma3 = float(live['ma3']) + (quote - raw_close) / 3.0
         live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
         live_ma15 = float(live['ma15']) + (quote - raw_close) / 15.0
         width = upper - lower
         values = (
             stamp, previous_stamp, opening, quote, raw_close, high, low,
-            upper, middle, lower, atr, previous_ma5, previous_ma15,
-            live_ma5, live_ma15, width,
+            upper, middle, lower, atr, previous_ma3, previous_ma5,
+            previous_ma15, live_ma3, live_ma5, live_ma15, width,
         )
         if (not all(math.isfinite(value) and value > 0 for value in values)
                 or stamp != previous_stamp + 60_000
@@ -415,27 +417,27 @@ def fast_cross_evidence(
         if side == 'LONG':
             body = quote - opening
             directional_wick = high - max(opening, quote)
-            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
             prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
+            prev2_ma3 = float(closed.iloc[-2]['ma3']) if len(closed) >= 2 else previous_ma3
             crossed = (
-                (previous_ma5 <= previous_ma15 and live_ma5 > live_ma15 and live_ma5 > previous_ma5)
-                or (prev2_ma5 <= prev2_ma15 and previous_ma5 > previous_ma15 and live_ma5 >= previous_ma5 and live_ma5 > live_ma15)
+                (previous_ma3 <= previous_ma15 and live_ma3 > live_ma15 and live_ma3 > previous_ma3)
+                or (prev2_ma3 <= prev2_ma15 and previous_ma3 > previous_ma15 and live_ma3 >= previous_ma3 and live_ma3 > live_ma15)
             )
-            # 當根 1m K 棒收線確認（close > ma5 且 close > open）
-            candle_confirmed = quote > live_ma5 and quote > opening
+            # 當根 1m 動能確認：收紅且價格站在 MA3、MA5 之上。
+            candle_confirmed = quote > live_ma3 and quote > live_ma5 and quote > opening
             position_ready = quote > middle
             room = (upper - quote) / width
         else:
             body = opening - quote
             directional_wick = min(opening, quote) - low
-            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
             prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
+            prev2_ma3 = float(closed.iloc[-2]['ma3']) if len(closed) >= 2 else previous_ma3
             crossed = (
-                (previous_ma5 >= previous_ma15 and live_ma5 < live_ma15 and live_ma5 < previous_ma5)
-                or (prev2_ma5 >= prev2_ma15 and previous_ma5 < previous_ma15 and live_ma5 <= previous_ma5 and live_ma5 < live_ma15)
+                (previous_ma3 >= previous_ma15 and live_ma3 < live_ma15 and live_ma3 < previous_ma3)
+                or (prev2_ma3 >= prev2_ma15 and previous_ma3 < previous_ma15 and live_ma3 <= previous_ma3 and live_ma3 < live_ma15)
             )
-            # 當根 1m K 棒收線確認（close < ma5 且 close < open）
-            candle_confirmed = quote < live_ma5 and quote < opening
+            # 當根 1m 動能確認：收黑且價格壓在 MA3、MA5 之下。
+            candle_confirmed = quote < live_ma3 and quote < live_ma5 and quote < opening
             position_ready = quote < middle
             room = (quote - lower) / width
 
@@ -493,6 +495,8 @@ def fast_cross_evidence(
             'upper': upper,
             'lower': lower,
             'live_ma5': live_ma5,
+            'previous_ma3': previous_ma3,
+            'live_ma3': live_ma3,
             'live_ma15': live_ma15,
             'previous_ma5': previous_ma5,
             'previous_ma15': previous_ma15,

@@ -70,11 +70,11 @@ def golden_cross_frame():
     frame = three_bar_frame()
     closed = frame.index[-2]
     live = frame.index[-1]
-    frame.loc[closed, ["ma5", "ma15"]] = [100.0, 100.2]
+    frame.loc[closed, ["ma3", "ma5", "ma15"]] = [100.0, 100.0, 100.2]
     frame.loc[live, [
         "open", "high", "low", "close", "kc_lower", "kc_upper", "kc_middle",
-        "ma5", "ma15",
-    ]] = [100.8, 101.4, 100.7, 100.9, 98.6, 103.0, 100.8, 100.15, 100.2]
+        "ma3", "ma5", "ma15",
+    ]] = [100.8, 101.4, 100.7, 100.9, 98.6, 103.0, 100.8, 100.25, 100.15, 100.2]
     return frame
 
 

@@ -204,6 +204,15 @@ def validate_ma5_ma15_cross_entry(
             and cross_age in (0, 1, 2)
         )
         if not cross:
+            # MA3/MA15 is the canonical live cross for the fast lane. Its
+            # evaluator also enforces MA5 momentum, candle, KC, and room gates.
+            from core.gates.pipeline import fast_cross_evidence
+            if fast_cross_evidence(frame, quote, side) is not None:
+                details["cross_source"] = "MA3_MA15"
+                return True, (
+                    "PERMIT_MA3_MA15_GOLDEN_CROSS"
+                    if side == "LONG" else "PERMIT_MA3_MA15_DEATH_CROSS"
+                ), details
             return False, (
                 "BLOCKED_MA5_MA15_CROSS_TOO_OLD"
                 if last_cross is not None and last_cross[1] == "LONG"
