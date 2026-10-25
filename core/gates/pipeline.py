@@ -1556,7 +1556,12 @@ class EntryGatePipeline:
             if (not all(math.isfinite(value) and value > 0 for value in values)
                     or atr <= 0 or quote >= opened):
                 return None
-            if not (middle[-1] < middle[-2] < middle[-3]
+            # Circle 1 on the reviewed chart is a lower-high retest that fails
+            # under the falling MA/KC resistance.  Accept a confirmed declining
+            # structure even if one intermediate KC reading is flat; requiring
+            # three strictly descending values delayed this setup until the
+            # later, more extended breakdown (circle 2).
+            if not (middle[-1] < middle[-3]
                     and ma5_values[-1] < ma15_values[-1]
                     and ma5_values[-1] < ma5_values[-2]
                     and ma15_values[-1] <= ma15_values[-2]):
@@ -1564,14 +1569,38 @@ class EntryGatePipeline:
             if base_high - base_low > 2.0 * atr:
                 return None
             body_atr = (opened - quote) / atr
-            if not 0.10 <= body_atr <= 0.75:
+            # Keep the user's short-body ceiling at 1 ATR.  Larger bars are
+            # likely exhaustion / floor chasing and must wait for a retest.
+            if not 0.10 <= body_atr <= 1.0:
+                return None
+            lower_rail = float(current.get('kc_lower', float('nan')))
+            if not math.isfinite(lower_rail) or lower_rail <= 0:
+                return None
+            # Do not enter at circle 2 after price has already run well beyond
+            # the lower rail.  A fresh move near the rail can qualify; a deep
+            # extension must wait for another pullback-and-rejection setup.
+            if quote < lower_rail - 0.5 * atr:
                 return None
             breaks_base = opened >= base_low and quote < base_low
             breaks_ma5 = (
                 opened >= live_ma5 and quote < live_ma5
                 and float(prior.iloc[-1]['close']) >= ma5_values[-1]
             )
-            if not (breaks_base or breaks_ma5):
+            resistance = max(
+                float(prior.iloc[-1]['ma5']),
+                float(prior.iloc[-1]['ma15']),
+                float(prior.iloc[-1]['kc_middle']),
+            )
+            pullback_rejection = (
+                base_high >= resistance - 0.35 * atr
+                and base_high <= resistance + 0.35 * atr
+                and any(
+                    float(row['close']) > float(row['open'])
+                    for _, row in base.iterrows()
+                )
+                and quote < float(prior.iloc[-1]['low'])
+            )
+            if not (breaks_base or breaks_ma5 or pullback_rejection):
                 return None
             stamp = float(current.get('timestamp', 0))
             if not math.isfinite(stamp) or stamp <= 0:
@@ -1584,7 +1613,14 @@ class EntryGatePipeline:
                 'is_breakout': True, 'ma5_direction_aligned': True,
                 'realtime_body_atr': body_atr,
                 'consolidation_low': base_low,
-                'break_reference': 'CONSOLIDATION_LOW' if breaks_base else 'MA5',
+                'setup': (
+                    'LOWER_HIGH_REJECTION' if pullback_rejection
+                    else 'BASE_BREAKDOWN'
+                ),
+                'break_reference': (
+                    'CONSOLIDATION_LOW' if breaks_base else
+                    'MA5' if breaks_ma5 else 'LOWER_HIGH_REJECTION'
+                ),
                 'confirmation_bar_id': stamp, 'breakout_bar_id': stamp,
                 'pending_signal_id': f'DOWNTREND_RESUME:SHORT:{int(stamp)}',
             }
