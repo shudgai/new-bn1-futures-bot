@@ -167,6 +167,56 @@ class CentralEntryGate:
             )
         checks["closed_bar"] = {"status": "PASS", "actual": True, "expected": True}
 
+        # 最前置黑名單：所有 MA 交叉／突破入口共用此已收線盤整檢查。
+        # 欄位或歷史不足一律拒絕，禁止策略分支繞過震盪濾網。
+        from core.services.market_consolidation_filter import evaluate_market_blacklist
+        if isinstance(klines_or_snapshot, pd.DataFrame):
+            entry_frame = klines_or_snapshot
+        elif isinstance(klines_or_snapshot, dict):
+            entry_frame = klines_or_snapshot.get("raw_df")
+            if entry_frame is None:
+                entry_frame = klines_or_snapshot.get("frame")
+            candles = klines_or_snapshot.get("candles")
+            if entry_frame is None and isinstance(candles, (list, tuple)):
+                entry_frame = pd.DataFrame(candles)
+        else:
+            entry_frame = getattr(klines_or_snapshot, "raw_df", None)
+        if not isinstance(entry_frame, pd.DataFrame):
+            blacklist = (True, "VETO_CONSOLIDATION_HISTORY_REQUIRED", {})
+        else:
+            last_trade = (
+                klines_or_snapshot.get("last_closed_trade")
+                if isinstance(klines_or_snapshot, dict) else None
+            )
+            macro_trend = (
+                klines_or_snapshot.get("macro_trend")
+                if isinstance(klines_or_snapshot, dict)
+                else getattr(klines_or_snapshot, "macro_trend", None)
+            )
+            last_stamp = entry_frame.iloc[-1].get("timestamp") if len(entry_frame) else None
+            try:
+                bar_index = int(float(last_stamp) // 60_000) if last_stamp is not None else None
+            except (TypeError, ValueError, OverflowError):
+                bar_index = None
+            blacklist = evaluate_market_blacklist(
+                entry_frame, -1, side=side, last_closed_trade=last_trade,
+                current_bar_index=bar_index, macro_trend=macro_trend,
+            )
+        blocked, block_reason, block_evidence = blacklist
+        checks["market_blacklist"] = {
+            "status": "FAIL" if blocked else "PASS",
+            "reason": block_reason,
+            "evidence": block_evidence,
+        }
+        if blocked:
+            return GateCheckResult(
+                passed=False,
+                reason=block_reason,
+                signal_id=sig_id,
+                details={"market_blacklist": block_evidence},
+                checks=checks,
+            )
+
         # -------------------------------------------------------------
         # 區分訊號類型：均線轉折類 (CROSS_MID) vs 常規破軌追單類 (BREAKOUT)
         # -------------------------------------------------------------
