@@ -23,8 +23,12 @@ from core.gates.swing_origin_entry_gate import (
     LONG_SWING_ORIGIN_CODE,
     SHORT_SWING_ORIGIN_CODE,
     SWING_ORIGIN_CODES,
+    LONG_OUTER_PIVOT_CODE,
+    SHORT_OUTER_PIVOT_CODE,
+    OUTER_PIVOT_CODES,
     SWING_ORIGIN_PHASE,
     late_entry_problem,
+    outer_pivot_evidence,
     swing_origin_evidence,
 )
 from core.gates.meme_coin_gate import MemeCoinGate
@@ -114,7 +118,7 @@ from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 
 ENTRY_CODES = NEW_TRIGGER_CODES | KC_PENDING_CODES | MEME_ENTRY_CODES | frozenset((
     GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
-    *SWING_ORIGIN_CODES,
+    *SWING_ORIGIN_CODES, *OUTER_PIVOT_CODES,
 ))
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
@@ -505,6 +509,10 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
             )
         elif phase == "WICK_NEXT_BAR_CONFIRM":
             bar_ids = (decision.get("confirmation_bar_id"),)
+        elif phase in OUTER_PIVOT_CODES:
+            # The outer-rail extreme is the setup candle; only the compact
+            # reversal confirmation candle is allowed to authorize the order.
+            bar_ids = (decision.get("pair_confirmation_bar_id"),)
         elif phase == "KC_2BAR_CLOSED_CONFIRM":
             # Only the two closed candles authorize a confirmed rail breakout.
             # The live candle is checked by quote-vs-rail gates, not its shape.
@@ -577,14 +585,25 @@ def entry_candle_shape_problem(frame, quote=None, decision=None):
                     if is_live else "BLOCKED_ENTRY_WICK_OR_DOJI"
                 )
             if phase == "WICK_NEXT_BAR_CONFIRM":
-                if not _wick_candle_confirmation(
-                    candle, decision.get('side'),
-                    decision.get('wick_reference_midpoint'),
-                ):
+                if decision.get('confirmation_kind') == 'OVERSIZED_BODY':
+                    confirmed = _small_body_impulse_confirmation(
+                        candle, decision.get('side'),
+                        decision.get('wick_reference_midpoint'),
+                        decision.get('entry_atr'),
+                    )
+                else:
+                    confirmed = _wick_candle_confirmation(
+                        candle, decision.get('side'),
+                        decision.get('wick_reference_midpoint'),
+                        decision.get('entry_atr'),
+                    )
+                if not confirmed:
                     return (
-                        'BLOCKED_LONG_WICK_NEXT_BAR_CONFIRMATION'
-                        if decision.get('side') == 'LONG'
-                        else 'BLOCKED_SHORT_WICK_NEXT_BAR_CONFIRMATION'
+                        'BLOCKED_OVERSIZED_BODY_NEXT_BAR_CONFIRMATION'
+                        if decision.get('confirmation_kind') == 'OVERSIZED_BODY'
+                        else ('BLOCKED_LONG_WICK_NEXT_BAR_CONFIRMATION'
+                              if decision.get('side') == 'LONG'
+                              else 'BLOCKED_SHORT_WICK_NEXT_BAR_CONFIRMATION')
                     )
                 continue
             side = decision.get("side") if decision else None
@@ -2793,7 +2812,7 @@ def pre_flight_safety_check(
             return False, direction_problem
         if frame is None or len(frame) < 2:
             return False, "BLOCKED_BY_MA5_SLOPE_INVALID"
-        if side == 'LONG':
+        if side == 'LONG' and entry_phase not in OUTER_PIVOT_CODES:
             bearish_candle_problem = long_large_bearish_candle_problem(frame, quote)
             if bearish_candle_problem:
                 return False, bearish_candle_problem
@@ -3080,7 +3099,7 @@ async def enforce_final_order_wick_gate(account, symbol, side):
         veto(f"BLOCKED_FINAL_WICK_DATA_INVALID_{type(exc).__name__}")
 
 
-def _wick_candle_confirmation(candle, side, midpoint):
+def _wick_candle_confirmation(candle, side, midpoint, atr=None):
     try:
         opening, high, low, close = (
             float(candle[key]) for key in ('open', 'high', 'low', 'close')
@@ -3090,11 +3109,37 @@ def _wick_candle_confirmation(candle, side, midpoint):
             return False
         body = abs(close - opening)
         wick = high - max(opening, close) if side == 'LONG' else min(opening, close) - low
+        if atr is not None and body > 0.35 * float(atr):
+            return False
         return (
             close > opening and body > wick and close > midpoint
             if side == 'LONG' else
             close < opening and body > wick and close < midpoint
         )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def _small_body_impulse_confirmation(candle, side, midpoint, atr):
+    """Confirm an oversized impulse with a short directional candle next bar."""
+    try:
+        opening, high, low, close, midpoint, atr = (
+            float(value) for value in (
+                candle['open'], candle['high'], candle['low'], candle['close'],
+                midpoint, atr,
+            )
+        )
+        values = (opening, high, low, close, midpoint, atr)
+        if not all(math.isfinite(value) and value > 0 for value in values) or atr <= 0:
+            return False
+        body = abs(close - opening)
+        if not 0 < body <= 0.35 * atr:
+            return False
+        if side == 'LONG':
+            return close > opening and close > midpoint
+        if side == 'SHORT':
+            return close < opening and close < midpoint
+        return False
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
 
@@ -3121,7 +3166,13 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or str(decision.get('entry_phase', '')).startswith('MEME_')
             or str(decision.get('type', '')).startswith('MEME_')
         )
-        if not is_meme:
+        if decision.get('entry_phase') in OUTER_PIVOT_CODES:
+            origin = outer_pivot_evidence(frame, quote, side)
+            if origin is None:
+                return reject('BLOCKED_KC_OUTER_PIVOT_REVALIDATION')
+            decision['outer_pivot_evidence'] = origin
+            decision['entry_atr'] = origin['atr']
+        elif not is_meme:
             extension_problem = late_entry_problem(frame, quote, side)
             if extension_problem:
                 return reject(extension_problem)
@@ -3168,11 +3219,15 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                         or raw_low > min(opening, raw_close)
                         or raw_high < max(opening, raw_close)):
                     return reject('BLOCKED_INVALID_WICK_SIGNAL_CANDLE')
-                if wick >= body and wick >= 0.25 * atr:
+                long_wick = wick >= body and wick >= 0.25 * atr
+                oversized_directional_body = (
+                    (side == 'LONG' and signal_close > opening)
+                    or (side == 'SHORT' and signal_close < opening)
+                ) and body >= 1.2 * atr
+                if long_wick or oversized_directional_body:
                     if account is None:
                         return reject(
-                            'BLOCKED_LONG_WICK_PENDING_STATE_UNAVAILABLE'
-                            if side == 'LONG' else 'BLOCKED_SHORT_WICK_PENDING_STATE_UNAVAILABLE'
+                            'BLOCKED_NEXT_BAR_CONFIRMATION_STATE_UNAVAILABLE'
                         )
                     pending_store = _wick_pending_store(account)
                     existing_pending = pending_store.get(symbol)
@@ -3185,8 +3240,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     mid = (float(candle['high']) + max(opening, signal_close)) / 2.0 if side == 'LONG' else (min(opening, signal_close) + float(candle['low'])) / 2.0
                     pending_store[symbol] = {
                         'side': side,
+                        'trigger_kind': 'LONG_WICK' if long_wick else 'OVERSIZED_BODY',
                         'signal_bar_id': float(wick_bar_id),
                         'midpoint': mid,
+                        'signal_high': high,
+                        'signal_low': low,
                         'entry_atr': atr,
                         'type': decision.get('type'),
                         'reason': decision.get('reason'),
@@ -3215,9 +3273,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # ──【順勢交易鐵律】趨勢是空頭不要開多，趨勢是多頭不要開空──
         market_trend = MemeCoinGate.get_market_trend(frame, quote)
         side = decision.get('side')
-        if side == 'LONG' and market_trend == 'BEARISH':
+        is_confirmed_outer_pivot = decision.get('entry_phase') in OUTER_PIVOT_CODES
+        if side == 'LONG' and market_trend == 'BEARISH' and not is_confirmed_outer_pivot:
             return reject('BLOCKED_LONG_ON_BEARISH_TREND')
-        if side == 'SHORT' and market_trend == 'BULLISH':
+        if side == 'SHORT' and market_trend == 'BULLISH' and not is_confirmed_outer_pivot:
             return reject('BLOCKED_SHORT_ON_BULLISH_TREND')
         # ──【若已在漲勢末端就不要再開倉 / 跌勢末端同理】──
         from core.gates.meme_shared_protection_gate import MemeSharedProtectionGate
@@ -3397,7 +3456,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     body = abs(close - opening)
                     wick = high - max(opening, close) if pending_wick['side'] == 'LONG' else min(opening, close) - low
                     atr = float(pending_wick['entry_atr'])
-                    if wick >= body and wick >= 0.25 * atr:
+                    if (pending_wick.get('trigger_kind') == 'OVERSIZED_BODY'
+                            or (wick >= body and wick >= 0.25 * atr)):
                         final_midpoint = (
                             (high + max(opening, close)) / 2.0
                             if pending_wick['side'] == 'LONG'
@@ -3417,15 +3477,25 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     pending_wicks.pop(symbol, None)
                     account.save_state()
                     return reject('BLOCKED_WICK_CONFIRMATION_BAR_MISSED')
-                if not _wick_candle_confirmation(
-                    latest_closed, pending_wick['side'], pending_wick['midpoint'],
-                ):
+                if pending_wick.get('trigger_kind') == 'OVERSIZED_BODY':
+                    confirmation_passed = _small_body_impulse_confirmation(
+                        latest_closed, pending_wick['side'], pending_wick['midpoint'],
+                        pending_wick['entry_atr'],
+                    )
+                else:
+                    confirmation_passed = _wick_candle_confirmation(
+                        latest_closed, pending_wick['side'], pending_wick['midpoint'],
+                        pending_wick['entry_atr'],
+                    )
+                if not confirmation_passed:
                     pending_wicks.pop(symbol, None)
                     account.save_state()
                     return reject(
-                        'BLOCKED_LONG_WICK_NEXT_BAR_FAILED'
-                        if pending_wick['side'] == 'LONG'
-                        else 'BLOCKED_SHORT_WICK_NEXT_BAR_FAILED'
+                        'BLOCKED_OVERSIZED_BODY_NEXT_BAR_FAILED'
+                        if pending_wick.get('trigger_kind') == 'OVERSIZED_BODY'
+                        else ('BLOCKED_LONG_WICK_NEXT_BAR_FAILED'
+                              if pending_wick['side'] == 'LONG'
+                              else 'BLOCKED_SHORT_WICK_NEXT_BAR_FAILED')
                     )
                 pending_wick.update(
                     status='ready', confirmation_bar_id=latest_id,
@@ -3437,7 +3507,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             decision = {
                 'action': 'ENTER', 'side': side,
                 'type': pending_wick['type'],
-                'reason': 'LONG_WICK_NEXT_BAR_CONFIRMED',
+                'reason': (
+                    'OVERSIZED_BODY_NEXT_BAR_CONFIRMED'
+                    if pending_wick.get('trigger_kind') == 'OVERSIZED_BODY'
+                    else 'LONG_WICK_NEXT_BAR_CONFIRMED'
+                ),
                 'price': float(price if price is not None else frame.iloc[-1]['close']),
                 'close_price': float(confirmation['close']),
                 'entry_atr': float(pending_wick['entry_atr']),
@@ -3446,6 +3520,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 'pair_confirmation_bar_id': pending_wick.get('pair_confirmation_bar_id') or signal_bar_id,
                 'pending_signal_id': f"{pending_wick.get('pending_signal_id')}:WICK_CONFIRM:{int(latest_id)}",
                 'entry_phase': 'WICK_NEXT_BAR_CONFIRM',
+                'confirmation_kind': pending_wick.get('trigger_kind', 'LONG_WICK'),
                 'strategy_type': pending_wick.get('strategy_type'),
                 'intrabar': False,
                 'pending_next_bar_long': side == 'LONG',
@@ -3499,8 +3574,16 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 for side in ('LONG', 'SHORT')
             )
         )
+        live_outer_pivot = (
+            not has_open_position
+            and any(
+                code in (None, LONG_OUTER_PIVOT_CODE if side == 'LONG' else SHORT_OUTER_PIVOT_CODE)
+                and outer_pivot_evidence(frame, quote, side) is not None
+                for side in ('LONG', 'SHORT')
+            )
+        )
         if (forming_bar and is_meme_breakout_symbol(symbol)
-                and not live_swing_origin and live_cross is None
+                and not live_swing_origin and not live_outer_pivot and live_cross is None
                 and code not in KC_PENDING_CODES
                 and code not in MEME_ENTRY_CODES
                 and code != 'TRIGGER_C_CONTINUATION'):
@@ -3519,6 +3602,40 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         if code is not None and code not in ENTRY_CODES:
             return reject("BLOCKED_OBSOLETE_ENTRY_SIGNAL")
+
+        if code is None or code in OUTER_PIVOT_CODES:
+            position_open = bool(
+                account is not None
+                and symbol in getattr(account, 'positions', {})
+            )
+            if not position_open:
+                pivot_sides = (
+                    ['LONG'] if code == LONG_OUTER_PIVOT_CODE else
+                    ['SHORT'] if code == SHORT_OUTER_PIVOT_CODE else
+                    ['LONG', 'SHORT']
+                )
+                for pivot_side in pivot_sides:
+                    evidence = outer_pivot_evidence(frame, quote, pivot_side)
+                    if evidence is None:
+                        continue
+                    pivot_code = (
+                        LONG_OUTER_PIVOT_CODE if pivot_side == 'LONG'
+                        else SHORT_OUTER_PIVOT_CODE
+                    )
+                    decision = {
+                        'action': 'ENTER', 'type': pivot_code,
+                        'side': pivot_side, 'price': float(quote),
+                        'confirmation_bar_id': evidence['confirmation_bar_id'],
+                        'breakout_bar_id': evidence['pivot_bar_id'],
+                        'pair_confirmation_bar_id': evidence['confirmation_bar_id'],
+                        'pending_signal_id': f'{pivot_code}:{evidence["confirmation_bar_id"]}',
+                        'entry_phase': pivot_code,
+                        'reason': 'CONFIRMED_KC_OUTER_PIVOT_REVERSAL',
+                        'entry_atr': evidence['atr'],
+                        'outer_pivot_evidence': evidence,
+                        '_is_authorized': True,
+                    }
+                    return authorize(decision, quote)
 
         # Fresh KC direction turns may enter on the first real body close
         # beyond the rail. This is still routed through `authorize`, so the

@@ -10,9 +10,73 @@ from core.services.candle_data import closed_entry_candles
 LONG_SWING_ORIGIN_CODE = "KC_SWING_ORIGIN_BREAKOUT_LONG"
 SHORT_SWING_ORIGIN_CODE = "KC_SWING_ORIGIN_BREAKOUT_SHORT"
 SWING_ORIGIN_CODES = frozenset((LONG_SWING_ORIGIN_CODE, SHORT_SWING_ORIGIN_CODE))
+LONG_OUTER_PIVOT_CODE = "KC_OUTER_PIVOT_LONG"
+SHORT_OUTER_PIVOT_CODE = "KC_OUTER_PIVOT_SHORT"
+OUTER_PIVOT_CODES = frozenset((LONG_OUTER_PIVOT_CODE, SHORT_OUTER_PIVOT_CODE))
 SWING_ORIGIN_PHASE = "KC_SWING_ORIGIN_BREAKOUT"
 SWING_ORIGIN_MAX_BIAS_ATR = 0.6
 LATE_ENTRY_MAX_BIAS_ATR = 0.8
+
+
+def outer_pivot_evidence(frame, quote, side):
+    """Confirm a small reversal candle after a KC outer-rail peak or trough."""
+    if side not in ("LONG", "SHORT") or frame is None or frame.empty:
+        return None
+    try:
+        closed = closed_entry_candles(frame)
+        if len(closed) < 3:
+            return None
+        pivot, confirm = closed.iloc[-2], closed.iloc[-1]
+        atr = float(closed.iloc[-2]["atr"])
+        opening, close = float(confirm["open"]), float(confirm["close"])
+        high, low = float(confirm["high"]), float(confirm["low"])
+        pivot_open = float(pivot["open"])
+        pivot_close = float(pivot["close"])
+        pivot_high, pivot_low = float(pivot["high"]), float(pivot["low"])
+        upper, lower = float(pivot["kc_upper"]), float(pivot["kc_lower"])
+        middle = float(confirm["kc_middle"])
+        ma5, ma15 = float(confirm["ma5"]), float(confirm["ma15"])
+        previous_ma5 = float(pivot["ma5"])
+        current_upper, current_lower = float(confirm["kc_upper"]), float(confirm["kc_lower"])
+        price = float(quote)
+        values = (atr, opening, close, high, low, pivot_open, pivot_close,
+                  pivot_high, pivot_low, upper, lower, middle, ma5, ma15,
+                  previous_ma5, current_upper, current_lower, price)
+        if (not all(math.isfinite(value) and value > 0 for value in values)
+                or atr <= 0 or not current_lower < middle < current_upper
+                or high < max(opening, close) or low > min(opening, close)):
+            return None
+        body = abs(close - opening)
+        if not 0.05 * atr <= body <= 0.45 * atr:
+            return None
+        channel_width = current_upper - current_lower
+        if channel_width <= 0:
+            return None
+        kc_position = (close - current_lower) / channel_width
+        if side == "LONG":
+            confirmed = (
+                pivot_low <= lower and close > opening
+                and low >= pivot_low and close > (pivot_open + pivot_close) / 2
+                and kc_position <= 0.40 and ma5 > previous_ma5
+                and ma5 > ma15 and close > ma5 and price >= close
+            )
+        else:
+            confirmed = (
+                pivot_high >= upper and close < opening
+                and high <= pivot_high and close < (pivot_open + pivot_close) / 2
+                and kc_position >= 0.60 and ma5 < previous_ma5
+                and ma5 < ma15 and close < ma5 and price <= close
+            )
+        if not confirmed or abs(price - close) > 0.25 * atr:
+            return None
+        return {
+            "side": side, "pivot_bar_id": float(pivot["timestamp"]),
+            "confirmation_bar_id": float(confirm["timestamp"]),
+            "atr": atr, "quote": price, "close": close,
+            "kc_position": kc_position, "ma5": ma5,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def swing_origin_evidence(frame, quote, side):
