@@ -45,7 +45,7 @@ def validate_entry_math(
     now_ms: float | None = None,
     max_staleness_ms: float = 180_000.0,
 ) -> tuple[bool, str]:
-    """Authorize an entry from the latest candle and prior MA5 value only."""
+    """Authorize an entry only when closed-bar HTF trend agrees with its side."""
     side = str(side or "").upper()
     if side not in {"LONG", "SHORT"}:
         return False, "BLOCKED_ENTRY_MATH_INVALID_SIDE"
@@ -103,6 +103,35 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
     if side == "SHORT" and kc_slope > 0:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
+
+    # The final order gate independently rebuilds the macro regime from closed
+    # candles. Breakouts and MA crosses cannot override an opposing or unknown
+    # higher-timeframe direction.
+    try:
+        import pandas as pd
+        from core.services.data_pipeline import DataPipeline
+
+        macro_frame = pd.DataFrame(closed_bars)
+        macro_close = _number(closed_bars[-1].get("close"))
+        snapshot = (
+            DataPipeline.calculate_snapshot(
+                "", macro_frame, current_price=macro_close,
+            )
+            if macro_close is not None and macro_close > 0
+            else None
+        )
+        macro_trend = str(
+            getattr(snapshot, "macro_trend", "NEUTRAL") or "NEUTRAL"
+        ).upper()
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        macro_trend = "NEUTRAL"
+    if macro_trend == "NEUTRAL":
+        return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
+    if side == "LONG" and macro_trend != "BULLISH":
+        return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
+    if side == "SHORT" and macro_trend != "BEARISH":
+        return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
+
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
     funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
     if funding_rate is not None and abs(funding_rate) >= 0.015:
