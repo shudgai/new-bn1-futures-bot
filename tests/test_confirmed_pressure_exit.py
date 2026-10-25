@@ -6,6 +6,7 @@ from core.gates.holding_protection_gate import HoldingProtectionExitGate
 from core.gates.meme_coin_gate import MemeCoinGate
 from core.gates.unified_pipeline_gates import ExitGate
 from core.services.exits.confirmed_pressure_exit import evaluate_confirmed_pressure_exit
+from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 
 
 def make_frame(side, current, *, live=None):
@@ -182,7 +183,7 @@ def test_entry_bar_cannot_confirm_pressure_exit():
     )["reason"] is None
 
 
-def test_meme_exit_signal_uses_confirmed_pressure_and_not_intrabar_quote():
+def test_confirmed_pressure_is_only_a_candidate_not_exit_authority():
     current = {
         "open": 100.0, "high": 100.0, "low": 99.2, "close": 99.4,
         "ma3": 99.7, "ma15": 99.6, "volume": 15.0,
@@ -190,12 +191,17 @@ def test_meme_exit_signal_uses_confirmed_pressure_and_not_intrabar_quote():
     frame = make_frame("LONG", current)
     pos = position()
 
-    assert MemeCoinGate.evaluate_meme_exit(
+    allowed, reason = MemeCoinGate.evaluate_meme_exit(
         frame, quote=98.0, side="LONG", symbol="龍蝦/USDT", position=pos,
-    ) == (True, "EXIT_BY_CONFIRMED_SELLING_PRESSURE")
+    )
+    assert allowed
+    assert reason == "EXIT_BY_CONFIRMED_SELLING_PRESSURE"
+    assert not automated_position_exit_allowed(
+        "龍蝦/USDT", pos, {}, reason, 98.0, frame=frame,
+    )
 
 
-def test_holding_gate_revalidates_pressure_reason(monkeypatch):
+def test_holding_gate_rejects_pressure_without_true_pivot(monkeypatch):
     current = {
         "open": 100.0, "high": 100.0, "low": 99.2, "close": 99.4,
         "ma3": 99.7, "ma15": 99.6,
@@ -211,12 +217,12 @@ def test_holding_gate_revalidates_pressure_reason(monkeypatch):
         "EXIT_BY_CONFIRMED_SELLING_PRESSURE", channel_swing=True,
     )
 
-    assert allowed
-    assert reason == "EXIT_BY_CONFIRMED_SELLING_PRESSURE"
-    assert details["classification"] == "CONFIRMED_SELLING_PRESSURE"
+    assert not allowed
+    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert "classification" not in details
 
 
-def test_exit_gate_can_execute_confirmed_closed_bar_pressure():
+def test_exit_gate_holds_on_confirmed_pressure_without_lock_or_true_pivot():
     current = {
         "open": 100.0, "high": 100.0, "low": 99.2, "close": 99.4,
         "ma3": 99.7, "ma15": 99.6,
@@ -232,6 +238,7 @@ def test_exit_gate_can_execute_confirmed_closed_bar_pressure():
 
     should_exit, reason, meta = ExitGate.evaluate(pos, market)
 
-    assert should_exit
-    assert reason == "EXIT_BY_CONFIRMED_SELLING_PRESSURE"
-    assert meta["bar_closed"]
+    assert not should_exit
+    assert reason == "HOLD_LOCKED"
+    assert meta["exit_policy"] == "HOLD_UNTIL_HARD_STOP_TRUE_PIVOT_OR_TWO_OF_FOUR_FACTORS"
+    assert meta["suppressed_exit_reason"] is None

@@ -54,3 +54,11 @@ WAIT candidate remains isolated and disabled. No manual trading orders were plac
 - **Modification Description**: Pushed the exit/entry gate repair to GitHub and restarted the user-level 8006 service from the current workspace.
 - **Trigger Reason & Requirement**: User explicitly requested deployment, restart, commit, and GitHub push.
 - **Verification & Test Status**: Service is `active`; `/api/status` returned `is_running=true`, `paper_trading=true`, `environment=binance_testnet`; service working directory is `/home/shudgai999/project/new bn`; local and remote feature branch both point to `6c3e362c`. Syntax checks passed; no automated tests were run.
+
+
+### [2026-10-26 07:53:16 UTC+8] - Test Update Phase: Pressure signals are not standalone exit authority
+- **Author**: shudgai999 (workspace operator) / Codex
+- **Target Files & Lines**: `tests/test_confirmed_pressure_exit.py`
+- **Modification Description**: Replace assertions that allowed confirmed buying/selling pressure to close a position. Keep pressure classification as diagnostic candidate evidence, and assert both the holding gate and final account authorization reject pressure without a verified true pivot or profit lock.
+- **Trigger Reason & Requirement**: User requested updating tests that still asserted the retired early-pressure exit policy.
+- **Verification & Test Status**: `pytest -q tests/test_confirmed_pressure_exit.py` — 15 passed.
