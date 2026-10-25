@@ -2486,8 +2486,8 @@ class BinanceTestnetAccount:
             return False
 
         # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
-        # 僅允許真正的 UI 人工強制操作 (force_manual_ui_override=True) 豁免，自動策略一律強制受審
-        is_ui_force_manual = entry_context.get("force_manual_ui_override") is True
+        # Manual callers use the same structural gate; the UI flag cannot bypass it.
+        is_ui_force_manual = False
         if not is_ui_force_manual:
             eval_frame = entry_context.get("frame")
             if eval_frame is None:
@@ -2595,6 +2595,18 @@ class BinanceTestnetAccount:
             })
         elif is_wild_swing:
             entry_context["managed_by_bot"] = True
+
+        from core.services.math_execution_gate import validate_entry_at_execution
+        math_allowed, math_reason = await validate_entry_at_execution(
+            self, symbol, side, entry_context, execution_price=price,
+        )
+        if not math_allowed:
+            self.log(
+                f"ENTRY_MATH_GATE {symbol} BLOCKED_FINAL_ENTRY:{math_reason}",
+                "WARNING",
+            )
+            return False
+
         if not is_manual:
             if (
                 symbol in self.positions

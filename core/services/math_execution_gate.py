@@ -94,6 +94,14 @@ def validate_entry_math(
     if high < max(opened, close) or low > min(opened, close):
         return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
 
+    # The final account gate must enforce MA5 direction for every entry class.
+    # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
+    # adverse/flat MA5 slope into an authorized entry.
+    if side == "LONG" and ma5 <= previous_ma5:
+        return False, "BLOCKED_BY_MA5_NOT_UPWARD"
+    if side == "SHORT" and ma5 >= previous_ma5:
+        return False, "BLOCKED_BY_MA5_NOT_DOWNWARD"
+
     # Final execution gate: numeric KC midline slope is authoritative. No
     # continuation, oversold-reversal, or profit-lock fast track may override it.
     kc_slope = latest_middle - prior_middle
@@ -292,12 +300,12 @@ def validate_entry_math(
         if abs(ma5 - ma15) < 0.05 * atr:
             return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
         if side == "LONG":
-            if not ((ma5 >= previous_ma5 or close > upper) and ma5 >= ma15 - 0.15 * atr):
+            if not (ma5 > previous_ma5 and ma5 >= ma15 - 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             if close - upper > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
         else:
-            if not ((ma5 <= previous_ma5 or close < lower) and ma5 <= ma15 + 0.15 * atr):
+            if not (ma5 < previous_ma5 and ma5 <= ma15 + 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
@@ -376,21 +384,128 @@ def validate_exit_math(
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return the only mathematical authorization for a full position exit."""
     details: dict[str, Any] = {}
-    if is_emergency_exit(close_reason):
-        return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
     norm_reason = str(close_reason or "").upper().replace(" ", "_")
-    is_meme_exit = any(token in norm_reason for token in (
-        "MEME_CLIMAX_TOP", "MEME_CLIMAX_BOTTOM",
-        "MEME_TREND_DEAD", "MEME_SHORT_TREND_DEAD",
-        "MEME_ATR_TRAILING", "MEME_ADVERSE_STOP",
-    ))
-    if is_meme_exit:
-        details.update(exit_type="MEME_HUNTER_EXIT", close=price)
-        return True, "EXIT_MATH_MEME_HUNTER_APPROVED", details
+    emergency = is_emergency_exit(close_reason)
     side = str(position.get("side") or "").upper()
-    sign = 1 if side == "LONG" else -1 if side == "SHORT" else 0
     quote = _number(price)
     bars = _rows(frame)
+
+    # Safety labels require matching evidence. Only exchange/account failure
+    # exits that cannot be price-validated retain an unconditional override.
+    if emergency:
+        if any(token in norm_reason for token in (
+            "DATA_OUTAGE", "LIQUIDATION", "MARGIN_LOSS", "FAIL_SAFE",
+        )):
+            return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
+        if quote is None or quote <= 0 or side not in ("LONG", "SHORT"):
+            return False, "BLOCKED_EXIT_EMERGENCY_EVIDENCE_INVALID", details
+
+        if any(token in norm_reason for token in (
+            "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布",
+        )):
+            if len(bars) < 2:
+                return False, "BLOCKED_EXIT_ABNORMAL_CANDLE_DATA_UNAVAILABLE", details
+            live, previous = bars[-1], bars[-2]
+            opening = _number(live.get("open"))
+            middle = _number(live.get("kc_middle"))
+            atr = _number(previous.get("atr")) or _number(live.get("atr"))
+            if None in (opening, middle, atr) or atr <= 0:
+                return False, "BLOCKED_EXIT_ABNORMAL_CANDLE_DATA_INVALID", details
+            body = opening - quote if side == "LONG" else quote - opening
+            crossed = quote < middle if side == "LONG" else quote > middle
+            if body < 1.5 * atr or not crossed:
+                return False, "BLOCKED_EXIT_ABNORMAL_CANDLE_NOT_CONFIRMED", details
+            return True, "EMERGENCY_EXIT_ABNORMAL_CANDLE_CONFIRMED", {
+                "exit_type": "ABNORMAL_CANDLE", "body": body,
+                "atr": atr, "kc_middle": middle, "quote": quote,
+            }
+
+        if "OPPOSITE_KC_BAND_BREACH" in norm_reason or "反側KC" in norm_reason:
+            if len(bars) < 2:
+                return False, "BLOCKED_EXIT_OPPOSITE_BREACH_DATA_UNAVAILABLE", details
+            live, closed = bars[-1], bars[-2]
+            band_key = "kc_lower" if side == "LONG" else "kc_upper"
+            live_band = _number(live.get(band_key))
+            closed_band = _number(closed.get(band_key))
+            closed_price = _number(closed.get("close"))
+            atr = _number(closed.get("atr")) or _number(live.get("atr"))
+            if None in (live_band, closed_band, closed_price, atr) or atr <= 0:
+                return False, "BLOCKED_EXIT_OPPOSITE_BREACH_DATA_INVALID", details
+            outside = quote < live_band if side == "LONG" else quote > live_band
+            if not outside:
+                return False, "BLOCKED_EXIT_OPPOSITE_BREACH_RECLAIMED", details
+            try:
+                macro_frame = getattr(frame, "attrs", {}).get("macro_frame")
+                if macro_frame is None:
+                    macro_frame = frame
+                import pandas as pd
+                from core.services.data_pipeline import DataPipeline
+                closed_macro = pd.DataFrame(_rows(macro_frame))
+                macro = str(DataPipeline.calculate_snapshot(
+                    "", closed_macro,
+                    current_price=_number(closed_macro.iloc[-1].get("close"))
+                    if not closed_macro.empty else None,
+                ).macro_trend or "NEUTRAL").upper()
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+                macro = "NEUTRAL"
+            aligned = (side == "LONG" and macro == "BULLISH") or (
+                side == "SHORT" and macro == "BEARISH"
+            )
+            depth = (closed_band - closed_price) if side == "LONG" else (closed_price - closed_band)
+            if aligned and depth < 0.5 * atr:
+                return False, "BLOCKED_EXIT_OPPOSITE_BREACH_UNCONFIRMED", {
+                    "macro_trend": macro, "closed_depth_atr": depth / atr,
+                }
+            return True, "EMERGENCY_EXIT_OPPOSITE_BREACH_CONFIRMED", {
+                "exit_type": "OPPOSITE_KC_BAND_BREACH", "macro_trend": macro,
+                "closed_depth_atr": depth / atr,
+            }
+
+        if "MEME_ADVERSE_STOP_LOSS" in norm_reason:
+            entry = _number(position.get("entry_price"))
+            atr = _number(bars[-2].get("atr")) if len(bars) >= 2 else None
+            adverse_move = (
+                entry - quote if side == "LONG" else quote - entry
+            ) if entry is not None else None
+            if (atr is not None and atr > 0 and adverse_move is not None
+                    and adverse_move >= 1.5 * atr):
+                return True, "EMERGENCY_EXIT_MEME_ADVERSE_STOP_CONFIRMED", {
+                    "exit_type": "MEME_ADVERSE_STOP", "adverse_move": adverse_move,
+                    "atr": atr, "adverse_atr": adverse_move / atr,
+                }
+            return False, "BLOCKED_EXIT_MEME_ADVERSE_STOP_NOT_CONFIRMED", details
+
+        if any(token in norm_reason for token in (
+            "HARD_STOP", "CIRCUIT_BREAKER", "STOP_LOSS", "STOP-LOSS", "停損",
+        )):
+            entry = _number(position.get("entry_price"))
+            stop = _number(position.get("sl")) or _number(position.get("initial_sl"))
+            if stop is None:
+                entry_atr = _number(position.get("entry_atr"))
+                if entry_atr is None and len(bars) >= 2:
+                    entry_atr = _number(bars[-2].get("atr"))
+                if entry is not None and entry_atr is not None:
+                    stop = entry - 3.0 * entry_atr if side == "LONG" else entry + 3.0 * entry_atr
+            breached = (
+                stop is not None and (quote <= stop if side == "LONG" else quote >= stop)
+            )
+            if entry is not None and len(bars) >= 2:
+                atr = _number(bars[-2].get("atr"))
+                breached = breached or bool(
+                    atr is not None and atr > 0 and
+                    ((entry - quote >= 3.0 * atr) if side == "LONG"
+                     else (quote - entry >= 3.0 * atr))
+                )
+            if breached:
+                return True, "EMERGENCY_EXIT_HARD_STOP_CONFIRMED", {
+                    "exit_type": "HARD_STOP", "stop_price": stop,
+                    "quote": quote,
+                }
+            return False, "BLOCKED_EXIT_HARD_STOP_NOT_BREACHED", details
+
+        return False, "BLOCKED_EXIT_EMERGENCY_REASON_UNVERIFIED", details
+
+    sign = 1 if side == "LONG" else -1 if side == "SHORT" else 0
     if not sign or quote is None or quote <= 0 or len(bars) < 2:
         return False, "BLOCKED_EXIT_MATH_DATA_UNAVAILABLE", details
     entry_time = _number(position.get("open_timestamp") or position.get("entry_timestamp"))
@@ -592,7 +707,10 @@ def validate_exit_math(
     return False, "BLOCKED_EXIT_NO_MATH_TRIGGER", details
 
 
-async def validate_entry_at_execution(account: Any, symbol: str, side: str, context: Any = None) -> tuple[bool, str]:
+async def validate_entry_at_execution(
+    account: Any, symbol: str, side: str, context: Any = None,
+    *, execution_price: float | None = None,
+) -> tuple[bool, str]:
     """Load the latest permitted snapshot, then run the pure entry calculator."""
     payload = context if isinstance(context, Mapping) else {}
     # A cached signal snapshot may be stale by the time a direct, continuation,
@@ -617,6 +735,50 @@ async def validate_entry_at_execution(account: Any, symbol: str, side: str, cont
             frame = snapshot
     if frame is None:
         return False, "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE"
+
+    # Re-run the shared structural gate at the account execution boundary.
+    # Earlier scan authorization and manual/UI flags cannot replace this check.
+    from core.gates.central_entry_gate import CentralEntryGate
+
+    signal_type = str(
+        payload.get("candidate_signal_type")
+        or payload.get("entry_signal_code")
+        or payload.get("signal_code")
+        or ""
+    )
+    source = " ".join(str(value or "") for value in (
+        payload.get("source"), payload.get("reason"), signal_type,
+    ))
+    authorized_intrabar_types = {
+        "BREAKOUT_LONG", "BREAKDOWN_SHORT",
+        "CONTINUATION_OUTSIDE_KC_LONG", "CONTINUATION_OUTSIDE_KC_SHORT",
+        "ENTRY_LONG_MA3_MA15_CROSS_MID", "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+        "AUTHORIZED_REALTIME_BREAKOUT", "KC_REALTIME_RAIL_BREACH_SHORT",
+        "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
+        "CLOSED_BODY_BREAKOUT_LONG", "CLOSED_BODY_BREAKOUT_SHORT",
+        "KC_LIVE_PATTERN_BREAKOUT_LONG", "KC_LIVE_PATTERN_BREAKOUT_SHORT",
+    }
+    allow_intrabar = bool(
+        payload.get("intrabar_authorized") is True
+        and payload.get("upstream_entry_gate_authorized") is True
+        and payload.get("source") == "UNIFIED_PIPELINE"
+        and signal_type in authorized_intrabar_types
+    )
+    rows = _rows(frame)
+    quote = _number(
+        execution_price or payload.get("entry_gate_quote")
+        or (rows[-1].get("close") if rows else None)
+    )
+    if quote is None or quote <= 0:
+        return False, "BLOCKED_ENTRY_MATH_EXECUTION_QUOTE_INVALID"
+    central_result = CentralEntryGate.verify_and_authorize(
+        symbol=symbol, side=side, price=quote, klines_or_snapshot=frame,
+        signal_id=str(payload.get("signal_id") or "") or None,
+        source=source or "EXECUTION_REVALIDATION",
+        allow_intrabar=allow_intrabar,
+    )
+    if not central_result.passed:
+        return False, f"BLOCKED_FINAL_CENTRAL_ENTRY_GATE:{central_result.reason}"
 
     fast_track = False
     bars = _rows(frame)

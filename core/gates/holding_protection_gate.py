@@ -100,8 +100,10 @@ def has_confirmed_true_pivot(
         is_live_closed = bool(last_bar.get('is_closed', False))
         closed = frame if is_live_closed else frame.iloc[:-1]
 
-        # ──【開倉前歷史雜訊過濾】：真峰谷必須在開倉後（或至少由開倉棒推進）形成，絕不能拿開倉前的歷史凹槽平倉！──
-        entry_bar_floor_ms = 0.0
+        # A pivot is valid only when its pivot and confirmation bars are both
+        # strictly after this position's entry. Missing entry identity must
+        # fail closed; otherwise old chart history can close a new position.
+        entry_bar_floor_ms = None
         try:
             opened_at = (
                 (position or {}).get('open_timestamp')
@@ -118,18 +120,27 @@ def has_confirmed_true_pivot(
                     timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
                     entry_bar_floor_ms = math.floor(opened_ms / timeframe_ms) * timeframe_ms
         except Exception:
-            entry_bar_floor_ms = 0.0
+            entry_bar_floor_ms = None
+        if entry_bar_floor_ms is None:
+            return False, None, {}
 
-        # A pivot can need more than one bar to produce a decisive reversal.
-        # Keep recent post-entry candidates alive for up to five closed bars;
-        # otherwise a weak first counter candle makes the actual extreme slide
-        # out of a three-bar window before the strong confirmation arrives.
-        first_candidate = max(1, len(closed) - 6)
-        for pivot_index in range(len(closed) - 2, first_candidate - 1, -1):
+        # Only the latest completed bar can confirm the immediately preceding
+        # three-point extreme. A stale pivot must not authorize a later exit.
+        for pivot_index in (len(closed) - 2,):
             pivot = closed.iloc[pivot_index]
             before = closed.iloc[pivot_index - 1]
+            confirm = closed.iloc[-1]
+            timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
             ts_pivot = float(pivot.get('timestamp', 0.0))
-            if entry_bar_floor_ms > 0 and ts_pivot < entry_bar_floor_ms:
+            ts_confirm = float(confirm.get('timestamp', 0.0))
+            if ts_pivot < 1e11:
+                ts_pivot *= 1000.0
+            if ts_confirm < 1e11:
+                ts_confirm *= 1000.0
+            if (not math.isfinite(timeframe_ms) or timeframe_ms <= 0
+                    or ts_pivot <= entry_bar_floor_ms
+                    or ts_confirm <= entry_bar_floor_ms
+                    or ts_confirm - ts_pivot != timeframe_ms):
                 continue
 
             pivot_open = float(pivot['open'])
@@ -160,11 +171,8 @@ def has_confirmed_true_pivot(
             if not pivot_still_valid:
                 continue
 
-            for confirm_index in range(pivot_index + 1, len(closed)):
+            for confirm_index in (len(closed) - 1,):
                 confirm = closed.iloc[confirm_index]
-                ts_confirm = float(confirm.get('timestamp', 0.0))
-                if entry_bar_floor_ms > 0 and ts_confirm <= entry_bar_floor_ms:
-                    continue
                 confirm_open = float(confirm['open'])
                 confirm_close = float(confirm['close'])
                 confirm_atr = float(confirm.get('atr', pivot_atr))
@@ -1786,48 +1794,17 @@ class HoldingProtectionExitGate:
             return _auth(clean_reason)
 
         if clean_reason == 'EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL':
-            macro_frame = details.get('macro_frame')
-            if macro_frame is None and frame is not None:
-                macro_frame = getattr(frame, 'attrs', {}).get('macro_frame')
-            if macro_frame is None and isinstance(details.get('macro_frame_evidence'), list):
-                try:
-                    macro_frame = pd.DataFrame(details['macro_frame_evidence'])
-                except (TypeError, ValueError):
-                    macro_frame = None
-            from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
-            holding_lock = HoldingLockStateMachine().evaluate(
-                position, frame, quote, macro_frame=macro_frame,
-            )
-            details['holding_lock'] = holding_lock.__dict__
-            if holding_lock.hard_stop_triggered:
-                return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
-            if (holding_lock.decision == 'CLOSE_POSITION'
-                    and holding_lock.factor_count >= 2):
+            if has_pivot:
+                details.update(true_pivot_type=pivot_type, **pivot_info)
                 return _auth(clean_reason)
-            return _reject(reason='VETO_HOLD_LOCKED_INSUFFICIENT_REVERSAL_FACTORS')
+            return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
 
         pressure_reasons = {
             'EXIT_BY_CONFIRMED_SELLING_PRESSURE',
             'EXIT_BY_CONFIRMED_BUYING_PRESSURE',
         }
         if clean_reason in pressure_reasons:
-            channel_swing = (
-                channel_swing
-                or str((position or {}).get('entry_mode') or '').upper()
-                == 'CHANNEL_SWING'
-            )
-            from core.gates.meme_coin_gate import MemeCoinGate
-            if channel_swing and MemeCoinGate.is_meme_coin(symbol):
-                from core.services.exits.confirmed_pressure_exit import (
-                    evaluate_confirmed_pressure_exit,
-                )
-                pressure = evaluate_confirmed_pressure_exit(
-                    position, frame, side,
-                )
-                if pressure.get('reason') == clean_reason:
-                    details.update(pressure.get('details') or {})
-                    return _auth(clean_reason)
-            return _reject(reason='VETO_PRESSURE_EXIT_NOT_CONFIRMED')
+            return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
 
         # ═════════════════════════════════════════════════════════════════
         # 【用戶授權鐵律：analyze_market_signal 多頭回踩與空頭反彈防洗保護】
@@ -1859,25 +1836,7 @@ class HoldingProtectionExitGate:
             if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
             details.update(verified_profit_lock)
-            macro_frame = details.get('macro_frame')
-            if macro_frame is None and frame is not None:
-                macro_frame = getattr(frame, 'attrs', {}).get('macro_frame')
-            if macro_frame is None and isinstance(details.get('macro_frame_evidence'), list):
-                try:
-                    macro_frame = pd.DataFrame(details['macro_frame_evidence'])
-                except (TypeError, ValueError):
-                    macro_frame = None
-            from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
-            holding_lock = HoldingLockStateMachine().evaluate(
-                position, frame, quote, macro_frame=macro_frame,
-            )
-            details['holding_lock'] = holding_lock.__dict__
-            if holding_lock.hard_stop_triggered:
-                return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
-            if (holding_lock.decision == 'CLOSE_POSITION'
-                    and holding_lock.factor_count >= 2):
-                return _auth('EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL')
-            return _reject(reason='VETO_HOLD_LOCKED_INSUFFICIENT_REVERSAL_FACTORS')
+            return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
@@ -2007,25 +1966,6 @@ class HoldingProtectionExitGate:
                 return _reject(reason='VETO_SAME_BAR_EXIT_NO_EXIT_ON_ENTRY_BAR')
 
         # ──【核心鐵律二：真峰谷與中軌反轉確認授權放行】──
-        if clean_reason in (
-            'EXIT_MEME_TRUE_PEAK_CONFIRMED', 'EXIT_MEME_TRUE_VALLEY_CONFIRMED',
-            'EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL',
-            'EXIT_BY_LONG_CONFIRMED_KC_MIDLINE_REVERSAL',
-            'EXIT_BY_KC_MIDLINE_RETRACE',
-            'EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL',
-            'EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL',
-            'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT',
-            'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT',
-            'WRONG_DIRECTION_CORRECTION',
-            'EXIT_BY_MEME_CLIMAX_TOP',
-            'EXIT_BY_MEME_CLIMAX_BOTTOM',
-            'EXIT_BY_MEME_TREND_DEAD',
-            'EXIT_BY_MEME_SHORT_TREND_DEAD',
-            'EXIT_BY_MEME_ATR_TRAILING',
-            'EXIT_BY_MEME_ADVERSE_STOP_LOSS',
-        ):
-            return _auth(clean_reason)
-
         if is_true_pivot_confirmed:
             curr_bar = frame.iloc[-1] if frame is not None and len(frame) >= 1 else {}
             bar_close_price = float(curr_bar.get('close', quote))

@@ -38,3 +38,11 @@ WAIT candidate remains isolated and disabled. No manual trading orders were plac
 - **Modification Description**: For SHORT positions, suppress confirmed true-valley, reversal, oversold-rebound, and KC-midline strategy exits while the latest two completed KC middle values strictly fall. Cancel an already-persisted ordinary KC exit ticket under that same verified trend. LONG exits are unchanged; account hard-stop and independent safety/profit-lock exits remain outside this gate.
 - **Trigger Reason & Requirement**: User instructed that a short should continue running rather than close while the trend is bearish, and confirmed KC middle-line decline as the trend definition.
 - **Verification & Test Status**: Focused combined run: 61 passed across KC true-extreme, true-pivot, exit-authorization, pivot-poll, and short-oversold tests, including account-level paper/testnet partial-close authorization. `git diff --check` and Python compilation passed. Working-tree change only; no deployment, restart, or commit performed.
+
+
+### [2026-10-26 07:48:38 UTC+8] - Modification Phase: Block intermediate position exits and revalidate post-entry pivots
+- **Author**: shudgai999 (workspace operator) / Codex
+- **Target Files & Lines**: `core/gates/central_entry_gate.py`; `core/gates/holding_protection_gate.py`; `core/gates/top_bottom_reversal_exit.py`; `core/gates/unified_pipeline_gates.py`; `core/paper_account.py`; `core/services/exits/authorized_position_exit.py`; `core/services/math_execution_gate.py`; `core/testnet_account.py`
+- **Modification Description**: Revalidate entry direction and structure at the account boundary; reject unsupported automated exits; require verified profit-lock evidence and a fresh, post-entry three-point pivot confirmed by the latest closed candle. Remove standalone buying/selling-pressure authorization and unconditional meme-exit math approval.
+- **Trigger Reason & Requirement**: User found that positions closed before the intended final peak/valley while the broader direction remained unchanged, and explicitly requested deployment, restart, commit, and GitHub push.
+- **Verification & Test Status**: `py_compile` for all modified Python modules and `git diff --check` passed. No tests were run. Deployment and Git operations are pending environment permission/service-bus access.

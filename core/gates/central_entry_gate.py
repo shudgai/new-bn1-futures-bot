@@ -59,15 +59,18 @@ class GateCheckResult:
 class CentralEntryGate:
     """中央開倉物理閘門：唯一開倉授權機構"""
 
-    # 門檻常數 (針對妖幣 meme coin 波動特性全面放寬)
-    KC_SLOPE_MIN_ATR: float = 0.05          # KC 中軌斜率門檻 >= 0.05 ATR (妖幣放寬，由 0.10 調降)
-    MAX_BAND_EXTENSION_ATR: float = 0.80    # 距 KC 同側外軌最大乖離 <= 0.80 ATR (妖幣放寬，由 0.50 調升至 0.80)
-    MAX_MA5_EXTENSION_ATR: float = 1.50     # 距 MA5 最大乖離 <= 1.50 ATR (妖幣放寬，由 1.00 調升)
-    MIN_KC_BANDWIDTH_PCT: float = 0.0025    # 通道帶寬門檻 >= 0.25% (防極度死水，妖幣放寬至 0.25%)
-    MIN_KC_EXPANSION_RATIO: float = -0.10   # 通道擴張與防崩縮門檻 (>= -10.0%，容許 1m ATR 正常平滑波動)
-    MIN_VOLUME_MULTIPLIER: float = 1.00     # 量能門檻 >= 1.0 倍均量 (妖幣放寬，由 1.20 調降)
-    MIN_BODY_ATR: float = 0.25              # 實體最小動能 >= 0.25 ATR (妖幣放寬，由 0.35 調降)
-    MAX_OPPOSITE_WICK_RATIO: float = 1.00   # 反向影線不得超過實體的 100% (妖幣頻繁插針，由 0.70 放寬至 1.00)
+    # 共用送單硬門檻：不因標的或訊號標籤放寬。
+    KC_SLOPE_MIN_ATR: float = 0.10
+    MAX_BAND_EXTENSION_ATR: float = 0.50
+    MAX_MA5_EXTENSION_ATR: float = 1.00
+    MIN_KC_BANDWIDTH_PCT: float = 0.0035
+    MIN_KC_EXPANSION_RATIO: float = 0.05
+    MIN_VOLUME_MULTIPLIER: float = 1.20
+    MIN_BODY_ATR: float = 0.35
+    MAX_OPPOSITE_WICK_RATIO: float = 0.70
+    MAX_SQUEEZE_RATIO: float = 0.25
+    MIN_MA_SPACING_WIDTH_RATIO: float = 0.25
+    MIN_CROSS_MID_ROOM_WIDTH_RATIO: float = 0.20
 
     @classmethod
     def generate_signal_id(cls, symbol: str, side: str, source: str) -> str:
@@ -243,13 +246,11 @@ class CentralEntryGate:
         required_slope = cls.KC_SLOPE_MIN_ATR * atr
 
         if is_cross_mid:
-            # 均線轉折類訊號：頂底轉折初期通道剛走平，放寬斜率要求 (只要不逆向擴張即可)
-            # 做多：走平或微幅上翹即可 (kc_mid_slope >= 0)
-            # 做空：走平或微幅下彎即可 (kc_mid_slope <= 0)
+            # 交叉訊號僅允許通道平向或同向，不能覆蓋反向結構。
             if side == "LONG":
-                slope_pass = kc_mid_slope >= -0.000005
+                slope_pass = kc_mid_slope >= 0.0
             else:
-                slope_pass = kc_mid_slope <= 0.000005
+                slope_pass = kc_mid_slope <= 0.0
             req_target = 0.0
         else:
             # 常規破軌追單類：維持原有的嚴格斜率審核 (>= 0.1 ATR)
@@ -328,6 +329,23 @@ class CentralEntryGate:
                 checks=checks,
             )
 
+        if is_cross_mid:
+            ma15_curr = float(parsed["ma15_curr"])
+            ma15_prev = float(parsed["ma15_prev"])
+            ma_cross_aligned = (
+                ma5_curr > ma15_curr and ma15_curr >= ma15_prev
+                if side == "LONG"
+                else ma5_curr < ma15_curr and ma15_curr <= ma15_prev
+            )
+            if not ma_cross_aligned:
+                return GateCheckResult(
+                    passed=False, reason="VETO_MA5_MA15_CROSS_NOT_DIRECTIONALLY_ALIGNED",
+                    signal_id=sig_id,
+                    details={"ma5": ma5_curr, "ma15": ma15_curr,
+                             "previous_ma15": ma15_prev, "side": side},
+                    checks=checks,
+                )
+
         # 乖離率檢查：距同側外軌不得超過 0.5 ATR
         kc_upper = float(parsed["kc_upper"])
         kc_lower = float(parsed["kc_lower"])
@@ -357,6 +375,21 @@ class CentralEntryGate:
                 details={"band_dist": band_dist, "limit": cls.MAX_BAND_EXTENSION_ATR * atr},
                 checks=checks,
             )
+        if is_cross_mid:
+            remaining_room = (
+                kc_upper - curr_price if side == "LONG"
+                else curr_price - kc_lower
+            )
+            width = kc_upper - kc_lower
+            required_room = cls.MIN_CROSS_MID_ROOM_WIDTH_RATIO * width
+            if remaining_room < required_room:
+                return GateCheckResult(
+                    passed=False, reason="VETO_CROSS_MID_CHANNEL_ROOM_INSUFFICIENT",
+                    signal_id=sig_id,
+                    details={"remaining_room": remaining_room,
+                             "required_room": required_room, "kc_width": width},
+                    checks=checks,
+                )
         if ma5_overext:
             return GateCheckResult(
                 passed=False,
@@ -372,7 +405,7 @@ class CentralEntryGate:
         kc_mid = float(parsed["kc_middle"])
         kc_width = kc_upper - kc_lower
         bandwidth = kc_width / kc_mid if kc_mid > 0 else 0.0
-        bw_pass = (bandwidth >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr) or is_cross_mid
+        bw_pass = (bandwidth >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr)
 
         checks["bandwidth"] = {
             "status": "PASS" if bw_pass else "FAIL",
@@ -390,10 +423,41 @@ class CentralEntryGate:
                 checks=checks,
             )
 
-        # -------------------------------------------------------------
-        # 條件 5：通道擴張與防劇烈收斂 (Bandwidth Expansion >= -5% 或 轉折/延續模式)
-        # -------------------------------------------------------------
+        # 20 根已收線最大寬度作為 squeeze 參考；歷史不足時 fail closed。
         curr_width = kc_upper - kc_lower
+        max_prev_width = parsed.get("max_prev_width")
+        if max_prev_width is None or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0:
+            return GateCheckResult(
+                passed=False, reason="VETO_KC_SQUEEZE_HISTORY_INVALID",
+                signal_id=sig_id, details={"max_prev_width": max_prev_width}, checks=checks,
+            )
+        max_prev_width = float(max_prev_width)
+        if curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
+            return GateCheckResult(
+                passed=False, reason="VETO_KC_SQUEEZE_AT_OR_BELOW_25_PERCENT",
+                signal_id=sig_id,
+                details={"current_width": curr_width, "max_prev_width": max_prev_width},
+                checks=checks,
+            )
+
+        # 均線黏合或 MA5 貼近目標外軌時，通道空間不足，一律拒絕。
+        ma5_curr = float(parsed["ma5_curr"])
+        ma15_curr = float(parsed["ma15_curr"])
+        target_band = kc_upper if side == "LONG" else kc_lower
+        min_spacing = cls.MIN_MA_SPACING_WIDTH_RATIO * curr_width
+        if (abs(ma5_curr - ma15_curr) < min_spacing
+                or abs(ma5_curr - target_band) < min_spacing):
+            return GateCheckResult(
+                passed=False, reason="VETO_MA_SPACING_BELOW_25_PERCENT_KC_WIDTH",
+                signal_id=sig_id,
+                details={"ma5": ma5_curr, "ma15": ma15_curr,
+                         "target_band": target_band, "min_spacing": min_spacing},
+                checks=checks,
+            )
+
+        # -------------------------------------------------------------
+        # 條件 5：通道擴張確認
+        # -------------------------------------------------------------
         min_prev_width = float(parsed.get("min_prev_width", curr_width))
         if min_prev_width > 0:
             expansion_ratio = (curr_width - min_prev_width) / min_prev_width
@@ -401,8 +465,7 @@ class CentralEntryGate:
             expansion_ratio = 0.0
 
         is_continuation = "CONTINUATION" in src_upper
-        # 若為均線轉折敏捷模式 (is_cross_mid) 或外軌延續開倉 (is_continuation) 豁免擴張檢查，常規破軌追單驗證未陷入劇烈收斂
-        exp_pass = is_cross_mid or is_continuation or (expansion_ratio >= cls.MIN_KC_EXPANSION_RATIO) or parsed.get("history_bars_count", 0) < 5
+        exp_pass = expansion_ratio >= cls.MIN_KC_EXPANSION_RATIO
         checks["expansion"] = {
             "status": "PASS" if exp_pass else "FAIL",
             "curr_width": curr_width,
@@ -426,8 +489,13 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        # 敏捷轉折模式 (is_cross_mid) 與延續開倉模式 (is_continuation) 豁免均量門檻
-        if enforce_volume and not is_cross_mid and not is_continuation and vol_curr > 0 and vol_avg > 0:
+        if enforce_volume:
+            if vol_curr <= 0 or vol_avg <= 0:
+                return GateCheckResult(
+                    passed=False, reason="VETO_VOLUME_DATA_UNAVAILABLE",
+                    signal_id=sig_id, details={"volume": vol_curr, "volume_avg": vol_avg},
+                    checks=checks,
+                )
             vol_ratio = vol_curr / vol_avg
             vol_pass = vol_ratio >= cls.MIN_VOLUME_MULTIPLIER
             checks["volume"] = {
@@ -458,7 +526,7 @@ class CentralEntryGate:
         c_body = abs(c_close - c_open)
 
         # 實體最小動能 (敏捷轉折模式放寬至 0.20 ATR，常規破軌維持 0.35 ATR)
-        req_body_atr = 0.20 if is_cross_mid else cls.MIN_BODY_ATR
+        req_body_atr = cls.MIN_BODY_ATR
         if c_body < req_body_atr * atr:
             checks["candle_body"] = {
                 "status": "FAIL",
@@ -606,13 +674,27 @@ class CentralEntryGate:
                 # MA5
                 metrics["ma5_curr"] = float(eval_row.get("ma5", metrics["close"]))
                 metrics["ma5_prev"] = float(prev_eval_row.get("ma5", metrics["ma5_curr"]))
+                metrics["ma15_curr"] = float(eval_row.get("ma15", metrics["close"]))
+                metrics["ma15_prev"] = float(prev_eval_row.get("ma15", metrics["ma15_curr"]))
 
                 # 歷史帶寬與擴張
                 if "kc_upper" in data.columns and "kc_lower" in data.columns:
                     widths = (data["kc_upper"] - data["kc_lower"]).tail(8).values
                     metrics["min_prev_width"] = float(np.min(widths[:-1])) if len(widths) > 1 else float(widths[-1])
+                    eval_idx = int(data.index.get_loc(eval_row.name))
+                    history = data.iloc[:eval_idx]
+                    if "is_closed" in history.columns:
+                        history = history[history["is_closed"] == True]
+                    history_widths = (
+                        pd.to_numeric(history["kc_upper"], errors="coerce")
+                        - pd.to_numeric(history["kc_lower"], errors="coerce")
+                    ).dropna().tail(20)
+                    metrics["max_prev_width"] = (
+                        float(history_widths.max()) if len(history_widths) >= 20 else None
+                    )
                 else:
                     metrics["min_prev_width"] = metrics["kc_upper"] - metrics["kc_lower"]
+                    metrics["max_prev_width"] = None
                 metrics["history_bars_count"] = len(data)
 
                 # 量能
@@ -645,9 +727,20 @@ class CentralEntryGate:
                 metrics["kc_middle_slope"] = float(data.get("kc_middle_slope", 0.0))
                 metrics["ma5_curr"] = float(data.get("ma5_curr", curr_k.get("ma5", data.get("ma5", metrics["close"]))))
                 metrics["ma5_prev"] = float(data.get("ma5_prev", prev_k.get("ma5", metrics["ma5_curr"])))
+                metrics["ma15_curr"] = float(data.get("ma15_curr", curr_k.get("ma15", data.get("ma15", metrics["close"]))))
+                metrics["ma15_prev"] = float(data.get("ma15_prev", prev_k.get("ma15", metrics["ma15_curr"])))
 
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(data.get("min_prev_width", curr_w * 0.95))
+                candles = data.get("candles") or []
+                prior_widths = []
+                for candle in candles[-21:-1]:
+                    try:
+                        prior_widths.append(float(candle["kc_upper"]) - float(candle["kc_lower"]))
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        prior_widths = []
+                        break
+                metrics["max_prev_width"] = max(prior_widths) if len(prior_widths) == 20 else None
                 metrics["history_bars_count"] = int(data.get("history_bars_count", 10))
 
                 metrics["is_closed"] = bool(data.get("is_closed", curr_k.get("is_closed", True)))
@@ -675,9 +768,12 @@ class CentralEntryGate:
 
                 metrics["ma5_curr"] = float(getattr(data, "ma5", curr_k.get("ma5", metrics["close"])))
                 metrics["ma5_prev"] = float(getattr(data, "prev_ma5", prev_k.get("ma5", metrics["ma5_curr"])))
+                metrics["ma15_curr"] = float(getattr(data, "ma15", curr_k.get("ma15", metrics["close"])))
+                metrics["ma15_prev"] = float(prev_k.get("ma15", metrics["ma15_curr"]))
 
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(getattr(data, "min_prev_width", curr_w * 0.95))
+                metrics["max_prev_width"] = getattr(data, "max_prev_width", None)
                 metrics["history_bars_count"] = 10
                 metrics["is_closed"] = bool(getattr(data, "is_closed", curr_k.get("is_closed", True)))
                 metrics["volume"] = float(curr_k.get("volume", 0.0))

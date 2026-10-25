@@ -72,12 +72,22 @@ def evaluate_top_bottom_reversal_exit(
         return False, None, meta
 
     # 1. 開倉初期防抖：最新已收線棒的時間戳必須在開倉之後
-    entry_ms = _to_ms(pos.get("open_timestamp") or pos.get("entry_timestamp"))
-    if entry_ms is not None and "timestamp" in closed.columns:
-        last_ts = _to_ms(closed["timestamp"].iloc[-1])
-        if last_ts is not None and last_ts <= entry_ms:
-            meta["skipped"] = "ENTRY_BAR_PROTECTION"
-            return False, None, meta
+    entry_ms = _to_ms(
+        pos.get("open_timestamp") or pos.get("entry_timestamp")
+        or pos.get("open_bar_id") or pos.get("entry_bar_id")
+    )
+    if entry_ms is None or "timestamp" not in closed.columns:
+        meta["skipped"] = "ENTRY_IDENTITY_UNAVAILABLE"
+        return False, None, meta
+    closed = closed.copy()
+    closed["_timestamp_ms"] = closed["timestamp"].map(_to_ms)
+    closed = closed[closed["_timestamp_ms"].notna()]
+    # Exclude the entry candle and all earlier history. These bars must not
+    # satisfy the swing-expansion check or provide the candidate pivot.
+    closed = closed[closed["_timestamp_ms"] > entry_ms]
+    if len(closed) < 3:
+        meta["skipped"] = "INSUFFICIENT_POST_ENTRY_CLOSED_BARS"
+        return False, None, meta
 
     try:
         closes = pd.to_numeric(closed["close"], errors="coerce")
@@ -105,7 +115,7 @@ def evaluate_top_bottom_reversal_exit(
         ma3_prev = float(ma3_series.iloc[-2]) if len(ma3_series) >= 2 and not pd.isna(ma3_series.iloc[-2]) else None
         ma3_prev2 = float(ma3_series.iloc[-3]) if len(ma3_series) >= 3 and not pd.isna(ma3_series.iloc[-3]) else None
 
-        atr = float(atr_val or curr.get("atr") or (entry_p * 0.01))
+        atr = float(atr_val or curr.get("atr") or 0.0)
     except (KeyError, IndexError, TypeError, ValueError):
         return False, None, meta
 

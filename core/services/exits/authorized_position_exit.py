@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from core.symbol_aliases import is_auto_entry_symbol
-
-
 def automated_position_exit_allowed(
     symbol: str,
     position: Mapping[str, Any],
@@ -18,9 +15,6 @@ def automated_position_exit_allowed(
     frame: Any = None,
 ) -> bool:
     """Allow safety/manual exits or a verified, position-aligned true pivot."""
-    if not is_auto_entry_symbol(symbol):
-        return True
-
     if is_manual and str(reason).strip() == "手動平倉":
         return True
 
@@ -32,6 +26,21 @@ def automated_position_exit_allowed(
     meta = metadata if isinstance(metadata, Mapping) else {}
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
+
+    # A lock is an explicit authorized exit class. Require the recorded net
+    # ROE floor to be armed and touched so a reason string alone cannot close.
+    is_profit_lock = any(token in normalized_reason for token in (
+        "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "PROFIT_FLOOR",
+    ))
+    if is_profit_lock:
+        from core.gates.holding_protection_gate import _verified_profit_lock_details
+
+        lock_position = dict(meta)
+        lock_position.update(dict(position))
+        lock_details = _verified_profit_lock_details(lock_position, float(price))
+        if lock_details is not None:
+            return True
+
     if frame is not None:
         from core.gates.holding_protection_gate import has_confirmed_true_pivot
 

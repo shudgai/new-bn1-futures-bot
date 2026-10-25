@@ -118,10 +118,19 @@ class ExitGate:
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
+        "EXIT_BY_RATCHET_PROFIT_LOCK",
+        "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
     })
     # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
     PIVOT_EXIT_REASONS = frozenset({
-        "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL",
+        "EARLY_PIVOT_PEAK_EXIT",
+        "EARLY_PIVOT_VALLEY_EXIT",
+        "EXIT_BY_VERIFIED_FRACTAL_PEAK",
+        "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
+        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
+        "CLOSE_LONG_AT_TOP",
+        "CLOSE_SHORT_AT_BOTTOM",
     })
     GENERAL_EXIT_VETO_REASON = "VETO_HOLD"
 
@@ -134,7 +143,11 @@ class ExitGate:
         reason = str(reason or "")
         reason_upper = reason.upper()
         if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS):
+                or reason in ExitGate.PIVOT_EXIT_REASONS
+                or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+                or "PROFIT_LOCK" in reason_upper
+                or "RATCHET" in reason_upper
+                or "TRAILING_LOCK" in reason_upper):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -170,6 +183,27 @@ class ExitGate:
         if is_emergency:
             return result
 
+        # A profit lock is an authorized exit class and must reach the final
+        # evidence check before any trend/pullback shield can veto it.
+        if should_exit and (
+            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or "PROFIT_LOCK" in reason_upper
+            or "RATCHET" in reason_upper
+            or "TRAILING_LOCK" in reason_upper
+        ):
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            raw_df = (
+                market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("raw_df")
+            )
+            quote = float(current_price or (
+                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("current_price", 0.0)
+            ))
+            return HoldingProtectionExitGate.validate_exit(
+                pos, raw_df, quote, reason, meta,
+            )
+
         if should_exit and reason == "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL":
             from core.gates.holding_protection_gate import HoldingProtectionExitGate
             raw_df = (
@@ -190,6 +224,26 @@ class ExitGate:
         )
         if not should_exit:
             return result
+        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+        quote = float(current_price or (
+            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("current_price", 0.0)
+        ))
+        pivot_confirmed, pivot_type, pivot_details = has_confirmed_true_pivot(
+            pos, raw_df, quote,
+        )
+        if pivot_confirmed and (
+            reason in ExitGate.PIVOT_EXIT_REASONS
+            or "PIVOT" in str(reason).upper()
+            or "FRACTAL_PEAK" in str(reason).upper()
+            or "FRACTAL_VALLEY" in str(reason).upper()
+            or "AT_TOP" in str(reason).upper()
+            or "AT_BOTTOM" in str(reason).upper()
+        ):
+            return True, reason, {
+                **(meta or {}),
+                "pivot_validation": {"confirmed": True, "type": pivot_type, **pivot_details},
+            }
         try:
             macro_trend = (
                 str(market_data.macro_trend or "NEUTRAL").upper()
@@ -205,7 +259,11 @@ class ExitGate:
             "macro_trend": macro_trend,
             "required_pivot": required_pivot,
             "exit_policy": "HOLD_UNTIL_CLOSED_TRUE_PEAK_OR_VALLEY_PIVOT",
-            "pivot_validation": pivot_details,
+            "pivot_validation": {
+                "confirmed": pivot_confirmed,
+                "type": pivot_type,
+                **pivot_details,
+            },
         }
 
     @staticmethod
@@ -219,7 +277,14 @@ class ExitGate:
         """Existing exit evaluation, followed by the public trend-alignment veto."""
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
-        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
+        if should_exit and (
+            reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+            or reason in ExitGate.PIVOT_EXIT_REASONS
+            or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or "PROFIT_LOCK" in str(reason).upper()
+            or "RATCHET" in str(reason).upper()
+            or "TRAILING_LOCK" in str(reason).upper()
+        ):
             return result
 
         if not pos or not market_data:
