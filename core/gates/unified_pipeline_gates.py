@@ -174,9 +174,6 @@ class ExitGate:
             pos, market_data, current_price, atr, kc_slope,
         )
         should_exit, reason, meta = result
-        if not should_exit:
-            return result
-
         side = str((pos or {}).get("side", "")).upper()
         reason_upper = str(reason or "").upper()
         is_emergency = reason in ExitGate.ABSOLUTE_SAFETY_REASONS or any(
@@ -206,12 +203,18 @@ class ExitGate:
         expected_pivot = "TRUE_VALLEY" if side == "SHORT" else "TRUE_PEAK"
         is_correct_pivot = has_pivot and str(pivot_type or "").upper().startswith(expected_pivot)
         if is_correct_pivot:
-            return True, reason, {
+            pivot_reason = reason if should_exit else (
+                "EARLY_PIVOT_PEAK_EXIT" if side == "LONG"
+                else "EARLY_PIVOT_VALLEY_EXIT"
+            )
+            return True, pivot_reason, {
                 **(meta or {}),
                 "confirmed_true_pivot": pivot_type,
                 "pivot_confirmation": pivot_details,
                 "exit_policy": "CLOSED_THREE_POINT_PIVOT_WITH_BODY_CONFIRMATION",
             }
+        if not should_exit:
+            return result
         try:
             macro_trend = (
                 str(market_data.macro_trend or "NEUTRAL").upper()

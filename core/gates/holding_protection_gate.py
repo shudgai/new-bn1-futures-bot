@@ -120,65 +120,90 @@ def has_confirmed_true_pivot(
         except Exception:
             entry_bar_floor_ms = 0.0
 
-        # Only the latest three completed bars can confirm a pivot. A wick
-        # extreme alone is insufficient: the confirmation candle must close
-        # in the reversal direction beyond the pivot candle's body midpoint.
-        if len(closed) >= 3:
-            before, pivot, confirm = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
-            ts_confirm = float(confirm.get('timestamp', 0.0))
+        # A pivot can need more than one bar to produce a decisive reversal.
+        # Keep recent post-entry candidates alive for up to five closed bars;
+        # otherwise a weak first counter candle makes the actual extreme slide
+        # out of a three-bar window before the strong confirmation arrives.
+        first_candidate = max(1, len(closed) - 6)
+        for pivot_index in range(len(closed) - 2, first_candidate - 1, -1):
+            pivot = closed.iloc[pivot_index]
+            before = closed.iloc[pivot_index - 1]
             ts_pivot = float(pivot.get('timestamp', 0.0))
-            if entry_bar_floor_ms > 0 and (
-                ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms
-            ):
-                return False, None, {}
+            if entry_bar_floor_ms > 0 and ts_pivot < entry_bar_floor_ms:
+                continue
 
             pivot_open = float(pivot['open'])
             pivot_close = float(pivot['close'])
-            confirm_open = float(confirm['open'])
-            confirm_close = float(confirm['close'])
-            confirm_atr = float(
-                confirm.get('atr', pivot.get('atr', float('nan')))
-            )
             pivot_body_mid = (pivot_open + pivot_close) / 2.0
-            if not math.isfinite(confirm_atr) or confirm_atr <= 0:
-                return False, None, {}
-            if side == 'LONG':
-                reversal_body = confirm_open - confirm_close
-                reversal_move = float(pivot['high']) - confirm_close
-                is_true_peak = (
-                    float(pivot['high']) > float(before['high'])
-                    and float(pivot['high']) > float(confirm['high'])
-                    and confirm_close < confirm_open
-                    and confirm_close < pivot_body_mid
-                    and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
-                    and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * confirm_atr
-                )
-                if is_true_peak:
-                    return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
-                        'pivot_high': float(pivot['high']),
+            pivot_atr = float(pivot.get('atr', float('nan')))
+            if not math.isfinite(pivot_atr) or pivot_atr <= 0:
+                continue
+
+            pivot_extreme = float(pivot['high'] if side == 'LONG' else pivot['low'])
+            left_extreme = float(before['high'] if side == 'LONG' else before['low'])
+            is_local_extreme = (
+                pivot_extreme > left_extreme
+                if side == 'LONG'
+                else pivot_extreme < left_extreme
+            )
+            if not is_local_extreme:
+                continue
+
+            post_extremes = [
+                float(closed.iloc[index]['high' if side == 'LONG' else 'low'])
+                for index in range(pivot_index + 1, len(closed))
+            ]
+            pivot_still_valid = all(
+                value < pivot_extreme if side == 'LONG' else value > pivot_extreme
+                for value in post_extremes
+            )
+            if not pivot_still_valid:
+                continue
+
+            for confirm_index in range(pivot_index + 1, len(closed)):
+                confirm = closed.iloc[confirm_index]
+                ts_confirm = float(confirm.get('timestamp', 0.0))
+                if entry_bar_floor_ms > 0 and ts_confirm <= entry_bar_floor_ms:
+                    continue
+                confirm_open = float(confirm['open'])
+                confirm_close = float(confirm['close'])
+                confirm_atr = float(confirm.get('atr', pivot_atr))
+                if not math.isfinite(confirm_atr) or confirm_atr <= 0:
+                    continue
+
+                if side == 'LONG':
+                    reversal_body = confirm_open - confirm_close
+                    reversal_move = pivot_extreme - confirm_close
+                    confirmed = (
+                        confirm_close < confirm_open
+                        and confirm_close < pivot_body_mid
+                        and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
+                        and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * pivot_atr
+                    )
+                    pivot_type = 'TRUE_PEAK_PIVOT_CONFIRMED'
+                    details = {'pivot_high': pivot_extreme}
+                else:
+                    reversal_body = confirm_close - confirm_open
+                    reversal_move = confirm_close - pivot_extreme
+                    confirmed = (
+                        confirm_close > confirm_open
+                        and confirm_close > pivot_body_mid
+                        and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
+                        and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * pivot_atr
+                    )
+                    pivot_type = 'TRUE_VALLEY_PIVOT_CONFIRMED'
+                    details = {'pivot_low': pivot_extreme}
+
+                if confirmed:
+                    return True, pivot_type, {
+                        **details,
                         'pivot_body_midpoint': pivot_body_mid,
                         'confirm_close': confirm_close,
+                        'pivot_bar_id': ts_pivot,
+                        'confirm_bar_id': ts_confirm,
+                        'confirm_bars_after_pivot': confirm_index - pivot_index,
                         'reversal_body_atr': reversal_body / confirm_atr,
-                        'reversal_move_atr': reversal_move / confirm_atr,
-                    }
-            else:
-                reversal_body = confirm_close - confirm_open
-                reversal_move = confirm_close - float(pivot['low'])
-                is_true_valley = (
-                    float(pivot['low']) < float(before['low'])
-                    and float(pivot['low']) < float(confirm['low'])
-                    and confirm_close > confirm_open
-                    and confirm_close > pivot_body_mid
-                    and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
-                    and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * confirm_atr
-                )
-                if is_true_valley:
-                    return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
-                        'pivot_low': float(pivot['low']),
-                        'pivot_body_midpoint': pivot_body_mid,
-                        'confirm_close': confirm_close,
-                        'reversal_body_atr': reversal_body / confirm_atr,
-                        'reversal_move_atr': reversal_move / confirm_atr,
+                        'reversal_move_atr': reversal_move / pivot_atr,
                     }
 
         return False, None, {}
