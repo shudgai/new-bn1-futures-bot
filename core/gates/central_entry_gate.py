@@ -64,7 +64,7 @@ class CentralEntryGate:
     MAX_BAND_EXTENSION_ATR: float = 0.50    # 距 KC 同側外軌最大乖離 <= 0.5 ATR
     MAX_MA5_EXTENSION_ATR: float = 1.00     # 距 MA5 最大乖離 <= 1.0 ATR
     MIN_KC_BANDWIDTH_PCT: float = 0.0035    # 通道帶寬門檻 >= 0.35% (防極度死水，放寬至正常 1m 波動)
-    MIN_KC_EXPANSION_RATIO: float = 0.05    # 通道擴張門檻 >= 5.0%
+    MIN_KC_EXPANSION_RATIO: float = -0.05   # 通道擴張與防崩縮門檻 (>= -5.0%，容許 1m ATR 正常平滑波動，防範通道急縮死水)
     MIN_VOLUME_MULTIPLIER: float = 1.20     # 量能門檻 >= 1.2 倍均量
     MIN_BODY_ATR: float = 0.35              # 實體最小動能 >= 0.35 ATR
     MAX_OPPOSITE_WICK_RATIO: float = 0.70   # 反向影線不得超過實體的 70%
@@ -314,7 +314,7 @@ class CentralEntryGate:
             )
 
         # -------------------------------------------------------------
-        # 條件 5：通道擴張 (Bandwidth Expansion >= 5%)
+        # 條件 5：通道擴張與防劇烈收斂 (Bandwidth Expansion >= -5% 或 轉折/延續模式)
         # -------------------------------------------------------------
         curr_width = kc_upper - kc_lower
         min_prev_width = float(parsed.get("min_prev_width", curr_width))
@@ -323,14 +323,17 @@ class CentralEntryGate:
         else:
             expansion_ratio = 0.0
 
-        # 若有歷史寬度序列，驗證是否擴張 >= 5%
-        exp_pass = expansion_ratio >= cls.MIN_KC_EXPANSION_RATIO or parsed.get("history_bars_count", 0) < 5
+        is_continuation = "CONTINUATION" in src_upper
+        # 若為均線轉折敏捷模式 (is_cross_mid) 或外軌延續開倉 (is_continuation) 豁免擴張檢查，常規破軌追單驗證未陷入劇烈收斂
+        exp_pass = is_cross_mid or is_continuation or (expansion_ratio >= cls.MIN_KC_EXPANSION_RATIO) or parsed.get("history_bars_count", 0) < 5
         checks["expansion"] = {
             "status": "PASS" if exp_pass else "FAIL",
             "curr_width": curr_width,
             "min_prev_width": min_prev_width,
             "expansion_ratio": expansion_ratio,
             "min_required": cls.MIN_KC_EXPANSION_RATIO,
+            "is_cross_mid": is_cross_mid,
+            "is_continuation": is_continuation,
         }
         if not exp_pass:
             return GateCheckResult(
@@ -346,8 +349,8 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        # 敏捷轉折模式 (is_cross_mid) 豁免均量門檻，以小止損搶佔成本優勢
-        if enforce_volume and not is_cross_mid and vol_curr > 0 and vol_avg > 0:
+        # 敏捷轉折模式 (is_cross_mid) 與延續開倉模式 (is_continuation) 豁免均量門檻
+        if enforce_volume and not is_cross_mid and not is_continuation and vol_curr > 0 and vol_avg > 0:
             vol_ratio = vol_curr / vol_avg
             vol_pass = vol_ratio >= cls.MIN_VOLUME_MULTIPLIER
             checks["volume"] = {
@@ -366,7 +369,7 @@ class CentralEntryGate:
                     checks=checks,
                 )
         else:
-            checks["volume"] = {"status": "SKIPPED_OR_PASS", "vol_curr": vol_curr, "vol_avg": vol_avg, "is_cross_mid": is_cross_mid}
+            checks["volume"] = {"status": "SKIPPED_OR_PASS", "vol_curr": vol_curr, "vol_avg": vol_avg, "is_cross_mid": is_cross_mid, "is_continuation": is_continuation}
 
         # -------------------------------------------------------------
         # 條件 7：實體突破與反向大陰線/插針防護

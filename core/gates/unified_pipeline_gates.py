@@ -1736,7 +1736,7 @@ class EntryGate:
             or (signal_side == "SHORT" and c_close <= kc_mid - 0.3 * atr_val and ma3_slope < 0)
         )
         is_breakout_mode_sig = any(b in signal_type.upper() for b in ("BREAKOUT", "BURST", "OUTSIDE", "CONTINUATION"))
-        is_breakout_candle = (c_close > kc_up or c_close < kc_low) and body >= 0.8 * atr_val
+        is_breakout_candle = (c_close > kc_up or c_close < kc_low) and body >= 0.5 * atr_val
 
         # ----------------- KC 中軌動態斜率計算 (跨 3 根 K 棒無量綱化計算，以 ATR 標準化) -----------------
         kc_mid_current = kc_mid
@@ -2021,7 +2021,7 @@ class EntryGate:
         # 2. 過去 8 根 MA15 極差走平過濾：ma15_range < 0.25 * atr
         # 3. MA3 與 MA15 黏合纏繞過濾：ma_gap_avg < 0.15 * atr
         # ══════════════════════════════════════════════════════════════════
-        MIN_TRADABLE_BANDWIDTH = 0.005  # 最低可交易帶寬 (0.50%)
+        MIN_TRADABLE_BANDWIDTH = 0.0035  # 最低可交易帶寬 (0.35%，同步 CentralEntryGate 與迷因幣波動標準)
 
         if kc_bandwidth < MIN_TRADABLE_BANDWIDTH and not (is_breakout_mode_sig and is_breakout_candle) and not is_cross_mid_ignition:
             return False, VetoEntryReason(
@@ -2290,13 +2290,13 @@ class EntryGate:
         if signal_side == "LONG":
             is_strong_momentum_breakout = (
                 (c_close > c_open)
-                and ((c_close - c_open) >= 0.8 * atr_val)
+                and ((c_close - c_open) >= 0.5 * atr_val)
                 and (c_close > kc_up)
             )
         elif signal_side == "SHORT":
             is_strong_momentum_breakout = (
                 (c_close < c_open)
-                and ((c_open - c_close) >= 0.8 * atr_val)
+                and ((c_open - c_close) >= 0.5 * atr_val)
                 and (c_close < kc_low)
             )
 
@@ -2547,8 +2547,11 @@ class EntryGate:
                 min_close = min(c_close, quote)
                 dist_to_lower = c_close - kc_low
                 is_near_lower = (c_close >= kc_low and dist_to_lower <= 0.2 * atr_val) or (quote >= kc_low and (quote - kc_low) <= 0.2 * atr_val)
-                # 剛從通道內穿出或兩根破軌確認模式才允許在軌外（且延展不得大於 0.5 ATR）
-                is_fresh_outer_breakout = ((not is_prev_outside) or ("2BAR" in signal_type.upper() or "CONFIRMED" in signal_type.upper())) and (c_close < kc_low) and (body >= 0.25 * atr_val) and (kc_low - min_close <= 0.5 * atr_val)
+                # 剛從通道內穿出、兩根破軌或延續開倉確認模式才允許在軌外（且延展不得大於 0.5 ATR）
+                is_fresh_outer_breakout = (
+                    (not is_prev_outside)
+                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION"))
+                ) and (c_close < kc_low) and (body >= 0.25 * atr_val) and (kc_low - min_close <= 0.5 * atr_val)
 
                 if (eff_middle_gap > 1.5 * atr_val or is_near_lower or min_close < (kc_low - 0.3 * atr_val)) and not is_fresh_outer_breakout:
                     return False, "VETO_OVEREXTENDED_SHORT: 距中軌過遠(>1.5 ATR)或緊貼/深破下軌，嚴禁地板追空", {
@@ -2569,8 +2572,11 @@ class EntryGate:
                 max_close = max(c_close, quote)
                 dist_to_upper = kc_up - c_close
                 is_near_upper = (c_close <= kc_up and dist_to_upper <= 0.2 * atr_val) or (quote <= kc_up and (kc_up - quote) <= 0.2 * atr_val)
-                # 剛從通道內穿出或兩根破軌確認模式才允許在軌外（且延展不得大於 0.5 ATR）
-                is_fresh_outer_breakout = ((not is_prev_outside) or ("2BAR" in signal_type.upper() or "CONFIRMED" in signal_type.upper())) and (c_close > kc_up) and (body >= 0.25 * atr_val) and (max_close - kc_up <= 0.5 * atr_val)
+                # 剛從通道內穿出、兩根破軌或延續開倉確認模式才允許在軌外（且延展不得大於 0.5 ATR）
+                is_fresh_outer_breakout = (
+                    (not is_prev_outside)
+                    or any(k in signal_type.upper() for k in ("2BAR", "CONFIRMED", "CONTINUATION"))
+                ) and (c_close > kc_up) and (body >= 0.25 * atr_val) and (max_close - kc_up <= 0.5 * atr_val)
 
                 if (eff_middle_gap > 1.5 * atr_val or is_near_upper or max_close > (kc_up + 0.3 * atr_val)) and not is_fresh_outer_breakout:
                     return False, "VETO_OVEREXTENDED_LONG: 距中軌過遠(>1.5 ATR)或緊貼/高出上軌，嚴禁天花板追多", {
