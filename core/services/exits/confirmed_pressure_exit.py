@@ -111,14 +111,74 @@ def evaluate_confirmed_pressure_exit(position, frame, side=None):
         details["volume_confirmed"] = volume_confirmed
         result["details"] = details
 
+        # Run the multi-bar classifier on the same completed-candle snapshot
+        # used by this exit gate. Its output is advisory to the caller only
+        # through the existing confirmed-pressure reason, which is revalidated
+        # by HoldingProtectionExitGate before an order can be sent.
+        try:
+            from core.services.exits.pullback_vs_reversal_evaluator import (
+                MarketRegimeState,
+                PullbackVsReversalEvaluator,
+            )
+
+            entry_price = float((position or {}).get("entry_price") or 0.0)
+            current_peak = float(
+                (position or {}).get("highest_price" if side == "LONG" else "lowest_price")
+                or close
+            )
+            leverage = float((position or {}).get("leverage") or 5.0)
+            classification = PullbackVsReversalEvaluator().evaluate(
+                side=side,
+                df=closed,
+                entry_price=entry_price,
+                current_quote=close,
+                peak_price=current_peak,
+                leverage=leverage,
+                entry_timestamp=(position or {}).get("open_timestamp")
+                or (position or {}).get("entry_timestamp"),
+            )
+            details["regime_state"] = classification.state.value
+            details["regime_triggers"] = list(classification.triggers)
+            details["regime_metrics"] = dict(classification.metrics)
+
+            if classification.state == MarketRegimeState.HEALTHY_PULLBACK:
+                details["classification"] = "HEALTHY_PULLBACK"
+                return result
+            if classification.state in (
+                MarketRegimeState.TOP_REVERSAL,
+                MarketRegimeState.BOTTOM_REVERSAL,
+            ):
+                if side == "LONG":
+                    details["classification"] = "CONFIRMED_SELLING_PRESSURE"
+                    details["regime_reason"] = "TOP_REVERSAL"
+                    result["reason"] = "EXIT_BY_CONFIRMED_SELLING_PRESSURE"
+                else:
+                    details["classification"] = "CONFIRMED_BUYING_PRESSURE"
+                    details["regime_reason"] = "BOTTOM_REVERSAL"
+                    result["reason"] = "EXIT_BY_CONFIRMED_BUYING_PRESSURE"
+                return result
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError):
+            # The established single-candle pressure checks below remain
+            # available if optional position metadata cannot be parsed.
+            pass
+
         if side == "LONG":
             adverse = close < opening
+            above_kc_mid = close >= values["kc_middle"]
+            is_panic = body >= 1.8 * atr and lower_wick <= 0.25 * body
+
             structural = adverse and close < values["ma3"] and close < values["ma15"]
             blowoff = (
                 adverse and high > values["kc_upper"]
                 and upper_wick > 1.5 * body
             )
             heavy = adverse and body > 0.5 * atr and close < values["ma3"]
+
+            # 【回踩不要平倉鐵律】：價格在 KC 中軌之上且非恐慌巨型大陰線，一律視為健康回踩續抱！
+            if above_kc_mid and not is_panic:
+                details["classification"] = "HEALTHY_PULLBACK"
+                return result
+
             healthy = (
                 lower_wick >= 0.5 * body
                 or (not blowoff and body <= 0.5 * atr and (
@@ -128,23 +188,33 @@ def evaluate_confirmed_pressure_exit(position, frame, side=None):
             if healthy:
                 details["classification"] = "HEALTHY_PULLBACK"
                 return result
-            if structural or blowoff or heavy:
+            if structural or blowoff or heavy or is_panic:
                 details.update(
                     classification="CONFIRMED_SELLING_PRESSURE",
                     structural_break=structural,
                     exhaustion_blowoff=blowoff,
                     heavy_selling=heavy,
+                    panic_dump=is_panic,
                 )
                 result["reason"] = "EXIT_BY_CONFIRMED_SELLING_PRESSURE"
                 return result
         else:
             adverse = close > opening
+            below_kc_mid = close <= values["kc_middle"]
+            is_panic = body >= 1.8 * atr and upper_wick <= 0.25 * body
+
             structural = adverse and close > values["ma3"] and close > values["ma15"]
             blowoff = (
                 adverse and low < values["kc_lower"]
                 and lower_wick > 1.5 * body
             )
             heavy = adverse and body > 0.5 * atr and close > values["ma3"]
+
+            # 【空單回踩/反彈不要平倉鏡像鐵律】：空單價格在 KC 中軌之下且非恐慌巨型大陽線，一律視為健康反彈續抱！
+            if below_kc_mid and not is_panic:
+                details["classification"] = "HEALTHY_PULLBACK"
+                return result
+
             healthy = (
                 upper_wick >= 0.5 * body
                 or (not blowoff and body <= 0.5 * atr and (
@@ -154,12 +224,13 @@ def evaluate_confirmed_pressure_exit(position, frame, side=None):
             if healthy:
                 details["classification"] = "HEALTHY_PULLBACK"
                 return result
-            if structural or blowoff or heavy:
+            if structural or blowoff or heavy or is_panic:
                 details.update(
                     classification="CONFIRMED_BUYING_PRESSURE",
                     structural_break=structural,
                     exhaustion_blowoff=blowoff,
                     heavy_selling=heavy,
+                    panic_pump=is_panic,
                 )
                 result["reason"] = "EXIT_BY_CONFIRMED_BUYING_PRESSURE"
                 return result

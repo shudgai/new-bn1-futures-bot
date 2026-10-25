@@ -2406,6 +2406,37 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
+        from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
+        whitelist_state = getattr(self.account, 'entry_filter_last', None)
+        if not isinstance(whitelist_state, dict):
+            whitelist_state = self.account.entry_filter_last = {}
+        traded_bars = whitelist_state.get('strict_ma3_ma15_last_trade_bar', {})
+        if not isinstance(traded_bars, dict):
+            traded_bars = {}
+        whitelist_atr = float(decision.get('entry_atr') or 0.0)
+        whitelist_stop = (
+            price - 3.0 * whitelist_atr if side == 'LONG'
+            else price + 3.0 * whitelist_atr
+        )
+        whitelist = evaluate_ma3_ma15_entry(
+            snapshot['frame'], side,
+            current_position='IDLE' if symbol not in self.account.positions else 'OPEN',
+            last_trade_bar_time=(traded_bars.get(symbol)
+                                 or getattr(self, '_last_trade_bar_time', {}).get(symbol)),
+            stop_loss_price=whitelist_stop,
+            execution_price=price,
+        )
+        if whitelist.action not in ('OPEN_LONG', 'OPEN_SHORT'):
+            reason = whitelist.violations[0] if whitelist.violations else 'ZERO_TRUST_WHITELIST_REJECTED'
+            log_entry_gate(
+                self, symbol, side, 'EXECUTION', reason, bar,
+                checklist=whitelist.checklist,
+                violations=whitelist.violations,
+            )
+            return False
+        context['initial_sl'] = whitelist.stop_loss_price
+        context['entry_snapshot']['whitelist_entry_price'] = whitelist.entry_price
+        context['entry_snapshot']['whitelist_checklist'] = whitelist.checklist
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
@@ -2707,8 +2738,34 @@ class TradingEngine:
                 pass
 
             log_count = len(getattr(self.account, 'logs', []))
+            if int(traded_bars.get(symbol) or 0) == whitelist.bar_time:
+                log_entry_gate(
+                    self, symbol, side, 'EXECUTION',
+                    'BLOCKED_DUPLICATE_WHITELIST_BAR_AT_SUBMIT', bar,
+                )
+                return False
+            traded_bars[symbol] = whitelist.bar_time
+            whitelist_state['strict_ma3_ma15_last_trade_bar'] = traded_bars
+            self.account.entry_filter_last = whitelist_state
+            self._last_trade_bar_time = getattr(self, '_last_trade_bar_time', {})
+            self._last_trade_bar_time[symbol] = whitelist.bar_time
+            save_state = getattr(self.account, 'save_state', None)
+            if not callable(save_state):
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BAR_CLAIM_STORE_UNAVAILABLE', bar)
+                return False
+            try:
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception as exc:
+                log_entry_gate(
+                    self, symbol, side, 'EXECUTION', 'BAR_CLAIM_PERSISTENCE_FAILED', bar,
+                    error=type(exc).__name__,
+                )
+                return False
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=0.,tp=0.,reason='Live1M '+decision['type'],
+                amount_usdt=amount,sl=whitelist.stop_loss_price,tp=0.,reason='Live1M '+decision['type'],
                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]

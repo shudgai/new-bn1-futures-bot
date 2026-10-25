@@ -360,6 +360,53 @@ class ExecutionManager:
                         candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
 
             if candidate_signal:
+                # Zero-trust whitelist: every candidate must be backed by the
+                # latest confirmed MA3/MA15 cross before downstream gates run.
+                from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
+
+                candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
+                entry_frame = getattr(market_data, "raw_df", None)
+                account_gate_state = getattr(account, "entry_filter_last", None)
+                if not isinstance(account_gate_state, dict):
+                    account_gate_state = {}
+                    try:
+                        account.entry_filter_last = account_gate_state
+                    except (AttributeError, TypeError):
+                        pass
+                persisted_trade_bars = account_gate_state.get(
+                    "strict_ma3_ma15_last_trade_bar", {}
+                )
+                if not isinstance(persisted_trade_bars, dict):
+                    persisted_trade_bars = {}
+                atr_for_stop = float(getattr(market_data, "atr", 0.0) or 0.0)
+                execution_price = float(getattr(market_data, "current_price", 0.0) or 0.0)
+                stop_loss = (
+                    execution_price - 3.0 * atr_for_stop if candidate_side == "LONG"
+                    else execution_price + 3.0 * atr_for_stop
+                )
+                whitelist = evaluate_ma3_ma15_entry(
+                    entry_frame,
+                    candidate_side,
+                    current_position="IDLE" if not has_position else "OPEN",
+                    last_trade_bar_time=(
+                        persisted_trade_bars.get(symbol)
+                        or cls._last_trade_bar_time.get(symbol)
+                    ),
+                    stop_loss_price=stop_loss,
+                    execution_price=execution_price,
+                )
+                if whitelist.action not in ("OPEN_LONG", "OPEN_SHORT"):
+                    reason = whitelist.violations[0] if whitelist.violations else "ZERO_TRUST_WHITELIST_REJECTED"
+                    logger.info(
+                        "[ZERO_TRUST_ENTRY_VETO] %s side=%s reason=%s checks=%s",
+                        symbol, candidate_side, reason, whitelist.checklist,
+                    )
+                    return {
+                        "status": "VETO", "action": whitelist.action, "symbol": symbol,
+                        "reason": reason, "checklist": whitelist.checklist,
+                        "violations": whitelist.violations,
+                    }
+
                 last_exit_context = {
                     **(last_exit or {}),
                     "hourly_entry_count": len(entry_history),
@@ -372,10 +419,43 @@ class ExecutionManager:
                 )
                 if should_entry:
                     side = meta.get("side", "LONG" if "LONG" in candidate_signal else "SHORT")
+                    # Claim synchronously before the first await in execution.
+                    # A failed/uncertain attempt stays consumed for this bar;
+                    # reconciliation must happen before a retry on a later bar.
+                    cls._last_trade_bar_time[symbol] = whitelist.bar_time
+                    persisted_trade_bars[symbol] = whitelist.bar_time
+                    account_gate_state["strict_ma3_ma15_last_trade_bar"] = persisted_trade_bars
+                    save_state = getattr(account, "save_state", None)
+                    if not callable(save_state):
+                        return {
+                            "status": "VETO", "action": whitelist.action, "symbol": symbol,
+                            "reason": "BAR_CLAIM_STORE_UNAVAILABLE",
+                            "checklist": whitelist.checklist,
+                        }
+                    try:
+                        try:
+                            save_state(strict=True)
+                        except TypeError:
+                            save_state()
+                    except Exception as exc:
+                        logger.error(
+                            "[ZERO_TRUST_ENTRY_VETO] %s unable to persist bar claim: %s",
+                            symbol, exc,
+                        )
+                        return {
+                            "status": "VETO", "symbol": symbol,
+                            "action": whitelist.action,
+                            "reason": "BAR_CLAIM_PERSISTENCE_FAILED",
+                            "checklist": whitelist.checklist,
+                        }
                     logger.info(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason} | meta={meta}")
                     print(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason}", flush=True)
                     call_meta = dict(meta or {})
                     call_meta["candidate_signal_type"] = candidate_signal
+                    call_meta["whitelist_entry_price"] = whitelist.entry_price
+                    call_meta["stop_loss_price"] = whitelist.stop_loss_price
+                    call_meta["whitelist_checklist"] = whitelist.checklist
+                    call_meta["atr"] = atr_for_stop
                     call_meta["upstream_entry_gate_authorized"] = True
                     try:
                         call_meta["intrabar_authorized"] = bool(
@@ -402,7 +482,15 @@ class ExecutionManager:
                         reason=f"EntryGate:{reason}",
                         meta=call_meta,
                     )
-                    return {"status": "ENTRY_EXECUTED", "symbol": symbol, "side": side, "reason": reason, "success": success}
+                    return {
+                        "status": "ENTRY_EXECUTED" if success else "VETO",
+                        "symbol": symbol,
+                        "action": whitelist.action if success else "HOLD / PASS",
+                        "side": side, "reason": reason, "success": success,
+                        "checklist": whitelist.checklist,
+                        "entry_price": whitelist.entry_price,
+                        "stop_loss_price": whitelist.stop_loss_price,
+                    }
                 else:
                     logger.debug(f"🚫 [VETO] {symbol} {reason}")
                     return {"status": "VETO", "symbol": symbol, "reason": reason}
@@ -410,6 +498,7 @@ class ExecutionManager:
         return {"status": "IDLE", "symbol": symbol}
 
     _last_exit_record: Dict[str, Dict[str, Any]] = {}
+    _last_trade_bar_time: Dict[str, int] = {}
     _hourly_entry_records: Dict[str, list] = {}
     MAX_ENTRIES_PER_HOUR: int = 3
 
@@ -567,10 +656,18 @@ class ExecutionManager:
                     frame.attrs.setdefault("timeframe_ms", 60_000)
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
+            requested_sl = (meta or {}).get("stop_loss_price")
+            if requested_sl is not None:
+                requested_sl = float(requested_sl)
+                if (not math.isfinite(requested_sl)
+                        or (str(side).upper() == "LONG" and requested_sl >= price)
+                        or (str(side).upper() == "SHORT" and requested_sl <= price)):
+                    logger.warning("[EXECUTION] %s invalid whitelist stop; fail closed", symbol)
+                    return False
             if str(side).upper() == "LONG":
-                initial_sl = max(0.0, price - 3.0 * atr)
+                initial_sl = requested_sl if requested_sl is not None else max(0.0, price - 3.0 * atr)
             else:
-                initial_sl = price + 3.0 * atr
+                initial_sl = requested_sl if requested_sl is not None else price + 3.0 * atr
 
             bar_id = None
             if frame is not None and len(frame) > 0:
