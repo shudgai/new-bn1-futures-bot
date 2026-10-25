@@ -35,9 +35,8 @@ def _short_midline_body_reclaim_confirmed(raw_df: Any, kc_middle: float) -> bool
 class ExitGate:
     """
     出場裁決唯一裁決官：
-    1. 階梯鎖利/保本底線 -> True (PROFIT_LOCK)
-    2. 純數學真峰谷力竭 (外軌大黑吞噬 / 確切三點樞紐力竭) -> True (TRUE_PEAK / TRUE_BOTTOM)
-    3. 盤整黏合嚴禁平多 (未達連續兩根收破 EMA40 強制 VETO_HOLD)
+    1. 硬止損及緊急避險 -> 立即允許
+    2. 一般策略/獲利出口 -> 必須由開倉後收線 K 確認真峰頂或真谷底
     """
 
     OPPOSITE_BREACH_MIN_DEPTH_ATR = 0.5
@@ -143,22 +142,14 @@ class ExitGate:
 
     @staticmethod
     def _gate_unconfirmed_exit(result):
-        """Only locks, confirmed swing pivots, and emergency protection may close."""
+        """Only confirmed swing pivots and emergency protection may close."""
         should_exit, reason, meta = result
         if not should_exit:
             return result
         reason = str(reason or "")
         reason_upper = reason.upper()
-        is_profit_lock = (
-            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or any(token in reason_upper for token in (
-                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
-                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
-            ))
-        )
         if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS
-                or is_profit_lock):
+                or reason in ExitGate.PIVOT_EXIT_REASONS):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -175,12 +166,9 @@ class ExitGate:
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        出場總裁決（2026-10-23 最新授權）：
+        出場總裁決：
         1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）最優先。
-        2. 極值轉折點見頂/見底即平倉 (CLOSE_SHORT_AT_BOTTOM / CLOSE_LONG_AT_TOP)：
-           MA3 勾頭、下影線插針打底或陽包陰吞噬，不等回摸中軌立即平倉鎖利！一票否決 VETO_HOLD！
-        3. 淨 ROE 階梯鎖利與中軌 MA3 規則（僅已收線）優先於一般 VETO_HOLD 與普通均線出口。
-        4. 暫緩期間 (HOLD_WAIT) 只放行真峰谷轉折出口，其餘一般出口暫停。
+        2. 其餘所有自動出口（含獲利鎖定）均須由開倉後已收線 K 確認真峰頂/真谷底。
         """
         result = ExitGate._evaluate_with_holding_rules(
             pos, market_data, current_price, atr, kc_slope,
@@ -191,20 +179,13 @@ class ExitGate:
 
         side = str((pos or {}).get("side", "")).upper()
         reason_upper = str(reason or "").upper()
-        is_profit_lock = (
-            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or any(token in reason_upper for token in (
-                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
-                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
-            ))
-        )
         is_emergency = reason in ExitGate.ABSOLUTE_SAFETY_REASONS or any(
             token in reason_upper for token in (
                 "HARD_STOP", "CIRCUIT_BREAKER", "EMERGENCY", "WATERFALL",
                 "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
             )
         )
-        if is_emergency or is_profit_lock:
+        if is_emergency:
             return result
 
         raw_df = (
@@ -245,7 +226,7 @@ class ExitGate:
             "suppressed_exit_reason": reason,
             "macro_trend": macro_trend,
             "required_pivot": required_pivot,
-            "exit_policy": "HOLD_PULLBACK_UNTIL_CLOSED_THREE_POINT_PIVOT_OR_PROFIT_LOCK",
+            "exit_policy": "HOLD_UNTIL_CLOSED_TRUE_PEAK_OR_VALLEY_PIVOT",
             "pivot_validation": pivot_details,
         }
 

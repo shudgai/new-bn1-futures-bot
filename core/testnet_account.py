@@ -3666,6 +3666,33 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        exit_frame = None
+        if not is_manual or str(close_reason).strip() != "手動平倉":
+            frame_provider = getattr(self, "channel_exit_frame_provider", None)
+            if not callable(frame_provider):
+                frame_provider = getattr(self, "entry_frame_provider", None)
+            try:
+                if callable(frame_provider):
+                    exit_frame = frame_provider(symbol)
+                    if hasattr(exit_frame, "__await__"):
+                        exit_frame = await exit_frame
+            except Exception:
+                exit_frame = None
+            if exit_frame is None:
+                exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual, frame=exit_frame,
+        ):
+            self.log(
+                f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=CONFIRMED_TRUE_PEAK_OR_VALLEY_REQUIRED",
+                "WARNING",
+            )
+            return False
         if meta.get("channel_short_oversold_partial_order_unknown"):
             self.log(
                 f"PARTIAL_EXIT_QUARANTINED symbol={symbol} "
@@ -3909,6 +3936,33 @@ class BinanceTestnetAccount:
             )
             return False
         emergency_exit = is_emergency_exit(close_reason)
+        from core.services.exits.authorized_position_exit import (
+            automated_position_exit_allowed,
+        )
+        exit_frame = None
+        if not is_manual or str(close_reason).strip() != "手動平倉":
+            frame_provider = getattr(self, "channel_exit_frame_provider", None)
+            if not callable(frame_provider):
+                frame_provider = getattr(self, "entry_frame_provider", None)
+            try:
+                if callable(frame_provider):
+                    exit_frame = frame_provider(symbol)
+                    if hasattr(exit_frame, "__await__"):
+                        exit_frame = await exit_frame
+            except Exception:
+                exit_frame = None
+            if exit_frame is None:
+                exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+        if not automated_position_exit_allowed(
+            symbol, position, meta, close_reason, current_price,
+            is_manual=is_manual, frame=exit_frame,
+        ):
+            self.log(
+                f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
+                "authority=CONFIRMED_TRUE_PEAK_OR_VALLEY_REQUIRED",
+                "WARNING",
+            )
+            return False
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"
