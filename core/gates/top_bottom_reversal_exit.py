@@ -152,30 +152,29 @@ def evaluate_top_bottom_reversal_exit(
             meta["skipped"] = "STAGE_A_NOT_MET: 未曾灌破KC下軌且浮盈未達門檻(1.5*ATR)，禁止猜底平空"
             return False, None, meta
 
-        # 階段 B（反轉確認）：必須同時滿足：
-        # 1. 出現「連續 2 根 Completed Bar 收陽」（當根收陽 + 前根收陽）
-        # 2. 最新一根收盤價必須「實體站穩突破 MA3 之上」（close > ma3）
-        # 3. 實體無長上影回吐（upper_wick < body 且 upper_wick <= 0.35 * span）
-        middle_band = float(curr.get("kc_middle", (lower_band + upper_band) / 2.0))
-        two_bars_bullish = (c_close > c_open) and (p_close > p_open)
-        close_above_ma3 = (ma3_curr is not None and c_close > ma3_curr)
+        # Stage B requires a true three-point valley, not two green pullback bars.
+        pivot_body_mid = (p_open + p_close) / 2.0
+        is_three_point_valley = (
+            p_low < float(closed.iloc[-3]["low"])
+            and p_low < c_low
+            and c_close > c_open
+            and c_close > pivot_body_mid
+        )
         curr_span = max(c_high - c_low, 1e-6)
         no_upper_wick_rejection = (curr_upper_wick < curr_body) and (curr_upper_wick <= 0.35 * curr_span)
-        at_bottom_zone = (c_close <= middle_band)
 
-        if two_bars_bullish and close_above_ma3 and no_upper_wick_rejection and at_bottom_zone:
+        if is_three_point_valley and no_upper_wick_rejection:
             triggers = [
                 f"STAGE_A_OVERSOLD(lowest={lowest_since_entry:.4f}<=lower={min_kc_lower:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
-                f"TWO_BARS_BULLISH(curr={c_close:.4f}>{c_open:.4f},prev={p_close:.4f}>{p_open:.4f})",
-                f"MA3_BREAKOUT(close={c_close:.4f}>ma3={ma3_curr:.4f})",
+                f"THREE_POINT_VALLEY(pivot_low={p_low:.4f}<left={float(closed.iloc[-3]['low']):.4f},right={c_low:.4f})",
+                f"BODY_RECLAIM(confirm_close={c_close:.4f}>pivot_body_mid={pivot_body_mid:.4f})",
                 f"SOLID_BODY(upper_wick={curr_upper_wick:.4f}<body={curr_body:.4f})",
-                f"AT_BOTTOM_ZONE(close={c_close:.4f}<=mid={middle_band:.4f})",
             ]
-            meta["cause"] = f"空單真谷底轉折確立（二根收陽+突破MA3實體站穩），平空鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"空單真谷底三點樞紐及反向實體確認，平空鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_SHORT_AT_BOTTOM, meta
         else:
-            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 未達連續2根收陽或未突破MA3或有長上影回吐，視為良性整理雜訊"
+            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 尚無三點真谷底或確認棒未以陽線收過樞紐實體中點，視為反抽/回踩"
             return False, None, meta
 
     # ==========================
@@ -196,31 +195,30 @@ def evaluate_top_bottom_reversal_exit(
             meta["skipped"] = "STAGE_A_NOT_MET: 未曾衝破KC上軌且浮盈未達門檻(1.5*ATR)，禁止猜頂平多"
             return False, None, meta
 
-        # 階段 B（反轉確認）：必須同時滿足：
-        # 1. 出現「連續 2 根 Completed Bar 收陰」（當根收陰 + 前根收陰）
-        # 2. 最新一根收盤價必須「實體跌破 MA3 之下」（close < ma3）
-        # 3. 實體無長下影回抽（lower_wick < body 且 lower_wick <= 0.35 * span）
-        # 4. 價格位於中軌上方之頂部區域（避免跌到反側外軌阿呆谷誤判為峰頂）
-        middle_band = float(curr.get("kc_middle", (lower_band + upper_band) / 2.0))
-        two_bars_bearish = (c_close < c_open) and (p_close < p_open)
-        close_below_ma3 = (ma3_curr is not None and c_close < ma3_curr)
+        # Mirror the short rule: require a local three-point peak and a bearish
+        # close below the pivot candle's real-body midpoint.
+        pivot_body_mid = (p_open + p_close) / 2.0
+        is_three_point_peak = (
+            p_high > float(closed.iloc[-3]["high"])
+            and p_high > c_high
+            and c_close < c_open
+            and c_close < pivot_body_mid
+        )
         curr_span = max(c_high - c_low, 1e-6)
         no_lower_wick_rejection = (curr_lower_wick < curr_body) and (curr_lower_wick <= 0.35 * curr_span)
-        at_top_zone = (c_close >= middle_band)
 
-        if two_bars_bearish and close_below_ma3 and no_lower_wick_rejection and at_top_zone:
+        if is_three_point_peak and no_lower_wick_rejection:
             triggers = [
                 f"STAGE_A_OVERBOUGHT(highest={highest_since_entry:.4f}>=upper={max_kc_upper:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
-                f"TWO_BARS_BEARISH(curr={c_close:.4f}<{c_open:.4f},prev={p_close:.4f}<{p_open:.4f})",
-                f"MA3_BREAKDOWN(close={c_close:.4f}<ma3={ma3_curr:.4f})",
+                f"THREE_POINT_PEAK(pivot_high={p_high:.4f}>left={float(closed.iloc[-3]['high']):.4f},right={c_high:.4f})",
+                f"BODY_BREAK(confirm_close={c_close:.4f}<pivot_body_mid={pivot_body_mid:.4f})",
                 f"SOLID_BODY(lower_wick={curr_lower_wick:.4f}<body={curr_body:.4f})",
-                f"AT_TOP_ZONE(close={c_close:.4f}>=mid={middle_band:.4f})",
             ]
-            meta["cause"] = f"多單真峰頂轉折確立（二根收陰+跌破MA3實體下破），平多鎖利！觸發特徵: {', '.join(triggers)}"
+            meta["cause"] = f"多單真峰頂三點樞紐及反向實體確認，平多鎖利！觸發特徵: {', '.join(triggers)}"
             meta["triggers"] = triggers
             return True, CLOSE_LONG_AT_TOP, meta
         else:
-            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 未達連續2根收陰或未跌破MA3或有長下影回抽，視為良性回踩雜訊"
+            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 尚無三點真峰頂或確認棒未以陰線收破樞紐實體中點，視為回踩/反抽"
             return False, None, meta
 
     return False, None, meta

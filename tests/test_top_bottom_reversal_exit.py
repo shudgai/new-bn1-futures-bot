@@ -56,22 +56,22 @@ def make_df(*bars):
 # 1. 空單測試 (SHORT)
 # ══════════════════════════════════════════════════════
 
-def test_short_two_bars_bullish_and_ma3_breakout_exits():
-    """空單下殺破軌後，出現連續 2 根 Completed Bar 收陽且突破 MA3，確立真谷底平空"""
+def test_short_three_point_valley_and_body_confirmation_exits():
+    """必須先形成三點谷底，再由已收陽棒實體收過樞紐棒中點。"""
     bars = [
         make_bar(97.0, 97.2, 95.8, 96.0),
         make_bar(96.0, 96.2, 92.8, 93.0),
-        make_bar(93.0, 93.2, 90.8, 91.0),   # 探破下軌 95.0，Stage A 達成
-        make_bar(91.0, 92.5, 90.9, 92.2),   # 第一根 Completed Bar 收陽
-        make_bar(92.2, 94.2, 92.0, 94.0),   # 第二根 Completed Bar 收陽且實體突破 MA3 (ma3~92.4)
+        make_bar(93.0, 93.2, 92.0, 92.5),
+        make_bar(92.5, 93.2, 90.8, 91.0),   # 三點樞紐棒
+        make_bar(91.0, 94.2, 90.9, 94.0),   # 確認棒突破樞紐實體中點
     ]
     df = make_df(*bars)
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.8}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is True
     assert reason == CLOSE_SHORT_AT_BOTTOM
-    assert any("TWO_BARS_BULLISH" in t for t in meta["triggers"])
-    assert any("MA3_BREAKOUT" in t for t in meta["triggers"])
+    assert any("THREE_POINT_VALLEY" in t for t in meta["triggers"])
+    assert any("BODY_RECLAIM" in t for t in meta["triggers"])
 
 
 def test_short_single_pin_bar_or_single_green_skipped_as_noise():
@@ -87,7 +87,22 @@ def test_short_single_pin_bar_or_single_green_skipped_as_noise():
     pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 92.0}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is False
-    assert meta.get("skipped") == "STAGE_B_NOT_CONFIRMED: 未達連續2根收陽或未突破MA3或有長上影回吐，視為良性整理雜訊"
+    assert meta.get("skipped", "").startswith("STAGE_B_NOT_CONFIRMED")
+
+
+def test_short_two_green_pullback_bars_without_local_valley_do_not_exit():
+    bars = [
+        make_bar(98.0, 98.2, 94.0, 94.5),
+        make_bar(94.5, 95.0, 91.0, 91.5),
+        make_bar(91.5, 94.0, 92.0, 93.0),
+        make_bar(93.0, 96.0, 90.5, 95.0),
+    ]
+    result = evaluate_top_bottom_reversal_exit(
+        {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.0},
+        make_df(*bars), atr_val=ATR,
+    )
+    assert result[0] is False
+    assert "三點真谷底" in result[2].get("skipped", "")
 
 
 def test_short_entry_bar_protection_skips_exit():
@@ -125,22 +140,22 @@ def test_short_no_favorable_move_yet_skips_exit():
 # 2. 多單測試 (LONG)
 # ══════════════════════════════════════════════════════
 
-def test_long_two_bars_bearish_and_ma3_breakdown_exits():
-    """多單衝高衝破上軌後，出現連續 2 根 Completed Bar 收陰且跌破 MA3，確立真峰頂平多"""
+def test_long_three_point_peak_and_body_confirmation_exits():
+    """必須先形成三點峰頂，再由已收陰棒實體跌破樞紐棒中點。"""
     bars = [
         make_bar(99.0, 100.2, 98.8, 100.0),
         make_bar(100.0, 103.2, 99.8, 103.0),
-        make_bar(103.0, 107.5, 102.8, 107.0),  # 衝破上軌 105.0，Stage A 達成
-        make_bar(107.0, 107.2, 105.5, 105.8),  # 第一根 Completed Bar 收陰
-        make_bar(105.8, 106.0, 103.0, 103.5),  # 第二根 Completed Bar 收陰且實體跌破 MA3 (ma3~105.4)
+        make_bar(103.0, 106.5, 102.8, 106.0),
+        make_bar(106.0, 107.5, 105.5, 107.0),  # 三點樞紐棒
+        make_bar(107.0, 107.2, 102.8, 103.0),  # 確認棒跌破樞紐實體中點
     ]
     df = make_df(*bars)
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 107.5}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is True
     assert reason == CLOSE_LONG_AT_TOP
-    assert any("TWO_BARS_BEARISH" in t for t in meta["triggers"])
-    assert any("MA3_BREAKDOWN" in t for t in meta["triggers"])
+    assert any("THREE_POINT_PEAK" in t for t in meta["triggers"])
+    assert any("BODY_BREAK" in t for t in meta["triggers"])
 
 
 def test_long_single_pin_bar_or_single_red_skipped_as_noise():
@@ -156,7 +171,22 @@ def test_long_single_pin_bar_or_single_red_skipped_as_noise():
     pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.0}
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos, df, atr_val=ATR)
     assert should_exit is False
-    assert meta.get("skipped") == "STAGE_B_NOT_CONFIRMED: 未達連續2根收陰或未跌破MA3或有長下影回抽，視為良性回踩雜訊"
+    assert meta.get("skipped", "").startswith("STAGE_B_NOT_CONFIRMED")
+
+
+def test_long_two_red_pullback_bars_without_local_peak_do_not_exit():
+    bars = [
+        make_bar(102.0, 110.0, 101.0, 109.0),
+        make_bar(109.0, 109.5, 105.0, 106.0),
+        make_bar(106.0, 108.0, 102.0, 103.0),
+        make_bar(103.0, 105.0, 100.0, 101.0),
+    ]
+    result = evaluate_top_bottom_reversal_exit(
+        {"side": "LONG", "entry_price": 100.0, "highest_price": 110.0},
+        make_df(*bars), atr_val=ATR,
+    )
+    assert result[0] is False
+    assert "三點真峰頂" in result[2].get("skipped", "")
 
 
 # ══════════════════════════════════════════════════════
@@ -168,12 +198,12 @@ def test_exit_gate_integrates_bottom_exit_when_trend_challenged():
     bars = [
         make_bar(100.0, 100.2, 97.8, 98.0),
         make_bar(98.0, 98.1, 95.8, 96.0),
-        make_bar(96.0, 96.2, 90.8, 91.0),   # 灌破下軌 95.0
-        make_bar(91.0, 95.5, 90.9, 95.0),   # 第 1 根收陽
-        make_bar(95.0, 98.2, 94.8, 98.0),   # 第 2 根收陽，突破 MA15 (97.0) 與 MA3
+        make_bar(96.0, 96.2, 91.0, 92.0),
+        make_bar(92.0, 93.0, 90.8, 91.0),   # 三點樞紐棒
+        make_bar(91.0, 98.2, 90.9, 98.0),   # 陽線收過樞紐實體中點
     ]
     df = make_df(*bars)
-    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.8, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "SHORT", "entry_price": 100.0, "lowest_price": 90.8, "leverage": 1.0}
     snapshot = {
         "current_price": 98.0,
         "atr": ATR,
@@ -198,12 +228,12 @@ def test_exit_gate_integrates_top_exit_when_trend_challenged():
     bars = [
         make_bar(99.0, 100.5, 98.8, 100.0),
         make_bar(100.0, 102.2, 99.8, 102.0),
-        make_bar(102.0, 108.5, 101.8, 108.0),  # 衝破上軌 105.0
-        make_bar(108.0, 108.2, 104.5, 105.0),  # 第 1 根收陰
-        make_bar(105.0, 105.2, 101.8, 102.0),  # 第 2 根收陰，跌破 MA15 (103.0) 與 MA3
+        make_bar(102.0, 107.5, 101.8, 107.0),
+        make_bar(107.0, 108.5, 104.5, 108.0),  # 三點樞紐棒
+        make_bar(108.0, 108.2, 101.8, 102.0),  # 陰線收破樞紐實體中點
     ]
     df = make_df(*bars)
-    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.5, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "LONG", "entry_price": 100.0, "highest_price": 108.5, "leverage": 1.0}
     snapshot = {
         "current_price": 102.0,
         "atr": ATR,
@@ -355,7 +385,7 @@ def test_exit_gate_holds_short_when_single_green_bar_below_ma3():
         "entry_price": 100.0,
         "lowest_price": 91.0,
         "qty": 1.0,
-        "leverage": 5.0,
+        "leverage": 1.0,
     }
     snapshot = {
         "current_price": 93.0,
@@ -401,7 +431,7 @@ def test_exit_gate_holds_long_when_single_red_bar_above_ma3():
         "entry_price": 100.0,
         "highest_price": 109.0,
         "qty": 1.0,
-        "leverage": 5.0,
+        "leverage": 1.0,
     }
     snapshot = {
         "current_price": 107.0,

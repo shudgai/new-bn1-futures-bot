@@ -65,20 +65,40 @@ def test_short_profit_lock_is_allowed_without_midline_reclaim():
 
 
 def test_bearish_short_suppresses_ordinary_exit_but_allows_valley_and_lock(monkeypatch):
+    valley = _frame([
+        dict(timestamp=60_000, open=96.0, high=96.5, low=95.0, close=95.5,
+             is_closed=True),
+        dict(timestamp=120_000, open=95.5, high=96.0, low=90.0, close=91.0,
+             is_closed=True),
+        dict(timestamp=180_000, open=91.0, high=94.0, low=90.5, close=94.0,
+             is_closed=True),
+    ])
+    pullback = _frame([
+        dict(timestamp=60_000, open=96.0, high=96.5, low=95.0, close=95.5,
+             is_closed=True),
+        dict(timestamp=120_000, open=95.5, high=96.0, low=90.0, close=91.0,
+             is_closed=True),
+        dict(timestamp=180_000, open=91.0, high=94.0, low=89.0, close=94.0,
+             is_closed=True),
+    ])
     monkeypatch.setattr(
         ExitGate, '_evaluate_with_holding_rules',
         staticmethod(lambda *args: (True, 'SHORT_EXIT_KC_MID_BREACH', {'x': 1})),
     )
-    result = ExitGate.evaluate({'side': 'SHORT'}, {'macro_trend': 'BEARISH'})
+    result = ExitGate.evaluate(
+        {'side': 'SHORT'}, {'macro_trend': 'BEARISH', 'raw_df': pullback},
+    )
     assert result[0] is False
-    assert result[1] == 'VETO_HOLD_TREND_ALIGNED'
+    assert result[1] == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
     assert result[2]['suppressed_exit_reason'] == 'SHORT_EXIT_KC_MID_BREACH'
 
     monkeypatch.setattr(
         ExitGate, '_evaluate_with_holding_rules',
         staticmethod(lambda *args: (True, 'EXIT_BY_CONFIRMED_TRUE_VALLEY', {})),
     )
-    assert ExitGate.evaluate({'side': 'SHORT'}, {'macro_trend': 'BEARISH'})[0] is True
+    assert ExitGate.evaluate(
+        {'side': 'SHORT'}, {'macro_trend': 'BEARISH', 'raw_df': valley},
+    )[0] is True
     monkeypatch.setattr(
         ExitGate, '_evaluate_with_holding_rules',
         staticmethod(lambda *args: (True, 'EXIT_BY_RATCHET_PROFIT_LOCK', {})),
@@ -87,15 +107,25 @@ def test_bearish_short_suppresses_ordinary_exit_but_allows_valley_and_lock(monke
 
 
 def test_bullish_long_mirror_holds_until_peak(monkeypatch):
+    peak = _frame([
+        dict(timestamp=60_000, open=101.0, high=102.0, low=100.0, close=101.5,
+             is_closed=True),
+        dict(timestamp=120_000, open=104.0, high=110.0, low=103.5, close=109.0,
+             is_closed=True),
+        dict(timestamp=180_000, open=109.0, high=109.5, low=102.0, close=103.0,
+             is_closed=True),
+    ])
     monkeypatch.setattr(
         ExitGate, '_evaluate_with_holding_rules',
         staticmethod(lambda *args: (True, 'LONG_EXIT_KC_MID_BREACH', {})),
     )
     result = ExitGate.evaluate({'side': 'LONG'}, {'macro_trend': 'BULLISH'})
     assert result[0] is False
-    assert result[1] == 'VETO_HOLD_TREND_ALIGNED'
+    assert result[1] == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
     monkeypatch.setattr(
         ExitGate, '_evaluate_with_holding_rules',
         staticmethod(lambda *args: (True, 'EXIT_BY_CONFIRMED_TRUE_PEAK', {})),
     )
-    assert ExitGate.evaluate({'side': 'LONG'}, {'macro_trend': 'BULLISH'})[0] is True
+    assert ExitGate.evaluate(
+        {'side': 'LONG'}, {'macro_trend': 'BULLISH', 'raw_df': peak},
+    )[0] is True

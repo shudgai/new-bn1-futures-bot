@@ -189,6 +189,47 @@ class ExitGate:
             return result
 
         side = str((pos or {}).get("side", "")).upper()
+        reason_upper = str(reason or "").upper()
+        is_profit_lock = (
+            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or any(token in reason_upper for token in (
+                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
+                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
+            ))
+        )
+        is_emergency = reason in ExitGate.ABSOLUTE_SAFETY_REASONS or any(
+            token in reason_upper for token in (
+                "HARD_STOP", "CIRCUIT_BREAKER", "EMERGENCY", "WATERFALL",
+                "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
+            )
+        )
+        if is_emergency or is_profit_lock:
+            return result
+
+        raw_df = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df")
+        )
+        try:
+            quote = float(current_price or (
+                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("current_price", 0.0)
+            ))
+            from core.gates.holding_protection_gate import has_confirmed_true_pivot
+            has_pivot, pivot_type, pivot_details = has_confirmed_true_pivot(
+                pos, raw_df, quote,
+            )
+        except (AttributeError, TypeError, ValueError):
+            has_pivot, pivot_type, pivot_details = False, None, {}
+        expected_pivot = "TRUE_VALLEY" if side == "SHORT" else "TRUE_PEAK"
+        is_correct_pivot = has_pivot and str(pivot_type or "").upper().startswith(expected_pivot)
+        if is_correct_pivot:
+            return True, reason, {
+                **(meta or {}),
+                "confirmed_true_pivot": pivot_type,
+                "pivot_confirmation": pivot_details,
+                "exit_policy": "CLOSED_THREE_POINT_PIVOT_WITH_BODY_CONFIRMATION",
+            }
         try:
             macro_trend = (
                 str(market_data.macro_trend or "NEUTRAL").upper()
@@ -197,43 +238,14 @@ class ExitGate:
             )
         except (AttributeError, TypeError):
             macro_trend = "NEUTRAL"
-
-        is_profit_lock = (
-            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or any(token in str(reason).upper() for token in (
-                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
-                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
-            ))
-        )
-        aligned_short = side == "SHORT" and macro_trend == "BEARISH"
-        aligned_long = side == "LONG" and macro_trend == "BULLISH"
-        if not (aligned_short or aligned_long):
-            return result
-        if reason in ExitGate.ABSOLUTE_SAFETY_REASONS or is_profit_lock:
-            return result
-
-        short_valley_exits = {
-            "EARLY_PIVOT_VALLEY_EXIT", "CLOSE_SHORT_AT_BOTTOM",
-            "EXIT_BY_VERIFIED_FRACTAL_VALLEY", "EXIT_BY_CONFIRMED_TRUE_VALLEY",
-            "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
-            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
-        }
-        long_peak_exits = {
-            "EARLY_PIVOT_PEAK_EXIT", "CLOSE_LONG_AT_TOP",
-            "EXIT_BY_VERIFIED_FRACTAL_PEAK", "EXIT_BY_CONFIRMED_TRUE_PEAK",
-            "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
-            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "EXIT_MEME_TRUE_PEAK_CONFIRMED",
-        }
-        if (aligned_short and reason in short_valley_exits) or (
-            aligned_long and reason in long_peak_exits
-        ):
-            return result
-        return False, "VETO_HOLD_TREND_ALIGNED", {
+        required_pivot = "CONFIRMED_VALLEY" if side == "SHORT" else "CONFIRMED_PEAK"
+        return False, "VETO_HOLDING_UNTIL_TRUE_PIVOT", {
             **(meta or {}),
             "suppressed_exit_reason": reason,
             "macro_trend": macro_trend,
-            "exit_policy": "HOLD_TREND_ALIGNED_UNTIL_CONFIRMED_PIVOT_OR_PROFIT_LOCK",
-            "required_pivot": "CONFIRMED_VALLEY" if aligned_short else "CONFIRMED_PEAK",
+            "required_pivot": required_pivot,
+            "exit_policy": "HOLD_PULLBACK_UNTIL_CLOSED_THREE_POINT_PIVOT_OR_PROFIT_LOCK",
+            "pivot_validation": pivot_details,
         }
 
     @staticmethod
@@ -267,6 +279,24 @@ class ExitGate:
             else market_data.get("raw_df")
         )
         quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0)))
+        atr_val = (
+            market_data.atr if isinstance(market_data, MarketDataSnapshot)
+            else float(atr or market_data.get("atr", 0.0))
+        )
+
+        # A completed, structurally confirmed peak/valley outranks ordinary
+        # pullback shields. The detector itself now requires a strict 3-point
+        # pivot and a reversal body close through the pivot-body midpoint.
+        from core.gates.top_bottom_reversal_exit import evaluate_top_bottom_reversal_exit
+        tb_exit, tb_reason, tb_meta = evaluate_top_bottom_reversal_exit(
+            pos, raw_df, atr_val=atr_val,
+        )
+        if tb_exit and tb_reason:
+            return True, tb_reason, {
+                **(meta or {}),
+                "top_bottom_reversal": tb_meta,
+                "cause": tb_meta.get("cause"),
+            }
 
         # Meme-coin soft exits are generated from the latest completed candle
         # only. A live quote or a red/green candle by itself never closes.
@@ -292,10 +322,6 @@ class ExitGate:
             return result
 
         pos_side = str(pos.get("side", "")).upper()
-        atr_val = (
-            market_data.atr if isinstance(market_data, MarketDataSnapshot)
-            else float(atr or market_data.get("atr", 0.0))
-        )
         kc_mid_val = float(market_data.kc_middle if isinstance(market_data, MarketDataSnapshot) else market_data.get("kc_middle", 0.0))
         kc_slope_val = float(market_data.kc_middle_slope if isinstance(market_data, MarketDataSnapshot) else (kc_slope or market_data.get("kc_middle_slope", 0.0)))
 
@@ -410,18 +436,6 @@ class ExitGate:
                     "entry_price": entry_p,
                     "cause": "多單頂層鎖倉鐵律一票否決 (中軌防守線 VETO_HOLD_LONG_ABOVE_MA3 / VETO_EXIT_HOLD_ABOVE_KC_MIDDLE): 只要收盤價依然穩守向上的KC中軌與 MA3 之上，多頭結構完好，微觀上出現單根小陰棒或上影線一律視為空中換手雜訊，強制禁止平多！一票否決微型峰頂，強制鎖倉續抱！",
                 }
-
-        # ── 2. 評估「真峰頂 / 真谷底」（二根收盤確認 + 均線實體破位） ──
-        from core.gates.top_bottom_reversal_exit import evaluate_top_bottom_reversal_exit
-        tb_exit, tb_reason, tb_meta = evaluate_top_bottom_reversal_exit(pos, raw_df, atr_val=atr_val)
-
-        # ── 3. 若已滿足真峰頂/真谷底二根確認，立即平倉獲利了結 ──
-        if tb_exit and tb_reason:
-            return True, tb_reason, {
-                **(meta or {}),
-                "top_bottom_reversal": tb_meta,
-                "cause": tb_meta.get("cause"),
-            }
 
         # ══════════════════════════════════════════════════════════════════
         # 核心防守線：守穩向上的 KC 中軌回踩不平倉鐵律（唯認中軌實體跌破）

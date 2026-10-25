@@ -60,7 +60,7 @@ def is_fractal_peak(bars: pd.DataFrame) -> bool:
         return False
     b1, b2, b3 = bars.iloc[-3], bars.iloc[-2], bars.iloc[-1]
     h1, h2, h3 = float(b1['high']), float(b2['high']), float(b3['high'])
-    return h2 > h1 and h2 >= h3
+    return h2 > h1 and h2 > h3
 
 
 def is_fractal_valley(bars: pd.DataFrame) -> bool:
@@ -69,7 +69,7 @@ def is_fractal_valley(bars: pd.DataFrame) -> bool:
         return False
     b1, b2, b3 = bars.iloc[-3], bars.iloc[-2], bars.iloc[-1]
     l1, l2, l3 = float(b1['low']), float(b2['low']), float(b3['low'])
-    return l2 < l1 and l2 <= l3
+    return l2 < l1 and l2 < l3
 
 
 def has_confirmed_true_pivot(
@@ -117,81 +117,49 @@ def has_confirmed_true_pivot(
         except Exception:
             entry_bar_floor_ms = 0.0
 
-        # ──【第一層：歷史已收線 K 棒成型之真峰谷】──
+        # Only the latest three completed bars can confirm a pivot. A wick
+        # extreme alone is insufficient: the confirmation candle must close
+        # in the reversal direction beyond the pivot candle's body midpoint.
         if len(closed) >= 3:
-            check_len = min(len(closed), 6)
-            sub = closed.iloc[-check_len:]
-            # 分形頂/底確認僅可使用已收線 K 棒（原本引用未定義的 target_df，
-            # NameError 被 except 吞掉，導致分形真峰谷確認永遠失效）。
-            target_df = closed
+            before, pivot, confirm = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
+            ts_confirm = float(confirm.get('timestamp', 0.0))
+            ts_pivot = float(pivot.get('timestamp', 0.0))
+            if entry_bar_floor_ms > 0 and (
+                ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms
+            ):
+                return False, None, {}
 
+            pivot_open = float(pivot['open'])
+            pivot_close = float(pivot['close'])
+            confirm_open = float(confirm['open'])
+            confirm_close = float(confirm['close'])
+            pivot_body_mid = (pivot_open + pivot_close) / 2.0
             if side == 'LONG':
-                for i in range(len(sub) - 2):
-                    b_before = sub.iloc[i]
-                    b_pivot = sub.iloc[i + 1]
-                    b_confirm = sub.iloc[i + 2]
-
-                    ts_confirm = float(b_confirm.get('timestamp', 0.0))
-                    ts_pivot = float(b_pivot.get('timestamp', 0.0))
-                    # 歷史雜訊過濾：真峰頂必須在開倉後推進成型，確認棒必須在開倉當根之後，樞紐棒必須至少在開倉當根
-                    if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
-                        continue
-
-                    h_before = float(b_before['high'])
-                    h_pivot = float(b_pivot['high'])
-                    h_confirm = float(b_confirm['high'])
-
-                    if h_pivot > h_before and h_pivot > h_confirm:
-                        c_confirm = float(b_confirm['close'])
-                        return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
-                            'pivot_high': h_pivot,
-                            'confirm_close': c_confirm,
-                        }
-
-                if is_fractal_peak(target_df):
-                    ts_last = float(target_df.iloc[-1].get('timestamp', 0.0))
-                    if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
-                        last_c = float(target_df.iloc[-1]['close'])
-                        prev_mid = (float(target_df.iloc[-2]['open']) + float(target_df.iloc[-2]['close'])) / 2.0
-                        if last_c < prev_mid:
-                            return True, 'TRUE_FRACTAL_PEAK_CONFIRMED', {
-                                'last_close': last_c,
-                                'prev_mid': prev_mid,
-                            }
-
-            elif side == 'SHORT':
-                for i in range(len(sub) - 2):
-                    b_before = sub.iloc[i]
-                    b_pivot = sub.iloc[i + 1]
-                    b_confirm = sub.iloc[i + 2]
-
-                    ts_confirm = float(b_confirm.get('timestamp', 0.0))
-                    ts_pivot = float(b_pivot.get('timestamp', 0.0))
-                    # 歷史雜訊過濾：真谷底必須在開倉後推進成型，確認棒必須在開倉當根之後，樞紐棒必須至少在開倉當根
-                    if entry_bar_floor_ms > 0 and (ts_confirm <= entry_bar_floor_ms or ts_pivot < entry_bar_floor_ms):
-                        continue
-
-                    l_before = float(b_before['low'])
-                    l_pivot = float(b_pivot['low'])
-                    l_confirm = float(b_confirm['low'])
-
-                    if l_pivot < l_before and l_pivot < l_confirm:
-                        c_confirm = float(b_confirm['close'])
-                        return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
-                            'pivot_low': l_pivot,
-                            'confirm_close': c_confirm,
-                        }
-
-                if is_fractal_valley(target_df):
-                    ts_last = float(target_df.iloc[-1].get('timestamp', 0.0))
-                    if entry_bar_floor_ms == 0 or ts_last > entry_bar_floor_ms:
-                        last_c = float(target_df.iloc[-1]['close'])
-                        prev_mid = (float(target_df.iloc[-2]['open']) + float(target_df.iloc[-2]['close'])) / 2.0
-                        if last_c > prev_mid:
-                            return True, 'TRUE_FRACTAL_VALLEY_CONFIRMED', {
-                                'last_close': last_c,
-                                'prev_mid': prev_mid,
-                            }
+                is_true_peak = (
+                    float(pivot['high']) > float(before['high'])
+                    and float(pivot['high']) > float(confirm['high'])
+                    and confirm_close < confirm_open
+                    and confirm_close < pivot_body_mid
+                )
+                if is_true_peak:
+                    return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
+                        'pivot_high': float(pivot['high']),
+                        'pivot_body_midpoint': pivot_body_mid,
+                        'confirm_close': confirm_close,
+                    }
+            else:
+                is_true_valley = (
+                    float(pivot['low']) < float(before['low'])
+                    and float(pivot['low']) < float(confirm['low'])
+                    and confirm_close > confirm_open
+                    and confirm_close > pivot_body_mid
+                )
+                if is_true_valley:
+                    return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
+                        'pivot_low': float(pivot['low']),
+                        'pivot_body_midpoint': pivot_body_mid,
+                        'confirm_close': confirm_close,
+                    }
 
         return False, None, {}
     except Exception:
@@ -1149,7 +1117,7 @@ def closed_peak_valley_reversal_evidence(frame, side, atr):
         # this bar only when the body breaks both structures. A 0.35-0.75 ATR
         # reversal also needs volume expansion; this filters ordinary retests.
         if not (reversed_body and body >= 0.35 * atr and structural_break
-                and (main_rail_broken or confirmed_pivot)):
+                and confirmed_pivot):
             return None
         volume_ratio = None
         if 'volume' in frame.columns and len(frame) >= 7:
