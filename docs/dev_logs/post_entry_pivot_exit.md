@@ -46,3 +46,11 @@ WAIT candidate remains isolated and disabled. No manual trading orders were plac
 - **Modification Description**: Revalidate entry direction and structure at the account boundary; reject unsupported automated exits; require verified profit-lock evidence and a fresh, post-entry three-point pivot confirmed by the latest closed candle. Remove standalone buying/selling-pressure authorization and unconditional meme-exit math approval.
 - **Trigger Reason & Requirement**: User found that positions closed before the intended final peak/valley while the broader direction remained unchanged, and explicitly requested deployment, restart, commit, and GitHub push.
 - **Verification & Test Status**: `py_compile` for all modified Python modules and `git diff --check` passed. No tests were run. Deployment and Git operations are pending environment permission/service-bus access.
+
+
+### [2026-10-26 07:49:33 UTC+8] - Deployment Phase: Push and restart 8006
+- **Author**: shudgai999 (workspace operator) / Codex
+- **Target Files & Lines**: `binance-8006.service`; feature branch `feature/kc-1m-continuation-gates`; commit `6c3e362c`; `/api/status`
+- **Modification Description**: Pushed the exit/entry gate repair to GitHub and restarted the user-level 8006 service from the current workspace.
+- **Trigger Reason & Requirement**: User explicitly requested deployment, restart, commit, and GitHub push.
+- **Verification & Test Status**: Service is `active`; `/api/status` returned `is_running=true`, `paper_trading=true`, `environment=binance_testnet`; service working directory is `/home/shudgai999/project/new bn`; local and remote feature branch both point to `6c3e362c`. Syntax checks passed; no automated tests were run.
