@@ -142,7 +142,11 @@ class ExecutionManager:
                 from core.services.candle_data import closed_entry_candles
 
                 closed_ma = closed_entry_candles(raw_df)
-                if len(closed_ma) >= 2 and {"ma3", "ma15"}.issubset(closed_ma.columns):
+                if len(closed_ma) >= 2:
+                    if not {"ma3", "ma15"}.issubset(closed_ma.columns):
+                        closed_ma = closed_ma.copy()
+                        closed_ma["ma3"] = closed_ma["close"].rolling(3, min_periods=1).mean()
+                        closed_ma["ma15"] = closed_ma["close"].rolling(15, min_periods=1).mean()
                     prior_ma = closed_ma.iloc[-2]
                     latest_ma = closed_ma.iloc[-1]
                     ma3_prior = float(prior_ma["ma3"])
@@ -184,6 +188,11 @@ class ExecutionManager:
                     raw_df, market_data.current_price, "SHORT", symbol=symbol,
                 )
 
+            if not ma3_directional_long and ma5_curr > ma5_prev:
+                ma3_directional_long = True
+            if not ma3_directional_short and ma5_curr < ma5_prev:
+                ma3_directional_short = True
+
             # 破軌衝擊信號（收線突破外軌，通道走平或向上即刻發動，杜絕盤中毛刺）：
             is_breakout_long = (
                 market_data.curr_k["close"] > market_data.kc_upper
@@ -224,9 +233,34 @@ class ExecutionManager:
             ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
             ma3_slope = ma3_curr - ma3_prev
 
-            is_ma_cross_long = live_cross_long is not None
+            # 結合肯特納通道 (KC) 方向與大週期趨勢濾網：
+            # 若主趨勢向上 (KC 中軌向上或大趨勢 BULLISH)，只做金叉開多，100% 禁止死叉開空！
+            # 若主趨勢向下 (KC 中軌向下或大趨勢 BEARISH)，只做死叉開空，100% 禁止金叉開多！
+            kc_slope = getattr(market_data, "kc_middle_slope", 0.0)
+            is_macro_bull = (macro_trend == "BULLISH" or kc_slope > 0.000005)
+            is_macro_bear = (macro_trend == "BEARISH" or kc_slope < -0.000005)
+
+            is_ma_cross_long = (
+                (live_cross_long is not None or (
+                    (ma3_curr >= ma15_curr or ma5_curr >= ma15_curr)
+                    and (ma3_slope >= 0 or ma5_curr > ma5_prev)
+                    and market_data.curr_k["close"] > market_data.curr_k["open"]
+                ))
+                and not is_macro_bear
+                and kc_slope >= -0.000005
+                and market_data.curr_k["close"] >= market_data.kc_middle
+            )
             # 做空：MA3 或 MA5 向下死叉/發散於 MA15，斜率向下，KC 中軌走平或微垂，K 棒實體陰線且壓制在中軌之下
-            is_ma_cross_short = live_cross_short is not None
+            is_ma_cross_short = (
+                (live_cross_short is not None or (
+                    (ma3_curr <= ma15_curr or ma5_curr <= ma15_curr)
+                    and (ma3_slope <= 0 or ma5_curr < ma5_prev)
+                    and market_data.curr_k["close"] < market_data.curr_k["open"]
+                ))
+                and not is_macro_bull
+                and kc_slope <= 0.000005
+                and market_data.curr_k["close"] <= market_data.kc_middle
+            )
 
             # 順勢鐵律與波段判定 (常規追單防護)
             is_above_slow_ma = (market_data.curr_k["close"] >= market_data.ema_slow or market_data.current_price >= market_data.ema_slow)
@@ -250,20 +284,24 @@ class ExecutionManager:
                 or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
             )
 
-            # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號豁免大週期波段鎖定；常規追單仍依循順勢波段
-            can_long = is_breakout_long or is_ma_cross_long or (
-                not is_bearish_wave
-                and ma_trend_aligned_long
-                and (ma3_slope >= 0)
-                and (market_data.curr_k["close"] >= ma3_curr)
-                and (market_data.current_price >= ma3_curr)
+            # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線
+            can_long = (not is_macro_bear) and (
+                is_breakout_long or is_ma_cross_long or (
+                    not is_bearish_wave
+                    and ma_trend_aligned_long
+                    and (ma3_slope >= 0)
+                    and (market_data.curr_k["close"] >= ma3_curr)
+                    and (market_data.current_price >= ma3_curr)
+                )
             )
-            can_short = is_breakdown_short or is_ma_cross_short or (
-                not is_bullish_wave
-                and ma_trend_aligned_short
-                and (ma3_slope <= 0)
-                and (market_data.curr_k["close"] <= ma3_curr)
-                and (market_data.current_price <= ma3_curr)
+            can_short = (not is_macro_bull) and (
+                is_breakdown_short or is_ma_cross_short or (
+                    not is_bullish_wave
+                    and ma_trend_aligned_short
+                    and (ma3_slope <= 0)
+                    and (market_data.curr_k["close"] <= ma3_curr)
+                    and (market_data.current_price <= ma3_curr)
+                )
             )
 
             # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)

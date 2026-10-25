@@ -118,7 +118,6 @@ class ExitGate:
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
-        "EXIT_BY_RATCHET_PROFIT_LOCK",
     })
     # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
     PIVOT_EXIT_REASONS = frozenset({
@@ -138,18 +137,19 @@ class ExitGate:
         "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
         "THREE_POINT_PIVOT",
     })
-    GENERAL_EXIT_VETO_REASON = "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    GENERAL_EXIT_VETO_REASON = "VETO_HOLD"
 
     @staticmethod
     def _gate_unconfirmed_exit(result):
-        """Only confirmed swing pivots and emergency protection may close."""
+        """Only confirmed swing pivots, profit locks, and emergency protection may close."""
         should_exit, reason, meta = result
         if not should_exit:
             return result
         reason = str(reason or "")
         reason_upper = reason.upper()
         if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS):
+                or reason in ExitGate.PIVOT_EXIT_REASONS
+                or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -167,8 +167,8 @@ class ExitGate:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         出場總裁決：
-        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）最優先。
-        2. 其餘所有自動出口（含獲利鎖定）均須由開倉後已收線 K 確認真峰頂/真谷底。
+        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）及淨 ROE 階梯獲利鎖定最優先。
+        2. 其餘所有自動出口均須由開倉後已收線 K 確認真峰頂/真谷底。
         """
         result = ExitGate._evaluate_with_holding_rules(
             pos, market_data, current_price, atr, kc_slope,
@@ -182,7 +182,8 @@ class ExitGate:
                 "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
             )
         )
-        if is_emergency:
+        is_profit_lock = reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+        if is_emergency or is_profit_lock:
             return result
 
         raw_df = (
@@ -224,7 +225,7 @@ class ExitGate:
         except (AttributeError, TypeError):
             macro_trend = "NEUTRAL"
         required_pivot = "CONFIRMED_VALLEY" if side == "SHORT" else "CONFIRMED_PEAK"
-        return False, "VETO_HOLDING_UNTIL_TRUE_PIVOT", {
+        return False, "VETO_HOLD", {
             **(meta or {}),
             "suppressed_exit_reason": reason,
             "macro_trend": macro_trend,
@@ -1083,7 +1084,6 @@ class ExitGate:
                 # Ordinary short reversal logic must use completed bars. A live
                 # wick or quote at KC middle is a pullback probe, not a body reclaim.
                 try:
-                    from core.services.candle_data import closed_entry_candles
                     short_closed = closed_entry_candles(raw_df)
                 except (AttributeError, TypeError, ValueError, IndexError):
                     short_closed = pd.DataFrame()
