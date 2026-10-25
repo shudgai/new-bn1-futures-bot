@@ -1426,6 +1426,7 @@ class HoldingProtectionExitGate:
         'EXIT_LONG_ON_TOP_WATERFALL_DUMP',
         'EXIT_BY_VERIFIED_FRACTAL_PEAK',
         'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
+        'EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL',
         'EXIT_SHORT_ON_EXHAUSTION_REVERSAL',
         'EXIT_LONG_ON_EXHAUSTION_REVERSAL',
         'EXIT_SHORT_ON_MA5_FLAT_REVERSAL',
@@ -1784,6 +1785,27 @@ class HoldingProtectionExitGate:
             details.update(true_pivot_type=pivot_type, **pivot_info)
             return _auth(clean_reason)
 
+        if clean_reason == 'EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL':
+            macro_frame = details.get('macro_frame')
+            if macro_frame is None and frame is not None:
+                macro_frame = getattr(frame, 'attrs', {}).get('macro_frame')
+            if macro_frame is None and isinstance(details.get('macro_frame_evidence'), list):
+                try:
+                    macro_frame = pd.DataFrame(details['macro_frame_evidence'])
+                except (TypeError, ValueError):
+                    macro_frame = None
+            from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
+            holding_lock = HoldingLockStateMachine().evaluate(
+                position, frame, quote, macro_frame=macro_frame,
+            )
+            details['holding_lock'] = holding_lock.__dict__
+            if holding_lock.hard_stop_triggered:
+                return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+            if (holding_lock.decision == 'CLOSE_POSITION'
+                    and holding_lock.factor_count >= 2):
+                return _auth(clean_reason)
+            return _reject(reason='VETO_HOLD_LOCKED_INSUFFICIENT_REVERSAL_FACTORS')
+
         pressure_reasons = {
             'EXIT_BY_CONFIRMED_SELLING_PRESSURE',
             'EXIT_BY_CONFIRMED_BUYING_PRESSURE',
@@ -1837,7 +1859,25 @@ class HoldingProtectionExitGate:
             if verified_profit_lock is None:
                 return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
             details.update(verified_profit_lock)
-            return _auth(clean_reason)
+            macro_frame = details.get('macro_frame')
+            if macro_frame is None and frame is not None:
+                macro_frame = getattr(frame, 'attrs', {}).get('macro_frame')
+            if macro_frame is None and isinstance(details.get('macro_frame_evidence'), list):
+                try:
+                    macro_frame = pd.DataFrame(details['macro_frame_evidence'])
+                except (TypeError, ValueError):
+                    macro_frame = None
+            from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
+            holding_lock = HoldingLockStateMachine().evaluate(
+                position, frame, quote, macro_frame=macro_frame,
+            )
+            details['holding_lock'] = holding_lock.__dict__
+            if holding_lock.hard_stop_triggered:
+                return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+            if (holding_lock.decision == 'CLOSE_POSITION'
+                    and holding_lock.factor_count >= 2):
+                return _auth('EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL')
+            return _reject(reason='VETO_HOLD_LOCKED_INSUFFICIENT_REVERSAL_FACTORS')
 
         is_safety_exit = any(s in clean_reason.upper() for s in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',

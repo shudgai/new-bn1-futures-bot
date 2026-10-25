@@ -121,21 +121,7 @@ class ExitGate:
     })
     # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
     PIVOT_EXIT_REASONS = frozenset({
-        "EARLY_PIVOT_PEAK_EXIT",
-        "EARLY_PIVOT_VALLEY_EXIT",
-        "CLOSE_SHORT_AT_BOTTOM",
-        "CLOSE_LONG_AT_TOP",
-        "EXIT_BY_VERIFIED_FRACTAL_PEAK",
-        "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
-        "EXIT_BY_CONFIRMED_TRUE_PEAK",
-        "EXIT_BY_CONFIRMED_TRUE_VALLEY",
-        "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
-        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
-        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
-        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
-        "EXIT_MEME_TRUE_PEAK_CONFIRMED",
-        "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
-        "THREE_POINT_PIVOT",
+        "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL",
     })
     GENERAL_EXIT_VETO_REASON = "VETO_HOLD"
 
@@ -148,8 +134,7 @@ class ExitGate:
         reason = str(reason or "")
         reason_upper = reason.upper()
         if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS
-                or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS):
+                or reason in ExitGate.PIVOT_EXIT_REASONS):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -182,38 +167,27 @@ class ExitGate:
                 "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
             )
         )
-        is_profit_lock = reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-        if is_emergency or is_profit_lock:
+        if is_emergency:
             return result
+
+        if should_exit and reason == "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL":
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            raw_df = (
+                market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("raw_df")
+            )
+            quote = float(current_price or (
+                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("current_price", 0.0)
+            ))
+            return HoldingProtectionExitGate.validate_exit(
+                pos, raw_df, quote, reason, meta,
+            )
 
         raw_df = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("raw_df")
         )
-        try:
-            quote = float(current_price or (
-                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-                else market_data.get("current_price", 0.0)
-            ))
-            from core.gates.holding_protection_gate import has_confirmed_true_pivot
-            has_pivot, pivot_type, pivot_details = has_confirmed_true_pivot(
-                pos, raw_df, quote,
-            )
-        except (AttributeError, TypeError, ValueError):
-            has_pivot, pivot_type, pivot_details = False, None, {}
-        expected_pivot = "TRUE_VALLEY" if side == "SHORT" else "TRUE_PEAK"
-        is_correct_pivot = has_pivot and str(pivot_type or "").upper().startswith(expected_pivot)
-        if is_correct_pivot:
-            pivot_reason = reason if should_exit else (
-                "EARLY_PIVOT_PEAK_EXIT" if side == "LONG"
-                else "EARLY_PIVOT_VALLEY_EXIT"
-            )
-            return True, pivot_reason, {
-                **(meta or {}),
-                "confirmed_true_pivot": pivot_type,
-                "pivot_confirmation": pivot_details,
-                "exit_policy": "CLOSED_THREE_POINT_PIVOT_WITH_BODY_CONFIRMATION",
-            }
         if not should_exit:
             return result
         try:
@@ -245,11 +219,7 @@ class ExitGate:
         """Existing exit evaluation, followed by the public trend-alignment veto."""
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
-        if should_exit and reason in (
-            ExitGate.ABSOLUTE_SAFETY_REASONS
-            | ExitGate.PROFIT_LOCK_EXIT_REASONS
-            | ExitGate.PIVOT_EXIT_REASONS
-        ):
+        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
             return result
 
         if not pos or not market_data:
@@ -283,6 +253,44 @@ class ExitGate:
                 "top_bottom_reversal": tb_meta,
                 "cause": tb_meta.get("cause"),
             }
+
+        macro_frame = (
+            getattr(market_data, "macro_df", None)
+            if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("macro_df")
+        )
+        if macro_frame is None and isinstance(raw_df, pd.DataFrame):
+            macro_frame = raw_df.attrs.get("macro_frame")
+        macro_frame_evidence = []
+        if isinstance(macro_frame, pd.DataFrame) and not macro_frame.empty:
+            macro_closed = closed_entry_candles(macro_frame)
+            macro_columns = [
+                name for name in ("timestamp", "open", "high", "low", "close", "kc_middle", "is_closed")
+                if name in macro_closed.columns
+            ]
+            if {"open", "high", "low", "close", "kc_middle"}.issubset(macro_columns):
+                macro_frame_evidence = macro_closed.tail(4)[macro_columns].to_dict("records")
+        from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
+        holding_lock = HoldingLockStateMachine().evaluate(
+            pos, raw_df, quote_p, macro_frame=macro_frame,
+        )
+        if holding_lock.hard_stop_triggered:
+            return True, "CIRCUIT_BREAKER_HARD_SL", {
+                **(meta or {}), "holding_lock": holding_lock.__dict__,
+            }
+        if holding_lock.decision == "CLOSE_POSITION":
+            return True, "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL", {
+                **(meta or {}),
+                "holding_lock": holding_lock.__dict__,
+                "macro_frame_evidence": macro_frame_evidence,
+                "exit_policy": "TWO_OF_FOUR_CONFIRMED_PEAK_VALLEY_FACTORS",
+            }
+        return False, "HOLD_LOCKED", {
+            **(meta or {}),
+            "suppressed_exit_reason": reason if should_exit else None,
+            "holding_lock": holding_lock.__dict__,
+            "exit_policy": "HOLD_UNTIL_HARD_STOP_TRUE_PIVOT_OR_TWO_OF_FOUR_FACTORS",
+        }
 
         # Meme-coin soft exits are generated from the latest completed candle
         # only. A live quote or a red/green candle by itself never closes.
@@ -350,11 +358,7 @@ class ExitGate:
             ma15_val = kc_mid_val  # 保底以 KC 中軌作為結構線
 
         # ── 0. 授權合約淨 ROE 階梯鎖利 (PROFIT_LOCK) 與絕對安全出口：優先放行 ──
-        if should_exit and (
-            reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-            or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or reason in ExitGate.PIVOT_EXIT_REASONS
-        ):
+        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
             return result
 
         # ══════════════════════════════════════════════════════════════════
