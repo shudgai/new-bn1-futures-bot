@@ -47,7 +47,7 @@ def outer_pivot_evidence(frame, quote, side):
                 or high < max(opening, close) or low > min(opening, close)):
             return None
         body = abs(close - opening)
-        if not 0.05 * atr <= body <= 0.45 * atr:
+        if not 0.15 * atr <= body <= 0.45 * atr:
             return None
         channel_width = current_upper - current_lower
         if channel_width <= 0:

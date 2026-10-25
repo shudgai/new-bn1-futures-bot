@@ -3133,7 +3133,7 @@ def _small_body_impulse_confirmation(candle, side, midpoint, atr):
         if not all(math.isfinite(value) and value > 0 for value in values) or atr <= 0:
             return False
         body = abs(close - opening)
-        if not 0 < body <= 0.35 * atr:
+        if not 0.15 * atr <= body <= 0.45 * atr:
             return False
         if side == 'LONG':
             return close > opening and close > midpoint

@@ -64,3 +64,5 @@ def test_oversized_impulse_requires_small_directional_next_bar_close():
     assert _small_body_impulse_confirmation(long_red, 'SHORT', 100.1, 1.0)
     too_large = dict(open=100.0, high=100.6, low=99.9, close=100.5)
     assert not _small_body_impulse_confirmation(too_large, 'LONG', 100.1, 1.0)
+    too_short = dict(open=100.0, high=100.1, low=99.99, close=100.1)
+    assert not _small_body_impulse_confirmation(too_short, 'LONG', 100.05, 1.0)
