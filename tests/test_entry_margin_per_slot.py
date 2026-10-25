@@ -122,30 +122,45 @@ def test_concurrent_wild_swing_entries_share_two_slots_and_wallet_safely(
     monkeypatch,
 ):
     import core.engine as engine_module
+    import core.services.entry_firewall as entry_firewall
+    import core.symbol_aliases as symbol_aliases
 
     monkeypatch.setattr(config, "MAX_SLOTS", 2)
     monkeypatch.setattr(engine_module, "MAX_SLOTS", 2)
+    # This test isolates the account reservation/slot race. Entry qualification
+    # and the currently enabled-symbol policy have their own gate tests.
+    monkeypatch.setattr(symbol_aliases, "is_auto_entry_symbol", lambda _symbol: True)
+    monkeypatch.setattr(
+        entry_firewall, "has_valid_wild_outer_confirmation",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        entry_firewall, "market_structure_gate_problem",
+        lambda *_args, **_kwargs: None,
+    )
     engine = object.__new__(TradingEngine)
     engine.account = BudgetAccount(150.)
     engine.symbol_rotation = SimpleNamespace(
         get_dynamic_leverage=lambda *_args: 5,
     )
-    frame = pd.DataFrame([{"timestamp": 1_000, "atr": 1.}])
+    frame = pd.DataFrame([{
+        "timestamp": 1_000, "atr": 1., "kc_upper": 99., "kc_lower": 90.,
+    }])
 
     async def submit_pair():
         pair = await asyncio.gather(
             engine.execute_dual_tf_entry(
                 LOBSTER, frame, 100., "LONG", "CROSSOVER",
-                {"bar_id": 1_000}, "WILD_SWING",
+                {"bar_id": 1_000, "entry_pattern": "CONTINUATION_OUTSIDE_KC"}, "WILD_SWING",
             ),
             engine.execute_dual_tf_entry(
                 PEPE, frame, 100., "LONG", "CROSSOVER",
-                {"bar_id": 1_000}, "WILD_SWING",
+                {"bar_id": 1_000, "entry_pattern": "CONTINUATION_OUTSIDE_KC"}, "WILD_SWING",
             ),
         )
         third = await engine.execute_dual_tf_entry(
             "DOGE/USDT", frame, 100., "LONG", "CROSSOVER",
-            {"bar_id": 1_000}, "WILD_SWING",
+            {"bar_id": 1_000, "entry_pattern": "CONTINUATION_OUTSIDE_KC"}, "WILD_SWING",
         )
         return pair, third
 
@@ -163,9 +178,11 @@ def test_concurrent_wild_swing_entries_share_two_slots_and_wallet_safely(
 
 def test_direct_entry_rechecks_slot_limit_before_order_submission(monkeypatch):
     import core.engine as engine_module
+    import core.symbol_aliases as symbol_aliases
 
     monkeypatch.setattr(config, "MAX_SLOTS", 2)
     monkeypatch.setattr(engine_module, "MAX_SLOTS", 2)
+    monkeypatch.setattr(symbol_aliases, "is_auto_entry_symbol", lambda _symbol: True)
     engine = object.__new__(TradingEngine)
     engine.account = BudgetAccount(500.)
     engine.account.positions.update({

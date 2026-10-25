@@ -2,6 +2,10 @@ import copy
 import pytest
 from core.services.exits.peak_trailing_exit import evaluate_peak_trailing, STATE_KEY, migrate_peak_state
 from core.services.exits.net_roe_profit_lock import should_arm_breakeven_lock
+from core.services.exits.net_roe_profit_lock import (
+    calculate_net_roe_pct,
+    evaluate_net_roe_profit_lock,
+)
 
 
 def position(side):
@@ -72,3 +76,43 @@ def test_missing_ui_margin_does_not_invent_a_percentage(margin):
     p['margin'] = margin
     assert tick(p, .07, 62000) is None
     assert tick(p, .05, 63000) is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("qty", [None, 0.0, -0.0, float("nan"), float("inf")])
+def test_invalid_position_quantity_cannot_arm_profit_lock(side, qty):
+    """Bad/missing size must not invent a one-contract profit and alter lock state."""
+    p = position(side)
+    if qty is None:
+        p.pop("qty")
+    else:
+        p["qty"] = qty
+
+    assert calculate_net_roe_pct(p, 101.0) is None
+    should_exit, reason, meta = evaluate_net_roe_profit_lock(p, 101.0)
+    assert (should_exit, reason, meta) == (False, None, {})
+    assert "three_tier_net_roe_lock_state" not in p
+    assert "profit_lock_armed" not in p
+
+
+@pytest.mark.parametrize("price", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_market_price_cannot_arm_profit_lock(price):
+    """Invalid quotes must fail closed without changing persisted peak state."""
+    p = position("LONG")
+    before = copy.deepcopy(p)
+
+    assert calculate_net_roe_pct(p, price) is None
+    should_exit, reason, meta = evaluate_net_roe_profit_lock(p, price)
+    assert (should_exit, reason, meta) == (False, None, {})
+    assert p == before
+
+
+def test_overflowing_position_value_cannot_create_nonfinite_net_roe():
+    """Extreme size/price math must not leak NaN/Infinity into lock thresholds."""
+    p = position("LONG")
+    p["qty"] = 1e308
+
+    assert calculate_net_roe_pct(p, 101.0) is None
+    should_exit, reason, meta = evaluate_net_roe_profit_lock(p, 101.0)
+    assert (should_exit, reason, meta) == (False, None, {})
+    assert "three_tier_net_roe_lock_state" not in p

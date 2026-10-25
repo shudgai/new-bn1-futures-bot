@@ -91,6 +91,10 @@ class ExitGate:
         "EXIT_BY_EXTREME_WATERFALL",
         "OPPOSITE_KC_BAND_BREACH",
     })
+    PROFIT_LOCK_EXIT_REASONS = frozenset({
+        "PROFIT_LOCK",
+        "EXIT_BY_RATCHET_PROFIT_LOCK",
+    })
     # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
     PIVOT_EXIT_REASONS = frozenset({
         "EARLY_PIVOT_PEAK_EXIT",
@@ -184,7 +188,10 @@ class ExitGate:
             ma15_val = kc_mid_val  # 保底以 KC 中軌作為結構線
 
         # ── 0. 授權合約淨 ROE 階梯鎖利 (PROFIT_LOCK) 與絕對安全出口：優先放行 ──
-        if should_exit and (reason in ExitGate.ABSOLUTE_SAFETY_REASONS or reason == "PROFIT_LOCK"):
+        if should_exit and (
+            reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+            or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+        ):
             return result
 
         # ══════════════════════════════════════════════════════════════════

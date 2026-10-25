@@ -133,12 +133,24 @@ def calculate_net_roe_pct(
             return None
         entry = float(position.get('entry_price') or 0.0)
         curr_price = float(price)
-        if entry <= 0 or curr_price <= 0:
+        if (
+            not math.isfinite(entry)
+            or not math.isfinite(curr_price)
+            or entry <= 0
+            or curr_price <= 0
+        ):
             return None
 
-        qty = abs(float(position.get('qty', position.get('quantity', 0.0)) or 1.0))
+        raw_qty = position.get('qty', position.get('quantity'))
+        if raw_qty is None:
+            return None
+        qty = abs(float(raw_qty))
+        if not math.isfinite(qty) or qty <= 0:
+            return None
         leverage = float(position.get('leverage') or 5.0)
         margin = float(position.get('margin') or 0.0)
+        if not math.isfinite(leverage) or leverage <= 0 or not math.isfinite(margin):
+            return None
         if margin <= 0:
             margin = (entry * qty) / max(leverage, 1.0)
 
@@ -151,7 +163,8 @@ def calculate_net_roe_pct(
         )
         if margin <= 0:
             return None
-        return (net_pnl / margin) * 100.0
+        net_roe = (net_pnl / margin) * 100.0
+        return net_roe if math.isfinite(net_roe) else None
     except (AttributeError, TypeError, ValueError, OverflowError):
         return None
 
