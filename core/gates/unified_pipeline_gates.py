@@ -166,29 +166,6 @@ class ExitGate:
         }
 
     @staticmethod
-    def _profit_lock_is_early_short_pullback(pos, market_data, reason) -> bool:
-        reason_upper = str(reason or "").upper()
-        is_profit_lock = (
-            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or any(token in reason_upper for token in (
-                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
-                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
-            ))
-        )
-        if not is_profit_lock or str((pos or {}).get("side", "")).upper() != "SHORT":
-            return False
-        try:
-            if isinstance(market_data, MarketDataSnapshot):
-                middle = float(market_data.kc_middle)
-                raw_df = market_data.raw_df
-            else:
-                middle = float(market_data.get("kc_middle", 0.0))
-                raw_df = market_data.get("raw_df")
-        except (AttributeError, TypeError, ValueError):
-            return True
-        return not _short_midline_body_reclaim_confirmed(raw_df, middle)
-
-    @staticmethod
     def evaluate(
         pos: Dict[str, Any],
         market_data: Union[MarketDataSnapshot, Dict[str, Any]],
@@ -204,21 +181,72 @@ class ExitGate:
         3. 淨 ROE 階梯鎖利與中軌 MA3 規則（僅已收線）優先於一般 VETO_HOLD 與普通均線出口。
         4. 暫緩期間 (HOLD_WAIT) 只放行真峰谷轉折出口，其餘一般出口暫停。
         """
+        result = ExitGate._evaluate_with_holding_rules(
+            pos, market_data, current_price, atr, kc_slope,
+        )
+        should_exit, reason, meta = result
+        if not should_exit:
+            return result
+
+        side = str((pos or {}).get("side", "")).upper()
+        try:
+            macro_trend = (
+                str(market_data.macro_trend or "NEUTRAL").upper()
+                if isinstance(market_data, MarketDataSnapshot)
+                else str(market_data.get("macro_trend") or "NEUTRAL").upper()
+            )
+        except (AttributeError, TypeError):
+            macro_trend = "NEUTRAL"
+
+        is_profit_lock = (
+            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or any(token in str(reason).upper() for token in (
+                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
+                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
+            ))
+        )
+        aligned_short = side == "SHORT" and macro_trend == "BEARISH"
+        aligned_long = side == "LONG" and macro_trend == "BULLISH"
+        if not (aligned_short or aligned_long):
+            return result
+        if reason in ExitGate.ABSOLUTE_SAFETY_REASONS or is_profit_lock:
+            return result
+
+        short_valley_exits = {
+            "EARLY_PIVOT_VALLEY_EXIT", "CLOSE_SHORT_AT_BOTTOM",
+            "EXIT_BY_VERIFIED_FRACTAL_VALLEY", "EXIT_BY_CONFIRMED_TRUE_VALLEY",
+            "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "EXIT_MEME_TRUE_VALLEY_CONFIRMED",
+        }
+        long_peak_exits = {
+            "EARLY_PIVOT_PEAK_EXIT", "CLOSE_LONG_AT_TOP",
+            "EXIT_BY_VERIFIED_FRACTAL_PEAK", "EXIT_BY_CONFIRMED_TRUE_PEAK",
+            "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "EXIT_MEME_TRUE_PEAK_CONFIRMED",
+        }
+        if (aligned_short and reason in short_valley_exits) or (
+            aligned_long and reason in long_peak_exits
+        ):
+            return result
+        return False, "VETO_HOLD_TREND_ALIGNED", {
+            **(meta or {}),
+            "suppressed_exit_reason": reason,
+            "macro_trend": macro_trend,
+            "exit_policy": "HOLD_TREND_ALIGNED_UNTIL_CONFIRMED_PIVOT_OR_PROFIT_LOCK",
+            "required_pivot": "CONFIRMED_VALLEY" if aligned_short else "CONFIRMED_PEAK",
+        }
+
+    @staticmethod
+    def _evaluate_with_holding_rules(
+        pos: Dict[str, Any],
+        market_data: Union[MarketDataSnapshot, Dict[str, Any]],
+        current_price: Optional[float] = None,
+        atr: Optional[float] = None,
+        kc_slope: Optional[float] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Existing exit evaluation, followed by the public trend-alignment veto."""
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
-        if should_exit and ExitGate._profit_lock_is_early_short_pullback(
-            pos, market_data, reason,
-        ):
-            result = False, "VETO_HOLD_SHORT_PULLBACK_BELOW_KC_MIDDLE", {
-                **(meta or {}),
-                "suppressed_exit_reason": reason,
-                "exit_policy": "SHORT_PROFIT_LOCK_REQUIRES_CLOSED_BODY_ABOVE_KC_MIDDLE",
-                "cause": (
-                    "空單回踩續抱：獲利鎖利雖已觸發，但最近已收線 K 棒實體尚未收復 KC 主軌；"
-                    "盤中報價或影線觸軌不平倉，等待實體收線確認。"
-                ),
-            }
-            should_exit, reason, meta = result
         if should_exit and reason in (
             ExitGate.ABSOLUTE_SAFETY_REASONS
             | ExitGate.PROFIT_LOCK_EXIT_REASONS

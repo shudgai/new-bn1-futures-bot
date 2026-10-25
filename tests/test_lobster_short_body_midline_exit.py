@@ -36,7 +36,7 @@ def test_closed_body_above_kc_middle_confirms_short_exit():
     assert _short_midline_body_reclaim_confirmed(frame, 100.0)
 
 
-def test_short_profit_lock_waits_while_closed_body_remains_below_middle():
+def test_short_profit_lock_is_allowed_without_midline_reclaim():
     frame = _frame([
         dict(timestamp=60_000, open=98.0, high=98.2, low=97.5, close=98.0,
              is_closed=True),
@@ -60,6 +60,42 @@ def test_short_profit_lock_waits_while_closed_body_remains_below_middle():
     should_exit, reason, meta = ExitGate.evaluate(
         position, snapshot, current_price=93.0,
     )
-    assert should_exit is False
-    assert 'VETO_HOLD_SHORT' in reason
-    assert meta['suppressed_exit_reason'] == 'EXIT_BY_RATCHET_PROFIT_LOCK'
+    assert should_exit is True
+    assert reason == 'EXIT_BY_RATCHET_PROFIT_LOCK'
+
+
+def test_bearish_short_suppresses_ordinary_exit_but_allows_valley_and_lock(monkeypatch):
+    monkeypatch.setattr(
+        ExitGate, '_evaluate_with_holding_rules',
+        staticmethod(lambda *args: (True, 'SHORT_EXIT_KC_MID_BREACH', {'x': 1})),
+    )
+    result = ExitGate.evaluate({'side': 'SHORT'}, {'macro_trend': 'BEARISH'})
+    assert result[0] is False
+    assert result[1] == 'VETO_HOLD_TREND_ALIGNED'
+    assert result[2]['suppressed_exit_reason'] == 'SHORT_EXIT_KC_MID_BREACH'
+
+    monkeypatch.setattr(
+        ExitGate, '_evaluate_with_holding_rules',
+        staticmethod(lambda *args: (True, 'EXIT_BY_CONFIRMED_TRUE_VALLEY', {})),
+    )
+    assert ExitGate.evaluate({'side': 'SHORT'}, {'macro_trend': 'BEARISH'})[0] is True
+    monkeypatch.setattr(
+        ExitGate, '_evaluate_with_holding_rules',
+        staticmethod(lambda *args: (True, 'EXIT_BY_RATCHET_PROFIT_LOCK', {})),
+    )
+    assert ExitGate.evaluate({'side': 'SHORT'}, {'macro_trend': 'BEARISH'})[0] is True
+
+
+def test_bullish_long_mirror_holds_until_peak(monkeypatch):
+    monkeypatch.setattr(
+        ExitGate, '_evaluate_with_holding_rules',
+        staticmethod(lambda *args: (True, 'LONG_EXIT_KC_MID_BREACH', {})),
+    )
+    result = ExitGate.evaluate({'side': 'LONG'}, {'macro_trend': 'BULLISH'})
+    assert result[0] is False
+    assert result[1] == 'VETO_HOLD_TREND_ALIGNED'
+    monkeypatch.setattr(
+        ExitGate, '_evaluate_with_holding_rules',
+        staticmethod(lambda *args: (True, 'EXIT_BY_CONFIRMED_TRUE_PEAK', {})),
+    )
+    assert ExitGate.evaluate({'side': 'LONG'}, {'macro_trend': 'BULLISH'})[0] is True
