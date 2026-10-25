@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Tuple, Optional, Union
 import pandas as pd
 from core.services.data_pipeline import MarketDataSnapshot
+from core.services.candle_data import closed_entry_candles
 
 logger = logging.getLogger(__name__)
 
@@ -897,6 +898,34 @@ class ExitGate:
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_shooting_star = (c_prev["high"] > c_prev2["high"]) and (upper_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (upper_wick_prev >= 0.4 * atr_val) and (c_curr["close"] < c_curr["open"])
 
+                # A decisive bearish confirmation of a post-entry three-bar
+                # peak is an exit signal in its own right. Evaluate it before
+                # the MA/KC pullback shields below; those shields classify
+                # ordinary retests and must not swallow a confirmed pivot.
+                long_closed = closed_entry_candles(raw_df)
+                if len(long_closed) >= 3 and bool(long_closed.iloc[-1].get("is_closed", True)):
+                    left, peak, confirm = (long_closed.iloc[-3], long_closed.iloc[-2], long_closed.iloc[-1])
+                    peak_mid = (float(peak["open"]) + float(peak["close"])) / 2.0
+                    confirm_body = float(confirm["open"]) - float(confirm["close"])
+                    peak_move = float(peak["high"]) - entry_p
+                    strong_peak_reversal = (
+                        float(peak["high"]) > float(left["high"])
+                        and float(peak["high"]) > float(confirm["high"])
+                        and float(confirm["close"]) < float(confirm["open"])
+                        and float(confirm["close"]) < peak_mid
+                        and confirm_body >= 0.35 * atr_val
+                        and (peak_move >= 0.45 * atr_val or peak_roe >= 0.006)
+                        and (unrealized_pct >= 0.002 or peak_roe >= 0.008)
+                    )
+                    if strong_peak_reversal:
+                        return True, "EARLY_PIVOT_PEAK_EXIT", {
+                            **meta, "pivot_meta": {"peak_high": float(peak["high"]),
+                            "conf_close": float(confirm["close"]), "peak_roe": peak_roe},
+                            "pivot_confirmation": "THREE_POINT_PLUS_DECISIVE_SINGLE_BAR",
+                            "reversal_body_atr": confirm_body / atr_val,
+                            "cause": "三點真峰頂後出現強勢收黑確認，立即平多；不等待中軌或第二根確認。",
+                        }
+
                 kc_up_curr = kc_up
                 kc_up_prev = float(prev_k.get("kc_upper", kc_up_curr)) if prev_k else kc_up_curr
                 is_kc_up_turning_down = kc_up_curr < kc_up_prev
@@ -1120,6 +1149,34 @@ class ExitGate:
                 lower_wick_prev = min(c_prev["open"], c_prev["close"]) - c_prev["low"]
                 body_prev = abs(c_prev["open"] - c_prev["close"])
                 is_hammer = (c_prev["low"] < c_prev2["low"]) and (lower_wick_prev >= 1.5 * max(body_prev, 0.2 * atr_val)) and (lower_wick_prev >= 0.4 * atr_val) and (c_curr["close"] > c_curr["open"])
+
+                # Symmetric short-side rule: a strong green close through the
+                # trough candle's body midpoint confirms the valley. Run this
+                # before trend/midline hold vetoes so a large reversal candle
+                # exits promptly while small bounces remain healthy pullbacks.
+                short_closed = closed_entry_candles(raw_df)
+                if len(short_closed) >= 3 and bool(short_closed.iloc[-1].get("is_closed", True)):
+                    left, valley, confirm = (short_closed.iloc[-3], short_closed.iloc[-2], short_closed.iloc[-1])
+                    valley_mid = (float(valley["open"]) + float(valley["close"])) / 2.0
+                    confirm_body = float(confirm["close"]) - float(confirm["open"])
+                    valley_move = entry_p - float(valley["low"])
+                    strong_valley_reversal = (
+                        float(valley["low"]) < float(left["low"])
+                        and float(valley["low"]) < float(confirm["low"])
+                        and float(confirm["close"]) > float(confirm["open"])
+                        and float(confirm["close"]) > valley_mid
+                        and confirm_body >= 0.35 * atr_val
+                        and (valley_move >= 0.45 * atr_val or peak_roe >= 0.006)
+                        and (unrealized_pct >= 0.002 or peak_roe >= 0.008)
+                    )
+                    if strong_valley_reversal:
+                        return True, "EARLY_PIVOT_VALLEY_EXIT", {
+                            **meta, "pivot_meta": {"valley_low": float(valley["low"]),
+                            "conf_close": float(confirm["close"]), "peak_roe": peak_roe},
+                            "pivot_confirmation": "THREE_POINT_PLUS_DECISIVE_SINGLE_BAR",
+                            "reversal_body_atr": confirm_body / atr_val,
+                            "cause": "三點真谷底後出現強勢收紅確認，立即平空；不等待中軌或第二根確認。",
+                        }
 
                 kc_low_curr = kc_low
                 kc_low_prev = float(prev_k.get("kc_lower", kc_low_curr)) if prev_k else kc_low_curr

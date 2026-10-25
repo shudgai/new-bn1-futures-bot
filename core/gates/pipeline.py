@@ -797,6 +797,8 @@ def entry_strategy_type(
         return STRATEGY_TYPE_BREAKOUT
     if entry_phase == 'POST_CLOSE_CONTINUATION_ENTRY':
         return STRATEGY_TYPE_TREND_CONTINUATION
+    if entry_phase == 'POST_CLOSE_PEAK_FLIP':
+        return STRATEGY_TYPE_BREAKOUT
     if entry_phase == 'REALTIME_RAIL_BREACH':
         return STRATEGY_TYPE_BREAKOUT
     return (

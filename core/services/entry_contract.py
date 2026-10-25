@@ -2774,8 +2774,12 @@ def pre_flight_safety_check(
             )
             if churn_problem:
                 return False, churn_problem
-            same_bar_problem = same_bar_close_entry_problem(
-                account, symbol, frame, side,
+            # A peak-flip candidate is generated only from the matched, freshly
+            # closed long exit plus a new decisive bearish candle. It is the
+            # narrowly authorized same-bar reversal path.
+            same_bar_problem = (
+                None if decision_type == 'AUTHORIZED_BY_PEAK_FLIP_SHORT'
+                else same_bar_close_entry_problem(account, symbol, frame, side)
             )
             if same_bar_problem:
                 return False, same_bar_problem
@@ -2783,6 +2787,7 @@ def pre_flight_safety_check(
                 None if decision_type in (
                     BEARISH_INSTANT_BREAKOUT_CODE,
                     BULLISH_INSTANT_BREAKOUT_CODE,
+                    'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                     "TRIGGER_A_KC_BREAKOUT",
                     "TRIGGER_MOMENTUM_GUILLOTINE",
                     "TRIGGER_PENDING_RETEST_ENTRY",
@@ -2795,6 +2800,7 @@ def pre_flight_safety_check(
             if (side == 'SHORT' and is_flip and last_side == 'LONG'
                     and decision_type not in (
                         BEARISH_INSTANT_BREAKOUT_CODE,
+                        'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                         "TRIGGER_A_KC_BREAKOUT",
                         "TRIGGER_MOMENTUM_GUILLOTINE",
                         "TRIGGER_PENDING_RETEST_ENTRY",
@@ -2805,8 +2811,10 @@ def pre_flight_safety_check(
         # Cooldown is a timestamp-only safety gate. Evaluate it before market
         # data gates so an active cooldown is reported consistently even when
         # the caller has no candle frame available yet.
-        direction_problem = live_ma5_entry_direction_problem(
-            frame, quote, side,
+        is_peak_flip = decision_type == 'AUTHORIZED_BY_PEAK_FLIP_SHORT'
+        direction_problem = (
+            None if is_peak_flip
+            else live_ma5_entry_direction_problem(frame, quote, side)
         )
         if direction_problem:
             return False, direction_problem
@@ -2845,6 +2853,7 @@ def pre_flight_safety_check(
         slope_atr = live_ma5_slope_atr(frame, quote)
         slope_flip_exempt = decision_type in (
             CLIMAX_REVERSAL_FLIP_CODE, TOP_WATERFALL_FLIP_CODE, "TOP_WATERFALL_FLIP",
+            'AUTHORIZED_BY_PEAK_FLIP_SHORT',
         )
         is_midline_break = (
             decision_type in (
@@ -2989,7 +2998,7 @@ def pre_flight_safety_check(
                 
         elif side == "SHORT":
             # 1. 【MA5 向上，100% 絕對禁止開空（向上不開空）】
-            if ma5_slope > 0:
+            if ma5_slope > 0 and decision_type != 'AUTHORIZED_BY_PEAK_FLIP_SHORT':
                 return False, "BLOCKED_BY_MA5_SLOPE_UP"
                 
             # 2. 獲利空間審核：ALLOW_EXPLOSIVE_BREAKOUT / is_flip / is_midline_break / fast_cross / breakout / is_meme 100% 豁免下軌空間限制
@@ -3016,7 +3025,7 @@ def pre_flight_safety_check(
                 channel_st in ('KC向上', 'KC_TREND_UP', 'UP', 'UPTREND', 'BULLISH', 'LONG')
                 or (len(closed_candles) >= 2 and float(closed_candles.iloc[-1].get('kc_middle', 0.0)) > float(closed_candles.iloc[-2].get('kc_middle', 0.0)))
             )
-            if is_kc_up:
+            if is_kc_up and decision_type != 'AUTHORIZED_BY_PEAK_FLIP_SHORT':
                 return False, "BLOCKED_BY_KC_TREND_UP"
                 
         return True, None
@@ -3172,7 +3181,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 return reject('BLOCKED_KC_OUTER_PIVOT_REVALIDATION')
             decision['outer_pivot_evidence'] = origin
             decision['entry_atr'] = origin['atr']
-        elif not is_meme:
+        elif (not is_meme
+              and decision.get('type') != 'AUTHORIZED_BY_PEAK_FLIP_SHORT'):
             extension_problem = late_entry_problem(frame, quote, side)
             if extension_problem:
                 return reject(extension_problem)
@@ -3300,8 +3310,11 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                 reentry_problem = long_post_impulse_reentry_problem(frame, quote)
                 if reentry_problem:
                     return reject(reentry_problem)
-        direction_problem = live_ma5_entry_direction_problem(
-            frame, quote, decision.get('side'),
+        is_peak_flip = decision.get('type') == 'AUTHORIZED_BY_PEAK_FLIP_SHORT'
+        direction_problem = (
+            None if is_peak_flip else live_ma5_entry_direction_problem(
+                frame, quote, decision.get('side'),
+            )
         )
         if direction_problem:
             return reject(direction_problem)
@@ -3365,6 +3378,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             or decision.get('type') in (
                 BEARISH_INSTANT_BREAKOUT_CODE,
                 BULLISH_INSTANT_BREAKOUT_CODE,
+                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                 GOLDEN_CROSS_FAST_LONG_CODE,
                 DEATH_CROSS_FAST_SHORT_CODE,
                 'TRIGGER_B_MA_CROSS',

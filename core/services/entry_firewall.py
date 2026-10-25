@@ -1565,15 +1565,24 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
-    require_final_trend_alignment(
-        frame,
-        side,
-        symbol,
-        quote=quote,
-        entry_confirmation=(
-            "CONFIRMED_2BAR_BREAKOUT" if code in KC_PENDING_CODES else None
-        ),
-    )
+    is_peak_flip = code == 'AUTHORIZED_BY_PEAK_FLIP_SHORT' and side == 'SHORT'
+    if is_peak_flip:
+        # Rebuild the matched close plus fresh bearish-body authority at the
+        # final order boundary. A valid reversal does not wait for KC/MA15 to
+        # finish turning after price has already collapsed.
+        from core.gates.pipeline import pipeline
+        if pipeline.detect_peak_flip_short(frame, quote, account, symbol) is None:
+            raise ValueError('[FORBIDDEN_ENTRY] BLOCKED_PEAK_FLIP_REVALIDATION')
+    else:
+        require_final_trend_alignment(
+            frame,
+            side,
+            symbol,
+            quote=quote,
+            entry_confirmation=(
+                "CONFIRMED_2BAR_BREAKOUT" if code in KC_PENDING_CODES else None
+            ),
+        )
     from core.services.entry_contract import (
         evaluate_death_cross_fast_lane,
         evaluate_golden_cross_fast_lane,
@@ -1636,7 +1645,7 @@ async def validate_account_entry(account, symbol, side, context):
     kc_problem = strict_kc_entry_problem(
         frame, quote, side,
         strategy_type=(
-            'BREAKOUT' if code in breakout_codes
+            'BREAKOUT' if code in breakout_codes or is_peak_flip
             else entry_strategy_type(context.get('entry_phase'))
         ),
     )
@@ -1651,13 +1660,14 @@ async def validate_account_entry(account, symbol, side, context):
     )
     if churn_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + churn_problem)
-    same_bar_problem = same_bar_close_entry_problem(
-        account, symbol, frame, side,
+    same_bar_problem = (
+        None if is_peak_flip
+        else same_bar_close_entry_problem(account, symbol, frame, side)
     )
     if same_bar_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
     opposite_cooldown_problem = (
-        None if code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT')
+        None if code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT') or is_peak_flip
         else opposite_side_close_cooldown_problem(
             account, symbol, frame, side,
         )
@@ -1669,7 +1679,7 @@ async def validate_account_entry(account, symbol, side, context):
         bearish_candle_problem = long_large_bearish_candle_problem(frame, quote)
         if bearish_candle_problem:
             raise ValueError('[FORBIDDEN_ENTRY] ' + bearish_candle_problem)
-    if (side == 'SHORT'
+    if (side == 'SHORT' and not is_peak_flip
             and code in (
                 'AUTHORIZED_BY_PEAK_FLIP_SHORT',
                 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
