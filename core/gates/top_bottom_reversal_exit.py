@@ -138,6 +138,11 @@ def evaluate_top_bottom_reversal_exit(
     # 1. 空單檢查：出現「真谷底」（階段 A 超賣/獲利 + 階段 B 連續 2 根收陽且突破 MA3）平空
     # ==========================
     if side == "SHORT":
+        from core.gates.holding_protection_gate import (
+            TRUE_PIVOT_MIN_CONFIRM_BODY_ATR,
+            TRUE_PIVOT_MIN_REVERSAL_ATR,
+        )
+
         lowest_since_entry = min(
             float(pos.get("lowest_price") or entry_p),
             float(closed["low"].min()),
@@ -159,6 +164,8 @@ def evaluate_top_bottom_reversal_exit(
             and p_low < c_low
             and c_close > c_open
             and c_close > pivot_body_mid
+            and curr_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * atr
+            and c_close - p_low >= TRUE_PIVOT_MIN_REVERSAL_ATR * atr
         )
         curr_span = max(c_high - c_low, 1e-6)
         no_upper_wick_rejection = (curr_upper_wick < curr_body) and (curr_upper_wick <= 0.35 * curr_span)
@@ -181,6 +188,11 @@ def evaluate_top_bottom_reversal_exit(
     # 2. 多單檢查：出現「真峰頂」（階段 A 超買/獲利 + 階段 B 連續 2 根收陰且跌破 MA3）平多
     # ==========================
     elif side == "LONG":
+        from core.gates.holding_protection_gate import (
+            TRUE_PIVOT_MIN_CONFIRM_BODY_ATR,
+            TRUE_PIVOT_MIN_REVERSAL_ATR,
+        )
+
         highest_since_entry = max(
             float(pos.get("highest_price") or entry_p),
             float(closed["high"].max()),
@@ -203,6 +215,8 @@ def evaluate_top_bottom_reversal_exit(
             and p_high > c_high
             and c_close < c_open
             and c_close < pivot_body_mid
+            and curr_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * atr
+            and p_high - c_close >= TRUE_PIVOT_MIN_REVERSAL_ATR * atr
         )
         curr_span = max(c_high - c_low, 1e-6)
         no_lower_wick_rejection = (curr_lower_wick < curr_body) and (curr_lower_wick <= 0.35 * curr_span)

@@ -23,6 +23,9 @@ from core.services.exits.net_roe_profit_lock import (
     tiered_net_roe_floor,
 )
 
+TRUE_PIVOT_MIN_CONFIRM_BODY_ATR = 0.35
+TRUE_PIVOT_MIN_REVERSAL_ATR = 0.45
+
 
 def _fractal_pullback_exit_authorized(position, frame, side, quote, atr, favorable_move):
     """Allow a fractal pullback only after the approved exceptional extension."""
@@ -133,32 +136,49 @@ def has_confirmed_true_pivot(
             pivot_close = float(pivot['close'])
             confirm_open = float(confirm['open'])
             confirm_close = float(confirm['close'])
+            confirm_atr = float(
+                confirm.get('atr', pivot.get('atr', float('nan')))
+            )
             pivot_body_mid = (pivot_open + pivot_close) / 2.0
+            if not math.isfinite(confirm_atr) or confirm_atr <= 0:
+                return False, None, {}
             if side == 'LONG':
+                reversal_body = confirm_open - confirm_close
+                reversal_move = float(pivot['high']) - confirm_close
                 is_true_peak = (
                     float(pivot['high']) > float(before['high'])
                     and float(pivot['high']) > float(confirm['high'])
                     and confirm_close < confirm_open
                     and confirm_close < pivot_body_mid
+                    and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
+                    and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * confirm_atr
                 )
                 if is_true_peak:
                     return True, 'TRUE_PEAK_PIVOT_CONFIRMED', {
                         'pivot_high': float(pivot['high']),
                         'pivot_body_midpoint': pivot_body_mid,
                         'confirm_close': confirm_close,
+                        'reversal_body_atr': reversal_body / confirm_atr,
+                        'reversal_move_atr': reversal_move / confirm_atr,
                     }
             else:
+                reversal_body = confirm_close - confirm_open
+                reversal_move = confirm_close - float(pivot['low'])
                 is_true_valley = (
                     float(pivot['low']) < float(before['low'])
                     and float(pivot['low']) < float(confirm['low'])
                     and confirm_close > confirm_open
                     and confirm_close > pivot_body_mid
+                    and reversal_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * confirm_atr
+                    and reversal_move >= TRUE_PIVOT_MIN_REVERSAL_ATR * confirm_atr
                 )
                 if is_true_valley:
                     return True, 'TRUE_VALLEY_PIVOT_CONFIRMED', {
                         'pivot_low': float(pivot['low']),
                         'pivot_body_midpoint': pivot_body_mid,
                         'confirm_close': confirm_close,
+                        'reversal_body_atr': reversal_body / confirm_atr,
+                        'reversal_move_atr': reversal_move / confirm_atr,
                     }
 
         return False, None, {}
