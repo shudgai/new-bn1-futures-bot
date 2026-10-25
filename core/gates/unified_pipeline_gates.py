@@ -168,10 +168,11 @@ class ExitGate:
         """
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
-        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
-            return result
-        # 開倉初期呼吸保護：最高優先續抱 (防剛開倉微幅震盪被洗)
-        if not should_exit and meta.get("early_pullback_shield"):
+        if should_exit and reason in (
+            ExitGate.ABSOLUTE_SAFETY_REASONS
+            | ExitGate.PROFIT_LOCK_EXIT_REASONS
+            | ExitGate.PIVOT_EXIT_REASONS
+        ):
             return result
 
         if not pos or not market_data:
@@ -186,9 +187,32 @@ class ExitGate:
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("raw_df")
         )
+        quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0)))
+
+        # Meme-coin soft exits are generated from the latest completed candle
+        # only. A live quote or a red/green candle by itself never closes.
+        try:
+            from core.gates.meme_coin_gate import MemeCoinGate
+            if MemeCoinGate.is_meme_coin(pos.get("symbol")):
+                from core.services.exits.confirmed_pressure_exit import (
+                    evaluate_confirmed_pressure_exit,
+                )
+                pressure = evaluate_confirmed_pressure_exit(
+                    pos, raw_df, pos.get("side"),
+                )
+                if pressure.get("reason"):
+                    return True, pressure["reason"], {
+                        **(meta or {}), **(pressure.get("details") or {}),
+                        "exit_policy": "CLOSED_BAR_CONFIRMED_PRESSURE",
+                    }
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+        # 開倉初期呼吸保護：一般波動續抱；已收線量化賣壓仍能執行。
+        if not should_exit and meta.get("early_pullback_shield"):
+            return result
 
         pos_side = str(pos.get("side", "")).upper()
-        quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0)))
         atr_val = (
             market_data.atr if isinstance(market_data, MarketDataSnapshot)
             else float(atr or market_data.get("atr", 0.0))

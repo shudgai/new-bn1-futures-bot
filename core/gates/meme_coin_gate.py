@@ -406,20 +406,14 @@ class MemeCoinGate:
                 if has_peak:
                     return True, 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
 
-                # ── 徹底禁止碰上軌就平多！衝破上軌要穩穩抱住 ──
-                # 唯一平多條件：收盤實體跌破 KC 中軌（或連續跌破中軌）才出場！
-                kc_middle = cls.calculate_kc_middle(curr)
-                if len(frame) >= 2 and kc_middle > 0:
-                    c1 = frame.iloc[-1]
-                    c2 = frame.iloc[-2]
-                    mid1 = cls.calculate_kc_middle(c1)
-                    mid2 = cls.calculate_kc_middle(c2)
-                    c1_close = float(c1.get('close', quote))
-                    c2_close = float(c2.get('close', c1_close))
-                    if (c1_close < mid1 and c2_close < mid2) or quote < mid1 * 0.9985:
-                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
+                from core.services.exits.confirmed_pressure_exit import (
+                    evaluate_confirmed_pressure_exit,
+                )
+                pressure = evaluate_confirmed_pressure_exit(pos, frame, side)
+                if pressure.get('reason'):
+                    return True, pressure['reason']
 
-                # 其餘情況（在 KC 中軌上方、碰觸上軌、沿上軌走、稍觸 MA5 等）：
+                # 其餘情況（普通反向 K、健康回踩、一般中軌收斂等）：
                 # 100% 嚴禁平多，堅決沿著上軌抱緊主升浪！
                 return False, None
 
@@ -430,23 +424,12 @@ class MemeCoinGate:
                 if has_valley:
                     return True, 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
 
-                # ── 徹底禁止碰下軌就平空！衝破下軌要穩穩抱住 ──
-                # 唯一平空條件：收盤實體站上 KC 中軌（或連續站上中軌）才出場！
-                kc_middle = cls.calculate_kc_middle(curr)
-                if len(frame) >= 2 and kc_middle > 0:
-                    c1 = frame.iloc[-1]
-                    c2 = frame.iloc[-2]
-                    mid1 = cls.calculate_kc_middle(c1)
-                    mid2 = cls.calculate_kc_middle(c2)
-                    c1_close = float(c1.get('close', quote))
-                    c2_close = float(c2.get('close', c1_close))
-                    if (c1_close > mid1 and c2_close > mid2) or quote > mid1 * 1.0015:
-                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
-                    mid2 = cls.calculate_kc_middle(c2)
-                    c1_close = float(c1.get('close', quote))
-                    c2_close = float(c2.get('close', c1_close))
-                    if c1_close > mid1 and c2_close > mid2 and quote > mid1:
-                        return True, 'EXIT_MEME_KC_MIDDLE_REVERSAL'
+                from core.services.exits.confirmed_pressure_exit import (
+                    evaluate_confirmed_pressure_exit,
+                )
+                pressure = evaluate_confirmed_pressure_exit(pos, frame, side)
+                if pressure.get('reason'):
+                    return True, pressure['reason']
 
                 # 其餘情況（在 KC 中軌下方、觸碰 MA5、回到下軌內等普通回踩雜訊），100% 嚴禁平空！
                 return False, None

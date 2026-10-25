@@ -269,3 +269,11 @@
 
 - 新增 `tests/test_channel_swing_pivot_or_lock_only.py`，覆蓋普通退出標籤阻擋、真峰確認放行、已驗證鎖利放行、緊急止損保留，以及 `ExitGate.evaluate` 整合檢查。
 - 本次聚焦執行：**88 passed**（鎖利、峰谷及新增出場授權測試）；Python 編譯與 `git diff --check` 通過。
+
+## 追加：妖幣反向 K 收線賣壓確認
+
+- 新增 `core/services/exits/confirmed_pressure_exit.py`，只使用進場後最近一根已收線 K 棒；排除進場當根、未收線行情、無效 OHLC/均線/ATR/KC 資料。
+- 多單只有結構性跌破 MA3 與 MA15、KC 上軌長上影反轉，或實體大於 0.5 ATR 且跌破 MA3 才產生賣壓出口；空單以反彈買盤條件對稱判斷。具明顯承接影線，或小反向實體仍守住 MA3/MA15 的回踩會續抱。
+- 成交量比值以診斷欄位紀錄，1.5 倍作爆量確認標籤；依本輪程式條件，結構破位/長影線/大實體 MA3 破位不強制要求成交量資料，避免行情源缺量時漏掉風險出口。
+- 移除妖幣普通 KC 中軌收斂直接平倉；鎖利、真峰谷與緊急風控出口維持原有授權。
+- 新增雙向與整合測試 `tests/test_confirmed_pressure_exit.py`，聚焦回歸合計 **130 passed**；`py_compile` 與 `git diff --check` 通過。

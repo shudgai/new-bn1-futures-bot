@@ -1771,6 +1771,29 @@ class HoldingProtectionExitGate:
             details.update(true_pivot_type=pivot_type, **pivot_info)
             return _auth(clean_reason)
 
+        pressure_reasons = {
+            'EXIT_BY_CONFIRMED_SELLING_PRESSURE',
+            'EXIT_BY_CONFIRMED_BUYING_PRESSURE',
+        }
+        if clean_reason in pressure_reasons:
+            channel_swing = (
+                channel_swing
+                or str((position or {}).get('entry_mode') or '').upper()
+                == 'CHANNEL_SWING'
+            )
+            from core.gates.meme_coin_gate import MemeCoinGate
+            if channel_swing and MemeCoinGate.is_meme_coin(symbol):
+                from core.services.exits.confirmed_pressure_exit import (
+                    evaluate_confirmed_pressure_exit,
+                )
+                pressure = evaluate_confirmed_pressure_exit(
+                    position, frame, side,
+                )
+                if pressure.get('reason') == clean_reason:
+                    details.update(pressure.get('details') or {})
+                    return _auth(clean_reason)
+            return _reject(reason='VETO_PRESSURE_EXIT_NOT_CONFIRMED')
+
         # ═════════════════════════════════════════════════════════════════
         # 【用戶授權鐵律：analyze_market_signal 多頭回踩與空頭反彈防洗保護】
         # ═════════════════════════════════════════════════════════════════
