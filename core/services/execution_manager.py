@@ -130,17 +130,72 @@ class ExecutionManager:
             ma15_curr = float(market_data.curr_k.get("ma15", getattr(market_data, "ma15", ma5_curr)))
             ma15_prev = float(market_data.prev_k.get("ma15", ma15_curr))
             macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
+            raw_df = getattr(market_data, "raw_df", None)
+            live_cross_long = None
+            live_cross_short = None
+            ma_trend_aligned_long = False
+            ma_trend_aligned_short = False
+            ma3_directional_long = False
+            ma3_directional_short = False
+            if raw_df is not None and len(raw_df) >= 2:
+                from core.gates.pipeline import fast_cross_evidence
+                from core.services.candle_data import closed_entry_candles
+
+                closed_ma = closed_entry_candles(raw_df)
+                if len(closed_ma) >= 2 and {"ma3", "ma15"}.issubset(closed_ma.columns):
+                    prior_ma = closed_ma.iloc[-2]
+                    latest_ma = closed_ma.iloc[-1]
+                    ma3_prior = float(prior_ma["ma3"])
+                    ma15_prior = float(prior_ma["ma15"])
+                    ma3_latest = float(latest_ma["ma3"])
+                    ma15_latest = float(latest_ma["ma15"])
+                    live_row = raw_df.iloc[-1]
+                    raw_close = float(live_row.get("close", market_data.current_price))
+                    live_ma3 = float(live_row.get("ma3", ma3_latest))
+                    live_bar_is_closed = bool(live_row.get("is_closed", True))
+                    if not live_bar_is_closed:
+                        live_ma3 += (float(market_data.current_price) - raw_close) / 3.0
+                    long_ma3_rising = (
+                        ma3_latest > ma3_prior
+                        if live_bar_is_closed else live_ma3 > ma3_latest
+                    )
+                    short_ma3_falling = (
+                        ma3_latest < ma3_prior
+                        if live_bar_is_closed else live_ma3 < ma3_latest
+                    )
+                    ma_values = (ma3_prior, ma15_prior, ma3_latest, ma15_latest, live_ma3)
+                    if all(math.isfinite(value) and value > 0 for value in ma_values):
+                        ma3_directional_long = ma3_latest > ma3_prior and long_ma3_rising
+                        ma3_directional_short = ma3_latest < ma3_prior and short_ma3_falling
+                        ma_trend_aligned_long = (
+                            ma3_directional_long
+                            and ma15_latest > ma15_prior
+                            and ma3_latest > ma15_latest
+                        )
+                        ma_trend_aligned_short = (
+                            ma3_directional_short
+                            and ma15_latest < ma15_prior
+                            and ma3_latest < ma15_latest
+                        )
+                live_cross_long = fast_cross_evidence(
+                    raw_df, market_data.current_price, "LONG", symbol=symbol,
+                )
+                live_cross_short = fast_cross_evidence(
+                    raw_df, market_data.current_price, "SHORT", symbol=symbol,
+                )
 
             # 破軌衝擊信號（收線突破外軌，通道走平或向上即刻發動，杜絕盤中毛刺）：
             is_breakout_long = (
                 market_data.curr_k["close"] > market_data.kc_upper
                 and market_data.kc_middle_slope >= -0.000005
                 and ma5_curr > ma5_prev
+                and ma3_directional_long
             )
             is_breakdown_short = (
                 market_data.curr_k["close"] < market_data.kc_lower
                 and market_data.kc_middle_slope <= 0.000005
                 and ma5_curr < ma5_prev
+                and ma3_directional_short
             )
 
             # 模式 2：趨勢回踩均線帶守穩轉強信號
@@ -151,6 +206,7 @@ class ExecutionManager:
                 and ma5_curr >= ma5_prev
                 and market_data.kc_middle_slope >= -0.000005
                 and market_data.curr_k["close"] >= market_data.ema_slow
+                and ma_trend_aligned_long
             )
             is_pullback_short = (
                 float(market_data.curr_k.get("high", market_data.current_price)) >= ma5_curr * 0.998
@@ -159,6 +215,7 @@ class ExecutionManager:
                 and ma5_curr <= ma5_prev
                 and market_data.kc_middle_slope <= 0.000005
                 and market_data.curr_k["close"] <= market_data.ema_slow
+                and ma_trend_aligned_short
             )
 
             # MA3 / MA5 交叉中軌敏捷轉折開倉 (AGILE_MOMENTUM)：
@@ -167,21 +224,9 @@ class ExecutionManager:
             ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
             ma3_slope = ma3_curr - ma3_prev
 
-            is_ma_cross_long = (
-                (ma3_curr >= ma15_curr or ma5_curr >= ma15_curr)
-                and (ma3_slope >= 0 or ma5_curr > ma5_prev)
-                and market_data.kc_middle_slope >= -0.000005
-                and market_data.curr_k["close"] > market_data.curr_k["open"]
-                and market_data.curr_k["close"] >= market_data.kc_middle
-            )
+            is_ma_cross_long = live_cross_long is not None
             # 做空：MA3 或 MA5 向下死叉/發散於 MA15，斜率向下，KC 中軌走平或微垂，K 棒實體陰線且壓制在中軌之下
-            is_ma_cross_short = (
-                (ma3_curr <= ma15_curr or ma5_curr <= ma15_curr)
-                and (ma3_slope <= 0 or ma5_curr < ma5_prev)
-                and market_data.kc_middle_slope <= 0.000005
-                and market_data.curr_k["close"] < market_data.curr_k["open"]
-                and market_data.curr_k["close"] <= market_data.kc_middle
-            )
+            is_ma_cross_short = live_cross_short is not None
 
             # 順勢鐵律與波段判定 (常規追單防護)
             is_above_slow_ma = (market_data.curr_k["close"] >= market_data.ema_slow or market_data.current_price >= market_data.ema_slow)
@@ -208,12 +253,14 @@ class ExecutionManager:
             # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號豁免大週期波段鎖定；常規追單仍依循順勢波段
             can_long = is_breakout_long or is_ma_cross_long or (
                 not is_bearish_wave
+                and ma_trend_aligned_long
                 and (ma3_slope >= 0)
                 and (market_data.curr_k["close"] >= ma3_curr)
                 and (market_data.current_price >= ma3_curr)
             )
             can_short = is_breakdown_short or is_ma_cross_short or (
                 not is_bullish_wave
+                and ma_trend_aligned_short
                 and (ma3_slope <= 0)
                 and (market_data.curr_k["close"] <= ma3_curr)
                 and (market_data.current_price <= ma3_curr)
@@ -250,7 +297,7 @@ class ExecutionManager:
                 if is_breakout_long:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
                 elif is_ma_cross_long:
-                    candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
+                    candidate_signal = "ENTRY_LONG_MA3_MA15_CROSS_MID"
                 elif is_pullback_long:
                     candidate_signal = "TREND_PULLBACK_LONG"
                 elif (market_data.curr_k["close"] > market_data.ema_fast and market_data.ema_fast >= market_data.ema_slow and market_data.kc_middle_slope >= 0 and ma5_curr > ma5_prev):
@@ -265,7 +312,7 @@ class ExecutionManager:
                 if is_breakdown_short:
                     candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
                 elif is_ma_cross_short:
-                    candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
+                    candidate_signal = "ENTRY_SHORT_MA3_MA15_CROSS_MID"
                 elif is_pullback_short:
                     candidate_signal = "TREND_PULLBACK_SHORT"
                 elif (market_data.curr_k["close"] < market_data.ema_fast and market_data.ema_fast <= market_data.ema_slow and market_data.kc_middle_slope <= 0 and ma5_curr < ma5_prev):
@@ -290,6 +337,15 @@ class ExecutionManager:
                     logger.info(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason} | meta={meta}")
                     print(f"🎯 [ENTRY_TRIGGERED] {symbol} {side} {reason}", flush=True)
                     call_meta = dict(meta or {})
+                    call_meta["candidate_signal_type"] = candidate_signal
+                    call_meta["upstream_entry_gate_authorized"] = True
+                    try:
+                        call_meta["intrabar_authorized"] = bool(
+                            raw_df is not None
+                            and not bool(raw_df.iloc[-1].get("is_closed", True))
+                        )
+                    except (AttributeError, IndexError, TypeError):
+                        call_meta["intrabar_authorized"] = False
                     if any(k in candidate_signal for k in ("CROSS_MID", "MA_CROSS", "MID_LINE", "PULLBACK", "AGILE")):
                         call_meta["is_cross_mid"] = True
                         call_meta["allow_kc_internal"] = True
@@ -509,6 +565,11 @@ class ExecutionManager:
                 "entry_mode": "WILD_SWING",
                 "strategy_mode": "AGILE_MOMENTUM" if is_cross_mid else "CONSERVATIVE",
                 "source": "UNIFIED_PIPELINE",
+                "candidate_signal_type": (meta or {}).get("candidate_signal_type"),
+                "upstream_entry_gate_authorized": bool(
+                    (meta or {}).get("upstream_entry_gate_authorized")
+                ),
+                "intrabar_authorized": bool((meta or {}).get("intrabar_authorized")),
                 "entry_pattern": confirmation,
                 "structure_confirmation": confirmation,
                 "is_outer_entry": not is_cross_mid,
@@ -520,7 +581,7 @@ class ExecutionManager:
                 "channel_confirmation_bar_id": bar_id,
                 "bar_id": bar_id,
                 "dual_tf_meta": {"bar_id": bar_id},
-                "is_intrabar": False,
+                "is_intrabar": bool((meta or {}).get("intrabar_authorized")),
                 "meta": meta or {},
             }
             if frame is not None:

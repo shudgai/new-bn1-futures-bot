@@ -87,6 +87,7 @@ class CentralEntryGate:
         source: str = "UNKNOWN",
         enforce_volume: bool = True,
         is_breakout: bool = True,
+        allow_intrabar: bool = False,
     ) -> GateCheckResult:
         """
         對即將送出交易所的開倉訂單進行中央硬性核驗。
@@ -105,7 +106,9 @@ class CentralEntryGate:
         checks: Dict[str, Dict[str, Any]] = {}
 
         # 1. 解析並標準化行情數據
-        parsed = cls._extract_market_metrics(klines_or_snapshot, price)
+        parsed = cls._extract_market_metrics(
+            klines_or_snapshot, price, allow_intrabar=allow_intrabar,
+        )
         if not parsed.get("valid"):
             err_reason = parsed.get("error", "VETO_INVALID_MARKET_DATA")
             return GateCheckResult(
@@ -123,7 +126,16 @@ class CentralEntryGate:
         # 條件 1：收盤確認 (Closed Bar Finality)
         # -------------------------------------------------------------
         is_closed = parsed.get("is_closed")
-        if is_closed is False:
+        src_upper = str(source or "").upper()
+        allowed_intrabar_routes = (
+            "BREAKOUT_LONG", "BREAKDOWN_SHORT", "CONTINUATION_OUTSIDE_KC_LONG",
+            "CONTINUATION_OUTSIDE_KC_SHORT", "ENTRY_LONG_MA3_MA15_CROSS_MID",
+            "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+        )
+        route_is_intrabar_eligible = any(
+            route in src_upper for route in allowed_intrabar_routes
+        )
+        if is_closed is False and not allow_intrabar:
             checks["closed_bar"] = {
                 "status": "FAIL",
                 "actual": is_closed,
@@ -137,12 +149,27 @@ class CentralEntryGate:
                 details=parsed,
                 checks=checks,
             )
+        if is_closed is False and allow_intrabar and not route_is_intrabar_eligible:
+            return GateCheckResult(
+                passed=False,
+                reason="VETO_INTRABAR_SIGNAL_TYPE_NOT_AUTHORIZED",
+                signal_id=sig_id,
+                details=parsed,
+                checks={"intrabar_route": {"status": "FAIL", "source": source}},
+            )
+        if allow_intrabar and is_closed is not False:
+            return GateCheckResult(
+                passed=False,
+                reason="VETO_INTRABAR_AUTHORITY_REQUIRES_FORMING_BAR",
+                signal_id=sig_id,
+                details=parsed,
+                checks={"closed_bar": {"status": "FAIL", "actual": is_closed}},
+            )
         checks["closed_bar"] = {"status": "PASS", "actual": True, "expected": True}
 
         # -------------------------------------------------------------
         # 區分訊號類型：均線轉折類 (CROSS_MID) vs 常規破軌追單類 (BREAKOUT)
         # -------------------------------------------------------------
-        src_upper = str(source or "").upper()
         is_cross_mid = bool(
             "CROSS_MID" in src_upper
             or "MA_CROSS" in src_upper
@@ -477,6 +504,8 @@ class CentralEntryGate:
         cls,
         data: Union[pd.DataFrame, Dict[str, Any], Any],
         price: float,
+        *,
+        allow_intrabar: bool = False,
     ) -> Dict[str, Any]:
         """從各種資料格式 (DataFrame, Dict, Snapshot) 安全提取標準化數值"""
         metrics: Dict[str, Any] = {"valid": False}
@@ -489,9 +518,17 @@ class CentralEntryGate:
                 last_row = data.iloc[-1]
                 prev_row = data.iloc[-2]
                 is_closed = bool(last_row.get("is_closed", True))
+                if not is_closed and allow_intrabar and len(data) < 3:
+                    return {"valid": False, "error": "VETO_INTRABAR_CLOSED_HISTORY_INVALID"}
 
                 # 若最後一根尚未收盤，以最後一根未收盤標註，或取前一根已收盤
-                if not is_closed and len(data) >= 3:
+                if not is_closed and allow_intrabar and len(data) >= 3:
+                    if not bool(prev_row.get("is_closed", False)):
+                        return {"valid": False, "error": "VETO_INTRABAR_CLOSED_HISTORY_INVALID"}
+                    eval_row = last_row
+                    prev_eval_row = data.iloc[-2]
+                    metrics["is_closed"] = False
+                elif not is_closed and len(data) >= 3:
                     eval_row = data.iloc[-2]
                     prev_eval_row = data.iloc[-3]
                     # 標註未收盤供 Gate 阻斷
@@ -502,9 +539,9 @@ class CentralEntryGate:
                     metrics["is_closed"] = is_closed
 
                 metrics["open"] = float(eval_row.get("open", price))
-                metrics["high"] = float(eval_row.get("high", price))
-                metrics["low"] = float(eval_row.get("low", price))
-                metrics["close"] = float(eval_row.get("close", price))
+                metrics["high"] = max(float(eval_row.get("high", price)), float(price)) if allow_intrabar else float(eval_row.get("high", price))
+                metrics["low"] = min(float(eval_row.get("low", price)), float(price)) if allow_intrabar else float(eval_row.get("low", price))
+                metrics["close"] = float(price) if allow_intrabar else float(eval_row.get("close", price))
                 metrics["current_price"] = float(price or last_row.get("close", price))
 
                 metrics["atr"] = float(eval_row.get("atr", max(0.001, price * 0.01)))

@@ -87,6 +87,23 @@ def test_veto_intrabar_not_closed():
     assert res.reason == "VETO_INTRABAR_NOT_CLOSED"
 
 
+def test_authorized_intrabar_entry_still_runs_all_market_checks():
+    df = _build_valid_long_frame()
+    df.loc[df.index[-1], "is_closed"] = False
+
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="LONG",
+        price=101.5,
+        klines_or_snapshot=df,
+        source="UNIFIED_PIPELINE|BREAKOUT_LONG",
+        allow_intrabar=True,
+    )
+
+    assert res.passed is True, res.reason
+    assert res.checks["closed_bar"]["status"] == "PASS"
+
+
 def test_veto_kc_middle_slope_insufficient():
     df = _build_valid_long_frame()
     # 中軌斜率僅 0.05 < 0.1 * 2.0 (0.2)

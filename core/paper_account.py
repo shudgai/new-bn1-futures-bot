@@ -602,7 +602,22 @@ class PaperAccount:
                     price=price,
                     klines_or_snapshot=eval_frame,
                     signal_id=signal_id,
-                    source=str(entry_context.get("source") or reason),
+                    source=(
+                        f"{entry_context.get('source') or reason}|"
+                        f"{entry_context.get('candidate_signal_type') or ''}"
+                    ),
+                    allow_intrabar=bool(
+                        entry_context.get("intrabar_authorized") is True
+                        and entry_context.get("upstream_entry_gate_authorized") is True
+                        and entry_context.get("source") == "UNIFIED_PIPELINE"
+                        and entry_context.get("candidate_signal_type") in {
+                            "BREAKOUT_LONG", "BREAKDOWN_SHORT",
+                            "CONTINUATION_OUTSIDE_KC_LONG",
+                            "CONTINUATION_OUTSIDE_KC_SHORT",
+                            "ENTRY_LONG_MA3_MA15_CROSS_MID",
+                            "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+                        }
+                    ),
                 )
                 OrderAuditTrail.record_entry_gate_eval(
                     symbol=symbol,
