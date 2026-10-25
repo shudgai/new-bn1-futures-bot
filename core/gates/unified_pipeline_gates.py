@@ -16,6 +16,21 @@ from core.services.data_pipeline import MarketDataSnapshot
 logger = logging.getLogger(__name__)
 
 
+def _short_midline_body_reclaim_confirmed(raw_df: Any, kc_middle: float) -> bool:
+    """Only a completed candle body close above KC middle confirms a short exit."""
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(raw_df)
+        if closed.empty or "close" not in closed.columns:
+            return False
+        close = float(closed.iloc[-1]["close"])
+        middle = float(kc_middle)
+        return math.isfinite(close) and math.isfinite(middle) and close > middle
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 class ExitGate:
     """
     出場裁決唯一裁決官：
@@ -151,6 +166,29 @@ class ExitGate:
         }
 
     @staticmethod
+    def _profit_lock_is_early_short_pullback(pos, market_data, reason) -> bool:
+        reason_upper = str(reason or "").upper()
+        is_profit_lock = (
+            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
+            or any(token in reason_upper for token in (
+                "PROFIT_LOCK", "RATCHET", "BREAKEVEN", "TRAILING_LOCK",
+                "PROFIT_FLOOR", "NET_ROE_THREE_TIER_GIVEBACK",
+            ))
+        )
+        if not is_profit_lock or str((pos or {}).get("side", "")).upper() != "SHORT":
+            return False
+        try:
+            if isinstance(market_data, MarketDataSnapshot):
+                middle = float(market_data.kc_middle)
+                raw_df = market_data.raw_df
+            else:
+                middle = float(market_data.get("kc_middle", 0.0))
+                raw_df = market_data.get("raw_df")
+        except (AttributeError, TypeError, ValueError):
+            return True
+        return not _short_midline_body_reclaim_confirmed(raw_df, middle)
+
+    @staticmethod
     def evaluate(
         pos: Dict[str, Any],
         market_data: Union[MarketDataSnapshot, Dict[str, Any]],
@@ -168,6 +206,19 @@ class ExitGate:
         """
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
+        if should_exit and ExitGate._profit_lock_is_early_short_pullback(
+            pos, market_data, reason,
+        ):
+            result = False, "VETO_HOLD_SHORT_PULLBACK_BELOW_KC_MIDDLE", {
+                **(meta or {}),
+                "suppressed_exit_reason": reason,
+                "exit_policy": "SHORT_PROFIT_LOCK_REQUIRES_CLOSED_BODY_ABOVE_KC_MIDDLE",
+                "cause": (
+                    "空單回踩續抱：獲利鎖利雖已觸發，但最近已收線 K 棒實體尚未收復 KC 主軌；"
+                    "盤中報價或影線觸軌不平倉，等待實體收線確認。"
+                ),
+            }
+            should_exit, reason, meta = result
         if should_exit and reason in (
             ExitGate.ABSOLUTE_SAFETY_REASONS
             | ExitGate.PROFIT_LOCK_EXIT_REASONS
@@ -974,6 +1025,14 @@ class ExitGate:
 
 
             elif side == "SHORT":
+                # Ordinary short reversal logic must use completed bars. A live
+                # wick or quote at KC middle is a pullback probe, not a body reclaim.
+                try:
+                    from core.services.candle_data import closed_entry_candles
+                    short_closed = closed_entry_candles(raw_df)
+                except (AttributeError, TypeError, ValueError, IndexError):
+                    short_closed = pd.DataFrame()
+
                 # ── 觸發器 2-A：標準已收線「三點谷底樞紐 (Three-Point Valley Pivot)」──
                 pivot_valley_found = False
                 pivot_valley_meta = {}
@@ -1134,11 +1193,11 @@ class ExitGate:
 
                 # ── 真谷底平倉：頂底確認必須雙根驗證（連續 2 根 Completed Bar 收陽 + 實體突破站穩 MA3 之上）──
                 has_two_bull_confirm = False
-                if raw_df is not None and len(raw_df) >= 3:
-                    c_b1 = raw_df.iloc[-2]
-                    c_b2 = raw_df.iloc[-1]
+                if len(short_closed) >= 2:
+                    c_b1 = short_closed.iloc[-2]
+                    c_b2 = short_closed.iloc[-1]
                     two_bull = (float(c_b1["close"]) > float(c_b1["open"])) and (float(c_b2["close"]) > float(c_b2["open"]))
-                    reclaim_ma3 = (float(c_b2["close"]) > ma5_curr) and (quote > ma5_curr)
+                    reclaim_ma3 = (float(c_b2["close"]) > ma5_curr)
                     has_two_bull_confirm = two_bull and reclaim_ma3
 
                 is_valley_valid = (pivot_valley_found and has_two_bull_confirm) or (
@@ -1167,17 +1226,18 @@ class ExitGate:
                     }
 
                 # ── 觸發器 2-C：均線金叉且實質突破KC中軌平空 ──
-                if ema_fast > ema_slow and (c_curr["close"] > kc_mid or quote > kc_mid):
+                middle_reclaimed_by_body = _short_midline_body_reclaim_confirmed(raw_df, kc_mid)
+                if ema_fast > ema_slow and middle_reclaimed_by_body:
                     return True, "SHORT_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"EMA15向上金叉EMA40且突破收復KC中軌 (quote={quote:.6f} > kc_mid={kc_mid:.6f})，波段反轉立即平空！",
+                        "cause": f"EMA15向上金叉EMA40且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.6f} > kc_mid={kc_mid:.6f})，波段反轉平空！",
                     }
 
                 # ── 觸發器 2-D：收復突破 KC 中軌平空 (SHORT_EXIT_KC_MID_BREACH) ──
-                if ema_fast > ema_slow and (c_curr["close"] > kc_mid or quote > kc_mid) and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
+                if ema_fast > ema_slow and middle_reclaimed_by_body and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
                     return True, "SHORT_EXIT_KC_MID_BREACH", {
                         **meta,
-                        "cause": f"空單均線轉弱且突破收復KC中軌 (close={c_curr['close']:.4f} > kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平空！",
+                        "cause": f"空單均線轉弱且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.4f} > kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平空！",
                     }
 
                 # 趨勢不變續抱：大週期空頭 (ema_fast <= ema_slow) 維持續抱！
