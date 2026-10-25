@@ -3154,6 +3154,44 @@ def _small_body_impulse_confirmation(candle, side, midpoint, atr):
 
 
 def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbol="", diagnostics=None):
+    def has_fresh_breakout_or_ma_cross(decision, quote):
+        """Rebuild an entry trigger from the current frame before authorizing it."""
+        side = decision.get('side')
+        signal_type = decision.get('type')
+        if side not in ('LONG', 'SHORT') or frame is None or frame.empty:
+            return False
+
+        # MA-cross signals must still have a fresh, direction-matched MA5/MA15
+        # cross in the latest quote snapshot. A stale label cannot authorize.
+        cross = pipeline.detect_fast_cross(
+            frame, quote, side=side, symbol=symbol,
+        )
+        if cross is not None:
+            if signal_type in (
+                cross.get('type'), 'TRIGGER_B_MA_CROSS',
+            ):
+                return True
+
+        # Otherwise require a currently valid outer-rail breakout. These
+        # validators cover the closed two-bar setup and the authorized live
+        # body / three-bar / realtime breakout routes.
+        closed = closed_entry_candles(frame)
+        pending = evaluate_kc_pending_entry(
+            closed, quote, symbol=symbol, live=frame.iloc[-1],
+        )
+        if pending.get('action') == 'ENTER' and pending.get('side') == side:
+            return True
+        breakout = (
+            evaluate_three_bar_outer_breakout(
+                frame, quote, symbol=symbol, requested_side=side,
+            )
+            or evaluate_live_body_breakout(
+                frame, quote, symbol=symbol, requested_side=side,
+            )
+            or pipeline.detect_realtime_breakout(frame, quote, side=side)
+        )
+        return bool(breakout and breakout.get('side') == side)
+
     def reject(reason):
         if diagnostics is not None:
             diagnostics.clear()
@@ -3166,6 +3204,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # execution-context fields; normalize them here so the engine can
         # build its final order context for either long or short entries.
         decision.setdefault('close_price', quote)
+        if not has_fresh_breakout_or_ma_cross(decision, quote):
+            return reject('BLOCKED_ENTRY_WITHOUT_FRESH_OUTER_BREAKOUT_OR_MA_CROSS')
         confirmation_bar_id = decision.get('confirmation_bar_id')
         decision.setdefault('breakout_bar_id', confirmation_bar_id)
         decision.setdefault('pair_confirmation_bar_id', confirmation_bar_id)
