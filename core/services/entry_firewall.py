@@ -274,7 +274,7 @@ def ma5_ma15_entry_gate_problem(
         "MA_CROSSOVER", "MEME_PEAK_HUNTER", "BREAKOUT", "CONTINUATION",
     }
     is_confirmed_outer_entry = is_relaxed_ma or has_valid_wild_outer_confirmation(
-        frame, normalized_side, entry_confirmation,
+        frame, normalized_side, entry_confirmation, quote=quote,
     )
     structure_problem = market_structure_gate_problem(
         frame,
@@ -302,7 +302,7 @@ def ma5_ma15_entry_gate_problem(
     return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
 
 
-def has_valid_wild_outer_confirmation(frame, side, confirmation):
+def has_valid_wild_outer_confirmation(frame, side, confirmation, quote=None):
     from core.gates.breakout_continuation_entry_gate import (
         BreakoutContinuationEntryGate,
     )
@@ -311,14 +311,25 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation):
     try:
         closed = closed_entry_candles(frame)
         live = None
-        tick_price = None
-        if (
-            frame is not None
-            and not frame.empty
-            and not bool(frame.iloc[-1].get("is_closed", True))
-        ):
-            live = frame.iloc[-1].to_dict()
-            tick_price = float(live.get("close") or 0.0)
+        tick_price = float(quote or 0.0)
+        if frame is not None and not frame.empty:
+            last = frame.iloc[-1]
+            if not bool(last.get("is_closed", True)):
+                live = last.to_dict()
+                if tick_price <= 0:
+                    tick_price = float(live.get("close") or 0.0)
+            elif tick_price > 0:
+                # Match trend_riding_strategy: the latest quote is a synthetic
+                # in-progress candle after the most recent closed candle.
+                live = last.to_dict()
+                live["close"] = tick_price
+                live["high"] = max(float(live.get("high", tick_price)), tick_price)
+                live["low"] = min(float(live.get("low", tick_price)), tick_price)
+                live["is_closed"] = False
+                tf_ms = float(frame.attrs.get("timeframe_ms", 60000.0) or 60000.0)
+                live["timestamp"] = float(live.get("timestamp", 0.0)) + tf_ms
+        if tick_price <= 0:
+            tick_price = None
         return (
             BreakoutContinuationEntryGate.validate_closed_outer_entry(
                 closed.to_dict("records"), side, confirmation,
@@ -570,7 +581,7 @@ def final_trend_alignment_problem(
         }
         is_live_big_trigger = entry_confirmation == "WAIT_LIVE_BIG_TRIGGER"
         if is_confirmed_outer_entry and not is_relaxed_ma_entry and not has_valid_wild_outer_confirmation(
-            frame, normalized_side, entry_confirmation,
+            frame, normalized_side, entry_confirmation, quote=quote,
         ):
             return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
         if is_confirmed_outer_entry or is_relaxed_ma_entry or len(closed) >= 15:

@@ -2636,7 +2636,7 @@ class TradingEngine:
                 }
                 and (
                     has_valid_wild_outer_confirmation(
-                        snapshot["frame"], side, confirmation,
+                        snapshot["frame"], side, confirmation, quote=price,
                     )
                     or decision.get('type') in MEME_ENTRY_CODES
                 )
@@ -3200,6 +3200,7 @@ class TradingEngine:
                     frame,
                     side,
                     wild_signal.get("structure_confirmation"),
+                    quote=price,
                 )
             )
             if is_confirmed_wild_outer:

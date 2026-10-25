@@ -3,6 +3,27 @@ import pandas as pd
 from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 from core.gates.holding_protection_gate import HoldingProtectionExitGate
 from core.gates.trend_riding_strategy import can_open_position
+from core.services.entry_firewall import has_valid_wild_outer_confirmation
+
+
+def test_final_firewall_reuses_latest_quote_for_closed_frame_outer_confirmation():
+    from core.gates.breakout_continuation_entry_gate import CONTINUATION_OUTSIDE_KC
+
+    frame = pd.DataFrame([
+        {"open": 100.2, "high": 100.5, "low": 99.8, "close": 100.0, "timestamp": 1000,
+         "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0, "ma5": 100.2, "ma15": 100.5},
+        {"open": 100.0, "high": 100.3, "low": 99.6, "close": 99.8, "timestamp": 2000,
+         "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0, "ma5": 100.0, "ma15": 100.4},
+        {"open": 99.8, "high": 100.1, "low": 99.5, "close": 99.7, "timestamp": 3000,
+         "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0, "ma5": 99.8, "ma15": 100.3},
+        {"open": 99.7, "high": 99.8, "low": 96.5, "close": 97.0, "timestamp": 4000,
+         "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0, "ma5": 99.0, "ma15": 100.0},
+    ])
+    frame["is_closed"] = True
+
+    assert has_valid_wild_outer_confirmation(
+        frame, "SHORT", CONTINUATION_OUTSIDE_KC, quote=96.8,
+    ) is True
 
 
 def test_long_kc_middle_defense_no_exit_on_pullback():
@@ -305,6 +326,17 @@ def test_cap_waterfall_continuation_and_breakout_entry():
     )
     assert val is not None, "validate_closed_outer_entry 不得回傳 None"
     assert val["action"] == "OPEN_SHORT"
+
+    # A final submit may hold only closed candles and carry the newest price
+    # separately. The firewall must synthesize the same live candle as scanning.
+    closed_frame = pd.DataFrame(closed_klines)
+    closed_frame["is_closed"] = True
+    assert has_valid_wild_outer_confirmation(
+        closed_frame,
+        "SHORT",
+        CONTINUATION_OUTSIDE_KC,
+        quote=96.8,
+    )
 
     # 3. 驗證 can_open_position 允許放行，不再拋出 BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID
     df = pd.DataFrame([
