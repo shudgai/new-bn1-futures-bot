@@ -2559,6 +2559,10 @@ class TradingEngine:
             ):
                 cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
                     snapshot['frame'], side, price=price,
+                    allow_ma3_cross=decision.get('type') in (
+                        'KC_GOLDEN_CROSS_FAST_LONG',
+                        'KC_DEATH_CROSS_FAST_SHORT',
+                    ),
                 )
                 if not cross_allowed:
                     log_entry_gate(
@@ -3101,6 +3105,14 @@ class TradingEngine:
                 )
                 cross_allowed, cross_reason, _ = validate_ma5_ma15_cross_entry(
                     frame, side, price=price,
+                    allow_ma3_cross=(
+                        entry_metadata.get("entry_type")
+                        or entry_metadata.get("signal_code")
+                        or entry_metadata.get("type")
+                    ) in {
+                        "KC_GOLDEN_CROSS_FAST_LONG",
+                        "KC_DEATH_CROSS_FAST_SHORT",
+                    },
                 )
                 if not cross_allowed:
                     self.account.log(

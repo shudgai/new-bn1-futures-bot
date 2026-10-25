@@ -319,7 +319,20 @@ def ma5_ma15_cross_chop_problem(
             cross_count >= MA_CROSS_CHOP_MIN_CROSSES
             and below(gap_pct, 0.0004 if meme_impulse else MA_CROSS_CHOP_RECOVERY_GAP_PCT)
         )
-        if below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT):
+        qualified_fast_cross = False
+        if allow_flat_ma15 and side in ('LONG', 'SHORT') and quote is not None:
+            # A fresh MA3/MA15 cross may have a naturally narrow MA5/MA15 gap.
+            # Exempt only when the shared evaluator confirms its candle,
+            # trend, KC-room, wick, and MA15-slope requirements. Repeated
+            # MA5/MA15 whipsaws remain blocked by recent_cross_compressed.
+            try:
+                qualified_fast_cross = fast_cross_evidence(
+                    frame, current_quote, side, symbol=symbol or None,
+                ) is not None
+            except Exception:
+                qualified_fast_cross = False
+        if (below(gap_pct, 0.0003 if meme_impulse else MA_GAP_CHOP_MIN_PCT)
+                and not qualified_fast_cross):
             problem = 'BLOCKED_MA5_MA15_GAP_TOO_NARROW'
         elif recent_cross_compressed:
             problem = 'BLOCKED_MA5_MA15_CROSS_CHOP'

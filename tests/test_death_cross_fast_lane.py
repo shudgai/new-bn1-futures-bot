@@ -96,6 +96,19 @@ def test_death_cross_fast_lane_requires_live_cross_and_25_percent_lower_room():
     ) is None
 
 
+def test_fast_lane_uses_ma3_ma15_cross_even_before_ma5_crosses():
+    from core.gates.pipeline import fast_cross_evidence
+
+    frame = death_cross_frame()
+    # MA5 remains above MA15 and rises; only MA3 has made the bearish cross.
+    frame.loc[frame.index[-1], "ma5"] = 101.0
+
+    assert fast_cross_evidence(frame, 99.7, "SHORT", symbol="LOBSTER/USDT")
+    assert entry_contract.evaluate_death_cross_fast_lane(
+        frame, 99.7, "LOBSTER/USDT",
+    ) is not None
+
+
 def test_golden_cross_fast_lane_is_mirrored_above_middle():
     frame, quote = fast_cross_frame("LONG")
     decision = entry_contract.evaluate_golden_cross_fast_lane(
@@ -201,6 +214,7 @@ def test_death_cross_fast_lane_revalidates_and_uses_shared_authorization(monkeyp
 def test_requested_death_cross_route_fails_closed_when_live_cross_disappears():
     frame = death_cross_frame()
     frame.loc[frame.index[-1], "ma5"] = 101.2
+    frame.loc[frame.index[-1], "ma3"] = 101.2
     diagnostics = {}
 
     decision = entry_contract.evaluate_entry_contract(

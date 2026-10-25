@@ -99,6 +99,8 @@ def validate_ma5_ma15_cross_entry(
     frame: Any,
     side: str,
     price: Any = None,
+    *,
+    allow_ma3_cross: bool = False,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """Validate fresh MA crosses and veto late, extended long crossover entries."""
     side = str(side).upper()
@@ -207,7 +209,7 @@ def validate_ma5_ma15_cross_entry(
             # MA3/MA15 is the canonical live cross for the fast lane. Its
             # evaluator also enforces MA5 momentum, candle, KC, and room gates.
             from core.gates.pipeline import fast_cross_evidence
-            if fast_cross_evidence(frame, quote, side) is not None:
+            if allow_ma3_cross and fast_cross_evidence(frame, quote, side) is not None:
                 details["cross_source"] = "MA3_MA15"
                 return True, (
                     "PERMIT_MA3_MA15_GOLDEN_CROSS"

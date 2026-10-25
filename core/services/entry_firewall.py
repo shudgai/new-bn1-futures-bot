@@ -1618,6 +1618,10 @@ async def validate_account_entry(account, symbol, side, context):
         ma5_ma15_cross_chop_problem(
             frame, quote, symbol=symbol, log_result=True,
             side=side,
+            allow_flat_ma15=code in (
+                GOLDEN_CROSS_FAST_LONG_CODE,
+                DEATH_CROSS_FAST_SHORT_CODE,
+            ),
         )
     )
     if cross_chop_problem:
