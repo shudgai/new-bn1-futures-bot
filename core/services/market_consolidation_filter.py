@@ -132,7 +132,12 @@ def evaluate_market_blacklist(
         adx = _num(current, "adx")
         atr_pct = float(atr.iloc[-1] / max(close.iloc[-1], 1e-12))
         checks.update(inside_donchian_box=inside_box, adx=adx, atr_pct=atr_pct)
-        if inside_box and ((adx is not None and adx < LOW_ADX) or atr_pct < LOW_ATR_PCT):
+        # Low ATR alone is common on 1m meme-coin charts even during a strong
+        # directional move. Only classify an in-range market as low-trend when
+        # both ADX and normalized ATR indicate weak conditions. Missing ADX
+        # remains fail-closed when ATR is also below threshold.
+        weak_adx = adx is None or adx < LOW_ADX
+        if inside_box and weak_adx and atr_pct < LOW_ATR_PCT:
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
 
         # Weak-volume and wick-heavy signal candle.
