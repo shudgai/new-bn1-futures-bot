@@ -70,7 +70,7 @@ import ccxt.pro as ccxtpro
 import pandas as pd
 import weakref
 from collections import deque
-from typing import Dict, List
+from typing import Dict, List, Optional
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION,
