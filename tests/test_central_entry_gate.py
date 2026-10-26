@@ -20,9 +20,9 @@ def _build_valid_long_frame():
     # 乖離 = 101.5 - 105.0 = -3.5 <= 0.5 * 2.0 = 1.0
     # 量能 = 1500 >= 1.2 * 1000 = 1200
     rows = []
-    for i in range(15):
+    for i in range(25):
         rows.append({
-            "timestamp": 1700000000 + i * 60,
+            "timestamp": 1700000000000 + i * 60_000,
             "open": 98.0 + i * 0.1,
             "high": 99.0 + i * 0.1,
             "low": 97.5 + i * 0.1,
@@ -32,13 +32,16 @@ def _build_valid_long_frame():
             "atr": 2.0,
             "kc_upper": 104.0,
             "kc_lower": 96.0,
-            "kc_middle": 99.7,
+            "kc_middle": 99.5 + i * (0.5 / 24),
             "kc_middle_slope": 0.25,
             "ma5": 100.5,
+            "ma3": 99.0 + i * 0.1,
+            "ma15": 97.5 + i * 0.02,
+            "macro_trend": "BULLISH",
         })
     # 最後一根符合突破條件
     rows[-1] = {
-        "timestamp": 1700000000 + 14 * 60,
+        "timestamp": 1700000000000 + 24 * 60_000,
         "open": 100.0,
         "high": 102.0,
         "low": 99.8,
@@ -51,6 +54,9 @@ def _build_valid_long_frame():
         "kc_middle": 100.0,
         "kc_middle_slope": 0.30,  # >= 0.1 * 2.0 = 0.2
         "ma5": 101.0,  # prev is 100.5, so delta = 0.5 > 0
+        "ma3": 101.0,
+        "ma15": 98.0,
+        "macro_trend": "BULLISH",
     }
     return pd.DataFrame(rows)
 
@@ -210,9 +216,9 @@ def test_veto_volume_insufficient():
 def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
     """均線死叉轉折做空：中軌走平 (斜率 0.0，不足 0.1 ATR) 但在中軌下方，放行做空"""
     rows = []
-    for i in range(15):
+    for i in range(25):
         rows.append({
-            "timestamp": 1700000000 + i * 60,
+            "timestamp": 1700000000000 + i * 60_000,
             "open": 101.0,
             "high": 101.5,
             "low": 100.5,
@@ -225,11 +231,15 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
             "kc_middle": 100.0,
             "kc_middle_slope": 0.0,
             "ma5": 100.5,
+            "ma3": 99.0 + i * 0.1,
+            "ma15": 102.5 - i * 0.02,
+            "macro_trend": "BEARISH",
+            "kc_middle": 101.0 - i * 0.04,
         })
     # 頂部轉折死叉棒：收黑陰線 (open=100.0, close=98.5, low=98.2, high=100.2)，在 KC 中軌 (100.0) 下方
     # 中軌斜率僅 -0.02 (不足 0.1 * 2.0 = 0.2)，MA5 拐頭向下 (99.0 < 100.5)
     rows[-1] = {
-        "timestamp": 1700000000 + 14 * 60,
+        "timestamp": 1700000000000 + 24 * 60_000,
         "open": 100.0,
         "high": 100.2,
         "low": 98.2,
@@ -242,6 +252,10 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
         "kc_middle": 100.0,
         "kc_middle_slope": -0.02,  # 接近 0，破軌單會被擋，但死叉轉折單放行
         "ma5": 99.0,  # 下彎
+        "ma3": 98.8,
+        "ma15": 102.0,
+        "macro_trend": "BEARISH",
+        "kc_middle": 100.0,
     }
     df = pd.DataFrame(rows)
     # 常規破軌追空：被擋
@@ -269,9 +283,9 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
 def test_cross_mid_short_veto_if_above_midline():
     """做空安全底線：若價格仍在 KC 中軌上方，哪怕死叉也一票否決 VETO_SHORT_ABOVE_KC_MIDDLE"""
     rows = []
-    for i in range(15):
+    for i in range(25):
         rows.append({
-            "timestamp": 1700000000 + i * 60,
+            "timestamp": 1700000000000 + i * 60_000,
             "open": 102.0,
             "high": 103.0,
             "low": 101.5,
@@ -284,10 +298,14 @@ def test_cross_mid_short_veto_if_above_midline():
             "kc_middle": 100.0,
             "kc_middle_slope": -0.01,
             "ma5": 102.0,
+            "ma3": 102.5,
+            "ma15": 102.6,
+            "macro_trend": "BEARISH",
+            "kc_middle": 101.0 - i * 0.04,
         })
     # 價格 101.5 仍在 KC 中軌 100.0 上方
     rows[-1] = {
-        "timestamp": 1700000000 + 14 * 60,
+        "timestamp": 1700000000000 + 24 * 60_000,
         "open": 102.5,
         "high": 102.6,
         "low": 101.0,
@@ -300,6 +318,10 @@ def test_cross_mid_short_veto_if_above_midline():
         "kc_middle": 100.0,
         "kc_middle_slope": -0.01,
         "ma5": 101.0,
+        "ma3": 101.6,
+        "ma15": 101.8,
+        "macro_trend": "BEARISH",
+        "kc_middle": 100.0,
     }
     df = pd.DataFrame(rows)
     res = CentralEntryGate.verify_and_authorize(
@@ -316,9 +338,9 @@ def test_cross_mid_short_veto_if_above_midline():
 def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
     """均線金叉轉折做多：中軌走平 (斜率 0.0) 但在中軌上方，放行做多"""
     rows = []
-    for i in range(15):
+    for i in range(25):
         rows.append({
-            "timestamp": 1700000000 + i * 60,
+            "timestamp": 1700000000000 + i * 60_000,
             "open": 99.0,
             "high": 99.5,
             "low": 98.5,
@@ -331,10 +353,14 @@ def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
             "kc_middle": 100.0,
             "kc_middle_slope": 0.0,
             "ma5": 99.5,
+            "ma3": 99.0,
+            "ma15": 97.5 + i * 0.02,
+            "macro_trend": "BULLISH",
+            "kc_middle": 99.5 + i * (0.5 / 24),
         })
     # 底部轉折金叉棒：收紅陽線 (open=100.0, close=101.5, low=99.8, high=101.8)，在 KC 中軌 (100.0) 上方
     rows[-1] = {
-        "timestamp": 1700000000 + 14 * 60,
+        "timestamp": 1700000000000 + 24 * 60_000,
         "open": 100.0,
         "high": 101.8,
         "low": 99.8,
@@ -347,6 +373,10 @@ def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
         "kc_middle": 100.0,
         "kc_middle_slope": 0.02,  # 走平微翹，不足 0.2
         "ma5": 101.0,  # 上翹
+        "ma3": 101.0,
+        "ma15": 98.0,
+        "macro_trend": "BULLISH",
+        "kc_middle": 100.0,
     }
     df = pd.DataFrame(rows)
     res = CentralEntryGate.verify_and_authorize(

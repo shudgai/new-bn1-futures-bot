@@ -214,7 +214,12 @@ class CentralEntryGate:
             macro_trend = (
                 klines_or_snapshot.get("macro_trend")
                 if isinstance(klines_or_snapshot, dict)
-                else getattr(klines_or_snapshot, "macro_trend", None)
+                else (
+                    entry_frame.attrs.get("macro_trend")
+                    or entry_frame.iloc[-1].get("macro_trend")
+                    if isinstance(entry_frame, pd.DataFrame) and not entry_frame.empty
+                    else getattr(klines_or_snapshot, "macro_trend", None)
+                )
             )
             last_stamp = entry_frame.iloc[-1].get("timestamp") if len(entry_frame) else None
             try:

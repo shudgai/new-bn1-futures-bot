@@ -34,11 +34,13 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "kc_middle_slope": 0.3 if side == "LONG" else -0.3,
             "ma5": 100.5,
             "ma15": 99.0 + i * 0.02,
+            "ma3": 100.2 + i * 0.1,
+            "macro_trend": "BULLISH" if side == "LONG" else "BEARISH",
         })
     # 設定倒數第二根為金叉前狀態 (ma5 < ma15)，確保最新一根為剛金叉
     if side == "LONG":
-        rows[-2]["ma5"] = 98.5
-        rows[-2]["ma15"] = 99.0
+        rows[-2]["ma5"] = 98.0
+        rows[-2]["ma15"] = 98.2
         rows[-2]["kc_middle"] = 99.8
         # 最後一根通道擴張 (width=10.0 vs min_prev=8.0 -> 25% expansion >= 5%)
         rows[-1] = {
@@ -55,7 +57,9 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "kc_middle": 100.0,
             "kc_middle_slope": 0.25,  # >= 0.1 * 2.0 = 0.2
             "ma5": 101.5,  # > 98.5
-            "ma15": 99.5,
+            "ma15": 98.5,
+            "ma3": 101.8,
+            "macro_trend": "BULLISH",
         }
     else:
         rows[-1] = {
@@ -73,6 +77,8 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "kc_middle_slope": -0.25,  # <= -0.1 * 2.0 = -0.2
             "ma5": 99.0,  # < 100.5
             "ma15": 101.0 - n * 0.02 - 0.1,
+            "ma3": 98.8,
+            "macro_trend": "BEARISH",
         }
     return pd.DataFrame(rows)
 
@@ -198,7 +204,7 @@ async def test_close_position_bypasses_central_entry_gate():
         "qty": 1.0,
         "margin": 50.0,
         "leverage": 5,
-        "sl": 0.0,
+        "sl": 96.0,
         "tp": 0.0,
     }
     
@@ -206,7 +212,7 @@ async def test_close_position_bypasses_central_entry_gate():
     closed = await account.close_position(
         symbol="LOBSTER/USDT",
         current_price=95.0,
-        close_reason="HARD_STOP_LOSS",
+        close_reason="CIRCUIT_BREAKER_HARD_SL",
     )
     assert closed is True
     assert "LOBSTER/USDT" not in account.positions
