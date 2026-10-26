@@ -922,8 +922,8 @@ class ExitGate:
                         and float(confirm["close"]) < float(confirm["open"])
                         and float(confirm["close"]) < peak_mid
                         and confirm_body >= 0.35 * atr_val
-                        and (peak_move >= 0.45 * atr_val or peak_roe >= 0.006)
-                        and (unrealized_pct >= 0.002 or peak_roe >= 0.008)
+                        and (peak_move >= 0.5 * atr_val or peak_roe >= 0.05)
+                        and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )
                     if strong_peak_reversal:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
@@ -931,7 +931,7 @@ class ExitGate:
                             "conf_close": float(confirm["close"]), "peak_roe": peak_roe},
                             "pivot_confirmation": "THREE_POINT_PLUS_DECISIVE_SINGLE_BAR",
                             "reversal_body_atr": confirm_body / atr_val,
-                            "cause": "三點真峰頂後出現強勢收黑確認，立即平多；不等待中軌或第二根確認。",
+                            "cause": "【方案A波段獲利了結】三點真峰頂確立且脫離成本區間 (peak_move >= 0.5 ATR 或 peak_roe >= 5%)，及時平多獲利了結！",
                         }
 
                 kc_up_curr = kc_up
@@ -1063,11 +1063,12 @@ class ExitGate:
                 )
 
                 if is_pivot_valid:
-                    if unrealized_pct >= 0.002 or peak_roe >= 0.008:
+                    # 【方案 A 波段獲利過濾】：波段未展開（未達 0.5 ATR 且 peak_roe < 5%），絕不平多
+                    if (peak_move >= 0.5 * atr_val or peak_roe >= 0.05) and (unrealized_pct >= 0.003 or peak_roe >= 0.05):
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
                             **meta,
                             "pivot_meta": pivot_peak_meta,
-                            "cause": f"真峰頂樞紐雙根驗證確立且跌破MA3 (ma5_up={is_ma5_up}, engulfing={is_bearish_engulfing}, pivot={pivot_peak_found})，波段滿足獲利了結平多！",
+                            "cause": f"【方案A波段獲利了結】真峰頂雙根驗證確立且脫離成本區間 (ma5_up={is_ma5_up}, engulfing={is_bearish_engulfing}, pivot={pivot_peak_found})，及時平多獲利了結！",
                         }
 
                 # ── 趨勢衰退確認平多：收線確認跌破 MA15 且 MA5 轉為走平或向下，且大週期均線死叉或大週期轉空 ──
@@ -1099,7 +1100,7 @@ class ExitGate:
                 if ema_fast >= ema_slow:
                     return False, "VETO_HOLD", {
                         **meta,
-                        "cause": f"多單大週期趨勢依然向上且守穩結構 (kc_middle_slope={slope:.6f}, ema_fast={ema_fast:.5f} >= ema_slow={ema_slow:.5f})，維持續抱！",
+                        "cause": f"多單大週期趨勢依然向上且守穩結構 (kc_mid_slope={slope:.6f}, ema_fast={ema_fast:.5f} >= ema_slow={ema_slow:.5f})，維持續抱！",
                     }
 
 
@@ -1173,8 +1174,8 @@ class ExitGate:
                         and float(confirm["close"]) > float(confirm["open"])
                         and float(confirm["close"]) > valley_mid
                         and confirm_body >= 0.35 * atr_val
-                        and (valley_move >= 0.45 * atr_val or peak_roe >= 0.006)
-                        and (unrealized_pct >= 0.002 or peak_roe >= 0.008)
+                        and (valley_move >= 0.5 * atr_val or peak_roe >= 0.05)
+                        and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )
                     if strong_valley_reversal:
                         return True, "EARLY_PIVOT_VALLEY_EXIT", {
@@ -1182,7 +1183,7 @@ class ExitGate:
                             "conf_close": float(confirm["close"]), "peak_roe": peak_roe},
                             "pivot_confirmation": "THREE_POINT_PLUS_DECISIVE_SINGLE_BAR",
                             "reversal_body_atr": confirm_body / atr_val,
-                            "cause": "三點真谷底後出現強勢收紅確認，立即平空；不等待中軌或第二根確認。",
+                            "cause": "【方案A波段獲利了結】三點真谷底確立且脫離成本區間 (valley_move >= 0.5 ATR 或 peak_roe >= 5%)，及時平空獲利了結！",
                         }
 
                 kc_low_curr = kc_low
@@ -1313,11 +1314,12 @@ class ExitGate:
                 )
 
                 if is_valley_valid:
-                    if unrealized_pct >= 0.002 or peak_roe >= 0.008:
+                    # 【方案 A 波段獲利過濾】：波段未展開（未達 0.5 ATR 且 peak_roe < 5%），絕不平空
+                    if (valley_move >= 0.5 * atr_val or peak_roe >= 0.05) and (unrealized_pct >= 0.003 or peak_roe >= 0.05):
                         return True, "EARLY_PIVOT_VALLEY_EXIT", {
                             **meta,
                             "pivot_meta": pivot_valley_meta,
-                            "cause": f"真谷底樞紐雙根驗證確立且站上MA3 (ma5_down={is_ma5_down}, engulfing={is_bullish_engulfing}, pivot={pivot_valley_found})，波段滿足獲利了結平空！",
+                            "cause": f"【方案A波段獲利了結】真谷底雙根驗證確立且脫離成本區間 (ma5_down={is_ma5_down}, engulfing={is_bullish_engulfing}, pivot={pivot_valley_found})，及時平空獲利了結！",
                         }
 
                 # ── 趨勢衰退確認平空：收線確認突破 MA15 且 MA5 轉為走平或向上，且大週期均線金叉或大週期轉多 ──
