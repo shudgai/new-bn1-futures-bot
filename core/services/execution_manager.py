@@ -324,7 +324,7 @@ class ExecutionManager:
             # 1. 平倉後強制冷卻檢查 (強動能突破放行交由 EntryGate 統一裁決)
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
-            if last_exit and not is_strong_breakout:
+            if last_exit and not is_strong_breakout and not is_swing_pivot:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 if elapsed_sec < 180:
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
@@ -372,8 +372,9 @@ class ExecutionManager:
                         candidate_signal = "ENTRY_SHORT_EMA_CROSS_MID"
 
             if candidate_signal:
-                # Zero-trust whitelist: every candidate must be backed by the
-                # latest confirmed MA3/MA15 cross before downstream gates run.
+                # Zero-trust whitelist: ordinary candidates need the closed-bar
+                # MA3/MA15 cross; breakout and pivot routes use their own
+                # closed-bar structural confirmation.
                 from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
 
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"

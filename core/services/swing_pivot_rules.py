@@ -18,7 +18,7 @@ def _num(row: Any, key: str) -> float:
 
 
 def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
-    """Return a counter-slope reversal entry only from the latest two closed bars."""
+    """Authorize entry only after a closed three-bar peak/valley confirmation."""
     if not isinstance(frame, pd.DataFrame):
         return None
     try:
@@ -27,34 +27,47 @@ def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
     except (TypeError, ValueError, OverflowError):
         return None
     closed = closed_entry_candles(frame)
-    if len(closed) < 2:
+    if len(closed) < 3:
         return None
-    previous, current = closed.iloc[-2], closed.iloc[-1]
+    left, pivot, current = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
     try:
         close, opening = _num(current, "close"), _num(current, "open")
-        middle = _num(current, "kc_middle")
-        ma3_now, ma3_prev = _num(current, "ma3"), _num(previous, "ma3")
-        ma15_now = _num(current, "ma15")
-        low_prev, high_prev = _num(previous, "low"), _num(previous, "high")
-        atr = _num(current, "atr")
-        if min(close, opening, middle, ma3_now, ma15_now, low_prev, high_prev, atr) <= 0:
+        high_left, low_left = _num(left, "high"), _num(left, "low")
+        high_pivot, low_pivot = _num(pivot, "high"), _num(pivot, "low")
+        high_confirm, low_confirm = _num(current, "high"), _num(current, "low")
+        pivot_open, pivot_close = _num(pivot, "open"), _num(pivot, "close")
+        atr, pivot_atr = _num(current, "atr"), _num(pivot, "atr")
+        if min(close, opening, high_left, low_left, high_pivot, low_pivot,
+               high_confirm, low_confirm, pivot_open, pivot_close, atr, pivot_atr) <= 0:
             return None
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
-    if close <= middle and ma3_now > ma3_prev and ma3_now >= ma15_now and close > opening and close >= ma3_now:
+    pivot_mid = (pivot_open + pivot_close) / 2.0
+    body = abs(close - opening)
+    if (low_pivot < low_left and low_pivot < low_confirm
+            and close > opening and close > pivot_mid
+            and body >= 0.35 * atr
+            and close - low_pivot >= 0.45 * pivot_atr):
         return {
             "side": "LONG", "entry_type": "SWING_PIVOT",
-            "stop_loss_price": low_prev, "atr": atr,
+            "stop_loss_price": low_pivot, "atr": atr,
             "bar_timestamp": float(current.get("timestamp", 0.0)),
-            "previous_bar_low": low_prev,
+            "pivot_price": low_pivot,
+            "pivot_bar_timestamp": float(pivot.get("timestamp", 0.0)),
+            "confirmation_bar_timestamp": float(current.get("timestamp", 0.0)),
         }
-    if close >= middle and ma3_now < ma3_prev and ma3_now <= ma15_now and close < opening and close <= ma3_now:
+    if (high_pivot > high_left and high_pivot > high_confirm
+            and close < opening and close < pivot_mid
+            and body >= 0.35 * atr
+            and high_pivot - close >= 0.45 * pivot_atr):
         return {
             "side": "SHORT", "entry_type": "SWING_PIVOT",
-            "stop_loss_price": high_prev, "atr": atr,
+            "stop_loss_price": high_pivot, "atr": atr,
             "bar_timestamp": float(current.get("timestamp", 0.0)),
-            "previous_bar_high": high_prev,
+            "pivot_price": high_pivot,
+            "pivot_bar_timestamp": float(pivot.get("timestamp", 0.0)),
+            "confirmation_bar_timestamp": float(current.get("timestamp", 0.0)),
         }
     return None
 

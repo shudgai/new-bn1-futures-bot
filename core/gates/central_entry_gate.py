@@ -221,10 +221,23 @@ class CentralEntryGate:
                 bar_index = int(float(last_stamp) // 60_000) if last_stamp is not None else None
             except (TypeError, ValueError, OverflowError):
                 bar_index = None
-            blacklist = evaluate_market_blacklist(
-                entry_frame, -1, side=side, last_closed_trade=last_trade,
-                current_bar_index=bar_index, macro_trend=macro_trend,
-            )
+            if is_swing_pivot:
+                from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
+                pivot_evidence = evaluate_swing_pivot_entry(entry_frame)
+                if not pivot_evidence or pivot_evidence.get("side") != side:
+                    return GateCheckResult(
+                        passed=False, reason="VETO_SWING_PIVOT_NOT_CONFIRMED",
+                        signal_id=sig_id, details={"side": side},
+                    )
+                blacklist = (False, "PASS_CONFIRMED_SWING_PIVOT", {
+                    "swing_pivot": pivot_evidence,
+                    "soft_market_blacklist": "BYPASSED_FOR_CONFIRMED_PIVOT",
+                })
+            else:
+                blacklist = evaluate_market_blacklist(
+                    entry_frame, -1, side=side, last_closed_trade=last_trade,
+                    current_bar_index=bar_index, macro_trend=macro_trend,
+                )
         blocked, block_reason, block_evidence = blacklist
         checks["market_blacklist"] = {
             "status": "FAIL" if blocked else "PASS",
@@ -394,7 +407,7 @@ class CentralEntryGate:
             "max_ma5_dist": cls.MAX_MA5_EXTENSION_ATR * atr,
             "ma5_pass": not ma5_overext,
         }
-        if band_overext:
+        if band_overext and not is_swing_pivot:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_OUTER_OVEREXTENSION",
@@ -402,7 +415,7 @@ class CentralEntryGate:
                 details={"band_dist": band_dist, "limit": cls.MAX_BAND_EXTENSION_ATR * atr},
                 checks=checks,
             )
-        if is_cross_mid:
+        if is_cross_mid and not is_swing_pivot:
             remaining_room = (
                 kc_upper - curr_price if side == "LONG"
                 else curr_price - kc_lower
@@ -417,7 +430,7 @@ class CentralEntryGate:
                              "required_room": required_room, "kc_width": width},
                     checks=checks,
                 )
-        if ma5_overext:
+        if ma5_overext and not is_swing_pivot:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_MA5_OVEREXTENSION",
@@ -441,7 +454,7 @@ class CentralEntryGate:
             "atr": atr,
             "min_required": cls.MIN_KC_BANDWIDTH_PCT,
         }
-        if not bw_pass:
+        if not bw_pass and not is_swing_pivot:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_BANDWIDTH_TOO_NARROW",
@@ -453,13 +466,14 @@ class CentralEntryGate:
         # 20 根已收線最大寬度作為 squeeze 參考；歷史不足時 fail closed。
         curr_width = kc_upper - kc_lower
         max_prev_width = parsed.get("max_prev_width")
-        if max_prev_width is None or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0:
+        if (not is_swing_pivot and (max_prev_width is None
+                or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0)):
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_HISTORY_INVALID",
                 signal_id=sig_id, details={"max_prev_width": max_prev_width}, checks=checks,
             )
-        max_prev_width = float(max_prev_width)
-        if curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
+        max_prev_width = float(max_prev_width) if max_prev_width is not None else curr_width
+        if not is_swing_pivot and curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_AT_OR_BELOW_25_PERCENT",
                 signal_id=sig_id,
@@ -472,8 +486,9 @@ class CentralEntryGate:
         ma15_curr = float(parsed["ma15_curr"])
         target_band = kc_upper if side == "LONG" else kc_lower
         min_spacing = cls.MIN_MA_SPACING_WIDTH_RATIO * curr_width
-        if (abs(ma5_curr - ma15_curr) < min_spacing
-                or abs(ma5_curr - target_band) < min_spacing):
+        if (not is_swing_pivot and (
+                abs(ma5_curr - ma15_curr) < min_spacing
+                or abs(ma5_curr - target_band) < min_spacing)):
             return GateCheckResult(
                 passed=False, reason="VETO_MA_SPACING_BELOW_25_PERCENT_KC_WIDTH",
                 signal_id=sig_id,
@@ -502,7 +517,7 @@ class CentralEntryGate:
             "is_cross_mid": is_cross_mid,
             "is_continuation": is_continuation,
         }
-        if not exp_pass:
+        if not exp_pass and not is_swing_pivot:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_NOT_EXPANDING",
@@ -516,7 +531,7 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        if enforce_volume:
+        if enforce_volume and not is_swing_pivot:
             if vol_curr <= 0 or vol_avg <= 0:
                 return GateCheckResult(
                     passed=False, reason="VETO_VOLUME_DATA_UNAVAILABLE",

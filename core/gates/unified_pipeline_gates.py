@@ -234,6 +234,24 @@ class ExitGate:
                 pos, raw_df, quote, reason, meta,
             )
 
+        # A confirmed post-entry three-point pivot is itself an exit signal;
+        # do not wait for the trend engine to emit a separate MA/midline exit.
+        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+        pivot_confirmed, pivot_type, pivot_details = has_confirmed_true_pivot(
+            pos, raw_for_reversal, quote_for_reversal,
+        )
+        if pivot_confirmed:
+            pivot_reason = (
+                "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+                if str((pos or {}).get("side", "")).upper() == "LONG"
+                else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+            )
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            return HoldingProtectionExitGate.validate_exit(
+                pos, raw_for_reversal, quote_for_reversal, pivot_reason,
+                {**(meta or {}), "true_pivot_type": pivot_type, **pivot_details},
+            )
+
         if should_exit and reason == "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL":
             from core.gates.holding_protection_gate import HoldingProtectionExitGate
             raw_df = (

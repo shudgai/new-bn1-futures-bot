@@ -51,6 +51,10 @@ def validate_entry_math(
     if side not in {"LONG", "SHORT"}:
         return False, "BLOCKED_ENTRY_MATH_INVALID_SIDE"
     bars = _rows(frame)
+    if is_swing_pivot:
+        from core.services.candle_data import closed_entry_candles
+        closed_frame = closed_entry_candles(frame)
+        bars = _rows(closed_frame)
     if len(bars) < 2:
         return False, "BLOCKED_ENTRY_MATH_INSUFFICIENT_BARS"
     current, previous = bars[-1], bars[-2]
@@ -303,15 +307,15 @@ def validate_entry_math(
     # 2. Outer chase limit: quote within 3 ATR from the outer rail.
     is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
     if is_outer:
-        if abs(ma5 - ma15) < 0.05 * atr:
+        if not is_swing_pivot and abs(ma5 - ma15) < 0.05 * atr:
             return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
         if side == "LONG":
-            if not (ma5 > previous_ma5 and ma5 >= ma15 - 0.15 * atr):
+            if not is_swing_pivot and not (ma5 > previous_ma5 and ma5 >= ma15 - 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             if close - upper > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
         else:
-            if not (ma5 < previous_ma5 and ma5 <= ma15 + 0.15 * atr):
+            if not is_swing_pivot and not (ma5 < previous_ma5 and ma5 <= ma15 + 0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"

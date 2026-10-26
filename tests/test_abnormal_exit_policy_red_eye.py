@@ -91,24 +91,31 @@ def test_single_live_waterfall_requires_15_atr_and_midline_cross(side, body, exp
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_swing_pivot_entry_is_symmetric_and_uses_prior_extreme_stop(side):
-    prev = dict(timestamp=60_000, is_closed=True, open=100., high=101., low=98., close=99.,
-                atr=1., kc_middle=100., ma3=99., ma15=99.5)
+def test_swing_pivot_entry_requires_three_closed_points_and_uses_pivot_stop(side):
+    left = dict(timestamp=60_000, is_closed=True, open=100., high=101., low=99., close=100.,
+                atr=1.)
     if side == "LONG":
-        curr = dict(timestamp=120_000, is_closed=True, open=99., high=101., low=98.5, close=100.,
-                    atr=1., kc_middle=100., ma3=99.8, ma15=99.7)
+        pivot = dict(timestamp=120_000, is_closed=True, open=99., high=100., low=98., close=98.5,
+                     atr=1.)
+        curr = dict(timestamp=180_000, is_closed=True, open=99., high=101., low=98.5, close=100.,
+                    atr=1.)
         expected_stop = 98.
     else:
-        prev.update(open=100., high=102., low=99., close=101., ma3=101., ma15=101.5)
-        curr = dict(timestamp=120_000, is_closed=True, open=101., high=101.5, low=99., close=100.,
-                    atr=1., kc_middle=100., ma3=100.2, ma15=100.3)
+        pivot = dict(timestamp=120_000, is_closed=True, open=101., high=102., low=99., close=101.5,
+                     atr=1.)
+        curr = dict(timestamp=180_000, is_closed=True, open=101., high=101.5, low=99., close=100.,
+                    atr=1.)
         expected_stop = 102.
-    frame = pd.DataFrame([prev, curr])
+    frame = pd.DataFrame([left, pivot, curr])
     frame.attrs["timeframe_ms"] = 60_000
     signal = evaluate_swing_pivot_entry(frame)
     assert signal and signal["side"] == side
     assert signal["entry_type"] == "SWING_PIVOT"
     assert signal["stop_loss_price"] == expected_stop
+    assert signal["pivot_bar_timestamp"] == 120_000
+    unclosed = frame.copy()
+    unclosed.loc[unclosed.index[-1], "is_closed"] = False
+    assert evaluate_swing_pivot_entry(unclosed) is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -133,38 +140,53 @@ def test_outer_rail_exhaustion_exit_requires_closed_confirmation(side):
     assert result["reason"] == ("EXIT_LONG_AT_PEAK" if side == "LONG" else "EXIT_SHORT_AT_BOTTOM")
 
 
-def test_central_entry_gate_allows_only_tagged_swing_pivot_to_ignore_flat_kc_slope(monkeypatch):
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_central_entry_gate_allows_confirmed_pivot_without_breakout_filters(monkeypatch, side):
     import core.services.market_consolidation_filter as consolidation
     from core.gates.central_entry_gate import CentralEntryGate
 
     monkeypatch.setattr(consolidation, "evaluate_market_blacklist", lambda *_a, **_k: (False, "PASS", {}))
-    rows = []
-    for i in range(25):
-        rows.append(dict(
-            timestamp=60_000 * (i + 1), is_closed=True,
-            open=99. if i == 24 else 100., high=100. if i == 24 else 101.,
-            low=98. if i == 24 else 99., close=100. if i == 24 else 100.,
-            volume=2. if i == 24 else 1., atr=1., kc_middle=100.5 if i == 23 else 100.,
-            kc_upper=110.5 if i == 24 else 110., kc_lower=89.5 if i == 24 else 90.,
-            ma3=100. if i == 24 else 99., ma5=100. if i == 24 else 99.,
-            ma15=90.,
-        ))
+    rows = [dict(
+        timestamp=60_000 * (i + 1), is_closed=True,
+        open=100., high=100.5, low=99.5, close=100., volume=1., atr=0.5,
+        kc_upper=101., kc_middle=100., kc_lower=99., ma3=99.9,
+        ma5=100.1, ma15=100.2,
+    ) for i in range(25)]
+    if side == "LONG":
+        rows[-3].update(high=100.5, low=99.5)
+        rows[-2].update(open=99.8, close=99.6, high=100., low=99., atr=0.5)
+        rows[-1].update(open=99.6, close=100.6, high=100.7, low=99.5, atr=0.5,
+                        kc_middle=99.9, ma5=99.8, volume=0.1)
+        quote = 100.6
+    else:
+        rows[-3].update(high=100.5, low=99.5)
+        rows[-2].update(open=100.2, close=100.4, high=101., low=100., atr=0.5)
+        rows[-1].update(open=100.4, close=99.4, high=100.5, low=99.3, atr=0.5,
+                        kc_middle=100.1, ma5=100.2, volume=0.1)
+        quote = 99.4
     frame = pd.DataFrame(rows)
     frame.attrs["timeframe_ms"] = 60_000
-    forming = frame.iloc[[-1]].copy()
-    forming.loc[:, "timestamp"] += 60_000
-    forming.loc[:, "is_closed"] = False
-    frame_with_live = pd.concat([frame, forming], ignore_index=True)
-    frame_with_live.attrs.update(frame.attrs)
     result = CentralEntryGate.verify_and_authorize(
-        "X", "LONG", 100., frame_with_live, source="UNIFIED_PIPELINE|SWING_PIVOT_LONG",
+        "X", side, quote, frame, source=f"UNIFIED_PIPELINE|SWING_PIVOT_{side}",
     )
     assert result.passed, (result.reason, result.checks)
+    assert result.checks["market_blacklist"]["reason"] == "PASS_CONFIRMED_SWING_PIVOT"
 
     blocked = CentralEntryGate.verify_and_authorize(
-        "X", "LONG", 100., frame, source="UNIFIED_PIPELINE|ENTRY_LONG_MA3_MA15_CROSS_MID",
+        "X", side, quote, frame, source=f"UNIFIED_PIPELINE|ENTRY_{side}_MA3_MA15_CROSS_MID",
     )
-    assert not blocked.passed and blocked.reason == "VETO_KC_SLOPE_INSUFFICIENT"
+    assert not blocked.passed
+
+    invalid = frame.copy()
+    if side == "LONG":
+        invalid.loc[invalid.index[-1], "low"] = 98.9
+    else:
+        invalid.loc[invalid.index[-1], "high"] = 101.1
+    rejected = CentralEntryGate.verify_and_authorize(
+        "X", side, quote, invalid, source=f"UNIFIED_PIPELINE|SWING_PIVOT_{side}",
+    )
+    assert not rejected.passed
+    assert rejected.reason == "VETO_SWING_PIVOT_NOT_CONFIRMED"
 
 
 def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override():
@@ -176,8 +198,10 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
     for i in range(4):
         rows.append(dict(
             timestamp=base + i * 60_000, is_closed=True,
-            open=99. if i == 3 else 100., high=100. if i == 3 else 101.,
-            low=98. if i == 2 else 99., close=100. if i == 3 else 100.,
+            open=99. if i == 3 else 99. if i == 2 else 100.,
+            high=100. if i >= 2 else 101.,
+            low=98. if i == 2 else 98.5 if i == 3 else 99.,
+            close=100. if i == 3 else 98.5 if i == 2 else 100.,
             volume=2. if i == 3 else 1., atr=1.,
             kc_middle=100.5 if i < 3 else 100.,
             kc_upper=110.5 if i == 3 else 110., kc_lower=89.5 if i == 3 else 90.,
@@ -190,3 +214,64 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
     assert valid, reason
     invalid, reason = validate_entry_math(frame, "LONG", is_swing_pivot=False)
     assert not invalid and reason == "BLOCKED_LONG_ON_BEARISH_TREND"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, monkeypatch):
+    from core.gates.unified_pipeline_gates import ExitGate
+    base = 1_700_000_000_000
+
+    if side == "LONG":
+        rows = [
+            dict(timestamp=base, open=100., high=100.4, low=99.5, close=100.,
+                 ma5=100., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 60_000, open=101., high=102.2, low=100.8, close=102.,
+                 ma5=102., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 120_000, open=102., high=104., low=101.5, close=103.,
+                 ma5=103., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 180_000, open=103., high=103.2, low=101.5, close=101.8,
+                 ma5=101.8, ema13=100.5, ma15=100.5, atr=1., kc_upper=110., kc_middle=100.5, kc_lower=90.),
+        ]
+        expected_reason = "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+    else:
+        rows = [
+            dict(timestamp=base, open=100., high=100.5, low=99.5, close=100.,
+                 ma5=100., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 60_000, open=100., high=100.2, low=98.8, close=99.,
+                 ma5=99., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 120_000, open=99., high=99.5, low=96., close=98.,
+                 ma5=98., ema13=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+            dict(timestamp=base + 180_000, open=98., high=99.5, low=97.8, close=99.2,
+                 ma5=99.2, ema13=99.5, ma15=99.5, atr=1., kc_upper=110., kc_middle=99.5, kc_lower=90.),
+        ]
+        expected_reason = "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    frame = pd.DataFrame(rows)
+    frame["is_closed"] = True
+    frame.attrs["timeframe_ms"] = 60_000
+    position = _position(side)
+    position["open_timestamp"] = base / 1000.0
+
+    monkeypatch.setattr(
+        ExitGate, "_evaluate_with_holding_rules",
+        staticmethod(lambda *_args, **_kwargs: (False, "VETO_HOLD", {})),
+    )
+    monkeypatch.setattr(
+        "core.services.exits.abnormal_candle_exit.two_closed_adverse_abnormal_evidence",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.services.swing_pivot_rules.evaluate_outer_rail_reversal_exit",
+        lambda *_args, **_kwargs: None,
+    )
+    should_exit, reason, _ = ExitGate.evaluate(
+        position, {"raw_df": frame, "current_price": float(frame.iloc[-1].close), "atr": 1.0},
+    )
+
+    assert should_exit is True
+    assert reason == expected_reason
+    from core.services.math_execution_gate import validate_exit_math
+    allowed, math_reason, _ = validate_exit_math(
+        position, frame, float(frame.iloc[-1].close),
+        close_reason=reason, now_ms=base + 180_000,
+    )
+    assert allowed, math_reason

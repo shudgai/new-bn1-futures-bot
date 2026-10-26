@@ -133,10 +133,16 @@ def has_confirmed_true_pivot(
             timeframe_ms = float(frame.attrs.get('timeframe_ms', 60_000) or 60_000)
             ts_pivot = float(pivot.get('timestamp', 0.0))
             ts_confirm = float(confirm.get('timestamp', 0.0))
-            if ts_pivot < 1e11:
+            raw_gap = ts_confirm - ts_pivot
+            if math.isclose(raw_gap, timeframe_ms, rel_tol=0.0, abs_tol=1.0):
+                # Small synthetic/test timestamps may already be milliseconds.
+                pass
+            elif math.isclose(raw_gap * 1000.0, timeframe_ms, rel_tol=0.0, abs_tol=1.0):
+                # Some feeds provide epoch seconds; normalize both to ms.
                 ts_pivot *= 1000.0
-            if ts_confirm < 1e11:
                 ts_confirm *= 1000.0
+            else:
+                continue
             if (not math.isfinite(timeframe_ms) or timeframe_ms <= 0
                     or ts_pivot <= entry_bar_floor_ms
                     or ts_confirm <= entry_bar_floor_ms
@@ -2000,18 +2006,9 @@ class HoldingProtectionExitGate:
 
         # ──【核心鐵律二：真峰谷與中軌反轉確認授權放行】──
         if is_true_pivot_confirmed:
-            curr_bar = frame.iloc[-1] if frame is not None and len(frame) >= 1 else {}
-            bar_close_price = float(curr_bar.get('close', quote))
-            defense_line = float(curr_bar.get('ema13', curr_bar.get('ma15', curr_bar.get('kc_middle', curr_bar.get('kc_basis', 0.0)))))
-            buffer_ratio = 0.0015
-            if side == 'LONG' and defense_line > 0:
-                # 只有收盤實體確實跌破 EMA13 * (1 - 0.0015)，結構確認破壞才允許離場；否則一律視為回踩有守或假摔
-                if bar_close_price >= defense_line * (1.0 - buffer_ratio):
-                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_ABOVE_MID: PRICE_ABOVE_KC_MIDDLE")
-            elif side == 'SHORT' and defense_line > 0:
-                # 只有收盤實體確實衝破 EMA13 * (1 + 0.0015)，結構確認破壞才允許離場；否則一律視為反彈遇阻或假突破
-                if bar_close_price <= defense_line * (1.0 + buffer_ratio):
-                    return _reject(reason="VETO_HOLDING_HEALTHY_PULLBACK_BELOW_MID: PRICE_BELOW_KC_MIDDLE")
+            # A confirmed three-point pivot is the exit signal itself. Do not
+            # require a later KC/EMA midline break; that would turn a peak or
+            # valley exit into a delayed trend exit.
             return _auth(clean_reason)
 
         # ──【核心鐵律三：持倉全週期防洗——除非剛好是真峰谷，否則除了鎖利外都不平倉】──
@@ -2074,6 +2071,7 @@ class HoldingProtectionExitGate:
         if (
             side == 'LONG'
             and not _is_profit_lock_reason(clean_reason)
+            and not is_true_pivot_confirmed
             and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
             and clean_reason not in ('EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR')
         ):
