@@ -1,8 +1,15 @@
 """Shared net-ROE profit lock used by scan-time and final-exit validation.
 
-Primary policy: arm at 10% peak net ROE and close after a 30% giveback
-from that peak. Net ROE includes estimated round-trip fees and slippage.
-Explicit legacy configs remain supported for offline callers.
+第一階段重構版本（2026-10 最新授權）：
+1. 支援可設定階梯鎖利參數 NetRoeLockConfig。
+2. 候選參數供回測比較：
+   - 啟動前：淨 ROE 未達 +8%，不觸發一般峰值回撤鎖利。
+   - 第一階段：峰值淨 ROE 達 +8% 後，鎖利底線固定為 +4%。
+   - 第二階段：峰值淨 ROE 達 +15% 後，允許回吐 4 個百分點。
+   - 第三階段：峰值淨 ROE 達 +30% 後，允許回吐 5 個百分點。
+3. 嚴格邊界保護：階梯切換時保證鎖利底線「單調不下降 (Monotonic Non-Decreasing)」。
+4. 多單 LONG 與空單 SHORT 嚴格鏡像對稱。
+5. 淨 ROE 計算嚴格扣除開平倉雙邊手續費、滑價與真實槓桿保證金。
 """
 from dataclasses import dataclass
 import math
@@ -11,22 +18,21 @@ from typing import Optional, Tuple, Dict, Any
 
 @dataclass(frozen=True)
 class NetRoeLockConfig:
-    """Legacy custom tier parameters; production uses the prompt ratio rule."""
-    tier1_start: float = 10.0     # 啟動門檻 (淨 ROE +10%)
-    tier1_floor: float = 7.0      # 相容欄位；預設策略用峰值比例計算
-    tier2_start: float = 15.0     # 舊版自訂階梯相容欄位
-    tier2_giveback: float = 4.0   # 舊版自訂階梯相容欄位
-    tier3_start: float = 30.0     # 舊版自訂階梯相容欄位
-    tier3_giveback: float = 5.0   # 舊版自訂階梯相容欄位
+    """可配置之淨 ROE 階梯鎖利參數"""
+    tier1_start: float = 8.0      # 第一階段啟動門檻 (預設 +8.0%)
+    tier1_floor: float = 4.0      # 第一階段鎖利底線 (預設 +4.0%)
+    tier2_start: float = 15.0     # 第二階段啟動門檻 (預設 +15.0%)
+    tier2_giveback: float = 4.0   # 第二階段回吐空間 (預設 4.0 個百分點)
+    tier3_start: float = 30.0     # 第三階段啟動門檻 (預設 +30.0%)
+    tier3_giveback: float = 5.0   # 第三階段回吐空間 (預設 5.0 個百分點)
 
 
 DEFAULT_LOCK_CONFIG = NetRoeLockConfig()
-PROMPT_LOCK_GIVEBACK_RATIO = 0.30
 
 # 向後相容之全域別名（指向預設配置之第一階段啟動門檻）
 NET_ROE_LOCK_START_PCT = DEFAULT_LOCK_CONFIG.tier1_start
 NET_ROE_LOCK_GIVEBACK_PCT = DEFAULT_LOCK_CONFIG.tier2_giveback
-BREAKEVEN_NET_ROE_TRIGGER_PCT = 10.0
+BREAKEVEN_NET_ROE_TRIGGER_PCT = 6.0
 BREAKEVEN_FAVORABLE_ATR_MULTIPLE = 0.5
 
 
@@ -50,21 +56,18 @@ def tiered_net_roe_floor(
     config: Optional[NetRoeLockConfig] = None,
 ) -> Tuple[Optional[float], int]:
     """
-    Default: arm at +10% peak net ROE and floor at 70% of the peak.
-    An explicitly supplied config retains the historical tier behavior.
+    階梯式淨 ROE 鎖利底線計算（Net-ROE Profit Lock Floor）：
+    - peak < tier1_start：尚未達到啟動門檻，回傳 (None, 0)。
+    - tier1_start <= peak < tier2_start (第一階段)：
+      鎖利底線固定為 tier1_floor (回傳 (tier1_floor, 1))。
+    - tier2_start <= peak < tier3_start (第二階段)：
+      底線為 peak - tier2_giveback，且保證不低於 tier1_floor (回傳 (floor, 2))。
+    - peak >= tier3_start (第三階段)：
+      底線為 peak - tier3_giveback，但嚴格受制於第二階段頂端底線防跌保護：
+      floor = max(tier3_start - tier2_giveback, peak - tier3_giveback)，
+      徹底杜絕階段切換時底線下退之漏洞！(回傳 (floor, 3))。
     """
-    # Default production policy: retain 70% of each peak once 10% is reached.
-    # Passing an explicit config opts into the legacy tiered behavior.
-    if config is None:
-        try:
-            peak = float(peak_net_roe_pct)
-            if not math.isfinite(peak) or peak < DEFAULT_LOCK_CONFIG.tier1_start:
-                return None, 0
-            return round(peak * (1.0 - PROMPT_LOCK_GIVEBACK_RATIO), 6), 1
-        except (TypeError, ValueError, OverflowError):
-            return None, 0
-
-    cfg = config
+    cfg = config or DEFAULT_LOCK_CONFIG
     try:
         peak = float(peak_net_roe_pct)
         if not math.isfinite(peak):
@@ -175,9 +178,9 @@ def evaluate_net_roe_profit_lock(
     """
     單筆持倉之淨 ROE 鎖利唯一裁決官：
     - 多單 LONG 與空單 SHORT 統一規則。
-    - 首次達淨 ROE +10% 啟動鎖利。
+    - 首次達 tier1_start (預設 +8%) 啟動鎖利。
     - 持續追蹤最高淨 ROE 並創新高時更新。
-    - 預設底線為峰值淨 ROE 的 70%，即峰值回吐 30% 時平倉。
+    - 當 目前淨 ROE <= 階梯鎖利底線 時觸發平倉。
     - 剛達啟動門檻時不因啟動動作立即平倉。
     - 回傳 (should_exit, reason, meta)。
     """
@@ -242,14 +245,14 @@ def evaluate_net_roe_profit_lock(
         "armed": is_armed,
         "floor_net_roe_pct": None,
         "lock_tier": 0,
-        "profit_lock_rule": "PEAK_NET_ROE_10PCT_ARM_30PCT_GIVEBACK",
+        "profit_lock_rule": "CONFIGURABLE_TIERED_NET_ROE_LOCK",
     }
 
     if not is_armed:
         return False, None, meta
 
     # 已啟動鎖利：計算當前階梯底線
-    floor, tier = tiered_net_roe_floor(peak_roe, config=config)
+    floor, tier = tiered_net_roe_floor(peak_roe, config=cfg)
     state["floor_net_roe_pct"] = floor
     state["lock_tier"] = tier
     meta["floor_net_roe_pct"] = floor
