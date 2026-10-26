@@ -1290,25 +1290,62 @@
                 getChartCkTrend(data) {
                     if (!Array.isArray(data) || data.length === 0) return 'wait';
                     const closed = data.filter(bar => bar.is_live === false);
-                    if (closed.length < 5) {
-                        const tail = closed.slice(-3);
-                        if (tail.length < 3) return 'wait';
-                        const [f, s, t] = tail.map(b => Number(b.kc_middle));
-                        if (f < s && s < t) return 'bull';
-                        if (f > s && s > t) return 'bear';
-                        return 'range';
+                    const currentBar = data[data.length - 1];
+                    const currentIsLive = currentBar.is_live === true;
+                    const previousClosed = closed[
+                        closed.length - (currentIsLive ? 1 : 2)
+                    ];
+                    const number = value => {
+                        const parsed = Number(value);
+                        return Number.isFinite(parsed) ? parsed : null;
+                    };
+
+                    // The badge must react to the forming candle. Waiting for
+                    // a five-bar KC slope made an upward breakout stay UNKNOWN
+                    // or DOWN even after price reached the upper rail.
+                    if (currentBar) {
+                        const open = number(currentBar.open);
+                        const close = number(currentBar.close);
+                        const high = number(currentBar.high);
+                        const low = number(currentBar.low);
+                        const middle = number(currentBar.kc_middle);
+                        const upper = number(currentBar.kc_upper);
+                        const lower = number(currentBar.kc_lower);
+                        const previousClose = previousClosed
+                            ? number(previousClosed.close) : null;
+                        const validLive = [open, close, high, low, middle, upper, lower]
+                            .every(value => value !== null && value > 0)
+                            && lower < middle && middle < upper;
+
+                        if (validLive) {
+                            const bullishBody = close > open
+                                && (previousClose === null || close > previousClose);
+                            const bearishBody = close < open
+                                && (previousClose === null || close < previousClose);
+
+                            if (close >= upper || (bullishBody && high >= upper && close >= middle)) {
+                                return 'bull';
+                            }
+                            if (close <= lower || (bearishBody && low <= lower && close <= middle)) {
+                                return 'bear';
+                            }
+                            if (bullishBody && close >= middle) return 'bull';
+                            if (bearishBody && close <= middle) return 'bear';
+                        }
                     }
-                    const lastBar = closed[closed.length - 1];
-                    const bar5Ago = closed[closed.length - 5];
-                    const kcMidNow = Number(lastBar.kc_middle);
-                    const kcMid5Ago = Number(bar5Ago.kc_middle);
-                    const emaFast = Number(lastBar.ema_fast || lastBar.ma15 || kcMidNow);
-                    const emaSlow = Number(lastBar.ema_slow || lastBar.ma40 || kcMidNow);
-                    if (!Number.isFinite(kcMidNow) || !Number.isFinite(kcMid5Ago)) return 'wait';
-                    
-                    const slope5 = kcMidNow - kcMid5Ago;
-                    if (slope5 > 0.000005 || (emaFast >= emaSlow && slope5 >= -0.000005)) return 'bull';
-                    if (slope5 < -0.000005 || (emaFast <= emaSlow && slope5 <= 0.000005)) return 'bear';
+
+                    // Outside an active directional candle, use the latest
+                    // three completed midlines. This avoids the old five-bar
+                    // delay while keeping ordinary noise out of the badge.
+                    const tail = closed.slice(-3);
+                    if (tail.length < 3) return 'wait';
+                    const mids = tail.map(bar => number(bar.kc_middle));
+                    if (mids.some(value => value === null || value <= 0)) return 'wait';
+                    const epsilon = Math.max(...mids.map(Math.abs)) * 1e-10;
+                    if (mids[0] < mids[1] - epsilon && mids[1] <= mids[2] + epsilon
+                            && mids[2] > mids[1] + epsilon) return 'bull';
+                    if (mids[0] > mids[1] + epsilon && mids[1] >= mids[2] - epsilon
+                            && mids[2] < mids[1] - epsilon) return 'bear';
                     return 'range';
                 },
                 getChartMarketMode(symbol) {

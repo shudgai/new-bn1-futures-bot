@@ -62,3 +62,11 @@ WAIT candidate remains isolated and disabled. No manual trading orders were plac
 - **Modification Description**: Replace assertions that allowed confirmed buying/selling pressure to close a position. Keep pressure classification as diagnostic candidate evidence, and assert both the holding gate and final account authorization reject pressure without a verified true pivot or profit lock.
 - **Trigger Reason & Requirement**: User requested updating tests that still asserted the retired early-pressure exit policy.
 - **Verification & Test Status**: `pytest -q tests/test_confirmed_pressure_exit.py` — 15 passed.
+
+
+### [2026-10-26 08:01:25 UTC+8] - Modification Phase: Make the chart KC direction badge responsive
+- **Author**: shudgai999 (workspace operator) / Codex
+- **Target Files & Lines**: `web/index.html` (`getChartCkTrend`)
+- **Modification Description**: Resolve chart direction from the latest forming or just-closed candle first: price beyond an outer rail sets that side; a directional body holding beyond the KC middle sets the matching side. Fall back to the latest three completed KC midlines instead of a five-bar slope. This changes the chart badge only; entry authorization remains unchanged.
+- **Trigger Reason & Requirement**: User reported that the chart showed KC direction unclear/down while price and candles had already advanced upward to the upper rail.
+- **Verification & Test Status**: Extracted the updated method and `node --check` passed; `git diff --check` passed. No automated test suite run. The root route serves `web/index.html` with no-cache headers, so refreshing the dashboard loads the change without restarting the bot.
