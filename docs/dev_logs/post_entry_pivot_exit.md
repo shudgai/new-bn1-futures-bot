@@ -70,3 +70,11 @@ WAIT candidate remains isolated and disabled. No manual trading orders were plac
 - **Modification Description**: Resolve chart direction from the latest forming or just-closed candle first: price beyond an outer rail sets that side; a directional body holding beyond the KC middle sets the matching side. Fall back to the latest three completed KC midlines instead of a five-bar slope. This changes the chart badge only; entry authorization remains unchanged.
 - **Trigger Reason & Requirement**: User reported that the chart showed KC direction unclear/down while price and candles had already advanced upward to the upper rail.
 - **Verification & Test Status**: Extracted the updated method and `node --check` passed; `git diff --check` passed. No automated test suite run. The root route serves `web/index.html` with no-cache headers, so refreshing the dashboard loads the change without restarting the bot.
+
+
+### [2026-10-26 08:09:22 UTC+8] - Modification Phase: Correct chart indicator badge
+- **Author**: shudgai999 (workspace operator) / Codex
+- **Target Files & Lines**: `web/index.html` (chart modal header badge)
+- **Modification Description**: Replace the inaccurate EMA15/40 and live holding-policy claim with the indicators actually drawn: 1-minute candles, MA5, MA15, and KC. Clarify in the tooltip that holding protection is enforced separately by strategy gates.
+- **Trigger Reason & Requirement**: User asked whether the chart header description needed correction.
+- **Verification & Test Status**: `git diff --check` passed. The dashboard serves the HTML file with no-cache headers; refresh the chart to load the label without restarting the service.
