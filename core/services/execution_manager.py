@@ -339,14 +339,18 @@ class ExecutionManager:
                 logger.info(f"🚫 [RATE_LIMIT] {symbol} 1 小時內已開倉 {len(entry_history)} 次，達到上限 ({cls.MAX_ENTRIES_PER_HOUR} 次)，禁止開倉！")
                 return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
-            if is_swing_pivot:
+            p_up = market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper
+            p_low = market_data.prev_k.get("kc_lower", market_data.kc_lower) if market_data.prev_k else market_data.kc_lower
+            p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
+
+            if can_long and is_breakout_long:
+                candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
+            elif can_short and is_breakdown_short:
+                candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
+            elif is_swing_pivot:
                 candidate_signal = f"SWING_PIVOT_{swing_pivot['side']}"
             elif can_long:
-                p_up = market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper
-                p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
-                if is_breakout_long:
-                    candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
-                elif is_ma_cross_long:
+                if is_ma_cross_long:
                     candidate_signal = "ENTRY_LONG_MA3_MA15_CROSS_MID"
                 elif is_pullback_long:
                     candidate_signal = "TREND_PULLBACK_LONG"
@@ -357,11 +361,7 @@ class ExecutionManager:
                         candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
 
             elif can_short:
-                p_low = market_data.prev_k.get("kc_lower", market_data.kc_lower) if market_data.prev_k else market_data.kc_lower
-                p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
-                if is_breakdown_short:
-                    candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
-                elif is_ma_cross_short:
+                if is_ma_cross_short:
                     candidate_signal = "ENTRY_SHORT_MA3_MA15_CROSS_MID"
                 elif is_pullback_short:
                     candidate_signal = "TREND_PULLBACK_SHORT"

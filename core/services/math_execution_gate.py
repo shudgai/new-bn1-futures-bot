@@ -787,20 +787,6 @@ async def validate_entry_at_execution(
     source = " ".join(str(value or "") for value in (
         payload.get("source"), payload.get("reason"), signal_type,
     ))
-    is_swing_pivot = (
-        str(payload.get("entry_type") or "").upper() == "SWING_PIVOT"
-        or "SWING_PIVOT" in signal_type.upper()
-    )
-    if is_swing_pivot:
-        from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
-        pivot = evaluate_swing_pivot_entry(frame)
-        requested_stop = _number(payload.get("stop_loss_price"))
-        if (
-            pivot is None or pivot.get("side") != str(side).upper()
-            or requested_stop is None
-            or abs(requested_stop - float(pivot["stop_loss_price"])) > max(1e-12, abs(requested_stop) * 1e-10)
-        ):
-            return False, "BLOCKED_SWING_PIVOT_STOP_OR_EVIDENCE_MISMATCH"
     authorized_intrabar_types = {
         "BREAKOUT_LONG", "BREAKDOWN_SHORT",
         "CONTINUATION_OUTSIDE_KC_LONG", "CONTINUATION_OUTSIDE_KC_SHORT",
@@ -810,6 +796,22 @@ async def validate_entry_at_execution(
         "CLOSED_BODY_BREAKOUT_LONG", "CLOSED_BODY_BREAKOUT_SHORT",
         "KC_LIVE_PATTERN_BREAKOUT_LONG", "KC_LIVE_PATTERN_BREAKOUT_SHORT",
     }
+    is_swing_pivot = (
+        str(payload.get("entry_type") or "").upper() == "SWING_PIVOT"
+        or "SWING_PIVOT" in signal_type.upper()
+    )
+    if is_swing_pivot and signal_type not in authorized_intrabar_types:
+        from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
+        pivot = evaluate_swing_pivot_entry(frame)
+        if pivot is None and payload.get("raw_df") is not None:
+            pivot = evaluate_swing_pivot_entry(payload.get("raw_df"))
+        requested_stop = _number(payload.get("stop_loss_price"))
+        if (
+            pivot is None or pivot.get("side") != str(side).upper()
+            or requested_stop is None
+            or abs(requested_stop - float(pivot["stop_loss_price"])) > max(1e-6, abs(requested_stop) * 1e-4)
+        ):
+            return False, "BLOCKED_SWING_PIVOT_STOP_OR_EVIDENCE_MISMATCH"
     allow_intrabar = bool(
         payload.get("intrabar_authorized") is True
         and payload.get("upstream_entry_gate_authorized") is True
