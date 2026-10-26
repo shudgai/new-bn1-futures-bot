@@ -1,6 +1,7 @@
 """Closing is single-flight; successful fills survive stale/failed refreshes."""
 import asyncio
 from unittest.mock import AsyncMock
+import pandas as pd
 import pytest
 from test_testnet_account import FakeTestnetExchange
 import core.testnet_account as tm
@@ -20,8 +21,33 @@ async def account_for(side, tmp_path, monkeypatch):
     ex = FakeTestnetExchange()
     account = tm.BinanceTestnetAccount(ex)
     await account.initialize()
-    assert await account.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
-                                       entry_context={"entry_mode": "CHANNEL_SWING"})
+    qty = 0.25
+    signed_qty = qty if side == "LONG" else -qty
+    ex.positions = [{
+        "symbol": "DOGEUSDT", "positionAmt": str(signed_qty),
+        "entryPrice": "100", "markPrice": "100", "leverage": "1",
+        "unRealizedProfit": "0",
+    }]
+    account.positions["DOGE/USDT"] = {
+        "side": side, "entry_price": 100.0, "qty": qty, "margin": 25.0,
+        "leverage": 1.0, "open_timestamp": 0.0,
+        "entry_mode": "CHANNEL_SWING", "trend_lock_managed": True,
+        "initial_sl": 95.0 if side == "LONG" else 105.0,
+    }
+    account.position_meta["DOGE/USDT"] = {"trend_lock_managed": True}
+    current_close = 99.0 if side == "LONG" else 101.0
+    frame = pd.DataFrame([
+        {"timestamp": 60_000, "open": 100.0, "high": 100.5,
+         "low": 99.5, "close": 100.0, "ma3": 100.0, "ma15": 100.0,
+         "kc_middle": 100.0, "kc_upper": 102.0, "kc_lower": 98.0,
+         "is_closed": True},
+        {"timestamp": 120_000, "open": 100.0, "high": 101.5,
+         "low": 98.5, "close": current_close, "ma3": 100.0, "ma15": 100.0,
+         "kc_middle": 100.0, "kc_upper": 102.0, "kc_lower": 98.0,
+         "is_closed": True},
+    ])
+    frame.attrs.update(timeframe_ms=60_000, snapshot_ms=180_000)
+    account._channel_exit_frames = {"DOGE/USDT": frame}
     return account, ex
 
 
@@ -30,7 +56,7 @@ def closes(account):
 
 
 def close_orders(ex):
-    return [o for o in ex.orders if o["type"] == "market" and o["params"].get("reduceOnly")]
+    return [o for o in ex.orders if o["params"].get("reduceOnly")]
 
 
 @pytest.mark.anyio
@@ -43,9 +69,9 @@ async def test_concurrent_testnet_closes_submit_once(side, tmp_path, monkeypatch
         started.set(); await release.wait()
         return await create(*args, **kwargs)
     ex.create_order = delayed
-    first = asyncio.create_task(a.close_position("DOGE/USDT", 100., "Channel Swing middle", True))
+    first = asyncio.create_task(a.close_position("DOGE/USDT", 100., "手動平倉", True))
     await started.wait()
-    results = await asyncio.gather(*(a.close_position("DOGE/USDT", 100., "Channel Swing profit", True) for _ in range(10)))
+    results = await asyncio.gather(*(a.close_position("DOGE/USDT", 100., "手動平倉", True) for _ in range(10)))
     assert results == [False] * 10
     release.set(); assert await first
     assert len(close_orders(ex)) == len(closes(a)) == 1
@@ -57,8 +83,8 @@ async def test_concurrent_testnet_closes_submit_once(side, tmp_path, monkeypatch
 async def test_successful_close_is_not_failed_by_refresh(side, tmp_path, monkeypatch):
     a, ex = await account_for(side, tmp_path, monkeypatch)
     a.refresh = AsyncMock(side_effect=RuntimeError("refresh unavailable"))
-    assert await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
-    assert not await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)
+    assert not await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     assert len(close_orders(ex)) == len(closes(a)) == 1
     assert "DOGE/USDT" not in a._close_retry_after
 
@@ -69,9 +95,9 @@ async def test_stale_refresh_cannot_resurrect_just_closed_position(side, tmp_pat
     a, ex = await account_for(side, tmp_path, monkeypatch)
     stale = list(ex.positions)
     ex.fapiPrivateV2GetPositionRisk = AsyncMock(return_value=stale)
-    assert await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     assert "DOGE/USDT" not in a.positions
-    assert not await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert not await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     assert len(close_orders(ex)) == len(closes(a)) == 1
 
 
@@ -90,7 +116,7 @@ async def test_inflight_refresh_from_before_close_is_discarded(side, tmp_path, m
     ex.fapiPrivateV2GetPositionRisk = delayed
     refreshing = asyncio.create_task(a.refresh(force=True))
     await started.wait()
-    assert await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     release.set(); await refreshing
     assert "DOGE/USDT" not in a.positions
     assert len(closes(a)) == 1
@@ -118,11 +144,16 @@ async def test_concurrent_paper_closes_book_once(side, tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "STATE_FILE", str(tmp_path / "paper.json"))
     a = pm.PaperAccount()
     a.balance = a.daily_start_balance = 1000.
-    assert await a.open_position("DOGE/USDT", side, 100., 25., 0., 0., "pivot", leverage=1,
-                                 entry_context={"entry_mode": "CHANNEL_SWING"})
-    results = await asyncio.gather(*(a.close_position("DOGE/USDT", 100., "Channel Swing middle", True) for _ in range(10)))
+    qty = 0.25
+    a.positions["DOGE/USDT"] = {
+        "side": side, "entry_price": 100.0, "qty": qty, "margin": 25.0,
+        "leverage": 1.0, "open_timestamp": 0.0,
+        "entry_mode": "CHANNEL_SWING", "trend_lock_managed": True,
+    }
+    a.position_meta["DOGE/USDT"] = {"trend_lock_managed": True}
+    results = await asyncio.gather(*(a.close_position("DOGE/USDT", 100., "手動平倉", True) for _ in range(10)))
     assert results.count(True) == 1
     assert len(closes(a)) == 1
     balance = a.balance
-    assert not await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert not await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     assert a.balance == balance

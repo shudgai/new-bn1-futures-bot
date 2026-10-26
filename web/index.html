@@ -615,7 +615,7 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ formatSymbol(symbol) }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="即時 K 價格站上／跌破 KC 中軌，或觸及同側外軌時優先顯示方向；否則參考最近三根已收線中軌">
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據最近已收線 KC 中軌斜率判定方向；即時 K 棒顏色不影響中軌方向">
                                 {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                             <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" style="font-size: 16px; margin-left: 6px; cursor: default; vertical-align: middle;">
@@ -1289,63 +1289,29 @@
 
                 getChartCkTrend(data) {
                     if (!Array.isArray(data) || data.length === 0) return 'wait';
-                    const closed = data.filter(bar => bar.is_live === false);
-                    const currentBar = data[data.length - 1];
-                    const currentIsLive = currentBar.is_live === true;
-                    const previousClosed = closed[
-                        closed.length - (currentIsLive ? 1 : 2)
-                    ];
                     const number = value => {
                         const parsed = Number(value);
                         return Number.isFinite(parsed) ? parsed : null;
                     };
+                    const closed = data.filter(bar => bar.is_live === false);
+                    if (closed.length < 2) return 'wait';
 
-                    // The badge must react to the forming candle. Waiting for
-                    // a five-bar KC slope made an upward breakout stay UNKNOWN
-                    // or DOWN even after price reached the upper rail.
-                    if (currentBar) {
-                        const open = number(currentBar.open);
-                        const close = number(currentBar.close);
-                        const high = number(currentBar.high);
-                        const low = number(currentBar.low);
-                        const middle = number(currentBar.kc_middle);
-                        const upper = number(currentBar.kc_upper);
-                        const lower = number(currentBar.kc_lower);
-                        const previousClose = previousClosed
-                            ? number(previousClosed.close) : null;
-                        const validLive = [open, close, high, low, middle, upper, lower]
-                            .every(value => value !== null && value > 0)
-                            && lower < middle && middle < upper;
-
-                        if (validLive) {
-                            const bullishBody = close > open
-                                && (previousClose === null || close > previousClose);
-                            const bearishBody = close < open
-                                && (previousClose === null || close < previousClose);
-
-                            if (close >= upper || (bullishBody && high >= upper && close >= middle)) {
-                                return 'bull';
-                            }
-                            if (close <= lower || (bearishBody && low <= lower && close <= middle)) {
-                                return 'bear';
-                            }
-                            if (bullishBody && close >= middle) return 'bull';
-                            if (bearishBody && close <= middle) return 'bear';
-                        }
-                    }
-
-                    // Outside an active directional candle, use the latest
-                    // three completed midlines. This avoids the old five-bar
-                    // delay while keeping ordinary noise out of the badge.
+                    // 依據已收線 K 棒的中軌斜率判定 KC 方向，嚴禁使用 K 棒實體顏色 (紅/綠 K) 代替中軌斜率
                     const tail = closed.slice(-3);
-                    if (tail.length < 3) return 'wait';
                     const mids = tail.map(bar => number(bar.kc_middle));
                     if (mids.some(value => value === null || value <= 0)) return 'wait';
+
                     const epsilon = Math.max(...mids.map(Math.abs)) * 1e-10;
-                    if (mids[0] < mids[1] - epsilon && mids[1] <= mids[2] + epsilon
-                            && mids[2] > mids[1] + epsilon) return 'bull';
-                    if (mids[0] > mids[1] + epsilon && mids[1] >= mids[2] - epsilon
-                            && mids[2] < mids[1] - epsilon) return 'bear';
+                    if (tail.length >= 3) {
+                        if (mids[0] < mids[1] - epsilon && mids[2] > mids[1] + epsilon) return 'bull';
+                        if (mids[0] > mids[1] + epsilon && mids[2] < mids[1] - epsilon) return 'bear';
+                    }
+
+                    // 兩根已收線平滑回退比對
+                    const prevMid = mids[mids.length - 2];
+                    const currMid = mids[mids.length - 1];
+                    if (currMid > prevMid + epsilon) return 'bull';
+                    if (currMid < prevMid - epsilon) return 'bear';
                     return 'range';
                 },
                 getChartMarketMode(symbol) {

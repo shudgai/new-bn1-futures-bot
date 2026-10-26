@@ -138,16 +138,20 @@ def validate_entry_math(
             if macro_close is not None and macro_close > 0
             else None
         )
+        calculated_macro = getattr(snapshot, "macro_trend", None) if snapshot else None
         macro_trend = str(
-            getattr(snapshot, "macro_trend", "NEUTRAL") or "NEUTRAL"
+            calculated_macro
+            or (getattr(frame, "attrs", {}).get("macro_trend") if hasattr(frame, "attrs") else None)
+            or (closed_bars[-1].get("macro_trend") if closed_bars else None)
+            or "NEUTRAL"
         ).upper()
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         macro_trend = "NEUTRAL"
     if macro_trend == "NEUTRAL" and not is_swing_pivot:
         return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
-    if side == "LONG" and macro_trend != "BULLISH" and not is_swing_pivot:
+    if side == "LONG" and macro_trend != "BULLISH":
         return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
-    if side == "SHORT" and macro_trend != "BEARISH" and not is_swing_pivot:
+    if side == "SHORT" and macro_trend != "BEARISH":
         return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -376,7 +380,8 @@ def is_emergency_exit(close_reason: Any) -> bool:
         "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP", "LIQUIDATION",
         "MARGIN_LOSS", "MAXIMUM_LOSS", "OPPOSITE_KC_BAND_BREACH", "EXTREME_WATERFALL",
         "TWO_CLOSED_ADVERSE_ABNORMAL", "ADVERSE_STOP_LOSS",
-        "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
+        "STOP-LOSS", "停損", "止損",
+        "急速反向",
         "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布",
         "帳戶硬止損", "最大虧損", "熔斷", "反側KC",
     ))
@@ -405,12 +410,60 @@ def validate_exit_math(
     # Safety labels require matching evidence. Only exchange/account failure
     # exits that cannot be price-validated retain an unconditional override.
     if emergency:
-        if any(token in norm_reason for token in (
-            "DATA_OUTAGE", "LIQUIDATION", "MARGIN_LOSS", "FAIL_SAFE",
-        )):
-            return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
         if quote is None or quote <= 0 or side not in ("LONG", "SHORT"):
             return False, "BLOCKED_EXIT_EMERGENCY_EVIDENCE_INVALID", details
+
+        if "DATA_OUTAGE" in norm_reason:
+            entry = _number(position.get("entry_price"))
+            leverage = _number(position.get("leverage")) or 1.0
+            entry_atr = (
+                _number(position.get("entry_atr"))
+                or _number(position.get("atr"))
+            )
+            if entry_atr is None and len(bars) >= 2:
+                entry_atr = _number(bars[-2].get("atr"))
+            if entry_atr is None and entry is not None:
+                entry_atr = entry * 0.015
+            if entry is None or entry <= 0 or entry_atr is None or entry_atr <= 0:
+                return False, "BLOCKED_EXIT_DATA_OUTAGE_EVIDENCE_INVALID", details
+            pnl_pct = (
+                (quote - entry) / entry if side == "LONG"
+                else (entry - quote) / entry
+            )
+            roe = pnl_pct * leverage
+            threshold_pct = 3.0 * entry_atr / entry
+            if pnl_pct <= -threshold_pct or roe <= -0.5:
+                return True, "EMERGENCY_EXIT_DATA_OUTAGE_LOSS_CONFIRMED", {
+                    "exit_type": "DATA_OUTAGE_HARD_STOP",
+                    "pnl_pct": pnl_pct,
+                    "roe": roe,
+                    "threshold_pct": threshold_pct,
+                }
+            return False, "BLOCKED_EXIT_DATA_OUTAGE_LOSS_NOT_CONFIRMED", {
+                "pnl_pct": pnl_pct,
+                "roe": roe,
+                "threshold_pct": threshold_pct,
+            }
+
+        if "LIQUIDATION" in norm_reason:
+            liquidation_price = (
+                _number(position.get("liquidation_price"))
+                or _number((metadata or {}).get("liquidation_price"))
+            )
+            breached = liquidation_price is not None and (
+                quote <= liquidation_price if side == "LONG"
+                else quote >= liquidation_price
+            )
+            if breached:
+                return True, "EMERGENCY_EXIT_LIQUIDATION_PRICE_CONFIRMED", {
+                    "exit_type": "LIQUIDATION_PRICE_BREACH",
+                    "liquidation_price": liquidation_price,
+                    "quote": quote,
+                }
+            return False, "BLOCKED_EXIT_LIQUIDATION_EVIDENCE_UNAVAILABLE", {
+                "liquidation_price": liquidation_price,
+                "quote": quote,
+            }
 
         if "TWO_CLOSED_ADVERSE_ABNORMAL" in norm_reason:
             from core.services.exits.abnormal_candle_exit import (
@@ -445,10 +498,19 @@ def validate_exit_math(
                 return False, "BLOCKED_EXIT_ABNORMAL_CANDLE_DATA_INVALID", details
             body = opening - quote if side == "LONG" else quote - opening
             crossed = quote < middle if side == "LONG" else quote > middle
-            if body < 1.5 * atr or not crossed:
+            live_waterfall = (body >= 1.5 * atr and crossed)
+
+            prev_open = _number(previous.get("open"))
+            prev_close = _number(previous.get("close"))
+            prev_mid = _number(previous.get("kc_middle")) or middle
+            prev_body = (prev_open - prev_close) if side == "LONG" else (prev_close - prev_open) if (prev_open is not None and prev_close is not None) else None
+            prev_crossed = (prev_open >= prev_mid and prev_close < prev_mid) if side == "LONG" else (prev_open <= prev_mid and prev_close > prev_mid) if (prev_open is not None and prev_close is not None and prev_mid is not None) else False
+            prev_waterfall = bool(prev_body is not None and prev_body >= 1.5 * atr and prev_crossed)
+
+            if not live_waterfall and not prev_waterfall:
                 return False, "BLOCKED_EXIT_ABNORMAL_CANDLE_NOT_CONFIRMED", details
             return True, "EMERGENCY_EXIT_ABNORMAL_CANDLE_CONFIRMED", {
-                "exit_type": "ABNORMAL_CANDLE", "body": body,
+                "exit_type": "ABNORMAL_CANDLE", "body": body if live_waterfall else prev_body,
                 "atr": atr, "kc_middle": middle, "quote": quote,
             }
 
@@ -507,11 +569,51 @@ def validate_exit_math(
                 }
             return False, "BLOCKED_EXIT_MEME_ADVERSE_STOP_NOT_CONFIRMED", details
 
+        if "急速反向" in norm_reason:
+            entry = _number(position.get("entry_price"))
+            atr = (
+                _number(position.get("atr"))
+                or _number(position.get("entry_atr"))
+                or _number((metadata or {}).get("atr"))
+            )
+            if atr is None and len(bars) >= 2:
+                atr = _number(bars[-2].get("atr"))
+            import re
+            match = re.search(r">\s*([0-9]+(?:\.[0-9]+)?)\s*ATR", norm_reason)
+            threshold = float(match.group(1)) if match else 1.5
+            adverse = (
+                entry - quote if side == "LONG" else quote - entry
+            ) if entry is not None else None
+            if (atr is not None and atr > 0 and adverse is not None
+                    and adverse >= threshold * atr):
+                return True, "EMERGENCY_EXIT_RAPID_ADVERSE_CONFIRMED", {
+                    "exit_type": "RAPID_ADVERSE_MOVE", "adverse_move": adverse,
+                    "atr": atr, "threshold_atr": threshold,
+                }
+            return False, "BLOCKED_EXIT_RAPID_ADVERSE_NOT_CONFIRMED", details
+
         if any(token in norm_reason for token in (
-            "HARD_STOP", "CIRCUIT_BREAKER", "STOP_LOSS", "STOP-LOSS", "停損",
+            "HARD_STOP", "CIRCUIT_BREAKER", "MARGIN_LOSS", "STOP_LOSS",
+            "STOP-LOSS", "停損", "止損",
         )):
             entry = _number(position.get("entry_price"))
-            stop = _number(position.get("sl")) or _number(position.get("initial_sl"))
+            initial_stop = (
+                _number(position.get("initial_sl"))
+                or _number(position.get("atr_sl"))
+                or _number((metadata or {}).get("initial_sl"))
+                or _number((metadata or {}).get("atr_sl"))
+            )
+            current_stop = _number(position.get("sl")) or _number((metadata or {}).get("sl"))
+            current_stop_is_profit_lock = bool(
+                entry is not None and current_stop is not None
+                and ((side == "LONG" and current_stop > entry)
+                     or (side == "SHORT" and current_stop < entry))
+            )
+            # A favorable mutable SL is a trailing/profit-lock stop, not proof
+            # of an initial hard stop. It cannot be relabeled as emergency.
+            stop = initial_stop or (
+                None if current_stop_is_profit_lock else current_stop
+            )
             if stop is None:
                 entry_atr = _number(position.get("entry_atr"))
                 if entry_atr is None and len(bars) >= 2:
@@ -702,10 +804,22 @@ def validate_exit_math(
             hold_veto = ("VETO_HOLD", {"exit_type": "VETO_HOLD", "kc_middle_slope": middle_slope})
 
     # Path B: fee-aware net-ROE breakeven and ratchet floors.
+    if any(token in norm_reason for token in ("STAGED_PROFIT_LOCK", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1", "EXIT_BY_STAGED_PROFIT_LOCK_TIER2")):
+        try:
+            from core.services.exits.staged_profit_lock import evaluate_staged_profit_lock
+            staged_ok, staged_reason, staged_meta = evaluate_staged_profit_lock(position, quote, side)
+            if staged_ok:
+                details.update(exit_type="STAGED_PROFIT_LOCK", **staged_meta)
+                return True, staged_reason or "EXIT_MATH_PROFIT_LOCK", details
+        except Exception:
+            pass
+
     meta = metadata if isinstance(metadata, Mapping) else {}
     state = (
         position.get("three_tier_net_roe_lock_state")
         or meta.get("three_tier_net_roe_lock_state")
+        or position.get("staged_profit_lock_state")
+        or meta.get("staged_profit_lock_state")
         or position.get("profit_lock_state")
         or meta.get("profit_lock_state")
         or {}
@@ -723,7 +837,7 @@ def validate_exit_math(
             _number(position.get("lowest_price")) or entry,
             *(_number(row.get("low")) or entry for row in bars[-120:]),
         )
-        peak_roe = _number(state.get("peak_net_roe_pct"))
+        peak_roe = _number(state.get("peak_net_roe_pct")) or _number(state.get("highest_net_roe_pct"))
         if peak_roe is None:
             peak_roe = _net_roe_pct(position, favored, sign, fee, slip)
         favorable_atr = (favored - entry) / atr if side == "LONG" else (entry - favored) / atr
@@ -773,6 +887,9 @@ async def validate_entry_at_execution(
             frame = snapshot
     if frame is None:
         return False, "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE"
+    if (hasattr(account, "_trend_lock_native_exit_cleanup_complete")
+            and account._trend_lock_native_exit_cleanup_complete is not True):
+        return False, "BLOCKED_TREND_LOCK_NATIVE_EXIT_CLEANUP_UNVERIFIED"
 
     # Re-run the shared structural gate at the account execution boundary.
     # Earlier scan authorization and manual/UI flags cannot replace this check.
@@ -802,10 +919,28 @@ async def validate_entry_at_execution(
     )
     if is_swing_pivot and signal_type not in authorized_intrabar_types:
         from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
-        pivot = evaluate_swing_pivot_entry(frame)
+        target_frame = frame if frame is not None else payload.get("raw_df")
+        if target_frame is None:
+            target_frame = payload.get("entry_gate_frame") or payload.get("frame")
+        if hasattr(target_frame, "attrs"):
+            target_frame.attrs.setdefault("timeframe_ms", 60_000.0)
+
+        pivot = evaluate_swing_pivot_entry(target_frame) if target_frame is not None else None
         if pivot is None and payload.get("raw_df") is not None:
-            pivot = evaluate_swing_pivot_entry(payload.get("raw_df"))
-        requested_stop = _number(payload.get("stop_loss_price"))
+            raw = payload.get("raw_df")
+            if hasattr(raw, "attrs"):
+                raw.attrs.setdefault("timeframe_ms", 60_000.0)
+            pivot = evaluate_swing_pivot_entry(raw)
+        if pivot is None and isinstance((payload.get("meta") or {}).get("swing_pivot"), dict):
+            pivot = (payload.get("meta") or {}).get("swing_pivot")
+
+        requested_stop = _number(
+            payload.get("stop_loss_price")
+            or payload.get("initial_sl")
+            or payload.get("sl")
+            or (payload.get("meta") or {}).get("stop_loss_price")
+            or (payload.get("meta") or {}).get("initial_sl")
+        )
         if (
             pivot is None or pivot.get("side") != str(side).upper()
             or requested_stop is None
@@ -825,6 +960,31 @@ async def validate_entry_at_execution(
     )
     if quote is None or quote <= 0:
         return False, "BLOCKED_ENTRY_MATH_EXECUTION_QUOTE_INVALID"
+
+    is_manual = bool(
+        payload.get("manual_entry") is True
+        or payload.get("source") == "MANUAL"
+    )
+    if not is_manual:
+        from core.services.exits.trend_lock import evaluate_trend_cycle_entry
+        cycle_state = getattr(account, "entry_filter_last", None)
+        if not isinstance(cycle_state, dict):
+            cycle_state = account.entry_filter_last = {}
+        cycle_allowed, cycle_reason, cycle_key = evaluate_trend_cycle_entry(
+            cycle_state, frame, side, symbol,
+        )
+        if not cycle_allowed:
+            return False, cycle_reason
+        if isinstance(context, dict):
+            context["trend_cycle_key"] = cycle_key
+            context["trend_lock_managed"] = True
+            attrs = getattr(frame, "attrs", {})
+            try:
+                timeframe_ms = int(float(attrs.get("timeframe_ms") or 60_000))
+            except (TypeError, ValueError, OverflowError):
+                return False, "BLOCKED_TREND_CYCLE_TIMEFRAME_INVALID"
+            context["trend_cycle_timeframe"] = f"{timeframe_ms}ms"
+
     central_result = CentralEntryGate.verify_and_authorize(
         symbol=symbol, side=side, price=quote, klines_or_snapshot=frame,
         signal_id=str(payload.get("signal_id") or "") or None,
@@ -905,16 +1065,49 @@ def validate_exit_at_execution(
     if frame is None:
         engine = getattr(account, "engine", None)
         frame = getattr(engine, "_channel_exit_frames", {}).get(symbol)
-    from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
-    return validate_exit_math(
-        position,
-        frame,
-        price,
-        getattr(account, "position_meta", {}).get(symbol, {}),
-        fee_rate=TAKER_FEE_RATE,
-        slippage=SLIPPAGE_PCT,
-        close_reason=close_reason,
+    metadata = getattr(account, "position_meta", {}).get(symbol, {})
+    if str(close_reason or "").strip() == "手動平倉":
+        return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+    allowed = automated_position_exit_allowed(
+        symbol, position, metadata, close_reason, price, frame=frame,
     )
+    is_emergency = is_emergency_exit(close_reason)
+    evidence = None
+    if allowed and is_emergency:
+        from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
+        allowed, code, evidence = validate_exit_math(
+            position, frame, price, metadata,
+            fee_rate=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT,
+            close_reason=close_reason,
+        )
+    elif allowed:
+        from core.services.exits.trend_lock import evaluate_trend_lock_exit
+        evidence = evaluate_trend_lock_exit(position, frame) if frame is not None else None
+        code = "TREND_LOCK_EXIT_APPROVED" if evidence is not None else "INITIAL_STOP_APPROVED"
+    else:
+        code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
+    if allowed and hasattr(account, "log"):
+        side = str(position.get("side") or "").upper()
+        qty = position.get("qty")
+        authorization = (
+            "emergency_exit_math" if is_emergency else "automated_position_exit_allowed"
+        )
+        account.log(
+            f"EXIT_AUTHORIZATION symbol={symbol} side={side} qty={qty} "
+            f"exit_reason={close_reason} authorization_function={authorization} "
+            f"trigger_source=account_close_boundary "
+            f"final_execution_gate={code} "
+            f"evidence={evidence if evidence is not None else 'none'}",
+            "WARNING" if allowed else "INFO",
+        )
+    if not allowed:
+        return False, "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY", {
+            "exit_type": "BLOCKED",
+        }
+    if is_emergency:
+        return True, code, evidence or {"exit_type": "EMERGENCY"}
+    return True, code, evidence or {"exit_type": "INITIAL_STOP"}
 
 
 def is_entry_bar(position: Mapping[str, Any], frame: Any) -> bool:

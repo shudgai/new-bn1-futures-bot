@@ -105,6 +105,10 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "trend_cycle_key",
+    "trend_lock_state",
+    "staged_profit_lock_state",
+    "trend_lock_managed",
     "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
     "entry_authority", "wait_trigger_id", "wait_trigger",
     "wait_client_order_id", "kc2bar_signal", "kc2bar_signal_id",
@@ -134,6 +138,38 @@ ENTRY_CONTEXT_KEYS = (
 )
 
 
+def _confirmed_market_entry_fill(order: dict, requested_qty: float) -> Optional[float]:
+    """Return the terminal, exchange-confirmed fill quantity or None."""
+    terminal = {"closed", "filled", "canceled", "cancelled", "expired", "rejected"}
+    try:
+        status = str(order.get("status") or "").lower()
+        filled = float(order.get("filled") or 0.0)
+        requested = float(order.get("amount") or requested_qty)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        status not in terminal
+        or not math.isfinite(filled)
+        or not math.isfinite(requested)
+        or filled <= 0
+        or requested <= 0
+        or filled > requested
+    ):
+        return None
+    return filled
+
+
+def _is_trend_lock_managed(position: dict, meta: dict) -> bool:
+    mode = str(position.get("entry_mode") or meta.get("entry_mode") or "").upper()
+    return bool(
+        position.get("managed_by_bot") or meta.get("managed_by_bot")
+        or position.get("trend_lock_managed") or meta.get("trend_lock_managed")
+        or position.get("trend_lock_state") or meta.get("trend_lock_state")
+        or mode in {"CHANNEL_SWING", "UNIFIED_PIPELINE", "WILD_SWING"}
+        or meta.get("source") == "UNIFIED_PIPELINE"
+    )
+
+
 def get_taipei_now_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     return datetime.now(TAIPEI_TZ).strftime(fmt)
 
@@ -154,6 +190,7 @@ class BinanceTestnetAccount:
         # State path DI: None keeps the production default (module STATE_FILE).
         self._state_file = state_file
         self.exchange = exchange
+        self._trend_lock_native_exit_cleanup_complete = False
         
         # ==================================================
         # [MASTER_BREAKER] 物理總電閘：強制攔截違規送單
@@ -477,25 +514,13 @@ class BinanceTestnetAccount:
             if open_orders is not None:
                 report["pending_entry_status"] = "PROCESSED"
 
-            # G. Verified reduce-only market close for every exchange position.
-            from core.symbol_aliases import is_auto_entry_symbol
-
+            # G. The account-level circuit breaker is independent of strategy
+            # exits and must flatten every verified exchange position.
             for row in open_positions:
                 signed = Decimal(str(row.get("positionAmt")))
                 symbol = self._clean_symbol(row.get("symbol", ""))
                 close_side = "sell" if signed > 0 else "buy"
                 attempt = {"symbol": symbol, "qty": str(abs(signed)), "ok": False}
-                if is_auto_entry_symbol(symbol):
-                    attempt["blocked"] = (
-                        "SOFTWARE_EXIT_POLICY_PROFIT_LOCK_OR_CONFIRMED_PIVOT"
-                    )
-                    self.log(
-                        f"🛑 [CIRCUIT_BREAKER] software close blocked by exit policy: "
-                        f"{symbol}",
-                        "WARNING",
-                    )
-                    report["close_attempts"].append(attempt)
-                    continue
                 try:
                     await self._raw_create_order(
                         to_binance_usdm_symbol(symbol),
@@ -779,15 +804,20 @@ class BinanceTestnetAccount:
         from core.services.exits.staged_testnet_runtime import restore_testnet_staged
         await restore_testnet_staged(self)
         await self._cancel_orphan_entry_orders()
+        native_exit_cleanup_before_refresh = (
+            await self._cancel_trend_lock_native_profit_exits()
+        )
         await self.refresh(force=True)
-        # Old native stops trigger intrabar and cannot implement the new contract.
-        for symbol, position in list(self.positions.items()):
-            meta = self.position_meta.get(symbol,{})
-            if str(position.get('entry_mode') or meta.get('entry_mode') or '').upper() in (
-                'CHANNEL_SWING', 'WILD_SWING',
-            ):
-                await self._remove_channel_native_exits(symbol)
-        await self._restore_exchange_initial_stops()
+        native_exit_cleanup_after_refresh = (
+            await self._cancel_trend_lock_native_profit_exits()
+        )
+        self._trend_lock_native_exit_cleanup_complete = bool(
+            native_exit_cleanup_before_refresh and native_exit_cleanup_after_refresh
+        )
+        stops_restored = await self._restore_exchange_initial_stops()
+        self._trend_lock_native_exit_cleanup_complete = bool(
+            self._trend_lock_native_exit_cleanup_complete and stops_restored
+        )
 
     async def enable_staged_risk(self, symbol, risk_params, entry_order_ids):
         from core.services.exits.staged_testnet_runtime import enable_testnet_staged
@@ -975,6 +1005,7 @@ class BinanceTestnetAccount:
                         "highest_price",
                         "lowest_price",
                         "profit_floor_armed",
+                        "staged_profit_lock_state",
                     )
                     if meta.get(key) is not None
                 },
@@ -1182,6 +1213,15 @@ class BinanceTestnetAccount:
             return "SL"
         return None
 
+    @staticmethod
+    def _is_native_profit_exit_order(order: dict) -> bool:
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        normalized = " ".join(str(value).upper() for value in (
+            order.get("type"), order.get("orderType"), order.get("origType"),
+            info.get("type"), info.get("orderType"), info.get("origType"),
+        ) if value)
+        return "TAKE_PROFIT" in normalized or "TRAILING_STOP" in normalized
+
     async def _classify_external_close(
         self, symbol: str, position: dict, closing_fills: List[dict], close_price: float
     ) -> tuple[str, str]:
@@ -1383,6 +1423,7 @@ class BinanceTestnetAccount:
             meta = self.position_meta.get(symbol, {})
             side = pos["side"]
             entry_p = pos["entry_price"]
+            trend_lock_managed = _is_trend_lock_managed(pos, meta)
 
             # symbol 還有我們自己在追蹤的限價掛單時，就算交易所那邊已經
             # 部分成交、看起來像「持倉但沒保護單」，也不要插手——這種情況
@@ -1621,46 +1662,22 @@ class BinanceTestnetAccount:
 
                 if not meta.get("limit_tp1_filled", False):
                     if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
-                        from core.services.exits.authorized_position_exit import (
-                            automated_position_exit_allowed,
-                        )
-
-                        if not automated_position_exit_allowed(
-                            symbol, pos, meta, "TAKE_PROFIT_50PCT", curr_p,
+                        if await self.partial_close_position(
+                            symbol, curr_p, "TAKE_PROFIT_50PCT", fraction=0.5,
                         ):
+                            meta["limit_tp1_filled"] = True
+                            pos = self.positions.get(symbol)
+                            if pos is None:
+                                continue
+                            pos["is_half_closed"] = True
+                            self.save_state()
+                        else:
                             self.log(
                                 f"POSITION_EXIT_BLOCK symbol={symbol} "
                                 "reason=TAKE_PROFIT_50PCT "
-                                "authority=PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+                                "authority=TREND_LOCK_OR_EXECUTION_GUARD",
                                 "WARNING",
                             )
-                        else:
-                            meta["limit_tp1_filled"] = True
-                            pos["is_half_closed"] = True
-                            half_qty = float(
-                                self._amount_to_precision(
-                                    symbol, float(pos["qty"]) / 2.0,
-                                )
-                            )
-                            if half_qty > 0:
-                                self.log(
-                                    f"🎯 [Limit TP1 達標] {symbol} {side} "
-                                    f"觸及 {tp1_target:.8g}！市價平倉 50% 數量 "
-                                    f"{half_qty}",
-                                    "SUCCESS",
-                                )
-                                close_side = "sell" if side == "LONG" else "buy"
-                                try:
-                                    await self._send_order(
-                                        symbol, "MARKET", close_side, half_qty,
-                                        reason="TAKE_PROFIT_50PCT",
-                                    )
-                                except Exception as exc:
-                                    self.log(
-                                        f"⚠️ [TP1 平倉失敗] API Error: {exc}",
-                                        "WARNING",
-                                    )
-                                    meta["limit_tp1_filled"] = False
                         
             # =========================================================================
             # 終極防禦體系：分階段動態防禦系統 (TieredExitManager)
@@ -1717,7 +1734,7 @@ class BinanceTestnetAccount:
                                 symbol, close_side_bank, "STOP_MARKET", pos["qty"], new_sl,
                             )
                             protection_installed = True
-                            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                            if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                 try:
                                     await self._create_protection_order(
                                         symbol, close_side_bank, "TAKE_PROFIT_MARKET",
@@ -1736,7 +1753,7 @@ class BinanceTestnetAccount:
                                     await self._create_protection_order(
                                         symbol, close_side_bank, "STOP_MARKET", pos["qty"], old_sl,
                                     )
-                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                         await self._create_protection_order(
                                             symbol, close_side_bank, "TAKE_PROFIT_MARKET",
                                             pos["qty"], tp_price,
@@ -1960,7 +1977,7 @@ class BinanceTestnetAccount:
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                         await self._create_protection_order(
                                             symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
                                         )
@@ -1983,7 +2000,7 @@ class BinanceTestnetAccount:
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                         await self._create_protection_order(
                                             symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
                                         )
@@ -2007,7 +2024,7 @@ class BinanceTestnetAccount:
                     if target_tier > 0 and now_ts < retry_after:
                         target_tier = 0
 
-                    if target_tier > 0:
+                    if target_tier > 0 and not trend_lock_managed:
                         tier_labels = {2: "鎖利", 3: "極致追蹤"}
                         callback_rate = self._compute_callback_rate(
                             atr_pct, target_tier, highest_pnl=highest_pnl
@@ -2051,7 +2068,7 @@ class BinanceTestnetAccount:
                             meta["sl"] = 0.0
                             pos["sl"] = 0.0
                             tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                            if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                 await self._create_protection_order(
                                     symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
                                 )
@@ -2131,7 +2148,7 @@ class BinanceTestnetAccount:
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                         await self._create_protection_order(
                                             symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
                                         )
@@ -2155,7 +2172,7 @@ class BinanceTestnetAccount:
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT and not trend_lock_managed:
                                         await self._create_protection_order(
                                             symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
                                         )
@@ -2200,9 +2217,7 @@ class BinanceTestnetAccount:
                 await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
-            entry_mode_chk = str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
-            is_trend_or_wild = entry_mode_chk in ("WILD_SWING", "CHANNEL_SWING", "UNIFIED_PIPELINE") or meta.get("source") == "UNIFIED_PIPELINE"
-            if not DISABLE_TAKE_PROFIT and not is_trend_or_wild:
+            if not DISABLE_TAKE_PROFIT and not _is_trend_lock_managed(pos, meta):
                 await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
             meta["tp"] = 0.0
@@ -2226,45 +2241,77 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
 
-    async def _restore_exchange_initial_stops(self) -> None:
+    async def _restore_exchange_initial_stops(self) -> bool:
         """啟用交易所初始停損後，替重啟前的既有持倉重建硬停損。
 
         position_meta 會跨重啟保留 SL，但先前若以本地觀察線模式開倉，交易所
-        並沒有對應條件單。啟動時取消該幣舊保護單後依原 SL/TP 重建，避免全域
-        開關已切回交易所模式、本地監控也不再觸發，卻留下裸倉。已升級原生
+        並沒有對應條件單。啟動時先核對既有 STOP，再只補缺少的硬止損，避免
+        撤除仍有效的保護單。已升級原生
         trailing 的部位不動，避免把鎖利單降級回初始固定停損。
         """
         if not POSITION_HARD_STOPS_ENABLED or not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
-            return
-        channel_swing_cleared = False
+            return True
+        restoration_ok = True
         for symbol, pos in list(self.positions.items()):
             if staged_enabled(pos, self.position_meta.get(symbol, {})):
                 # The staged dispatcher/transport owns all exits and protection.
                 continue
             meta = self.position_meta.get(symbol, {})
-            entry_mode = str(
-                pos.get("entry_mode") or meta.get("entry_mode") or ""
-            ).upper()
-            if entry_mode == 'CHANNEL_SWING':
-                continue
-            sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
-            if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
-                continue
-            close_side = "sell" if pos["side"] == "LONG" else "buy"
-            sl_price = cap_stop_loss_to_margin_risk(
-                pos["entry_price"], pos["side"], sl_price, pos["leverage"]
-            )
-            sl_price = float(self._price_to_precision(symbol, sl_price))
+            managed_by_trend_lock = _is_trend_lock_managed(pos, meta)
             try:
-                await self._cancel_all_orders(symbol)
+                normal_orders = await self.exchange.fetch_open_orders(symbol)
+                algo_orders = await self.exchange.request(
+                    "algoOpenOrders", "fapiPrivate", "GET",
+                    {"symbol": self._raw_symbol(symbol)},
+                )
+                has_native_stop = any(
+                    self._protection_type_from_order(order) == "SL"
+                    for order in normal_orders
+                ) or any(
+                    self._protection_type_from_order(order) == "SL"
+                    and str(order.get("algoStatus") or "WORKING").upper() == "WORKING"
+                    for order in (algo_orders or [])
+                )
+                if has_native_stop:
+                    continue
+                sl_price = float(
+                    (
+                        meta.get("initial_sl") or meta.get("atr_sl")
+                        or pos.get("initial_sl") or pos.get("atr_sl")
+                    ) if managed_by_trend_lock else (
+                        meta.get("sl") or pos.get("sl")
+                    ) or 0.0
+                )
+                if sl_price <= 0:
+                    entry = float(pos.get("entry_price") or 0.0)
+                    atr = float(
+                        pos.get("entry_atr") or meta.get("entry_atr")
+                        or pos.get("atr") or meta.get("atr") or 0.0
+                    )
+                    if entry > 0 and atr > 0:
+                        sl_price = entry - 3.0 * atr if pos["side"] == "LONG" else entry + 3.0 * atr
+                if not math.isfinite(sl_price) or sl_price <= 0:
+                    restoration_ok = False
+                    self.log(
+                        f"🚨 {symbol} 無有效硬止損價格或 ATR，禁止新進場",
+                        "DANGER",
+                    )
+                    continue
+                close_side = "sell" if pos["side"] == "LONG" else "buy"
+                sl_price = cap_stop_loss_to_margin_risk(
+                    pos["entry_price"], pos["side"], sl_price, pos["leverage"]
+                )
+                sl_price = float(self._price_to_precision(symbol, sl_price))
                 order = await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
                 if meta.get("channel_cross_lock"):
                     meta["channel_lock_algo_id"] = order.get("algoId") or order.get("id")
                     self.save_state()
-                tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
-                if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                tp_price = 0.0 if managed_by_trend_lock else float(
+                    meta.get("tp") or pos.get("tp") or 0.0
+                )
+                if tp_price > 0 and not DISABLE_TAKE_PROFIT and not managed_by_trend_lock:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price,
                     )
@@ -2273,12 +2320,12 @@ class BinanceTestnetAccount:
                     "WARNING",
                 )
             except Exception as exc:
+                restoration_ok = False
                 self.log(
                     f"🚨 {symbol} 啟動時重建交易所硬停損失敗：{type(exc).__name__}: {exc}",
                     "DANGER",
                 )
-        if channel_swing_cleared:
-            self.save_state()
+        return restoration_ok
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:
@@ -2286,16 +2333,80 @@ class BinanceTestnetAccount:
             self._markets_loaded = True
 
     async def _remove_channel_native_exits(self, symbol):
-        """Remove managed native conditions; do not silently claim migration on failure."""
-        await self.exchange.request('algoOpenOrders','fapiPrivate','DELETE',
-                                    {'symbol':self._raw_symbol(symbol)})
-        fetch = getattr(self.exchange,'fetch_open_orders',None)
-        if fetch is not None:
-            for order in await fetch(symbol):
-                kind = str(order.get('type','')).upper()
-                if kind in ('STOP','STOP_MARKET','TAKE_PROFIT','TAKE_PROFIT_MARKET','TRAILING_STOP_MARKET'):
-                    await self.exchange.cancel_order(order['id'],symbol)
-        self.log(f'[CLOSE_ONLY_MIGRATION] {symbol} 已移除舊逐價條件單，改由已收線策略管理','INFO')
+        """Remove only native TP/trailing exits; retain exchange hard stops."""
+        if not await self._cancel_trend_lock_native_profit_exits({symbol}):
+            raise RuntimeError(
+                f"{symbol} native TP/trailing cleanup could not be verified"
+            )
+
+    async def _cancel_trend_lock_native_profit_exits(
+        self, symbols: Optional[set[str]] = None,
+    ) -> bool:
+        """Cancel bypassing native TP/trailing exits while retaining hard stops."""
+        ok = True
+        managed_symbols = (
+            set(symbols) if symbols is not None
+            else set(self.positions) | set(self.position_meta)
+        )
+        for symbol in managed_symbols:
+            position = self.positions.get(symbol, {})
+            meta = self.position_meta.get(symbol, {})
+            entry_mode = str(
+                position.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper()
+            managed = _is_trend_lock_managed(position, meta)
+            if not managed:
+                continue
+            try:
+                for order in await self.exchange.fetch_open_orders(symbol):
+                    if not self._is_native_profit_exit_order(order):
+                        continue
+                    order_id = order.get("id")
+                    if not order_id:
+                        raise RuntimeError("managed native TP has no order ID")
+                    await self.exchange.cancel_order(order_id, symbol)
+                algo_orders = await self.exchange.request(
+                    "algoOpenOrders", "fapiPrivate", "GET",
+                    {"symbol": self._raw_symbol(symbol)},
+                )
+                for order in algo_orders or []:
+                    if not self._is_native_profit_exit_order(order):
+                        continue
+                    if str(order.get("algoStatus") or "WORKING").upper() != "WORKING":
+                        continue
+                    algo_id = order.get("algoId") or order.get("id")
+                    if not algo_id:
+                        raise RuntimeError("managed native TP algo has no ID")
+                    await self.exchange.request(
+                        "algoOrder", "fapiPrivate", "DELETE",
+                        {"symbol": self._raw_symbol(symbol), "algoId": algo_id},
+                    )
+                normal_after = await self.exchange.fetch_open_orders(symbol)
+                algo_after = await self.exchange.request(
+                    "algoOpenOrders", "fapiPrivate", "GET",
+                    {"symbol": self._raw_symbol(symbol)},
+                )
+                normal_tp = [
+                    order for order in normal_after
+                    if self._is_native_profit_exit_order(order)
+                ]
+                algo_tp = [
+                    order for order in (algo_after or [])
+                    if self._is_native_profit_exit_order(order)
+                    and str(order.get("algoStatus") or "WORKING").upper() == "WORKING"
+                ]
+                if normal_tp or algo_tp:
+                    raise RuntimeError("managed native TP remains active after cancel")
+            except Exception as exc:
+                ok = False
+                self.log(
+                    f"TREND_LOCK_NATIVE_EXIT_CLEANUP_FAILED symbol={symbol}: "
+                    f"{type(exc).__name__}: {exc}; entry disabled until verified",
+                    "DANGER",
+                )
+        if ok:
+            self.log("TREND_LOCK_NATIVE_EXIT_CLEANUP_VERIFIED", "INFO")
+        return ok
 
     async def _cancel_all_orders(self, symbol: str) -> None:
         try:
@@ -2926,71 +3037,77 @@ class BinanceTestnetAccount:
             )
             execution_price = float(entry_order.get("average") or price)
 
-            # ──【全鏈路審計階段 4：交易所訂單回報】──
+            # Every market entry must be confirmed from an exchange order receipt
+            # before we create local position state or consume its trend cycle.
+            # RESULT responses can still be partial/open, regardless of entry type.
+            try:
+                filled_qty = float(entry_order.get("filled") or 0.0)
+                requested_qty = float(entry_order.get("amount") or qty)
+            except (TypeError, ValueError, OverflowError):
+                filled_qty = None
+                requested_qty = None
+            status = str(entry_order.get("status") or "").lower()
+            terminal_statuses = {
+                "closed", "filled", "canceled", "cancelled", "expired", "rejected",
+            }
+            if status not in terminal_statuses:
+                try:
+                    order_id = entry_order.get("id")
+                    if order_id:
+                        try:
+                            await self.exchange.cancel_order(order_id, symbol)
+                        except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+                            self.log(
+                                f"ENTRY_REMAINDER_CANCEL_UNCONFIRMED {symbol}: "
+                                f"{type(exc).__name__}: {exc}", "DANGER",
+                            )
+                        entry_order = await self.exchange.fetch_order(order_id, symbol)
+                    elif authority_client_order_id:
+                        entry_order = await self.exchange.fetch_order(
+                            None, symbol,
+                            {"origClientOrderId": authority_client_order_id},
+                        )
+                    else:
+                        raise RuntimeError("entry receipt has no exchange order identifier")
+                    status = str(entry_order.get("status") or "").lower()
+                    filled_qty = float(entry_order.get("filled") or 0.0)
+                    requested_qty = float(entry_order.get("amount") or qty)
+                    execution_price = float(entry_order.get("average") or execution_price)
+                except Exception as exc:
+                    status = "unconfirmed"
+                    filled_qty = None
+                    self.log(
+                        f"ENTRY_ORDER_RECONCILIATION_UNCONFIRMED {symbol}: "
+                        f"{type(exc).__name__}: {exc}", "DANGER",
+                    )
+            confirmed_fill_qty = _confirmed_market_entry_fill(entry_order, qty)
+            self.wait_entry_execution[symbol] = {
+                    "order_id": entry_order.get("id"),
+                    "status": status,
+                    "filled_qty": filled_qty,
+                    "requested_qty": requested_qty,
+            }
+            if (
+                confirmed_fill_qty is None
+            ):
+                if is_d0:
+                    self.d0_quarantine_state[symbol] = True
+                    self.save_state()
+                await self.refresh(force=True)
+                return False
+            qty = confirmed_fill_qty
+            # Only publish the exchange receipt after reconciliation. Never log
+            # the requested amount as a fill when the exchange has not confirmed it.
             OrderAuditTrail.record_exchange_return(
                 symbol=symbol,
                 side=side,
                 signal_id=signal_id,
                 order_id=entry_order.get("id"),
-                status=str(entry_order.get("status") or "FILLED"),
-                filled_qty=float(entry_order.get("filled") or qty),
+                status=status,
+                filled_qty=filled_qty,
                 avg_price=execution_price,
                 account=self,
             )
-            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
-                try:
-                    filled_qty = float(entry_order.get("filled") or 0.0)
-                    requested_qty = float(entry_order.get("amount") or qty)
-                except (TypeError, ValueError, OverflowError):
-                    filled_qty = None
-                    requested_qty = None
-                status = str(entry_order.get("status") or "").lower()
-                terminal_statuses = {"closed", "canceled", "expired", "rejected"}
-                if status not in terminal_statuses:
-                    try:
-                        await self.exchange.cancel_order(
-                            entry_order.get("id"),
-                            symbol,
-                            {"origClientOrderId": authority_client_order_id},
-                        )
-                    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-                        self.log(
-                            f"WAIT_REMAINING_ORDER_CANCEL_UNCONFIRMED {symbol}: "
-                            f"{type(exc).__name__}: {exc}",
-                            "DANGER",
-                        )
-                    try:
-                        entry_order = await self.exchange.fetch_order(
-                            None,
-                            symbol,
-                            {"origClientOrderId": authority_client_order_id},
-                        )
-                        status = str(entry_order.get("status") or "").lower()
-                        filled_qty = float(entry_order.get("filled") or 0.0)
-                        requested_qty = float(entry_order.get("amount") or qty)
-                        execution_price = float(
-                            entry_order.get("average") or execution_price
-                        )
-                    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-                        self.log(
-                            f"WAIT_ORDER_RECONCILIATION_UNCONFIRMED {symbol}: "
-                            f"{type(exc).__name__}: {exc}",
-                            "DANGER",
-                        )
-                self.wait_entry_execution[symbol] = {
-                    "order_id": entry_order.get("id"),
-                    "status": status,
-                    "filled_qty": filled_qty,
-                    "requested_qty": requested_qty,
-                }
-                if filled_qty is None or filled_qty < 0:
-                    await self.refresh(force=True)
-                    return False
-                if filled_qty == 0 and status in terminal_statuses:
-                    await self.refresh(force=True)
-                    return False
-                if filled_qty > 0:
-                    qty = filled_qty
         except Exception as exc:
             import ccxt
             is_definitive = False
@@ -3096,7 +3213,9 @@ class BinanceTestnetAccount:
             entry_mode = str(entry_context.get("entry_mode") or "").upper()
             is_channel_swing = entry_mode == "CHANNEL_SWING"
             is_wild_swing = entry_mode == "WILD_SWING"
-            if is_channel_swing or is_wild_swing or entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK":
+            if (is_channel_swing or is_wild_swing
+                    or bool(entry_context.get("managed_by_bot"))
+                    or entry_context.get("entry_phase") == "D0_STRUCTURE_BREAK"):
                 tp = 0.0
             else:
                 try:
@@ -3182,7 +3301,11 @@ class BinanceTestnetAccount:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )
-                if not (is_channel_swing or is_wild_swing) and not DISABLE_TAKE_PROFIT and not structure_exit_only:
+                if (not (is_channel_swing or is_wild_swing)
+                        and not bool(entry_context.get("manual_entry"))
+                        and not bool(entry_context.get("managed_by_bot"))
+                        and not bool(entry_context.get("trend_lock_managed"))
+                        and not DISABLE_TAKE_PROFIT and not structure_exit_only):
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
                     )
@@ -3209,6 +3332,7 @@ class BinanceTestnetAccount:
                 "open_time": get_taipei_now_str(),
                 "reason": reason,
                 "signal_score": signal_score,
+                "trend_lock_state": {"side": side, "outer_rail_touched": False},
                 **entry_context,
             }
             if is_channel_swing:
@@ -3254,6 +3378,12 @@ class BinanceTestnetAccount:
                 "exchange_order_id": entry_order_id,
                 **entry_context,
             })
+            from core.services.exits.trend_lock import claim_filled_trend_cycle
+            claim_filled_trend_cycle(
+                self, symbol, side,
+                str(entry_context.get("trend_cycle_key") or ""),
+                str(entry_context.get("trend_cycle_timeframe") or "60000ms"),
+            )
             await self.refresh(force=True)
             self.log(
                 f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
@@ -3771,7 +3901,17 @@ class BinanceTestnetAccount:
             self.save_state()
 
             try:
-                await self._cancel_all_orders(symbol)
+                managed = _is_trend_lock_managed(position, meta)
+                if managed:
+                    cleanup_ok = await self._cancel_trend_lock_native_profit_exits(
+                        {symbol},
+                    )
+                    if not cleanup_ok:
+                        raise RuntimeError(
+                            "managed native TP/trailing cleanup is unverified"
+                        )
+                else:
+                    await self._cancel_all_orders(symbol)
             except Exception as exc:
                 meta.pop("channel_short_oversold_partial_order_pending", None)
                 mark_partial_exit_result(position, meta, completed=False)
@@ -4117,7 +4257,16 @@ class BinanceTestnetAccount:
             close_side = "sell" if position["side"] == "LONG" else "buy"
             is_hard_stop_now = "HARD_STOP" in str(close_reason)
             if not is_hard_stop_now:
-                await self._cancel_all_orders(symbol)
+                if _is_trend_lock_managed(position, meta):
+                    cleanup_ok = await self._cancel_trend_lock_native_profit_exits(
+                        {symbol},
+                    )
+                    if not cleanup_ok:
+                        raise RuntimeError(
+                            "managed native TP/trailing cleanup is unverified"
+                        )
+                else:
+                    await self._cancel_all_orders(symbol)
 
             is_ratchet_lock = "RATCHET_PROFIT_LOCK" in str(close_reason) or (is_limit and limit_price is not None)
             if is_wild_swing:
@@ -4137,80 +4286,54 @@ class BinanceTestnetAccount:
                         f"Wild Swing limit close not fully confirmed: {order.get('error', 'UNKNOWN')}"
                     )
             elif is_ratchet_lock and limit_price:
-                # 廢棄市價平倉，改為帶微幅折讓之限價防滑平倉單（死守底線，拒絕市價滑穿）
-                order_price = limit_price
-                if hasattr(self.exchange, "price_to_precision"):
-                    order_price = float(self._price_to_precision(symbol, order_price))
-                elif hasattr(self, "price_to_precision"):
-                    order_price = float(self.price_to_precision(symbol, order_price))
-
-                self.log(f"🛡️ [限價防滑平倉] {symbol} {close_side} 限價={order_price:.6g} (死守底線，拒絕市價滑價)", "INFO")
-                order = await self._send_order(
-                    symbol,
-                    "limit",
-                    close_side,
-                    position["qty"],
-                    order_price,
-                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
+                from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
+                order_price = float(self._price_to_precision(symbol, limit_price))
+                completed, order = (
+                    await AntiSlippageOrderExecutor.execute_confirmed_limit_close(
+                        account=self,
+                        symbol=symbol,
+                        side=position["side"],
+                        qty=float(position["qty"]),
+                        live_price=float(current_price),
+                        initial_limit_price=order_price,
+                    )
                 )
-                from core.gates.ratchet_net_profit_gate import get_ratchet_manager
-                rm = get_ratchet_manager(symbol, exchange=self)
-                order_id = (order or {}).get("id") or (order or {}).get("orderId")
-                if order_id:
-                    await rm._ensure_order_filled_async(str(order_id), close_side, position["qty"], order_price)
+                if not completed:
+                    raise RuntimeError(
+                        f"Ratchet close fill not confirmed: "
+                        f"{order.get('error', 'UNKNOWN')}"
+                    )
             else:
                 from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
-                # 依 2026-10-15 最新規範：全面廢棄 Stop Market，改以帶 0.2%~0.3% 讓步緩衝之限價單發送
-                order_price = AntiSlippageOrderExecutor.calculate_limit_close_price(
-                    side=position["side"],
-                    live_price=current_price,
-                    offset_pct=0.002,
+                self.log(
+                    f"🛡️ [限價防滑平倉] {symbol} {close_side} "
+                    "使用單一確認執行器，等待實際成交",
+                    "INFO",
                 )
-                if hasattr(self.exchange, "price_to_precision"):
-                    order_price = float(self._price_to_precision(symbol, order_price))
-                elif hasattr(self, "price_to_precision"):
-                    order_price = float(self.price_to_precision(symbol, order_price))
-
-                self.log(f"🛡️ [防滑價限價平倉] {symbol} {close_side} 限價={order_price:.6g} (死守底線，全面廢棄市價單)", "INFO")
-                order = await self._send_order(
-                    symbol,
-                    "limit",
-                    close_side,
-                    position["qty"],
-                    order_price,
-                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
+                completed, order = (
+                    await AntiSlippageOrderExecutor.execute_confirmed_limit_close(
+                        account=self,
+                        symbol=symbol,
+                        side=position["side"],
+                        qty=float(position["qty"]),
+                        live_price=float(current_price),
+                        offset_pct=0.002,
+                    )
                 )
-                # 3 秒 Watchdog 撮合監控 (若未完全撮合則撤單以最新對手價重掛)
-                order_id = (order or {}).get("id") or (order or {}).get("orderId")
-                if order_id and not getattr(self, "is_paper", False):
-                    asyncio.create_task(
-                        AntiSlippageOrderExecutor.execute_anti_slippage_close(
-                            account=self,
-                            symbol=symbol,
-                            side=position["side"],
-                            qty=position["qty"],
-                            live_price=current_price,
-                            offset_pct=0.002,
-                            watchdog_timeout_sec=3.0,
-                            close_reason=close_reason,
-                        )
+                if not completed:
+                    raise RuntimeError(
+                        f"Position close fill not confirmed: "
+                        f"{order.get('error', 'UNKNOWN')}"
                     )
             from core.services.post_profit_lock_gate import profit_exit_fields, confirmed_full_close
             profit_candidate = profit_exit_fields(position, close_reason, time.time()*1000)
             from core.services.impulse_breakout import reverse_close_fields
             reverse_candidate = reverse_close_fields(position, close_reason, time.time()*1000)
-            if (
-                (is_wild_swing or profit_candidate or reverse_candidate or 'THREE_POINT_PIVOT' in str(close_reason))
-                and not confirmed_full_close(order, position['qty'])
-            ):
+            if not confirmed_full_close(order, position['qty']):
                 # Keep the position and pending close until authoritative fill evidence.
                 raise ValueError('Strategy exit not confirmed fully filled; no close receipt recorded')
-            # HARD_STOP 送完市價單後再撤剩餘委託，不阻塞成交確認
-            if is_hard_stop_now:
-                try:
-                    await self._cancel_all_orders(symbol)
-                except Exception:
-                    pass
+            # 成交已確認後才清除剩餘委託；未成交／狀態未知時保留原生硬止損。
+            await self._cancel_all_orders(symbol)
             execution_price = float(order.get("average") or current_price)
             # ✅ B. 滑點稽核：計算實際成交滑點，超出門檻即記錄 WARNING
             if CLOSE_SLIPPAGE_WARN_PCT > 0 and current_price > 0:

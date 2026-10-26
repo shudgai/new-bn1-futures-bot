@@ -36,6 +36,19 @@ class FakeTestnetExchange:
     def price_to_precision(self, symbol, price):
         return str(round(price, 4))
 
+    def market(self, symbol):
+        lot = {
+            "minQty": "0.001", "maxQty": "100000", "stepSize": "0.001",
+        }
+        return {
+            "symbol": symbol, "linear": True, "contractSize": 1,
+            "info": {"filters": [
+                {"filterType": "LOT_SIZE", **lot},
+                {"filterType": "MARKET_LOT_SIZE", **lot},
+                {"filterType": "MIN_NOTIONAL", "notional": "5"},
+            ]},
+        }
+
     async def set_leverage(self, leverage, symbol):
         self.leverage = (symbol, leverage)
 
@@ -60,7 +73,8 @@ class FakeTestnetExchange:
                 "unRealizedProfit": "0",
             }]
             order["average"] = 100.0
-        elif str(order_type).lower() == "market" and (params or {}).get("reduceOnly"):
+            order.update(status="closed", filled=float(qty), remaining=0.0)
+        elif (params or {}).get("reduceOnly"):
             if self.positions:
                 pos = dict(self.positions[0])
                 current_amt = float(pos["positionAmt"])
@@ -74,9 +88,18 @@ class FakeTestnetExchange:
             else:
                 self.positions = []
             order["average"] = 101.0
+            order.update(status="closed", filled=float(qty), remaining=0.0)
         return order
 
+    async def fetch_order(self, order_id, _symbol):
+        return next(order for order in self.orders if order["id"] == str(order_id))
+
+    async def fetch_open_orders(self, _symbol):
+        return []
+
     async def request(self, path, api, method, params):
+        if path == "algoOpenOrders" and method == "GET":
+            return []
         if method == "DELETE":
             self.cancelled.append(params["symbol"])
             return {}

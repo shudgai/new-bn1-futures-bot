@@ -135,6 +135,10 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "trend_cycle_key",
+    "trend_lock_state",
+    "staged_profit_lock_state",
+    "trend_lock_managed",
     "entry_phase", "d0_event_id", "reference_level", "prior_3_bar_ids",
     "entry_authority", "wait_trigger_id", "wait_trigger",
     "wait_client_order_id", "kc2bar_signal", "kc2bar_signal_id",
@@ -709,7 +713,7 @@ class PaperAccount:
         if not math_allowed:
             message = f"[FORBIDDEN_ENTRY] {math_reason}"
             self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
-            raise ValueError(message)
+            return False
 
         if (
             not is_manual
@@ -982,6 +986,12 @@ class PaperAccount:
             key: value for key, value in dict(entry_context or {}).items()
             if key in ENTRY_CONTEXT_KEYS
         }
+        trend_managed = bool(
+            entry_context.get("managed_by_bot")
+            or entry_context.get("trend_lock_managed")
+        )
+        if trend_managed:
+            tp = 0.0
         if entry_context.get("initial_sl") is not None:
             entry_context["initial_sl"] = sl
             entry_context["initial_risk"] = abs(execution_price - sl)
@@ -1024,6 +1034,7 @@ class PaperAccount:
                 "unrealized_pnl": 0.0,
                 "peak_pnl_pct": 0.0,
                 "profit_alert": False,
+                "trend_lock_state": {"side": side, "outer_rail_touched": False},
                 **entry_context,
             }
             if entry_mode == "CHANNEL_SWING":
@@ -1041,9 +1052,11 @@ class PaperAccount:
                 "highest_pnl_pct": 0.0,
                 "peak_profit_updated_at": now,
                 "is_half_closed": False,
+                "trend_lock_state": pos["trend_lock_state"],
                 **entry_context,
             }
-            if entry_mode not in ('CHANNEL_SWING', 'WILD_SWING'):
+            if (entry_mode not in ('CHANNEL_SWING', 'WILD_SWING')
+                    and not trend_managed):
                 # 自動掛出 50% Limit TP1
                 tp1_distance = pos["atr"] * 1.5 if pos["atr"] > 0 else execution_price * 0.025
                 limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
@@ -1086,6 +1099,12 @@ class PaperAccount:
         if is_d0:
             self.d0_in_flight_state.pop(symbol, None)
             self.d0_consumed_state[symbol] = d0_event_id
+
+        from core.services.exits.trend_lock import claim_filled_trend_cycle
+        claim_filled_trend_cycle(
+            self, symbol, side, str(entry_context.get("trend_cycle_key") or ""),
+            str(entry_context.get("trend_cycle_timeframe") or "60000ms"),
+        )
 
         self.log(
             f"🚀 [紙上交易] 開倉成功 [{side}] {symbol} @ {execution_price:.6g} "
@@ -1824,7 +1843,6 @@ class PaperAccount:
             if pnl_pct > highest_pnl:
                 meta["highest_pnl_pct"] = pnl_pct
                 pos["peak_roe"] = pnl_pct
-            continue
             position_atr = max(float(pos.get("atr") or meta.get("atr") or 0.0), entry_p * 1e-12)
             failure_buffer = max(position_atr * PIVOT_FAILURE_BUFFER_ATR, entry_p * PIVOT_FAILURE_MIN_PCT)
             failure_level = signal_low - failure_buffer if side == "LONG" else signal_high + failure_buffer
@@ -1872,29 +1890,19 @@ class PaperAccount:
             tp1_target = float(meta.get("limit_tp1_price", 0.0))
             if tp1_target > 0 and not meta.get("limit_tp1_filled", False):
                 if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
-                    meta["limit_tp1_filled"] = True
-                    pos["is_half_closed"] = True
-                    half_qty = float(pos["qty"]) / 2.0
-                    pos["qty"] -= half_qty
-                    
-                    # 計算 50% 的利潤 (扣除手續費) Limit = 零滑點
-                    exec_close_price = tp1_target
-                    raw_pnl = ((exec_close_price - entry_p) * half_qty if side == "LONG" else (entry_p - exec_close_price) * half_qty)
-                    close_fee = half_qty * exec_close_price * TAKER_FEE_RATE
-                    half_margin = float(pos.get("margin", 0.0)) / 2.0
-                    pos["margin"] -= half_margin
-                    
-                    self.balance += half_margin + raw_pnl - close_fee
-                    self.available_balance = self.balance
-                    self.realized_pnl += (raw_pnl - close_fee)
-                    
-                    self.log(f"🎯 [Limit TP1 達標] {symbol} {side} 觸及 {tp1_target:.8g}！平倉 50% 數量 {half_qty:.6g}，獲利 {(raw_pnl - close_fee):.4f} USDT", "SUCCESS")
-                    
-                    # 自動移保本
-                    pos["sl"] = float(pos["entry_price"])
-                    meta["sl"] = float(pos["entry_price"])
-                    pos["is_breakeven_moved"] = True
-                    meta["is_breakeven_moved"] = True
+                    # Restored TP1 state must use the same final Trend Lock
+                    # boundary as every other automated partial close.
+                    if await self.partial_close_position(
+                        symbol, curr_p, "TAKE_PROFIT_50PCT", fraction=0.5,
+                    ):
+                        meta["limit_tp1_filled"] = True
+                        pos = self.positions.get(symbol)
+                        if pos is None:
+                            continue
+                        pos["is_half_closed"] = True
+                        pos["sl"] = float(pos.get("initial_sl") or pos.get("sl") or 0.0)
+                        meta["sl"] = pos["sl"]
+                        self.save_state()
                     
                     self.log(f"🛡️ [移保本] {symbol} {side} 剩餘 50% 倉位止損已上調至開倉價 {pos['entry_price']:.8g}", "INFO")
                     self.save_state()
@@ -2010,39 +2018,9 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-            # =========================================================================
-            # 🔥 獨立極值利潤回撤保護 (Extreme Profit Giveback Protection) 🔥
-            # =========================================================================
+            # 歷史最高浮盈追蹤（平倉決策統一由 ExitGate 階梯鎖利裁決）
             max_unrealized = max(float(meta.get("max_unrealized_pnl", unrealized)), unrealized)
             meta["max_unrealized_pnl"] = max_unrealized
-            
-            # 條件 1：高額利潤回吐 25% 即刻市價全平
-            trend_hold = pos.get("trend_hold_status", "RELEASED")
-            is_shielded = trend_hold in ("HOLD", "WARNING")
-            
-            if (max_unrealized >= 15.0 or highest_pnl >= 0.20) and not is_shielded:
-                if unrealized <= max_unrealized * 0.75:
-                    self.log(
-                        f"⚡ [極值回撤保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
-                        f"目前縮水至 {unrealized:.2f}U (回吐>=25%)，立即市價平倉保利！",
-                        "SUCCESS"
-                    )
-                    await self._execute_market_close(symbol, pos, curr_p, "極值利潤回撤25%強制保利")
-                    continue
-                    
-            # 條件 2：低浮盈保本門檻
-            elif (max_unrealized >= 5.0 or highest_pnl >= 0.03) and not is_shielded:
-                fee_buffer = entry_p * TAKER_FEE_RATE * 2.5
-                breakeven_p = entry_p + fee_buffer if side == "LONG" else entry_p - fee_buffer
-                hit_breakeven = (side == "LONG" and curr_p <= breakeven_p) or (side == "SHORT" and curr_p >= breakeven_p)
-                if hit_breakeven:
-                    self.log(
-                        f"🛡️ [極值保本保護] {symbol} {side} 最高浮盈曾達 {max_unrealized:.2f}U ({highest_pnl:.2%})，"
-                        f"目前跌回成本價 {curr_p:.6g}，立即市價保本平倉！",
-                        "WARNING"
-                    )
-                    await self._execute_market_close(symbol, pos, curr_p, "極值浮盈跌回保本線")
-                    continue
 
             if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
                 continue

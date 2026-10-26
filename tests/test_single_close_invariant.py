@@ -3,10 +3,12 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from core.testnet_account import BinanceTestnetAccount
 
-def setup_mock_account():
+def setup_mock_account(tmp_path):
     exchange = MagicMock()
     exchange.price_to_precision = MagicMock(return_value="0.10")
-    account = BinanceTestnetAccount(exchange=exchange)
+    account = BinanceTestnetAccount(
+        exchange=exchange, state_file=str(tmp_path / "testnet.json"),
+    )
     account.close_position = AsyncMock()
     account.refresh = AsyncMock()
     account.save_state = MagicMock()
@@ -21,6 +23,7 @@ def create_mock_position(side, curr_unrealized, max_unrealized, entry_price, qty
         "amount": entry_price * qty,
         "qty": qty,
         "entry_price": entry_price,
+        "open_timestamp": 1_700_000_000.0,
         "mark_price": 0.10,
         "status": "OPEN",
         "unrealized_pnl": curr_unrealized,
@@ -35,8 +38,8 @@ def create_mock_meta(max_unrealized):
     }
 
 @pytest.mark.anyio
-async def test_single_close_invariant_released_and_peak_trailing():
-    account = setup_mock_account()
+async def test_profit_giveback_cannot_bypass_trend_lock(tmp_path):
+    account = setup_mock_account(tmp_path)
     # Trigger Early Profit Guard (curr_unrealized < max * 0.75)
     pos = create_mock_position('LONG', curr_unrealized=10.0, max_unrealized=20.0, entry_price=0.10, trend_status='RELEASED')
     account.positions = {"龙虾/USDT": pos}
@@ -50,15 +53,16 @@ async def test_single_close_invariant_released_and_peak_trailing():
     
     await account.update_positions({"龙虾/USDT": 0.10})
     
-    # Expected exactly 1 call (due to Extreme Profit Giveback Protection)
-    assert account.close_position.call_count == 1
-    args, kwargs = account.close_position.call_args
-    reason = args[2] if len(args) > 2 else kwargs.get('reason', '')
-    assert "極值利潤回撤" in reason
+    # This legacy peak giveback is a strategy exit and needs closed-bar Trend
+    # Lock evidence. No frame is supplied, so the account boundary must not
+    # receive an ordinary close request.
+    assert account.close_position.call_count == 0
 
 @pytest.mark.anyio
-async def test_single_close_invariant_hard_exit_and_peak_trailing():
-    account = setup_mock_account()
+async def test_legacy_profit_giveback_with_competing_exit_cannot_bypass_trend_lock(
+    tmp_path,
+):
+    account = setup_mock_account(tmp_path)
     # Trigger Early Profit Guard but also trigger some other close logic (if any)
     # However since Extreme Profit Giveback Protection has `continue` right after, it guarantees single close!
     pos = create_mock_position('LONG', curr_unrealized=10.0, max_unrealized=20.0, entry_price=0.10, trend_status='RELEASED')
@@ -72,7 +76,6 @@ async def test_single_close_invariant_hard_exit_and_peak_trailing():
     
     await account.update_positions({"龙虾/USDT": 0.10})
     
-    assert account.close_position.call_count == 1
-    args, kwargs = account.close_position.call_args
-    reason = args[2] if len(args) > 2 else kwargs.get('reason', '')
-    assert "極值利潤回撤" in reason
+    # Multiple ordinary profit heuristics still cannot authorize the same-bar
+    # close when there is no closed-bar Trend Lock evidence.
+    assert account.close_position.call_count == 0

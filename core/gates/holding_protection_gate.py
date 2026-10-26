@@ -829,11 +829,21 @@ def _is_profit_lock_reason(reason: str) -> bool:
         or 'BREAKEVEN' in r
         or 'PROFIT_FLOOR' in r
         or 'PROFIT_LOCK' in r
+        or 'STAGED_PROFIT_LOCK' in r
     )
 
 
 def _verified_profit_lock_details(position, quote):
     """Return evidence only when an armed profit floor is actually touched."""
+    try:
+        from core.services.exits.staged_profit_lock import evaluate_staged_profit_lock
+        side = str((position or {}).get('side', '')).upper()
+        staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(position, quote, side)
+        if staged_exit:
+            return staged_meta
+    except Exception:
+        pass
+
     details = _ratchet_lock_details(position, quote)
     if details is not None:
         return details
@@ -1434,6 +1444,9 @@ class HoldingProtectionExitGate:
         'EXIT_BY_EXTREME_WATERFALL',
         'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         'EXIT_BY_RATCHET_PROFIT_LOCK',
+        'EXIT_BY_STAGED_PROFIT_LOCK_TIER1',
+        'EXIT_BY_STAGED_PROFIT_LOCK_TIER2',
+        'PROFIT_LOCK',
         'EMERGENCY_DUMP_EXIT',
         'TWO_BAR_DOJI_REVERSAL_EXIT',
         'EMERGENCY_EXTREME_ADVERSE_BAR',
@@ -1515,14 +1528,15 @@ class HoldingProtectionExitGate:
         # ── 1.1 極端異常：大瀑布反轉 / 極速反撲 (EXIT_BY_EXTREME_WATERFALL) ──
         if frame is not None and len(frame) >= 1 and atr > 0:
             curr_open = float(curr.get('open', quote))
+            curr_close = float(curr.get('close', quote))
             kc_upper = float(curr.get('kc_upper', 0.0))
             kc_lower = float(curr.get('kc_lower', 0.0))
             kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
 
             if side == 'LONG':
-                adverse_body = curr_open - quote
-                if (not candle_closed and adverse_body >= 1.5 * atr
-                        and kc_middle > 0 and quote < kc_middle):
+                adverse_body = max(curr_open - quote, curr_open - curr_close)
+                crossed = (quote < kc_middle) or (curr_close < kc_middle)
+                if adverse_body >= 1.5 * atr and kc_middle > 0 and crossed:
                     return 'EXIT_BY_EXTREME_WATERFALL', {
                         'adverse_body': adverse_body, 'atr': atr,
                         'kc_middle': kc_middle,
@@ -1530,9 +1544,9 @@ class HoldingProtectionExitGate:
                     }
 
             elif side == 'SHORT':
-                adverse_body = quote - curr_open
-                if (not candle_closed and adverse_body >= 1.5 * atr
-                        and kc_middle > 0 and quote > kc_middle):
+                adverse_body = max(quote - curr_open, curr_close - curr_open)
+                crossed = (quote > kc_middle) or (curr_close > kc_middle)
+                if adverse_body >= 1.5 * atr and kc_middle > 0 and crossed:
                     return 'EXIT_BY_EXTREME_WATERFALL', {
                         'adverse_body': adverse_body, 'atr': atr,
                         'kc_middle': kc_middle,
@@ -1762,6 +1776,22 @@ class HoldingProtectionExitGate:
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
 
+        # Profit locks are not emergency exits.  They may preserve gains only
+        # after the position's post-entry true peak/valley has closed and
+        # confirmed, matching ExitGate's top-level holding rule.
+        if is_profit_lock:
+            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
+                position, frame, quote,
+            )
+            if not has_pivot:
+                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
+            details.update(true_pivot_type=pivot_type, **pivot_info)
+            pivot_reason = (
+                'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT'
+                if side == 'LONG' else 'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT'
+            )
+            return _auth(pivot_reason)
+
         if clean_reason == 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL':
             from core.services.exits.abnormal_candle_exit import (
                 two_closed_adverse_abnormal_evidence,
@@ -1769,6 +1799,15 @@ class HoldingProtectionExitGate:
             abnormal_evidence = two_closed_adverse_abnormal_evidence(position, frame)
             if abnormal_evidence is None:
                 return _reject(wait_for_close=True)
+            # 持倉防洗鐵律（2026-10-26 授權：破軌開倉走到真峰谷才平倉，普通回踩不平倉）：
+            # 檢查是否摜穿中軌防守線；若未摜穿中軌且未出現真峰谷，一票否決回踩平倉，堅定續抱！
+            last_bar = frame.iloc[-1]
+            c_close = float(last_bar.get("close", quote))
+            kc_mid = float(last_bar.get("kc_middle", 0.0))
+            if kc_mid > 0:
+                is_midline_broken = (c_close < kc_mid if side == "LONG" else c_close > kc_mid)
+                if not is_midline_broken:
+                    return _reject(reason="VETO_HOLDING_UNTIL_TRUE_PIVOT")
             details.update(abnormal_evidence)
             return _auth(clean_reason)
 
@@ -2241,7 +2280,7 @@ class HoldingProtectionExitGate:
                 'EXIT_SHORT_ON_CONFIRMED_MIDLINE_BREAK',
                 'EXIT_SHORT_ON_CONFIRMED_TROUGH',
             )
-            if (not intrabar_peak_valley and not intrabar_catastrophic
+            if (not is_safety_exit and not intrabar_peak_valley and not intrabar_catastrophic
                     and not intrabar_pressure and not closed_structure_exit
                     and not intrabar_spike_rebound):
                 return _reject(wait_for_close=True)
@@ -2250,6 +2289,15 @@ class HoldingProtectionExitGate:
             # Pressure remains corroborating evidence for ratchet locks, but is
             # never an independent strategy exit under the approved exit policy.
             return _reject(wait_for_close=not candle_closed)
+
+        # ── 1. 硬止損 / 市場熔斷 (CIRCUIT_BREAKER_HARD_SL / OPPOSITE_KC_BAND_BREACH) ──
+        if is_safety_exit or any(token in clean_reason.upper() for token in ('CIRCUIT_BREAKER', 'HARD_SL', 'HARD_STOP', 'OPPOSITE_KC_BAND_BREACH')):
+            if any(token in clean_reason.upper() for token in ('CIRCUIT_BREAKER', 'HARD_SL', 'HARD_STOP')):
+                details.update(quote=quote, side=side, reason=clean_reason)
+                return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+            if 'OPPOSITE_KC_BAND_BREACH' in clean_reason.upper():
+                details.update(quote=quote, side=side, reason=clean_reason)
+                return _auth('OPPOSITE_KC_BAND_BREACH')
 
         # ── 2. 極端異常大瀑布：原因標籤不構成授權，重新驗證實體與中軌 ──
         if clean_reason in ('EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT'):
@@ -2266,13 +2314,25 @@ class HoldingProtectionExitGate:
                 crossed_middle = (
                     current_quote < middle if side == 'LONG' else current_quote > middle
                 )
-                if (not all(math.isfinite(value) for value in
-                            (atr, opening, middle, current_quote, adverse_body))
-                        or atr <= 0 or opening <= 0 or middle <= 0
-                        or adverse_body < 1.5 * atr or not crossed_middle):
+                live_ok = (
+                    all(math.isfinite(value) for value in (atr, opening, middle, current_quote, adverse_body))
+                    and atr > 0 and opening > 0 and middle > 0
+                    and adverse_body >= 1.5 * atr and crossed_middle
+                )
+                prev_open = float(previous.get('open', 0.0))
+                prev_close = float(previous.get('close', 0.0))
+                prev_mid = float(previous.get('kc_middle', middle))
+                prev_adverse = prev_open - prev_close if side == 'LONG' else prev_close - prev_open
+                prev_crossed = (prev_open >= prev_mid and prev_close < prev_mid) if side == 'LONG' else (prev_open <= prev_mid and prev_close > prev_mid)
+                prev_ok = (
+                    all(math.isfinite(value) for value in (prev_open, prev_close, prev_mid, prev_adverse))
+                    and atr > 0 and prev_open > 0 and prev_mid > 0
+                    and prev_adverse >= 1.5 * atr and prev_crossed
+                )
+                if not live_ok and not prev_ok:
                     return _reject(wait_for_close=not candle_closed)
                 details.update(
-                    adverse_body=adverse_body, atr=atr, kc_middle=middle,
+                    adverse_body=adverse_body if live_ok else prev_adverse, atr=atr, kc_middle=middle,
                     quote=current_quote, side=side,
                 )
                 return _auth('EXIT_BY_EXTREME_WATERFALL')

@@ -115,11 +115,6 @@ def can_open_position(
 
     from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
     kc_trend = resolve_kc_trend(df)
-    explicit_kc = str(last_closed.get("kc_trend") or last_closed.get("channel_state") or "").strip().upper()
-    if any(w in explicit_kc for w in ("UP", "KC向上", "UPTREND", "BULLISH")):
-        kc_trend = "UP"
-    elif any(w in explicit_kc for w in ("DOWN", "KC向下", "DOWNTREND", "BEARISH")):
-        kc_trend = "DOWN"
 
     body = abs(close_p - open_p)
     target_df = closed_df if "is_closed" in df.columns and len(closed_df) >= 2 else df

@@ -308,8 +308,9 @@ def test_exit_gate_evaluate_integration_triggers_profit_lock():
     }
     should_exit_16, reason_16, meta16 = ExitGate.evaluate(pos, snap16)
     
-    assert should_exit_16 is True, "ExitGate.evaluate 必須直接觸發鎖利平倉"
-    assert reason_16 == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert should_exit_16 is False, "未確認真峰谷前，普通鎖利不得提前平倉"
+    assert reason_16 == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert meta16["required_pivot"] == "CONFIRMED_TRUE_PEAK"
     assert math.isclose(meta16["floor_net_roe_pct"], 16.0, abs_tol=0.05)
 
 

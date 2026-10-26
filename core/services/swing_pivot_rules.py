@@ -45,10 +45,25 @@ def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
 
     pivot_mid = (pivot_open + pivot_close) / 2.0
     body = abs(close - opening)
+    kc_middle = float(current.get("kc_middle", (float(current.get("kc_upper", close)) + float(current.get("kc_lower", close))) / 2.0))
+    kc_upper = float(current.get("kc_upper", close + 2.0 * atr))
+    kc_lower = float(current.get("kc_lower", close - 2.0 * atr))
+    bandwidth = (kc_upper - kc_lower) / max(kc_middle, 1e-9)
+
+    # 拒絕通道極度壓縮死水區間 (Bandwidth < 0.0035) 雜訊假峰谷
+    if bandwidth < 0.0035:
+        return None
+
+    # 多單真谷底 (True Valley Pivot)：
+    # 1. 中間棒探底且確認棒收陽站上實體中點
+    # 2. 結構位置：探底點必須在 KC 中軌附近或中軌下方 (回踩確認支撐)，嚴禁貼在天花板頂端摸多
+    # 3. 向上通道獲利空間至少 0.35 ATR
     if (low_pivot < low_left and low_pivot < low_confirm
             and close > opening and close > pivot_mid
             and body >= 0.35 * atr
-            and close - low_pivot >= 0.45 * pivot_atr):
+            and close - low_pivot >= 0.45 * pivot_atr
+            and low_pivot <= kc_middle + 0.25 * atr
+            and kc_upper - close >= 0.35 * atr):
         return {
             "side": "LONG", "entry_type": "SWING_PIVOT",
             "stop_loss_price": low_pivot, "atr": atr,
@@ -57,10 +72,16 @@ def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
             "pivot_bar_timestamp": float(pivot.get("timestamp", 0.0)),
             "confirmation_bar_timestamp": float(current.get("timestamp", 0.0)),
         }
+    # 空單真峰頂 (True Peak Pivot)：
+    # 1. 中間棒衝高且確認棒收陰跌破實體中點
+    # 2. 結構位置：衝高點必須在 KC 中軌附近或中軌上方 (反彈確認阻力)，嚴禁貼在地板殺跌
+    # 3. 向下通道獲利空間至少 0.35 ATR
     if (high_pivot > high_left and high_pivot > high_confirm
             and close < opening and close < pivot_mid
             and body >= 0.35 * atr
-            and high_pivot - close >= 0.45 * pivot_atr):
+            and high_pivot - close >= 0.45 * pivot_atr
+            and high_pivot >= kc_middle - 0.25 * atr
+            and close - kc_lower >= 0.35 * atr):
         return {
             "side": "SHORT", "entry_type": "SWING_PIVOT",
             "stop_loss_price": high_pivot, "atr": atr,
@@ -110,6 +131,9 @@ def evaluate_outer_rail_reversal_exit(position: Any, frame: Any) -> dict[str, An
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
+    # 持倉防洗鐵律（2026-10-26 最新授權）：
+    # 破軌開倉後嚴禁因普通 MA3 回踩就提早平倉洗下車！徹底剔除 fast_break (OUTER_RAIL_MA3_BODY_BREAK)。
+    # 唯有已收線確認之強烈反轉吞沒 (ENGULFING) 或長影線頂底反轉 (LONG_WICK) 才放行。
     if side == "LONG":
         touched = bool((bars.loc[bars["timestamp"].astype(float) > entry_bar, "high"].astype(float)
                         >= bars.loc[bars["timestamp"].astype(float) > entry_bar, "kc_upper"].astype(float)).any())
@@ -117,8 +141,7 @@ def evaluate_outer_rail_reversal_exit(position: Any, frame: Any) -> dict[str, An
             p_close > p_open and p_close > prev_upper and c_close < c_open
             and prev_body > 0 and c_close <= p_close - 0.6 * prev_body
         )
-        wick = c_close < c_open and upper_wick >= 1.2 * max(body, 1e-12)
-        fast_break = c_close < ma3 and c_close < c_open and body >= 0.5 * atr
+        wick = c_close < c_open and upper_wick >= 1.5 * max(body, 1e-12) and upper_wick >= 0.5 * atr
         label = "EXIT_LONG_AT_PEAK"
     else:
         eligible = bars.loc[bars["timestamp"].astype(float) > entry_bar]
@@ -127,10 +150,9 @@ def evaluate_outer_rail_reversal_exit(position: Any, frame: Any) -> dict[str, An
             p_close < p_open and p_close < prev_lower and c_close > c_open
             and prev_body > 0 and c_close >= p_close + 0.6 * prev_body
         )
-        wick = c_close > c_open and lower_wick >= 1.2 * max(body, 1e-12)
-        fast_break = c_close > ma3 and c_close > c_open and body >= 0.5 * atr
+        wick = c_close > c_open and lower_wick >= 1.5 * max(body, 1e-12) and lower_wick >= 0.5 * atr
         label = "EXIT_SHORT_AT_BOTTOM"
-    reason = "OUTER_RAIL_ENGULFING" if engulf else "OUTER_RAIL_LONG_WICK" if wick else "OUTER_RAIL_MA3_BODY_BREAK" if fast_break else None
+    reason = "OUTER_RAIL_ENGULFING" if engulf else "OUTER_RAIL_LONG_WICK" if wick else None
     if not touched or reason is None:
         return None
     return {

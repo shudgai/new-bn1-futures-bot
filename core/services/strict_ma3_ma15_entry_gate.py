@@ -139,7 +139,11 @@ def evaluate_ma3_ma15_entry(
 
     if side == "LONG":
         kc_ok = values["kc_now"] > values["kc_prev"] and values["close"] > values["kc_now"]
-        cross_ok = values["ma3_prev"] <= values["ma15_prev"] and values["ma3_now"] > values["ma15_now"]
+        cross_ok = (
+            values["ma3_prev"] <= values["kc_prev"]
+            and values["ma3_now"] > values["kc_now"]
+            and values["ma3_now"] > values["ma3_prev"]
+        )
         body_ok = values["close"] > values["open"]
         adverse_wick = values["high"] - max(values["open"], values["close"])
         action = "OPEN_LONG"
@@ -150,7 +154,11 @@ def evaluate_ma3_ma15_entry(
         )
     else:
         kc_ok = values["kc_now"] < values["kc_prev"] and values["close"] < values["kc_now"]
-        cross_ok = values["ma3_prev"] >= values["ma15_prev"] and values["ma3_now"] < values["ma15_now"]
+        cross_ok = (
+            values["ma3_prev"] >= values["kc_prev"]
+            and values["ma3_now"] < values["kc_now"]
+            and values["ma3_now"] < values["ma3_prev"]
+        )
         body_ok = values["close"] < values["open"]
         adverse_wick = min(values["open"], values["close"]) - values["low"]
         action = "OPEN_SHORT"

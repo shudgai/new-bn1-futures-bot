@@ -98,6 +98,15 @@ class ExecutionManager:
                 logger.critical(f"🛑 [CRITICAL_DATA_OUTAGE] {symbol} 快照與即時報價均失效！嚴禁增加風險，請依交易所原生止損守護持倉")
                 return {"status": "CRITICAL_DATA_OUTAGE", "symbol": symbol}
 
+        if has_position:
+            from core.services.exits.trend_lock import update_trend_lock_state
+            if update_trend_lock_state(current_position, klines_df):
+                meta = getattr(account, "position_meta", {}).setdefault(symbol, {})
+                meta["trend_lock_state"] = dict(current_position["trend_lock_state"])
+                save = getattr(account, "save_state", None)
+                if callable(save):
+                    save()
+
         # 2. 若有持倉：只問 ExitGate (唯一裁決官)
         if has_position:
             should_exit, reason, meta = ExitGate.evaluate(
@@ -129,6 +138,9 @@ class ExecutionManager:
             ma5_prev = float(market_data.prev_k.get("ma5", ma5_curr))
             ma15_curr = float(market_data.curr_k.get("ma15", getattr(market_data, "ma15", ma5_curr)))
             ma15_prev = float(market_data.prev_k.get("ma15", ma15_curr))
+            ma3_curr = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", market_data.current_price)))
+            ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
+            ma3_slope = ma3_curr - ma3_prev
             macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
             raw_df = getattr(market_data, "raw_df", None)
             live_cross_long = None
@@ -169,6 +181,9 @@ class ExecutionManager:
                     )
                     ma_values = (ma3_prior, ma15_prior, ma3_latest, ma15_latest, live_ma3)
                     if all(math.isfinite(value) and value > 0 for value in ma_values):
+                        ma3_curr = ma3_latest
+                        ma3_prev = ma3_prior
+                        ma3_slope = ma3_curr - ma3_prev
                         ma3_directional_long = ma3_latest > ma3_prior and long_ma3_rising
                         ma3_directional_short = ma3_latest < ma3_prior and short_ma3_falling
                         ma_trend_aligned_long = (
@@ -227,11 +242,23 @@ class ExecutionManager:
                 and ma_trend_aligned_short
             )
 
-            # MA3 / MA5 交叉中軌敏捷轉折開倉 (AGILE_MOMENTUM)：
-            # 做多：MA3 或 MA5 向上金叉/發散於 MA15，斜率向上，KC 中軌走平或微揚，K 棒實體陽線且站穩中軌之上
-            ma3_curr = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", ma5_curr)))
-            ma3_prev = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr)))
-            ma3_slope = ma3_curr - ma3_prev
+            # MA3 交叉 KC 中軌進場授權（統一核心鐵律）：
+            # 做多：前一根已收線 MA3 <= KC 中軌，當前已收線 MA3 > KC 中軌，當前 MA3 > 前一根 MA3 (斜率向上)
+            # 做空：前一根已收線 MA3 >= KC 中軌，當前已收線 MA3 < KC 中軌，當前 MA3 < 前一根 MA3 (斜率向下)
+            from core.gates.ma3_kc_midline_cross_gate import evaluate_ma3_kc_midline_cross
+            from core.services.candle_data import closed_entry_candles
+
+            closed_for_cross = closed_entry_candles(raw_df) if raw_df is not None else None
+            ma3_cross_long_ok, ma3_cross_long_reason, ma3_cross_long_meta = (
+                evaluate_ma3_kc_midline_cross(closed_for_cross, "LONG", symbol)
+                if closed_for_cross is not None and len(closed_for_cross) >= 2
+                else (False, "NO_CLOSED_BARS", {})
+            )
+            ma3_cross_short_ok, ma3_cross_short_reason, ma3_cross_short_meta = (
+                evaluate_ma3_kc_midline_cross(closed_for_cross, "SHORT", symbol)
+                if closed_for_cross is not None and len(closed_for_cross) >= 2
+                else (False, "NO_CLOSED_BARS", {})
+            )
 
             # 結合肯特納通道 (KC) 方向與大週期趨勢濾網：
             # 若主趨勢向上 (KC 中軌向上或大趨勢 BULLISH)，只做金叉開多，100% 禁止死叉開空！
@@ -241,22 +268,13 @@ class ExecutionManager:
             is_macro_bear = (macro_trend == "BEARISH" or kc_slope < -0.000005)
 
             is_ma_cross_long = (
-                (live_cross_long is not None or (
-                    (ma3_curr >= ma15_curr or ma5_curr >= ma15_curr)
-                    and (ma3_slope >= 0 or ma5_curr > ma5_prev)
-                    and market_data.curr_k["close"] > market_data.curr_k["open"]
-                ))
+                ma3_cross_long_ok
                 and not is_macro_bear
                 and kc_slope >= -0.000005
                 and market_data.curr_k["close"] >= market_data.kc_middle
             )
-            # 做空：MA3 或 MA5 向下死叉/發散於 MA15，斜率向下，KC 中軌走平或微垂，K 棒實體陰線且壓制在中軌之下
             is_ma_cross_short = (
-                (live_cross_short is not None or (
-                    (ma3_curr <= ma15_curr or ma5_curr <= ma15_curr)
-                    and (ma3_slope <= 0 or ma5_curr < ma5_prev)
-                    and market_data.curr_k["close"] < market_data.curr_k["open"]
-                ))
+                ma3_cross_short_ok
                 and not is_macro_bull
                 and kc_slope <= 0.000005
                 and market_data.curr_k["close"] <= market_data.kc_middle
@@ -284,9 +302,36 @@ class ExecutionManager:
                 or (market_data.kc_middle_slope <= 0.000005 and market_data.curr_k["close"] <= market_data.kc_middle)
             )
 
+            # 單一軌外延續開倉判定（2026-10-09 最新授權：平倉後或破軌沒開倉，只要上一根在軌外且當前報價在軌外及MA5外，順勢外軌鎖定延續開倉）
+            p_up = float(market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper)
+            p_low = float(market_data.prev_k.get("kc_lower", market_data.kc_lower) if market_data.prev_k else market_data.kc_lower)
+            p_close = float(market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price)
+            curr_quote = float(market_data.current_price)
+            curr_c = float(market_data.curr_k.get("close", curr_quote))
+            curr_o = float(market_data.curr_k.get("open", curr_c))
+
+            is_continuation_long = (
+                not is_macro_bear
+                and (p_close > p_up or curr_quote > market_data.kc_upper)
+                and curr_quote > market_data.kc_upper
+                and curr_quote > ma5_curr
+                and ma5_curr > ma5_prev
+                and kc_slope >= -0.000005
+                and curr_c >= curr_o
+            )
+            is_continuation_short = (
+                not is_macro_bull
+                and (p_close < p_low or curr_quote < market_data.kc_lower)
+                and curr_quote < market_data.kc_lower
+                and curr_quote < ma5_curr
+                and ma5_curr < ma5_prev
+                and kc_slope <= 0.000005
+                and curr_c <= curr_o
+            )
+
             # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線
             can_long = (not is_macro_bear) and (
-                is_breakout_long or is_ma_cross_long or (
+                is_breakout_long or is_continuation_long or is_ma_cross_long or (
                     not is_bearish_wave
                     and ma_trend_aligned_long
                     and (ma3_slope >= 0)
@@ -295,7 +340,7 @@ class ExecutionManager:
                 )
             )
             can_short = (not is_macro_bull) and (
-                is_breakdown_short or is_ma_cross_short or (
+                is_breakdown_short or is_continuation_short or is_ma_cross_short or (
                     not is_bullish_wave
                     and ma_trend_aligned_short
                     and (ma3_slope <= 0)
@@ -304,27 +349,39 @@ class ExecutionManager:
                 )
             )
 
-            # Explicit closed-bar swing-pivot exception: this is the only
-            # entry route allowed to oppose a lagging KC/macro label.
+            # 順勢交易鐵律（2026-10-26 授權：空頭趨勢嚴禁摸底開多，多頭趨勢嚴禁摸頂開空）
             from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
-            swing_pivot = evaluate_swing_pivot_entry(raw_df)
+            raw_swing_pivot = evaluate_swing_pivot_entry(raw_df)
+            swing_pivot = None
+            if raw_swing_pivot:
+                pivot_side = raw_swing_pivot.get("side")
+                # 順勢過濾：空頭趨勢下只接受 SHORT 峰頂做空；多頭趨勢下只接受 LONG 谷底做多
+                if pivot_side == "LONG" and is_macro_bear:
+                    logger.debug(f"🚫 [SWING_PIVOT_FILTER] {symbol} 空頭趨勢嚴禁谷底摸多！一票否決！")
+                elif pivot_side == "SHORT" and is_macro_bull:
+                    logger.debug(f"🚫 [SWING_PIVOT_FILTER] {symbol} 多頭趨勢嚴禁峰頂摸空！一票否決！")
+                else:
+                    swing_pivot = raw_swing_pivot
+
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                can_long = candidate_side == "LONG"
-                can_short = candidate_side == "SHORT"
+                if candidate_side == "LONG" and not is_macro_bear:
+                    can_long = True
+                elif candidate_side == "SHORT" and not is_macro_bull:
+                    can_short = True
 
-            # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)
+            # 強動能破軌或外軌延續開倉判定 (外軌鎖定強制上車，豁免平倉後冷卻期)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
             is_strong_breakout = (
-                (is_breakout_long and c_body >= 0.5 * market_data.atr)
-                or (is_breakdown_short and c_body >= 0.5 * market_data.atr)
+                ((is_breakout_long or is_continuation_long) and (c_body >= 0.35 * market_data.atr or curr_quote > market_data.kc_upper))
+                or ((is_breakdown_short or is_continuation_short) and (c_body >= 0.35 * market_data.atr or curr_quote < market_data.kc_lower))
             )
 
-            # 1. 平倉後強制冷卻檢查 (強動能突破放行交由 EntryGate 統一裁決)
+            # 1. 平倉後強制冷卻檢查 (強動能破軌與外軌延續放行，SWING_PIVOT 嚴格遵守冷卻防止反覆刷單)
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
-            if last_exit and not is_strong_breakout and not is_swing_pivot:
+            if last_exit and not is_strong_breakout:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 if elapsed_sec < 180:
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
@@ -339,15 +396,11 @@ class ExecutionManager:
                 logger.info(f"🚫 [RATE_LIMIT] {symbol} 1 小時內已開倉 {len(entry_history)} 次，達到上限 ({cls.MAX_ENTRIES_PER_HOUR} 次)，禁止開倉！")
                 return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
-            p_up = market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper
-            p_low = market_data.prev_k.get("kc_lower", market_data.kc_lower) if market_data.prev_k else market_data.kc_lower
-            p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
-
-            if can_long and is_breakout_long:
-                candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if p_close > p_up else "BREAKOUT_LONG"
-            elif can_short and is_breakdown_short:
-                candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if p_close < p_low else "BREAKDOWN_SHORT"
-            elif is_swing_pivot:
+            if can_long and (is_breakout_long or is_continuation_long):
+                candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if (p_close > p_up or is_continuation_long) else "BREAKOUT_LONG"
+            elif can_short and (is_breakdown_short or is_continuation_short):
+                candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if (p_close < p_low or is_continuation_short) else "BREAKDOWN_SHORT"
+            elif is_swing_pivot and ((swing_pivot['side'] == "LONG" and can_long) or (swing_pivot['side'] == "SHORT" and can_short)):
                 candidate_signal = f"SWING_PIVOT_{swing_pivot['side']}"
             elif can_long:
                 if is_ma_cross_long:
@@ -454,12 +507,19 @@ class ExecutionManager:
                     "current_time": now_ts,
                 }
                 if is_swing_pivot:
-                    should_entry, reason, meta = True, "CLOSED_SWING_PIVOT_DIRECTION_OVERRIDE", {
-                        "side": candidate_side,
-                        "direction_override": True,
-                        "entry_type": "SWING_PIVOT",
-                        "stop_loss_price": stop_loss,
-                    }
+                    # 順勢交易鐵律（2026-10-26 授權）：空頭趨勢嚴禁開多，多頭趨勢嚴禁開空！
+                    if (candidate_side == "LONG" and is_macro_bear) or (candidate_side == "SHORT" and is_macro_bull):
+                        should_entry = False
+                        reason = f"BLOCKED_{candidate_side}_ON_{'BEARISH' if is_macro_bear else 'BULLISH'}_TREND"
+                        meta = {"side": candidate_side, "macro_trend": macro_trend}
+                        logger.info(f"🚫 [VETO] {symbol} {reason}: 順勢交易鐵律，絕不准逆勢開單！")
+                    else:
+                        should_entry, reason, meta = True, "CLOSED_SWING_PIVOT_TREND_ALIGNED", {
+                            "side": candidate_side,
+                            "direction_override": False,
+                            "entry_type": "SWING_PIVOT",
+                            "stop_loss_price": stop_loss,
+                        }
                 else:
                     should_entry, reason, meta = EntryGate.evaluate(
                         signal_type=candidate_signal,
@@ -509,9 +569,10 @@ class ExecutionManager:
                     if is_swing_pivot:
                         call_meta.update(
                             entry_type="SWING_PIVOT",
-                            direction_override=True,
+                            direction_override=False,
                             stop_loss_price=stop_loss,
                             source="UNIFIED_PIPELINE|SWING_PIVOT",
+                            swing_pivot=swing_pivot,
                         )
                     call_meta["upstream_entry_gate_authorized"] = True
                     try:
@@ -777,6 +838,7 @@ class ExecutionManager:
                     else "CROSS_MID" if is_cross_mid else "BREAKOUT"
                 ),
                 "initial_sl": initial_sl,
+                "stop_loss_price": initial_sl,
                 "signal_id": signal_id,
                 "channel_confirmation_bar_id": bar_id,
                 "bar_id": bar_id,
@@ -785,8 +847,11 @@ class ExecutionManager:
                 "meta": meta or {},
             }
             if frame is not None:
+                if hasattr(frame, "attrs"):
+                    frame.attrs.setdefault("timeframe_ms", 60_000.0)
                 entry_context["entry_gate_frame"] = frame
                 entry_context["frame"] = frame
+                entry_context["raw_df"] = frame
 
             if hasattr(account, "open_position"):
                 opened = await account.open_position(

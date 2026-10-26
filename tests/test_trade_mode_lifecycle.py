@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import core.paper_account as pa_module
@@ -34,6 +35,31 @@ DYNAMIC_MODE_NAMES = {
     "MA5_CROSS_PIVOT",
     "MA5_REVERSAL",
 }
+
+
+def seed_confirmed_position(account, side, entry_mode):
+    """Create a persisted, already-filled position without exercising EntryGate."""
+    account.positions["MODE/USDT"] = {
+        "side": side, "entry_price": 100.0, "qty": 0.25, "margin": 25.0,
+        "leverage": 1.0, "open_timestamp": 0.0,
+        "entry_mode": entry_mode, "trend_lock_managed": True,
+        "initial_sl": 95.0 if side == "LONG" else 105.0,
+    }
+    account.position_meta["MODE/USDT"] = {"trend_lock_managed": True}
+    account.trades.append({"action": f"OPEN_{side}", "symbol": "MODE/USDT"})
+    close = 99.0 if side == "LONG" else 101.0
+    frame = pd.DataFrame([
+        {"timestamp": 60_000, "open": 100.0, "high": 100.5,
+         "low": 99.5, "close": 100.0, "ma3": 100.0, "ma15": 100.0,
+         "kc_middle": 100.0, "kc_upper": 102.0, "kc_lower": 98.0,
+         "is_closed": True},
+        {"timestamp": 120_000, "open": 100.0, "high": 101.5,
+         "low": 98.5, "close": close, "ma3": 100.0, "ma15": 100.0,
+         "kc_middle": 100.0, "kc_upper": 102.0, "kc_lower": 98.0,
+         "is_closed": True},
+    ])
+    frame.attrs.update(timeframe_ms=60_000, snapshot_ms=180_000)
+    account._channel_exit_frames = {"MODE/USDT": frame}
 
 
 def test_every_production_entry_mode_is_registered_in_the_test_matrix():
@@ -143,11 +169,7 @@ async def test_every_trade_mode_rejects_same_side_duplicate(
     account = PaperAccount()
     sl = 95.0 if side == "LONG" else 105.0
     tp = 105.0 if side == "LONG" else 95.0
-    assert await account.open_position(
-        "MODE/USDT", side, 100.0, 25.0, sl, tp, "first",
-        leverage=1, signal_score=80, apply_slippage=False,
-        entry_context={"entry_mode": entry_mode},
-    )
+    seed_confirmed_position(account, side, entry_mode)
     qty_before = account.positions["MODE/USDT"]["qty"]
 
     duplicate = await account.open_position(
@@ -210,13 +232,7 @@ async def test_partial_close_rejects_non_partial_fraction(
         pa_module, "STATE_FILE", str(tmp_path / f"partial-{side}-{fraction}.json"),
     )
     account = PaperAccount()
-    sl = 95.0 if side == "LONG" else 105.0
-    tp = 105.0 if side == "LONG" else 95.0
-    assert await account.open_position(
-        "MODE/USDT", side, 100.0, 25.0, sl, tp, "partial guard",
-        leverage=1, signal_score=80, apply_slippage=False,
-        entry_context={"entry_mode": "BREAKOUT"},
-    )
+    seed_confirmed_position(account, side, "BREAKOUT")
     qty_before = account.positions["MODE/USDT"]["qty"]
 
     closed = await account.partial_close_position(
@@ -235,11 +251,7 @@ async def test_close_paths_remove_same_symbol_pending_top_up(
 ):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"close-pending-{partial}.json"))
     account = PaperAccount()
-    assert await account.open_position(
-        "MODE/USDT", "LONG", 100.0, 25.0, 95.0, 105.0, "open",
-        leverage=1, signal_score=80, apply_slippage=False,
-        entry_context={"entry_mode": "BREAKOUT"},
-    )
+    seed_confirmed_position(account, "LONG", "BREAKOUT")
     account.pending_limit_orders["MODE/USDT"] = {
         "side": "LONG", "entry_context": {"dca_stage": 2},
     }

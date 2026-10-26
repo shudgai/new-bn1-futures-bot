@@ -234,6 +234,17 @@ class CentralEntryGate:
                         passed=False, reason="VETO_SWING_PIVOT_NOT_CONFIRMED",
                         signal_id=sig_id, details={"side": side},
                     )
+                macro_upper = str(macro_trend or "").upper()
+                if side == "LONG" and macro_upper in ("BEARISH", "SHORT", "DOWN"):
+                    return GateCheckResult(
+                        passed=False, reason="BLOCKED_LONG_ON_BEARISH_TREND",
+                        signal_id=sig_id, details={"side": side, "macro_trend": macro_trend},
+                    )
+                if side == "SHORT" and macro_upper in ("BULLISH", "LONG", "UP"):
+                    return GateCheckResult(
+                        passed=False, reason="BLOCKED_SHORT_ON_BULLISH_TREND",
+                        signal_id=sig_id, details={"side": side, "macro_trend": macro_trend},
+                    )
                 blacklist = (False, "PASS_CONFIRMED_SWING_PIVOT", {
                     "swing_pivot": pivot_evidence,
                     "soft_market_blacklist": "BYPASSED_FOR_CONFIRMED_PIVOT",
@@ -281,6 +292,28 @@ class CentralEntryGate:
                 or klines_or_snapshot.get("entry_type") == "CROSS_MID"
             ))
         )
+
+        # -------------------------------------------------------------
+        # 條件 1.5：MA3 交叉 KC 中軌核心授權 (MA3 x KC Midline Cross)
+        # -------------------------------------------------------------
+        if ("CROSS_MID" in src_upper or "MA_CROSS" in src_upper) and not is_swing_pivot:
+            from core.gates.ma3_kc_midline_cross_gate import evaluate_ma3_kc_midline_cross
+            cross_ok, cross_reason, cross_meta = evaluate_ma3_kc_midline_cross(
+                entry_frame, side, symbol=symbol,
+            )
+            checks["ma3_kc_midline_cross"] = {
+                "status": "PASS" if cross_ok else "FAIL",
+                "reason": cross_reason,
+                **cross_meta,
+            }
+            if not cross_ok:
+                return GateCheckResult(
+                    passed=False,
+                    reason=f"VETO_{cross_reason}",
+                    signal_id=sig_id,
+                    details=cross_meta,
+                    checks=checks,
+                )
 
         # -------------------------------------------------------------
         # 條件 2：KC 中軌斜率 (動態門檻)

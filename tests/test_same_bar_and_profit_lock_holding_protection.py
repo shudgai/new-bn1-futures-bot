@@ -1,7 +1,7 @@
 """Unit tests for Same-Bar Holding Protection and Profit-Lock Rules.
 
 鐵律：
-開倉後不要當根平倉，除非剛好是真峰谷，否則除了鎖利外都不平倉。
+開倉後不要當根平倉，普通鎖利也須等待已收線確認真峰谷。
 """
 import pytest
 import pandas as pd
@@ -21,7 +21,7 @@ def make_frame(rows, timeframe_ms=60000):
 
 
 class TestSameBarAndProfitLockProtection:
-    """測試開倉後不要當根平倉，除非剛好是真峰谷，否則除了鎖利外都不平倉"""
+    """測試開倉後只在真峰谷或緊急風控條件下平倉"""
 
     def test_same_bar_veto_ordinary_exit(self):
         """當根 K 棒內普通平倉（如 MA 破位、回調）必須 100% 否決"""
@@ -87,8 +87,8 @@ class TestSameBarAndProfitLockProtection:
         assert can_exit is True
         assert reason == 'EXIT_BY_CONFIRMED_TRUE_PEAK'
 
-    def test_same_bar_allow_profit_lock_exit(self):
-        """當根 K 棒內若達到保本鎖利或階梯鎖利，允許平倉"""
+    def test_same_bar_profit_lock_waits_for_true_pivot(self):
+        """當根 K 棒觸及普通鎖利仍須等待真峰谷確認"""
         live_ts = 1791941640000.0
         df = make_frame([
             {'open': 10.0, 'close': 10.2, 'high': 10.3, 'low': 9.9, 'timestamp': live_ts - 120000,
@@ -107,15 +107,15 @@ class TestSameBarAndProfitLockProtection:
             'open_timestamp': (live_ts + 2000) / 1000.0,
         }
 
-        # 鎖利原因（如保本鎖定 / 階梯鎖利）在當根允許平倉
+        # 普通鎖利不是緊急出口，不能繞過真峰谷確認
         can_exit, reason, _ = HoldingProtectionExitGate.validate_exit(
             position, df, quote=10.9, candidate_reason='RATCHET_BREAKEVEN_LOCK'
         )
-        assert can_exit is True
-        assert reason == 'RATCHET_BREAKEVEN_LOCK'
+        assert can_exit is False
+        assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'
 
-    def test_cross_bar_veto_ordinary_pullback_allow_profit_lock(self):
-        """跨根後（非當根）：普通回調未成真峰谷禁止平倉，但鎖利允許平倉"""
+    def test_cross_bar_profit_lock_waits_for_true_pivot(self):
+        """跨根後普通回調與鎖利都要等真峰谷"""
         live_ts = 1791941640000.0
         df = make_frame([
             {'open': 10.0, 'close': 10.2, 'high': 10.3, 'low': 9.9, 'timestamp': live_ts - 120000,
@@ -144,9 +144,9 @@ class TestSameBarAndProfitLockProtection:
         assert can_exit is False
         assert 'VETO' in veto_reason
 
-        # 2. 鎖利（如保本鎖定 / 階梯鎖利） -> 允許平倉
+        # 2. 鎖利（如保本鎖定 / 階梯鎖利） -> 未到真峰谷仍否決
         can_exit, reason, _ = HoldingProtectionExitGate.validate_exit(
             position, df, quote=10.5, candidate_reason='RATCHET_BREAKEVEN_LOCK'
         )
-        assert can_exit is True
-        assert reason == 'RATCHET_BREAKEVEN_LOCK'
+        assert can_exit is False
+        assert reason == 'VETO_HOLDING_UNTIL_TRUE_PIVOT'

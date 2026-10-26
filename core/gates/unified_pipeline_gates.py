@@ -115,13 +115,13 @@ class ExitGate:
         "EXIT_LONG_ON_KC_LOWER_BREACH",
         "EXIT_SHORT_ON_KC_UPPER_BREACH",
         "EXIT_BY_MEME_ADVERSE_STOP_LOSS",
-        "EXIT_LONG_AT_PEAK",
-        "EXIT_SHORT_AT_BOTTOM",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
         "EXIT_BY_RATCHET_PROFIT_LOCK",
         "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+        "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+        "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
     })
     # 中軌 MA3 暫緩期間仍然放行的真峰谷出口
     PIVOT_EXIT_REASONS = frozenset({
@@ -138,19 +138,14 @@ class ExitGate:
 
     @staticmethod
     def _gate_unconfirmed_exit(result):
-        """Only confirmed swing pivots, profit locks, and emergency protection may close."""
+        """Only confirmed swing pivots and emergency protection may close."""
         should_exit, reason, meta = result
         if not should_exit:
             return result
         reason = str(reason or "")
         reason_upper = reason.upper()
         if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS
-                or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-                or "PROFIT_LOCK" in reason_upper
-                or "RATCHET" in reason_upper
-                or "TRAILING_LOCK" in reason_upper
-                or "NET_ROE" in reason_upper):
+                or reason in ExitGate.PIVOT_EXIT_REASONS):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -166,152 +161,50 @@ class ExitGate:
         atr: Optional[float] = None,
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        出場總裁決：
-        1. 絕對風險出口（3 ATR 硬止損、極端瀑布、反側破軌）及淨 ROE 階梯獲利鎖定最優先。
-        2. 其餘所有自動出口均須由開倉後已收線 K 確認真峰頂/真谷底。
-        """
+        """Keep emergency controls independent; route strategy exits through Trend Lock."""
         result = ExitGate._evaluate_with_holding_rules(
             pos, market_data, current_price, atr, kc_slope,
         )
-        if not result[0] and result[1] == "HOLD_LOCKED":
-            result = (False, ExitGate.GENERAL_EXIT_VETO_REASON, result[2])
-        raw_for_reversal = (
+        should_exit, reason, meta = result
+        reason_upper = str(reason or "").upper()
+        from core.services.exits.trend_lock import (
+            evaluate_trend_lock_exit, is_trend_lock_emergency,
+            update_trend_lock_state,
+        )
+        from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
+        frame = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("raw_df") if isinstance(market_data, dict) else None
         )
-        quote_for_reversal = float(current_price or (
+        quote = float(current_price or (
             market_data.current_price if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
         ))
-        from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
-        abnormal_evidence = two_closed_adverse_abnormal_evidence(pos, raw_for_reversal)
-        if abnormal_evidence:
-            from core.gates.holding_protection_gate import HoldingProtectionExitGate
-            return HoldingProtectionExitGate.validate_exit(
-                pos, raw_for_reversal, quote_for_reversal,
-                "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal_evidence,
-            )
-        from core.services.swing_pivot_rules import evaluate_outer_rail_reversal_exit
-        rail_reversal = evaluate_outer_rail_reversal_exit(pos, raw_for_reversal)
-        if rail_reversal:
-            from core.gates.holding_protection_gate import HoldingProtectionExitGate
-            return HoldingProtectionExitGate.validate_exit(
-                pos, raw_for_reversal, quote_for_reversal,
-                str(rail_reversal["reason"]), rail_reversal,
-            )
-        should_exit, reason, meta = result
-        side = str((pos or {}).get("side", "")).upper()
-        reason_upper = str(reason or "").upper()
-        is_emergency = reason in ExitGate.ABSOLUTE_SAFETY_REASONS or any(
-            token in reason_upper for token in (
-                "HARD_STOP", "CIRCUIT_BREAKER", "EMERGENCY", "WATERFALL",
-                "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
-                "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
-            )
-        )
-        if is_emergency:
+
+        if should_exit and is_trend_lock_emergency(reason):
             return result
+        abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
+        if abnormal is not None:
+            return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
 
-        # A profit lock is an authorized exit class and must reach the final
-        # evidence check before any trend/pullback shield can veto it.
-        if should_exit and (
-            reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
-            or "PROFIT_LOCK" in reason_upper
-            or "RATCHET" in reason_upper
-            or "TRAILING_LOCK" in reason_upper
-        ):
-            from core.gates.holding_protection_gate import HoldingProtectionExitGate
-            raw_df = (
-                market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
-                else market_data.get("raw_df")
-            )
-            quote = float(current_price or (
-                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-                else market_data.get("current_price", 0.0)
-            ))
-            return HoldingProtectionExitGate.validate_exit(
-                pos, raw_df, quote, reason, meta,
-            )
+        if isinstance(pos, dict) and update_trend_lock_state(pos, frame):
+            if isinstance(market_data, dict):
+                state = pos.get("trend_lock_state")
+                market_data["trend_lock_state"] = state
 
-        # A confirmed post-entry three-point pivot is itself an exit signal;
-        # do not wait for the trend engine to emit a separate MA/midline exit.
-        from core.gates.holding_protection_gate import has_confirmed_true_pivot
-        pivot_confirmed, pivot_type, pivot_details = has_confirmed_true_pivot(
-            pos, raw_for_reversal, quote_for_reversal,
-        )
-        if pivot_confirmed:
-            pivot_reason = (
-                "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
-                if str((pos or {}).get("side", "")).upper() == "LONG"
-                else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+        trend_exit = evaluate_trend_lock_exit(pos, frame)
+        if trend_exit is not None:
+            trend_exit["final_execution_gate"] = (
+                "EXIT_GATE_APPROVED_PENDING_ACCOUNT_AUTHORIZATION"
             )
-            from core.gates.holding_protection_gate import HoldingProtectionExitGate
-            return HoldingProtectionExitGate.validate_exit(
-                pos, raw_for_reversal, quote_for_reversal, pivot_reason,
-                {**(meta or {}), "true_pivot_type": pivot_type, **pivot_details},
-            )
+            return True, f"EXIT_BY_TREND_LOCK_{trend_exit['reason']}", trend_exit
 
-        if should_exit and reason == "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL":
-            from core.gates.holding_protection_gate import HoldingProtectionExitGate
-            raw_df = (
-                market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
-                else market_data.get("raw_df")
-            )
-            quote = float(current_price or (
-                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-                else market_data.get("current_price", 0.0)
-            ))
-            return HoldingProtectionExitGate.validate_exit(
-                pos, raw_df, quote, reason, meta,
-            )
-
-        raw_df = (
-            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
-            else market_data.get("raw_df")
-        )
-        if not should_exit:
-            return result
-        from core.gates.holding_protection_gate import has_confirmed_true_pivot
-        quote = float(current_price or (
-            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-            else market_data.get("current_price", 0.0)
-        ))
-        pivot_confirmed, pivot_type, pivot_details = has_confirmed_true_pivot(
-            pos, raw_df, quote,
-        )
-        if pivot_confirmed and (
-            reason in ExitGate.PIVOT_EXIT_REASONS
-            or "PIVOT" in str(reason).upper()
-            or "FRACTAL_PEAK" in str(reason).upper()
-            or "FRACTAL_VALLEY" in str(reason).upper()
-            or "AT_TOP" in str(reason).upper()
-            or "AT_BOTTOM" in str(reason).upper()
-        ):
-            return True, reason, {
-                **(meta or {}),
-                "pivot_validation": {"confirmed": True, "type": pivot_type, **pivot_details},
-            }
-        try:
-            macro_trend = (
-                str(market_data.macro_trend or "NEUTRAL").upper()
-                if isinstance(market_data, MarketDataSnapshot)
-                else str(market_data.get("macro_trend") or "NEUTRAL").upper()
-            )
-        except (AttributeError, TypeError):
-            macro_trend = "NEUTRAL"
-        required_pivot = "CONFIRMED_VALLEY" if side == "SHORT" else "CONFIRMED_PEAK"
-        return False, "VETO_HOLD", {
+        return False, "VETO_TREND_LOCK", {
             **(meta or {}),
-            "suppressed_exit_reason": reason,
-            "macro_trend": macro_trend,
-            "required_pivot": required_pivot,
-            "exit_policy": "HOLD_UNTIL_CLOSED_TRUE_PEAK_OR_VALLEY_PIVOT",
-            "pivot_validation": {
-                "confirmed": pivot_confirmed,
-                "type": pivot_type,
-                **pivot_details,
-            },
+            "suppressed_exit_reason": reason if should_exit else None,
+            "trend_lock": True,
+            "closed_bar_only": True,
+            "quote": quote,
         }
 
     @staticmethod
@@ -637,6 +530,10 @@ class ExitGate:
                 entry_timestamp=pos.get("open_timestamp") or pos.get("entry_timestamp"),
             )
             if action == ACTION_EXIT:
+                from core.services.exits.staged_profit_lock import check_stage0_veto_hold
+                is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, mid_reason, quote_p, pos.get("side"))
+                if is_s0:
+                    return False, s0_r, {**(meta or {}), **s0_m}
                 return ExitGate._gate_unconfirmed_exit((
                     True, mid_reason,
                     {**(meta or {}), "mid_band_ma3": mid_meta,
@@ -759,7 +656,7 @@ class ExitGate:
         if unrealized_pct <= hard_loss_threshold:
             return True, "CIRCUIT_BREAKER_HARD_SL", {
                 **meta,
-                "cause": f"硬止損避險: loss={unrealized_pct:.2%} <= threshold={hard_loss_threshold:.2%}",
+                "cause": f"市場熔斷/硬防線避險: loss={unrealized_pct:.2%} <= threshold={hard_loss_threshold:.2%}",
             }
 
         # 1.2 極端巨型瀑布 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
@@ -817,24 +714,22 @@ class ExitGate:
 
         # ══════════════════════════════════════════════════════════════════
         # 第二級：淨 ROE 階梯鎖利（獲利了結出口，不受一般趨勢續抱 VETO 阻擋）
-        # 首次達 +8% 啟動鎖利，階梯回撤觸及底線立即平倉落袋
+        # 首次達 +10% 啟動鎖利 (Tier 1: 鎖 70%)，達 +20% 升級 (Tier 2: 鎖 85%)，不可降級
         # 多單 LONG 與空單 SHORT 統一規則
         # ══════════════════════════════════════════════════════════════════
-        # 傳統 ROE 階梯鎖利（相容 10% 鎖 70%、15% 鎖 80%）
-        if peak_roe >= 0.15:
-            lock_line = peak_roe * 0.80
-            if unrealized_roe <= lock_line:
-                return True, "PROFIT_LOCK", {
-                    **meta,
-                    "cause": f"階梯鎖利落袋: 達標15%鎖80% (peak_roe={peak_roe:.2%}, curr_roe={unrealized_roe:.2%} <= floor={lock_line:.2%})",
-                }
-        elif peak_roe >= 0.10:
-            lock_line = peak_roe * 0.70
-            if unrealized_roe <= lock_line:
-                return True, "PROFIT_LOCK", {
-                    **meta,
-                    "cause": f"階梯鎖利落袋: 達標10%鎖70% (peak_roe={peak_roe:.2%}, curr_roe={unrealized_roe:.2%} <= floor={lock_line:.2%})",
-                }
+        from core.services.exits.staged_profit_lock import (
+            evaluate_staged_profit_lock,
+            check_stage0_veto_hold,
+            EXIT_REASON_TIER1,
+            EXIT_REASON_TIER2,
+        )
+        should_staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(pos, quote, side)
+        meta.update(staged_meta)
+        if should_staged_exit:
+            return True, staged_reason or "PROFIT_LOCK", {
+                **meta,
+                **staged_meta,
+            }
 
         from core.services.exits.net_roe_profit_lock import evaluate_net_roe_profit_lock
         should_lock_exit, lock_reason, lock_meta = evaluate_net_roe_profit_lock(pos, quote, side)
@@ -846,7 +741,7 @@ class ExitGate:
             }
 
         # ══════════════════════════════════════════════════════════════════
-        # 第三級：重大趨勢結構破壞出口（不可被微型續抱盲目阻擋）
+        # 第三級：重大趨勢結構破壞出口（不可被微型續抱盲目阻擋，但階段0受防洗保護）
         # 3.1 已確認的慢線趨勢結構實質破位 (EXIT_BY_TREND_BROKEN)
         # 3.2 已確認的中軌結構實質破位 (EXIT_BY_KC_MID_STRUCTURE_BROKEN)
         # ══════════════════════════════════════════════════════════════════
@@ -858,6 +753,9 @@ class ExitGate:
                 deep_break_l = float(c_curr["close"]) < (ma_slow_t - 0.3 * atr_val)
                 trend_broken_l = deep_break_l and (macro_trend != "BULLISH") and not ma_slow_trending_up
                 if trend_broken_l:
+                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_TREND_BROKEN", quote, side)
+                    if is_s0:
+                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_TREND_BROKEN", {
                         **meta,
                         "cause": f"多頭趨勢實質破位: 收盤明確跌破棕色慢線 (close={float(c_curr['close']):.6f} < slow={ma_slow_t:.6f}-0.3*ATR) 且大週期衰竭 (macro={macro_trend})，波段結束平多！",
@@ -867,6 +765,9 @@ class ExitGate:
                 deep_break_s = float(c_curr["close"]) > (ma_slow_t + 0.3 * atr_val)
                 trend_broken_s = deep_break_s and (macro_trend != "BEARISH") and not ma_slow_trending_down
                 if trend_broken_s:
+                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_TREND_BROKEN", quote, side)
+                    if is_s0:
+                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_TREND_BROKEN", {
                         **meta,
                         "cause": f"空頭趨勢實質破位: 收盤明確突破棕色慢線 (close={float(c_curr['close']):.6f} > slow={ma_slow_t:.6f}+0.3*ATR) 且大週期衰竭 (macro={macro_trend})，波段結束平空！",
@@ -877,6 +778,9 @@ class ExitGate:
             if side == "LONG":
                 deep_mid_break_l = c_close_val < (kc_mid - 0.3 * atr_val)
                 if deep_mid_break_l and c_close_val < entry_p and macro_trend != "BULLISH":
+                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", quote, side)
+                    if is_s0:
+                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", {
                         **meta,
                         "cause": f"多頭中軌結構破位: 收盤實質跌破KC中軌 (close={c_close_val:.6f} < mid={kc_mid:.6f}-0.3*ATR) 且已跌破進場成本 (entry={entry_p:.6f})，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出！",
@@ -884,6 +788,9 @@ class ExitGate:
             elif side == "SHORT":
                 deep_mid_break_s = c_close_val > (kc_mid + 0.3 * atr_val)
                 if deep_mid_break_s and c_close_val > entry_p and macro_trend != "BEARISH":
+                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", quote, side)
+                    if is_s0:
+                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", {
                         **meta,
                         "cause": f"空頭中軌結構破位: 收盤實質突破KC中軌 (close={c_close_val:.6f} > mid={kc_mid:.6f}+0.3*ATR) 且已突破進場成本 (entry={entry_p:.6f})，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出！",
@@ -1987,7 +1894,10 @@ class EntryGate:
                         }
 
             # ─── 回踩中軌重置鎖 (Wave Reset Lock / 禁止同浪追單，2026-10-24 最新授權) ───
-            if "wave_reset_confirmed" in last_exit_context:
+            # 注意：外軌強勢延續開倉 (CONTINUATION_OUTSIDE_KC) 屬妖幣/強單邊外軌鎖定上車機制，
+            # 價格處於強勢暴走區間無需回測中軌，強制豁免此鎖！
+            is_continuation_sig = "CONTINUATION" in signal_type.upper()
+            if "wave_reset_confirmed" in last_exit_context and not is_continuation_sig:
                 is_wave_reset = WaveResetTracker.update_wave_reset_state(
                     last_exit_context,
                     raw_df=raw_df,
@@ -3017,39 +2927,42 @@ class EntryGate:
                 }
 
         # ══════════════════════════════════════════════════════════════════
-        # 模式 1：趨勢啟動進場（S1: EMA5金叉/死叉EMA13，站穩中軌，距EMA5 <= 0.8 ATR）
+        # 模式 1：趨勢啟動進場（MA3 交叉 KC 中軌核心授權）
         # ══════════════════════════════════════════════════════════════════
+        prev_kc_mid = float(prev_k.get("kc_middle", kc_mid))
         if signal_side == "LONG":
             not_chasing_ema_l = max(0.0, c_close - ma5_curr) <= max(0.8 * atr_val, 0.001 * quote)
             is_ma_cross_mid = (
-                (ma5_curr >= ma15 or ema_fast >= ema_slow)
-                and (c_close >= kc_mid or quote >= kc_mid)
-                and (c_close >= min(ema_fast, kc_mid) * 0.999)
-                and (c_close >= c_open)
-                and (slope >= -0.000005)
-                and (ma5_curr > ma5_prev)
+                ma3_prev <= prev_kc_mid
+                and ma3_curr > kc_mid
+                and ma3_curr > ma3_prev
                 and not_chasing_ema_l
             )
             if is_ma_cross_mid and (is_trend_start_mode or "CROSS_MID" in sig_upper):
                 return True, "ENTRY_LONG_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "模式1 S1提前啟動進場: EMA5金叉EMA13且站穩中軌/均線帶，MA5向上，及時捕捉主升浪起點！",
+                    "cause": "模式1 S1提前啟動進場: MA3金叉KC中軌且斜率向上，及時捕捉主升浪起點！",
+                    "ma3_prev": ma3_prev,
+                    "ma3_now": ma3_curr,
+                    "kc_mid_prev": prev_kc_mid,
+                    "kc_mid_now": kc_mid,
                 }
         elif signal_side == "SHORT":
             not_chasing_ema_s = max(0.0, ma5_curr - c_close) <= max(0.8 * atr_val, 0.001 * quote)
             is_ma_cross_mid = (
-                (ma5_curr <= ma15 or ema_fast <= ema_slow)
-                and (c_close <= kc_mid or quote <= kc_mid)
-                and (c_close <= max(ema_fast, kc_mid) * 1.001)
-                and (c_close <= c_open)
-                and (slope <= 0.000005)
-                and (ma5_curr < ma5_prev)
+                ma3_prev >= prev_kc_mid
+                and ma3_curr < kc_mid
+                and ma3_curr < ma3_prev
                 and not_chasing_ema_s
             )
             if is_ma_cross_mid and (is_trend_start_mode or "CROSS_MID" in sig_upper):
                 return True, "ENTRY_SHORT_EMA_CROSS_MID", {
                     **meta,
-                    "cause": "模式1 S1提前啟動進場: EMA5死叉EMA13且受壓中軌/均線帶，MA5向下，及時捕捉主跌浪起點！",
+                    "cause": "模式1 S1提前啟動進場: MA3死叉KC中軌且斜率向下，及時捕捉主跌浪起點！",
+                    "ma3_prev": ma3_prev,
+                    "ma3_now": ma3_curr,
+                    "kc_mid_prev": prev_kc_mid,
+                    "kc_mid_now": kc_mid,
                 }
 
         # ══════════════════════════════════════════════════════════════════

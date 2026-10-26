@@ -470,6 +470,34 @@ async def enforce_realtime_profit_exit(engine, symbol, price, quote_ms=None):
         if await enforce_hard_stop(account, symbol, price):
             return True
 
+        # Use the completed-bar Trend Lock for every strategy exit. This
+        # prevents legacy fixed-ATR, ratchet, KC-pivot and MA-turn branches
+        # below from emitting competing automatic close orders.
+        frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
+        if frame is None or frame.empty:
+            return False
+        from core.services.exits.trend_lock import (
+            evaluate_trend_lock_exit, update_trend_lock_state,
+        )
+        if update_trend_lock_state(position, frame):
+            meta['trend_lock_state'] = copy.deepcopy(position['trend_lock_state'])
+            account.save_state()
+        decision = evaluate_trend_lock_exit(position, frame)
+        if decision is None:
+            return False
+        account.log(
+            f'TREND_LOCK_EXIT symbol={symbol} side={position.get("side")} '
+            f'qty={position.get("qty")} reason={decision["reason"]} '
+            f'authorization_function={decision.get("authorization_function")} '
+            f'trigger_source={decision.get("trigger_source")} '
+            f'final_execution_gate=SUBMITTED_TO_ACCOUNT_BOUNDARY '
+            f'diagnostics={decision}',
+            'WARNING',
+        )
+        return await account.close_position(
+            symbol, price, f'TREND_LOCK_{decision["reason"]}', is_manual=False,
+        )
+
         if restricted_exit_policy:
             frame = getattr(engine, '_channel_exit_frames', {}).get(symbol)
             if frame is None or frame.empty:
