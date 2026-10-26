@@ -234,8 +234,12 @@ class CentralEntryGate:
                     "soft_market_blacklist": "BYPASSED_FOR_CONFIRMED_PIVOT",
                 })
             else:
+                # The entry may be submitted during a forming third candle,
+                # but consolidation classification must use closed evidence.
+                from core.services.candle_data import closed_entry_candles
+                blacklist_frame = closed_entry_candles(entry_frame)
                 blacklist = evaluate_market_blacklist(
-                    entry_frame, -1, side=side, last_closed_trade=last_trade,
+                    blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                 )
         blocked, block_reason, block_evidence = blacklist

@@ -193,19 +193,19 @@ class ExecutionManager:
             if not ma3_directional_short and ma5_curr < ma5_prev:
                 ma3_directional_short = True
 
-            # 破軌衝擊信號（收線突破外軌，通道走平或向上即刻發動，杜絕盤中毛刺）：
-            is_breakout_long = (
-                market_data.curr_k["close"] > market_data.kc_upper
-                and market_data.kc_middle_slope >= -0.000005
-                and ma5_curr > ma5_prev
-                and ma3_directional_long
-            )
-            is_breakdown_short = (
-                market_data.curr_k["close"] < market_data.kc_lower
-                and market_data.kc_middle_slope <= 0.000005
-                and ma5_curr < ma5_prev
-                and ma3_directional_short
-            )
+            # Two closed candles authorize KC breakout entries: K1 opens
+            # inside the channel and closes beyond the rail; K2 is same-color
+            # and closes beyond both its KC rail and MA5. Revalidate live quote.
+            two_bar_breakout = None
+            if raw_df is not None:
+                from core.services.candle_data import closed_entry_candles
+                from core.services.kc_two_bar_entry import evaluate_kc_two_bar_entry
+
+                two_bar_breakout = evaluate_kc_two_bar_entry(
+                    closed_entry_candles(raw_df), market_data.current_price,
+                )
+            is_breakout_long = bool(two_bar_breakout and two_bar_breakout.get("side") == "LONG")
+            is_breakdown_short = bool(two_bar_breakout and two_bar_breakout.get("side") == "SHORT")
 
             # 模式 2：趨勢回踩均線帶守穩轉強信號
             is_pullback_long = (
@@ -414,8 +414,15 @@ class ExecutionManager:
                         violations=[],
                     )
                 else:
+                    whitelist_frame = entry_frame
+                    if is_breakout_long or is_breakdown_short:
+                        # Breakout authorization is built from two completed
+                        # candles. Do not let the forming third candle fail
+                        # the closed-candle whitelist or replace its bar ID.
+                        from core.services.candle_data import closed_entry_candles
+                        whitelist_frame = closed_entry_candles(entry_frame)
                     whitelist = evaluate_ma3_ma15_entry(
-                        entry_frame,
+                        whitelist_frame,
                         candidate_side,
                         current_position="IDLE" if not has_position else "OPEN",
                         last_trade_bar_time=(
@@ -498,6 +505,7 @@ class ExecutionManager:
                     call_meta["stop_loss_price"] = whitelist.stop_loss_price
                     call_meta["whitelist_checklist"] = whitelist.checklist
                     call_meta["atr"] = atr_for_stop
+                    call_meta["macro_trend"] = market_data.macro_trend
                     if is_swing_pivot:
                         call_meta.update(
                             entry_type="SWING_PIVOT",
@@ -704,6 +712,9 @@ class ExecutionManager:
                 if hasattr(frame, "attrs"):
                     frame.attrs["entry_finality_verified"] = True
                     frame.attrs.setdefault("timeframe_ms", 60_000)
+                    macro_label = (meta or {}).get("macro_trend")
+                    if macro_label:
+                        frame.attrs["macro_trend"] = str(macro_label).upper()
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
             requested_sl = (meta or {}).get("stop_loss_price")

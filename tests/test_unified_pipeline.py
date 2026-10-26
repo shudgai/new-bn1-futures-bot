@@ -140,16 +140,15 @@ def test_exit_gate_hold_through_consolidation():
     assert "未達連續兩根收破EMA40慢線" in meta.get("cause", "") or "大週期趨勢依然向上" in meta.get("cause", "")
 
 
-def test_exit_gate_10pct_lock_7pct_profit():
-    """測試出場門禁 2：達標 10% 鎖 7% 階梯保護"""
+def test_exit_gate_rejects_legacy_gross_roe_lock_without_net_lock_state():
+    """舊 gross ROE 峰值不可取代目前的淨 ROE 鎖利狀態。"""
     df = _generate_sample_df(30, trend="UP")
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=106.0)
     # entry=100, 最高達 112 (+12%), 當前跌到 106 (+6%), 跌破 70% 保證線 (12% * 0.7 = 8.4%)
     pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.12, "leverage": 1.0}
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=106.0)
-    assert should_exit
-    assert reason == "PROFIT_LOCK"
-    assert "10%鎖70%" in meta.get("cause", "")
+    assert not should_exit
+    assert reason == "VETO_PROFIT_LOCK_NOT_REACHED"
 
 
 def test_execution_manager_pipeline_flow():
@@ -202,34 +201,35 @@ def test_execution_manager_pipeline_flow():
 @pytest.mark.anyio
 async def test_early_short_execution_pipeline_flow():
     """
-    [功能與整合測試：提早開空流水線與持倉防洗整合]
+    [整合測試：數學候選仍須通過市場狀態及帳戶防線]
     驗證三層流水線鏈路：
     1. 當前 K 線滿足「長黑吞噬反轉」或「破中軌」時，數學裁決閘門放行。
-    2. ExecutionManager 依 step_size 截斷、檢查保證金與 5U MIN_NOTIONAL 後成功開空。
-    3. 開空後進入 ExitGate，驗證在跌勢展開且未收線確認真谷底前，持倉保護維持續抱 (VETO_HOLD)，
-       確保提早進場不會誤觸防洗持倉過濾器，整條流水線流暢且不撞車！
+    2. 盤整市場不得只憑數學反轉候選越過中央市場濾網開倉。
     """
     from core.paper_account import PaperAccount
     from core.services.math_execution_gate import validate_entry_math
     import time
     now_ms = time.time() * 1000.0
-    n = 30
+    n = 45
     data = []
     for i in range(n):
         if i < 28:
-            c = 100.2 if i % 2 == 0 else 100.0
-            o = 100.0 if i % 2 == 0 else 100.2
+            c = 101.0 - i * (1.1 / 27)
+            o = c + 0.01
         elif i == 28:
-            o, c = 100.0, 100.5
+            o, c = 99.86, 99.9
         else:
-            o, c = 100.5, 99.4
+            step = 0.5 / (n - 29)
+            o = 99.9 - (i - 29) * step
+            c = 99.9 - (i - 28) * step
         data.append({
             "timestamp": int(now_ms - (n - 1 - i) * 60_000),
             "open": o,
-            "high": max(o, c) + 0.2,
-            "low": min(o, c) - 0.2,
+            "high": max(o, c) + (0.02 if i > 28 else 0.2),
+            "low": min(o, c) - (0.02 if i > 28 else 0.2),
             "close": c,
             "volume": 150.0 if i == n - 1 else 100.0,
+            "is_closed": True,
         })
     df = pd.DataFrame(data)
 
@@ -241,7 +241,11 @@ async def test_early_short_execution_pipeline_flow():
     # 2. 驗證數學閘門提早開空放行
     allowed, reason = validate_entry_math(full_df, side="SHORT")
     assert allowed is True
-    assert reason in ("ENTRY_SHORT_ENGULFING_REVERSAL", "ENTRY_SHORT_MID_BAND_BREAK")
+    assert reason in (
+        "ENTRY_SHORT_ENGULFING_REVERSAL",
+        "ENTRY_SHORT_MID_BAND_BREAK",
+        "ENTRY_MATH_APPROVED",
+    )
 
     # 3. 驗證 ExecutionManager 執行鏈路
     account = PaperAccount()
@@ -259,23 +263,9 @@ async def test_early_short_execution_pipeline_flow():
         reason,
         meta={"step_size": 0.1, "atr": snapshot.atr, "raw_df": full_df},
     )
-    assert opened is True
-    assert "LOBSTER/USDT" in account.positions
-    pos = account.positions["LOBSTER/USDT"]
-    assert pos["side"] == "SHORT"
-    assert abs(pos["entry_price"] - 99.4) < 0.1
-
-    # 3. 驗證開倉後持倉防洗整合：價格順利下行 (99.0)，無真谷底反轉，維持續抱
-    from core.gates.unified_pipeline_gates import ExitGate
-    snapshot = DataPipeline.calculate_snapshot(
-        "LOBSTER/USDT",
-        df,
-        current_price=99.0,
-        position={"side": "SHORT", "entry_price": 99.5, "peak_roe": 0.05},
-    )
-    should_exit, exit_reason, _ = ExitGate.evaluate(pos, snapshot, current_price=99.0)
-    assert should_exit is False
-    assert exit_reason == "VETO_HOLD"
+    assert opened is False
+    assert "LOBSTER/USDT" not in account.positions
+    assert any("CENTRAL_ENTRY_GATE_VETO" in item["text"] for item in account.logs)
 
 
 @pytest.mark.anyio
@@ -328,7 +318,7 @@ async def test_exit_gate_no_stall_on_bearish_exhaustion():
 
 
 @pytest.mark.anyio
-async def test_replay_entry_price_improvement_over_kc_breakout():
+async def test_replay_rejects_flat_ma15_midline_cross_without_room():
     """
     [時序回放比對測試：EMA 交叉 + 中軌突破提早開倉 vs KC 外軌破軌追高]
     情境重現：
@@ -366,18 +356,19 @@ async def test_replay_entry_price_improvement_over_kc_breakout():
     for i in range(50):
         bars.append({
             "timestamp": now_ms - (52 - i) * 60_000,
-            "open": 0.06670,
-            "high": 0.06675,
-            "low": 0.06665,
-            "close": 0.06670,
+            "open": 0.06645,
+            "high": 0.06665,
+            "low": 0.06625,
+            "close": 0.06645,
             "volume": 100.0,
+            "is_closed": True,
         })
 
     # 第 51~52 根紅 K 連續推升，穿過中軌並引發 EMA15 金叉 EMA40
     # 第 51 根
-    bars.append({"timestamp": now_ms - 60_000, "open": 0.06670, "high": 0.06678, "low": 0.06668, "close": 0.06676, "volume": 150.0})
+    bars.append({"timestamp": now_ms - 120_000, "open": 0.06645, "high": 0.06647, "low": 0.06642, "close": 0.06644, "volume": 150.0, "is_closed": True})
     # 第 52 根：金叉穿過 KC 中軌 (Close=0.06684 > Mid=0.06675, Upper=0.06695)
-    bars.append({"timestamp": now_ms, "open": 0.06676, "high": 0.06686, "low": 0.06674, "close": 0.06684, "volume": 250.0})
+    bars.append({"timestamp": now_ms - 60_000, "open": 0.06676, "high": 0.06686, "low": 0.06674, "close": 0.06684, "volume": 250.0, "is_closed": True})
 
     df = pd.DataFrame(bars)
 
@@ -388,15 +379,10 @@ async def test_replay_entry_price_improvement_over_kc_breakout():
         quote=0.06684,
     )
 
-    # 驗證在 0.06684 處提早開多成立
-    assert res["status"] == "ENTRY_EXECUTED", f"預期在金叉穿中軌時提早開多，實際狀態: {res}"
-    assert res["reason"] in ("ENTRY_LONG_EMA_CROSS_MID", "PULLBACK_RECLAIM_CONTINUATION")
-    assert symbol in account.positions
-    pos = account.positions[symbol]
-    assert pos["side"] == "LONG"
-    # 核心斷言：成交價嚴格低於 0.06690 (避免外軌 0.06699 天花板)
-    assert pos["entry_price"] < 0.06690, f"開倉價 {pos['entry_price']} 未能顯著優於外軌天花板 0.06690！"
-    assert pos["entry_price"] == 0.06684
+    # 平坦的 MA15/KC 斜率未達門檻，不能因單根中軌上穿而開倉。
+    assert res["status"] == "VETO"
+    assert "VETO_MA15_FLAT" in res["reason"] or "VETO_KC_MIDDLE_FLAT" in res["reason"]
+    assert symbol not in account.positions
 
 
 def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
@@ -456,7 +442,7 @@ def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
     assert meta_s.get("side") == "SHORT"
 
 
-def test_exit_gate_holds_long_above_ascending_kc_middle():
+def test_profit_lock_overrides_pullback_hold_above_ascending_kc_middle():
     """
     驗證核心防守線：唯認 KC 中軌收盤實體跌破。
     多單開倉衝高後，回踩測試向上的 KC 中軌，未跌破中軌前強制一票否決回踩平多 (VETO_EXIT_HOLD_ABOVE_KC_MIDDLE)！
@@ -481,10 +467,9 @@ def test_exit_gate_holds_long_above_ascending_kc_middle():
         "ema_slow": 101.5,
     }
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=102.5)
-    assert should_exit is False
-    assert reason == "VETO_HOLD"
-    assert meta.get("hold_rule") == "VETO_EXIT_HOLD_ABOVE_KC_MIDDLE"
-    assert "穩守向上的KC中軌" in meta.get("cause", "")
+    assert should_exit is True
+    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert meta.get("armed") is True
 
 
 

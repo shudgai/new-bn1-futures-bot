@@ -167,7 +167,9 @@ def evaluate_market_blacklist(
                 macro_mid = pd.to_numeric(bars["macro_kc_middle"], errors="coerce")
                 if len(macro_mid) >= 2 and macro_mid.notna().iloc[-2:].all():
                     macro_slope = float(macro_mid.iloc[-1] - macro_mid.iloc[-2])
-            if macro_label not in {"BULLISH", "BEARISH", "LONG", "SHORT", "UP", "DOWN"} and macro_slope is None:
+            if macro_label not in {
+                "BULLISH", "BEARISH", "LONG", "SHORT", "UP", "DOWN", "NEUTRAL",
+            } and macro_slope is None:
                 return True, "VETO_MACRO_TREND_UNAVAILABLE", checks
             if macro_slope is not None and (
                 direction == "LONG" and macro_slope < 0

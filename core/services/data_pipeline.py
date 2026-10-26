@@ -299,6 +299,11 @@ class DataPipeline:
         else:
             macro_trend = "NEUTRAL"
 
+        # Carry the snapshot's explicitly computed regime with its frame so
+        # downstream gates can distinguish a valid neutral market from a
+        # missing macro-trend calculation.
+        df_calc.attrs["macro_trend"] = macro_trend
+
         return MarketDataSnapshot(
             symbol=symbol,
             current_price=quote,
