@@ -8,6 +8,29 @@ from core.paper_account import (
 )
 
 
+def seed_test_position(account, symbol, *, side, price, margin, leverage,
+                       stop, take_profit=0.0, atr=1.0, entry_mode="",
+                       wave_regime=""):
+    """Seed a controlled fill so these tests isolate exit/lock behavior."""
+    qty = margin * leverage / price
+    fee = qty * price * pa_module.TAKER_FEE_RATE
+    account.balance -= margin + fee
+    position = {
+        "symbol": symbol, "side": side, "entry_price": price, "qty": qty,
+        "margin": margin, "leverage": leverage, "sl": stop,
+        "initial_sl": stop, "tp": take_profit, "initial_tp": take_profit,
+        "atr": atr, "entry_atr": atr, "open_timestamp": 1.0,
+        "entry_mode": entry_mode, "wave_regime": wave_regime,
+    }
+    account.positions[symbol] = position
+    account.position_meta[symbol] = {
+        "sl": stop, "tp": take_profit, "atr": atr,
+        "entry_mode": entry_mode, "wave_regime": wave_regime,
+    }
+    account.save_state()
+    return position
+
+
 def test_profit_lock_giveback_scales_with_peak_ratio():
     # Below the ratio break-even point, the fixed 1.0U floor applies.
     assert get_profit_lock_giveback_usdt(0.0) == pytest.approx(1.0)
@@ -25,7 +48,7 @@ def test_outer_run_net_giveback_is_fixed_for_every_position_size():
 
 
 @pytest.mark.anyio
-async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
+async def test_paper_price_update_does_not_own_profit_lock_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "profit_lock_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     monkeypatch.setattr(pa_module, "DISABLE_STOP_LOSS", True)
@@ -42,36 +65,21 @@ async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
 
     account = PaperAccount()
     account.balance = 1000.0  # Include funds for the entry fee as well as margin.
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 150.0, 98.0, 0.0, "MA alignment",
-        atr=1.0, leverage=5, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA_ALIGNMENT"},
+    seed_test_position(account, "BTC/USDT", side="LONG", price=100.0,
+                       margin=150.0, leverage=5, stop=98.0,
+                       entry_mode="MA_ALIGNMENT")
+
+    # Price updates maintain valuation and peak state. The unified exit gate
+    # owns lock authorization; account marking must not invent a second ladder.
+    for price in (100.20, 100.2666666667, 100.32, 100.3333333334, 100.44, 100.34):
+        await account.update_positions({"BTC/USDT": price})
+        assert account.positions["BTC/USDT"]["sl"] == pytest.approx(98.0)
+    assert account.positions["BTC/USDT"]["mark_price"] == pytest.approx(100.34)
+    assert "profit_lock_mode" not in account.positions["BTC/USDT"]
+    assert not any(
+        str(trade.get("action") or "").startswith("CLOSE")
+        for trade in account.trades
     )
-
-    # Notional=750U, round-trip fee=0.75U, first protected floor=1.50U.
-    # The first protection floor activates immediately at 1.50U.
-    await account.update_positions({"BTC/USDT": 100.20})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.20)
-
-    await account.update_positions({"BTC/USDT": 100.2666666667})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.2666666667)
-
-    # Before the next 0.5U threshold, the 2.00U floor stays fixed.
-    await account.update_positions({"BTC/USDT": 100.32})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.2666666667)
-
-    # At 2.50U peak, advance one 0.5U step: 2.00U -> 2.50U locked.
-    await account.update_positions({"BTC/USDT": 100.3333333334})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.3333333333)
-
-    await account.update_positions({"BTC/USDT": 100.44})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.4)
-    assert account.positions["BTC/USDT"]["profit_lock_mode"] == "0.5U_LADDER_0.8U_GAP"
-    assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
-    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
-
-    await account.update_positions({"BTC/USDT": 100.34})
-    assert "BTC/USDT" not in account.positions
 
 
 @pytest.mark.anyio
@@ -83,11 +91,9 @@ async def test_outer_run_ignores_one_usdt_giveback_even_after_pivot(
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     account = PaperAccount()
     account.balance = 1000.0  # Include funds for the entry fee as well as margin.
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 300.0, 95.0, 0.0, "OUTER_RUN",
-        leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "TREND"},
-    )
+    seed_test_position(account, "BTC/USDT", side="LONG", price=100.0,
+                       margin=300.0, leverage=1, stop=95.0,
+                       entry_mode="MA3_MA15_MARKET", wave_regime="TREND")
     account.positions["BTC/USDT"]["outer_run_active"] = True
     account.position_meta["BTC/USDT"]["outer_run_active"] = True
 
@@ -118,11 +124,9 @@ async def test_kc_structure_ignores_pivot_and_one_usdt_giveback(
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     account = PaperAccount()
     account.balance = 1000.0  # Include funds for the entry fee as well as margin.
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 150.0, 95.0, 0.0, "KC trend",
-        leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "TREND"},
-    )
+    seed_test_position(account, "BTC/USDT", side="LONG", price=100.0,
+                       margin=150.0, leverage=1, stop=95.0,
+                       entry_mode="MA3_MA15_MARKET", wave_regime="TREND")
 
     await account.update_positions({"BTC/USDT": 102.0})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(95.0)
@@ -148,11 +152,9 @@ async def test_wide_trail_mode_does_not_exit_at_fixed_take_profit(tmp_path, monk
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     account = PaperAccount()
     account.balance = 1000.0  # Include funds for the entry fee as well as margin.
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 150.0, 98.0, 104.0,
-        "trend-end mode", atr=1.0, leverage=5, signal_score=100,
-        apply_slippage=False,
-    )
+    seed_test_position(account, "BTC/USDT", side="LONG", price=100.0,
+                       margin=150.0, leverage=5, stop=98.0,
+                       take_profit=104.0, entry_mode="TREND_END", atr=1.0)
 
     await account.update_positions({"BTC/USDT": 104.2})
 
@@ -160,7 +162,7 @@ async def test_wide_trail_mode_does_not_exit_at_fixed_take_profit(tmp_path, monk
 
 
 @pytest.mark.anyio
-async def test_one_usdt_floor_advances_every_two_usdt(tmp_path, monkeypatch):
+async def test_account_update_does_not_apply_legacy_usdt_ladder(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "one_by_two_lock.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
@@ -176,18 +178,16 @@ async def test_one_usdt_floor_advances_every_two_usdt(tmp_path, monkeypatch):
 
     account = PaperAccount()
     account.balance = 1000.0  # Include funds for the entry fee as well as margin.
-    assert await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 0.0, "1U/2U ladder",
-        leverage=1, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "MA_ALIGNMENT"},
+    seed_test_position(account, "BTC/USDT", side="LONG", price=100.0,
+                       margin=50.0, leverage=1, stop=95.0,
+                       entry_mode="MA_ALIGNMENT")
+
+    for price in (105.98, 106.0, 110.0):
+        await account.update_positions({"BTC/USDT": price})
+        assert account.positions["BTC/USDT"]["sl"] == pytest.approx(95.0)
+    assert account.positions["BTC/USDT"]["mark_price"] == pytest.approx(110.0)
+    assert "profit_lock_mode" not in account.positions["BTC/USDT"]
+    assert not any(
+        str(trade.get("action") or "").startswith("CLOSE")
+        for trade in account.trades
     )
-
-    await account.update_positions({"BTC/USDT": 105.98})  # 2.99U, first 1U floor
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(102.0)
-
-    await account.update_positions({"BTC/USDT": 106.0})   # 3U peak -> lock 3U
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(106.0)
-
-    await account.update_positions({"BTC/USDT": 110.0})   # 5U peak -> lock 5U
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(110.0)
-    assert account.positions["BTC/USDT"]["profit_lock_mode"] == "2U_LADDER_2U_GAP"
