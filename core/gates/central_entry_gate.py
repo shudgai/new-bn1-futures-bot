@@ -188,7 +188,37 @@ class CentralEntryGate:
                 details=parsed,
                 checks={"closed_bar": {"status": "FAIL", "actual": is_closed}},
             )
-        checks["closed_bar"] = {"status": "PASS", "actual": True, "expected": True}
+        # -------------------------------------------------------------
+        # 條件 0：方向總開關 (Direction Master Lock，一票否決，零歧義)
+        # 🟢 開多：MA3 必須在 KC 中軌上方 且 (MA3 > MA5 或 MA3 > MA3_PREV)
+        # 🔴 開空：MA3 必須在 KC 中軌下方 且 (MA3 < MA5 或 MA3 < MA3_PREV)
+        # -------------------------------------------------------------
+        ma3_c = float(parsed.get("ma3_curr", parsed.get("close", curr_price)))
+        ma3_p = float(parsed.get("ma3_prev", ma3_c))
+        kc_mid_val = float(parsed["kc_middle"])
+        ma5_c = float(parsed.get("ma5_curr", ma3_c))
+
+        from core.gates.direction_master_lock import evaluate_direction_master_lock
+        dir_ok, dir_reason, dir_details = evaluate_direction_master_lock(
+            side=side, ma3_curr=ma3_c, ma3_prev=ma3_p, kc_middle=kc_mid_val, ma5_curr=ma5_c
+        )
+        checks["direction_master_lock"] = {
+            "status": "PASS" if dir_ok else "FAIL",
+            "side": side,
+            "ma3_curr": ma3_c,
+            "ma3_prev": ma3_p,
+            "kc_middle": kc_mid_val,
+            "ma5_curr": ma5_c,
+            "reason": dir_reason,
+        }
+        if not dir_ok:
+            return GateCheckResult(
+                passed=False,
+                reason=dir_reason,
+                signal_id=sig_id,
+                details=dir_details,
+                checks=checks,
+            )
 
         # 最前置黑名單：所有 MA 交叉／突破入口共用此已收線盤整檢查。
         # 欄位或歷史不足一律拒絕，禁止策略分支繞過震盪濾網。
@@ -363,7 +393,7 @@ class CentralEntryGate:
         # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下)
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
-        if side == "LONG" and curr_price < kc_mid and not is_swing_pivot:
+        if side == "LONG" and curr_price < kc_mid:
             checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
             return GateCheckResult(
                 passed=False,
@@ -372,7 +402,7 @@ class CentralEntryGate:
                 details={"price": curr_price, "kc_middle": kc_mid},
                 checks=checks,
             )
-        elif side == "SHORT" and curr_price > kc_mid and not is_swing_pivot:
+        elif side == "SHORT" and curr_price > kc_mid:
             checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
             return GateCheckResult(
                 passed=False,
@@ -761,6 +791,18 @@ class CentralEntryGate:
                 metrics["ma15_curr"] = float(eval_row.get("ma15", metrics["close"]))
                 metrics["ma15_prev"] = float(prev_eval_row.get("ma15", metrics["ma15_curr"]))
 
+                # MA3
+                if "ma3" in data.columns:
+                    metrics["ma3_curr"] = float(eval_row.get("ma3", metrics["close"]))
+                    metrics["ma3_prev"] = float(prev_eval_row.get("ma3", metrics["ma3_curr"]))
+                elif "close" in data.columns:
+                    roll_ma3 = data["close"].rolling(3, min_periods=1).mean()
+                    metrics["ma3_curr"] = float(roll_ma3.loc[eval_row.name])
+                    metrics["ma3_prev"] = float(roll_ma3.loc[prev_eval_row.name])
+                else:
+                    metrics["ma3_curr"] = metrics["close"]
+                    metrics["ma3_prev"] = metrics["ma3_curr"]
+
                 # 歷史帶寬與擴張
                 if "kc_upper" in data.columns and "kc_lower" in data.columns:
                     widths = (data["kc_upper"] - data["kc_lower"]).tail(8).values
@@ -813,6 +855,8 @@ class CentralEntryGate:
                 metrics["ma5_prev"] = float(data.get("ma5_prev", prev_k.get("ma5", metrics["ma5_curr"])))
                 metrics["ma15_curr"] = float(data.get("ma15_curr", curr_k.get("ma15", data.get("ma15", metrics["close"]))))
                 metrics["ma15_prev"] = float(data.get("ma15_prev", prev_k.get("ma15", metrics["ma15_curr"])))
+                metrics["ma3_curr"] = float(data.get("ma3_curr", curr_k.get("ma3", data.get("ma3", metrics["close"]))))
+                metrics["ma3_prev"] = float(data.get("ma3_prev", prev_k.get("ma3", metrics["ma3_curr"])))
 
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(data.get("min_prev_width", curr_w * 0.95))

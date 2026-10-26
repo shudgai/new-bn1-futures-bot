@@ -2726,6 +2726,51 @@ class BinanceTestnetAccount:
             ):
                 return False
 
+            # =========================================================================
+            # 【第 0 層：方向總開關物理硬核驗 (Direction Master Lock)】
+            # 賣空若 ma3_curr > kc_middle 或 ma3_curr > ma3_prev，強制阻斷！
+            # 開多若 ma3_curr < kc_middle 或 ma3_curr < ma3_prev，強制阻斷！
+            # =========================================================================
+            check_frame = (
+                entry_context.get("entry_gate_frame")
+                if entry_context.get("entry_gate_frame") is not None
+                else entry_context.get("frame")
+            )
+            if check_frame is None and hasattr(self, "entry_frame_provider") and callable(self.entry_frame_provider):
+                try:
+                    check_frame = self.entry_frame_provider(symbol)
+                    if hasattr(check_frame, "__await__"):
+                        check_frame = await check_frame
+                except Exception:
+                    check_frame = None
+
+            if check_frame is not None:
+                from core.gates.direction_master_lock import extract_direction_metrics_from_frame
+                metrics = extract_direction_metrics_from_frame(check_frame)
+                if metrics:
+                    m3_c = metrics["ma3_curr"]
+                    m3_p = metrics["ma3_prev"]
+                    kc_m = metrics["kc_middle"]
+                    side_up = side.upper()
+                    if side_up == "SHORT" and (m3_c > kc_m or m3_c > m3_p):
+                        err_msg = (
+                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌上方 (ma3={m3_c:.6f} > kc_mid={kc_m:.6f}) "
+                            f"或斜率向上 (ma3_curr={m3_c:.6f} > ma3_prev={m3_p:.6f})，嚴禁逆勢開空！"
+                        )
+                        self.log(err_msg, "CRITICAL")
+                        if entry_context.get("raise_on_direction_lock"):
+                            raise RuntimeError(err_msg)
+                        return False
+                    elif side_up == "LONG" and (m3_c < kc_m or m3_c < m3_p):
+                        err_msg = (
+                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌下方 (ma3={m3_c:.6f} < kc_mid={kc_m:.6f}) "
+                            f"或斜率向下 (ma3_curr={m3_c:.6f} < ma3_prev={m3_p:.6f})，嚴禁逆勢開多！"
+                        )
+                        self.log(err_msg, "CRITICAL")
+                        if entry_context.get("raise_on_direction_lock"):
+                            raise RuntimeError(err_msg)
+                        return False
+
             target_action = f"OPEN_{side.upper()}"
             last_trade = getattr(self, "last_closed_trades", {}).get(symbol)
 

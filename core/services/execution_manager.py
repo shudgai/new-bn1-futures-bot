@@ -329,8 +329,20 @@ class ExecutionManager:
                 and curr_c <= curr_o
             )
 
-            # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線
-            can_long = (not is_macro_bear) and (
+            # 方向總開關（Direction Master Lock）：
+            # 🟢 開多絕對門檻：MA3 在 KC 中軌上方 且 (MA3 > MA5 或 MA3 > 前一根 MA3)
+            # 🔴 開空絕對門檻：MA3 在 KC 中軌下方 且 (MA3 < MA5 或 MA3 < 前一根 MA3)
+            from core.gates.direction_master_lock import evaluate_direction_master_lock
+            kc_mid_val = float(market_data.kc_middle)
+            direction_long_ok, dir_long_reason, _ = evaluate_direction_master_lock(
+                "LONG", ma3_curr, ma3_prev, kc_mid_val, ma5_curr
+            )
+            direction_short_ok, dir_short_reason, _ = evaluate_direction_master_lock(
+                "SHORT", ma3_curr, ma3_prev, kc_mid_val, ma5_curr
+            )
+
+            # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線與方向總開關
+            can_long = direction_long_ok and (not is_macro_bear) and (
                 is_breakout_long or is_continuation_long or is_ma_cross_long or (
                     not is_bearish_wave
                     and ma_trend_aligned_long
@@ -339,7 +351,7 @@ class ExecutionManager:
                     and (market_data.current_price >= ma3_curr)
                 )
             )
-            can_short = (not is_macro_bull) and (
+            can_short = direction_short_ok and (not is_macro_bull) and (
                 is_breakdown_short or is_continuation_short or is_ma_cross_short or (
                     not is_bullish_wave
                     and ma_trend_aligned_short
@@ -349,14 +361,17 @@ class ExecutionManager:
                 )
             )
 
-            # 順勢交易鐵律（2026-10-26 授權：空頭趨勢嚴禁摸底開多，多頭趨勢嚴禁摸頂開空）
+            # 順勢交易鐵律（2026-10-26 授權：空頭趨勢嚴禁摸底開多，多頭趨勢嚴禁摸頂開空；方向總開關一票否決）
             from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
             raw_swing_pivot = evaluate_swing_pivot_entry(raw_df)
             swing_pivot = None
             if raw_swing_pivot:
                 pivot_side = raw_swing_pivot.get("side")
-                # 順勢過濾：空頭趨勢下只接受 SHORT 峰頂做空；多頭趨勢下只接受 LONG 谷底做多
-                if pivot_side == "LONG" and is_macro_bear:
+                if pivot_side == "LONG" and not direction_long_ok:
+                    logger.warning(f"🛑 [DIRECTION_LOCK_VETO] {symbol} SWING_PIVOT_LONG 違反方向總開關 (MA3未在中軌上方或未向上)，一票否決！")
+                elif pivot_side == "SHORT" and not direction_short_ok:
+                    logger.warning(f"🛑 [DIRECTION_LOCK_VETO] {symbol} SWING_PIVOT_SHORT 違反方向總開關 (MA3未在中軌下方或未向下)，一票否決！")
+                elif pivot_side == "LONG" and is_macro_bear:
                     logger.debug(f"🚫 [SWING_PIVOT_FILTER] {symbol} 空頭趨勢嚴禁谷底摸多！一票否決！")
                 elif pivot_side == "SHORT" and is_macro_bull:
                     logger.debug(f"🚫 [SWING_PIVOT_FILTER] {symbol} 多頭趨勢嚴禁峰頂摸空！一票否決！")
@@ -366,9 +381,9 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG" and not is_macro_bear:
+                if candidate_side == "LONG" and direction_long_ok and not is_macro_bear:
                     can_long = True
-                elif candidate_side == "SHORT" and not is_macro_bull:
+                elif candidate_side == "SHORT" and direction_short_ok and not is_macro_bull:
                     can_short = True
 
             # 強動能破軌或外軌延續開倉判定 (外軌鎖定強制上車，豁免平倉後冷卻期)
@@ -431,6 +446,19 @@ class ExecutionManager:
                 from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
 
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
+                if candidate_side == "LONG" and not direction_long_ok:
+                    logger.warning(
+                        f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開多方向鎖 "
+                        f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_LONG"}
+                if candidate_side == "SHORT" and not direction_short_ok:
+                    logger.warning(
+                        f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開空方向鎖 "
+                        f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_SHORT"}
+
                 entry_frame = getattr(market_data, "raw_df", None)
                 account_gate_state = getattr(account, "entry_filter_last", None)
                 if not isinstance(account_gate_state, dict):

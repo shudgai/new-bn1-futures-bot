@@ -104,6 +104,12 @@ def validate_entry_math(
     if high < max(opened, close) or low > min(opened, close):
         return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
 
+    # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
+    from core.gates.direction_master_lock import check_direction_lock_from_frame
+    dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side)
+    if not dir_lock_pass:
+        return False, dir_lock_reason
+
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
     # adverse/flat MA5 slope into an authorized entry.
@@ -890,6 +896,18 @@ async def validate_entry_at_execution(
     if (hasattr(account, "_trend_lock_native_exit_cleanup_complete")
             and account._trend_lock_native_exit_cleanup_complete is not True):
         return False, "BLOCKED_TREND_LOCK_NATIVE_EXIT_CLEANUP_UNVERIFIED"
+
+    # 方向總開關 (Direction Master Lock) 物理核驗
+    from core.gates.direction_master_lock import check_direction_lock_from_frame
+    dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side)
+    if not dir_lock_pass:
+        account_log = getattr(account, "log", None)
+        if callable(account_log):
+            account_log(
+                f"🛑 [DIRECTION_MASTER_LOCK_BLOCK] {symbol} {side} 違反方向總開關: {dir_lock_reason} (details={dir_details})",
+                "CRITICAL",
+            )
+        return False, dir_lock_reason
 
     # Re-run the shared structural gate at the account execution boundary.
     # Earlier scan authorization and manual/UI flags cannot replace this check.

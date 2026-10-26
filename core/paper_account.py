@@ -601,6 +601,33 @@ class PaperAccount:
                         eval_frame = None
 
             if eval_frame is not None:
+                # ──【方向總開關物理硬核驗 (Direction Master Lock)】──
+                from core.gates.direction_master_lock import extract_direction_metrics_from_frame
+                dir_metrics = extract_direction_metrics_from_frame(eval_frame)
+                if dir_metrics:
+                    m3_c = dir_metrics["ma3_curr"]
+                    m3_p = dir_metrics["ma3_prev"]
+                    kc_m = dir_metrics["kc_middle"]
+                    side_up = side.upper()
+                    if side_up == "SHORT" and (m3_c > kc_m or m3_c > m3_p):
+                        err_msg = (
+                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌上方 (ma3={m3_c:.6f} > kc_mid={kc_m:.6f}) "
+                            f"或斜率向上 (ma3_curr={m3_c:.6f} > ma3_prev={m3_p:.6f})，嚴禁逆勢開空！"
+                        )
+                        self.log(err_msg, "CRITICAL")
+                        if entry_context.get("raise_on_direction_lock"):
+                            raise RuntimeError(err_msg)
+                        return False
+                    elif side_up == "LONG" and (m3_c < kc_m or m3_c < m3_p):
+                        err_msg = (
+                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌下方 (ma3={m3_c:.6f} < kc_mid={kc_m:.6f}) "
+                            f"或斜率向下 (ma3_curr={m3_c:.6f} < ma3_prev={m3_p:.6f})，嚴禁逆勢開多！"
+                        )
+                        self.log(err_msg, "CRITICAL")
+                        if entry_context.get("raise_on_direction_lock"):
+                            raise RuntimeError(err_msg)
+                        return False
+
                 gate_res = CentralEntryGate.verify_and_authorize(
                     symbol=symbol,
                     side=side,
