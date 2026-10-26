@@ -60,9 +60,15 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
+SLOT_1_SYMBOL = "龙虾/USDT"
+SLOT_2_SYMBOL = "1000PEPE/USDT"
+SLOT_CONFIG = {
+    "SLOT_1": SLOT_1_SYMBOL,
+    "SLOT_2": SLOT_2_SYMBOL,
+}
 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
-    1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
+    1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.50")))
 )
 MAX_SLOT_TRADE_USDT = 1000.0
 
@@ -79,13 +85,13 @@ def get_effective_slot_count(wallet_balance: float, configured_max: int = None) 
     return slot_cap
 
 
-WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.98
+WILD_SWING_SYMBOL_MARGIN_FRACTION = 0.50
 
 
 def get_wild_swing_margin_fraction(symbol: str) -> float | None:
-    from core.symbol_aliases import is_lobster_symbol
+    from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
 
-    if is_lobster_symbol(symbol):
+    if is_lobster_symbol(symbol) or is_pepe_symbol(symbol):
         return WILD_SWING_SYMBOL_MARGIN_FRACTION
     return None
 
@@ -1204,11 +1210,9 @@ SYMBOL_CANDIDATE_POOL[:] = [
     symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS
 ]
 
-# Automatic trading is restricted to Lobster only (CAP removed 2026-10-22);
-# symbol-list environment variables cannot re-enable other contracts. Existing
-# other positions remain managed by the position-management loop.
+# 雙槽位（2-Slots）標的配置：Slot 1 龙虾/USDT、Slot 2 1000PEPE/USDT
 DEFAULT_SYMBOLS = [
-    symbol for symbol in ("龙虾/USDT",)
+    symbol for symbol in (SLOT_1_SYMBOL, SLOT_2_SYMBOL)
     if not is_entry_disabled(symbol)
 ]
 

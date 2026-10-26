@@ -14,9 +14,31 @@ def positive(value):
     return result
 
 
-def raw_order_qty(margin, leverage, price):
-    # The 1000 prefix is already reflected in the quote price. Never divide
-    # by a parsed symbol prefix or by 1000 again.
+def calculate_target_slot_capital(available_balance: float, slot_count: int = 2) -> float:
+    """雙槽位 (2-Slots) 架構核心資金分配：
+    Target_Capital = Account_Balance / 2
+    每次開倉調用當前帳戶總可用餘額的 1/2。
+    """
+    avail = float(available_balance or 0.0)
+    if avail <= 0:
+        return 0.0
+    slots = max(1, int(slot_count))
+    return round(avail / float(slots), 4)
+
+
+def raw_order_qty(margin, leverage, price, symbol: str = None):
+    """計算目標開倉數量 (Quantity / Size)。
+    
+    CRITICAL: 1000PEPE 特殊單位換算處理：
+    1. 幣安 USD-M 期貨中，1000PEPEUSDT 的合約乘數 (Contract Size) 為 1（即 1 手 = 1000 PEPE）。
+    2. 行情中心的即時報價 price 本身即為「每 1000 顆 PEPE 的 USDT 價格」（例如 0.0095 USDT / 1000 PEPE）。
+    3. 名義價值 Notional = qty * price (USDT)。
+    4. 所需保證金 Margin = Notional / leverage = (qty * price) / leverage。
+    5. 目標數量 qty = (Target_Capital * leverage) / price。
+    
+    ⚠️ 鐵律禁令：絕對不可在計算中額外除以 1000 或重複乘 1000！
+    任何額外縮放都會導致 1000PEPE 的下單本金放大或縮小 1000 倍！
+    """
     return positive(margin) * positive(leverage) / positive(price)
 
 
