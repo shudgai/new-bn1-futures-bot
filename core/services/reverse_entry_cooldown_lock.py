@@ -30,22 +30,16 @@ def check_reverse_cooldown_lock(
 
     # 1. 剛平多單（LONG），若想反手開空（OPEN_SHORT）：
     if target_action == "OPEN_SHORT" and last_side in ('long', 'buy'):
-        # 必須滿足：平多後至少經過 3 根 K 棒，且價格實體已穩穩跌破 60MA
-        if bars_since_last_exit < 3 or (ma60 > 0 and current_price > ma60):
-            filter_reason = (
-                f"平多冷卻中 (已過 {max(0, bars_since_last_exit)}/3 根K棒，"
-                f"或價格未收在 60MA 下方 [現價 {current_price:.6g} > 60MA {ma60:.6g}])"
-            )
+        # 妖幣敏捷放寬：平多後冷卻 3 根 K 棒；滿 3 根後不因滯後 60MA 阻斷順勢開空
+        if bars_since_last_exit < 3:
+            filter_reason = f"平多冷卻中 (已過 {max(0, bars_since_last_exit)}/3 根K棒)"
             return "WAIT", filter_reason
 
     # 2. 剛平空單（SHORT），若想反手開多（OPEN_LONG）：
     elif target_action == "OPEN_LONG" and last_side in ('short', 'sell'):
-        # 必須滿足：平空後至少經過 3 根 K 棒，且價格實體已穩穩站上 60MA
-        if bars_since_last_exit < 3 or (ma60 > 0 and current_price < ma60):
-            filter_reason = (
-                f"平空冷卻中 (已過 {max(0, bars_since_last_exit)}/3 根K棒，"
-                f"或價格未收在 60MA 上方 [現價 {current_price:.6g} < 60MA {ma60:.6g}])"
-            )
+        # 妖幣敏捷放寬：平空後冷卻 3 根 K 棒；滿 3 根後不因滯後 60MA 阻斷順勢開多
+        if bars_since_last_exit < 3:
+            filter_reason = f"平空冷卻中 (已過 {max(0, bars_since_last_exit)}/3 根K棒)"
             return "WAIT", filter_reason
 
     return target_action, None

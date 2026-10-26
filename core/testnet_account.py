@@ -2821,7 +2821,13 @@ class BinanceTestnetAccount:
             # =========================================================================
             # 【第三層：反向開單冷卻鎖】防止剛平倉立即反向開單（多轉空、空轉多冷卻與大趨勢確認）
             # =========================================================================
-            is_ema_cross_entry = str(entry_context.get("entry_source", "")).startswith("EMA_CROSS") or entry_context.get("allow_flip") is True
+            is_ema_cross_entry = (
+                str(entry_context.get("entry_source", "")).startswith("EMA_CROSS")
+                or entry_context.get("allow_flip") is True
+                or "BREAKOUT" in str(entry_context.get("candidate_signal_type", ""))
+                or "CONTINUATION" in str(entry_context.get("candidate_signal_type", ""))
+                or bool(entry_context.get("intrabar_authorized"))
+            )
             if not is_ema_cross_entry:
                 frame_provider = getattr(self, "channel_exit_frame_provider", None)
                 frame = frame_provider(symbol) if callable(frame_provider) else getattr(self, "_channel_exit_frames", {}).get(symbol)

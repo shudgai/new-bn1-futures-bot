@@ -155,3 +155,47 @@ def test_v_turn_short_signal_blocked_at_execution_gate():
         assert "DIRECTION_LOCK" in reason
 
     asyncio.run(_run())
+
+
+def test_meme_coin_breakout_extension_relaxed_pass():
+    # 測試妖幣破軌暴衝：價格距外軌 1.5 ATR (原 0.5 ATR 會被殺，現在 2.5~3.5 ATR 放寬通過)
+    atr_val = 0.000010
+    kc_up = 0.004280
+    price_extended = kc_up + 1.5 * atr_val  # 距外軌 1.5 ATR
+    # 提供足夠的歷史 K 棒（>= 20 根），使最後一根明確創出 20 根新高突破唐奇安箱體
+    bars = []
+    base_price = 0.004200
+    for i in range(25):
+        ts = (i + 1) * 60_000
+        p = base_price + i * 0.000002
+        bars.append(
+            dict(timestamp=ts, open=p - 0.000001, high=p + 0.000001, low=p - 0.000001, close=p,
+                 atr=atr_val, ma3=p - 0.000001, ma5=p - 0.000002, ma15=p - 0.000004,
+                 kc_upper=p + 0.000015, kc_middle=p, kc_lower=p - 0.000015,
+                 is_closed=True, volume=1000, volume_avg=800)
+        )
+    # 最後一根價格暴衝，距外軌 1.5 ATR 且大幅突破 Donchian Box
+    kc_up = bars[-1]["kc_upper"]
+    price_extended = kc_up + 1.5 * atr_val
+    bars.append(
+        dict(timestamp=26 * 60_000, open=bars[-1]["close"], high=price_extended + 0.000002,
+             low=bars[-1]["close"], close=price_extended,
+             atr=atr_val, ma3=price_extended - 0.000002, ma5=price_extended - 0.000005, ma15=price_extended - 0.000020,
+             kc_upper=kc_up + 0.000005, kc_middle=bars[-1]["kc_middle"] + 0.000002, kc_lower=kc_up - 0.000035,
+             is_closed=True, volume=3000, volume_avg=800)
+    )
+    df = pd.DataFrame(bars)
+    df.attrs["timeframe_ms"] = 60_000.0
+    df.attrs["macro_trend"] = "BULLISH"
+
+    gate_res = CentralEntryGate.verify_and_authorize(
+        symbol="1000PEPEUSDT",
+        side="LONG",
+        price=price_extended,
+        klines_or_snapshot=df,
+        source="UNIFIED_PIPELINE CONTINUATION_OUTSIDE_KC_LONG",
+    )
+
+    # 驗證不再被 VETO_KC_OUTER_OVEREXTENSION 阻斷
+    assert gate_res.passed is True, f"Meme coin breakout extension should pass, got: {gate_res.reason}"
+

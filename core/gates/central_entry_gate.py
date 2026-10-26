@@ -61,8 +61,8 @@ class CentralEntryGate:
 
     # 共用送單硬門檻：不因標的或訊號標籤放寬。
     KC_SLOPE_MIN_ATR: float = 0.10
-    MAX_BAND_EXTENSION_ATR: float = 0.50
-    MAX_MA5_EXTENSION_ATR: float = 1.00
+    MAX_BAND_EXTENSION_ATR: float = 2.50
+    MAX_MA5_EXTENSION_ATR: float = 3.00
     MIN_KC_BANDWIDTH_PCT: float = 0.0035
     MIN_KC_EXPANSION_RATIO: float = 0.05
     MIN_VOLUME_MULTIPLIER: float = 1.20
@@ -468,15 +468,19 @@ class CentralEntryGate:
             band_dist = kc_lower - curr_price
             ma5_dist = ma5_curr - curr_price
 
-        band_overext = band_dist > (cls.MAX_BAND_EXTENSION_ATR * atr)
-        ma5_overext = ma5_dist > (cls.MAX_MA5_EXTENSION_ATR * atr)
+        is_breakout_or_continuation = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+        band_limit = (3.50 if is_breakout_or_continuation else cls.MAX_BAND_EXTENSION_ATR) * atr
+        ma5_limit = (3.50 if is_breakout_or_continuation else cls.MAX_MA5_EXTENSION_ATR) * atr
+
+        band_overext = band_dist > band_limit
+        ma5_overext = ma5_dist > ma5_limit
 
         checks["extension"] = {
             "band_dist": band_dist,
-            "max_band_dist": cls.MAX_BAND_EXTENSION_ATR * atr,
+            "max_band_dist": band_limit,
             "band_pass": not band_overext,
             "ma5_dist": ma5_dist,
-            "max_ma5_dist": cls.MAX_MA5_EXTENSION_ATR * atr,
+            "max_ma5_dist": ma5_limit,
             "ma5_pass": not ma5_overext,
         }
         if band_overext and not is_swing_pivot:
@@ -484,7 +488,7 @@ class CentralEntryGate:
                 passed=False,
                 reason="VETO_KC_OUTER_OVEREXTENSION",
                 signal_id=sig_id,
-                details={"band_dist": band_dist, "limit": cls.MAX_BAND_EXTENSION_ATR * atr},
+                details={"band_dist": band_dist, "limit": band_limit},
                 checks=checks,
             )
         if is_cross_mid and not is_swing_pivot:
@@ -507,7 +511,7 @@ class CentralEntryGate:
                 passed=False,
                 reason="VETO_MA5_OVEREXTENSION",
                 signal_id=sig_id,
-                details={"ma5_dist": ma5_dist, "limit": cls.MAX_MA5_EXTENSION_ATR * atr},
+                details={"ma5_dist": ma5_dist, "limit": ma5_limit},
                 checks=checks,
             )
 
@@ -553,14 +557,18 @@ class CentralEntryGate:
                 checks=checks,
             )
 
-        # 均線黏合或 MA5 貼近目標外軌時，通道空間不足，一律拒絕。
+        # 均線黏合或通道內開倉 MA5 貼近目標外軌時，通道空間不足，一律拒絕。
+        # 破軌與外軌延續單（MA5 已向外軌發散）不檢查 target_band 剩餘空間
         ma5_curr = float(parsed["ma5_curr"])
         ma15_curr = float(parsed["ma15_curr"])
         target_band = kc_upper if side == "LONG" else kc_lower
         min_spacing = cls.MIN_MA_SPACING_WIDTH_RATIO * curr_width
-        if (not is_swing_pivot and (
-                abs(ma5_curr - ma15_curr) < min_spacing
-                or abs(ma5_curr - target_band) < min_spacing)):
+        is_breakout_or_cont = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+        ma_spacing_insufficient = (
+            abs(ma5_curr - ma15_curr) < min_spacing
+            or (not is_breakout_or_cont and abs(ma5_curr - target_band) < min_spacing)
+        )
+        if not is_swing_pivot and ma_spacing_insufficient:
             return GateCheckResult(
                 passed=False, reason="VETO_MA_SPACING_BELOW_25_PERCENT_KC_WIDTH",
                 signal_id=sig_id,
