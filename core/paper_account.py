@@ -1845,6 +1845,8 @@ class PaperAccount:
                 pos["peak_roe"] = pnl_pct
             position_atr = max(float(pos.get("atr") or meta.get("atr") or 0.0), entry_p * 1e-12)
             failure_buffer = max(position_atr * PIVOT_FAILURE_BUFFER_ATR, entry_p * PIVOT_FAILURE_MIN_PCT)
+            signal_low = float(pos.get("signal_low") or meta.get("signal_low") or entry_p)
+            signal_high = float(pos.get("signal_high") or meta.get("signal_high") or entry_p)
             failure_level = signal_low - failure_buffer if side == "LONG" else signal_high + failure_buffer
             structure_failed = curr_p <= failure_level if side == "LONG" else curr_p >= failure_level
             price_window = self._rapid_drop_window.setdefault(symbol, [])
