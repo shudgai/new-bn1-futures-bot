@@ -158,6 +158,8 @@ FLAT_LINE_BREAKOUT_TYPES = frozenset((
     'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
     'KC_REALTIME_RAIL_BREACH_SHORT',
     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
+    'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+    'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
     'TRIGGER_A_KC_BREAKOUT',
     'TRIGGER_B_MA_CROSS',
     'TRIGGER_C_CONTINUATION',
@@ -1861,70 +1863,72 @@ class EntryGatePipeline:
     @staticmethod
     def detect_reversal_flip(frame: pd.DataFrame, quote: float,
                              side: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """情境 2：頂底轉折與反手（Reversal Flip - 帶量吞噬秒換向）。
-        
-        - 多單見頂平倉後（或頂部反轉），若次根走出飽滿大陰線跌破中軌/MA5：無條件立即反手開空！
-          (AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT)
-        - 空單見底平倉後（或底部反轉），若次根走出飽滿大陽線穿透中軌/MA5：無條件立即反手開多！
-          (AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG)
-        - 廢除平倉冷卻時間 (override_cooldown=True)，廢除所有阻礙反手的多餘門檻！
-        """
-        if frame is None or len(frame) < 2:
-            return None
+        """Detect a confirmed 5-left/3-right fractal and 1.5 ATR reversal."""
+        try:
+            from core.services.candle_data import closed_entry_candles
 
-        curr = frame.iloc[-1]
+            if frame is None or len(frame) < 9 or side not in (None, 'LONG', 'SHORT'):
+                return None
+            closed = closed_entry_candles(frame)
+            if len(closed) < 9:
+                return None
+            quote = float(quote)
+            if not math.isfinite(quote) or quote <= 0:
+                return None
 
-        open_p = float(curr.get('open', quote))
-        close_p = float(quote)
-        high_p = max(float(curr.get('high', quote)), quote)
-        low_p = min(float(curr.get('low', quote)), quote)
+            # Only pivots with all three right-hand bars closed are eligible.
+            first = max(5, len(closed) - 40)
+            last = len(closed) - 4
+            for pivot_idx in range(last, first - 1, -1):
+                pivot = closed.iloc[pivot_idx]
+                atr = float(pivot.get('atr') or 0.0)
+                high = float(pivot['high'])
+                low = float(pivot['low'])
+                stamp = float(pivot.get('timestamp') or 0.0)
+                confirm_stamp = float(closed.iloc[-1].get('timestamp') or 0.0)
+                if (not all(math.isfinite(value) and value > 0
+                            for value in (atr, high, low, stamp, confirm_stamp))
+                        or confirm_stamp <= stamp):
+                    continue
 
-        body = abs(close_p - open_p)
-        candle_range = high_p - low_p + 1e-9
-        solidity_ratio = body / candle_range
+                left = closed.iloc[pivot_idx - 5:pivot_idx]
+                right = closed.iloc[pivot_idx + 1:pivot_idx + 4]
+                is_peak = high > float(left['high'].max()) and high > float(right['high'].max())
+                is_valley = low < float(left['low'].min()) and low < float(right['low'].min())
+                short_ready = is_peak and quote <= high - 1.5 * atr
+                long_ready = is_valley and quote >= low + 1.5 * atr
+                if side == 'SHORT':
+                    long_ready = False
+                elif side == 'LONG':
+                    short_ready = False
+                if not short_ready and not long_ready:
+                    continue
 
-        # 飽滿大實體 (實體佔比 >= 50%)
-        if solidity_ratio < 0.50:
-            return None
-
-        ma5 = float(curr.get('ma5', quote))
-        kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
-
-        # ── 1. 見頂反手開空 (Flip to Short) ──
-        if side is None or side == 'SHORT':
-            is_bearish = close_p < open_p
-            breaks_down = close_p < ma5 or (kc_middle > 0 and close_p < kc_middle)
-            if is_bearish and breaks_down:
+                target_side = 'SHORT' if short_ready else 'LONG'
+                code = (
+                    'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT'
+                    if target_side == 'SHORT'
+                    else 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG'
+                )
+                stop = high if target_side == 'SHORT' else low
                 return {
-                    'type': 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                    'side': 'SHORT',
+                    'type': code,
+                    'side': target_side,
                     'price': quote,
-                    'is_reversal_flip': True,
-                    'confirmation_bar_id': float(curr.get('timestamp', 0)),
-                    'breakout_bar_id': float(curr.get('timestamp', 0)),
-                    'pending_signal_id': f"FLIP:SHORT:{curr.get('timestamp', 0)}",
-                    'entry_phase': 'KC_REVERSAL_FLIP',
-                    'reason': 'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
+                    'is_true_pivot_entry': True,
+                    'structural_stop_price': stop,
+                    'initial_sl': stop,
+                    'pivot_price': high if target_side == 'SHORT' else low,
+                    'entry_atr': atr,
+                    'confirmation_bar_id': confirm_stamp,
+                    'breakout_bar_id': confirm_stamp,
+                    'pending_signal_id': f"TRUE_PIVOT:{target_side}:{stamp}:{confirm_stamp}",
+                    'entry_phase': 'CONFIRMED_TRUE_PIVOT_REVERSAL',
+                    'reason': code,
                 }
-
-        # ── 2. 見底反手開多 (Flip to Long) ──
-        if side is None or side == 'LONG':
-            is_bullish = close_p > open_p
-            breaks_up = close_p > ma5 or (kc_middle > 0 and close_p > kc_middle)
-            if is_bullish and breaks_up:
-                return {
-                    'type': 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
-                    'side': 'LONG',
-                    'price': quote,
-                    'is_reversal_flip': True,
-                    'confirmation_bar_id': float(curr.get('timestamp', 0)),
-                    'breakout_bar_id': float(curr.get('timestamp', 0)),
-                    'pending_signal_id': f"FLIP:LONG:{curr.get('timestamp', 0)}",
-                    'entry_phase': 'KC_REVERSAL_FLIP',
-                    'reason': 'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
-                }
-
-        return None
+            return None
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return None
 
     @staticmethod
     def detect_top_reversal_short(frame: pd.DataFrame, quote: float,
@@ -2506,6 +2510,13 @@ class EntryGatePipeline:
                   requested_side: Optional[str] = None,
                   account=None,
                   diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        if decision is None:
+            held = getattr(account, 'positions', {}).get(symbol) if account is not None and symbol else None
+            if not held:
+                decision = self.detect_reversal_flip(frame, quote, side=requested_side)
+        is_true_pivot_entry = bool(
+            isinstance(decision, dict) and decision.get('is_true_pivot_entry') is True
+        )
         candidate_type = (
             decision.get('type') if isinstance(decision, dict)
             else None
@@ -2959,9 +2970,9 @@ class EntryGatePipeline:
                 )
                 is_shadow_entry = (decision.get('type') == 'AUTHORIZED_SHADOW_RETEST_ENTRY')
                 slope_problem = live_ma5_slope_problem(frame, quote, side)
-                if slope_problem and not is_midline_break and not is_shadow_entry and not (
+                if (slope_problem and not is_midline_break and not is_shadow_entry and not (
                     is_head_chop_flip and slope_problem == 'BLOCKED_BY_MA5_SLOPE_INSUFFICIENT'
-                ):
+                )):
                     if diagnostics is not None:
                         diagnostics['reason'] = slope_problem
                     return None
@@ -2989,8 +3000,6 @@ class EntryGatePipeline:
             or is_midline_break
             or decision.get('type') in (
                 'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
                 'AUTHORIZED_TOP_REVERSAL_SHORT',
                 'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
                 'TOP_WATERFALL_FLIP',
@@ -3000,8 +3009,6 @@ class EntryGatePipeline:
                 MOMENTUM_BURST_SHORT_CODE,
             )
             or decision.get('reason') in (
-                'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-                'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
                 'AUTHORIZED_TOP_REVERSAL_SHORT',
                 'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT',
                 'TOP_WATERFALL_FLIP',

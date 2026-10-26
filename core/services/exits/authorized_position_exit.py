@@ -21,7 +21,12 @@ def automated_position_exit_allowed(
     from core.services.math_execution_gate import is_emergency_exit
 
     if is_emergency_exit(reason):
-        return True
+        from core.services.math_execution_gate import validate_exit_math
+
+        allowed, _code, _evidence = validate_exit_math(
+            position, frame, float(price), metadata, close_reason=str(reason),
+        )
+        return bool(allowed)
 
     meta = metadata if isinstance(metadata, Mapping) else {}
     normalized_reason = str(reason or "").upper()

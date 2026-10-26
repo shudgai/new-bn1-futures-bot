@@ -304,6 +304,16 @@ class ExecutionManager:
                 )
             )
 
+            # Explicit closed-bar swing-pivot exception: this is the only
+            # entry route allowed to oppose a lagging KC/macro label.
+            from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
+            swing_pivot = evaluate_swing_pivot_entry(raw_df)
+            is_swing_pivot = bool(swing_pivot)
+            if is_swing_pivot:
+                candidate_side = swing_pivot["side"]
+                can_long = candidate_side == "LONG"
+                can_short = candidate_side == "SHORT"
+
             # 強動能破軌判定 (實體大陽/大陰且收在軌外，交由 EntryGate 判定豁免冷卻期)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
             is_strong_breakout = (
@@ -329,7 +339,9 @@ class ExecutionManager:
                 logger.info(f"🚫 [RATE_LIMIT] {symbol} 1 小時內已開倉 {len(entry_history)} 次，達到上限 ({cls.MAX_ENTRIES_PER_HOUR} 次)，禁止開倉！")
                 return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
-            if can_long:
+            if is_swing_pivot:
+                candidate_signal = f"SWING_PIVOT_{swing_pivot['side']}"
+            elif can_long:
                 p_up = market_data.prev_k.get("kc_upper", market_data.kc_upper) if market_data.prev_k else market_data.kc_upper
                 p_close = market_data.prev_k.get("close", market_data.current_price) if market_data.prev_k else market_data.current_price
                 if is_breakout_long:
@@ -378,23 +390,40 @@ class ExecutionManager:
                 )
                 if not isinstance(persisted_trade_bars, dict):
                     persisted_trade_bars = {}
-                atr_for_stop = float(getattr(market_data, "atr", 0.0) or 0.0)
+                atr_for_stop = float((swing_pivot or {}).get("atr") or getattr(market_data, "atr", 0.0) or 0.0)
                 execution_price = float(getattr(market_data, "current_price", 0.0) or 0.0)
                 stop_loss = (
+                    float(swing_pivot["stop_loss_price"]) if is_swing_pivot else
                     execution_price - 3.0 * atr_for_stop if candidate_side == "LONG"
                     else execution_price + 3.0 * atr_for_stop
                 )
-                whitelist = evaluate_ma3_ma15_entry(
-                    entry_frame,
-                    candidate_side,
-                    current_position="IDLE" if not has_position else "OPEN",
-                    last_trade_bar_time=(
-                        persisted_trade_bars.get(symbol)
-                        or cls._last_trade_bar_time.get(symbol)
-                    ),
-                    stop_loss_price=stop_loss,
-                    execution_price=execution_price,
-                )
+                if is_swing_pivot:
+                    from types import SimpleNamespace
+                    from core.services.candle_data import closed_entry_candles
+                    closed_pivot_bars = closed_entry_candles(entry_frame)
+                    pivot_bar_time = int(float(closed_pivot_bars.iloc[-1]["timestamp"])) if len(closed_pivot_bars) else None
+                    last_used = persisted_trade_bars.get(symbol) or cls._last_trade_bar_time.get(symbol)
+                    valid_stop = stop_loss < execution_price if candidate_side == "LONG" else stop_loss > execution_price
+                    if (not pivot_bar_time or last_used == pivot_bar_time or not valid_stop):
+                        return {"status": "VETO", "symbol": symbol, "reason": "SWING_PIVOT_BAR_OR_STOP_INVALID"}
+                    whitelist = SimpleNamespace(
+                        action=f"OPEN_{candidate_side}", bar_time=pivot_bar_time,
+                        entry_price=execution_price, stop_loss_price=stop_loss,
+                        checklist={"CLOSED_SWING_PIVOT": True, "PIVOT_STOP_VALID": True},
+                        violations=[],
+                    )
+                else:
+                    whitelist = evaluate_ma3_ma15_entry(
+                        entry_frame,
+                        candidate_side,
+                        current_position="IDLE" if not has_position else "OPEN",
+                        last_trade_bar_time=(
+                            persisted_trade_bars.get(symbol)
+                            or cls._last_trade_bar_time.get(symbol)
+                        ),
+                        stop_loss_price=stop_loss,
+                        execution_price=execution_price,
+                    )
                 if whitelist.action not in ("OPEN_LONG", "OPEN_SHORT"):
                     reason = whitelist.violations[0] if whitelist.violations else "ZERO_TRUST_WHITELIST_REJECTED"
                     logger.info(
@@ -412,11 +441,19 @@ class ExecutionManager:
                     "hourly_entry_count": len(entry_history),
                     "current_time": now_ts,
                 }
-                should_entry, reason, meta = EntryGate.evaluate(
-                    signal_type=candidate_signal,
-                    market_data=market_data,
-                    last_exit_context=last_exit_context,
-                )
+                if is_swing_pivot:
+                    should_entry, reason, meta = True, "CLOSED_SWING_PIVOT_DIRECTION_OVERRIDE", {
+                        "side": candidate_side,
+                        "direction_override": True,
+                        "entry_type": "SWING_PIVOT",
+                        "stop_loss_price": stop_loss,
+                    }
+                else:
+                    should_entry, reason, meta = EntryGate.evaluate(
+                        signal_type=candidate_signal,
+                        market_data=market_data,
+                        last_exit_context=last_exit_context,
+                    )
                 if should_entry:
                     side = meta.get("side", "LONG" if "LONG" in candidate_signal else "SHORT")
                     # Claim synchronously before the first await in execution.
@@ -456,6 +493,13 @@ class ExecutionManager:
                     call_meta["stop_loss_price"] = whitelist.stop_loss_price
                     call_meta["whitelist_checklist"] = whitelist.checklist
                     call_meta["atr"] = atr_for_stop
+                    if is_swing_pivot:
+                        call_meta.update(
+                            entry_type="SWING_PIVOT",
+                            direction_override=True,
+                            stop_loss_price=stop_loss,
+                            source="UNIFIED_PIPELINE|SWING_PIVOT",
+                        )
                     call_meta["upstream_entry_gate_authorized"] = True
                     try:
                         call_meta["intrabar_authorized"] = bool(
@@ -532,6 +576,7 @@ class ExecutionManager:
                 is_emergency = any(token in str(reason).upper() for token in (
                     "OPPOSITE_KC_BAND_BREACH", "EMERGENCY", "HARD_STOP", "CIRCUIT_BREAKER",
                     "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布"
+                    , "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM", "TWO_CLOSED_ADVERSE_ABNORMAL"
                 ))
                 is_limit = False if is_emergency else bool((meta or {}).get("is_limit", False))
                 success = await account.close_position(
@@ -690,6 +735,7 @@ class ExecutionManager:
                 (meta or {}).get("is_cross_mid")
                 or (meta or {}).get("allow_kc_internal")
                 or (meta or {}).get("strategy_mode") == "AGILE_MOMENTUM"
+                or (meta or {}).get("entry_type") == "SWING_PIVOT"
                 or any(k in str(reason).upper() for k in ("CROSS_MID", "MA_CROSS", "EMA_CROSS", "MID_LINE", "PULLBACK", "AGILE"))
                 or any(k in str(confirmation).upper() for k in ("MID_LINE", "CROSS", "AGILE"))
             )
@@ -710,7 +756,10 @@ class ExecutionManager:
                 "is_outer_entry": not is_cross_mid,
                 "allow_kc_internal": is_cross_mid,
                 "direction_override": is_cross_mid,
-                "entry_type": "CROSS_MID" if is_cross_mid else "BREAKOUT",
+                "entry_type": (
+                    "SWING_PIVOT" if (meta or {}).get("entry_type") == "SWING_PIVOT"
+                    else "CROSS_MID" if is_cross_mid else "BREAKOUT"
+                ),
                 "initial_sl": initial_sl,
                 "signal_id": signal_id,
                 "channel_confirmation_bar_id": bar_id,

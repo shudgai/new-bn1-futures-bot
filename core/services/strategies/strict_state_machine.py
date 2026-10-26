@@ -84,22 +84,12 @@ class StrictStateMachineStrategy:
             return {"action": "WAIT", "reason": diagnostics.get('reason', 'UNKNOWN_WAIT')}
 
         elif state == PositionState.LONG:
-            # 持多續抱硬性白名單
-            if close_price >= ma5:
-                return {"action": "WAIT", "reason": "HOLD_ABOVE_MA5"}
-            # 只有當收盤價實質跌破 MA5，且當根為實體陰線時，才准執行平多
-            if is_red_candle and close_price < ma5:
-                return {"action": "EXIT_LONG", "reason": "CLOSED_BELOW_MA5_RED_BODY"}
-            return {"action": "WAIT", "reason": "HOLDING_LONG"}
+            # This legacy signal calculator cannot authorize software exits.
+            # The shared exit gate owns locks, emergencies, and confirmed pivots.
+            return {"action": "WAIT", "reason": "HOLDING_LONG_EXIT_GATE_REQUIRED"}
 
         elif state == PositionState.SHORT:
-            # 持空續抱硬性白名單
-            if close_price <= ma5:
-                return {"action": "WAIT", "reason": "HOLD_BELOW_MA5"}
-            # 只有當收盤價實質突破 MA5，且當根為實體陽線時，才准執行平空
-            if is_green_candle and close_price > ma5:
-                return {"action": "EXIT_SHORT", "reason": "CLOSED_ABOVE_MA5_GREEN_BODY"}
-            return {"action": "WAIT", "reason": "HOLDING_SHORT"}
+            return {"action": "WAIT", "reason": "HOLDING_SHORT_EXIT_GATE_REQUIRED"}
 
         return {"action": "WAIT", "reason": "UNKNOWN_STATE"}
 

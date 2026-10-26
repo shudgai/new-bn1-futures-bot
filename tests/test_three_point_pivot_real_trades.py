@@ -44,8 +44,8 @@ def lobster_candles():
     return df
 
 
-def test_trade_0848_holds_on_healthy_structure_at_0856(lobster_candles):
-    """08:48 開多後，08:56 價格守住 MA5 防守線且 MA5 向上，微型峰頂不得單獨平倉，必須 VETO_HOLD 續抱"""
+def test_trade_0848_exits_on_closed_outer_rail_engulfing_at_0856(lobster_candles):
+    """08:56 的收線反轉吞噬滿足新授權的外軌峰頂出場條件。"""
     df = lobster_candles
     pos = {
         "symbol": "龙虾/USDT",
@@ -63,10 +63,9 @@ def test_trade_0848_holds_on_healthy_structure_at_0856(lobster_candles):
     snap = DataPipeline.calculate_snapshot("龙虾/USDT", sub_df, current_price=quote, position=pos)
     should_exit, reason, meta = ExitGate.evaluate(pos, snap)
 
-    # 第一階段重構驗收斷言：守住 MA5 結構，VETO_HOLD 一票否決平倉
-    assert should_exit is False, "08:56 價格守住 MA5 且 MA5 向上，微型峰頂不得單獨觸發平倉，必須續抱！"
-    assert reason == "VETO_HOLD"
-    assert "一票否決微型峰頂" in meta.get("cause", "")
+    assert should_exit is True
+    assert reason == "EXIT_LONG_AT_PEAK"
+    assert meta["trigger"] == "OUTER_RAIL_ENGULFING"
 
 
 def test_trade_0915_holds_on_kc_middle_support_at_0925(lobster_candles):

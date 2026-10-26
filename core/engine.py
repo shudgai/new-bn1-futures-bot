@@ -2152,8 +2152,6 @@ class TradingEngine:
             'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
             'AUTHORIZED_SHADOW_RETEST_ENTRY',
             'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-            'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
-            'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
             'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
         }
         if not isinstance(signal, dict):
@@ -2414,18 +2412,35 @@ class TradingEngine:
         if not isinstance(traded_bars, dict):
             traded_bars = {}
         whitelist_atr = float(decision.get('entry_atr') or 0.0)
-        whitelist_stop = (
-            price - 3.0 * whitelist_atr if side == 'LONG'
-            else price + 3.0 * whitelist_atr
-        )
-        whitelist = evaluate_ma3_ma15_entry(
-            snapshot['frame'], side,
-            current_position='IDLE' if symbol not in self.account.positions else 'OPEN',
-            last_trade_bar_time=(traded_bars.get(symbol)
-                                 or getattr(self, '_last_trade_bar_time', {}).get(symbol)),
-            stop_loss_price=whitelist_stop,
-            execution_price=price,
-        )
+        is_true_pivot_entry = decision.get('is_true_pivot_entry') is True
+        if is_true_pivot_entry:
+            from types import SimpleNamespace
+            whitelist_stop = float(decision.get('structural_stop_price') or 0.0)
+            stop_is_valid = (
+                math.isfinite(whitelist_stop) and whitelist_stop > 0
+                and (whitelist_stop < price if side == 'LONG' else whitelist_stop > price)
+            )
+            whitelist = SimpleNamespace(
+                action='OPEN_' + side if stop_is_valid else 'WAIT',
+                stop_loss_price=whitelist_stop,
+                entry_price=price,
+                checklist={'CONFIRMED_FRACTAL_STRUCTURAL_STOP': stop_is_valid},
+                violations=[] if stop_is_valid else ['INVALID_STRUCTURAL_STOP'],
+                bar_time=bar,
+            )
+        else:
+            whitelist_stop = (
+                price - 3.0 * whitelist_atr if side == 'LONG'
+                else price + 3.0 * whitelist_atr
+            )
+            whitelist = evaluate_ma3_ma15_entry(
+                snapshot['frame'], side,
+                current_position='IDLE' if symbol not in self.account.positions else 'OPEN',
+                last_trade_bar_time=(traded_bars.get(symbol)
+                                     or getattr(self, '_last_trade_bar_time', {}).get(symbol)),
+                stop_loss_price=whitelist_stop,
+                execution_price=price,
+            )
         if whitelist.action not in ('OPEN_LONG', 'OPEN_SHORT'):
             reason = whitelist.violations[0] if whitelist.violations else 'ZERO_TRUST_WHITELIST_REJECTED'
             log_entry_gate(
@@ -2434,9 +2449,6 @@ class TradingEngine:
                 violations=whitelist.violations,
             )
             return False
-        context['initial_sl'] = whitelist.stop_loss_price
-        context['entry_snapshot']['whitelist_entry_price'] = whitelist.entry_price
-        context['entry_snapshot']['whitelist_checklist'] = whitelist.checklist
         live = snapshot['frame'].iloc[-1]
         candle_high = max(float(live['high']), price)
         candle_low = min(float(live['low']), price)
@@ -2508,6 +2520,9 @@ class TradingEngine:
                        signal_id=signal.get('signal_id', decision.get('pending_signal_id')),
                        candidate_bar_id=signal.get('candidate_bar_id'),
                        evidence=entry_frame_evidence(snapshot['frame'])))
+        context['initial_sl'] = whitelist.stop_loss_price
+        context['entry_snapshot']['whitelist_entry_price'] = whitelist.entry_price
+        context['entry_snapshot']['whitelist_checklist'] = whitelist.checklist
         if (side == 'SHORT'
                 and decision.get('type') == 'AUTHORIZED_REALTIME_BREAKOUT'):
             try:
@@ -2607,7 +2622,10 @@ class TradingEngine:
             diagnostics = {}
             pipeline_ttl_grace = bool(snapshot.get('pipeline_ttl_grace'))
             if not pipeline_ttl_grace:
-                if evaluate_entry_contract(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol, diagnostics=diagnostics) is None:
+                if evaluate_entry_contract(
+                    snapshot['frame'], price, decision['type'], account=self.account,
+                    symbol=symbol, diagnostics=diagnostics,
+                ) is None:
                     grace_decision = self._pipeline_authorization_grace_decision(
                         signal, symbol, side, price,
                     )
@@ -2633,9 +2651,7 @@ class TradingEngine:
                     'AUTHORIZED_BY_TREND_CONTINUATION_LONG',
                     'AUTHORIZED_BY_TREND_CONTINUATION_SHORT',
                     'TRIGGER_C_CONTINUATION',
-                    'AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG',
                     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-                    'AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT',
                     'AUTHORIZED_TOP_REVERSAL_SHORT',
                     'KC_DOWNTREND_PULLBACK_RESUME_SHORT',
                     'KC_GOLDEN_CROSS_FAST_LONG',

@@ -296,7 +296,17 @@ def cached_tick_indicators(frame, price, stamp):
         snapshot['reason'] = 'NO_DATA'
         return snapshot, 0.
     closed = closed_entry_candles(frame)
-    if len(closed) < 2:
+    if len(closed) < 1:
+        snapshot['reason'] = 'NO_DATA'
+        return snapshot, 0.
+    bar = math.floor(stamp / 60000) * 60000
+    live = frame.iloc[-1]
+    live_ms = float(live.get('timestamp', 0) or 0)
+    if (
+        bool(live.get('is_closed', True))
+        or live_ms != bar
+        or float(closed.iloc[-1].get('timestamp', 0) or 0) != bar - 60000
+    ):
         snapshot['reason'] = 'NO_DATA'
         return snapshot, 0.
 
@@ -341,9 +351,8 @@ def cached_tick_indicators(frame, price, stamp):
     ]
 
     last = closed.iloc[-1]
-    prev = closed.iloc[-2]
+    prev = closed.iloc[-2] if len(closed) >= 2 else last
     last_ms = float(last.get('timestamp', 0))
-    bar = math.floor(stamp / 60000) * 60000
 
     snapshot['snapshot_age'] = stamp - last_ms
 

@@ -68,6 +68,9 @@ STATE_KEYS = (STATE_KEY, 'peak_price', 'peak_pnl', 'peak_pnl_usd', 'peak_net_pnl
               'three_tier_net_roe_lock_state', 'highest_net_roe', 'peak_net_roe_pct', 'profit_lock_armed')
 CHANNEL_SWING_EXIT_TRIGGERS = frozenset({
     'THREE_POINT_PIVOT',
+    'WATERFALL_DROP',
+    'TWO_CLOSED_ADVERSE_ABNORMAL',
+    'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL',
     'NET_ROE_THREE_TIER_GIVEBACK',
     'HYBRID_DYNAMIC_ATR_TRAILING',
     'HYBRID_DYNAMIC_RATCHET_GIVEBACK',
@@ -102,6 +105,8 @@ def channel_swing_exit_allowed(reason=None, trigger=None):
                 'CIRCUIT_BREAKER',
                 'EMERGENCY_DUMP',
                 'EMERGENCY_WATERFALL',
+                'WATERFALL_DROP',
+                'TWO_CLOSED_ADVERSE_ABNORMAL',
                 'FAIL_SAFE_EMERGENCY_EXIT',
                 'OPPOSITE_KC_BAND_BREACH',
             )

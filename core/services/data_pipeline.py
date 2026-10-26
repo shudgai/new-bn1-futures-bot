@@ -43,6 +43,7 @@ class MarketDataSnapshot:
     ma3: float = 0.0                  # MA 3 短期動能線
     prev_ma3: float = 0.0             # 前一根 MA 3
     ma3_slope: float = 0.0            # MA 3 斜率 (當前 - 前一根)
+    kc_trend: str = "NEUTRAL"         # KC slope plus closed-bar price location
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -67,6 +68,7 @@ class MarketDataSnapshot:
             "kc_middle": self.kc_middle,
             "kc_lower": self.kc_lower,
             "kc_middle_slope": self.kc_middle_slope,
+            "kc_trend": self.kc_trend,
             "atr": self.atr,
             "peak_roe": self.peak_roe,
             "min_price": self.min_price,
@@ -205,10 +207,26 @@ class DataPipeline:
         kc_mid = float(kc_basis.iloc[-1]) if not pd.isna(kc_basis.iloc[-1]) else curr_k["close"]
         kc_low = float(kc_lower_series.iloc[-1]) if not pd.isna(kc_lower_series.iloc[-1]) else curr_k["close"]
 
-        prev_kc_mid = float(kc_basis.iloc[-2]) if len(kc_basis) > 1 and not pd.isna(kc_basis.iloc[-2]) else kc_mid
-        prev_kc_mid_5 = float(kc_basis.iloc[-6]) if len(kc_basis) >= 6 and not pd.isna(kc_basis.iloc[-6]) else prev_kc_mid
-        n_kc_step = 5 if len(kc_basis) >= 6 else 1
-        kc_middle_slope = (kc_mid - prev_kc_mid_5) / n_kc_step
+        from core.services.candle_data import closed_entry_candles
+        closed_for_slope = closed_entry_candles(df_calc)
+        if closed_for_slope.empty:
+            return None
+        closed_positions = [int(df_calc.index.get_loc(index)) for index in closed_for_slope.index]
+        closed_latest_pos = closed_positions[-1]
+        closed_prior_pos = closed_positions[-2] if len(closed_positions) >= 2 else closed_latest_pos
+        closed_slope_base_pos = closed_positions[-3] if len(closed_positions) >= 3 else closed_prior_pos
+        prev_kc_mid = float(kc_basis.iloc[closed_prior_pos])
+        closed_kc_mid = float(kc_basis.iloc[closed_latest_pos])
+        closed_slope_base = float(kc_basis.iloc[closed_slope_base_pos])
+        n_kc_step = max(1, len(closed_positions[-3:]) - 1)
+        # Short 3-closed-bar (two-step) slope keeps 1m reversal state responsive.
+        kc_middle_slope = (closed_kc_mid - closed_slope_base) / n_kc_step
+        closed_price = float(df_calc.iloc[closed_latest_pos]["close"])
+        kc_trend = (
+            "BULLISH" if kc_middle_slope > 0 and closed_price >= closed_kc_mid
+            else "BEARISH" if kc_middle_slope < 0 and closed_price <= closed_kc_mid
+            else "NEUTRAL"
+        )
 
         ema5_val = float(ema5_series.iloc[-1]) if not pd.isna(ema5_series.iloc[-1]) else curr_k["close"]
         ema13_val = float(ema13_series.iloc[-1]) if not pd.isna(ema13_series.iloc[-1]) else curr_k["close"]
@@ -267,8 +285,12 @@ class DataPipeline:
         macro_slope = macro_slope_10
         slow_slope_5 = slow_slope_10
 
-        is_htf_bull = (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0 or kc_middle_slope >= 0)) or (quote > ema60 and macro_slope_10 > 0)
-        is_htf_bear = (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0 or kc_middle_slope <= 0)) or (quote < ema60 and macro_slope_10 < 0)
+        # KC labels require both slope and price location; a lagging middle
+        # line cannot keep its old directional label after price crosses it.
+        kc_trend_up = kc_trend == "BULLISH"
+        kc_trend_down = kc_trend == "BEARISH"
+        is_htf_bull = (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0 or kc_trend_up)) or (quote > ema60 and macro_slope_10 > 0)
+        is_htf_bear = (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0 or kc_trend_down)) or (quote < ema60 and macro_slope_10 < 0)
 
         if is_htf_bull and not is_htf_bear:
             macro_trend = "BULLISH"
@@ -285,6 +307,7 @@ class DataPipeline:
             ma3=ma3,
             prev_ma3=prev_ma3,
             ma3_slope=ma3_slope,
+            kc_trend=kc_trend,
             ma5=ma5,
             ma15=ma15,
             ema_fast=ema_fast,

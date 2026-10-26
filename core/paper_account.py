@@ -737,6 +737,7 @@ class PaperAccount:
                         or entry_context.get('allow_kc_internal')
                         or entry_context.get('is_cross_mid')
                         or entry_context.get('strategy_mode') == 'AGILE_MOMENTUM'
+                        or entry_context.get('entry_type') == 'SWING_PIVOT'
                         or entry_context.get('entry_type') == 'CROSS_MID'
                     ))
                     or climax_flip or top_waterfall_flip or code in (
@@ -760,6 +761,14 @@ class PaperAccount:
                     )
                     or any(k in str(reason).upper() for k in ('CROSS_MID', 'EMA_CROSS', 'MA_CROSS', 'AGILE'))
                 )
+                swing_pivot_override = bool(
+                    direction_override
+                    and (
+                        entry_context.get('entry_type') == 'SWING_PIVOT'
+                        or 'SWING_PIVOT' in str(reason).upper()
+                        or 'SWING_PIVOT' in str(entry_context.get('candidate_signal_type') or '').upper()
+                    )
+                )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
                 # 1. 通道外軌突破限制（若為均線金叉/死叉敏捷轉折單，豁免破軌限制，允許通道內提早佈局）
                 if not direction_override and side == 'LONG' and price <= kc_upper:
@@ -770,10 +779,10 @@ class PaperAccount:
                     raise RuntimeError(f"嚴禁通道內開空！執行價({price}) >= 下軌({kc_lower})")
 
                 # 2. 中軌正向側底線安全防線（金叉做多必須在 KC 中軌上方，死叉做空必須在 KC 中軌下方）
-                if side == 'LONG' and price < kc_middle:
+                if side == 'LONG' and price < kc_middle and not swing_pivot_override:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌下方嚴禁開多！執行價({price}) < 中軌({kc_middle})", 'CRITICAL')
                     raise RuntimeError(f"中軌下方嚴禁開多！執行價({price}) < 中軌({kc_middle})")
-                if side == 'SHORT' and price > kc_middle:
+                if side == 'SHORT' and price > kc_middle and not swing_pivot_override:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})", 'CRITICAL')
                     raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})")
 

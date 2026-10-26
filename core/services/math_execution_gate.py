@@ -42,6 +42,7 @@ def validate_entry_math(
     is_outer_entry: bool = False,
     is_dip_sniper: bool = False,
     is_meme_hunter: bool = False,
+    is_swing_pivot: bool = False,
     now_ms: float | None = None,
     max_staleness_ms: float = 180_000.0,
 ) -> tuple[bool, str]:
@@ -80,6 +81,11 @@ def validate_entry_math(
         closed_bars = [row for row in bars if row.get("is_closed") == True]
     if len(closed_bars) < 2:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
+    if is_swing_pivot:
+        from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
+        evidence = evaluate_swing_pivot_entry(frame)
+        if evidence is None or evidence.get("side") != side:
+            return False, "BLOCKED_SWING_PIVOT_EVIDENCE_INVALID"
     prior_middle = _number(closed_bars[-2].get("kc_middle"))
     latest_middle = _number(closed_bars[-1].get("kc_middle"))
     if (any(value is None for value in values.values()) or previous_ma5 is None
@@ -97,19 +103,19 @@ def validate_entry_math(
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
     # adverse/flat MA5 slope into an authorized entry.
-    if side == "LONG" and ma5 <= previous_ma5:
+    if side == "LONG" and ma5 <= previous_ma5 and not is_swing_pivot:
         return False, "BLOCKED_BY_MA5_NOT_UPWARD"
-    if side == "SHORT" and ma5 >= previous_ma5:
+    if side == "SHORT" and ma5 >= previous_ma5 and not is_swing_pivot:
         return False, "BLOCKED_BY_MA5_NOT_DOWNWARD"
 
     # Final execution gate: numeric KC midline slope is authoritative. No
     # continuation, oversold-reversal, or profit-lock fast track may override it.
     kc_slope = latest_middle - prior_middle
-    if kc_slope == 0:
+    if kc_slope == 0 and not is_swing_pivot:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
-    if side == "LONG" and kc_slope < 0:
+    if side == "LONG" and kc_slope < 0 and not is_swing_pivot:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0:
+    if side == "SHORT" and kc_slope > 0 and not is_swing_pivot:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # The final order gate independently rebuilds the macro regime from closed
@@ -133,11 +139,11 @@ def validate_entry_math(
         ).upper()
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         macro_trend = "NEUTRAL"
-    if macro_trend == "NEUTRAL":
+    if macro_trend == "NEUTRAL" and not is_swing_pivot:
         return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
-    if side == "LONG" and macro_trend != "BULLISH":
+    if side == "LONG" and macro_trend != "BULLISH" and not is_swing_pivot:
         return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
-    if side == "SHORT" and macro_trend != "BEARISH":
+    if side == "SHORT" and macro_trend != "BEARISH" and not is_swing_pivot:
         return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -155,14 +161,14 @@ def validate_entry_math(
     curr_ema15 = _number(current.get("ema15")) or _number(current.get("ema_fast")) or values.get("ma15")
     prev_ema15 = _number(previous.get("ema15")) or _number(previous.get("ema_fast")) or previous_ma15
 
-    if curr_ema15 is not None and prev_ema15 is not None:
+    if curr_ema15 is not None and prev_ema15 is not None and not is_swing_pivot:
         ema15_slope = curr_ema15 - prev_ema15
         if side == "LONG" and (curr_ema15 <= prev_ema15 or ema15_slope <= 0):
             return False, "BLOCKED_LONG_ON_EMA_FALLING"
         if side == "SHORT" and (curr_ema15 >= prev_ema15 or ema15_slope >= 0):
             return False, "BLOCKED_SHORT_ON_EMA_RISING"
 
-    is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
+    is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
     # In-channel entries: reject squeeze chop
     if not is_outer:
@@ -173,9 +179,9 @@ def validate_entry_math(
     # 做多必須站在中軌與 MA15 之上，做空必須在下方
     # 放寬中軌/MA15 緩衝區（0.15 ATR）：允許反抽假刺穿或短暫回測中軌/MA15 時，不被直接 1 票秒殺
     retest_buffer = 0.15 * atr
-    if side == "LONG" and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
+    if side == "LONG" and not is_swing_pivot and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
-    if side == "SHORT" and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
+    if side == "SHORT" and not is_swing_pivot and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
 
     if is_dip_sniper or is_meme_hunter:
@@ -295,7 +301,7 @@ def validate_entry_math(
     # Enforce:
     # 1. MA5 slope direction (LONG: ma5 > previous_ma5, SHORT: ma5 < previous_ma5)
     # 2. Outer chase limit: quote within 3 ATR from the outer rail.
-    is_outer = is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
+    is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
     if is_outer:
         if abs(ma5 - ma15) < 0.05 * atr:
             return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
@@ -365,8 +371,10 @@ def is_emergency_exit(close_reason: Any) -> bool:
     return any(token in reason for token in (
         "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP", "LIQUIDATION",
         "MARGIN_LOSS", "MAXIMUM_LOSS", "OPPOSITE_KC_BAND_BREACH", "EXTREME_WATERFALL",
+        "TWO_CLOSED_ADVERSE_ABNORMAL", "ADVERSE_STOP_LOSS",
+        "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
         "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布",
-        "帳戶硬止損", "最大虧損", "熔斷", "反側KC", "STOP_LOSS", "STOP-LOSS", "停損",
+        "帳戶硬止損", "最大虧損", "熔斷", "反側KC",
     ))
 
 
@@ -399,6 +407,26 @@ def validate_exit_math(
             return True, "EMERGENCY_EXIT_OVERRIDE", {"exit_type": "EMERGENCY"}
         if quote is None or quote <= 0 or side not in ("LONG", "SHORT"):
             return False, "BLOCKED_EXIT_EMERGENCY_EVIDENCE_INVALID", details
+
+        if "TWO_CLOSED_ADVERSE_ABNORMAL" in norm_reason:
+            from core.services.exits.abnormal_candle_exit import (
+                two_closed_adverse_abnormal_evidence,
+            )
+            evidence = two_closed_adverse_abnormal_evidence(position, frame)
+            if evidence is None:
+                return False, "BLOCKED_EXIT_TWO_CLOSED_ABNORMAL_NOT_CONFIRMED", details
+            return True, "EMERGENCY_EXIT_TWO_CLOSED_ABNORMAL_CONFIRMED", {
+                "exit_type": "TWO_CLOSED_ADVERSE_ABNORMAL",
+                **evidence,
+            }
+
+        if "EXIT_LONG_AT_PEAK" in norm_reason or "EXIT_SHORT_AT_BOTTOM" in norm_reason:
+            from core.services.swing_pivot_rules import evaluate_outer_rail_reversal_exit
+            evidence = evaluate_outer_rail_reversal_exit(position, frame)
+            expected_side = "LONG" if "EXIT_LONG_AT_PEAK" in norm_reason else "SHORT"
+            if evidence is None or evidence.get("side") != expected_side or evidence.get("reason") not in norm_reason:
+                return False, "BLOCKED_EXIT_OUTER_RAIL_REVERSAL_NOT_CONFIRMED", details
+            return True, "EMERGENCY_EXIT_OUTER_RAIL_REVERSAL_CONFIRMED", evidence
 
         if any(token in norm_reason for token in (
             "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布",
@@ -671,7 +699,13 @@ def validate_exit_math(
 
     # Path B: fee-aware net-ROE breakeven and ratchet floors.
     meta = metadata if isinstance(metadata, Mapping) else {}
-    state = position.get("profit_lock_state") or meta.get("profit_lock_state") or {}
+    state = (
+        position.get("three_tier_net_roe_lock_state")
+        or meta.get("three_tier_net_roe_lock_state")
+        or position.get("profit_lock_state")
+        or meta.get("profit_lock_state")
+        or {}
+    )
     state = state if isinstance(state, Mapping) else {}
     fee = max(0.0, _number(fee_rate) or 0.0)
     slip = max(0.0, _number(slippage) or 0.0)
@@ -689,13 +723,13 @@ def validate_exit_math(
         if peak_roe is None:
             peak_roe = _net_roe_pct(position, favored, sign, fee, slip)
         favorable_atr = (favored - entry) / atr if side == "LONG" else (entry - favored) / atr
-        if peak_roe is not None and peak_roe >= 6.0 and favorable_atr >= 0.5:
+        if peak_roe is not None and peak_roe >= 10.0 and favorable_atr >= 0.5:
             be_line = entry * (1.0005 if side == "LONG" else 0.9995)
             if (side == "LONG" and quote <= be_line) or (side == "SHORT" and quote >= be_line):
                 details.update(exit_type="PROFIT_LOCK", lock_type="BREAKEVEN", peak_roe=peak_roe)
                 return True, "EXIT_MATH_PROFIT_LOCK", details
-        floor = _number(state.get("floor_net_roe_pct"))
-        if floor is None and peak_roe is not None:
+        floor = None
+        if peak_roe is not None:
             from core.services.exits.net_roe_profit_lock import tiered_net_roe_floor
             floor, _tier = tiered_net_roe_floor(peak_roe)
         if floor is not None and current_roe <= floor + 1e-12:
@@ -749,6 +783,20 @@ async def validate_entry_at_execution(
     source = " ".join(str(value or "") for value in (
         payload.get("source"), payload.get("reason"), signal_type,
     ))
+    is_swing_pivot = (
+        str(payload.get("entry_type") or "").upper() == "SWING_PIVOT"
+        or "SWING_PIVOT" in signal_type.upper()
+    )
+    if is_swing_pivot:
+        from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
+        pivot = evaluate_swing_pivot_entry(frame)
+        requested_stop = _number(payload.get("stop_loss_price"))
+        if (
+            pivot is None or pivot.get("side") != str(side).upper()
+            or requested_stop is None
+            or abs(requested_stop - float(pivot["stop_loss_price"])) > max(1e-12, abs(requested_stop) * 1e-10)
+        ):
+            return False, "BLOCKED_SWING_PIVOT_STOP_OR_EVIDENCE_MISMATCH"
     authorized_intrabar_types = {
         "BREAKOUT_LONG", "BREAKDOWN_SHORT",
         "CONTINUATION_OUTSIDE_KC_LONG", "CONTINUATION_OUTSIDE_KC_SHORT",
@@ -821,13 +869,19 @@ async def validate_entry_at_execution(
         or payload.get("structure_confirmation") == "MEME_PEAK_HUNTER"
         or payload.get("entry_pattern") == "MEME_PEAK_HUNTER"
     )
+    math_frame = frame
+    if is_swing_pivot:
+        from core.services.candle_data import closed_entry_candles
+        math_frame = closed_entry_candles(frame)
+        math_frame.attrs.update(getattr(frame, "attrs", {}))
     return validate_entry_math(
-        frame,
+        math_frame,
         side,
         profit_lock_fast_track=fast_track,
         is_outer_entry=is_outer,
         is_dip_sniper=is_dip,
         is_meme_hunter=is_meme,
+        is_swing_pivot=is_swing_pivot,
     )
 
 

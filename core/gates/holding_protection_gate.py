@@ -402,6 +402,8 @@ _ENTRY_ONLY_CHOP_REASONS = frozenset((
     'BLOCKED_KC_SQUEEZE',
 ))
 _CHOP_EXTREME_EXIT_REASONS = frozenset((
+    'EXIT_BY_EXTREME_WATERFALL',
+    'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL',
     'EXIT_BY_VERIFIED_FRACTAL_PEAK',
     'EXIT_BY_VERIFIED_FRACTAL_VALLEY',
     'EXIT_LONG_ON_FRACTAL_PEAK',
@@ -1520,6 +1522,7 @@ class HoldingProtectionExitGate:
                         'kc_middle': kc_middle,
                         'quote': quote, 'side': side,
                     }
+
             elif side == 'SHORT':
                 adverse_body = quote - curr_open
                 if (not candle_closed and adverse_body >= 1.5 * atr
@@ -1529,6 +1532,16 @@ class HoldingProtectionExitGate:
                         'kc_middle': kc_middle,
                         'quote': quote, 'side': side,
                     }
+
+        # Two consecutive closed abnormal bodies are a separate exit from a
+        # single live waterfall. Both candles must be post-entry and at least
+        # 0.5 of their preceding closed-bar ATR in the adverse direction.
+        from core.services.exits.abnormal_candle_exit import (
+            two_closed_adverse_abnormal_evidence,
+        )
+        abnormal_evidence = two_closed_adverse_abnormal_evidence(position, frame)
+        if abnormal_evidence is not None:
+            return 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL', abnormal_evidence
 
         if side in ('LONG', 'SHORT'):
             spike_rebound = intrabar_spike_rebound_evidence(
@@ -1725,12 +1738,14 @@ class HoldingProtectionExitGate:
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         ))
         is_profit_lock = _is_profit_lock_reason(clean_reason)
+        is_closed_abnormal_exit = clean_reason == 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL'
         verified_profit_lock = (
             _verified_profit_lock_details(position, quote)
             if is_profit_lock else None
         )
 
-        if side == 'SHORT' and not hard_exit and verified_profit_lock is None:
+        if (side == 'SHORT' and not hard_exit and not is_closed_abnormal_exit
+                and verified_profit_lock is None):
             lower_break = short_lower_break_exit_confirmation(
                 frame, quote, position,
             )
@@ -1740,6 +1755,24 @@ class HoldingProtectionExitGate:
 
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        if clean_reason == 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL':
+            from core.services.exits.abnormal_candle_exit import (
+                two_closed_adverse_abnormal_evidence,
+            )
+            abnormal_evidence = two_closed_adverse_abnormal_evidence(position, frame)
+            if abnormal_evidence is None:
+                return _reject(wait_for_close=True)
+            details.update(abnormal_evidence)
+            return _auth(clean_reason)
+
+        if clean_reason in ('EXIT_LONG_AT_PEAK', 'EXIT_SHORT_AT_BOTTOM'):
+            from core.services.swing_pivot_rules import evaluate_outer_rail_reversal_exit
+            evidence = evaluate_outer_rail_reversal_exit(position, frame)
+            if evidence is None or evidence.get('reason') != clean_reason:
+                return _reject(wait_for_close=True)
+            details.update(evidence)
+            return _auth(clean_reason)
 
         # 反側 KC 外軌擊穿屬已授權緊急避險：以最新報價重新驗證確實擊穿，
         # 驗證通過即放行，不得被盤整/中軌/寬限期等持倉防洗否決困住虧損部位。
@@ -2070,6 +2103,7 @@ class HoldingProtectionExitGate:
         if (
             not hard_exit
             and clean_reason != 'EXIT_BY_EXTREME_WATERFALL'
+            and clean_reason != 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL'
             and clean_reason not in ('EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR')
         ):
             from core.services.exits.dual_track_exit_service import is_ma5_slope_shield_active
@@ -2094,7 +2128,14 @@ class HoldingProtectionExitGate:
 
         if (channel_swing
                 or str((position or {}).get('entry_mode') or '').upper() == 'CHANNEL_SWING'):
-            return _reject(wait_for_close=not candle_closed)
+            if clean_reason not in (
+                'EXIT_BY_EXTREME_WATERFALL',
+                'CATASTROPHIC_DUMP_EXIT',
+                'CATASTROPHIC_PUMP_EXIT',
+                'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL',
+                INTRABAR_SPIKE_REBOUND_EXIT,
+            ):
+                return _reject(wait_for_close=not candle_closed)
 
         if clean_reason == INTRABAR_SPIKE_REBOUND_EXIT:
             evidence = intrabar_spike_rebound_evidence(
@@ -2146,7 +2187,8 @@ class HoldingProtectionExitGate:
         # ── 1. 硬止損 / 市場熔斷 (WHITELIST SCENARIO 2) ──
         midline_exempt_reasons = {
             'EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT',
-            'CATASTROPHIC_PUMP_EXIT', INTRABAR_SPIKE_REBOUND_EXIT,
+            'CATASTROPHIC_PUMP_EXIT', 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL',
+            INTRABAR_SPIKE_REBOUND_EXIT,
         }
         if (not _is_profit_lock_reason(clean_reason)
                 and clean_reason not in midline_exempt_reasons
@@ -2157,7 +2199,8 @@ class HoldingProtectionExitGate:
         bars_held = _calculate_bars_held(position, frame)
         grace_allowed_exits = {
             'EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT',
-            'CATASTROPHIC_PUMP_EXIT', 'EXIT_BY_RATCHET_PROFIT_LOCK',
+            'CATASTROPHIC_PUMP_EXIT', 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL',
+            'EXIT_BY_RATCHET_PROFIT_LOCK',
             INTRABAR_SPIKE_REBOUND_EXIT,
             'EXIT_BY_VERIFIED_FRACTAL_PEAK', 'EXIT_LONG_ON_FRACTAL_PEAK',
             'EXIT_BY_VERIFIED_FRACTAL_VALLEY', 'EXIT_SHORT_ON_FRACTAL_VALLEY',

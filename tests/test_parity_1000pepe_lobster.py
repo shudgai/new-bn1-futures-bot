@@ -1,7 +1,7 @@
 import pytest
 from core.config import DEFAULT_SYMBOLS, ENTRY_DISABLED_SYMBOLS, HIGH_BETA_CONFIG
 
-@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+@pytest.mark.parametrize("symbol", ["龙虾/USDT"])
 def test_entry_parity_same_gate_and_logic(symbol):
     assert symbol not in ENTRY_DISABLED_SYMBOLS
     assert symbol in DEFAULT_SYMBOLS

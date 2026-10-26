@@ -83,7 +83,7 @@ def test_exit_gate_suppresses_ordinary_exit_until_pivot_or_lock(reason):
     result = ExitGate._gate_unconfirmed_exit((True, reason, {"source": "test"}))
 
     assert result[0] is False
-    assert result[1] == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert result[1] == ExitGate.GENERAL_EXIT_VETO_REASON
     assert result[2]["suppressed_exit_reason"] == reason
 
 
@@ -113,7 +113,7 @@ def test_exit_gate_evaluate_suppresses_ma_break_exit(monkeypatch):
     should_exit, reason, meta = ExitGate.evaluate(position, market)
 
     assert not should_exit
-    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert reason == ExitGate.GENERAL_EXIT_VETO_REASON
     assert meta["suppressed_exit_reason"] == "LONG_EXIT_MA15_BREAK_AND_MA5_DECAY"
 
 

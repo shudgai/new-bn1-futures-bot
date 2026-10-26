@@ -108,6 +108,22 @@ class CentralEntryGate:
         sig_id = signal_id or cls.generate_signal_id(symbol, side, source)
         checks: Dict[str, Dict[str, Any]] = {}
 
+        source_upper = str(source or "").upper()
+        swing_pivot_signal = "SWING_PIVOT" in source_upper or bool(
+            isinstance(klines_or_snapshot, dict)
+            and str(klines_or_snapshot.get("entry_type") or "").upper() == "SWING_PIVOT"
+        )
+        if swing_pivot_signal and isinstance(klines_or_snapshot, pd.DataFrame):
+            from core.services.candle_data import closed_entry_candles
+            closed_frame = closed_entry_candles(klines_or_snapshot)
+            if closed_frame.empty:
+                return GateCheckResult(
+                    passed=False, reason="VETO_SWING_PIVOT_CLOSED_BAR_REQUIRED",
+                    signal_id=sig_id,
+                )
+            closed_frame.attrs.update(klines_or_snapshot.attrs)
+            klines_or_snapshot = closed_frame
+
         # 1. 解析並標準化行情數據
         parsed = cls._extract_market_metrics(
             klines_or_snapshot, price, allow_intrabar=allow_intrabar,
@@ -130,6 +146,10 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         is_closed = parsed.get("is_closed")
         src_upper = str(source or "").upper()
+        is_swing_pivot = swing_pivot_signal or bool(
+            isinstance(klines_or_snapshot, dict)
+            and str(klines_or_snapshot.get("entry_type") or "").upper() == "SWING_PIVOT"
+        )
         allowed_intrabar_routes = (
             "BREAKOUT_LONG", "BREAKDOWN_SHORT", "CONTINUATION_OUTSIDE_KC_LONG",
             "CONTINUATION_OUTSIDE_KC_SHORT", "ENTRY_LONG_MA3_MA15_CROSS_MID",
@@ -230,6 +250,7 @@ class CentralEntryGate:
             or "MID_LINE" in src_upper
             or "REVERSAL" in src_upper
             or "AGILE" in src_upper
+            or is_swing_pivot
             or (isinstance(klines_or_snapshot, dict) and (
                 klines_or_snapshot.get("allow_kc_internal")
                 or klines_or_snapshot.get("is_cross_mid")
@@ -245,7 +266,13 @@ class CentralEntryGate:
         kc_mid_slope = float(parsed["kc_middle_slope"])
         required_slope = cls.KC_SLOPE_MIN_ATR * atr
 
-        if is_cross_mid:
+        if is_swing_pivot:
+            # Pivot entries are explicitly authorized against a lagging KC
+            # slope. All candle, location, bandwidth, liquidity, and risk gates
+            # below remain active.
+            slope_pass = True
+            req_target = "SWING_PIVOT_OVERRIDE"
+        elif is_cross_mid:
             # 交叉訊號僅允許通道平向或同向，不能覆蓋反向結構。
             if side == "LONG":
                 slope_pass = kc_mid_slope >= 0.0
@@ -281,7 +308,7 @@ class CentralEntryGate:
         # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下)
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
-        if side == "LONG" and curr_price < kc_mid:
+        if side == "LONG" and curr_price < kc_mid and not is_swing_pivot:
             checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
             return GateCheckResult(
                 passed=False,
@@ -290,7 +317,7 @@ class CentralEntryGate:
                 details={"price": curr_price, "kc_middle": kc_mid},
                 checks=checks,
             )
-        elif side == "SHORT" and curr_price > kc_mid:
+        elif side == "SHORT" and curr_price > kc_mid and not is_swing_pivot:
             checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
             return GateCheckResult(
                 passed=False,
@@ -320,7 +347,7 @@ class CentralEntryGate:
             "ma5_delta": ma5_delta,
             "side": side,
         }
-        if not ma5_pass:
+        if not ma5_pass and not is_swing_pivot:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_MA5_SLOPE_OPPOSITE",
@@ -329,7 +356,7 @@ class CentralEntryGate:
                 checks=checks,
             )
 
-        if is_cross_mid:
+        if is_cross_mid and not is_swing_pivot:
             ma15_curr = float(parsed["ma15_curr"])
             ma15_prev = float(parsed["ma15_prev"])
             ma_cross_aligned = (

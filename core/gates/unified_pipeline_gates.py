@@ -115,6 +115,8 @@ class ExitGate:
         "EXIT_LONG_ON_KC_LOWER_BREACH",
         "EXIT_SHORT_ON_KC_UPPER_BREACH",
         "EXIT_BY_MEME_ADVERSE_STOP_LOSS",
+        "EXIT_LONG_AT_PEAK",
+        "EXIT_SHORT_AT_BOTTOM",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
@@ -147,7 +149,8 @@ class ExitGate:
                 or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
                 or "PROFIT_LOCK" in reason_upper
                 or "RATCHET" in reason_upper
-                or "TRAILING_LOCK" in reason_upper):
+                or "TRAILING_LOCK" in reason_upper
+                or "NET_ROE" in reason_upper):
             return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
@@ -171,6 +174,32 @@ class ExitGate:
         result = ExitGate._evaluate_with_holding_rules(
             pos, market_data, current_price, atr, kc_slope,
         )
+        if not result[0] and result[1] == "HOLD_LOCKED":
+            result = (False, ExitGate.GENERAL_EXIT_VETO_REASON, result[2])
+        raw_for_reversal = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df") if isinstance(market_data, dict) else None
+        )
+        quote_for_reversal = float(current_price or (
+            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
+        ))
+        from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
+        abnormal_evidence = two_closed_adverse_abnormal_evidence(pos, raw_for_reversal)
+        if abnormal_evidence:
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            return HoldingProtectionExitGate.validate_exit(
+                pos, raw_for_reversal, quote_for_reversal,
+                "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal_evidence,
+            )
+        from core.services.swing_pivot_rules import evaluate_outer_rail_reversal_exit
+        rail_reversal = evaluate_outer_rail_reversal_exit(pos, raw_for_reversal)
+        if rail_reversal:
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            return HoldingProtectionExitGate.validate_exit(
+                pos, raw_for_reversal, quote_for_reversal,
+                str(rail_reversal["reason"]), rail_reversal,
+            )
         should_exit, reason, meta = result
         side = str((pos or {}).get("side", "")).upper()
         reason_upper = str(reason or "").upper()
@@ -178,6 +207,7 @@ class ExitGate:
             token in reason_upper for token in (
                 "HARD_STOP", "CIRCUIT_BREAKER", "EMERGENCY", "WATERFALL",
                 "CATASTROPHIC", "OPPOSITE_KC_BAND_BREACH", "ADVERSE_STOP_LOSS",
+                "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
             )
         )
         if is_emergency:

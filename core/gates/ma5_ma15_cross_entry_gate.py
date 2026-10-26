@@ -37,6 +37,11 @@ def ma_cross_gate_exempt_for_entry(
         "KC_DEATH_CROSS_FAST_SHORT",
         "TRIGGER_B_MA_CROSS",
     }
+    if normalized_type in {
+        "AUTHORIZED_BY_PEAK_REVERSAL_FLIP_SHORT",
+        "AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG",
+    }:
+        return True
     if normalized_type in cross_types:
         return False
     if (
@@ -102,7 +107,7 @@ def validate_ma5_ma15_cross_entry(
     *,
     allow_ma3_cross: bool = False,
 ) -> Tuple[bool, str, Dict[str, Any]]:
-    """Validate fresh MA crosses and veto late, extended long crossover entries."""
+    """Validate fresh, symmetric MA crosses and veto late, extended entries."""
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
         return False, "BLOCKED_INVALID_SIDE", {}
@@ -291,7 +296,41 @@ def validate_ma5_ma15_cross_entry(
             return False, "BLOCKED_SHORT_BELOW_KC_LOWER", details
         if short_bias_atr > 0.5:
             return False, "BLOCKED_SHORT_MA15_BIAS", details
-        cross = ma5_prev >= ma15_prev and ma5_curr < ma15_curr
+        cross_events = []
+        try:
+            ma_pairs = [
+                (
+                    float(row.get("ma5", row.get("_wild_ma5"))),
+                    float(row["ma15"]),
+                )
+                for _, row in closed.iterrows()
+            ]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", details
+        if not all(
+            math.isfinite(ma5) and ma5 > 0
+            and math.isfinite(ma15) and ma15 > 0
+            for ma5, ma15 in ma_pairs
+        ):
+            return False, "BLOCKED_MA_CROSS_MARKET_DATA_INVALID", details
+        for index in range(1, len(ma_pairs)):
+            prior_spread = ma_pairs[index - 1][0] - ma_pairs[index - 1][1]
+            spread = ma_pairs[index][0] - ma_pairs[index][1]
+            if prior_spread <= 0 < spread:
+                cross_events.append((index, "LONG"))
+            elif prior_spread >= 0 > spread:
+                cross_events.append((index, "SHORT"))
+        last_cross = cross_events[-1] if cross_events else None
+        cross_age = (
+            len(ma_pairs) - 1 - last_cross[0]
+            if last_cross is not None else None
+        )
+        details["cross_age_bars"] = cross_age
+        cross = (
+            last_cross is not None
+            and last_cross[1] == "SHORT"
+            and cross_age in (0, 1, 2)
+        )
         valid = (
             cross and ma5_curr < ma5_prev
             and (direction == "DOWN" or current_middle <= previous_middle) and close < opening

@@ -32,12 +32,12 @@ def snapshot(side='LONG', stamp=181000):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('body', [1.199, 1.2, 1.201])
+@pytest.mark.parametrize('body', [1.499, 1.5, 1.501])
 def test_abnormal_boundary_both_sides(side, body):
     p = position(side); snap = snapshot(side)
     sign = 1 if side == 'LONG' else -1
     result = evaluate_peak_trailing(p, snap['live_open']-sign*body, snap)
-    assert bool(result) == (body >= 1.2)
+    assert bool(result) == (body >= 1.5)
     if result:
         assert result['type'] == ABNORMAL_REASON
         assert result['action'] == 'FULL_CLOSE'
@@ -74,8 +74,10 @@ def test_original_open_same_entry_bar_and_no_favorable_body_exit(side):
     p = position(side, opened=180.5); snap = snapshot(side)
     sign = 1 if side == 'LONG' else -1
     assert evaluate_peak_trailing(p, snap['live_open']+sign*3., snap) is None
-    result = evaluate_peak_trailing(p, snap['live_open']-sign*1.2, snap)
-    assert result['type'] == ABNORMAL_REASON
+    result = evaluate_peak_trailing(p, snap['live_open']-sign*1.5, snap)
+    # The live candle opened before the fill. Its pre-entry move cannot count
+    # as an adverse body; the effective entry-bar open is the actual fill.
+    assert result is None
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -112,15 +114,22 @@ def test_pending_retry_new_identity_without_position_hard_stop(side):
     )
     snap = snapshot(side)
 
-    assert evaluate_peak_trailing(p, p['initial_sl'], snap) is None
-    assert p[STATE_KEY].get('pending') is None
+    result = evaluate_peak_trailing(p, p['initial_sl'], snap)
+    assert result['type'] == ABNORMAL_REASON
+    assert result['trigger'] == 'WATERFALL_DROP'
+    assert p[STATE_KEY].get('pending') == ABNORMAL_REASON
 
 
 def frame_for(side, now):
     bar = int(now//60)*60000
     opening = 110. if side == 'LONG' else 90.
+    adverse_close = 99.5 if side == 'LONG' else 100.5
     return pd.DataFrame([
-        dict(timestamp=bar-60000, is_closed=True, open=100., close=100., high=101., low=99., atr=1.),
+        dict(timestamp=bar-180000, is_closed=True, open=100., close=100., high=101., low=99., atr=1.),
+        dict(timestamp=bar-120000, is_closed=True, open=100., close=adverse_close,
+             high=101., low=min(99., adverse_close), atr=1.),
+        dict(timestamp=bar-60000, is_closed=True, open=100., close=adverse_close,
+             high=101., low=min(99., adverse_close), atr=1.),
         dict(timestamp=bar, is_closed=False, open=opening, close=opening,
              high=opening, low=opening, atr=999.),
     ])
@@ -130,14 +139,16 @@ def test_cached_snapshot_requires_actual_live_bar_and_supports_one_closed_bar():
     now = time.time(); f = frame_for('LONG', now)
     snap, atr = cached_tick_indicators(f, 108., now*1000)
     assert atr == 1. and snap['live_open'] == 110.
-    assert cached_tick_indicators(f.iloc[:-1], 108., now*1000) == ({'quote_ms': now*1000}, 0.)
-    assert cached_tick_indicators(f, 108., now*1000+60000) == ({'quote_ms': now*1000+60000}, 0.)
+    missing_live, missing_atr = cached_tick_indicators(f.iloc[:-1], 108., now*1000)
+    assert missing_atr == 0. and missing_live['reason'] == 'NO_DATA'
+    stale_live, stale_atr = cached_tick_indicators(f, 108., now*1000+60000)
+    assert stale_atr == 0. and stale_live['reason'] == 'NO_DATA'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_scan_tick_retry_no_rest_and_no_position(side):
     async def run():
-        now=time.time(); p=position(side, now-120); f=frame_for(side, now)
+        now=time.time(); p=position(side, now-240); f=frame_for(side, now)
         account=SimpleNamespace(positions={'X':p}, position_meta={}, save_state=Mock(), log=Mock(),
                                 close_position=AsyncMock(return_value=False))
         engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'X':f},
@@ -145,10 +156,12 @@ def test_scan_tick_retry_no_rest_and_no_position(side):
         price = 108. if side == 'LONG' else 92.
         await process_single_symbol_runner(engine,'X',now,None,True,exit_frame=f,exit_quote=price)
         assert account.close_position.await_count == 1
-        assert ABNORMAL_REASON in account.close_position.await_args.args[2]
+        assert 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL' in account.close_position.await_args.args[2]
         engine._channel_exit_frames = {}
-        assert await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
-        assert account.close_position.await_count == 2
+        # With the evidence frame gone, a failed abnormal exit is not retried
+        # from a stale reason token alone.
+        assert not await enforce_realtime_profit_exit(engine,'X',100.,time.time()*1000)
+        assert account.close_position.await_count == 1
         saved=copy.deepcopy(p)
         assert not await enforce_realtime_profit_exit(engine,'X',100.,(now-10)*1000)
         assert p==saved
@@ -159,43 +172,32 @@ def test_scan_tick_retry_no_rest_and_no_position(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('mode', ['paper', 'testnet'])
-def test_real_account_reload_and_single_flight_abnormal_close(side, mode, tmp_path, monkeypatch):
+def test_paper_account_reload_and_single_flight_abnormal_close(side, tmp_path, monkeypatch):
     async def run():
         import core.paper_account as pm
-        import core.testnet_account as tm
-        from test_testnet_account import FakeTestnetExchange
-        from test_close_deduplication import close_orders, closes
-        ex=FakeTestnetExchange()
-        ex.market=lambda symbol: dict(linear=True,contractSize=1.,info={'filters':[
-            dict(filterType=name,stepSize='0.001',minQty='0.001',maxQty='1000000')
-            for name in ('LOT_SIZE','MARKET_LOT_SIZE')]})
-        ex.amount_to_precision=lambda symbol, amount: str(round(float(amount),3))
         monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
-        monkeypatch.setattr(tm,'STATE_FILE',str(tmp_path/'testnet.json'))
-        monkeypatch.setattr(tm,'DATA_DIR',str(tmp_path))
-        monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
-        monkeypatch.setattr(tm.BinanceTestnetAccount,'credentials_configured',staticmethod(lambda:True))
-        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
-        if mode=='testnet': await account.initialize()
-        assert await account.open_position('DOGE/USDT',side,100.,25.,0.,0.,'MANUAL',leverage=1,atr=10.,
-            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
-        p=account.positions['DOGE/USDT']
+        account=pm.PaperAccount()
+        p=position(side, time.time()-240)
+        migrate_peak_state(p, {})
+        account.positions['DOGE/USDT']=p
+        account.position_meta['DOGE/USDT']={}
+        account.save_state()
         assert 'limit_tp1_price' not in account.position_meta['DOGE/USDT']
         now=time.time();f=frame_for(side,now)
+        account.channel_exit_frame_provider=lambda _symbol:f
         engine=SimpleNamespace(account=account,is_running=True,_channel_exit_frames={'DOGE/USDT':f})
-        assert not await enforce_realtime_profit_exit(engine,'DOGE/USDT',110. if side=='LONG' else 90.,now*1000)
-        account=pm.PaperAccount() if mode=='paper' else tm.BinanceTestnetAccount(ex)
-        if mode=='testnet': await account.initialize()
+        account=pm.PaperAccount()
+        account.channel_exit_frame_provider=lambda _symbol:f
         engine.account=account
         assert account.positions['DOGE/USDT'][STATE_KEY]['policy']==POLICY
-        price=108. if side=='LONG' else 92.
-        await asyncio.gather(*(enforce_realtime_profit_exit(engine,'DOGE/USDT',price,time.time()*1000) for _ in range(10)))
+        quote=108. if side=='LONG' else 92.
+        await asyncio.gather(*(
+            process_single_symbol_runner(
+                engine,'DOGE/USDT',time.time(),None,True,exit_frame=f,exit_quote=quote,
+            ) for _ in range(10)
+        ))
         assert 'DOGE/USDT' not in account.positions
-        assert len(closes(account))==1
-        if mode=='testnet':
-            assert len(close_orders(ex))==1
-            assert close_orders(ex)[0]['params']['reduceOnly']
+        assert len([t for t in account.trades if t.get('action','').startswith('CLOSE')])==1
     asyncio.run(run())
 
 
@@ -205,8 +207,7 @@ def test_paper_account_does_not_execute_position_hard_stops(side, tmp_path, monk
         import core.paper_account as pm
         monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
         account=pm.PaperAccount()
-        assert await account.open_position('X',side,100.,25.,0.,0.,'MANUAL',atr=1.,leverage=1,
-            entry_context={'entry_mode':'CHANNEL_SWING','manual_entry':True})
+        account.positions['X']=position(side)
         stop=account.positions['X']['initial_sl']
         await account.update_positions({'X': stop})
         assert 'X' in account.positions

@@ -624,6 +624,14 @@ async def _process_wild_swing_symbol(
                 )
         if exit_decision is not None:
             side_decision = str(exit_decision.get("side", "")).upper()
+            exit_reason_upper = str(exit_decision.get("reason", "")).upper()
+            # These exits have their own evidence checks in the unified exit
+            # gate and final math gate. Legacy pullback guards must not veto them.
+            evidence_exit = any(token in exit_reason_upper for token in (
+                "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "PROFIT_FLOOR",
+                "WATERFALL", "CATASTROPHIC", "ABNORMAL",
+                "TRUE_PEAK", "TRUE_VALLEY", "PIVOT",
+            ))
             last_bar = frame.iloc[-1].to_dict() if frame is not None and not frame.empty else {}
             kc_bundle = {
                 "mid": float(last_bar.get("kc_middle", last_bar.get("kc_basis", 0.0)) or 0.0),
@@ -634,7 +642,7 @@ async def _process_wild_swing_symbol(
             ema5_val = float(last_bar.get("ema5", last_bar.get("ma5", 0.0)) or 0.0)
 
             # ── 多單防洗盤硬守衛（Veto Long Exit）：收盤跌破 KC 中軌前，只要中軌向上，強制禁止平多！──
-            if side_decision == "LONG":
+            if side_decision == "LONG" and not evidence_exit:
                 from core.services.exits.anti_fakeout_exit_guard import should_veto_long_exit
                 veto_needed, veto_reason = should_veto_long_exit(
                     candle=last_bar,
@@ -658,7 +666,7 @@ async def _process_wild_swing_symbol(
                     )
                     exit_decision = None
 
-            if side_decision == "LONG" and exit_decision is not None:
+            if side_decision == "LONG" and exit_decision is not None and not evidence_exit:
                 from core.services.chart_1m_scalper import is_scalping_1m_pullback_holding
                 if is_scalping_1m_pullback_holding(frame, "LONG"):
                     logger.warning(
@@ -672,7 +680,7 @@ async def _process_wild_swing_symbol(
                     exit_decision = None
 
             # ── 空單防洗盤硬守衛（Veto Short Exit）：只要當前 3M 收盤價仍在 13EMA 之下，且 KC 中軌向下傾斜，強制禁止平空！──
-            elif side_decision == "SHORT":
+            elif side_decision == "SHORT" and not evidence_exit:
                 from core.services.exits.anti_fakeout_exit_guard import should_veto_short_exit
                 veto_needed, veto_reason = should_veto_short_exit(
                     candle=last_bar,
@@ -696,7 +704,7 @@ async def _process_wild_swing_symbol(
                     )
                     exit_decision = None
 
-            if side_decision == "SHORT" and exit_decision is not None:
+            if side_decision == "SHORT" and exit_decision is not None and not evidence_exit:
                 from core.services.chart_1m_scalper import is_scalping_1m_pullback_holding
                 if is_scalping_1m_pullback_holding(frame, "SHORT"):
                     logger.warning(
@@ -1214,6 +1222,27 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         engine._channel_exit_frames = {}
     engine._channel_exit_frames[symbol] = frame.copy()
 
+    quote = float(exit_quote if exit_quote is not None else
+                  (getattr(engine, 'tickers', {}).get(symbol) or frame.iloc[-1]['close']))
+    if not math.isfinite(quote) or quote <= 0:
+        return [], []
+    if position:
+        from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
+        abnormal_evidence = two_closed_adverse_abnormal_evidence(position, frame)
+        if abnormal_evidence is not None:
+            close_reason = "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL"
+            from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+            if automated_position_exit_allowed(
+                symbol, position, getattr(engine.account, "position_meta", {}).get(symbol, {}),
+                close_reason, quote, is_manual=True, frame=frame,
+            ):
+                closed = await engine.account.close_position(
+                    symbol, quote, close_reason, is_manual=True, is_limit=False,
+                )
+                if closed and symbol not in engine.account.positions:
+                    strict_strategy.set_state(symbol, PositionState.IDLE)
+                return [], []
+
     # 3. 獲取 15M 大趨勢級別 K 棒
     frame_15m = None
     try:
@@ -1226,9 +1255,6 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     c_5m = float(frame.iloc[-1]['close']) if frame is not None and not frame.empty else None
     len_5m = len(frame) if frame is not None else 0
     len_15m = len(frame_15m) if frame_15m is not None else 0
-
-    quote = float(exit_quote if exit_quote is not None else
-                  (getattr(engine, 'tickers', {}).get(symbol) or frame.iloc[-1]['close']))
 
     if not math.isfinite(quote) or quote <= 0:
         return [], []
