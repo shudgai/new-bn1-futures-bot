@@ -223,25 +223,52 @@ def confirmed_true_pivot_exit(
         if pivot_ms <= entry_bar_ms or confirmation_ms <= entry_bar_ms:
             return None
 
+        entry_price = float(position.get("entry_price") or position.get("price") or 0.0)
+        atr = float(confirmation.get("atr") or bars.iloc[-1].get("atr") or 0.0)
+        if atr <= 0:
+            atr = abs(float(confirmation["high"]) - float(confirmation["low"]))
+        peak_roe = float(position.get("peak_roe", 0.0) or 0.0)
+
         structure = analyze_market_structure(frame, side)
         if structure not in ("TRUE_PEAK", "TRUE_TROUGH"):
             return None
         pivot = bars.iloc[1]
         confirmation = bars.iloc[2]
         ma5_slope = float(confirmation["ma5"]) - float(bars.iloc[1]["ma5"])
+        conf_close = float(confirmation["close"])
+        kc_mid = float(confirmation.get("kc_middle", 0.0))
+        conf_ma15 = float(confirmation.get("ma15", 0.0))
+
         if side == "LONG":
+            pivot_high = float(pivot["high"])
+            gain = pivot_high - entry_price if entry_price > 0 else 0.0
+            # 峰谷三點及時平倉鐵律：開倉波段獲利後才放行真峰頂獲利了結。
+            # 若波段尚未實質展開（漲幅 < 0.35 ATR 且 peak_roe < 5%），
+            # 且價格守穩在 KC 中軌或 MA15 支撐之上，視為正常回踩，絕不平多！
+            if entry_price > 0 and gain < 0.35 * atr and peak_roe < 0.05:
+                if (kc_mid > 0 and conf_close >= kc_mid) or (conf_ma15 > 0 and conf_close >= conf_ma15):
+                    return None
+
             return "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", {
                 "pivot_bar_id": pivot_ms,
                 "confirm_bar_id": confirmation_ms,
-                "pivot_high": float(pivot["high"]),
-                "confirmation_close": float(confirmation["close"]),
+                "pivot_high": pivot_high,
+                "confirmation_close": conf_close,
                 "ma5_slope": ma5_slope,
             }
+
+        pivot_low = float(pivot["low"])
+        drop = entry_price - pivot_low if entry_price > 0 else 0.0
+        # 空單同理：若未實質探底展開且受壓在 KC 中軌或 MA15 之下，視為正常反彈，絕不平空！
+        if entry_price > 0 and drop < 0.35 * atr and peak_roe < 0.05:
+            if (kc_mid > 0 and conf_close <= kc_mid) or (conf_ma15 > 0 and conf_close <= conf_ma15):
+                return None
+
         return "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", {
             "pivot_bar_id": pivot_ms,
             "confirm_bar_id": confirmation_ms,
-            "pivot_low": float(pivot["low"]),
-            "confirmation_close": float(confirmation["close"]),
+            "pivot_low": pivot_low,
+            "confirmation_close": conf_close,
             "ma5_slope": ma5_slope,
         }
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):

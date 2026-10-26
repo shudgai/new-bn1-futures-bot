@@ -181,11 +181,16 @@ class ExitGate:
             else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
         ))
 
-        if should_exit and is_trend_lock_emergency(reason):
+        if should_exit:
             return result
+
         abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
         if abnormal is not None:
             return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
+
+        # 若核心規則已判定守穩續抱（如守住 KC 中軌、MA15 或開倉呼吸保護 VETO_HOLD），一票否決平倉，嚴禁被雜訊誤平
+        if reason == "VETO_HOLD" or "VETO" in str(reason).upper():
+            return result
 
         if isinstance(pos, dict) and update_trend_lock_state(pos, frame):
             if isinstance(market_data, dict):
@@ -199,13 +204,7 @@ class ExitGate:
             )
             return True, f"EXIT_BY_TREND_LOCK_{trend_exit['reason']}", trend_exit
 
-        return False, "VETO_TREND_LOCK", {
-            **(meta or {}),
-            "suppressed_exit_reason": reason if should_exit else None,
-            "trend_lock": True,
-            "closed_bar_only": True,
-            "quote": quote,
-        }
+        return result
 
     @staticmethod
     def _evaluate_with_holding_rules(

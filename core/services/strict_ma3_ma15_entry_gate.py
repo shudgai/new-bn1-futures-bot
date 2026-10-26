@@ -149,7 +149,7 @@ def evaluate_ma3_ma15_entry(
         action = "OPEN_LONG"
         breakout_ok = (
             bool(confirmed_breakout)
-            and values["close"] > values.get("kc_upper", math.inf)
+            and (values["close"] > values.get("kc_upper", math.inf) or execution > values.get("kc_upper", math.inf))
             and values["ma5_now"] > values["ma5_prev"]
         )
     else:
@@ -164,7 +164,7 @@ def evaluate_ma3_ma15_entry(
         action = "OPEN_SHORT"
         breakout_ok = (
             bool(confirmed_breakout)
-            and values["close"] < values.get("kc_lower", -math.inf)
+            and (values["close"] < values.get("kc_lower", -math.inf) or execution < values.get("kc_lower", -math.inf))
             and values["ma5_now"] < values["ma5_prev"]
         )
 

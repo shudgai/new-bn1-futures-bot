@@ -467,13 +467,12 @@ class ExecutionManager:
                         violations=[],
                     )
                 else:
-                    whitelist_frame = entry_frame
-                    if is_breakout_long or is_breakdown_short:
-                        # Breakout authorization is built from two completed
-                        # candles. Do not let the forming third candle fail
-                        # the closed-candle whitelist or replace its bar ID.
-                        from core.services.candle_data import closed_entry_candles
-                        whitelist_frame = closed_entry_candles(entry_frame)
+                    from core.services.candle_data import closed_entry_candles
+                    whitelist_frame = closed_entry_candles(entry_frame)
+                    is_breakout_or_continuation = (
+                        (is_breakout_long or is_continuation_long) if candidate_side == "LONG"
+                        else (is_breakdown_short or is_continuation_short)
+                    )
                     whitelist = evaluate_ma3_ma15_entry(
                         whitelist_frame,
                         candidate_side,
@@ -484,10 +483,7 @@ class ExecutionManager:
                         ),
                         stop_loss_price=stop_loss,
                         execution_price=execution_price,
-                        confirmed_breakout=(
-                            is_breakout_long if candidate_side == "LONG"
-                            else is_breakdown_short
-                        ),
+                        confirmed_breakout=is_breakout_or_continuation,
                     )
                 if whitelist.action not in ("OPEN_LONG", "OPEN_SHORT"):
                     reason = whitelist.violations[0] if whitelist.violations else "ZERO_TRUST_WHITELIST_REJECTED"
