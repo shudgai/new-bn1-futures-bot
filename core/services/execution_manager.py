@@ -423,6 +423,10 @@ class ExecutionManager:
                         ),
                         stop_loss_price=stop_loss,
                         execution_price=execution_price,
+                        confirmed_breakout=(
+                            is_breakout_long if candidate_side == "LONG"
+                            else is_breakdown_short
+                        ),
                     )
                 if whitelist.action not in ("OPEN_LONG", "OPEN_SHORT"):
                     reason = whitelist.violations[0] if whitelist.violations else "ZERO_TRUST_WHITELIST_REJECTED"

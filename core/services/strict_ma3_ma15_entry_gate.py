@@ -40,6 +40,7 @@ def evaluate_ma3_ma15_entry(
     last_trade_bar_time: Optional[int],
     stop_loss_price: Optional[float],
     execution_price: Optional[float] = None,
+    confirmed_breakout: bool = False,
     min_spread_ratio: float = 0.0015,
     max_adverse_wick_body_ratio: float = 0.70,
 ) -> EntryDecision:
@@ -49,12 +50,15 @@ def evaluate_ma3_ma15_entry(
     MA columns are used when present; otherwise simple moving averages are
     calculated from closed-candle closes. KC direction is strict: a flat
     middle line fails. ``current_position`` must explicitly be ``IDLE``.
+    A confirmed closed-bar KC breakout can replace the same-bar MA cross check,
+    while all candle, KC direction, position, and stop checks remain active.
     """
     side = str(side).upper()
     checks: Dict[str, bool] = {
         "LATEST_BAR_CLOSED": False,
         "KC_TREND_AND_MIDLINE": False,
         "STRICT_MA3_MA15_CROSS": False,
+        "CONFIRMED_BREAKOUT_DIRECTION": not confirmed_breakout,
         "CANDLE_BODY_AND_WICK": False,
         "MA_SPREAD": False,
         "POSITION_IDLE_AND_BAR_UNUSED": False,
@@ -108,6 +112,15 @@ def evaluate_ma3_ma15_entry(
             "ma3_now": float(ma3.iloc[-1]), "ma15_now": float(ma15.iloc[-1]),
             "ma3_prev": float(ma3.iloc[-2]), "ma15_prev": float(ma15.iloc[-2]),
         }
+        ma5 = (pd.to_numeric(closed["ma5"], errors="coerce")
+               if "ma5" in closed else closes.rolling(5, min_periods=5).mean())
+        values["ma5_now"] = float(ma5.iloc[-1])
+        values["ma5_prev"] = float(ma5.iloc[-2])
+        if confirmed_breakout:
+            if "kc_upper" not in closed or "kc_lower" not in closed:
+                return reject("BREAKOUT_BAND_DATA_MISSING")
+            values["kc_upper"] = float(current["kc_upper"])
+            values["kc_lower"] = float(current["kc_lower"])
         bar_time = int(current.get("timestamp", current.get("open_time")))
         stop = float(stop_loss_price) if stop_loss_price is not None else math.nan
         execution = float(execution_price) if execution_price is not None else float(current["close"])
@@ -130,14 +143,28 @@ def evaluate_ma3_ma15_entry(
         body_ok = values["close"] > values["open"]
         adverse_wick = values["high"] - max(values["open"], values["close"])
         action = "OPEN_LONG"
+        breakout_ok = (
+            bool(confirmed_breakout)
+            and values["close"] > values.get("kc_upper", math.inf)
+            and values["ma5_now"] > values["ma5_prev"]
+        )
     else:
         kc_ok = values["kc_now"] < values["kc_prev"] and values["close"] < values["kc_now"]
         cross_ok = values["ma3_prev"] >= values["ma15_prev"] and values["ma3_now"] < values["ma15_now"]
         body_ok = values["close"] < values["open"]
         adverse_wick = min(values["open"], values["close"]) - values["low"]
+        action = "OPEN_SHORT"
+        breakout_ok = (
+            bool(confirmed_breakout)
+            and values["close"] < values.get("kc_lower", -math.inf)
+            and values["ma5_now"] < values["ma5_prev"]
+        )
 
     checks["KC_TREND_AND_MIDLINE"] = kc_ok
     checks["STRICT_MA3_MA15_CROSS"] = cross_ok
+    checks["CONFIRMED_BREAKOUT_DIRECTION"] = (
+        breakout_ok if confirmed_breakout else True
+    )
     body = abs(values["close"] - values["open"])
     checks["CANDLE_BODY_AND_WICK"] = (
         body_ok and body > 0 and adverse_wick <= max_adverse_wick_body_ratio * body
@@ -162,12 +189,17 @@ def evaluate_ma3_ma15_entry(
         "LATEST_BAR_CLOSED": "LATEST_CANDLE_NOT_CONFIRMED_CLOSED",
         "KC_TREND_AND_MIDLINE": "KC_DIRECTION_OR_MIDLINE_CONFLICT",
         "STRICT_MA3_MA15_CROSS": "NO_STRICT_MA3_MA15_CROSS",
+        "CONFIRMED_BREAKOUT_DIRECTION": "BREAKOUT_NOT_CONFIRMED_OR_MA5_OPPOSED",
         "CANDLE_BODY_AND_WICK": "CANDLE_BODY_OR_ADVERSE_WICK_FAILED",
         "MA_SPREAD": "MA_SPREAD_BELOW_THRESHOLD",
         "POSITION_IDLE_AND_BAR_UNUSED": "POSITION_NOT_IDLE_OR_BAR_ALREADY_TRADED",
         "STOP_LOSS_VALID": "STOP_LOSS_MISSING_OR_ON_WRONG_SIDE",
     }
-    violations = [labels[key] for key, passed in checks.items() if not passed]
+    violations = [
+        labels[key] for key, passed in checks.items()
+        if not passed
+        and not (key == "STRICT_MA3_MA15_CROSS" and breakout_ok)
+    ]
     if violations:
         return EntryDecision(checklist=checks, violations=violations)
 
