@@ -45,6 +45,8 @@ class MarketDataSnapshot:
     prev_ma15: float = 0.0            # 前一根 MA 15
     ma3_slope: float = 0.0            # MA 3 斜率 (當前 - 前一根)
     kc_trend: str = "NEUTRAL"         # KC slope plus closed-bar price location
+    ema200: float = 0.0               # EMA 200 大趨勢基底
+    volume_ma20: float = 0.0          # 成交量 20 期均量
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -78,6 +80,8 @@ class MarketDataSnapshot:
             "macro_slope": self.macro_slope,
             "slow_slope_5": self.slow_slope_5,
             "bandwidth": self.bandwidth,
+            "ema200": self.ema200,
+            "volume_ma20": self.volume_ma20,
         }
 
 
@@ -115,6 +119,13 @@ class DataPipeline:
         ema_fast_series = close.ewm(span=15, adjust=False).mean()
         ema_slow_series = close.ewm(span=40, adjust=False).mean()
 
+        # EMA 200 大趨勢基準線
+        ema200_series = close.ewm(span=200, adjust=False).mean() if len(close) >= 5 else close
+
+        # 成交量 MA 20 均量線
+        vol_col = df_calc["volume"] if "volume" in df_calc.columns else pd.Series(0.0, index=df_calc.index)
+        volume_ma20_series = vol_col.rolling(window=20, min_periods=1).mean()
+
         # 均線間距比例 (%)
         ma_spread_series = ((ema_fast_series - ema_slow_series).abs() / ema_slow_series) * 100.0
 
@@ -148,6 +159,8 @@ class DataPipeline:
         df_calc["ema13"] = ema13_series
         df_calc["ema_fast"] = ema_fast_series
         df_calc["ema_slow"] = ema_slow_series
+        df_calc["ema200"] = ema200_series
+        df_calc["volume_ma20"] = volume_ma20_series
         df_calc["atr"] = atr_series
         df_calc["kc_middle"] = kc_basis
         df_calc["kc_upper"] = kc_upper_series
@@ -257,6 +270,13 @@ class DataPipeline:
         prev_k["kc_upper"] = float(kc_upper_series.iloc[-2]) if len(kc_upper_series) > 1 and not pd.isna(kc_upper_series.iloc[-2]) else kc_up
         prev_k["kc_lower"] = float(kc_lower_series.iloc[-2]) if len(kc_lower_series) > 1 and not pd.isna(kc_lower_series.iloc[-2]) else kc_low
 
+        ema200_val = float(ema200_series.iloc[-1]) if not pd.isna(ema200_series.iloc[-1]) else curr_k["close"]
+        vol_ma20_val = float(volume_ma20_series.iloc[-1]) if not pd.isna(volume_ma20_series.iloc[-1]) else 0.0
+        curr_k["ema200"] = ema200_val
+        curr_k["volume_ma20"] = vol_ma20_val
+        prev_k["ema200"] = float(ema200_series.iloc[-2]) if len(ema200_series) > 1 and not pd.isna(ema200_series.iloc[-2]) else ema200_val
+        prev_k["volume_ma20"] = float(volume_ma20_series.iloc[-2]) if len(volume_ma20_series) > 1 and not pd.isna(volume_ma20_series.iloc[-2]) else vol_ma20_val
+
         atr_val = float(atr_series.iloc[-1])
 
         quote = float(current_price) if current_price is not None and current_price > 0 else curr_k["close"]
@@ -344,5 +364,7 @@ class DataPipeline:
             bandwidth=((kc_up - kc_low) / kc_mid if kc_mid > 0 else 0.0),
             ema5=ema5_val,
             ema13=ema13_val,
+            ema200=ema200_val,
+            volume_ma20=vol_ma20_val,
             raw_df=df_calc,
         )

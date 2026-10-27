@@ -599,7 +599,7 @@ class ExitGate:
                 "macro_frame_evidence": macro_frame_evidence,
                 "exit_policy": "TWO_OF_FOUR_CONFIRMED_PEAK_VALLEY_FACTORS",
             }
-        return False, "VETO_HOLD_LOCKED", {
+        return False, "VETO_HOLD", {
             **(meta or {}),
             "suppressed_exit_reason": reason if should_exit else None,
             "holding_lock": holding_lock.__dict__,

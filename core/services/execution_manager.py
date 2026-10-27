@@ -62,6 +62,94 @@ def check_pivot_status(
 
 
 # =========================================================================
+# 🧬 0.5 妖幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine)
+# =========================================================================
+def evaluate_meme_trade_valid(
+    side: str,
+    curr_k: Dict[str, Any],
+    ma3_curr: float,
+    ma15_curr: float,
+    ema200_curr: float,
+    current_atr: float,
+    volume_ma20: float,
+    funding_rate: float = 0.0,
+    oi_change_pct: float = 0.01,
+) -> tuple[bool, str]:
+    """
+    妖幣 / 高波動 Meme 幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine)
+    1. 大趨勢過濾 (EMA 200 Anchor)
+       - 當價格在 EMA 200 下方時，所有 MA3/MA15 金叉一律視為「逆勢弱反彈」，禁止執行做多開倉。
+       - 當價格在 EMA 200 上方時，所有 MA3/MA15 死叉一律視為「順勢回踩」，禁止盲目追空。
+    2. 籌碼與槓桿情緒過濾 (Funding Rate & OI)
+       - 做多時：資金費率 > 0.1% (0.001) 極端過熱禁止做多；OI <= 0 (持平或減少) 視為誘多，禁止做多。
+       - 做空時：資金費率 < -0.1% (-0.001) 極端過冷禁止做空；OI <= 0 視為誘空，禁止做空。
+    3. K 棒強度與成交量確認 (ATR Dynamics & Volume)
+       - 當根 K 棒實體幅度 (curr_body) 必須 >= 1.2 * ATR(14)，否則視為無量毛刺/弱勢插針，一律攔截。
+       - 成交量 (volume) 必須 > 20 期均量 (volume_ma20)，未放量一律攔截。
+    """
+    curr_close = float(curr_k.get('close', 0.0))
+    curr_open = float(curr_k.get('open', curr_close))
+    curr_body = abs(curr_close - curr_open)
+    curr_vol = float(curr_k.get('volume', 0.0))
+    atr_val = float(current_atr or 0.0)
+
+    side_norm = "BUY" if str(side).upper() in ("BUY", "LONG") else "SELL"
+
+    # 1. 大趨勢過濾 (EMA 200)
+    if side_norm == "BUY" and ema200_curr > 0 and curr_close < ema200_curr:
+        return False, f"PRICE_BELOW_EMA200 (close={curr_close:.6f} < ema200={ema200_curr:.6f})"
+    if side_norm == "SELL" and ema200_curr > 0 and curr_close > ema200_curr:
+        return False, f"PRICE_ABOVE_EMA200 (close={curr_close:.6f} > ema200={ema200_curr:.6f})"
+
+    # 2. 籌碼與槓桿情緒過濾 (Funding Rate & OI)
+    if side_norm == "BUY":
+        if funding_rate is not None and funding_rate > 0.001:
+            return False, f"OVERHEATED_FUNDING_RATE (fr={funding_rate:.4%} > 0.1%)"
+        if oi_change_pct is not None and oi_change_pct <= 0:
+            return False, f"NON_EXPANDING_OI_BULL_TRAP (oi_change={oi_change_pct:.2%} <= 0)"
+    elif side_norm == "SELL":
+        if funding_rate is not None and funding_rate < -0.001:
+            return False, f"OVERCOOLED_FUNDING_RATE (fr={funding_rate:.4%} < -0.1%)"
+        if oi_change_pct is not None and oi_change_pct <= 0:
+            return False, f"NON_EXPANDING_OI_BEAR_TRAP (oi_change={oi_change_pct:.2%} <= 0)"
+
+    # 3. K 棒強度與成交量確認 (ATR & Volume)
+    if atr_val > 0 and curr_body < 1.2 * atr_val:
+        return False, f"WEAK_CANDLE_BODY_PINBAR (body={curr_body:.6f} < 1.2*ATR={1.2*atr_val:.6f})"
+    if volume_ma20 > 0 and curr_vol <= volume_ma20:
+        return False, f"INSUFFICIENT_VOLUME (vol={curr_vol:.1f} <= vol_ma20={volume_ma20:.1f})"
+
+    return True, "MEME_TRADE_VALID_PASS"
+
+
+def is_meme_trade_valid(
+    side: str,
+    curr_k: Dict[str, Any],
+    ma3_curr: float,
+    ma15_curr: float,
+    ema200_curr: float,
+    current_atr: float,
+    volume_ma20: float,
+    funding_rate: float = 0.0,
+    oi_change_pct: float = 0.01,
+) -> bool:
+    """使用者指定標準簽名之布林值判斷函式"""
+    valid, _ = evaluate_meme_trade_valid(
+        side=side,
+        curr_k=curr_k,
+        ma3_curr=ma3_curr,
+        ma15_curr=ma15_curr,
+        ema200_curr=ema200_curr,
+        current_atr=current_atr,
+        volume_ma20=volume_ma20,
+        funding_rate=funding_rate,
+        oi_change_pct=oi_change_pct,
+    )
+    return valid
+
+
+
+# =========================================================================
 # 🟢 1. 多頭持倉平倉判定 (未見真峰頂且未破壞結構，絕對一票否決平多)
 # =========================================================================
 def should_exit_long(
@@ -1062,6 +1150,58 @@ class ExecutionManager:
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_SHORT"}
 
+                # ── 🧬 妖幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine) ──
+                from core.symbol_aliases import is_meme_breakout_symbol
+                is_meme_contract = (
+                    is_meme_breakout_symbol(symbol)
+                    or "MEME" in str(candidate_signal).upper()
+                    or "PEPE" in str(symbol).upper()
+                    or "LOBSTER" in str(symbol).upper()
+                    or "CAP" in str(symbol).upper()
+                    or "龙虾" in str(symbol)
+                    or "龍蝦" in str(symbol)
+                )
+                if is_meme_contract:
+                    ema200_val = float(market_data.curr_k.get("ema200", getattr(market_data, "ema200", 0.0)))
+                    if ema200_val <= 0 and raw_df is not None and "close" in raw_df.columns:
+                        ema200_val = float(raw_df["close"].ewm(span=200, adjust=False).mean().iloc[-1])
+                    vol_ma20_val = float(market_data.curr_k.get("volume_ma20", getattr(market_data, "volume_ma20", 0.0)))
+                    if vol_ma20_val <= 0 and raw_df is not None and "volume" in raw_df.columns:
+                        vol_ma20_val = float(raw_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+
+                    fr_val = float(
+                        getattr(market_data, "funding_rate", None)
+                        or market_data.curr_k.get("funding_rate")
+                        or (raw_df.attrs.get("funding_rate") if hasattr(raw_df, "attrs") else None)
+                        or getattr(engine_or_account, "funding_rates", {}).get(symbol, {}).get("fundingRate")
+                        or 0.0
+                    )
+                    oi_change_val = float(
+                        getattr(market_data, "oi_change_pct", None)
+                        or market_data.curr_k.get("oi_change_pct")
+                        or (raw_df.attrs.get("oi_change_pct") if hasattr(raw_df, "attrs") else None)
+                        or 0.01
+                    )
+                    side_param = "BUY" if candidate_side == "LONG" else "SELL"
+                    meme_ok, meme_fail_reason = evaluate_meme_trade_valid(
+                        side=side_param,
+                        curr_k=market_data.curr_k,
+                        ma3_curr=ma3_curr,
+                        ma15_curr=ma15_curr,
+                        ema200_curr=ema200_val,
+                        current_atr=atr_val_now,
+                        volume_ma20=vol_ma20_val,
+                        funding_rate=fr_val,
+                        oi_change_pct=oi_change_val,
+                    )
+                    if not meme_ok:
+                        logger.warning(
+                            f"🛑 [MEME_ANTI_FAKEOUT_VETO] {symbol} {candidate_signal} 觸發妖幣風控一票否決: {meme_fail_reason} "
+                            f"(body={c_body_now:.6f}, 1.2*atr={1.2*atr_val_now:.6f}, vol={float(market_data.curr_k.get('volume',0)):.1f}, "
+                            f"vol_ma20={vol_ma20_val:.1f}, ema200={ema200_val:.6f}, fr={fr_val:.4%}, oi_change={oi_change_val:.2%})"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": f"BLOCKED_BY_MEME_FILTER:{meme_fail_reason}"}
+
                 entry_frame = getattr(market_data, "raw_df", None)
                 account_gate_state = getattr(account, "entry_filter_last", None)
                 if not isinstance(account_gate_state, dict):
@@ -1082,9 +1222,10 @@ class ExecutionManager:
                 elif three_bar_stop is not None:
                     stop_loss = float(three_bar_stop)
                 else:
+                    atr_mult = 2.0 if is_meme_contract else 3.0
                     stop_loss = (
-                        execution_price - 3.0 * atr_for_stop if candidate_side == "LONG"
-                        else execution_price + 3.0 * atr_for_stop
+                        execution_price - atr_mult * atr_for_stop if candidate_side == "LONG"
+                        else execution_price + atr_mult * atr_for_stop
                     )
                 if is_agile_trigger:
                     from types import SimpleNamespace
