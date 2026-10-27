@@ -23,6 +23,45 @@ logger = logging.getLogger("ExecutionManager")
 
 
 # =========================================================================
+# 🎯 0. 嚴格過濾「真谷底 (True Bottom)」與「真峰頂 (True Top)」唯一評判裁決官
+# =========================================================================
+def check_pivot_status(
+    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev,
+    kc_upper, kc_lower, prev_kc_upper, prev_kc_lower, current_atr,
+):
+    """
+    全域真峰谷唯一驗證裁決官 (波段狀態機核心):
+    - is_true_bottom: MA3向上金叉MA15 / 軌外大陽吞噬 / 低位長下影天地針 / 1.8 ATR爆發大陽線
+    - is_true_peak: MA3向下死叉MA15 / 軌外大陰吞噬 / 高位長上影天地針 / 1.8 ATR崩盤大陰線
+    """
+    curr_close = float(curr_k['close'])
+    curr_open = float(curr_k['open'])
+    curr_body = abs(curr_close - curr_open)
+    prev_close = float(prev_k['close'])
+    prev_open = float(prev_k['open'])
+    prev_body = abs(prev_close - prev_open)
+    upper_wick = float(curr_k['high']) - max(curr_open, curr_close)
+    lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
+    atr_val = float(current_atr or 0.0)
+
+    # 🟢【真谷底驗證】(代表下跌趨勢正式結束)
+    is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
+    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
+    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
+    is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
+    is_true_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_bottom
+
+    # 🔴【真峰頂驗證】(代表上漲趨勢正式結束)
+    is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
+    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body)
+    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
+    is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
+    is_true_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_spike_peak
+
+    return is_true_bottom, is_true_peak
+
+
+# =========================================================================
 # 🟢 1. 多頭持倉平倉判定 (未見真峰頂且未破壞結構，絕對一票否決平多)
 # =========================================================================
 def should_exit_long(
@@ -31,26 +70,19 @@ def should_exit_long(
 ):
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
-    curr_body = abs(curr_close - curr_open)
-    prev_close = float(prev_k['close'])
-    prev_open = float(prev_k['open'])
-    prev_body = abs(prev_close - prev_open)
-    upper_wick = float(curr_k['high']) - max(curr_open, curr_close)
-    atr_val = float(current_atr or 0.0)
+    kc_lower = float(curr_k.get('kc_lower', 0.0))
+    prev_kc_lower = float(prev_k.get('kc_lower', 0.0))
 
-    # 判斷是否為【真峰頂】（4 大硬性條件之一）
-    # 峰頂 A: MA3 死叉 MA15 (動能真正轉空)
-    is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
-    # 峰頂 B: 極限軌外大陰吞噬
-    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body)
-    # 峰頂 C: 高位天地針 Pinbar
-    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
-    # 峰頂 D: 1.8 ATR 崩盤熔斷 (單根大陰實體貫穿 MA15 慢線)
-    is_crash_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
-
-    is_real_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_crash_circuit_breaker
+    _, is_real_peak = check_pivot_status(
+        curr_k=curr_k, prev_k=prev_k,
+        ma3_curr=ma3_curr, ma3_prev=ma3_prev,
+        ma15_curr=ma15_curr, ma15_prev=ma15_prev,
+        kc_upper=kc_upper, kc_lower=kc_lower,
+        prev_kc_upper=prev_kc_upper, prev_kc_lower=prev_kc_lower,
+        current_atr=current_atr,
+    )
     if is_real_peak:
-        return True  # 觸發四大真峰頂門檻之一，立即放行平多，不受波段前低限制！
+        return True  # 觸發真峰頂門檻，立即放行平多，不受波段前低限制！
 
     # 計算本波波段起漲谷底低點 swing_low_price (若未提供)
     if swing_low_price is None:
@@ -72,7 +104,7 @@ def should_exit_long(
 
     # ⚠️ 關鍵鋼鐵鎖定：
     # 只要未出現真峰頂 (is_real_peak) 且未破壞結構 (is_structure_broken)，
-    # 中間任何微幅回踩小紅 K，平多邏輯【必須直接 return False】！強制持倉續抱！
+    # 中間任何微幅回踩小紅 K / 假峰頂，平多邏輯【必須直接 return False】！強制持倉續抱！
     if not (is_real_peak or is_structure_broken):
         return False
 
@@ -88,26 +120,19 @@ def should_exit_short(
 ):
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
-    curr_body = abs(curr_close - curr_open)
-    prev_close = float(prev_k['close'])
-    prev_open = float(prev_k['open'])
-    prev_body = abs(prev_close - prev_open)
-    lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
-    atr_val = float(current_atr or 0.0)
+    kc_upper = float(curr_k.get('kc_upper', 0.0))
+    prev_kc_upper = float(prev_k.get('kc_upper', 0.0))
 
-    # 判斷是否為【真谷底】（4 大硬性條件之一）
-    # 谷底 A: MA3 金叉 MA15 (動能真正轉多)
-    is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
-    # 谷底 B: 極限軌外大陽吞噬
-    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
-    # 谷底 C: 低位下刺針 Pinbar (下影線 >= 1.2倍實體，當前收陽，觸及或跌破下軌)
-    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
-    # 谷底 D: 1.8 ATR 爆發熔斷 (單根大陽實體貫穿 MA15 慢線)
-    is_spike_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
-
-    is_real_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_circuit_breaker
+    is_real_bottom, _ = check_pivot_status(
+        curr_k=curr_k, prev_k=prev_k,
+        ma3_curr=ma3_curr, ma3_prev=ma3_prev,
+        ma15_curr=ma15_curr, ma15_prev=ma15_prev,
+        kc_upper=kc_upper, kc_lower=kc_lower,
+        prev_kc_upper=prev_kc_upper, prev_kc_lower=prev_kc_lower,
+        current_atr=current_atr,
+    )
     if is_real_bottom:
-        return True  # 觸發四大真谷底門檻之一，立即放行平空，不受波段前高限制！
+        return True  # 觸發真谷底門檻，立即放行平空，不受波段前高限制！
 
     # 計算本波波段起跌高點 swing_high_price (若未提供)
     if swing_high_price is None:
@@ -129,7 +154,7 @@ def should_exit_short(
 
     # ⚠️ 關鍵鋼鐵鎖定：
     # 只要未出現真谷底 (is_real_bottom) 且未破壞結構 (is_structure_broken)，
-    # 中間任何微幅回踩/橫盤小綠 K，平空邏輯【必須直接 return False】！強制持倉續抱！
+    # 中間任何微幅回踩/橫盤小綠 K / 假谷底，平空邏輯【必須直接 return False】！強制持倉續抱！
     if not (is_real_bottom or is_structure_broken):
         return False
 
