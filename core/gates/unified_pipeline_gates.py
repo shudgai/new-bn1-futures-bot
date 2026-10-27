@@ -485,67 +485,6 @@ class ExitGate:
                 "cause": tb_meta.get("cause"),
             }
 
-        macro_frame = (
-            getattr(market_data, "macro_df", None)
-            if isinstance(market_data, MarketDataSnapshot)
-            else market_data.get("macro_df")
-        )
-        if macro_frame is None and isinstance(raw_df, pd.DataFrame):
-            macro_frame = raw_df.attrs.get("macro_frame")
-        macro_frame_evidence = []
-        if isinstance(macro_frame, pd.DataFrame) and not macro_frame.empty:
-            macro_closed = closed_entry_candles(macro_frame)
-            macro_columns = [
-                name for name in ("timestamp", "open", "high", "low", "close", "kc_middle", "is_closed")
-                if name in macro_closed.columns
-            ]
-            if {"open", "high", "low", "close", "kc_middle"}.issubset(macro_columns):
-                macro_frame_evidence = macro_closed.tail(4)[macro_columns].to_dict("records")
-        from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
-        holding_lock = HoldingLockStateMachine().evaluate(
-            pos, raw_df, quote_p, macro_frame=macro_frame,
-        )
-        if holding_lock.hard_stop_triggered:
-            return True, "CIRCUIT_BREAKER_HARD_SL", {
-                **(meta or {}), "holding_lock": holding_lock.__dict__,
-            }
-        if holding_lock.decision == "CLOSE_POSITION":
-            return True, "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL", {
-                **(meta or {}),
-                "holding_lock": holding_lock.__dict__,
-                "macro_frame_evidence": macro_frame_evidence,
-                "exit_policy": "TWO_OF_FOUR_CONFIRMED_PEAK_VALLEY_FACTORS",
-            }
-        return False, "HOLD_LOCKED", {
-            **(meta or {}),
-            "suppressed_exit_reason": reason if should_exit else None,
-            "holding_lock": holding_lock.__dict__,
-            "exit_policy": "HOLD_UNTIL_HARD_STOP_TRUE_PIVOT_OR_TWO_OF_FOUR_FACTORS",
-        }
-
-        # Meme-coin soft exits are generated from the latest completed candle
-        # only. A live quote or a red/green candle by itself never closes.
-        try:
-            from core.gates.meme_coin_gate import MemeCoinGate
-            if MemeCoinGate.is_meme_coin(pos.get("symbol")):
-                from core.services.exits.confirmed_pressure_exit import (
-                    evaluate_confirmed_pressure_exit,
-                )
-                pressure = evaluate_confirmed_pressure_exit(
-                    pos, raw_df, pos.get("side"),
-                )
-                if pressure.get("reason"):
-                    return True, pressure["reason"], {
-                        **(meta or {}), **(pressure.get("details") or {}),
-                        "exit_policy": "CLOSED_BAR_CONFIRMED_PRESSURE",
-                    }
-        except (AttributeError, TypeError, ValueError):
-            pass
-
-        # 開倉初期呼吸保護：一般波動續抱；已收線量化賣壓仍能執行。
-        if not should_exit and meta.get("early_pullback_shield"):
-            return result
-
         pos_side = str(pos.get("side", "")).upper()
         kc_mid_val = float(market_data.kc_middle if isinstance(market_data, MarketDataSnapshot) else market_data.get("kc_middle", 0.0))
         kc_slope_val = float(market_data.kc_middle_slope if isinstance(market_data, MarketDataSnapshot) else (kc_slope or market_data.get("kc_middle_slope", 0.0)))
@@ -560,13 +499,6 @@ class ExitGate:
         if closed_df is not None and isinstance(closed_df, pd.DataFrame) and len(closed_df) > 0:
             latest_close = float(closed_df["close"].iloc[-1])
         ref_c = quote_p if quote_p > 0 else latest_close
-
-        # 僅考慮進場之後產生的波段高點/低點
-        entry_ts = float(pos.get("open_timestamp") or pos.get("entry_timestamp") or 0.0)
-        entry_p = float(pos.get("entry_price") or 0.0)
-        bars_since = None
-        if entry_ts > 0 and raw_df is not None and isinstance(raw_df, pd.DataFrame) and "timestamp" in raw_df.columns:
-            bars_since = raw_df[raw_df["timestamp"] >= entry_ts]
 
         ma3_curr_val = float(market_data.curr_k.get("ma3", getattr(market_data, "ma3", quote_p)) if isinstance(market_data, MarketDataSnapshot) else market_data.get("ma3", quote_p))
         ma3_prev_val = float(market_data.prev_k.get("ma3", getattr(market_data, "prev_ma3", ma3_curr_val)) if isinstance(market_data, MarketDataSnapshot) else market_data.get("prev_ma3", ma3_curr_val))
@@ -586,24 +518,8 @@ class ExitGate:
             else:
                 ma15_val = float(closed_df["close"].iloc[-15:].mean())
         if ma15_val <= 0:
-            ma15_val = kc_mid_val  # 保底以 KC 中軌作為結構線
+            ma15_val = kc_mid_val
 
-        # ── 0. 授權合約淨 ROE 階梯鎖利 (PROFIT_LOCK) 與絕對安全出口：優先放行 ──
-        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
-            return result
-
-        # ══════════════════════════════════════════════════════════════════
-        # 核心鐵律一：頂層鎖倉鐵律（一票否決提前離場 / VETO_HOLD，2026-10-24 最新授權）
-        # 除了硬性帳戶止損（3*ATR）、瀑布防護與反側破軌外，任何頂底反轉出場必須受趨勢結構硬性約束：
-        # 1. 空單頂層鎖倉鐵律（嚴禁在下跌途中被單根小陽棒震出場）：
-        #    只要收盤價壓制在 KC 中軌下方（close <= kc_middle），且中軌處於下傾狀態（kc_middle_slope <= 0）：
-        #    - 100% 嚴禁僅憑「單根收陽」、「出現下影線（探底針）」或「MA3 微幅上翹」觸發平空。
-        #    - 若收盤價甚至連紅色 MA3 都未實體收破（close <= ma3），一票否決任何提前離場，強制鎖倉！
-        # 2. 多單頂層鎖倉鐵律（嚴禁在拉升途中被單根小陰棒震出場）：
-        #    只要收盤價踩在 KC 中軌上方（close >= kc_middle），且中軌處於上傾狀態（kc_middle_slope >= 0）：
-        #    - 100% 嚴禁僅憑「單根收陰」、「出現上影線（衝高回落）」或「MA3 微幅下拐」觸發平多。
-        #    - 若收盤價甚至連紅色 MA3 都未實體跌破（close >= ma3），一票否決任何提前離場，強制鎖倉！
-        # ══════════════════════════════════════════════════════════════════
         class VetoHoldReason(str):
             def __eq__(self, other):
                 if other in ("VETO_HOLD", "VETO_HOLD_SHORT", "VETO_HOLD_LONG", str(self)):
@@ -639,7 +555,6 @@ class ExitGate:
                     "kc_middle_slope": kc_slope_val,
                     "ma3": ma3_curr_val,
                     "ma15": ma15_val,
-                    "entry_price": entry_p,
                     "cause": "空單頂層鎖倉鐵律一票否決 (中軌防守線 VETO_HOLD_SHORT_BELOW_MA3 / VETO_EXIT_HOLD_BELOW_KC_MIDDLE): 只要收盤價依然壓在紅色 MA3 與 KC 中軌之下，空頭結構完好，微觀上出現單根小陽棒、下影線或小十字星一律視為空中換手雜訊，強制禁止平空！一票否決微型谷底，強制鎖倉續抱！",
                 }
         elif pos_side == "LONG":
@@ -654,9 +569,45 @@ class ExitGate:
                     "kc_middle_slope": kc_slope_val,
                     "ma3": ma3_curr_val,
                     "ma15": ma15_val,
-                    "entry_price": entry_p,
-                    "cause": "多單頂層鎖倉鐵律一票否決 (中軌防守線 VETO_HOLD_LONG_ABOVE_MA3 / VETO_EXIT_HOLD_ABOVE_KC_MIDDLE): 只要收盤價依然穩守向上的KC中軌與 MA3 之上，多頭結構完好，微觀上出現單根小陰棒或上影線一律視為空中換手雜訊，強制禁止平多！一票否決微型峰頂，強制鎖倉續抱！",
+                    "cause": "多單頂層鎖倉鐵律一票否決 (中軌防守線 VETO_HOLD_LONG_ABOVE_MA3 / VETO_EXIT_HOLD_ABOVE_KC_MIDDLE): 只要收盤價依然踩在紅色 MA3 與 KC 中軌之上，多頭結構完好，微觀上出現單根小陰棒、上影線或小十字星一律視為空中換手雜訊，強制禁止平多！一票否決微型峰頂，強制鎖倉續抱！",
                 }
+
+        macro_frame = (
+            getattr(market_data, "macro_df", None)
+            if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("macro_df")
+        )
+        if macro_frame is None and isinstance(raw_df, pd.DataFrame):
+            macro_frame = raw_df.attrs.get("macro_frame")
+        macro_frame_evidence = []
+        if isinstance(macro_frame, pd.DataFrame) and not macro_frame.empty:
+            macro_closed = closed_entry_candles(macro_frame)
+            macro_columns = [
+                name for name in ("timestamp", "open", "high", "low", "close", "kc_middle", "is_closed")
+                if name in macro_closed.columns
+            ]
+            if {"open", "high", "low", "close", "kc_middle"}.issubset(macro_columns):
+                macro_frame_evidence = macro_closed.tail(4)[macro_columns].to_dict("records")
+        from core.services.exits.holding_lock_state_machine import HoldingLockStateMachine
+        holding_lock = HoldingLockStateMachine().evaluate(
+            pos, raw_df, quote_p, macro_frame=macro_frame,
+        )
+        if holding_lock.hard_stop_triggered:
+            return True, "CIRCUIT_BREAKER_HARD_SL", {
+                **(meta or {}), "holding_lock": holding_lock.__dict__,
+            }
+        if holding_lock.decision == "CLOSE_POSITION":
+            return True, "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL", {
+                **(meta or {}),
+                "holding_lock": holding_lock.__dict__,
+                "macro_frame_evidence": macro_frame_evidence,
+                "exit_policy": "TWO_OF_FOUR_CONFIRMED_PEAK_VALLEY_FACTORS",
+            }
+        return False, "VETO_HOLD_LOCKED", {
+            **(meta or {}),
+            "suppressed_exit_reason": reason if should_exit else None,
+            "holding_lock": holding_lock.__dict__,
+        }
 
         # ══════════════════════════════════════════════════════════════════
         # 核心防守線：守穩向上的 KC 中軌回踩不平倉鐵律（唯認中軌實體跌破）

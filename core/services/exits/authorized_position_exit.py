@@ -32,6 +32,19 @@ def automated_position_exit_allowed(
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
 
+    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 結構破壞離場授權：
+    # 多單真峰頂: CLOSE_LONG_AT_TOP, EXIT_BY_TRUE_PEAK, MA3_DEAD_CROSS, STRUCTURE_BROKEN_PEAK
+    # 空單真谷底: CLOSE_SHORT_AT_BOTTOM, EXIT_BY_TRUE_VALLEY, MA3_GOLDEN_CROSS, STRUCTURE_BROKEN_BOTTOM
+    if side == "LONG" and any(k in normalized_reason for k in (
+        "CLOSE_LONG_AT_TOP", "TRUE_PEAK", "MA3_DEAD_CROSS", "STRUCTURE_BROKEN_PEAK", "EXIT_LONG_ON_TOP", "BEARISH_TREND_REVERSAL",
+    )):
+        return True
+
+    if side == "SHORT" and any(k in normalized_reason for k in (
+        "CLOSE_SHORT_AT_BOTTOM", "TRUE_VALLEY", "MA3_GOLDEN_CROSS", "STRUCTURE_BROKEN_BOTTOM", "EXIT_SHORT_ON_BOTTOM", "BULLISH_TREND_REVERSAL",
+    )):
+        return True
+
     # A lock is an explicit authorized exit class. Require the recorded net
     # ROE floor to be armed and touched so a reason string alone cannot close.
     is_profit_lock = any(token in normalized_reason for token in (

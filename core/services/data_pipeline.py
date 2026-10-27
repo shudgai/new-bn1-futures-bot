@@ -237,9 +237,15 @@ class DataPipeline:
         curr_k["ma3_slope"] = ma3_slope
         curr_k["ma5"] = ma5
         curr_k["ma15"] = ma15
+        curr_k["ma3"] = ma3
+        curr_k["ma3_slope"] = ma3_slope
+        curr_k["ma5"] = ma5
+        curr_k["ma15"] = ma15
         curr_k["ema5"] = ema5_val
         curr_k["ema13"] = ema13_val
         curr_k["kc_middle"] = kc_mid
+        curr_k["kc_upper"] = kc_up
+        curr_k["kc_lower"] = kc_low
         prev_k["ma3"] = prev_ma3
         prev_k["ma3_slope"] = ma3_slope
         prev_k["ma5"] = prev_ma5
@@ -247,6 +253,8 @@ class DataPipeline:
         prev_k["ema5"] = prev_ema5
         prev_k["ema13"] = prev_ema13
         prev_k["kc_middle"] = prev_kc_mid
+        prev_k["kc_upper"] = float(kc_upper_series.iloc[-2]) if len(kc_upper_series) > 1 and not pd.isna(kc_upper_series.iloc[-2]) else kc_up
+        prev_k["kc_lower"] = float(kc_lower_series.iloc[-2]) if len(kc_lower_series) > 1 and not pd.isna(kc_lower_series.iloc[-2]) else kc_low
 
         atr_val = float(atr_series.iloc[-1])
 

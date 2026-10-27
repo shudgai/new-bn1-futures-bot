@@ -49,6 +49,8 @@ def should_exit_long(
     is_crash_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
 
     is_real_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_crash_circuit_breaker
+    if is_real_peak:
+        return True  # 觸發四大真峰頂門檻之一，立即放行平多，不受波段前低限制！
 
     # 計算本波波段起漲谷底低點 swing_low_price (若未提供)
     if swing_low_price is None:
@@ -98,12 +100,14 @@ def should_exit_short(
     is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
     # 谷底 B: 極限軌外大陽吞噬
     is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
-    # 谷底 C: 低位下刺針 Pinbar
+    # 谷底 C: 低位下刺針 Pinbar (下影線 >= 1.2倍實體，當前收陽，觸及或跌破下軌)
     is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
     # 谷底 D: 1.8 ATR 爆發熔斷 (單根大陽實體貫穿 MA15 慢線)
     is_spike_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
 
     is_real_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_circuit_breaker
+    if is_real_bottom:
+        return True  # 觸發四大真谷底門檻之一，立即放行平空，不受波段前高限制！
 
     # 計算本波波段起跌高點 swing_high_price (若未提供)
     if swing_high_price is None:
@@ -308,17 +312,39 @@ class ExecutionManager:
                     return {"status": "EXIT_FAILED", "symbol": symbol, "reason": reason}
 
                 # ══════════════════════════════════════════════════════════════════
-                # 🔄 關鍵秒級反手邏輯 (Flip Position): 平倉與反手在同根 K 棒一次性完成！
+                # 🔄 關鍵秒級原子反手邏輯 (Flip Position): 平倉與反手在同根 K 棒一次性完成！
                 # ══════════════════════════════════════════════════════════════════
-                # 🔴 空頭平倉 -> 谷底金叉秒級反手開多 (Flip to Long)
+                # 🔴 空頭平倉 -> 谷底真轉折秒級反手開多 (Flip Short to Long)
                 is_ma3_golden_cross = (m3_c > m15_c) and (m3_p <= m15_p)
                 is_bullish_confirm = (c_c > c_o) and (m3_c > m3_p)
-                is_flip_to_long = (pos_side == "SHORT" and is_ma3_golden_cross and is_bullish_confirm)
+                is_pinbar_bottom = (c_lo_w >= 1.2 * c_bd) and (c_c > c_o) and (c_l <= kc_lo)
+                is_engulfing_bottom = (p_c < p_kc_lo) and (c_c > c_o) and (c_bd >= 0.6 * p_bd)
+                is_real_bottom = (
+                    is_ma3_golden_cross
+                    or is_pinbar_bottom
+                    or is_engulfing_bottom
+                    or (m3_c > m15_c and is_bullish_confirm)
+                    or "CLOSE_SHORT_AT_BOTTOM" in str(reason).upper()
+                    or "VALLEY" in str(reason).upper()
+                    or "BULLISH_TREND_REVERSAL" in str(reason).upper()
+                )
+                is_flip_to_long = bool(pos_side == "SHORT" and is_real_bottom)
 
-                # 🟢 多頭平倉 -> 頂部死叉秒級反手開空 (Flip to Short)
+                # 🟢 多頭平倉 -> 頂部真轉折秒級反手開空 (Flip Long to Short)
                 is_ma3_dead_cross = (m3_c < m15_c) and (m3_p >= m15_p)
                 is_bearish_confirm = (c_c < c_o) and (m3_c < m3_p)
-                is_flip_to_short = (pos_side == "LONG" and is_ma3_dead_cross and is_bearish_confirm)
+                is_pinbar_peak = (c_up_w >= 1.2 * c_bd) and (c_c < c_o) and (c_h >= kc_u)
+                is_engulfing_peak = (p_c > p_kc_u) and (c_c < c_o) and (c_bd >= 0.6 * p_bd)
+                is_real_peak = (
+                    is_ma3_dead_cross
+                    or is_pinbar_peak
+                    or is_engulfing_peak
+                    or (m3_c < m15_c and is_bearish_confirm)
+                    or "CLOSE_LONG_AT_TOP" in str(reason).upper()
+                    or "PEAK" in str(reason).upper()
+                    or "BEARISH_TREND_REVERSAL" in str(reason).upper()
+                )
+                is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
                 if is_flip_to_long or is_flip_to_short:
                     flip_side = "LONG" if is_flip_to_long else "SHORT"

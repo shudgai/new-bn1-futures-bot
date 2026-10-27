@@ -745,6 +745,203 @@ def test_dual_defense_should_exit_long_all_branches():
     ) is False
 
 
+@pytest.mark.anyio
+async def test_lobster_1804_top_dead_cross_exit_and_flip_short():
+    """
+    實盤 龙虾/USDT 18:04 重現驗證：
+    18:02 衝至 0.01895 頂部力竭後，18:04 MA3 快線向下死叉 MA15 慢線。
+    1. authorized_position_exit_allowed 必須無條件放行 CLOSE_LONG_AT_TOP 平多，絕不被底層靜默攔截！
+    2. ExecutionManager 必須在平多成功後秒級一次性反手開空 (PIVOT_FLIP_SHORT)！
+    """
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_long = {
+        "symbol": "LOBSTERUSDT",
+        "side": "LONG",
+        "entry_price": 0.01860,
+        "amount": 1000.0,
+        "highest_price": 0.01895,
+        "open_timestamp": 1700000000000.0,
+    }
+
+    # 1. 驗證 authorized_position_exit_allowed 放行 ExitGate:CLOSE_LONG_AT_TOP
+    assert automated_position_exit_allowed(
+        symbol="LOBSTERUSDT",
+        position=pos_long,
+        metadata={},
+        reason="ExitGate:CLOSE_LONG_AT_TOP",
+        price=0.01890,
+    ) is True, "ExitGate:CLOSE_LONG_AT_TOP 必須被 authorized_position_exit_allowed 放行！"
+
+    # 2. 構造 18:04 死叉行情數據
+    bars = []
+    for i in range(35):
+        p = 0.01850 + i * 0.00001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p, "high": p + 0.00015, "low": p - 0.00015, "close": p + 0.00005,
+            "volume": 10000.0, "is_closed": True,
+        })
+    # 倒數第 3 根: 衝頂 0.01895
+    bars[-3]["open"] = 0.01888
+    bars[-3]["high"] = 0.01896
+    bars[-3]["low"] = 0.01885
+    bars[-3]["close"] = 0.01894
+
+    # 倒數第 2 根: 開始走弱，ma3 守在 ma15 之上
+    bars[-2]["open"] = 0.01894
+    bars[-2]["high"] = 0.01895
+    bars[-2]["low"] = 0.01880
+    bars[-2]["close"] = 0.01880
+
+    # 最後一根: 陰線下破，MA3 死叉 MA15
+    bars[-1]["open"] = 0.01880
+    bars[-1]["high"] = 0.01882
+    bars[-1]["low"] = 0.01860
+    bars[-1]["close"] = 0.01862
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"LOBSTERUSDT": pos_long}
+            self.position_meta = {}
+            self.channel_exit_frames = {"LOBSTERUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="LOBSTERUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.01862,
+    )
+
+    assert close_mock.called, "18:04 死叉必須立即觸發平多！"
+    assert open_mock.called, "18:04 死叉平多後必須秒級反手開空！"
+    assert open_mock.call_args.kwargs["side"] == "SHORT"
+    assert open_mock.call_args.kwargs["meta"]["entry_type"] == "PIVOT_FLIP_SHORT"
+
+
+@pytest.mark.anyio
+async def test_lobster_1817_bottom_pinbar_and_golden_cross_flip_long():
+    """
+    實盤 龙虾/USDT 18:15~18:17 谷底重現驗證：
+    1. 18:15~18:17 在 KC 下軌爆發長下影下刺針與 MA3 向上金叉 MA15。
+    2. should_exit_short 必須立即 return True (真谷底放行)，不受波段前高限制！
+    3. authorized_position_exit_allowed 必須放行 CLOSE_SHORT_AT_BOTTOM 及 BULLISH_TREND_REVERSAL！
+    4. ExecutionManager 必須平空後秒級原子反手開多 (PIVOT_FLIP_LONG)！
+    """
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+    from core.services.execution_manager import ExecutionManager, should_exit_short
+    from unittest.mock import AsyncMock
+
+    pos_short = {
+        "symbol": "LOBSTERUSDT",
+        "side": "SHORT",
+        "entry_price": 0.01880,
+        "amount": 1000.0,
+        "lowest_price": 0.01860,
+        "open_timestamp": 1700000000000.0,
+    }
+
+    # 1. 驗證 authorized_position_exit_allowed
+    assert automated_position_exit_allowed(
+        symbol="LOBSTERUSDT",
+        position=pos_short,
+        metadata={},
+        reason="ExitGate:CLOSE_SHORT_AT_BOTTOM",
+        price=0.01875,
+    ) is True
+    assert automated_position_exit_allowed(
+        symbol="LOBSTERUSDT",
+        position=pos_short,
+        metadata={},
+        reason="Wild Swing EXIT_BY_BULLISH_TREND_REVERSAL",
+        price=0.01875,
+    ) is True
+
+    # 2. 驗證 should_exit_short 真谷底立刻放行
+    curr_pinbar = {"open": 0.01870, "high": 0.01875, "low": 0.01858, "close": 0.01872}  # lower_wick=0.00012 >= 1.2*body(0.00002)
+    prev_k = {"open": 0.01878, "high": 0.01880, "low": 0.01868, "close": 0.01870}
+    can_exit = should_exit_short(
+        curr_k=curr_pinbar,
+        prev_k=prev_k,
+        ma3_curr=0.01873,
+        ma3_prev=0.01870,
+        ma15_curr=0.01872,
+        ma15_prev=0.01873,  # MA3 金叉 MA15
+        kc_lower=0.01865,
+        prev_kc_lower=0.01866,
+        current_atr=0.00010,
+        swing_high_price=0.01900,  # 遠低於前高 0.01900，但觸發真谷底必須放行！
+    )
+    assert can_exit is True, "滿足真谷底條件時 should_exit_short 必須立即放行平空！"
+
+    # 3. 構造 18:15~18:17 谷底金叉行情數據
+    bars = []
+    for i in range(35):
+        p = 0.01890 - i * 0.00001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p, "high": p + 0.00015, "low": p - 0.00015, "close": p - 0.00005,
+            "volume": 10000.0, "is_closed": True,
+        })
+    # 倒數第 3 根: 探底
+    bars[-3]["open"] = 0.01865
+    bars[-3]["high"] = 0.01868
+    bars[-3]["low"] = 0.01855
+    bars[-3]["close"] = 0.01858
+
+    # 倒數第 2 根: 底部長下影下刺針
+    bars[-2]["open"] = 0.01858
+    bars[-2]["high"] = 0.01865
+    bars[-2]["low"] = 0.01850
+    bars[-2]["close"] = 0.01860
+
+    # 最後一根: 陽線上衝，MA3 金叉 MA15
+    bars[-1]["open"] = 0.01860
+    bars[-1]["high"] = 0.01878
+    bars[-1]["low"] = 0.01858
+    bars[-1]["close"] = 0.01876
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"LOBSTERUSDT": pos_short}
+            self.position_meta = {}
+            self.channel_exit_frames = {"LOBSTERUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="LOBSTERUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.01876,
+    )
+
+    assert close_mock.called, "18:17 谷底金叉刺針必須立即觸發平空！"
+    assert open_mock.called, "18:17 谷底平空後必須秒級原子反手開多！"
+    assert open_mock.call_args.kwargs["side"] == "LONG"
+    assert open_mock.call_args.kwargs["meta"]["entry_type"] == "PIVOT_FLIP_LONG"
+
+
+
+
 
 
 
