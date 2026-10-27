@@ -2020,9 +2020,9 @@ class PaperAccount:
                     continue
 
             # ================================================================
-            # 🛡️ 緊急斷路器（最高優先級，適用所有進場模式）
+            # 🛡️ 緊急斷路器（僅適用非 CHANNEL_SWING 模式；CHANNEL_SWING 順勢持倉嚴格由 ExitGate 真峰谷審查）
             # ================================================================
-            if position_atr > 0:
+            if position_atr > 0 and not is_channel_swing:
                 # 防線二：KC 中軌結構性破壞
                 if PIVOT_TURN_KC_MIDDLE_EXIT:
                     entry_kc_mid = float(pos.get("entry_kc_middle") or meta.get("entry_kc_middle") or 0.0)
