@@ -916,8 +916,15 @@ class ExitGate:
                     peak_mid = (float(peak["open"]) + float(peak["close"])) / 2.0
                     confirm_body = float(confirm["open"]) - float(confirm["close"])
                     peak_move = float(peak["high"]) - entry_p
+                    peak_prominence = float(peak["high"]) - float(left["high"])
+                    # 中間棒 High 必須鶴立雞群 (至少高於左棒 0.35 ATR)，且當前報價與盤中棒未破新高
+                    is_peak_prominent = peak_prominence >= 0.35 * atr_val
+                    curr_bar_high = float(c_curr.get("high", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "high", quote))
+                    not_making_new_high = (quote < float(peak["high"])) and (curr_bar_high <= float(peak["high"]))
+
                     strong_peak_reversal = (
-                        float(peak["high"]) > float(left["high"])
+                        is_peak_prominent
+                        and not_making_new_high
                         and float(peak["high"]) > float(confirm["high"])
                         and float(confirm["close"]) < float(confirm["open"])
                         and float(confirm["close"]) < peak_mid
@@ -1168,8 +1175,15 @@ class ExitGate:
                     valley_mid = (float(valley["open"]) + float(valley["close"])) / 2.0
                     confirm_body = float(confirm["close"]) - float(confirm["open"])
                     valley_move = entry_p - float(valley["low"])
+                    valley_prominence = float(left["low"]) - float(valley["low"])
+                    # 中間棒 Low 必須明確探底 (至少低於左棒 0.35 ATR)，且當前報價與盤中棒未破新低
+                    is_valley_prominent = valley_prominence >= 0.35 * atr_val
+                    curr_bar_low = float(c_curr.get("low", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "low", quote))
+                    not_making_new_low = (quote > float(valley["low"])) and (curr_bar_low >= float(valley["low"]))
+
                     strong_valley_reversal = (
-                        float(valley["low"]) < float(left["low"])
+                        is_valley_prominent
+                        and not_making_new_low
                         and float(valley["low"]) < float(confirm["low"])
                         and float(confirm["close"]) > float(confirm["open"])
                         and float(confirm["close"]) > valley_mid
