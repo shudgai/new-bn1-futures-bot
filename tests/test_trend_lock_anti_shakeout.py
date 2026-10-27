@@ -112,11 +112,11 @@ def test_long_four_peak_exit_conditions():
     assert reason == CLOSE_LONG_AT_TOP
     assert "PINBAR_PEAK" in meta.get("triggers", [])
 
-    # 條件 4: 跌破轉折前 K 棒低點結構失效 (前根收在軌內，不構成軌外吞噬，但跌破前低)
+    # 條件 4: 跌破波段起漲前低結構失效 (跌破起漲點 99.5 且跌破 MA15 慢線)
     bars_struct = [
         dict(timestamp=60_000, open=100.0, high=102.0, low=99.5, close=101.5, kc_upper=104.0, kc_lower=96.0, atr=1.0, ma3=101.0, ma15=100.0, is_closed=True),
-        dict(timestamp=120_000, open=101.5, high=105.0, low=103.0, close=103.8, kc_upper=104.0, kc_lower=97.0, atr=1.0, ma3=102.8, ma15=100.5, is_closed=True), # prev_close=103.8 <= upper=104.0, prev_low=103.0
-        dict(timestamp=180_000, open=103.8, high=103.9, low=102.2, close=102.5, kc_upper=104.0, kc_lower=97.5, atr=1.0, ma3=102.4, ma15=101.0, is_closed=True), # close=102.5 < prev_low=103.0
+        dict(timestamp=120_000, open=101.5, high=105.0, low=103.0, close=103.8, kc_upper=104.0, kc_lower=97.0, atr=1.0, ma3=102.8, ma15=100.5, is_closed=True),
+        dict(timestamp=180_000, open=100.0, high=100.1, low=98.8, close=99.0, kc_upper=104.0, kc_lower=97.5, atr=1.0, ma3=100.5, ma15=100.2, is_closed=True), # close=99.0 < 99.5 且 close < ma15(100.2), ma3(100.5) > ma15(100.2) 未死叉
     ]
     df_struct = pd.DataFrame(bars_struct)
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos_long, df_struct, atr_val=1.0)
@@ -196,11 +196,11 @@ def test_short_four_valley_exit_conditions():
     assert reason == CLOSE_SHORT_AT_BOTTOM
     assert "PINBAR_BOTTOM" in meta.get("triggers", [])
 
-    # 條件 4: 突破轉折前 K 棒高點結構失效 (前根收在軌內，不構成軌外吞噬，但突破前高)
+    # 條件 4: 突破波段起跌前高結構失效 (突破起跌點 100.2 且收盤站上 MA15 慢線)
     bars_struct = [
         dict(timestamp=60_000, open=100.0, high=100.2, low=97.5, close=98.0, kc_upper=103.0, kc_lower=96.0, atr=1.0, ma3=98.5, ma15=100.0, is_closed=True),
-        dict(timestamp=120_000, open=98.0, high=97.0, low=95.0, close=96.5, kc_upper=102.0, kc_lower=96.0, atr=1.0, ma3=97.0, ma15=99.2, is_closed=True), # prev_close=96.5 >= lower=96.0, prev_high=97.0
-        dict(timestamp=180_000, open=96.5, high=97.8, low=96.4, close=97.5, kc_upper=101.5, kc_lower=96.0, atr=1.0, ma3=97.2, ma15=98.8, is_closed=True), # close=97.5 > prev_high=97.0
+        dict(timestamp=120_000, open=98.0, high=97.0, low=95.0, close=96.5, kc_upper=102.0, kc_lower=96.0, atr=1.0, ma3=97.0, ma15=99.2, is_closed=True),
+        dict(timestamp=180_000, open=99.5, high=101.0, low=99.2, close=100.5, kc_upper=101.5, kc_lower=96.0, atr=1.0, ma3=99.0, ma15=99.8, is_closed=True), # close=100.5 > 100.2 且 close > ma15(99.8)
     ]
     df_struct = pd.DataFrame(bars_struct)
     should_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos_short, df_struct, atr_val=1.0)
@@ -562,6 +562,61 @@ def test_real_trade_1603_and_1616_micro_green_candle_veto_hold_short():
         swing_high_price=0.01935,
     )
     assert exit_1616 is False, "16:16 底部狹幅走平小綠 K 未破 MA15 慢線，必須一票否決平空，續抱拿滿 16:25 大暴跌！"
+
+
+def test_pepe_1632_low_level_consolidation_veto_hold_short():
+    """
+    實盤 1000PEPE/USDT 16:32 Bug 重現驗證：
+    16:07 在 0.0042950 附近開空後，價格暴跌至 0.0042700。
+    16:32 價格僅在底部出現微幅小陽線 (close=0.0042780 遠低於波段前高 swing_high=0.0042950)，
+    MA3(0.0042770) 尚未金叉 MA15(0.0042830)，且收盤價仍在 MA15 之下。
+    未滿足結構破壞、未金叉、非極限見底、非 1.8 ATR 爆發熔斷，
+    系統【必須強制 return False】一票否決平空，堅決持倉續抱！
+    """
+    from core.services.execution_manager import should_exit_short
+
+    pos_pepe = {
+        "side": "SHORT",
+        "entry_price": 0.0042950,
+        "lowest_price": 0.0042700,
+        "open_timestamp": 100.0,
+    }
+    bars = [
+        # 16:07 開空波段高點
+        dict(timestamp=60_000, open=0.0042980, high=0.0043000, low=0.0042920, close=0.0042950, kc_upper=0.0043100, kc_lower=0.0042850, atr=0.000010, ma3=0.0042960, ma15=0.0042980, is_closed=True),
+        # 16:30 創低探底
+        dict(timestamp=120_000, open=0.0042750, high=0.0042770, low=0.0042680, close=0.0042720, kc_upper=0.0042980, kc_lower=0.0042710, atr=0.000008, ma3=0.0042730, ma15=0.0042860, is_closed=True),
+        # 16:31 小十字星
+        dict(timestamp=180_000, open=0.0042720, high=0.0042760, low=0.0042710, close=0.0042740, kc_upper=0.0042950, kc_lower=0.0042700, atr=0.000008, ma3=0.0042740, ma15=0.0042845, is_closed=True),
+        # 16:32 微幅小陽線 (close=0.0042780 < ma15=0.0042830，未金叉 ma3=0.0042770 < ma15=0.0042830，遠低於 swing_high=0.0042950)
+        dict(timestamp=240_000, open=0.0042740, high=0.0042790, low=0.0042730, close=0.0042780, kc_upper=0.0042940, kc_lower=0.0042695, atr=0.000008, ma3=0.0042770, ma15=0.0042830, is_closed=True),
+    ]
+    df = pd.DataFrame(bars)
+    curr_k = bars[-1]
+    prev_k = bars[-2]
+
+    # 1. 驗證 should_exit_short (執行層最外層鐵律)
+    exit_short_allowed = should_exit_short(
+        curr_k=curr_k,
+        prev_k=prev_k,
+        ma3_curr=curr_k["ma3"],
+        ma3_prev=prev_k["ma3"],
+        ma15_curr=curr_k["ma15"],
+        ma15_prev=prev_k["ma15"],
+        kc_lower=curr_k["kc_lower"],
+        prev_kc_lower=prev_k["kc_lower"],
+        current_atr=curr_k["atr"],
+        raw_df=df,
+        position=pos_pepe,
+        swing_high_price=0.0042950,
+    )
+    assert exit_short_allowed is False, "1000PEPE 16:32 微幅小陽線未突破波段前高且未金叉 MA15，should_exit_short 必須一票否決平空！"
+
+    # 2. 驗證 evaluate_top_bottom_reversal_exit (閘門層鐵律)
+    reversal_exit, reason, meta = evaluate_top_bottom_reversal_exit(pos_pepe, df, atr_val=curr_k["atr"])
+    assert reversal_exit is False, f"evaluate_top_bottom_reversal_exit 應該鎖倉抗洗盤，但觸發了: {reason}"
+    assert "TREND_LOCK_ACTIVE" in str(meta.get("skipped"))
+
 
 
 

@@ -230,21 +230,26 @@ def evaluate_top_bottom_reversal_exit(
             and c_close > c_open
             and (c_low <= lower_band or p_low <= prev_lower_band)
         )
-        # 條件 4: 突破轉折前 K 棒高點結構失效 (結構破位)
+        # 條件 4: 突破波段起跌高點結構失效 (真正的結構破壞，至少回溯 20 根或進場起跌點，且收盤站上 MA15)
+        prior_closed = closed.iloc[:-1]
+        entry_price_val = float(pos.get("entry_price") or 0.0)
+        pos_high_val = float(pos.get("highest_price") or 0.0)
+        if len(prior_closed) > 0:
+            lookback_bars = min(len(prior_closed), 45)
+            swing_high_calc = float(prior_closed["high"].iloc[-lookback_bars:].max())
+            true_swing_high = max(swing_high_calc, entry_price_val, pos_high_val)
+        else:
+            true_swing_high = max(entry_price_val, pos_high_val)
+
         is_structure_broken_short = bool(
-            touched_lower
-            and c_close > p_high
+            c_close > true_swing_high
+            and c_close > ma15_val
             and c_close > c_open
         )
 
-        # ⚠️ 關鍵硬性卡死：若收盤價仍低於 MA3 快線 (close <= ma3) 或低於 MA15 慢線 (close <= ma15)，
-        # 且【未滿足】上述 A/B/C/D 任一極限條件，平空邏輯必須直接 return False！強制持倉向下！
-        is_below_ma3_or_ma15 = bool(
-            c_close <= (ma3_curr if ma3_curr is not None else c_close)
-            or c_close <= ma15_val
-        )
-        if is_below_ma3_or_ma15 and not (is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_structure_broken_short):
-            meta["skipped"] = "TREND_LOCK_ACTIVE: 空單未達谷底極限條件(微幅反抽壓制於MA3/MA15)，強制持倉拿滿整波空頭趨勢！"
+        # ⚠️ 關鍵硬性卡死：未滿足金叉、軌外吞噬、長下影天地針或波段前高結構破壞，平空邏輯必須直接 return False！
+        if not (is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_structure_broken_short):
+            meta["skipped"] = "TREND_LOCK_ACTIVE: 空單未達谷底極限條件(壓制於MA15且未金叉)，強制持倉拿滿整波空頭趨勢！"
             return False, None, meta
 
         if is_ma3_golden_cross:
@@ -263,7 +268,7 @@ def evaluate_top_bottom_reversal_exit(
             return True, CLOSE_SHORT_AT_BOTTOM, meta
 
         if is_structure_broken_short:
-            meta["cause"] = f"空單觸發谷底離場 4: 突破前棒高點結構失效 (close={c_close:.6f} > prev_high={p_high:.6f})，獲利離場！"
+            meta["cause"] = f"空單觸發谷底離場 4: 突破波段起跌前高結構失效 (close={c_close:.6f} > swing_high={true_swing_high:.6f})，獲利離場！"
             meta["triggers"] = ["STRUCTURE_BROKEN_BOTTOM"]
             return True, CLOSE_SHORT_AT_BOTTOM, meta
 
@@ -308,21 +313,27 @@ def evaluate_top_bottom_reversal_exit(
             and c_close < c_open
             and (c_high >= upper_band or p_high >= prev_upper_band)
         )
-        # 條件 4: 跌破轉折前 K 棒低點結構失效 (結構破位)
+        # 條件 4: 跌破波段起漲低點結構失效 (真正的結構破壞，至少回溯 20 根或進場起漲點，且收盤跌破 MA15)
+        prior_closed = closed.iloc[:-1]
+        entry_price_val = float(pos.get("entry_price") or 0.0)
+        pos_low_val = float(pos.get("lowest_price") or 0.0)
+        valid_pos_lows = [p for p in (entry_price_val, pos_low_val) if p > 0]
+        if len(prior_closed) > 0:
+            lookback_bars = min(len(prior_closed), 45)
+            swing_low_calc = float(prior_closed["low"].iloc[-lookback_bars:].min())
+            true_swing_low = min([swing_low_calc] + valid_pos_lows)
+        else:
+            true_swing_low = min(valid_pos_lows) if valid_pos_lows else entry_p
+
         is_structure_broken = bool(
-            touched_upper
-            and c_close < p_low
+            c_close < true_swing_low
+            and c_close < ma15_val
             and c_close < c_open
         )
 
-        # ⚠️ 關鍵硬性卡死：若收盤價仍高於 MA3 快線 (close >= ma3) 或高於 MA15 慢線 (close >= ma15)，
-        # 且【未滿足】上述 A/B/C/D 任一極限條件，平多邏輯必須直接 return False！強制持倉續抱！
-        is_above_ma3_or_ma15 = bool(
-            c_close >= (ma3_curr if ma3_curr is not None else c_close)
-            or c_close >= ma15_val
-        )
-        if is_above_ma3_or_ma15 and not (is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_structure_broken):
-            meta["skipped"] = "TREND_LOCK_ACTIVE: 多單未達峰頂極限條件(微幅回踩守穩MA3/MA15)，強制持倉拿滿整波多頭趨勢！"
+        # ⚠️ 關鍵硬性卡死：未滿足死叉、軌外大陰吞噬、高位長上影或波段前低結構破壞，平多邏輯必須直接 return False！
+        if not (is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_structure_broken):
+            meta["skipped"] = "TREND_LOCK_ACTIVE: 多單未達峰頂極限條件(守穩MA15且未死叉)，強制持倉拿滿整波多頭趨勢！"
             return False, None, meta
 
         if is_ma3_dead_cross:
