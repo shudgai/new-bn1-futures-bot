@@ -599,8 +599,8 @@ class DualTrackExitStrategy(IExitStrategy):
         if not candidate_exit:
             return None
 
-        # 極端安全風控（硬止損、緊急暴跌防護、安全熔斷）
-        if candidate_exit in ('CIRCUIT_BREAKER_HARD_SL', 'HARD_STOP_LOSS', 'FAIL_SAFE_EMERGENCY_EXIT', 'EMERGENCY_DUMP_EXIT'):
+        # 極端安全風控（緊急暴跌防護、安全熔斷；⚠️ 2026-10-27 最高指示：開倉後不要硬止損割肉）
+        if candidate_exit in ('FAIL_SAFE_EMERGENCY_EXIT', 'EMERGENCY_DUMP_EXIT'):
             return candidate_exit
 
         # 凡任何出場邏輯（包含階梯鎖利、利潤回吐平倉、指標平倉等）欲發出平倉訊號前，必須強制通過此 Gate 審查

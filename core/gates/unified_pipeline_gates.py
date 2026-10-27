@@ -589,10 +589,9 @@ class ExitGate:
         holding_lock = HoldingLockStateMachine().evaluate(
             pos, raw_df, quote_p, macro_frame=macro_frame,
         )
-        if holding_lock.hard_stop_triggered:
-            return True, "CIRCUIT_BREAKER_HARD_SL", {
-                **(meta or {}), "holding_lock": holding_lock.__dict__,
-            }
+        # ⚠️ 2026-10-27 最高指示：開倉後不要硬止損平倉，回踩絕不割肉
+        # if holding_lock.hard_stop_triggered:
+        #     return True, "CIRCUIT_BREAKER_HARD_SL", ...
         if holding_lock.decision == "CLOSE_POSITION":
             return True, "EXIT_BY_CONFIRMED_MULTI_FACTOR_REVERSAL", {
                 **(meta or {}),

@@ -82,37 +82,15 @@ def should_exit_long(
         current_atr=current_atr,
     )
     if is_real_peak:
-        return True  # 觸發真峰頂門檻，立即放行平多，不受波段前低限制！
+        return True  # 觸發真峰頂門檻，立即放行平多！
 
-    # 計算本波波段起漲谷底低點 swing_low_price (若未提供)
-    if swing_low_price is None:
-        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
-        lowest_p = float((position or {}).get("lowest_price", 0.0) or 0.0)
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            prior_df = raw_df.iloc[:-1]
-            lookback = min(len(prior_df), 45)
-            swing_low_price = float(prior_df['low'].iloc[-lookback:].min())
-        else:
-            swing_low_price = float(prev_k.get('low', curr_k.get('low', 0.0)))
-        if entry_price > 0:
-            swing_low_price = min(swing_low_price, entry_price)
-        if lowest_p > 0:
-            swing_low_price = min(swing_low_price, lowest_p)
-
-    # 判斷是否為【最終多頭結構破壞】(收盤價跌破波段谷底前低且跌破 MA15 慢線)
-    is_structure_broken = (curr_close < float(swing_low_price)) and (curr_close < ma15_curr)
-
-    # ⚠️ 關鍵鋼鐵鎖定：
-    # 只要未出現真峰頂 (is_real_peak) 且未破壞結構 (is_structure_broken)，
-    # 中間任何微幅回踩小紅 K / 假峰頂，平多邏輯【必須直接 return False】！強制持倉續抱！
-    if not (is_real_peak or is_structure_broken):
-        return False
-
-    return True  # 觸發真峰頂或結構破壞，允許平多離場
+    # ⚠️ 2026-10-27 最高指示：開倉後回踩不要平倉也不要硬止損平倉！
+    # 成本區間正常回踩、跌破均線或破前低一律判定為回踩呼吸，絕不平倉割肉！
+    return False
 
 
 # =========================================================================
-# 🔴 2. 空頭持倉平倉判定 (未見真谷底且未破壞結構，絕對一票否決平空)
+# 🔴 2. 空頭持倉平倉判定 (未見真谷底，絕對一票否決平空)
 # =========================================================================
 def should_exit_short(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
@@ -132,33 +110,11 @@ def should_exit_short(
         current_atr=current_atr,
     )
     if is_real_bottom:
-        return True  # 觸發真谷底門檻，立即放行平空，不受波段前高限制！
+        return True  # 觸發真谷底門檻，立即放行平空！
 
-    # 計算本波波段起跌高點 swing_high_price (若未提供)
-    if swing_high_price is None:
-        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
-        highest_p = float((position or {}).get("highest_price", 0.0) or 0.0)
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            prior_df = raw_df.iloc[:-1]
-            lookback = min(len(prior_df), 45)
-            swing_high_price = float(prior_df['high'].iloc[-lookback:].max())
-        else:
-            swing_high_price = float(prev_k.get('high', curr_k.get('high', 0.0)))
-        if entry_price > 0:
-            swing_high_price = max(swing_high_price, entry_price)
-        if highest_p > 0:
-            swing_high_price = max(swing_high_price, highest_p)
-
-    # 判斷是否為【最終空頭結構破壞】(收盤價突破波段起跌前高且突破 MA15 慢線)
-    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > ma15_curr)
-
-    # ⚠️ 關鍵鋼鐵鎖定：
-    # 只要未出現真谷底 (is_real_bottom) 且未破壞結構 (is_structure_broken)，
-    # 中間任何微幅回踩/橫盤小綠 K / 假谷底，平空邏輯【必須直接 return False】！強制持倉續抱！
-    if not (is_real_bottom or is_structure_broken):
-        return False
-
-    return True  # 觸發真谷底或結構破壞，允許平空離場
+    # ⚠️ 2026-10-27 最高指示：開倉後回踩/反彈不要平倉也不要硬止損平倉！
+    # 成本區間正常反彈、突破均線或破前高一律判定為回調呼吸，絕不平倉割肉！
+    return False
 
 
 class ExecutionManager:
