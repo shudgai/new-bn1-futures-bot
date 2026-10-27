@@ -520,3 +520,74 @@ def test_fakeout_bull_trap_veto_long():
     assert is_bull_trap is True, "無量小實體且長上影衝出下行 KC 上軌，必須被判定為 Bull Trap 一票否決！"
 
 
+def test_pre_cross_pivot_valley_exit_short():
+    """
+    驗證空頭持倉在未破壞 Swing High 前，只要觸發 Pre-Cross 谷底拐頭，
+    即刻提前平空鎖利（不用等均線完全交叉完或結構破壞）。
+    """
+    from core.services.execution_manager import should_exit_short
+    
+    # 設置參數：kc_lower=93.0, ma15_curr=97.0 -> kc_lower_half = 95.0
+    # curr_k 收盤在 94.8 <= 95.0, 陽線(94.8 > 94.2), MA3 向上拐頭(94.6 > 94.0), close(94.8) >= MA3(94.6)
+    curr_k = {"open": 94.2, "high": 95.0, "low": 94.0, "close": 94.8}
+    prev_k = {"open": 95.5, "high": 95.6, "low": 93.8, "close": 94.2}
+    
+    kc_lower = 93.0
+    prev_kc_lower = 93.0
+    ma15_curr = 97.0
+    ma15_prev = 97.2
+    ma3_curr = 94.6
+    ma3_prev = 94.0
+    swing_high_price = 105.0 # 結構起跌點遠在 105.0，完全未被破壞
+    
+    exit_triggered = should_exit_short(
+        curr_k=curr_k,
+        prev_k=prev_k,
+        ma3_curr=ma3_curr,
+        ma3_prev=ma3_prev,
+        ma15_curr=ma15_curr,
+        ma15_prev=ma15_prev,
+        kc_lower=kc_lower,
+        prev_kc_lower=prev_kc_lower,
+        current_atr=1.0,
+        swing_high_price=swing_high_price
+    )
+    assert exit_triggered is True, "Pre-Cross 谷底拐頭必須在結構破壞前提前平空鎖利！"
+
+
+def test_pre_cross_pivot_peak_exit_long():
+    """
+    驗證多頭持倉在未破壞 Swing Low 前，只要觸發 Pre-Cross 峰頂拐頭，
+    即刻提前平多鎖利（不用等均線完全死叉完或結構破壞）。
+    """
+    from core.services.execution_manager import should_exit_long
+    
+    # 設置參數：kc_upper=107.0, ma15_curr=103.0 -> kc_upper_half = 105.0
+    # curr_k 收盤在 105.2 >= 105.0, 陰線(105.2 < 105.8), MA3 向下拐頭(105.4 < 106.5), close(105.2) <= MA3(105.4)
+    curr_k = {"open": 105.8, "high": 106.0, "low": 105.0, "close": 105.2}
+    prev_k = {"open": 104.5, "high": 106.2, "low": 104.2, "close": 105.8}
+    
+    kc_upper = 107.0
+    prev_kc_upper = 107.0
+    ma15_curr = 103.0
+    ma15_prev = 102.8
+    ma3_curr = 105.4
+    ma3_prev = 106.5
+    swing_low_price = 95.0 # 結構起漲點遠在 95.0，完全未被跌破
+    
+    exit_triggered = should_exit_long(
+        curr_k=curr_k,
+        prev_k=prev_k,
+        ma3_curr=ma3_curr,
+        ma3_prev=ma3_prev,
+        ma15_curr=ma15_curr,
+        ma15_prev=ma15_prev,
+        kc_upper=kc_upper,
+        prev_kc_upper=prev_kc_upper,
+        current_atr=1.0,
+        swing_low_price=swing_low_price
+    )
+    assert exit_triggered is True, "Pre-Cross 峰頂拐頭必須在結構破壞前提前平多鎖利！"
+
+
+
