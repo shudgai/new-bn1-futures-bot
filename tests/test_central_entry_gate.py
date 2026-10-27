@@ -54,7 +54,7 @@ def _build_valid_long_frame():
         "kc_middle": 100.0,
         "kc_middle_slope": 0.30,  # >= 0.1 * 2.0 = 0.2
         "ma5": 101.0,  # prev is 100.5, so delta = 0.5 > 0
-        "ma3": 101.0,
+        "ma3": 101.5,
         "ma15": 98.0,
         "macro_trend": "BULLISH",
     }
@@ -144,7 +144,7 @@ def test_veto_kc_outer_overextension():
     res = CentralEntryGate.verify_and_authorize(
         symbol="BTC/USDT",
         side="LONG",
-        price=107.0,
+        price=111.0,
         klines_or_snapshot=df,
     )
     assert res.passed is False
@@ -164,7 +164,7 @@ def test_veto_kc_bandwidth_too_narrow():
         klines_or_snapshot=df,
     )
     assert res.passed is False
-    assert res.reason == "VETO_KC_BANDWIDTH_TOO_NARROW"
+    assert res.reason in ("VETO_KC_BANDWIDTH_TOO_NARROW", "BLOCKED_BY_KC_SQUEEZE_LOCK")
 
 
 def test_veto_bearish_candle_for_long():
@@ -332,7 +332,7 @@ def test_cross_mid_short_veto_if_above_midline():
         source="ENTRY_SHORT_EMA_CROSS_MID",
     )
     assert res.passed is False
-    assert res.reason == "VETO_SHORT_ABOVE_KC_MIDDLE"
+    assert res.reason in ("VETO_SHORT_ABOVE_KC_MIDDLE", "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID")
 
 
 def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():

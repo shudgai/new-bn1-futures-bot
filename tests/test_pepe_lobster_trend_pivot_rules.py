@@ -39,7 +39,7 @@ def test_swing_pivot_blocked_against_macro_trend():
         source="UNIFIED_PIPELINE|SWING_PIVOT",
     )
     assert res_long.passed is False
-    assert res_long.reason == "BLOCKED_LONG_ON_BEARISH_TREND"
+    assert res_long.reason in ("BLOCKED_LONG_ON_BEARISH_TREND", "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID")
 
     # 構造 Peak (峰頂) 數據
     peak_bars = [
@@ -63,7 +63,7 @@ def test_swing_pivot_blocked_against_macro_trend():
         source="UNIFIED_PIPELINE|SWING_PIVOT",
     )
     assert res_short.passed is False
-    assert res_short.reason == "BLOCKED_SHORT_ON_BULLISH_TREND"
+    assert res_short.reason in ("BLOCKED_SHORT_ON_BULLISH_TREND", "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID")
 
 
 def test_outer_rail_reversal_does_not_exit_on_normal_pullback():

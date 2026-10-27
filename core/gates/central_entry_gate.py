@@ -190,6 +190,7 @@ class CentralEntryGate:
                 details=parsed,
                 checks={"closed_bar": {"status": "FAIL", "actual": is_closed}},
             )
+        checks["closed_bar"] = {"status": "PASS", "actual": is_closed}
         # -------------------------------------------------------------
         # 條件 0：方向總開關 (Direction Master Lock，一票否決，零歧義)
         # 🟢 開多：MA3 必須在 KC 中軌上方 且 (MA3 > MA5 或 MA3 > MA3_PREV)
@@ -286,9 +287,11 @@ class CentralEntryGate:
                 # but consolidation classification must use closed evidence.
                 from core.services.candle_data import closed_entry_candles
                 blacklist_frame = closed_entry_candles(entry_frame)
+                is_breakout_candidate = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
                 blacklist = evaluate_market_blacklist(
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
+                    is_breakout=is_breakout_candidate,
                 )
         blocked, block_reason, block_evidence = blacklist
         checks["market_blacklist"] = {
@@ -976,11 +979,24 @@ class CentralEntryGate:
 
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(getattr(data, "min_prev_width", curr_w * 0.95))
-                metrics["max_prev_width"] = getattr(data, "max_prev_width", None)
+                raw_df = getattr(data, "raw_df", None)
+                max_w = getattr(data, "max_prev_width", None)
+                if max_w is None or not math.isfinite(float(max_w)) or float(max_w) <= 0:
+                    if isinstance(raw_df, pd.DataFrame) and len(raw_df) > 1 and "kc_upper" in raw_df and "kc_lower" in raw_df:
+                        max_w = float((raw_df["kc_upper"] - raw_df["kc_lower"]).iloc[:-1].tail(20).max())
+                    else:
+                        max_w = curr_w * 1.05
+                metrics["max_prev_width"] = float(max_w)
                 metrics["history_bars_count"] = 10
                 metrics["is_closed"] = bool(getattr(data, "is_closed", curr_k.get("is_closed", True)))
                 metrics["volume"] = float(curr_k.get("volume", 0.0))
-                metrics["volume_avg"] = float(getattr(data, "volume_avg", metrics["volume"]))
+                volume_avg_val = getattr(data, "volume_avg", None)
+                if volume_avg_val is None or not math.isfinite(float(volume_avg_val)) or float(volume_avg_val) <= 0:
+                    if isinstance(raw_df, pd.DataFrame) and len(raw_df) > 1 and "volume" in raw_df:
+                        volume_avg_val = float(raw_df["volume"].iloc[:-1].tail(20).mean())
+                    else:
+                        volume_avg_val = metrics["volume"] if metrics["volume"] > 0 else 1.0
+                metrics["volume_avg"] = float(volume_avg_val)
                 metrics["valid"] = True
                 return metrics
 

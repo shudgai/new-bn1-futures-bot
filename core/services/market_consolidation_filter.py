@@ -41,6 +41,7 @@ def evaluate_market_blacklist(
     current_bar_index: Optional[int] = None,
     cooldown_bars: int = COOLDOWN_BARS,
     macro_trend: Optional[str] = None,
+    is_breakout: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -82,8 +83,9 @@ def evaluate_market_blacklist(
         values = recent[list(needed)].apply(pd.to_numeric, errors="coerce")
         if not values.notna().all().all() or not np.isfinite(values.to_numpy(dtype=float)).all():
             return True, "VETO_CONSOLIDATION_INVALID_INDICATORS", {}
-        if (values[["atr", "kc_middle", "kc_upper", "kc_lower"]] <= 0).any().any():
+        if (values[["kc_middle", "kc_upper", "kc_lower"]] <= 0).any().any() or (values["atr"] < 0).any():
             return True, "VETO_CONSOLIDATION_INVALID_INDICATORS", {}
+        values["atr"] = values["atr"].clip(lower=1e-8)
 
         ma3 = values["ma3"]
         ma15 = values["ma15"]
@@ -120,7 +122,7 @@ def evaluate_market_blacklist(
         prior_width = width.iloc[:-1].tail(LOOKBACK)
         big_mouth_ratio = float(width.iloc[-1] / prior_width.mean()) if len(prior_width) else math.inf
         checks["kc_big_mouth_ratio"] = big_mouth_ratio
-        if not math.isfinite(big_mouth_ratio) or big_mouth_ratio >= KC_BIG_MOUTH_RATIO:
+        if not is_breakout and (not math.isfinite(big_mouth_ratio) or big_mouth_ratio >= KC_BIG_MOUTH_RATIO):
             return True, "VETO_KC_BIG_MOUTH_EXPANSION", checks
 
         # Box/range with weak ADX or low normalized ATR.
