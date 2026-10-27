@@ -940,6 +940,61 @@ async def test_lobster_1817_bottom_pinbar_and_golden_cross_flip_long():
     assert open_mock.call_args.kwargs["meta"]["entry_type"] == "PIVOT_FLIP_LONG"
 
 
+@pytest.mark.anyio
+async def test_pepe_1843_anti_chasing_veto_long_at_top():
+    """
+    實盤 1000PEPE 18:43 頂部追高重現驗證：
+    價格自 18:15 谷底 0.0042700 連續拉升 8 根陽線暴漲至 0.00431123 (超過 2.0 ATR)。
+    當價格在 18:43 衝出 KC 上軌時，Anti-Chasing Gate 必須 100% 一票否決開多，絕不在天花板追多接刀！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    bars = []
+    base_p = 0.004270
+    atr = 0.000015
+    for i in range(30):
+        p = base_p + i * 0.0000015
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p - 0.0000005, "high": p + 0.000001, "low": p - 0.000001, "close": p + 0.0000005,
+            "volume": 10000.0, "is_closed": True, "atr": atr,
+            "kc_middle": p, "kc_upper": p + 0.00001, "kc_lower": p - 0.00001,
+            "ma3": p, "ma15": p - 0.000002,
+        })
+    # 最後一根: 暴拉 0.000040 (約 2.5 ATR)，衝出上軌 (0.00431123)
+    bars[-1]["open"] = 0.004305
+    bars[-1]["close"] = 0.00431123
+    bars[-1]["high"] = 0.004312
+    bars[-1]["low"] = 0.004300
+    bars[-1]["kc_upper"] = 0.004310
+    bars[-1]["kc_middle"] = 0.004290
+    bars[-1]["kc_lower"] = 0.004270
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {}
+            self.position_meta = {}
+            self.channel_exit_frames = {}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.00431123,
+    )
+
+    assert open_mock.called is False, "18:43 自低點已狂拉超過 1.5 ATR 且衝破上軌，Anti-Chasing Gate 必須 100% 一票否決追多接刀！"
+
+
+
 
 
 

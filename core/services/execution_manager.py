@@ -821,6 +821,40 @@ class ExecutionManager:
                     f"判定為假跌破誘空 (Bear Trap)，一票否決開空！"
                 )
 
+            # ══════════════════════════════════════════════════════════════════
+            # 🚫 高位追高一票否決防線 (Anti-Chasing Gate - 嚴禁在 KC 上軌頂部追高接刀)
+            # 嚴禁在價格自波段低點連續拉升超過 1.5 ATR 且衝出/貼近 KC 上軌時後知後覺追高！
+            # 追高開多必須被硬性攔截，開多只允許在谷底起漲或穿中軌第一時間進場！
+            # ══════════════════════════════════════════════════════════════════
+            if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
+                lookback_p = min(len(raw_df), 30)
+                prior_swing_low = float(raw_df['low'].iloc[-lookback_p:].min())
+                prior_swing_high = float(raw_df['high'].iloc[-lookback_p:].max())
+                rise_from_low = curr_close - prior_swing_low
+                drop_from_high = prior_swing_high - curr_close
+
+                # 多單高位追高：自低點累積漲幅 >= 1.5 ATR 且價格在 KC 上軌外或貼近上軌
+                if atr_val_now > 0 and rise_from_low >= 1.5 * atr_val_now and curr_close >= (kc_up_val - 0.2 * atr_val_now):
+                    can_long = False
+                    is_breakout_long = False
+                    is_continuation_long = False
+                    agile_breakout_long = False
+                    logger.info(
+                        f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格自波段低點已狂拉 {rise_from_low:.6f} (>= 1.5*ATR={1.5*atr_val_now:.6f})，"
+                        f"且已衝出/貼近 KC 上軌 (close={curr_close:.6f} >= upper={kc_up_val:.6f})，一票否決追多接刀！"
+                    )
+
+                # 空單低位追空：自高點累積跌幅 >= 1.5 ATR 且價格在 KC 下軌外或貼近下軌
+                if atr_val_now > 0 and drop_from_high >= 1.5 * atr_val_now and curr_close <= (kc_low_val + 0.2 * atr_val_now):
+                    can_short = False
+                    is_breakdown_short = False
+                    is_continuation_short = False
+                    agile_breakdown_short = False
+                    logger.info(
+                        f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格自波段高點已暴跌 {drop_from_high:.6f} (>= 1.5*ATR={1.5*atr_val_now:.6f})，"
+                        f"且已跌破/貼近 KC 下軌 (close={curr_close:.6f} <= lower={kc_low_val:.6f})，一票否決追空接地產！"
+                    )
+
             is_agile_trigger = False
             agile_signal = None
             if agile_breakout_long:
@@ -846,20 +880,22 @@ class ExecutionManager:
             swing_pivot = None
             if raw_swing_pivot:
                 pivot_side = raw_swing_pivot.get("side")
-                # 轉折開多/開空也必須嚴格遵守 MA3 斜率、慢線位置與 K 棒顏色硬性門檻
+                # 谷底/頂部轉折開倉：只要極短線 MA3 拐頭順向且收線同色，即可第一時間進場，豁免 slow 慢線位置限制！
                 if pivot_side == "LONG":
-                    if not hard_long_allowed:
+                    pivot_long_ok = is_ma3_trending_up and is_candle_bullish
+                    if not pivot_long_ok:
                         logger.warning(
-                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多絕對門檻 "
-                            f"(ma3_up={is_ma3_trending_up}, ma3>=slow={is_ma3_above_slow}, bullish={is_candle_bullish})，一票否決！"
+                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多門檻 "
+                            f"(ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
                 elif pivot_side == "SHORT":
-                    if not hard_short_allowed:
+                    pivot_short_ok = is_ma3_trending_down and is_candle_bearish
+                    if not pivot_short_ok:
                         logger.warning(
-                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空絕對門檻 "
-                            f"(ma3_down={is_ma3_trending_down}, ma3<=slow={is_ma3_below_slow}, bearish={is_candle_bearish})，一票否決！"
+                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空門檻 "
+                            f"(ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -867,9 +903,9 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG" and hard_long_allowed:
+                if candidate_side == "LONG":
                     can_long = True
-                elif candidate_side == "SHORT" and hard_short_allowed:
+                elif candidate_side == "SHORT":
                     can_short = True
 
             # 強動能破軌或外軌延續開倉判定 (外軌鎖定強制上車，豁免平倉後冷卻期)
