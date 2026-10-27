@@ -620,12 +620,13 @@ def test_pepe_1632_low_level_consolidation_veto_hold_short():
 
 def test_dual_defense_should_exit_short_all_branches():
     """
-    驗證 should_exit_short 的雙重防線全分支：
+    驗證 should_exit_short 的雙重防線全分支 (方案 B 慢線硬鎖定修復版)：
     - 谷底 A (MA3 金叉 MA15) -> True
-    - 谷底 B (軌外大陽吞噬) -> True
-    - 谷底 C (低位下刺針 Pinbar) -> True
-    - 谷底 D (1.8 ATR 爆發熔斷) -> True
+    - 谷底 B (軌外大陽吞噬 且 收盤價實體站上 MA15) -> True
+    - 谷底 C (低位下刺針 Pinbar 且 收盤價實體站上 MA15) -> True
+    - 谷底 D (1.8 ATR 爆發熔斷 且 收盤價實體站上 MA15) -> True
     - 最終結構破壞 (突破 swing_high 且突破 MA15) -> True
+    - ⚠️ 關鍵防禦：若價格仍在 MA15 慢線下方 (curr_close < ma15_curr) 且未金叉，即使出現吞噬/刺針，一律強制 False (防止 06:50 龍蝦提早平空)
     - 微幅回踩小陽 K (未滿足任一條件) -> 強制 False
     """
     from core.services.execution_manager import should_exit_short
@@ -641,21 +642,37 @@ def test_dual_defense_should_exit_short_all_branches():
         kc_lower=9.5, prev_kc_lower=9.5, current_atr=0.5, swing_high_price=12.0,
     ) is True
 
-    # 2. 谷底 B: 軌外大陽吞噬 (前根收在 kc_lower 下方，當根陽線吞噬 60% 以上)
+    # 2. 谷底 B: 軌外大陽吞噬 且 收盤價實體站上 MA15 (close > ma15_curr)
     assert should_exit_short(
-        curr_k={"open": 9.3, "high": 9.8, "low": 9.3, "close": 9.8}, # body=0.5
+        curr_k={"open": 9.3, "high": 9.8, "low": 9.3, "close": 9.8}, # body=0.5, close=9.8 > ma15=9.7
         prev_k={"open": 9.9, "high": 10.0, "low": 9.3, "close": 9.4}, # close < prev_kc_lower(9.5), body=0.5
-        ma3_curr=9.5, ma3_prev=9.6, ma15_curr=9.9, ma15_prev=10.0,
+        ma3_curr=9.5, ma3_prev=9.6, ma15_curr=9.7, ma15_prev=9.8,
         kc_lower=9.5, prev_kc_lower=9.5, current_atr=0.5, swing_high_price=12.0,
     ) is True
 
-    # 3. 谷底 C: 低位下刺針 Pinbar (lower_wick >= 1.2 * body, low <= kc_lower, close > open)
+    # ⚠️ 關鍵防禦 B-VETO: 軌外吞噬但收盤未站上 MA15 (curr_close < ma15_curr) -> 一票否決 (False)！
     assert should_exit_short(
-        curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # body=0.1, lower_wick=0.4 >= 1.2*0.1, low <= 9.2
-        prev_k=base_k,
+        curr_k={"open": 9.3, "high": 9.8, "low": 9.3, "close": 9.8}, # close=9.8 < ma15=9.9
+        prev_k={"open": 9.9, "high": 10.0, "low": 9.3, "close": 9.4},
         ma3_curr=9.5, ma3_prev=9.6, ma15_curr=9.9, ma15_prev=10.0,
+        kc_lower=9.5, prev_kc_lower=9.5, current_atr=0.5, swing_high_price=12.0,
+    ) is False
+
+    # 3. 谷底 C: 低位下刺針 Pinbar 且 收盤站上 MA15 (close > ma15_curr)
+    assert should_exit_short(
+        curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # close=9.5 > ma15=9.45
+        prev_k=base_k,
+        ma3_curr=9.4, ma3_prev=9.3, ma15_curr=9.45, ma15_prev=9.5,
         kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
     ) is True
+
+    # ⚠️ 關鍵防禦 C-VETO: 下刺針但收盤未站上 MA15 (curr_close < ma15_curr) -> 一票否決 (False)！
+    assert should_exit_short(
+        curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # close=9.5 < ma15=9.9
+        prev_k=base_k,
+        ma3_curr=9.4, ma3_prev=9.3, ma15_curr=9.9, ma15_prev=10.0,
+        kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
+    ) is False
 
     # 4. 谷底 D: 1.8 ATR 爆發熔斷 (body >= 1.8 * atr 且 close > ma15)
     assert should_exit_short(
@@ -684,12 +701,13 @@ def test_dual_defense_should_exit_short_all_branches():
 
 def test_dual_defense_should_exit_long_all_branches():
     """
-    驗證 should_exit_long 的雙重防線全分支：
+    驗證 should_exit_long 的雙重防線全分支 (方案 B 慢線硬鎖定修復版)：
     - 峰頂 A (MA3 死叉 MA15) -> True
-    - 峰頂 B (極限軌外大陰吞噬) -> True
-    - 峰頂 C (高位天地針 Pinbar) -> True
-    - 峰頂 D (1.8 ATR 崩盤熔斷) -> True
+    - 峰頂 B (極限軌外大陰吞噬 且 收盤價實體跌破 MA15) -> True
+    - 峰頂 C (高位天地針 Pinbar 且 收盤價實體跌破 MA15) -> True
+    - 峰頂 D (1.8 ATR 崩盤熔斷 且 收盤價實體跌破 MA15) -> True
     - 最終結構破壞 (跌破 swing_low 且跌破 MA15) -> True
+    - ⚠️ 關鍵防禦：若價格仍在 MA15 慢線上方 (curr_close > ma15_curr) 且未死叉，即使出現吞噬/天地針，一律強制 False (防止 06:48 PEPE 提早平多)
     - 微幅回踩小紅 K (未滿足任一條件) -> 強制 False
     """
     from core.services.execution_manager import should_exit_long
@@ -704,21 +722,37 @@ def test_dual_defense_should_exit_long_all_branches():
         kc_upper=10.5, prev_kc_upper=10.5, current_atr=0.5, swing_low_price=8.0,
     ) is True
 
-    # 2. 峰頂 B: 極限軌外大陰吞噬 (前根衝出 kc_upper，當根大陰吞噬 60% 以上)
+    # 2. 峰頂 B: 極限軌外大陰吞噬 且 收盤價實體跌破 MA15 (close < ma15_curr)
     assert should_exit_long(
-        curr_k={"open": 10.7, "high": 10.7, "low": 10.2, "close": 10.2}, # body=0.5
+        curr_k={"open": 10.7, "high": 10.7, "low": 10.0, "close": 10.0}, # body=0.7, close=10.0 < ma15=10.1
         prev_k={"open": 10.1, "high": 10.7, "low": 10.0, "close": 10.6}, # close > prev_kc_upper(10.5), body=0.5
-        ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
+        ma3_curr=10.3, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
         kc_upper=10.5, prev_kc_upper=10.5, current_atr=0.5, swing_low_price=8.0,
     ) is True
 
-    # 3. 峰頂 C: 高位天地針 Pinbar (upper_wick >= 1.2 * body, high >= kc_upper, close < open)
+    # ⚠️ 關鍵防禦 B-VETO: 軌外陰線但收盤仍在 MA15 之上 (curr_close > ma15_curr) -> 一票否決 (False)！
     assert should_exit_long(
-        curr_k={"open": 10.5, "high": 11.0, "low": 10.35, "close": 10.4}, # body=0.1, upper_wick=0.5 >= 1.2*0.1, high >= 10.8
+        curr_k={"open": 10.7, "high": 10.7, "low": 10.2, "close": 10.2}, # close=10.2 > ma15=10.1
+        prev_k={"open": 10.1, "high": 10.7, "low": 10.0, "close": 10.6},
+        ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
+        kc_upper=10.5, prev_kc_upper=10.5, current_atr=0.5, swing_low_price=8.0,
+    ) is False
+
+    # 3. 峰頂 C: 高位天地針 Pinbar 且 收盤跌破 MA15 (close < ma15_curr)
+    assert should_exit_long(
+        curr_k={"open": 10.2, "high": 11.0, "low": 9.9, "close": 10.0}, # body=0.2, upper_wick=0.8, close=10.0 < ma15=10.1
+        prev_k=base_k,
+        ma3_curr=10.2, ma3_prev=10.3, ma15_curr=10.1, ma15_prev=10.0,
+        kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
+    ) is True
+
+    # ⚠️ 關鍵防禦 C-VETO: 高位天地針但收盤仍穩守 MA15 之上 (curr_close > ma15_curr) -> 一票否決 (False)！
+    assert should_exit_long(
+        curr_k={"open": 10.5, "high": 11.0, "low": 10.35, "close": 10.4}, # close=10.4 > ma15=10.1
         prev_k=base_k,
         ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
         kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
-    ) is True
+    ) is False
 
     # 4. 峰頂 D: 1.8 ATR 崩盤熔斷 (body >= 1.8 * atr 且 close < ma15)
     assert should_exit_long(
@@ -1365,6 +1399,153 @@ async def test_scheme_b_trend_lock_veto_micro_pullback():
     assert res.get("reason") == "TREND_LOCK_MASTER_LOCK_LONG"
     assert close_mock.called is False
     assert open_mock.called is False
+
+
+@pytest.mark.anyio
+async def test_pepe_0648_micro_pullback_veto_hold_long():
+    """
+    【2026/10/28 實盤實證】1000PEPE 06:48 回踩防洗盤測試：
+    - 06:36「買多」進場後主升浪狂拉至 0.0046200
+    - 06:48 (0.0045650 半山腰) 出現一根回踩小陰線 (前棒破軌、當棒陰線)
+    - 由於收盤價 0.0045650 依然穩居 MA15 慢線 (0.0045500) 之上，且 MA3 尚未死叉 MA15
+    - 慢線硬鎖定機制必須一票否決平多 (VETO)，鎖死持倉續抱，吃滿 0.0046200 大肉！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_long = {
+        "symbol": "1000PEPEUSDT",
+        "side": "LONG",
+        "entry_price": 0.0045300,
+        "amount": 50000.0,
+        "highest_price": 0.0045800,
+    }
+
+    bars = []
+    base_p = 0.0045100
+    for i in range(35):
+        p = base_p + i * 0.0000015
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p - 0.0000005, "high": p + 0.0000010, "low": p - 0.0000005, "close": p + 0.0000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000010,
+            "kc_middle": p, "kc_upper": p + 0.000012, "kc_lower": p - 0.000012,
+        })
+
+    # 06:47 破軌大陽線
+    bars[-2]["open"] = 0.0045580
+    bars[-2]["high"] = 0.0045780
+    bars[-2]["low"] = 0.0045570
+    bars[-2]["close"] = 0.0045750  # 突破 kc_upper
+    bars[-2]["kc_upper"] = 0.0045680
+
+    # 06:48 微幅回踩陰 K: 收 0.0045650，高於 MA15 慢線 (~0.0045450)
+    bars[-1]["open"] = 0.0045750
+    bars[-1]["high"] = 0.0045760
+    bars[-1]["low"] = 0.0045630
+    bars[-1]["close"] = 0.0045650
+    bars[-1]["kc_upper"] = 0.0045700
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"1000PEPEUSDT": pos_long}
+            self.position_meta = {}
+            self.channel_exit_frames = {"1000PEPEUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.0045650,
+    )
+
+    assert res.get("status") == "HOLD"
+    assert res.get("reason") == "TREND_LOCK_MASTER_LOCK_LONG"
+    assert close_mock.called is False
+    assert open_mock.called is False
+
+
+@pytest.mark.anyio
+async def test_lobster_0650_micro_bounce_veto_hold_short():
+    """
+    【2026/10/28 實盤實證】龙虾 06:50 反彈防洗盤測試：
+    - 06:48「賣空」開倉後一路向下主跌至 0.019700
+    - 06:50 (0.020150 半山腰) 僅出現一根微幅小陽 K 反彈
+    - 由於收盤價 0.020150 依然被壓制在 MA15 慢線 (0.020250) 之下，且 MA3 尚未金叉 MA15
+    - 慢線硬鎖定機制必須一票否決平空 (VETO)，鎖死持倉續抱，吃滿 450 點暴跌大瀑布！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_short = {
+        "symbol": "LOBSTERUSDT",
+        "side": "SHORT",
+        "entry_price": 0.020400,
+        "amount": 50000.0,
+        "lowest_price": 0.020100,
+    }
+
+    bars = []
+    base_p = 0.020400
+    for i in range(35):
+        p = base_p - i * 0.000010
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p + 0.000005, "high": p + 0.000008, "low": p - 0.000008, "close": p - 0.000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000050,
+            "kc_middle": p, "kc_upper": p + 0.000080, "kc_lower": p - 0.000080,
+        })
+
+    # 06:49 跌破軌道大陰 K
+    bars[-2]["open"] = 0.020200
+    bars[-2]["high"] = 0.020210
+    bars[-2]["low"] = 0.020110
+    bars[-2]["close"] = 0.020120  # 跌破 kc_lower (0.020150)
+    bars[-2]["kc_lower"] = 0.020150
+
+    # 06:50 微幅小陽 K 反彈: 收 0.020150，低於 MA15 慢線 0.020250
+    bars[-1]["open"] = 0.020120
+    bars[-1]["high"] = 0.020160
+    bars[-1]["low"] = 0.020115
+    bars[-1]["close"] = 0.020150
+    bars[-1]["kc_lower"] = 0.020140
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"LOBSTERUSDT": pos_short}
+            self.position_meta = {}
+            self.channel_exit_frames = {"LOBSTERUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="LOBSTERUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.020150,
+    )
+
+    assert res.get("status") == "HOLD"
+    assert res.get("reason") == "TREND_LOCK_MASTER_LOCK_SHORT"
+    assert close_mock.called is False
+    assert open_mock.called is False
+
 
 
 

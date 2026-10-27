@@ -30,9 +30,9 @@ def check_pivot_status(
     kc_upper, kc_lower, prev_kc_upper, prev_kc_lower, current_atr,
 ):
     """
-    全域真峰谷唯一驗證裁決官 (波段狀態機核心 - 方案 B):
-    - is_true_bottom: MA3向上金叉MA15 / 軌外大陽吞噬 / 低位長下影天地針 / 1.8 ATR爆發大陽線
-    - is_true_peak: MA3向下死叉MA15 / 軌外大陰吞噬 / 高位長上影天地針 / 1.8 ATR崩盤大陰線
+    全域真峰谷唯一驗證裁決官 (波段狀態機核心 - 方案 B 慢線硬鎖定修復版):
+    - is_true_bottom: MA3向上金叉MA15 OR (軌外大陽吞噬 / 低位天地針 / 1.8 ATR爆發大陽線 且 收盤價實體站上 MA15)
+    - is_true_peak: MA3向下死叉MA15 OR (軌外大陰吞噬 / 高位天地針 / 1.8 ATR崩盤大陰線 且 收盤價實體跌破 MA15)
     """
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
@@ -44,21 +44,23 @@ def check_pivot_status(
     lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
     atr_val = float(current_atr or 0.0)
 
-    # 🟢【真谷底驗證】(代表下跌趨勢正式結束 -> 18:15 類型的秒級平空兼反手開多)
+    # 🟢【真谷底硬性條件】：必須「MA3 金叉 MA15」OR「極限形態且收盤價實體站上 MA15 慢線」
     is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
-    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
-    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
-    is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
+    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close > ma15_curr)
+    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower) and (curr_close > ma15_curr)
+    is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > curr_open) and (curr_close > ma15_curr)
 
-    is_true_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_bottom
+    # ⚠️ 只要收盤價低於 MA15 慢線 (curr_close < ma15_curr) 且未金叉，一律視為假反彈，絕對禁止平空！
+    is_true_bottom = is_ma3_golden_cross or (is_engulfing_bottom or is_pinbar_bottom or is_spike_bottom)
 
-    # 🔴【真峰頂驗證】(代表上漲趨勢正式結束 -> 19:05 類型的秒級平多兼反手開空)
+    # 🔴【真峰頂硬性條件】：必須「MA3 死叉 MA15」OR「極限形態且收盤價實體跌破 MA15 慢線」
     is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
-    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body)
-    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
-    is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
+    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close < ma15_curr)
+    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper) and (curr_close < ma15_curr)
+    is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < curr_open) and (curr_close < ma15_curr)
 
-    is_true_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_spike_peak
+    # ⚠️ 只要收盤價高於 MA15 慢線 (curr_close > ma15_curr) 且未死叉，一律視為假回踩，絕對禁止平多！
+    is_true_peak = is_ma3_dead_cross or (is_engulfing_peak or is_pinbar_peak or is_spike_peak)
 
     return is_true_bottom, is_true_peak
 
