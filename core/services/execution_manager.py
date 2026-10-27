@@ -265,30 +265,9 @@ class ExecutionManager:
             pos_leverage = float(current_position.get("leverage") or 1.0)
 
             # 核對是否具備可信報價
+            # 核對是否具備可信報價 (方案 B 無硬止損版: 徹底取消固定點位硬止損割肉)
             if quote and quote > 0 and pos_entry > 0:
-                pnl_pct = (quote - pos_entry) / pos_entry if pos_side == "LONG" else (pos_entry - quote) / pos_entry
-                unrealized_roe = pnl_pct * pos_leverage
-
-                # 保守估計 3 ATR 止損距離
-                fallback_atr = pos_entry * 0.015
-                hard_sl_threshold = -3.0 * (fallback_atr / pos_entry)
-
-                # 若虧損超過硬止損底線，立即緊急平倉避險
-                if pnl_pct <= hard_sl_threshold or unrealized_roe <= -0.5:
-                    logger.critical(
-                        f"🚨 [EMERGENCY_DATA_OUTAGE_CLOSE] {symbol} 快照失效期間觸發緊急硬止損！"
-                        f"pnl_pct={pnl_pct:.2%}, roe={unrealized_roe:.2%}"
-                    )
-                    success = await cls.close_position(
-                        account=account,
-                        symbol=symbol,
-                        price=quote,
-                        reason="CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
-                        meta={"cause": "Snapshot failed with emergency loss threshold breach"}
-                    )
-                    return {"status": "EMERGENCY_EXIT_EXECUTED", "symbol": symbol, "success": success}
-
-                logger.info(f"🛡️ [DATA_OUTAGE_HOLD] {symbol} 資料快照失敗，但即時報價未觸發緊急硬止損 (roe={unrealized_roe:.2%})，依交易所原生保護單守護持倉")
+                logger.info(f"🛡️ [DATA_OUTAGE_HOLD] {symbol} 資料快照失敗，依真波段狀態機守護持倉，取消固定硬止損割肉！")
                 return {"status": "DATA_OUTAGE_HOLD", "symbol": symbol, "quote": quote}
             else:
                 logger.critical(f"🛑 [CRITICAL_DATA_OUTAGE] {symbol} 快照與即時報價均失效！嚴禁增加風險，請依交易所原生止損守護持倉")
@@ -431,9 +410,10 @@ class ExecutionManager:
             reason = ""
             meta = {}
 
-            # 🎯 方案 B 核心狀態機：
+            # 🎯 方案 B 核心狀態機 (無硬止損版 - 完全取消固定價位硬止損):
             # 🔴 空頭持倉中 (SHORT)：
             if pos_side == "SHORT":
+                # 完全取消固定價位硬止損 (No Rigid Stop Loss)
                 if is_true_bottom or is_structure_broken_long:
                     # 觸發真谷底：18:15 類型的秒級【平空 ＋ 反手開多】
                     should_exit = True
@@ -443,26 +423,17 @@ class ExecutionManager:
                         f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單捕獲真谷底！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
                         f"第一優先級秒級觸發市價平空兼反手開多修正方向！"
                     )
-                elif is_profit_lock:
-                    should_exit = True
-                    reason = gate_reason
-                    meta = gate_meta
-                    logger.info(f"💰 [PROFIT_LOCK_TRIGGER] {symbol} 獲利展開觸發鎖利離場: {reason}")
-                elif is_absolute_safety:
-                    should_exit = True
-                    reason = gate_reason
-                    meta = gate_meta
-                    logger.info(f"🚨 [ABSOLUTE_SAFETY_TRIGGER] {symbol} 觸發極端避險離場: {reason}")
                 else:
-                    # 震盪假峰谷 (未金叉、無極限訊號)：一票否決，強制續抱空單！
+                    # 震盪假谷底 (收盤價仍在 MA15 下方、未金叉)：一票否決，強制續抱空單！
                     logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單震盪假峰谷 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單震盪假谷底 (close={c_c:.6f}, slope={kc_slope:.6f})，"
                         f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
                     )
                     return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
             # 🟢 多頭持倉中 (LONG)：
             elif pos_side == "LONG":
+                # 完全取消固定價位硬止損 (No Rigid Stop Loss)
                 if is_true_peak or is_structure_broken_short:
                     # ⚠️ 19:05 峰頂死叉成立當下，秒級【平多 ＋ 即刻在頂部起跌點開空】：
                     should_exit = True
@@ -472,20 +443,10 @@ class ExecutionManager:
                         f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
                         f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
                     )
-                elif is_profit_lock:
-                    should_exit = True
-                    reason = gate_reason
-                    meta = gate_meta
-                    logger.info(f"💰 [PROFIT_LOCK_TRIGGER] {symbol} 獲利展開觸發鎖利離場: {reason}")
-                elif is_absolute_safety:
-                    should_exit = True
-                    reason = gate_reason
-                    meta = gate_meta
-                    logger.info(f"🚨 [ABSOLUTE_SAFETY_TRIGGER] {symbol} 觸發極端避險離場: {reason}")
                 else:
-                    # 震盪假峰谷 (未死叉、無極限訊號)：一票否決，強制續抱多單！
+                    # 震盪假峰頂 (收盤價仍在 MA15 上方、未死叉)：一票否決，強制續抱多單！
                     logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰谷 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰頂 (close={c_c:.6f}, slope={kc_slope:.6f})，"
                         f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
                     )
                     return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
@@ -549,15 +510,13 @@ class ExecutionManager:
                     logger.info(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！(entry_type={flip_entry_type})")
                     print(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！", flush=True)
 
-                    flip_stop_loss = (
-                        exit_price - 3.0 * atr_v if flip_side == "LONG"
-                        else exit_price + 3.0 * atr_v
-                    )
+                    flip_stop_loss = None  # 方案 B 無硬止損版: 完全取消固定價位硬止損 (No Rigid Stop Loss)
                     flip_meta = {
                         "side": flip_side,
                         "direction_override": True,
                         "entry_type": flip_entry_type,
-                        "stop_loss_price": flip_stop_loss,
+                        "no_rigid_sl": True,
+                        "stop_loss_price": None,
                         "upstream_entry_gate_authorized": True,
                         "allow_kc_internal": True,
                         "strategy_mode": "AGILE_MOMENTUM",
@@ -590,8 +549,75 @@ class ExecutionManager:
                 logger.debug(f"🛡️ [HOLD] {symbol} {reason}")
                 return {"status": "HOLD", "symbol": symbol, "reason": reason}
 
-        # 3. 若無持倉或剛執行平倉：直通評估開倉或即刻反手開倉 (Flip Position)
+        # =========================================================================
+        # 3. ⚪ 無持倉狀態 (NONE)：方案 B 嚴禁半山腰/衝破 KC 上下軌後追高/追空，僅允許真谷底/真峰頂開倉
+        # =========================================================================
         if not has_position:
+            lookback_p = min(len(raw_df), 15) if raw_df is not None and isinstance(raw_df, pd.DataFrame) else 0
+            if lookback_p >= 2:
+                prior_lows = raw_df['low'].iloc[-lookback_p:-1]
+                prior_highs = raw_df['high'].iloc[-lookback_p:-1]
+                swing_low_p = float(prior_lows.min()) if len(prior_lows) > 0 else c_l
+                swing_high_p = float(prior_highs.max()) if len(prior_highs) > 0 else c_h
+                rise_from_low = c_c - swing_low_p
+                drop_from_high = swing_high_p - c_c
+            else:
+                rise_from_low = 0.0
+                drop_from_high = 0.0
+
+            is_chasing_high = bool((atr_v > 0 and rise_from_low >= 1.5 * atr_v and c_c >= (kc_u - 0.2 * atr_v)) or (c_c >= kc_u))
+            is_chasing_low = bool((atr_v > 0 and drop_from_high >= 1.5 * atr_v and c_c <= (kc_lo + 0.2 * atr_v)) or (c_c <= kc_lo))
+
+            # 嚴禁在半山腰或衝破 KC 上下軌後追高/追空！
+            if (is_true_bottom or is_structure_broken_long) and not is_chasing_high:
+                candidate_side = "LONG"
+                entry_type = "PIVOT_LONG"
+            elif (is_true_peak or is_structure_broken_short) and not is_chasing_low:
+                candidate_side = "SHORT"
+                entry_type = "PIVOT_SHORT"
+            else:
+                # 震盪、半山腰或衝破 KC 上下軌追高追空：一律硬性攔截！
+                logger.info(
+                    f"🛡️ [ANTI_CHASING_VETO] {symbol} 無持倉 (is_bottom={is_true_bottom}, is_peak={is_true_peak}, chasing_high={is_chasing_high}, chasing_low={is_chasing_low})，"
+                    f"嚴禁在半山腰或衝破 KC 上下軌後追高/追空！一票否決硬性攔截！"
+                )
+                return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_CHASING_WAIT_PIVOT"}
+
+            logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲真峰谷轉折！發起 {candidate_side} 開倉 ({entry_type})")
+            print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
+            entry_meta = {
+                "side": candidate_side,
+                "direction_override": True,
+                "entry_type": entry_type,
+                "no_rigid_sl": True,
+                "stop_loss_price": None,
+                "upstream_entry_gate_authorized": True,
+                "allow_kc_internal": True,
+                "strategy_mode": "AGILE_MOMENTUM",
+                "raw_df": klines_df,
+                "source": f"UNIFIED_PIPELINE|{entry_type}",
+                "atr": atr_v,
+            }
+            raw_df_instance = entry_meta.get("raw_df")
+            if hasattr(raw_df_instance, "attrs"):
+                for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
+                    raw_df_instance.attrs[k] = entry_meta.get(k, True)
+
+            open_success = await cls.open_position(
+                engine_or_account=engine_or_account,
+                symbol=symbol,
+                side=candidate_side,
+                price=curr_quote,
+                reason=f"PivotEntry:{entry_type}",
+                meta=entry_meta,
+            )
+            if open_success:
+                logger.info(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！")
+                print(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！", flush=True)
+                return {"status": "SUCCESS_ENTRY", "symbol": symbol, "side": candidate_side, "entry_type": entry_type}
+            return {"status": "ENTRY_FAILED", "symbol": symbol, "side": candidate_side}
+
+        if False and not has_position:
             # 偵測候選方向訊號 (大週期順勢原則：多頭大週期只看多、空頭大週期只看空，絕不頻繁多空互反)
             candidate_signal = None
             ma5_curr = float(market_data.curr_k.get("ma5", market_data.current_price))
@@ -1679,14 +1705,17 @@ class ExecutionManager:
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
             requested_sl = (meta or {}).get("stop_loss_price")
-            if requested_sl is not None:
+            no_rigid_sl = bool((meta or {}).get("no_rigid_sl"))
+            if requested_sl is not None and not no_rigid_sl:
                 requested_sl = float(requested_sl)
                 if (not math.isfinite(requested_sl)
                         or (str(side).upper() == "LONG" and requested_sl >= price)
                         or (str(side).upper() == "SHORT" and requested_sl <= price)):
                     logger.warning("[EXECUTION] %s invalid whitelist stop; fail closed", symbol)
                     return False
-            if str(side).upper() == "LONG":
+            if no_rigid_sl:
+                initial_sl = None  # 方案 B 無硬止損版: 完全取消固定價位硬止損 (No Rigid Stop Loss)
+            elif str(side).upper() == "LONG":
                 initial_sl = requested_sl if requested_sl is not None else max(0.0, price - 3.0 * atr)
             else:
                 initial_sl = requested_sl if requested_sl is not None else price + 3.0 * atr

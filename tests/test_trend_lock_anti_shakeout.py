@@ -1547,6 +1547,73 @@ async def test_lobster_0650_micro_bounce_veto_hold_short():
     assert open_mock.called is False
 
 
+@pytest.mark.anyio
+async def test_scheme_b_idle_pivot_long_open_no_rigid_sl():
+    """
+    【方案 B 最高決策驗證】無持倉時捕獲真谷底金叉開多，且完全取消固定價位硬止損：
+    1. 帳戶無持倉 (NONE)
+    2. 18:15 在低位捕獲 MA3 金叉 MA15 (真谷底確立)
+    3. 系統秒級開多 (PIVOT_LONG)，帶入 direction_override=True，stop_loss_price=None (No Rigid Stop Loss)！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    bars = []
+    base_p = 0.0043000
+    for i in range(35):
+        p = base_p - i * 0.000001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p + 0.000005, "high": p + 0.000015, "low": p - 0.000015, "close": p - 0.000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000015,
+            "kc_middle": p, "kc_upper": p + 0.000035, "kc_lower": p - 0.000035,
+        })
+
+    # 18:15 谷底金叉棒: 前棒 ma3 <= ma15, 當棒放量強陽上穿 ma15
+    bars[-2]["close"] = 0.0042650
+    bars[-2]["open"] = 0.0042700
+    bars[-2]["low"] = 0.0042600
+    bars[-2]["high"] = 0.0042710
+
+    bars[-1]["open"] = 0.0042650
+    bars[-1]["close"] = 0.0042850
+    bars[-1]["high"] = 0.0042880
+    bars[-1]["low"] = 0.0042640
+    bars[-1]["kc_upper"] = 0.0043200
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {}
+            self.position_meta = {}
+            self.channel_exit_frames = {}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.0042850,
+    )
+
+    assert res.get("status") == "SUCCESS_ENTRY"
+    assert res.get("side") == "LONG"
+    assert res.get("entry_type") == "PIVOT_LONG"
+    assert open_mock.called is True
+    open_kwargs = open_mock.call_args.kwargs
+    assert open_kwargs["side"] == "LONG"
+    assert open_kwargs["meta"]["entry_type"] == "PIVOT_LONG"
+    assert open_kwargs["meta"]["direction_override"] is True
+    assert open_kwargs["meta"]["no_rigid_sl"] is True
+    assert open_kwargs["meta"]["stop_loss_price"] is None
+
+
+
 
 
 
