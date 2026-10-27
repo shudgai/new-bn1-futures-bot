@@ -101,21 +101,23 @@ def evaluate_market_blacklist(
         cross = (signs * signs.shift(1) < 0)
         low_amp = pd.concat([delta.abs(), delta.shift(1).abs()], axis=1).max(axis=1) < 0.5 * atr
         checks["ma3_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
-        if checks["ma3_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
+        if not is_breakout and checks["ma3_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
             return True, "VETO_MA3_KC_MIDLINE_CHOP", checks
 
         # Flat short-term mean or channel basis.
         ma3_delta_pct = abs(float(ma3.iloc[-1] - ma3.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma3.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         checks.update(ma3_net_slope_pct=ma3_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
-        if ma3_delta_pct < SLOPE_FLAT_PCT or mid_delta_pct < SLOPE_FLAT_PCT:
+        if not is_breakout and (ma3_delta_pct < SLOPE_FLAT_PCT or mid_delta_pct < SLOPE_FLAT_PCT):
             return True, "VETO_FLAT_MA3_OR_KC_MIDLINE", checks
 
-        # MA3/MA15 whipsaw count over the analysis window.
+        # MA3/MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
         spread = ma3 - ma15
-        ma_crossings = int((spread * spread.shift(1) < 0).tail(LOOKBACK).sum())
-        checks["ma3_ma15_crossings"] = ma_crossings
-        if ma_crossings >= MAX_MA_CROSSINGS:
+        recent_crossings = int((spread * spread.shift(1) < 0).tail(8).sum())
+        total_crossings = int((spread * spread.shift(1) < 0).tail(LOOKBACK).sum())
+        checks["ma3_ma15_crossings"] = total_crossings
+        checks["ma3_ma15_recent_crossings"] = recent_crossings
+        if not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4):
             return True, "VETO_MA3_MA15_CHOP", checks
 
         # Sudden KC expansion (current width versus prior mean, excluding current bar).

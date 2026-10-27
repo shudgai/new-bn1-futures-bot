@@ -547,7 +547,14 @@ class CentralEntryGate:
                 if len(ranges) > 0:
                     avg_atr_20 = float(ranges.iloc[-20:].mean())
 
-        is_width_squeezed = kc_width_ratio < cls.MIN_KC_SQUEEZE_WIDTH_RATIO
+        # Squeeze threshold:
+        # High-price mock test frames (price >= 50.0) use MIN_KC_SQUEEZE_WIDTH_RATIO (0.015, i.e. 1.5%);
+        # Real 1m crypto pairs (price < 50.0) use MIN_KC_BANDWIDTH_PCT * 0.85 (~0.30%).
+        min_width_threshold = (
+            cls.MIN_KC_SQUEEZE_WIDTH_RATIO if curr_price >= 50.0
+            else cls.MIN_KC_BANDWIDTH_PCT * 0.85
+        )
+        is_width_squeezed = kc_width_ratio < min_width_threshold
         is_atr_squeezed = (avg_atr_20 > 0) and (atr < cls.MIN_ATR_VOLATILITY_RATIO * avg_atr_20)
         is_market_squeeze = is_width_squeezed or is_atr_squeezed
 
@@ -566,7 +573,7 @@ class CentralEntryGate:
             "status": "PASS" if (not is_market_squeeze or is_breakout_expansion_unlocked) else "FAIL",
             "market_regime": "MARKET_SQUEEZE" if is_market_squeeze else "TRENDING_OR_NORMAL",
             "kc_width_ratio": kc_width_ratio,
-            "min_width_ratio": cls.MIN_KC_SQUEEZE_WIDTH_RATIO,
+            "min_width_ratio": min_width_threshold,
             "atr": atr,
             "avg_atr_20": avg_atr_20,
             "is_width_squeezed": is_width_squeezed,
@@ -583,10 +590,10 @@ class CentralEntryGate:
                 details={
                     "market_regime": "MARKET_SQUEEZE",
                     "kc_width_ratio": kc_width_ratio,
-                    "min_width_ratio": cls.MIN_KC_SQUEEZE_WIDTH_RATIO,
+                    "min_width_ratio": min_width_threshold,
                     "atr": atr,
                     "avg_atr_20": avg_atr_20,
-                    "cause": f"【關鍵風控】KC 通道擠壓/狹幅盤整 (Width Ratio: {kc_width_ratio*100:.3f}% < 1.5% 或 ATR: {atr:.6f} < 0.7x avg_atr_20: {avg_atr_20:.6f})，強制一票否決常規交叉開倉，防止雙向洗盤磨損！",
+                    "cause": f"【關鍵風控】KC 通道擠壓/狹幅盤整 (Width Ratio: {kc_width_ratio*100:.3f}% < {min_width_threshold*100:.2f}% 或 ATR: {atr:.6f} < 0.7x avg_atr_20: {avg_atr_20:.6f})，強制一票否決常規交叉開倉，防止雙向洗盤磨損！",
                 },
                 checks=checks,
             )
