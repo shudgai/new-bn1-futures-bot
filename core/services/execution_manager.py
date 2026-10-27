@@ -23,26 +23,12 @@ logger = logging.getLogger("ExecutionManager")
 
 
 # =========================================================================
-# 🟢 1. 多頭持倉平倉判定 (峰頂生成 OR 結構破壞 -> 平多離場)
+# 🟢 1. 多頭持倉平倉判定 (未見真峰頂且未破壞結構，絕對一票否決平多)
 # =========================================================================
 def should_exit_long(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr,
-    raw_df=None, position=None, swing_low_price=None,
+    swing_low_price=None, raw_df=None, position=None,
 ):
-    # 計算本波上漲的真實波段起漲低點 (Swing Low / Bottom Pivot)
-    if swing_low_price is None:
-        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
-        lowest_p = float((position or {}).get("lowest_price", 0.0) or 0.0)
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            lookback = min(len(raw_df), 45)
-            swing_low_price = float(raw_df['low'].iloc[-lookback:].min())
-        else:
-            swing_low_price = float(prev_k.get('low', curr_k.get('low', 0.0)))
-        if entry_price > 0:
-            swing_low_price = min(swing_low_price, entry_price)
-        if lowest_p > 0:
-            swing_low_price = min(swing_low_price, lowest_p)
-
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
     curr_body = abs(curr_close - curr_open)
@@ -51,63 +37,53 @@ def should_exit_long(
     prev_body = abs(prev_close - prev_open)
     upper_wick = float(curr_k['high']) - max(curr_open, curr_close)
     atr_val = float(current_atr or 0.0)
-    m3_c, m3_p = float(ma3_curr), float(ma3_prev)
-    m15_c, m15_p = float(ma15_curr), float(ma15_prev)
-    kc_u, p_kc_u = float(kc_upper), float(prev_kc_upper)
 
-    # 【峰頂門檻 1】：MA3 快線正式向下死叉 MA15 慢線
-    is_ma3_dead_cross = (m3_c < m15_c) and (m3_p >= m15_p)
-    
-    # 【峰頂門檻 2】：極限見頂反轉 (曾衝出 KC 上軌 + 軌外大陰吞噬 >= 60% OR 高位長上影天地針)
-    is_engulfing_peak = (
-        (prev_close > p_kc_u)
-        and (curr_close < curr_open)
-        and (curr_body >= 0.6 * prev_body)
-    )
-    is_pinbar_peak = (
-        (upper_wick >= 1.2 * curr_body)
-        and (curr_close < curr_open)
-        and (float(curr_k['high']) >= kc_u)
-    )
-    is_peak_signal = is_engulfing_peak or is_pinbar_peak
+    # 判斷是否為【真峰頂】（4 大硬性條件之一）
+    # 峰頂 A: MA3 死叉 MA15 (動能真正轉空)
+    is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
+    # 峰頂 B: 極限軌外大陰吞噬
+    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body)
+    # 峰頂 C: 高位天地針 Pinbar
+    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
+    # 峰頂 D: 1.8 ATR 崩盤熔斷 (單根大陰實體貫穿 MA15 慢線)
+    is_crash_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
 
-    # 【峰頂門檻 3】：大瀑布/崩盤熔斷 (單根大陰線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
-    is_crash_circuit_breaker = (
-        (curr_body >= 1.8 * atr_val)
-        and (curr_close < m15_c)
-    )
+    is_real_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_crash_circuit_breaker
 
-    # 【峰頂門檻 4】：收盤價實體跌破本波波段起漲低點 Swing Low (真正的結構破壞)
-    is_structure_broken = (curr_close < float(swing_low_price)) and (curr_close < m15_c)
+    # 計算本波波段起漲谷底低點 swing_low_price (若未提供)
+    if swing_low_price is None:
+        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        lowest_p = float((position or {}).get("lowest_price", 0.0) or 0.0)
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            prior_df = raw_df.iloc[:-1]
+            lookback = min(len(prior_df), 45)
+            swing_low_price = float(prior_df['low'].iloc[-lookback:].min())
+        else:
+            swing_low_price = float(prev_k.get('low', curr_k.get('low', 0.0)))
+        if entry_price > 0:
+            swing_low_price = min(swing_low_price, entry_price)
+        if lowest_p > 0:
+            swing_low_price = min(swing_low_price, lowest_p)
 
-    # ⚠️ 【關鍵鎖定】：未滿足四大硬門檻之一，平多邏輯必須強制 return False！高位任何小幅回踩一律續抱！
-    if not (is_structure_broken or is_ma3_dead_cross or is_peak_signal or is_crash_circuit_breaker):
+    # 判斷是否為【最終多頭結構破壞】(收盤價跌破波段谷底前低且跌破 MA15 慢線)
+    is_structure_broken = (curr_close < float(swing_low_price)) and (curr_close < ma15_curr)
+
+    # ⚠️ 關鍵鋼鐵鎖定：
+    # 只要未出現真峰頂 (is_real_peak) 且未破壞結構 (is_structure_broken)，
+    # 中間任何微幅回踩小紅 K，平多邏輯【必須直接 return False】！強制持倉續抱！
+    if not (is_real_peak or is_structure_broken):
         return False
 
-    return True  # 符合硬性離場門檻，執行平多
+    return True  # 觸發真峰頂或結構破壞，允許平多離場
 
 
 # =========================================================================
-# 🔴 2. 空頭持倉平倉判定 (未滿足硬性離場門檻，絕對一票否決平空)
+# 🔴 2. 空頭持倉平倉判定 (未見真谷底且未破壞結構，絕對一票否決平空)
 # =========================================================================
 def should_exit_short(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
-    raw_df=None, position=None, swing_high_price=None,
+    swing_high_price=None, raw_df=None, position=None,
 ):
-    # 計算本波下跌的真實波段起跌高點 (Swing High / Top Pivot)
-    if swing_high_price is None:
-        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
-        highest_p = float((position or {}).get("highest_price", 0.0) or 0.0)
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            lookback = min(len(raw_df), 45)
-            swing_high_price = float(raw_df['high'].iloc[-lookback:].max())
-        else:
-            swing_high_price = float(prev_k.get('high', curr_k.get('high', 0.0)))
-        if entry_price > 0:
-            swing_high_price = max(swing_high_price, entry_price)
-        if highest_p > 0:
-            swing_high_price = max(swing_high_price, highest_p)
-
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
     curr_body = abs(curr_close - curr_open)
@@ -116,42 +92,44 @@ def should_exit_short(
     prev_body = abs(prev_close - prev_open)
     lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
     atr_val = float(current_atr or 0.0)
-    m3_c, m3_p = float(ma3_curr), float(ma3_prev)
-    m15_c, m15_p = float(ma15_curr), float(ma15_prev)
-    kc_l, p_kc_l = float(kc_lower), float(prev_kc_lower)
 
-    # 門檻 1：收盤價實體突破本波下跌的波段高點 Swing High (真正的結構破壞)
-    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > m15_c)
+    # 判斷是否為【真谷底】（4 大硬性條件之一）
+    # 谷底 A: MA3 金叉 MA15 (動能真正轉多)
+    is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
+    # 谷底 B: 極限軌外大陽吞噬
+    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
+    # 谷底 C: 低位下刺針 Pinbar
+    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
+    # 谷底 D: 1.8 ATR 爆發熔斷 (單根大陽實體貫穿 MA15 慢線)
+    is_spike_circuit_breaker = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
 
-    # 門檻 2：MA3 快線正式向上金叉 MA15 慢線
-    is_ma3_golden_cross = (m3_c > m15_c) and (m3_p <= m15_p)
-    
-    # 門檻 3：極限見底 (價格曾衝出 KC 下軌 + 軌外大陽吞噬 >= 60% OR 長下影刺針)
-    is_engulfing_bottom = (
-        (prev_close < p_kc_l)
-        and (curr_close > curr_open)
-        and (curr_body >= 0.6 * prev_body)
-    )
-    is_pinbar_bottom = (
-        (lower_wick >= 1.2 * curr_body)
-        and (curr_close > curr_open)
-        and (float(curr_k['low']) <= kc_l)
-    )
-    is_bottom_signal = is_engulfing_bottom or is_pinbar_bottom
+    is_real_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_circuit_breaker
 
-    # 門檻 4：大爆發熔斷 (單根大陽線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
-    is_spike_circuit_breaker = (
-        (curr_body >= 1.8 * atr_val)
-        and (curr_close > m15_c)
-    )
+    # 計算本波波段起跌高點 swing_high_price (若未提供)
+    if swing_high_price is None:
+        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        highest_p = float((position or {}).get("highest_price", 0.0) or 0.0)
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            prior_df = raw_df.iloc[:-1]
+            lookback = min(len(prior_df), 45)
+            swing_high_price = float(prior_df['high'].iloc[-lookback:].max())
+        else:
+            swing_high_price = float(prev_k.get('high', curr_k.get('high', 0.0)))
+        if entry_price > 0:
+            swing_high_price = max(swing_high_price, entry_price)
+        if highest_p > 0:
+            swing_high_price = max(swing_high_price, highest_p)
 
-    # ⚠️ 【關鍵鎖定】：
-    # 只要 (curr_close < ma15_curr) 且未滿足上述 1/2/3/4 任一硬門檻，
-    # 平空邏輯【必須強制 return False】！嚴禁在低位小綠 K 當下平倉！
-    if not (is_structure_broken or is_ma3_golden_cross or is_bottom_signal or is_spike_circuit_breaker):
+    # 判斷是否為【最終空頭結構破壞】(收盤價突破波段起跌前高且突破 MA15 慢線)
+    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > ma15_curr)
+
+    # ⚠️ 關鍵鋼鐵鎖定：
+    # 只要未出現真谷底 (is_real_bottom) 且未破壞結構 (is_structure_broken)，
+    # 中間任何微幅回踩/橫盤小綠 K，平空邏輯【必須直接 return False】！強制持倉續抱！
+    if not (is_real_bottom or is_structure_broken):
         return False
 
-    return True  # 符合硬性離場門檻，執行平空
+    return True  # 觸發真谷底或結構破壞，允許平空離場
 
 
 class ExecutionManager:

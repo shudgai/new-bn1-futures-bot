@@ -618,5 +618,133 @@ def test_pepe_1632_low_level_consolidation_veto_hold_short():
     assert "TREND_LOCK_ACTIVE" in str(meta.get("skipped"))
 
 
+def test_dual_defense_should_exit_short_all_branches():
+    """
+    驗證 should_exit_short 的雙重防線全分支：
+    - 谷底 A (MA3 金叉 MA15) -> True
+    - 谷底 B (軌外大陽吞噬) -> True
+    - 谷底 C (低位下刺針 Pinbar) -> True
+    - 谷底 D (1.8 ATR 爆發熔斷) -> True
+    - 最終結構破壞 (突破 swing_high 且突破 MA15) -> True
+    - 微幅回踩小陽 K (未滿足任一條件) -> 強制 False
+    """
+    from core.services.execution_manager import should_exit_short
+
+    base_k = {"open": 10.0, "high": 10.1, "low": 9.9, "close": 10.0}
+    prev_k = {"open": 10.2, "high": 10.3, "low": 9.8, "close": 9.9}
+
+    # 1. 谷底 A: MA3 金叉 MA15
+    assert should_exit_short(
+        curr_k={"open": 10.0, "high": 10.1, "low": 9.9, "close": 10.05},
+        prev_k={"open": 10.1, "high": 10.2, "low": 9.9, "close": 10.0},
+        ma3_curr=10.05, ma3_prev=9.95, ma15_curr=10.00, ma15_prev=10.00,
+        kc_lower=9.5, prev_kc_lower=9.5, current_atr=0.5, swing_high_price=12.0,
+    ) is True
+
+    # 2. 谷底 B: 軌外大陽吞噬 (前根收在 kc_lower 下方，當根陽線吞噬 60% 以上)
+    assert should_exit_short(
+        curr_k={"open": 9.3, "high": 9.8, "low": 9.3, "close": 9.8}, # body=0.5
+        prev_k={"open": 9.9, "high": 10.0, "low": 9.3, "close": 9.4}, # close < prev_kc_lower(9.5), body=0.5
+        ma3_curr=9.5, ma3_prev=9.6, ma15_curr=9.9, ma15_prev=10.0,
+        kc_lower=9.5, prev_kc_lower=9.5, current_atr=0.5, swing_high_price=12.0,
+    ) is True
+
+    # 3. 谷底 C: 低位下刺針 Pinbar (lower_wick >= 1.2 * body, low <= kc_lower, close > open)
+    assert should_exit_short(
+        curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # body=0.1, lower_wick=0.4 >= 1.2*0.1, low <= 9.2
+        prev_k=base_k,
+        ma3_curr=9.5, ma3_prev=9.6, ma15_curr=9.9, ma15_prev=10.0,
+        kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
+    ) is True
+
+    # 4. 谷底 D: 1.8 ATR 爆發熔斷 (body >= 1.8 * atr 且 close > ma15)
+    assert should_exit_short(
+        curr_k={"open": 9.0, "high": 10.1, "low": 9.0, "close": 10.0}, # body=1.0 >= 1.8*0.5=0.9, close=10.0 > ma15=9.8
+        prev_k=base_k,
+        ma3_curr=9.7, ma3_prev=9.8, ma15_curr=9.8, ma15_prev=9.9, # ma3 未金叉 ma15
+        kc_lower=8.5, prev_kc_lower=8.5, current_atr=0.5, swing_high_price=12.0,
+    ) is True
+
+    # 5. 最終結構破壞: 突破 swing_high 且突破 MA15
+    assert should_exit_short(
+        curr_k={"open": 10.5, "high": 11.2, "low": 10.5, "close": 11.1}, # close > swing_high(11.0) 且 close > ma15(10.8)
+        prev_k=base_k,
+        ma3_curr=10.6, ma3_prev=10.7, ma15_curr=10.8, ma15_prev=10.9, # ma3 未金叉 ma15
+        kc_lower=9.0, prev_kc_lower=9.0, current_atr=0.5, swing_high_price=11.0,
+    ) is True
+
+    # 6. 微幅回踩/橫盤小綠 K (未滿足任一門檻) -> 強制 False
+    assert should_exit_short(
+        curr_k={"open": 9.5, "high": 9.6, "low": 9.48, "close": 9.55}, # body=0.05
+        prev_k={"open": 9.6, "high": 9.62, "low": 9.48, "close": 9.50},
+        ma3_curr=9.52, ma3_prev=9.50, ma15_curr=9.80, ma15_prev=9.85, # 未金叉
+        kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
+    ) is False
+
+
+def test_dual_defense_should_exit_long_all_branches():
+    """
+    驗證 should_exit_long 的雙重防線全分支：
+    - 峰頂 A (MA3 死叉 MA15) -> True
+    - 峰頂 B (極限軌外大陰吞噬) -> True
+    - 峰頂 C (高位天地針 Pinbar) -> True
+    - 峰頂 D (1.8 ATR 崩盤熔斷) -> True
+    - 最終結構破壞 (跌破 swing_low 且跌破 MA15) -> True
+    - 微幅回踩小紅 K (未滿足任一條件) -> 強制 False
+    """
+    from core.services.execution_manager import should_exit_long
+
+    base_k = {"open": 10.0, "high": 10.2, "low": 9.9, "close": 10.1}
+
+    # 1. 峰頂 A: MA3 死叉 MA15
+    assert should_exit_long(
+        curr_k={"open": 10.1, "high": 10.15, "low": 9.95, "close": 10.0},
+        prev_k={"open": 10.0, "high": 10.2, "low": 9.9, "close": 10.1},
+        ma3_curr=10.00, ma3_prev=10.10, ma15_curr=10.05, ma15_prev=10.05,
+        kc_upper=10.5, prev_kc_upper=10.5, current_atr=0.5, swing_low_price=8.0,
+    ) is True
+
+    # 2. 峰頂 B: 極限軌外大陰吞噬 (前根衝出 kc_upper，當根大陰吞噬 60% 以上)
+    assert should_exit_long(
+        curr_k={"open": 10.7, "high": 10.7, "low": 10.2, "close": 10.2}, # body=0.5
+        prev_k={"open": 10.1, "high": 10.7, "low": 10.0, "close": 10.6}, # close > prev_kc_upper(10.5), body=0.5
+        ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
+        kc_upper=10.5, prev_kc_upper=10.5, current_atr=0.5, swing_low_price=8.0,
+    ) is True
+
+    # 3. 峰頂 C: 高位天地針 Pinbar (upper_wick >= 1.2 * body, high >= kc_upper, close < open)
+    assert should_exit_long(
+        curr_k={"open": 10.5, "high": 11.0, "low": 10.35, "close": 10.4}, # body=0.1, upper_wick=0.5 >= 1.2*0.1, high >= 10.8
+        prev_k=base_k,
+        ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
+        kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
+    ) is True
+
+    # 4. 峰頂 D: 1.8 ATR 崩盤熔斷 (body >= 1.8 * atr 且 close < ma15)
+    assert should_exit_long(
+        curr_k={"open": 11.0, "high": 11.0, "low": 9.9, "close": 10.0}, # body=1.0 >= 1.8*0.5=0.9, close=10.0 < ma15=10.2
+        prev_k=base_k,
+        ma3_curr=10.4, ma3_prev=10.3, ma15_curr=10.2, ma15_prev=10.1, # ma3 未死叉 ma15
+        kc_upper=11.5, prev_kc_upper=11.5, current_atr=0.5, swing_low_price=8.0,
+    ) is True
+
+    # 5. 最終結構破壞: 跌破 swing_low 且跌破 MA15
+    assert should_exit_long(
+        curr_k={"open": 9.2, "high": 9.2, "low": 8.7, "close": 8.8}, # close < swing_low(8.9) 且 close < ma15(9.5)
+        prev_k=base_k,
+        ma3_curr=9.6, ma3_prev=9.7, ma15_curr=9.5, ma15_prev=9.4, # ma3 未死叉 ma15
+        kc_upper=11.0, prev_kc_upper=11.0, current_atr=0.5, swing_low_price=8.9,
+    ) is True
+
+    # 6. 微幅回踩小紅 K (未滿足任一門檻) -> 強制 False
+    assert should_exit_long(
+        curr_k={"open": 10.5, "high": 10.52, "low": 10.42, "close": 10.45}, # body=0.05
+        prev_k={"open": 10.4, "high": 10.55, "low": 10.38, "close": 10.50},
+        ma3_curr=10.48, ma3_prev=10.50, ma15_curr=10.20, ma15_prev=10.15, # 未死叉
+        kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
+    ) is False
+
+
+
 
 
