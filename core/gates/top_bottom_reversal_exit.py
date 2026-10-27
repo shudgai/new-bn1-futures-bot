@@ -66,7 +66,7 @@ def evaluate_top_bottom_reversal_exit(
         return False, None, meta
 
     closed = _closed_bars(raw_df)
-    if closed is None or len(closed) < 3:
+    if closed is None or len(closed) < 1:
         return False, None, meta
     if any(col not in closed.columns for col in _REQUIRED):
         return False, None, meta
@@ -85,7 +85,7 @@ def evaluate_top_bottom_reversal_exit(
     # Exclude the entry candle and all earlier history. These bars must not
     # satisfy the swing-expansion check or provide the candidate pivot.
     closed = closed[closed["_timestamp_ms"] > entry_ms]
-    if len(closed) < 3:
+    if len(closed) < 1:
         meta["skipped"] = "INSUFFICIENT_POST_ENTRY_CLOSED_BARS"
         return False, None, meta
 
@@ -97,7 +97,7 @@ def evaluate_top_bottom_reversal_exit(
             ma3_series = closes.rolling(window=3).mean()
 
         curr = closed.iloc[-1]
-        prev = closed.iloc[-2]
+        prev = closed.iloc[-2] if len(closed) >= 2 else curr
 
         c_open, c_high, c_low, c_close = (
             float(curr["open"]), float(curr["high"]), float(curr["low"]), float(curr["close"])
@@ -147,103 +147,206 @@ def evaluate_top_bottom_reversal_exit(
     # ==========================
     # 1. 空單檢查：出現「真谷底」（階段 A 超賣/獲利 + 階段 B 連續 2 根收陽且突破 MA3）平空
     # ==========================
-    if side == "SHORT":
-        from core.gates.holding_protection_gate import (
-            TRUE_PIVOT_MIN_CONFIRM_BODY_ATR,
-            TRUE_PIVOT_MIN_REVERSAL_ATR,
-        )
+    # 獲取 MA15 與 MA3 歷史數值
+    ma15_val = float(curr.get("ma15", curr.get("kc_middle", (upper_band + lower_band) / 2.0)))
+    ma15_prev = float(prev.get("ma15", ma15_val))
+    stop_loss_price = float(pos.get("stop_loss_price") or 0.0)
 
+    # ==========================
+    # 0. 緊急大瀑布 / 熔斷斷路器（極端行情防護，最高優先級）
+    # 單根超大實體反向 K 棒（body >= 1.8 * atr）且直接貫穿 MA15 慢線
+    # ==========================
+    if side == "LONG":
+        is_waterfall_dump = (
+            (c_open - c_close >= 1.8 * atr)
+            and (c_open >= ma15_val and c_close < ma15_val)
+        )
+        if is_waterfall_dump:
+            meta["cause"] = f"極端大瀑布崩盤熔斷: 單根大陰棒(body={c_open - c_close:.6f} >= 1.8*ATR)貫穿MA15，緊急離場！"
+            meta["triggers"] = ["EXTREME_WATERFALL_BREAKER"]
+            return True, "EXIT_BY_EXTREME_WATERFALL", meta
+    elif side == "SHORT":
+        is_waterfall_pump = (
+            (c_close - c_open >= 1.8 * atr)
+            and (c_open <= ma15_val and c_close > ma15_val)
+        )
+        if is_waterfall_pump:
+            meta["cause"] = f"極端垂直軋空暴漲熔斷: 單根大陽棒(body={c_close - c_open:.6f} >= 1.8*ATR)貫穿MA15，緊急離場！"
+            meta["triggers"] = ["EXTREME_WATERFALL_BREAKER"]
+            return True, "EXIT_BY_EXTREME_WATERFALL", meta
+
+    # ==========================
+    # 0.5 結構失效平倉（僅在轉折判定失敗時離場）
+    # ==========================
+    if stop_loss_price > 0:
+        if side == "LONG" and c_close < stop_loss_price:
+            meta["cause"] = f"多單結構失效離場: 收盤價(close={c_close:.6f})跌破谷底前根最低點({stop_loss_price:.6f})"
+            meta["triggers"] = ["STRUCTURAL_FAILURE_EXIT"]
+            return True, "STRUCTURAL_FAILURE_EXIT", meta
+        elif side == "SHORT" and c_close > stop_loss_price:
+            meta["cause"] = f"空單結構失效離場: 收盤價(close={c_close:.6f})突破頂部前根最高點({stop_loss_price:.6f})"
+            meta["triggers"] = ["STRUCTURAL_FAILURE_EXIT"]
+            return True, "STRUCTURAL_FAILURE_EXIT", meta
+
+    if len(closed) < 2:
+        meta["skipped"] = "INSUFFICIENT_POST_ENTRY_CLOSED_BARS"
+        return False, None, meta
+
+    # ==========================
+    # 1. 空單檢查：貫徹趨勢鎖定，未達條件 1/2/3/4 絕對禁止平空
+    # ==========================
+    if side == "SHORT":
         lowest_since_entry = min(
             float(pos.get("lowest_price") or entry_p),
             float(closed["low"].min()),
             c_low,
         )
-        max_favorable = entry_p - lowest_since_entry
         min_kc_lower = float(closed["kc_lower"].min()) if "kc_lower" in closed.columns else lower_band
 
-        # 階段 A（進入獲利保護期）：持倉最低價曾灌破 KC 下軌 或 曾獲得大於 1.5 * ATR 的浮盈
-        stage_a_met = (lowest_since_entry <= min_kc_lower) or (max_favorable >= (1.5 * atr))
-        if not stage_a_met:
-            meta["skipped"] = "STAGE_A_NOT_MET: 未曾灌破KC下軌且浮盈未達門檻(1.5*ATR)，禁止猜底平空"
-            return False, None, meta
+        # 價格曾觸及或跌破 KC 下軌
+        touched_lower = (lowest_since_entry <= min_kc_lower) or (p_low <= prev_lower_band) or (c_low <= lower_band)
 
-        # Stage B requires a true three-point valley, not two green pullback bars.
-        pivot_body_mid = (p_open + p_close) / 2.0
-        is_three_point_valley = (
-            p_low < float(closed.iloc[-3]["low"])
-            and p_low < c_low
-            and c_close > c_open
-            and c_close > pivot_body_mid
-            and curr_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * atr
-            and c_close - p_low >= TRUE_PIVOT_MIN_REVERSAL_ATR * atr
+        # 趨勢鎖定 (Trend Lock) 空單四項谷底離場硬門檻：
+        # 條件 1: 谷底 MA3 實體向上金叉 MA15 慢線
+        is_ma3_golden_cross = bool(
+            ma3_curr is not None and ma3_prev is not None
+            and ma3_prev <= ma15_prev and ma3_curr > ma15_val
         )
-        curr_span = max(c_high - c_low, 1e-6)
-        no_upper_wick_rejection = (curr_upper_wick < curr_body) and (curr_upper_wick <= 0.35 * curr_span)
+        # 條件 2: 軌外大陽吞噬 (前根紅 K 跌破下軌，當前大陽線實體吃掉前根 60% 以上，且具備反轉突破動能)
+        is_engulfing_bottom = bool(
+            touched_lower
+            and p_close < prev_lower_band
+            and p_close < p_open
+            and c_close > c_open
+            and prev_body > 0
+            and curr_body >= 0.6 * prev_body
+            and (curr_body >= 0.4 * atr or c_close > p_open or c_close > p_high)
+        )
+        # 條件 3: 低位長下影天地針 (下影線 >= 1.2倍實體，下影線顯著 >= 0.5*ATR，當前收陽，觸及或跌破下軌)
+        is_pinbar_bottom = bool(
+            touched_lower
+            and curr_lower_wick >= 1.2 * curr_body
+            and curr_lower_wick >= 0.5 * atr
+            and c_close > c_open
+            and (c_low <= lower_band or p_low <= prev_lower_band)
+        )
+        # 條件 4: 突破轉折前 K 棒高點結構失效 (結構破位)
+        is_structure_broken_short = bool(
+            touched_lower
+            and c_close > p_high
+            and c_close > c_open
+        )
 
-        if is_three_point_valley and no_upper_wick_rejection:
-            triggers = [
-                f"STAGE_A_OVERSOLD(lowest={lowest_since_entry:.4f}<=lower={min_kc_lower:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
-                f"THREE_POINT_VALLEY(pivot_low={p_low:.4f}<left={float(closed.iloc[-3]['low']):.4f},right={c_low:.4f})",
-                f"BODY_RECLAIM(confirm_close={c_close:.4f}>pivot_body_mid={pivot_body_mid:.4f})",
-                f"SOLID_BODY(upper_wick={curr_upper_wick:.4f}<body={curr_body:.4f})",
-            ]
-            meta["cause"] = f"空單真谷底三點樞紐及反向實體確認，平空鎖利！觸發特徵: {', '.join(triggers)}"
-            meta["triggers"] = triggers
-            return True, CLOSE_SHORT_AT_BOTTOM, meta
-        else:
-            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 尚無三點真谷底或確認棒未以陽線收過樞紐實體中點，視為反抽/回踩"
+        # ⚠️ 關鍵硬性卡死：若收盤價仍低於 MA3 快線 (close <= ma3) 或低於 MA15 慢線 (close <= ma15)，
+        # 且【未滿足】上述 A/B/C/D 任一極限條件，平空邏輯必須直接 return False！強制持倉向下！
+        is_below_ma3_or_ma15 = bool(
+            c_close <= (ma3_curr if ma3_curr is not None else c_close)
+            or c_close <= ma15_val
+        )
+        if is_below_ma3_or_ma15 and not (is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_structure_broken_short):
+            meta["skipped"] = "TREND_LOCK_ACTIVE: 空單未達谷底極限條件(微幅反抽壓制於MA3/MA15)，強制持倉拿滿整波空頭趨勢！"
             return False, None, meta
+
+        if is_ma3_golden_cross:
+            meta["cause"] = f"空單觸發谷底離場 1: MA3 向上金叉 MA15 (ma3={ma3_curr:.6f} > ma15={ma15_val:.6f})，獲利離場！"
+            meta["triggers"] = ["MA3_GOLDEN_CROSS"]
+            return True, CLOSE_SHORT_AT_BOTTOM, meta
+
+        if is_engulfing_bottom:
+            meta["cause"] = f"空單觸發谷底離場 2: 軌外大陽吞噬 (body={curr_body:.6f} >= 0.6*prev={prev_body:.6f})，獲利離場！"
+            meta["triggers"] = ["OUTER_RAIL_ENGULFING"]
+            return True, CLOSE_SHORT_AT_BOTTOM, meta
+
+        if is_pinbar_bottom:
+            meta["cause"] = f"空單觸發谷底離場 3: 低位長下影天地針 (lower_wick={curr_lower_wick:.6f} >= 1.2*body={curr_body:.6f})，獲利離場！"
+            meta["triggers"] = ["PINBAR_BOTTOM"]
+            return True, CLOSE_SHORT_AT_BOTTOM, meta
+
+        if is_structure_broken_short:
+            meta["cause"] = f"空單觸發谷底離場 4: 突破前棒高點結構失效 (close={c_close:.6f} > prev_high={p_high:.6f})，獲利離場！"
+            meta["triggers"] = ["STRUCTURE_BROKEN_BOTTOM"]
+            return True, CLOSE_SHORT_AT_BOTTOM, meta
+
+        meta["skipped"] = "TREND_LOCK_ACTIVE: 空單未達谷底，強制持倉繼續向下走"
+        return False, None, meta
 
     # ==========================
-    # 2. 多單檢查：出現「真峰頂」（階段 A 超買/獲利 + 階段 B 連續 2 根收陰且跌破 MA3）平多
+    # 2. 多單檢查：貫徹趨勢鎖定，未達條件 1/2/3/4 絕對禁止平多
     # ==========================
     elif side == "LONG":
-        from core.gates.holding_protection_gate import (
-            TRUE_PIVOT_MIN_CONFIRM_BODY_ATR,
-            TRUE_PIVOT_MIN_REVERSAL_ATR,
-        )
-
         highest_since_entry = max(
             float(pos.get("highest_price") or entry_p),
             float(closed["high"].max()),
             c_high,
         )
-        max_favorable = highest_since_entry - entry_p
         max_kc_upper = float(closed["kc_upper"].max()) if "kc_upper" in closed.columns else upper_band
 
-        # 階段 A（進入獲利保護期）：持倉最高價曾衝破 KC 上軌 或 曾獲得大於 1.5 * ATR 的浮盈
-        stage_a_met = (highest_since_entry >= max_kc_upper) or (max_favorable >= (1.5 * atr))
-        if not stage_a_met:
-            meta["skipped"] = "STAGE_A_NOT_MET: 未曾衝破KC上軌且浮盈未達門檻(1.5*ATR)，禁止猜頂平多"
-            return False, None, meta
+        # 價格曾觸及或衝出 KC 上軌
+        touched_upper = (highest_since_entry >= max_kc_upper) or (p_high >= prev_upper_band) or (c_high >= upper_band)
 
-        # Mirror the short rule: require a local three-point peak and a bearish
-        # close below the pivot candle's real-body midpoint.
-        pivot_body_mid = (p_open + p_close) / 2.0
-        is_three_point_peak = (
-            p_high > float(closed.iloc[-3]["high"])
-            and p_high > c_high
-            and c_close < c_open
-            and c_close < pivot_body_mid
-            and curr_body >= TRUE_PIVOT_MIN_CONFIRM_BODY_ATR * atr
-            and p_high - c_close >= TRUE_PIVOT_MIN_REVERSAL_ATR * atr
+        # 趨勢鎖定 (Trend Lock) 多單四項峰頂離場硬門檻：
+        # 條件 1: 峰頂 MA3 實體向下死叉 MA15 慢線
+        is_ma3_dead_cross = bool(
+            ma3_curr is not None and ma3_prev is not None
+            and ma3_prev >= ma15_prev and ma3_curr < ma15_val
         )
-        curr_span = max(c_high - c_low, 1e-6)
-        no_lower_wick_rejection = (curr_lower_wick < curr_body) and (curr_lower_wick <= 0.35 * curr_span)
+        # 條件 2: 軌外大陰吞噬 (前根綠 K 衝出上軌，當前大陰線實體吃掉前根 60% 以上，且具備反轉跌破動能)
+        is_engulfing_peak = bool(
+            touched_upper
+            and p_close > prev_upper_band
+            and p_close > p_open
+            and c_close < c_open
+            and prev_body > 0
+            and curr_body >= 0.6 * prev_body
+            and (curr_body >= 0.4 * atr or c_close < p_open or c_close < p_low)
+        )
+        # 條件 3: 高位長上影天地針 (上影線 >= 1.2倍實體，上影線顯著 >= 0.5*ATR，當前收陰，觸及或突破上軌)
+        is_pinbar_peak = bool(
+            touched_upper
+            and curr_upper_wick >= 1.2 * curr_body
+            and curr_upper_wick >= 0.5 * atr
+            and c_close < c_open
+            and (c_high >= upper_band or p_high >= prev_upper_band)
+        )
+        # 條件 4: 跌破轉折前 K 棒低點結構失效 (結構破位)
+        is_structure_broken = bool(
+            touched_upper
+            and c_close < p_low
+            and c_close < c_open
+        )
 
-        if is_three_point_peak and no_lower_wick_rejection:
-            triggers = [
-                f"STAGE_A_OVERBOUGHT(highest={highest_since_entry:.4f}>=upper={max_kc_upper:.4f} or gain={max_favorable:.4f}>=1.5*atr={1.5*atr:.4f})",
-                f"THREE_POINT_PEAK(pivot_high={p_high:.4f}>left={float(closed.iloc[-3]['high']):.4f},right={c_high:.4f})",
-                f"BODY_BREAK(confirm_close={c_close:.4f}<pivot_body_mid={pivot_body_mid:.4f})",
-                f"SOLID_BODY(lower_wick={curr_lower_wick:.4f}<body={curr_body:.4f})",
-            ]
-            meta["cause"] = f"多單真峰頂三點樞紐及反向實體確認，平多鎖利！觸發特徵: {', '.join(triggers)}"
-            meta["triggers"] = triggers
-            return True, CLOSE_LONG_AT_TOP, meta
-        else:
-            meta["skipped"] = "STAGE_B_NOT_CONFIRMED: 尚無三點真峰頂或確認棒未以陰線收破樞紐實體中點，視為回踩/反抽"
+        # ⚠️ 關鍵硬性卡死：若收盤價仍高於 MA3 快線 (close >= ma3) 或高於 MA15 慢線 (close >= ma15)，
+        # 且【未滿足】上述 A/B/C/D 任一極限條件，平多邏輯必須直接 return False！強制持倉續抱！
+        is_above_ma3_or_ma15 = bool(
+            c_close >= (ma3_curr if ma3_curr is not None else c_close)
+            or c_close >= ma15_val
+        )
+        if is_above_ma3_or_ma15 and not (is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_structure_broken):
+            meta["skipped"] = "TREND_LOCK_ACTIVE: 多單未達峰頂極限條件(微幅回踩守穩MA3/MA15)，強制持倉拿滿整波多頭趨勢！"
             return False, None, meta
+
+        if is_ma3_dead_cross:
+            meta["cause"] = f"多單觸發峰頂離場 1: MA3 向下死叉 MA15 (ma3={ma3_curr:.6f} < ma15={ma15_val:.6f})，獲利離場！"
+            meta["triggers"] = ["MA3_DEATH_CROSS"]
+            return True, CLOSE_LONG_AT_TOP, meta
+
+        if is_engulfing_peak:
+            meta["cause"] = f"多單觸發峰頂離場 2: 軌外大陰吞噬 (body={curr_body:.6f} >= 0.6*prev={prev_body:.6f})，獲利離場！"
+            meta["triggers"] = ["OUTER_RAIL_ENGULFING"]
+            return True, CLOSE_LONG_AT_TOP, meta
+
+        if is_pinbar_peak:
+            meta["cause"] = f"多單觸發峰頂離場 3: 高位長上影天地針 (upper_wick={curr_upper_wick:.6f} >= 1.2*body={curr_body:.6f})，獲利離場！"
+            meta["triggers"] = ["PINBAR_PEAK"]
+            return True, CLOSE_LONG_AT_TOP, meta
+
+        if is_structure_broken:
+            meta["cause"] = f"多單觸發峰頂離場 4: 跌破前棒低點結構失效 (close={c_close:.6f} < prev_low={p_low:.6f})，獲利離場！"
+            meta["triggers"] = ["STRUCTURE_BROKEN_PEAK"]
+            return True, CLOSE_LONG_AT_TOP, meta
+
+        meta["skipped"] = "TREND_LOCK_ACTIVE: 多單未達峰頂，強制持倉繼續向上走"
+        return False, None, meta
 
     return False, None, meta
 

@@ -199,3 +199,45 @@ def test_meme_coin_breakout_extension_relaxed_pass():
     # 驗證不再被 VETO_KC_OUTER_OVEREXTENSION 阻斷
     assert gate_res.passed is True, f"Meme coin breakout extension should pass, got: {gate_res.reason}"
 
+
+def test_lobster_1055_dead_cross_slope_down_long_vetoed():
+    """
+    盤面 Bug 現況回歸測試 (10:55 龍蝦/USDT)：
+    當價格從高點回落，MA3 已經向下跌穿 MA15，且 MA3 明確向下，收陰線時：
+    系統一票否決所有開多 (LONG) 請求！
+    """
+    # 1. 純數學判定
+    ok, reason, details = evaluate_direction_master_lock(
+        side="LONG",
+        ma3_curr=0.018580,
+        ma3_prev=0.018590,  # MA3 向下
+        kc_middle=0.018550,
+        ma15_curr=0.018600, # MA3 < MA15 (死叉)
+        curr_close=0.018575,
+        curr_open=0.018585,  # 收陰線
+    )
+    assert ok is False
+    assert reason in ("BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN", "BLOCKED_DIRECTION_LOCK_LONG_MA3_BELOW_SLOW", "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE")
+
+    # 2. CentralEntryGate 攔截
+    df = pd.DataFrame([
+        dict(timestamp=60_000, open=0.01860, high=0.01865, low=0.01858, close=0.01862,
+             atr=0.00005, ma3=0.01861, ma5=0.01860, ma15=0.01858, kc_upper=0.01870,
+             kc_middle=0.01855, kc_lower=0.01840, is_closed=True),
+        dict(timestamp=120_000, open=0.01862, high=0.01863, low=0.01856, close=0.01857,  # 收陰
+             atr=0.00005, ma3=0.01858, ma5=0.01860, ma15=0.01860, kc_upper=0.01870,     # ma3 <= ma3_prev, ma3 < ma15
+             kc_middle=0.01855, kc_lower=0.01840, is_closed=True),
+    ])
+    df.attrs["timeframe_ms"] = 60_000.0
+
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="LOBSTERUSDT",
+        side="LONG",
+        price=0.01857,
+        klines_or_snapshot=df,
+        source="UNIFIED_PIPELINE",
+    )
+    assert res.passed is False
+    assert "DIRECTION_LOCK" in res.reason or "BLOCKED" in res.reason
+
+

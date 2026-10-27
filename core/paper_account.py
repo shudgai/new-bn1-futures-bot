@@ -609,25 +609,73 @@ class PaperAccount:
                     m3_p = dir_metrics["ma3_prev"]
                     kc_m = dir_metrics["kc_middle"]
                     side_up = side.upper()
-                    if side_up == "SHORT" and (m3_c > kc_m or m3_c > m3_p):
-                        err_msg = (
-                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌上方 (ma3={m3_c:.6f} > kc_mid={kc_m:.6f}) "
-                            f"或斜率向上 (ma3_curr={m3_c:.6f} > ma3_prev={m3_p:.6f})，嚴禁逆勢開空！"
-                        )
-                        self.log(err_msg, "CRITICAL")
-                        if entry_context.get("raise_on_direction_lock"):
-                            raise RuntimeError(err_msg)
-                        return False
-                    elif side_up == "LONG" and (m3_c < kc_m or m3_c < m3_p):
-                        err_msg = (
-                            f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌下方 (ma3={m3_c:.6f} < kc_mid={kc_m:.6f}) "
-                            f"或斜率向下 (ma3_curr={m3_c:.6f} < ma3_prev={m3_p:.6f})，嚴禁逆勢開多！"
-                        )
-                        self.log(err_msg, "CRITICAL")
-                        if entry_context.get("raise_on_direction_lock"):
-                            raise RuntimeError(err_msg)
-                        return False
+                    is_override = bool(entry_context.get("direction_override") or entry_context.get("is_swing_pivot"))
 
+                    if is_override:
+                        # 特例轉折放行：豁免中軌位置，但 MA3 斜率必須嚴格同向拐頭
+                        if side_up == "SHORT" and m3_c >= m3_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開空但 MA3 未向下拐頭 (ma3_curr={m3_c:.6f} >= ma3_prev={m3_p:.6f})，強制攔截！"
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+                        elif side_up == "LONG" and m3_c <= m3_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開多但 MA3 未向上拐頭 (ma3_curr={m3_c:.6f} <= ma3_prev={m3_p:.6f})，強制攔截！"
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+                    else:
+                        # 常規開倉：嚴格執行中軌位置與斜率方向限制
+                        if side_up == "SHORT" and (m3_c > kc_m or m3_c > m3_p):
+                            err_msg = (
+                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌上方 (ma3={m3_c:.6f} > kc_mid={kc_m:.6f}) "
+                                f"或斜率向上 (ma3_curr={m3_c:.6f} > ma3_prev={m3_p:.6f})，嚴禁逆勢開空！"
+                            )
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+                        elif side_up == "LONG" and (m3_c < kc_m or m3_c < m3_p):
+                            err_msg = (
+                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌下方 (ma3={m3_c:.6f} < kc_mid={kc_m:.6f}) "
+                                f"或斜率向下 (ma3_curr={m3_c:.6f} < ma3_prev={m3_p:.6f})，嚴禁逆勢開多！"
+                            )
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+
+                if isinstance(eval_frame, pd.DataFrame):
+                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown"):
+                        if k in entry_context:
+                            eval_frame.attrs[k] = entry_context[k]
+
+                    # 微觀動能突破 (Momentum Override) 豁免機制
+                    try:
+                        last_k = eval_frame.iloc[-1]
+                        prev_k = eval_frame.iloc[-2] if len(eval_frame) >= 2 else last_k
+                        c_atr = float(last_k.get("atr", 0.0) or (float(last_k["close"]) * 0.01))
+                        c_mid = float(last_k.get("kc_middle", last_k["close"]))
+                        m3_c = float(last_k.get("ma3", last_k["close"]))
+                        m3_p = float(prev_k.get("ma3", m3_c))
+                        is_v_recovery = bool(
+                            float(last_k["close"]) > c_mid
+                            and m3_c > m3_p
+                            and float(last_k["close"]) > float(last_k["open"])
+                            and (float(last_k["close"]) - float(last_k["open"])) >= 0.4 * c_atr
+                        )
+                        is_v_breakdown = bool(
+                            float(last_k["close"]) < c_mid
+                            and m3_c < m3_p
+                            and float(last_k["close"]) < float(last_k["open"])
+                            and (float(last_k["open"]) - float(last_k["close"])) >= 0.4 * c_atr
+                        )
+                        if (side == "LONG" and is_v_recovery) or (side == "SHORT" and is_v_breakdown):
+                            eval_frame.attrs["is_v_shape_recovery"] = is_v_recovery
+                            eval_frame.attrs["is_v_shape_breakdown"] = is_v_breakdown
+                    except Exception:
+                        pass
                 gate_res = CentralEntryGate.verify_and_authorize(
                     symbol=symbol,
                     side=side,
@@ -816,6 +864,34 @@ class PaperAccount:
                 if side == 'SHORT' and price > kc_middle and not swing_pivot_override:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})", 'CRITICAL')
                     raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})")
+
+                # 2.5 🟢/🔴 MA3 斜率、慢線相對位置與 K 棒顏色絕對硬核防線（絕不可繞過）
+                ma3_val = float(current_bar.get("ma3", current_bar.get("close", price)))
+                ma15_val = float(current_bar.get("ma15", current_bar.get("kc_middle", kc_middle)))
+                prev_bar_m3 = float(prev_bar.get("ma3", ma3_val)) if len(snapshot["candles"]) >= 2 else ma3_val
+                bar_c = float(current_bar.get("close", price))
+                bar_o = float(current_bar.get("open", price))
+
+                if side == "LONG":
+                    if ma3_val <= prev_bar_m3:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向上(ma3={ma3_val} <= prev={prev_bar_m3})，嚴禁開多！", 'CRITICAL')
+                        raise RuntimeError(f"MA3 未向上，嚴禁開多！ma3={ma3_val} <= prev={prev_bar_m3}")
+                    if ma3_val < ma15_val:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線下方(ma3={ma3_val} < ma15={ma15_val})，嚴禁開多！", 'CRITICAL')
+                        raise RuntimeError(f"MA3 位於慢線下方，嚴禁開多！ma3={ma3_val} < ma15={ma15_val}")
+                    if bar_c <= bar_o:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陽線(close={bar_c} <= open={bar_o})，嚴禁開多！", 'CRITICAL')
+                        raise RuntimeError(f"當前 K 棒非實體陽線，嚴禁開多！close={bar_c} <= open={bar_o}")
+                elif side == "SHORT":
+                    if ma3_val >= prev_bar_m3:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向下(ma3={ma3_val} >= prev={prev_bar_m3})，嚴禁開空！", 'CRITICAL')
+                        raise RuntimeError(f"MA3 未向下，嚴禁開空！ma3={ma3_val} >= prev={prev_bar_m3}")
+                    if ma3_val > ma15_val:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線上方(ma3={ma3_val} > ma15={ma15_val})，嚴禁開空！", 'CRITICAL')
+                        raise RuntimeError(f"MA3 位於慢線上方，嚴禁開空！ma3={ma3_val} > ma15={ma15_val}")
+                    if bar_c >= bar_o:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陰線(close={bar_c} >= open={bar_o})，嚴禁開空！", 'CRITICAL')
+                        raise RuntimeError(f"當前 K 棒非實體陰線，嚴禁開空！close={bar_c} >= open={bar_o}")
 
                 # 3. 大週期 CK 趨勢防線（敏捷動能轉折單豁免跨週期鎖定，交由當前週期結構性止損保護）
                 if not direction_override and len(snapshot['candles']) >= 2:

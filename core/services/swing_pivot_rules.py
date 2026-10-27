@@ -54,36 +54,73 @@ def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
     if bandwidth < 0.0035:
         return None
 
-    # 多單真谷底 (True Valley Pivot)：
-    # 1. 中間棒探底且確認棒收陽站上實體中點
-    # 2. 結構位置：探底點必須在 KC 中軌附近或中軌下方 (回踩確認支撐)，嚴禁貼在天花板頂端摸多
-    # 3. 向上通道獲利空間至少 0.35 ATR
-    if (low_pivot < low_left and low_pivot < low_confirm
-            and close > opening and close > pivot_mid
-            and body >= 0.35 * atr
-            and close - low_pivot >= 0.45 * pivot_atr
-            and low_pivot <= kc_middle + 0.25 * atr
-            and kc_upper - close >= 0.35 * atr):
+    ma3_curr = float(current.get("ma3", close))
+    ma3_prev = float(pivot.get("ma3", ma3_curr))
+    ma15_curr = float(current.get("ma15", kc_middle))
+    ma15_prev = float(pivot.get("ma15", ma15_curr))
+
+    dist_curr = abs(ma3_curr - ma15_curr)
+    dist_prev = abs(ma3_prev - ma15_prev)
+
+    # 任務 2：多頭谷底轉折提前開多（SWING_PIVOT_LONG）
+    # 條件：價格在 KC 通道下半區（close <= kc_middle） + MA3 向上拐頭（ma3_curr > ma3_prev）且與 MA15 距離比前根縮小（即將金叉） + 當前為實體陽線（close > open）且收盤價站上 MA3（close >= ma3_curr）。
+    # 豁免：【完全豁免】kc_middle_slope >= 0 限制（允許中軌走平或向下）。
+    is_swing_pivot_long = bool(
+        close <= kc_middle
+        and ma3_curr > ma3_prev
+        and (dist_curr < dist_prev or ma3_curr >= ma15_curr)
+        and close > opening
+        and close >= ma3_curr
+    )
+
+    # 傳統三點谷底樞紐判定 (保留相容性)
+    is_three_point_valley = (
+        low_pivot < low_left and low_pivot < low_confirm
+        and close > opening and close > pivot_mid
+        and body >= 0.35 * atr
+        and close - low_pivot >= 0.45 * pivot_atr
+        and low_pivot <= kc_middle + 0.25 * atr
+        and kc_upper - close >= 0.35 * atr
+    )
+
+    if is_swing_pivot_long or is_three_point_valley:
         return {
             "side": "LONG", "entry_type": "SWING_PIVOT",
+            "direction_override": True,
+            "is_swing_pivot": True,
             "stop_loss_price": low_pivot, "atr": atr,
             "bar_timestamp": float(current.get("timestamp", 0.0)),
             "pivot_price": low_pivot,
             "pivot_bar_timestamp": float(pivot.get("timestamp", 0.0)),
             "confirmation_bar_timestamp": float(current.get("timestamp", 0.0)),
         }
-    # 空單真峰頂 (True Peak Pivot)：
-    # 1. 中間棒衝高且確認棒收陰跌破實體中點
-    # 2. 結構位置：衝高點必須在 KC 中軌附近或中軌上方 (反彈確認阻力)，嚴禁貼在地板殺跌
-    # 3. 向下通道獲利空間至少 0.35 ATR
-    if (high_pivot > high_left and high_pivot > high_confirm
-            and close < opening and close < pivot_mid
-            and body >= 0.35 * atr
-            and high_pivot - close >= 0.45 * pivot_atr
-            and high_pivot >= kc_middle - 0.25 * atr
-            and close - kc_lower >= 0.35 * atr):
+
+    # 任務 2：空頭頂部轉折提前開空（SWING_PIVOT_SHORT）
+    # 條件：價格在 KC 通道上半區（close >= kc_middle） + MA3 向下拐頭（ma3_curr < ma3_prev）且與 MA15 距離比前根縮小（即將死叉） + 當前為實體陰線（close < open）且收盤價跌破 MA3（close <= ma3_curr）。
+    # 豁免：【完全豁免】kc_middle_slope <= 0 限制（允許中軌走平或向上）。
+    is_swing_pivot_short = bool(
+        close >= kc_middle
+        and ma3_curr < ma3_prev
+        and (dist_curr < dist_prev or ma3_curr <= ma15_curr)
+        and close < opening
+        and close <= ma3_curr
+    )
+
+    # 傳統三點頂部樞紐判定 (保留相容性)
+    is_three_point_peak = (
+        high_pivot > high_left and high_pivot > high_confirm
+        and close < opening and close < pivot_mid
+        and body >= 0.35 * atr
+        and high_pivot - close >= 0.45 * pivot_atr
+        and high_pivot >= kc_middle - 0.25 * atr
+        and close - kc_lower >= 0.35 * atr
+    )
+
+    if is_swing_pivot_short or is_three_point_peak:
         return {
             "side": "SHORT", "entry_type": "SWING_PIVOT",
+            "direction_override": True,
+            "is_swing_pivot": True,
             "stop_loss_price": high_pivot, "atr": atr,
             "bar_timestamp": float(current.get("timestamp", 0.0)),
             "pivot_price": high_pivot,
@@ -122,6 +159,7 @@ def evaluate_outer_rail_reversal_exit(position: Any, frame: Any) -> dict[str, An
         upper, lower = _num(current, "kc_upper"), _num(current, "kc_lower")
         prev_upper, prev_lower = _num(previous, "kc_upper"), _num(previous, "kc_lower")
         ma3, atr = _num(current, "ma3"), _num(current, "atr")
+        ma15 = float(current.get("ma15", current.get("kc_middle", 0.0)))
         if atr <= 0 or min(upper, lower, prev_upper, prev_lower, ma3) <= 0:
             return None
         body = abs(c_close - c_open)
@@ -131,28 +169,49 @@ def evaluate_outer_rail_reversal_exit(position: Any, frame: Any) -> dict[str, An
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
-    # 持倉防洗鐵律（2026-10-26 最新授權）：
-    # 破軌開倉後嚴禁因普通 MA3 回踩就提早平倉洗下車！徹底剔除 fast_break (OUTER_RAIL_MA3_BODY_BREAK)。
-    # 唯有已收線確認之強烈反轉吞沒 (ENGULFING) 或長影線頂底反轉 (LONG_WICK) 才放行。
+    # 任務 4：多空持倉退出機制（中間抗洗盤，極限峰谷即刻鎖利）
+    # 2. 極限峰谷主動平倉（收線即刻鎖利，不待均線交叉）：
+    # 多單峰頂平倉（EXIT LONG AT PEAK）：價格曾觸及或衝出 KC 上軌，出現：
+    #   A. 軌外大陰吞噬：prev_k['close'] > prev_kc_upper 且當前陰線實體吃掉前根綠 K 實體 60% 以上 (curr_body >= 0.6 * prev_body)
+    #   B. 高位天地針：upper_wick >= 1.2 * body 且當根收陰
+    #   C. 實體跌破 MA3 快線：close < ma3_curr 且 body >= 0.5 * atr
+    # 空單谷底平倉（EXIT SHORT AT BOTTOM）：價格曾觸及或跌破 KC 下軌，出現：
+    #   A. 軌外大陽吞噬：prev_k['close'] < prev_kc_lower 且當前陽線實體吃掉前根紅 K 實體 60% 以上 (curr_body >= 0.6 * prev_body)
+    #   B. 低位下刺針：lower_wick >= 1.2 * body 且當根收陽
+    #   C. 實體突破 MA3 快線：close > ma3_curr 且 body >= 0.5 * atr
     if side == "LONG":
-        touched = bool((bars.loc[bars["timestamp"].astype(float) > entry_bar, "high"].astype(float)
-                        >= bars.loc[bars["timestamp"].astype(float) > entry_bar, "kc_upper"].astype(float)).any())
+        eligible = bars.loc[bars["timestamp"].astype(float) > entry_bar]
+        touched = bool((eligible["high"].astype(float) >= eligible["kc_upper"].astype(float)).any())
         engulf = (
             p_close > p_open and p_close > prev_upper and c_close < c_open
-            and prev_body > 0 and c_close <= p_close - 0.6 * prev_body
+            and prev_body > 0 and body >= 0.6 * prev_body
         )
-        wick = c_close < c_open and upper_wick >= 1.5 * max(body, 1e-12) and upper_wick >= 0.5 * atr
+        wick = c_close < c_open and upper_wick >= 1.2 * max(body, 1e-12)
+        ma3_break = c_close < c_open and c_close < ma3 and body >= 0.5 * atr
         label = "EXIT_LONG_AT_PEAK"
+        reason = (
+            "OUTER_RAIL_ENGULFING" if engulf
+            else "OUTER_RAIL_LONG_WICK" if wick
+            else "OUTER_RAIL_MA3_BREAK" if ma3_break
+            else None
+        )
     else:
         eligible = bars.loc[bars["timestamp"].astype(float) > entry_bar]
         touched = bool((eligible["low"].astype(float) <= eligible["kc_lower"].astype(float)).any())
         engulf = (
             p_close < p_open and p_close < prev_lower and c_close > c_open
-            and prev_body > 0 and c_close >= p_close + 0.6 * prev_body
+            and prev_body > 0 and body >= 0.6 * prev_body
         )
-        wick = c_close > c_open and lower_wick >= 1.5 * max(body, 1e-12) and lower_wick >= 0.5 * atr
+        wick = c_close > c_open and lower_wick >= 1.2 * max(body, 1e-12)
+        ma3_break = c_close > c_open and c_close > ma3 and body >= 0.5 * atr
         label = "EXIT_SHORT_AT_BOTTOM"
-    reason = "OUTER_RAIL_ENGULFING" if engulf else "OUTER_RAIL_LONG_WICK" if wick else None
+        reason = (
+            "OUTER_RAIL_ENGULFING" if engulf
+            else "OUTER_RAIL_LONG_WICK" if wick
+            else "OUTER_RAIL_MA3_BREAK" if ma3_break
+            else None
+        )
+
     if not touched or reason is None:
         return None
     return {

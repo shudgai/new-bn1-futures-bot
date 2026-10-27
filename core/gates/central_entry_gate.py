@@ -143,6 +143,37 @@ class CentralEntryGate:
         atr = float(parsed["atr"])
         curr_price = float(price or parsed["current_price"])
 
+        # ══════════════════════════════════════════════════════════════════
+        # 微觀動能突破 (Momentum Override / V-Shape Recovery & Breakdown)
+        # 解決 EMA20 滯後：谷底 V 轉 / 頂部 V 轉 敏捷豁免
+        # ══════════════════════════════════════════════════════════════════
+        c_close = float(parsed.get("close", curr_price))
+        c_open = float(parsed.get("open", c_close))
+        c_mid = float(parsed.get("kc_middle", curr_price))
+        m3_c = float(parsed.get("ma3_curr", c_close))
+        m3_p = float(parsed.get("ma3_prev", m3_c))
+
+        # 🟢 多頭谷底 V 轉 / 穿中軌 敏捷豁免條件：
+        is_v_shape_recovery = bool(
+            (c_close > c_mid)
+            and (m3_c > m3_p)
+            and (c_close > c_open)
+            and (c_close - c_open >= 0.4 * atr)
+        )
+
+        # 🔴 空頭頂部 V 轉 / 跌破中軌 敏捷豁免條件：
+        is_v_shape_breakdown = bool(
+            (c_close < c_mid)
+            and (m3_c < m3_p)
+            and (c_close < c_open)
+            and (c_open - c_close >= 0.4 * atr)
+        )
+
+        has_momentum_override = bool(
+            (side == "LONG" and is_v_shape_recovery)
+            or (side == "SHORT" and is_v_shape_breakdown)
+        )
+
         # -------------------------------------------------------------
         # 條件 1：收盤確認 (Closed Bar Finality)
         # -------------------------------------------------------------
@@ -151,6 +182,13 @@ class CentralEntryGate:
         is_swing_pivot = swing_pivot_signal or bool(
             isinstance(klines_or_snapshot, dict)
             and str(klines_or_snapshot.get("entry_type") or "").upper() == "SWING_PIVOT"
+        ) or ("SWING_PIVOT" in src_upper)
+        direction_override = bool(
+            (isinstance(klines_or_snapshot, dict) and klines_or_snapshot.get("direction_override"))
+            or (isinstance(klines_or_snapshot, pd.DataFrame) and klines_or_snapshot.attrs.get("direction_override"))
+            or is_swing_pivot
+            or ("AGILE" in src_upper)
+            or ("OVERRIDE" in src_upper)
         )
         allowed_intrabar_routes = (
             "BREAKOUT_LONG", "BREAKDOWN_SHORT", "CONTINUATION_OUTSIDE_KC_LONG",
@@ -193,17 +231,29 @@ class CentralEntryGate:
         checks["closed_bar"] = {"status": "PASS", "actual": is_closed}
         # -------------------------------------------------------------
         # 條件 0：方向總開關 (Direction Master Lock，一票否決，零歧義)
-        # 🟢 開多：MA3 必須在 KC 中軌上方 且 (MA3 > MA5 或 MA3 > MA3_PREV)
-        # 🔴 開空：MA3 必須在 KC 中軌下方 且 (MA3 < MA5 或 MA3 < MA3_PREV)
+        # 🟢 開多：MA3 必須在 KC 中軌上方 且 MA3 > MA3_PREV (轉折特例放行位置)
+        # 🔴 開空：MA3 必須在 KC 中軌下方 且 MA3 < MA3_PREV (轉折特例放行位置)
         # -------------------------------------------------------------
         ma3_c = float(parsed.get("ma3_curr", parsed.get("close", curr_price)))
         ma3_p = float(parsed.get("ma3_prev", ma3_c))
         kc_mid_val = float(parsed["kc_middle"])
         ma5_c = float(parsed.get("ma5_curr", ma3_c))
+        ma15_c = float(parsed.get("ma15_curr", parsed.get("ma15", kc_mid_val)))
+        c_close = float(parsed.get("close", curr_price))
+        c_open = float(parsed.get("open", curr_price))
 
         from core.gates.direction_master_lock import evaluate_direction_master_lock
         dir_ok, dir_reason, dir_details = evaluate_direction_master_lock(
-            side=side, ma3_curr=ma3_c, ma3_prev=ma3_p, kc_middle=kc_mid_val, ma5_curr=ma5_c
+            side=side,
+            ma3_curr=ma3_c,
+            ma3_prev=ma3_p,
+            kc_middle=kc_mid_val,
+            ma5_curr=ma5_c,
+            is_swing_pivot=is_swing_pivot,
+            direction_override=direction_override,
+            ma15_curr=ma15_c,
+            curr_close=c_close,
+            curr_open=c_open,
         )
         checks["direction_master_lock"] = {
             "status": "PASS" if dir_ok else "FAIL",
@@ -212,12 +262,22 @@ class CentralEntryGate:
             "ma3_prev": ma3_p,
             "kc_middle": kc_mid_val,
             "ma5_curr": ma5_c,
+            "ma15_curr": ma15_c,
+            "curr_close": c_close,
+            "curr_open": c_open,
             "reason": dir_reason,
+            "is_swing_pivot": is_swing_pivot,
+            "direction_override": direction_override,
         }
         if not dir_ok:
+            veto_reason = dir_reason
+            if dir_reason == "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE":
+                veto_reason = "VETO_BEARISH_CANDLE_FOR_LONG"
+            elif dir_reason == "BLOCKED_DIRECTION_LOCK_SHORT_NOT_BEARISH_CANDLE":
+                veto_reason = "VETO_BULLISH_CANDLE_FOR_SHORT"
             return GateCheckResult(
                 passed=False,
-                reason=dir_reason,
+                reason=veto_reason,
                 signal_id=sig_id,
                 details=dir_details,
                 checks=checks,
@@ -282,6 +342,11 @@ class CentralEntryGate:
                     "swing_pivot": pivot_evidence,
                     "soft_market_blacklist": "BYPASSED_FOR_CONFIRMED_PIVOT",
                 })
+            elif direction_override:
+                blacklist = (False, "PASS_AGILE_OVERRIDE", {
+                    "direction_override": True,
+                    "soft_market_blacklist": "BYPASSED_FOR_AGILE_OVERRIDE",
+                })
             else:
                 # The entry may be submitted during a forming third candle,
                 # but consolidation classification must use closed evidence.
@@ -331,7 +396,7 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         # 條件 1.5：MA3 交叉 KC 中軌核心授權 (MA3 x KC Midline Cross)
         # -------------------------------------------------------------
-        if ("CROSS_MID" in src_upper or "MA_CROSS" in src_upper) and not is_swing_pivot:
+        if ("CROSS_MID" in src_upper or "MA_CROSS" in src_upper) and not (is_swing_pivot or direction_override):
             from core.gates.ma3_kc_midline_cross_gate import evaluate_ma3_kc_midline_cross
             cross_ok, cross_reason, cross_meta = evaluate_ma3_kc_midline_cross(
                 entry_frame, side, symbol=symbol,
@@ -356,19 +421,30 @@ class CentralEntryGate:
         kc_mid_slope = float(parsed["kc_middle_slope"])
         required_slope = cls.KC_SLOPE_MIN_ATR * atr
 
-        if is_swing_pivot:
-            # Pivot entries are explicitly authorized against a lagging KC
-            # slope. All candle, location, bandwidth, liquidity, and risk gates
-            # below remain active.
+        # ⚠️ 關鍵放行邏輯：微觀動能突破豁免條款 (Momentum Override)
+        # 只要觸發對應方向的 V 轉敏捷條件，或訂單帶有 direction_override=True / entry_type="SWING_PIVOT"：
+        is_side_v_shape = bool(
+            (side == "LONG" and is_v_shape_recovery)
+            or (side == "SHORT" and is_v_shape_breakdown)
+        )
+        if is_swing_pivot or direction_override:
+            # Pivot & Agile direction override entries are explicitly authorized against a lagging KC slope.
             slope_pass = True
-            req_target = "SWING_PIVOT_OVERRIDE"
+            req_target = "OVERRIDE"
         elif is_cross_mid:
-            # 交叉訊號僅允許通道平向或同向，不能覆蓋反向結構。
-            if side == "LONG":
-                slope_pass = kc_mid_slope >= 0.0
+            if is_side_v_shape:
+                # 🟢 多頭谷底 V 轉 / 穿中軌 或 🔴 空頭頂部 V 轉 / 跌破中軌：
+                # 【強制豁免】kc_middle_slope 的正負號檢查！
+                # 允許在 EMA20 斜率仍為負（谷底）或仍為正（頂部）時直接下發訂單，絕不阻斷！
+                slope_pass = True
+                req_target = "V_SHAPE_OVERRIDE"
             else:
-                slope_pass = kc_mid_slope <= 0.0
-            req_target = 0.0
+                # 普通交叉訊號僅允許通道平向或同向，不能覆蓋反向結構。
+                if side == "LONG":
+                    slope_pass = kc_mid_slope >= 0.0
+                else:
+                    slope_pass = kc_mid_slope <= 0.0
+                req_target = 0.0
         else:
             # 常規破軌追單類：維持原有的嚴格斜率審核 (>= 0.1 ATR)
             if side == "LONG":
@@ -395,28 +471,29 @@ class CentralEntryGate:
             )
 
         # -------------------------------------------------------------
-        # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下)
+        # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下；轉折特例放行)
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
-        if side == "LONG" and curr_price < kc_mid:
-            checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
-            return GateCheckResult(
-                passed=False,
-                reason="VETO_LONG_BELOW_KC_MIDDLE",
-                signal_id=sig_id,
-                details={"price": curr_price, "kc_middle": kc_mid},
-                checks=checks,
-            )
-        elif side == "SHORT" and curr_price > kc_mid:
-            checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
-            return GateCheckResult(
-                passed=False,
-                reason="VETO_SHORT_ABOVE_KC_MIDDLE",
-                signal_id=sig_id,
-                details={"price": curr_price, "kc_middle": kc_mid},
-                checks=checks,
-            )
-        checks["midline_side"] = {"status": "PASS", "price": curr_price, "kc_middle": kc_mid}
+        if not (is_swing_pivot or direction_override):
+            if side == "LONG" and curr_price < kc_mid:
+                checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
+                return GateCheckResult(
+                    passed=False,
+                    reason="VETO_LONG_BELOW_KC_MIDDLE",
+                    signal_id=sig_id,
+                    details={"price": curr_price, "kc_middle": kc_mid},
+                    checks=checks,
+                )
+            elif side == "SHORT" and curr_price > kc_mid:
+                checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
+                return GateCheckResult(
+                    passed=False,
+                    reason="VETO_SHORT_ABOVE_KC_MIDDLE",
+                    signal_id=sig_id,
+                    details={"price": curr_price, "kc_middle": kc_mid},
+                    checks=checks,
+                )
+        checks["midline_side"] = {"status": "PASS", "price": curr_price, "kc_middle": kc_mid, "is_swing_pivot": is_swing_pivot}
 
         # -------------------------------------------------------------
         # 條件 3：MA 斜率與乖離 (MA Slope & Extension)
@@ -437,7 +514,7 @@ class CentralEntryGate:
             "ma5_delta": ma5_delta,
             "side": side,
         }
-        if not ma5_pass and not is_swing_pivot:
+        if not ma5_pass and not (is_swing_pivot or direction_override):
             return GateCheckResult(
                 passed=False,
                 reason="VETO_MA5_SLOPE_OPPOSITE",
@@ -446,7 +523,7 @@ class CentralEntryGate:
                 checks=checks,
             )
 
-        if is_cross_mid and not is_swing_pivot:
+        if is_cross_mid and not (is_swing_pivot or direction_override or is_side_v_shape):
             ma15_curr = float(parsed["ma15_curr"])
             ma15_prev = float(parsed["ma15_prev"])
             ma_cross_aligned = (
@@ -473,7 +550,7 @@ class CentralEntryGate:
             band_dist = kc_lower - curr_price
             ma5_dist = ma5_curr - curr_price
 
-        is_breakout_or_continuation = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+        is_breakout_or_continuation = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper) or direction_override
         band_limit = (3.50 if is_breakout_or_continuation else cls.MAX_BAND_EXTENSION_ATR) * atr
         ma5_limit = (3.50 if is_breakout_or_continuation else cls.MAX_MA5_EXTENSION_ATR) * atr
 
@@ -488,7 +565,7 @@ class CentralEntryGate:
             "max_ma5_dist": ma5_limit,
             "ma5_pass": not ma5_overext,
         }
-        if band_overext and not is_swing_pivot:
+        if band_overext and not (is_swing_pivot or direction_override):
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_OUTER_OVEREXTENSION",
@@ -496,7 +573,7 @@ class CentralEntryGate:
                 details={"band_dist": band_dist, "limit": band_limit},
                 checks=checks,
             )
-        if is_cross_mid and not is_swing_pivot:
+        if is_cross_mid and not (is_swing_pivot or direction_override):
             remaining_room = (
                 kc_upper - curr_price if side == "LONG"
                 else curr_price - kc_lower
@@ -511,7 +588,7 @@ class CentralEntryGate:
                              "required_room": required_room, "kc_width": width},
                     checks=checks,
                 )
-        if ma5_overext and not is_swing_pivot:
+        if ma5_overext and not (is_swing_pivot or direction_override):
             return GateCheckResult(
                 passed=False,
                 reason="VETO_MA5_OVEREXTENSION",
@@ -619,14 +696,14 @@ class CentralEntryGate:
         # 20 根已收線最大寬度作為 squeeze 參考；歷史不足時 fail closed。
         curr_width = kc_width
         max_prev_width = parsed.get("max_prev_width")
-        if (not is_swing_pivot and (max_prev_width is None
+        if (not (is_swing_pivot or direction_override) and (max_prev_width is None
                 or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0)):
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_HISTORY_INVALID",
                 signal_id=sig_id, details={"max_prev_width": max_prev_width}, checks=checks,
             )
         max_prev_width = float(max_prev_width) if max_prev_width is not None else curr_width
-        if not is_swing_pivot and curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
+        if not (is_swing_pivot or direction_override) and curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_AT_OR_BELOW_25_PERCENT",
                 signal_id=sig_id,
@@ -645,7 +722,7 @@ class CentralEntryGate:
             abs(ma5_curr - ma15_curr) < min_spacing
             or (not is_breakout_or_cont and abs(ma5_curr - target_band) < min_spacing)
         )
-        if not is_swing_pivot and ma_spacing_insufficient:
+        if not (is_swing_pivot or direction_override or is_side_v_shape) and ma_spacing_insufficient:
             return GateCheckResult(
                 passed=False, reason="VETO_MA_SPACING_BELOW_25_PERCENT_KC_WIDTH",
                 signal_id=sig_id,
@@ -674,7 +751,7 @@ class CentralEntryGate:
             "is_cross_mid": is_cross_mid,
             "is_continuation": is_continuation,
         }
-        if not exp_pass and not is_swing_pivot:
+        if not exp_pass and not (is_swing_pivot or direction_override or is_side_v_shape):
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_NOT_EXPANDING",
@@ -688,7 +765,7 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        if enforce_volume and not is_swing_pivot:
+        if enforce_volume and not (is_swing_pivot or direction_override):
             if vol_curr <= 0 or vol_avg <= 0:
                 return GateCheckResult(
                     passed=False, reason="VETO_VOLUME_DATA_UNAVAILABLE",
@@ -871,10 +948,28 @@ class CentralEntryGate:
                 metrics["kc_middle_slope"] = float(eval_row.get("kc_middle_slope", metrics["kc_middle"] - prev_kc_mid))
 
                 # MA5
-                metrics["ma5_curr"] = float(eval_row.get("ma5", metrics["close"]))
-                metrics["ma5_prev"] = float(prev_eval_row.get("ma5", metrics["ma5_curr"]))
-                metrics["ma15_curr"] = float(eval_row.get("ma15", metrics["close"]))
-                metrics["ma15_prev"] = float(prev_eval_row.get("ma15", metrics["ma15_curr"]))
+                if "ma5" in data.columns and not pd.isna(eval_row.get("ma5")) and not pd.isna(prev_eval_row.get("ma5")):
+                    metrics["ma5_curr"] = float(eval_row["ma5"])
+                    metrics["ma5_prev"] = float(prev_eval_row["ma5"])
+                elif "close" in data.columns:
+                    roll_ma5 = data["close"].rolling(5, min_periods=1).mean()
+                    metrics["ma5_curr"] = float(roll_ma5.loc[eval_row.name])
+                    metrics["ma5_prev"] = float(roll_ma5.loc[prev_eval_row.name])
+                else:
+                    metrics["ma5_curr"] = metrics["close"]
+                    metrics["ma5_prev"] = metrics["ma5_curr"]
+
+                # MA15
+                if "ma15" in data.columns and not pd.isna(eval_row.get("ma15")) and not pd.isna(prev_eval_row.get("ma15")):
+                    metrics["ma15_curr"] = float(eval_row["ma15"])
+                    metrics["ma15_prev"] = float(prev_eval_row["ma15"])
+                elif "close" in data.columns:
+                    roll_ma15 = data["close"].rolling(15, min_periods=1).mean()
+                    metrics["ma15_curr"] = float(roll_ma15.loc[eval_row.name])
+                    metrics["ma15_prev"] = float(roll_ma15.loc[prev_eval_row.name])
+                else:
+                    metrics["ma15_curr"] = metrics["close"]
+                    metrics["ma15_prev"] = metrics["ma15_curr"]
 
                 # MA3
                 if "ma3" in data.columns:

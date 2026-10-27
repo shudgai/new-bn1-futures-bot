@@ -115,6 +115,7 @@ class ExitGate:
         "EXIT_LONG_ON_KC_LOWER_BREACH",
         "EXIT_SHORT_ON_KC_UPPER_BREACH",
         "EXIT_BY_MEME_ADVERSE_STOP_LOSS",
+        "STRUCTURAL_FAILURE_EXIT",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
@@ -133,6 +134,11 @@ class ExitGate:
         "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
         "CLOSE_LONG_AT_TOP",
         "CLOSE_SHORT_AT_BOTTOM",
+        "EXIT_LONG_AT_PEAK",
+        "EXIT_SHORT_AT_BOTTOM",
+        "OUTER_RAIL_ENGULFING",
+        "PINBAR_LONG_WICK",
+        "MA3_BODY_BREAK",
     })
     GENERAL_EXIT_VETO_REASON = "VETO_HOLD"
 
@@ -181,29 +187,152 @@ class ExitGate:
             else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
         ))
 
-        if should_exit:
-            return result
+        final_exit = should_exit
+        final_reason = reason
+        final_meta = meta
 
-        abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
-        if abnormal is not None:
-            return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
+        if not final_exit:
+            abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
+            if abnormal is not None:
+                final_exit = True
+                final_reason = "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL"
+                final_meta = abnormal
 
-        # 若核心規則已判定守穩續抱（如守住 KC 中軌、MA15 或開倉呼吸保護 VETO_HOLD），一票否決平倉，嚴禁被雜訊誤平
-        if reason == "VETO_HOLD" or "VETO" in str(reason).upper():
-            return result
+        if not final_exit and not (reason == "VETO_HOLD" or "VETO" in str(reason).upper()):
+            if isinstance(pos, dict) and update_trend_lock_state(pos, frame):
+                if isinstance(market_data, dict):
+                    state = pos.get("trend_lock_state")
+                    market_data["trend_lock_state"] = state
 
-        if isinstance(pos, dict) and update_trend_lock_state(pos, frame):
-            if isinstance(market_data, dict):
-                state = pos.get("trend_lock_state")
-                market_data["trend_lock_state"] = state
+            trend_exit = evaluate_trend_lock_exit(pos, frame)
+            if trend_exit is not None:
+                trend_exit["final_execution_gate"] = (
+                    "EXIT_GATE_APPROVED_PENDING_ACCOUNT_AUTHORIZATION"
+                )
+                final_exit = True
+                final_reason = f"EXIT_BY_TREND_LOCK_{trend_exit['reason']}"
+                final_meta = trend_exit
 
-        trend_exit = evaluate_trend_lock_exit(pos, frame)
-        if trend_exit is not None:
-            trend_exit["final_execution_gate"] = (
-                "EXIT_GATE_APPROVED_PENDING_ACCOUNT_AUTHORIZATION"
-            )
-            return True, f"EXIT_BY_TREND_LOCK_{trend_exit['reason']}", trend_exit
+        # ══════════════════════════════════════════════════════════════════
+        # 🟢 最高優先級：持倉鎖定（Trend Lock）硬性卡死過濾（2026-10-27 核心授權）
+        # 只要收盤價仍高於 MA3 或高於 MA15，未滿足極限峰頂 A/B/C/D 任一條件，【絕對禁止平多】！
+        # ══════════════════════════════════════════════════════════════════
+        if final_exit and final_reason not in ExitGate.ABSOLUTE_SAFETY_REASONS:
+            side = str((pos or {}).get("side") or "").upper()
+            if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 2:
+                c_k = frame.iloc[-1]
+                p_k = frame.iloc[-2]
+                c_close = float(c_k.get("close", quote))
+                c_open = float(c_k.get("open", c_close))
+                c_high = float(c_k.get("high", max(c_open, c_close)))
+                c_low = float(c_k.get("low", min(c_open, c_close)))
+                p_close = float(p_k.get("close", c_open))
+                p_open = float(p_k.get("open", p_close))
+                p_high = float(p_k.get("high", max(p_open, p_close)))
+                p_low = float(p_k.get("low", min(p_open, p_close)))
 
+                ma3_curr = float(c_k.get("ma3", c_close))
+                ma3_prev = float(p_k.get("ma3", ma3_curr))
+                ma15_curr = float(c_k.get("ma15", c_close))
+                ma15_prev = float(p_k.get("ma15", ma15_curr))
+
+                curr_kc_upper = float(c_k.get("kc_upper", c_high))
+                prev_kc_upper = float(p_k.get("kc_upper", curr_kc_upper))
+                curr_kc_lower = float(c_k.get("kc_lower", c_low))
+                prev_kc_lower = float(p_k.get("kc_lower", curr_kc_lower))
+
+                curr_body = abs(c_close - c_open)
+                prev_body = abs(p_close - p_open)
+                curr_upper_wick = c_high - max(c_open, c_close)
+                curr_lower_wick = min(c_open, c_close) - c_low
+
+                atr_now = float(atr or c_k.get("atr") or 0.0)
+
+                if side == "LONG":
+                    # 條件 A：MA3 快線正式向下死叉 MA15 慢線
+                    is_ma3_dead_cross = bool(ma3_curr < ma15_curr and ma3_prev >= ma15_prev)
+                    # 條件 B：軌外大陰吞噬 (前根綠 K 衝出 KC 上軌，當前陰線實體吃掉前根 60% 以上)
+                    is_engulfing_peak = bool(
+                        p_close > prev_kc_upper
+                        and p_close > p_open
+                        and c_close < c_open
+                        and prev_body > 0
+                        and curr_body >= 0.6 * prev_body
+                        and (curr_body >= 0.4 * atr_now or c_close < p_open or c_close < p_low)
+                    )
+                    # 條件 C：高位天地針 (上影線 >= 1.2倍實體，上影線顯著 >= 0.5*ATR，當前收陰，且最高價碰觸或突破上軌)
+                    is_pinbar_peak = bool(
+                        curr_upper_wick >= 1.2 * curr_body
+                        and curr_upper_wick >= 0.5 * atr_now
+                        and c_close < c_open
+                        and (c_high >= curr_kc_upper or p_high >= prev_kc_upper)
+                    )
+                    is_peak_signal = bool(is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak)
+                    # 門檻 2：結構失效 (實體收盤跌破谷底轉折前 K 棒最低點 prev_k['low'])
+                    is_structure_broken = bool(c_close < p_low and c_close < c_open)
+                    # 門檻 3：大瀑布/崩盤熔斷 (單根大陰線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
+                    is_crash_circuit_breaker = bool(
+                        (c_open - c_close >= 1.8 * atr_now)
+                        and (c_open >= ma15_curr and c_close < ma15_curr)
+                    )
+
+                    has_valid_long_exit = bool(is_peak_signal or is_structure_broken or is_crash_circuit_breaker)
+
+                    # ⚠️ 關鍵硬性卡死：只要未滿足四大離場門檻之一，且價格穩守 MA15 或 MA3 之上 (或中軌向上且MA3>=MA15)：
+                    # 平多邏輯必須直接 return False！強制持倉續抱拿滿主升段！
+                    is_above_support = bool(c_close >= ma3_curr or c_close >= ma15_curr)
+                    is_trend_intact = bool(ma3_curr >= ma15_curr and (kc_slope is None or kc_slope >= -0.000005))
+                    if (is_above_support or is_trend_intact) and not has_valid_long_exit:
+                        return False, "VETO_HOLD", {
+                            **(final_meta or {}),
+                            "hold_rule": "TREND_LOCK_MASTER_GATE_LONG",
+                            "suppressed_exit_reason": final_reason,
+                            "cause": "多單持倉抗洗盤 Master Gate 硬性一票否決: 價格在 MA15/MA3 之上且通道向上，未達峰頂力竭/結構破壞/大瀑布崩盤，絕對禁止平多！",
+                        }
+
+                elif side == "SHORT":
+                    # 條件 A：MA3 快線正式向上金叉 MA15 慢線
+                    is_ma3_golden_cross = bool(ma3_curr > ma15_curr and ma3_prev <= ma15_prev)
+                    # 條件 B：軌外大陽吞噬 (前根紅 K 跌破 KC 下軌，當前陽線實體吃掉前根 60% 以上)
+                    is_engulfing_bottom = bool(
+                        p_close < prev_kc_lower
+                        and p_close < p_open
+                        and c_close > c_open
+                        and prev_body > 0
+                        and curr_body >= 0.6 * prev_body
+                        and (curr_body >= 0.4 * atr_now or c_close > p_open or c_close > p_high)
+                    )
+                    # 條件 C：低位下刺針 (下影線 >= 1.2倍實體，下影線顯著 >= 0.5*ATR，當前收陽，觸及或跌破下軌)
+                    is_pinbar_bottom = bool(
+                        curr_lower_wick >= 1.2 * curr_body
+                        and curr_lower_wick >= 0.5 * atr_now
+                        and c_close > c_open
+                        and (c_low <= curr_kc_lower or p_low <= prev_kc_lower)
+                    )
+                    is_valley_signal = bool(is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom)
+
+                    # 條件 D：結構失效
+                    is_structure_broken_short = bool(c_close > p_high and c_close > c_open)
+                    # 條件 E：大拉升/軋空暴漲熔斷 (單根大陽線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
+                    is_pump_circuit_breaker = bool(
+                        (c_close - c_open >= 1.8 * atr_now)
+                        and (c_open <= ma15_curr and c_close > ma15_curr)
+                    )
+
+                    has_valid_short_exit = bool(is_valley_signal or is_structure_broken_short or is_pump_circuit_breaker)
+
+                    is_below_resistance = bool(c_close <= ma3_curr or c_close <= ma15_curr)
+                    is_trend_intact_short = bool(ma3_curr <= ma15_curr and (kc_slope is None or kc_slope <= 0.000005))
+                    if (is_below_resistance or is_trend_intact_short) and not has_valid_short_exit:
+                        return False, "VETO_HOLD", {
+                            **(final_meta or {}),
+                            "hold_rule": "TREND_LOCK_MASTER_GATE_SHORT",
+                            "suppressed_exit_reason": final_reason,
+                            "cause": "空單持倉抗洗盤 Master Gate 硬性一票否決: 價格在 MA15/MA3 之下且通道向下，未達谷底力竭/結構破壞/大軋空暴漲，絕對禁止平空！",
+                        }
+
+        if final_exit:
+            return True, final_reason, final_meta
         return result
 
     @staticmethod
@@ -217,9 +346,106 @@ class ExitGate:
         """Existing exit evaluation, followed by the public trend-alignment veto."""
         result = ExitGate._evaluate_core(pos, market_data, current_price, atr, kc_slope)
         should_exit, reason, meta = result
+        # 1. 絕對風險保護出口：最高優先級市價放行
+        if should_exit and reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
+            return result
+
+        # 2. 趨勢鎖定 (Trend Lock) 抗洗盤一票否決機制（2026-10-27 核心授權）：
+        # 買多/開空後若僅為微幅回踩/反抽，守穩 MA3 或 MA15，且未達四項真正峰頂/谷底條件，一律禁止平倉！
+        raw_df = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df") if isinstance(market_data, dict) else None
+        )
+        quote_p = float(current_price or (market_data.current_price if isinstance(market_data, MarketDataSnapshot) else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0))
+        atr_val = (
+            market_data.atr if isinstance(market_data, MarketDataSnapshot)
+            else float(atr or market_data.get("atr", 0.0) if isinstance(market_data, dict) else 0.0)
+        )
+        pos_side = str(pos.get("side", "")).upper()
+
+        if should_exit and raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
+            c_k = raw_df.iloc[-1]
+            p_k = raw_df.iloc[-2]
+            c_close = float(c_k.get("close", quote_p))
+            c_open = float(c_k.get("open", c_close))
+            c_high = float(c_k.get("high", max(c_open, c_close)))
+            c_low = float(c_k.get("low", min(c_open, c_close)))
+            p_close = float(p_k.get("close", c_open))
+            p_open = float(p_k.get("open", p_close))
+            p_high = float(p_k.get("high", max(p_open, p_close)))
+            p_low = float(p_k.get("low", min(p_open, p_close)))
+
+            ma3_curr = float(c_k.get("ma3", c_close))
+            ma3_prev = float(p_k.get("ma3", ma3_curr))
+            ma15_curr = float(c_k.get("ma15", c_close))
+            ma15_prev = float(p_k.get("ma15", ma15_curr))
+
+            prev_kc_upper = float(p_k.get("kc_upper", c_high))
+            prev_kc_lower = float(p_k.get("kc_lower", c_low))
+
+            curr_body = abs(c_close - c_open)
+            prev_body = abs(p_close - p_open)
+
+            if pos_side == "LONG":
+                is_ma3_dead_cross = bool(ma3_curr < ma15_curr and ma3_prev >= ma15_prev)
+                curr_upper_wick = c_high - max(c_open, c_close)
+                is_engulfing_peak = bool(
+                    p_close > prev_kc_upper
+                    and p_close > p_open
+                    and c_close < c_open
+                    and prev_body > 0
+                    and curr_body >= 0.6 * prev_body
+                    and (curr_body >= 0.4 * atr_val or c_close < p_open or c_close < p_low)
+                )
+                is_pinbar_peak = bool(
+                    curr_upper_wick >= 1.2 * curr_body
+                    and curr_upper_wick >= 0.5 * atr_val
+                    and c_close < c_open
+                    and (c_high >= prev_kc_upper or p_high >= prev_kc_upper)
+                )
+                is_structure_broken = bool(c_close < p_low and c_close < c_open)
+
+                # ⚠️ 關鍵鎖定：若僅為中間微幅紅 K 回踩 (close >= ma3 或 close >= ma15)，且未滿足上述四項條件：
+                is_micro_pullback = bool(c_close >= ma3_curr or c_close >= ma15_curr)
+                if is_micro_pullback and not (is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_structure_broken):
+                    return False, "VETO_HOLD", {
+                        **(meta or {}),
+                        "hold_rule": "TREND_LOCK_ANTI_SHAKEOUT_LONG",
+                        "suppressed_exit_reason": reason,
+                        "cause": "多單趨勢鎖定抗洗盤: 微幅紅 K 回踩且價格穩踩在 MA3 或 MA15 之上，未達死叉/大陰吞噬/天地針/結構破壞，一票否決平多，一路持倉拿滿至真正峰頂！",
+                    }
+
+            elif pos_side == "SHORT":
+                is_ma3_golden_cross = bool(ma3_curr > ma15_curr and ma3_prev <= ma15_prev)
+                curr_lower_wick = min(c_open, c_close) - c_low
+                is_engulfing_bottom = bool(
+                    p_close < prev_kc_lower
+                    and p_close < p_open
+                    and c_close > c_open
+                    and prev_body > 0
+                    and curr_body >= 0.6 * prev_body
+                    and (curr_body >= 0.4 * atr_val or c_close > p_open or c_close > p_high)
+                )
+                is_pinbar_bottom = bool(
+                    curr_lower_wick >= 1.2 * curr_body
+                    and curr_lower_wick >= 0.5 * atr_val
+                    and c_close > c_open
+                    and (c_low <= prev_kc_lower or p_low <= prev_kc_lower)
+                )
+                is_structure_broken_short = bool(c_close > p_high and c_close > c_open)
+
+                # ⚠️ 關鍵鎖定：若僅為中間微幅綠 K 反抽 (close <= ma3 或 close <= ma15)，且未滿足上述四項條件：
+                is_micro_bounce = bool(c_close <= ma3_curr or c_close <= ma15_curr)
+                if is_micro_bounce and not (is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_structure_broken_short):
+                    return False, "VETO_HOLD", {
+                        **(meta or {}),
+                        "hold_rule": "TREND_LOCK_ANTI_SHAKEOUT_SHORT",
+                        "suppressed_exit_reason": reason,
+                        "cause": "空單趨勢鎖定抗洗盤: 微幅綠 K 反抽且價格壓制在 MA3 或 MA15 之下，未達金叉/大陽吞噬/天地針/結構破壞，一票否決平空，一路持倉拿滿至真正谷底！",
+                    }
+
         if should_exit and (
-            reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-            or reason in ExitGate.PIVOT_EXIT_REASONS
+            reason in ExitGate.PIVOT_EXIT_REASONS
             or reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
             or "PROFIT_LOCK" in str(reason).upper()
             or "RATCHET" in str(reason).upper()
@@ -1848,9 +2074,12 @@ class EntryGate:
         # ══════════════════════════════════════════════════════════════════
         # 前置門禁 A：平倉後強制冷卻與頻率上限防護 (Post-Exit Cooldown & Rate Limit)
         # 平倉後強制冷卻至少 3 根 1m K 棒 (180 秒)
-        # 多頭/空頭強動能破軌 (is_strong_momentum_breakout) 強制豁免冷卻期，及時捕捉大單邊主升/主跌浪！
+        # 多頭/空頭強動能破軌、反手交易 (signal_side != last_exit_side) 與敏捷觸發強制豁免冷卻期！
         # ══════════════════════════════════════════════════════════════════
-        if last_exit_context and not is_strong_momentum_breakout:
+        last_exit_side = str(last_exit_context.get("side") or "").upper() if last_exit_context else ""
+        is_reverse_reentry = bool(last_exit_side and signal_side in ("LONG", "SHORT") and signal_side != last_exit_side)
+        is_agile_override = any(b in signal_type.upper() for b in ("AGILE", "ENTRY_LONG_CROSS_MID", "ENTRY_SHORT_CROSS_MID", "ENTRY_LONG_BREAKOUT", "ENTRY_SHORT_BREAKDOWN"))
+        if last_exit_context and not is_strong_momentum_breakout and not is_reverse_reentry and not is_agile_override:
             exit_ts = float(last_exit_context.get("timestamp") or 0.0)
             if exit_ts > 0:
                 now_ts = float(last_exit_context.get("current_time") or time.time())
