@@ -23,14 +23,14 @@ logger = logging.getLogger("ExecutionManager")
 
 
 # =========================================================================
-# 🎯 0. 嚴格過濾「真谷底 (True Bottom)」與「真峰頂 (True Top)」唯一評判裁決官
+# 🎯 0. 嚴格過濾「真谷底 (True Bottom)」與「真峰頂 (True Top)」唯一評判裁決官 (方案 B)
 # =========================================================================
 def check_pivot_status(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev,
     kc_upper, kc_lower, prev_kc_upper, prev_kc_lower, current_atr,
 ):
     """
-    全域真峰谷唯一驗證裁決官 (波段狀態機核心):
+    全域真峰谷唯一驗證裁決官 (波段狀態機核心 - 方案 B):
     - is_true_bottom: MA3向上金叉MA15 / 軌外大陽吞噬 / 低位長下影天地針 / 1.8 ATR爆發大陽線
     - is_true_peak: MA3向下死叉MA15 / 軌外大陰吞噬 / 高位長上影天地針 / 1.8 ATR崩盤大陰線
     """
@@ -44,43 +44,43 @@ def check_pivot_status(
     lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
     atr_val = float(current_atr or 0.0)
 
-    # 🟢【真谷底驗證】(代表下跌趨勢正式結束)
+    # 🟢【真谷底驗證】(代表下跌趨勢正式結束 -> 18:15 類型的秒級平空兼反手開多)
     is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
-    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body) and (curr_body >= 0.3 * atr_val)
-    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (lower_wick >= 0.5 * atr_val) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
+    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body)
+    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k['low']) <= kc_lower)
     is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > ma15_curr)
+
     is_true_bottom = is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_bottom
 
-    # 🔴【真峰頂驗證】(代表上漲趨勢正式結束)
+    # 🔴【真峰頂驗證】(代表上漲趨勢正式結束 -> 19:05 類型的秒級平多兼反手開空)
     is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
-    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body) and (curr_body >= 0.3 * atr_val)
-    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (upper_wick >= 0.5 * atr_val) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
+    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body)
+    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k['high']) >= kc_upper)
     is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < ma15_curr)
+
     is_true_peak = is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_spike_peak
 
     return is_true_bottom, is_true_peak
 
 
 # =========================================================================
-# 🧬 0.5 妖幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine)
+# 🧬 0.5 妖幣專用風控與籌碼濾網 (方案 B: 完全棄用 EMA 200 / EMA 50 等慢速指標)
 # =========================================================================
 def evaluate_meme_trade_valid(
     side: str,
     curr_k: Dict[str, Any],
     ma3_curr: float,
     ma15_curr: float,
-    ema200_curr: float,
-    current_atr: float,
-    volume_ma20: float,
+    ema200_curr: float = 0.0,
+    current_atr: float = 0.0,
+    volume_ma20: float = 0.0,
     funding_rate: float = 0.0,
     oi_change_pct: float = 0.01,
     prev_k: Optional[Dict[str, Any]] = None,
 ) -> tuple[bool, str]:
     """
-    妖幣 / 高波動 Meme 幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine)
-    1. 大趨勢過濾 (EMA 200 Anchor)
-       - 當價格在 EMA 200 下方時，所有 MA3/MA15 金叉一律視為「逆勢弱反彈」，禁止執行做多開倉。
-       - 當價格在 EMA 200 上方時，所有 MA3/MA15 死叉一律視為「順勢回踩」，禁止盲目追空。
+    妖幣 / 高波動 Meme 幣專用風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine - 方案 B)
+    1. 方案 B: 完全棄用 EMA 200 / EMA 50 等慢速指標 (改由 check_pivot_status 真峰谷嚴格控制)
     2. 籌碼與槓桿情緒過濾 (Funding Rate & OI)
        - 做多時：資金費率 > 0.1% (0.001) 極端過熱禁止做多；OI <= 0 (持平或減少) 視為誘多，禁止做多。
        - 做空時：資金費率 < -0.1% (-0.001) 極端過冷禁止做空；OI <= 0 視為誘空，禁止做空。
@@ -96,11 +96,7 @@ def evaluate_meme_trade_valid(
 
     side_norm = "BUY" if str(side).upper() in ("BUY", "LONG") else "SELL"
 
-    # 1. 大趨勢過濾 (EMA 200)
-    if side_norm == "BUY" and ema200_curr > 0 and curr_close < ema200_curr:
-        return False, f"PRICE_BELOW_EMA200 (close={curr_close:.6f} < ema200={ema200_curr:.6f})"
-    if side_norm == "SELL" and ema200_curr > 0 and curr_close > ema200_curr:
-        return False, f"PRICE_ABOVE_EMA200 (close={curr_close:.6f} > ema200={ema200_curr:.6f})"
+    # 1. 方案 B 完全棄用 EMA 200 / EMA 50 等慢速指標，避免 1M 起漲點被誤殺！
 
     # 2. 籌碼與槓桿情緒過濾 (Funding Rate & OI)
     if side_norm == "BUY":
@@ -159,7 +155,7 @@ def is_meme_trade_valid(
 
 
 # =========================================================================
-# 🟢 1. 多頭持倉平倉判定 (未見真峰頂且未破壞結構，絕對一票否決平多)
+# 🟢 1. 多頭持倉平倉判定 (方案 B: 檢測真峰頂與結構破壞，震盪假峰頂一票否決)
 # =========================================================================
 def should_exit_long(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr,
@@ -170,24 +166,6 @@ def should_exit_long(
     kc_lower = float(curr_k.get('kc_lower', 0.0))
     prev_kc_lower = float(prev_k.get('kc_lower', 0.0))
 
-    # 方案 A 核心前置檢查：波段是否已實質獲利展開 (最高漲幅 >= 0.5 ATR 或 peak_roe >= 5%)
-    if position:
-        entry_price = float(position.get("entry_price") or 0.0)
-        highest_price = float(position.get("highest_price") or position.get("peak_price") or entry_price)
-        if curr_close > highest_price:
-            highest_price = curr_close
-        gain = highest_price - entry_price if entry_price > 0 else 0.0
-        lev = float(position.get("leverage") or 5.0)
-        cur_roe = (gain / entry_price * 100.0 * lev) if entry_price > 0 else 0.0
-        peak_roe = float(position.get("peak_roe", 0.0) or 0.0)
-        peak_roe_pct = peak_roe * 100.0 if (0.0 < peak_roe < 0.5) else peak_roe
-        peak_roe_pct = max(peak_roe_pct, cur_roe)
-        atr_val = float(current_atr or 0.0)
-        is_expanded = (atr_val > 0 and gain >= 0.5 * atr_val) or (peak_roe_pct >= 5.0)
-        if not is_expanded:
-            # 成本區間正常回踩呼吸，一票否決平多！
-            return False
-
     _, is_real_peak = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
         ma3_curr=ma3_curr, ma3_prev=ma3_prev,
@@ -197,15 +175,18 @@ def should_exit_long(
         current_atr=current_atr,
     )
     if is_real_peak:
-        return True  # 獲利展開後觸發真峰頂門檻，放行平多獲利了結！
+        return True  # 觸發真峰頂 (死叉/大陰吞噬/天地針/1.8ATR暴跌)，放行平多兼反手開空！
 
-    # ⚠️ 2026-10-27 最高指示：開倉後回踩不要平倉也不要硬止損平倉！
-    # 成本區間正常回踩、跌破均線或破前低一律判定為回踩呼吸，絕不平倉割肉！
+    # 最終結構破壞: 跌破波段起漲前低且收盤跌破 MA15 慢線
+    if swing_low_price is not None and curr_close < float(swing_low_price) and curr_close < ma15_curr:
+        return True
+
+    # 震盪假峰谷 (未死叉、無極限訊號、未破壞結構)：一票否決平多，強制鎖死持倉續抱！
     return False
 
 
 # =========================================================================
-# 🔴 2. 空頭持倉平倉判定 (未見真谷底，絕對一票否決平空)
+# 🔴 2. 空頭持倉平倉判定 (方案 B: 檢測真谷底與結構破壞，震盪假谷底一票否決)
 # =========================================================================
 def should_exit_short(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
@@ -216,24 +197,6 @@ def should_exit_short(
     kc_upper = float(curr_k.get('kc_upper', 0.0))
     prev_kc_upper = float(prev_k.get('kc_upper', 0.0))
 
-    # 方案 A 核心前置檢查：波段是否已實質獲利展開 (最大跌幅 >= 0.5 ATR 或 peak_roe >= 5%)
-    if position:
-        entry_price = float(position.get("entry_price") or 0.0)
-        lowest_price = float(position.get("lowest_price") or position.get("trough_price") or entry_price)
-        if lowest_price <= 0 or (curr_close > 0 and curr_close < lowest_price):
-            lowest_price = curr_close
-        drop = entry_price - lowest_price if entry_price > 0 else 0.0
-        lev = float(position.get("leverage") or 5.0)
-        cur_roe = (drop / entry_price * 100.0 * lev) if entry_price > 0 else 0.0
-        peak_roe = float(position.get("peak_roe", 0.0) or 0.0)
-        peak_roe_pct = peak_roe * 100.0 if (0.0 < peak_roe < 0.5) else peak_roe
-        peak_roe_pct = max(peak_roe_pct, cur_roe)
-        atr_val = float(current_atr or 0.0)
-        is_expanded = (atr_val > 0 and drop >= 0.5 * atr_val) or (peak_roe_pct >= 5.0)
-        if not is_expanded:
-            # 成本區間正常反彈呼吸，一票否決平空！
-            return False
-
     is_real_bottom, _ = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
         ma3_curr=ma3_curr, ma3_prev=ma3_prev,
@@ -243,10 +206,13 @@ def should_exit_short(
         current_atr=current_atr,
     )
     if is_real_bottom:
-        return True  # 獲利展開後觸發真谷底門檻，放行平空獲利了結！
+        return True  # 觸發真谷底 (金叉/大陽吞噬/下刺針/1.8ATR暴漲)，放行平空兼反手開多！
 
-    # ⚠️ 2026-10-27 最高指示：開倉後回踩/反彈不要平倉也不要硬止損平倉！
-    # 成本區間正常反彈、突破均線或破前高一律判定為回調呼吸，絕不平倉割肉！
+    # 最終結構破壞: 突破波段起跌前高且收盤站上 MA15 慢線
+    if swing_high_price is not None and curr_close > float(swing_high_price) and curr_close > ma15_curr:
+        return True
+
+    # 震盪假峰谷 (未金叉、無極限訊號、未破壞結構)：一票否決平空，強制鎖死持倉續抱！
     return False
 
 
@@ -335,10 +301,11 @@ class ExecutionManager:
                 if callable(save):
                     save()
 
+        curr_quote = float(quote if quote is not None else market_data.current_price)
         raw_df = getattr(market_data, "raw_df", None)
         c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
         p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)
-        c_c = float(c_k.get("close", market_data.current_price))
+        c_c = float(c_k.get("close", curr_quote))
         c_o = float(c_k.get("open", c_c))
         c_h = float(c_k.get("high", max(c_c, c_o)))
         c_l = float(c_k.get("low", min(c_c, c_o)))
@@ -364,7 +331,7 @@ class ExecutionManager:
         atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
         kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
 
-        # 🎯 核心全域裁決：檢測「真谷底 (True Bottom)」與「真峰頂 (True Top)」
+        # 🎯 核心全域裁決：檢測「真谷底 (True Bottom)」與「真峰頂 (True Top)」(方案 B)
         is_true_bottom, is_true_peak = check_pivot_status(
             curr_k=c_k, prev_k=p_k,
             ma3_curr=m3_c, ma3_prev=m3_p,
@@ -374,13 +341,49 @@ class ExecutionManager:
             current_atr=atr_v,
         )
 
-        # 2. 持倉狀態機控制 (Trend Lock State Machine): 最高第一優先審查真峰頂/真谷底狀態機，秒級平倉兼反手開倉
+        lookback_p = min(len(raw_df), 15) if raw_df is not None and isinstance(raw_df, pd.DataFrame) else 0
+        if lookback_p >= 2:
+            prior_lows = raw_df['low'].iloc[-lookback_p:-1]
+            prior_highs = raw_df['high'].iloc[-lookback_p:-1]
+            swing_low_price = float(prior_lows.min()) if len(prior_lows) > 0 else None
+            swing_high_price = float(prior_highs.max()) if len(prior_highs) > 0 else None
+        else:
+            swing_low_price = None
+            swing_high_price = None
+
+        is_structure_broken_short = (
+            (swing_low_price is not None and c_c < float(swing_low_price) and c_c < m15_c)
+            or should_exit_long(
+                curr_k=c_k, prev_k=p_k,
+                ma3_curr=m3_c, ma3_prev=m3_p,
+                ma15_curr=m15_c, ma15_prev=m15_p,
+                kc_upper=kc_u, prev_kc_upper=p_kc_u,
+                current_atr=atr_v,
+                swing_low_price=swing_low_price,
+                raw_df=klines_df,
+                position=current_position if has_position else None,
+            )
+        )
+        is_structure_broken_long = (
+            (swing_high_price is not None and c_c > float(swing_high_price) and c_c > m15_c)
+            or should_exit_short(
+                curr_k=c_k, prev_k=p_k,
+                ma3_curr=m3_c, ma3_prev=m3_p,
+                ma15_curr=m15_c, ma15_prev=m15_p,
+                kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
+                current_atr=atr_v,
+                swing_high_price=swing_high_price,
+                raw_df=klines_df,
+                position=current_position if has_position else None,
+            )
+        )
+
+        # 2. 持倉狀態機控制 (Trend Lock State Machine - 方案 B): 最高第一優先審查真峰頂/真谷底狀態機，秒級平倉兼反手開倉
         if has_position:
             pos_side = str(current_position.get("side", "")).upper()
             pos_entry = float(current_position.get("entry_price") or 0.0)
             pos_lev = float(current_position.get("leverage") or 5.0)
 
-            # 計算開倉以來歷史最大有利波幅 (Peak Gain) 與當前 ROE (方案 A 波段展開過濾)
             high_seen = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry)
             low_seen = float(current_position.get("lowest_price") or current_position.get("trough_price") or pos_entry)
             if curr_quote > high_seen:
@@ -406,9 +409,6 @@ class ExecutionManager:
             peak_roe_pct = max(peak_roe_pct, cur_roe_pct)
             current_position["peak_roe"] = peak_roe_pct
 
-            # 方案 A 核心鐵律：波段實質展開 (peak_gain >= 0.5 ATR 或 peak_roe >= 5.0%)
-            is_profit_expanded = (atr_v > 0 and gain_from_entry >= 0.5 * atr_v) or (peak_roe_pct >= 5.0)
-
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
@@ -429,84 +429,64 @@ class ExecutionManager:
             reason = ""
             meta = {}
 
-            # 🎯 最高第一優先級：真峰頂與真谷底秒級平倉兼反手（修正開錯方向）
-            # 方案 A 鐵律：只有在實質獲利展開 (is_profit_expanded) 後才放行真峰頂/真谷底平倉！
-            if pos_side == "LONG" and is_true_peak and is_profit_expanded:
-                should_exit = True
-                reason = "CLOSE_LONG_AT_TOP"
-                meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
-                logger.info(
-                    f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單獲利展開捕獲真峰頂！(gain={gain_from_entry:.6f}>=0.5*ATR={0.5*atr_v:.6f}, peak_roe={peak_roe_pct:.2f}%)，"
-                    f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
-                )
-            elif pos_side == "SHORT" and is_true_bottom and is_profit_expanded:
-                should_exit = True
-                reason = "CLOSE_SHORT_AT_BOTTOM"
-                meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
-                logger.info(
-                    f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單獲利展開捕獲真谷底！(gain={gain_from_entry:.6f}>=0.5*ATR={0.5*atr_v:.6f}, peak_roe={peak_roe_pct:.2f}%)，"
-                    f"第一優先級秒級觸發市價平空兼反手開多修正方向！"
-                )
-            elif is_profit_lock:
-                should_exit = True
-                reason = gate_reason
-                meta = gate_meta
-                logger.info(f"💰 [PROFIT_LOCK_TRIGGER] {symbol} 獲利展開觸發鎖利離場: {reason}")
-            elif is_absolute_safety:
-                should_exit = True
-                reason = gate_reason
-                meta = gate_meta
-                logger.info(f"🚨 [ABSOLUTE_SAFETY_TRIGGER] {symbol} 觸發極端避險離場: {reason}")
-            elif pos_side == "LONG":
-                long_exit_ok = should_exit_long(
-                    curr_k=c_k, prev_k=p_k,
-                    ma3_curr=m3_c, ma3_prev=m3_p,
-                    ma15_curr=m15_c, ma15_prev=m15_p,
-                    kc_upper=kc_u, prev_kc_upper=p_kc_u,
-                    current_atr=atr_v,
-                    raw_df=klines_df,
-                    position=current_position,
-                )
-                if long_exit_ok and is_profit_expanded:
-                    should_exit = True
-                    reason = "CLOSE_LONG_AT_TOP"
-                    meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
-                    logger.info(
-                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單結構破壞放行平多！"
-                    )
-                else:
-                    # 震盪假峰谷 (未實質展開或未死叉)：一票否決，強制續抱多單！
-                    breathing_reason = "成本呼吸區回踩保護 (未達0.5ATR且ROE<5%)" if not is_profit_expanded else "穩守支撐未見極限峰頂"
-                    logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單 {breathing_reason} (gain={gain_from_entry:.6f}, close={c_c:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平多，強制持倉續抱拿滿主升段！"
-                    )
-                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
-
-            elif pos_side == "SHORT":
-                short_exit_ok = should_exit_short(
-                    curr_k=c_k, prev_k=p_k,
-                    ma3_curr=m3_c, ma3_prev=m3_p,
-                    ma15_curr=m15_c, ma15_prev=m15_p,
-                    kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
-                    current_atr=atr_v,
-                    raw_df=klines_df,
-                    position=current_position,
-                )
-                if short_exit_ok and is_profit_expanded:
+            # 🎯 方案 B 核心狀態機：
+            # 🔴 空頭持倉中 (SHORT)：
+            if pos_side == "SHORT":
+                if is_true_bottom or is_structure_broken_long:
+                    # 觸發真谷底：18:15 類型的秒級【平空 ＋ 反手開多】
                     should_exit = True
                     reason = "CLOSE_SHORT_AT_BOTTOM"
                     meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
                     logger.info(
-                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單結構破壞放行平空！"
+                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單捕獲真谷底！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
+                        f"第一優先級秒級觸發市價平空兼反手開多修正方向！"
                     )
+                elif is_profit_lock:
+                    should_exit = True
+                    reason = gate_reason
+                    meta = gate_meta
+                    logger.info(f"💰 [PROFIT_LOCK_TRIGGER] {symbol} 獲利展開觸發鎖利離場: {reason}")
+                elif is_absolute_safety:
+                    should_exit = True
+                    reason = gate_reason
+                    meta = gate_meta
+                    logger.info(f"🚨 [ABSOLUTE_SAFETY_TRIGGER] {symbol} 觸發極端避險離場: {reason}")
                 else:
-                    breathing_reason = "成本呼吸區反彈保護 (未達0.5ATR且ROE<5%)" if not is_profit_expanded else "壓制阻力未見極限谷底"
+                    # 震盪假峰谷 (未金叉、無極限訊號)：一票否決，強制續抱空單！
                     logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單 {breathing_reason} (drop={gain_from_entry:.6f}, close={c_c:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平空，強制持倉續抱拿滿主跌段！"
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單震盪假峰谷 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                        f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
                     )
                     return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
+
+            # 🟢 多頭持倉中 (LONG)：
+            elif pos_side == "LONG":
+                if is_true_peak or is_structure_broken_short:
+                    # ⚠️ 19:05 峰頂死叉成立當下，秒級【平多 ＋ 即刻在頂部起跌點開空】：
+                    should_exit = True
+                    reason = "CLOSE_LONG_AT_TOP"
+                    meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
+                    logger.info(
+                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
+                        f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
+                    )
+                elif is_profit_lock:
+                    should_exit = True
+                    reason = gate_reason
+                    meta = gate_meta
+                    logger.info(f"💰 [PROFIT_LOCK_TRIGGER] {symbol} 獲利展開觸發鎖利離場: {reason}")
+                elif is_absolute_safety:
+                    should_exit = True
+                    reason = gate_reason
+                    meta = gate_meta
+                    logger.info(f"🚨 [ABSOLUTE_SAFETY_TRIGGER] {symbol} 觸發極端避險離場: {reason}")
+                else:
+                    # 震盪假峰谷 (未死叉、無極限訊號)：一票否決，強制續抱多單！
+                    logger.info(
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰谷 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                        f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
             if should_exit:
 

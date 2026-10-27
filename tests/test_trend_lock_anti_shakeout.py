@@ -1152,6 +1152,222 @@ async def test_no_hard_stop_loss_only_profit_lock_waterfall_and_pivots():
     assert "CIRCUIT_BREAKER_HARD_SL" not in close_kwargs["reason"], "嚴禁觸發硬止損！"
 
 
+@pytest.mark.anyio
+async def test_scheme_b_1815_valley_golden_cross_atomic_flip_long():
+    """
+    【方案 B 核心測試】18:15 谷底金叉起漲點秒級開多 (Atomic Flip Short to Long)：
+    - 徹底棄用 EMA 200 / EMA 50 等慢線依賴
+    - 空單持倉中，一旦 check_pivot_status 判定為真谷底 (MA3 金叉 MA15)
+    - 系統秒級一次性執行平空兼反手開多 (PIVOT_FLIP_LONG)，帶入 direction_override=True
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_short = {
+        "symbol": "1000PEPEUSDT",
+        "side": "SHORT",
+        "entry_price": 0.0043500,
+        "amount": 50000.0,
+        "lowest_price": 0.0042600,
+    }
+
+    bars = []
+    base_p = 0.0043000
+    for i in range(35):
+        p = base_p - i * 0.000001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p + 0.0000005, "high": p + 0.000001, "low": p - 0.000001, "close": p - 0.0000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000015,
+            "kc_middle": p, "kc_upper": p + 0.00002, "kc_lower": p - 0.00002,
+        })
+
+    # 構造 18:15 谷底金叉棒: 前棒 ma3 <= ma15, 當棒放量強陽上穿 ma15
+    bars[-2]["close"] = 0.0042650
+    bars[-2]["open"] = 0.0042700
+    bars[-2]["low"] = 0.0042600
+    bars[-2]["high"] = 0.0042710
+
+    bars[-1]["open"] = 0.0042650
+    bars[-1]["close"] = 0.0042850
+    bars[-1]["high"] = 0.0042880
+    bars[-1]["low"] = 0.0042640
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"1000PEPEUSDT": pos_short}
+            self.position_meta = {}
+            self.channel_exit_frames = {"1000PEPEUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.0042850,
+    )
+
+    assert res.get("status") == "SUCCESS_FLIP"
+    assert res.get("side") == "LONG"
+    assert close_mock.called is True
+    assert open_mock.called is True
+    open_kwargs = open_mock.call_args.kwargs
+    assert open_kwargs["side"] == "LONG"
+    assert open_kwargs["meta"]["entry_type"] == "PIVOT_FLIP_LONG"
+    assert open_kwargs["meta"]["direction_override"] is True
+
+
+@pytest.mark.anyio
+async def test_scheme_b_1905_peak_dead_cross_atomic_flip_short():
+    """
+    【方案 B 核心測試】19:05 峰頂死叉秒級反手 (Atomic Flip Long to Short)：
+    - 多單持倉中，一旦 check_pivot_status 判定為真峰頂 (MA3 死叉 MA15)
+    - 系統在死叉當根 K 棒收線時立即觸發平多，並秒級反手開空 (PIVOT_FLIP_SHORT)
+    - 徹底根除拖延至 19:10 暴跌才後知後覺平多的惡質 Bug
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_long = {
+        "symbol": "1000PEPEUSDT",
+        "side": "LONG",
+        "entry_price": 0.0042800,
+        "amount": 50000.0,
+        "highest_price": 0.0043120,
+    }
+
+    bars = []
+    base_p = 0.0042900
+    for i in range(35):
+        p = base_p + i * 0.000001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p - 0.0000005, "high": p + 0.000001, "low": p - 0.000001, "close": p + 0.0000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000015,
+            "kc_middle": p, "kc_upper": p + 0.00002, "kc_lower": p - 0.00002,
+        })
+
+    # 19:03 衝頂
+    bars[-3]["high"] = 0.0043120
+    bars[-3]["close"] = 0.0043100
+
+    # 19:04 高位長上影走弱
+    bars[-2]["open"] = 0.0043100
+    bars[-2]["high"] = 0.0043120
+    bars[-2]["close"] = 0.0043020
+
+    # 19:05 陰線下殺，MA3 正式死叉 MA15
+    bars[-1]["open"] = 0.0043020
+    bars[-1]["high"] = 0.0043030
+    bars[-1]["low"] = 0.0042780
+    bars[-1]["close"] = 0.0042800
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"1000PEPEUSDT": pos_long}
+            self.position_meta = {}
+            self.channel_exit_frames = {"1000PEPEUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.0042800,
+    )
+
+    assert res.get("status") == "SUCCESS_FLIP"
+    assert res.get("side") == "SHORT"
+    assert close_mock.called is True
+    assert open_mock.called is True
+    open_kwargs = open_mock.call_args.kwargs
+    assert open_kwargs["side"] == "SHORT"
+    assert open_kwargs["meta"]["entry_type"] == "PIVOT_FLIP_SHORT"
+    assert open_kwargs["meta"]["direction_override"] is True
+
+
+@pytest.mark.anyio
+async def test_scheme_b_trend_lock_veto_micro_pullback():
+    """
+    【方案 B 核心測試】震盪假峰谷一票否決 (Trend Lock 鋼鐵鎖定)：
+    - 多單持倉中，微幅小紅 K (陰線回踩)，未死叉、未吞噬、未見長上影天地針
+    - 系統判定為震盪假峰谷，一票否決平倉，強制續抱拿滿主升段
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_long = {
+        "symbol": "1000PEPEUSDT",
+        "side": "LONG",
+        "entry_price": 0.0042800,
+        "amount": 50000.0,
+        "highest_price": 0.0043100,
+    }
+
+    bars = []
+    base_p = 0.0042900
+    for i in range(35):
+        p = base_p + i * 0.000001
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p - 0.0000005, "high": p + 0.000001, "low": p - 0.000001, "close": p + 0.0000005,
+            "volume": 20000.0, "is_closed": True, "atr": 0.000015,
+            "kc_middle": p, "kc_upper": p + 0.00002, "kc_lower": p - 0.00002,
+        })
+
+    # 微幅小陰回踩 (實體極小，收盤依然穩守 MA3 與 MA15 之上，未破前低)
+    p33 = bars[-2]["close"]
+    bars[-1]["open"] = p33
+    bars[-1]["close"] = p33 - 0.0000003
+    bars[-1]["high"] = p33 + 0.0000002
+    bars[-1]["low"] = p33 - 0.0000005
+    quote_val = bars[-1]["close"]
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"1000PEPEUSDT": pos_long}
+            self.position_meta = {}
+            self.channel_exit_frames = {"1000PEPEUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=quote_val,
+    )
+
+    assert res.get("status") == "HOLD"
+    assert res.get("reason") == "TREND_LOCK_MASTER_LOCK_LONG"
+    assert close_mock.called is False
+    assert open_mock.called is False
+
+
+
 
 
 
