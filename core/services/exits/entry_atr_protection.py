@@ -63,6 +63,59 @@ def atr_exit_reason(position, price, frame=None):
     return DualTrackExitStrategy().evaluate_exit(position, frame, current_price=price)
 
 
+def check_trend_lock_exit_permission(position, frame, price):
+    """
+    四大離場門檻硬核驗：未滿足四大離場門檻之一，強制一票否決平倉！
+    """
+    if frame is None or len(frame) < 2:
+        return True
+    
+    from core.services.execution_manager import should_exit_long, should_exit_short
+    
+    side = str(position.get("side", "")).upper()
+    df = frame.copy()
+    if "ma3" not in df.columns:
+        df["ma3"] = df["close"].rolling(3).mean().bfill()
+    if "ma15" not in df.columns:
+        df["ma15"] = df["close"].rolling(15).mean().bfill()
+    if "atr" not in df.columns:
+        df["atr"] = (df["high"] - df["low"]).rolling(14).mean().bfill()
+        
+    curr_k = df.iloc[-1].to_dict()
+    prev_k = df.iloc[-2].to_dict()
+    ma3_c = float(curr_k.get("ma3", curr_k["close"]))
+    ma3_p = float(prev_k.get("ma3", prev_k["close"]))
+    ma15_c = float(curr_k.get("ma15", curr_k["close"]))
+    ma15_p = float(prev_k.get("ma15", prev_k["close"]))
+    kc_u = float(curr_k.get("kc_upper", 0.0))
+    p_kc_u = float(prev_k.get("kc_upper", 0.0))
+    kc_lo = float(curr_k.get("kc_lower", 0.0))
+    p_kc_lo = float(prev_k.get("kc_lower", 0.0))
+    atr_v = float(curr_k.get("atr", 0.0) or 0.0)
+    
+    if side == "LONG":
+        return should_exit_long(
+            curr_k=curr_k, prev_k=prev_k,
+            ma3_curr=ma3_c, ma3_prev=ma3_p,
+            ma15_curr=ma15_c, ma15_prev=ma15_p,
+            kc_upper=kc_u, prev_kc_upper=p_kc_u,
+            current_atr=atr_v,
+            raw_df=df,
+            position=position,
+        )
+    elif side == "SHORT":
+        return should_exit_short(
+            curr_k=curr_k, prev_k=prev_k,
+            ma3_curr=ma3_c, ma3_prev=ma3_p,
+            ma15_curr=ma15_c, ma15_prev=ma15_p,
+            kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
+            current_atr=atr_v,
+            raw_df=df,
+            position=position,
+        )
+    return True
+
+
 async def enforce_atr_protection(account, symbol, price):
     """Observe peak exits even when the strategy scan is delayed."""
     import copy
@@ -140,10 +193,32 @@ async def enforce_atr_protection(account, symbol, price):
                         trend_shield_hold = True
 
             # 只要趨勢保護鎖生效，中途的盤中回踩或普通觸軌一律強制不平倉，繼續死抱主升/主跌段！
-            if trend_shield_hold and exit_cause in ("INTRADAY_PEAK_PULLBACK", "INTRADAY_TROUGH_REBOUND", "KC_MIDLINE_TOUCH"):
+            if trend_shield_hold and exit_cause in (
+                "INTRADAY_PEAK_PULLBACK",
+                "INTRADAY_TROUGH_REBOUND",
+                "KC_MIDLINE_TOUCH",
+                "KC_MIDLINE_RECLAIM_CLOSE",
+                "EXIT_BY_KC_MIDLINE_RETRACE",
+                "EXIT_BY_SHORT_CONFIRMED_KC_MIDLINE_REVERSAL",
+            ):
                 account.log(
                     f"🛡️ [TREND_SHIELD] symbol={symbol} side={side} "
                     f"大趨勢保持完整 ({market_signal.get('status', '')})，中途回踩強制不平倉！繼續抱牢主波段 (cause={exit_cause})",
+                    "INFO",
+                )
+                state = position.get("kc_true_extreme_exit_state")
+                if isinstance(state, dict):
+                    state["pending"] = None
+                meta_state = meta.get("kc_true_extreme_exit_state")
+                if isinstance(meta_state, dict):
+                    meta_state["pending"] = None
+                return False
+
+            # ⚠️ 【四大離場門檻總鎖定】：未滿足離場門檻，絕對一票否決平倉！
+            if not check_trend_lock_exit_permission(position, frame, price):
+                account.log(
+                    f"🛡️ [TREND_LOCK_MASTER_VETO] symbol={symbol} side={position.get('side')} "
+                    f"未滿足四大極限離場門檻，entry_atr_protection 一票否決 KC 結構平倉，強制續抱！(reason={exit_reason})",
                     "INFO",
                 )
                 state = position.get("kc_true_extreme_exit_state")
@@ -269,6 +344,12 @@ async def enforce_atr_protection(account, symbol, price):
         meta.update({key: copy.deepcopy(position[key])
                      for key in STATE_KEYS if key in position})
         account.save_state()
+    if frame is not None and not check_trend_lock_exit_permission(position, frame, price):
+        account.log(
+            f"🛡️ [TREND_LOCK_MASTER_VETO] symbol={symbol} side={position.get('side')} "
+            f"未滿足四大極限離場門檻，entry_atr_protection 一票否決 Channel Swing 平倉，強制續抱！(reason={reason})",
+            "INFO",
+        )
         return False
     await account.close_position(symbol, price, "Channel Swing " + reason, is_manual=True)
     return True

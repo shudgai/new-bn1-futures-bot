@@ -217,7 +217,7 @@ class ExitGate:
         # 🟢 最高優先級：持倉鎖定（Trend Lock）硬性卡死過濾（2026-10-27 核心授權）
         # 只要收盤價仍高於 MA3 或高於 MA15，未滿足極限峰頂 A/B/C/D 任一條件，【絕對禁止平多】！
         # ══════════════════════════════════════════════════════════════════
-        if final_exit and final_reason not in ExitGate.ABSOLUTE_SAFETY_REASONS:
+        if final_exit and final_reason not in ExitGate.ABSOLUTE_SAFETY_REASONS and final_reason not in ExitGate.PIVOT_EXIT_REASONS:
             side = str((pos or {}).get("side") or "").upper()
             if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 2:
                 c_k = frame.iloc[-1]
@@ -363,7 +363,7 @@ class ExitGate:
         )
         pos_side = str(pos.get("side", "")).upper()
 
-        if should_exit and raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
+        if should_exit and reason not in ExitGate.ABSOLUTE_SAFETY_REASONS and reason not in ExitGate.PIVOT_EXIT_REASONS and raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
             c_k = raw_df.iloc[-1]
             p_k = raw_df.iloc[-2]
             c_close = float(c_k.get("close", quote_p))

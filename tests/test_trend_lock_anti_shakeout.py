@@ -350,3 +350,74 @@ def test_real_trade_1219_fresh_long_veto_exit():
     should_exit, reason, meta = ExitGate.evaluate(pos_long, market_data)
     assert should_exit is False, f"12:19 微幅回踩不應平多，但被觸發: {reason}"
     assert "TREND_LOCK" in str(reason) or "VETO" in str(reason) or "HOLD" in str(reason)
+
+
+def test_real_trade_1501_bottom_consolidation_short_veto_hold():
+    """
+    🔴 15:01 底部震盪時的平空硬核驗：
+    is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev) # 15:01 時為 False
+    is_structure_broken = curr_k['close'] > swing_high_price                  # 15:01 時為 False (遠低於前高)
+    is_spike_circuit_breaker = (curr_body >= 1.8 * current_atr) and (curr_k['close'] > ma15_curr) # 15:01 時為 False
+
+    ⚠️ 15:01 均未觸發上述離場條件，系統強制 return False 續抱空單！
+    """
+    from core.services.execution_manager import should_exit_short
+
+    pos_short = {
+        "side": "SHORT",
+        "entry_price": 100.0,
+        "lowest_price": 95.0,
+        "open_timestamp": 60_000,
+    }
+    # 15:01 底部微幅震盪，價格在 95.5~95.8，遠低於開倉與波段高點 100.0，且 ma3(95.6) <= ma15(96.5)
+    bars = [
+        dict(timestamp=60_000, open=100.0, high=100.2, low=97.0, close=97.5, kc_upper=101.0, kc_lower=95.0, atr=1.0, ma3=98.0, ma15=99.5, is_closed=True),
+        dict(timestamp=120_000, open=97.5, high=97.6, low=95.0, close=95.2, kc_upper=100.5, kc_lower=94.5, atr=1.0, ma3=96.2, ma15=98.0, is_closed=True),
+        dict(timestamp=180_000, open=95.2, high=95.8, low=95.1, close=95.6, kc_upper=100.0, kc_lower=94.0, atr=1.0, ma3=95.6, ma15=96.5, is_closed=True),
+    ]
+    df = pd.DataFrame(bars)
+    curr_k = bars[-1]
+    prev_k = bars[-2]
+
+    # 硬核調用 should_exit_short
+    can_exit = should_exit_short(
+        curr_k=curr_k,
+        prev_k=prev_k,
+        ma3_curr=curr_k["ma3"],
+        ma3_prev=prev_k["ma3"],
+        ma15_curr=curr_k["ma15"],
+        ma15_prev=prev_k["ma15"],
+        kc_lower=curr_k["kc_lower"],
+        prev_kc_lower=prev_k["kc_lower"],
+        current_atr=1.0,
+        raw_df=df,
+        position=pos_short,
+    )
+    assert can_exit is False, "15:01 底部震盪時未觸發四大離場門檻，系統必須強制 return False 續抱空單！"
+
+
+def test_real_trade_1513_low_range_consolidation_short_veto_hold():
+    """
+    🔴 15:13 低位狹幅橫盤平空硬核驗：
+    收盤價未能實體突破波段高點 (swing_high_price)，且未金叉，
+    即使觸及中軌或微幅反彈，系統強制一票否決平空！
+    """
+    from core.services.exits.entry_atr_protection import check_trend_lock_exit_permission
+
+    pos_short = {
+        "side": "SHORT",
+        "entry_price": 0.0195,
+        "lowest_price": 0.0182,
+        "open_timestamp": 60_000,
+    }
+    bars = [
+        dict(timestamp=60_000, open=0.0195, high=0.0196, low=0.0185, close=0.0186, kc_upper=0.0198, kc_lower=0.0182, atr=0.0003, ma3=0.0190, ma15=0.0194, is_closed=True),
+        dict(timestamp=120_000, open=0.0186, high=0.0187, low=0.0181, close=0.0183, kc_upper=0.0196, kc_lower=0.0180, atr=0.0003, ma3=0.0185, ma15=0.0192, is_closed=True),
+        # 15:13 狹幅橫盤小陽 K (close=0.0184 仍遠低於 entry 0.0195 與 ma15 0.0190)
+        dict(timestamp=180_000, open=0.0183, high=0.0185, low=0.0182, close=0.0184, kc_upper=0.0195, kc_lower=0.0179, atr=0.0003, ma3=0.0184, ma15=0.0190, is_closed=True),
+    ]
+    df = pd.DataFrame(bars)
+
+    permission = check_trend_lock_exit_permission(pos_short, df, price=0.0184)
+    assert permission is False, "15:13 狹幅橫盤未觸發四大門檻，check_trend_lock_exit_permission 必須返回 False 一票否決！"
+

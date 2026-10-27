@@ -25,9 +25,23 @@ logger = logging.getLogger("ExecutionManager")
 # =========================================================================
 # 🟢 1. 多頭持倉【強制續抱鐵律】 (未觸發離場門檻，絕對一票否決平多)
 # =========================================================================
-def should_exit_long(curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr):
-    # 門檻 A：結構破壞 (收盤價實體跌破谷底轉折前 K 棒最低點 prev_k['low'])
-    is_structure_broken = float(curr_k['close']) < float(prev_k['low'])
+def should_exit_long(
+    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr,
+    raw_df=None, position=None, swing_low_price=None,
+):
+    # 計算本波上漲的真實波段低點 (Swing Low / Bottom Pivot)
+    if swing_low_price is None:
+        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            lookback = min(len(raw_df), 15)
+            swing_low_price = float(raw_df['low'].iloc[-lookback:].min())
+        else:
+            swing_low_price = float(prev_k.get('low', curr_k.get('low', 0.0)))
+        if entry_price > 0:
+            swing_low_price = min(swing_low_price, entry_price)
+
+    # 門檻 A：真正的結構破壞 (收盤價實體跌破本波波段低點 Swing Low 且跌破 MA15 慢線)
+    is_structure_broken = (float(curr_k['close']) < float(swing_low_price)) and (float(curr_k['close']) < float(ma15_curr))
     
     # 門檻 B：MA3 快線正式向下死叉 MA15 慢線
     is_ma3_dead_cross = (float(ma3_curr) < float(ma15_curr)) and (float(ma3_prev) >= float(ma15_prev))
@@ -56,7 +70,7 @@ def should_exit_long(curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, k
         and (float(curr_k['close']) < float(ma15_curr))
     )
     
-    # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平多邏輯強制 return False！中間任何小幅回踩一律續抱！
+    # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平多邏輯強制 return False！高位任何小幅回踩一律續抱！
     if not (is_structure_broken or is_ma3_dead_cross or is_peak_signal or is_crash_circuit_breaker):
         return False
         
@@ -66,9 +80,23 @@ def should_exit_long(curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, k
 # =========================================================================
 # 🔴 2. 空頭持倉【強制續抱鐵律】 (未觸發離場門檻，絕對一票否決平空)
 # =========================================================================
-def should_exit_short(curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr):
-    # 門檻 A：結構破壞 (收盤價實體突破頂部轉折前 K 棒最高點 prev_k['high'])
-    is_structure_broken = float(curr_k['close']) > float(prev_k['high'])
+def should_exit_short(
+    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
+    raw_df=None, position=None, swing_high_price=None,
+):
+    # 計算本波下跌的真實波段高點 (Swing High / Top Pivot)
+    if swing_high_price is None:
+        entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+            lookback = min(len(raw_df), 15)
+            swing_high_price = float(raw_df['high'].iloc[-lookback:].max())
+        else:
+            swing_high_price = float(prev_k.get('high', curr_k.get('high', 0.0)))
+        if entry_price > 0:
+            swing_high_price = max(swing_high_price, entry_price)
+
+    # 門檻 A：真正的結構破壞 (收盤價實體突破本波波段高點 Swing High 且站上 MA15 慢線)
+    is_structure_broken = (float(curr_k['close']) > float(swing_high_price)) and (float(curr_k['close']) > float(ma15_curr))
     
     # 門檻 B：MA3 快線正式向上金叉 MA15 慢線
     is_ma3_golden_cross = (float(ma3_curr) > float(ma15_curr)) and (float(ma3_prev) <= float(ma15_prev))
@@ -97,7 +125,7 @@ def should_exit_short(curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, 
         and (float(curr_k['close']) > float(ma15_curr))
     )
     
-    # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平空邏輯強制 return False！中間任何小幅反彈一律續抱！
+    # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平空邏輯強制 return False！低位任何小幅反彈/橫盤一律續抱！
     if not (is_structure_broken or is_ma3_golden_cross or is_bottom_signal or is_spike_circuit_breaker):
         return False
         
@@ -240,6 +268,8 @@ class ExecutionManager:
                                 ma15_curr=m15_c, ma15_prev=m15_p,
                                 kc_upper=kc_u, prev_kc_upper=p_kc_u,
                                 current_atr=atr_v,
+                                raw_df=klines_df,
+                                position=current_position,
                             )
                             if not can_exit:
                                 logger.info(
@@ -255,6 +285,8 @@ class ExecutionManager:
                                 ma15_curr=m15_c, ma15_prev=m15_p,
                                 kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
                                 current_atr=atr_v,
+                                raw_df=klines_df,
+                                position=current_position,
                             )
                             if not can_exit:
                                 logger.info(
