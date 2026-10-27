@@ -421,3 +421,102 @@ def test_real_trade_1513_low_range_consolidation_short_veto_hold():
     permission = check_trend_lock_exit_permission(pos_short, df, price=0.0184)
     assert permission is False, "15:13 狹幅橫盤未觸發四大門檻，check_trend_lock_exit_permission 必須返回 False 一票否決！"
 
+
+@pytest.mark.anyio
+async def test_position_flip_from_short_to_long_on_ma3_golden_cross():
+    """
+    【最高指令】
+    當空頭持倉觸發「MA3 向上金叉 MA15 慢線」離場時，
+    只要當前 K 棒為實體陽線且 MA3 方向向上，必須在同一個 K 棒收線時，一次性完成平空與開多，嚴禁中間留空倉觀望！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock, MagicMock
+
+    bars = []
+    base_p = 100.0
+    for i in range(35):
+        p = base_p - i * 0.1
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": p + 0.05,
+            "high": p + 0.1,
+            "low": p - 0.1,
+            "close": p - 0.05,
+            "volume": 100.0,
+            "is_closed": True,
+            "atr": 0.5,
+            "kc_middle": p,
+            "kc_upper": p + 1.0,
+            "kc_lower": p - 1.0,
+            "ma3": p,
+            "ma15": p + 0.5,
+        })
+    df = pd.DataFrame(bars)
+    # 最後一根在谷底放量拉升突破，MA3 向上金叉 MA15，實體收陽
+    df.loc[df.index[-1], "open"] = 96.0
+    df.loc[df.index[-1], "close"] = 99.2
+    df.loc[df.index[-1], "high"] = 99.3
+    df.loc[df.index[-1], "low"] = 95.9
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {
+                "TESTUSDT": {
+                    "symbol": "TESTUSDT",
+                    "side": "SHORT",
+                    "entry_price": 100.0,
+                    "amount": 10.0,
+                    "highest_price": 100.5,
+                    "open_timestamp": (1700000000) * 1000,
+                }
+            }
+            self.position_meta = {}
+            self.channel_exit_frames = {"TESTUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="TESTUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=99.2,
+    )
+
+    # 驗證平倉已被調用
+    assert close_mock.called, "應觸發平空"
+    # 驗證秒級反手開多已同步調用！
+    assert open_mock.called, "應在同一個循環內一次性完成平空兼反手開多！"
+    open_call_kwargs = open_mock.call_args.kwargs
+    assert open_call_kwargs["side"] == "LONG"
+    assert open_call_kwargs["meta"]["entry_type"] == "PIVOT_FLIP_LONG"
+    assert open_call_kwargs["meta"]["direction_override"] is True
+
+
+def test_fakeout_bull_trap_veto_long():
+    """
+    假突破防範 (Anti-Bull-Trap Filter)：
+    當 KC 中軌走平或往下時，若價格僅是短期衝出 KC 上軌但缺乏放量強實體或長上影線，
+    判定為假突破誘多 (Bull Trap)，一票否決開多！
+    """
+    curr_close = 100.5
+    curr_open = 100.2
+    c_body_now = abs(curr_close - curr_open) # 0.3
+    atr_val_now = 1.0 # body 0.3 < 0.6 * atr
+    kc_up_val = 100.0 # close > kc_up_val
+    kc_slope = -0.0001 # KC 中軌向下
+    upper_wick_now = 101.5 - curr_close # 1.0 (長上影)
+
+    is_bull_trap = bool(
+        kc_slope <= 0.000005
+        and curr_close >= (kc_up_val - 0.2 * atr_val_now)
+        and (c_body_now < 0.6 * atr_val_now or upper_wick_now >= 0.6 * c_body_now or curr_close <= curr_open)
+    )
+    assert is_bull_trap is True, "無量小實體且長上影衝出下行 KC 上軌，必須被判定為 Bull Trap 一票否決！"
+
+

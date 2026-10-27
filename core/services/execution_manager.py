@@ -29,49 +29,59 @@ def should_exit_long(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr,
     raw_df=None, position=None, swing_low_price=None,
 ):
-    # 計算本波上漲的真實波段低點 (Swing Low / Bottom Pivot)
+    # 計算本波上漲的真實波段起漲低點 (Swing Low / Bottom Pivot)
     if swing_low_price is None:
         entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        lowest_p = float((position or {}).get("lowest_price", 0.0) or 0.0)
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            lookback = min(len(raw_df), 15)
+            lookback = min(len(raw_df), 45)
             swing_low_price = float(raw_df['low'].iloc[-lookback:].min())
         else:
             swing_low_price = float(prev_k.get('low', curr_k.get('low', 0.0)))
         if entry_price > 0:
             swing_low_price = min(swing_low_price, entry_price)
+        if lowest_p > 0:
+            swing_low_price = min(swing_low_price, lowest_p)
 
-    # 門檻 A：真正的結構破壞 (收盤價實體跌破本波波段低點 Swing Low 且跌破 MA15 慢線)
-    is_structure_broken = (float(curr_k['close']) < float(swing_low_price)) and (float(curr_k['close']) < float(ma15_curr))
+    curr_close = float(curr_k['close'])
+    curr_open = float(curr_k['open'])
+    curr_body = abs(curr_close - curr_open)
+    prev_close = float(prev_k['close'])
+    prev_open = float(prev_k['open'])
+    prev_body = abs(prev_close - prev_open)
+    upper_wick = float(curr_k['high']) - max(curr_open, curr_close)
+    atr_val = float(current_atr or 0.0)
+
+    # 門檻 A：真正的結構破壞 (收盤價實體跌破本波波段起漲低點 Swing Low 且跌破 MA15 慢線)
+    is_structure_broken = (curr_close < float(swing_low_price)) and (curr_close < float(ma15_curr))
     
-    # 門檻 B：MA3 快線正式向下死叉 MA15 慢線
+    # 門檻 B：MA3 快線正式向下死叉 MA15 慢線，且當前 K 棒為實體陰線 + MA3 向下確認
     is_ma3_dead_cross = (float(ma3_curr) < float(ma15_curr)) and (float(ma3_prev) >= float(ma15_prev))
+    is_bearish_confirm = (curr_close < curr_open) and (float(ma3_curr) < float(ma3_prev))
+    is_pivot_flip_short = is_ma3_dead_cross and is_bearish_confirm
     
     # 門檻 C：極限見頂 (軌外大陰吞噬 >= 60% OR 高位長上影天地針)
-    curr_body = abs(float(curr_k['close']) - float(curr_k['open']))
-    prev_body = abs(float(prev_k['close']) - float(prev_k['open']))
-    upper_wick = float(curr_k['high']) - max(float(curr_k['open']), float(curr_k['close']))
-    
     is_engulfing_peak = (
-        (float(prev_k['close']) > float(prev_kc_upper))
-        and (float(curr_k['close']) < float(curr_k['open']))
+        (prev_close > float(prev_kc_upper))
+        and (curr_close < curr_open)
         and (curr_body >= 0.6 * prev_body)
     )
     is_pinbar_peak = (
         (upper_wick >= 1.2 * curr_body)
-        and (upper_wick >= 0.5 * float(current_atr or 0.0))
-        and (float(curr_k['close']) < float(curr_k['open']))
+        and (upper_wick >= 0.5 * atr_val)
+        and (curr_close < curr_open)
         and (float(curr_k['high']) >= float(kc_upper))
     )
     is_peak_signal = is_engulfing_peak or is_pinbar_peak
     
     # 門檻 D：大瀑布/崩盤熔斷 (單根大陰線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
     is_crash_circuit_breaker = (
-        (curr_body >= 1.8 * float(current_atr or 0.0))
-        and (float(curr_k['close']) < float(ma15_curr))
+        (curr_body >= 1.8 * atr_val)
+        and (curr_close < float(ma15_curr))
     )
     
     # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平多邏輯強制 return False！高位任何小幅回踩一律續抱！
-    if not (is_structure_broken or is_ma3_dead_cross or is_peak_signal or is_crash_circuit_breaker):
+    if not (is_structure_broken or is_pivot_flip_short or is_peak_signal or is_crash_circuit_breaker):
         return False
         
     return True # 符合離場門檻，執行平多（若同時滿足開空條件，即刻反手開空）
@@ -84,49 +94,59 @@ def should_exit_short(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
     raw_df=None, position=None, swing_high_price=None,
 ):
-    # 計算本波下跌的真實波段高點 (Swing High / Top Pivot)
+    # 計算本波下跌的真實波段起跌高點 (Swing High / Top Pivot)
     if swing_high_price is None:
         entry_price = float((position or {}).get("entry_price", 0.0) or 0.0)
+        highest_p = float((position or {}).get("highest_price", 0.0) or 0.0)
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            lookback = min(len(raw_df), 15)
+            lookback = min(len(raw_df), 45)
             swing_high_price = float(raw_df['high'].iloc[-lookback:].max())
         else:
             swing_high_price = float(prev_k.get('high', curr_k.get('high', 0.0)))
         if entry_price > 0:
             swing_high_price = max(swing_high_price, entry_price)
+        if highest_p > 0:
+            swing_high_price = max(swing_high_price, highest_p)
 
-    # 門檻 A：真正的結構破壞 (收盤價實體突破本波波段高點 Swing High 且站上 MA15 慢線)
-    is_structure_broken = (float(curr_k['close']) > float(swing_high_price)) and (float(curr_k['close']) > float(ma15_curr))
+    curr_close = float(curr_k['close'])
+    curr_open = float(curr_k['open'])
+    curr_body = abs(curr_close - curr_open)
+    prev_close = float(prev_k['close'])
+    prev_open = float(prev_k['open'])
+    prev_body = abs(prev_close - prev_open)
+    lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
+    atr_val = float(current_atr or 0.0)
+
+    # 門檻 A：真正的結構破壞 (收盤價實體突破本波波段起跌高點 Swing High 且站上 MA15 慢線)
+    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > float(ma15_curr))
     
-    # 門檻 B：MA3 快線正式向上金叉 MA15 慢線
+    # 門檻 B：MA3 快線正式向上金叉 MA15 慢線，且當前 K 棒為實體陽線 + MA3 向上確認
     is_ma3_golden_cross = (float(ma3_curr) > float(ma15_curr)) and (float(ma3_prev) <= float(ma15_prev))
+    is_bullish_confirm = (curr_close > curr_open) and (float(ma3_curr) > float(ma3_prev))
+    is_pivot_flip_long = is_ma3_golden_cross and is_bullish_confirm
     
     # 門檻 C：極限見底 (軌外大陽吞噬 >= 60% OR 低位長下影下刺針)
-    curr_body = abs(float(curr_k['close']) - float(curr_k['open']))
-    prev_body = abs(float(prev_k['close']) - float(prev_k['open']))
-    lower_wick = min(float(curr_k['open']), float(curr_k['close'])) - float(curr_k['low'])
-    
     is_engulfing_bottom = (
-        (float(prev_k['close']) < float(prev_kc_lower))
-        and (float(curr_k['close']) > float(curr_k['open']))
+        (prev_close < float(prev_kc_lower))
+        and (curr_close > curr_open)
         and (curr_body >= 0.6 * prev_body)
     )
     is_pinbar_bottom = (
         (lower_wick >= 1.2 * curr_body)
-        and (lower_wick >= 0.5 * float(current_atr or 0.0))
-        and (float(curr_k['close']) > float(curr_k['open']))
+        and (lower_wick >= 0.5 * atr_val)
+        and (curr_close > curr_open)
         and (float(curr_k['low']) <= float(kc_lower))
     )
     is_bottom_signal = is_engulfing_bottom or is_pinbar_bottom
     
     # 門檻 D：大拉升/爆發熔斷 (單根大陽線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
     is_spike_circuit_breaker = (
-        (curr_body >= 1.8 * float(current_atr or 0.0))
-        and (float(curr_k['close']) > float(ma15_curr))
+        (curr_body >= 1.8 * atr_val)
+        and (curr_close > float(ma15_curr))
     )
     
     # ⚠️ 【硬性鎖定】：未觸發四大門檻之一，平空邏輯強制 return False！低位任何小幅反彈/橫盤一律續抱！
-    if not (is_structure_broken or is_ma3_golden_cross or is_bottom_signal or is_spike_circuit_breaker):
+    if not (is_structure_broken or is_pivot_flip_long or is_bottom_signal or is_spike_circuit_breaker):
         return False
         
     return True # 符合離場門檻，執行平空（若同時滿足開多條件，即刻反手開多）
@@ -224,42 +244,40 @@ class ExecutionManager:
                 market_data=market_data,
             )
             if should_exit:
+                pos_side = str(current_position.get("side", "")).upper()
+                raw_df = getattr(market_data, "raw_df", None)
+                c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
+                p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)
+                c_c = float(c_k.get("close", market_data.current_price))
+                c_o = float(c_k.get("open", c_c))
+                c_h = float(c_k.get("high", max(c_c, c_o)))
+                c_l = float(c_k.get("low", min(c_c, c_o)))
+                p_c = float(p_k.get("close", c_o))
+                p_o = float(p_k.get("open", p_c))
+                p_h = float(p_k.get("high", max(p_c, p_o)))
+                p_l = float(p_k.get("low", min(p_c, p_o)))
+
+                m3_c = float(c_k.get("ma3", getattr(market_data, "ma3", c_c)))
+                m3_p = float(p_k.get("ma3", getattr(market_data, "prev_ma3", m3_c)))
+                m15_c = float(c_k.get("ma15", getattr(market_data, "ma15", c_c)))
+                m15_p = float(p_k.get("ma15", getattr(market_data, "prev_ma15", m15_c)))
+
+                kc_u = float(c_k.get("kc_upper", market_data.kc_upper))
+                p_kc_u = float(p_k.get("kc_upper", kc_u))
+                kc_lo = float(c_k.get("kc_lower", market_data.kc_lower))
+                p_kc_lo = float(p_k.get("kc_lower", kc_lo))
+
+                c_bd = abs(c_c - c_o)
+                p_bd = abs(p_c - p_o)
+                c_up_w = c_h - max(c_c, c_o)
+                c_lo_w = min(c_c, c_o) - c_l
+                atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
+                kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
+
                 # ══════════════════════════════════════════════════════════════════
                 # 🟢 多單/空單持倉抗洗盤最外層硬性卡死（未滿足極限峰谷條件，絕對禁止平倉）
-                # ══════════════════════════════════════════════════════════════════
-                from core.gates.unified_pipeline_gates import ExitGate
                 if reason not in ExitGate.ABSOLUTE_SAFETY_REASONS:
-                    pos_side = str(current_position.get("side", "")).upper()
-                    raw_df = getattr(market_data, "raw_df", None)
                     if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
-                        c_k = raw_df.iloc[-1]
-                        p_k = raw_df.iloc[-2]
-                        c_c = float(c_k.get("close", market_data.current_price))
-                        c_o = float(c_k.get("open", c_c))
-                        c_h = float(c_k.get("high", max(c_c, c_o)))
-                        c_l = float(c_k.get("low", min(c_c, c_o)))
-                        p_c = float(p_k.get("close", c_o))
-                        p_o = float(p_k.get("open", p_c))
-                        p_h = float(p_k.get("high", max(p_c, p_o)))
-                        p_l = float(p_k.get("low", min(p_c, p_o)))
-
-                        m3_c = float(c_k.get("ma3", c_c))
-                        m3_p = float(p_k.get("ma3", m3_c))
-                        m15_c = float(c_k.get("ma15", getattr(market_data, "ma15", c_c)))
-                        m15_p = float(p_k.get("ma15", m15_c))
-
-                        kc_u = float(c_k.get("kc_upper", market_data.kc_upper))
-                        p_kc_u = float(p_k.get("kc_upper", kc_u))
-                        kc_lo = float(c_k.get("kc_lower", market_data.kc_lower))
-                        p_kc_lo = float(p_k.get("kc_lower", kc_lo))
-
-                        c_bd = abs(c_c - c_o)
-                        p_bd = abs(p_c - p_o)
-                        c_up_w = c_h - max(c_c, c_o)
-                        c_lo_w = min(c_c, c_o) - c_l
-                        atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
-
-                        kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
 
                         if pos_side == "LONG":
                             can_exit = should_exit_long(
@@ -308,7 +326,61 @@ class ExecutionManager:
                 )
                 if not success:
                     return {"status": "EXIT_FAILED", "symbol": symbol, "reason": reason}
-                # 平倉成功後重設持倉標記，直通第 3 階段評估反手開倉（平多後滿足做空立刻反手，絕不留空倉看戲）
+
+                # ══════════════════════════════════════════════════════════════════
+                # 🔄 關鍵秒級反手邏輯 (Flip Position): 平倉與反手在同根 K 棒一次性完成！
+                # ══════════════════════════════════════════════════════════════════
+                # 🔴 空頭平倉 -> 谷底金叉秒級反手開多 (Flip to Long)
+                is_ma3_golden_cross = (m3_c > m15_c) and (m3_p <= m15_p)
+                is_bullish_confirm = (c_c > c_o) and (m3_c > m3_p)
+                is_flip_to_long = (pos_side == "SHORT" and is_ma3_golden_cross and is_bullish_confirm)
+
+                # 🟢 多頭平倉 -> 頂部死叉秒級反手開空 (Flip to Short)
+                is_ma3_dead_cross = (m3_c < m15_c) and (m3_p >= m15_p)
+                is_bearish_confirm = (c_c < c_o) and (m3_c < m3_p)
+                is_flip_to_short = (pos_side == "LONG" and is_ma3_dead_cross and is_bearish_confirm)
+
+                if is_flip_to_long or is_flip_to_short:
+                    flip_side = "LONG" if is_flip_to_long else "SHORT"
+                    flip_entry_type = "PIVOT_FLIP_LONG" if is_flip_to_long else "PIVOT_FLIP_SHORT"
+                    logger.info(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！(entry_type={flip_entry_type})")
+                    print(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！", flush=True)
+
+                    flip_stop_loss = (
+                        exit_price - 3.0 * atr_v if flip_side == "LONG"
+                        else exit_price + 3.0 * atr_v
+                    )
+                    flip_meta = {
+                        "side": flip_side,
+                        "direction_override": True,
+                        "entry_type": flip_entry_type,
+                        "stop_loss_price": flip_stop_loss,
+                        "upstream_entry_gate_authorized": True,
+                        "allow_kc_internal": True,
+                        "strategy_mode": "AGILE_MOMENTUM",
+                        "raw_df": klines_df,
+                        "source": f"UNIFIED_PIPELINE|{flip_entry_type}",
+                        "atr": atr_v,
+                    }
+                    raw_df_instance = flip_meta.get("raw_df")
+                    if hasattr(raw_df_instance, "attrs"):
+                        for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
+                            raw_df_instance.attrs[k] = flip_meta.get(k, True)
+
+                    flip_success = await cls.open_position(
+                        engine_or_account=engine_or_account,
+                        symbol=symbol,
+                        side=flip_side,
+                        price=exit_price,
+                        reason=f"FlipPosition:{flip_entry_type}",
+                        meta=flip_meta,
+                    )
+                    if flip_success:
+                        logger.info(f"🎯 [POSITION_FLIP_SUCCESS] {symbol} 成功秒級反手建立 {flip_side} 倉位！")
+                        print(f"🎯 [POSITION_FLIP_SUCCESS] {symbol} 成功秒級反手建立 {flip_side} 倉位！", flush=True)
+                        return {"status": "SUCCESS_FLIP", "symbol": symbol, "side": flip_side}
+
+                # 平倉成功且未觸發秒級反手時，重設持倉標記直通第 3 階段評估開倉
                 has_position = False
                 current_position = None
             else:
@@ -703,6 +775,45 @@ class ExecutionManager:
                 and curr_close < curr_open
                 and ma3_curr < ma3_prev
             )
+
+            # ══════════════════════════════════════════════════════════════════
+            # 🚫 假突破防範 (KC Squeeze / Fakeout Filter - Anti-Bull-Trap)
+            # 當 KC 中軌走平或往下時，若價格僅是短期衝出 KC 上軌但缺乏放量強實體或上影線過長，
+            # 判定為假突破誘多（Bull Trap），一票否決開多，防止買在假突破頂部！
+            # ══════════════════════════════════════════════════════════════════
+            upper_wick_now = float(market_data.curr_k.get("high", curr_close)) - max(curr_close, curr_open)
+            is_bull_trap = bool(
+                kc_slope <= 0.000005
+                and curr_close >= (kc_up_val - 0.2 * atr_val_now)
+                and (c_body_now < 0.6 * atr_val_now or upper_wick_now >= 0.6 * c_body_now or curr_close <= curr_open)
+            )
+            if is_bull_trap:
+                can_long = False
+                is_breakout_long = False
+                is_continuation_long = False
+                agile_breakout_long = False
+                logger.info(
+                    f"🚫 [FAKE_BREAKOUT_BULL_TRAP] {symbol} KC中軌走平/向下 (slope={kc_slope:.6f})，"
+                    f"上軌附近缺乏放量實體或上影過長 (body={c_body_now:.6f}, wick={upper_wick_now:.6f}, atr={atr_val_now:.6f})，"
+                    f"判定為假突破誘多 (Bull Trap)，一票否決開多！"
+                )
+
+            lower_wick_now = min(curr_close, curr_open) - float(market_data.curr_k.get("low", curr_close))
+            is_bear_trap = bool(
+                kc_slope >= -0.000005
+                and curr_close <= (kc_low_val + 0.2 * atr_val_now)
+                and (c_body_now < 0.6 * atr_val_now or lower_wick_now >= 0.6 * c_body_now or curr_close >= curr_open)
+            )
+            if is_bear_trap:
+                can_short = False
+                is_breakdown_short = False
+                is_continuation_short = False
+                agile_breakdown_short = False
+                logger.info(
+                    f"🚫 [FAKE_BREAKDOWN_BEAR_TRAP] {symbol} KC中軌走平/向上 (slope={kc_slope:.6f})，"
+                    f"下軌附近缺乏放量實體或下影過長 (body={c_body_now:.6f}, wick={lower_wick_now:.6f}, atr={atr_val_now:.6f})，"
+                    f"判定為假跌破誘空 (Bear Trap)，一票否決開空！"
+                )
 
             is_agile_trigger = False
             agile_signal = None
