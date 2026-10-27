@@ -994,6 +994,94 @@ async def test_pepe_1843_anti_chasing_veto_long_at_top():
     assert open_mock.called is False, "18:43 自低點已狂拉超過 1.5 ATR 且衝破上軌，Anti-Chasing Gate 必須 100% 一票否決追多接刀！"
 
 
+@pytest.mark.anyio
+async def test_pepe_1905_top_dead_cross_exit_and_flip_short():
+    """
+    實盤 1000PEPE/USDT 19:05 重現驗證：
+    多單在 19:02~19:04 買多後衝高至頂部，
+    19:05 頂部形成長上影線且 MA3 正式死叉 MA15 (真峰頂成立)。
+    驗證：
+    1. 系統在 19:05 當根 K 棒收線時立即觸發市價平多 (CLOSE_LONG_AT_TOP)！
+    2. 絕不拖延至 19:10 暴跌貫穿慢線才被動平多！
+    3. 平多成功後同 K 棒秒級原子反手開空 (PIVOT_FLIP_SHORT)！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    pos_pepe_long = {
+        "symbol": "1000PEPEUSDT",
+        "side": "LONG",
+        "entry_price": 0.0042850,
+        "amount": 100000.0,
+        "highest_price": 0.0043120,
+        "open_timestamp": 1700000000000.0,
+    }
+
+    # 構造 19:00~19:05 行情數據
+    bars = []
+    base_price = 0.0042950
+    for i in range(35):
+        bars.append({
+            "timestamp": (1700000000 + i * 60) * 1000,
+            "open": base_price, "high": base_price + 0.000005, "low": base_price - 0.000005, "close": base_price,
+            "volume": 10000.0, "is_closed": True,
+        })
+
+    # 倒數第 3 根 (19:03): 衝頂大陽 0.0043120 (close=0.0043100)
+    bars[-3]["open"] = 0.0042950
+    bars[-3]["high"] = 0.0043120
+    bars[-3]["low"] = 0.0042940
+    bars[-3]["close"] = 0.0043100
+
+    # 倒數第 2 根 (19:04): 高位十字星/長上影 (high=0.0043120, close=0.0043020)
+    # 此時 ma3 = (0.0042950 + 0.0043100 + 0.0043020) / 3 = 0.0043023 > ma15
+    bars[-2]["open"] = 0.0043100
+    bars[-2]["high"] = 0.0043120
+    bars[-2]["low"] = 0.0043000
+    bars[-2]["close"] = 0.0043020
+
+    # 最後一根 (19:05): 陰線收跌 0.0042800，MA3 向下死叉 MA15 (ma3=0.0042973 < ma15=0.0042980)
+    bars[-1]["open"] = 0.0043020
+    bars[-1]["high"] = 0.0043030
+    bars[-1]["low"] = 0.0042780
+    bars[-1]["close"] = 0.0042800
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"1000PEPEUSDT": pos_pepe_long}
+            self.position_meta = {}
+            self.channel_exit_frames = {"1000PEPEUSDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPEUSDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.0042800,
+    )
+
+    # 1. 驗證 19:05 死叉當下立即執行市價平多！
+    assert close_mock.called is True, "19:05 MA3 死叉 MA15 真峰頂成立，必須第一優先級立即平多！"
+    close_call_kwargs = close_mock.call_args.kwargs
+    assert "CLOSE_LONG_AT_TOP" in close_call_kwargs["reason"], f"平多理由應為 CLOSE_LONG_AT_TOP，實際為: {close_call_kwargs['reason']}"
+
+    # 2. 驗證同 K 棒秒級原子反手開空！
+    assert open_mock.called is True, "19:05 峰頂平多後必須同 K 棒秒級反手開空！"
+    open_call_kwargs = open_mock.call_args.kwargs
+    assert open_call_kwargs["side"] == "SHORT"
+    assert open_call_kwargs["meta"]["entry_type"] == "PIVOT_FLIP_SHORT"
+    assert open_call_kwargs["meta"]["direction_override"] is True
+
+
+
 
 
 

@@ -246,81 +246,131 @@ class ExecutionManager:
                 if callable(save):
                     save()
 
-        # 2. 若有持倉：只問 ExitGate (唯一裁決官)
+        # 2. 持倉狀態機控制 (Trend Lock State Machine): 最高第一優先審查真峰頂/真谷底狀態機，秒級平倉兼反手開倉
         if has_position:
-            should_exit, reason, meta = ExitGate.evaluate(
+            pos_side = str(current_position.get("side", "")).upper()
+            raw_df = getattr(market_data, "raw_df", None)
+            c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
+            p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)
+            c_c = float(c_k.get("close", market_data.current_price))
+            c_o = float(c_k.get("open", c_c))
+            c_h = float(c_k.get("high", max(c_c, c_o)))
+            c_l = float(c_k.get("low", min(c_c, c_o)))
+            p_c = float(p_k.get("close", c_o))
+            p_o = float(p_k.get("open", p_c))
+            p_h = float(p_k.get("high", max(p_c, p_o)))
+            p_l = float(p_k.get("low", min(p_c, p_o)))
+
+            m3_c = float(c_k.get("ma3", getattr(market_data, "ma3", c_c)))
+            m3_p = float(p_k.get("ma3", getattr(market_data, "prev_ma3", m3_c)))
+            m15_c = float(c_k.get("ma15", getattr(market_data, "ma15", c_c)))
+            m15_p = float(p_k.get("ma15", getattr(market_data, "prev_ma15", m15_c)))
+
+            kc_u = float(c_k.get("kc_upper", market_data.kc_upper))
+            p_kc_u = float(p_k.get("kc_upper", kc_u))
+            kc_lo = float(c_k.get("kc_lower", market_data.kc_lower))
+            p_kc_lo = float(p_k.get("kc_lower", kc_lo))
+
+            c_bd = abs(c_c - c_o)
+            p_bd = abs(p_c - p_o)
+            c_up_w = c_h - max(c_c, c_o)
+            c_lo_w = min(c_c, c_o) - c_l
+            atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
+            kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
+
+            # 🎯 核心判定：檢測「真谷底 (True Bottom)」與「真峰頂 (True Top)」
+            is_true_bottom, is_true_peak = check_pivot_status(
+                curr_k=c_k, prev_k=p_k,
+                ma3_curr=m3_c, ma3_prev=m3_p,
+                ma15_curr=m15_c, ma15_prev=m15_p,
+                kc_upper=kc_u, kc_lower=kc_lo,
+                prev_kc_upper=p_kc_u, prev_kc_lower=p_kc_lo,
+                current_atr=atr_v,
+            )
+
+            # 審查 ExitGate 是否觸發絕對安全避險（3 ATR 硬止損、極端大瀑布、反側破軌等）
+            gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
                 market_data=market_data,
             )
+            is_absolute_safety = bool(gate_should_exit and gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS)
+
+            should_exit = False
+            reason = ""
+            meta = {}
+
+            # 🎯 最高第一優先級：真峰頂 (19:05) 與真谷底 (18:15) 秒級平倉兼反手
+            if pos_side == "LONG" and is_true_peak:
+                should_exit = True
+                reason = "CLOSE_LONG_AT_TOP"
+                meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
+                logger.info(
+                    f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                    f"第一優先級秒級觸發市價平多兼反手開空！"
+                )
+            elif pos_side == "SHORT" and is_true_bottom:
+                should_exit = True
+                reason = "CLOSE_SHORT_AT_BOTTOM"
+                meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
+                logger.info(
+                    f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單捕獲真谷底！(MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                    f"第一優先級秒級觸發市價平空兼反手開多！"
+                )
+            elif is_absolute_safety:
+                should_exit = True
+                reason = gate_reason
+                meta = gate_meta
+            elif pos_side == "LONG":
+                long_exit_ok = should_exit_long(
+                    curr_k=c_k, prev_k=p_k,
+                    ma3_curr=m3_c, ma3_prev=m3_p,
+                    ma15_curr=m15_c, ma15_prev=m15_p,
+                    kc_upper=kc_u, prev_kc_upper=p_kc_u,
+                    current_atr=atr_v,
+                    raw_df=klines_df,
+                    position=current_position,
+                )
+                if long_exit_ok:
+                    should_exit = True
+                    reason = "CLOSE_LONG_AT_TOP"
+                    meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
+                    logger.info(
+                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單結構破壞放行平多！"
+                    )
+                else:
+                    # 震盪假峰谷 (未死叉、無極限訊號)：一票否決，強制續抱多單！
+                    logger.info(
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單收盤價(close={c_c:.6f})穩守支撐 (MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                        f"未滿足四大極限峰頂門檻，一票否決平多，強制持倉續抱拿滿主升段！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
+
+            elif pos_side == "SHORT":
+                short_exit_ok = should_exit_short(
+                    curr_k=c_k, prev_k=p_k,
+                    ma3_curr=m3_c, ma3_prev=m3_p,
+                    ma15_curr=m15_c, ma15_prev=m15_p,
+                    kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
+                    current_atr=atr_v,
+                    raw_df=klines_df,
+                    position=current_position,
+                )
+                if short_exit_ok:
+                    should_exit = True
+                    reason = "CLOSE_SHORT_AT_BOTTOM"
+                    meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
+                    logger.info(
+                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單結構破壞放行平空！"
+                    )
+                else:
+                    # 震盪假峰谷 (未金叉、無極限訊號)：一票否決，強制續抱空單！
+                    logger.info(
+                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單收盤價(close={c_c:.6f})壓制在阻力之下 (MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                        f"未滿足四大極限谷底門檻，一票否決平空，強制持倉續抱拿滿主跌段！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
+
             if should_exit:
-                pos_side = str(current_position.get("side", "")).upper()
-                raw_df = getattr(market_data, "raw_df", None)
-                c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
-                p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)
-                c_c = float(c_k.get("close", market_data.current_price))
-                c_o = float(c_k.get("open", c_c))
-                c_h = float(c_k.get("high", max(c_c, c_o)))
-                c_l = float(c_k.get("low", min(c_c, c_o)))
-                p_c = float(p_k.get("close", c_o))
-                p_o = float(p_k.get("open", p_c))
-                p_h = float(p_k.get("high", max(p_c, p_o)))
-                p_l = float(p_k.get("low", min(p_c, p_o)))
-
-                m3_c = float(c_k.get("ma3", getattr(market_data, "ma3", c_c)))
-                m3_p = float(p_k.get("ma3", getattr(market_data, "prev_ma3", m3_c)))
-                m15_c = float(c_k.get("ma15", getattr(market_data, "ma15", c_c)))
-                m15_p = float(p_k.get("ma15", getattr(market_data, "prev_ma15", m15_c)))
-
-                kc_u = float(c_k.get("kc_upper", market_data.kc_upper))
-                p_kc_u = float(p_k.get("kc_upper", kc_u))
-                kc_lo = float(c_k.get("kc_lower", market_data.kc_lower))
-                p_kc_lo = float(p_k.get("kc_lower", kc_lo))
-
-                c_bd = abs(c_c - c_o)
-                p_bd = abs(p_c - p_o)
-                c_up_w = c_h - max(c_c, c_o)
-                c_lo_w = min(c_c, c_o) - c_l
-                atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
-                kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
-
-                # ══════════════════════════════════════════════════════════════════
-                # 🟢 多單/空單持倉抗洗盤最外層硬性卡死（未滿足極限峰谷條件，絕對禁止平倉）
-                if reason not in ExitGate.ABSOLUTE_SAFETY_REASONS:
-                    if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
-
-                        if pos_side == "LONG":
-                            can_exit = should_exit_long(
-                                curr_k=c_k, prev_k=p_k,
-                                ma3_curr=m3_c, ma3_prev=m3_p,
-                                ma15_curr=m15_c, ma15_prev=m15_p,
-                                kc_upper=kc_u, prev_kc_upper=p_kc_u,
-                                current_atr=atr_v,
-                                raw_df=klines_df,
-                                position=current_position,
-                            )
-                            if not can_exit:
-                                logger.info(
-                                    f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單收盤價(close={c_c:.6f})穩守支撐 (MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
-                                    f"未滿足四大極限峰頂門檻，一票否決平多，強制持倉續抱拿滿主升段！(阻斷理由: {reason})"
-                                )
-                                return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
-
-                        elif pos_side == "SHORT":
-                            can_exit = should_exit_short(
-                                curr_k=c_k, prev_k=p_k,
-                                ma3_curr=m3_c, ma3_prev=m3_p,
-                                ma15_curr=m15_c, ma15_prev=m15_p,
-                                kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
-                                current_atr=atr_v,
-                                raw_df=klines_df,
-                                position=current_position,
-                            )
-                            if not can_exit:
-                                logger.info(
-                                    f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單收盤價(close={c_c:.6f})壓制在阻力之下 (MA3={m3_c:.6f}, MA15={m15_c:.6f}, slope={kc_slope:.6f})，"
-                                    f"未滿足四大極限谷底門檻，一票否決平空，強制持倉續抱拿滿主跌段！(阻斷理由: {reason})"
-                                )
-                                return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
                 logger.info(f"🚀 [EXIT_TRIGGERED] {symbol} {reason} | meta={meta}")
                 print(f"🚀 [EXIT_TRIGGERED] {symbol} {reason}", flush=True)
@@ -1474,8 +1524,8 @@ class ExecutionManager:
                 "entry_pattern": confirmation,
                 "structure_confirmation": confirmation,
                 "is_outer_entry": not is_cross_mid,
-                "allow_kc_internal": is_cross_mid,
-                "direction_override": is_cross_mid,
+                "allow_kc_internal": bool((meta or {}).get("allow_kc_internal") or is_cross_mid),
+                "direction_override": bool((meta or {}).get("direction_override") or is_cross_mid),
                 "entry_type": (
                     "SWING_PIVOT" if (meta or {}).get("entry_type") == "SWING_PIVOT"
                     else "CROSS_MID" if is_cross_mid else "BREAKOUT"

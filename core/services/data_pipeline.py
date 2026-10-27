@@ -42,6 +42,7 @@ class MarketDataSnapshot:
     ema13: float = 0.0                # EMA 13
     ma3: float = 0.0                  # MA 3 短期動能線
     prev_ma3: float = 0.0             # 前一根 MA 3
+    prev_ma15: float = 0.0            # 前一根 MA 15
     ma3_slope: float = 0.0            # MA 3 斜率 (當前 - 前一根)
     kc_trend: str = "NEUTRAL"         # KC slope plus closed-bar price location
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
@@ -323,6 +324,7 @@ class DataPipeline:
             kc_trend=kc_trend,
             ma5=ma5,
             ma15=ma15,
+            prev_ma15=prev_ma15,
             ema_fast=ema_fast,
             ema_slow=ema_slow,
             ma_spread_pct=ma_spread_pct,
