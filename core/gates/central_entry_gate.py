@@ -64,6 +64,8 @@ class CentralEntryGate:
     MAX_BAND_EXTENSION_ATR: float = 2.50
     MAX_MA5_EXTENSION_ATR: float = 3.00
     MIN_KC_BANDWIDTH_PCT: float = 0.0035
+    MIN_KC_SQUEEZE_WIDTH_RATIO: float = 0.015  # 通道頻寬比率門檻 1.5% (SQUEEZE_LOCK)
+    MIN_ATR_VOLATILITY_RATIO: float = 0.70     # 當前 ATR 相對 20 根平均 ATR 門檻 0.7 倍
     MIN_KC_EXPANSION_RATIO: float = 0.05
     MIN_VOLUME_MULTIPLIER: float = 1.20
     MIN_BODY_ATR: float = 0.35
@@ -516,16 +518,81 @@ class CentralEntryGate:
             )
 
         # -------------------------------------------------------------
-        # 條件 4：通道帶寬 (Bandwidth >= 0.35% 或 通道寬度 >= 2.0 ATR)
+        # 條件 4：【關鍵風控】KC 通道擠壓/狹幅盤整濾網 (KC Squeeze Gate)
+        # 1. 定義 KC 通道頻寬比率 (KC Width Ratio):
+        #    kc_width_ratio = (kc_upper - kc_lower) / kc_middle
+        # 2. 盤整鎖定條件 (SQUEEZE_LOCK):
+        #    - kc_width_ratio < 0.015 (通道間距小於中軌的 1.5%)，或
+        #    - current_atr < 0.7 * avg_atr_20 (當前 ATR 顯著低於 20 根平均波動率)
+        #    標記為 MARKET_SQUEEZE，【強制一票否決】所有常規 MA3/MA15 交叉與轉折開倉！
+        # 3. 解鎖條件 (Breakout Expansion):
+        #    只有通道頻寬重新放大 (kc_width 轉向擴張) 且實體帶量突破外軌時才放行！
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
         kc_width = kc_upper - kc_lower
-        bandwidth = kc_width / kc_mid if kc_mid > 0 else 0.0
-        bw_pass = (bandwidth >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr)
+        kc_width_ratio = kc_width / kc_mid if kc_mid > 0 else 0.0
 
+        # 計算歷史 20 根平均 ATR
+        avg_atr_20 = atr
+        if isinstance(entry_frame, pd.DataFrame) and len(entry_frame) >= 5:
+            if "atr" in entry_frame.columns:
+                s_atr = entry_frame["atr"].dropna().astype(float)
+                if len(s_atr) > 0:
+                    avg_atr_20 = float(s_atr.iloc[-20:].mean())
+            elif "high" in entry_frame.columns and "low" in entry_frame.columns:
+                ranges = (entry_frame["high"].astype(float) - entry_frame["low"].astype(float)).dropna()
+                if len(ranges) > 0:
+                    avg_atr_20 = float(ranges.iloc[-20:].mean())
+
+        is_width_squeezed = kc_width_ratio < cls.MIN_KC_SQUEEZE_WIDTH_RATIO
+        is_atr_squeezed = (avg_atr_20 > 0) and (atr < cls.MIN_ATR_VOLATILITY_RATIO * avg_atr_20)
+        is_market_squeeze = is_width_squeezed or is_atr_squeezed
+
+        # 檢驗解鎖條件 (Breakout Expansion: 頻寬擴張且帶量突破外軌)
+        is_breakout_candidate = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+        prev_kc_width = None
+        if isinstance(entry_frame, pd.DataFrame) and len(entry_frame) >= 2:
+            prev_row = entry_frame.iloc[-2]
+            if "kc_upper" in prev_row and "kc_lower" in prev_row:
+                prev_kc_width = float(prev_row["kc_upper"]) - float(prev_row["kc_lower"])
+        is_width_expanding = (prev_kc_width is not None) and (kc_width > prev_kc_width)
+        is_outside_breakout = (curr_price >= kc_upper) if side == "LONG" else (curr_price <= kc_lower)
+        is_breakout_expansion_unlocked = is_breakout_candidate and (is_width_expanding or is_outside_breakout)
+
+        checks["kc_squeeze_gate"] = {
+            "status": "PASS" if (not is_market_squeeze or is_breakout_expansion_unlocked) else "FAIL",
+            "market_regime": "MARKET_SQUEEZE" if is_market_squeeze else "TRENDING_OR_NORMAL",
+            "kc_width_ratio": kc_width_ratio,
+            "min_width_ratio": cls.MIN_KC_SQUEEZE_WIDTH_RATIO,
+            "atr": atr,
+            "avg_atr_20": avg_atr_20,
+            "is_width_squeezed": is_width_squeezed,
+            "is_atr_squeezed": is_atr_squeezed,
+            "breakout_unlocked": is_breakout_expansion_unlocked,
+        }
+
+        # 若處於通道擠壓狹幅盤整且未達成破軌解鎖，一票否決所有常規交叉與轉折開倉
+        if is_market_squeeze and not is_breakout_expansion_unlocked:
+            return GateCheckResult(
+                passed=False,
+                reason="BLOCKED_BY_KC_SQUEEZE_LOCK",
+                signal_id=sig_id,
+                details={
+                    "market_regime": "MARKET_SQUEEZE",
+                    "kc_width_ratio": kc_width_ratio,
+                    "min_width_ratio": cls.MIN_KC_SQUEEZE_WIDTH_RATIO,
+                    "atr": atr,
+                    "avg_atr_20": avg_atr_20,
+                    "cause": f"【關鍵風控】KC 通道擠壓/狹幅盤整 (Width Ratio: {kc_width_ratio*100:.3f}% < 1.5% 或 ATR: {atr:.6f} < 0.7x avg_atr_20: {avg_atr_20:.6f})，強制一票否決常規交叉開倉，防止雙向洗盤磨損！",
+                },
+                checks=checks,
+            )
+
+        # 保留既有帶寬過窄與極度收斂防護
+        bw_pass = (kc_width_ratio >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr)
         checks["bandwidth"] = {
             "status": "PASS" if bw_pass else "FAIL",
-            "bandwidth": bandwidth,
+            "bandwidth": kc_width_ratio,
             "kc_width": kc_width,
             "atr": atr,
             "min_required": cls.MIN_KC_BANDWIDTH_PCT,
@@ -535,12 +602,12 @@ class CentralEntryGate:
                 passed=False,
                 reason="VETO_KC_BANDWIDTH_TOO_NARROW",
                 signal_id=sig_id,
-                details={"bandwidth": bandwidth, "min_required": cls.MIN_KC_BANDWIDTH_PCT},
+                details={"bandwidth": kc_width_ratio, "min_required": cls.MIN_KC_BANDWIDTH_PCT},
                 checks=checks,
             )
 
         # 20 根已收線最大寬度作為 squeeze 參考；歷史不足時 fail closed。
-        curr_width = kc_upper - kc_lower
+        curr_width = kc_width
         max_prev_width = parsed.get("max_prev_width")
         if (not is_swing_pivot and (max_prev_width is None
                 or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0)):
@@ -731,7 +798,7 @@ class CentralEntryGate:
                 "price": curr_price,
                 "atr": atr,
                 "kc_mid_slope": kc_mid_slope,
-                "bandwidth": bandwidth,
+                "bandwidth": kc_width_ratio,
                 "expansion_ratio": expansion_ratio,
             },
             checks=checks,
