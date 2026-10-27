@@ -2647,33 +2647,44 @@ class EntryGate:
                     "cause": f"短期均線動能一票否決: 價格被 MA3 壓制 (close={c_close:.6f}, quote={quote:.6f} < ma3={ma3_curr:.6f})，短期多頭未確立嚴禁開多！",
                 }
 
-            if macro_trend == "BEARISH":
-                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
-                    **meta,
-                    "macro_trend": macro_trend,
-                    "cause": "順勢交易鐵律一票否決: 市場大週期為空頭 (BEARISH)，哪怕盤中暴拉突破，100% 嚴禁開多接飛刀！",
-                }
-            # 棕色慢線(EMA40)定生死：價格在慢線之下且慢線或中軌下行，嚴禁開多！
-            is_below_slow = (c_close <= ema_slow or quote <= ema_slow)
-            is_slow_down = (slow_slope <= -0.000002)
-            if (is_below_slow and is_slow_down) or (slope < -0.000005 and is_below_slow):
-                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)空頭壓制中 (close={c_close:.5f} <= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向下嚴禁開多！要一路開空！",
-                }
-            if ema_fast <= ema_slow and is_below_slow and slope <= 0:
-                if not (is_breakout_trigger and not is_below_slow and c_close > kc_mid):
+            is_override = bool(
+                (last_exit_context and last_exit_context.get("direction_override"))
+                or (raw_df is not None and getattr(raw_df, "attrs", {}).get("direction_override"))
+                or any(s in signal_type.upper() for s in ("SWING_PIVOT", "AGILE", "CROSS_MID", "BREAKOUT", "BREAKDOWN", "OVERRIDE"))
+            )
+
+            if not is_override and not is_breakout_trigger:
+                if macro_trend == "BEARISH":
+                    return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                        **meta,
+                        "macro_trend": macro_trend,
+                        "cause": "順勢交易鐵律一票否決: 市場大週期為空頭 (BEARISH)，哪怕盤中暴拉突破，100% 嚴禁開多接飛刀！",
+                    }
+                # 棕色慢線(EMA40)定生死：價格在慢線之下且慢線或中軌下行，嚴禁開多！
+                is_below_slow = (c_close <= ema_slow or quote <= ema_slow)
+                is_slow_down = (slow_slope <= -0.000002)
+                if (is_below_slow and is_slow_down) or (slope < -0.000005 and is_below_slow):
+                    return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                        **meta,
+                        "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)空頭壓制中 (close={c_close:.5f} <= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向下嚴禁開多！要一路開空！",
+                    }
+                if ema_fast <= ema_slow and is_below_slow and slope <= 0:
                     return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
                         **meta,
                         "cause": f"順勢交易鐵律一票否決: 均線空頭排列且受壓於慢線與中軌 (ema_fast={ema_fast:.5f} <= ema_slow={ema_slow:.5f})，嚴禁開多接飛刀！",
                     }
-            if slope < -0.000005 and (c_close <= kc_mid or quote <= kc_mid):
-                return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 主跌浪KC中軌下行 (kc_slope={slope:.6f} < 0) 且價格在中軌之下 (close={c_close:.6f} <= mid={kc_mid:.6f})，嚴禁逆勢摸底開多！要一路開空！",
-                }
+                if slope < -0.000005 and (c_close <= kc_mid or quote <= kc_mid):
+                    return False, "BLOCKED_LONG_ON_BEARISH_TREND", {
+                        **meta,
+                        "cause": f"順勢交易鐵律一票否決: 主跌浪KC中軌下行 (kc_slope={slope:.6f} < 0) 且價格在中軌之下 (close={c_close:.6f} <= mid={kc_mid:.6f})，嚴禁逆勢摸底開多！要一路開空！",
+                    }
 
         if signal_side == "SHORT":
+            is_override = bool(
+                (last_exit_context and last_exit_context.get("direction_override"))
+                or (raw_df is not None and getattr(raw_df, "attrs", {}).get("direction_override"))
+                or any(s in signal_type.upper() for s in ("SWING_PIVOT", "AGILE", "CROSS_MID", "BREAKOUT", "BREAKDOWN", "OVERRIDE"))
+            )
             lower_wick = min(c_open, c_close) - c_low
             if lower_wick >= body and lower_wick >= 0.25 * atr_val:
                 return False, "VETO_WICK_REJECTION", {
@@ -2682,7 +2693,7 @@ class EntryGate:
                 }
 
             # ── 禁令一：中軌斜率向上，100% 禁止做空（嚴禁在上升通道中摸頂） ──
-            if kc_middle_slope >= 0:
+            if kc_middle_slope >= 0 and not is_override:
                 if not (is_breakdown_trigger and kc_middle_slope <= 0.0001):
                     return False, "VETO_KC_SLOPE_UP", {
                         **meta,
@@ -2691,7 +2702,7 @@ class EntryGate:
                     }
 
             # ── 禁令二：收盤價未實體壓制在中軌之下，禁止做空（留 0.1 ATR 安全邊際） ──
-            if c_close > (kc_mid - 0.1 * atr_val):
+            if c_close > (kc_mid - 0.1 * atr_val) and not is_override:
                 return False, "VETO_ABOVE_KC_MIDDLE", {
                     **meta,
                     "close": c_close,
@@ -2702,7 +2713,7 @@ class EntryGate:
 
             # ── 禁令三：通道壓縮走平期（Bandwidth 縮減），禁止觸軌開倉 ──
             if (kc_bandwidth < min_bandwidth_threshold or is_hist_squeeze) and abs(kc_middle_slope) < slope_threshold:
-                if not is_breakdown_trigger:
+                if not is_breakdown_trigger and not is_override:
                     return False, "VETO_CONSOLIDATION_SQUEEZE", {
                         **meta,
                         "kc_bandwidth": kc_bandwidth,
@@ -2724,7 +2735,7 @@ class EntryGate:
                 }
 
             # ── 禁令五：嚴禁因碰觸上軌而做空（買空唯一合法區域必須在中軌之下，上軌附近100%禁止Short） ──
-            if c_close >= (kc_up - 0.5 * atr_val) or c_high >= kc_up or quote >= (kc_up - 0.5 * atr_val):
+            if (c_close >= (kc_up - 0.5 * atr_val) or c_high >= kc_up or quote >= (kc_up - 0.5 * atr_val)) and not is_override:
                 return False, "VETO_KC_UPPER_ZONE_FORBIDDEN_FOR_SHORT", {
                     **meta,
                     "close": c_close,
@@ -2753,31 +2764,31 @@ class EntryGate:
                     "cause": f"短期均線動能一票否決: 價格站上 MA3 之上 (close={c_close:.6f}, quote={quote:.6f} > ma3={ma3_curr:.6f})，迎面撞上反彈波嚴禁開空！",
                 }
 
-            if macro_trend == "BULLISH":
-                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
-                    **meta,
-                    "macro_trend": macro_trend,
-                    "cause": "順勢交易鐵律一票否決: 市場大週期為多頭 (BULLISH)，哪怕盤中暴跌破位，100% 嚴禁開空摸頂！要一路開多！",
-                }
-            # 棕色慢線(EMA40)定生死：價格在慢線之上且慢線或中軌上行，或者大週期多頭發散，嚴禁開空！
-            is_above_slow = (c_close >= ema_slow or quote >= ema_slow)
-            is_slow_up = (slow_slope >= 0.000002)
-            if (is_above_slow and is_slow_up) or (slope > 0.000005 and is_above_slow):
-                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)多頭護航中 (close={c_close:.5f} >= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向上嚴禁開空！要一路開多！",
-                }
-            if ema_fast >= ema_slow and (is_above_slow or slope >= 0 or c_close >= kc_mid):
-                if not (is_breakdown_trigger and not is_above_slow and c_close < kc_mid):
+            if not is_override and not is_breakdown_trigger:
+                if macro_trend == "BULLISH":
+                    return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                        **meta,
+                        "macro_trend": macro_trend,
+                        "cause": "順勢交易鐵律一票否決: 市場大週期為多頭 (BULLISH)，哪怕盤中暴跌破位，100% 嚴禁開空摸頂！要一路開多！",
+                    }
+                # 棕色慢線(EMA40)定生死：價格在慢線之上且慢線或中軌上行，或者大週期多頭發散，嚴禁開空！
+                is_above_slow = (c_close >= ema_slow or quote >= ema_slow)
+                is_slow_up = (slow_slope >= 0.000002)
+                if (is_above_slow and is_slow_up) or (slope > 0.000005 and is_above_slow):
+                    return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                        **meta,
+                        "cause": f"順勢交易鐵律一票否決: 棕色慢線(EMA40)多頭護航中 (close={c_close:.5f} >= ema_slow={ema_slow:.5f}, slow_slope={slow_slope:.6f})，大趨勢向上嚴禁開空！要一路開多！",
+                    }
+                if ema_fast >= ema_slow and (is_above_slow or slope >= 0 or c_close >= kc_mid):
                     return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
                         **meta,
                         "cause": f"順勢交易鐵律一票否決: 大週期均線多頭排列且守穩結構 (ema_fast={ema_fast:.5f} >= ema_slow={ema_slow:.5f})，大趨勢向上嚴禁開空！要一路開多！",
                     }
-            if slope > 0.000005 and (c_close >= kc_mid or quote >= kc_mid):
-                return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
-                    **meta,
-                    "cause": f"順勢交易鐵律一票否決: 主升浪中軌上行 (kc_slope={slope:.6f} > 0) 且價格在中軌之上 (close={c_close:.6f} >= mid={kc_mid:.6f})，多頭波段中100%嚴禁賣空！要一路開多！",
-                }
+                if slope > 0.000005 and (c_close >= kc_mid or quote >= kc_mid):
+                    return False, "BLOCKED_SHORT_ON_BULLISH_TREND", {
+                        **meta,
+                        "cause": f"順勢交易鐵律一票否決: 主升浪中軌上行 (kc_slope={slope:.6f} > 0) 且價格在中軌之上 (close={c_close:.6f} >= mid={kc_mid:.6f})，多頭波段中100%嚴禁賣空！要一路開多！",
+                    }
 
         # ─── 延續開倉新鮮度防追高 (AGENTS.md 2026-10-20 最新授權) ───
         is_breakout_mode = any(b in signal_type.upper() for b in ("BREAKOUT", "CONTINUATION", "OUTSIDE", "BURST", "BREAKDOWN", "CROSS_MID"))

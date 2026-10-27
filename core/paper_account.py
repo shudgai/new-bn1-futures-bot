@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
+import pandas as pd
 
 from core.config import (
     INITIAL_BALANCE,

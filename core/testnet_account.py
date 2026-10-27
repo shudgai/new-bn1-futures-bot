@@ -17,6 +17,7 @@ from decimal import Decimal
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
+import pandas as pd
 
 from core.services.exits.tiered_exit_manager import TieredExitManager, PositionDefenseState
 from core.config import (
