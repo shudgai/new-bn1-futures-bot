@@ -55,10 +55,10 @@ def should_exit_long(
     m15_c, m15_p = float(ma15_curr), float(ma15_prev)
     kc_u, p_kc_u = float(kc_upper), float(prev_kc_upper)
 
-    # 【峰頂生成條件 A】：MA3 快線向下死叉 MA15 慢線
+    # 【峰頂門檻 1】：MA3 快線正式向下死叉 MA15 慢線
     is_ma3_dead_cross = (m3_c < m15_c) and (m3_p >= m15_p)
     
-    # 【峰頂生成條件 B】：極限見頂反轉 (軌外大陰吞噬 >= 60% OR 高位長上影天地針)
+    # 【峰頂門檻 2】：極限見頂反轉 (曾衝出 KC 上軌 + 軌外大陰吞噬 >= 60% OR 高位長上影天地針)
     is_engulfing_peak = (
         (prev_close > p_kc_u)
         and (curr_close < curr_open)
@@ -71,37 +71,24 @@ def should_exit_long(
     )
     is_peak_signal = is_engulfing_peak or is_pinbar_peak
 
-    # 【峰頂生成條件 C】：Pre-Cross 峰頂拐頭 (KC 上半區 + MA3 向下拐頭 + 實體陰線收盤跌破 MA3)
-    # KC 上半區：close >= (kc_upper - (kc_upper - ma15_curr) * 0.5)
-    kc_upper_half = kc_u - (kc_u - m15_c) * 0.5
-    is_pivot_peak = (
-        (curr_close >= kc_upper_half)
-        and (m3_c < m3_p)
-        and (curr_close < curr_open)
-        and (curr_close <= m3_c)
-    )
-
-    # 峰頂力竭/轉折訊號綜合判定
-    is_peak_formed = is_ma3_dead_cross or is_peak_signal or is_pivot_peak
-
-    # 【極端崩盤熔斷】：單根大陰線實體 body >= 1.8 ATR 且貫穿 MA15 慢線
+    # 【峰頂門檻 3】：大瀑布/崩盤熔斷 (單根大陰線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
     is_crash_circuit_breaker = (
         (curr_body >= 1.8 * atr_val)
         and (curr_close < m15_c)
     )
 
-    # 【最終底線】：收盤價實體跌破本波波段起漲低點 Swing Low (真正的結構破壞)
+    # 【峰頂門檻 4】：收盤價實體跌破本波波段起漲低點 Swing Low (真正的結構破壞)
     is_structure_broken = (curr_close < float(swing_low_price)) and (curr_close < m15_c)
 
-    # ⚠️ 只要「生成峰頂」、「極端熔斷」或「結構破壞」，立即觸發平多！
-    if is_peak_formed or is_crash_circuit_breaker or is_structure_broken:
-        return True
+    # ⚠️ 【關鍵鎖定】：未滿足四大硬門檻之一，平多邏輯必須強制 return False！高位任何小幅回踩一律續抱！
+    if not (is_structure_broken or is_ma3_dead_cross or is_peak_signal or is_crash_circuit_breaker):
+        return False
 
-    return False  # 未達峰頂且未破壞結構，繼續持倉續抱拿滿波段
+    return True  # 符合硬性離場門檻，執行平多
 
 
 # =========================================================================
-# 🔴 2. 空頭持倉平倉判定 (谷底生成 OR 結構破壞 -> 平空離場)
+# 🔴 2. 空頭持倉平倉判定 (未滿足硬性離場門檻，絕對一票否決平空)
 # =========================================================================
 def should_exit_short(
     curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
@@ -133,10 +120,13 @@ def should_exit_short(
     m15_c, m15_p = float(ma15_curr), float(ma15_prev)
     kc_l, p_kc_l = float(kc_lower), float(prev_kc_lower)
 
-    # 【谷底生成條件 A】：MA3 快線向上金叉 MA15 慢線
+    # 門檻 1：收盤價實體突破本波下跌的波段高點 Swing High (真正的結構破壞)
+    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > m15_c)
+
+    # 門檻 2：MA3 快線正式向上金叉 MA15 慢線
     is_ma3_golden_cross = (m3_c > m15_c) and (m3_p <= m15_p)
     
-    # 【谷底生成條件 B】：極限見底反轉 (軌外大陽吞噬 >= 60% OR 低位長下影刺針)
+    # 門檻 3：極限見底 (價格曾衝出 KC 下軌 + 軌外大陽吞噬 >= 60% OR 長下影刺針)
     is_engulfing_bottom = (
         (prev_close < p_kc_l)
         and (curr_close > curr_open)
@@ -149,33 +139,19 @@ def should_exit_short(
     )
     is_bottom_signal = is_engulfing_bottom or is_pinbar_bottom
 
-    # 【谷底生成條件 C】：Pre-Cross 谷底拐頭 (KC 下半區 + MA3 向上拐頭 + 實體陽線收盤站上 MA3)
-    # KC 下半區：close <= (kc_lower + (ma15_curr - kc_lower) * 0.5)
-    kc_lower_half = kc_l + (m15_c - kc_l) * 0.5
-    is_pivot_bottom = (
-        (curr_close <= kc_lower_half)
-        and (m3_c > m3_p)
-        and (curr_close > curr_open)
-        and (curr_close >= m3_c)
-    )
-
-    # 谷底力竭/轉折訊號綜合判定
-    is_bottom_formed = is_ma3_golden_cross or is_bottom_signal or is_pivot_bottom
-
-    # 【極端爆發熔斷】：單根大陽線實體 body >= 1.8 ATR 且貫穿 MA15 慢線
+    # 門檻 4：大爆發熔斷 (單根大陽線實體 body >= 1.8 * atr 且貫穿 MA15 慢線)
     is_spike_circuit_breaker = (
         (curr_body >= 1.8 * atr_val)
         and (curr_close > m15_c)
     )
 
-    # 【最終底線】：收盤價實體突破本波波段起跌高點 Swing High (真正的結構破壞)
-    is_structure_broken = (curr_close > float(swing_high_price)) and (curr_close > m15_c)
+    # ⚠️ 【關鍵鎖定】：
+    # 只要 (curr_close < ma15_curr) 且未滿足上述 1/2/3/4 任一硬門檻，
+    # 平空邏輯【必須強制 return False】！嚴禁在低位小綠 K 當下平倉！
+    if not (is_structure_broken or is_ma3_golden_cross or is_bottom_signal or is_spike_circuit_breaker):
+        return False
 
-    # ⚠️ 只要「生成谷底」、「極端熔斷」或「結構破壞」，立即觸發平空！
-    if is_bottom_formed or is_spike_circuit_breaker or is_structure_broken:
-        return True
-
-    return False  # 未達谷底且未破壞結構，繼續持倉續抱拿滿波段
+    return True  # 符合硬性離場門檻，執行平空
 
 
 class ExecutionManager:

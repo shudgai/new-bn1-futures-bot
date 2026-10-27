@@ -520,74 +520,48 @@ def test_fakeout_bull_trap_veto_long():
     assert is_bull_trap is True, "無量小實體且長上影衝出下行 KC 上軌，必須被判定為 Bull Trap 一票否決！"
 
 
-def test_pre_cross_pivot_valley_exit_short():
+def test_real_trade_1603_and_1616_micro_green_candle_veto_hold_short():
     """
-    驗證空頭持倉在未破壞 Swing High 前，只要觸發 Pre-Cross 谷底拐頭，
-    即刻提前平空鎖利（不用等均線完全交叉完或結構破壞）。
+    驗證 16:03 與 16:16 實盤場景：
+    空頭持倉中，即使出現微幅小綠 K 或底部走平，
+    只要收盤價壓制在 MA15 慢線之下，且未滿足 4 大硬性離場門檻，
+    should_exit_short 必須強制 return False，一票否決平空，續抱拿滿大暴跌！
     """
     from core.services.execution_manager import should_exit_short
     
-    # 設置參數：kc_lower=93.0, ma15_curr=97.0 -> kc_lower_half = 95.0
-    # curr_k 收盤在 94.8 <= 95.0, 陽線(94.8 > 94.2), MA3 向上拐頭(94.6 > 94.0), close(94.8) >= MA3(94.6)
-    curr_k = {"open": 94.2, "high": 95.0, "low": 94.0, "close": 94.8}
-    prev_k = {"open": 95.5, "high": 95.6, "low": 93.8, "close": 94.2}
-    
-    kc_lower = 93.0
-    prev_kc_lower = 93.0
-    ma15_curr = 97.0
-    ma15_prev = 97.2
-    ma3_curr = 94.6
-    ma3_prev = 94.0
-    swing_high_price = 105.0 # 結構起跌點遠在 105.0，完全未被破壞
-    
-    exit_triggered = should_exit_short(
-        curr_k=curr_k,
-        prev_k=prev_k,
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        ma15_curr=ma15_curr,
-        ma15_prev=ma15_prev,
-        kc_lower=kc_lower,
-        prev_kc_lower=prev_kc_lower,
-        current_atr=1.0,
-        swing_high_price=swing_high_price
+    # 場景 1 (16:03 附近)：微幅小綠 K 回踩，價格 0.01910 遠在 MA15=0.01918 之下
+    curr_k_1603 = {"open": 0.01908, "high": 0.01912, "low": 0.01906, "close": 0.01910}
+    prev_k_1603 = {"open": 0.01915, "high": 0.01916, "low": 0.01905, "close": 0.01908}
+    exit_1603 = should_exit_short(
+        curr_k=curr_k_1603,
+        prev_k=prev_k_1603,
+        ma3_curr=0.01909,
+        ma3_prev=0.01912,
+        ma15_curr=0.01918,
+        ma15_prev=0.01920,
+        kc_lower=0.01900,
+        prev_kc_lower=0.01902,
+        current_atr=0.00007,
+        swing_high_price=0.01935,
     )
-    assert exit_triggered is True, "Pre-Cross 谷底拐頭必須在結構破壞前提前平空鎖利！"
+    assert exit_1603 is False, "16:03 微幅回踩小綠 K 遠在 MA15 之下，必須一票否決平空！"
 
-
-def test_pre_cross_pivot_peak_exit_long():
-    """
-    驗證多頭持倉在未破壞 Swing Low 前，只要觸發 Pre-Cross 峰頂拐頭，
-    即刻提前平多鎖利（不用等均線完全死叉完或結構破壞）。
-    """
-    from core.services.execution_manager import should_exit_long
-    
-    # 設置參數：kc_upper=107.0, ma15_curr=103.0 -> kc_upper_half = 105.0
-    # curr_k 收盤在 105.2 >= 105.0, 陰線(105.2 < 105.8), MA3 向下拐頭(105.4 < 106.5), close(105.2) <= MA3(105.4)
-    curr_k = {"open": 105.8, "high": 106.0, "low": 105.0, "close": 105.2}
-    prev_k = {"open": 104.5, "high": 106.2, "low": 104.2, "close": 105.8}
-    
-    kc_upper = 107.0
-    prev_kc_upper = 107.0
-    ma15_curr = 103.0
-    ma15_prev = 102.8
-    ma3_curr = 105.4
-    ma3_prev = 106.5
-    swing_low_price = 95.0 # 結構起漲點遠在 95.0，完全未被跌破
-    
-    exit_triggered = should_exit_long(
-        curr_k=curr_k,
-        prev_k=prev_k,
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        ma15_curr=ma15_curr,
-        ma15_prev=ma15_prev,
-        kc_upper=kc_upper,
-        prev_kc_upper=prev_kc_upper,
-        current_atr=1.0,
-        swing_low_price=swing_low_price
+    # 場景 2 (16:16 附近)：底部狹幅走平小綠 K，價格 0.01903 仍在 MA15=0.01906 之下且未金叉
+    curr_k_1616 = {"open": 0.01901, "high": 0.01905, "low": 0.01900, "close": 0.01903}
+    prev_k_1616 = {"open": 0.01904, "high": 0.01906, "low": 0.01901, "close": 0.01901}
+    exit_1616 = should_exit_short(
+        curr_k=curr_k_1616,
+        prev_k=prev_k_1616,
+        ma3_curr=0.01903,
+        ma3_prev=0.01902,
+        ma15_curr=0.01906,
+        ma15_prev=0.01907,
+        kc_lower=0.01890,
+        prev_kc_lower=0.01892,
+        current_atr=0.00007,
+        swing_high_price=0.01935,
     )
-    assert exit_triggered is True, "Pre-Cross 峰頂拐頭必須在結構破壞前提前平多鎖利！"
+    assert exit_1616 is False, "16:16 底部狹幅走平小綠 K 未破 MA15 慢線，必須一票否決平空，續抱拿滿 16:25 大暴跌！"
 
 
 
