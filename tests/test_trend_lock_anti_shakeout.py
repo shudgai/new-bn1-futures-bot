@@ -1081,6 +1081,78 @@ async def test_pepe_1905_top_dead_cross_exit_and_flip_short():
     assert open_call_kwargs["meta"]["direction_override"] is True
 
 
+@pytest.mark.anyio
+async def test_no_hard_stop_loss_only_profit_lock_waterfall_and_pivots():
+    """
+    驗證 2026-10-27 最新最高指示：
+    1. 開倉後不要硬止損割肉 (虧損達 -3.5 ATR 依然堅決拒絕硬止損割肉，拒絕洗下車)。
+    2. 只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉。
+    3. 開錯方向 (遇到真峰頂或真谷底) 秒級平倉兼反手開倉修正！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    # 構造一個多單持倉，進場價 100.0，當前報價 98.0，ATR=0.5 (虧損 -4.0 ATR)
+    pos = {
+        "symbol": "BTC/USDT",
+        "side": "LONG",
+        "entry_price": 100.0,
+        "amount": 1.0,
+        "entry_atr": 0.5,
+    }
+    
+    # 構造 35 根正常震盪陰跌 K 棒 (無大瀑布、未形成真峰頂)
+    records = []
+    base_t = 1700000000
+    for i in range(35):
+        records.append({
+            "timestamp": (base_t + i * 60) * 1000,
+            "open": 100.0 - i * 0.2,
+            "high": 100.1 - i * 0.2,
+            "low": 99.8 - i * 0.2,
+            "close": 99.9 - i * 0.2,
+            "volume": 100.0,
+            "is_closed": True,
+            "atr": 0.5,
+            "kc_middle": 99.5 - i * 0.2,
+            "kc_upper": 100.5 - i * 0.2,
+            "kc_lower": 98.5 - i * 0.2,
+            "ma3": 99.9 - i * 0.2,
+            "prev_ma3": 100.0 - i * 0.2,
+            "ma15": 100.0 - i * 0.2,
+            "prev_ma15": 100.0 - i * 0.2,
+        })
+    df = pd.DataFrame(records)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {"BTC/USDT": pos}
+            self.position_meta = {}
+            self.channel_exit_frames = {"BTC/USDT": df}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
+
+    # 1. 雖然虧損達到 -4.0 ATR，但絕不觸發硬止損割肉，而是判定為開錯方向直接秒級平多兼反手開空 (SUCCESS_FLIP)！
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="BTC/USDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=98.0,
+    )
+    assert res.get("status") == "SUCCESS_FLIP", f"開錯方向必須同 K 棒秒級反手修正，但返回了: {res}"
+    assert res.get("side") == "SHORT"
+    assert close_mock.called is True
+    close_kwargs = close_mock.call_args.kwargs
+    assert "HARD_STOP" not in close_kwargs["reason"], "嚴禁觸發硬止損！"
+    assert "CIRCUIT_BREAKER_HARD_SL" not in close_kwargs["reason"], "嚴禁觸發硬止損！"
+
+
+
 
 
 

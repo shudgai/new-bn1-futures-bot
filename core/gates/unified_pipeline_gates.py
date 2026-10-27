@@ -100,11 +100,9 @@ class ExitGate:
                 )
         return False, ""
 
-    # 第一級絕對安全避險出口（3 ATR 硬止損、極端瀑布、反側破軌）：優先於頂底平倉
+    # 第一級絕對安全避險出口（極端大瀑布、市場熔斷、反側破位）：優先於一般持倉鎖定
+    # ⚠️ 依據 2026-10-27 最新最高指示：開倉後不要硬止損，只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉
     ABSOLUTE_SAFETY_REASONS = frozenset({
-        "CIRCUIT_BREAKER_HARD_SL",
-        "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
-        "HARD_STOP_LOSS",
         "CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
         "EXIT_BY_EXTREME_WATERFALL",
         "EMERGENCY_DUMP_EXIT",
@@ -114,7 +112,6 @@ class ExitGate:
         "OPPOSITE_KC_BAND_BREACH",
         "EXIT_LONG_ON_KC_LOWER_BREACH",
         "EXIT_SHORT_ON_KC_UPPER_BREACH",
-        "EXIT_BY_MEME_ADVERSE_STOP_LOSS",
         "STRUCTURAL_FAILURE_EXIT",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
@@ -828,12 +825,9 @@ class ExitGate:
         # 1.2 極端反向巨型瀑布 (EXIT_BY_EXTREME_WATERFALL，1.5 ATR 貫穿中軌)
         # 1.3 經確認成立的反側外軌破位 (OPPOSITE_KC_BAND_BREACH)
         # ══════════════════════════════════════════════════════════════════
-        hard_loss_threshold = -3.0 * atr_pct
-        if unrealized_pct <= hard_loss_threshold:
-            return True, "CIRCUIT_BREAKER_HARD_SL", {
-                **meta,
-                "cause": f"市場熔斷/硬防線避險: loss={unrealized_pct:.2%} <= threshold={hard_loss_threshold:.2%}",
-            }
+        # ⚠️ 2026-10-27 最新最高指示：開倉後不要硬止損割肉，只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉
+        # hard_loss_threshold = -3.0 * atr_pct
+        # if unrealized_pct <= hard_loss_threshold: ... [DISABLED]
 
         # 1.2 極端巨型瀑布 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
         if has_candle_history and c_curr is not None:

@@ -111,14 +111,9 @@ class HoldingLockStateMachine:
         stop = self._finite_positive(
             (position or {}).get("sl") or (position or {}).get("initial_sl")
         )
-        if stop is None and atr is not None:
-            stop = entry - 3.0 * atr if side == "LONG" else entry + 3.0 * atr
-        hard_stop = stop is not None and (price <= stop if side == "LONG" else price >= stop)
-        if hard_stop:
-            return HoldingLockResult(
-                "CLOSE_POSITION", side=side, hard_stop_triggered=True,
-                evidence={"stop_price": stop, "quote": price}, reason="HARD_STOP_TRIGGERED",
-            )
+        # ⚠️ 2026-10-27 最新最高指示：開倉後不要硬止損割肉，只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉
+        # hard_stop = stop is not None and (price <= stop if side == "LONG" else price >= stop)
+        # if hard_stop: return HoldingLockResult(...) [DISABLED]
 
         if len(closed) >= self.swing_lookback + 1:
             current = closed.iloc[-1]
