@@ -137,3 +137,24 @@ def test_normal_trending_width_allows_regular_ma_cross():
 
     assert res.checks.get("kc_squeeze_gate", {}).get("status") == "PASS"
     assert res.passed is True
+
+
+def test_squeeze_unlocks_on_agile_midline_bounce_ambush():
+    """5. 妖幣回踩中軌轉強 (AGILE_MOMENTUM / direction_override) 在擠壓收口區解鎖提前埋伏底倉"""
+    # 通道處於擠壓 (kc_width=1.0 < 1.5% 門檻)，但觸發回踩中軌轉強，收盤站穩中軌，均線順勢發散
+    df = _make_squeeze_df(kc_middle=100.0, kc_width=1.0, atr=0.25, avg_atr=0.25, curr_price=100.2, ma3=100.3, ma5=100.1, ma15=99.8)
+    df.attrs["strategy_mode"] = "AGILE_MOMENTUM"
+    df.attrs["direction_override"] = True
+
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="1000PEPE/USDT",
+        side="LONG",
+        price=100.2,
+        klines_or_snapshot=df,
+        source="UNIFIED_PIPELINE|AGILE_TRIGGER_ENTRY_LONG_CROSS_MID",
+    )
+
+    # 必須成功通過 SQUEEZE 審查且解鎖埋伏
+    assert res.checks.get("kc_squeeze_gate", {}).get("status") == "PASS"
+    assert res.checks.get("kc_squeeze_gate", {}).get("ambush_unlocked") is True
+

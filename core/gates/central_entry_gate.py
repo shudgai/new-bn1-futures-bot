@@ -635,8 +635,27 @@ class CentralEntryGate:
         is_outside_breakout = (curr_price >= kc_upper) if side == "LONG" else (curr_price <= kc_lower)
         is_breakout_expansion_unlocked = is_breakout_candidate and (is_width_expanding or is_outside_breakout)
 
+        # 解鎖條件 2 (Midline Bounce Ambush: 擠壓收口區內「妖幣回踩中軌轉強底倉埋伏」解鎖)
+        # 依據妖幣手冊：收口擠壓為底倉埋伏必備前置，當為 AGILE 敏捷動能且收盤站穩中軌、MA3/MA5 同步順勢發散時放行底倉！
+        is_cross_mid_signal = any(k in src_upper for k in ("CROSS_MID", "PULLBACK", "AGILE", "MID_LINE"))
+        is_agile_ambush = bool(
+            direction_override
+            or (isinstance(entry_frame, pd.DataFrame) and entry_frame.attrs.get("is_agile_trigger"))
+            or (isinstance(entry_frame, pd.DataFrame) and entry_frame.attrs.get("strategy_mode") == "AGILE_MOMENTUM")
+            or (isinstance(klines_or_snapshot, dict) and klines_or_snapshot.get("strategy_mode") == "AGILE_MOMENTUM")
+        )
+        is_cross_mid_ambush_unlocked = bool(
+            is_agile_ambush
+            and is_cross_mid_signal
+            and (
+                (side == "LONG" and c_close > kc_mid and c_close > c_open and ma3_c > ma3_p and ma5_curr >= ma5_prev)
+                or (side == "SHORT" and c_close < kc_mid and c_close < c_open and ma3_c < ma3_p and ma5_curr <= ma5_prev)
+            )
+        )
+        is_squeeze_unlocked = is_breakout_expansion_unlocked or is_cross_mid_ambush_unlocked
+
         checks["kc_squeeze_gate"] = {
-            "status": "PASS" if (not is_market_squeeze or is_breakout_expansion_unlocked) else "FAIL",
+            "status": "PASS" if (not is_market_squeeze or is_squeeze_unlocked) else "FAIL",
             "market_regime": "MARKET_SQUEEZE" if is_market_squeeze else "TRENDING_OR_NORMAL",
             "kc_width_ratio": kc_width_ratio,
             "min_width_ratio": min_width_threshold,
@@ -645,10 +664,11 @@ class CentralEntryGate:
             "is_width_squeezed": is_width_squeezed,
             "is_atr_squeezed": is_atr_squeezed,
             "breakout_unlocked": is_breakout_expansion_unlocked,
+            "ambush_unlocked": is_cross_mid_ambush_unlocked,
         }
 
-        # 若處於通道擠壓狹幅盤整且未達成破軌解鎖，一票否決所有常規交叉與轉折開倉
-        if is_market_squeeze and not is_breakout_expansion_unlocked:
+        # 若處於通道擠壓狹幅盤整且未達成破軌或回踩轉強解鎖，一票否決
+        if is_market_squeeze and not is_squeeze_unlocked:
             return GateCheckResult(
                 passed=False,
                 reason="BLOCKED_BY_KC_SQUEEZE_LOCK",
