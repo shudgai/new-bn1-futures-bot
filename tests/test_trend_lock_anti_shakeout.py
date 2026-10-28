@@ -1764,3 +1764,54 @@ def test_pepe_1210_lock_short_and_lobster_1214_lock_long():
         kc_upper=0.01995, prev_kc_upper=0.01990, current_atr=0.00005,
     ) is False, "龍蝦 12:14 必須一票否決平多，鎖死多單持倉！"
 
+
+def test_buffer_distance_and_slope_trend_lock_bidirectional():
+    """
+    驗證最高核心架構與鐵律（多空雙向）：
+    1. 均線黏合假金叉 / 假死叉過濾 (Buffer Distance Protection: 穿越深度 >= 0.15 * ATR)
+    2. 中軌斜率雙向鋼鐵鎖定 (中軌向上不平多、中軌向下不平空)
+    """
+    from core.services.execution_manager import (
+        is_valid_dead_cross,
+        is_valid_golden_cross,
+        should_exit_long,
+        should_exit_short,
+    )
+
+    atr = 0.5
+
+    # 1. 死叉深度防線 (MA15 - MA3 >= 0.15 * ATR = 0.075)
+    # 黏合微幅毛刺 (深度 = 10.02 - 10.00 = 0.02 < 0.075) -> False
+    assert is_valid_dead_cross(ma3_curr=10.00, ma3_prev=10.05, ma15_curr=10.02, ma15_prev=10.00, current_atr=atr) is False
+    # 有效深度死叉 (深度 = 10.10 - 10.00 = 0.10 >= 0.075) -> True
+    assert is_valid_dead_cross(ma3_curr=10.00, ma3_prev=10.05, ma15_curr=10.10, ma15_prev=10.00, current_atr=atr) is True
+
+    # 2. 金叉深度防線 (MA3 - MA15 >= 0.15 * ATR = 0.075)
+    # 黏合微幅毛刺 (深度 = 10.02 - 10.00 = 0.02 < 0.075) -> False
+    assert is_valid_golden_cross(ma3_curr=10.02, ma3_prev=9.95, ma15_curr=10.00, ma15_prev=10.00, current_atr=atr) is False
+    # 有效深度金叉 (深度 = 10.10 - 10.00 = 0.10 >= 0.075) -> True
+    assert is_valid_golden_cross(ma3_curr=10.10, ma3_prev=9.95, ma15_curr=10.00, ma15_prev=10.00, current_atr=atr) is True
+
+    # 3. 多頭中軌斜率鋼鐵鎖定 (kc_mid_curr > kc_mid_prev 且 close > ma15)
+    # 即使盤中微幅回踩紅 K 且 MA3 碰觸 MA15，但未滿足 0.15*ATR 深度死叉 -> 強制 False
+    curr_k_long = {"open": 10.5, "close": 10.3, "high": 10.6, "low": 10.2} # 回踩紅 K, close=10.3 > ma15=10.1
+    prev_k_long = {"open": 10.2, "close": 10.5, "high": 10.6, "low": 10.1}
+    assert should_exit_long(
+        curr_k=curr_k_long, prev_k=prev_k_long,
+        ma3_curr=10.08, ma3_prev=10.12, ma15_curr=10.10, ma15_prev=10.05, # 差距 0.02 < 0.075 黏合假死叉
+        kc_middle=10.0, prev_kc_middle=9.9, # 中軌斜率向上
+        current_atr=atr,
+    ) is False, "中軌向上且在 MA15 之上，均線黏合假死叉必須一票否決平多！"
+
+    # 4. 空頭中軌斜率鋼鐵鎖定 (kc_mid_curr < kc_mid_prev 且 close < ma15)
+    # 即使盤中微幅反彈綠 K 且 MA3 碰觸 MA15，但未滿足 0.15*ATR 深度金叉 -> 強制 False
+    curr_k_short = {"open": 9.5, "close": 9.7, "high": 9.8, "low": 9.4} # 反彈綠 K, close=9.7 < ma15=9.9
+    prev_k_short = {"open": 9.8, "close": 9.5, "high": 9.9, "low": 9.4}
+    assert should_exit_short(
+        curr_k=curr_k_short, prev_k=prev_k_short,
+        ma3_curr=9.92, ma3_prev=9.88, ma15_curr=9.90, ma15_prev=9.95, # 差距 0.02 < 0.075 黏合假金叉
+        kc_middle=9.9, prev_kc_middle=10.0, # 中軌斜率向下
+        current_atr=atr,
+    ) is False, "中軌向下且在 MA15 之下，均線黏合假金叉必須一票否決平空！"
+
+

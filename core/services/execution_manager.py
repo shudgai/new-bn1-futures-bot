@@ -23,6 +23,24 @@ logger = logging.getLogger("ExecutionManager")
 
 
 # =========================================================================
+# 1. 嚴格過濾「均線黏合假金叉 / 假死叉 (Buffer Distance Protection)」
+# =========================================================================
+def is_valid_dead_cross(ma3_curr, ma3_prev, ma15_curr, ma15_prev, current_atr):
+    """ 多頭離場：MA3 向下貫穿 MA15 深度必須 >= 0.15 * ATR """
+    atr_val = float(current_atr or 0.0)
+    raw_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
+    cross_depth = (ma15_curr - ma3_curr)
+    return bool(raw_cross and (cross_depth >= 0.15 * atr_val))
+
+def is_valid_golden_cross(ma3_curr, ma3_prev, ma15_curr, ma15_prev, current_atr):
+    """ 空頭離場：MA3 向上貫穿 MA15 深度必須 >= 0.15 * ATR """
+    atr_val = float(current_atr or 0.0)
+    raw_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
+    cross_depth = (ma3_curr - ma15_curr)
+    return bool(raw_cross and (cross_depth >= 0.15 * atr_val))
+
+
+# =========================================================================
 # 🎯 0. 嚴格過濾「真谷底 (True Bottom)」與「真峰頂 (True Top)」唯一評判裁決官 (方案 B)
 # =========================================================================
 def check_pivot_status(
@@ -31,8 +49,8 @@ def check_pivot_status(
 ):
     """
     全域真峰谷唯一驗證裁決官 (波段狀態機核心 - 方案 B 慢線硬鎖定修復版):
-    - is_true_bottom: MA3向上金叉MA15 OR (軌外大陽吞噬 / 低位天地針 / 1.8 ATR爆發大陽線 且 收盤價實體站上 MA15)
-    - is_true_peak: MA3向下死叉MA15 OR (軌外大陰吞噬 / 高位天地針 / 1.8 ATR崩盤大陰線 且 收盤價實體跌破 MA15)
+    - is_true_bottom: MA3向上金叉MA15 (深度>=0.15 ATR) OR (軌外大陽吞噬 / 低位天地針 / 1.8 ATR爆發大陽線 且 收盤價實體站上 MA15)
+    - is_true_peak: MA3向下死叉MA15 (深度>=0.15 ATR) OR (軌外大陰吞噬 / 高位天地針 / 1.8 ATR崩盤大陰線 且 收盤價實體跌破 MA15)
     """
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
@@ -150,85 +168,181 @@ def is_meme_trade_valid(
 # =========================================================================
 # 🟢 1. 多頭持倉平倉判定 (方案 B: 檢測真峰頂與結構破壞，震盪假峰頂一票否決)
 # =========================================================================
+# 🟢 2. 多頭持倉離場 (中軌向上 & 黏合防洗盤鎖定)
+# =========================================================================
 def should_exit_long(
-    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_upper, prev_kc_upper, current_atr,
-    swing_low_price=None, raw_df=None, position=None,
+    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev,
+    *args,
+    kc_middle=None, prev_kc_middle=None, kc_upper=None, prev_kc_upper=None,
+    current_atr=0.0, swing_low_price=None, raw_df=None, position=None, **kwargs
 ):
+    """
+    多頭持倉離場判定 (中軌斜率鋼鐵鎖定 + 均線黏合假死叉防線):
+    1. 中軌向上 & 收盤穩守 MA15 且未發生 0.15*ATR 深度死叉 -> 一票否決 (return False)
+    2. 深度死叉 (MA15 - MA3 >= 0.15*ATR) OR 真峰頂 OR 跌破 swing_low 且跌破 MA15 -> return True
+    """
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
-    kc_lower = float(curr_k.get('kc_lower', 0.0))
-    prev_kc_lower = float(prev_k.get('kc_lower', 0.0))
+
+    # 智能解析 kc_middle / prev_kc_middle (相容位置參數與命名參數)
+    if kc_middle is not None:
+        kc_mid_curr = float(kc_middle)
+    elif len(args) >= 1 and args[0] is not None:
+        kc_mid_curr = float(args[0])
+    elif "kc_middle" in curr_k:
+        kc_mid_curr = float(curr_k["kc_middle"])
+    elif kc_upper is not None or "kc_upper" in curr_k:
+        u = float(kc_upper if kc_upper is not None else curr_k.get("kc_upper", 0.0))
+        l = float(curr_k.get("kc_lower", 0.0))
+        kc_mid_curr = (u + l) / 2.0 if (u and l) else u
+    else:
+        kc_mid_curr = 0.0
+
+    if prev_kc_middle is not None:
+        kc_mid_prev = float(prev_kc_middle)
+    elif len(args) >= 2 and args[1] is not None:
+        kc_mid_prev = float(args[1])
+    elif "kc_middle" in prev_k:
+        kc_mid_prev = float(prev_k["kc_middle"])
+    elif prev_kc_upper is not None or "kc_upper" in prev_k:
+        u = float(prev_kc_upper if prev_kc_upper is not None else prev_k.get("kc_upper", 0.0))
+        l = float(prev_k.get("kc_lower", 0.0))
+        kc_mid_prev = (u + l) / 2.0 if (u and l) else u
+    else:
+        kc_mid_prev = 0.0
+
+    atr_val = float(current_atr or (args[2] if len(args) >= 3 else 0.0) or curr_k.get("atr", 0.0) or 0.0)
+    swing_low = swing_low_price if swing_low_price is not None else (args[3] if len(args) >= 4 else None)
 
     # 持倉呼吸防洗鐵律: 未實質展開波段 (gain < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
     if position:
         entry_p = float(position.get("entry_price") or 0.0)
         peak_roe = float(position.get("peak_roe") or 0.0)
-        atr_threshold = 0.5 * float(current_atr or 0.0)
+        atr_threshold = 0.5 * atr_val
         if entry_p > 0:
             high_p = float(position.get("highest_price") or position.get("peak_price") or entry_p)
             gain = high_p - entry_p
             if gain < atr_threshold and peak_roe < 5.0:
                 return False
 
+    is_kc_mid_up = bool(kc_mid_curr > kc_mid_prev)  # 中軌斜率向上
+    is_ma3_dead_cross = is_valid_dead_cross(ma3_curr, ma3_prev, ma15_curr, ma15_prev, atr_val)
+    is_structure_broken_short = bool(swing_low is not None and curr_close < float(swing_low) and curr_close < ma15_curr)
+
+    # ⚠️ 【中軌向上 & 均線黏合鋼鐵過濾】：
+    # 只要 (中軌斜率向上) 且 (收盤價仍站在 MA15 慢線上方) 且 (未發生 0.15*ATR 深度死叉)，
+    # 平多邏輯【必須直接 return False】！強制鎖死持倉！
+    if is_kc_mid_up and (curr_close > ma15_curr) and not is_ma3_dead_cross:
+        return False
+
+    # 獲取真峰頂狀態
+    kc_u = float(kc_upper if kc_upper is not None else curr_k.get("kc_upper", kc_mid_curr * 1.02))
+    p_kc_u = float(prev_kc_upper if prev_kc_upper is not None else prev_k.get("kc_upper", kc_mid_prev * 1.02))
+    kc_lo = float(curr_k.get("kc_lower", kc_mid_curr * 0.98))
+    p_kc_lo = float(prev_k.get("kc_lower", kc_mid_prev * 0.98))
+
     _, is_real_peak = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
         ma3_curr=ma3_curr, ma3_prev=ma3_prev,
         ma15_curr=ma15_curr, ma15_prev=ma15_prev,
-        kc_upper=kc_upper, kc_lower=kc_lower,
-        prev_kc_upper=prev_kc_upper, prev_kc_lower=prev_kc_lower,
-        current_atr=current_atr,
+        kc_upper=kc_u, kc_lower=kc_lo,
+        prev_kc_upper=p_kc_u, prev_kc_lower=p_kc_lo,
+        current_atr=atr_val,
     )
-    if is_real_peak:
-        return True  # 觸發真峰頂 (死叉/大陰吞噬/天地針/1.8ATR暴跌)，放行平多兼反手開空！
 
-    # 最終結構破壞: 跌破波段起漲前低且收盤跌破 MA15 慢線
-    if swing_low_price is not None and curr_close < float(swing_low_price) and curr_close < ma15_curr:
-        return True
+    if not (is_ma3_dead_cross or is_real_peak or is_structure_broken_short):
+        return False
 
-    # 震盪假峰谷 (未死叉、無極限訊號、未破壞結構)：一票否決平多，強制鎖死持倉續抱！
-    return False
+    return True  # 觸發真死叉或真峰頂/結構破壞，允許【平多兼秒級反手開空】
 
 
 # =========================================================================
-# 🔴 2. 空頭持倉平倉判定 (方案 B: 檢測真谷底與結構破壞，震盪假谷底一票否決)
+# 🔴 3. 空頭持倉離場 (中軌向下 & 黏合防洗盤鎖定)
 # =========================================================================
 def should_exit_short(
-    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev, kc_lower, prev_kc_lower, current_atr,
-    swing_high_price=None, raw_df=None, position=None,
+    curr_k, prev_k, ma3_curr, ma3_prev, ma15_curr, ma15_prev,
+    *args,
+    kc_middle=None, prev_kc_middle=None, kc_lower=None, prev_kc_lower=None,
+    current_atr=0.0, swing_high_price=None, raw_df=None, position=None, **kwargs
 ):
+    """
+    空頭持倉離場判定 (中軌斜率鋼鐵鎖定 + 均線黏合假金叉防線):
+    1. 中軌向下 & 收盤穩守 MA15 且未發生 0.15*ATR 深度金叉 -> 一票否決 (return False)
+    2. 深度金叉 (MA3 - MA15 >= 0.15*ATR) OR 真谷底 OR 突破 swing_high 且突破 MA15 -> return True
+    """
     curr_close = float(curr_k['close'])
     curr_open = float(curr_k['open'])
-    kc_upper = float(curr_k.get('kc_upper', 0.0))
-    prev_kc_upper = float(prev_k.get('kc_upper', 0.0))
+
+    # 智能解析 kc_middle / prev_kc_middle (相容位置參數與命名參數)
+    if kc_middle is not None:
+        kc_mid_curr = float(kc_middle)
+    elif len(args) >= 1 and args[0] is not None:
+        kc_mid_curr = float(args[0])
+    elif "kc_middle" in curr_k:
+        kc_mid_curr = float(curr_k["kc_middle"])
+    elif kc_lower is not None or "kc_lower" in curr_k:
+        l = float(kc_lower if kc_lower is not None else curr_k.get("kc_lower", 0.0))
+        u = float(curr_k.get("kc_upper", 0.0))
+        kc_mid_curr = (u + l) / 2.0 if (u and l) else l
+    else:
+        kc_mid_curr = 0.0
+
+    if prev_kc_middle is not None:
+        kc_mid_prev = float(prev_kc_middle)
+    elif len(args) >= 2 and args[1] is not None:
+        kc_mid_prev = float(args[1])
+    elif "kc_middle" in prev_k:
+        kc_mid_prev = float(prev_k["kc_middle"])
+    elif prev_kc_lower is not None or "kc_lower" in prev_k:
+        l = float(prev_kc_lower if prev_kc_lower is not None else prev_k.get("kc_lower", 0.0))
+        u = float(prev_k.get("kc_upper", 0.0))
+        kc_mid_prev = (u + l) / 2.0 if (u and l) else l
+    else:
+        kc_mid_prev = 0.0
+
+    atr_val = float(current_atr or (args[2] if len(args) >= 3 else 0.0) or curr_k.get("atr", 0.0) or 0.0)
+    swing_high = swing_high_price if swing_high_price is not None else (args[3] if len(args) >= 4 else None)
 
     # 持倉呼吸防洗鐵律: 未實質展開波段 (drop < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
     if position:
         entry_p = float(position.get("entry_price") or 0.0)
         peak_roe = float(position.get("peak_roe") or 0.0)
-        atr_threshold = 0.5 * float(current_atr or 0.0)
+        atr_threshold = 0.5 * atr_val
         if entry_p > 0:
             low_p = float(position.get("lowest_price") or position.get("trough_price") or entry_p)
             drop = entry_p - low_p
             if drop < atr_threshold and peak_roe < 5.0:
                 return False
 
+    is_kc_mid_down = bool(kc_mid_curr < kc_mid_prev)  # 中軌斜率向下
+    is_ma3_golden_cross = is_valid_golden_cross(ma3_curr, ma3_prev, ma15_curr, ma15_prev, atr_val)
+    is_structure_broken_long = bool(swing_high is not None and curr_close > float(swing_high) and curr_close > ma15_curr)
+
+    # ⚠️ 【中軌向下 & 均線黏合鋼鐵過濾】：
+    # 只要 (中軌向下斜率) 且 (收盤價仍站在 MA15 慢線下方) 且 (未發生 0.15*ATR 深度金叉)，
+    # 平空邏輯【必須直接 return False】！強制鎖死持倉！
+    if is_kc_mid_down and (curr_close < ma15_curr) and not is_ma3_golden_cross:
+        return False
+
+    # 獲取真谷底狀態
+    kc_u = float(curr_k.get("kc_upper", kc_mid_curr * 1.02))
+    p_kc_u = float(prev_k.get("kc_upper", kc_mid_prev * 1.02))
+    kc_lo = float(kc_lower if kc_lower is not None else curr_k.get("kc_lower", kc_mid_curr * 0.98))
+    p_kc_lo = float(prev_kc_lower if prev_kc_lower is not None else prev_k.get("kc_lower", kc_mid_prev * 0.98))
+
     is_real_bottom, _ = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
         ma3_curr=ma3_curr, ma3_prev=ma3_prev,
         ma15_curr=ma15_curr, ma15_prev=ma15_prev,
-        kc_upper=kc_upper, kc_lower=kc_lower,
-        prev_kc_upper=prev_kc_upper, prev_kc_lower=prev_kc_lower,
-        current_atr=current_atr,
+        kc_upper=kc_u, kc_lower=kc_lo,
+        prev_kc_upper=p_kc_u, prev_kc_lower=p_kc_lo,
+        current_atr=atr_val,
     )
-    if is_real_bottom:
-        return True  # 觸發真谷底 (金叉/大陽吞噬/下刺針/1.8ATR暴漲)，放行平空兼反手開多！
 
-    # 最終結構破壞: 突破波段起跌前高且收盤站上 MA15 慢線
-    if swing_high_price is not None and curr_close > float(swing_high_price) and curr_close > ma15_curr:
-        return True
+    if not (is_ma3_golden_cross or is_real_bottom or is_structure_broken_long):
+        return False
 
-    # 震盪假峰谷 (未金叉、無極限訊號、未破壞結構)：一票否決平空，強制鎖死持倉續抱！
-    return False
+    return True  # 觸發真金叉或真谷底/結構破壞，允許【平空兼秒級反手開多】
 
 
 class ExecutionManager:
@@ -346,12 +460,15 @@ class ExecutionManager:
             swing_low_price = None
             swing_high_price = None
 
+        p_kc_mid = float(p_k.get("kc_middle", (p_kc_u + p_kc_lo) / 2.0))
+
         is_structure_broken_short = (
             (swing_low_price is not None and c_c < float(swing_low_price) and c_c < m15_c)
             or should_exit_long(
                 curr_k=c_k, prev_k=p_k,
                 ma3_curr=m3_c, ma3_prev=m3_p,
                 ma15_curr=m15_c, ma15_prev=m15_p,
+                kc_middle=kc_mid, prev_kc_middle=p_kc_mid,
                 kc_upper=kc_u, prev_kc_upper=p_kc_u,
                 current_atr=atr_v,
                 swing_low_price=swing_low_price,
@@ -365,6 +482,7 @@ class ExecutionManager:
                 curr_k=c_k, prev_k=p_k,
                 ma3_curr=m3_c, ma3_prev=m3_p,
                 ma15_curr=m15_c, ma15_prev=m15_p,
+                kc_middle=kc_mid, prev_kc_middle=p_kc_mid,
                 kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
                 current_atr=atr_v,
                 swing_high_price=swing_high_price,
@@ -427,6 +545,18 @@ class ExecutionManager:
             # 🎯 方案 B 核心狀態機 (無硬止損版 - 完全取消固定價位硬止損):
             # 🔴 空頭持倉中 (SHORT)：
             if pos_side == "SHORT":
+                is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
+                is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+                # ⚠️ 【中軌向下 & 均線黏合鋼鐵過濾】：
+                # 只要 (中軌向下斜率) 且 (收盤價仍站在 MA15 慢線下方) 且 (未發生 0.15*ATR 深度金叉)，
+                # 平空邏輯【必須直接一票否決，強制續抱空單】！
+                if is_kc_mid_down and (c_c < m15_c) and not is_valid_gc:
+                    logger.info(
+                        f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 空單中軌向下且在MA15下方 (close={c_c:.6f} < ma15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                        f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
+
                 # 完全取消固定價位硬止損 (No Rigid Stop Loss)
                 if is_true_bottom or is_structure_broken_long:
                     # 觸發真谷底：18:15 類型的秒級【平空 ＋ 反手開多】
@@ -447,6 +577,19 @@ class ExecutionManager:
 
             # 🟢 多頭持倉中 (LONG)：
             elif pos_side == "LONG":
+                is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
+                is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+                # ⚠️ 【中軌向上 & 均線黏合鋼鐵過濾】：
+                # 只要 (中軌斜率向上) 且 (收盤價仍站在 MA15 慢線上方) 且 (未發生 0.15*ATR 深度死叉)，
+                # 平多邏輯【必須直接一票否決，強制續抱多單】！
+                if is_kc_mid_up and (c_c > m15_c) and not is_valid_dc:
+                    logger.info(
+                        f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 多單中軌向上且在MA15上方 (close={c_c:.6f} > ma15={m15_c:.6f}, slope={kc_slope:.6f})，"
+                        f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
+
+
                 # 完全取消固定價位硬止損 (No Rigid Stop Loss)
                 if is_true_peak or is_structure_broken_short:
                     # ⚠️ 19:05 峰頂死叉成立當下，秒級【平多 ＋ 即刻在頂部起跌點開空】：
