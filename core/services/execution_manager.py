@@ -108,11 +108,11 @@ def evaluate_meme_trade_valid(
         if funding_rate is not None and funding_rate < -0.003:
             return False, f"OVERCOOLED_FUNDING_RATE (fr={funding_rate:.4%} < -0.3%)"
 
-    # 3. K 棒強度與成交量確認 (ATR & Volume) - 放寬妖幣動能要求
+    # 3. K 棒強度確認 - 妖幣交叉與破軌徹底放寬 (僅過濾完全無波動死水 0.05 ATR)
     prev_body = abs(float(prev_k.get('close', 0.0)) - float(prev_k.get('open', 0.0))) if prev_k else 0.0
     effective_body = max(curr_body, prev_body)
-    if atr_val > 0 and effective_body < 0.25 * atr_val:
-        return False, f"WEAK_CANDLE_BODY_PINBAR (body={curr_body:.6f} < 0.25*ATR={0.25*atr_val:.6f})"
+    if atr_val > 0 and effective_body < 0.05 * atr_val:
+        return False, f"ZERO_LIQUIDITY_DOJI (body={curr_body:.6f} < 0.05*ATR={0.05*atr_val:.6f})"
 
     return True, "MEME_TRADE_VALID_PASS"
 
@@ -1310,7 +1310,8 @@ class ExecutionManager:
                         oi_change_pct=oi_change_val,
                         prev_k=market_data.prev_k,
                     )
-                    if not meme_ok:
+                    is_direct_actionable = any(k in str(candidate_signal).upper() for k in ("CROSS_MID", "BREAKOUT", "BREAKDOWN", "SWING_PIVOT", "PIVOT", "AGILE"))
+                    if not meme_ok and not is_direct_actionable:
                         logger.warning(
                             f"🛑 [MEME_ANTI_FAKEOUT_VETO] {symbol} {candidate_signal} 觸發妖幣風控一票否決: {meme_fail_reason} "
                             f"(body={c_body_now:.6f}, 1.2*atr={1.2*atr_val_now:.6f}, vol={float(market_data.curr_k.get('volume',0)):.1f}, "
