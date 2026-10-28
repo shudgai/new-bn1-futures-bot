@@ -1831,4 +1831,95 @@ def test_idle_none_position_anti_miss_triggers():
     assert is_valid_dead_cross(ma3_curr=9.90, ma3_prev=10.05, ma15_curr=10.00, ma15_prev=10.00, current_atr=atr) is True
 
 
+@pytest.mark.anyio
+async def test_lobster_1253_break_midline_cross_mid_short_opens_immediately():
+    """
+    【盤面實況回歸 12:53】龍蝦 12:45 平多後進入 NONE，12:53 MA3 跌破 KC 中軌：
+    1. 驗證 ExecutionManager 觸發 PIVOT_SHORT_CROSS_MID
+    2. candidate_signal_type 必須為 ENTRY_SHORT_MA3_MA15_CROSS_MID，且 is_swing_pivot=False
+    3. CentralEntryGate 不得拋出 VETO_SWING_PIVOT_NOT_CONFIRMED，秒級授權開空！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from core.gates.central_entry_gate import CentralEntryGate
+    from unittest.mock import AsyncMock
+
+    bars = []
+    base_ts = 1793163000_000
+    for i in range(35):
+        bars.append({
+            "timestamp": base_ts + i * 60_000,
+            "open": 0.01995,
+            "close": 0.01995,
+            "high": 0.02000,
+            "low": 0.01990,
+            "atr": 0.00005,
+            "volume": 80000.0,
+            "is_closed": True,
+        })
+
+    # 12:51 (倒數第 3 根): 衝上 0.02010
+    bars[-3]["open"] = 0.01995
+    bars[-3]["close"] = 0.02010
+    bars[-3]["high"] = 0.02015
+    bars[-3]["low"] = 0.01995
+
+    # 12:52 (倒數第 2 根): 0.02005 (中軌在 ~0.01996，MA3 在 0.02003 > 中軌)
+    bars[-2]["open"] = 0.02010
+    bars[-2]["close"] = 0.02005
+    bars[-2]["high"] = 0.02010
+    bars[-2]["low"] = 0.02000
+
+    # 12:53 (倒數第 1 根): 0.01975 (暴跌貫穿中軌，MA3 掉到 0.01996，收盤跌破中軌)
+    bars[-1]["open"] = 0.02000
+    bars[-1]["close"] = 0.01975
+    bars[-1]["high"] = 0.02000
+    bars[-1]["low"] = 0.01970
+    bars[-1]["atr"] = 0.00005
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {}
+            self.position_meta = {}
+            self.channel_exit_frames = {}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    captured_open = {}
+
+    async def mock_open(engine_or_account, symbol, side, price, reason, meta=None):
+        captured_open["symbol"] = symbol
+        captured_open["side"] = side
+        captured_open["reason"] = reason
+        captured_open["meta"] = meta
+        return True
+
+    ExecutionManager.open_position = mock_open
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="龙虾/USDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.01975,
+    )
+
+    assert res.get("status") in ("SUCCESS_ENTRY", "ENTRY_EXECUTED")
+    assert res.get("side") == "SHORT"
+    assert "CROSS_MID" in res.get("entry_type")
+    assert captured_open.get("meta", {}).get("candidate_signal_type") == "ENTRY_SHORT_MA3_MA15_CROSS_MID"
+    assert captured_open.get("meta", {}).get("is_swing_pivot") is False
+
+    # 驗證 CentralEntryGate 也能順利通過（不再被 VETO_SWING_PIVOT_NOT_CONFIRMED 阻擋）
+    gate_res = CentralEntryGate.verify_and_authorize(
+        symbol="龙虾/USDT",
+        side="SHORT",
+        price=0.01975,
+        klines_or_snapshot=df,
+        source="UNIFIED_PIPELINE|PIVOT_SHORT_CROSS_MID",
+    )
+    assert gate_res.passed is True, f"CentralEntryGate 必須放行穿中軌開空，實際拒絕原因: {gate_res.reason}"
+
+
+
 

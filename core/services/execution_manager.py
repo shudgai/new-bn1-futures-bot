@@ -739,31 +739,70 @@ class ExecutionManager:
             entry_type = None
 
             # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制
+            # 支援【MA3 穿越 KC 中軌】與【MA3 交叉 MA15】雙重敏捷觸發！
             is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
             is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
 
-            if (is_valid_gc or is_true_bottom) and not is_chasing_high:
+            # MA3 穿越 KC 中軌（極速啟動多空轉換）
+            is_cross_mid_long = bool(
+                kc_mid > 0
+                and m3_c > m3_p
+                and ((m3_c >= kc_mid and m3_p <= kc_mid) or (c_c >= kc_mid and (c_o <= kc_mid or p_c <= kc_mid)))
+            )
+            is_cross_mid_short = bool(
+                kc_mid > 0
+                and m3_c < m3_p
+                and ((m3_c <= kc_mid and m3_p >= kc_mid) or (c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)))
+            )
+
+            # 嚴格順勢方向審查：做多必須 MA3 向上發散且位於中軌上方或剛穿中軌；做空必須 MA3 向下發散且位於中軌下方或剛穿中軌
+            can_open_long = bool(
+                (is_cross_mid_long or is_valid_gc or is_true_bottom)
+                and (m3_c > m3_p)
+                and (m3_c >= kc_mid or c_c >= kc_mid)
+                and not is_chasing_high
+            )
+            can_open_short = bool(
+                (is_cross_mid_short or is_valid_dc or is_true_peak)
+                and (m3_c < m3_p)
+                and (m3_c <= kc_mid or c_c <= kc_mid)
+                and not is_chasing_low
+            )
+
+            if can_open_long:
                 candidate_side = "LONG"
-                is_cross_mid_long = bool(kc_mid > 0 and ((c_c >= kc_mid and (c_o <= kc_mid or p_c <= kc_mid)) or (m3_c >= kc_mid and m3_p <= kc_mid)))
-                entry_type = "NONE_GOLDEN_CROSS" if is_valid_gc else ("PIVOT_LONG_CROSS_MID" if is_cross_mid_long else "PIVOT_LONG")
+                if is_cross_mid_long:
+                    entry_type = "PIVOT_LONG_CROSS_MID"
+                elif is_valid_gc:
+                    entry_type = "NONE_GOLDEN_CROSS"
+                else:
+                    entry_type = "PIVOT_LONG"
                 pivot_triggered = True
-            elif (is_valid_dc or is_true_peak) and not is_chasing_low:
+            elif can_open_short:
                 candidate_side = "SHORT"
-                is_cross_mid_short = bool(kc_mid > 0 and ((c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)) or (m3_c <= kc_mid and m3_p >= kc_mid)))
-                entry_type = "NONE_DEAD_CROSS" if is_valid_dc else ("PIVOT_SHORT_CROSS_MID" if is_cross_mid_short else "PIVOT_SHORT")
+                if is_cross_mid_short:
+                    entry_type = "PIVOT_SHORT_CROSS_MID"
+                elif is_valid_dc:
+                    entry_type = "NONE_DEAD_CROSS"
+                else:
+                    entry_type = "PIVOT_SHORT"
                 pivot_triggered = True
 
             if pivot_triggered and candidate_side and entry_type:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
                 print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
-                is_cm = "CROSS" in entry_type or "MID" in entry_type
+                is_cm = ("CROSS" in entry_type or "MID" in entry_type)
+                sig_type = (
+                    ("ENTRY_LONG_MA3_MA15_CROSS_MID" if candidate_side == "LONG" else "ENTRY_SHORT_MA3_MA15_CROSS_MID")
+                    if is_cm else "SWING_PIVOT"
+                )
                 entry_meta = {
                     "side": candidate_side,
                     "direction_override": True,
                     "is_agile_trigger": True,
                     "entry_type": entry_type,
-                    "candidate_signal_type": "SWING_PIVOT",
-                    "is_swing_pivot": True,
+                    "candidate_signal_type": sig_type,
+                    "is_swing_pivot": (not is_cm),
                     "is_cross_mid": True,
                     "no_rigid_sl": True,
                     "stop_loss_price": None,

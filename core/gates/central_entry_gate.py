@@ -810,8 +810,8 @@ class CentralEntryGate:
         c_low = float(parsed["low"])
         c_body = abs(c_close - c_open)
 
-        # 實體最小動能 (敏捷轉折模式放寬至 0.20 ATR，常規破軌維持 0.35 ATR)
-        req_body_atr = cls.MIN_BODY_ATR
+        # 實體最小動能 (敏捷轉折/均線穿軌模式放寬至 0.15 ATR，常規破軌維持 0.35 ATR)
+        req_body_atr = 0.15 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
         if c_body < req_body_atr * atr:
             checks["candle_body"] = {
                 "status": "FAIL",
