@@ -898,8 +898,25 @@ async def validate_entry_at_execution(
         return False, "BLOCKED_TREND_LOCK_NATIVE_EXIT_CLEANUP_UNVERIFIED"
 
     # 方向總開關 (Direction Master Lock) 物理核驗
+    signal_type = str(
+        payload.get("candidate_signal_type")
+        or payload.get("entry_signal_code")
+        or payload.get("signal_code")
+        or payload.get("entry_type")
+        or ""
+    )
+    is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
+    allow_override = bool(
+        payload.get("direction_override")
+        or payload.get("allow_kc_internal")
+        or payload.get("is_swing_pivot")
+        or payload.get("strategy_mode") == "AGILE_MOMENTUM"
+        or is_meme_contract
+        or any(k in signal_type.upper() for k in ("PIVOT", "CROSS", "BREAKOUT", "BREAKDOWN", "AGILE"))
+    )
+
     from core.gates.direction_master_lock import check_direction_lock_from_frame
-    dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side)
+    dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
     if not dir_lock_pass:
         account_log = getattr(account, "log", None)
         if callable(account_log):

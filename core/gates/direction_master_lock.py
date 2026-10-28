@@ -98,13 +98,13 @@ def evaluate_direction_master_lock(
         if not is_ma3_trending_up:
             return False, "BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN", details
 
-        # 3. MA3 與慢線：MA3 必須高於或等於慢線/MA15 (絕不可豁免)
-        is_ma3_above_slow = (ma3_curr >= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr >= kc_middle if not allow_override else True)
+        # 3. MA3 與慢線：特例/轉折/穿中軌豁免慢線限制；常規開倉要求 MA3 高於慢線
+        is_ma3_above_slow = True if allow_override else ((ma3_curr >= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr >= kc_middle))
         if not is_ma3_above_slow:
             return False, "BLOCKED_DIRECTION_LOCK_LONG_MA3_BELOW_SLOW", details
 
-        # 4. K 棒形態：當前 K 棒必須是實體陽線 (若提供，絕不可豁免)
-        if curr_close is not None and curr_open is not None and math.isfinite(curr_close) and math.isfinite(curr_open):
+        # 4. K 棒形態：常規開倉當前 K 棒必須是實體陽線 (allow_override 轉折時放寬)
+        if not allow_override and curr_close is not None and curr_open is not None and math.isfinite(curr_close) and math.isfinite(curr_open):
             if not (curr_close > curr_open):
                 return False, "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE", details
 
@@ -121,13 +121,13 @@ def evaluate_direction_master_lock(
         if not is_ma3_trending_down:
             return False, "BLOCKED_DIRECTION_LOCK_SHORT_SLOPE_UP", details
 
-        # 3. MA3 與慢線：MA3 必須低於或等於慢線/MA15 (絕不可豁免)
-        is_ma3_below_slow = (ma3_curr <= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr <= kc_middle if not allow_override else True)
+        # 3. MA3 與慢線：特例/轉折/穿中軌豁免慢線限制；常規開倉要求 MA3 低於慢線
+        is_ma3_below_slow = True if allow_override else ((ma3_curr <= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr <= kc_middle))
         if not is_ma3_below_slow:
             return False, "BLOCKED_DIRECTION_LOCK_SHORT_MA3_ABOVE_SLOW", details
 
-        # 4. K 棒形態：當前 K 棒必須是實體陰線 (若提供，絕不可豁免)
-        if curr_close is not None and curr_open is not None and math.isfinite(curr_close) and math.isfinite(curr_open):
+        # 4. K 棒形態：常規開倉當前 K 棒必須是實體陰線 (allow_override 轉折時放寬)
+        if not allow_override and curr_close is not None and curr_open is not None and math.isfinite(curr_close) and math.isfinite(curr_open):
             if not (curr_close < curr_open):
                 return False, "BLOCKED_DIRECTION_LOCK_SHORT_NOT_BEARISH_CANDLE", details
 
@@ -217,7 +217,7 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
     }
 
 
-def check_direction_lock_from_frame(frame: Any, side: str) -> Tuple[bool, str, Dict[str, Any]]:
+def check_direction_lock_from_frame(frame: Any, side: str, allow_override: bool = False) -> Tuple[bool, str, Dict[str, Any]]:
     """
     由行情資料檢查是否通過方向總開關
     """
@@ -234,4 +234,5 @@ def check_direction_lock_from_frame(frame: Any, side: str) -> Tuple[bool, str, D
         ma15_curr=metrics.get("ma15_curr"),
         curr_close=metrics.get("curr_close"),
         curr_open=metrics.get("curr_open"),
+        direction_override=allow_override,
     )

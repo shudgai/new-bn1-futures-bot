@@ -100,29 +100,19 @@ def evaluate_meme_trade_valid(
 
     # 1. 方案 B 完全棄用 EMA 200 / EMA 50 等慢速指標，避免 1M 起漲點被誤殺！
 
-    # 2. 籌碼與槓桿情緒過濾 (Funding Rate & OI)
+    # 2. 籌碼與槓桿情緒過濾 (Funding Rate & OI) - 放寬極端值門檻
     if side_norm == "BUY":
-        if funding_rate is not None and funding_rate > 0.001:
-            return False, f"OVERHEATED_FUNDING_RATE (fr={funding_rate:.4%} > 0.1%)"
-        if oi_change_pct is not None and oi_change_pct <= 0:
-            return False, f"NON_EXPANDING_OI_BULL_TRAP (oi_change={oi_change_pct:.2%} <= 0)"
+        if funding_rate is not None and funding_rate > 0.003:
+            return False, f"OVERHEATED_FUNDING_RATE (fr={funding_rate:.4%} > 0.3%)"
     elif side_norm == "SELL":
-        if funding_rate is not None and funding_rate < -0.001:
-            return False, f"OVERCOOLED_FUNDING_RATE (fr={funding_rate:.4%} < -0.1%)"
-        if oi_change_pct is not None and oi_change_pct <= 0:
-            return False, f"NON_EXPANDING_OI_BEAR_TRAP (oi_change={oi_change_pct:.2%} <= 0)"
+        if funding_rate is not None and funding_rate < -0.003:
+            return False, f"OVERCOOLED_FUNDING_RATE (fr={funding_rate:.4%} < -0.3%)"
 
-    # 3. K 棒強度與成交量確認 (ATR & Volume)
-    # 若提供 prev_k（上一根已收線 K 棒），取兩者較強者作為動能代表，防止剛開盤的前幾秒因成交量未累計被誤殺
+    # 3. K 棒強度與成交量確認 (ATR & Volume) - 放寬妖幣動能要求
     prev_body = abs(float(prev_k.get('close', 0.0)) - float(prev_k.get('open', 0.0))) if prev_k else 0.0
     effective_body = max(curr_body, prev_body)
-    if atr_val > 0 and effective_body < 1.2 * atr_val:
-        return False, f"WEAK_CANDLE_BODY_PINBAR (body={curr_body:.6f} < 1.2*ATR={1.2*atr_val:.6f})"
-
-    prev_vol = float((prev_k or {}).get('volume', 0.0))
-    effective_vol = max(curr_vol, prev_vol)
-    if volume_ma20 > 0 and effective_vol <= volume_ma20:
-        return False, f"INSUFFICIENT_VOLUME (vol={curr_vol:.1f} <= vol_ma20={volume_ma20:.1f})"
+    if atr_val > 0 and effective_body < 0.25 * atr_val:
+        return False, f"WEAK_CANDLE_BODY_PINBAR (body={curr_body:.6f} < 0.25*ATR={0.25*atr_val:.6f})"
 
     return True, "MEME_TRADE_VALID_PASS"
 
@@ -942,27 +932,29 @@ class ExecutionManager:
             curr_open = float(market_data.curr_k.get("open", curr_close))
             kc_mid_val = float(market_data.kc_middle)
             is_ma3_trending_up = ma3_curr > ma3_prev
-            is_ma3_above_slow = (ma3_curr >= ma15_curr or ma3_curr >= kc_mid_val or curr_close > kc_mid_val)
-            is_candle_bullish = curr_close > curr_open
+            from core.symbol_aliases import is_meme_breakout_symbol
+            is_meme_contract = (
+                is_meme_breakout_symbol(symbol)
+                or any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME"))
+                or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
+            )
+            is_ma3_trending_up = ma3_curr > ma3_prev
+            is_ma3_above_slow = True if is_meme_contract else (ma3_curr >= ma15_curr or ma3_curr >= kc_mid_val or curr_close > kc_mid_val)
+            is_candle_bullish = True if is_meme_contract else (curr_close > curr_open)
             hard_long_allowed = is_ma3_trending_up and is_ma3_above_slow and is_candle_bullish
 
-            # 🔴 開空絕對門檻（沒滿足任何一項，強制拒絕開空）：
-            # 1. MA3 當前必須明確向下: ma3_curr < ma3_prev
-            # 2. MA3 必須位於慢線/中軌下方 (或死叉狀態): ma3_curr <= ma15_curr
-            # 3. 當前 K 棒必須是實體陰線: curr_k['close'] < curr_k['open']
-            # 只要 MA3 向上、或在慢線上方、或當前收陽，一律一票否決，嚴禁生成任何 SHORT 訊號！
             is_ma3_trending_down = ma3_curr < ma3_prev
-            is_ma3_below_slow = (ma3_curr <= ma15_curr or ma3_curr <= kc_mid_val or curr_close < kc_mid_val)
-            is_candle_bearish = curr_close < curr_open
+            is_ma3_below_slow = True if is_meme_contract else (ma3_curr <= ma15_curr or ma3_curr <= kc_mid_val or curr_close < kc_mid_val)
+            is_candle_bearish = True if is_meme_contract else (curr_close < curr_open)
             hard_short_allowed = is_ma3_trending_down and is_ma3_below_slow and is_candle_bearish
 
-            if not hard_long_allowed:
+            if not hard_long_allowed and not (is_breakout_long or is_continuation_long or is_meme_contract):
                 is_breakout_long = False
                 is_continuation_long = False
                 three_bar_long = False
                 is_ma_cross_long = False
 
-            if not hard_short_allowed:
+            if not hard_short_allowed and not (is_breakdown_short or is_continuation_short or is_meme_contract):
                 is_breakdown_short = False
                 is_continuation_short = False
                 three_bar_short = False
@@ -972,15 +964,17 @@ class ExecutionManager:
             kc_mid_val = float(market_data.kc_middle)
             direction_long_ok, dir_long_reason, _ = evaluate_direction_master_lock(
                 "LONG", ma3_curr, ma3_prev, kc_mid_val, ma5_curr,
-                ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open
+                ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open,
+                direction_override=is_meme_contract,
             )
             direction_short_ok, dir_short_reason, _ = evaluate_direction_master_lock(
                 "SHORT", ma3_curr, ma3_prev, kc_mid_val, ma5_curr,
-                ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open
+                ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open,
+                direction_override=is_meme_contract,
             )
 
             # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線與方向總開關
-            can_long = hard_long_allowed and direction_long_ok and (not is_macro_bear) and (
+            can_long = (is_breakout_long or is_continuation_long or is_meme_contract or (hard_long_allowed and direction_long_ok)) and (not is_macro_bear) and (
                 is_breakout_long or is_continuation_long or is_ma_cross_long or (
                     not is_bearish_wave
                     and ma_trend_aligned_long
@@ -989,7 +983,7 @@ class ExecutionManager:
                     and (market_data.current_price >= ma3_curr)
                 )
             )
-            can_short = hard_short_allowed and direction_short_ok and (not is_macro_bull) and (
+            can_short = (is_breakdown_short or is_continuation_short or is_meme_contract or (hard_short_allowed and direction_short_ok)) and (not is_macro_bull) and (
                 is_breakdown_short or is_continuation_short or is_ma_cross_short or (
                     not is_bullish_wave
                     and ma_trend_aligned_short
@@ -1052,7 +1046,8 @@ class ExecutionManager:
             # ══════════════════════════════════════════════════════════════════
             upper_wick_now = float(market_data.curr_k.get("high", curr_close)) - max(curr_close, curr_open)
             is_bull_trap = bool(
-                kc_slope <= 0.000005
+                (not is_meme_contract)
+                and kc_slope <= 0.000005
                 and curr_close >= (kc_up_val - 0.2 * atr_val_now)
                 and (c_body_now < 0.6 * atr_val_now or upper_wick_now >= 0.6 * c_body_now or curr_close <= curr_open)
             )
@@ -1069,7 +1064,8 @@ class ExecutionManager:
 
             lower_wick_now = min(curr_close, curr_open) - float(market_data.curr_k.get("low", curr_close))
             is_bear_trap = bool(
-                kc_slope >= -0.000005
+                (not is_meme_contract)
+                and kc_slope >= -0.000005
                 and curr_close <= (kc_low_val + 0.2 * atr_val_now)
                 and (c_body_now < 0.6 * atr_val_now or lower_wick_now >= 0.6 * c_body_now or curr_close >= curr_open)
             )
@@ -1207,9 +1203,9 @@ class ExecutionManager:
             elif is_true_peak:
                 candidate_signal = "SWING_PIVOT_SHORT"
                 can_short = True
-            elif can_long and (is_breakout_long or is_continuation_long):
+            elif is_breakout_long or is_continuation_long:
                 candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if (p_close > p_up or is_continuation_long) else "BREAKOUT_LONG"
-            elif can_short and (is_breakdown_short or is_continuation_short):
+            elif is_breakdown_short or is_continuation_short:
                 candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if (p_close < p_low or is_continuation_short) else "BREAKDOWN_SHORT"
             elif is_swing_pivot and ((swing_pivot['side'] == "LONG" and can_long) or (swing_pivot['side'] == "SHORT" and can_short)):
                 candidate_signal = f"SWING_PIVOT_{swing_pivot['side']}"
@@ -1243,26 +1239,26 @@ class ExecutionManager:
 
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
                 if candidate_side == "LONG":
-                    if not hard_long_allowed:
+                    if not hard_long_allowed and not (is_meme_contract or is_swing_pivot or is_agile_trigger):
                         logger.warning(
                             f"🛑 [HARD_LONG_VETO] {symbol} {candidate_signal} 違反開多絕對門檻 "
                             f"(ma3_up={is_ma3_trending_up}, ma3>=slow={is_ma3_above_slow}, bullish={is_candle_bullish})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_LONG_MA3_OR_CANDLE"}
-                    if not direction_long_ok and not (is_swing_pivot or three_bar_long or is_agile_trigger):
+                    if not direction_long_ok and not (is_meme_contract or is_swing_pivot or three_bar_long or is_agile_trigger):
                         logger.warning(
                             f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開多方向鎖 "
                             f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_LONG"}
                 elif candidate_side == "SHORT":
-                    if not hard_short_allowed:
+                    if not hard_short_allowed and not (is_meme_contract or is_swing_pivot or is_agile_trigger):
                         logger.warning(
                             f"🛑 [HARD_SHORT_VETO] {symbol} {candidate_signal} 違反開空絕對門檻 "
                             f"(ma3_down={is_ma3_trending_down}, ma3<=slow={is_ma3_below_slow}, bearish={is_candle_bearish})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_SHORT_MA3_OR_CANDLE"}
-                    if not direction_short_ok and not (is_swing_pivot or three_bar_short or is_agile_trigger):
+                    if not direction_short_ok and not (is_meme_contract or is_swing_pivot or three_bar_short or is_agile_trigger):
                         logger.warning(
                             f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開空方向鎖 "
                             f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
