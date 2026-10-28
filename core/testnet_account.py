@@ -4633,6 +4633,9 @@ class BinanceTestnetAccount:
             self.log(f"🛡️ {symbol} 開倉當根禁止收緊止損線", "WARNING")
             return False
         meta = self.position_meta.get(symbol, {})
+        if position.get("no_rigid_sl") or meta.get("no_rigid_sl"):
+            self.log(f"🛡️ {symbol} 方案 B 無硬止損模式：禁止修改或移動止損線！", "INFO")
+            return False
         current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
         if not math.isfinite(new_sl_price) or new_sl_price <= 0:
             return False

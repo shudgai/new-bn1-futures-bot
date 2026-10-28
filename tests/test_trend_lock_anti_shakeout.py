@@ -1921,5 +1921,90 @@ async def test_lobster_1253_break_midline_cross_mid_short_opens_immediately():
     assert gate_res.passed is True, f"CentralEntryGate 必須放行穿中軌開空，實際拒絕原因: {gate_res.reason}"
 
 
+@pytest.mark.anyio
+async def test_pepe_1314_micro_green_candle_below_kc_mid_veto_hold_short():
+    """
+    【實盤 13:14 致命 Bug 回歸驗證】
+    1000PEPE 在大瀑布主跌浪中持有空單，13:14 僅在低位出現微幅小綠 K 反彈頂到 MA15 慢線：
+    1. KC 中軌向下狂瀉，價格遠在 KC 中軌下方（無結構破壞）
+    2. MA3 穿越深度不足 0.15*ATR，無長下影下刺針 Pinbar 或大陽吞噬（無真谷底）
+    3. 狀態機必須 100% 判定為 TREND_LOCK_MASTER_LOCK_SHORT，一票否決平空！
+    4. 絕對禁止平倉 (close_position not called)，空單強制續抱吃滿主跌段！
+    5. 方案 B 持倉中禁止修改或移動止損線 (no_rigid_sl)！
+    """
+    from core.services.execution_manager import ExecutionManager
+    from unittest.mock import AsyncMock
+
+    bars = []
+    base_ts = 1793164000_000
+    base_p = 0.00510
+    # 模擬 12:45 ~ 13:13 大瀑布狂跌
+    for i in range(35):
+        p = base_p - i * 0.00001
+        bars.append({
+            "timestamp": base_ts + i * 60_000,
+            "open": p + 0.000005,
+            "close": p - 0.000005,
+            "high": p + 0.000008,
+            "low": p - 0.000008,
+            "atr": 0.00003,
+            "volume": 200000.0,
+            "is_closed": True,
+            "kc_middle": p + 0.00004,
+            "kc_upper": p + 0.00010,
+            "kc_lower": p - 0.00002,
+            "ma3": p,
+            "ma15": p + 0.00002,
+        })
+
+    # 13:14 微幅小綠 K 反彈棒: open=0.004780, close=0.004795, ma15=0.004790, kc_middle=0.004950
+    bars[-1]["open"] = 0.004780
+    bars[-1]["close"] = 0.004795
+    bars[-1]["high"] = 0.004800
+    bars[-1]["low"] = 0.004775
+    bars[-1]["ma3"] = 0.004792
+    bars[-1]["ma15"] = 0.004790  # ma3 僅比 ma15 高 0.000002，遠小於 0.15*0.00003 = 0.0000045 (黏合假金叉)
+    bars[-1]["kc_middle"] = 0.004950  # 價格 0.004795 遠在 KC 中軌 0.004950 下方！
+
+    df = pd.DataFrame(bars)
+
+    class MockAccount:
+        def __init__(self):
+            self.positions = {
+                "1000PEPE/USDT": {
+                    "side": "SHORT",
+                    "entry_price": 0.00505,
+                    "qty": 30000.0,
+                    "margin": 75.0,
+                    "leverage": 5,
+                    "sl": 0.0,
+                    "tp": 0.0,
+                    "no_rigid_sl": True,
+                }
+            }
+            self.position_meta = {
+                "1000PEPE/USDT": {"no_rigid_sl": True}
+            }
+            self.channel_exit_frames = {}
+            self.closing_lock = set()
+
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="1000PEPE/USDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.004795,
+    )
+
+    # 驗證一票否決平空，強制續抱！
+    assert res.get("status") == "HOLD"
+    assert res.get("reason") == "TREND_LOCK_MASTER_LOCK_SHORT"
+    assert not close_mock.called, "13:14 盤面無結構破壞亦無真谷底，絕對禁止平空！"
+
+
+
 
 

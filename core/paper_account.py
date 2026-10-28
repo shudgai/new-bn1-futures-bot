@@ -1882,6 +1882,9 @@ class PaperAccount:
             self.log(f"🛡️ {symbol} 開倉當根禁止收緊止損線", "WARNING")
             return False
         meta = self.position_meta.setdefault(symbol, {})
+        if pos.get("no_rigid_sl") or meta.get("no_rigid_sl"):
+            self.log(f"🛡️ {symbol} 方案 B 無硬止損模式：禁止修改或移動止損線！", "INFO")
+            return False
         current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
         if not math.isfinite(new_sl_price) or new_sl_price <= 0:
             return False
@@ -2142,7 +2145,7 @@ class PaperAccount:
                 pos["peak_pnl_pct"] = highest_pnl
                 total_unrealized += unrealized
                 continue
-            if CONTINUOUS_PIVOT_ONLY:
+            if CONTINUOUS_PIVOT_ONLY or pos.get("no_rigid_sl") or meta.get("no_rigid_sl"):
                 pos["sl"] = meta["sl"] = 0.0
                 pos["tp"] = meta["tp"] = 0.0
                 pos["peak_pnl_pct"] = highest_pnl
