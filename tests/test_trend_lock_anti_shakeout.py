@@ -666,13 +666,14 @@ def test_dual_defense_should_exit_short_all_branches():
         kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
     ) is True
 
-    # ⚠️ 妖幣極限谷底長下影刺針 (Pinbar Bottom)：擊穿 KC 下軌收陽即確立真谷底，放行平空兼反手開多！
+    # ⚠️ 關鍵防禦 C-VETO: 低位下刺針但收盤未站上 MA15 (curr_close < ma15_curr) -> 一票否決 (False)！
     assert should_exit_short(
         curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # close=9.5 < ma15=9.9
         prev_k=base_k,
         ma3_curr=9.4, ma3_prev=9.3, ma15_curr=9.9, ma15_prev=10.0,
         kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
-    ) is True
+    ) is False
+
 
     # 4. 谷底 D: 1.8 ATR 爆發熔斷 (body >= 1.8 * atr 且 close > ma15)
     assert should_exit_short(
@@ -746,13 +747,13 @@ def test_dual_defense_should_exit_long_all_branches():
         kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
     ) is True
 
-    # ⚠️ 頂部刺針 Pinbar Peak (High 衝破 KC 上軌且收長上影天針)：確立極限真峰頂，秒級平多 (is True)
+    # ⚠️ 關鍵防禦 C-VETO: 高位天地針但收盤仍穩守 MA15 之上 (curr_close > ma15_curr) -> 一票否決 (False)！
     assert should_exit_long(
         curr_k={"open": 10.5, "high": 11.0, "low": 10.35, "close": 10.4}, # close=10.4 > ma15=10.1
         prev_k=base_k,
         ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
         kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
-    ) is True
+    ) is False
 
 
     # 4. 峰頂 D: 1.8 ATR 崩盤熔斷 (body >= 1.8 * atr 且 close < ma15)
@@ -1627,8 +1628,8 @@ async def test_lobster_1200_pinbar_bottom_flip_long():
 
     # 1. 直接測試 check_pivot_status
     curr_k = {
-        "open": 0.01968, "close": 0.01972, "high": 0.01973, "low": 0.01965,
-        "ma3": 0.01970, "ma15": 0.01980,
+        "open": 0.01968, "close": 0.01982, "high": 0.01985, "low": 0.01965,
+        "ma3": 0.01981, "ma15": 0.01980,
     }
     prev_k = {
         "open": 0.01978, "close": 0.01969, "high": 0.01979, "low": 0.01968,
@@ -1636,13 +1637,13 @@ async def test_lobster_1200_pinbar_bottom_flip_long():
     }
     is_true_bottom, is_true_peak = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
-        ma3_curr=0.01970, ma3_prev=0.01973,
+        ma3_curr=0.01981, ma3_prev=0.01973,
         ma15_curr=0.01980, ma15_prev=0.01982,
         kc_upper=0.02010, kc_lower=0.01967,
         prev_kc_upper=0.02015, prev_kc_lower=0.01970,
         current_atr=0.00005,
     )
-    assert is_true_bottom is True, "12:00 軌外極限下刺針必須判定為真谷底，不得受限於 MA15"
+    assert is_true_bottom is True, "12:00 軌外下刺針且收盤突破 MA15 慢線，判定為真谷底"
 
     # 2. 測試 ExecutionManager 全鏈路平空兼反手開多 (Atomic Flip)
     bars = []
@@ -1664,9 +1665,11 @@ async def test_lobster_1200_pinbar_bottom_flip_long():
             "is_closed": True,
         })
     bars[-1]["open"] = 0.01968
-    bars[-1]["close"] = 0.01972
+    bars[-1]["close"] = 0.01982
     bars[-1]["low"] = 0.01965
-    bars[-1]["high"] = 0.01973
+    bars[-1]["high"] = 0.01985
+    bars[-1]["ma3"] = 0.01981
+    bars[-1]["ma15"] = 0.01980
 
     df = pd.DataFrame(bars)
 
@@ -1704,7 +1707,7 @@ async def test_lobster_1200_pinbar_bottom_flip_long():
         symbol="龙虾/USDT",
         engine_or_account=account,
         klines_df=df,
-        quote=0.01972,
+        quote=0.01982,
     )
 
     assert close_mock.called is True, "必須立即市價平空"
@@ -1717,3 +1720,47 @@ async def test_lobster_1200_pinbar_bottom_flip_long():
     assert "PIVOT_FLIP_LONG" in open_kwargs["meta"]["entry_type"]
     assert open_kwargs["meta"]["direction_override"] is True
     assert open_kwargs["meta"]["no_rigid_sl"] is True
+
+
+def test_pepe_1210_lock_short_and_lobster_1214_lock_long():
+    """
+    驗證 Trend Lock 慢線與死叉鋼鐵鎖定：
+    1. 1000PEPE 12:10：空頭持倉中，收盤價在 MA15 下方且未金叉的小綠 K，平空邏輯強制 return False (HOLD)。
+    2. 龍蝦 12:14：多頭持倉中，收盤價在 MA15 上方且 MA3 未死叉的回踩紅 K，平多邏輯強制 return False (HOLD)。
+    """
+    from core.services.execution_manager import ExecutionManager, check_pivot_status, should_exit_long, should_exit_short
+
+    # 1. 1000PEPE 12:10: close < ma15 且未金叉的小綠 K -> is_true_bottom 為 False，should_exit_short 為 False
+    pepe_curr_k = {"open": 0.00450, "close": 0.00452, "high": 0.00453, "low": 0.00448} # 小綠 K
+    pepe_prev_k = {"open": 0.00455, "close": 0.00451, "high": 0.00456, "low": 0.00450}
+    is_bottom, _ = check_pivot_status(
+        curr_k=pepe_curr_k, prev_k=pepe_prev_k,
+        ma3_curr=0.00451, ma3_prev=0.00452, ma15_curr=0.00458, ma15_prev=0.00460, # 遠低於 ma15 且未金叉
+        kc_upper=0.00470, kc_lower=0.00445, prev_kc_upper=0.00472, prev_kc_lower=0.00448,
+        current_atr=0.00005,
+    )
+    assert is_bottom is False, "1000PEPE 12:10 在 MA15 下方且未金叉，真谷底必須判定為 False！"
+
+    assert should_exit_short(
+        curr_k=pepe_curr_k, prev_k=pepe_prev_k,
+        ma3_curr=0.00451, ma3_prev=0.00452, ma15_curr=0.00458, ma15_prev=0.00460,
+        kc_lower=0.00445, prev_kc_lower=0.00448, current_atr=0.00005,
+    ) is False, "1000PEPE 12:10 必須一票否決平空，鎖死空單持倉！"
+
+    # 2. 龍蝦 12:14: close > ma15 且 MA3 未死叉的回踩紅 K -> is_true_peak 為 False，should_exit_long 為 False
+    lobster_curr_k = {"open": 0.01985, "close": 0.01982, "high": 0.01988, "low": 0.01980} # 回踩紅 K
+    lobster_prev_k = {"open": 0.01975, "close": 0.01984, "high": 0.01985, "low": 0.01974}
+    _, is_peak = check_pivot_status(
+        curr_k=lobster_curr_k, prev_k=lobster_prev_k,
+        ma3_curr=0.01983, ma3_prev=0.01980, ma15_curr=0.01975, ma15_prev=0.01972, # 遠高於 ma15 且未死叉
+        kc_upper=0.01995, kc_lower=0.01960, prev_kc_upper=0.01990, prev_kc_lower=0.01958,
+        current_atr=0.00005,
+    )
+    assert is_peak is False, "龍蝦 12:14 在 MA15 上方且未死叉，真峰頂必須判定為 False！"
+
+    assert should_exit_long(
+        curr_k=lobster_curr_k, prev_k=lobster_prev_k,
+        ma3_curr=0.01983, ma3_prev=0.01980, ma15_curr=0.01975, ma15_prev=0.01972,
+        kc_upper=0.01995, prev_kc_upper=0.01990, current_atr=0.00005,
+    ) is False, "龍蝦 12:14 必須一票否決平多，鎖死多單持倉！"
+

@@ -44,41 +44,26 @@ def check_pivot_status(
     lower_wick = min(curr_open, curr_close) - float(curr_k['low'])
     atr_val = float(current_atr or 0.0)
 
-    # 🟢【真谷底硬性條件】：
-    # 1. 快慢線確認：MA3 金叉 MA15
-    # 2. 軌外極限下刺針（Pinbar Bottom）：價格探底擊穿 KC 下軌，收出長下影線並收紅陽線。
-    #    ⚠️ 妖幣探底刺針極限反轉絕不強綁 curr_close > ma15_curr，防止平倉滯後至半山腰！
-    # 3. 軌外大陽吞噬（Engulfing Bottom）：前根在軌道外，當根大陽線吞噬。
-    # 4. 爆發巨型大陽線且站上 MA15（Spike Bottom）
+    # 🟢 1. 空頭持倉離場 / 真谷底判定 (1000PEPE 12:10 防洗盤鎖定)
     is_ma3_golden_cross = (ma3_curr > ma15_curr) and (ma3_prev <= ma15_prev)
-    is_pinbar_bottom = (
-        (curr_close > curr_open)
-        and (lower_wick >= 1.2 * curr_body or (atr_val > 0 and lower_wick >= 0.5 * atr_val))
-        and (float(curr_k.get('low', curr_close)) <= kc_lower or prev_close <= prev_kc_lower)
-    )
-    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.8 * prev_body) and (curr_close > ma15_curr)
-    is_spike_bottom = (curr_body >= 1.5 * atr_val) and (curr_close > curr_open) and (curr_close > ma15_curr)
+    is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close > ma15_curr)
+    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k.get('low', curr_close)) <= kc_lower) and (curr_close > ma15_curr)
+    is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > curr_open) and (curr_close > ma15_curr)
 
-    is_true_bottom = is_ma3_golden_cross or is_pinbar_bottom or is_engulfing_bottom or is_spike_bottom
+    # ⚠️ 1000PEPE 12:10 這種收盤價在 MA15 下方 (curr_close < ma15_curr) 且未金叉的小綠 K，平空邏輯強制否決！
+    is_true_bottom = bool(is_ma3_golden_cross or is_engulfing_bottom or is_pinbar_bottom or is_spike_bottom)
 
-    # 🔴【真峰頂硬性條件】：
-    # 1. 快慢線確認：MA3 死叉 MA15
-    # 2. 軌外極限上刺針（Pinbar Peak）：價格衝高突破 KC 上軌，收出長上影線並收黑陰線。
-    #    ⚠️ 妖幣衝高刺針極限見頂絕不強綁 curr_close < ma15_curr，防止平倉滯後至半山腰！
-    # 3. 軌外大陰吞噬（Engulfing Peak）：前根在軌道外，當根大陰線吞噬且跌破 MA15。
-    # 4. 崩盤巨型大陰線且跌破 MA15（Spike Peak）
+    # 🟢 2. 多頭持倉離場 / 真峰頂判定 (龍蝦 12:14 防洗盤鎖定)
     is_ma3_dead_cross = (ma3_curr < ma15_curr) and (ma3_prev >= ma15_prev)
-    is_pinbar_peak = (
-        (curr_close < curr_open)
-        and (upper_wick >= 1.2 * curr_body or (atr_val > 0 and upper_wick >= 0.5 * atr_val))
-        and (float(curr_k.get('high', curr_close)) >= kc_upper or prev_close >= prev_kc_upper)
-    )
-    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.8 * prev_body) and (curr_close < ma15_curr)
-    is_spike_peak = (curr_body >= 1.5 * atr_val) and (curr_close < curr_open) and (curr_close < ma15_curr)
+    is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close < ma15_curr)
+    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k.get('high', curr_close)) >= kc_upper) and (curr_close < ma15_curr)
+    is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < curr_open) and (curr_close < ma15_curr)
 
-    is_true_peak = is_ma3_dead_cross or is_pinbar_peak or is_engulfing_peak or is_spike_peak
+    # ⚠️ 龍蝦 12:14 這種收盤價在 MA15 上方 (curr_close > ma15_curr) 且 MA3 未死叉的回踩紅 K，平多邏輯強制否決！
+    is_true_peak = bool(is_ma3_dead_cross or is_engulfing_peak or is_pinbar_peak or is_spike_peak)
 
     return is_true_bottom, is_true_peak
+
 
 
 # =========================================================================
