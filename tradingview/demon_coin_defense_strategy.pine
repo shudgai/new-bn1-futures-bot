@@ -1,0 +1,218 @@
+//@version=5
+strategy("KC + MA3/MA15 Demon Coin Trend Defense Strategy", overlay=true, initial_capital=1000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04)
+
+// =============================================================================
+// 🌟 妖幣專用 5 大短線防護與量化交易策略 (TradingView Pine Script v5)
+// =============================================================================
+// 本腳本完整實裝：
+// 1. 訊號冷卻期機制 (Cooldown Period)
+// 2. 多/空門檻不對稱與量能確認 (Asymmetric Thresholds & Volume Confirmation)
+// 3. 爆量插針/超買過熱過濾 (ATR Extreme Filter)
+// 4. 主動式動態追蹤止盈 (ATR Trailing Stop)
+// 5. 時間停損與無效盤整平倉 (Time-Based Exit)
+// =============================================================================
+
+// =============================================================================
+// 🛠️ 【參數設定區塊 (Inputs)】
+// =============================================================================
+// --- 核心指標參數 ---
+grp_core = "1. 核心指標設定 (KC & MA)"
+kc_len        = input.int(20, "KC 中軌週期 (EMA)", minval=5, group=grp_core)
+kc_mult       = input.float(2.0, "KC 外軌倍數 (ATR Mult)", minval=0.5, step=0.1, group=grp_core)
+atr_len       = input.int(14, "ATR 週期", minval=1, group=grp_core)
+ma_fast_len   = input.int(3, "快線週期 (MA3)", minval=1, group=grp_core)
+ma_slow_len   = input.int(15, "慢線週期 (MA15)", minval=5, group=grp_core)
+
+// --- 防護機制 1: 訊號冷卻期機制 ---
+grp_cd = "2. 訊號冷卻期機制 (Cooldown Period)"
+cooldown_bars = input.int(4, "平倉後反手凍結 K 棒數 (N 根)", minval=1, maxval=20, group=grp_cd,
+ tooltip="空單平倉後 N 根 K 棒內嚴禁開多；多單平倉後 N 根 K 棒內嚴禁開空。防止在同一個擺盪區間頻繁雙向損耗。")
+
+// --- 防護機制 2: 多空門檻不對稱與量能確認 ---
+grp_vol = "3. 多/空門檻不對稱與量能確認 (Volume Filter)"
+vol_ma_len    = input.int(20, "成交量均線週期 (M 根)", minval=5, group=grp_vol)
+long_vol_mult = input.float(1.5, "開多成交量倍數門檻 (K 倍)", minval=1.0, step=0.1, group=grp_vol,
+ tooltip="開多必須放量 (Volume >= K * Vol_MA)。縮量誘多時僅允許平空，絕不開多。開空保持敏捷無高量限制。")
+
+// --- 防護機制 3: 爆量插針/超買過熱過濾 ---
+grp_ext = "4. 爆量插針/超買過熱過濾 (ATR Extreme Filter)"
+atr_ext_mult  = input.float(2.5, "單棒過熱插針門檻 (X 倍 ATR)", minval=1.5, step=0.1, group=grp_ext,
+ tooltip="當根 K 棒震幅或漲幅超過 X 倍 ATR 視為過熱插針，暫停追多，需拉回均線或通道內才建倉。")
+
+// --- 防護機制 4: 主動式動態追蹤止盈 ---
+grp_trail = "5. 主動式動態追蹤止盈 (ATR Trailing Stop)"
+trailing_arm_atr  = input.float(1.5, "追蹤止盈啟動門檻 (獲利達 X * ATR)", minval=0.5, step=0.1, group=grp_trail)
+trailing_pull_atr = input.float(1.0, "波段極值回撤平倉 (回撤 Y * ATR)", minval=0.3, step=0.1, group=grp_trail,
+ tooltip="獲利展開後，從反彈高點或下跌低點回撤超過 Y * ATR 時市價止盈離場，鎖定利潤。")
+
+// --- 防護機制 5: 時間停損與無效盤整平倉 ---
+grp_time = "6. 時間停損與無效盤整平倉 (Time Exit)"
+max_hold_bars     = input.int(8, "最大持倉盤整 K 棒數 (P 根)", minval=3, maxval=30, group=grp_time)
+consol_atr_range  = input.float(0.3, "無效盤整成本區間 (+- Z * ATR)", minval=0.1, step=0.05, group=grp_time,
+ tooltip="持倉達 P 根 K 棒且價格仍在成本區間 (+- Z*ATR) 內無動能，立即平倉離場觀望。")
+
+
+// =============================================================================
+// 📊 【指標計算】
+// =============================================================================
+atr_val   = ta.atr(atr_len)
+ma_fast   = ta.sma(close, ma_fast_len)
+ma_slow   = ta.sma(close, ma_slow_len)
+vol_ma    = ta.sma(volume, vol_ma_len)
+
+// KC 肯特納通道計算 (EMA20 中軌, 2.0 ATR 外軌)
+kc_middle = ta.ema(close, kc_len)
+kc_upper  = kc_middle + kc_mult * atr_val
+kc_lower  = kc_middle - kc_mult * atr_val
+
+// 中軌斜率判定 (順勢核心)
+kc_slope_up   = kc_middle > kc_middle[1]
+kc_slope_down = kc_middle < kc_middle[1]
+
+// 均線交叉與穿越中軌
+ma_cross_over  = ta.crossover(ma_fast, ma_slow)
+ma_cross_under = ta.crossunder(ma_fast, ma_slow)
+mid_cross_over = ta.crossover(ma_fast, kc_middle)
+mid_cross_under= ta.crossunder(ma_fast, kc_middle)
+
+
+// =============================================================================
+// 🛡️ 【防護機制邏輯實裝】
+// =============================================================================
+
+// ── 1. 訊號冷卻期變數追蹤 ──
+var int last_exit_short_bar = -999
+var int last_exit_long_bar  = -999
+
+// 當前是否處於凍結期
+is_long_frozen  = (bar_index - last_exit_short_bar) <= cooldown_bars
+is_short_frozen = (bar_index - last_exit_long_bar) <= cooldown_bars
+
+// ── 2. 多/空門檻不對稱與量能確認 ──
+has_volume_support = (volume >= long_vol_mult * vol_ma)
+
+// ── 3. 爆量插針 / 超買過熱過濾 ──
+bar_range = high - low
+bar_rise  = close - open
+is_overheated_candle = (bar_range >= atr_ext_mult * atr_val) or (bar_rise >= atr_ext_mult * atr_val)
+// 只有拉回均線或回到通道內才算解除過熱
+is_safe_from_overheat = not is_overheated_candle or (close <= ma_fast or close <= kc_upper)
+
+
+// =============================================================================
+// 🎯 【持倉狀態追蹤與出口裁決 (Exits)】
+// =============================================================================
+in_long  = strategy.position_size > 0
+in_short = strategy.position_size < 0
+
+var float entry_price = 0.0
+var float peak_price  = 0.0
+var float trough_price= 0.0
+var int   entry_bar   = 0
+
+if ta.change(strategy.position_size) != 0
+    if strategy.position_size != 0
+        entry_price  := strategy.position_avg_price
+        peak_price   := close
+        trough_price := close
+        entry_bar    := bar_index
+    else
+        // 平倉發生時記錄平倉 K 棒序號，觸發冷卻期
+        if strategy.position_size[1] < 0
+            last_exit_short_bar := bar_index
+        if strategy.position_size[1] > 0
+            last_exit_long_bar := bar_index
+
+// 更新持倉極值
+if in_long
+    peak_price := math.max(peak_price, high)
+if in_short
+    trough_price := math.min(trough_price, low)
+
+// ── 4. 主動式動態追蹤止盈 (ATR Trailing Stop) ──
+long_gain   = peak_price - entry_price
+short_gain  = entry_price - trough_price
+
+long_trailing_exit  = in_long and (long_gain >= trailing_arm_atr * atr_val) and (peak_price - close >= trailing_pull_atr * atr_val)
+short_trailing_exit = in_short and (short_gain >= trailing_arm_atr * atr_val) and (close - trough_price >= trailing_pull_atr * atr_val)
+
+// ── 5. 時間停損與無效盤整平倉 (Time Exit) ──
+bars_held = in_long or in_short ? (bar_index - entry_bar) : 0
+is_in_consolidation = math.abs(close - entry_price) <= (consol_atr_range * atr_val)
+time_based_exit = (bars_held >= max_hold_bars) and is_in_consolidation
+
+// ── 常規趨勢結構平倉 (真峰谷與中軌/均線深度反轉) ──
+long_trend_exit  = in_long and ((close < kc_middle and ma_cross_under) or (close < ma_slow and close < open and (ma_slow - ma_fast) >= 0.15 * atr_val))
+short_trend_exit = in_short and ((close > kc_middle and ma_cross_over) or (close > ma_slow and close > open and (ma_fast - ma_slow) >= 0.15 * atr_val))
+
+
+// =============================================================================
+// 🚪 【執行平倉 (strategy.close)】
+// =============================================================================
+// 多單平倉執行位置
+if in_long
+    if long_trailing_exit
+        strategy.close("Long", comment="Exit Long: ATR Trailing Stop")
+        last_exit_long_bar := bar_index
+    else if time_based_exit
+        strategy.close("Long", comment="Exit Long: Time-Based Consolidation")
+        last_exit_long_bar := bar_index
+    else if long_trend_exit
+        strategy.close("Long", comment="Exit Long: Trend Structure Reversal")
+        last_exit_long_bar := bar_index
+
+// 空單平倉執行位置
+if in_short
+    if short_trailing_exit
+        strategy.close("Short", comment="Exit Short: ATR Trailing Stop")
+        last_exit_short_bar := bar_index
+    else if time_based_exit
+        strategy.close("Short", comment="Exit Short: Time-Based Consolidation")
+        last_exit_short_bar := bar_index
+    else if short_trend_exit
+        strategy.close("Short", comment="Exit Short: Trend Structure Reversal")
+        last_exit_short_bar := bar_index
+
+
+// =============================================================================
+// 🚀 【開倉條件與執行 (strategy.entry)】
+// =============================================================================
+
+// 多單進場訊號 (金叉或穿中軌 + 中軌向上 + 站穩均線)
+raw_long_signal = (ma_cross_over or mid_cross_over) and kc_slope_up and (close > kc_middle) and (close > ma_slow)
+
+// 嚴格多單過濾條件 (Strict Long Filter):
+// 1. 不在平空後的冷卻期 (not is_long_frozen)
+// 2. 必須放量確認 (has_volume_support)
+// 3. 排除爆量插針/過熱 (is_safe_from_overheat)
+valid_long_entry = raw_long_signal and (not is_long_frozen) and has_volume_support and is_safe_from_overheat
+
+// 空單進場訊號 (死叉或跌破中軌 + 中軌向下 + 壓制於均線)
+raw_short_signal = (ma_cross_under or mid_cross_under) and kc_slope_down and (close < kc_middle) and (close < ma_slow)
+
+// 敏捷空單過濾條件 (Fast Short Filter):
+// 1. 不在平多後的冷卻期 (not is_short_frozen)
+// 2. 開空保持敏捷，無需高量能限制
+valid_short_entry = raw_short_signal and (not is_short_frozen)
+
+// 多單進場執行位置
+if valid_long_entry and not in_long
+    strategy.entry("Long", strategy.long, comment="Enter Long (Vol+CoolPass)")
+
+// 空單進場執行位置
+if valid_short_entry and not in_short
+    strategy.entry("Short", strategy.short, comment="Enter Short (FastShort)")
+
+
+// =============================================================================
+// 🎨 【圖表可視化】
+// =============================================================================
+plot(kc_middle, "KC Middle (EMA20)", color=color.new(color.orange, 0), linewidth=2)
+plot(kc_upper, "KC Upper Band", color=color.new(color.teal, 30), linewidth=1)
+plot(kc_lower, "KC Lower Band", color=color.new(color.teal, 30), linewidth=1)
+plot(ma_fast, "MA3 Fast", color=color.new(color.yellow, 0), linewidth=1)
+plot(ma_slow, "MA15 Slow", color=color.new(color.purple, 0), linewidth=1)
+
+// 狀態提示標記
+bgcolor(is_long_frozen ? color.new(color.blue, 90) : na, title="開多凍結冷卻期")
+bgcolor(is_short_frozen ? color.new(color.red, 90) : na, title="開空凍結冷卻期")

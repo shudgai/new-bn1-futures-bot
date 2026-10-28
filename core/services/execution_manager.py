@@ -18,6 +18,7 @@ import pandas as pd
 
 from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 from core.gates.unified_pipeline_gates import ExitGate, EntryGate
+from core.services.demon_coin_defense import DemonCoinDefenseController
 
 logger = logging.getLogger("ExecutionManager")
 
@@ -542,71 +543,94 @@ class ExecutionManager:
             reason = ""
             meta = {}
 
+            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop)
+            trail_exit, trail_reason, trail_meta = DemonCoinDefenseController.check_atr_trailing_stop(
+                current_position, curr_quote, atr_v
+            )
+            if trail_exit:
+                should_exit = True
+                reason = trail_reason
+                meta = trail_meta
+                logger.info(f"🎯 [DEMON_TRAILING_STOP] {symbol} {pos_side} 觸發主動追蹤止盈離場！meta={trail_meta}")
+
+            # 🛡️ 妖幣專用時間停損與無效盤整平倉 (Time-Based Exit)
+            if not should_exit:
+                entry_t = float(current_position.get("created_at") or current_position.get("entry_time") or time.time())
+                bars_held = int(max(0, (time.time() - entry_t) / 60.0))
+                time_exit, time_reason, time_meta = DemonCoinDefenseController.check_time_based_exit(
+                    current_position, curr_quote, atr_v, bars_held
+                )
+                if time_exit:
+                    should_exit = True
+                    reason = time_reason
+                    meta = time_meta
+                    logger.info(f"⏳ [DEMON_TIME_EXIT] {symbol} {pos_side} 持倉 {bars_held} 根 K 棒無動能，觸發時間停損盤整平倉！")
+
             # 🎯 方案 B 核心狀態機 (無硬止損版 - 完全取消固定價位硬止損):
-            # 🔴 空頭持倉中 (SHORT)：
-            if pos_side == "SHORT":
-                is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
-                is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
-                # ⚠️ 【中軌向下 & 均線慢線鋼鐵過濾】：
-                # 只要中軌向下，且價格仍在 KC 中軌下方（或在 MA15 慢線下方），且未發生 0.15*ATR 深度金叉：
-                # 平空邏輯【必須直接一票否決，強制續抱空單】！
-                if is_kc_mid_down and not is_valid_gc and (c_c <= kc_mid or c_c <= m15_c):
-                    logger.info(
-                        f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 空單中軌向下且在KC中軌下方 (close={c_c:.6f} <= kc_mid={kc_mid:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
-                    )
-                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
+            if not should_exit:
+                # 🔴 空頭持倉中 (SHORT)：
+                if pos_side == "SHORT":
+                    is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
+                    is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+                    # ⚠️ 【中軌向下 & 均線慢線鋼鐵過濾】：
+                    # 只要中軌向下，且價格仍在 KC 中軌下方（或在 MA15 慢線下方），且未發生 0.15*ATR 深度金叉：
+                    # 平空邏輯【必須直接一票否決，強制續抱空單】！
+                    if is_kc_mid_down and not is_valid_gc and (c_c <= kc_mid or c_c <= m15_c):
+                        logger.info(
+                            f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 空單中軌向下且在KC中軌下方 (close={c_c:.6f} <= kc_mid={kc_mid:.6f}, slope={kc_slope:.6f})，"
+                            f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                # 完全取消固定價位硬止損 (No Rigid Stop Loss)
-                if is_true_bottom or is_structure_broken_long:
-                    # 觸發真谷底：18:15 類型的秒級【平空 ＋ 反手開多】
-                    should_exit = True
-                    reason = "CLOSE_SHORT_AT_BOTTOM"
-                    meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
-                    logger.info(
-                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單捕獲真谷底！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
-                        f"第一優先級秒級觸發市價平空兼反手開多修正方向！"
-                    )
-                else:
-                    # 震盪假谷底 (收盤價仍在 MA15 下方、未金叉)：一票否決，強制續抱空單！
-                    logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單震盪假谷底 (close={c_c:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
-                    )
-                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
+                    # 完全取消固定價位硬止損 (No Rigid Stop Loss)
+                    if is_true_bottom or is_structure_broken_long:
+                        # 觸發真谷底：18:15 類型的秒級【平空 ＋ 反手開多】
+                        should_exit = True
+                        reason = "CLOSE_SHORT_AT_BOTTOM"
+                        meta = {"pivot_type": "TRUE_BOTTOM", "trigger": "MA3_GOLDEN_CROSS_OR_PINBAR", "flip_target": "LONG"}
+                        logger.info(
+                            f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 空單捕獲真谷底！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
+                            f"第一優先級秒級觸發市價平空兼反手開多修正方向！"
+                        )
+                    else:
+                        # 震盪假谷底 (收盤價仍在 MA15 下方、未金叉)：一票否決，強制續抱空單！
+                        logger.info(
+                            f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 空單震盪假谷底 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                            f"一票否決平空，強制鎖死持倉續抱拿滿主跌段！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-            # 🟢 多頭持倉中 (LONG)：
-            elif pos_side == "LONG":
-                is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
-                is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
-                # ⚠️ 【中軌向上 & 均線慢線鋼鐵過濾】：
-                # 只要中軌向上，且價格仍在 KC 中軌上方（或在 MA15 慢線上方），且未發生 0.15*ATR 深度死叉：
-                # 平多邏輯【必須直接一票否決，強制續抱多單】！
-                if is_kc_mid_up and not is_valid_dc and (c_c >= kc_mid or c_c >= m15_c):
-                    logger.info(
-                        f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 多單中軌向上且在KC中軌上方 (close={c_c:.6f} >= kc_mid={kc_mid:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
-                    )
-                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
+                # 🟢 多頭持倉中 (LONG)：
+                elif pos_side == "LONG":
+                    is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
+                    is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+                    # ⚠️ 【中軌向上 & 均線慢線鋼鐵過濾】：
+                    # 只要中軌向上，且價格仍在 KC 中軌上方（或在 MA15 慢線上方），且未發生 0.15*ATR 深度死叉：
+                    # 平多邏輯【必須直接一票否決，強制續抱多單】！
+                    if is_kc_mid_up and not is_valid_dc and (c_c >= kc_mid or c_c >= m15_c):
+                        logger.info(
+                            f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 多單中軌向上且在KC中軌上方 (close={c_c:.6f} >= kc_mid={kc_mid:.6f}, slope={kc_slope:.6f})，"
+                            f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
-
-                # 完全取消固定價位硬止損 (No Rigid Stop Loss)
-                if is_true_peak or is_structure_broken_short:
-                    # ⚠️ 19:05 峰頂死叉成立當下，秒級【平多 ＋ 即刻在頂部起跌點開空】：
-                    should_exit = True
-                    reason = "CLOSE_LONG_AT_TOP"
-                    meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
-                    logger.info(
-                        f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
-                        f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
-                    )
-                else:
-                    # 震盪假峰頂 (收盤價仍在 MA15 上方、未死叉)：一票否決，強制續抱多單！
-                    logger.info(
-                        f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰頂 (close={c_c:.6f}, slope={kc_slope:.6f})，"
-                        f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
-                    )
-                    return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
+                    # 完全取消固定價位硬止損 (No Rigid Stop Loss)
+                    if is_true_peak or is_structure_broken_short:
+                        # ⚠️ 19:05 峰頂死叉成立當下，秒級【平多 ＋ 即刻在頂部起跌點開空】：
+                        should_exit = True
+                        reason = "CLOSE_LONG_AT_TOP"
+                        meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
+                        logger.info(
+                            f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
+                            f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
+                        )
+                    else:
+                        # 震盪假峰頂 (收盤價仍在 MA15 上方、未死叉)：一票否決，強制續抱多單！
+                        logger.info(
+                            f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰頂 (close={c_c:.6f}, slope={kc_slope:.6f})，"
+                            f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
             if should_exit:
 
@@ -661,7 +685,29 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                if is_flip_to_long or is_flip_to_short:
+                # 🛡️ 妖幣防護第 1 條：平倉後強制冷卻期，嚴禁無腦原子反手 (防止低位/高位擺盪被 Whipsaw 雙殺)
+                can_flip = False
+                if is_flip_to_long:
+                    passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, "LONG")
+                    curr_vol = float(c_k.get("volume", 0.0))
+                    vol_ma20 = float(getattr(market_data, "volume_ma20", 0.0) or 0.0)
+                    if vol_ma20 <= 0 and raw_df is not None and "volume" in raw_df.columns:
+                        vol_ma20 = float(raw_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+                    passed_vol, vol_msg = DemonCoinDefenseController.check_volume_confirmation("LONG", curr_vol, vol_ma20)
+                    passed_heat, heat_msg = DemonCoinDefenseController.check_atr_extreme_overheat("LONG", c_k, atr_v, ma5_curr=m15_c, kc_upper=kc_u)
+                    if passed_cd and passed_vol and passed_heat:
+                        can_flip = True
+                    else:
+                        logger.info(f"🛡️ [DEMON_FLIP_VETO] {symbol} 拒絕平空秒反手開多: {cd_msg} | {vol_msg} | {heat_msg}")
+
+                elif is_flip_to_short:
+                    passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, "SHORT")
+                    if passed_cd:
+                        can_flip = True
+                    else:
+                        logger.info(f"🛡️ [DEMON_FLIP_VETO] {symbol} 拒絕平多秒反手開空: {cd_msg}")
+
+                if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
                     flip_entry_type = "PIVOT_FLIP_LONG" if is_flip_to_long else "PIVOT_FLIP_SHORT"
                     logger.info(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！(entry_type={flip_entry_type})")
@@ -1430,6 +1476,32 @@ class ExecutionManager:
                 from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
 
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
+
+                # ── 🛡️ 妖幣專用 3 大開倉前防護審查 (Demon Coin Defense Pre-Entry Gate) ──
+                # 1. 訊號冷卻期機制 (Cooldown Period)
+                passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, candidate_side)
+                if not passed_cd:
+                    logger.info(f"⏳ [DEMON_DEFENSE_COOLDOWN] {symbol} {candidate_side} 開倉遭攔截: {cd_msg}")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_COOLDOWN_FROZEN", "details": cd_msg}
+
+                # 2. 多/空門檻不對稱與量能確認 (Asymmetric Volume Confirmation)
+                curr_volume = float(market_data.curr_k.get("volume", 0.0))
+                vol_ma20_ref = float(getattr(market_data, "volume_ma20", 0.0) or 0.0)
+                if vol_ma20_ref <= 0 and raw_df is not None and "volume" in raw_df.columns:
+                    vol_ma20_ref = float(raw_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+                passed_vol, vol_msg = DemonCoinDefenseController.check_volume_confirmation(candidate_side, curr_volume, vol_ma20_ref)
+                if not passed_vol:
+                    logger.info(f"📊 [DEMON_DEFENSE_VOLUME] {symbol} {candidate_side} 開倉遭攔截: {vol_msg}")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_LONG_INSUFFICIENT_VOLUME", "details": vol_msg}
+
+                # 3. 爆量插針/超買過熱過濾 (ATR Extreme Filter)
+                passed_heat, heat_msg = DemonCoinDefenseController.check_atr_extreme_overheat(
+                    candidate_side, market_data.curr_k, atr_v, ma5_curr=ma5_curr, kc_upper=kc_u
+                )
+                if not passed_heat:
+                    logger.info(f"🔥 [DEMON_DEFENSE_OVERHEAT] {symbol} {candidate_side} 開倉遭攔截: {heat_msg}")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_ATR_EXTREME_OVERHEATED", "details": heat_msg}
+
                 if candidate_side == "LONG":
                     if not hard_long_allowed and not (is_meme_contract or is_swing_pivot or is_agile_trigger):
                         logger.warning(
@@ -1805,6 +1877,13 @@ class ExecutionManager:
                     }
                     cls._last_exit_record[acc_key] = record
                     cls._last_exit_record[symbol] = record
+                    DemonCoinDefenseController.record_exit(
+                        symbol=symbol,
+                        closed_side=closed_side,
+                        exit_price=price,
+                        timestamp=time.time(),
+                        reason=reason,
+                    )
                     if hasattr(account, "position_meta") and isinstance(account.position_meta, dict):
                         pos_meta = account.position_meta.get(symbol, {})
                         if isinstance(pos_meta, dict):
