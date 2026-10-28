@@ -510,7 +510,7 @@ async def _process_wild_swing_symbol(
         quote=quote,
     )
     # 依使用者重構指示：三層流水線為唯一通道，嚴禁任何舊規則介入或掉落舊分支
-    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "HOLD", "VETO", "IDLE"):
+    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "SUCCESS_ENTRY", "SUCCESS_FLIP", "HOLD", "VETO", "IDLE"):
         return [], []
 
     await _reconcile_wait_claims(engine, symbol)

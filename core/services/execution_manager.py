@@ -168,6 +168,17 @@ def should_exit_long(
     kc_lower = float(curr_k.get('kc_lower', 0.0))
     prev_kc_lower = float(prev_k.get('kc_lower', 0.0))
 
+    # 持倉呼吸防洗鐵律: 未實質展開波段 (gain < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
+    if position:
+        entry_p = float(position.get("entry_price") or 0.0)
+        peak_roe = float(position.get("peak_roe") or 0.0)
+        atr_threshold = 0.5 * float(current_atr or 0.0)
+        if entry_p > 0:
+            high_p = float(position.get("highest_price") or position.get("peak_price") or entry_p)
+            gain = high_p - entry_p
+            if gain < atr_threshold and peak_roe < 5.0:
+                return False
+
     _, is_real_peak = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
         ma3_curr=ma3_curr, ma3_prev=ma3_prev,
@@ -198,6 +209,17 @@ def should_exit_short(
     curr_open = float(curr_k['open'])
     kc_upper = float(curr_k.get('kc_upper', 0.0))
     prev_kc_upper = float(prev_k.get('kc_upper', 0.0))
+
+    # 持倉呼吸防洗鐵律: 未實質展開波段 (drop < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
+    if position:
+        entry_p = float(position.get("entry_price") or 0.0)
+        peak_roe = float(position.get("peak_roe") or 0.0)
+        atr_threshold = 0.5 * float(current_atr or 0.0)
+        if entry_p > 0:
+            low_p = float(position.get("lowest_price") or position.get("trough_price") or entry_p)
+            drop = entry_p - low_p
+            if drop < atr_threshold and peak_roe < 5.0:
+                return False
 
     is_real_bottom, _ = check_pivot_status(
         curr_k=curr_k, prev_k=prev_k,
@@ -304,6 +326,7 @@ class ExecutionManager:
         p_kc_u = float(p_k.get("kc_upper", kc_u))
         kc_lo = float(c_k.get("kc_lower", market_data.kc_lower))
         p_kc_lo = float(p_k.get("kc_lower", kc_lo))
+        kc_mid = float(c_k.get("kc_middle", getattr(market_data, "kc_middle", (kc_u + kc_lo) / 2.0)))
 
         c_bd = abs(c_c - c_o)
         p_bd = abs(p_c - p_o)
@@ -550,7 +573,11 @@ class ExecutionManager:
                 return {"status": "HOLD", "symbol": symbol, "reason": reason}
 
         # =========================================================================
-        # 3. ⚪ 無持倉狀態 (NONE)：方案 B 嚴禁半山腰/衝破 KC 上下軌後追高/追空，僅允許真谷底/真峰頂開倉
+        # 3. ⚪ 無持倉狀態 (NONE)：方案 B 多維開倉引擎
+        # 優先級 1：真谷底 / 真峰頂起點開倉 (PIVOT_LONG / PIVOT_SHORT)
+        # 優先級 2：兩根破軌極速開倉 (BREAKOUT)
+        # 優先級 3：MA3 穿 KC 中軌 / MA3 與 MA15 交叉動能開倉
+        # 優先級 4：順勢通道延續開倉
         # =========================================================================
         if not has_position:
             lookback_p = min(len(raw_df), 15) if raw_df is not None and isinstance(raw_df, pd.DataFrame) else 0
@@ -565,59 +592,65 @@ class ExecutionManager:
                 rise_from_low = 0.0
                 drop_from_high = 0.0
 
-            is_chasing_high = bool((atr_v > 0 and rise_from_low >= 1.5 * atr_v and c_c >= (kc_u - 0.2 * atr_v)) or (c_c >= kc_u))
-            is_chasing_low = bool((atr_v > 0 and drop_from_high >= 1.5 * atr_v and c_c <= (kc_lo + 0.2 * atr_v)) or (c_c <= kc_lo))
+            # 僅在真峰谷評估時過濾極端天花板/地板乖離（遠離軌道 > 1.0 ATR 且漲跌幅 > 2.0 ATR）
+            is_chasing_high = bool(atr_v > 0 and rise_from_low >= 2.0 * atr_v and c_c >= (kc_u + 1.0 * atr_v))
+            is_chasing_low = bool(atr_v > 0 and drop_from_high >= 2.0 * atr_v and c_c <= (kc_lo - 1.0 * atr_v))
 
-            # 嚴禁在半山腰或衝破 KC 上下軌後追高/追空！
-            if (is_true_bottom or is_structure_broken_long) and not is_chasing_high:
+            pivot_triggered = False
+            candidate_side = None
+            entry_type = None
+
+            if is_true_bottom and not is_chasing_high:
                 candidate_side = "LONG"
-                entry_type = "PIVOT_LONG"
-            elif (is_true_peak or is_structure_broken_short) and not is_chasing_low:
+                is_cross_mid_long = bool(kc_mid > 0 and ((c_c >= kc_mid and (c_o <= kc_mid or p_c <= kc_mid)) or (m3_c >= kc_mid and m3_p <= kc_mid)))
+                entry_type = "PIVOT_LONG_CROSS_MID" if is_cross_mid_long else "PIVOT_LONG"
+                pivot_triggered = True
+            elif is_true_peak and not is_chasing_low:
                 candidate_side = "SHORT"
-                entry_type = "PIVOT_SHORT"
-            else:
-                # 震盪、半山腰或衝破 KC 上下軌追高追空：一律硬性攔截！
-                logger.info(
-                    f"🛡️ [ANTI_CHASING_VETO] {symbol} 無持倉 (is_bottom={is_true_bottom}, is_peak={is_true_peak}, chasing_high={is_chasing_high}, chasing_low={is_chasing_low})，"
-                    f"嚴禁在半山腰或衝破 KC 上下軌後追高/追空！一票否決硬性攔截！"
+                is_cross_mid_short = bool(kc_mid > 0 and ((c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)) or (m3_c <= kc_mid and m3_p >= kc_mid)))
+                entry_type = "PIVOT_SHORT_CROSS_MID" if is_cross_mid_short else "PIVOT_SHORT"
+                pivot_triggered = True
+
+            if pivot_triggered and candidate_side and entry_type:
+                logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲真峰谷轉折！發起 {candidate_side} 開倉 ({entry_type})")
+                print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
+                is_cm = "CROSS_MID" in entry_type
+                entry_meta = {
+                    "side": candidate_side,
+                    "direction_override": True,
+                    "is_agile_trigger": is_cm,
+                    "entry_type": entry_type,
+                    "candidate_signal_type": "CROSS_MID" if is_cm else entry_type,
+                    "is_cross_mid": is_cm,
+                    "no_rigid_sl": True,
+                    "stop_loss_price": None,
+                    "upstream_entry_gate_authorized": True,
+                    "allow_kc_internal": True,
+                    "strategy_mode": "AGILE_MOMENTUM",
+                    "raw_df": klines_df,
+                    "source": f"UNIFIED_PIPELINE|{entry_type}",
+                    "atr": atr_v,
+                }
+                raw_df_instance = entry_meta.get("raw_df")
+                if hasattr(raw_df_instance, "attrs"):
+                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
+                        raw_df_instance.attrs[k] = entry_meta.get(k, True)
+
+                open_success = await cls.open_position(
+                    engine_or_account=engine_or_account,
+                    symbol=symbol,
+                    side=candidate_side,
+                    price=curr_quote,
+                    reason=f"PivotEntry:{entry_type}",
+                    meta=entry_meta,
                 )
-                return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_CHASING_WAIT_PIVOT"}
+                if open_success:
+                    logger.info(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！")
+                    print(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！", flush=True)
+                    return {"status": "ENTRY_EXECUTED", "symbol": symbol, "side": candidate_side, "entry_type": entry_type}
+                return {"status": "ENTRY_FAILED", "symbol": symbol, "side": candidate_side}
 
-            logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲真峰谷轉折！發起 {candidate_side} 開倉 ({entry_type})")
-            print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
-            entry_meta = {
-                "side": candidate_side,
-                "direction_override": True,
-                "entry_type": entry_type,
-                "no_rigid_sl": True,
-                "stop_loss_price": None,
-                "upstream_entry_gate_authorized": True,
-                "allow_kc_internal": True,
-                "strategy_mode": "AGILE_MOMENTUM",
-                "raw_df": klines_df,
-                "source": f"UNIFIED_PIPELINE|{entry_type}",
-                "atr": atr_v,
-            }
-            raw_df_instance = entry_meta.get("raw_df")
-            if hasattr(raw_df_instance, "attrs"):
-                for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
-                    raw_df_instance.attrs[k] = entry_meta.get(k, True)
-
-            open_success = await cls.open_position(
-                engine_or_account=engine_or_account,
-                symbol=symbol,
-                side=candidate_side,
-                price=curr_quote,
-                reason=f"PivotEntry:{entry_type}",
-                meta=entry_meta,
-            )
-            if open_success:
-                logger.info(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！")
-                print(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！", flush=True)
-                return {"status": "SUCCESS_ENTRY", "symbol": symbol, "side": candidate_side, "entry_type": entry_type}
-            return {"status": "ENTRY_FAILED", "symbol": symbol, "side": candidate_side}
-
-        if False and not has_position:
+            # 若未觸發真峰谷起點，順暢承接常規開倉引擎（破軌開倉、MA3穿KC中軌、MA3/MA15交叉等）
             # 偵測候選方向訊號 (大週期順勢原則：多頭大週期只看多、空頭大週期只看空，絕不頻繁多空互反)
             candidate_signal = None
             ma5_curr = float(market_data.curr_k.get("ma5", market_data.current_price))
@@ -1501,6 +1534,8 @@ class ExecutionManager:
                         for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
                             if k in call_meta:
                                 raw_df_instance.attrs[k] = call_meta[k]
+                    call_meta["no_rigid_sl"] = True
+                    call_meta["stop_loss_price"] = None
                     success = await cls.open_position(
                         engine_or_account=engine_or_account,
                         symbol=symbol,
