@@ -666,13 +666,13 @@ def test_dual_defense_should_exit_short_all_branches():
         kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
     ) is True
 
-    # ⚠️ 關鍵防禦 C-VETO: 下刺針但收盤未站上 MA15 (curr_close < ma15_curr) -> 一票否決 (False)！
+    # ⚠️ 妖幣極限谷底長下影刺針 (Pinbar Bottom)：擊穿 KC 下軌收陽即確立真谷底，放行平空兼反手開多！
     assert should_exit_short(
         curr_k={"open": 9.4, "high": 9.6, "low": 9.0, "close": 9.5}, # close=9.5 < ma15=9.9
         prev_k=base_k,
         ma3_curr=9.4, ma3_prev=9.3, ma15_curr=9.9, ma15_prev=10.0,
         kc_lower=9.2, prev_kc_lower=9.2, current_atr=0.5, swing_high_price=12.0,
-    ) is False
+    ) is True
 
     # 4. 谷底 D: 1.8 ATR 爆發熔斷 (body >= 1.8 * atr 且 close > ma15)
     assert should_exit_short(
@@ -746,13 +746,14 @@ def test_dual_defense_should_exit_long_all_branches():
         kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
     ) is True
 
-    # ⚠️ 關鍵防禦 C-VETO: 高位天地針但收盤仍穩守 MA15 之上 (curr_close > ma15_curr) -> 一票否決 (False)！
+    # ⚠️ 頂部刺針 Pinbar Peak (High 衝破 KC 上軌且收長上影天針)：確立極限真峰頂，秒級平多 (is True)
     assert should_exit_long(
         curr_k={"open": 10.5, "high": 11.0, "low": 10.35, "close": 10.4}, # close=10.4 > ma15=10.1
         prev_k=base_k,
         ma3_curr=10.5, ma3_prev=10.4, ma15_curr=10.1, ma15_prev=10.0,
         kc_upper=10.8, prev_kc_upper=10.8, current_atr=0.5, swing_low_price=8.0,
-    ) is False
+    ) is True
+
 
     # 4. 峰頂 D: 1.8 ATR 崩盤熔斷 (body >= 1.8 * atr 且 close < ma15)
     assert should_exit_long(
@@ -1613,14 +1614,106 @@ async def test_scheme_b_idle_pivot_long_open_no_rigid_sl():
     assert open_kwargs["meta"]["stop_loss_price"] is None
 
 
+@pytest.mark.anyio
+async def test_lobster_1200_pinbar_bottom_flip_long():
+    """
+    驗證 12:00 龍蝦實盤案例：
+    持空單期間，價格在 0.019650 附近拉出長下影刺針 (Pinbar Bottom 擊穿 KC 下軌)，
+    系統必須在當根 K 棒立即放行平空，並同 K 棒秒級發起 PIVOT_FLIP_LONG 反手開多，
+    徹底解決平空滯後到 0.01976 半山腰以及錯失暴漲大陽線的漏洞！
+    """
+    from unittest.mock import AsyncMock
+    from core.services.execution_manager import ExecutionManager, check_pivot_status
 
+    # 1. 直接測試 check_pivot_status
+    curr_k = {
+        "open": 0.01968, "close": 0.01972, "high": 0.01973, "low": 0.01965,
+        "ma3": 0.01970, "ma15": 0.01980,
+    }
+    prev_k = {
+        "open": 0.01978, "close": 0.01969, "high": 0.01979, "low": 0.01968,
+        "ma3": 0.01973, "ma15": 0.01982,
+    }
+    is_true_bottom, is_true_peak = check_pivot_status(
+        curr_k=curr_k, prev_k=prev_k,
+        ma3_curr=0.01970, ma3_prev=0.01973,
+        ma15_curr=0.01980, ma15_prev=0.01982,
+        kc_upper=0.02010, kc_lower=0.01967,
+        prev_kc_upper=0.02015, prev_kc_lower=0.01970,
+        current_atr=0.00005,
+    )
+    assert is_true_bottom is True, "12:00 軌外極限下刺針必須判定為真谷底，不得受限於 MA15"
 
+    # 2. 測試 ExecutionManager 全鏈路平空兼反手開多 (Atomic Flip)
+    bars = []
+    base_ts = 1793160000_000
+    for i in range(20):
+        bars.append({
+            "timestamp": base_ts + i * 60_000,
+            "open": 0.01985 - i * 0.00001,
+            "close": 0.01984 - i * 0.00001,
+            "high": 0.01986 - i * 0.00001,
+            "low": 0.01983 - i * 0.00001,
+            "ma3": 0.01984 - i * 0.00001,
+            "ma15": 0.01986 - i * 0.00001,
+            "kc_upper": 0.02010,
+            "kc_lower": 0.01968,
+            "kc_middle": 0.01989,
+            "atr": 0.00005,
+            "volume": 100000.0,
+            "is_closed": True,
+        })
+    bars[-1]["open"] = 0.01968
+    bars[-1]["close"] = 0.01972
+    bars[-1]["low"] = 0.01965
+    bars[-1]["high"] = 0.01973
 
+    df = pd.DataFrame(bars)
 
+    class MockAccount:
+        def __init__(self):
+            self.positions = {
+                "龙虾/USDT": {
+                    "side": "SHORT",
+                    "entry_price": 0.019788,
+                    "qty": 18973.0,
+                    "margin": 75.0,
+                    "leverage": 5,
+                    "sl": 0.0,
+                    "tp": 0.0,
+                }
+            }
+            self.position_meta = {}
+            self.channel_exit_frames = {}
+            self.closing_lock = set()
 
+        async def close_position(self, symbol, current_price, close_reason, is_limit=False):
+            self.positions.pop(symbol, None)
+            return True
 
+        async def open_position(self, **kwargs):
+            return True
 
+    account = MockAccount()
+    close_mock = AsyncMock(return_value=True)
+    open_mock = AsyncMock(return_value=True)
+    ExecutionManager.close_position = close_mock
+    ExecutionManager.open_position = open_mock
 
+    res = await ExecutionManager.process_symbol_pipeline(
+        symbol="龙虾/USDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=0.01972,
+    )
 
+    assert close_mock.called is True, "必須立即市價平空"
+    close_kwargs = close_mock.call_args.kwargs
+    assert "CLOSE_SHORT_AT_BOTTOM" in close_kwargs["reason"]
 
-
+    assert open_mock.called is True, "必須立即發起秒級反手開多"
+    open_kwargs = open_mock.call_args.kwargs
+    assert open_kwargs["side"] == "LONG"
+    assert "PIVOT_FLIP_LONG" in open_kwargs["meta"]["entry_type"]
+    assert open_kwargs["meta"]["direction_override"] is True
+    assert open_kwargs["meta"]["no_rigid_sl"] is True
