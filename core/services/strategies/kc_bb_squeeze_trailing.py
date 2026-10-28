@@ -361,6 +361,178 @@ def calculate_squeeze_kc_breakout_strategy(
     return df
 
 
+def calculate_full_kc_bb_strategy(
+    df: pd.DataFrame,
+    kc_length: int = 20,
+    kc_mult: float = 2.0,
+    bb_length: int = 20,
+    bb_std: float = 2.0,
+    min_kc_slope: float = 0.0003,
+    min_ma_dist: float = 0.001,
+    trailing_stop_pct: float = 0.018,
+) -> pd.DataFrame:
+    """
+    KC + BB Squeeze 雙向 (多頭/空頭) 大波段跟蹤策略 (Trend Riding & Parabolic Lock)
+
+    參數設定：
+    - kc_length: KC 通道週期 (預設 20)
+    - kc_mult: KC ATR 乘數 (預設 2.0)
+    - bb_length / bb_std: 布林通道週期與標準差
+    - min_kc_slope: KC 中軌最小斜率 (過濾平坦走勢)
+    - min_ma_dist: MA3 與中軌最小距離 (%)，過濾貼著走黏著盤
+    - trailing_stop_pct: 大波段移動止盈回檔門檻 (預設 1.8%)
+    """
+    df = df.copy()
+
+    # -------------------------------------------------------------------------
+    # 1. 基礎指標計算 (KC, BB, MA3, MA15)
+    # -------------------------------------------------------------------------
+    df["ma3"] = df["close"].ewm(span=3, adjust=False).mean()
+    df["ma15"] = df["close"].ewm(span=15, adjust=False).mean()
+
+    # KC 通道
+    df["kc_middle"] = df["close"].ewm(span=kc_length, adjust=False).mean()
+    df["atr"] = _compute_atr(df["high"], df["low"], df["close"], length=kc_length)
+    df["kc_upper"] = df["kc_middle"] + (kc_mult * df["atr"])
+    df["kc_lower"] = df["kc_middle"] - (kc_mult * df["atr"])
+
+    # 布林通道 (BB)
+    df["bb_middle"] = df["close"].rolling(window=bb_length, min_periods=1).mean()
+    df["bb_std"] = df["close"].rolling(window=bb_length, min_periods=1).std().fillna(0.0)
+    df["bb_upper"] = df["bb_middle"] + (bb_std * df["bb_std"])
+    df["bb_lower"] = df["bb_middle"] - (bb_std * df["bb_std"])
+
+    # -------------------------------------------------------------------------
+    # 2. 濾網條件判斷
+    # -------------------------------------------------------------------------
+    # A. Squeeze 擠壓狀態 (BB 縮進 KC 內部 -> 極度盤整，禁止開倉)
+    df["is_sqz"] = (df["bb_upper"] < df["kc_upper"]) & (df["bb_lower"] > df["kc_lower"])
+
+    # B. KC 中軌斜率 (近 3 棒變動率)
+    shifted_mid = df["kc_middle"].shift(3)
+    df["kc_slope"] = (df["kc_middle"] - shifted_mid) / shifted_mid.replace(0, np.nan)
+
+    # C. MA3 與 KC 中軌距離 (防黏著離差)
+    safe_kc_mid = df["kc_middle"].replace(0, np.nan)
+    df["ma_dist"] = (df["ma3"] - df["kc_middle"]).abs() / safe_kc_mid
+
+    # 基礎許可條件
+    df["can_trade"] = (~df["is_sqz"]) & (df["ma_dist"] > min_ma_dist)
+
+    # -------------------------------------------------------------------------
+    # 3. 核心多/空開平倉邏輯迴圈
+    # -------------------------------------------------------------------------
+    df["signal"] = 0  # 1: 買多, -1: 賣空, 2: 平多, -2: 平空
+    df["exit_reason"] = None
+
+    position = 0  # 0: 空倉, 1: 持有多單, -1: 持有空單
+    entry_price = 0.0
+    highest_price = 0.0
+    lowest_price = 0.0
+
+    for i in range(1, len(df)):
+        current_close = float(df["close"].iloc[i])
+        kc_mid = float(df["kc_middle"].iloc[i])
+        kc_up = float(df["kc_upper"].iloc[i])
+        kc_low = float(df["kc_lower"].iloc[i])
+        slope = float(df["kc_slope"].iloc[i]) if pd.notna(df["kc_slope"].iloc[i]) else 0.0
+        can_trade = bool(df["can_trade"].iloc[i])
+
+        # 前一棒突破條件
+        prev_close = float(df["close"].iloc[i - 1])
+        prev_kc_up = float(df["kc_upper"].iloc[i - 1])
+        prev_kc_low = float(df["kc_lower"].iloc[i - 1])
+
+        ma3_curr = float(df["ma3"].iloc[i])
+        ma3_prev = float(df["ma3"].iloc[i - 1])
+        ma15_curr = float(df["ma15"].iloc[i])
+        ma15_prev = float(df["ma15"].iloc[i - 1])
+
+        # =====================================================================
+        # A. 【無持倉狀態 (position == 0) - 開倉邏輯】
+        # =====================================================================
+        if position == 0:
+            if can_trade:
+                # 【買多邏輯】: 必須 KC向上 + 收盤在中軌上方 + 斜率足夠
+                if (slope > min_kc_slope) and (current_close > kc_mid):
+                    # 條件1: 順勢突破 KC 上軌 或 條件2: MA3 金叉向上拉開
+                    if (prev_close <= prev_kc_up and current_close > kc_up) or (
+                        ma3_curr > ma15_curr and ma3_prev <= ma15_prev
+                    ):
+                        df.loc[df.index[i], "signal"] = 1  # 買多
+                        position = 1
+                        entry_price = current_close
+                        highest_price = current_close
+
+                # 【賣空邏輯】: 必須 KC向下 + 收盤在中軌下方 + 斜率負值
+                elif (slope < -min_kc_slope) and (current_close < kc_mid):
+                    # 條件1: 順勢跌破 KC 下軌 或 條件2: MA3 死叉向下拉開
+                    if (prev_close >= prev_kc_low and current_close < kc_low) or (
+                        ma3_curr < ma15_curr and ma3_prev >= ma15_prev
+                    ):
+                        df.loc[df.index[i], "signal"] = -1  # 賣空
+                        position = -1
+                        entry_price = current_close
+                        lowest_price = current_close
+
+        # =====================================================================
+        # B. 【持有多單 (position == 1) - 大波段平多邏輯】
+        # =====================================================================
+        elif position == 1:
+            highest_price = max(highest_price, current_close)
+
+            # 1. 暴脹急拉保護: 最高價曾衝出 KC 上軌外，若跌破 MA3 即刻高位鎖利
+            parabolic_exit = (highest_price > kc_up) and (current_close < ma3_curr)
+
+            # 2. 高點動態回檔移動止盈 (自最高點回檔超過 N%)
+            trailing_exit = current_close < highest_price * (1.0 - trailing_stop_pct)
+
+            # 3. 趨勢破壞保底: 實體收盤價強勢跌破 KC 中軌
+            trend_exit = current_close < kc_mid
+
+            # 觸發任一即平多
+            if parabolic_exit or trailing_exit or trend_exit:
+                df.loc[df.index[i], "signal"] = 2  # 平多
+                if parabolic_exit:
+                    df.loc[df.index[i], "exit_reason"] = "PARABOLIC_MA3_EXIT"
+                elif trailing_exit:
+                    df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
+                else:
+                    df.loc[df.index[i], "exit_reason"] = "MIDLINE_TREND_EXIT"
+                position = 0
+                highest_price = 0.0
+
+        # =====================================================================
+        # C. 【持有空單 (position == -1) - 大波段平空邏輯 (如 1000PEPE 一單到底)】
+        # =====================================================================
+        elif position == -1:
+            lowest_price = min(lowest_price, current_close)
+
+            # 1. 瀑布暴跌保護: 最低價曾衝出 KC 下軌外，若反彈突破 MA3 即刻高位鎖利
+            parabolic_exit = (lowest_price < kc_low) and (current_close > ma3_curr)
+
+            # 2. 大波段動態移動止盈 (自最低點反彈超過 N%，不被小微陽線嚇出場)
+            trailing_exit = current_close > lowest_price * (1.0 + trailing_stop_pct)
+
+            # 3. 趨勢完全反轉保底: 實體收盤價強勢突破 KC 通道上軌 (貫穿頂部防守)
+            trend_exit = current_close > kc_up
+
+            # 觸發任一才執行平空 (絕對無視中間 MA3/MA15 小交叉)
+            if parabolic_exit or trailing_exit or trend_exit:
+                df.loc[df.index[i], "signal"] = -2  # 平空
+                if parabolic_exit:
+                    df.loc[df.index[i], "exit_reason"] = "PARABOLIC_MA3_EXIT"
+                elif trailing_exit:
+                    df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
+                else:
+                    df.loc[df.index[i], "exit_reason"] = "UPPER_RAIL_TREND_EXIT"
+                position = 0
+                lowest_price = 0.0
+
+    return df
+
+
 # 保留舊函式名稱別名，確保向後相容
 calculate_squeeze_kc_strategy = calculate_squeeze_kc_breakout_strategy
+
 

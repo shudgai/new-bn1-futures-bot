@@ -5,6 +5,7 @@ import pandas as pd
 
 from core.services.strategies.kc_bb_squeeze import KCBBStrategy
 from core.services.strategies.kc_bb_squeeze_trailing import (
+    calculate_full_kc_bb_strategy,
     calculate_squeeze_kc_breakout_strategy,
 )
 
@@ -307,6 +308,40 @@ def test_long_exit_holds_normal_pullback_and_triggers_on_overbought_or_waterfall
     assert res_wf["signal"].iloc[23] == 1
     assert res_wf["signal"].iloc[24] == 2
     assert res_wf["exit_reason"].iloc[24] == "WATERFALL_EXIT"
+
+
+def test_calculate_full_kc_bb_strategy_trend_riding_and_parabolic_exit():
+    """
+    Verify calculate_full_kc_bb_strategy:
+    1. Strictly separates Long (slope > min_kc_slope, close > kc_middle) and Short (slope < -min_kc_slope, close < kc_middle).
+    2. Short trend riding: ignores minor green candles and MA3/MA15 crosses while inside channel,
+       exiting via parabolic_exit (lowest_price < kc_lower and close > ma3) or trailing_exit (1.8%).
+    """
+    # Short trend scenario (like 1000PEPE downtrend)
+    prices = [100.0 + (-2.0 if i % 2 == 0 else 2.0) for i in range(20)] + [
+        99.5,
+        99.0,
+        98.8,
+        92.0,  # Short entry (close < kc_lower, slope < -0.0003)
+        90.0,  # Continues down outside lower rail (lowest_price = 90.0 < kc_low)
+        92.5,  # Rebounds above EWM MA3 -> triggers parabolic_exit (-2)
+    ]
+    closes = np.array(prices, dtype=float)
+    df = pd.DataFrame(
+        {
+            "open": closes + 0.1,
+            "high": closes + 0.2,
+            "low": closes - 0.2,
+            "close": closes,
+            "volume": np.full(len(closes), 1000.0),
+        }
+    )
+    res = calculate_full_kc_bb_strategy(df, min_kc_slope=0.0003, trailing_stop_pct=0.018)
+    signals = res["signal"].tolist()
+    assert -1 in signals, "Expected short entry (-1)"
+    short_idx = signals.index(-1)
+    assert -2 in signals[short_idx + 1 :], "Expected parabolic or trailing short exit (-2)"
+
 
 
 

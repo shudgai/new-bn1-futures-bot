@@ -14,6 +14,7 @@ import numpy as np
 from typing import Optional
 
 from core.services.strategies.kc_bb_squeeze_trailing import (
+    calculate_full_kc_bb_strategy,
     calculate_squeeze_kc_breakout_strategy,
     calculate_squeeze_kc_strategy,
 )
