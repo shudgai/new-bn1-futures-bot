@@ -2787,7 +2787,13 @@ class BinanceTestnetAccount:
                     m3_p = metrics["ma3_prev"]
                     kc_m = metrics["kc_middle"]
                     side_up = side.upper()
-                    is_override = bool(entry_context.get("direction_override") or entry_context.get("is_swing_pivot"))
+                    is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
+                    is_override = bool(
+                        entry_context.get("direction_override")
+                        or entry_context.get("is_swing_pivot")
+                        or entry_context.get("allow_kc_internal")
+                        or is_meme_contract
+                    )
 
                     if is_override:
                         # 特例轉折放行：豁免中軌位置，但 MA3 斜率必須嚴格同向拐頭
@@ -3393,7 +3399,7 @@ class BinanceTestnetAccount:
                 if not DISABLE_STOP_LOSS:
                     sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
                     sl_price = float(self._price_to_precision(symbol, sl_price))
-            elif is_channel_swing and (DISABLE_STOP_LOSS or sl <= 0):
+            elif is_channel_swing and (DISABLE_STOP_LOSS or not sl or sl <= 0):
                 sl_price = 0.0
             elif not DISABLE_STOP_LOSS or is_exhaustion_sniper:
                 atr_value = atr if atr > 0 else execution_price * 0.015

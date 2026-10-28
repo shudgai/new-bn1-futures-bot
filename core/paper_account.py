@@ -1032,9 +1032,9 @@ class PaperAccount:
         else:
             execution_price = price
         if apply_slippage:
-            sl_distance = abs(price - sl) if sl > 0 else 0.0
-            tp_distance = abs(tp - price) if tp else 0.0
-            if sl > 0:
+            sl_distance = abs(price - sl) if (sl is not None and sl > 0) else 0.0
+            tp_distance = abs(tp - price) if (tp is not None and tp > 0) else 0.0
+            if sl is not None and sl > 0:
                 sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
             if tp_distance > 0:
                 tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
@@ -1046,7 +1046,7 @@ class PaperAccount:
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
         if entry_mode in ("CHANNEL_SWING", "WILD_SWING"):
-            sl = 0.0 if DISABLE_STOP_LOSS else sl
+            sl = 0.0 if DISABLE_STOP_LOSS else (sl or 0.0)
             tp = 0.0
         elif CONTINUOUS_PIVOT_ONLY:
             sl = 0.0
@@ -1056,17 +1056,20 @@ class PaperAccount:
         else:
             # Ensure SL is on correct side and at least a conservative minimum distance
             try:
-                effective_atr = atr if atr and atr > 0 else execution_price * 0.015
-                min_dist = max(execution_price * MIN_SL_DISTANCE_PCT, effective_atr * STOP_LOSS_MULTIPLIER)
-                if side == "LONG":
-                    if sl >= execution_price - 1e-12:
-                        sl = execution_price - min_dist
+                if sl is not None and sl > 0:
+                    effective_atr = atr if atr and atr > 0 else execution_price * 0.015
+                    min_dist = max(execution_price * MIN_SL_DISTANCE_PCT, effective_atr * STOP_LOSS_MULTIPLIER)
+                    if side == "LONG":
+                        if sl >= execution_price - 1e-12:
+                            sl = execution_price - min_dist
+                    else:
+                        if sl <= execution_price + 1e-12:
+                            sl = execution_price + min_dist
+                    sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
                 else:
-                    if sl <= execution_price + 1e-12:
-                        sl = execution_price + min_dist
+                    sl = 0.0
             except Exception:
-                pass
-            sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
+                sl = 0.0
         from core.services.order_sizing import raw_order_qty
         qty = float(raw_order_qty(amount_usdt, leverage, execution_price))
         notional = amount_usdt * leverage

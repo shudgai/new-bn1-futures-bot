@@ -1746,7 +1746,7 @@ class ExecutionManager:
                     logger.warning("[EXECUTION] %s invalid whitelist stop; fail closed", symbol)
                     return False
             if no_rigid_sl:
-                initial_sl = None  # 方案 B 無硬止損版: 完全取消固定價位硬止損 (No Rigid Stop Loss)
+                initial_sl = 0.0  # 方案 B 無硬止損版: 完全取消固定價位硬止損 (No Rigid Stop Loss)
             elif str(side).upper() == "LONG":
                 initial_sl = requested_sl if requested_sl is not None else max(0.0, price - 3.0 * atr)
             else:
