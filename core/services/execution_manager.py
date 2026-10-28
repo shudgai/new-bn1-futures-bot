@@ -1707,7 +1707,9 @@ class ExecutionManager:
                 if truncated_qty > 0:
                     amount_usdt = (truncated_qty * price) / leverage
 
+            print(f"🚀 [EXECUTION_ENTER] {symbol} {side} price={price} reason={reason} available={available:.2f} wallet={wallet:.2f}", flush=True)
             if amount_usdt < 5.0:
+                print(f"⚠️ [EXECUTION] {symbol} 可用保證金不足: {amount_usdt:.2f}U (available={available:.2f}U)", flush=True)
                 logger.warning(f"[EXECUTION] {symbol} 可用保證金不足: {amount_usdt:.2f}U (available={available:.2f}U)")
                 return False
 
@@ -1800,6 +1802,7 @@ class ExecutionManager:
                 ),
                 "initial_sl": initial_sl,
                 "stop_loss_price": initial_sl,
+                "no_rigid_sl": no_rigid_sl,
                 "signal_id": signal_id,
                 "channel_confirmation_bar_id": bar_id,
                 "bar_id": bar_id,
@@ -1848,8 +1851,12 @@ class ExecutionManager:
                             pos.pop("peak_roe", None)
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
+                else:
+                    print(f"⚠️ [EXECUTION_FAILED] {symbol} {side} account.open_position returned False! reason={reason}", flush=True)
                 return opened
+            print(f"⚠️ [EXECUTION_FAILED] {symbol} account object does not have open_position method!", flush=True)
             return False
         except Exception as exc:
+            print(f"❌ [EXECUTION_EXCEPTION] {symbol} open_position 異常: {exc}", flush=True)
             logger.error(f"[EXECUTION] open_position 異常 {symbol}: {exc}", exc_info=True)
             return False

@@ -979,19 +979,25 @@ async def validate_entry_at_execution(
         if pivot is None and isinstance((payload.get("meta") or {}).get("swing_pivot"), dict):
             pivot = (payload.get("meta") or {}).get("swing_pivot")
 
-        requested_stop = _number(
-            payload.get("stop_loss_price")
-            or payload.get("initial_sl")
-            or payload.get("sl")
-            or (payload.get("meta") or {}).get("stop_loss_price")
-            or (payload.get("meta") or {}).get("initial_sl")
+        no_rigid_sl = bool(
+            payload.get("no_rigid_sl")
+            or (payload.get("meta") or {}).get("no_rigid_sl")
+            or is_meme_contract
         )
-        if (
-            pivot is None or pivot.get("side") != str(side).upper()
-            or requested_stop is None
-            or abs(requested_stop - float(pivot["stop_loss_price"])) > max(1e-6, abs(requested_stop) * 1e-4)
-        ):
-            return False, "BLOCKED_SWING_PIVOT_STOP_OR_EVIDENCE_MISMATCH"
+        if not no_rigid_sl:
+            requested_stop = _number(
+                payload.get("stop_loss_price")
+                or payload.get("initial_sl")
+                or payload.get("sl")
+                or (payload.get("meta") or {}).get("stop_loss_price")
+                or (payload.get("meta") or {}).get("initial_sl")
+            )
+            if (
+                pivot is None or pivot.get("side") != str(side).upper()
+                or requested_stop is None
+                or abs(requested_stop - float(pivot["stop_loss_price"])) > max(1e-6, abs(requested_stop) * 1e-4)
+            ):
+                return False, "BLOCKED_SWING_PIVOT_STOP_OR_EVIDENCE_MISMATCH"
     allow_intrabar = bool(
         payload.get("intrabar_authorized") is True
         and payload.get("upstream_entry_gate_authorized") is True
