@@ -110,22 +110,31 @@ def validate_entry_math(
     if not dir_lock_pass:
         return False, dir_lock_reason
 
+    frame_attrs = getattr(frame, "attrs", {}) or {}
+    allow_override = bool(
+        is_swing_pivot
+        or frame_attrs.get("direction_override")
+        or frame_attrs.get("is_agile_trigger")
+        or frame_attrs.get("is_cross_mid")
+        or frame_attrs.get("strategy_mode") == "AGILE_MOMENTUM"
+    )
+
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
     # adverse/flat MA5 slope into an authorized entry.
-    if side == "LONG" and ma5 <= previous_ma5 and not is_swing_pivot:
+    if side == "LONG" and ma5 <= previous_ma5 and not allow_override:
         return False, "BLOCKED_BY_MA5_NOT_UPWARD"
-    if side == "SHORT" and ma5 >= previous_ma5 and not is_swing_pivot:
+    if side == "SHORT" and ma5 >= previous_ma5 and not allow_override:
         return False, "BLOCKED_BY_MA5_NOT_DOWNWARD"
 
     # Final execution gate: numeric KC midline slope is authoritative. No
     # continuation, oversold-reversal, or profit-lock fast track may override it.
     kc_slope = latest_middle - prior_middle
-    if kc_slope == 0 and not is_swing_pivot:
+    if kc_slope == 0 and not allow_override:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
-    if side == "LONG" and kc_slope < 0 and not is_swing_pivot:
+    if side == "LONG" and kc_slope < 0 and not allow_override:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0 and not is_swing_pivot:
+    if side == "SHORT" and kc_slope > 0 and not allow_override:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # The final order gate independently rebuilds the macro regime from closed
@@ -153,12 +162,13 @@ def validate_entry_math(
         ).upper()
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         macro_trend = "NEUTRAL"
-    if macro_trend == "NEUTRAL" and not is_swing_pivot:
-        return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
-    if side == "LONG" and macro_trend != "BULLISH":
-        return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
-    if side == "SHORT" and macro_trend != "BEARISH":
-        return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
+    if not allow_override:
+        if macro_trend == "NEUTRAL":
+            return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
+        if side == "LONG" and macro_trend != "BULLISH":
+            return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
+        if side == "SHORT" and macro_trend != "BEARISH":
+            return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
     funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
@@ -175,7 +185,7 @@ def validate_entry_math(
     curr_ema15 = _number(current.get("ema15")) or _number(current.get("ema_fast")) or values.get("ma15")
     prev_ema15 = _number(previous.get("ema15")) or _number(previous.get("ema_fast")) or previous_ma15
 
-    if curr_ema15 is not None and prev_ema15 is not None and not is_swing_pivot:
+    if curr_ema15 is not None and prev_ema15 is not None and not allow_override:
         ema15_slope = curr_ema15 - prev_ema15
         if side == "LONG" and (curr_ema15 <= prev_ema15 or ema15_slope <= 0):
             return False, "BLOCKED_LONG_ON_EMA_FALLING"
