@@ -2954,9 +2954,12 @@ class BinanceTestnetAccount:
                 swing_pivot_override = bool(
                     direction_override
                     and (
-                        entry_context.get('entry_type') == 'SWING_PIVOT'
-                        or 'SWING_PIVOT' in str(reason).upper()
-                        or 'SWING_PIVOT' in str(entry_context.get('candidate_signal_type') or '').upper()
+                        'PIVOT' in str(entry_context.get('entry_type') or '').upper()
+                        or 'FLIP' in str(entry_context.get('entry_type') or '').upper()
+                        or 'CROSS' in str(entry_context.get('entry_type') or '').upper()
+                        or 'SWING' in str(entry_context.get('entry_type') or '').upper()
+                        or any(k in str(reason).upper() for k in ('PIVOT', 'FLIP', 'CROSS', 'SWING'))
+                        or any(k in str(entry_context.get('candidate_signal_type') or '').upper() for k in ('PIVOT', 'FLIP', 'CROSS', 'SWING'))
                     )
                 )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━

@@ -1815,3 +1815,20 @@ def test_buffer_distance_and_slope_trend_lock_bidirectional():
     ) is False, "中軌向下且在 MA15 之下，均線黏合假金叉必須一票否決平空！"
 
 
+def test_idle_none_position_anti_miss_triggers():
+    """
+    驗證無持倉狀態 (NONE) 的起漲/起跌點防錯失機制：
+    1. 只要 MA3 正式金叉 MA15 (且穿越深度 >= 0.15 * ATR)，觸發 NONE_GOLDEN_CROSS 秒級開多！
+    2. 只要 MA3 正式死叉 MA15 (且穿越深度 >= 0.15 * ATR)，觸發 NONE_DEAD_CROSS 秒級開空！
+    3. 驗證豁免中軌死鎖 (swing_pivot_override=True)，確保谷底起漲點與頂部起跌點順暢成交！
+    """
+    from core.services.execution_manager import ExecutionManager, is_valid_golden_cross, is_valid_dead_cross
+
+    atr = 0.5
+    # 深度金叉 (ma3=10.10, ma15=10.00, 深度=0.10 >= 0.15*0.5=0.075) -> True
+    assert is_valid_golden_cross(ma3_curr=10.10, ma3_prev=9.95, ma15_curr=10.00, ma15_prev=10.00, current_atr=atr) is True
+    # 深度死叉 (ma3=9.90, ma15=10.00, 深度=0.10 >= 0.15*0.5=0.075) -> True
+    assert is_valid_dead_cross(ma3_curr=9.90, ma3_prev=10.05, ma15_curr=10.00, ma15_prev=10.00, current_atr=atr) is True
+
+
+

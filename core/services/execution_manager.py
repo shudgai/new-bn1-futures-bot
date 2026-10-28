@@ -738,28 +738,33 @@ class ExecutionManager:
             candidate_side = None
             entry_type = None
 
-            if is_true_bottom and not is_chasing_high:
+            # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制
+            is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+            is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+
+            if (is_valid_gc or is_true_bottom) and not is_chasing_high:
                 candidate_side = "LONG"
                 is_cross_mid_long = bool(kc_mid > 0 and ((c_c >= kc_mid and (c_o <= kc_mid or p_c <= kc_mid)) or (m3_c >= kc_mid and m3_p <= kc_mid)))
-                entry_type = "PIVOT_LONG_CROSS_MID" if is_cross_mid_long else "PIVOT_LONG"
+                entry_type = "NONE_GOLDEN_CROSS" if is_valid_gc else ("PIVOT_LONG_CROSS_MID" if is_cross_mid_long else "PIVOT_LONG")
                 pivot_triggered = True
-            elif is_true_peak and not is_chasing_low:
+            elif (is_valid_dc or is_true_peak) and not is_chasing_low:
                 candidate_side = "SHORT"
                 is_cross_mid_short = bool(kc_mid > 0 and ((c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)) or (m3_c <= kc_mid and m3_p >= kc_mid)))
-                entry_type = "PIVOT_SHORT_CROSS_MID" if is_cross_mid_short else "PIVOT_SHORT"
+                entry_type = "NONE_DEAD_CROSS" if is_valid_dc else ("PIVOT_SHORT_CROSS_MID" if is_cross_mid_short else "PIVOT_SHORT")
                 pivot_triggered = True
 
             if pivot_triggered and candidate_side and entry_type:
-                logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲真峰谷轉折！發起 {candidate_side} 開倉 ({entry_type})")
+                logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
                 print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
-                is_cm = "CROSS_MID" in entry_type
+                is_cm = "CROSS" in entry_type or "MID" in entry_type
                 entry_meta = {
                     "side": candidate_side,
                     "direction_override": True,
-                    "is_agile_trigger": is_cm,
+                    "is_agile_trigger": True,
                     "entry_type": entry_type,
-                    "candidate_signal_type": "CROSS_MID" if is_cm else entry_type,
-                    "is_cross_mid": is_cm,
+                    "candidate_signal_type": "SWING_PIVOT",
+                    "is_swing_pivot": True,
+                    "is_cross_mid": True,
                     "no_rigid_sl": True,
                     "stop_loss_price": None,
                     "upstream_entry_gate_authorized": True,
@@ -1945,8 +1950,9 @@ class ExecutionManager:
                 "allow_kc_internal": bool((meta or {}).get("allow_kc_internal") or is_cross_mid),
                 "direction_override": bool((meta or {}).get("direction_override") or is_cross_mid),
                 "entry_type": (
-                    "SWING_PIVOT" if (meta or {}).get("entry_type") == "SWING_PIVOT"
-                    else "CROSS_MID" if is_cross_mid else "BREAKOUT"
+                    (meta or {}).get("entry_type")
+                    if (meta or {}).get("entry_type")
+                    else ("CROSS_MID" if is_cross_mid else "BREAKOUT")
                 ),
                 "initial_sl": initial_sl,
                 "stop_loss_price": initial_sl,
