@@ -867,7 +867,7 @@ class PaperAccount:
                 # 2.5 🟢/🔴 MA3 斜率、慢線相對位置與 K 棒顏色絕對硬核防線（絕不可繞過）
                 ma3_val = float(current_bar.get("ma3", current_bar.get("close", price)))
                 ma15_val = float(current_bar.get("ma15", current_bar.get("kc_middle", kc_middle)))
-                prev_bar_m3 = float(prev_bar.get("ma3", ma3_val)) if len(snapshot["candles"]) >= 2 else ma3_val
+                prev_bar_m3 = float(snapshot["candles"][-2].get("ma3", ma3_val)) if len(snapshot["candles"]) >= 2 else ma3_val
                 bar_c = float(current_bar.get("close", price))
                 bar_o = float(current_bar.get("open", price))
 
@@ -875,8 +875,8 @@ class PaperAccount:
                     if ma3_val <= prev_bar_m3:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向上(ma3={ma3_val} <= prev={prev_bar_m3})，嚴禁開多！", 'CRITICAL')
                         raise RuntimeError(f"MA3 未向上，嚴禁開多！ma3={ma3_val} <= prev={prev_bar_m3}")
-                    if ma3_val < ma15_val:
-                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線下方(ma3={ma3_val} < ma15={ma15_val})，嚴禁開多！", 'CRITICAL')
+                    if ma3_val < ma15_val and ma3_val < kc_middle and not swing_pivot_override:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線與中軌下方(ma3={ma3_val} < ma15={ma15_val}, kc_mid={kc_middle})，嚴禁開多！", 'CRITICAL')
                         raise RuntimeError(f"MA3 位於慢線下方，嚴禁開多！ma3={ma3_val} < ma15={ma15_val}")
                     if bar_c <= bar_o:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陽線(close={bar_c} <= open={bar_o})，嚴禁開多！", 'CRITICAL')
@@ -885,8 +885,8 @@ class PaperAccount:
                     if ma3_val >= prev_bar_m3:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向下(ma3={ma3_val} >= prev={prev_bar_m3})，嚴禁開空！", 'CRITICAL')
                         raise RuntimeError(f"MA3 未向下，嚴禁開空！ma3={ma3_val} >= prev={prev_bar_m3}")
-                    if ma3_val > ma15_val:
-                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線上方(ma3={ma3_val} > ma15={ma15_val})，嚴禁開空！", 'CRITICAL')
+                    if ma3_val > ma15_val and ma3_val > kc_middle and not swing_pivot_override:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線與中軌上方(ma3={ma3_val} > ma15={ma15_val}, kc_mid={kc_middle})，嚴禁開空！", 'CRITICAL')
                         raise RuntimeError(f"MA3 位於慢線上方，嚴禁開空！ma3={ma3_val} > ma15={ma15_val}")
                     if bar_c >= bar_o:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陰線(close={bar_c} >= open={bar_o})，嚴禁開空！", 'CRITICAL')
@@ -1783,6 +1783,14 @@ class PaperAccount:
             self.realized_pnl += net_pnl
             self.last_closed_at[symbol] = time.time()
             self.last_closed_side[symbol] = side
+            # 平倉後釋放該標的之同週期鎖定 (trend_cycle_lock) 與已交易 K 棒記錄，確保若趨勢延續能立即於下一根動能棒延續開倉！
+            if isinstance(getattr(self, "entry_filter_last", None), dict):
+                cycle_locks = self.entry_filter_last.get("trend_cycle_lock")
+                if isinstance(cycle_locks, dict):
+                    cycle_locks.pop(symbol, None)
+                persisted_bars = self.entry_filter_last.get("strict_ma3_ma15_last_trade_bar")
+                if isinstance(persisted_bars, dict):
+                    persisted_bars.pop(symbol, None)
 
             # 移動止利的SL可能是在價格觸發時「回吐前一波峰值」推上去的，
             # 但下一次檢查價格已跳空穿越（含滑點/手續費），實際平倉價

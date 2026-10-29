@@ -240,10 +240,14 @@ def _trend_cycle_key(frame: Any, side: str) -> str:
         if short_breakout:
             events.append((stamp, "SHORT", f"KC_SHORT_BREAKOUT:{stamp:.0f}"))
     if not events:
-        return f"BASELINE:{side}"
+        latest_ts = _float(closed.iloc[-1].get("timestamp")) if len(closed) else None
+        return f"BASELINE:{side}:{latest_ts:.0f}" if latest_ts is not None else f"BASELINE:{side}"
     _stamp, event_side, event_key = max(events, key=lambda item: item[0])
     if event_side != side:
         return f"TREND_REVERSED:{event_side}:{event_key}"
+    latest_ts = _float(closed.iloc[-1].get("timestamp")) if len(closed) else None
+    if latest_ts is not None and latest_ts > _stamp:
+        return f"{event_key}:BAR:{latest_ts:.0f}"
     return event_key
 
 

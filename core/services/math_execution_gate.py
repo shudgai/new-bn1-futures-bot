@@ -195,7 +195,7 @@ def validate_entry_math(
     is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
     # In-channel entries: reject squeeze chop
-    if not is_outer:
+    if not is_outer and not allow_override:
         kc_width = upper - lower
         if kc_width < (atr * 1.5):
             return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
@@ -203,18 +203,22 @@ def validate_entry_math(
     # 做多必須站在中軌與 MA15 之上，做空必須在下方
     # 放寬中軌/MA15 緩衝區（0.15 ATR）：允許反抽假刺穿或短暫回測中軌/MA15 時，不被直接 1 票秒殺
     retest_buffer = 0.15 * atr
-    if side == "LONG" and not is_swing_pivot and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
+    if side == "LONG" and not is_swing_pivot and not allow_override and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
-    if side == "SHORT" and not is_swing_pivot and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
+    if side == "SHORT" and not is_swing_pivot and not allow_override and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
+    if side == "LONG" and allow_override and close < latest_middle - retest_buffer:
+        return False, "BLOCKED_LONG_BELOW_MIDLINE"
+    if side == "SHORT" and allow_override and close > latest_middle + retest_buffer:
+        return False, "BLOCKED_SHORT_ABOVE_MIDLINE"
 
-    if is_dip_sniper or is_meme_hunter:
+    if is_dip_sniper or is_meme_hunter or allow_override:
         if side == "LONG":
-            if ma5 < ma15 - (0.15 * atr):
+            if not allow_override and ma5 < ma15 - (0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
         else:
-            if ma5 > ma15 + (0.15 * atr):
+            if not allow_override and ma5 > ma15 + (0.15 * atr):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
 
@@ -955,6 +959,15 @@ async def validate_entry_at_execution(
         "BREAKOUT_LONG", "BREAKDOWN_SHORT",
         "CONTINUATION_OUTSIDE_KC_LONG", "CONTINUATION_OUTSIDE_KC_SHORT",
         "ENTRY_LONG_MA3_MA15_CROSS_MID", "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+        "ENTRY_LONG_BREAKOUT", "ENTRY_SHORT_BREAKDOWN",
+        "ENTRY_LONG_CROSS_MID", "ENTRY_SHORT_CROSS_MID",
+        "ENTRY_LONG_CONTINUATION", "ENTRY_SHORT_CONTINUATION",
+        "ENTRY_LONG_EMA_CROSS_MID", "ENTRY_SHORT_EMA_CROSS_MID",
+        "PIVOT_LONG_CROSS_MID", "PIVOT_SHORT_CROSS_MID",
+        "NONE_GOLDEN_CROSS", "NONE_DEAD_CROSS",
+        "PIVOT_LONG", "PIVOT_SHORT",
+        "SWING_PIVOT", "SWING_PIVOT_LONG", "SWING_PIVOT_SHORT",
+        "TREND_PULLBACK_LONG", "TREND_PULLBACK_SHORT",
         "AUTHORIZED_REALTIME_BREAKOUT", "KC_REALTIME_RAIL_BREACH_SHORT",
         "KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT",
         "CLOSED_BODY_BREAKOUT_LONG", "CLOSED_BODY_BREAKOUT_SHORT",
@@ -1003,8 +1016,8 @@ async def validate_entry_at_execution(
     allow_intrabar = bool(
         payload.get("intrabar_authorized") is True
         and payload.get("upstream_entry_gate_authorized") is True
-        and payload.get("source") == "UNIFIED_PIPELINE"
-        and signal_type in authorized_intrabar_types
+        and "UNIFIED_PIPELINE" in str(payload.get("source") or "")
+        and (signal_type in authorized_intrabar_types or allow_override)
     )
     rows = _rows(frame)
     quote = _number(
