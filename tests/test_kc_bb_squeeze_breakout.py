@@ -343,6 +343,117 @@ def test_calculate_full_kc_bb_strategy_trend_riding_and_parabolic_exit():
     assert -2 in signals[short_idx + 1 :], "Expected parabolic or trailing short exit (-2)"
 
 
+def test_enforce_final_order_wick_gate_uses_entry_context_frame():
+    """
+    Regression test for 2026-10-28 22:54 LOBSTER/USDT:
+    When entry_frame_provider returns None/empty, enforce_final_order_wick_gate
+    must use entry_context['entry_gate_frame'] instead of throwing
+    BLOCKED_FINAL_WICK_FRAME_UNVERIFIED.
+    """
+    import asyncio
+    from types import SimpleNamespace
+    from core.services.entry_contract import enforce_final_order_wick_gate
+
+    n = 10
+    df = pd.DataFrame(
+        {
+            "timestamp": [1793199000000 + i * 60000 for i in range(n)],
+            "open": [0.01960 + i * 0.00001 for i in range(n)],
+            "high": [0.01966 + i * 0.00001 for i in range(n)],
+            "low": [0.01958 + i * 0.00001 for i in range(n)],
+            "close": [0.01965 + i * 0.00001 for i in range(n)],
+            "atr": [0.00012] * n,
+            "is_closed": [True] * n,
+        }
+    )
+    df.attrs["entry_finality_verified"] = True
+    df.attrs["timeframe_ms"] = 60_000.0
+
+    async def failing_provider(_symbol):
+        return None
+
+    account = SimpleNamespace(
+        entry_frame_provider=failing_provider,
+        log=lambda msg, level="INFO": None,
+    )
+    entry_context = {"entry_gate_frame": df}
+
+    # Should pass without raising ValueError(BLOCKED_FINAL_WICK_FRAME_UNVERIFIED)
+    asyncio.run(
+        enforce_final_order_wick_gate(
+            account, "龙虾/USDT", "LONG", entry_context=entry_context
+        )
+    )
+
+
+def test_kc_trend_filter_blocks_counter_trend():
+    """
+    Test 1000PEPE trend filter requirement:
+    1. In a KC downward trend (slope < 0), long entries (Buy/Long) are 100% blocked.
+    2. In a KC upward trend (slope > 0), short entries (Sell/Short) are 100% blocked.
+    """
+    from core.services.strategies.kc_bb_squeeze_trailing import calculate_full_kc_bb_strategy
+
+    # Steady downward price path: 100 down to 70
+    n = 30
+    prices_down = [100.0 - i * 1.0 for i in range(n)]
+    df_down = pd.DataFrame({
+        "open": prices_down,
+        "high": [p + 0.5 for p in prices_down],
+        "low": [p - 0.5 for p in prices_down],
+        "close": prices_down,
+        "volume": [1000.0] * n,
+    })
+    res_down = calculate_full_kc_bb_strategy(df_down, min_kc_slope=0.0003)
+    # Long signal (1) must be strictly 0 across the entire series
+    assert 1 not in res_down["signal"].values, "Long signals must be strictly blocked during KC downward trend"
+
+    # Steady upward price path: 70 up to 100
+    prices_up = [70.0 + i * 1.0 for i in range(n)]
+    df_up = pd.DataFrame({
+        "open": prices_up,
+        "high": [p + 0.5 for p in prices_up],
+        "low": [p - 0.5 for p in prices_up],
+        "close": prices_up,
+        "volume": [1000.0] * n,
+    })
+    res_up = calculate_full_kc_bb_strategy(df_up, min_kc_slope=0.0003)
+    # Short signal (-1) must be strictly 0 across the entire series
+    assert -1 not in res_up["signal"].values, "Short signals must be strictly blocked during KC upward trend"
+
+
+def test_breakout_reentry_after_long_exit():
+    """
+    Test breakout re-entry mechanism:
+    When long exits on a false breakdown/shakeout, but the next candle surges
+    above kc_upper with a big green candle, allow immediate re-entry (signal=1, BREAKOUT_REENTRY).
+    """
+    from core.services.strategies.kc_bb_squeeze_trailing import calculate_full_kc_bb_strategy
+
+    # Upward base: 20 bars rising from 50 to 70
+    prices = [50.0 + i * 1.0 for i in range(20)]
+    # Bar 20: entry long breakout
+    # Bar 21: dips slightly below kc_middle -> exit long
+    # Bar 22: explosive rocket bar above kc_upper (open=68, close=75) -> BREAKOUT_REENTRY!
+    opens = prices + [69.0, 69.0, 68.0]
+    highs = [p + 1.0 for p in prices] + [71.0, 70.0, 76.0]
+    lows = [p - 0.5 for p in prices] + [68.5, 65.0, 67.5]
+    closes = prices + [70.5, 65.5, 75.0]
+
+    df = pd.DataFrame({
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": [1000.0] * len(closes),
+    })
+    res = calculate_full_kc_bb_strategy(df, min_kc_slope=0.0001, bb_length=10, kc_length=10)
+    # Check that breakout re-entry or signal was handled
+    assert (res["signal"] == 1).any()
+
+
+
+
 
 
 

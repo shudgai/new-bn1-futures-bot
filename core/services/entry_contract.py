@@ -3043,10 +3043,11 @@ def _wick_pending_store(account):
     return store
 
 
-async def enforce_final_order_wick_gate(account, symbol, side):
+async def enforce_final_order_wick_gate(account, symbol, side, entry_context=None):
     """Hard-stop entries at the account boundary when the latest candle has a large adverse wick."""
     side = str(side or "").upper()
     provider = getattr(account, "entry_frame_provider", None)
+    ch_provider = getattr(account, "channel_exit_frame_provider", None)
 
     def veto(reason, *, body=None, wick=None, atr=None, bar_id=None):
         details = (
@@ -3061,12 +3062,37 @@ async def enforce_final_order_wick_gate(account, symbol, side):
             log(message, "WARNING")
         raise ValueError(message)
 
-    if side not in {"LONG", "SHORT"} or not callable(provider):
+    ctx_frame = None
+    if isinstance(entry_context, dict):
+        for key in ("entry_gate_frame", "frame", "raw_df"):
+            candidate_df = entry_context.get(key)
+            if candidate_df is not None and not getattr(candidate_df, "empty", True):
+                ctx_frame = candidate_df
+                break
+
+    if side not in {"LONG", "SHORT"} or (
+        not callable(provider) and not callable(ch_provider) and ctx_frame is None
+    ):
         veto("BLOCKED_FINAL_WICK_MARKET_DATA_UNAVAILABLE")
     try:
-        frame = await provider(symbol)
-        if frame is None or frame.empty:
-            ch_frames = getattr(account, "channel_exit_frames", {})
+        frame = ctx_frame
+        if frame is None or getattr(frame, "empty", True):
+            if callable(provider):
+                try:
+                    frame = await provider(symbol)
+                except Exception:
+                    frame = None
+        if (frame is None or getattr(frame, "empty", True)) and callable(ch_provider):
+            try:
+                frame = ch_provider(symbol)
+                if hasattr(frame, "__await__"):
+                    frame = await frame
+            except Exception:
+                frame = None
+        if frame is None or getattr(frame, "empty", True):
+            ch_frames = getattr(account, "channel_exit_frames", None) or getattr(
+                account, "_channel_exit_frames", {}
+            )
             if isinstance(ch_frames, dict) and symbol in ch_frames:
                 frame = ch_frames[symbol]
         if frame is not None and not frame.empty and len(frame) >= 5:
@@ -3074,10 +3100,11 @@ async def enforce_final_order_wick_gate(account, symbol, side):
                 frame.attrs.setdefault("entry_finality_verified", True)
                 frame.attrs.setdefault("timeframe_ms", 60_000)
 
+        tf_ms = frame.attrs.get("timeframe_ms") if (frame is not None and hasattr(frame, "attrs")) else None
         if (
             frame is None or frame.empty
             or not frame.attrs.get("entry_finality_verified")
-            or frame.attrs.get("timeframe_ms") != 60_000
+            or int(float(tf_ms or 0)) != 60_000
         ):
             veto("BLOCKED_FINAL_WICK_FRAME_UNVERIFIED")
         from core.services.candle_data import closed_entry_candles

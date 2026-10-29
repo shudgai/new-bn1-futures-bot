@@ -944,7 +944,7 @@ class PaperAccount:
                 price = float(entry_decision["price"])
                 atr = float(entry_decision["entry_atr"])
         from core.services.entry_contract import enforce_final_order_wick_gate
-        await enforce_final_order_wick_gate(self, symbol, side)
+        await enforce_final_order_wick_gate(self, symbol, side, entry_context=entry_context)
         structural_stop = entry_decision.get('initial_sl')
         
         # The shared account firewall above owns strategy validation. Repeating

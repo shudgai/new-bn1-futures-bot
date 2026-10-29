@@ -104,12 +104,6 @@ def validate_entry_math(
     if high < max(opened, close) or low > min(opened, close):
         return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
 
-    # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
-    from core.gates.direction_master_lock import check_direction_lock_from_frame
-    dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side)
-    if not dir_lock_pass:
-        return False, dir_lock_reason
-
     frame_attrs = getattr(frame, "attrs", {}) or {}
     allow_override = bool(
         is_swing_pivot
@@ -118,6 +112,12 @@ def validate_entry_math(
         or frame_attrs.get("is_cross_mid")
         or frame_attrs.get("strategy_mode") == "AGILE_MOMENTUM"
     )
+
+    # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
+    from core.gates.direction_master_lock import check_direction_lock_from_frame
+    dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
+    if not dir_lock_pass:
+        return False, dir_lock_reason
 
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an

@@ -245,6 +245,7 @@ class BinanceTestnetAccount:
                     from core.services.entry_contract import enforce_final_order_wick_gate
                     await enforce_final_order_wick_gate(
                         self, symbol, 'LONG' if side == 'buy' else 'SHORT',
+                        entry_context=context,
                     )
                 # Internal strategy metadata must never reach Binance parameters.
                 self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
