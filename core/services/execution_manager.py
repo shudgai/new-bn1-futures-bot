@@ -715,11 +715,15 @@ class ExecutionManager:
             if is_absolute_safety:
                 # 若為 OPPOSITE_KC_BAND_BREACH，必須確認已收線實體真正破軌，拒絕下影線/上影線毛刺誤平倉
                 if "OPPOSITE_KC_BAND_BREACH" in str(gate_reason).upper():
-                    if pos_side == "LONG" and not (closed_c < closed_kc_lo and closed_c < closed_o and curr_quote < kc_lo):
+                    # 拉遠大週期仍與持倉同向時，須已收線實體破軌深度 >= 0.5 ATR 才放行（拒絕盤中毛刺）
+                    long_need = 0.5 * atr_v if not is_zoomed_out_bearish else 0.0
+                    short_need = 0.5 * atr_v if not is_zoomed_out_bullish else 0.0
+                    if pos_side == "LONG" and not (
+                        closed_c < closed_kc_lo - long_need and closed_c < closed_o and curr_quote < kc_lo
+                    ):
                         is_absolute_safety = False
                     elif pos_side == "SHORT" and not (
-                        (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
-                        or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                        closed_c > closed_kc_u + short_need and closed_c > closed_o and curr_quote > kc_u
                     ):
                         is_absolute_safety = False
                 # 若為 EXIT_BY_EXTREME_WATERFALL，必須確認是「已收線 K 棒」且實體 >= 2.0 ATR 貫穿中軌並跌破/突破反側或慢線，拒絕盤中未收線 K 棒誤觸發！
@@ -792,14 +796,15 @@ class ExecutionManager:
                 if pos_side == "SHORT":
                     trough_p = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry)
 
-                    # 1. 【結構破壞防線 (Structure Break / Upper Rail Breach)】：
-                    # 只有當：(a) 已收線 K 棒實體收盤突破 KC 上軌，或 (b) 盤中強勢長陽突破上軌，
-                    # 或 (c) KC 中軌已轉向上行 (kc_slope > 0) 且已收線實體同時站上 KC 中軌、MA15 與前波高點 (swing_high_price) 時，才算空頭結構真正破壞！
+                    # 1. 【結構破壞防線】：只認「已收線」實體突破 KC 上軌（盤中上影線毛刺一律不算）。
+                    # 拉遠看仍是空頭（非 is_zoomed_out_bullish）時，須收線深度 >= 0.5 ATR 才算真破壞；
+                    # 或 KC 中軌已轉上行且收線同時站上中軌、MA15 與前波高點，且拉遠已不再是空頭。
+                    short_breach_need = 0.5 * atr_v if not is_zoomed_out_bullish else 0.0
                     is_upper_rail_breach = bool(
-                        (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
-                        or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                        (closed_c > closed_kc_u + short_breach_need and closed_c > closed_o and curr_quote > kc_u)
                         or (
                             kc_slope > 0
+                            and not is_zoomed_out_bearish
                             and closed_c > closed_o
                             and closed_c > closed_kc_mid
                             and closed_c > m15_c
@@ -871,14 +876,14 @@ class ExecutionManager:
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
                     peak_p = float(current_position.get("highest_price") or pos_entry_price)
 
-                    # 1. 【結構破壞防線 (Structure Break / Lower Rail Breach)】：
-                    # 只有當：(a) 已收線 K 棒實體陰線正式跌破 KC 下軌，或 (b) 盤中強勢長陰跌破下軌，
-                    # 或 (c) KC 中軌已轉向下行 (kc_slope < 0) 且已收線實體同時跌破 KC 中軌、MA15 與前波低點 (swing_low_price) 時，才算多頭結構真正破壞！
+                    # 1. 【結構破壞防線】：只認「已收線」實體跌破 KC 下軌（盤中下影線毛刺一律不算）。
+                    # 拉遠看仍是多頭（非 is_zoomed_out_bearish）時，須收線深度 >= 0.5 ATR 才算真破壞。
+                    long_breach_need = 0.5 * atr_v if not is_zoomed_out_bearish else 0.0
                     is_lower_rail_breach = bool(
-                        (closed_c < closed_kc_lo and closed_c < closed_o and curr_quote < kc_lo)
-                        or (c_c < kc_lo and c_c < c_o and (kc_lo - c_c) >= 0.45 * atr_v and kc_slope < -0.00005)
+                        (closed_c < closed_kc_lo - long_breach_need and closed_c < closed_o and curr_quote < kc_lo)
                         or (
                             kc_slope < 0
+                            and not is_zoomed_out_bullish
                             and closed_c < closed_o
                             and closed_c < closed_kc_mid
                             and closed_c < m15_c
