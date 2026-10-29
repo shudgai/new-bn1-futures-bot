@@ -32,21 +32,19 @@ def automated_position_exit_allowed(
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
 
-    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 結構破壞 / 硬性破軌與波段移動止盈離場授權：
-    # 多單真峰頂 / 破軌 / 跌破中軌 / 移動止盈 / 風控止損
+    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 結構破壞 / 硬性破軌與谷底反彈離場授權：
+    # 多單頂部反轉 / 實體收盤跌破中軌保底平多
     if side == "LONG" and any(k in normalized_reason for k in (
-        "CLOSE_LONG_AT_TOP", "TRUE_PEAK", "MA3_DEAD_CROSS", "STRUCTURE_BROKEN_PEAK",
-        "EXIT_LONG_ON_TOP", "BEARISH_TREND_REVERSAL", "MIDLINE_BREAK", "CLOSE_LONG_AT_MIDLINE_BREAK",
-        "HARD_SL", "TRAILING_STOP", "TRAILING_EXIT", "LOWER_RAIL", "BREAKOUT", "OPPOSITE_KC_BAND_BREACH",
+        "CLOSE_LONG_AT_TOP", "MA3_DEAD_CROSS", "STRUCTURE_BROKEN_PEAK",
+        "EXIT_LONG_ON_TOP", "BEARISH_TREND_REVERSAL", "CLOSE_LONG_AT_MIDLINE_BREAK", "MIDLINE_BREAK_EXIT",
     )):
         return True
 
-    # 空單真谷底 / 破軌 (突破KC上軌) / 自谷底反彈移動止盈 / 風控止損
+    # 空單底部反轉 / 突破KC上軌硬防守 / 谷底反彈超過門檻
     if side == "SHORT" and any(k in normalized_reason for k in (
-        "CLOSE_SHORT_AT_BOTTOM", "TRUE_VALLEY", "MA3_GOLDEN_CROSS", "STRUCTURE_BROKEN_BOTTOM",
-        "EXIT_SHORT_ON_BOTTOM", "BULLISH_TREND_REVERSAL", "UPPER_RAIL", "CLOSE_SHORT_AT_UPPER_RAIL",
-        "VALLEY_REBOUND", "CLOSE_SHORT_AT_VALLEY_REBOUND", "HARD_SL", "TRAILING_STOP", "TRAILING_EXIT",
-        "BREAKOUT", "OPPOSITE_KC_BAND_BREACH",
+        "CLOSE_SHORT_AT_BOTTOM", "MA3_GOLDEN_CROSS", "STRUCTURE_BROKEN_BOTTOM",
+        "EXIT_SHORT_ON_BOTTOM", "BULLISH_TREND_REVERSAL", "CLOSE_SHORT_AT_UPPER_RAIL_BREACH",
+        "UPPER_RAIL_TREND_EXIT", "CLOSE_SHORT_AT_VALLEY_REBOUND", "VALLEY_REBOUND_1_8_PCT_EXIT",
     )):
         return True
 

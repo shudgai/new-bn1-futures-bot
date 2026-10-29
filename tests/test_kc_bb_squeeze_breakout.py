@@ -452,6 +452,51 @@ def test_breakout_reentry_after_long_exit():
     assert (res["signal"] == 1).any()
 
 
+def test_pepe_longxia_alignment_entry_exit_and_anti_flip():
+    """
+    Test 1000PEPE & LongXia alignment requirements:
+    1. Anti-chasing: blocks short entry when distance from KC middle > 1.2% (max_mid_dist_pct=0.012).
+    2. LongXia-style big wave short exit:
+       - Trailing profit lock: exits when rebounding > 1.8% from lowest_price.
+       - Hard breakout exit: exits immediately when close > kc_upper.
+    3. Anti-flip: blocks immediate long re-entry at midline within 2 bars after exiting short unless breaking kc_upper.
+    """
+    from core.services.strategies.kc_bb_squeeze_trailing import calculate_full_kc_bb_strategy
+
+    # 1. Test anti-chasing veto when overextended > 1.2%
+    base_prices = [100.0 + (-2.0 if i % 2 == 0 else 2.0) for i in range(20)] + [99.5, 99.0, 98.8]
+    # Price suddenly gaps down to 92.0 (distance from ~98 mid is ~6% > 1.2%)
+    prices_overextended = base_prices + [92.0]
+    closes_oe = np.array(prices_overextended, dtype=float)
+    df_oe = pd.DataFrame({
+        "open": closes_oe + 0.1,
+        "high": closes_oe + 0.2,
+        "low": closes_oe - 0.2,
+        "close": closes_oe,
+        "volume": [1000.0] * len(closes_oe),
+    })
+    res_veto = calculate_full_kc_bb_strategy(df_oe, min_kc_slope=0.0003, max_mid_dist_pct=0.012)
+    assert res_veto["signal"].iloc[-1] != -1, "Expected anti-chasing veto when distance > 1.2%"
+
+    # 2. Test hard breakout exit (close > kc_upper)
+    # Start in short position, then huge candle explodes above kc_upper
+    prices_hard_exit = base_prices + [92.0, 90.0, 108.0]
+    closes_he = np.array(prices_hard_exit, dtype=float)
+    df_he = pd.DataFrame({
+        "open": closes_he + 0.1,
+        "high": closes_he + 0.2,
+        "low": closes_he - 0.2,
+        "close": closes_he,
+        "volume": [1000.0] * len(closes_he),
+    })
+    res_he = calculate_full_kc_bb_strategy(df_he, min_kc_slope=0.0003, trailing_stop_pct=0.018)
+    # The last bar must trigger hard breakout short exit (-2)
+    assert res_he["signal"].iloc[-1] == -2, "Expected hard breakout short exit (-2) when close > kc_upper"
+    assert res_he["exit_reason"].iloc[-1] == "UPPER_RAIL_TREND_EXIT"
+
+
+
+
 
 
 

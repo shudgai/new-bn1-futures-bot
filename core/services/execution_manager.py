@@ -814,9 +814,10 @@ class ExecutionManager:
                 rise_from_low = 0.0
                 drop_from_high = 0.0
 
-            # 僅在真峰谷評估時過濾極端天花板/地板乖離（遠離軌道 > 1.0 ATR 且漲跌幅 > 2.0 ATR）
-            is_chasing_high = bool(atr_v > 0 and rise_from_low >= 2.0 * atr_v and c_c >= (kc_u + 1.0 * atr_v))
-            is_chasing_low = bool(atr_v > 0 and drop_from_high >= 2.0 * atr_v and c_c <= (kc_lo - 1.0 * atr_v))
+            # 僅在真峰谷評估時過濾極端天花板/地板乖離（遠離軌道 > 1.0 ATR 且漲跌幅 > 2.0 ATR，或中軌離差 > 1.2%）
+            mid_dist_ratio = abs(c_c - kc_mid) / kc_mid if kc_mid > 0 else 0.0
+            is_chasing_high = bool((atr_v > 0 and rise_from_low >= 2.0 * atr_v and c_c >= (kc_u + 1.0 * atr_v)) or (c_c > kc_mid and mid_dist_ratio > 0.012))
+            is_chasing_low = bool((atr_v > 0 and drop_from_high >= 2.0 * atr_v and c_c <= (kc_lo - 1.0 * atr_v)) or (c_c < kc_mid and mid_dist_ratio > 0.012))
 
             pivot_triggered = False
             candidate_side = None
@@ -1397,6 +1398,28 @@ class ExecutionManager:
                 rise_from_low = curr_close - prior_swing_low
                 drop_from_high = prior_swing_high - curr_close
 
+                # 封鎖延伸追單（中軌離差 > 1.2% 一票否決追多/追空）：
+                mid_dist_ratio_now = abs(curr_close - kc_mid_val) / kc_mid_val if kc_mid_val > 0 else 0.0
+                if mid_dist_ratio_now > 0.012:
+                    if curr_close < kc_mid_val:
+                        can_short = False
+                        is_breakdown_short = False
+                        is_continuation_short = False
+                        agile_breakdown_short = False
+                        logger.info(
+                            f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格距離KC中軌已過遠 (離差={mid_dist_ratio_now*100:.2f}% > 1.2%)，"
+                            f"認定為延伸末端，一票否決追空！"
+                        )
+                    elif curr_close > kc_mid_val:
+                        can_long = False
+                        is_breakout_long = False
+                        is_continuation_long = False
+                        agile_breakout_long = False
+                        logger.info(
+                            f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格距離KC中軌已過遠 (離差={mid_dist_ratio_now*100:.2f}% > 1.2%)，"
+                            f"認定為延伸末端，一票否決追多！"
+                        )
+
                 # 多單高位追高：自低點累積漲幅 >= 1.5 ATR 且價格在 KC 上軌外或貼近上軌，且前一根收盤已在 KC 上軌之外 (狂飆多根，非破軌第一根)
                 if atr_val_now > 0 and rise_from_low >= 1.5 * atr_val_now and curr_close >= (kc_up_val - 0.2 * atr_val_now) and p_close > p_up:
                     can_long = False
@@ -1492,15 +1515,13 @@ class ExecutionManager:
                 or ((is_breakdown_short or is_continuation_short) and (c_body >= 0.35 * market_data.atr or curr_quote < market_data.kc_lower))
             )
 
-            # 1. 平倉後強制冷卻檢查 (強動能破軌、敏捷觸發與反手開倉放行，SWING_PIVOT 嚴格遵守冷卻防止反覆刷單)
+            # 1. 平倉後強制冷卻檢查 (僅強動能破軌放行；嚴格禁止在中軌附近平空後即刻買多等頻繁翻轉)
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
-            target_side = "LONG" if can_long else ("SHORT" if can_short else "")
-            is_reverse_position = bool(last_exit and last_exit.get("side") and last_exit.get("side") != target_side)
-            if last_exit and not is_strong_breakout and not is_agile_trigger and not is_reverse_position:
+            if last_exit and not is_strong_breakout:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 if elapsed_sec < 180:
-                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
             # 2. 單一合約 1 小時內開倉次數上限 (3～4 次，預設 3 次)

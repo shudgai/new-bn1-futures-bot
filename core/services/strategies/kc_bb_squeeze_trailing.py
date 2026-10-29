@@ -366,6 +366,7 @@ def calculate_full_kc_bb_strategy(
     min_kc_slope: float = 0.0003,
     min_ma_dist: float = 0.001,
     trailing_stop_pct: float = 0.018,
+    max_mid_dist_pct: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     KC + BB Squeeze 雙向 (多頭/空頭) 大波段跟蹤策略 (Trend Riding & Parabolic Lock)
@@ -448,12 +449,28 @@ def calculate_full_kc_bb_strategy(
         ma15_prev = float(df["ma15"].iloc[i - 1])
 
         # =====================================================================
-        # 硬性大趨勢過濾器 (Trend Filter)
+        # 🛡️ 核心重構：大趨勢過濾器 (Trend Filter) & 封鎖追高追低
         # =====================================================================
-        # 1. 當 KC 通道方向為「向下」或價格位於中軌下方時，強制阻斷所有買多訊號，僅允許賣空或觀望
-        # 2. 當 KC 通道方向為「向上」或價格位於中軌上方時，強制阻斷所有賣空訊號，僅允許買多或觀望
-        allow_long = (slope > min_kc_slope) and (current_close > kc_mid)
-        allow_short = (slope < -min_kc_slope) and (current_close < kc_mid)
+        # 1. 價格與中軌離差率 (Distance from KC Middle)
+        dist_from_mid = abs(current_close - kc_mid) / kc_mid if kc_mid > 0 else 0.0
+        is_overextended = (max_mid_dist_pct is not None) and (dist_from_mid > max_mid_dist_pct)  # 離差過大認定為延伸末端封鎖追單
+
+        # 2. 趨勢基本許可：
+        #    買多：KC向上 (slope > min_kc_slope) 且 收盤站穩中軌之上
+        #    賣空：KC向下 (slope < -min_kc_slope) 且 收盤壓制中軌之下
+        allow_long = (slope > min_kc_slope) and (current_close > kc_mid) and (not is_overextended)
+        allow_short = (slope < -min_kc_slope) and (current_close < kc_mid) and (not is_overextended)
+
+        # 3. 過濾頻繁翻轉 (Disable Early Flip - 嚴禁在中軌附近多空無腦互翻)：
+        #    剛平空後 2 棒內：若未強勢突破上軌，嚴禁在中軌附近反手買多！
+        #    剛平多後 2 棒內：若未強勢跌破下軌，嚴禁在中軌附近反手賣空！
+        just_closed_short = any(df["signal"].iloc[max(0, i - 2):i] == -2) if i >= 1 else False
+        just_closed_long_exit = any(df["signal"].iloc[max(0, i - 2):i] == 2) if i >= 1 else False
+
+        if just_closed_short and (current_close <= kc_up):
+            allow_long = False  # 剛平空，封鎖反手追多，防止中軌雜訊震盪多空雙巴！
+        if just_closed_long_exit and (current_close >= kc_low):
+            allow_short = False  # 剛平多，封鎖反手追空！
 
         # =====================================================================
         # A. 【無持倉狀態 (position == 0) - 開倉邏輯 & 暴漲二次追價進場】
@@ -463,7 +480,7 @@ def calculate_full_kc_bb_strategy(
             just_closed_long = (df["signal"].iloc[i - 1] == 2) if i >= 1 else False
             is_breakout_reentry = (
                 just_closed_long
-                and allow_long
+                and (slope > 0)
                 and (current_close > kc_up)
                 and (current_close > current_open)  # 大長紅
                 and (current_close > prev_close)
@@ -478,7 +495,7 @@ def calculate_full_kc_bb_strategy(
                 entry_price = current_close
                 highest_price = current_close
             elif can_trade:
-                # 【買多邏輯】: 必須 KC向上 + 收盤在中軌上方 + 斜率足夠 (allow_long 硬性過濾)
+                # 【買多邏輯】: 必須 KC向上 + 收盤在中軌上方 + 斜率足夠 + 未過度延伸 (allow_long 硬性過濾)
                 if allow_long:
                     # 條件1: 順勢突破 KC 上軌 或 條件2: MA3 金叉向上拉開
                     if (prev_close <= prev_kc_up and current_close > kc_up) or (
@@ -489,7 +506,8 @@ def calculate_full_kc_bb_strategy(
                         entry_price = current_close
                         highest_price = current_close
 
-                # 【賣空邏輯】: 必須 KC向下 + 收盤在中軌下方 + 斜率負值 (allow_short 硬性過濾)
+                # 【賣空邏輯】: 必須 KC向下 + 收盤在中軌下方 + 斜率負值 + 未過度延伸 (allow_short 硬性過濾)
+                # 封鎖追空：離中軌 > 1.2% 嚴禁開空！
                 elif allow_short:
                     # 條件1: 順勢跌破 KC 下軌 或 條件2: MA3 死叉向下拉開
                     if (prev_close >= prev_kc_low and current_close < kc_low) or (
