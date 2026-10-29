@@ -143,6 +143,7 @@ def evaluate_ma3_ma15_entry(
             values["ma3_prev"] <= values["kc_prev"]
             and values["ma3_now"] > values["kc_now"]
             and values["ma3_now"] > values["ma3_prev"]
+            and values["ma3_now"] > values["ma15_now"]
         )
         body_ok = values["close"] > values["open"]
         adverse_wick = values["high"] - max(values["open"], values["close"])
@@ -151,13 +152,16 @@ def evaluate_ma3_ma15_entry(
             bool(confirmed_breakout)
             and (values["close"] > values.get("kc_upper", math.inf) or execution > values.get("kc_upper", math.inf))
             and values["ma5_now"] > values["ma5_prev"]
+            and values["ma3_now"] > values["ma15_now"]
         )
+        ma_rel_ok = values["ma3_now"] > values["ma15_now"]
     else:
         kc_ok = values["kc_now"] < values["kc_prev"] and values["close"] < values["kc_now"]
         cross_ok = (
             values["ma3_prev"] >= values["kc_prev"]
             and values["ma3_now"] < values["kc_now"]
             and values["ma3_now"] < values["ma3_prev"]
+            and values["ma3_now"] < values["ma15_now"]
         )
         body_ok = values["close"] < values["open"]
         adverse_wick = min(values["open"], values["close"]) - values["low"]
@@ -166,7 +170,9 @@ def evaluate_ma3_ma15_entry(
             bool(confirmed_breakout)
             and (values["close"] < values.get("kc_lower", -math.inf) or execution < values.get("kc_lower", -math.inf))
             and values["ma5_now"] < values["ma5_prev"]
+            and values["ma3_now"] < values["ma15_now"]
         )
+        ma_rel_ok = values["ma3_now"] < values["ma15_now"]
 
     checks["KC_TREND_AND_MIDLINE"] = kc_ok
     checks["STRICT_MA3_MA15_CROSS"] = cross_ok
@@ -178,8 +184,8 @@ def evaluate_ma3_ma15_entry(
         body_ok and body > 0 and adverse_wick <= max_adverse_wick_body_ratio * body
     )
     checks["MA_SPREAD"] = (
-        abs(values["ma3_now"] - values["ma15_now"]) / abs(values["ma15_now"])
-        >= min_spread_ratio
+        ma_rel_ok
+        and (abs(values["ma3_now"] - values["ma15_now"]) / abs(values["ma15_now"]) >= min_spread_ratio)
     )
     try:
         bar_unused = last_trade_bar_time is None or int(last_trade_bar_time) != bar_time

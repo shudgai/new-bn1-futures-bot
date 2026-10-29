@@ -303,3 +303,54 @@ def test_central_entry_gate_enforces_ma3_kc_cross_for_cross_mid():
     )
     assert result.passed is False
     assert "VETO_NO_FRESH_CROSS_MA3_ALREADY_ABOVE_MIDLINE" in result.reason
+
+
+def test_strict_ma3_ma15_relationship_veto():
+    """嚴格鐵律：MA3 <= MA15 嚴禁開多，MA3 >= MA15 嚴禁開空。"""
+    # 測試多單但 MA3 <= MA15 被拒絕
+    df_long_fail = make_frame(
+        ma3_tuple=(99.0, 101.0),
+        kc_mid_tuple=(99.5, 100.0),
+        closes=(99.8, 101.5),
+        opens=(99.5, 100.2),
+        highs=(100.0, 101.8),
+        lows=(99.2, 100.0),
+    )
+    df_long_fail.iloc[-1, df_long_fail.columns.get_loc("kc_middle")] = 100.5
+    df_long_fail.iloc[-2, df_long_fail.columns.get_loc("kc_middle")] = 100.0
+    # 將 MA15 設定高於 MA3 (102.0 > 101.0)
+    df_long_fail.iloc[-1, df_long_fail.columns.get_loc("ma15")] = 102.0
+
+    decision = evaluate_ma3_ma15_entry(
+        df_long_fail, "LONG",
+        current_position="IDLE",
+        last_trade_bar_time=None,
+        stop_loss_price=98.0,
+        execution_price=101.5,
+    )
+    assert decision.action == "HOLD / PASS"
+    assert "NO_STRICT_MA3_MA15_CROSS" in decision.violations or "MA_SPREAD_TOO_NARROW" in decision.violations
+
+    # 測試空單但 MA3 >= MA15 被拒絕
+    df_short_fail = make_frame(
+        ma3_tuple=(101.0, 99.0),
+        kc_mid_tuple=(100.5, 100.0),
+        closes=(100.2, 98.5),
+        opens=(100.5, 99.8),
+        highs=(101.0, 100.0),
+        lows=(100.0, 98.2),
+    )
+    df_short_fail.iloc[-1, df_short_fail.columns.get_loc("kc_middle")] = 99.5
+    df_short_fail.iloc[-2, df_short_fail.columns.get_loc("kc_middle")] = 100.0
+    # 將 MA15 設定低於 MA3 (98.0 < 99.0)
+    df_short_fail.iloc[-1, df_short_fail.columns.get_loc("ma15")] = 98.0
+
+    decision_short = evaluate_ma3_ma15_entry(
+        df_short_fail, "SHORT",
+        current_position="IDLE",
+        last_trade_bar_time=None,
+        stop_loss_price=102.0,
+        execution_price=98.5,
+    )
+    assert decision_short.action == "HOLD / PASS"
+    assert "NO_STRICT_MA3_MA15_CROSS" in decision_short.violations or "MA_SPREAD_TOO_NARROW" in decision_short.violations

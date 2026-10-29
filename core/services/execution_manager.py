@@ -1185,8 +1185,10 @@ class ExecutionManager:
             # 賣空必須 KC 中軌向下 (kc_slope <= 0)、拉遠非多頭 (not is_zoomed_out_bullish)、且 MA3 與收盤價皆在中軌之下，且當前 K 棒必須為陰線 (c_c < c_o)！
             # 順勢鐵律：當拉遠看是空頭或 KC 中軌向下，100% 絕對禁止開多！當拉遠看是多頭或 KC 中軌向上，100% 絕對禁止開空！
             # 🐒 猴市鐵律（方案 3）：猴市不隨意摸頂摸底，只有已收線突破區間 (range_breakout_side) 時才允許順勢開倉！
+            # ⚖️ 【使用者最高鐵律】：MA3 必須在 MA15 上方 (m3_c > m15_c) 才准開多單；MA3 必須在 MA15 下方 (m3_c < m15_c) 才准開空單！
             can_open_long = bool(
                 (is_cross_mid_long or is_valid_gc or is_true_bottom)
+                and (m3_c > m15_c)
                 and (not is_zoomed_out_bearish)
                 and (market_regime != "RANGE" or range_breakout_side == "LONG")
                 and (m3_c > m3_p)
@@ -1198,6 +1200,7 @@ class ExecutionManager:
             )
             can_open_short = bool(
                 (is_cross_mid_short or is_valid_dc or is_true_peak)
+                and (m3_c < m15_c)
                 and (not is_zoomed_out_bullish)
                 and (market_regime != "RANGE" or range_breakout_side == "SHORT")
                 and (m3_c < m3_p)
@@ -1561,9 +1564,9 @@ class ExecutionManager:
             # 方向總開關（Direction Master Lock）與開倉絕對門檻：
             # 🟢 開多絕對門檻（沒滿足任何一項，強制拒絕開多）：
             # 1. MA3 當前必須明確向上: ma3_curr > ma3_prev
-            # 2. MA3 必須位於慢線/中軌上方 (或金叉狀態): ma3_curr >= ma15_curr
+            # 2. MA3 必須嚴格位於 MA15 慢線上線上方: ma3_curr > ma15_curr
             # 3. 當前 K 棒必須是實體陽線: curr_k['close'] > curr_k['open']
-            # 只要 MA3 向下、或在慢線下方、或當前收陰，一律一票否決，嚴禁生成任何 LONG 訊號！
+            # 只要 MA3 向下、或在 MA15 下方、或當前收陰，一律一票否決，嚴禁生成任何 LONG 訊號！
             ma15_curr = float(getattr(market_data, "ma15", getattr(market_data, "ema_slow", market_data.kc_middle)))
             curr_close = float(market_data.curr_k.get("close", market_data.current_price))
             curr_open = float(market_data.curr_k.get("open", curr_close))
@@ -1576,12 +1579,14 @@ class ExecutionManager:
                 or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
             )
             is_ma3_trending_up = ma3_curr > ma3_prev
-            is_ma3_above_slow = (ma3_curr >= ma15_curr or ma3_curr >= kc_mid_val or curr_close > kc_mid_val)
+            # 嚴格鐵律：做多 MA3 必須嚴格在 MA15 上方！
+            is_ma3_above_slow = (ma3_curr > ma15_curr)
             is_candle_bullish = (curr_close > curr_open)
             hard_long_allowed = is_ma3_trending_up and is_ma3_above_slow and is_candle_bullish
 
             is_ma3_trending_down = ma3_curr < ma3_prev
-            is_ma3_below_slow = (ma3_curr <= ma15_curr or ma3_curr <= kc_mid_val or curr_close < kc_mid_val)
+            # 嚴格鐵律：做空 MA3 必須嚴格在 MA15 下方！
+            is_ma3_below_slow = (ma3_curr < ma15_curr)
             is_candle_bearish = (curr_close < curr_open)
             hard_short_allowed = is_ma3_trending_down and is_ma3_below_slow and is_candle_bearish
 
@@ -1664,6 +1669,7 @@ class ExecutionManager:
             prev_kc_mid_val = float(market_data.prev_k.get("kc_middle", kc_mid_val) if market_data.prev_k else kc_mid_val)
             agile_cross_long = (
                 (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (ma3_curr > ma15_curr)
                 and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and (p_close <= prev_kc_mid_val or ma3_prev <= prev_kc_mid_val or ma3_prev <= ma15_prev)
@@ -1677,6 +1683,7 @@ class ExecutionManager:
             # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點，但拉遠看空頭時嚴禁逆勢反彈追多）：
             agile_breakout_long = (
                 (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (ma3_curr > ma15_curr)
                 and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and (curr_close > kc_up_val or curr_quote > kc_up_val)
@@ -1688,6 +1695,7 @@ class ExecutionManager:
             # 🟢 多頭觸發點 C（KC向上順勢延續開倉：若鎖利平倉或空手，只要拉遠非空頭且價格穩居 KC 中軌與 MA3 之上且收紅陽線，立即延續補倉買多！）：
             agile_continuation_long = (
                 (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (ma3_curr > ma15_curr)
                 and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and kc_slope >= 0
@@ -1702,6 +1710,7 @@ class ExecutionManager:
             # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌或 MA15，早點開空，但拉遠看多頭時嚴禁逆勢開空）：
             agile_cross_short = (
                 (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (ma3_curr < ma15_curr)
                 and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and (p_close >= prev_kc_mid_val or ma3_prev >= prev_kc_mid_val or ma3_prev >= ma15_prev)
@@ -1715,6 +1724,7 @@ class ExecutionManager:
             # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空，但拉遠看多頭時嚴禁逆勢殺跌）：
             agile_breakdown_short = (
                 (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (ma3_curr < ma15_curr)
                 and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and (curr_close < kc_low_val or curr_quote < kc_low_val)
@@ -1726,6 +1736,7 @@ class ExecutionManager:
             # 🔴 空頭觸發點 C（KC向下順勢延續開空：若鎖利平空或空手，只要拉遠非多頭且價格受壓於 KC 中軌與 MA3 之下且收黑陰線，立即延續補倉賣空！）：
             agile_continuation_short = (
                 (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (ma3_curr < ma15_curr)
                 and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and kc_slope <= 0
@@ -1878,11 +1889,12 @@ class ExecutionManager:
                         and (kc_slope >= 0)
                         and (curr_close >= kc_mid_val)
                         and (ma3_curr >= kc_mid_val)
+                        and (ma3_curr > ma15_curr)
                     )
                     if not pivot_long_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多門檻 "
-                            f"(zoomed_bear={is_zoomed_out_bearish}, ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
+                            f"(zoomed_bear={is_zoomed_out_bearish}, ma3_up={is_ma3_trending_up}, ma3_above_ma15={ma3_curr > ma15_curr}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -1895,11 +1907,12 @@ class ExecutionManager:
                         and (kc_slope <= 0)
                         and (curr_close <= kc_mid_val)
                         and (ma3_curr <= kc_mid_val)
+                        and (ma3_curr < ma15_curr)
                     )
                     if not pivot_short_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空門檻 "
-                            f"(zoomed_bull={is_zoomed_out_bullish}, ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
+                            f"(zoomed_bull={is_zoomed_out_bullish}, ma3_down={is_ma3_trending_down}, ma3_below_ma15={ma3_curr < ma15_curr}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -2013,6 +2026,18 @@ class ExecutionManager:
                         f"尚未確認實體突破區間 (range_high={range_high}, range_low={range_low})，一票否決摸頂摸底，嚴防雙巴！"
                     )
                     return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_RANGE_MONKEY_MARKET", "details": "猴市震盪市場，嚴格等待突破才開倉！"}
+
+                # 0.1 ⚖️ 【使用者最高鐵律】：MA3 必須在 MA15 上方 (ma3_curr > ma15_curr) 才准開多單；MA3 必須在 MA15 下方 (ma3_curr < ma15_curr) 才准開空單！
+                if candidate_side == "LONG" and ma3_curr <= ma15_curr:
+                    logger.info(
+                        f"🚫 [BLOCKED_MA3_MA15_RULE] {symbol} 開多但 MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA3_NOT_ABOVE_MA15", "details": "MA3 必須在 MA15 上方才准開多單！"}
+                if candidate_side == "SHORT" and ma3_curr >= ma15_curr:
+                    logger.info(
+                        f"🚫 [BLOCKED_MA3_MA15_RULE] {symbol} 開空但 MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA3_NOT_BELOW_MA15", "details": "MA3 必須在 MA15 下方才准開空單！"}
 
                 # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 中軌下行 (kc_slope < 0) 或收盤位於中軌之下 或 MA3 低於中軌 或 MA3 未向上 或 非陽線，100% 一票否決開多！
                 # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 中軌上行 (kc_slope > 0) 或收盤位於中軌之上 或 MA3 高於中軌 或 MA3 未向下 或 非陰線，100% 一票否決開空！
