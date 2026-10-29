@@ -896,10 +896,11 @@ class ExecutionManager:
                 reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
-            elif is_pivot_exit and (has_profit_expansion or favorable_gain_atr >= 0.8 or peak_roe_pct >= 3.0):
+            elif is_pivot_exit and (has_profit_expansion or favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0):
                 # 真峰頂/真谷底獲利了結：
-                # 當波段已獲利展開並觸及/逼近 KC 外軌後，若出現已收線三點峰谷確認（收反向K棒且跌破/突破 MA3/MA5 或前棒中點），
-                # 立即在峰頂/谷底精準平倉落袋，無須等到跌破 KC 中軌與 MA15 把利潤全部吐光！
+                # 嚴格遵守「持倉기간 KC 外軌鎖定機制」與「真谷底/真峰頂不是下軌/上軌外一根小反彈就平倉」！
+                # 1. 空單若收盤仍在 KC 下軌之外 (closed_c <= closed_kc_lo)，或 KC 中軌向下且價格仍壓制在 KC 中軌與 MA15 之下，絕對禁止提早平空！
+                # 2. 多單若收盤仍在 KC 上軌之外 (closed_c >= closed_kc_u)，或 KC 中軌向上且價格仍穩守在 KC 中軌與 MA15 之上，絕對禁止提早平多！
                 ma5_ref = float(getattr(market_data, "ma5", m3_c) or m3_c)
                 touched_outer_rail = (
                     (pos_side == "LONG" and (peak_p_ref >= closed_kc_u * 0.9985 or prev_closed_h >= closed_kc_u * 0.9985 or closed_h >= closed_kc_u * 0.9985))
@@ -911,17 +912,27 @@ class ExecutionManager:
                     and (
                         (
                             pos_side == "LONG"
+                            and closed_c < closed_kc_u
                             and closed_c < closed_o
                             and curr_quote <= closed_c
-                            and (closed_c < m3_c or closed_c < ma5_ref)
-                            and (closed_c < prev_mid_pt or closed_c < prev_closed_l or m3_c <= m3_p)
+                            and closed_c < m3_c
+                            and closed_c < ma5_ref
+                            and m3_c < m3_p
+                            and (closed_c < closed_kc_mid or closed_c < m15_c)
+                            and (curr_quote < kc_mid or curr_quote < m15_c)
+                            and (closed_c < prev_mid_pt or closed_c < prev_closed_l)
                         )
                         or (
                             pos_side == "SHORT"
+                            and closed_c > closed_kc_lo
                             and closed_c > closed_o
                             and curr_quote >= closed_c
-                            and (closed_c > m3_c or closed_c > ma5_ref)
-                            and (closed_c > prev_mid_pt or closed_c > prev_closed_h or m3_c >= m3_p)
+                            and closed_c > m3_c
+                            and closed_c > ma5_ref
+                            and m3_c > m3_p
+                            and (closed_c > closed_kc_mid or closed_c > m15_c)
+                            and (curr_quote > kc_mid or curr_quote > m15_c)
+                            and (closed_c > prev_mid_pt or closed_c > prev_closed_h)
                         )
                     )
                 )
@@ -929,7 +940,7 @@ class ExecutionManager:
                     should_exit = True
                     reason = gate_reason
                     meta = {**(gate_meta or {}), "pivot_type": "TRUE_PIVOT_CONFIRMED", "trigger": "EXIT_GATE_TRUE_PIVOT"}
-                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且確立真峰頂/真谷底轉折，立即在頂部/底部精準獲利了結！reason={reason}")
+                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且確立真峰頂/真谷底結構反轉，立即獲利了結！reason={reason}")
 
             # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或結構破壞再平倉」全面停用！
             # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或結構破壞平倉，取消固定硬止損):
@@ -984,31 +995,34 @@ class ExecutionManager:
                     )
 
                     # 2. 【真谷底確認平空 (True Valley Exit)】：
-                    # 觸及下軌後若出現三點谷底轉折（收紅陽線突破前棒實體中點與 MA3/MA5 且 MA3 拐頭向上），立即在谷底精準平空落袋！
+                    # 嚴格鐵律：只要空單仍在 KC 下軌外、或仍受壓制於 KC 中軌與 MA15 之下（如 20:07 沿下軌暴跌後的單根小綠K喘息），
+                    # 絕對不是真谷底，也不是結構破壞，100% 禁止提早平空被洗下車！
+                    # 必須確認：收紅陽線回到 KC 下軌之內，且突破 MA3/MA5 與 KC 中軌（或 MA15），且 MA3 明確向上拐頭，才算真谷底結構反轉！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_lower_wick = min(prev_closed_o, prev_closed_c) - prev_closed_l
                     prev_closed_mid_short = (prev_closed_o + prev_closed_c) / 2.0
                     ma5_short_ref = float(getattr(market_data, "ma5", m3_c) or m3_c)
                     is_confirmed_true_valley = bool(
-                        (has_profit_expansion or favorable_gain_atr >= 0.8 or peak_roe_pct >= 3.0)
+                        (has_profit_expansion or favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0)
                         and outer_touched_short
+                        and closed_c > closed_kc_lo
                         and closed_c > closed_o
                         and curr_quote >= closed_c
-                        and (closed_c > m3_c or closed_c > ma5_short_ref)
-                        and m3_c >= m3_p
-                        and (closed_c > prev_closed_mid_short or closed_c > prev_closed_h or closed_body >= 0.35 * atr_v or prev_closed_lower_wick > prev_closed_body)
+                        and closed_c > m3_c
+                        and closed_c > ma5_short_ref
+                        and m3_c > m3_p
+                        and (closed_c > closed_kc_mid or closed_c > m15_c)
+                        and (curr_quote > kc_mid or curr_quote > m15_c)
+                        and (closed_c > prev_closed_h or closed_body >= 0.4 * atr_v)
                     )
 
-                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.2% (或回吐達 0.9 ATR) 且跌勢停滯，動態鎖利平空
+                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% 且同時突破 KC 中軌，動態鎖利平空
                     is_valley_rebound_1_8pct = bool(
                         trough_p > 0
                         and pos_entry > 0
-                        and ((pos_entry - trough_p) / pos_entry >= 0.008 or has_profit_expansion or favorable_gain_atr >= 1.2)
-                        and (
-                            (closed_c > trough_p * 1.012 and curr_quote > trough_p * 1.012 and closed_c > closed_o and closed_c > m3_c)
-                            or (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_kc_mid)
-                        )
+                        and ((pos_entry - trough_p) / pos_entry >= 0.015 or has_profit_expansion)
+                        and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o and closed_c > closed_kc_mid)
                     )
 
                     # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，走到真谷底或結構破壞再平倉」
@@ -1093,31 +1107,34 @@ class ExecutionManager:
                     )
 
                     # 2. 【真峰頂確認平多 (True Peak Exit)】：
-                    # 觸及上軌後若出現三點峰頂轉折（收黑陰線跌破前棒實體中點與 MA3/MA5 且 MA3 拐頭向下），立即在峰頂精準平多落袋！
+                    # 嚴格鐵律：只要多單仍在 KC 上軌外、或仍穩守於 KC 中軌與 MA15 之上（沿上軌暴漲後的單根小陰K換手），
+                    # 絕對不是真峰頂，也不是結構破壞，100% 禁止提早平多被洗下車！
+                    # 必須確認：收黑陰線跌回 KC 上軌之內，且跌破 MA3/MA5 與 KC 中軌（或 MA15），且 MA3 明確向下拐頭，才算真峰頂結構反轉！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_upper_wick = prev_closed_h - max(prev_closed_o, prev_closed_c)
                     prev_closed_mid_long = (prev_closed_o + prev_closed_c) / 2.0
                     ma5_long_ref = float(getattr(market_data, "ma5", m3_c) or m3_c)
                     is_confirmed_true_peak = bool(
-                        (has_profit_expansion or favorable_gain_atr >= 0.8 or peak_roe_pct >= 3.0)
+                        (has_profit_expansion or favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0)
                         and outer_touched_long
+                        and closed_c < closed_kc_u
                         and closed_c < closed_o
                         and curr_quote <= closed_c
-                        and (closed_c < m3_c or closed_c < ma5_long_ref)
-                        and m3_c <= m3_p
-                        and (closed_c < prev_closed_mid_long or closed_c < prev_closed_l or closed_body >= 0.35 * atr_v or prev_closed_upper_wick > prev_closed_body)
+                        and closed_c < m3_c
+                        and closed_c < ma5_long_ref
+                        and m3_c < m3_p
+                        and (closed_c < closed_kc_mid or closed_c < m15_c)
+                        and (curr_quote < kc_mid or curr_quote < m15_c)
+                        and (closed_c < prev_closed_l or closed_body >= 0.4 * atr_v)
                     )
 
-                    # 3. 【大波段移動鎖利】：盈利達標後，自最高點回撤超過 1.2% 且跌破 MA3（或回撤 1.8% 跌破 KC 中軌），精準鎖利平多
+                    # 3. 【大波段移動鎖利】：盈利達標後，自最高點回撤超過 1.8% 且同時跌破 KC 中軌，精準鎖利平多
                     is_peak_pullback_2pct = bool(
                         peak_p > 0
                         and pos_entry_price > 0
-                        and ((peak_p - pos_entry_price) / pos_entry_price >= 0.008 or has_profit_expansion or favorable_gain_atr >= 1.2)
-                        and (
-                            (closed_c < peak_p * 0.988 and curr_quote < peak_p * 0.988 and closed_c < closed_o and closed_c < m3_c)
-                            or (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_kc_mid)
-                        )
+                        and ((peak_p - pos_entry_price) / pos_entry_price >= 0.015 or has_profit_expansion)
+                        and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o and closed_c < closed_kc_mid)
                     )
 
                     # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，若是多頭要繼續走下去，走到峰頂再平倉」
