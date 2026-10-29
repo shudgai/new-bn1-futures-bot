@@ -63,57 +63,57 @@ def atr_exit_reason(position, price, frame=None):
     return DualTrackExitStrategy().evaluate_exit(position, frame, current_price=price)
 
 
-def check_trend_lock_exit_permission(position, frame, price):
+def check_trend_lock_exit_permission(position, frame, price) -> bool:
     """
-    四大離場門檻硬核驗：未滿足四大離場門檻之一，強制一票否決平倉！
+    大週期不變一單到底總鎖定 (Trend Lock Master Permission):
+    只要大週期順勢未變（空單 KC向下且價格在 KC中軌下方；多單 KC向上且價格在 KC中軌上方），
+    entry_atr_protection 輪詢通道一律禁止因短線小反彈、回踩中軌或 MA3 金叉/死叉平倉！
+    唯有已收線實體突破反側 KC 外軌，或自峰頂/谷底實質獲利展開後大幅回撤 >= 1.8% 並貫穿 KC 中軌時才放行。
     """
     if frame is None or len(frame) < 2:
-        return True
-    
-    from core.services.execution_manager import should_exit_long, should_exit_short
-    
+        return False
+
     side = str(position.get("side", "")).upper()
     df = frame.copy()
-    if "ma3" not in df.columns:
-        df["ma3"] = df["close"].rolling(3).mean().bfill()
-    if "ma15" not in df.columns:
-        df["ma15"] = df["close"].rolling(15).mean().bfill()
-    if "atr" not in df.columns:
-        df["atr"] = (df["high"] - df["low"]).rolling(14).mean().bfill()
-        
-    curr_k = df.iloc[-1].to_dict()
-    prev_k = df.iloc[-2].to_dict()
-    ma3_c = float(curr_k.get("ma3", curr_k["close"]))
-    ma3_p = float(prev_k.get("ma3", prev_k["close"]))
-    ma15_c = float(curr_k.get("ma15", curr_k["close"]))
-    ma15_p = float(prev_k.get("ma15", prev_k["close"]))
-    kc_u = float(curr_k.get("kc_upper", 0.0))
-    p_kc_u = float(prev_k.get("kc_upper", 0.0))
-    kc_lo = float(curr_k.get("kc_lower", 0.0))
-    p_kc_lo = float(prev_k.get("kc_lower", 0.0))
-    atr_v = float(curr_k.get("atr", 0.0) or 0.0)
-    
-    if side == "LONG":
-        return should_exit_long(
-            curr_k=curr_k, prev_k=prev_k,
-            ma3_curr=ma3_c, ma3_prev=ma3_p,
-            ma15_curr=ma15_c, ma15_prev=ma15_p,
-            kc_upper=kc_u, prev_kc_upper=p_kc_u,
-            current_atr=atr_v,
-            raw_df=df,
-            position=position,
-        )
-    elif side == "SHORT":
-        return should_exit_short(
-            curr_k=curr_k, prev_k=prev_k,
-            ma3_curr=ma3_c, ma3_prev=ma3_p,
-            ma15_curr=ma15_c, ma15_prev=ma15_p,
-            kc_lower=kc_lo, prev_kc_lower=p_kc_lo,
-            current_atr=atr_v,
-            raw_df=df,
-            position=position,
-        )
-    return True
+    last_closed = bool(df.iloc[-1].get("is_closed", True))
+    closed_k = df.iloc[-2] if (not last_closed and len(df) >= 2) else df.iloc[-1]
+    prev_closed_k = df.iloc[-3] if (not last_closed and len(df) >= 3) else df.iloc[-2]
+
+    c_close = float(closed_k.get("close", price))
+    c_open = float(closed_k.get("open", c_close))
+    kc_u = float(closed_k.get("kc_upper", 0.0))
+    kc_lo = float(closed_k.get("kc_lower", 0.0))
+    kc_mid = float(closed_k.get("kc_middle", (kc_u + kc_lo) / 2.0))
+    prev_kc_mid = float(prev_closed_k.get("kc_middle", kc_mid))
+    entry_p = float(position.get("entry_price") or 0.0)
+
+    if side == "SHORT":
+        # 1. 反側外軌突破：收盤與報價雙雙突破 KC 上軌
+        if kc_u > 0 and c_close > kc_u and c_close > c_open and price > kc_u:
+            return True
+        # 2. 只要大週期仍向下或價格仍在 KC 中軌下方，一票否決平空！
+        if kc_mid <= prev_kc_mid + 1e-9 or c_close <= kc_mid or price <= kc_mid:
+            return False
+        # 3. 突破中軌且自最低價反彈 >= 1.8%
+        trough_p = float(position.get("trough_price") or position.get("lowest_price") or entry_p)
+        if trough_p > 0 and entry_p > 0 and ((entry_p - trough_p) / entry_p >= 0.015) and c_close > trough_p * 1.018 and price > trough_p * 1.018:
+            return True
+        return False
+
+    elif side == "LONG":
+        # 1. 反側外軌跌破：收盤與報價雙雙跌破 KC 下軌
+        if kc_lo > 0 and c_close < kc_lo and c_close < c_open and price < kc_lo:
+            return True
+        # 2. 只要大週期仍向上或價格仍在 KC 中軌上方，一票否決平多！
+        if kc_mid >= prev_kc_mid - 1e-9 or c_close >= kc_mid or price >= kc_mid:
+            return False
+        # 3. 跌破中軌且自最高價回撤 >= 1.8%
+        peak_p = float(position.get("highest_price") or entry_p)
+        if peak_p > 0 and entry_p > 0 and ((peak_p - entry_p) / entry_p >= 0.015) and c_close < peak_p * 0.982 and price < peak_p * 0.982:
+            return True
+        return False
+
+    return False
 
 
 async def enforce_atr_protection(account, symbol, price):

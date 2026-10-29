@@ -282,46 +282,42 @@ def calculate_squeeze_kc_breakout_strategy(
                     lowest_price = min(current_low, current_close)
                     reached_oversold = lowest_price < kc_low
 
-        # 【持有多單 - 區分「一般回檔續抱」與「大瀑布暴跌 / 超買動態止盈 / 跌破中軌保底平倉」】
+        # 【持有多單 - 大週期不變一單到底，只到真峰頂、鎖利或破下軌才平多】
         elif position == 1:
             bar_peak = max(current_high, current_close)
             highest_price = max(highest_price, bar_peak)
             if bar_peak > kc_up or highest_price > kc_up:
                 reached_overbought = True
 
-            # 1. 大瀑布觸發判定：單根 K 棒跌幅超過 1.2% 或 收盤強勢貫穿 KC 下軌 (close < kc_lower)
-            bar_body_drop_pct = (current_open - current_close) / current_open if current_open > 0 else 0.0
-            bar_close_drop_pct = (prev_close - current_close) / prev_close if prev_close > 0 else 0.0
-            is_waterfall_crash = (
-                (bar_body_drop_pct > waterfall_drop_pct)
-                or (bar_close_drop_pct > waterfall_drop_pct)
-                or (current_close < kc_low)
+            # 1. 核心破軌防線：實體陰線收盤正式跌破 KC 下軌 (close < kc_lower)
+            is_lower_rail_trend_exit = (current_close < kc_low) and (current_close < current_open)
+
+            # 2. 大波段移動鎖利：盈利達標後 (最高價 > 成本 * 1.015)，自最高價回撤超過 1.8% 且收陰線
+            is_peak_pullback_exit = (
+                (highest_price > entry_price * 1.015)
+                and (current_close < highest_price * 0.982)
+                and (current_close < current_open)
             )
 
-            # 2. 高點動態止盈 (Adaptive Trailing Stop)：
-            #    僅當最高價曾突破 KC 上軌 (進入超買區)，且自最高價回檔超過 0.8% (active_trailing_pct) 時觸發
-            overbought_trailing_stop = highest_price * (1.0 - active_trailing_pct)
-            is_overbought_pullback_exit = reached_overbought and (current_close < overbought_trailing_stop)
+            # 3. 初始硬性風控止損 (跌破成本價 1.8% 且位於中軌下方)
+            is_hard_sl_long = (entry_price > 0) and (current_close <= entry_price * 0.982) and (current_close < kc_mid)
 
-            # 3. 保底平倉條件：收盤價跌破 KC 中軌 (close < kc_middle)
-            is_midline_broken = current_close < kc_mid
-
-            if is_waterfall_crash:
-                df.loc[df.index[i], "signal"] = 2  # 大瀑布緊急平多
-                df.loc[df.index[i], "exit_reason"] = "WATERFALL_EXIT"
+            if is_lower_rail_trend_exit:
+                df.loc[df.index[i], "signal"] = 2
+                df.loc[df.index[i], "exit_reason"] = "LOWER_RAIL_TREND_EXIT"
                 position = 0
                 reached_overbought = False
-            elif is_overbought_pullback_exit:
-                df.loc[df.index[i], "signal"] = 2  # 超買區高點回檔 0.8% 鎖利平多
-                df.loc[df.index[i], "exit_reason"] = "OVERBOUGHT_TRAILING_STOP"
+            elif is_peak_pullback_exit:
+                df.loc[df.index[i], "signal"] = 2
+                df.loc[df.index[i], "exit_reason"] = "PEAK_PULLBACK_1_8_PCT_EXIT"
                 position = 0
                 reached_overbought = False
-            elif is_midline_broken:
-                df.loc[df.index[i], "signal"] = 2  # 跌破 KC 中軌保底平多
-                df.loc[df.index[i], "exit_reason"] = "MIDLINE_BREAK_EXIT"
+            elif is_hard_sl_long:
+                df.loc[df.index[i], "signal"] = 2
+                df.loc[df.index[i], "exit_reason"] = "HARD_SL_LONG_EXIT"
                 position = 0
                 reached_overbought = False
-            # 否則：屬於「通道內一般回檔（close >= kc_middle 且未達大瀑布或超買回檔門檻）」，繼續抱緊持倉讓利潤奔跑！
+            # 否則：大週期向上期間回踩中軌或小幅震盪一律強制續抱讓利潤奔跑！
 
         # 【持有空單 - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)】
         elif position == -1:
@@ -329,13 +325,19 @@ def calculate_squeeze_kc_breakout_strategy(
             lowest_price = min(lowest_price, bar_trough)
 
             # 1. 大趨勢反轉平倉：必須等待 K 棒實體收盤價強勢貫穿突破 KC 上軌 (close > kc_upper)
-            is_upper_rail_trend_exit = current_close > kc_up
+            is_upper_rail_trend_exit = (current_close > kc_up) and (current_close > current_open)
 
-            # 2. 谷底強勢反彈止盈：自最低谷底價格 (lowest_price) 反彈幅度超過 2.0%
-            is_valley_rebound_exit = (lowest_price > 0) and (current_close > lowest_price * 1.020)
+            # 2. 谷底強勢反彈鎖利：曾獲利 >= 1.5% 後，自最低谷底價格 (lowest_price) 反彈超過 1.8% 且收陽線
+            is_valley_rebound_exit = (
+                (lowest_price > 0)
+                and (entry_price > 0)
+                and ((entry_price - lowest_price) / entry_price >= 0.015)
+                and (current_close > lowest_price * 1.018)
+                and (current_close > current_open)
+            )
 
-            # 3. 極端硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
-            is_hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.015)
+            # 3. 極端硬性風控止損 (暴拉急煞超過成本價 1.8% 且突破中軌)
+            is_hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.018) and (current_close > kc_mid)
 
             if is_upper_rail_trend_exit:
                 df.loc[df.index[i], "signal"] = -2  # 強勢貫穿 KC 上軌，大趨勢反轉平空
@@ -582,16 +584,22 @@ def calculate_full_kc_bb_strategy(
         elif position == -1:
             lowest_price = min(lowest_price, current_close)
 
-            # 1. 大波段移動止盈: 自最低谷底反彈超過 1.8% (0.018) 必須鎖利 (防止利潤大幅吐光)
+            # 1. 大波段移動止盈: 曾獲利 >= 1.5% 後，自最低谷底反彈超過 1.8% (0.018) 且收陽線必須鎖利
             trailing_stop_threshold = 0.018
-            trailing_exit = (lowest_price > 0) and (current_close > lowest_price * (1.0 + trailing_stop_threshold))
+            trailing_exit = (
+                (lowest_price > 0)
+                and (entry_price > 0)
+                and ((entry_price - lowest_price) / entry_price >= 0.015)
+                and (current_close > lowest_price * (1.0 + trailing_stop_threshold))
+                and (current_close > current_open)
+            )
 
             # 2. 【核心破軌防線】: 只要實體收盤價突破 KC 通道上軌 (破軌)，無條件強制平空！
             # (無論當前大週期 slope 是正還是負，破軌就必須跑！)
-            hard_breakout_exit = current_close > kc_up
+            hard_breakout_exit = (current_close > kc_up) and (current_close > current_open)
 
-            # 3. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
-            hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.015)
+            # 3. 初始硬性風控止損 (暴拉急煞超過成本價 1.8% 且突破中軌)
+            hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.018) and (current_close > kc_mid)
 
             if hard_breakout_exit:
                 df.loc[df.index[i], "signal"] = -2  # 強勢突破 KC 上軌破軌，無條件強制平空

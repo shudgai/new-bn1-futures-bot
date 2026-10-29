@@ -510,31 +510,58 @@ class ExecutionManager:
             pos_side = str(current_position.get("side", "")).upper()
             pos_entry = float(current_position.get("entry_price") or 0.0)
             pos_lev = float(current_position.get("leverage") or 5.0)
+            pos_open_ts = float(current_position.get("open_timestamp") or current_position.get("created_at") or current_position.get("entry_time") or 0.0)
 
-            high_seen = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry)
+            high_seen = float(current_position.get("highest_price") or pos_entry)
             low_seen = float(current_position.get("lowest_price") or current_position.get("trough_price") or pos_entry)
+
+            # 同步回溯持倉開倉後的歷史 K 棒最高價/最低價，確保最高浮盈與最低谷底價 100% 精準紀錄
+            if raw_df is not None and isinstance(raw_df, pd.DataFrame) and not raw_df.empty and pos_open_ts > 0:
+                try:
+                    ts_col = "timestamp" if "timestamp" in raw_df.columns else ("open_time" if "open_time" in raw_df.columns else None)
+                    if ts_col:
+                        open_ms = pos_open_ts * 1000.0 if pos_open_ts < 1e11 else pos_open_ts
+                        post_df = raw_df[raw_df[ts_col] >= open_ms - 60000.0]
+                        if not post_df.empty:
+                            df_max_h = float(post_df["high"].max() or 0.0)
+                            df_min_l = float(post_df["low"].min() or 0.0)
+                            if df_max_h > high_seen:
+                                high_seen = df_max_h
+                            if df_min_l > 0 and (low_seen <= 0 or df_min_l < low_seen):
+                                low_seen = df_min_l
+                except Exception:
+                    pass
+
             if curr_quote > high_seen:
                 high_seen = curr_quote
-                current_position["highest_price"] = high_seen
-                current_position["peak_price"] = high_seen
             if low_seen <= 0 or (curr_quote > 0 and curr_quote < low_seen):
                 low_seen = curr_quote
-                current_position["lowest_price"] = low_seen
-                current_position["trough_price"] = low_seen
 
-            gain_from_entry = (high_seen - pos_entry) if pos_side == "LONG" else (pos_entry - low_seen)
+            current_position["highest_price"] = high_seen
+            current_position["lowest_price"] = low_seen
+            current_position["trough_price"] = low_seen
+            # 注意：peak_price 在 PaperAccount 中代表「最有利價格」(LONG 為最高價、SHORT 為最低價)，不可把 SHORT 的 peak_price 覆寫為 high_seen！
+            current_position["peak_price"] = high_seen if pos_side == "LONG" else low_seen
+            if hasattr(account, "position_meta") and isinstance(account.position_meta, dict):
+                p_meta = account.position_meta.setdefault(symbol, {})
+                p_meta["highest_price"] = high_seen
+                p_meta["lowest_price"] = low_seen
+                p_meta["trough_price"] = low_seen
+
+            gain_from_entry = max(0.0, (high_seen - pos_entry) if pos_side == "LONG" else (pos_entry - low_seen))
             cur_gain = (curr_quote - pos_entry) if pos_side == "LONG" else (pos_entry - curr_quote)
             cur_roe_pct = (cur_gain / pos_entry * 100.0 * pos_lev) if pos_entry > 0 else 0.0
+            max_roe_from_price_pct = (gain_from_entry / pos_entry * 100.0 * pos_lev) if pos_entry > 0 else 0.0
 
-            stored_peak_roe = float(
-                current_position.get("peak_roe", 0.0)
-                or current_position.get("peak_net_roe_pct", 0.0)
-                or getattr(market_data, "peak_roe", 0.0)
+            stored_peak_roe_pct = float(
+                current_position.get("peak_net_roe_pct", 0.0)
+                or current_position.get("highest_net_roe", 0.0)
                 or 0.0
             )
-            peak_roe_pct = stored_peak_roe * 100.0 if (0.0 < stored_peak_roe < 0.5) else stored_peak_roe
-            peak_roe_pct = max(peak_roe_pct, cur_roe_pct)
-            current_position["peak_roe"] = peak_roe_pct
+            peak_roe_pct = max(stored_peak_roe_pct, max_roe_from_price_pct, cur_roe_pct)
+            current_position["peak_roe_pct"] = peak_roe_pct
+            # ExitGate 內部使用比例制 (0.05 = 5% ROE)，因此傳遞給 ExitGate 的 peak_roe 統一儲存為比例制
+            current_position["peak_roe"] = peak_roe_pct / 100.0
 
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
@@ -616,18 +643,18 @@ class ExecutionManager:
                 or (pos_side == "SHORT" and is_kc_mid_down and closed_c <= closed_kc_mid and curr_quote <= kc_mid)
             )
 
-            # 計算持倉波段是否已實質展開獲利 (>= 0.8 ATR 或 峰值 ROE >= 6%)，防範在剛開倉成本區誤把正常呼吸當真峰谷
+            # 計算持倉波段是否已實質展開獲利 (>= 1.8 ATR 且目前或峰值 ROE >= 8%)，防範在剛開倉成本區或主跌/主升中途小反彈誤把洗盤當真峰谷
             pos_entry_ref = float(current_position.get("entry_price") or 0.0)
-            peak_p_ref = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry_ref)
+            peak_p_ref = float(current_position.get("highest_price") or pos_entry_ref)
             trough_p_ref = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry_ref)
             favorable_gain_atr = (
                 ((peak_p_ref - pos_entry_ref) / atr_v) if (pos_side == "LONG" and atr_v > 0 and pos_entry_ref > 0)
                 else ((pos_entry_ref - trough_p_ref) / atr_v) if (pos_side == "SHORT" and atr_v > 0 and pos_entry_ref > 0)
                 else 0.0
             )
-            has_profit_expansion = bool(favorable_gain_atr >= 0.8 or peak_roe_pct >= 6.0)
+            has_profit_expansion = bool(favorable_gain_atr >= 1.8 and peak_roe_pct >= 8.0 and cur_roe_pct > 1.0)
 
-            # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 實質獲利展開後之真峰頂/真谷底
+            # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 大週期轉弱或突破中軌時之真峰頂/真谷底
             if is_absolute_safety:
                 # 若為 OPPOSITE_KC_BAND_BREACH，必須確認已收線實體真正破軌，拒絕下影線/上影線毛刺誤平倉
                 if "OPPOSITE_KC_BAND_BREACH" in str(gate_reason).upper():
@@ -649,17 +676,20 @@ class ExecutionManager:
                 reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
-            elif is_pivot_exit and has_profit_expansion:
-                # 驗證已收線 K 棒確實為反向確認棒，避免在順向強勢突破棒誤平
+            elif is_pivot_exit and has_profit_expansion and not trend_hold_shield:
+                # ⚠️ 【大週期不變絕不平倉鐵律】：
+                # 只要 trend_hold_shield 為真（空單 KC向下且價格在 KC中軌下方；多單 KC向上且價格在 KC中軌上方），
+                # 軌道下方的任何 3 根小紅陽或下影線一律視為「順勢下跌途中的洗盤喘息」，100% 屏蔽 EARLY_PIVOT 平倉！
+                # 唯有價格反彈突破 KC 中軌（或大週期已不再順向）且目前處於實質獲利狀態時，才放行真峰谷獲利了結！
                 is_valid_pivot_candle = (
-                    (pos_side == "LONG" and closed_c < closed_o and curr_quote <= closed_c)
-                    or (pos_side == "SHORT" and closed_c > closed_o and curr_quote >= closed_c)
+                    (pos_side == "LONG" and closed_c < closed_o and curr_quote <= closed_c and closed_c < closed_kc_mid)
+                    or (pos_side == "SHORT" and closed_c > closed_o and curr_quote >= closed_c and closed_c > closed_kc_mid)
                 )
                 if is_valid_pivot_candle:
                     should_exit = True
                     reason = gate_reason
                     meta = {**(gate_meta or {}), "pivot_type": "TRUE_PIVOT_CONFIRMED", "trigger": "EXIT_GATE_TRUE_PIVOT"}
-                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開後確立真峰頂/真谷底，立即獲利了結！reason={reason}")
+                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且破中軌確立真峰頂/真谷底，立即獲利了結！reason={reason}")
 
             # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop) - 順勢主升/主跌段期間屏蔽
             if not should_exit and not trend_hold_shield:
@@ -698,29 +728,31 @@ class ExecutionManager:
                     )
 
                     # 2. 【真谷底確認平空 (True Valley Exit)】：
-                    # 必須已脫離成本區實質展開獲利 (has_profit_expansion)，且在 KC 下軌附近出現「已收線外軌探底吞噬反轉」或「長下影錘頭確認反轉」並突破前棒高點與 MA3！
+                    # 關鍵鐵律：只要大週期仍是 KC向下 (kc_slope < 0) 且價格仍在 KC 中軌下方 (closed_c <= closed_kc_mid)，
+                    # 軌道下方的任何探底陽線或下影線都只是下跌中繼，絕不可當成谷底平空（避免 14:24 / 14:29 在半山腰或虧損時平空）！
+                    # 必須滿足：(1) 實質大幅獲利展開 (has_profit_expansion) 且當前仍為正獲利 (cur_roe_pct > 1.0)，
+                    # 且 (2) 已收線強勢長陽突破 KC 中軌 (closed_c > closed_kc_mid) 與 MA15 (closed_c > m15_c)，代表谷底反轉確立！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
-                    closed_lower_wick = min(closed_o, closed_c) - closed_l
                     prev_closed_lower_wick = min(prev_closed_o, prev_closed_c) - prev_closed_l
                     is_confirmed_true_valley = bool(
                         has_profit_expansion
+                        and not trend_hold_shield
                         and closed_c > closed_o
                         and curr_quote >= closed_c
-                        and closed_c > m3_c
+                        and closed_c > closed_kc_mid
+                        and closed_c > m15_c
                         and (
-                            # (a) 軌外探底後強勢陽線吞噬突破前棒高點
-                            ((prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo) and closed_c > prev_closed_h and closed_body >= 0.45 * atr_v)
-                            # (b) 軌外長下影探底針 + 收陽突破前高
-                            or ((prev_closed_l <= closed_kc_lo and prev_closed_lower_wick >= 1.2 * max(prev_closed_body, 0.2 * atr_v)) and closed_c > prev_closed_h)
+                            ((prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo) and closed_c > prev_closed_h and closed_body >= 0.6 * atr_v)
+                            or ((prev_closed_l <= closed_kc_lo and prev_closed_lower_wick >= 1.5 * max(prev_closed_body, 0.3 * atr_v)) and closed_c > prev_closed_h)
                         )
                     )
 
-                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% (且曾獲利 >= 1.2%)，動態鎖利平空
+                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% (且曾獲利 >= 1.5%)，動態鎖利平空
                     is_valley_rebound_1_8pct = bool(
                         trough_p > 0
                         and pos_entry > 0
-                        and ((pos_entry - trough_p) / pos_entry >= 0.012 or has_profit_expansion)
+                        and ((pos_entry - trough_p) / pos_entry >= 0.015 or has_profit_expansion)
                         and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o)
                     )
 
@@ -763,7 +795,7 @@ class ExecutionManager:
                 # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到真峰頂或鎖利，絕不因下影線或回踩中軌平多)：
                 elif pos_side == "LONG":
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
-                    peak_p = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry_price)
+                    peak_p = float(current_position.get("highest_price") or pos_entry_price)
 
                     # 1. 【核心破軌防線】：必須是「已收線 K 棒實體陰線收盤正式跌破 KC 下軌」且當前報價仍在下軌之下，嚴禁被盤中下影線 (如 12:58) 洗出場！
                     is_lower_rail_breach = bool(
@@ -772,20 +804,23 @@ class ExecutionManager:
                     )
 
                     # 2. 【真峰頂確認平多 (True Peak Exit)】：
-                    # 必須已脫離成本區實質展開獲利 (has_profit_expansion)，且在 KC 上軌附近出現「已收線外軌衝高陰線吞噬」或「長上影避雷針確認反轉」並跌破前棒低點與 MA3！
+                    # 關鍵鐵律：只要大週期仍是 KC向上 (kc_slope > 0) 且價格仍在 KC 中軌上方 (closed_c >= closed_kc_mid)，
+                    # 軌道上方的任何小陰線或上影線都只是上漲中繼，絕不可當成峰頂平多！
+                    # 必須滿足：(1) 實質大幅獲利展開 (has_profit_expansion) 且當前仍為正獲利 (cur_roe_pct > 1.0)，
+                    # 且 (2) 已收線強勢長陰跌破 KC 中軌 (closed_c < closed_kc_mid) 與 MA15 (closed_c < m15_c)，代表峰頂反轉確立！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_upper_wick = prev_closed_h - max(prev_closed_o, prev_closed_c)
                     is_confirmed_true_peak = bool(
                         has_profit_expansion
+                        and not trend_hold_shield
                         and closed_c < closed_o
                         and curr_quote <= closed_c
-                        and closed_c < m3_c
+                        and closed_c < closed_kc_mid
+                        and closed_c < m15_c
                         and (
-                            # (a) 軌外衝高後強勢陰線吞噬跌破前棒低點
-                            ((prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u) and closed_c < prev_closed_l and closed_body >= 0.45 * atr_v)
-                            # (b) 軌外長上影避雷針 + 收陰跌破前低
-                            or ((prev_closed_h >= closed_kc_u and prev_closed_upper_wick >= 1.2 * max(prev_closed_body, 0.2 * atr_v)) and closed_c < prev_closed_l)
+                            ((prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u) and closed_c < prev_closed_l and closed_body >= 0.6 * atr_v)
+                            or ((prev_closed_h >= closed_kc_u and prev_closed_upper_wick >= 1.5 * max(prev_closed_body, 0.3 * atr_v)) and closed_c < prev_closed_l)
                         )
                     )
 
