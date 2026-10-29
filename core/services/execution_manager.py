@@ -498,6 +498,58 @@ class ExecutionManager:
             )
         )
 
+        # ── 🐒 市場狀態分類 (BULL / BEAR / RANGE)：猴市只做「收線突破區間」 ──
+        # 猴市判定：EMA60 斜率走平 (|slope| < 0.5 ATR) 且近 60 根價格反覆穿越 EMA60 (>= 4 次)，
+        # 或牛熊皆不成立。猴市期間一律不開倉，只有已收線 K 棒實體突破近 30 根區間高/低點且同時站出 KC 外軌，才順突破方向進場。
+        ema60_cross_count = 0
+        range_high = None
+        range_low = None
+        range_breakout_side = None
+        closed_rng = None
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 20 and "close" in raw_df.columns:
+            try:
+                s_c = raw_df["close"].astype(float)
+                s_e60 = s_c.ewm(span=60, adjust=False).mean()
+                side_sign = (s_c - s_e60).iloc[-60:].apply(lambda v: 1 if v > 0 else -1)
+                ema60_cross_count = int((side_sign.diff().abs() > 0).sum())
+                if "is_closed" in raw_df.columns and not bool(raw_df.iloc[-1].get("is_closed", True)):
+                    closed_rng = raw_df.iloc[:-1]
+                else:
+                    closed_rng = raw_df
+                if len(closed_rng) >= 12:
+                    look = closed_rng.iloc[-31:-1]
+                    range_high = float(look["high"].astype(float).max())
+                    range_low = float(look["low"].astype(float).min())
+            except Exception:
+                ema60_cross_count = 0
+
+        is_flat_macro = bool(atr_v > 0 and abs(macro_slope_val) < 0.5 * atr_v)
+        is_choppy = bool(is_flat_macro and ema60_cross_count >= 4)
+        if is_choppy:
+            is_zoomed_out_bearish = False
+            is_zoomed_out_bullish = False
+        if is_zoomed_out_bullish:
+            market_regime = "BULL"
+        elif is_zoomed_out_bearish:
+            market_regime = "BEAR"
+        else:
+            market_regime = "RANGE"
+
+        if market_regime == "RANGE" and closed_rng is not None and range_high is not None and len(closed_rng) >= 1:
+            lk = closed_rng.iloc[-1]
+            lk_c = float(lk.get("close", 0.0))
+            lk_o = float(lk.get("open", lk_c))
+            lk_u = float(lk.get("kc_upper", kc_u) or kc_u)
+            lk_l = float(lk.get("kc_lower", kc_lo) or kc_lo)
+            if lk_c > lk_o and lk_c > range_high and lk_c > lk_u and curr_quote > range_high:
+                range_breakout_side = "LONG"
+            elif lk_c < lk_o and lk_c < range_low and lk_c < lk_l and curr_quote < range_low:
+                range_breakout_side = "SHORT"
+        try:
+            setattr(market_data, "market_regime", market_regime)
+        except Exception:
+            pass
+
         # ── Squeeze 擠壓狀態與 MA3 離差計算 (Squeeze & MA Distance Guard) ──
         # 當處於 Squeeze 蓄勢期，或 MA3 貼著中軌走 (ma_dist <= 0.001) 時，
         # 即使當下 kc_slope 微幅向下，也【絕對禁止開空】！
@@ -1109,9 +1161,11 @@ class ExecutionManager:
             # 做多必須 KC 中軌向上 (kc_slope >= 0)、拉遠非空頭 (not is_zoomed_out_bearish)、且 MA3 與收盤價皆在中軌之上，且當前 K 棒必須為陽線 (c_c > c_o)；
             # 賣空必須 KC 中軌向下 (kc_slope <= 0)、拉遠非多頭 (not is_zoomed_out_bullish)、且 MA3 與收盤價皆在中軌之下，且當前 K 棒必須為陰線 (c_c < c_o)！
             # 順勢鐵律：當拉遠看是空頭或 KC 中軌向下，100% 絕對禁止開多！當拉遠看是多頭或 KC 中軌向上，100% 絕對禁止開空！
+            # 🐒 猴市鐵律（方案 3）：猴市不隨意摸頂摸底，只有已收線突破區間 (range_breakout_side) 時才允許順勢開倉！
             can_open_long = bool(
                 (is_cross_mid_long or is_valid_gc or is_true_bottom)
                 and (not is_zoomed_out_bearish)
+                and (market_regime != "RANGE" or range_breakout_side == "LONG")
                 and (m3_c > m3_p)
                 and (m3_c >= kc_mid and c_c >= kc_mid)
                 and (c_c > c_o)
@@ -1122,6 +1176,7 @@ class ExecutionManager:
             can_open_short = bool(
                 (is_cross_mid_short or is_valid_dc or is_true_peak)
                 and (not is_zoomed_out_bullish)
+                and (market_regime != "RANGE" or range_breakout_side == "SHORT")
                 and (m3_c < m3_p)
                 and (m3_c <= kc_mid and c_c <= kc_mid)
                 and (c_c < c_o)
@@ -1537,6 +1592,7 @@ class ExecutionManager:
             #           KC 中軌上行或價格在 KC 中軌之上時，100% 絕對禁止開空！
             can_long = (
                 hard_long_allowed
+                and (market_regime != "RANGE" or range_breakout_side == "LONG")
                 and (is_breakout_long or is_continuation_long or is_meme_contract or direction_long_ok)
                 and (not is_macro_bear)
                 and (kc_slope >= 0)
@@ -1554,6 +1610,7 @@ class ExecutionManager:
             )
             can_short = (
                 hard_short_allowed
+                and (market_regime != "RANGE" or range_breakout_side == "SHORT")
                 and (is_breakdown_short or is_continuation_short or is_meme_contract or direction_short_ok)
                 and (not is_macro_bull)
                 and (kc_slope <= 0)
@@ -1583,7 +1640,8 @@ class ExecutionManager:
             # 🟢 多頭觸發點 A（MA3/價格 剛自下方貫穿中軌或 MA15，早點開倉，但拉遠看空頭時嚴禁逆勢開多）：
             prev_kc_mid_val = float(market_data.prev_k.get("kc_middle", kc_mid_val) if market_data.prev_k else kc_mid_val)
             agile_cross_long = (
-                (not is_macro_bear)
+                (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and (p_close <= prev_kc_mid_val or ma3_prev <= prev_kc_mid_val or ma3_prev <= ma15_prev)
                 and curr_close > kc_mid_val
@@ -1595,7 +1653,8 @@ class ExecutionManager:
             )
             # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點，但拉遠看空頭時嚴禁逆勢反彈追多）：
             agile_breakout_long = (
-                (not is_macro_bear)
+                (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and (curr_close > kc_up_val or curr_quote > kc_up_val)
                 and (c_body_now >= 0.12 * atr_val_now or curr_close > kc_up_val)
@@ -1605,7 +1664,8 @@ class ExecutionManager:
             )
             # 🟢 多頭觸發點 C（KC向上順勢延續開倉：若鎖利平倉或空手，只要拉遠非空頭且價格穩居 KC 中軌與 MA3 之上且收紅陽線，立即延續補倉買多！）：
             agile_continuation_long = (
-                (not is_macro_bear)
+                (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (not is_macro_bear)
                 and (not is_zoomed_out_bearish)
                 and kc_slope >= 0
                 and curr_close > kc_mid_val
@@ -1618,7 +1678,8 @@ class ExecutionManager:
 
             # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌或 MA15，早點開空，但拉遠看多頭時嚴禁逆勢開空）：
             agile_cross_short = (
-                (not is_macro_bull)
+                (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and (p_close >= prev_kc_mid_val or ma3_prev >= prev_kc_mid_val or ma3_prev >= ma15_prev)
                 and curr_close < kc_mid_val
@@ -1630,7 +1691,8 @@ class ExecutionManager:
             )
             # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空，但拉遠看多頭時嚴禁逆勢殺跌）：
             agile_breakdown_short = (
-                (not is_macro_bull)
+                (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and (curr_close < kc_low_val or curr_quote < kc_low_val)
                 and (c_body_now >= 0.12 * atr_val_now or curr_close < kc_low_val)
@@ -1640,7 +1702,8 @@ class ExecutionManager:
             )
             # 🔴 空頭觸發點 C（KC向下順勢延續開空：若鎖利平空或空手，只要拉遠非多頭且價格受壓於 KC 中軌與 MA3 之下且收黑陰線，立即延續補倉賣空！）：
             agile_continuation_short = (
-                (not is_macro_bull)
+                (market_regime != "RANGE" or range_breakout_side == "SHORT")
+                and (not is_macro_bull)
                 and (not is_zoomed_out_bullish)
                 and kc_slope <= 0
                 and curr_close < kc_mid_val
@@ -1920,6 +1983,14 @@ class ExecutionManager:
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
 
                 # ── 🛡️ 全域順勢鐵律 + 拉遠視角防逆勢閘門 (Master KC & Zoomed-Out Trend Isolation Gate) ──
+                # 0. 🐒 猴市只做突破（方案 3）：猴市環境下，未出現已收線實體突破 30 根區間高/低點，100% 一票否決任何常規開倉！
+                if market_regime == "RANGE" and range_breakout_side != candidate_side:
+                    logger.info(
+                        f"🚫 [BLOCKED_RANGE_MONKEY_MARKET] {symbol} 當前處於【猴市震盪】(cross_count={ema60_cross_count}, flat={is_flat_macro})，"
+                        f"尚未確認實體突破區間 (range_high={range_high}, range_low={range_low})，一票否決摸頂摸底，嚴防雙巴！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_RANGE_MONKEY_MARKET", "details": "猴市震盪市場，嚴格等待突破才開倉！"}
+
                 # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 中軌下行 (kc_slope < 0) 或收盤位於中軌之下 或 MA3 低於中軌 或 MA3 未向上 或 非陽線，100% 一票否決開多！
                 # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 中軌上行 (kc_slope > 0) 或收盤位於中軌之上 或 MA3 高於中軌 或 MA3 未向下 或 非陰線，100% 一票否決開空！
                 if candidate_side == "LONG" and (is_zoomed_out_bearish or is_macro_bear or kc_slope < 0 or curr_close < kc_mid_val or ma3_curr < kc_mid_val or ma3_curr <= ma3_prev or curr_close <= curr_open):

@@ -615,8 +615,8 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ formatSymbol(symbol) }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據最近已收線 KC 中軌斜率判定方向；即時 K 棒顏色不影響中軌方向">
-                                {{ { bull: 'KC向上', bear: 'KC向下', range: 'KC方向不明', wait: 'KC方向不明' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據大週期趨勢與已收線 KC 判定牛市、熊市、猴市(盤整)">
+                                {{ { bull: '牛市 (KC向上)', bear: '熊市 (KC向下)', range: '猴市 (區間盤整)', wait: '猴市 (觀望突破)' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                             <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" style="font-size: 16px; margin-left: 6px; cursor: default; vertical-align: middle;">
                                 🚫
