@@ -193,11 +193,17 @@ class CentralEntryGate:
         allowed_intrabar_routes = (
             "BREAKOUT_LONG", "BREAKDOWN_SHORT", "CONTINUATION_OUTSIDE_KC_LONG",
             "CONTINUATION_OUTSIDE_KC_SHORT", "ENTRY_LONG_MA3_MA15_CROSS_MID",
-            "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+            "ENTRY_SHORT_MA3_MA15_CROSS_MID", "ENTRY_LONG_BREAKOUT",
+            "ENTRY_SHORT_BREAKDOWN", "ENTRY_LONG_CROSS_MID", "ENTRY_SHORT_CROSS_MID",
+            "ENTRY_LONG_CONTINUATION", "ENTRY_SHORT_CONTINUATION",
+            "PIVOT_LONG_CROSS_MID", "PIVOT_SHORT_CROSS_MID",
+            "NONE_GOLDEN_CROSS", "NONE_DEAD_CROSS", "PIVOT_LONG", "PIVOT_SHORT",
+            "SWING_PIVOT", "THREE_BAR_CONTINUATION", "TREND_PULLBACK",
+            "UNIFIED_PIPELINE",
         )
         route_is_intrabar_eligible = any(
             route in src_upper for route in allowed_intrabar_routes
-        )
+        ) or direction_override
         if is_closed is False and not allow_intrabar:
             checks["closed_bar"] = {
                 "status": "FAIL",
@@ -810,9 +816,15 @@ class CentralEntryGate:
         c_low = float(parsed["low"])
         c_body = abs(c_close - c_open)
 
-        # 實體最小動能 (敏捷轉折/均線穿軌模式放寬至 0.15 ATR，常規破軌維持 0.35 ATR)
-        req_body_atr = 0.15 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
-        if c_body < req_body_atr * atr:
+        prev_body = 0.0
+        if isinstance(entry_frame, pd.DataFrame) and len(entry_frame) >= 2:
+            prev_row = entry_frame.iloc[-2]
+            prev_body = abs(float(prev_row.get("close", c_close)) - float(prev_row.get("open", c_open)))
+
+        # 實體最小動能 (敏捷轉折/延續模式支援盤中動能或前一根已收線動能)
+        req_body_atr = 0.12 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
+        eff_body = max(c_body, prev_body) if (direction_override and is_closed is False) else c_body
+        if eff_body < req_body_atr * atr:
             checks["candle_body"] = {
                 "status": "FAIL",
                 "c_body": c_body,
@@ -827,7 +839,7 @@ class CentralEntryGate:
                 checks=checks,
             )
 
-        # 做多：嚴禁陰線，上影線不得超過實體的 70%
+        # 做多：嚴禁陰線，上影線不得超過實體的 70% (敏捷/延續模式僅在顯著長上影 >= 0.45 ATR 時攔截)
         if side == "LONG":
             if c_close <= c_open:
                 checks["candle_color"] = {"status": "FAIL", "reason": "做多當根 K 棒收陰"}
@@ -839,11 +851,12 @@ class CentralEntryGate:
                     checks=checks,
                 )
             upper_wick = c_high - c_close
-            if upper_wick > cls.MAX_OPPOSITE_WICK_RATIO * c_body:
+            wick_limit = (1.25 * max(c_body, 0.25 * atr)) if direction_override else (cls.MAX_OPPOSITE_WICK_RATIO * c_body)
+            if upper_wick > wick_limit and (not direction_override or upper_wick >= 0.45 * atr):
                 checks["candle_wick"] = {
                     "status": "FAIL",
                     "upper_wick": upper_wick,
-                    "max_allowed": cls.MAX_OPPOSITE_WICK_RATIO * c_body,
+                    "max_allowed": wick_limit,
                     "reason": "上影線過長，衝高回落天花板插針",
                 }
                 return GateCheckResult(
@@ -854,7 +867,7 @@ class CentralEntryGate:
                     checks=checks,
                 )
 
-        # 做空：嚴禁陽線，下影線不得超過實體的 70%
+        # 做空：嚴禁陽線，下影線不得超過實體的 70% (敏捷/延續模式僅在顯著長下影 >= 0.45 ATR 時攔截)
         if side == "SHORT":
             if c_close >= c_open:
                 checks["candle_color"] = {"status": "FAIL", "reason": "做空當根 K 棒收陽"}
@@ -866,11 +879,12 @@ class CentralEntryGate:
                     checks=checks,
                 )
             lower_wick = c_close - c_low
-            if lower_wick > cls.MAX_OPPOSITE_WICK_RATIO * c_body:
+            wick_limit = (1.25 * max(c_body, 0.25 * atr)) if direction_override else (cls.MAX_OPPOSITE_WICK_RATIO * c_body)
+            if lower_wick > wick_limit and (not direction_override or lower_wick >= 0.45 * atr):
                 checks["candle_wick"] = {
                     "status": "FAIL",
                     "lower_wick": lower_wick,
-                    "max_allowed": cls.MAX_OPPOSITE_WICK_RATIO * c_body,
+                    "max_allowed": wick_limit,
                     "reason": "下影線過長，探底回升地板插針",
                 }
                 return GateCheckResult(

@@ -556,20 +556,74 @@ class ExecutionManager:
             reason = ""
             meta = {}
 
-            # 🎯 最高優先級：絕對安全風控與淨 ROE 階梯鎖利（Profit Lock 出口最高優先放行，絕不讓利潤吐回成本！）
+            # 擷取最近一根「已收線 K 棒」與多棒 KC 通道趨勢，避免盤中未收線毛刺或單棒斜率微幅抖動誤觸發平倉
+            closed_k = c_k
+            prev_closed_k = p_k
+            if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
+                last_row_closed = bool(raw_df.iloc[-1].get("is_closed", True))
+                if not last_row_closed and len(raw_df) >= 3:
+                    closed_k = raw_df.iloc[-2]
+                    prev_closed_k = raw_df.iloc[-3]
+                elif not last_row_closed:
+                    closed_k = raw_df.iloc[-2]
+                    prev_closed_k = raw_df.iloc[-2]
+                else:
+                    closed_k = raw_df.iloc[-1]
+                    prev_closed_k = raw_df.iloc[-2]
+
+            closed_c = float(closed_k.get("close", c_c))
+            closed_o = float(closed_k.get("open", c_o))
+            closed_kc_u = float(closed_k.get("kc_upper", kc_u))
+            closed_kc_lo = float(closed_k.get("kc_lower", kc_lo))
+            closed_kc_mid = float(closed_k.get("kc_middle", kc_mid))
+            prev_closed_kc_mid = float(prev_closed_k.get("kc_middle", p_kc_mid))
+
+            is_kc_mid_up = bool(
+                (p_kc_mid > 0 and kc_mid >= p_kc_mid - 1e-9)
+                or (prev_closed_kc_mid > 0 and closed_kc_mid >= prev_closed_kc_mid - 1e-9)
+                or (kc_slope >= -0.00001)
+                or (pos_side == "LONG" and (curr_quote >= kc_mid or closed_c >= closed_kc_mid) and curr_quote >= kc_lo)
+            )
+            is_kc_mid_down = bool(
+                (p_kc_mid > 0 and kc_mid <= p_kc_mid + 1e-9)
+                or (prev_closed_kc_mid > 0 and closed_kc_mid <= prev_closed_kc_mid + 1e-9)
+                or (kc_slope <= 0.00001)
+                or (pos_side == "SHORT" and (curr_quote <= kc_mid or closed_c <= closed_kc_mid) and curr_quote <= kc_u)
+            )
+
+            # 🛡️ 大波段順勢鎖倉保護：
+            # 當多單處於 KC向上 / 中軌上方，或空單處於 KC向下 / 中軌下方時，
+            # 屏蔽過早的 Tier-1 階梯鎖利、ATR 動態止盈與時間停損，確保從第一個開倉一路抱到波段結束！
+            trend_hold_shield = bool(
+                (pos_side == "LONG" and is_kc_mid_up and closed_c >= closed_kc_mid and curr_quote >= kc_mid)
+                or (pos_side == "SHORT" and is_kc_mid_down and closed_c <= closed_kc_mid and curr_quote <= kc_mid)
+            )
+
+            # 🎯 最高優先級：絕對安全風控與淨 ROE 階梯鎖利
+            if is_absolute_safety:
+                # 若為 OPPOSITE_KC_BAND_BREACH，必須確認已收線實體真正破軌，拒絕下影線/上影線毛刺誤平倉
+                if "OPPOSITE_KC_BAND_BREACH" in str(gate_reason).upper():
+                    if pos_side == "LONG" and not (closed_c < closed_kc_lo and closed_c < closed_o and curr_quote < kc_lo):
+                        is_absolute_safety = False
+                    elif pos_side == "SHORT" and not (
+                        (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
+                        or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                    ):
+                        is_absolute_safety = False
+
             if is_absolute_safety:
                 should_exit = True
                 reason = gate_reason
                 meta = gate_meta
                 logger.warning(f"🚨 [ABSOLUTE_SAFETY_EXIT] {symbol} {pos_side} 命中絕對安全出場防線！reason={reason}")
-            elif is_profit_lock:
+            elif is_profit_lock and not trend_hold_shield:
                 should_exit = True
                 reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
 
-            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop)
-            if not should_exit:
+            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop) - 順勢主升/主跌段期間屏蔽
+            if not should_exit and not trend_hold_shield:
                 trail_exit, trail_reason, trail_meta = DemonCoinDefenseController.check_atr_trailing_stop(
                     current_position, curr_quote, atr_v
                 )
@@ -579,8 +633,8 @@ class ExecutionManager:
                     meta = trail_meta
                     logger.info(f"🎯 [DEMON_TRAILING_STOP] {symbol} {pos_side} 觸發主動追蹤止盈離場！meta={trail_meta}")
 
-            # 🛡️ 妖幣專用時間停損與無效盤整平倉 (Time-Based Exit)
-            if not should_exit:
+            # 🛡️ 妖幣專用時間停損與無效盤整平倉 (Time-Based Exit) - 順勢持倉期間屏蔽
+            if not should_exit and not trend_hold_shield:
                 entry_t = float(current_position.get("created_at") or current_position.get("entry_time") or time.time())
                 bars_held = int(max(0, (time.time() - entry_t) / 60.0))
                 time_exit, time_reason, time_meta = DemonCoinDefenseController.check_time_based_exit(
@@ -592,32 +646,39 @@ class ExecutionManager:
                     meta = time_meta
                     logger.info(f"⏳ [DEMON_TIME_EXIT] {symbol} {pos_side} 持倉 {bars_held} 根 K 棒無動能，觸發時間停損盤整平倉！")
 
-            # 🎯 方案 B 核心狀態機 (無硬止損版 - 完全取消固定價位硬止損):
+            # 🎯 方案 B 核心狀態機 (大波段一單到底持倉鎖定):
             if not should_exit:
                 # 🔴 空頭持倉中 (SHORT) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)：
                 if pos_side == "SHORT":
                     trough_p = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry)
 
-                    # 1. 【核心破軌防線】：只要價格或收盤實體突破 KC 通道上軌 (破軌)，無論大週期方向，無條件強制平空！
-                    is_upper_rail_breach = bool(c_c > kc_u or curr_quote > kc_u)
+                    # 1. 【核心破軌防線】：已收線 K 棒實體收盤突破 KC 上軌，或盤中強勢長陽突破上軌 (>= 0.35 ATR)，無條件強制平空！
+                    is_upper_rail_breach = bool(
+                        (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
+                        or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                    )
 
-                    # 2. 【大波段移動止盈】：自最低谷底價格 (trough_price) 反彈超過 1.8%，動態鎖利平空 (防止利潤大幅吐光)
-                    is_valley_rebound_1_8pct = bool(trough_p > 0 and (c_c > trough_p * 1.018 or curr_quote > trough_p * 1.018))
+                    # 2. 【大波段移動止盈】：自最低谷底價格 (trough_price) 反彈超過 1.8% 且站上 KC 中軌，動態鎖利平空
+                    is_valley_rebound_1_8pct = bool(
+                        trough_p > 0
+                        and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018)
+                        and (closed_c > closed_kc_mid and curr_quote > kc_mid)
+                    )
 
-                    # 3. 【大趨勢反轉防線】：當大週期標籤轉為 KC向上 (kc_slope > 0)，且收盤已站上 KC 中軌 (c_c > kc_mid)，空單波段結束平倉！
-                    is_trend_reversed_to_bull = bool(kc_slope > 0 and c_c > kc_mid)
-
-                    # 4. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
-                    is_hard_sl_short = bool(pos_entry > 0 and (c_c >= pos_entry * 1.015 or curr_quote >= pos_entry * 1.015))
-
-                    is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
+                    # 3. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.8% 且突破上軌)
+                    is_hard_sl_short = bool(
+                        pos_entry > 0
+                        and closed_c >= pos_entry * 1.018
+                        and curr_quote >= pos_entry * 1.018
+                        and curr_quote > kc_mid
+                    )
 
                     # ⚠️ 【中軌向下大波段谷底持倉鐵律】：
-                    # 當 KC 中軌向下且未破軌、未達 1.8% 反彈、未站上中軌時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
-                    if is_kc_mid_down and not is_upper_rail_breach and not is_valley_rebound_1_8pct and not is_hard_sl_short and not is_trend_reversed_to_bull:
+                    # 當未破上軌、未達 1.8% 谷底反彈破中軌、未觸發硬止損時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
+                    if not is_upper_rail_breach and not is_valley_rebound_1_8pct and not is_hard_sl_short:
                         logger.info(
-                            f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段谷底持倉模式: KC中軌向下 (slope={kc_slope:.6f})，"
-                            f"反彈小陽線一律視為洗盤雜訊，一票否決平空，強制鎖死持倉續抱吃滿主跌段！"
+                            f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段谷底持倉模式: (slope={kc_slope:.6f})，"
+                            f"反彈小陽線或回踩中軌一律視為洗盤雜訊，一票否決平空，強制鎖死持倉續抱吃滿主跌段！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
@@ -629,44 +690,46 @@ class ExecutionManager:
                         should_exit = True
                         reason = "CLOSE_SHORT_AT_VALLEY_REBOUND_2PCT"
                         meta = {"pivot_type": "VALLEY_REBOUND", "trigger": "REBOUND_OVER_1_8_PCT", "trough_price": trough_p}
-                    elif is_trend_reversed_to_bull:
-                        should_exit = True
-                        reason = "BULLISH_TREND_REVERSAL"
-                        meta = {"pivot_type": "TREND_REVERSAL", "trigger": "KC_UPWARD_OVER_MID"}
                     elif is_hard_sl_short:
                         should_exit = True
                         reason = "HARD_SL_SHORT_EXIT"
-                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_PLUS_1_5_PCT"}
+                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_PLUS_1_8_PCT"}
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (一單到底，KC向上絕不因回踩中軌平多)：
+                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到底，絕不因下影線或回踩中軌平多)：
                 elif pos_side == "LONG":
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
                     peak_p = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry_price)
 
-                    # 1. 【核心破軌防線】：K 棒實體收盤價正式跌破 KC 通道下軌 (破軌)，大趨勢徹底反轉平多！
-                    is_lower_rail_breach = bool(c_c < kc_lo or curr_quote < kc_lo)
-
-                    # 2. 【大波段移動止盈】：盈利達標後 (最高價 > 成本 * 1.02)，自最高點回撤超過 2.0% 且收盤跌破中軌，鎖利平多
-                    is_peak_pullback_2pct = bool(
-                        peak_p > pos_entry_price * 1.02
-                        and (c_c < peak_p * 0.98 or curr_quote < peak_p * 0.98)
-                        and (c_c < kc_mid or curr_quote < kc_mid)
+                    # 1. 【核心破軌防線】：必須是「已收線 K 棒實體陰線收盤正式跌破 KC 下軌」且當前報價仍在下軌之下，嚴禁被盤中下影線 (如 12:58) 洗出場！
+                    is_lower_rail_breach = bool(
+                        (closed_c < closed_kc_lo and closed_c < closed_o and curr_quote < kc_lo)
+                        or (c_c < kc_lo and c_c < c_o and (kc_lo - c_c) >= 0.45 * atr_v and kc_slope < -0.00005)
                     )
 
-                    # 3. 初始硬性風控止損 (例如暴跌急煞跌破成本價 1.5%)
-                    is_hard_sl_long = bool(pos_entry_price > 0 and (c_c <= pos_entry_price * 0.985 or curr_quote <= pos_entry_price * 0.985))
+                    # 2. 【大波段移動止盈】：盈利達標後 (最高價 > 成本 * 1.02)，自最高點回撤超過 2.0% 且已收線收盤跌破中軌，才鎖利平多
+                    is_peak_pullback_2pct = bool(
+                        peak_p > pos_entry_price * 1.02
+                        and (closed_c < peak_p * 0.98 and curr_quote < peak_p * 0.98)
+                        and (closed_c < closed_kc_mid and curr_quote < kc_mid)
+                    )
 
-                    is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
+                    # 3. 初始硬性風控止損 (已收線跌破成本價 1.8% 且位於中軌下方)
+                    is_hard_sl_long = bool(
+                        pos_entry_price > 0
+                        and closed_c <= pos_entry_price * 0.982
+                        and curr_quote <= pos_entry_price * 0.982
+                        and curr_quote < kc_mid
+                    )
 
                     # ⚠️ 【KC向上大波段持倉鐵律】：
-                    # 當 KC 中軌向上且未跌破下軌、未達 2.0% 高點回撤且破中軌時，一票否決平多 (VETO_HOLD)！
-                    # 中間的所有微幅回檔、MA3 下拐、死叉或價格回踩中軌，100% 視為正常洗盤，死抱主升段！
-                    if is_kc_mid_up and not is_lower_rail_breach and not is_peak_pullback_2pct and not is_hard_sl_long:
+                    # 只要未發生「已收線實體跌破下軌」、未達「2.0% 高點回撤且跌破中軌」、未達「硬止損」，
+                    # 中間任何微幅回檔、12:30 回踩中軌、12:58 下影線刺穿下軌或均線死叉，100% 視為正常洗盤，死抱主升段到底！
+                    if not is_lower_rail_breach and not is_peak_pullback_2pct and not is_hard_sl_long:
                         logger.info(
-                            f"🛡️ [TREND_LOCK_MASTER_LOCK_LONG] {symbol} 多單大波段持倉鎖定: KC中軌向上 (slope={kc_slope:.6f})，"
-                            f"回踩中軌或均線死叉一律視為正常洗盤，一票否決平多，強制鎖死持倉一單到底！"
+                            f"🛡️ [TREND_LOCK_MASTER_LOCK_LONG] {symbol} 多單大波段持倉鎖定: (slope={kc_slope:.6f})，"
+                            f"回踩中軌、下影線洗盤或均線死叉一律視為正常呼吸，一票否決平多，強制鎖死持倉一單到底！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
@@ -681,7 +744,7 @@ class ExecutionManager:
                     elif is_hard_sl_long:
                         should_exit = True
                         reason = "HARD_SL_LONG_EXIT"
-                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_1_5_PCT"}
+                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_1_8_PCT"}
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
@@ -812,31 +875,30 @@ class ExecutionManager:
                 rise_from_low = 0.0
                 drop_from_high = 0.0
 
-            # 僅在真峰谷評估時過濾極端天花板/地板乖離（遠離軌道 > 1.0 ATR 且漲跌幅 > 2.0 ATR，或中軌離差 > 1.2%）
+            # 僅在真峰谷評估時過濾極端天花板/地板乖離（遠離軌道 > 2.5 ATR 且中軌離差 > 3.5%）
             mid_dist_ratio = abs(c_c - kc_mid) / kc_mid if kc_mid > 0 else 0.0
-            is_chasing_high = bool((atr_v > 0 and rise_from_low >= 2.0 * atr_v and c_c >= (kc_u + 1.0 * atr_v)) or (c_c > kc_mid and mid_dist_ratio > 0.012))
-            is_chasing_low = bool((atr_v > 0 and drop_from_high >= 2.0 * atr_v and c_c <= (kc_lo - 1.0 * atr_v)) or (c_c < kc_mid and mid_dist_ratio > 0.012))
+            is_chasing_high = bool((atr_v > 0 and rise_from_low >= 3.5 * atr_v and c_c >= (kc_u + 2.5 * atr_v)) or (c_c > kc_mid and mid_dist_ratio > 0.035))
+            is_chasing_low = bool((atr_v > 0 and drop_from_high >= 3.5 * atr_v and c_c <= (kc_lo - 2.5 * atr_v)) or (c_c < kc_mid and mid_dist_ratio > 0.035))
 
             pivot_triggered = False
             candidate_side = None
             entry_type = None
 
-            # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制（僅對已收線 K 棒或真峰谷觸發，防止盤中未收線洗刷）
-            c_is_closed = bool(c_k.get("is_closed", True)) if isinstance(c_k, dict) else bool(getattr(c_k, "get", lambda k, d=True: d)("is_closed", True))
+            # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制
+            # 支援已收線 K 棒或盤中即時確認觸發，避免因每分鐘 59 秒未收線而錯過起點！
+            c_is_closed = True
             # 支援【MA3 穿越 KC 中軌】與【MA3 交叉 MA15】雙重敏捷觸發！
             is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
             is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
 
             # MA3 穿越 KC 中軌（極速啟動多空轉換）
             is_cross_mid_long = bool(
-                c_is_closed
-                and kc_mid > 0
+                kc_mid > 0
                 and m3_c > m3_p
                 and ((m3_c >= kc_mid and m3_p <= kc_mid) or (c_c >= kc_mid and (c_o <= kc_mid or p_c <= kc_mid)))
             )
             is_cross_mid_short = bool(
-                c_is_closed
-                and kc_mid > 0
+                kc_mid > 0
                 and m3_c < m3_p
                 and ((m3_c <= kc_mid and m3_p >= kc_mid) or (c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)))
             )
@@ -846,8 +908,7 @@ class ExecutionManager:
             # 賣空必須 KC 中軌向下 (kc_slope <= 0) 且 MA3 與收盤價皆在中軌之下！
             # 順勢鐵律：當 KC 中軌向下，100% 絕對禁止開多！當 KC 中軌向上，100% 絕對禁止開空！
             can_open_long = bool(
-                c_is_closed
-                and (is_cross_mid_long or is_valid_gc or is_true_bottom)
+                (is_cross_mid_long or is_valid_gc or is_true_bottom)
                 and (m3_c > m3_p)
                 and (m3_c >= kc_mid and c_c >= kc_mid)
                 and (kc_slope >= 0)
@@ -855,8 +916,7 @@ class ExecutionManager:
                 and (not is_sqz_now)
             )
             can_open_short = bool(
-                c_is_closed
-                and (is_cross_mid_short or is_valid_dc or is_true_peak)
+                (is_cross_mid_short or is_valid_dc or is_true_peak)
                 and (m3_c < m3_p)
                 and (m3_c <= kc_mid and c_c <= kc_mid)
                 and (kc_slope <= 0)
@@ -891,6 +951,11 @@ class ExecutionManager:
                     ("ENTRY_LONG_MA3_MA15_CROSS_MID" if candidate_side == "LONG" else "ENTRY_SHORT_MA3_MA15_CROSS_MID")
                     if is_cm else "SWING_PIVOT"
                 )
+                intrabar_flag = False
+                try:
+                    intrabar_flag = bool(raw_df is not None and not bool(raw_df.iloc[-1].get("is_closed", True)))
+                except Exception:
+                    intrabar_flag = True
                 entry_meta = {
                     "side": candidate_side,
                     "direction_override": True,
@@ -902,6 +967,7 @@ class ExecutionManager:
                     "no_rigid_sl": True,
                     "stop_loss_price": None,
                     "upstream_entry_gate_authorized": True,
+                    "intrabar_authorized": intrabar_flag,
                     "allow_kc_internal": True,
                     "strategy_mode": "AGILE_MOMENTUM",
                     "raw_df": klines_df,
@@ -1306,7 +1372,7 @@ class ExecutionManager:
             kc_up_val = float(market_data.kc_upper)
             kc_low_val = float(market_data.kc_lower)
 
-            # 🟢 多頭觸發點 A（MA3/價格 剛自下方貫穿中軌第一根，且遠離上軌天花板）：
+            # 🟢 多頭觸發點 A（MA3/價格 剛自下方貫穿中軌，且遠離上軌天花板）：
             prev_kc_mid_val = float(market_data.prev_k.get("kc_middle", kc_mid_val) if market_data.prev_k else kc_mid_val)
             agile_cross_long = (
                 (p_close <= prev_kc_mid_val or ma3_prev <= prev_kc_mid_val)
@@ -1314,33 +1380,53 @@ class ExecutionManager:
                 and ma3_curr > kc_mid_val
                 and ma3_curr > ma3_prev
                 and curr_close > curr_open
-                and curr_close < (kc_up_val - 0.25 * atr_val_now)
+                and curr_close < (kc_up_val - 0.15 * atr_val_now)
             )
-            # 🟢 多頭觸發點 B（實體剛衝破 KC 上軌前 1~2 根極速跟進）：
+            # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點）：
             agile_breakout_long = (
-                curr_close > kc_up_val
-                and p_close <= p_up
-                and (c_body_now >= 0.40 * atr_val_now or curr_close > kc_up_val)
+                (curr_close > kc_up_val or curr_quote > kc_up_val)
+                and (c_body_now >= 0.20 * atr_val_now or curr_close > kc_up_val)
                 and curr_close > curr_open
                 and ma3_curr > ma3_prev
+                and kc_slope >= -0.000005
+            )
+            # 🟢 多頭觸發點 C（KC向上順勢延續開倉：若中途平倉或空手，只要價格穩居 KC 中軌與 MA3 之上且收紅陽線，立即延續補倉買多！）：
+            agile_continuation_long = (
+                kc_slope > 0.000005
+                and curr_close > kc_mid_val
+                and ma3_curr > kc_mid_val
+                and curr_close >= ma3_curr
+                and ma3_curr > ma3_prev
+                and curr_close > curr_open
+                and c_body_now >= 0.20 * atr_val_now
             )
 
-            # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌第一根，且遠離下軌地板）：
+            # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌，且遠離下軌地板）：
             agile_cross_short = (
                 (p_close >= prev_kc_mid_val or ma3_prev >= prev_kc_mid_val)
                 and curr_close < kc_mid_val
                 and ma3_curr < kc_mid_val
                 and ma3_curr < ma3_prev
                 and curr_close < curr_open
-                and curr_close > (kc_low_val + 0.25 * atr_val_now)
+                and curr_close > (kc_low_val + 0.15 * atr_val_now)
             )
-            # 🔴 空頭觸發點 B（實體剛跌破 KC 下軌前 1~2 根極速跟進）：
+            # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空）：
             agile_breakdown_short = (
-                curr_close < kc_low_val
-                and p_close >= p_low
-                and (c_body_now >= 0.40 * atr_val_now or curr_close < kc_low_val)
+                (curr_close < kc_low_val or curr_quote < kc_low_val)
+                and (c_body_now >= 0.20 * atr_val_now or curr_close < kc_low_val)
                 and curr_close < curr_open
                 and ma3_curr < ma3_prev
+                and kc_slope <= 0.000005
+            )
+            # 🔴 空頭觸發點 C（KC向下順勢延續開空：若中途平空或空手，只要價格受壓於 KC 中軌與 MA3 之下且收黑陰線，立即延續補倉賣空！）：
+            agile_continuation_short = (
+                kc_slope < -0.000005
+                and curr_close < kc_mid_val
+                and ma3_curr < kc_mid_val
+                and curr_close <= ma3_curr
+                and ma3_curr < ma3_prev
+                and curr_close < curr_open
+                and c_body_now >= 0.20 * atr_val_now
             )
 
             # ══════════════════════════════════════════════════════════════════
@@ -1360,6 +1446,7 @@ class ExecutionManager:
                 is_breakout_long = False
                 is_continuation_long = False
                 agile_breakout_long = False
+                agile_continuation_long = False
                 logger.info(
                     f"🚫 [FAKE_BREAKOUT_BULL_TRAP] {symbol} KC中軌走平/向下 (slope={kc_slope:.6f})，"
                     f"上軌附近缺乏放量實體或上影過長 (body={c_body_now:.6f}, wick={upper_wick_now:.6f}, atr={atr_val_now:.6f})，"
@@ -1378,6 +1465,7 @@ class ExecutionManager:
                 is_breakdown_short = False
                 is_continuation_short = False
                 agile_breakdown_short = False
+                agile_continuation_short = False
                 logger.info(
                     f"🚫 [FAKE_BREAKDOWN_BEAR_TRAP] {symbol} KC中軌走平/向上 (slope={kc_slope:.6f})，"
                     f"下軌附近缺乏放量實體或下影過長 (body={c_body_now:.6f}, wick={lower_wick_now:.6f}, atr={atr_val_now:.6f})，"
@@ -1385,9 +1473,8 @@ class ExecutionManager:
                 )
 
             # ══════════════════════════════════════════════════════════════════
-            # 🚫 高位追高一票否決防線 (Anti-Chasing Gate - 嚴禁在 KC 上軌頂部追高接刀)
-            # 嚴禁在價格自波段低點連續拉升超過 1.5 ATR 且衝出/貼近 KC 上軌時後知後覺追高！
-            # 追高開多必須被硬性攔截，開多只允許在谷底起漲或穿中軌第一時間進場！
+            # 🚫 極端暴拉/暴跌插針追高防線 (Anti-Extreme-Spike Gate)
+            # 僅攔截極端乖離（中軌離差 > 3.5% 或超出外軌 > 2.5 ATR），確保正常破軌與順勢延續開倉暢通！
             # ══════════════════════════════════════════════════════════════════
             if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
                 lookback_p = min(len(raw_df), 30)
@@ -1396,48 +1483,47 @@ class ExecutionManager:
                 rise_from_low = curr_close - prior_swing_low
                 drop_from_high = prior_swing_high - curr_close
 
-                # 封鎖延伸追單（中軌離差 > 1.2% 一票否決追多/追空）：
                 mid_dist_ratio_now = abs(curr_close - kc_mid_val) / kc_mid_val if kc_mid_val > 0 else 0.0
-                if mid_dist_ratio_now > 0.012:
+                if mid_dist_ratio_now > 0.035:
                     if curr_close < kc_mid_val:
                         can_short = False
                         is_breakdown_short = False
                         is_continuation_short = False
                         agile_breakdown_short = False
+                        agile_continuation_short = False
                         logger.info(
-                            f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格距離KC中軌已過遠 (離差={mid_dist_ratio_now*100:.2f}% > 1.2%)，"
-                            f"認定為延伸末端，一票否決追空！"
+                            f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格距離KC中軌極端過遠 (離差={mid_dist_ratio_now*100:.2f}% > 3.5%)，"
+                            f"認定為極端延伸末端，一票否決追空！"
                         )
                     elif curr_close > kc_mid_val:
                         can_long = False
                         is_breakout_long = False
                         is_continuation_long = False
                         agile_breakout_long = False
+                        agile_continuation_long = False
                         logger.info(
-                            f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格距離KC中軌已過遠 (離差={mid_dist_ratio_now*100:.2f}% > 1.2%)，"
-                            f"認定為延伸末端，一票否決追多！"
+                            f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格距離KC中軌極端過遠 (離差={mid_dist_ratio_now*100:.2f}% > 3.5%)，"
+                            f"認定為極端延伸末端，一票否決追多！"
                         )
 
-                # 多單高位追高：自低點累積漲幅 >= 1.5 ATR 且價格在 KC 上軌外或貼近上軌，且前一根收盤已在 KC 上軌之外 (狂飆多根，非破軌第一根)
-                if atr_val_now > 0 and rise_from_low >= 1.5 * atr_val_now and curr_close >= (kc_up_val - 0.2 * atr_val_now) and p_close > p_up:
+                if atr_val_now > 0 and rise_from_low >= 4.0 * atr_val_now and curr_close >= (kc_up_val + 2.5 * atr_val_now) and p_close > p_up:
                     can_long = False
                     is_breakout_long = False
                     is_continuation_long = False
                     agile_breakout_long = False
+                    agile_continuation_long = False
                     logger.info(
-                        f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格自波段低點已狂拉 {rise_from_low:.6f} (>= 1.5*ATR={1.5*atr_val_now:.6f})，"
-                        f"且前一根已在軌外並持續逼近天花板 (close={curr_close:.6f})，一票否決追多接刀！"
+                        f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格自低點極端噴出 {rise_from_low:.6f} 且超出上軌 > 2.5 ATR，一票否決極端追多！"
                     )
 
-                # 空單低位追空：自高點累積跌幅 >= 1.5 ATR 且價格在 KC 下軌外或貼近下軌，且前一根收盤已在 KC 下軌之下 (暴跌多根，非破軌第一根)
-                if atr_val_now > 0 and drop_from_high >= 1.5 * atr_val_now and curr_close <= (kc_low_val + 0.2 * atr_val_now) and p_close < p_low:
+                if atr_val_now > 0 and drop_from_high >= 4.0 * atr_val_now and curr_close <= (kc_low_val - 2.5 * atr_val_now) and p_close < p_low:
                     can_short = False
                     is_breakdown_short = False
                     is_continuation_short = False
                     agile_breakdown_short = False
+                    agile_continuation_short = False
                     logger.info(
-                        f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格自波段高點已暴跌 {drop_from_high:.6f} (>= 1.5*ATR={1.5*atr_val_now:.6f})，"
-                        f"且前一根已在軌外並持續逼近地板 (close={curr_close:.6f})，一票否決追空接地產！"
+                        f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格自高點極端崩跌 {drop_from_high:.6f} 且超出下軌 > 2.5 ATR，一票否決極端追空！"
                     )
 
             is_agile_trigger = False
@@ -1450,6 +1536,10 @@ class ExecutionManager:
                 is_agile_trigger = True
                 agile_signal = "ENTRY_LONG_CROSS_MID"
                 can_long = True
+            elif agile_continuation_long:
+                is_agile_trigger = True
+                agile_signal = "ENTRY_LONG_CONTINUATION"
+                can_long = True
             elif agile_breakdown_short:
                 is_agile_trigger = True
                 agile_signal = "ENTRY_SHORT_BREAKDOWN"
@@ -1457,6 +1547,10 @@ class ExecutionManager:
             elif agile_cross_short:
                 is_agile_trigger = True
                 agile_signal = "ENTRY_SHORT_CROSS_MID"
+                can_short = True
+            elif agile_continuation_short:
+                is_agile_trigger = True
+                agile_signal = "ENTRY_SHORT_CONTINUATION"
                 can_short = True
 
             # 任務 2：【特例放行】谷底與頂部轉折提前開倉（雙向豁免 KC 斜率）
@@ -1506,37 +1600,46 @@ class ExecutionManager:
                 elif candidate_side == "SHORT" and (kc_slope <= 0 and curr_close <= kc_mid_val):
                     can_short = True
 
-            # 強動能破軌或外軌延續開倉判定 (外軌鎖定強制上車，豁免平倉後冷卻期)
+            # 強動能破軌、外軌延續或順勢延續開倉判定 (若平倉後趨勢仍延續，必須執行延續開倉，而非都不動作！)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
-            is_strong_breakout = (
-                ((is_breakout_long or is_continuation_long) and (c_body >= 0.35 * market_data.atr or curr_quote > market_data.kc_upper))
-                or ((is_breakdown_short or is_continuation_short) and (c_body >= 0.35 * market_data.atr or curr_quote < market_data.kc_lower))
+            is_strong_breakout = bool(
+                is_agile_trigger
+                or is_breakout_long
+                or is_continuation_long
+                or is_breakdown_short
+                or is_continuation_short
+                or three_bar_long
+                or three_bar_short
+                or ((can_long or can_short) and c_body >= 0.25 * market_data.atr)
             )
 
-            # 1. 平倉後強制冷卻檢查 (僅強動能破軌放行；嚴格禁止在中軌附近平空後即刻買多等頻繁翻轉)
+            # 1. 平倉後強制冷卻檢查 (順勢延續開倉與強動能破軌豁免 180 秒死鎖，僅保留 20 秒防重複送單保護)
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
-            if last_exit and not is_strong_breakout:
+            if last_exit:
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
-                if elapsed_sec < 180:
-                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
+                if elapsed_sec < 20:
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後 20 秒防重複下單保護中 ({elapsed_sec:.1f}s)")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
+                if not is_strong_breakout and elapsed_sec < 120:
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉冷卻中: 剩餘 {120 - elapsed_sec:.1f} 秒")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
-            # 1.1 禁止無效的「平多 + 同價位重複買多」或「平空 + 同價位重複賣空」 (Disable Churning)
-            if last_exit:
+            # 1.1 禁止無效的「平多 + 同價位重複買多」：若已突破外軌或順勢收陽延續則放行延續開倉！
+            if last_exit and not is_strong_breakout:
                 last_side = last_exit.get("side")
                 exit_p = float(last_exit.get("price", 0.0) or 0.0)
                 elapsed_churn_sec = time.time() - float(last_exit.get("timestamp", 0.0))
-                if exit_p > 0 and elapsed_churn_sec < 600 and not is_strong_breakout:
+                if exit_p > 0 and elapsed_churn_sec < 180:
                     dist_to_exit = abs(curr_quote - exit_p) / exit_p
-                    if (last_side == "LONG" and can_long and dist_to_exit < 0.008) or (last_side == "SHORT" and can_short and dist_to_exit < 0.008):
+                    if (last_side == "LONG" and can_long and dist_to_exit < 0.003) or (last_side == "SHORT" and can_short and dist_to_exit < 0.003):
                         logger.info(
                             f"🚫 [DISABLE_CHURNING_VETO] {symbol} 剛平倉離場，當前報價 ({curr_quote}) 仍位於原平倉價附近 ({exit_p}, 離差={dist_to_exit*100:.2f}%)，"
-                            f"嚴禁同區間無效重複開倉，防止墊高持倉成本與浪費手續費！"
+                            f"暫緩無動能重複開倉！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "VETO_CHURNING_SAME_ZONE"}
 
-            # 2. 單一合約 1 小時內開倉次數上限 (3～4 次，預設 3 次)
+            # 2. 單一合約 1 小時內開倉次數上限
             now_ts = time.time()
             entry_history = [t for t in cls._hourly_entry_records.get(acc_key, cls._hourly_entry_records.get(symbol, [])) if (now_ts - t) < 3600.0]
             cls._hourly_entry_records[acc_key] = entry_history
@@ -1970,7 +2073,7 @@ class ExecutionManager:
     _last_exit_record: Dict[str, Dict[str, Any]] = {}
     _last_trade_bar_time: Dict[str, int] = {}
     _hourly_entry_records: Dict[str, list] = {}
-    MAX_ENTRIES_PER_HOUR: int = 3
+    MAX_ENTRIES_PER_HOUR: int = 15
 
     @classmethod
     def _get_account_key(cls, account: Any, symbol: str) -> str:

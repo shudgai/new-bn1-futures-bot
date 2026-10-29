@@ -463,45 +463,53 @@ def calculate_full_kc_bb_strategy(
 
         # 3. 過濾頻繁翻轉與無效重複開倉 (Disable Churning & Early Flip)：
         #    剛平空後 3 棒內：若未強勢突破上軌，嚴禁在中軌附近反手買多！
-        #    剛平多後 3 棒內：嚴禁在同個價位區間重複追買多，防止把成本墊高與多付手續費！
+        #    剛平多後若仍在主升段 (slope > 0 且收紅站穩 MA3 與中軌之上)，允許延續開倉，而非都不動作！
         just_closed_short = any(df["signal"].iloc[max(0, i - 3):i] == -2) if i >= 1 else False
         just_closed_long_exit = any(df["signal"].iloc[max(0, i - 3):i] == 2) if i >= 1 else False
 
         if just_closed_short and (current_close <= kc_up):
             allow_long = False  # 剛平空，封鎖反手追多，防止中軌雜訊震盪多空雙巴！
-        if just_closed_long_exit and (current_close <= kc_up):
-            allow_long = False  # 剛平多，封鎖在同區間重複買多墊高成本！
         if just_closed_long_exit and (current_close >= kc_low):
             allow_short = False  # 剛平多，封鎖反手追空！
 
         # =====================================================================
-        # A. 【無持倉狀態 (position == 0) - 開倉邏輯 & 暴漲二次追價進場】
+        # A. 【無持倉狀態 (position == 0) - 開倉邏輯 & 順勢延續開倉】
         # =====================================================================
         if position == 0:
-            # 判斷是否為「剛平多後的次棒強勢突破」：
-            just_closed_long = (df["signal"].iloc[i - 1] == 2) if i >= 1 else False
+            # 判斷是否為「剛平多後的順勢延續開倉 / 破軌追進」：
+            just_closed_long = any(df["signal"].iloc[max(0, i - 5):i] == 2) if i >= 1 else False
             is_breakout_reentry = (
                 just_closed_long
                 and (slope > 0)
-                and (current_close > kc_up)
-                and (current_close > current_open)  # 大長紅
-                and (current_close > prev_close)
+                and (current_close > kc_mid)
+                and (current_close >= ma3_curr)
+                and (ma3_curr > ma3_prev)
+                and (current_close > current_open)  # 順勢陽線延續
             )
 
             if is_breakout_reentry:
-                # 🚀 暴漲二次追價進場機制 (Breakout Re-entry)：
-                # 若前一棒剛平多，但當前 K 棒收盤價強勢突破 KC 上軌且收大長紅，認定為洗盤後暴漲，允許即刻重新執行「買多」
+                # 🚀 順勢延續開倉機制 (Continuation Re-entry)：
+                # 若先前平多，但趨勢仍在 KC向上 主升段且收紅站穩 MA3 與中軌之上，立即延續買多，絕不發呆空手！
                 df.loc[df.index[i], "signal"] = 1
-                df.loc[df.index[i], "exit_reason"] = "BREAKOUT_REENTRY"
+                df.loc[df.index[i], "exit_reason"] = "CONTINUATION_REENTRY_LONG"
                 position = 1
                 entry_price = current_close
                 highest_price = current_close
             elif can_trade:
                 # 【買多邏輯】: 必須 KC向上 + 收盤在中軌上方 + 斜率足夠 + 未過度延伸 (allow_long 硬性過濾)
                 if allow_long:
-                    # 條件1: 順勢突破 KC 上軌 或 條件2: MA3 金叉向上拉開
-                    if (prev_close <= prev_kc_up and current_close > kc_up) or (
-                        ma3_curr > ma15_curr and ma3_prev <= ma15_prev
+                    # 條件1: 順勢突破/延續 KC 上軌 或 條件2: MA3 金叉向上拉開 或 條件3: 主升段站穩 MA3 與中軌之上順勢延續
+                    is_trend_continuation_long = (
+                        current_close > kc_mid
+                        and ma3_curr > kc_mid
+                        and current_close >= ma3_curr
+                        and ma3_curr > ma3_prev
+                        and current_close > current_open
+                    )
+                    if (
+                        (current_close > kc_up and current_close > current_open)
+                        or (ma3_curr > ma15_curr and ma3_prev <= ma15_prev)
+                        or is_trend_continuation_long
                     ):
                         df.loc[df.index[i], "signal"] = 1  # 買多
                         position = 1
@@ -511,9 +519,18 @@ def calculate_full_kc_bb_strategy(
                 # 【賣空邏輯】: 必須 KC向下 + 收盤在中軌下方 + 斜率負值 + 未過度延伸 (allow_short 硬性過濾)
                 # 封鎖追空：離中軌 > 1.2% 嚴禁開空！
                 elif allow_short:
-                    # 條件1: 順勢跌破 KC 下軌 或 條件2: MA3 死叉向下拉開
-                    if (prev_close >= prev_kc_low and current_close < kc_low) or (
-                        ma3_curr < ma15_curr and ma3_prev >= ma15_prev
+                    # 條件1: 順勢跌破/延續 KC 下軌 或 條件2: MA3 死叉向下拉開 或 條件3: 主跌段受壓 MA3 與中軌之下順勢延續
+                    is_trend_continuation_short = (
+                        current_close < kc_mid
+                        and ma3_curr < kc_mid
+                        and current_close <= ma3_curr
+                        and ma3_curr < ma3_prev
+                        and current_close < current_open
+                    )
+                    if (
+                        (current_close < kc_low and current_close < current_open)
+                        or (ma3_curr < ma15_curr and ma3_prev >= ma15_prev)
+                        or is_trend_continuation_short
                     ):
                         df.loc[df.index[i], "signal"] = -1  # 賣空
                         position = -1
@@ -521,51 +538,43 @@ def calculate_full_kc_bb_strategy(
                         lowest_price = current_close
 
         # =====================================================================
-        # B. 【持有多單 (position == 1) - 大週期不變一單到底邏輯 (KC向上持倉鎖定)】
+        # B. 【持有多單 (position == 1) - 從第一個開多到最後都不要平倉 (一單到底鎖定)】
         # =====================================================================
         elif position == 1:
             highest_price = max(highest_price, current_close)
 
-            # 1. 只有在大週期標籤徹底扭轉，或實體收盤價跌破 KC 下軌時，才允許平多！
-            trend_reversal = current_close < kc_low
+            # 1. 只有當實體陰線收盤正式跌破 KC 下軌時，才視為大趨勢徹底反轉平多（拒絕下影線洗盤）！
+            trend_reversal = (current_close < kc_low) and (current_close < current_open)
 
-            # 2. 移動止盈: 從最高點回撤超過 2.0% 且打破中軌時才平多
+            # 2. 移動止盈: 從最高點回撤超過 2.0% 且收盤跌破中軌時才平多
             trailing_exit = (
                 (highest_price > entry_price * 1.02)
                 and (current_close < highest_price * (1.0 - trailing_stop_pct))
                 and (current_close < kc_mid)
             )
 
-            # 3. 初始硬性風控止損 (例如暴跌急煞跌破成本價 1.5%)
-            hard_sl_long = (entry_price > 0) and (current_close <= entry_price * 0.985)
+            # 3. 初始硬性風控止損 (跌破成本價 1.8% 且位於中軌下方)
+            hard_sl_long = (entry_price > 0) and (current_close <= entry_price * 0.982) and (current_close < kc_mid)
 
             # -----------------------------------------------------------------
-            # 【核心硬防守】：只要 kc_slope > 0 (KC向上)，絕不因快線向下或回踩中軌而平多！
+            # 【核心硬防守】：從第一個開多一路抱到底！絕不因回踩中軌、快線下彎或單棒斜率微幅抖動而平多！
             # -----------------------------------------------------------------
-            if slope > 0:
-                if trend_reversal:
-                    df.loc[df.index[i], "signal"] = 2  # 實體跌破下軌，大趨勢徹底反轉平多
-                    df.loc[df.index[i], "exit_reason"] = "LOWER_RAIL_TREND_EXIT"
-                    position = 0
-                    highest_price = 0.0
-                elif trailing_exit:
-                    df.loc[df.index[i], "signal"] = 2  # 衝高回撤超過 2% 且跌破中軌移動止盈
-                    df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
-                    position = 0
-                    highest_price = 0.0
-                elif hard_sl_long:
-                    df.loc[df.index[i], "signal"] = 2
-                    df.loc[df.index[i], "exit_reason"] = "HARD_SL_LONG_EXIT"
-                    position = 0
-                    highest_price = 0.0
-                # 否則：KC向上過程中的任何回踩中軌或快線下彎，一律判定為正常洗盤，強制續抱一單到底！
-            else:
-                # 當大週期已走平或下行 (slope <= 0)，允許跌破中軌保底平多
-                if current_close < kc_mid:
-                    df.loc[df.index[i], "signal"] = 2
-                    df.loc[df.index[i], "exit_reason"] = "MIDLINE_BREAK_EXIT"
-                    position = 0
-                    highest_price = 0.0
+            if trend_reversal:
+                df.loc[df.index[i], "signal"] = 2  # 實體陰線跌破下軌，大趨勢徹底反轉平多
+                df.loc[df.index[i], "exit_reason"] = "LOWER_RAIL_TREND_EXIT"
+                position = 0
+                highest_price = 0.0
+            elif trailing_exit:
+                df.loc[df.index[i], "signal"] = 2  # 衝高回撤超過 2% 且跌破中軌移動止盈
+                df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
+                position = 0
+                highest_price = 0.0
+            elif hard_sl_long:
+                df.loc[df.index[i], "signal"] = 2
+                df.loc[df.index[i], "exit_reason"] = "HARD_SL_LONG_EXIT"
+                position = 0
+                highest_price = 0.0
+            # 否則：中間所有回踩中軌、下影線洗盤或快線下彎，100% 視為正常呼吸，強制續抱一單到底！
 
         # =====================================================================
         # C. 【持有空單 (position == -1) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)】

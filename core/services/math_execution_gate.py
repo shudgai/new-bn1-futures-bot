@@ -350,17 +350,19 @@ def validate_entry_math(
 
         return True, "ENTRY_MATH_APPROVED"
 
+    max_ma15_dist_atr = 3.0 if allow_override else 1.5
+    ma_tol_atr = 0.5 if allow_override else 0.05
     if side == "LONG":
-        # 開多允許：MA5 > MA15，且 MA5 向上發散；或者當前價已站上 MA15 且 MA15 處於上行狀態
-        if not (ma5 >= ma15 - 0.05 * atr and (ma5 > previous_ma5 or (close > ma15 and ma15 > previous_ma15))):
+        # 開多允許：MA5 > MA15，且 MA5 向上發散；或者當前價已站上 MA15/KC中軌 且處於上行狀態
+        if not (ma5 >= ma15 - ma_tol_atr * atr and (ma5 > previous_ma5 or (close > ma15 and ma15 >= previous_ma15) or allow_override)):
             return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
-        if close - ma15 > 1.2 * atr:
+        if close - ma15 > max_ma15_dist_atr * atr:
             return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
     else:
-        # 開空允許：MA5 < MA15，且 MA5 向下發散；或者當前價已跌破 MA15 且 MA15 處於下行狀態
-        if not (ma5 <= ma15 + 0.05 * atr and (ma5 < previous_ma5 or (close < ma15 and ma15 < previous_ma15))):
+        # 開空允許：MA5 < MA15，且 MA5 向下發散；或者當前價已跌破 MA15/KC中軌 且處於下行狀態
+        if not (ma5 <= ma15 + ma_tol_atr * atr and (ma5 < previous_ma5 or (close < ma15 and ma15 <= previous_ma15) or allow_override)):
             return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
-        if ma15 - close > 1.2 * atr:
+        if ma15 - close > max_ma15_dist_atr * atr:
             return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
 
     funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)
