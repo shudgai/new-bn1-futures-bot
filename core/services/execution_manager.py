@@ -684,10 +684,6 @@ class ExecutionManager:
                         meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_1_5_PCT"}
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
-                            f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰頂 (close={c_c:.6f}, slope={kc_slope:.6f})，"
-                            f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
-                        )
-                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
             if should_exit:
 
