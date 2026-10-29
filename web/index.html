@@ -1294,24 +1294,37 @@
                         return Number.isFinite(parsed) ? parsed : null;
                     };
                     const closed = data.filter(bar => bar.is_live === false);
-                    if (closed.length < 2) return 'wait';
+                    if (closed.length < 5) return 'wait';
 
-                    // 依據已收線 K 棒的中軌斜率判定 KC 方向，嚴禁使用 K 棒實體顏色 (紅/綠 K) 代替中軌斜率
-                    const tail = closed.slice(-3);
-                    const mids = tail.map(bar => number(bar.kc_middle));
-                    if (mids.some(value => value === null || value <= 0)) return 'wait';
+                    // 綜合大週期 (近 15 根 KC 中軌趨勢)、均線排列 (MA5 vs MA15) 與價格相對於 KC 中軌位置判定市場趨勢，
+                    // 避免在空頭下行通道中僅因最後 1 根微幅反彈 1 tick 就誤判顯示「牛市 (KC向上)」！
+                    const lastBar = closed[closed.length - 1];
+                    const prevBar = closed[closed.length - 2];
+                    const currMid = number(lastBar.kc_middle);
+                    const prevMid = number(prevBar.kc_middle);
+                    const currClose = number(lastBar.close);
+                    const currMa5 = number(lastBar.ma5);
+                    const currMa15 = number(lastBar.ma15);
+                    if (currMid === null || prevMid === null || currMid <= 0) return 'wait';
 
-                    const epsilon = Math.max(...mids.map(Math.abs)) * 1e-10;
-                    if (tail.length >= 3) {
-                        if (mids[0] < mids[1] - epsilon && mids[2] > mids[1] + epsilon) return 'bull';
-                        if (mids[0] > mids[1] + epsilon && mids[2] < mids[1] - epsilon) return 'bear';
+                    const lookbackIdx = Math.max(0, closed.length - 15);
+                    const mid15Ago = number(closed[lookbackIdx].kc_middle) || prevMid;
+                    const macroDelta = (currMid - mid15Ago) / currMid;
+                    const barDelta = (currMid - prevMid) / currMid;
+
+                    const isPriceAboveMid = currClose !== null && currClose > currMid;
+                    const isPriceBelowMid = currClose !== null && currClose < currMid;
+                    const isMaBull = currMa5 !== null && currMa15 !== null && currMa5 > currMa15;
+                    const isMaBear = currMa5 !== null && currMa15 !== null && currMa5 < currMa15;
+
+                    // 明確空頭 (熊市): 中軌向下且價格在中軌下方 (或大週期中軌下行且 MA5 < MA15)
+                    if ((barDelta < -0.00005 && isPriceBelowMid) || (macroDelta < -0.0008 && (isPriceBelowMid || isMaBear))) {
+                        return 'bear';
                     }
-
-                    // 兩根已收線平滑回退比對
-                    const prevMid = mids[mids.length - 2];
-                    const currMid = mids[mids.length - 1];
-                    if (currMid > prevMid + epsilon) return 'bull';
-                    if (currMid < prevMid - epsilon) return 'bear';
+                    // 明確多頭 (牛市): 中軌向上且價格在中軌上方 (或大週期中軌上行且 MA5 > MA15)
+                    if ((barDelta > 0.00005 && isPriceAboveMid) || (macroDelta > 0.0008 && (isPriceAboveMid || isMaBull))) {
+                        return 'bull';
+                    }
                     return 'range';
                 },
                 getChartMarketMode(symbol) {
