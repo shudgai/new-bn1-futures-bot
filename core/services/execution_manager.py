@@ -356,6 +356,7 @@ class ExecutionManager:
         engine_or_account: Any,
         klines_df: Optional[pd.DataFrame] = None,
         quote: Optional[float] = None,
+        frame_15m: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """
         單一幣種的標準流水線處理循環 (Thread-safe, Single-Pipeline)
@@ -366,10 +367,20 @@ class ExecutionManager:
         current_position = account.positions.get(symbol)
         has_position = bool(current_position and abs(float(current_position.get("amount", 0.0) or current_position.get("qty", 0.0))) > 0)
 
+        # 若未傳入 15M K 棒，自動嘗試獲取 15M 大週期 K 棒提供精準大趨勢過濾
+        if frame_15m is None or frame_15m.empty:
+            if hasattr(engine_or_account, "fetch_klines"):
+                try:
+                    frame_15m = await engine_or_account.fetch_klines(symbol, timeframe="15m", limit=50, keep_live=True)
+                    if frame_15m is not None and not frame_15m.empty and hasattr(engine_or_account, "strategy"):
+                        frame_15m = engine_or_account.strategy.compute_indicators(frame_15m.copy())
+                except Exception:
+                    pass
+
         if klines_df is None or klines_df.empty:
             if hasattr(engine_or_account, "fetch_klines"):
                 try:
-                    klines_df = await engine_or_account.fetch_klines(symbol, timeframe="1m", limit=60)
+                    klines_df = await engine_or_account.fetch_klines(symbol, timeframe="1m", limit=120)
                 except Exception as e:
                     logger.debug(f"[PIPELINE] {symbol} fetch_klines 失敗: {e}")
                     return {"status": "FETCH_FAILED", "symbol": symbol}
@@ -479,11 +490,22 @@ class ExecutionManager:
                 elif second_half_low > first_half_low and second_half_high >= first_half_high and c_c > ema60_val:
                     is_higher_lows_bull = True
 
-        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢
-        # 只要拉遠看 EMA60 向下且價格或 MA15 在 EMA60 之下、或 12 根 KC 中軌斜率向下且價格低於 EMA60、或高低點呈空頭排列：
+        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢 (結合 15M 大級別 K 棒與 60~120 根 1M K 棒結構)
+        # 15M 大週期分析：
+        htf_15m_trend = "UNKNOWN"
+        if frame_15m is not None and not frame_15m.empty and len(frame_15m) >= 2:
+            try:
+                from core.indicators.dual_timeframe_provider import DualTimeframeProvider
+                t_dict = DualTimeframeProvider.get_15m_trend(frame_15m)
+                htf_15m_trend = t_dict.get("15m_big_trend", "UNKNOWN")
+            except Exception:
+                pass
+
+        # 只要 15M 大週期為 DOWN，或拉遠看 EMA60 向下且價格/MA15在下方，或高低點呈空頭排列：
         # 100% 鎖定為拉遠空頭 (is_zoomed_out_bearish = True)，絕對禁止在反彈時開多！
         is_zoomed_out_bearish = bool(
-            macro_trend_snap == "BEARISH"
+            htf_15m_trend == "DOWN"
+            or macro_trend_snap == "BEARISH"
             or (macro_slope_val < 0 and (c_c < ema60_val or m15_c < ema60_val))
             or (kc_slope_10_val < 0 and c_c < ema60_val)
             or is_lower_highs_bear
@@ -491,7 +513,8 @@ class ExecutionManager:
         is_zoomed_out_bullish = bool(
             (not is_zoomed_out_bearish)
             and (
-                macro_trend_snap == "BULLISH"
+                htf_15m_trend == "UP"
+                or macro_trend_snap == "BULLISH"
                 or (macro_slope_val > 0 and (c_c > ema60_val or m15_c > ema60_val))
                 or (kc_slope_10_val > 0 and c_c > ema60_val)
                 or is_higher_lows_bull
