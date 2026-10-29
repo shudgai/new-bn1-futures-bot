@@ -643,7 +643,7 @@ class ExecutionManager:
                 or (pos_side == "SHORT" and is_kc_mid_down and closed_c <= closed_kc_mid and curr_quote <= kc_mid)
             )
 
-            # 計算持倉波段是否已實質展開獲利 (>= 1.8 ATR 且目前或峰值 ROE >= 8%)，防範在剛開倉成本區或主跌/主升中途小反彈誤把洗盤當真峰谷
+            # 計算持倉波段是否已實質展開獲利 (>= 1.2 ATR 或 峰值 ROE >= 5%)，防範在剛開倉成本區誤把正常呼吸當真峰谷
             pos_entry_ref = float(current_position.get("entry_price") or 0.0)
             peak_p_ref = float(current_position.get("highest_price") or pos_entry_ref)
             trough_p_ref = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry_ref)
@@ -652,9 +652,9 @@ class ExecutionManager:
                 else ((pos_entry_ref - trough_p_ref) / atr_v) if (pos_side == "SHORT" and atr_v > 0 and pos_entry_ref > 0)
                 else 0.0
             )
-            has_profit_expansion = bool(favorable_gain_atr >= 1.8 and peak_roe_pct >= 8.0 and cur_roe_pct > 1.0)
+            has_profit_expansion = bool((favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0) and cur_roe_pct > 0.5)
 
-            # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 大週期轉弱或突破中軌時之真峰頂/真谷底
+            # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 實質獲利展開後之真峰頂/真谷底
             if is_absolute_safety:
                 # 若為 OPPOSITE_KC_BAND_BREACH，必須確認已收線實體真正破軌，拒絕下影線/上影線毛刺誤平倉
                 if "OPPOSITE_KC_BAND_BREACH" in str(gate_reason).upper():
@@ -663,6 +663,20 @@ class ExecutionManager:
                     elif pos_side == "SHORT" and not (
                         (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
                         or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                    ):
+                        is_absolute_safety = False
+                # 若為 EXIT_BY_EXTREME_WATERFALL，必須確認是「已收線 K 棒」且實體 >= 2.0 ATR 貫穿中軌並跌破/突破反側或慢線，拒絕盤中未收線 K 棒誤觸發！
+                elif "EXTREME_WATERFALL" in str(gate_reason).upper():
+                    if pos_side == "LONG" and not (
+                        (closed_o - closed_c >= 2.0 * atr_v)
+                        and (closed_o >= closed_kc_mid and closed_c < closed_kc_mid)
+                        and (closed_c < m15_c and curr_quote <= closed_c)
+                    ):
+                        is_absolute_safety = False
+                    elif pos_side == "SHORT" and not (
+                        (closed_c - closed_o >= 2.0 * atr_v)
+                        and (closed_o <= closed_kc_mid and closed_c > closed_kc_mid)
+                        and (closed_c > m15_c and curr_quote >= closed_c)
                     ):
                         is_absolute_safety = False
 
@@ -676,46 +690,28 @@ class ExecutionManager:
                 reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
-            elif is_pivot_exit and has_profit_expansion and not trend_hold_shield:
-                # ⚠️ 【大週期不變絕不平倉鐵律】：
-                # 只要 trend_hold_shield 為真（空單 KC向下且價格在 KC中軌下方；多單 KC向上且價格在 KC中軌上方），
-                # 軌道下方的任何 3 根小紅陽或下影線一律視為「順勢下跌途中的洗盤喘息」，100% 屏蔽 EARLY_PIVOT 平倉！
-                # 唯有價格反彈突破 KC 中軌（或大週期已不再順向）且目前處於實質獲利狀態時，才放行真峰谷獲利了結！
+            elif is_pivot_exit and has_profit_expansion:
+                # 只有在實質獲利展開後，且在 KC 外軌附近見頂/見底並收反向確認棒跌破/突破 MA3 時，才放行真峰頂/真谷底獲利了結！
+                # 嚴禁在成本區或未觸及外軌的半山腰誤平倉！
+                touched_outer_rail = (
+                    (pos_side == "LONG" and (peak_p_ref >= closed_kc_u or prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u))
+                    or (pos_side == "SHORT" and (trough_p_ref <= closed_kc_lo or prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo))
+                )
                 is_valid_pivot_candle = (
-                    (pos_side == "LONG" and closed_c < closed_o and curr_quote <= closed_c and closed_c < closed_kc_mid)
-                    or (pos_side == "SHORT" and closed_c > closed_o and curr_quote >= closed_c and closed_c > closed_kc_mid)
+                    touched_outer_rail
+                    and (
+                        (pos_side == "LONG" and closed_c < closed_o and curr_quote <= closed_c and closed_c < m3_c and m3_c <= m3_p)
+                        or (pos_side == "SHORT" and closed_c > closed_o and curr_quote >= closed_c and closed_c > m3_c and m3_c >= m3_p)
+                    )
                 )
                 if is_valid_pivot_candle:
                     should_exit = True
                     reason = gate_reason
                     meta = {**(gate_meta or {}), "pivot_type": "TRUE_PIVOT_CONFIRMED", "trigger": "EXIT_GATE_TRUE_PIVOT"}
-                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且破中軌確立真峰頂/真谷底，立即獲利了結！reason={reason}")
+                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且外軌確立真峰頂/真谷底，立即獲利了結！reason={reason}")
 
-            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop) - 順勢主升/主跌段期間屏蔽
-            if not should_exit and not trend_hold_shield:
-                trail_exit, trail_reason, trail_meta = DemonCoinDefenseController.check_atr_trailing_stop(
-                    current_position, curr_quote, atr_v
-                )
-                if trail_exit:
-                    should_exit = True
-                    reason = trail_reason
-                    meta = trail_meta
-                    logger.info(f"🎯 [DEMON_TRAILING_STOP] {symbol} {pos_side} 觸發主動追蹤止盈離場！meta={trail_meta}")
-
-            # 🛡️ 妖幣專用時間停損與無效盤整平倉 (Time-Based Exit) - 順勢持倉期間屏蔽
-            if not should_exit and not trend_hold_shield:
-                entry_t = float(current_position.get("created_at") or current_position.get("entry_time") or time.time())
-                bars_held = int(max(0, (time.time() - entry_t) / 60.0))
-                time_exit, time_reason, time_meta = DemonCoinDefenseController.check_time_based_exit(
-                    current_position, curr_quote, atr_v, bars_held
-                )
-                if time_exit:
-                    should_exit = True
-                    reason = time_reason
-                    meta = time_meta
-                    logger.info(f"⏳ [DEMON_TIME_EXIT] {symbol} {pos_side} 持倉 {bars_held} 根 K 棒無動能，觸發時間停損盤整平倉！")
-
-            # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷平倉):
+            # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或鎖利再平倉」全面停用！
+            # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或反側外軌破軌平倉，取消固定硬止損):
             if not should_exit:
                 # 🔴 空頭持倉中 (SHORT) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)：
                 if pos_side == "SHORT":
@@ -728,23 +724,20 @@ class ExecutionManager:
                     )
 
                     # 2. 【真谷底確認平空 (True Valley Exit)】：
-                    # 關鍵鐵律：只要大週期仍是 KC向下 (kc_slope < 0) 且價格仍在 KC 中軌下方 (closed_c <= closed_kc_mid)，
-                    # 軌道下方的任何探底陽線或下影線都只是下跌中繼，絕不可當成谷底平空（避免 14:24 / 14:29 在半山腰或虧損時平空）！
-                    # 必須滿足：(1) 實質大幅獲利展開 (has_profit_expansion) 且當前仍為正獲利 (cur_roe_pct > 1.0)，
-                    # 且 (2) 已收線強勢長陽突破 KC 中軌 (closed_c > closed_kc_mid) 與 MA15 (closed_c > m15_c)，代表谷底反轉確立！
+                    # 必須滿足：(1) 實質獲利展開 (has_profit_expansion) 且曾觸及/跌破 KC 下軌，
+                    # 且 (2) 已收線強勢陽線吞噬突破前棒高點與 MA3，且 MA3 拐頭向上！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_lower_wick = min(prev_closed_o, prev_closed_c) - prev_closed_l
                     is_confirmed_true_valley = bool(
                         has_profit_expansion
-                        and not trend_hold_shield
                         and closed_c > closed_o
                         and curr_quote >= closed_c
-                        and closed_c > closed_kc_mid
-                        and closed_c > m15_c
+                        and closed_c > m3_c
+                        and m3_c >= m3_p
                         and (
-                            ((prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo) and closed_c > prev_closed_h and closed_body >= 0.6 * atr_v)
-                            or ((prev_closed_l <= closed_kc_lo and prev_closed_lower_wick >= 1.5 * max(prev_closed_body, 0.3 * atr_v)) and closed_c > prev_closed_h)
+                            ((prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo) and closed_c > prev_closed_h and closed_body >= 0.5 * atr_v)
+                            or ((prev_closed_l <= closed_kc_lo and prev_closed_lower_wick >= 1.5 * max(prev_closed_body, 0.25 * atr_v)) and closed_c > prev_closed_h)
                         )
                     )
 
@@ -756,17 +749,12 @@ class ExecutionManager:
                         and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o)
                     )
 
-                    # 4. 初始硬性風控止損 (暴拉急煞超過成本價 1.8% 且突破中軌)
-                    is_hard_sl_short = bool(
-                        pos_entry > 0
-                        and closed_c >= pos_entry * 1.018
-                        and curr_quote >= pos_entry * 1.018
-                        and curr_quote > kc_mid
-                    )
+                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，走到谷底或破上軌再平倉」
+                    is_hard_sl_short = False
 
                     # ⚠️ 【大週期不變谷底持倉鐵律】：
-                    # 當未破上軌、未達真谷底、未觸發谷底 1.8% 鎖利、未觸發硬止損時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
-                    if not is_upper_rail_breach and not is_confirmed_true_valley and not is_valley_rebound_1_8pct and not is_hard_sl_short:
+                    # 當未破上軌、未達真谷底、未觸發谷底 1.8% 鎖利時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
+                    if not is_upper_rail_breach and not is_confirmed_true_valley and not is_valley_rebound_1_8pct:
                         logger.info(
                             f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段谷底持倉模式: (slope={kc_slope:.6f})，"
                             f"反彈小陽線或回踩中軌一律視為洗盤雜訊，一票否決平空，強制鎖死持倉續抱吃滿主跌段！"
@@ -785,14 +773,10 @@ class ExecutionManager:
                         should_exit = True
                         reason = "CLOSE_SHORT_AT_VALLEY_REBOUND_2PCT"
                         meta = {"pivot_type": "VALLEY_REBOUND", "trigger": "REBOUND_OVER_1_8_PCT", "trough_price": trough_p}
-                    elif is_hard_sl_short:
-                        should_exit = True
-                        reason = "HARD_SL_SHORT_EXIT"
-                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_PLUS_1_8_PCT"}
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到真峰頂或鎖利，絕不因下影線或回踩中軌平多)：
+                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到真峰頂或鎖利，不要硬止損)：
                 elif pos_side == "LONG":
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
                     peak_p = float(current_position.get("highest_price") or pos_entry_price)
@@ -804,23 +788,20 @@ class ExecutionManager:
                     )
 
                     # 2. 【真峰頂確認平多 (True Peak Exit)】：
-                    # 關鍵鐵律：只要大週期仍是 KC向上 (kc_slope > 0) 且價格仍在 KC 中軌上方 (closed_c >= closed_kc_mid)，
-                    # 軌道上方的任何小陰線或上影線都只是上漲中繼，絕不可當成峰頂平多！
-                    # 必須滿足：(1) 實質大幅獲利展開 (has_profit_expansion) 且當前仍為正獲利 (cur_roe_pct > 1.0)，
-                    # 且 (2) 已收線強勢長陰跌破 KC 中軌 (closed_c < closed_kc_mid) 與 MA15 (closed_c < m15_c)，代表峰頂反轉確立！
+                    # 必須滿足：(1) 實質獲利展開 (has_profit_expansion) 且曾觸及/突破 KC 上軌，
+                    # 且 (2) 已收線強勢陰線吞噬跌破前棒低點與 MA3，且 MA3 拐頭向下！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_upper_wick = prev_closed_h - max(prev_closed_o, prev_closed_c)
                     is_confirmed_true_peak = bool(
                         has_profit_expansion
-                        and not trend_hold_shield
                         and closed_c < closed_o
                         and curr_quote <= closed_c
-                        and closed_c < closed_kc_mid
-                        and closed_c < m15_c
+                        and closed_c < m3_c
+                        and m3_c <= m3_p
                         and (
-                            ((prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u) and closed_c < prev_closed_l and closed_body >= 0.6 * atr_v)
-                            or ((prev_closed_h >= closed_kc_u and prev_closed_upper_wick >= 1.5 * max(prev_closed_body, 0.3 * atr_v)) and closed_c < prev_closed_l)
+                            ((prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u) and closed_c < prev_closed_l and closed_body >= 0.5 * atr_v)
+                            or ((prev_closed_h >= closed_kc_u and prev_closed_upper_wick >= 1.5 * max(prev_closed_body, 0.25 * atr_v)) and closed_c < prev_closed_l)
                         )
                     )
 
@@ -832,18 +813,13 @@ class ExecutionManager:
                         and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o)
                     )
 
-                    # 4. 初始硬性風控止損 (已收線跌破成本價 1.8% 且位於中軌下方)
-                    is_hard_sl_long = bool(
-                        pos_entry_price > 0
-                        and closed_c <= pos_entry_price * 0.982
-                        and curr_quote <= pos_entry_price * 0.982
-                        and curr_quote < kc_mid
-                    )
+                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，若是多頭要繼續走下去，走到峰頂再平倉」
+                    is_hard_sl_long = False
 
                     # ⚠️ 【大週期不變持倉鐵律】：
-                    # 只要未發生「已收線實體跌破下軌」、未達「真峰頂確認」、未達「高點 1.8% 回撤鎖利」、未達「硬止損」，
-                    # 中間任何微幅回檔、12:30 回踩中軌、12:58 下影線刺穿下軌或均線死叉，100% 視為正常洗盤，死抱主升段到底！
-                    if not is_lower_rail_breach and not is_confirmed_true_peak and not is_peak_pullback_2pct and not is_hard_sl_long:
+                    # 只要未發生「已收線實體跌破下軌」、未達「真峰頂確認」、未達「高點 1.8% 回撤鎖利」，
+                    # 中間任何微幅回檔、回踩中軌、下影線刺穿下軌或均線死叉，100% 視為正常洗盤，死抱主升段到底！
+                    if not is_lower_rail_breach and not is_confirmed_true_peak and not is_peak_pullback_2pct:
                         logger.info(
                             f"🛡️ [TREND_LOCK_MASTER_LOCK_LONG] {symbol} 多單大波段持倉鎖定: (slope={kc_slope:.6f})，"
                             f"回踩中軌、下影線洗盤或均線死叉一律視為正常呼吸，一票否決平多，強制鎖死持倉一單到底！"
@@ -862,10 +838,6 @@ class ExecutionManager:
                         should_exit = True
                         reason = "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT"
                         meta = {"pivot_type": "TRAILING_STOP", "trigger": "PEAK_PULLBACK_OVER_2_PCT", "peak_price": peak_p}
-                    elif is_hard_sl_long:
-                        should_exit = True
-                        reason = "HARD_SL_LONG_EXIT"
-                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_1_8_PCT"}
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
@@ -883,7 +855,7 @@ class ExecutionManager:
                     meta=exit_meta,
                 )
                 if not success:
-                    return {"status": "EXIT_FAILED", "symbol": symbol, "reason": reason}
+                    return {"status": "HOLD", "symbol": symbol, "reason": f"EXIT_BLOCKED_HOLD:{reason}"}
 
                 # ══════════════════════════════════════════════════════════════════
                 # 🔄 關鍵秒級原子反手邏輯 (Flip Position): 平倉與反手在同根 K 棒一次性完成！

@@ -503,15 +503,14 @@ async def _process_wild_swing_symbol(
     # 【三層流水線唯一通道】：數據層 -> 裁決層 (ExitGate/EntryGate) -> 執行層 (ExecutionManager)
     # ══════════════════════════════════════════════════════════════════════
     from core.services.execution_manager import ExecutionManager
-    pipeline_res = await ExecutionManager.process_symbol_pipeline(
+    await ExecutionManager.process_symbol_pipeline(
         symbol=symbol,
         engine_or_account=engine,
         klines_df=frame,
         quote=quote,
     )
-    # 依使用者重構指示：三層流水線為唯一通道，嚴禁任何舊規則介入或掉落舊分支
-    if pipeline_res.get("status") in ("EXIT_EXECUTED", "ENTRY_EXECUTED", "SUCCESS_ENTRY", "SUCCESS_FLIP", "HOLD", "VETO", "IDLE", "ENTRY_FAILED"):
-        return [], []
+    # 依使用者重構指示：三層流水線為唯一通道，嚴禁任何舊規則 (WildSwingStrategy / MemePeakHunter) 介入或掉落舊分支偷平倉！
+    return [], []
 
     await _reconcile_wait_claims(engine, symbol)
     position = engine.account.positions.get(symbol)

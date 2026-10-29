@@ -32,30 +32,29 @@ def automated_position_exit_allowed(
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
 
-    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 結構破壞 / 硬性破軌與谷底反彈離場授權：
-    # 多單頂部反轉 / 跌破KC下軌 / 衝高回撤2%移動止盈 / 實體收盤跌破中軌保底平多
-    if side == "LONG" and any(k in normalized_reason for k in (
-        "CLOSE_LONG_AT_TOP", "MA3_DEAD_CROSS", "STRUCTURE_BROKEN_PEAK",
-        "EXIT_LONG_ON_TOP", "BEARISH_TREND_REVERSAL", "CLOSE_LONG_AT_MIDLINE_BREAK", "MIDLINE_BREAK_EXIT",
-        "CLOSE_LONG_AT_LOWER_RAIL_BREACH", "LOWER_RAIL_TREND_EXIT", "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT",
-        "PEAK_PULLBACK", "EARLY_PIVOT_PEAK_EXIT", "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
-        "EXIT_BY_VERIFIED_FRACTAL_PEAK", "EXIT_LONG_AT_PEAK", "HARD_SL_LONG_EXIT",
-        "EXIT_BY_STAGED_PROFIT_LOCK_TIER1", "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
-        "EXIT_BY_RATCHET_PROFIT_LOCK", "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
-    )):
-        return True
+    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 反側破軌 / 鎖利離場授權：
+    # ⚠️ 嚴格鎖定：移除舊版 Wild Swing / Channel Swing 的 BEARISH_TREND_REVERSAL / BULLISH_TREND_REVERSAL / MIDLINE_BREAK_EXIT / HARD_SL，
+    # 嚴禁任何繞過 ExecutionManager 的舊策略偷平倉或硬止損割肉！
+    if normalized_reason.startswith("EXITGATE:"):
+        if side == "LONG" and any(k in normalized_reason for k in (
+            "CLOSE_LONG_AT_TOP", "CLOSE_LONG_AT_LOWER_RAIL_BREACH",
+            "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT", "EARLY_PIVOT_PEAK_EXIT",
+            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_PEAK",
+            "EXIT_LONG_AT_PEAK", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+            "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
+            "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+        )):
+            return True
 
-    # 空單底部反轉 / 突破KC上軌硬防守 / 谷底反彈超過門檻
-    if side == "SHORT" and any(k in normalized_reason for k in (
-        "CLOSE_SHORT_AT_BOTTOM", "MA3_GOLDEN_CROSS", "STRUCTURE_BROKEN_BOTTOM",
-        "EXIT_SHORT_ON_BOTTOM", "BULLISH_TREND_REVERSAL", "CLOSE_SHORT_AT_UPPER_RAIL_BREACH",
-        "UPPER_RAIL_TREND_EXIT", "CLOSE_SHORT_AT_VALLEY_REBOUND", "VALLEY_REBOUND_1_8_PCT_EXIT",
-        "EARLY_PIVOT_VALLEY_EXIT", "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
-        "EXIT_BY_VERIFIED_FRACTAL_VALLEY", "EXIT_SHORT_AT_BOTTOM", "HARD_SL_SHORT_EXIT",
-        "EXIT_BY_STAGED_PROFIT_LOCK_TIER1", "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
-        "EXIT_BY_RATCHET_PROFIT_LOCK", "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
-    )):
-        return True
+        if side == "SHORT" and any(k in normalized_reason for k in (
+            "CLOSE_SHORT_AT_BOTTOM", "CLOSE_SHORT_AT_UPPER_RAIL_BREACH",
+            "CLOSE_SHORT_AT_VALLEY_REBOUND", "EARLY_PIVOT_VALLEY_EXIT",
+            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
+            "EXIT_SHORT_AT_BOTTOM", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+            "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
+            "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+        )):
+            return True
 
     # A lock is an explicit authorized exit class. Require the recorded net
     # ROE floor to be armed and touched so a reason string alone cannot close.
