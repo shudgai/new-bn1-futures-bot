@@ -501,15 +501,15 @@ class ExecutionManager:
             except Exception:
                 pass
 
-        # 判斷 1M 圖表是否已經正式翻轉為明確多頭 / 空頭結構（MA3 與 MA15 順向排列 + 站穩 KC 中軌與 MA15 + 中軌與慢線同步順向）
-        # 解決「1M 圖表 MA3 已在 MA15 上方、KC 中軌與 MA15 已全面向上變多頭，卻因 15M/60M 歷史落後指標仍顯示 DOWN 而死鎖不平空、不開多」的痛點！
+        # 判斷 1M 圖表是否已經正式翻轉為明確多頭 / 空頭結構（MA3 與 MA15 順向排列 + 站穩 KC 中軌與 MA15 + 中軌順向）
+        # 解決「1M 圖表 MA3 已在 MA15 上方/下方、KC 中軌已翻向，卻因 15M/60M 歷史落後指標仍未轉向而死鎖不平倉、不開順勢單」的痛點！
         is_1m_confirmed_bull = bool(
             (m3_c > m15_c)
             and (m3_c > m3_p)
             and (c_c > kc_mid)
             and (c_c > m15_c)
             and (kc_slope >= 0)
-            and (m15_c >= m15_p or kc_slope_10_val >= 0 or c_c >= ema60_val)
+            and (m15_c >= m15_p or kc_slope > 0 or kc_slope_10_val >= 0 or c_c >= ema60_val)
         )
         is_1m_confirmed_bear = bool(
             (m3_c < m15_c)
@@ -517,7 +517,7 @@ class ExecutionManager:
             and (c_c < kc_mid)
             and (c_c < m15_c)
             and (kc_slope <= 0)
-            and (m15_c <= m15_p or kc_slope_10_val <= 0 or c_c <= ema60_val)
+            and (m15_c <= m15_p or kc_slope < 0 or kc_slope_10_val <= 0 or c_c <= ema60_val)
         )
 
         # 只要 15M 大週期為 DOWN，或拉遠看 EMA60 向下且價格/MA15在下方，或高低點呈空頭排列（且尚未被 1M 全面翻多結構推翻）：
@@ -1853,6 +1853,7 @@ class ExecutionManager:
             #           KC 中軌上行或價格在 KC 中軌之上時，100% 絕對禁止開空！
             can_long = (
                 hard_long_allowed
+                and allow_long_defense
                 and (not is_ma3_midline_adhered)
                 and (not is_chop_zone or range_breakout_side == "LONG")
                 and (market_regime != "RANGE" or range_breakout_side == "LONG")
@@ -1874,6 +1875,7 @@ class ExecutionManager:
             )
             can_short = (
                 hard_short_allowed
+                and allow_short_defense
                 and (not is_ma3_midline_adhered)
                 and (not is_chop_zone or range_breakout_side == "SHORT")
                 and (market_regime != "RANGE" or range_breakout_side == "SHORT")
