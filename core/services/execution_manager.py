@@ -834,32 +834,27 @@ class ExecutionManager:
                 and ((m3_c <= kc_mid and m3_p >= kc_mid) or (c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)))
             )
 
-            # 嚴格順勢方向審查：做多必須 MA3 向上發散且位於中軌上方或剛穿中軌；
-            # 賣空必須同時滿足「非 Squeeze 擠壓」+「離差拉開 (>0.001)」+「中軌向下 (slope < -0.0003)」
-            # 當處於 Squeeze 蓄勢期，或 MA3 貼著中軌走 (ma_dist <= 0.001) 時，
-            # 即使當下 kc_slope 微幅向下，也【絕對禁止開空】！
-            # 順勢鐵律：當 KC 中軌向下 (kc_slope < -0.00005)，100% 絕對禁止開多！
+            # 嚴格順勢方向審查：
+            # 做多必須 KC 中軌向上 (kc_slope >= 0) 且 MA3 與收盤價皆在中軌之上；
+            # 賣空必須 KC 中軌向下 (kc_slope <= 0) 且 MA3 與收盤價皆在中軌之下！
+            # 順勢鐵律：當 KC 中軌向下，100% 絕對禁止開多！當 KC 中軌向上，100% 絕對禁止開空！
             can_open_long = bool(
                 c_is_closed
                 and (is_cross_mid_long or is_valid_gc or is_true_bottom)
                 and (m3_c > m3_p)
-                and (m3_c >= kc_mid or c_c >= kc_mid)
+                and (m3_c >= kc_mid and c_c >= kc_mid)
+                and (kc_slope >= 0)
                 and not is_chasing_high
                 and (not is_sqz_now)
-                and (ma_dist_now > 0.001)
-                and (kc_slope > 0.00005 or is_true_bottom)
-                and (kc_slope >= -0.00005)
             )
             can_open_short = bool(
                 c_is_closed
                 and (is_cross_mid_short or is_valid_dc or is_true_peak)
                 and (m3_c < m3_p)
-                and (m3_c <= kc_mid or c_c <= kc_mid)
+                and (m3_c <= kc_mid and c_c <= kc_mid)
+                and (kc_slope <= 0)
                 and not is_chasing_low
                 and (not is_sqz_now)
-                and (ma_dist_now > 0.001)
-                and (kc_slope < -0.0003 or is_true_peak)
-                and (kc_slope <= 0.00005)
             )
 
             if can_open_long:
@@ -1259,23 +1254,31 @@ class ExecutionManager:
             )
 
             # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線與方向總開關
-            # 賣空必須同時滿足「非 Squeeze 擠壓」+「離差拉開 (>0.001)」
-            # 當處於 Squeeze 蓄勢期，或 MA3 貼著中軌走 (ma_dist <= 0.001) 時，
-            # 即使當下 kc_slope 微幅向下，也【絕對禁止開空】！
-            can_long = (is_breakout_long or is_continuation_long or is_meme_contract or (hard_long_allowed and direction_long_ok)) and (not is_macro_bear) and (
-                is_breakout_long or is_continuation_long or is_ma_cross_long or (
-                    not is_bearish_wave
-                    and ma_trend_aligned_long
-                    and (ma3_slope >= 0)
-                    and (market_data.curr_k["close"] >= ma3_curr)
-                    and (market_data.current_price >= ma3_curr)
+            # 順勢鐵律：KC 中軌下行或價格在 KC 中軌之下時，100% 絕對禁止開多！
+            #           KC 中軌上行或價格在 KC 中軌之上時，100% 絕對禁止開空！
+            can_long = (
+                (is_breakout_long or is_continuation_long or is_meme_contract or (hard_long_allowed and direction_long_ok))
+                and (not is_macro_bear)
+                and (kc_slope >= 0)
+                and (curr_close >= kc_mid_val)
+                and (ma3_curr >= kc_mid_val)
+                and (
+                    is_breakout_long or is_continuation_long or is_ma_cross_long or (
+                        not is_bearish_wave
+                        and ma_trend_aligned_long
+                        and (ma3_slope >= 0)
+                        and (market_data.curr_k["close"] >= ma3_curr)
+                        and (market_data.current_price >= ma3_curr)
+                    )
                 )
             )
             can_short = (
                 (is_breakdown_short or is_continuation_short or is_meme_contract or (hard_short_allowed and direction_short_ok))
                 and (not is_macro_bull)
+                and (kc_slope <= 0)
+                and (curr_close <= kc_mid_val)
+                and (ma3_curr <= kc_mid_val)
                 and (not is_sqz_now)
-                and (ma_dist_now > 0.001)
                 and (
                     is_breakdown_short or is_continuation_short or is_ma_cross_short or (
                         not is_bullish_wave
@@ -1434,21 +1437,34 @@ class ExecutionManager:
             if raw_swing_pivot:
                 pivot_side = raw_swing_pivot.get("side")
                 # 谷底/頂部轉折開倉：只要極短線 MA3 拐頭順向且收線同色，即可第一時間進場，豁免 slow 慢線位置限制！
+                # 但必須嚴格遵守順勢鐵律：KC 中軌向下或破中軌嚴禁開多；KC 中軌向上或站上中軌嚴禁開空！
                 if pivot_side == "LONG":
-                    pivot_long_ok = is_ma3_trending_up and is_candle_bullish
+                    pivot_long_ok = (
+                        is_ma3_trending_up
+                        and is_candle_bullish
+                        and (kc_slope >= 0)
+                        and (curr_close >= kc_mid_val)
+                        and (ma3_curr >= kc_mid_val)
+                    )
                     if not pivot_long_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多門檻 "
-                            f"(ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish})，一票否決！"
+                            f"(ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
                 elif pivot_side == "SHORT":
-                    pivot_short_ok = is_ma3_trending_down and is_candle_bearish
+                    pivot_short_ok = (
+                        is_ma3_trending_down
+                        and is_candle_bearish
+                        and (kc_slope <= 0)
+                        and (curr_close <= kc_mid_val)
+                        and (ma3_curr <= kc_mid_val)
+                    )
                     if not pivot_short_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空門檻 "
-                            f"(ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish})，一票否決！"
+                            f"(ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -1456,9 +1472,9 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG":
+                if candidate_side == "LONG" and (kc_slope >= 0 and curr_close >= kc_mid_val):
                     can_long = True
-                elif candidate_side == "SHORT":
+                elif candidate_side == "SHORT" and (kc_slope <= 0 and curr_close <= kc_mid_val):
                     can_short = True
 
             # 強動能破軌或外軌延續開倉判定 (外軌鎖定強制上車，豁免平倉後冷卻期)
@@ -1534,14 +1550,20 @@ class ExecutionManager:
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
 
                 # ── 🛡️ 全域順勢鐵律 (Master KC Trend Isolation Gate) ──
-                # 1. 空頭趨勢嚴禁開多：KC 中軌下行 (kc_slope < -0.00005)，100% 一票否決開多，嚴防逆勢接刀！
-                # 2. 多頭趨勢嚴禁開空：KC 中軌上行 (kc_slope > 0.00005)，100% 一票否決開空，嚴防逆勢摸頂！
-                if candidate_side == "LONG" and kc_slope < -0.00005:
-                    logger.info(f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} KC中軌向下 (slope={kc_slope:.6f})，絕對禁止逆勢開多！")
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": f"KC 中軌向下 (slope={kc_slope:.6f})，強制阻斷買多！"}
-                if candidate_side == "SHORT" and kc_slope > 0.00005:
-                    logger.info(f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} KC中軌向上 (slope={kc_slope:.6f})，絕對禁止逆勢開空！")
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": f"KC 中軌向上 (slope={kc_slope:.6f})，強制阻斷賣空！"}
+                # 1. 空頭趨勢嚴禁開多：KC 中軌下行 (kc_slope < 0) 或收盤位於中軌之下 (curr_close < kc_mid_val) 或 MA3 低於中軌，100% 一票否決開多，嚴防逆勢接刀！
+                # 2. 多頭趨勢嚴禁開空：KC 中軌上行 (kc_slope > 0) 或收盤位於中軌之上 (curr_close > kc_mid_val) 或 MA3 高於中軌，100% 一票否決開空，嚴防逆勢摸頂！
+                if candidate_side == "LONG" and (kc_slope < 0 or curr_close < kc_mid_val or ma3_curr < kc_mid_val):
+                    logger.info(
+                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} KC中軌向下/位於中軌下方 "
+                        f"(slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f}, ma3={ma3_curr:.8f})，100% 絕對禁止逆勢開多！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": f"KC 中軌向下或破中軌，強制阻斷買多！"}
+                if candidate_side == "SHORT" and (kc_slope > 0 or curr_close > kc_mid_val or ma3_curr > kc_mid_val):
+                    logger.info(
+                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} KC中軌向上/位於中軌上方 "
+                        f"(slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f}, ma3={ma3_curr:.8f})，100% 絕對禁止逆勢開空！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": f"KC 中軌向上或站上中軌，強制阻斷賣空！"}
 
                 # ── 🛡️ 妖幣專用 3 大開倉前防護審查 (Demon Coin Defense Pre-Entry Gate) ──
                 # 1. 訊號冷卻期機制 (Cooldown Period)
