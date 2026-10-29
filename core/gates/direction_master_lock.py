@@ -172,11 +172,23 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
     if df is None or len(df) < 2:
         return None
 
-    # 提取已收線 K 棒
+    # 提取已收線 K 棒；若傳入之最後一根為盤中正在形成的 K 棒且 allow_intrabar，則使用該最新棒計算即時 MA3
     from core.services.candle_data import closed_entry_candles
-    closed_df = closed_entry_candles(df)
-    if len(closed_df) < 2:
+    use_live_tail = bool(
+        isinstance(df, pd.DataFrame)
+        and len(df) >= 2
+        and (
+            df.attrs.get("intrabar_authorized")
+            or df.attrs.get("direction_override")
+            or df.attrs.get("is_agile_trigger")
+        )
+    )
+    if use_live_tail:
         closed_df = df
+    else:
+        closed_df = closed_entry_candles(df)
+        if len(closed_df) < 2:
+            closed_df = df
 
     if len(closed_df) < 2:
         return None

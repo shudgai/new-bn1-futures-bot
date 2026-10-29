@@ -994,8 +994,13 @@ class CentralEntryGate:
                     metrics["ma15_curr"] = metrics["close"]
                     metrics["ma15_prev"] = metrics["ma15_curr"]
 
-                # MA3
-                if "ma3" in data.columns:
+                # MA3 (若 allow_intrabar 且最後一根未收線，結合即時報價動態計算即時 MA3，避免舊收線 K 棒 MA3 滯後誤擋妖幣起漲/起跌點)
+                if allow_intrabar and not is_closed and len(data) >= 3 and "close" in data.columns:
+                    c_m2 = float(data.iloc[-3].get("close", metrics["close"]))
+                    c_m1 = float(prev_eval_row.get("close", metrics["close"]))
+                    metrics["ma3_curr"] = (c_m2 + c_m1 + float(metrics["close"])) / 3.0
+                    metrics["ma3_prev"] = float(prev_eval_row.get("ma3", (float(data.iloc[-4].get("close", c_m2)) + c_m2 + c_m1) / 3.0 if len(data) >= 4 else metrics["ma3_curr"]))
+                elif "ma3" in data.columns:
                     metrics["ma3_curr"] = float(eval_row.get("ma3", metrics["close"]))
                     metrics["ma3_prev"] = float(prev_eval_row.get("ma3", metrics["ma3_curr"]))
                 elif "close" in data.columns:

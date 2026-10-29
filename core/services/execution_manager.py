@@ -618,19 +618,38 @@ class ExecutionManager:
         ma3_ma15_spread_ratio = ma3_ma15_diff / m15_c if m15_c > 0 else 0.0
 
         # 1. 【MA3 中軌貼合判定 (is_ma3_midline_adhered)】：
-        # 當 MA3 與 KC 中軌距離過近 (|m3_c - kc_mid| / kc_mid < 0.00055 或 |m3_c - kc_mid| < 0.10 * ATR)，
-        # 或 MA3 與 MA15 高度貼合 (|m3_c - m15_c| / m15_c < 0.00045 或 |m3_c - m15_c| < 0.08 * ATR)，
-        # 代表均線與中軌黏合毫無動能方向，100% 禁止開倉！
+        # 當 MA3 與 KC 中軌距離過近，或 MA3 與 MA15 高度貼合，且 K 棒實體微弱 (< 0.25 ATR) 毫無突破動能時，禁止開倉！
+        # 但針對妖幣：若當根 K 棒為中大實體動能棒 (c_bd >= 0.25 * atr_v) 強勢貫穿中軌/MA15 起飛，代表正處於金叉/死叉發散起點，絕不誤判為死水貼合！
+        is_strong_cross_candle = bool(
+            atr_v > 0
+            and c_bd >= 0.25 * atr_v
+            and (
+                (c_c > c_o and c_c > kc_mid and c_c > m15_c and m3_c > m3_p)
+                or (c_c < c_o and c_c < kc_mid and c_c < m15_c and m3_c < m3_p)
+            )
+        )
         is_ma3_midline_adhered = bool(
-            ma_dist_now < 0.00055
-            or (atr_v > 0 and ma3_mid_diff < 0.10 * atr_v)
-            or ma3_ma15_spread_ratio < 0.00045
-            or (atr_v > 0 and ma3_ma15_diff < 0.08 * atr_v)
+            not is_strong_cross_candle
+            and (
+                ma_dist_now < 0.00045
+                or (atr_v > 0 and ma3_mid_diff < 0.08 * atr_v)
+                or ma3_ma15_spread_ratio < 0.00035
+                or (atr_v > 0 and ma3_ma15_diff < 0.06 * atr_v)
+            )
         )
 
         # 2. 【震盪區 / 均線糾纏判定 (is_chop_zone)】：
         # 檢查近 8 根 K 棒內 MA3 與 KC 中軌 (或 MA15) 是否反覆交錯糾纏 (>= 2 次交錯)，
-        # 或 KC 中軌斜率極度走平 (|kc_slope| < 0.03 * ATR 且未突破外軌)，或處於 RANGE 猴市震盪區！
+        # 或 KC 中軌斜率極度走平 (|kc_slope| < 0.02 * ATR 且未突破外軌)，或處於 RANGE 猴市震盪區！
+        # 針對妖幣：若出現強勢突破/爆量拉升 (c_bd >= 0.40 * atr_v 且站穩中軌與 MA15 順向發散)，代表脫離盤整正式點火！
+        is_meme_breakout_ignition = bool(
+            atr_v > 0
+            and c_bd >= 0.40 * atr_v
+            and (
+                (c_c > c_o and c_c > kc_mid and c_c > m15_c and m3_c > m15_c and m3_c > m3_p and kc_slope >= 0)
+                or (c_c < c_o and c_c < kc_mid and c_c < m15_c and m3_c < m15_c and m3_c < m3_p and kc_slope <= 0)
+            )
+        )
         ma3_mid_cross_8 = 0
         ma3_m15_cross_8 = 0
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 15 and "close" in raw_df.columns:
@@ -647,14 +666,17 @@ class ExecutionManager:
                 ma3_mid_cross_8 = 0
                 ma3_m15_cross_8 = 0
 
-        is_kc_slope_flat = bool(atr_v > 0 and abs(kc_slope) < 0.03 * atr_v and kc_lo <= c_c <= kc_u)
+        is_kc_slope_flat = bool(atr_v > 0 and abs(kc_slope) < 0.02 * atr_v and kc_lo <= c_c <= kc_u and not is_meme_breakout_ignition)
         is_chop_zone = bool(
-            market_regime == "RANGE"
-            or is_choppy
-            or is_sqz_now
-            or is_kc_slope_flat
-            or (ma3_mid_cross_8 >= 2 and ma_dist_now < 0.0018)
-            or (ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0015)
+            not is_meme_breakout_ignition
+            and (
+                market_regime == "RANGE"
+                or is_choppy
+                or is_sqz_now
+                or is_kc_slope_flat
+                or (ma3_mid_cross_8 >= 2 and ma_dist_now < 0.0015)
+                or (ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0012)
+            )
         )
 
         # 🎯 核心全域裁決：檢測「真谷底 (True Bottom)」與「真峰頂 (True Top)」(方案 B)
@@ -893,8 +915,8 @@ class ExecutionManager:
                 meta = gate_meta
                 logger.warning(f"🚨 [ABSOLUTE_SAFETY_EXIT] {symbol} {pos_side} 命中絕對安全出場防線！reason={reason}")
             elif is_profit_lock and not trend_hold_shield and (
-                (pos_side == "LONG" and not is_zoomed_out_bullish and kc_slope <= 0 and closed_c < closed_kc_mid and closed_c < m15_c)
-                or (pos_side == "SHORT" and not is_zoomed_out_bearish and kc_slope >= 0 and closed_c > closed_kc_mid and closed_c > m15_c)
+                (pos_side == "LONG" and not is_zoomed_out_bullish and kc_slope <= 0 and m3_c < m15_c and closed_c < closed_kc_mid and closed_c < m15_c and curr_quote < kc_mid and curr_quote < m15_c)
+                or (pos_side == "SHORT" and not is_zoomed_out_bearish and kc_slope >= 0 and m3_c > m15_c and closed_c > closed_kc_mid and closed_c > m15_c and curr_quote > kc_mid and curr_quote > m15_c)
             ):
                 should_exit = True
                 reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
