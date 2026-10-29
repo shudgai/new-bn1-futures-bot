@@ -123,8 +123,12 @@ class LocalAIAdvisor:
                     "content": (
                         "Classify the supplied single-symbol sequence of completed 1-minute "
                         "candles as exactly CHOPPY or TRENDING. Use directional progress, "
-                        "overlap and consistency in these candles only. Do not predict price, "
-                        "recommend a trade, choose a side, or infer missing data. Return one "
+                        "overlap and consistency in these candles only. "
+                        "Enforce MTF MA3/MA15 rules when explaining reason: "
+                        "(1) 大週期優先：先確認大週期均線方向，若為空頭則狀態為「大週期熊市 - 尋找高空點」，若為多頭則為「大週期牛市 - 尋找低多點」；"
+                        "(2) 禁止逆勢開倉：大週期為空頭時，即使小週期 MA3 金叉 MA15，嚴格禁止發出 LONG 或平空開多；大週期為多頭時，即使小週期 MA3 死叉 MA15，嚴格禁止發出 SHORT 或平多開空；"
+                        "(3) 訊號定義：大週期熊市中小週期 MA3 > MA15 僅為「反彈高點準備區 (WAIT_REBOUND)」，需等待 MA3 再次死叉 MA15 才發出 SHORT；大週期牛市中小週期 MA3 < MA15 僅為「回檔低點準備區 (WAIT_PULLBACK)」。"
+                        "Do not predict price, recommend a trade, choose a side, or infer missing data. Return one "
                         "JSON object with regime and a brief reason."
                     ),
                 },
@@ -299,7 +303,10 @@ class LocalAIAdvisor:
                         "You are a conservative crypto futures performance analyst. "
                         "Analyze only the supplied historical trade statistics and samples. "
                         "Find repeatable strengths, loss patterns, stop-loss clusters and "
-                        "risk-control improvements for a 5m SuperTrend + Keltner strategy. "
+                        "risk-control improvements for an MTF MA3/MA15 + Keltner strategy: "
+                        "(1) 大週期優先（大週期熊市 - 尋找高空點 / 大週期牛市 - 尋找低多點）；"
+                        "(2) 禁止逆勢開倉（大週期空頭嚴禁因小週期 MA3 金叉 MA15 而平空開多；大週期多頭嚴禁因小週期 MA3 死叉 MA15 而平多開空）；"
+                        "(3) 訊號定義（大週期熊市中 MA3 > MA15 僅為反彈高點準備區 WAIT_REBOUND，等待再次死叉才開空；大週期牛市中 MA3 < MA15 僅為回檔低點準備區 WAIT_PULLBACK）。"
                         "Never place trades, never change settings, and never claim certainty. "
                         "Return exactly one JSON object in Traditional Chinese."
                     ),

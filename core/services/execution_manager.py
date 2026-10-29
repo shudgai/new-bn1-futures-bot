@@ -503,34 +503,105 @@ class ExecutionManager:
                 elif second_half_low > first_half_low and second_half_high >= first_half_high and c_c > ema60_val:
                     is_higher_lows_bull = True
 
-        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢 (結合 15M 大級別 K 棒與 60~120 根 1M K 棒結構)
-        # 15M 大週期分析：
+        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢 (結合 15M/1H 大級別均線結構與 60~120 根 1M K 棒結構)
+        # ══════════════════════════════════════════════════════════════════════════
+        # 🏛️ 【MA 3m/15m 雙重週期 (MTF) 趨勢與進場解耦引擎】：
+        #   - 大週期定方向（主趨勢 macro_trend_status）：取 15M 大週期均線 (15m MA5/MA15 與 15m KC 中軌) 及 1H 等效均線 (1M 週期之 MA45 vs EMA180 / EMA60 斜率與 10 棒 KC 中軌)。
+        #   - 小週期定觸發點（micro_ma3 vs micro_ma15）：
+        #     * 情況 A：大週期空頭 (macro_trend == "BEARISH") + 小週期 MA3 > MA15 (黃金交叉) ➔ 僅視為「反彈拉高 (WAIT_REBOUND)」！絕不開多 (`can_open_long = False`)，保留空單或等待二次高點！
+        #     * 情況 B：大週期空頭 (macro_trend == "BEARISH") + 小週期 MA3 < MA15 (死亡交叉) ➔ 順勢開空 / 加空 (`OPEN_SHORT`)！
+        #     * 情況 C：大週期多頭 (macro_trend == "BULLISH") + 小週期 MA3 < MA15 (死亡交叉) ➔ 僅視為「回檔拉回 (WAIT_PULLBACK)」！絕不開空 (`can_open_short = False`)，保留多單或等待低點！
+        #     * 情況 D：大週期多頭 (macro_trend == "BULLISH") + 小週期 MA3 > MA15 (黃金交叉) ➔ 順勢開多 / 加多 (`OPEN_LONG`)！
+        # ══════════════════════════════════════════════════════════════════════════
         htf_15m_trend = "UNKNOWN"
+        htf_15m_ma5 = 0.0
+        htf_15m_ma15 = 0.0
+        htf_15m_slope = 0.0
         if frame_15m is not None and not frame_15m.empty and len(frame_15m) >= 2:
             try:
                 from core.indicators.dual_timeframe_provider import DualTimeframeProvider
                 t_dict = DualTimeframeProvider.get_15m_trend(frame_15m)
                 htf_15m_trend = t_dict.get("15m_big_trend", "UNKNOWN")
+                htf_15m_ma5 = float(t_dict.get("15m_ma5", 0.0) or 0.0)
+                htf_15m_ma15 = float(t_dict.get("15m_ma15", 0.0) or 0.0)
+                htf_15m_slope = float(t_dict.get("15m_ma15_slope", 0.0) or 0.0)
             except Exception:
                 pass
 
-        # 判斷 1M 圖表是否已經正式翻轉為明確黃金交叉多頭 / 死亡交叉空頭結構：
-        # 1. 解決「一交叉就急著開倉」：必須 MA3 與 MA15 明確發散 (|m3_c - m15_c| >= 0.08 * ATR)，且 MA15 與 KC 中軌 (1棒/3棒) 已同步轉向！
-        # 2. 解決「開倉太晚 / 已經交叉好久卻不開倉」：不再死等滯後 6~12 分鐘的 kc_slope_5_ref / m15_slope_5_ref，
-        #    只要 1棒與 3棒 KC 中軌及 MA15 已同步轉向（或 5棒已轉正且當根動能棒飽滿 >= 0.35 ATR），且 MA3 與 MA15 黃金/死亡交叉發散確立，第一時間確認新趨勢起點！
+        # 計算 1H 等效大週期均線 (在 1m K 線上：MA45 相當於 15m MA3、EMA60/EMA180 相當於 1H/3H 慢線)：
+        macro_ma_fast = ema60_val
+        macro_ma_slow = ema60_val
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and "close" in raw_df.columns and len(raw_df) >= 20:
+            s_c_mtf = raw_df["close"].astype(float)
+            macro_ma_fast = float(s_c_mtf.ewm(span=30, adjust=False).mean().iloc[-1])
+            macro_ma_slow = float(s_c_mtf.ewm(span=90, adjust=False).mean().iloc[-1])
+
         kc_slope_5_ref = locals().get("kc_slope_5_val", kc_slope)
         kc_slope_3_ref = locals().get("kc_slope_3_val", kc_slope)
         m15_slope_5_ref = locals().get("m15_slope_5_val", m15_c - m15_p)
         m15_slope_3_ref = locals().get("m15_slope_3_val", m15_c - m15_p)
         min_gc_dc_spread = max(0.08 * atr_v, m15_c * 0.0004) if atr_v > 0 else (m15_c * 0.0004)
 
+        # 1. 獨立判定大週期主趨勢 (macro_htf_bearish / macro_htf_bullish) —— 嚴格與小週期 MA3/MA15 交叉解耦！
+        # 當大週期均線向下 (15m DOWN、或 10棒與5棒 KC 中軌與 MA15 同步向下、或 macro_ma_fast < macro_ma_slow 且價格在 EMA60 下方) 時，
+        # 絕不因為小週期 MA3 > MA15 金叉就把大週期誤判成牛市！
+        is_macro_htf_bearish = bool(
+            htf_15m_trend == "DOWN"
+            or (htf_15m_ma5 > 0 and htf_15m_ma15 > 0 and htf_15m_ma5 < htf_15m_ma15 and htf_15m_slope < 0)
+            or (kc_slope_10_val < 0 and kc_slope_5_ref < 0 and m15_slope_5_ref < 0)
+            or (macro_ma_fast < macro_ma_slow and macro_slope_val < 0 and c_c < ema60_val and kc_slope_5_ref <= 0)
+            or (is_lower_highs_bear and kc_slope_5_ref <= 0)
+        )
+        is_macro_htf_bullish = bool(
+            (not is_macro_htf_bearish)
+            and (
+                htf_15m_trend == "UP"
+                or (htf_15m_ma5 > 0 and htf_15m_ma15 > 0 and htf_15m_ma5 > htf_15m_ma15 and htf_15m_slope > 0)
+                or (kc_slope_10_val > 0 and kc_slope_5_ref > 0 and m15_slope_5_ref > 0)
+                or (macro_ma_fast > macro_ma_slow and macro_slope_val > 0 and c_c > ema60_val and kc_slope_5_ref >= 0)
+                or (is_higher_lows_bull and kc_slope_5_ref >= 0)
+            )
+        )
+
+        # 唯有當 1M 的 5棒與 10棒 KC 中軌及 MA15 慢線【全部】完成實質結構翻轉且突破 EMA60，才代表大週期已經真正易位（而非短線假反彈/假回檔）：
+        is_true_macro_reversal_to_bull = bool(
+            (m3_c > m15_c and (m3_c - m15_c) >= min_gc_dc_spread)
+            and kc_slope > 0
+            and kc_slope_3_ref > 0
+            and kc_slope_5_ref > 0
+            and kc_slope_10_val >= 0
+            and m15_c > m15_p
+            and m15_slope_3_ref > 0
+            and m15_slope_5_ref >= 0
+            and c_c > kc_mid
+            and c_c > m15_c
+            and c_c >= ema60_val
+            and htf_15m_trend != "DOWN"
+        )
+        is_true_macro_reversal_to_bear = bool(
+            (m3_c < m15_c and (m15_c - m3_c) >= min_gc_dc_spread)
+            and kc_slope < 0
+            and kc_slope_3_ref < 0
+            and kc_slope_5_ref < 0
+            and kc_slope_10_val <= 0
+            and m15_c < m15_p
+            and m15_slope_3_ref < 0
+            and m15_slope_5_ref <= 0
+            and c_c < kc_mid
+            and c_c < m15_c
+            and c_c <= ema60_val
+            and htf_15m_trend != "UP"
+        )
+
         is_3bar_bull_slope_ready = bool(
             (kc_slope > 0 and kc_slope_3_ref >= 0 and m15_c >= m15_p and (m15_slope_3_ref >= 0 or c_bd >= 0.35 * atr_v))
             and (kc_slope_5_ref >= -0.15 * atr_v if atr_v > 0 else True)
+            and (not is_macro_htf_bearish or is_true_macro_reversal_to_bull)
         )
         is_3bar_bear_slope_ready = bool(
             (kc_slope < 0 and kc_slope_3_ref <= 0 and m15_c <= m15_p and (m15_slope_3_ref <= 0 or c_bd >= 0.35 * atr_v))
             and (kc_slope_5_ref <= 0.15 * atr_v if atr_v > 0 else True)
+            and (not is_macro_htf_bullish or is_true_macro_reversal_to_bear)
         )
 
         is_1m_confirmed_bull = bool(
@@ -550,27 +621,29 @@ class ExecutionManager:
             and is_3bar_bear_slope_ready
         )
 
-        # 只要 15M 大週期為 DOWN，或 5棒/10棒 KC 中軌向下，或拉遠看 EMA60 向下且價格/MA15在下方，或高低點呈空頭排列（且尚未被 1M 全面翻多結構推翻）：
+        # 大週期鎖定旗標（遵循 MTF 鐵律：大週期空頭時，小週期 MA3 > MA15 僅為 WAIT_REBOUND 反彈拉高，不推翻 is_zoomed_out_bearish！）：
         is_zoomed_out_bearish = bool(
-            (not is_1m_confirmed_bull)
-            and (
-                is_1m_confirmed_bear
-                or htf_15m_trend == "DOWN"
-                or macro_trend_snap == "BEARISH"
-                or kc_slope_10_val < 0
-                or (kc_slope_5_ref < 0 and m15_slope_5_ref < 0)
-                or (macro_slope_val < 0 and (c_c < ema60_val or m15_c < ema60_val))
-                or is_lower_highs_bear
+            (is_macro_htf_bearish and not is_true_macro_reversal_to_bull)
+            or (
+                (not is_1m_confirmed_bull)
+                and (
+                    is_1m_confirmed_bear
+                    or macro_trend_snap == "BEARISH"
+                    or kc_slope_10_val < 0
+                    or (kc_slope_5_ref < 0 and m15_slope_5_ref < 0)
+                    or (macro_slope_val < 0 and (c_c < ema60_val or m15_c < ema60_val))
+                    or is_lower_highs_bear
+                )
             )
         )
         is_zoomed_out_bullish = bool(
-            (not is_1m_confirmed_bear)
+            (not is_zoomed_out_bearish)
             and (
-                is_1m_confirmed_bull
+                (is_macro_htf_bullish and not is_true_macro_reversal_to_bear)
                 or (
-                    (not is_zoomed_out_bearish)
+                    (not is_1m_confirmed_bear)
                     and (
-                        htf_15m_trend == "UP"
+                        is_1m_confirmed_bull
                         or macro_trend_snap == "BULLISH"
                         or kc_slope_10_val > 0
                         or (kc_slope_5_ref > 0 and m15_slope_5_ref > 0)
@@ -580,6 +653,14 @@ class ExecutionManager:
                 )
             )
         )
+
+        # MTF 四大情境狀態標記（情況 A: WAIT_REBOUND / 情況 B: OPEN_SHORT / 情況 C: WAIT_PULLBACK / 情況 D: OPEN_LONG）
+        if is_zoomed_out_bearish:
+            mtf_signal_state = "OPEN_SHORT" if (m3_c < m15_c) else "WAIT_REBOUND"
+        elif is_zoomed_out_bullish:
+            mtf_signal_state = "OPEN_LONG" if (m3_c > m15_c) else "WAIT_PULLBACK"
+        else:
+            mtf_signal_state = "NEUTRAL"
 
         # ── 🐒 市場狀態分類 (BULL / BEAR / RANGE)：猴市只做「收線突破區間」 ──
         # 猴市判定：EMA60 斜率走平 (|slope| < 0.5 ATR) 且近 60 根價格反覆穿越 EMA60 (>= 4 次)，
@@ -1863,6 +1944,34 @@ class ExecutionManager:
                 and (not is_sqz_now or is_meme_vol_surge_breakdown_short)
             )
 
+            # ══════════════════════════════════════════════════════════════════
+            # 🏛️ MTF 雙重過濾與下單控制（情況 A/B/C/D 絕對執行）：
+            # - 若大週期為空頭 (is_zoomed_out_bearish)：
+            #   * 強制鎖死開多功能 (can_open_long = False)！
+            #   * 若小週期 MA3 > MA15 (情況 A)：僅視為 WAIT_REBOUND (弱勢反彈拉高)，維持觀望等待高空點，絕不開多！
+            #   * 僅當小週期 MA3 < MA15 (情況 B)：順勢開空 (OPEN_SHORT)！
+            # - 若大週期為多頭 (is_zoomed_out_bullish)：
+            #   * 強制鎖死開空功能 (can_open_short = False)！
+            #   * 若小週期 MA3 < MA15 (情況 C)：僅視為 WAIT_PULLBACK (回檔拉回)，維持觀望等待低多點，絕不開空！
+            #   * 僅當小週期 MA3 > MA15 (情況 D)：順勢開多 (OPEN_LONG)！
+            # ══════════════════════════════════════════════════════════════════
+            if is_zoomed_out_bearish:
+                can_open_long = False
+                if m3_c >= m15_c:
+                    can_open_short = False
+                    logger.debug(
+                        f"🛡️ [MTF_WAIT_REBOUND] {symbol} 情況 A (大週期空頭 + 小週期 MA3>MA15 金叉): "
+                        f"僅視為反彈高點準備區 (WAIT_REBOUND)，強制鎖死 can_open_long=False，等待 MA3 重新死叉 MA15 再開空！"
+                    )
+            elif is_zoomed_out_bullish:
+                can_open_short = False
+                if m3_c <= m15_c:
+                    can_open_long = False
+                    logger.debug(
+                        f"🛡️ [MTF_WAIT_PULLBACK] {symbol} 情況 C (大週期多頭 + 小週期 MA3<MA15 死叉): "
+                        f"僅視為回檔低點準備區 (WAIT_PULLBACK)，強制鎖死 can_open_short=False，等待 MA3 重新金叉 MA15 再開多！"
+                    )
+
             if can_open_long:
                 candidate_side = "LONG"
                 if is_cross_mid_long:
@@ -2638,6 +2747,34 @@ class ExecutionManager:
                     can_long = True
                 elif candidate_side == "SHORT" and (not is_zoomed_out_bullish and kc_slope <= 0 and curr_close <= kc_mid_val):
                     can_short = True
+
+            # 🏛️ Stage 3.2 MTF 雙重過濾硬鎖定（情況 A/B/C/D 絕對執行）：
+            # 大週期為空頭時：100% 鎖死開多，且當小週期 MA3 > MA15 時視為 WAIT_REBOUND 觀望！
+            # 大週期為多頭時：100% 鎖死開空，且當小週期 MA3 < MA15 時視為 WAIT_PULLBACK 觀望！
+            if is_zoomed_out_bearish:
+                can_long = False
+                is_breakout_long = False
+                is_continuation_long = False
+                agile_breakout_long = False
+                agile_cross_long = False
+                agile_continuation_long = False
+                if agile_signal and "LONG" in str(agile_signal):
+                    is_agile_trigger = False
+                    agile_signal = None
+                if ma3_curr >= ma15_curr:
+                    can_short = False
+            elif is_zoomed_out_bullish:
+                can_short = False
+                is_breakdown_short = False
+                is_continuation_short = False
+                agile_breakdown_short = False
+                agile_cross_short = False
+                agile_continuation_short = False
+                if agile_signal and "SHORT" in str(agile_signal):
+                    is_agile_trigger = False
+                    agile_signal = None
+                if ma3_curr <= ma15_curr:
+                    can_long = False
 
             # 強動能破軌、外軌延續或順勢延續開倉判定 (若平倉後趨勢仍延續，必須執行延續開倉，而非都不動作！)
             c_body = abs(market_data.curr_k["close"] - market_data.curr_k["open"])
