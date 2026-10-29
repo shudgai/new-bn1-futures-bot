@@ -640,44 +640,50 @@ class ExecutionManager:
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                # 🟢 多頭持倉中 (LONG)：
+                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (一單到底，KC向上絕不因回踩中軌平多)：
                 elif pos_side == "LONG":
-                    is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
-                    is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
-                    # ⚠️ 【中軌向上 & 均線慢線鋼鐵過濾 - 嚴格收盤價確認】：
-                    # 只要中軌向上或走平，取消普通快線 MA3 交叉平多！
-                    # 只有收盤價正式跌破 KC 中軌 (c_c < kc_mid) 或跌破成本價 0.8% 硬風控，才允許考慮離場。
-                    # 盤中下影線插破 MA3 或中軌一律判定為正常洗盤，100% 一票否決平多 (VETO_HOLD)！
-                    is_midline_broken = bool(c_c < kc_mid)
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
-                    is_hard_sl = bool(pos_entry_price > 0 and c_c <= pos_entry_price * 0.992)
+                    peak_p = float(current_position.get("highest_price") or current_position.get("peak_price") or pos_entry_price)
 
-                    if is_kc_mid_up and not is_midline_broken and not is_hard_sl:
+                    # 1. 【核心破軌防線】：K 棒實體收盤價正式跌破 KC 通道下軌 (破軌)，大趨勢徹底反轉平多！
+                    is_lower_rail_breach = bool(c_c < kc_lo or curr_quote < kc_lo)
+
+                    # 2. 【大波段移動止盈】：盈利達標後 (最高價 > 成本 * 1.02)，自最高點回撤超過 2.0% 且收盤跌破中軌，鎖利平多
+                    is_peak_pullback_2pct = bool(
+                        peak_p > pos_entry_price * 1.02
+                        and (c_c < peak_p * 0.98 or curr_quote < peak_p * 0.98)
+                        and (c_c < kc_mid or curr_quote < kc_mid)
+                    )
+
+                    # 3. 初始硬性風控止損 (例如暴跌急煞跌破成本價 1.5%)
+                    is_hard_sl_long = bool(pos_entry_price > 0 and (c_c <= pos_entry_price * 0.985 or curr_quote <= pos_entry_price * 0.985))
+
+                    is_kc_mid_up = (p_kc_mid > 0 and kc_mid > p_kc_mid) or (kc_slope > 0.000005)
+
+                    # ⚠️ 【KC向上大波段持倉鐵律】：
+                    # 當 KC 中軌向上且未跌破下軌、未達 2.0% 高點回撤且破中軌時，一票否決平多 (VETO_HOLD)！
+                    # 中間的所有微幅回檔、MA3 下拐、死叉或價格回踩中軌，100% 視為正常洗盤，死抱主升段！
+                    if is_kc_mid_up and not is_lower_rail_breach and not is_peak_pullback_2pct and not is_hard_sl_long:
                         logger.info(
-                            f"🛡️ [TREND_LOCK_SLOPE_VETO] {symbol} 多單中軌向上且收盤穩守KC中軌之上 (close={c_c:.6f} >= kc_mid={kc_mid:.6f})，"
-                            f"下影線視為洗盤雜訊，一票否決平多，強制鎖死持倉續抱拿滿主升段！"
+                            f"🛡️ [TREND_LOCK_MASTER_LOCK_LONG] {symbol} 多單大波段持倉鎖定: KC中軌向上 (slope={kc_slope:.6f})，"
+                            f"回踩中軌或均線死叉一律視為正常洗盤，一票否決平多，強制鎖死持倉一單到底！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
-                    if is_hard_sl:
+                    if is_lower_rail_breach:
                         should_exit = True
-                        reason = "HARD_SL_0_8_PCT_EXIT"
-                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_0_8_PCT"}
-                    elif is_midline_broken:
+                        reason = "CLOSE_LONG_AT_LOWER_RAIL_BREACH"
+                        meta = {"pivot_type": "LOWER_RAIL_BREACH", "trigger": "CLOSE_BELOW_KC_LOWER"}
+                    elif is_peak_pullback_2pct:
                         should_exit = True
-                        reason = "CLOSE_LONG_AT_MIDLINE_BREAK"
-                        meta = {"pivot_type": "MIDLINE_BREAK", "trigger": "CLOSE_BELOW_KC_MID"}
-                    elif is_true_peak or is_structure_broken_short:
+                        reason = "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT"
+                        meta = {"pivot_type": "TRAILING_STOP", "trigger": "PEAK_PULLBACK_OVER_2_PCT", "peak_price": peak_p}
+                    elif is_hard_sl_long:
                         should_exit = True
-                        reason = "CLOSE_LONG_AT_TOP"
-                        meta = {"pivot_type": "TRUE_PEAK", "trigger": "MA3_DEAD_CROSS_OR_PINBAR", "flip_target": "SHORT"}
-                        logger.info(
-                            f"🎯 [PIVOT_MASTER_TRIGGER] {symbol} 多單捕獲真峰頂！(close={c_c:.6f}, ma3={m3_c:.6f}, ma15={m15_c:.6f})，"
-                            f"第一優先級秒級觸發市價平多兼反手開空修正方向！"
-                        )
+                        reason = "HARD_SL_LONG_EXIT"
+                        meta = {"pivot_type": "HARD_SL", "trigger": "COST_MINUS_1_5_PCT"}
                     else:
-                        # 震盪假峰頂 (收盤價仍在 MA15 上方、未死叉)：一票否決，強制續抱多單！
-                        logger.info(
+                        return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
                             f"🛡️ [TREND_LOCK_MASTER_VETO] {symbol} 多單震盪假峰頂 (close={c_c:.6f}, slope={kc_slope:.6f})，"
                             f"一票否決平多，強制鎖死持倉續抱拿滿主升段！"
                         )
@@ -1519,6 +1525,20 @@ class ExecutionManager:
                 if elapsed_sec < 180:
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉強制冷卻中: 剩餘 {180 - elapsed_sec:.1f} 秒 (不足 3 根 1m K 棒)，禁止開倉")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
+
+            # 1.1 禁止無效的「平多 + 同價位重複買多」或「平空 + 同價位重複賣空」 (Disable Churning)
+            if last_exit:
+                last_side = last_exit.get("side")
+                exit_p = float(last_exit.get("price", 0.0) or 0.0)
+                elapsed_churn_sec = time.time() - float(last_exit.get("timestamp", 0.0))
+                if exit_p > 0 and elapsed_churn_sec < 600 and not is_strong_breakout:
+                    dist_to_exit = abs(curr_quote - exit_p) / exit_p
+                    if (last_side == "LONG" and can_long and dist_to_exit < 0.008) or (last_side == "SHORT" and can_short and dist_to_exit < 0.008):
+                        logger.info(
+                            f"🚫 [DISABLE_CHURNING_VETO] {symbol} 剛平倉離場，當前報價 ({curr_quote}) 仍位於原平倉價附近 ({exit_p}, 離差={dist_to_exit*100:.2f}%)，"
+                            f"嚴禁同區間無效重複開倉，防止墊高持倉成本與浪費手續費！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "VETO_CHURNING_SAME_ZONE"}
 
             # 2. 單一合約 1 小時內開倉次數上限 (3～4 次，預設 3 次)
             now_ts = time.time()

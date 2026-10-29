@@ -461,14 +461,16 @@ def calculate_full_kc_bb_strategy(
         allow_long = (slope > min_kc_slope) and (current_close > kc_mid) and (not is_overextended)
         allow_short = (slope < -min_kc_slope) and (current_close < kc_mid) and (not is_overextended)
 
-        # 3. 過濾頻繁翻轉 (Disable Early Flip - 嚴禁在中軌附近多空無腦互翻)：
-        #    剛平空後 2 棒內：若未強勢突破上軌，嚴禁在中軌附近反手買多！
-        #    剛平多後 2 棒內：若未強勢跌破下軌，嚴禁在中軌附近反手賣空！
-        just_closed_short = any(df["signal"].iloc[max(0, i - 2):i] == -2) if i >= 1 else False
-        just_closed_long_exit = any(df["signal"].iloc[max(0, i - 2):i] == 2) if i >= 1 else False
+        # 3. 過濾頻繁翻轉與無效重複開倉 (Disable Churning & Early Flip)：
+        #    剛平空後 3 棒內：若未強勢突破上軌，嚴禁在中軌附近反手買多！
+        #    剛平多後 3 棒內：嚴禁在同個價位區間重複追買多，防止把成本墊高與多付手續費！
+        just_closed_short = any(df["signal"].iloc[max(0, i - 3):i] == -2) if i >= 1 else False
+        just_closed_long_exit = any(df["signal"].iloc[max(0, i - 3):i] == 2) if i >= 1 else False
 
         if just_closed_short and (current_close <= kc_up):
             allow_long = False  # 剛平空，封鎖反手追多，防止中軌雜訊震盪多空雙巴！
+        if just_closed_long_exit and (current_close <= kc_up):
+            allow_long = False  # 剛平多，封鎖在同區間重複買多墊高成本！
         if just_closed_long_exit and (current_close >= kc_low):
             allow_short = False  # 剛平多，封鎖反手追空！
 
@@ -519,39 +521,51 @@ def calculate_full_kc_bb_strategy(
                         lowest_price = current_close
 
         # =====================================================================
-        # B. 【持有多單 (position == 1) - 防洗多單平倉邏輯 (收盤價確認)】
+        # B. 【持有多單 (position == 1) - 大週期不變一單到底邏輯 (KC向上持倉鎖定)】
         # =====================================================================
         elif position == 1:
             highest_price = max(highest_price, current_close)
 
-            # 1. 嚴格依據收盤價確認 (Close Price Confirmation)，徹底杜絕盤中下影線洗盤：
-            #    中軌向上或走平 (slope >= 0) 時，嚴格取消快線 MA3 死叉或抖動平倉！
-            # 2. 只有收盤價正式跌破 KC 中軌 (close < kc_middle)，才判定為趨勢破壞保底平多
-            midline_break_exit = current_close < kc_mid
+            # 1. 只有在大週期標籤徹底扭轉，或實體收盤價跌破 KC 下軌時，才允許平多！
+            trend_reversal = current_close < kc_low
 
-            # 3. 硬性風控止損：實體收盤價跌破成本價 0.8% (entry_price * 0.992)
-            hard_sl_exit = (entry_price > 0) and (current_close <= entry_price * 0.992)
+            # 2. 移動止盈: 從最高點回撤超過 2.0% 且打破中軌時才平多
+            trailing_exit = (
+                (highest_price > entry_price * 1.02)
+                and (current_close < highest_price * (1.0 - trailing_stop_pct))
+                and (current_close < kc_mid)
+            )
 
-            # 4. 暴脹極限獲利了結：僅在衝出 KC 上軌且實體收盤顯著回落 (> 1.8% 或自高點回檔超過 trailing_stop_pct)
-            trailing_exit = (highest_price > kc_up) and (current_close < highest_price * (1.0 - trailing_stop_pct))
+            # 3. 初始硬性風控止損 (例如暴跌急煞跌破成本價 1.5%)
+            hard_sl_long = (entry_price > 0) and (current_close <= entry_price * 0.985)
 
-            # 觸發條件判定
-            if hard_sl_exit:
-                df.loc[df.index[i], "signal"] = 2  # 硬性風控平多
-                df.loc[df.index[i], "exit_reason"] = "HARD_SL_0_8_PCT_EXIT"
-                position = 0
-                highest_price = 0.0
-            elif midline_break_exit:
-                df.loc[df.index[i], "signal"] = 2  # 跌破 KC 中軌保底平多
-                df.loc[df.index[i], "exit_reason"] = "MIDLINE_BREAK_EXIT"
-                position = 0
-                highest_price = 0.0
-            elif trailing_exit:
-                df.loc[df.index[i], "signal"] = 2  # 超買區高點大幅回檔鎖利平多
-                df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
-                position = 0
-                highest_price = 0.0
-            # 否則：收盤價仍高於 KC 中軌且未觸及止損，下影線毛刺一律判定為良性洗盤，堅定續抱！
+            # -----------------------------------------------------------------
+            # 【核心硬防守】：只要 kc_slope > 0 (KC向上)，絕不因快線向下或回踩中軌而平多！
+            # -----------------------------------------------------------------
+            if slope > 0:
+                if trend_reversal:
+                    df.loc[df.index[i], "signal"] = 2  # 實體跌破下軌，大趨勢徹底反轉平多
+                    df.loc[df.index[i], "exit_reason"] = "LOWER_RAIL_TREND_EXIT"
+                    position = 0
+                    highest_price = 0.0
+                elif trailing_exit:
+                    df.loc[df.index[i], "signal"] = 2  # 衝高回撤超過 2% 且跌破中軌移動止盈
+                    df.loc[df.index[i], "exit_reason"] = "TRAILING_STOP_EXIT"
+                    position = 0
+                    highest_price = 0.0
+                elif hard_sl_long:
+                    df.loc[df.index[i], "signal"] = 2
+                    df.loc[df.index[i], "exit_reason"] = "HARD_SL_LONG_EXIT"
+                    position = 0
+                    highest_price = 0.0
+                # 否則：KC向上過程中的任何回踩中軌或快線下彎，一律判定為正常洗盤，強制續抱一單到底！
+            else:
+                # 當大週期已走平或下行 (slope <= 0)，允許跌破中軌保底平多
+                if current_close < kc_mid:
+                    df.loc[df.index[i], "signal"] = 2
+                    df.loc[df.index[i], "exit_reason"] = "MIDLINE_BREAK_EXIT"
+                    position = 0
+                    highest_price = 0.0
 
         # =====================================================================
         # C. 【持有空單 (position == -1) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)】

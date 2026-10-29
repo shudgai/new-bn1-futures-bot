@@ -33,10 +33,12 @@ def automated_position_exit_allowed(
     side = str(position.get("side") or "").upper()
 
     # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 結構破壞 / 硬性破軌與谷底反彈離場授權：
-    # 多單頂部反轉 / 實體收盤跌破中軌保底平多
+    # 多單頂部反轉 / 跌破KC下軌 / 衝高回撤2%移動止盈 / 實體收盤跌破中軌保底平多
     if side == "LONG" and any(k in normalized_reason for k in (
         "CLOSE_LONG_AT_TOP", "MA3_DEAD_CROSS", "STRUCTURE_BROKEN_PEAK",
         "EXIT_LONG_ON_TOP", "BEARISH_TREND_REVERSAL", "CLOSE_LONG_AT_MIDLINE_BREAK", "MIDLINE_BREAK_EXIT",
+        "CLOSE_LONG_AT_LOWER_RAIL_BREACH", "LOWER_RAIL_TREND_EXIT", "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT",
+        "PEAK_PULLBACK",
     )):
         return True
 
