@@ -541,25 +541,25 @@ def calculate_full_kc_bb_strategy(
         elif position == -1:
             lowest_price = min(lowest_price, current_close)
 
-            # 1. 大趨勢反轉平倉：必須等待 K 棒實體收盤價強勢貫穿突破 KC 上軌 (close > kc_upper)
-            upper_rail_trend_exit = current_close > kc_up
+            # 1. 大波段移動止盈: 自最低谷底反彈超過 1.8% (0.018) 必須鎖利 (防止利潤大幅吐光)
+            trailing_stop_threshold = 0.018
+            trailing_exit = (lowest_price > 0) and (current_close > lowest_price * (1.0 + trailing_stop_threshold))
 
-            # 2. 谷底強勢反彈止盈：當浮動獲利曾展開後，自最低谷底價格 (lowest_price) 反彈幅度超過 2.0% (0.02)
-            #    中軌向下 (slope < 0) 時，完全刪除所有 MA3/MA15 交叉、快線勾頭或中軌碰觸平倉，一單到底！
-            rebound_threshold_pct = 0.020  # 2.0% 谷底強勢反彈止盈
-            valley_rebound_exit = (lowest_price > 0) and (current_close > lowest_price * (1.0 + rebound_threshold_pct))
+            # 2. 【核心破軌防線】: 只要實體收盤價突破 KC 通道上軌 (破軌)，無條件強制平空！
+            # (無論當前大週期 slope 是正還是負，破軌就必須跑！)
+            hard_breakout_exit = current_close > kc_up
 
-            # 3. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5% 或突破上軌)
+            # 3. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
             hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.015)
 
-            if upper_rail_trend_exit:
-                df.loc[df.index[i], "signal"] = -2  # 強勢貫穿 KC 上軌，大趨勢反轉平空
+            if hard_breakout_exit:
+                df.loc[df.index[i], "signal"] = -2  # 強勢突破 KC 上軌破軌，無條件強制平空
                 df.loc[df.index[i], "exit_reason"] = "UPPER_RAIL_TREND_EXIT"
                 position = 0
                 lowest_price = 0.0
-            elif valley_rebound_exit:
-                df.loc[df.index[i], "signal"] = -2  # 自谷底最低價反彈超過 2.0% 移動止盈
-                df.loc[df.index[i], "exit_reason"] = "VALLEY_REBOUND_2_0_PCT_EXIT"
+            elif trailing_exit:
+                df.loc[df.index[i], "signal"] = -2  # 自谷底最低價反彈超過 1.8% 移動止盈落袋
+                df.loc[df.index[i], "exit_reason"] = "VALLEY_REBOUND_1_8_PCT_EXIT"
                 position = 0
                 lowest_price = 0.0
             elif hard_sl_short:

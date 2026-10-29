@@ -583,21 +583,25 @@ class ExecutionManager:
             if not should_exit:
                 # 🔴 空頭持倉中 (SHORT) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)：
                 if pos_side == "SHORT":
-                    is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
-                    # 1. 唯一平空條件 A：收盤價實體強勢貫穿突破 KC 上軌 (大趨勢反轉)
-                    is_upper_rail_breach = bool(c_c > kc_u)
-
-                    # 2. 唯一平空條件 B：自波段最低谷底價格 (trough_price) 強勢反彈超過 2.0%
                     trough_p = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry)
-                    is_valley_rebound_2pct = bool(trough_p > 0 and c_c > trough_p * 1.020)
 
-                    # 3. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
-                    is_hard_sl_short = bool(pos_entry > 0 and c_c >= pos_entry * 1.015)
+                    # 1. 【核心破軌防線】：只要價格或收盤實體突破 KC 通道上軌 (破軌)，無論大週期方向，無條件強制平空！
+                    is_upper_rail_breach = bool(c_c > kc_u or curr_quote > kc_u)
+
+                    # 2. 【大波段移動止盈】：自最低谷底價格 (trough_price) 反彈超過 1.8%，動態鎖利平空 (防止利潤大幅吐光)
+                    is_valley_rebound_1_8pct = bool(trough_p > 0 and (c_c > trough_p * 1.018 or curr_quote > trough_p * 1.018))
+
+                    # 3. 【大趨勢反轉防線】：當大週期標籤轉為 KC向上 (kc_slope > 0)，且收盤已站上 KC 中軌 (c_c > kc_mid)，空單波段結束平倉！
+                    is_trend_reversed_to_bull = bool(kc_slope > 0 and c_c > kc_mid)
+
+                    # 4. 初始硬性風控止損 (例如暴拉急煞超過成本價 1.5%)
+                    is_hard_sl_short = bool(pos_entry > 0 and (c_c >= pos_entry * 1.015 or curr_quote >= pos_entry * 1.015))
+
+                    is_kc_mid_down = (p_kc_mid > 0 and kc_mid < p_kc_mid) or (kc_slope < -0.000005)
 
                     # ⚠️ 【中軌向下大波段谷底持倉鐵律】：
-                    # 當 KC 中軌向下時，完全刪除所有 MA3/MA15 交叉、快線向上勾或觸碰中軌的平倉條件！
-                    # 下跌過程中的任何微幅反彈陽線，一律視為洗盤雜訊，100% 一票否決平空 (VETO_HOLD)！
-                    if is_kc_mid_down and not is_upper_rail_breach and not is_valley_rebound_2pct and not is_hard_sl_short:
+                    # 當 KC 中軌向下且未破軌、未達 1.8% 反彈、未站上中軌時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
+                    if is_kc_mid_down and not is_upper_rail_breach and not is_valley_rebound_1_8pct and not is_hard_sl_short and not is_trend_reversed_to_bull:
                         logger.info(
                             f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段谷底持倉模式: KC中軌向下 (slope={kc_slope:.6f})，"
                             f"反彈小陽線一律視為洗盤雜訊，一票否決平空，強制鎖死持倉續抱吃滿主跌段！"
@@ -608,10 +612,14 @@ class ExecutionManager:
                         should_exit = True
                         reason = "CLOSE_SHORT_AT_UPPER_RAIL_BREACH"
                         meta = {"pivot_type": "UPPER_RAIL_BREACH", "trigger": "CLOSE_ABOVE_KC_UPPER"}
-                    elif is_valley_rebound_2pct:
+                    elif is_valley_rebound_1_8pct:
                         should_exit = True
                         reason = "CLOSE_SHORT_AT_VALLEY_REBOUND_2PCT"
-                        meta = {"pivot_type": "VALLEY_REBOUND", "trigger": "REBOUND_OVER_2_PCT", "trough_price": trough_p}
+                        meta = {"pivot_type": "VALLEY_REBOUND", "trigger": "REBOUND_OVER_1_8_PCT", "trough_price": trough_p}
+                    elif is_trend_reversed_to_bull:
+                        should_exit = True
+                        reason = "BULLISH_TREND_REVERSAL"
+                        meta = {"pivot_type": "TREND_REVERSAL", "trigger": "KC_UPWARD_OVER_MID"}
                     elif is_hard_sl_short:
                         should_exit = True
                         reason = "HARD_SL_SHORT_EXIT"
