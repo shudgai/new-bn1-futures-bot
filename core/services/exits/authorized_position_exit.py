@@ -38,6 +38,7 @@ def automated_position_exit_allowed(
     if normalized_reason.startswith("EXITGATE:"):
         if side == "LONG" and any(k in normalized_reason for k in (
             "CLOSE_LONG_AT_TOP", "CLOSE_LONG_AT_LOWER_RAIL_BREACH",
+            "CLOSE_LONG_ON_BEARISH_REVERSAL", "CLOSE_LONG_MEME_WICK_BUFFER_SL",
             "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT", "EARLY_PIVOT_PEAK_EXIT",
             "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_PEAK",
             "EXIT_LONG_AT_PEAK", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
@@ -48,6 +49,7 @@ def automated_position_exit_allowed(
 
         if side == "SHORT" and any(k in normalized_reason for k in (
             "CLOSE_SHORT_AT_BOTTOM", "CLOSE_SHORT_AT_UPPER_RAIL_BREACH",
+            "CLOSE_SHORT_ON_BULLISH_REVERSAL", "CLOSE_SHORT_MEME_WICK_BUFFER_SL",
             "CLOSE_SHORT_AT_VALLEY_REBOUND", "EARLY_PIVOT_VALLEY_EXIT",
             "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
             "EXIT_SHORT_AT_BOTTOM", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",

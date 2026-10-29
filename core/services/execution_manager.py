@@ -1051,19 +1051,19 @@ class ExecutionManager:
                     # 嚴格區分「空頭下降通道中的反彈觸中軌（如 1000PEPE 21:17 & 21:57）」與「真正變多頭」！
                     # 必須同時滿足：
                     # 1. 1M 結構已正式確立多頭 (is_1m_confirmed_bull) 且非大週期空頭鎖定 (not is_zoomed_out_bearish)
-                    # 2. 5棒與10棒 KC 中軌及 MA15 慢線同步拐頭向上 (kc_slope_5_ref > 0 且 m15_c > m15_p)
-                    # 3. 已收線 K 棒與即時報價【雙雙站穩】KC 中軌與 MA15 之上
+                    # 2. 3棒與5棒 KC 中軌及 MA15 慢線同步拐頭向上 (kc_slope_3_ref > 0, kc_slope_5_ref >= 0 且 m15_c >= m15_p)
+                    # 3. 已收線 K 棒與即時報價【雙雙站穩】KC 中軌與 MA15 之上（及時在中軌附近認錯平空，避免拖到反側外軌爆掉！）
                     is_bullish_trend_reversal = bool(
                         is_1m_confirmed_bull
                         and (not is_zoomed_out_bearish)
                         and (m3_c > m15_c)
                         and (m3_c > m3_p)
-                        and (kc_slope > 0 and kc_slope_5_ref > 0)
-                        and (m15_c > m15_p and m15_slope_5_ref >= 0)
+                        and (kc_slope > 0 and kc_slope_3_ref > 0 and kc_slope_5_ref >= 0)
+                        and (m15_c >= m15_p and m15_slope_3_ref >= 0 and m15_slope_5_ref >= 0)
                         and (closed_c > closed_o)
                         and (closed_c > closed_kc_mid and closed_c > m15_c)
                         and (curr_quote > kc_mid and curr_quote > m15_c)
-                        and (closed_c > prev_closed_h and (m3_c - m15_c) >= 0.15 * atr_v)
+                        and ((m3_c - m15_c) >= min_gc_dc_spread)
                     )
 
                     # 1. 【結構破壞防線】：只認「已收線」實體突破 KC 上軌（盤中上影線毛刺一律不算），或 3棒/5棒中軌與慢線全面轉上且突破前高。
@@ -1089,7 +1089,7 @@ class ExecutionManager:
 
                     # 2. 【真谷底確認平空 (True Valley Exit)】：
                     # 嚴格鐵律：大週期空頭未變、3棒/5棒 KC 中軌仍向下 (kc_slope_5_ref < 0)、MA15 慢線仍向下、或價格仍在 KC 中軌/MA15 下方時，100% 鎖死不平空！
-                    # 必須確認：收紅陽線突破 KC 中軌與 MA15 雙防線，且 MA3 > MA15 黃金交叉發散、1棒/3棒/5棒 KC 中軌與 MA15 轉上，才算真谷底反轉！
+                    # 必須確認：收紅陽線突破 KC 中軌與 MA15 雙防線，且 MA3 > MA15 黃金交叉發散、1棒/3棒/5棒 KC 中軌與 MA15 轉上，且處於獲利區間才算真谷底獲利了結！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_lower_wick = min(prev_closed_o, prev_closed_c) - prev_closed_l
@@ -1097,6 +1097,7 @@ class ExecutionManager:
                     ma5_short_ref = float(getattr(market_data, "ma5", m3_c) or m3_c)
                     is_confirmed_true_valley = bool(
                         (has_profit_expansion or favorable_gain_atr >= 1.5 or peak_roe_pct >= 6.0)
+                        and (pos_entry <= 0 or curr_quote <= pos_entry * 0.9985 or peak_roe_pct >= 8.0)
                         and outer_touched_short
                         and (not is_zoomed_out_bearish)
                         and kc_slope > 0
@@ -1116,15 +1117,30 @@ class ExecutionManager:
                         and (closed_c > prev_closed_h or closed_body >= 0.4 * atr_v)
                     )
 
-                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% 且同時突破 KC 中軌與 MA15 且中軌/慢線已走平轉上，動態鎖利平空
+                    # 3. 【大波段移動鎖利 & +6% ROE 保本鎖利防線】：
+                    # (A) 自最低谷底價格 (trough_price) 反彈超過 1.8% 且同時突破 KC 中軌與 MA15 且中軌/慢線已走平轉上，動態鎖利平空
+                    # (B) 若曾達到 peak_roe_pct >= 6.0% 但回吐至成本保本區 (pos_entry * 0.998) 且已收紅陽線站上 KC 中軌與 MA15，立即保本鎖利出場，嚴禁賺錢單變倒賠！
                     is_valley_rebound_1_8pct = bool(
                         trough_p > 0
                         and pos_entry > 0
-                        and ((pos_entry - trough_p) / pos_entry >= 0.015 or has_profit_expansion)
-                        and (not is_zoomed_out_bearish)
-                        and (kc_slope >= 0 and kc_slope_5_ref >= 0 and m15_c >= m15_p)
-                        and (m3_c > m15_c)
-                        and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o and closed_c > closed_kc_mid and closed_c > m15_c)
+                        and (
+                            (
+                                ((pos_entry - trough_p) / pos_entry >= 0.015 or has_profit_expansion)
+                                and (not is_zoomed_out_bearish)
+                                and (kc_slope >= 0 and kc_slope_5_ref >= 0 and m15_c >= m15_p)
+                                and (m3_c > m15_c)
+                                and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o and closed_c > closed_kc_mid and closed_c > m15_c)
+                            )
+                            or (
+                                peak_roe_pct >= 6.0
+                                and (not is_zoomed_out_bearish)
+                                and (kc_slope >= 0 and m15_c >= m15_p and m3_c > m15_c)
+                                and closed_c > closed_o
+                                and closed_c > closed_kc_mid
+                                and closed_c > m15_c
+                                and curr_quote >= pos_entry * 0.9980
+                            )
+                        )
                     )
 
                     # 4. 【妖幣專屬：前高插針點外加 1.2% 緩衝防二次拉爆止損】：
@@ -1184,19 +1200,19 @@ class ExecutionManager:
                     # 嚴格區分「多頭回踩中軌/MA15」與「真正變空頭」！
                     # 必須同時滿足：
                     # 1. 1M 結構已正式確立空頭 (is_1m_confirmed_bear) 且非大週期多頭鎖定 (not is_zoomed_out_bullish)
-                    # 2. 5棒與10棒 KC 中軌及 MA15 慢線同步拐頭向下 (kc_slope_5_ref < 0 且 m15_c < m15_p)
-                    # 3. 已收線 K 棒與即時報價【雙雙跌破】KC 中軌與 MA15 之下
+                    # 2. 3棒與5棒 KC 中軌及 MA15 慢線同步拐頭向下 (kc_slope_3_ref < 0, kc_slope_5_ref <= 0 且 m15_c <= m15_p)
+                    # 3. 已收線 K 棒與即時報價【雙雙跌破】KC 中軌與 MA15 之下（及時在中軌附近認錯平多，避免拖到反側下軌爆掉！）
                     is_bearish_trend_reversal = bool(
                         is_1m_confirmed_bear
                         and (not is_zoomed_out_bullish)
                         and (m3_c < m15_c)
                         and (m3_c < m3_p)
-                        and (kc_slope < 0 and kc_slope_5_ref < 0)
-                        and (m15_c < m15_p and m15_slope_5_ref <= 0)
+                        and (kc_slope < 0 and kc_slope_3_ref < 0 and kc_slope_5_ref <= 0)
+                        and (m15_c <= m15_p and m15_slope_3_ref <= 0 and m15_slope_5_ref <= 0)
                         and (closed_c < closed_o)
                         and (closed_c < closed_kc_mid and closed_c < m15_c)
                         and (curr_quote < kc_mid and curr_quote < m15_c)
-                        and (closed_c < prev_closed_l and (m15_c - m3_c) >= 0.15 * atr_v)
+                        and ((m15_c - m3_c) >= min_gc_dc_spread)
                     )
 
                     # 1. 【結構破壞防線】：只認「已收線」實體跌破 KC 下軌（盤中下影線毛刺一律不算），或 3棒/5棒中軌與慢線全面轉下且跌破前低。
@@ -1223,7 +1239,7 @@ class ExecutionManager:
                     # 2. 【真峰頂確認平多 (True Peak Exit)】：
                     # 嚴格鐵律：大週期多頭未變、3棒/5棒 KC 中軌仍向上 (kc_slope_5_ref > 0)、MA15 慢線仍向上、或價格仍在 KC 中軌/MA15 上方（如龍蝦 21:13 回踩中軌但 KC 中軌仍向上且 MA3 > MA15）時，
                     # 100% 鎖死不平多！
-                    # 必須確認：收黑陰線同時跌破 KC 中軌與 MA15 雙防線，且 MA3 < MA15 死亡交叉發散、1棒/3棒/5棒 KC 中軌與 MA15 轉下，才算真峰頂反轉！
+                    # 必須確認：收黑陰線同時跌破 KC 中軌與 MA15 雙防線，且 MA3 < MA15 死亡交叉發散、1棒/3棒/5棒 KC 中軌與 MA15 轉下，且處於獲利區間才算真峰頂獲利了結！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_upper_wick = prev_closed_h - max(prev_closed_o, prev_closed_c)
@@ -1231,6 +1247,7 @@ class ExecutionManager:
                     ma5_long_ref = float(getattr(market_data, "ma5", m3_c) or m3_c)
                     is_confirmed_true_peak = bool(
                         (has_profit_expansion or favorable_gain_atr >= 1.5 or peak_roe_pct >= 6.0)
+                        and (pos_entry_price <= 0 or curr_quote >= pos_entry_price * 1.0015 or peak_roe_pct >= 8.0)
                         and outer_touched_long
                         and (not is_zoomed_out_bullish)
                         and kc_slope < 0
@@ -1250,15 +1267,30 @@ class ExecutionManager:
                         and (closed_c < prev_closed_l or closed_body >= 0.4 * atr_v)
                     )
 
-                    # 3. 【大波段移動鎖利】：盈利達標後，自最高點回撤超過 1.8% 且同時跌破 KC 中軌與 MA15 且中軌/慢線已走平轉下，精準鎖利平多
+                    # 3. 【大波段移動鎖利 & +6% ROE 保本鎖利防線】：
+                    # (A) 盈利達標後，自最高點回撤超過 1.8% 且同時跌破 KC 中軌與 MA15 且中軌/慢線已走平轉下，精準鎖利平多
+                    # (B) 若曾達到 peak_roe_pct >= 6.0% 但回吐至成本保本區 (pos_entry_price * 1.002) 且已收黑陰線跌破 KC 中軌與 MA15，立即保本鎖利出場，嚴禁賺錢單變倒賠！
                     is_peak_pullback_2pct = bool(
                         peak_p > 0
                         and pos_entry_price > 0
-                        and ((peak_p - pos_entry_price) / pos_entry_price >= 0.015 or has_profit_expansion)
-                        and (not is_zoomed_out_bullish)
-                        and (kc_slope <= 0 and kc_slope_5_ref <= 0 and m15_c <= m15_p)
-                        and (m3_c < m15_c)
-                        and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o and closed_c < closed_kc_mid and closed_c < m15_c)
+                        and (
+                            (
+                                ((peak_p - pos_entry_price) / pos_entry_price >= 0.015 or has_profit_expansion)
+                                and (not is_zoomed_out_bullish)
+                                and (kc_slope <= 0 and kc_slope_5_ref <= 0 and m15_c <= m15_p)
+                                and (m3_c < m15_c)
+                                and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o and closed_c < closed_kc_mid and closed_c < m15_c)
+                            )
+                            or (
+                                peak_roe_pct >= 6.0
+                                and (not is_zoomed_out_bullish)
+                                and (kc_slope <= 0 and m15_c <= m15_p and m3_c < m15_c)
+                                and closed_c < closed_o
+                                and closed_c < closed_kc_mid
+                                and closed_c < m15_c
+                                and curr_quote <= pos_entry_price * 1.0020
+                            )
+                        )
                     )
 
                     # 4. 【妖幣專屬：前低插針點外加 1.2% 緩衝防二次下砸止損】：
@@ -1608,10 +1640,44 @@ class ExecutionManager:
             meme_wick_buffer_sl_long = meme_pinbar_low_ref * 0.988 if (is_meme_3x_pinbar_long or is_meme_vol_surge_breakout_long) else 0.0
             meme_wick_buffer_sl_short = meme_pinbar_high_ref * 1.012 if (is_meme_3x_pinbar_short or is_meme_vol_surge_breakdown_short) else 0.0
 
-            # ⚖️ 【黃金交叉 / 死亡交叉確立才開倉，且若先前交叉時慢線未轉向、現在已確認發散則立即補上車】：
+            # ⚖️ 【黃金交叉 / 死亡交叉確立才開倉 + 通道獲利空間 (Room Ready) + 已收線確認防毛刺】：
             # 1. 嚴禁 MA3 與 MA15 剛微幅觸碰/未發散就急著開倉：必須具備明確發散間距 ((m3_c - m15_c) >= min_gc_dc_spread) 且具備實體動能棒！
-            # 2. 解決「已經交叉好久卻不開倉」：只要 MA3 與 MA15 處於黃金交叉/死亡交叉發散狀態，且 KC 中軌 (1棒/3棒/5棒) 與 MA15 (1棒/3棒/5棒) 皆已同步順向，
-            #    無論交叉發生在當根 K 棒還是前幾根 K 棒，只要當前空手 (not has_position)，立即確認進場！
+            # 2. 嚴禁盤中未收線毛刺搶跑與貼軌追高追低：
+            #    - 通道獲利空間 (Room Ready)：做多距離 KC 上軌剩餘空間至少 25% 上半通道寬度且距中軌 <= 1.25 ATR；做空距離 KC 下軌剩餘空間至少 25% 下半通道寬度且距中軌 <= 1.25 ATR！
+            #    - 收線確認：最近一根已收線 1m K 棒必須已站上/跌破 KC 中軌（或爆量突破），嚴禁上一根還在反側時因盤中前 15~45 秒毛刺衝過中軌就提前買在最高點/空在最低點！
+            # 3. 解決「已經交叉好久卻不開倉」：只要黃金交叉/死亡交叉發散狀態確立、通道空間充足且已收線確認順向，無論交叉發生在當根或前幾根 K 棒，空手即刻確認進場！
+            closed_k_entry = c_k
+            if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
+                if not bool(raw_df.iloc[-1].get("is_closed", True)):
+                    closed_k_entry = raw_df.iloc[-2]
+                else:
+                    closed_k_entry = raw_df.iloc[-1]
+            closed_c_entry = float(closed_k_entry.get("close", c_c))
+            closed_o_entry = float(closed_k_entry.get("open", c_o))
+            closed_kcm_entry = float(closed_k_entry.get("kc_middle", kc_mid))
+            closed_m15_entry = float(closed_k_entry.get("ma15", m15_c))
+
+            upper_half_w = max(kc_u - kc_mid, 1e-12)
+            lower_half_w = max(kc_mid - kc_lo, 1e-12)
+            has_room_to_upper_rail = bool(
+                ((kc_u - c_c) >= 0.25 * upper_half_w)
+                and (atr_v <= 0 or (c_c - kc_mid) <= 1.25 * atr_v)
+            )
+            has_room_to_lower_rail = bool(
+                ((c_c - kc_lo) >= 0.25 * lower_half_w)
+                and (atr_v <= 0 or (kc_mid - c_c) <= 1.25 * atr_v)
+            )
+            is_closed_bar_bull_confirmed = bool(
+                (closed_c_entry >= closed_kcm_entry and closed_c_entry >= closed_m15_entry and closed_c_entry >= closed_o_entry)
+                or is_meme_vol_surge_breakout_long
+                or is_meme_3x_pinbar_long
+            )
+            is_closed_bar_bear_confirmed = bool(
+                (closed_c_entry <= closed_kcm_entry and closed_c_entry <= closed_m15_entry and closed_c_entry <= closed_o_entry)
+                or is_meme_vol_surge_breakdown_short
+                or is_meme_3x_pinbar_short
+            )
+
             is_confirmed_golden_cross_ready = bool(
                 (m3_c > m15_c)
                 and ((m3_c - m15_c) >= min_gc_dc_spread)
@@ -1622,6 +1688,8 @@ class ExecutionManager:
                 and (c_c > c_o)
                 and (atr_v <= 0 or c_bd >= 0.16 * atr_v)
                 and (c_up_w <= 0.85 * max(c_bd, 1e-12))
+                and has_room_to_upper_rail
+                and is_closed_bar_bull_confirmed
             )
             is_confirmed_death_cross_ready = bool(
                 (m3_c < m15_c)
@@ -1633,6 +1701,8 @@ class ExecutionManager:
                 and (c_c < c_o)
                 and (atr_v <= 0 or c_bd >= 0.16 * atr_v)
                 and (c_lo_w <= 0.85 * max(c_bd, 1e-12))
+                and has_room_to_lower_rail
+                and is_closed_bar_bear_confirmed
             )
 
             # MA3 穿越 KC 中軌（必須伴隨黃金交叉/死亡交叉發散確認，嚴禁未形成黃金/死亡交叉就單憑穿中軌搶跑開倉！）
@@ -1647,19 +1717,41 @@ class ExecutionManager:
                 and ((m3_c <= kc_mid and m3_p >= kc_mid) or (c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)))
             )
 
+            # 平倉後防秒級連環反手與同區間雙巴冷卻門檻（Stage 3.1 與 Stage 3.2 共用）：
+            acc_key_stage3 = cls._get_account_key(account, symbol)
+            last_exit_stage3 = cls._last_exit_record.get(acc_key_stage3)
+            pivot_cooldown_blocked = False
+            if last_exit_stage3:
+                elapsed_s3 = time.time() - float(last_exit_stage3.get("timestamp", 0.0))
+                last_exit_reason_s3 = str(last_exit_stage3.get("reason", "")).upper()
+                is_loss_or_breach_exit = any(
+                    k in last_exit_reason_s3
+                    for k in ("OPPOSITE_KC_BAND_BREACH", "REVERSAL", "RAIL_BREACH", "STOP_LOSS", "WATERFALL")
+                )
+                min_wait_s3 = 60.0 if is_loss_or_breach_exit else 45.0
+                if elapsed_s3 < min_wait_s3:
+                    pivot_cooldown_blocked = True
+                    logger.debug(
+                        f"⏳ [PIVOT_COOLDOWN] {symbol} 剛平倉 ({last_exit_reason_s3}) 僅 {elapsed_s3:.1f}s < {min_wait_s3:.0f}s，"
+                        f"禁止秒級搶跑反手或連環追單！"
+                    )
+
             # 嚴格順勢方向審查（精準開多開空，絕不開錯邊，拉遠看是空頭絕不開多、多頭絕不開空）：
             # 做多必須 KC 中軌向上 (kc_slope > 0, kc_slope_3 > 0, kc_slope_5 >= 0)、MA15 向上、拉遠非空頭 (not is_zoomed_out_bearish)、且黃金交叉發散確立；
             # 賣空必須 KC 中軌向下 (kc_slope < 0, kc_slope_3 < 0, kc_slope_5 <= 0)、MA15 向下、拉遠非多頭 (not is_zoomed_out_bullish)、且死亡交叉發散確立！
             can_open_long = bool(
-                (
+                (not pivot_cooldown_blocked)
+                and (
                     is_confirmed_golden_cross_ready
                     or is_cross_mid_long
-                    or is_valid_gc
+                    or (is_valid_gc and has_room_to_upper_rail and is_closed_bar_bull_confirmed)
                     or is_true_bottom
                     or is_meme_3x_pinbar_long
                     or is_meme_vol_surge_breakout_long
-                    or (is_1m_confirmed_bull and c_c >= m3_c)
+                    or (is_1m_confirmed_bull and c_c >= m3_c and has_room_to_upper_rail and is_closed_bar_bull_confirmed)
                 )
+                and (has_room_to_upper_rail or is_meme_vol_surge_breakout_long or is_meme_3x_pinbar_long)
+                and is_closed_bar_bull_confirmed
                 and (not is_heavy_bear_smash)
                 and (not (is_weak_body_now and kc_slope <= 0 and not is_meme_3x_pinbar_long))
                 and (m3_c > m15_c)
@@ -1679,15 +1771,18 @@ class ExecutionManager:
                 and (not is_sqz_now or is_meme_vol_surge_breakout_long)
             )
             can_open_short = bool(
-                (
+                (not pivot_cooldown_blocked)
+                and (
                     is_confirmed_death_cross_ready
                     or is_cross_mid_short
-                    or is_valid_dc
+                    or (is_valid_dc and has_room_to_lower_rail and is_closed_bar_bear_confirmed)
                     or is_true_peak
                     or is_meme_3x_pinbar_short
                     or is_meme_vol_surge_breakdown_short
-                    or (is_1m_confirmed_bear and c_c <= m3_c)
+                    or (is_1m_confirmed_bear and c_c <= m3_c and has_room_to_lower_rail and is_closed_bar_bear_confirmed)
                 )
+                and (has_room_to_lower_rail or is_meme_vol_surge_breakdown_short or is_meme_3x_pinbar_short)
+                and is_closed_bar_bear_confirmed
                 and (not is_heavy_bull_surge)
                 and (not (is_weak_body_now and kc_slope >= 0 and not is_meme_3x_pinbar_short))
                 and (m3_c < m15_c)
@@ -2196,6 +2291,8 @@ class ExecutionManager:
                 and ma3_curr > ma3_prev
                 and curr_close > curr_open
                 and c_body_now >= 0.16 * atr_val_now
+                and has_room_to_upper_rail
+                and is_closed_bar_bull_confirmed
                 and curr_close < (kc_up_val - 0.10 * atr_val_now)
             )
             # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點，但拉遠看空頭時嚴禁逆勢反彈追多）：
@@ -2216,6 +2313,7 @@ class ExecutionManager:
                 and upper_wick_check <= c_body_now
                 and curr_close > curr_open
                 and ma3_curr > ma3_prev
+                and is_closed_bar_bull_confirmed
             )
             # 🟢 多頭觸發點 C（黃金交叉確立後順勢延續補上車：解決「已經交叉好久卻不開倉」！只要黃金交叉發散確立且穩居中軌與 MA15 之上收陽，立即補倉買多！）：
             agile_continuation_long = (
@@ -2236,6 +2334,8 @@ class ExecutionManager:
                 and ma3_curr > ma3_prev
                 and curr_close > curr_open
                 and c_body_now >= 0.16 * atr_val_now
+                and has_room_to_upper_rail
+                and is_closed_bar_bull_confirmed
             )
 
             # 🔴 空頭觸發點 A（MA3 與 MA15 死亡交叉發散確立，解決「剛觸碰就亂開」與「已經交叉好久卻不開倉」雙重痛點）：
@@ -2256,6 +2356,8 @@ class ExecutionManager:
                 and ma3_curr < ma3_prev
                 and curr_close < curr_open
                 and c_body_now >= 0.16 * atr_val_now
+                and has_room_to_lower_rail
+                and is_closed_bar_bear_confirmed
                 and curr_close > (kc_low_val + 0.10 * atr_val_now)
             )
             # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空，但拉遠看多頭時嚴禁逆勢殺跌）：
@@ -2276,6 +2378,7 @@ class ExecutionManager:
                 and lower_wick_check <= c_body_now
                 and curr_close < curr_open
                 and ma3_curr < ma3_prev
+                and is_closed_bar_bear_confirmed
             )
             # 🔴 空頭觸發點 C（死亡交叉確立後順勢延續補上車：解決「已經交叉好久卻不開倉」！只要死亡交叉發散確立且受壓於中軌與 MA15 之下收陰，立即補倉賣空！）：
             agile_continuation_short = (
@@ -2296,6 +2399,8 @@ class ExecutionManager:
                 and ma3_curr < ma3_prev
                 and curr_close < curr_open
                 and c_body_now >= 0.16 * atr_val_now
+                and has_room_to_lower_rail
+                and is_closed_bar_bear_confirmed
             )
 
             # ══════════════════════════════════════════════════════════════════
@@ -2492,23 +2597,28 @@ class ExecutionManager:
                 or ((can_long or can_short) and c_body >= 0.25 * market_data.atr)
             )
 
-            # 1. 平倉後強制冷卻檢查 (若趨勢已明確反轉為反向多頭/空頭，豁免舊倉冷卻，立即順新趨勢開倉！)
+            # 1. 平倉後強制冷卻檢查：嚴防秒級搶跑反手或同區間雙巴連環虧損
             acc_key = cls._get_account_key(account, symbol)
             last_exit = cls._last_exit_record.get(acc_key)
             if last_exit:
                 last_exit_side = str(last_exit.get("side", "")).upper()
+                last_exit_reason = str(last_exit.get("reason", "")).upper()
+                is_loss_or_breach_exit = any(
+                    k in last_exit_reason
+                    for k in ("OPPOSITE_KC_BAND_BREACH", "REVERSAL", "RAIL_BREACH", "STOP_LOSS", "WATERFALL")
+                )
                 is_opposite_reversal_ready = bool(
-                    (last_exit_side == "SHORT" and is_1m_confirmed_bull and can_long)
-                    or (last_exit_side == "LONG" and is_1m_confirmed_bear and can_short)
+                    (last_exit_side == "SHORT" and is_1m_confirmed_bull and is_closed_bar_bull_confirmed and has_room_to_upper_rail and can_long)
+                    or (last_exit_side == "LONG" and is_1m_confirmed_bear and is_closed_bar_bear_confirmed and has_room_to_lower_rail and can_short)
                 )
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
-                if not is_opposite_reversal_ready:
-                    if elapsed_sec < 20:
-                        logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後 20 秒防重複下單保護中 ({elapsed_sec:.1f}s)")
-                        return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
-                    if not is_strong_breakout and elapsed_sec < 120:
-                        logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉冷卻中: 剩餘 {120 - elapsed_sec:.1f} 秒")
-                        return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
+                min_cooldown_sec = 60.0 if is_loss_or_breach_exit else 45.0
+                if elapsed_sec < min_cooldown_sec:
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後 {min_cooldown_sec:.0f} 秒防雙巴保護中 ({elapsed_sec:.1f}s)")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
+                if not is_opposite_reversal_ready and not is_strong_breakout and elapsed_sec < 120:
+                    logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉冷卻中: 剩餘 {120 - elapsed_sec:.1f} 秒")
+                    return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
             # 1.1 禁止無效的「平多 + 同價位重複買多」：若已突破外軌或順勢收陽延續則放行延續開倉！
             if last_exit and not is_strong_breakout:
