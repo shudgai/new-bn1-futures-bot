@@ -64,9 +64,10 @@ def check_pivot_status(
     atr_val = float(current_atr or 0.0)
 
     # 🟢 1. 空頭持倉離場 / 真谷底判定 (1000PEPE 12:10 & 13:14 防洗盤鎖定)
+    # 妖幣插針比例提高為 3 倍以上 (lower_wick >= 3.0 * curr_body)：普通下影線僅為隨機波動，唯有極致爆量長下影線才具主力吸籌轉折價值！
     is_ma3_golden_cross = (ma3_curr >= ma15_curr) and (ma3_prev <= ma15_prev) and (curr_close >= ma15_curr)
     is_engulfing_bottom = (prev_close < prev_kc_lower) and (curr_close > curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close >= ma15_curr)
-    is_pinbar_bottom = (lower_wick >= 1.2 * curr_body) and (curr_close > curr_open) and (float(curr_k.get('low', curr_close)) <= kc_lower) and (curr_close >= ma15_curr)
+    is_pinbar_bottom = (lower_wick >= 3.0 * max(curr_body, 1e-12)) and (curr_close > curr_open) and (float(curr_k.get('low', curr_close)) <= kc_lower) and (curr_close >= ma15_curr)
     is_spike_bottom = (curr_body >= 1.8 * atr_val) and (curr_close > curr_open) and (curr_close >= ma15_curr)
 
     # ⚠️ 收盤價在 MA15 下方 (curr_close < ma15_curr) 且未金叉的小綠 K，平空邏輯強制否決！
@@ -75,7 +76,7 @@ def check_pivot_status(
     # 🟢 2. 多頭持倉離場 / 真峰頂判定 (龍蝦 12:14 防洗盤鎖定)
     is_ma3_dead_cross = (ma3_curr <= ma15_curr) and (ma3_prev >= ma15_prev) and (curr_close <= ma15_curr)
     is_engulfing_peak = (prev_close > prev_kc_upper) and (curr_close < curr_open) and (curr_body >= 0.6 * prev_body) and (curr_close <= ma15_curr)
-    is_pinbar_peak = (upper_wick >= 1.2 * curr_body) and (curr_close < curr_open) and (float(curr_k.get('high', curr_close)) >= kc_upper) and (curr_close <= ma15_curr)
+    is_pinbar_peak = (upper_wick >= 3.0 * max(curr_body, 1e-12)) and (curr_close < curr_open) and (float(curr_k.get('high', curr_close)) >= kc_upper) and (curr_close <= ma15_curr)
     is_spike_peak = (curr_body >= 1.8 * atr_val) and (curr_close < curr_open) and (curr_close <= ma15_curr)
 
     # ⚠️ 收盤價在 MA15 上方 (curr_close > ma15_curr) 且 MA3 未死叉的回踩紅 K，平多邏輯強制否決！
@@ -1031,20 +1032,30 @@ class ExecutionManager:
                         and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o and closed_c > closed_kc_mid and closed_c > m15_c)
                     )
 
-                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，走到真谷底或結構破壞再平倉」
-                    is_hard_sl_short = False
+                    # 4. 【妖幣專屬：前高插針點外加 1.2% 緩衝防二次拉爆止損】：
+                    meme_wick_sl_short = float(current_position.get("meme_wick_stop_loss") or 0.0)
+                    is_hard_sl_short = bool(
+                        meme_wick_sl_short > 0
+                        and closed_c > meme_wick_sl_short
+                        and curr_quote > meme_wick_sl_short
+                        and closed_c > closed_o
+                    )
 
                     # ⚠️ 【大週期不變谷底持倉鐵律】：
                     # 只要大週期空頭未變，未發生趨勢翻多、結構破壞、真谷底轉折、谷底破中軌鎖利時，
                     # 一票否決平空 (VETO_HOLD)，中間絕對不平空，從第一個賣空一路抱到底吃滿整個主跌段！
-                    if not is_bullish_trend_reversal and not is_upper_rail_breach and not is_confirmed_true_valley and not is_valley_rebound_1_8pct:
+                    if not is_bullish_trend_reversal and not is_upper_rail_breach and not is_confirmed_true_valley and not is_valley_rebound_1_8pct and not is_hard_sl_short:
                         logger.info(
                             f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段一單到底模式: (slope={kc_slope:.6f}, close={closed_c:.6f}, kc_mid={closed_kc_mid:.6f})，"
                             f"大週期空頭未變且結構未破壞，中間反彈小陽線一律視為洗盤雜訊，一票否決平空，強制續抱吃滿主跌段！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                    if is_bullish_trend_reversal:
+                    if is_hard_sl_short:
+                        should_exit = True
+                        reason = "CLOSE_SHORT_MEME_WICK_BUFFER_SL"
+                        meta = {"pivot_type": "MEME_WICK_STOP_LOSS", "trigger": "ABOVE_PINBAR_HIGH_BUFFER", "stop_loss": meme_wick_sl_short}
+                    elif is_bullish_trend_reversal:
                         should_exit = True
                         reason = "CLOSE_SHORT_ON_BULLISH_REVERSAL"
                         meta = {"pivot_type": "BULLISH_TREND_REVERSAL", "trigger": "MA3_ABOVE_MA15_AND_KC_MID", "trough_price": trough_p}
@@ -1142,18 +1153,29 @@ class ExecutionManager:
                         and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o and closed_c < closed_kc_mid and closed_c < m15_c)
                     )
 
-                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，若是多頭要繼續走下去，走到峰頂再平倉」
-                    is_hard_sl_long = False
+                    # 4. 【妖幣專屬：前低插針點外加 1.2% 緩衝防二次下砸止損】：
+                    # 僅當該筆多單由「妖幣 3 倍超長下影線插針 / 支撐預警吸籌」觸發進場且設有 wick_buffer_sl 時啟動！
+                    meme_wick_sl_long = float(current_position.get("meme_wick_stop_loss") or 0.0)
+                    is_hard_sl_long = bool(
+                        meme_wick_sl_long > 0
+                        and closed_c < meme_wick_sl_long
+                        and curr_quote < meme_wick_sl_long
+                        and closed_c < closed_o
+                    )
 
                     # ⚠️ 【大週期不變持倉鐵律】：
-                    if not is_bearish_trend_reversal and not is_lower_rail_breach and not is_confirmed_true_peak and not is_peak_pullback_2pct:
+                    if not is_bearish_trend_reversal and not is_lower_rail_breach and not is_confirmed_true_peak and not is_peak_pullback_2pct and not is_hard_sl_long:
                         logger.info(
                             f"🛡️ [TREND_LOCK_MASTER_LOCK_LONG] {symbol} 多單大波段持倉鎖定: (slope={kc_slope:.6f})，"
                             f"回踩中軌、下影線洗盤或均線死叉一律視為正常呼吸，一票否決平多，強制鎖死持倉一單到底！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
-                    if is_bearish_trend_reversal:
+                    if is_hard_sl_long:
+                        should_exit = True
+                        reason = "CLOSE_LONG_MEME_WICK_BUFFER_SL"
+                        meta = {"pivot_type": "MEME_WICK_STOP_LOSS", "trigger": "BELOW_PINBAR_LOW_BUFFER", "stop_loss": meme_wick_sl_long}
+                    elif is_bearish_trend_reversal:
                         should_exit = True
                         reason = "CLOSE_LONG_ON_BEARISH_REVERSAL"
                         meta = {"pivot_type": "BEARISH_TREND_REVERSAL", "trigger": "MA3_BELOW_MA15_AND_KC_MID", "peak_price": peak_p}
@@ -1380,12 +1402,66 @@ class ExecutionManager:
             candidate_side = None
             entry_type = None
 
-            # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制
+            # 🟢 2. 無持倉狀態 (NONE) 的起漲/起跌點防錯失機制 + 妖幣專用 K 線與量能重塑邏輯
             # 支援已收線 K 棒或盤中即時確認觸發，避免因每分鐘 59 秒未收線而錯過起點！
             c_is_closed = True
             # 支援【MA3 穿越 KC 中軌】與【MA3 交叉 MA15】雙重敏捷觸發！
             is_valid_gc = is_valid_golden_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
             is_valid_dc = is_valid_dead_cross(m3_c, m3_p, m15_c, m15_p, atr_v)
+
+            # ── 🧬 【妖幣專用 - K 線型態與量能爆發重塑邏輯】 ──
+            curr_vol_now = float(c_k.get("volume", 0.0) or 0.0)
+            prev_vol_now = float(p_k.get("volume", 0.0) or 0.0)
+            vol_ma20_now = float(c_k.get("volume_ma20", getattr(market_data, "volume_ma20", 0.0)) or 0.0)
+            if vol_ma20_now <= 0 and raw_df is not None and isinstance(raw_df, pd.DataFrame) and "volume" in raw_df.columns and len(raw_df) >= 5:
+                vol_ma20_now = float(raw_df["volume"].astype(float).rolling(20, min_periods=1).mean().iloc[-1] or 0.0)
+
+            # (1) 大實體向下（強空砸盤）：大實體陰線下砸且幾乎無下影線，視為主力強砸，嚴禁開多接飛刀！
+            is_heavy_bear_smash = bool(
+                c_c < c_o
+                and atr_v > 0
+                and c_bd >= 0.85 * atr_v
+                and c_lo_w <= 0.15 * c_bd
+            )
+            # (2) 弱實體（小 K 線）：
+            #   - 在「KC 向下 / 熊市」結構中：弱實體視為跌勢中繼，禁止開多。
+            #   - 若「已跌至極限/打到關鍵支撐」且伴隨「極致縮量」(vol < 0.65 * vol_ma20)：進入預警區 (is_support_low_vol_alert)，等待下一根主力放量買盤啟動！
+            is_weak_body_now = bool(atr_v > 0 and c_bd < 0.22 * atr_v)
+            is_prev_weak_at_support_low_vol = bool(
+                atr_v > 0
+                and p_bd < 0.25 * atr_v
+                and (vol_ma20_now <= 0 or prev_vol_now <= 0.70 * vol_ma20_now)
+                and (p_l <= kc_lo * 1.003 or is_support_wall_block_short)
+            )
+            # (3) 妖幣核心開多訊號 A — 超長下影線（洗盤插針 >= 實體 3 倍以上 + 爆量拉回）：
+            # 瞬間跌破下軌/支撐又爆量拉回且站回 MA3/中軌，代表主力爆破槓桿後吸籌！
+            is_meme_3x_pinbar_long = bool(
+                c_lo_w >= 3.0 * max(c_bd, 1e-12)
+                and (c_l <= kc_lo or is_support_wall_block_short)
+                and c_c >= c_o
+                and c_c > kc_mid
+                and m3_c > m15_c
+                and (vol_ma20_now <= 0 or curr_vol_now >= 1.25 * vol_ma20_now)
+            )
+            # (4) 妖幣核心開多訊號 B — 實體突破 + 爆量（主力拉升）：
+            # 中大實體綠棒直接站回均線 (MA3/MA15) 與 KC 中軌之上，且成交量顯著放大（或承接前根極致縮量支撐預警區），優先於慢速型態進場！
+            is_meme_vol_surge_breakout_long = bool(
+                c_c > c_o
+                and atr_v > 0
+                and c_bd >= 0.45 * atr_v
+                and c_c > kc_mid
+                and c_c > m15_c
+                and m3_c > m15_c
+                and m3_c > m3_p
+                and c_up_w <= 0.6 * c_bd
+                and (
+                    (vol_ma20_now > 0 and curr_vol_now >= 1.35 * vol_ma20_now)
+                    or (is_prev_weak_at_support_low_vol and (vol_ma20_now <= 0 or curr_vol_now >= 1.10 * vol_ma20_now))
+                )
+            )
+            # 妖幣前低插針點外加 1.2% 緩衝硬性防二次下砸停損價
+            meme_pinbar_low_ref = min(c_l, p_l)
+            meme_wick_buffer_sl_long = meme_pinbar_low_ref * 0.988 if (is_meme_3x_pinbar_long or is_meme_vol_surge_breakout_long) else 0.0
 
             # MA3 穿越 KC 中軌（極速啟動多空轉換）
             is_cross_mid_long = bool(
@@ -1406,19 +1482,28 @@ class ExecutionManager:
             # 🐒 猴市鐵律（方案 3）：猴市不隨意摸頂摸底，只有已收線突破區間 (range_breakout_side) 時才允許順勢開倉！
             # ⚖️ 【使用者最高鐵律】：MA3 必須在 MA15 上方 (m3_c > m15_c) 才准開多單；MA3 必須在 MA15 下方 (m3_c < m15_c) 才准開空單！
             can_open_long = bool(
-                (is_cross_mid_long or is_valid_gc or is_true_bottom or (is_1m_confirmed_bull and c_c >= m3_c))
+                (
+                    is_cross_mid_long
+                    or is_valid_gc
+                    or is_true_bottom
+                    or is_meme_3x_pinbar_long
+                    or is_meme_vol_surge_breakout_long
+                    or (is_1m_confirmed_bull and c_c >= m3_c)
+                )
+                and (not is_heavy_bear_smash)
+                and (not (is_weak_body_now and kc_slope <= 0 and not is_meme_3x_pinbar_long))
                 and (m3_c > m15_c)
-                and (not is_ma3_midline_adhered)
-                and (not is_chop_zone or range_breakout_side == "LONG")
+                and (not is_ma3_midline_adhered or is_meme_vol_surge_breakout_long)
+                and (not is_chop_zone or range_breakout_side == "LONG" or is_meme_vol_surge_breakout_long)
                 and allow_long_defense
                 and (not is_zoomed_out_bearish)
-                and (market_regime != "RANGE" or range_breakout_side == "LONG")
+                and (market_regime != "RANGE" or range_breakout_side == "LONG" or is_meme_vol_surge_breakout_long)
                 and (m3_c > m3_p)
                 and (m3_c > kc_mid and c_c > kc_mid)
                 and (c_c > c_o)
                 and (kc_slope >= 0)
                 and not is_chasing_high
-                and (not is_sqz_now)
+                and (not is_sqz_now or is_meme_vol_surge_breakout_long)
             )
             can_open_short = bool(
                 (is_cross_mid_short or is_valid_dc or is_true_peak or (is_1m_confirmed_bear and c_c <= m3_c))
@@ -1479,6 +1564,7 @@ class ExecutionManager:
                     "is_cross_mid": True,
                     "no_rigid_sl": True,
                     "stop_loss_price": None,
+                    "meme_wick_stop_loss": meme_wick_buffer_sl_long if candidate_side == "LONG" else 0.0,
                     "upstream_entry_gate_authorized": True,
                     "intrabar_authorized": intrabar_flag,
                     "allow_kc_internal": True,
@@ -3052,6 +3138,9 @@ class ExecutionManager:
                             pos.pop("peak_net_roe_pct", None)
                             pos.pop("profit_lock_armed", None)
                             pos.pop("peak_roe", None)
+                            wick_sl_val = float((meta or {}).get("meme_wick_stop_loss") or 0.0)
+                            if wick_sl_val > 0:
+                                pos["meme_wick_stop_loss"] = wick_sl_val
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 else:
