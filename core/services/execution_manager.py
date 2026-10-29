@@ -617,19 +617,19 @@ class ExecutionManager:
         ma3_ma15_spread_ratio = ma3_ma15_diff / m15_c if m15_c > 0 else 0.0
 
         # 1. 【MA3 中軌貼合判定 (is_ma3_midline_adhered)】：
-        # 當 MA3 與 KC 中軌距離過近 (|m3_c - kc_mid| / kc_mid < 0.0012 或 |m3_c - kc_mid| < 0.18 * ATR)，
-        # 或 MA3 與 MA15 高度貼合 (|m3_c - m15_c| / m15_c < 0.0008 或 |m3_c - m15_c| < 0.12 * ATR)，
+        # 當 MA3 與 KC 中軌距離過近 (|m3_c - kc_mid| / kc_mid < 0.00055 或 |m3_c - kc_mid| < 0.10 * ATR)，
+        # 或 MA3 與 MA15 高度貼合 (|m3_c - m15_c| / m15_c < 0.00045 或 |m3_c - m15_c| < 0.08 * ATR)，
         # 代表均線與中軌黏合毫無動能方向，100% 禁止開倉！
         is_ma3_midline_adhered = bool(
-            ma_dist_now < 0.0012
-            or (atr_v > 0 and ma3_mid_diff < 0.18 * atr_v)
-            or ma3_ma15_spread_ratio < 0.0008
-            or (atr_v > 0 and ma3_ma15_diff < 0.12 * atr_v)
+            ma_dist_now < 0.00055
+            or (atr_v > 0 and ma3_mid_diff < 0.10 * atr_v)
+            or ma3_ma15_spread_ratio < 0.00045
+            or (atr_v > 0 and ma3_ma15_diff < 0.08 * atr_v)
         )
 
         # 2. 【震盪區 / 均線糾纏判定 (is_chop_zone)】：
         # 檢查近 8 根 K 棒內 MA3 與 KC 中軌 (或 MA15) 是否反覆交錯糾纏 (>= 2 次交錯)，
-        # 或 KC 中軌斜率極度走平 (|kc_slope| < 0.05 * ATR 且未突破外軌)，或處於 RANGE 猴市震盪區！
+        # 或 KC 中軌斜率極度走平 (|kc_slope| < 0.03 * ATR 且未突破外軌)，或處於 RANGE 猴市震盪區！
         ma3_mid_cross_8 = 0
         ma3_m15_cross_8 = 0
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 15 and "close" in raw_df.columns:
@@ -639,21 +639,21 @@ class ExecutionManager:
                 s_ma15_w = raw_df["ma15"].astype(float) if "ma15" in raw_df.columns else s_close_w.rolling(15, min_periods=1).mean()
                 s_kcm_w = raw_df["kc_middle"].astype(float) if "kc_middle" in raw_df.columns else s_close_w.ewm(span=20, adjust=False).mean()
                 diff_mid_sign = (s_ma3_w - s_kcm_w).iloc[-8:].apply(lambda v: 1 if v >= 0 else -1)
-                diff_m15_sign = (s_ma3_w - s_m15_w if "s_m15_w" in locals() else (s_ma3_w - s_ma15_w)).iloc[-8:].apply(lambda v: 1 if v >= 0 else -1)
+                diff_m15_sign = (s_ma3_w - s_ma15_w).iloc[-8:].apply(lambda v: 1 if v >= 0 else -1)
                 ma3_mid_cross_8 = int((diff_mid_sign.diff().abs() > 0).sum())
                 ma3_m15_cross_8 = int((diff_m15_sign.diff().abs() > 0).sum())
             except Exception:
                 ma3_mid_cross_8 = 0
                 ma3_m15_cross_8 = 0
 
-        is_kc_slope_flat = bool(atr_v > 0 and abs(kc_slope) < 0.04 * atr_v and kc_lo <= c_c <= kc_u)
+        is_kc_slope_flat = bool(atr_v > 0 and abs(kc_slope) < 0.03 * atr_v and kc_lo <= c_c <= kc_u)
         is_chop_zone = bool(
             market_regime == "RANGE"
             or is_choppy
             or is_sqz_now
             or is_kc_slope_flat
-            or (ma3_mid_cross_8 >= 2 and ma_dist_now < 0.0025)
-            or (ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0020)
+            or (ma3_mid_cross_8 >= 2 and ma_dist_now < 0.0018)
+            or (ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0015)
         )
 
         # 🎯 核心全域裁決：檢測「真谷底 (True Bottom)」與「真峰頂 (True Top)」(方案 B)
