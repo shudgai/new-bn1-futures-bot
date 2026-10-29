@@ -556,15 +556,28 @@ class ExecutionManager:
             reason = ""
             meta = {}
 
-            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop)
-            trail_exit, trail_reason, trail_meta = DemonCoinDefenseController.check_atr_trailing_stop(
-                current_position, curr_quote, atr_v
-            )
-            if trail_exit:
+            # 🎯 最高優先級：絕對安全風控與淨 ROE 階梯鎖利（Profit Lock 出口最高優先放行，絕不讓利潤吐回成本！）
+            if is_absolute_safety:
                 should_exit = True
-                reason = trail_reason
-                meta = trail_meta
-                logger.info(f"🎯 [DEMON_TRAILING_STOP] {symbol} {pos_side} 觸發主動追蹤止盈離場！meta={trail_meta}")
+                reason = gate_reason
+                meta = gate_meta
+                logger.warning(f"🚨 [ABSOLUTE_SAFETY_EXIT] {symbol} {pos_side} 命中絕對安全出場防線！reason={reason}")
+            elif is_profit_lock:
+                should_exit = True
+                reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
+                meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
+                logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
+
+            # 🛡️ 妖幣專用主動式動態追蹤止盈 (ATR Trailing Stop)
+            if not should_exit:
+                trail_exit, trail_reason, trail_meta = DemonCoinDefenseController.check_atr_trailing_stop(
+                    current_position, curr_quote, atr_v
+                )
+                if trail_exit:
+                    should_exit = True
+                    reason = trail_reason
+                    meta = trail_meta
+                    logger.info(f"🎯 [DEMON_TRAILING_STOP] {symbol} {pos_side} 觸發主動追蹤止盈離場！meta={trail_meta}")
 
             # 🛡️ 妖幣專用時間停損與無效盤整平倉 (Time-Based Exit)
             if not should_exit:
@@ -723,27 +736,10 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🛡️ 妖幣防護第 1 條：平倉後強制冷卻期，嚴禁無腦原子反手 (防止低位/高位擺盪被 Whipsaw 雙殺)
+                # 🛡️ 大波段防雙巴鐵律 (Disable Early Flip)：平倉後嚴格禁止秒級原子反手！
+                # 徹底解決「平多即刻開空、開空又秒平」的中軌雙殺死循環，一律強制進入正常冷卻與趨勢審查！
                 can_flip = False
-                if is_flip_to_long:
-                    passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, "LONG")
-                    curr_vol = float(c_k.get("volume", 0.0))
-                    vol_ma20 = float(getattr(market_data, "volume_ma20", 0.0) or 0.0)
-                    if vol_ma20 <= 0 and raw_df is not None and "volume" in raw_df.columns:
-                        vol_ma20 = float(raw_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
-                    passed_vol, vol_msg = DemonCoinDefenseController.check_volume_confirmation("LONG", curr_vol, vol_ma20)
-                    passed_heat, heat_msg = DemonCoinDefenseController.check_atr_extreme_overheat("LONG", c_k, atr_v, ma5_curr=m15_c, kc_upper=kc_u)
-                    if passed_cd and passed_vol and passed_heat:
-                        can_flip = True
-                    else:
-                        logger.info(f"🛡️ [DEMON_FLIP_VETO] {symbol} 拒絕平空秒反手開多: {cd_msg} | {vol_msg} | {heat_msg}")
-
-                elif is_flip_to_short:
-                    passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, "SHORT")
-                    if passed_cd:
-                        can_flip = True
-                    else:
-                        logger.info(f"🛡️ [DEMON_FLIP_VETO] {symbol} 拒絕平多秒反手開空: {cd_msg}")
+                logger.debug(f"🛡️ [DISABLE_EARLY_FLIP] {symbol} 平倉後依防洗防雙巴規則禁止秒級原子反手，進入標準冷卻期")
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
