@@ -236,11 +236,32 @@ class DataPipeline:
         # Short 3-closed-bar (two-step) slope keeps 1m reversal state responsive.
         kc_middle_slope = (closed_kc_mid - closed_slope_base) / n_kc_step
         closed_price = float(df_calc.iloc[closed_latest_pos]["close"])
-        kc_trend = (
-            "BULLISH" if kc_middle_slope > 0 and closed_price >= closed_kc_mid
-            else "BEARISH" if kc_middle_slope < 0 and closed_price <= closed_kc_mid
-            else "NEUTRAL"
-        )
+
+        # ─── 拉遠視角 (Zoomed-Out 10~60 根 K 棒) 結構與趨勢審查 ───
+        # 避免空頭下降通道中出現 2~3 根反彈小陽線導致 2-bar kc_middle_slope 微正 (+7e-7) 就誤判為多頭！
+        kc_base_10_pos = closed_positions[-11] if len(closed_positions) >= 11 else closed_positions[0]
+        kc_slope_10 = (closed_kc_mid - float(kc_basis.iloc[kc_base_10_pos])) / max(1, len(closed_positions[-11:]) - 1)
+        ema60_early_series = close.ewm(span=60, adjust=False).mean()
+        ema60_early = float(ema60_early_series.iloc[-1]) if not pd.isna(ema60_early_series.iloc[-1]) else closed_price
+        prev_ema60_early = float(ema60_early_series.iloc[-11]) if len(ema60_early_series) >= 11 else ema60_early
+        ema60_slope_10 = ema60_early - prev_ema60_early
+
+        # 若拉遠看 EMA60 向下且價格或慢線位於 EMA60 之下（或 10 根 KC 中軌斜率向下），屬於空頭結構反彈，絕不可標記為 BULLISH！
+        zoomed_out_bearish = (ema60_slope_10 < 0 and (closed_price < ema60_early or ema_slow < ema60_early)) or (kc_slope_10 < 0 and closed_price < ema60_early)
+        zoomed_out_bullish = (ema60_slope_10 > 0 and (closed_price > ema60_early or ema_slow > ema60_early)) or (kc_slope_10 > 0 and closed_price > ema60_early)
+
+        if zoomed_out_bearish and kc_middle_slope > 0 and closed_price < ema60_early:
+            # 空頭趨勢中的短線反彈，壓制虛假微正斜率，維持空頭判定
+            kc_trend = "BEARISH"
+        elif zoomed_out_bullish and kc_middle_slope < 0 and closed_price > ema60_early:
+            # 多頭趨勢中的短線回踩，壓制虛假微負斜率，維持多頭判定
+            kc_trend = "BULLISH"
+        else:
+            kc_trend = (
+                "BULLISH" if kc_middle_slope > 0 and closed_price >= closed_kc_mid and not zoomed_out_bearish
+                else "BEARISH" if kc_middle_slope < 0 and closed_price <= closed_kc_mid and not zoomed_out_bullish
+                else ("BEARISH" if zoomed_out_bearish else ("BULLISH" if zoomed_out_bullish else "NEUTRAL"))
+            )
 
         ema5_val = float(ema5_series.iloc[-1]) if not pd.isna(ema5_series.iloc[-1]) else curr_k["close"]
         ema13_val = float(ema13_series.iloc[-1]) if not pd.isna(ema13_series.iloc[-1]) else curr_k["close"]
@@ -318,8 +339,21 @@ class DataPipeline:
         # line cannot keep its old directional label after price crosses it.
         kc_trend_up = kc_trend == "BULLISH"
         kc_trend_down = kc_trend == "BEARISH"
-        is_htf_bull = (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0 or kc_trend_up)) or (quote > ema60 and macro_slope_10 > 0)
-        is_htf_bear = (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0 or kc_trend_down)) or (quote < ema60 and macro_slope_10 < 0)
+        is_htf_bull = (
+            not zoomed_out_bearish
+            and (
+                (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0) and quote >= ema60)
+                or (quote > ema60 and macro_slope_10 > 0)
+            )
+        )
+        is_htf_bear = (
+            not zoomed_out_bullish
+            and (
+                (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0) and quote <= ema60)
+                or (quote < ema60 and macro_slope_10 < 0)
+                or zoomed_out_bearish
+            )
+        )
 
         if is_htf_bull and not is_htf_bear:
             macro_trend = "BULLISH"

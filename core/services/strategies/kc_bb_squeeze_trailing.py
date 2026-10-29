@@ -120,6 +120,11 @@ def calculate_squeeze_kc_breakout_strategy(
     df["ma15"] = df["close"].rolling(window=slow_ma_length, min_periods=1).mean()
     df["ma_fast"] = df["ma3"]
     df["ma_slow"] = df["ma15"]
+    # 拉遠視角大週期均線 (EMA60) 與其 10 棒斜率，防止在空頭下降趨勢中因短線 3 棒反彈而逆勢開多
+    df["ema60"] = df["close"].ewm(span=60, adjust=False).mean()
+    df["ema60_slope"] = df["ema60"] - df["ema60"].shift(10).bfill()
+    df["is_macro_bear"] = (df["ema60_slope"] < 0) & (df["close"] < df["ema60"])
+    df["is_macro_bull"] = (df["ema60_slope"] > 0) & (df["close"] > df["ema60"])
 
     # 2. 計算 布林通道 (BB)
     df["bb_middle"] = df["close"].rolling(window=bb_length, min_periods=1).mean()
@@ -166,6 +171,7 @@ def calculate_squeeze_kc_breakout_strategy(
         & (df["close"] > df["kc_middle"])
         & (df["ma_dist"] > min_ma_dist)
         & (~df["is_sqz"])
+        & (~df["is_macro_bear"])
     )
 
     # 對稱空頭開倉必須同時滿足以下所有條件：
@@ -173,12 +179,14 @@ def calculate_squeeze_kc_breakout_strategy(
     # 2. close < kc_middle  (收盤價必須在 KC 中軌下方)
     # 3. ma_dist > 0.001    (MA3 與中軌離差 > 0.1%，解決貼著中軌走的問題)
     # 4. ~is_sqz            (非布林擠壓狀態)
+    # 5. ~is_macro_bull     (拉遠看非多頭趨勢，防止多頭回檔開空)
     df["can_sell"] = (
         (df["kc_slope"] < -min_kc_slope)
         & kc_step_down
         & (df["close"] < df["kc_middle"])
         & (df["ma_dist"] > min_ma_dist)
         & (~df["is_sqz"])
+        & (~df["is_macro_bull"])
     )
 
     df["allow_long"] = (

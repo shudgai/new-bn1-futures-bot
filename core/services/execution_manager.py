@@ -441,6 +441,63 @@ class ExecutionManager:
         atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
         kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
 
+        # ── 🔭 拉遠視角 (Zoomed-Out 60~120 根 K 棒) 大週期趨勢濾網 ──
+        # 解決「拉遠看明明是空頭下降趨勢（一峰比一峰低、一底比一底低、EMA60 下行），
+        # 卻因為短線 2~3 根反彈小陽線使 2-bar kc_slope 微幅翻正就逆勢開多」的致命錯誤！
+        ema60_val = float(getattr(market_data, "ema60", 0.0) or c_c)
+        macro_slope_val = float(getattr(market_data, "macro_slope", 0.0) or 0.0)
+        slow_slope_5_val = float(getattr(market_data, "slow_slope_5", 0.0) or 0.0)
+        macro_trend_snap = str(getattr(market_data, "macro_trend", "NEUTRAL") or "NEUTRAL").upper()
+        kc_slope_10_val = kc_slope
+        is_lower_highs_bear = False
+        is_higher_lows_bull = False
+
+        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and "close" in raw_df.columns and len(raw_df) >= 20:
+            s_close = raw_df["close"].astype(float)
+            s_ema60 = s_close.ewm(span=60, adjust=False).mean()
+            ema60_val = float(s_ema60.iloc[-1])
+            lookback_e60 = min(len(s_ema60), 15)
+            macro_slope_val = float(s_ema60.iloc[-1] - s_ema60.iloc[-lookback_e60])
+            if "kc_middle" in raw_df.columns:
+                s_kcm = raw_df["kc_middle"].astype(float)
+            else:
+                s_kcm = s_close.ewm(span=20, adjust=False).mean()
+            lookback_kc10 = min(len(s_kcm), 12)
+            kc_slope_10_val = float(s_kcm.iloc[-1] - s_kcm.iloc[-lookback_kc10]) / max(1, lookback_kc10 - 1)
+
+            # 檢查過去 60 根 K 棒的高低點結構（是否處於空頭主跌波段下半場或一峰比一峰低）
+            if len(raw_df) >= 40 and "high" in raw_df.columns and "low" in raw_df.columns:
+                w_len = min(len(raw_df), 90)
+                half_w = w_len // 2
+                first_half_high = float(raw_df["high"].iloc[-w_len:-half_w].max())
+                second_half_high = float(raw_df["high"].iloc[-half_w:].max())
+                first_half_low = float(raw_df["low"].iloc[-w_len:-half_w].min())
+                second_half_low = float(raw_df["low"].iloc[-half_w:].min())
+                # 前半段高點顯著高於後半段高點，且後半段低點更低 -> 標準拉遠空頭結構 (Lower Highs & Lower Lows)
+                if second_half_high < first_half_high and second_half_low <= first_half_low and c_c < ema60_val:
+                    is_lower_highs_bear = True
+                elif second_half_low > first_half_low and second_half_high >= first_half_high and c_c > ema60_val:
+                    is_higher_lows_bull = True
+
+        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢
+        # 只要拉遠看 EMA60 向下且價格或 MA15 在 EMA60 之下、或 12 根 KC 中軌斜率向下且價格低於 EMA60、或高低點呈空頭排列：
+        # 100% 鎖定為拉遠空頭 (is_zoomed_out_bearish = True)，絕對禁止在反彈時開多！
+        is_zoomed_out_bearish = bool(
+            macro_trend_snap == "BEARISH"
+            or (macro_slope_val < 0 and (c_c < ema60_val or m15_c < ema60_val))
+            or (kc_slope_10_val < 0 and c_c < ema60_val)
+            or is_lower_highs_bear
+        )
+        is_zoomed_out_bullish = bool(
+            (not is_zoomed_out_bearish)
+            and (
+                macro_trend_snap == "BULLISH"
+                or (macro_slope_val > 0 and (c_c > ema60_val or m15_c > ema60_val))
+                or (kc_slope_10_val > 0 and c_c > ema60_val)
+                or is_higher_lows_bull
+            )
+        )
+
         # ── Squeeze 擠壓狀態與 MA3 離差計算 (Squeeze & MA Distance Guard) ──
         # 當處於 Squeeze 蓄勢期，或 MA3 貼著中軌走 (ma_dist <= 0.001) 時，
         # 即使當下 kc_slope 微幅向下，也【絕對禁止開空】！
@@ -996,12 +1053,13 @@ class ExecutionManager:
                 and ((m3_c <= kc_mid and m3_p >= kc_mid) or (c_c <= kc_mid and (c_o >= kc_mid or p_c >= kc_mid)))
             )
 
-            # 嚴格順勢方向審查（精準開多開空，絕不開錯邊）：
-            # 做多必須 KC 中軌向上 (kc_slope >= 0) 且 MA3 與收盤價皆在中軌之上，且當前 K 棒必須為陽線 (c_c > c_o)；
-            # 賣空必須 KC 中軌向下 (kc_slope <= 0) 且 MA3 與收盤價皆在中軌之下，且當前 K 棒必須為陰線 (c_c < c_o)！
-            # 順勢鐵律：當 KC 中軌向下，100% 絕對禁止開多！當 KC 中軌向上，100% 絕對禁止開空！
+            # 嚴格順勢方向審查（精準開多開空，絕不開錯邊，拉遠看是空頭絕不開多、多頭絕不開空）：
+            # 做多必須 KC 中軌向上 (kc_slope >= 0)、拉遠非空頭 (not is_zoomed_out_bearish)、且 MA3 與收盤價皆在中軌之上，且當前 K 棒必須為陽線 (c_c > c_o)；
+            # 賣空必須 KC 中軌向下 (kc_slope <= 0)、拉遠非多頭 (not is_zoomed_out_bullish)、且 MA3 與收盤價皆在中軌之下，且當前 K 棒必須為陰線 (c_c < c_o)！
+            # 順勢鐵律：當拉遠看是空頭或 KC 中軌向下，100% 絕對禁止開多！當拉遠看是多頭或 KC 中軌向上，100% 絕對禁止開空！
             can_open_long = bool(
                 (is_cross_mid_long or is_valid_gc or is_true_bottom)
+                and (not is_zoomed_out_bearish)
                 and (m3_c > m3_p)
                 and (m3_c >= kc_mid and c_c >= kc_mid)
                 and (c_c > c_o)
@@ -1011,6 +1069,7 @@ class ExecutionManager:
             )
             can_open_short = bool(
                 (is_cross_mid_short or is_valid_dc or is_true_peak)
+                and (not is_zoomed_out_bullish)
                 and (m3_c < m3_p)
                 and (m3_c <= kc_mid and c_c <= kc_mid)
                 and (c_c < c_o)
@@ -1217,12 +1276,12 @@ class ExecutionManager:
                 else (False, "NO_CLOSED_BARS", {})
             )
 
-            # 結合肯特納通道 (KC) 方向與大週期趨勢濾網：
-            # 若主趨勢向上 (KC 中軌向上或大趨勢 BULLISH)，只做金叉開多，100% 禁止死叉開空！
-            # 若主趨勢向下 (KC 中軌向下或大趨勢 BEARISH)，只做死叉開空，100% 禁止金叉開多！
+            # 結合肯特納通道 (KC) 方向與大週期趨勢濾網（拉遠看大結構）：
+            # 若主趨勢向上 (拉遠多頭 is_zoomed_out_bullish 或大趨勢 BULLISH)，只做金叉開多，100% 禁止死叉開空！
+            # 若主趨勢向下 (拉遠空頭 is_zoomed_out_bearish 或大趨勢 BEARISH)，只做死叉開空，100% 禁止金叉開多！
             kc_slope = getattr(market_data, "kc_middle_slope", 0.0)
-            is_macro_bull = (macro_trend == "BULLISH" or kc_slope > 0.000005)
-            is_macro_bear = (macro_trend == "BEARISH" or kc_slope < -0.000005)
+            is_macro_bull = bool(is_zoomed_out_bullish or macro_trend == "BULLISH" or (kc_slope > 0.000005 and not is_zoomed_out_bearish))
+            is_macro_bear = bool(is_zoomed_out_bearish or macro_trend == "BEARISH" or (kc_slope < -0.000005 and not is_zoomed_out_bullish))
 
             is_ma_cross_long = (
                 ma3_cross_long_ok
@@ -1469,10 +1528,12 @@ class ExecutionManager:
             kc_up_val = float(market_data.kc_upper)
             kc_low_val = float(market_data.kc_lower)
 
-            # 🟢 多頭觸發點 A（MA3/價格 剛自下方貫穿中軌或 MA15，早點開倉）：
+            # 🟢 多頭觸發點 A（MA3/價格 剛自下方貫穿中軌或 MA15，早點開倉，但拉遠看空頭時嚴禁逆勢開多）：
             prev_kc_mid_val = float(market_data.prev_k.get("kc_middle", kc_mid_val) if market_data.prev_k else kc_mid_val)
             agile_cross_long = (
-                (p_close <= prev_kc_mid_val or ma3_prev <= prev_kc_mid_val or ma3_prev <= ma15_prev)
+                (not is_macro_bear)
+                and (not is_zoomed_out_bearish)
+                and (p_close <= prev_kc_mid_val or ma3_prev <= prev_kc_mid_val or ma3_prev <= ma15_prev)
                 and curr_close > kc_mid_val
                 and ma3_curr >= kc_mid_val
                 and ma3_curr > ma3_prev
@@ -1480,17 +1541,21 @@ class ExecutionManager:
                 and curr_close > curr_open
                 and curr_close < (kc_up_val - 0.10 * atr_val_now)
             )
-            # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點）：
+            # 🟢 多頭觸發點 B（實體突破 KC 上軌或沿上軌外強勢延續開倉，解決平倉後不動作痛點，但拉遠看空頭時嚴禁逆勢反彈追多）：
             agile_breakout_long = (
-                (curr_close > kc_up_val or curr_quote > kc_up_val)
+                (not is_macro_bear)
+                and (not is_zoomed_out_bearish)
+                and (curr_close > kc_up_val or curr_quote > kc_up_val)
                 and (c_body_now >= 0.12 * atr_val_now or curr_close > kc_up_val)
                 and curr_close > curr_open
                 and ma3_curr > ma3_prev
                 and kc_slope >= 0
             )
-            # 🟢 多頭觸發點 C（KC向上順勢延續開倉：若鎖利平倉或空手，只要價格穩居 KC 中軌與 MA3 之上且收紅陽線，立即延續補倉買多！）：
+            # 🟢 多頭觸發點 C（KC向上順勢延續開倉：若鎖利平倉或空手，只要拉遠非空頭且價格穩居 KC 中軌與 MA3 之上且收紅陽線，立即延續補倉買多！）：
             agile_continuation_long = (
-                kc_slope >= 0
+                (not is_macro_bear)
+                and (not is_zoomed_out_bearish)
+                and kc_slope >= 0
                 and curr_close > kc_mid_val
                 and ma3_curr >= kc_mid_val
                 and curr_close >= ma3_curr
@@ -1499,9 +1564,11 @@ class ExecutionManager:
                 and c_body_now >= 0.10 * atr_val_now
             )
 
-            # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌或 MA15，早點開空）：
+            # 🔴 空頭觸發點 A（MA3/價格 剛自上方跌破中軌或 MA15，早點開空，但拉遠看多頭時嚴禁逆勢開空）：
             agile_cross_short = (
-                (p_close >= prev_kc_mid_val or ma3_prev >= prev_kc_mid_val or ma3_prev >= ma15_prev)
+                (not is_macro_bull)
+                and (not is_zoomed_out_bullish)
+                and (p_close >= prev_kc_mid_val or ma3_prev >= prev_kc_mid_val or ma3_prev >= ma15_prev)
                 and curr_close < kc_mid_val
                 and ma3_curr <= kc_mid_val
                 and ma3_curr < ma3_prev
@@ -1509,17 +1576,21 @@ class ExecutionManager:
                 and curr_close < curr_open
                 and curr_close > (kc_low_val + 0.10 * atr_val_now)
             )
-            # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空）：
+            # 🔴 空頭觸發點 B（實體跌破 KC 下軌或沿下軌外強勢延續開空，但拉遠看多頭時嚴禁逆勢殺跌）：
             agile_breakdown_short = (
-                (curr_close < kc_low_val or curr_quote < kc_low_val)
+                (not is_macro_bull)
+                and (not is_zoomed_out_bullish)
+                and (curr_close < kc_low_val or curr_quote < kc_low_val)
                 and (c_body_now >= 0.12 * atr_val_now or curr_close < kc_low_val)
                 and curr_close < curr_open
                 and ma3_curr < ma3_prev
                 and kc_slope <= 0
             )
-            # 🔴 空頭觸發點 C（KC向下順勢延續開空：若鎖利平空或空手，只要價格受壓於 KC 中軌與 MA3 之下且收黑陰線，立即延續補倉賣空！）：
+            # 🔴 空頭觸發點 C（KC向下順勢延續開空：若鎖利平空或空手，只要拉遠非多頭且價格受壓於 KC 中軌與 MA3 之下且收黑陰線，立即延續補倉賣空！）：
             agile_continuation_short = (
-                kc_slope <= 0
+                (not is_macro_bull)
+                and (not is_zoomed_out_bullish)
+                and kc_slope <= 0
                 and curr_close < kc_mid_val
                 and ma3_curr <= kc_mid_val
                 and curr_close <= ma3_curr
@@ -1662,7 +1733,9 @@ class ExecutionManager:
                 # 但必須嚴格遵守順勢鐵律：KC 中軌向下或破中軌嚴禁開多；KC 中軌向上或站上中軌嚴禁開空！
                 if pivot_side == "LONG":
                     pivot_long_ok = (
-                        is_ma3_trending_up
+                        (not is_zoomed_out_bearish)
+                        and (not is_macro_bear)
+                        and is_ma3_trending_up
                         and is_candle_bullish
                         and (kc_slope >= 0)
                         and (curr_close >= kc_mid_val)
@@ -1671,13 +1744,15 @@ class ExecutionManager:
                     if not pivot_long_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多門檻 "
-                            f"(ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
+                            f"(zoomed_bear={is_zoomed_out_bearish}, ma3_up={is_ma3_trending_up}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
                 elif pivot_side == "SHORT":
                     pivot_short_ok = (
-                        is_ma3_trending_down
+                        (not is_zoomed_out_bullish)
+                        and (not is_macro_bull)
+                        and is_ma3_trending_down
                         and is_candle_bearish
                         and (kc_slope <= 0)
                         and (curr_close <= kc_mid_val)
@@ -1686,7 +1761,7 @@ class ExecutionManager:
                     if not pivot_short_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空門檻 "
-                            f"(ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
+                            f"(zoomed_bull={is_zoomed_out_bullish}, ma3_down={is_ma3_trending_down}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -1694,9 +1769,9 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG" and (kc_slope >= 0 and curr_close >= kc_mid_val):
+                if candidate_side == "LONG" and (not is_zoomed_out_bearish and kc_slope >= 0 and curr_close >= kc_mid_val):
                     can_long = True
-                elif candidate_side == "SHORT" and (kc_slope <= 0 and curr_close <= kc_mid_val):
+                elif candidate_side == "SHORT" and (not is_zoomed_out_bullish and kc_slope <= 0 and curr_close <= kc_mid_val):
                     can_short = True
 
             # 強動能破軌、外軌延續或順勢延續開倉判定 (若平倉後趨勢仍延續，必須執行延續開倉，而非都不動作！)
@@ -1750,19 +1825,19 @@ class ExecutionManager:
             # 🎯 最高優先級：敏捷突破/穿中軌/順勢延續優先點火，次之真谷底/真峰頂第一時間點火
             if is_agile_trigger and agile_signal:
                 candidate_signal = agile_signal
-            elif is_true_bottom and hard_long_allowed and kc_slope >= 0 and curr_close >= kc_mid_val and ma3_curr >= kc_mid_val:
+            elif is_true_bottom and (not is_zoomed_out_bearish) and hard_long_allowed and kc_slope >= 0 and curr_close >= kc_mid_val and ma3_curr >= kc_mid_val:
                 candidate_signal = "SWING_PIVOT_LONG"
                 can_long = True
-            elif is_true_peak and hard_short_allowed and kc_slope <= 0 and curr_close <= kc_mid_val and ma3_curr <= kc_mid_val:
+            elif is_true_peak and (not is_zoomed_out_bullish) and hard_short_allowed and kc_slope <= 0 and curr_close <= kc_mid_val and ma3_curr <= kc_mid_val:
                 candidate_signal = "SWING_PIVOT_SHORT"
                 can_short = True
-            elif is_breakout_long or is_continuation_long:
+            elif (is_breakout_long or is_continuation_long) and (not is_zoomed_out_bearish):
                 candidate_signal = "CONTINUATION_OUTSIDE_KC_LONG" if (p_close > p_up or is_continuation_long) else "BREAKOUT_LONG"
-            elif is_breakdown_short or is_continuation_short:
+            elif (is_breakdown_short or is_continuation_short) and (not is_zoomed_out_bullish):
                 candidate_signal = "CONTINUATION_OUTSIDE_KC_SHORT" if (p_close < p_low or is_continuation_short) else "BREAKDOWN_SHORT"
-            elif is_swing_pivot and ((swing_pivot['side'] == "LONG" and can_long) or (swing_pivot['side'] == "SHORT" and can_short)):
+            elif is_swing_pivot and ((swing_pivot['side'] == "LONG" and can_long and not is_zoomed_out_bearish) or (swing_pivot['side'] == "SHORT" and can_short and not is_zoomed_out_bullish)):
                 candidate_signal = f"SWING_PIVOT_{swing_pivot['side']}"
-            elif can_long:
+            elif can_long and not is_zoomed_out_bearish:
                 if is_ma_cross_long:
                     candidate_signal = "ENTRY_LONG_MA3_MA15_CROSS_MID"
                 elif is_pullback_long:
@@ -1773,7 +1848,7 @@ class ExecutionManager:
                     else:
                         candidate_signal = "ENTRY_LONG_EMA_CROSS_MID"
 
-            elif can_short:
+            elif can_short and not is_zoomed_out_bullish:
                 if is_ma_cross_short:
                     candidate_signal = "ENTRY_SHORT_MA3_MA15_CROSS_MID"
                 elif is_pullback_short:
@@ -1792,21 +1867,21 @@ class ExecutionManager:
 
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
 
-                # ── 🛡️ 全域順勢鐵律 (Master KC Trend Isolation Gate) ──
-                # 1. 空頭趨勢嚴禁開多：KC 中軌下行 (kc_slope < 0) 或收盤位於中軌之下 (curr_close < kc_mid_val) 或 MA3 低於中軌 或 MA3 未向上 或 非陽線，100% 一票否決開多！
-                # 2. 多頭趨勢嚴禁開空：KC 中軌上行 (kc_slope > 0) 或收盤位於中軌之上 (curr_close > kc_mid_val) 或 MA3 高於中軌 或 MA3 未向下 或 非陰線，100% 一票否決開空！
-                if candidate_side == "LONG" and (kc_slope < 0 or curr_close < kc_mid_val or ma3_curr < kc_mid_val or ma3_curr <= ma3_prev or curr_close <= curr_open):
+                # ── 🛡️ 全域順勢鐵律 + 拉遠視角防逆勢閘門 (Master KC & Zoomed-Out Trend Isolation Gate) ──
+                # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 中軌下行 (kc_slope < 0) 或收盤位於中軌之下 或 MA3 低於中軌 或 MA3 未向上 或 非陽線，100% 一票否決開多！
+                # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 中軌上行 (kc_slope > 0) 或收盤位於中軌之上 或 MA3 高於中軌 或 MA3 未向下 或 非陰線，100% 一票否決開空！
+                if candidate_side == "LONG" and (is_zoomed_out_bearish or is_macro_bear or kc_slope < 0 or curr_close < kc_mid_val or ma3_curr < kc_mid_val or ma3_curr <= ma3_prev or curr_close <= curr_open):
                     logger.info(
-                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 違反開多精準方向門檻 "
-                        f"(slope={kc_slope:.8f}, close={curr_close:.8f}, open={curr_open:.8f}, kc_mid={kc_mid_val:.8f}, ma3={ma3_curr:.8f}, ma3_prev={ma3_prev:.8f})，100% 絕對禁止開錯邊買多！"
+                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 違反開多精準方向門檻 (拉遠空頭={is_zoomed_out_bearish}, "
+                        f"ema60={ema60_val:.8f}, macro_slope={macro_slope_val:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在空頭趨勢開多！"
                     )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "KC 中軌向下/破中軌/MA3未上揚/非陽線，強制阻斷買多！"}
-                if candidate_side == "SHORT" and (kc_slope > 0 or curr_close > kc_mid_val or ma3_curr > kc_mid_val or ma3_curr >= ma3_prev or curr_close >= curr_open):
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "拉遠看為空頭趨勢或 KC 中軌向下/破中軌，強制阻斷買多！"}
+                if candidate_side == "SHORT" and (is_zoomed_out_bullish or is_macro_bull or kc_slope > 0 or curr_close > kc_mid_val or ma3_curr > kc_mid_val or ma3_curr >= ma3_prev or curr_close >= curr_open):
                     logger.info(
-                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 違反開空精準方向門檻 "
-                        f"(slope={kc_slope:.8f}, close={curr_close:.8f}, open={curr_open:.8f}, kc_mid={kc_mid_val:.8f}, ma3={ma3_curr:.8f}, ma3_prev={ma3_prev:.8f})，100% 絕對禁止開錯邊賣空！"
+                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 違反開空精準方向門檻 (拉遠多頭={is_zoomed_out_bullish}, "
+                        f"ema60={ema60_val:.8f}, macro_slope={macro_slope_val:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在多頭趨勢開空！"
                     )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "KC 中軌向上/站上中軌/MA3未下彎/非陰線，強制阻斷賣空！"}
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "拉遠看為多頭趨勢或 KC 中軌向上/站上中軌，強制阻斷賣空！"}
 
                 # ── 🛡️ 妖幣專用 3 大開倉前防護審查 (Demon Coin Defense Pre-Entry Gate) ──
                 # 1. 訊號冷卻期機制 (Cooldown Period) - 若大週期已正式扭轉且站穩中軌與 MA3，豁免舊反手冷卻鎖死
