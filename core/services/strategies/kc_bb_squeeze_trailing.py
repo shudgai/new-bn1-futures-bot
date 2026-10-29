@@ -297,18 +297,19 @@ def calculate_squeeze_kc_breakout_strategy(
             if bar_peak > kc_up or highest_price > kc_up:
                 reached_overbought = True
 
-            # 1. 核心破軌防線：實體陰線收盤正式跌破 KC 下軌 (close < kc_lower)
+            # 1. 核心破軌防線（結構破壞）：實體陰線收盤正式跌破 KC 下軌 (close < kc_lower)
             is_lower_rail_trend_exit = (current_close < kc_low) and (current_close < current_open)
 
-            # 2. 大波段移動鎖利：盈利達標後 (最高價 > 成本 * 1.015)，自最高價回撤超過 1.8% 且收陰線
+            # 2. 真峰頂回撤平多：盈利達標後 (最高價 > 成本 * 1.015)，自最高價回撤超過 1.8% 且收陰線並跌破 KC 中軌
             is_peak_pullback_exit = (
                 (highest_price > entry_price * 1.015)
                 and (current_close < highest_price * 0.982)
                 and (current_close < current_open)
+                and (current_close < kc_mid)
             )
 
-            # 3. 初始硬性風控止損 (跌破成本價 1.8% 且位於中軌下方)
-            is_hard_sl_long = (entry_price > 0) and (current_close <= entry_price * 0.982) and (current_close < kc_mid)
+            # 3. 取消固定點位硬止損：依使用者指示「不要硬止損，要真峰頂或結構破壞才能平倉」
+            is_hard_sl_long = False
 
             if is_lower_rail_trend_exit:
                 df.loc[df.index[i], "signal"] = 2
@@ -320,32 +321,28 @@ def calculate_squeeze_kc_breakout_strategy(
                 df.loc[df.index[i], "exit_reason"] = "PEAK_PULLBACK_1_8_PCT_EXIT"
                 position = 0
                 reached_overbought = False
-            elif is_hard_sl_long:
-                df.loc[df.index[i], "signal"] = 2
-                df.loc[df.index[i], "exit_reason"] = "HARD_SL_LONG_EXIT"
-                position = 0
-                reached_overbought = False
             # 否則：大週期向上期間回踩中軌或小幅震盪一律強制續抱讓利潤奔跑！
 
-        # 【持有空單 - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)】
+        # 【持有空單 - 大波段谷底持倉模式 (1000PEPE & 龍蝦一路抱到底，中間不平空)】
         elif position == -1:
             bar_trough = min(current_low, current_close)
             lowest_price = min(lowest_price, bar_trough)
 
-            # 1. 大趨勢反轉平倉：必須等待 K 棒實體收盤價強勢貫穿突破 KC 上軌 (close > kc_upper)
+            # 1. 大趨勢反轉 / 結構破壞平倉：必須等待 K 棒實體收盤價強勢貫穿突破 KC 上軌 (close > kc_upper)
             is_upper_rail_trend_exit = (current_close > kc_up) and (current_close > current_open)
 
-            # 2. 谷底強勢反彈鎖利：曾獲利 >= 1.5% 後，自最低谷底價格 (lowest_price) 反彈超過 1.8% 且收陽線
+            # 2. 真谷底強勢反彈平空：曾獲利 >= 1.5% 後，自最低谷底價格 (lowest_price) 反彈超過 1.8% 且收陽線並站上 KC 中軌
             is_valley_rebound_exit = (
                 (lowest_price > 0)
                 and (entry_price > 0)
                 and ((entry_price - lowest_price) / entry_price >= 0.015)
                 and (current_close > lowest_price * 1.018)
                 and (current_close > current_open)
+                and (current_close > kc_mid)
             )
 
-            # 3. 極端硬性風控止損 (暴拉急煞超過成本價 1.8% 且突破中軌)
-            is_hard_sl_short = (entry_price > 0) and (current_close >= entry_price * 1.018) and (current_close > kc_mid)
+            # 3. 取消固定點位硬止損：依使用者指示「一路開空中間不平倉，要真谷底或結構破壞才能平倉」
+            is_hard_sl_short = False
 
             if is_upper_rail_trend_exit:
                 df.loc[df.index[i], "signal"] = -2  # 強勢貫穿 KC 上軌，大趨勢反轉平空
@@ -353,13 +350,8 @@ def calculate_squeeze_kc_breakout_strategy(
                 position = 0
                 lowest_price = 0.0
             elif is_valley_rebound_exit:
-                df.loc[df.index[i], "signal"] = -2  # 自谷底反彈超過 2.0% 移動止盈
+                df.loc[df.index[i], "signal"] = -2  # 真谷底反彈突破中軌止盈
                 df.loc[df.index[i], "exit_reason"] = "VALLEY_REBOUND_2_0_PCT_EXIT"
-                position = 0
-                lowest_price = 0.0
-            elif is_hard_sl_short:
-                df.loc[df.index[i], "signal"] = -2
-                df.loc[df.index[i], "exit_reason"] = "HARD_SL_SHORT_EXIT"
                 position = 0
                 lowest_price = 0.0
             # 否則：KC向下過程中的任何微幅反彈陽線，一律視為洗盤雜訊，強制續抱吃滿主跌段！

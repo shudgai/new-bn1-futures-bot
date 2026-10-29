@@ -748,8 +748,10 @@ class ExecutionManager:
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線！立即放行出場保利！reason={reason}, meta={meta}")
             elif is_pivot_exit and has_profit_expansion:
-                # 只有在實質獲利展開後，且在 KC 外軌附近見頂/見底並收反向確認棒跌破/突破 MA3 時，才放行真峰頂/真谷底獲利了結！
-                # 嚴禁在成本區或未觸及外軌的半山腰誤平倉！
+                # 只有在實質獲利展開後，且在 KC 外軌附近見頂/見底並收反向確認棒，同時【跌破/突破 KC 中軌與 MA15 慢線（結構轉折確認）】時，
+                # 才放行真峰頂/真谷底獲利了結！
+                # 嚴禁在 KC 中軌仍向下（空頭）且價格仍壓制在中軌/MA15 下方時，因下軌外一根小反彈陽線就提早平空下車！
+                # 嚴禁在 KC 中軌仍向上（多頭）且價格仍穩守在中軌/MA15 上方時，因上軌外一根小回踩陰線就提早平多下車！
                 touched_outer_rail = (
                     (pos_side == "LONG" and (peak_p_ref >= closed_kc_u or prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u))
                     or (pos_side == "SHORT" and (trough_p_ref <= closed_kc_lo or prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo))
@@ -757,32 +759,60 @@ class ExecutionManager:
                 is_valid_pivot_candle = (
                     touched_outer_rail
                     and (
-                        (pos_side == "LONG" and closed_c < closed_o and curr_quote <= closed_c and closed_c < m3_c and m3_c <= m3_p)
-                        or (pos_side == "SHORT" and closed_c > closed_o and curr_quote >= closed_c and closed_c > m3_c and m3_c >= m3_p)
+                        (
+                            pos_side == "LONG"
+                            and closed_c < closed_o
+                            and curr_quote <= closed_c
+                            and closed_c < m3_c
+                            and m3_c <= m3_p
+                            and (closed_c < closed_kc_mid or closed_c < m15_c)
+                            and (curr_quote < kc_mid or curr_quote < m15_c)
+                        )
+                        or (
+                            pos_side == "SHORT"
+                            and closed_c > closed_o
+                            and curr_quote >= closed_c
+                            and closed_c > m3_c
+                            and m3_c >= m3_p
+                            and (closed_c > closed_kc_mid or closed_c > m15_c)
+                            and (curr_quote > kc_mid or curr_quote > m15_c)
+                        )
                     )
                 )
                 if is_valid_pivot_candle:
                     should_exit = True
                     reason = gate_reason
                     meta = {**(gate_meta or {}), "pivot_type": "TRUE_PIVOT_CONFIRMED", "trigger": "EXIT_GATE_TRUE_PIVOT"}
-                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且外軌確立真峰頂/真谷底，立即獲利了結！reason={reason}")
+                    logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且確立真峰頂/真谷底結構反轉，立即獲利了結！reason={reason}")
 
-            # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或鎖利再平倉」全面停用！
-            # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或反側外軌破軌平倉，取消固定硬止損):
+            # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或結構破壞再平倉」全面停用！
+            # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或結構破壞平倉，取消固定硬止損):
             if not should_exit:
-                # 🔴 空頭持倉中 (SHORT) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一單到底)：
+                # 🔴 空頭持倉中 (SHORT) - 大波段谷底持倉模式 (1000PEPE & 龍蝦一路抱到底，中間不平空)：
                 if pos_side == "SHORT":
                     trough_p = float(current_position.get("trough_price") or current_position.get("lowest_price") or pos_entry)
 
-                    # 1. 【核心破軌防線】：已收線 K 棒實體收盤突破 KC 上軌，或盤中強勢長陽突破上軌 (>= 0.35 ATR)，無條件強制平空！
+                    # 1. 【結構破壞防線 (Structure Break / Upper Rail Breach)】：
+                    # 只有當：(a) 已收線 K 棒實體收盤突破 KC 上軌，或 (b) 盤中強勢長陽突破上軌，
+                    # 或 (c) KC 中軌已轉向上行 (kc_slope > 0) 且已收線實體同時站上 KC 中軌、MA15 與前波高點 (swing_high_price) 時，才算空頭結構真正破壞！
                     is_upper_rail_breach = bool(
                         (closed_c > closed_kc_u and closed_c > closed_o and curr_quote > kc_u)
                         or (c_c > kc_u and c_c > c_o and (c_c - kc_u) >= 0.35 * atr_v)
+                        or (
+                            kc_slope > 0
+                            and closed_c > closed_o
+                            and closed_c > closed_kc_mid
+                            and closed_c > m15_c
+                            and curr_quote > kc_mid
+                            and swing_high_price is not None
+                            and closed_c > float(swing_high_price)
+                        )
                     )
 
                     # 2. 【真谷底確認平空 (True Valley Exit)】：
                     # 必須滿足：(1) 實質獲利展開 (has_profit_expansion) 且曾觸及/跌破 KC 下軌，
-                    # 且 (2) 已收線強勢陽線吞噬突破前棒高點與 MA3，且 MA3 拐頭向上！
+                    # 且 (2) 已收線強勢陽線吞噬突破前棒高點與 MA3，且 MA3 拐頭向上，
+                    # 且 (3) 【關鍵防半山腰下車鎖定】：收盤價與現價必須已經正式收復站上 KC 中軌或 MA15 慢線（代表空頭主跌波段真正見底轉折，而非貼著下軌/中軌下方的半山腰反彈小綠 K）！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_lower_wick = min(prev_closed_o, prev_closed_c) - prev_closed_l
@@ -792,29 +822,32 @@ class ExecutionManager:
                         and curr_quote >= closed_c
                         and closed_c > m3_c
                         and m3_c >= m3_p
+                        and (closed_c > closed_kc_mid or closed_c > m15_c)
+                        and (curr_quote > kc_mid or curr_quote > m15_c)
                         and (
                             ((prev_closed_l <= closed_kc_lo or closed_l <= closed_kc_lo) and closed_c > prev_closed_h and closed_body >= 0.5 * atr_v)
                             or ((prev_closed_l <= closed_kc_lo and prev_closed_lower_wick >= 1.5 * max(prev_closed_body, 0.25 * atr_v)) and closed_c > prev_closed_h)
                         )
                     )
 
-                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% (且曾獲利 >= 1.5%)，動態鎖利平空
+                    # 3. 【大波段移動鎖利】：自最低谷底價格 (trough_price) 反彈超過 1.8% 且同時突破 KC 中軌，動態鎖利平空
                     is_valley_rebound_1_8pct = bool(
                         trough_p > 0
                         and pos_entry > 0
                         and ((pos_entry - trough_p) / pos_entry >= 0.015 or has_profit_expansion)
-                        and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o)
+                        and (closed_c > trough_p * 1.018 and curr_quote > trough_p * 1.018 and closed_c > closed_o and closed_c > closed_kc_mid)
                     )
 
-                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，走到谷底或破上軌再平倉」
+                    # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，走到真谷底或結構破壞再平倉」
                     is_hard_sl_short = False
 
                     # ⚠️ 【大週期不變谷底持倉鐵律】：
-                    # 當未破上軌、未達真谷底、未觸發谷底 1.8% 鎖利時，一票否決平空 (VETO_HOLD)，續抱吃滿主跌段！
+                    # 只要價格仍壓制在 KC 中軌或 MA15 之下，未發生結構破壞、未達真谷底轉折、未觸發谷底破中軌鎖利時，
+                    # 一票否決平空 (VETO_HOLD)，中間絕對不平空，從第一個賣空一路抱到底吃滿整個主跌段！
                     if not is_upper_rail_breach and not is_confirmed_true_valley and not is_valley_rebound_1_8pct:
                         logger.info(
-                            f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段谷底持倉模式: (slope={kc_slope:.6f})，"
-                            f"反彈小陽線或回踩中軌一律視為洗盤雜訊，一票否決平空，強制鎖死持倉續抱吃滿主跌段！"
+                            f"🛡️ [TREND_LOCK_VALLEY_MODE] {symbol} 空單大波段一單到底模式: (slope={kc_slope:.6f}, close={closed_c:.6f}, kc_mid={closed_kc_mid:.6f})，"
+                            f"未達真谷底轉折且結構未破壞，中間反彈小陽線一律視為洗盤雜訊，一票否決平空，強制續抱吃滿主跌段！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
@@ -833,20 +866,32 @@ class ExecutionManager:
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_SHORT"}
 
-                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到真峰頂或鎖利，不要硬止損)：
+                # 🟢 多頭持倉中 (LONG) - 大波段持倉鎖定模式 (從第一個開多一路抱到真峰頂或結構破壞，中間不平多)：
                 elif pos_side == "LONG":
                     pos_entry_price = float(current_position.get("entry_price") or 0.0)
                     peak_p = float(current_position.get("highest_price") or pos_entry_price)
 
-                    # 1. 【核心破軌防線】：必須是「已收線 K 棒實體陰線收盤正式跌破 KC 下軌」且當前報價仍在下軌之下，嚴禁被盤中下影線 (如 12:58) 洗出場！
+                    # 1. 【結構破壞防線 (Structure Break / Lower Rail Breach)】：
+                    # 只有當：(a) 已收線 K 棒實體陰線正式跌破 KC 下軌，或 (b) 盤中強勢長陰跌破下軌，
+                    # 或 (c) KC 中軌已轉向下行 (kc_slope < 0) 且已收線實體同時跌破 KC 中軌、MA15 與前波低點 (swing_low_price) 時，才算多頭結構真正破壞！
                     is_lower_rail_breach = bool(
                         (closed_c < closed_kc_lo and closed_c < closed_o and curr_quote < kc_lo)
                         or (c_c < kc_lo and c_c < c_o and (kc_lo - c_c) >= 0.45 * atr_v and kc_slope < -0.00005)
+                        or (
+                            kc_slope < 0
+                            and closed_c < closed_o
+                            and closed_c < closed_kc_mid
+                            and closed_c < m15_c
+                            and curr_quote < kc_mid
+                            and swing_low_price is not None
+                            and closed_c < float(swing_low_price)
+                        )
                     )
 
                     # 2. 【真峰頂確認平多 (True Peak Exit)】：
                     # 必須滿足：(1) 實質獲利展開 (has_profit_expansion) 且曾觸及/突破 KC 上軌，
-                    # 且 (2) 已收線強勢陰線吞噬跌破前棒低點與 MA3，且 MA3 拐頭向下！
+                    # 且 (2) 已收線強勢陰線吞噬跌破前棒低點與 MA3，且 MA3 拐頭向下，
+                    # 且 (3) 【關鍵防半山腰下車鎖定】：收盤價與現價必須已經正式跌破 KC 中軌或 MA15 慢線（代表多頭主升波段真正見頂轉折，而非貼著上軌/中軌上方的半山腰回踩小紅 K）！
                     closed_body = abs(closed_c - closed_o)
                     prev_closed_body = abs(prev_closed_c - prev_closed_o)
                     prev_closed_upper_wick = prev_closed_h - max(prev_closed_o, prev_closed_c)
@@ -856,18 +901,20 @@ class ExecutionManager:
                         and curr_quote <= closed_c
                         and closed_c < m3_c
                         and m3_c <= m3_p
+                        and (closed_c < closed_kc_mid or closed_c < m15_c)
+                        and (curr_quote < kc_mid or curr_quote < m15_c)
                         and (
                             ((prev_closed_h >= closed_kc_u or closed_h >= closed_kc_u) and closed_c < prev_closed_l and closed_body >= 0.5 * atr_v)
                             or ((prev_closed_h >= closed_kc_u and prev_closed_upper_wick >= 1.5 * max(prev_closed_body, 0.25 * atr_v)) and closed_c < prev_closed_l)
                         )
                     )
 
-                    # 3. 【大波段移動鎖利】：盈利達標後 (最高價 > 成本 * 1.015 或實質獲利展開)，自最高點回撤超過 1.8% 且收陰線，鎖利平多
+                    # 3. 【大波段移動鎖利】：盈利達標後，自最高點回撤超過 1.8% 且同時跌破 KC 中軌，鎖利平多
                     is_peak_pullback_2pct = bool(
                         peak_p > 0
                         and pos_entry_price > 0
                         and ((peak_p - pos_entry_price) / pos_entry_price >= 0.015 or has_profit_expansion)
-                        and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o)
+                        and (closed_c < peak_p * 0.982 and curr_quote < peak_p * 0.982 and closed_c < closed_o and closed_c < closed_kc_mid)
                     )
 
                     # 4. 取消固定點位硬止損 (No Hard SL)：依使用者指示「不要硬止損，若是多頭要繼續走下去，走到峰頂再平倉」
