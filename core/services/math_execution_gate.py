@@ -330,12 +330,12 @@ def validate_entry_math(
         if not is_swing_pivot and abs(ma5 - ma15) < 0.05 * atr:
             return False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE"
         if side == "LONG":
-            if not is_swing_pivot and not (ma5 > previous_ma5 and ma5 >= ma15 - 0.15 * atr):
+            if not is_swing_pivot and not (ma5 > previous_ma5 and (ma5 >= ma15 - 0.5 * atr or (close > upper and close > opened))):
                 return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
             if close - upper > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
         else:
-            if not is_swing_pivot and not (ma5 < previous_ma5 and ma5 <= ma15 + 0.15 * atr):
+            if not is_swing_pivot and not (ma5 < previous_ma5 and (ma5 <= ma15 + 0.5 * atr or (close < lower and close < opened))):
                 return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
             if lower - close > 3.0 * atr:
                 return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
