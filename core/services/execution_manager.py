@@ -2249,31 +2249,55 @@ class ExecutionManager:
                         f"僅視為回檔低點準備區 (WAIT_PULLBACK)，強制鎖死 can_open_short=False，等待 MA3 重新金叉 MA15 再開多！"
                     )
 
-            # 🚀 2026-10-30 核心授權：牛市提早開倉機制 (解決半山腰追多)
-            # 1. 取消「強制等待 MA3/MA15 金叉」限制：只要大週期牛市且收盤突破 MA15 (curr_quote > m15_c 且 c_c > m15_c 且 c_c > c_o)，
-            #    無需苦等 MA3 完全向上金叉 MA15，立即發出 OPEN_LONG 提早開多搶佔起漲點！
-            # 2. KC 下軌 V 轉提前試單：觸及 KC 下軌 (c_l <= kc_lo) 且收盤站上 MA3 (c_c > m3_c 且 m3_c > m3_p)，提前卡位開多！
+            # 🚀 2026-10-30 核心授權：牛市/熊市早期開倉機制與雙重一票否決
             if (not has_position) and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
-                is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
-                is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
-                if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_chasing_high):
-                    can_open_long = True
-                    is_cross_mid_long = False
-                    is_valid_gc = False
-                    is_confirmed_golden_cross_ready = False
-                    is_1m_confirmed_bull = False
-                    entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
-                    logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，無需苦等 MA3/MA15 金叉，立即鎖定起漲點開多！")
+                # 🛑 規則四.3：平多後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
+                last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
+                last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
+                is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 180.0)
+
+                # 🛑 規則二.2：做多雙重一票否決 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下)
+                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p)
+
+                if is_in_long_cooldown:
+                    logger.info(
+                        f"⏳ [LONG_EXIT_COOLDOWN] {symbol} 平多後 {time.time() - last_closed_time:.1f}s 處於 3 根 K 棒冷卻期 (< 180s)，"
+                        f"嚴禁在回調初期反覆追多！"
+                    )
+                elif is_long_vetoed:
+                    logger.info(
+                        f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
+                        f"MA3 < MA15 或斜率向下，嚴防下殺接飛刀！"
+                    )
+                else:
+                    is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
+                    is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
+                    if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_chasing_high):
+                        can_open_long = True
+                        is_cross_mid_long = False
+                        is_valid_gc = False
+                        is_confirmed_golden_cross_ready = False
+                        is_1m_confirmed_bull = False
+                        entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
+                        logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，通過雙重審查，立即鎖定起漲點開多！")
             elif (not has_position) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
-                # 🛑 2026-10-30 核心授權：平空後進場冷卻 (Cooldown 至少 2~3 根 K 棒)
+                # 🛑 規則四.3：平空後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
 
+                # 🛑 規則三.2：做空雙重一票否決 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上)
+                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p)
+
                 if is_in_short_cooldown:
                     logger.info(
-                        f"⏳ [SHORT_EXIT_COOLDOWN] {symbol} 平空後 {time.time() - last_closed_time:.1f}s 處於 2~3 根 K 棒冷卻期 (< 180s)，"
+                        f"⏳ [SHORT_EXIT_COOLDOWN] {symbol} 平空後 {time.time() - last_closed_time:.1f}s 處於 3 根 K 棒冷卻期 (< 180s)，"
                         f"嚴禁在觸底反彈初期反覆追空！"
+                    )
+                elif is_short_vetoed:
+                    logger.info(
+                        f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
+                        f"MA3 > MA15 或斜率向上，嚴防阿呆谷賣空！"
                     )
                 else:
                     is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
@@ -2285,7 +2309,7 @@ class ExecutionManager:
                         is_confirmed_death_cross_ready = False
                         is_1m_confirmed_bear = False
                         entry_type = "EARLY_BEAR_BREAKDOWN_SHORT" if is_early_ma15_breakdown else "MOMENTUM_FOLLOW_SHORT"
-                        logger.info(f"⚡ [{entry_type}] {symbol} 處於大週期熊市且跌破 MA15，觸發順勢開空/補單！")
+                        logger.info(f"⚡ [{entry_type}] {symbol} 處於大週期熊市且跌破 MA15，通過雙重審查，觸發順勢開空/補單！")
 
             if can_open_long:
                 candidate_side = "LONG"

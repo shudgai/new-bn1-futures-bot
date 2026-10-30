@@ -58,3 +58,204 @@ def test_short_early_breakdown_ma15():
 
     is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
     assert is_early_ma15_breakdown is True, "單根跌破 MA15 必須放行早期開空"
+
+
+
+from core.services.scalping_state_machine import ScalpingStateMachine
+
+
+def test_state_machine_macro_trend_veto():
+    """驗證規則一：大週期順勢一票否決"""
+    # 牛市中，即使條件符合跌破，FLAT 狀態絕不開空
+    res_bull = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BULLISH",
+        current_price=95.0,
+        ma3=94.0,
+        ma15=100.0,
+        ma3_slope=-0.05,
+        open_price=96.0,
+    )
+    assert res_bull["action"] == "WAIT"
+    assert "大週期牛市觀望中" in res_bull["reason"]
+
+    # 熊市中，即使條件符合突破，FLAT 狀態絕不開多
+    res_bear = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=105.0,
+        ma3=106.0,
+        ma15=100.0,
+        ma3_slope=0.05,
+        open_price=104.0,
+    )
+    assert res_bear["action"] == "WAIT"
+    assert "大週期熊市觀望中" in res_bear["reason"]
+
+
+def test_state_machine_structure_break_reversal():
+    """驗證規則一.2：大週期結束即刻一鍵轉向"""
+    # 熊轉牛 + 持有空單 -> 一鍵翻多 CLOSE_SHORT_AND_OPEN_LONG
+    res_flip_long = ScalpingStateMachine.evaluate_dict(
+        position_state="SHORT",
+        macro_trend="BULLISH",
+        current_price=102.0,
+        ma3=101.0,
+        ma15=100.0,
+        is_structure_break=True,
+    )
+    assert res_flip_long["action"] == "CLOSE_SHORT_AND_OPEN_LONG"
+
+    # 熊轉牛 + 無持倉 -> 立刻 OPEN_LONG
+    res_open_long = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BULLISH",
+        current_price=102.0,
+        ma3=101.0,
+        ma15=100.0,
+        is_structure_break=True,
+    )
+    assert res_open_long["action"] == "OPEN_LONG"
+
+    # 牛轉熊 + 持有多單 -> 一鍵翻空 CLOSE_LONG_AND_OPEN_SHORT
+    res_flip_short = ScalpingStateMachine.evaluate_dict(
+        position_state="LONG",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        ma3=99.0,
+        ma15=100.0,
+        is_structure_break=True,
+    )
+    assert res_flip_short["action"] == "CLOSE_LONG_AND_OPEN_SHORT"
+
+    # 牛轉熊 + 無持倉 -> 立刻 OPEN_SHORT
+    res_open_short = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        ma3=99.0,
+        ma15=100.0,
+        is_structure_break=True,
+    )
+    assert res_open_short["action"] == "OPEN_SHORT"
+
+
+def test_state_machine_long_double_veto():
+    """驗證規則二：多頭【位置+斜率】雙重否決"""
+    # 1. 位置否決：MA3 < MA15 (空頭排列)
+    res_pos_veto = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BULLISH",
+        current_price=102.0,
+        open_price=100.0,
+        ma3=99.0,
+        ma15=100.0,
+        ma3_slope=0.01,
+    )
+    assert res_pos_veto["action"] == "WAIT"
+    assert "位置否決" in res_pos_veto["reason"]
+
+    # 2. 斜率否決：MA3_Slope < 0 (向下勾)
+    res_slope_veto = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BULLISH",
+        current_price=102.0,
+        open_price=100.0,
+        ma3=101.0,
+        ma15=100.0,
+        ma3_slope=-0.02,
+    )
+    assert res_slope_veto["action"] == "WAIT"
+    assert "斜率否決" in res_slope_veto["reason"]
+
+    # 3. 雙重通過 -> OPEN_LONG
+    res_ok = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BULLISH",
+        current_price=102.0,
+        open_price=100.0,
+        ma3=101.0,
+        ma15=100.0,
+        ma3_slope=0.02,
+    )
+    assert res_ok["action"] == "OPEN_LONG"
+
+
+def test_state_machine_short_double_veto():
+    """驗證規則三：空頭【位置+斜率】雙重否決"""
+    # 1. 位置否決：MA3 > MA15 (多頭排列)
+    res_pos_veto = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=100.0,
+        ma3=101.0,
+        ma15=100.0,
+        ma3_slope=-0.01,
+    )
+    assert res_pos_veto["action"] == "WAIT"
+    assert "位置否決" in res_pos_veto["reason"]
+
+    # 2. 斜率否決：MA3_Slope > 0 (向上勾)
+    res_slope_veto = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=100.0,
+        ma3=99.0,
+        ma15=100.0,
+        ma3_slope=0.02,
+    )
+    assert res_slope_veto["action"] == "WAIT"
+    assert "斜率否決" in res_slope_veto["reason"]
+
+    # 3. 雙重通過 -> OPEN_SHORT
+    res_ok = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=100.0,
+        ma3=99.0,
+        ma15=100.0,
+        ma3_slope=-0.02,
+    )
+    assert res_ok["action"] == "OPEN_SHORT"
+
+
+def test_state_machine_cooldown_and_exit_rules():
+    """驗證規則四：平倉冷卻期與廢除過中軌平倉"""
+    # 1. 冷卻期中 -> 100% WAIT
+    res_cooldown = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=100.0,
+        ma3=99.0,
+        ma15=100.0,
+        ma3_slope=-0.02,
+        cooldown_active=True,
+    )
+    assert res_cooldown["action"] == "WAIT"
+    assert "冷卻期" in res_cooldown["reason"]
+
+    # 2. 空單持倉中，微幅過線但未實體站穩 MA15 (收陰線或價格仍壓制) -> HOLD
+    res_hold_short = ScalpingStateMachine.evaluate_dict(
+        position_state="SHORT",
+        macro_trend="BEARISH",
+        current_price=99.5,
+        open_price=100.0,  # 陰線
+        ma3=99.0,
+        ma15=100.0,
+    )
+    assert res_hold_short["action"] == "HOLD"
+
+    # 3. 空單持倉中，實體收盤強勢站上 MA15 (curr_p > ma15 且 curr_p > open_p) -> CLOSE_SHORT
+    res_exit_short = ScalpingStateMachine.evaluate_dict(
+        position_state="SHORT",
+        macro_trend="BEARISH",
+        current_price=101.0,
+        open_price=99.5,  # 實體陽線站上 MA15
+        ma3=100.5,
+        ma15=100.0,
+    )
+    assert res_exit_short["action"] == "CLOSE_SHORT"
