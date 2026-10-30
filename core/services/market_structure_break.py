@@ -189,3 +189,4 @@ def check_macro_trend_end(
         "key_pivot_price": key_pivot_price,
         "htf_ma15": htf_ma15,
     }
+

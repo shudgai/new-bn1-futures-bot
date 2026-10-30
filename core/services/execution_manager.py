@@ -1790,12 +1790,14 @@ class ExecutionManager:
                     print(f"🔄 [POSITION_FLIP] {symbol} {pos_side} 平倉後同 K 棒即刻秒級反手開 {flip_side}！", flush=True)
 
                     flip_stop_loss = None  # 方案 B 無硬止損版: 完全取消固定價位硬止損 (No Rigid Stop Loss)
+                    flip_action_name = "CLOSE_SHORT_AND_OPEN_LONG" if flip_side == "LONG" else "CLOSE_LONG_AND_OPEN_SHORT"
                     flip_meta = {
                         "side": flip_side,
                         "direction_override": True,
                         "entry_type": flip_entry_type,
-                        "candidate_signal_type": "SWING_PIVOT",
-                        "is_swing_pivot": True,
+                        "candidate_signal_type": "ENTRY_LONG_MA3_MA15_CROSS_MID" if flip_side == "LONG" else "ENTRY_SHORT_MA3_MA15_CROSS_MID",
+                        "is_swing_pivot": False,
+                        "is_flip": True,
                         "is_agile_trigger": True,
                         "is_cross_mid": True,
                         "no_rigid_sl": True,
@@ -1804,12 +1806,12 @@ class ExecutionManager:
                         "allow_kc_internal": True,
                         "strategy_mode": "AGILE_MOMENTUM",
                         "raw_df": klines_df,
-                        "source": f"UNIFIED_PIPELINE|{flip_entry_type}",
+                        "source": f"UNIFIED_PIPELINE|{flip_action_name}",
                         "atr": atr_v,
                     }
                     raw_df_instance = flip_meta.get("raw_df")
                     if hasattr(raw_df_instance, "attrs"):
-                        for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
+                        for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_flip"):
                             raw_df_instance.attrs[k] = flip_meta.get(k, True)
 
                     flip_success = await cls.open_position(
@@ -1817,7 +1819,7 @@ class ExecutionManager:
                         symbol=symbol,
                         side=flip_side,
                         price=exit_price,
-                        reason=f"FlipPosition:{flip_entry_type}",
+                        reason=f"FlipPosition:{flip_action_name}",
                         meta=flip_meta,
                     )
                     if flip_success:
@@ -2263,15 +2265,27 @@ class ExecutionManager:
                     entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
                     logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，無需苦等 MA3/MA15 金叉，立即鎖定起漲點開多！")
             elif (not has_position) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
-                is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
-                if (is_early_ma15_breakdown or (m3_c < m15_c and curr_quote < m15_c)) and (not is_chasing_low):
-                    can_open_short = True
-                    is_cross_mid_short = False
-                    is_valid_dc = False
-                    is_confirmed_death_cross_ready = False
-                    is_1m_confirmed_bear = False
-                    entry_type = "EARLY_BEAR_BREAKDOWN_SHORT" if is_early_ma15_breakdown else "MOMENTUM_FOLLOW_SHORT"
-                    logger.info(f"⚡ [{entry_type}] {symbol} 處於大週期熊市且跌破 MA15，觸發順勢開空/補單！")
+                # 🛑 2026-10-30 核心授權：平空後進場冷卻 (Cooldown 至少 2~3 根 K 棒)
+                last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
+                last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
+                is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
+
+                if is_in_short_cooldown:
+                    logger.info(
+                        f"⏳ [SHORT_EXIT_COOLDOWN] {symbol} 平空後 {time.time() - last_closed_time:.1f}s 處於 2~3 根 K 棒冷卻期 (< 180s)，"
+                        f"嚴禁在觸底反彈初期反覆追空！"
+                    )
+                else:
+                    is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
+                    is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c)
+                    if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_chasing_low):
+                        can_open_short = True
+                        is_cross_mid_short = False
+                        is_valid_dc = False
+                        is_confirmed_death_cross_ready = False
+                        is_1m_confirmed_bear = False
+                        entry_type = "EARLY_BEAR_BREAKDOWN_SHORT" if is_early_ma15_breakdown else "MOMENTUM_FOLLOW_SHORT"
+                        logger.info(f"⚡ [{entry_type}] {symbol} 處於大週期熊市且跌破 MA15，觸發順勢開空/補單！")
 
             if can_open_long:
                 candidate_side = "LONG"
@@ -2285,15 +2299,18 @@ class ExecutionManager:
                     entry_type = "PIVOT_LONG"
                 pivot_triggered = True
             elif can_open_short:
-                # 🛑 2026-10-30 核心防呆：V 轉強勢反彈硬性禁止開空（防阿呆谷開空）
-                # 即使指標算出了死叉或跌破，但只要價格已站回 MA15 上方 (curr_quote > m15_c 或 c_c > m15_c)
-                # 或正在拉出強烈反彈陽線 (c_c > c_o 且 (c_c - c_o) >= 0.25 * atr_v)，
-                # 100% 嚴格廢除開空，嚴禁開在 V 轉反彈半山腰或起漲地基點！
-                is_v_reversal_bounce = bool(curr_quote > m15_c or c_c > m15_c or (c_c > c_o and (c_c - c_o) >= 0.25 * atr_v))
+                # 🛑 2026-10-30 核心防呆：V 轉強勢反彈硬性一票否決開空（防阿呆谷追空）
+                # 無論大週期標籤為何，只要當前 K 棒出現實體綠棒 (close > open) 且價格已站上 MA3 或 MA15，
+                # 代表正在進行 V 轉反彈，強制一票否決任何 OPEN_SHORT 請求！
+                is_v_reversal_bounce = bool(
+                    (c_c > c_o and (c_c >= m3_c or curr_quote >= m3_c or c_c >= m15_c or curr_quote >= m15_c))
+                    or (c_c > m15_c or curr_quote > m15_c)
+                    or (c_c > c_o and (c_c - c_o) >= 0.20 * atr_v)
+                )
                 if is_v_reversal_bounce:
                     logger.info(
-                        f"🚫 [VETO_V_REVERSAL_SHORT] {symbol} 價格已強勢反彈站回 MA15 或正拉出強勢陽線 "
-                        f"(quote={curr_quote:.6f}, c={c_c:.6f}, m15={m15_c:.6f})，強制廢除滯後開空，防止阿呆谷賣空！"
+                        f"🚫 [VETO_V_REVERSAL_SHORT] {symbol} 正在進行 V 轉反彈 (收陽且價格站上 MA3/MA15，"
+                        f"c={c_c:.6f}, o={c_o:.6f}, m3={m3_c:.6f}, m15={m15_c:.6f})，強制一票否決任何 OPEN_SHORT 請求！"
                     )
                     can_open_short = False
                 else:

@@ -141,3 +141,4 @@ def test_dataframe_and_auto_derivation():
     )
     assert res["macro_trend"] == "BULLISH"
     assert res["event"] == "MACRO_TREND_CONTINUES"
+
