@@ -1179,6 +1179,83 @@ class ExecutionManager:
                     meta = {**(gate_meta or {}), "pivot_type": "TRUE_PIVOT_CONFIRMED", "trigger": "EXIT_GATE_TRUE_PIVOT"}
                     logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開且確立真峰頂/真谷底結構反轉，立即獲利了結！reason={reason}")
 
+            # 🚀 高靈敏度解耦動態出場引擎 (Agile Decoupled Exit Engine)：
+            # 1. 階梯保本 (Breakeven Lock): 浮盈曾達 +8% ROE，價格跌回成本價(+0.3%覆蓋手續費)立即強制平倉保本
+            # 2. 5% 回吐移動鎖利 (Staged Trailing Lock): 浮盈曾達 +20% ROE，回吐達 5% 立即止盈
+            # 3. 逆勢單快平 (Counter-Trend Scalp Exit): 逆勢多單觸及 KC 上軌、破前低 Low[1]、長上影線力竭或首根陰線立即平倉
+            if not should_exit and pos_entry > 0:
+                is_counter_trend = (
+                    (pos_side == "LONG" and is_zoomed_out_bearish)
+                    or (pos_side == "SHORT" and is_zoomed_out_bullish)
+                )
+
+                # (1) 保本防線：浮盈曾達 8% ROE，回踩成本線 (0.3% 手續費與滑價緩衝) 保本平倉
+                if peak_roe_pct >= 8.0:
+                    if pos_side == "LONG" and curr_quote <= pos_entry * 1.003:
+                        should_exit = True
+                        reason = "EXIT_BY_BREAKEVEN_PROTECTION_LONG"
+                        meta = {"peak_roe_pct": peak_roe_pct, "cur_roe_pct": cur_roe_pct, "entry_price": pos_entry, "be_floor": pos_entry * 1.003}
+                    elif pos_side == "SHORT" and curr_quote >= pos_entry * 0.997:
+                        should_exit = True
+                        reason = "EXIT_BY_BREAKEVEN_PROTECTION_SHORT"
+                        meta = {"peak_roe_pct": peak_roe_pct, "cur_roe_pct": cur_roe_pct, "entry_price": pos_entry, "be_floor": pos_entry * 0.997}
+
+                # (2) 二階鎖利：浮盈曾達 20% ROE，自高點回吐達 5% 立刻止盈
+                if not should_exit and peak_roe_pct >= 20.0:
+                    drawback_roe = peak_roe_pct - cur_roe_pct
+                    if drawback_roe >= 5.0:
+                        should_exit = True
+                        reason = "EXIT_BY_STAGED_TRAILING_PROFIT_LOCK_5PCT"
+                        meta = {"peak_roe_pct": peak_roe_pct, "cur_roe_pct": cur_roe_pct, "drawback_roe": drawback_roe}
+
+                # (3) 逆勢單極速快平（熊市做多或牛市做空）
+                if not should_exit and is_counter_trend:
+                    if pos_side == "LONG":
+                        # A. 觸及 KC 上軌即止盈
+                        if curr_quote >= closed_kc_u or closed_h >= closed_kc_u:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_TP_HIT_KC_UPPER"
+                            meta = {"curr_quote": curr_quote, "kc_upper": closed_kc_u}
+                        # B. 跌破前一根 K 線低點 (Low[1])
+                        elif closed_c < prev_closed_l:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_BREAK_PREV_LOW"
+                            meta = {"closed_close": closed_c, "prev_low": prev_closed_l}
+                        # C. 處於浮盈區時出現首根收黑陰線閃人
+                        elif closed_c < closed_o and curr_quote > pos_entry * 1.0015:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_FIRST_RED_CANDLE"
+                            meta = {"closed_close": closed_c, "closed_open": closed_o}
+                        # D. 高位長上影線力竭 (上影線 >= 1.5 倍實體且 >= 0.3 ATR)
+                        else:
+                            c_body = abs(closed_c - closed_o)
+                            upper_wick = closed_h - max(closed_o, closed_c)
+                            if upper_wick >= 1.5 * max(c_body, 0.1 * atr_v) and upper_wick >= 0.3 * atr_v and curr_quote > pos_entry:
+                                should_exit = True
+                                reason = "EXIT_COUNTER_TREND_EXHAUSTION_UPPER_WICK"
+                                meta = {"upper_wick": upper_wick, "body": c_body, "atr": atr_v}
+                    elif pos_side == "SHORT":
+                        # 做空對稱鏡像
+                        if curr_quote <= closed_kc_lo or closed_l <= closed_kc_lo:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_TP_HIT_KC_LOWER"
+                            meta = {"curr_quote": curr_quote, "kc_lower": closed_kc_lo}
+                        elif closed_c > prev_closed_h:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_BREAK_PREV_HIGH"
+                            meta = {"closed_close": closed_c, "prev_high": prev_closed_h}
+                        elif closed_c > closed_o and curr_quote < pos_entry * 0.9985:
+                            should_exit = True
+                            reason = "EXIT_COUNTER_TREND_FIRST_GREEN_CANDLE"
+                            meta = {"closed_close": closed_c, "closed_open": closed_o}
+                        else:
+                            c_body = abs(closed_c - closed_o)
+                            lower_wick = min(closed_o, closed_c) - closed_l
+                            if lower_wick >= 1.5 * max(c_body, 0.1 * atr_v) and lower_wick >= 0.3 * atr_v and curr_quote < pos_entry:
+                                should_exit = True
+                                reason = "EXIT_COUNTER_TREND_EXHAUSTION_LOWER_WICK"
+                                meta = {"lower_wick": lower_wick, "body": c_body, "atr": atr_v}
+
             # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或結構破壞再平倉」全面停用！
             # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或結構破壞平倉，取消固定硬止損):
             if not should_exit:
