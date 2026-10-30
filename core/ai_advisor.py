@@ -203,6 +203,103 @@ class LocalAIAdvisor:
     def clear_market_regimes(self) -> None:
         self._market_regimes.clear()
 
+    async def evaluate_trading_decision(
+        self,
+        symbol: str,
+        macro_trend: str,
+        position_status: str,
+        entry_price: float,
+        current_price: float,
+        highest_profit_margin: float,
+        current_ma3: float,
+        current_ma15: float,
+        timeframe: str = "15m",
+    ) -> dict:
+        """AI 決策引擎：嚴格依據雙重週期 (MTF) 濾網與方案 1 動態鎖利機制發出指令"""
+        if not self.enabled:
+            from core.services.exits.staged_profit_lock import check_exit_conditions
+            action = "HOLD"
+            if position_status in ("SHORT", "LONG"):
+                action = check_exit_conditions(
+                    position=position_status,
+                    entry_price=entry_price,
+                    current_price=current_price,
+                    highest_profit_margin=highest_profit_margin,
+                    current_ma3=current_ma3,
+                    current_ma15=current_ma15,
+                )
+            micro_signal = "MA3_ABOVE_MA15" if current_ma3 > current_ma15 else "MA3_BELOW_MA15"
+            return {
+                "macro_trend": macro_trend,
+                "micro_signal": micro_signal,
+                "action": action,
+                "reason": f"本地雙重濾網判定: action={action}, ma3={current_ma3}, ma15={current_ma15}",
+            }
+
+        payload = {
+            "model": "local",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一個專巧於極短線（3m/15m）加密貨幣量化交易策略的 AI 決策引擎。你的職責是根據傳入的行情數據與 K 線指標，嚴格依據雙重週期（MTF）濾網與動態鎖利機制發出交易指令。\n\n"
+                        "## 🛑 規則一：大週期趨勢硬性約束（最高優先級）\n"
+                        "1. 大週期決定方向：當大週期為熊市時全場禁止開多（NO_LONG）；當大週期為牛市時全場禁止開空（NO_SHORT）。\n"
+                        "2. 嚴禁逆勢開倉：大週期為熊市時，無論 3m/15m MA3 是否金叉 MA15，絕對嚴禁發出 BUY 或 OPEN_LONG 指令，僅能判定為弱勢反彈，保持觀望 HOLD 或尋找高點加空。\n\n"
+                        "## 🛡️ 規則二：方案 1 - 動態鎖利與平倉雙重濾網（以空單 SHORT 為例）\n"
+                        "1. 鎖利觸發條件（雙重過濾）：最高浮盈 >= 10% 且自最高點回吐 >= 20%。\n"
+                        "   關鍵趨勢濾網：即使同時滿足條件，必須同時滿足「MA3 向上穿過 MA15（MA3 > MA15，趨勢發生真實反轉）」時，才允許發出 CLOSE_SHORT 指令；若 MA3 依然在 MA15 下方，代表回吐僅為影線插針，必須忽略平倉輸出 HOLD 讓利潤奔跑。\n"
+                        "2. 收盤價（Bar Close）判定：所有交叉與價格回吐計算必須以正式收盤 Bar Close 數據為準，忽略瞬間插針。\n\n"
+                        "請返回符合 JSON 規範的物件：{\"macro_trend\": \"BEARISH/BULLISH\", \"micro_signal\": \"MA3_CROSS_UNDER_MA15/MA3_CROSS_OVER_MA15\", \"action\": \"OPEN_SHORT/CLOSE_SHORT/HOLD\", \"reason\": \"...\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "evaluate_trading_decision",
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "macro_trend": macro_trend,
+                            "position_status": position_status,
+                            "entry_price": entry_price,
+                            "current_price": current_price,
+                            "highest_profit_margin": highest_profit_margin,
+                            "current_ma3": current_ma3,
+                            "current_ma15": current_ma15,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 256,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self.request_fn, payload),
+                timeout=self.timeout + 2.0,
+            )
+            message = response["choices"][0]["message"]
+            content = message.get("content") or message.get("reasoning_content", "")
+            parsed = self._extract_json(content)
+            return {
+                "macro_trend": str(parsed.get("macro_trend", macro_trend)),
+                "micro_signal": str(parsed.get("micro_signal", "")),
+                "action": str(parsed.get("action", "HOLD")),
+                "reason": str(parsed.get("reason", ""))[:300],
+            }
+        except Exception as exc:
+            return {
+                "macro_trend": macro_trend,
+                "micro_signal": "MA3_CROSS_UNDER_MA15" if current_ma3 < current_ma15 else "MA3_CROSS_OVER_MA15",
+                "action": "HOLD",
+                "reason": f"AI fallback ({type(exc).__name__}): 保持觀望",
+            }
+
     async def rank_symbols(self, metrics: List[dict]) -> List[str]:
         if not self.enabled:
             return []
