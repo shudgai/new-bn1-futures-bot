@@ -1351,13 +1351,28 @@ class ExecutionManager:
                     )
 
                     # 0. 【V 轉快速平空防線 (V-Reversal Fast Close) 與 趨勢翻多防線】：
-                    # 依 2026-10-30 核心授權：持有空單時，只要單根 K 棒收盤價強勢突破 MA15 (closed_c > m15_c 且 curr_quote > m15_c)，
-                    # 無需等待滯後的 MA3 完全向上金叉 MA15，立即平空離場，把獲利鎖在反彈初期！
+                    # 依 2026-10-30 規格升級授權 (Rule 5)：
+                    # ⚠️ 【大週期熊市防誤平鐵律】：大週期空頭 (is_zoomed_out_bearish=True) 持空單時，
+                    # 1m 小幅反彈過 MA15 一律視為正常洗盤雜訊，嚴禁單純收盤 > MA15 就平空！
+                    # 必須同時滿足：①KC 中軌斜率已轉正向上(kc_slope > 0) 且 ②MA3 已站上 MA15(m3_c > m15_c)
+                    # 方可判定為真正的牛市反轉，否則 100% 一票否決平空。
+                    # 非大週期熊市時（BULLISH or NEUTRAL）：維持原敏感平空邏輯，迅速平空保住獲利。
                     is_fast_v_reversal_close = bool(
                         can_exit_short_on_candle
                         and closed_c > m15_c
                         and curr_quote > m15_c
                         and closed_c > closed_o
+                        and (
+                            # 大週期熊市：需要KC斜率向上 + MA3站上MA15 雙重確認，防止弱勢反彈誤平空
+                            (not is_zoomed_out_bearish)
+                            or (
+                                is_zoomed_out_bearish
+                                and kc_slope > 0
+                                and kc_slope_3_ref > 0
+                                and m3_c > m15_c
+                                and (m3_c - m15_c) >= min_gc_dc_spread
+                            )
+                        )
                     )
                     is_bullish_trend_reversal = bool(
                         is_fast_v_reversal_close
@@ -1368,6 +1383,11 @@ class ExecutionManager:
                             and (closed_c > closed_o)
                             and (closed_c > closed_kc_mid and closed_c > m15_c)
                             and (curr_quote > m15_c)
+                            and (
+                                # 大週期熊市：額外要求KC斜率也要向上，才能宣告牛市反轉
+                                (not is_zoomed_out_bearish)
+                                or (is_zoomed_out_bearish and kc_slope > 0 and kc_slope_3_ref > 0)
+                            )
                         )
                     )
 
@@ -1531,13 +1551,28 @@ class ExecutionManager:
                     )
 
                     # 0. 【趨勢正式變空頭及時平多防線 (Bearish Trend Reversal) 與 跌破 MA15 快速平多】：
-                    # 當多單持倉時，單根 K 棒收盤跌破 MA15 (closed_c < m15_c 且 curr_quote < m15_c 且 closed_c < closed_o)，
-                    # 即代表反彈力竭，多頭結構瓦解，必須【立即及時平多離場】，若在大週期熊市背景下直接觸發一鍵翻空！
+                    # 依 2026-10-30 規格升級授權 (Rule 5)：
+                    # ⚠️ 【大週期牛市防誤平鐵律】：大週期多頭 (is_zoomed_out_bullish=True) 持多單時，
+                    # 1m 小幅回踩跌破 MA15 一律視為正常牛市洗盤，嚴禁單純收盤 < MA15 就平多！
+                    # 必須同時滿足：①KC 中軌斜率已轉負向下(kc_slope < 0) 且 ②MA3 已跌破 MA15(m3_c < m15_c)
+                    # 方可判定為真正的熊市反轉，否則 100% 一票否決平多。
+                    # 非大週期牛市時（BEARISH or NEUTRAL）：維持原敏感平多邏輯，迅速平多保住獲利。
                     is_fast_bear_reversal_close = bool(
                         can_exit_long_on_candle
                         and closed_c < m15_c
                         and curr_quote < m15_c
                         and closed_c < closed_o
+                        and (
+                            # 大週期牛市：需要KC斜率向下 + MA3跌破MA15 雙重確認，防止正常回踩誤平多
+                            (not is_zoomed_out_bullish)
+                            or (
+                                is_zoomed_out_bullish
+                                and kc_slope < 0
+                                and kc_slope_3_ref < 0
+                                and m3_c < m15_c
+                                and (m15_c - m3_c) >= min_gc_dc_spread
+                            )
+                        )
                     )
                     is_bearish_trend_reversal = bool(
                         is_fast_bear_reversal_close
@@ -1548,6 +1583,11 @@ class ExecutionManager:
                             and (closed_c < closed_o)
                             and (closed_c < closed_kc_mid and closed_c < m15_c)
                             and (curr_quote < m15_c)
+                            and (
+                                # 大週期牛市：額外要求KC斜率也要向下，才能宣告熊市反轉
+                                (not is_zoomed_out_bullish)
+                                or (is_zoomed_out_bullish and kc_slope < 0 and kc_slope_3_ref < 0)
+                            )
                         )
                     )
 
@@ -2276,8 +2316,11 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則二.2：做多雙重一票否決 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下)
-                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p)
+                # 🛑 規則二.2：做多審查 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下; KC斜率否決: KC向下)
+                p_kc_mid = float(p_k.get("kc_middle", kc_mid))
+                kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
+                is_kc_slope_down = bool(kc_slope < 0 or kc_mid_slope < 0)
+                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p or is_kc_slope_down)
 
                 if is_in_long_cooldown:
                     logger.info(
@@ -2285,10 +2328,16 @@ class ExecutionManager:
                         f"嚴禁在回調初期反覆追多！"
                     )
                 elif is_long_vetoed:
-                    logger.info(
-                        f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
-                        f"MA3 < MA15 或斜率向下，嚴防下殺接飛刀！"
-                    )
+                    if is_kc_slope_down:
+                        logger.info(
+                            f"🛑 [BLOCKED_LONG_KC_SLOPE_DOWN] {symbol} KC 通道中軌斜率向下 "
+                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，強勢空頭結構中 100% 嚴禁開多！"
+                        )
+                    else:
+                        logger.info(
+                            f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
+                            f"MA3 < MA15 或斜率向下，嚴防下殺接飛刀！"
+                        )
                 else:
                     is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
                     is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
@@ -2306,8 +2355,11 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則三.2：做空雙重一票否決 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上)
-                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p)
+                # 🛑 規則三.2：做空審查 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上; KC斜率否決: KC向上)
+                p_kc_mid = float(p_k.get("kc_middle", kc_mid))
+                kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
+                is_kc_slope_up = bool(kc_slope > 0 or kc_mid_slope > 0)
+                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p or is_kc_slope_up)
 
                 if is_in_short_cooldown:
                     logger.info(
@@ -2315,10 +2367,16 @@ class ExecutionManager:
                         f"嚴禁在觸底反彈初期反覆追空！"
                     )
                 elif is_short_vetoed:
-                    logger.info(
-                        f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
-                        f"MA3 > MA15 或斜率向上，嚴防阿呆谷賣空！"
-                    )
+                    if is_kc_slope_up:
+                        logger.info(
+                            f"🛑 [BLOCKED_SHORT_KC_SLOPE_UP] {symbol} KC 通道中軌斜率向上 "
+                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，強勢多頭結構中 100% 嚴禁開空！"
+                        )
+                    else:
+                        logger.info(
+                            f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
+                            f"MA3 > MA15 或斜率向上，嚴防阿呆谷賣空！"
+                        )
                 else:
                     is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
                     is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c)
