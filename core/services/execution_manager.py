@@ -1166,13 +1166,14 @@ class ExecutionManager:
                     and can_exit_long_on_candle
                     and pos_entry > 0
                     and curr_quote > pos_entry * 1.0015
-                    and (not is_zoomed_out_bullish)  # ⚠️ 大週期牛市多單一單到底，絕不被普通回調鎖利震出場！
                     and (
-                        (scheme1_action == "CLOSE_LONG")
-                        # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價跌破 MA3 與 MA5 且 MA3 下拐，或跌破 KC 中軌，立即高點鎖利落袋，絕不抱回起漲點！
-                        or (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
-                        # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陰線跌破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 下方、MA3 < MA15
-                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
+                        # (A) 二階大波段鎖利 (peak_roe >= 20%)：無論大週期為何，一旦達到 20% ROE 且跌破 MA3/MA5 或跌破 KC 中軌，立即高點鎖利落袋，絕不坐過山車抱回起漲點！
+                        (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
+                        # (B) 普通鎖利：非大週期牛市鎖定時放行
+                        or ((not is_zoomed_out_bullish) and (
+                            (scheme1_action == "CLOSE_LONG")
+                            or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
+                        ))
                     )
                 )
                 or (
@@ -1180,13 +1181,14 @@ class ExecutionManager:
                     and can_exit_short_on_candle
                     and pos_entry > 0
                     and curr_quote < pos_entry * 0.9985
-                    and (not is_zoomed_out_bearish)  # ⚠️ 大週期熊市空單一單到底，絕不被普通回抽鎖利震出場！
                     and (
-                        (scheme1_action == "CLOSE_SHORT")
-                        # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價突破 MA3 與 MA5 且 MA3 上拐，或突破 KC 中軌，立即低點鎖利落袋，絕不抱回起跌點！
-                        or (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
-                        # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陽線突破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 上方、MA3 > MA15
-                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
+                        # (A) 二階大波段鎖利 (peak_roe >= 20%)：無論大週期為何，一旦達到 20% ROE 且突破 MA3/MA5 或突破 KC 中軌，立即低點鎖利落袋，絕不坐過山車抱回起跌點！
+                        (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
+                        # (B) 普通鎖利：非大週期熊市鎖定時放行
+                        or ((not is_zoomed_out_bearish) and (
+                            (scheme1_action == "CLOSE_SHORT")
+                            or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
+                        ))
                     )
                 )
             ):
@@ -1268,13 +1270,13 @@ class ExecutionManager:
                     macro_trend="BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else macro_trend),
                 )
                 if staged_exit_needed and not should_exit:
-                    # ⚠️ 順勢大週期一單到底鐵律：
-                    # 大週期熊市持有空單、或大週期牛市持有多單時，嚴禁 Stage 1~3 小保本在成本價附近將順勢單洗下車！
-                    # 唯有大週期反轉 (EXIT_BY_MACRO_TREND_REVERSAL) 或 Stage 4 (獲利 >= 20% 移動止盈) 才允許平倉！
+                    # ⚠️ 順勢大週期一單到底與獲利鎖定平衡：
+                    # 大週期熊市持有空單、或大週期牛市持有多單時，僅一票否決 Stage 1 (零利潤成本保本)，防止在剛開倉呼吸時被震下車！
+                    # 一旦達到 Stage 2 (+4% ROE)、Stage 3 (+8% ROE)、Stage 4 (+12% ROE / Trailing Stop)，屬於實質波段獲利，必須及時放行平倉落袋！
                     is_macro_aligned = (pos_side == "SHORT" and is_zoomed_out_bearish) or (pos_side == "LONG" and is_zoomed_out_bullish)
-                    is_small_ladder = any(f"STAGE{i}" in str(staged_exit_reason) for i in (1, 2, 3))
-                    if is_macro_aligned and is_small_ladder:
-                        logger.info(f"🛡️ [VETO_STAGED_LADDER] {symbol} {pos_side} 大週期順勢一單到底，一票否決 {staged_exit_reason} 小保本平倉，拒絕被洗下車！")
+                    is_stage1_only = "STAGE1" in str(staged_exit_reason)
+                    if is_macro_aligned and is_stage1_only:
+                        logger.info(f"🛡️ [VETO_STAGED_LADDER] {symbol} {pos_side} 大週期順勢持倉，一票否決 {staged_exit_reason} 成本零利潤保本平倉，拒絕被洗下車！")
                     else:
                         should_exit = True
                         reason = staged_exit_reason
@@ -1442,9 +1444,9 @@ class ExecutionManager:
                         and (has_profit_expansion or favorable_gain_atr >= 1.5 or peak_roe_pct >= 6.0)
                         and (pos_entry <= 0 or curr_quote <= pos_entry * 0.9985)
                         and outer_touched_short
-                        and closed_c > closed_kc_lo
+                        and closed_c >= closed_kc_lo * 0.998
                         and closed_c > closed_o
-                        and curr_quote >= closed_c
+                        and curr_quote >= closed_c * 0.998
                         and closed_c > m3_c
                         and closed_c > ma5_short_ref
                         and curr_quote > m3_c
@@ -1652,9 +1654,9 @@ class ExecutionManager:
                         and (has_profit_expansion or favorable_gain_atr >= 1.5 or peak_roe_pct >= 6.0)
                         and (pos_entry_price <= 0 or curr_quote >= pos_entry_price * 1.0015)
                         and outer_touched_long
-                        and closed_c < closed_kc_u
+                        and closed_c <= closed_kc_u * 1.002
                         and closed_c < closed_o
-                        and curr_quote <= closed_c
+                        and curr_quote <= closed_c * 1.002
                         and closed_c < m3_c
                         and closed_c < ma5_long_ref
                         and curr_quote < m3_c
