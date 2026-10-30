@@ -41,6 +41,8 @@ class ScalpingStateMachine:
         lowest_price: float = 0.0,
         peak_roe_pct: float = 0.0,
         is_structure_break: bool = False,
+        is_sideways: bool = False,
+        sideways_reason: str = "",
     ) -> Tuple[str, str]:
         """
         每根 K 棒收盤 (Bar Close) 或即時報價更新時執行的核心裁決
@@ -69,6 +71,8 @@ class ScalpingStateMachine:
             lowest_price=lowest_price,
             peak_roe_pct=peak_roe_pct,
             is_structure_break=is_structure_break,
+            is_sideways=is_sideways,
+            sideways_reason=sideways_reason,
         )
         return res["action"], res["reason"]
 
@@ -88,6 +92,8 @@ class ScalpingStateMachine:
         lowest_price: float = 0.0,
         peak_roe_pct: float = 0.0,
         is_structure_break: bool = False,
+        is_sideways: bool = False,
+        sideways_reason: str = "",
     ) -> Dict[str, Any]:
         """
         回傳符合 System Prompt 規範的完整 JSON 結構字典
@@ -108,14 +114,42 @@ class ScalpingStateMachine:
         low_p = float(lowest_price or entry_p or curr_p)
         roe_pct = float(peak_roe_pct or 0.0)
         struct_break = bool(is_structure_break)
+        sideways = bool(is_sideways)
 
         # 狀態標籤
-        if macro == "BULLISH":
+        if sideways:
+            status_label = "震盪觀望 (禁止開倉)"
+        elif macro == "BULLISH":
             status_label = "大週期牛市 (順勢做多)"
         elif macro == "BEARISH":
             status_label = "大週期熊市 (順勢做空)"
         else:
             status_label = "中性震盪 (等待大結構確認)"
+
+        # =====================================================================
+        # 🚨 規則：震盪行情硬性禁止開倉 (Sideways No-Trade Zone)
+        # =====================================================================
+        if sideways and not struct_break:
+            if pos == "FLAT":
+                return {
+                    "macro_trend": macro,
+                    "status_label": status_label,
+                    "position_state": pos,
+                    "ma3_slope": slope,
+                    "cooldown_active": cooldown,
+                    "action": "HOLD",
+                    "reason": f"🚨 觸發震盪行情硬性禁止開倉 (Sideways No-Trade Zone)：{sideways_reason or 'KC通道縮口/均線走平纏繞/K棒實體微小'}，100% 一票否決開倉！",
+                }
+            else:
+                return {
+                    "macro_trend": macro,
+                    "status_label": status_label,
+                    "position_state": pos,
+                    "ma3_slope": slope,
+                    "cooldown_active": cooldown,
+                    "action": "HOLD",
+                    "reason": f"震盪行情持倉中 ({pos})：{sideways_reason or '狹幅震盪區間'}，100% 續抱持倉防雙向巴掌磨損！",
+                }
 
         # =====================================================================
         # 🛑 規則一：大週期結束即刻一鍵轉向 (Structure Break Reversal)

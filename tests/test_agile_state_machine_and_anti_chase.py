@@ -259,3 +259,36 @@ def test_state_machine_cooldown_and_exit_rules():
         ma15=100.0,
     )
     assert res_exit_short["action"] == "CLOSE_SHORT"
+
+
+def test_state_machine_sideways_veto():
+    """驗證：震盪行情硬性禁止開倉 (Sideways No-Trade Zone)"""
+    # 1. 無持倉 (FLAT) + 震盪行情 (is_sideways=True) -> 100% HOLD / 禁止開倉
+    res_flat_sideways = ScalpingStateMachine.evaluate_dict(
+        position_state="FLAT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=100.0,
+        ma3=99.0,
+        ma15=100.0,
+        ma3_slope=-0.02,
+        is_sideways=True,
+        sideways_reason="KC 通道寬度 < 0.8% 且均線麻花纏繞",
+    )
+    assert res_flat_sideways["action"] == "HOLD"
+    assert res_flat_sideways["status_label"] == "震盪觀望 (禁止開倉)"
+    assert "Sideways No-Trade Zone" in res_flat_sideways["reason"]
+    assert "一票否決開倉" in res_flat_sideways["reason"]
+
+    # 2. 持倉中 (SHORT) + 震盪行情 (is_sideways=True) -> 100% 續抱 (HOLD) 防雙向巴掌
+    res_pos_sideways = ScalpingStateMachine.evaluate_dict(
+        position_state="SHORT",
+        macro_trend="BEARISH",
+        current_price=98.0,
+        open_price=97.5,
+        ma3=98.2,
+        ma15=98.0,
+        is_sideways=True,
+    )
+    assert res_pos_sideways["action"] == "HOLD"
+    assert "續抱持倉防雙向巴掌磨損" in res_pos_sideways["reason"]

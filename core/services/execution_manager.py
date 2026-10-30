@@ -2249,8 +2249,28 @@ class ExecutionManager:
                         f"僅視為回檔低點準備區 (WAIT_PULLBACK)，強制鎖死 can_open_short=False，等待 MA3 重新金叉 MA15 再開多！"
                     )
 
+            # 🚨 規則：震盪行情硬性禁止開倉 (Sideways No-Trade Zone)
+            # 1. KC 通道縮口: (KC上軌 - KC下軌) / 當前價格 < 0.8%
+            # 2. 均線走平纏繞: 近 8~10 根 K 棒內 MA3 與 MA15 交叉次數 >= 2 且間距極小
+            # 3. KC 中軌斜率與 MA15 斜率過小 (無趨勢傾角) 且 K 棒實體微小
+            kc_width_ratio = (kc_u - kc_lo) / c_c if c_c > 0 else 0.0
+            is_kc_narrow_squeeze = bool(kc_width_ratio > 0 and kc_width_ratio < 0.008)
+            is_ma_entangled = bool(ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0015)
+            is_slope_flat_chop = bool(atr_v > 0 and abs(kc_slope) < 0.02 * atr_v and abs(m15_c - m15_p) < 0.02 * atr_v)
+            is_sideways_market = bool(
+                (is_kc_narrow_squeeze or is_ma_entangled or is_slope_flat_chop or is_chop_zone)
+                and not is_meme_breakout_ignition
+            )
+
+            if is_sideways_market and not has_position:
+                logger.info(
+                    f"🚫 [SIDEWAYS_NO_TRADE_ZONE] {symbol} 處於垃圾時間窄幅震盪 "
+                    f"(kc_width={kc_width_ratio:.2%}, sqz={is_kc_narrow_squeeze}, entangled={is_ma_entangled}, flat={is_slope_flat_chop})，"
+                    f"100% 一票否決任何開倉指令，維持震盪觀望 (HOLD)！"
+                )
+
             # 🚀 2026-10-30 核心授權：牛市/熊市早期開倉機制與雙重一票否決
-            if (not has_position) and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
+            if (not has_position) and (not is_sideways_market) and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
                 # 🛑 規則四.3：平多後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
@@ -2280,7 +2300,7 @@ class ExecutionManager:
                         is_1m_confirmed_bull = False
                         entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
                         logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，通過雙重審查，立即鎖定起漲點開多！")
-            elif (not has_position) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
+            elif (not has_position) and (not is_sideways_market) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
                 # 🛑 規則四.3：平空後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
