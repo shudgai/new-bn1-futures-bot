@@ -143,3 +143,30 @@ def test_entry_ma3_slope_flat_rule():
     )
     assert res_short_flat["action"] == "WAIT"
     assert "斜率否決" in res_short_flat["reason"]
+
+
+
+def test_entry_pullback_veto_hold():
+    """驗證開倉後成本區間回踩絕不平倉鐵律 (peak_roe < 5% 且虧損在呼吸區)"""
+    # 模擬多單開倉在 100，價格小回踩至 99.5 (-0.5% 呼吸區，未達 5% ROE)
+    peak_roe_pct = 2.0
+    favorable_gain_atr = 0.3
+    pos_entry = 100.0
+    curr_quote = 99.5
+    pos_side = 'LONG'
+    atr_v = 1.0
+
+    is_absolute_safety = False
+    reason = 'CLOSE_LONG_ON_BEARISH_REVERSAL'
+    is_stagnation_exit = (reason == 'EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION')
+
+    is_profit_unexpanded = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+    current_loss_pct = (pos_entry - curr_quote) / pos_entry
+    is_within_normal_breathing = bool(current_loss_pct < 0.020 and (current_loss_pct * pos_entry) < 2.5 * atr_v)
+
+    should_exit = True
+    if should_exit and not is_absolute_safety and not is_stagnation_exit:
+        if is_profit_unexpanded and is_within_normal_breathing:
+            should_exit = False
+
+    assert should_exit is False, '開倉後回踩應觸發 VETO_HOLD，絕不平倉！'

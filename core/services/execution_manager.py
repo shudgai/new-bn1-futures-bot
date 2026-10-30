@@ -1851,6 +1851,25 @@ class ExecutionManager:
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
+            # 🛡️ 【開倉後回踩防洗鐵律（2026-10-30 最高授權：開倉後回踩不平倉）】：
+            # 開倉後若波段尚未實質展開獲利（peak_roe_pct < 5.0 且 favorable_gain_atr < 0.8）：
+            # 價格在成本價附近的任何回踩（小陰小陽、均線死叉/金叉、跌破MA15或中軌），
+            # 100% 判定為「成本區間正常呼吸回踩（PULLBACK_BREATHING）」，一票否決平倉（VETO_HOLD）！
+            # 嚴禁在成本價附近因微幅回調提前割肉下車！
+            # 唯一例外：觸發絕對安全避險防線 (is_absolute_safety) 或單筆硬止損熔斷 (虧損 >= 2.0% 或 >= 3.0 ATR)
+            if should_exit and not is_absolute_safety:
+                is_stagnation_exit = bool(reason == "EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION")
+                if not is_stagnation_exit:
+                    is_profit_unexpanded = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+                    current_loss_pct = ((pos_entry - curr_quote) / pos_entry) if (pos_side == "LONG" and pos_entry > 0) else (((curr_quote - pos_entry) / pos_entry) if (pos_side == "SHORT" and pos_entry > 0) else 0.0)
+                    is_within_normal_breathing = bool(current_loss_pct < 0.020 and (atr_v <= 0 or (current_loss_pct * pos_entry) < 2.5 * atr_v))
+                    if is_profit_unexpanded and is_within_normal_breathing:
+                        logger.info(
+                            f"🛡️ [VETO_PULLBACK_HOLD] {symbol} 開倉後回踩不平倉！波段未實質展開 (peak_roe={peak_roe_pct:.2f}% < 5%, loss={current_loss_pct*100:.2f}%)，"
+                            f"判定為成本區間正常呼吸回踩，100% 一票否決平倉請求 ({reason})，拒絕提前割肉下車！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_COST_PULLBACK_BREATHING"}
+
             # 🛑 【終極防呆總閘門：出紅K（下跌陰線）100% 嚴禁平空、出綠K（上漲陽線）100% 嚴禁平多】：
             if should_exit:
                 if pos_side == "SHORT" and not can_exit_short_on_candle:

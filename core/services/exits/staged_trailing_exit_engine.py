@@ -39,24 +39,10 @@ def evaluate_staged_trailing_exit(
     macro = str(macro_trend or "NEUTRAL").upper()
 
     # ══════════════════════════════════════════════════════════════════
-    # 規則 1：大週期反轉強制清場 (Macro Trend Reversal Mandatory Exit)
+    # 規則 1：開倉後成本區間回踩防洗鐵律（AGENTS.md 核心授權）
+    # 開倉後若波段尚未實質展開（peak_roe < 5% 且峰值未達 0.5 ATR）：
+    # 成本區間的一切小陰小陽或均線盤中抖動，100% 判定為正常呼吸回踩，絕不平倉！
     # ══════════════════════════════════════════════════════════════════
-    if side == "LONG" and macro == "BEARISH":
-        return True, "EXIT_BY_MACRO_TREND_REVERSAL_TO_BEAR", {
-            "side": side,
-            "entry_price": entry_p,
-            "current_price": current_price,
-            "macro_trend": macro,
-            "detail": "大週期由牛轉熊，多單無條件立即市價全平！",
-        }
-    elif side == "SHORT" and macro == "BULLISH":
-        return True, "EXIT_BY_MACRO_TREND_REVERSAL_TO_BULL", {
-            "side": side,
-            "entry_price": entry_p,
-            "current_price": current_price,
-            "macro_trend": macro,
-            "detail": "大週期由熊轉牛，空單無條件立即市價全平！",
-        }
 
     # ══════════════════════════════════════════════════════════════════
     # 規則 2：多階段階梯保本與防守價只進不退 (Monotonic Trailing Ladder - 依 ROE 計算)
