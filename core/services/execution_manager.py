@@ -913,6 +913,7 @@ class ExecutionManager:
             highest_profit_margin = max(stored_highest_margin, curr_profit_margin)
             current_position["highest_profit_margin"] = round(highest_profit_margin, 6)
 
+            _is_pepe = "1000PEPE" in symbol or "PEPE" in str(symbol).upper()
             scheme1_action = check_exit_conditions(
                 position=pos_side,
                 entry_price=pos_entry,
@@ -922,6 +923,8 @@ class ExecutionManager:
                 current_ma15=m15_c,
                 highest_roe_pct=peak_roe_pct,
                 current_roe_pct=cur_roe_pct,
+                tier1_start_roe_pct=20.0 if _is_pepe else 10.0,
+                tier1_drawback_pct=0.05 if _is_pepe else 0.20,
             )
 
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
@@ -1098,8 +1101,8 @@ class ExecutionManager:
                         (scheme1_action == "CLOSE_LONG")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價跌破 MA3 與 MA5 且 MA3 下拐，或跌破 KC 中軌，立即高點鎖利落袋，絕不抱回起漲點！
                         or (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
-                        # (B) 一階鎖利 (peak_roe >= 10%)：已收陰線跌破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 下方、MA3 < MA15（無須苦等 5 棒/10 棒慢線滯後轉向，且嚴格保證平在獲利區間 curr_quote > pos_entry * 1.0015！）
-                        or ((not is_zoomed_out_bullish) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
+                        # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陰線跌破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 下方、MA3 < MA15
+                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and (not is_zoomed_out_bullish) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
                     )
                 )
                 or (
@@ -1111,8 +1114,8 @@ class ExecutionManager:
                         (scheme1_action == "CLOSE_SHORT")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價突破 MA3 與 MA5 且 MA3 上拐，或突破 KC 中軌，立即低點鎖利落袋，絕不抱回起跌點！
                         or (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
-                        # (B) 一階鎖利 (peak_roe >= 10%)：已收陽線突破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 上方、MA3 > MA15（無須苦等 5 棒/10 棒慢線滯後轉向，且嚴格保證平在獲利區間 curr_quote < pos_entry * 0.9985！）
-                        or ((not is_zoomed_out_bearish) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
+                        # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陽線突破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 上方、MA3 > MA15
+                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and (not is_zoomed_out_bearish) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
                     )
                 )
             ):

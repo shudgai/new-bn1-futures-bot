@@ -45,6 +45,8 @@ def check_exit_conditions(
     current_ma15: float,
     highest_roe_pct: Optional[float] = None,
     current_roe_pct: Optional[float] = None,
+    tier1_start_roe_pct: float = 10.0,
+    tier1_drawback_pct: float = 0.20,
 ) -> str:
     """
     方案 1 核心實作：持倉平倉與動態鎖利邏輯判定 (以 10% 門檻 + 20% 回吐鎖利 結合 MA3 / MA15 趨勢濾網)
@@ -101,17 +103,17 @@ def check_exit_conditions(
     # 核心方案 1 鎖利與平倉判定邏輯
     # ----------------------------------------------------
 
-    # 條件 A：達到 10% 鎖利門檻（價格浮盈 >= 10% 或 ROE >= 10%），且回吐超過 20%
-    is_reach_10pct = (highest_profit_margin >= 0.10) or (highest_roe_pct is not None and highest_roe_pct >= 10.0)
-    is_take_profit_triggered = is_reach_10pct and (profit_drawdown >= 0.20)
+    # 條件 A：達到鎖利門檻（價格浮盈 >= tier1_start_roe_pct/100 或 ROE >= tier1_start_roe_pct），且回吐超過 tier1_drawback_pct
+    is_reach_threshold = (highest_profit_margin >= (tier1_start_roe_pct / 100.0)) or (highest_roe_pct is not None and highest_roe_pct >= tier1_start_roe_pct)
+    is_take_profit_triggered = is_reach_threshold and (profit_drawdown >= tier1_drawback_pct)
 
     if is_take_profit_triggered:
-        # 【加入雙重濾網】：即使回吐達 20%，也要檢查趨勢是否真的反轉
+        # 【加入雙重濾網】：即使回吐達門檻，也要檢查趨勢是否真的反轉
         if is_trend_reversed:
             action = "CLOSE_SHORT" if pos_side == "SHORT" else "CLOSE_LONG"
             return action
         else:
-            # 雖然回吐 20%，但 MA3 依然在未反轉側，認定為插針/假拉高，忽略平倉！
+            # 雖然回吐，但 MA3 依然在未反轉側，認定為插針/假拉回，忽略平倉！
             return "HOLD"
 
     # 條件 B：一般的均線反轉平倉 (即使沒達到 10% 浮盈，只要均線反轉且處於浮盈區亦可離場)
