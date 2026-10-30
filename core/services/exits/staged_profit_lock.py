@@ -33,6 +33,93 @@ TIER2_RETAIN_RATIO = 0.85    # 階段 2 鎖利保留率：85% (允許回吐 15%)
 
 EXIT_REASON_TIER1 = "EXIT_BY_STAGED_PROFIT_LOCK_TIER1"
 EXIT_REASON_TIER2 = "EXIT_BY_STAGED_PROFIT_LOCK_TIER2"
+EXIT_REASON_SCHEME1 = "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15"
+
+
+def check_exit_conditions(
+    position: str,
+    entry_price: float,
+    current_price: float,
+    highest_profit_margin: float,
+    current_ma3: float,
+    current_ma15: float,
+    highest_roe_pct: Optional[float] = None,
+    current_roe_pct: Optional[float] = None,
+) -> str:
+    """
+    方案 1 核心實作：持倉平倉與動態鎖利邏輯判定 (以 10% 門檻 + 20% 回吐鎖利 結合 MA3 / MA15 趨勢濾網)
+    支援 SHORT 與 LONG 雙向鏡像。
+
+    核心思想：
+    「縱使浮盈從高點回吐達 20%，只要 MA3 依然在 MA15 下方（空單未反轉）/ 上方（多單未反轉），
+    就判定這只是影線插針或正常震盪，強制續抱不鎖利；只有當趨勢真正反轉且滿足回吐條件時，才執行平倉。」
+
+    :param position: 當前持倉狀態 ("SHORT", "LONG" 或 "NONE")
+    :param entry_price: 開倉價格
+    :param current_price: 當前 K 線價格 (或收盤價)
+    :param highest_profit_margin: 本筆交易紀錄到的最高浮盈比例 (例如 0.15 代表 15%)
+    :param current_ma3: 當前 MA3 數值
+    :param current_ma15: 當前 MA15 數值
+    :param highest_roe_pct: (可選) 本筆交易最高 ROE%
+    :param current_roe_pct: (可選) 當前 ROE%
+    :return: 執行的動作 ("HOLD" 續抱, "CLOSE_SHORT" 平空, "CLOSE_LONG" 平多, 或 "NONE")
+    """
+    pos_side = str(position or "NONE").upper()
+    if pos_side not in ("SHORT", "LONG"):
+        return "NONE"
+
+    if entry_price <= 0 or current_price <= 0:
+        return "HOLD"
+
+    # 1. 計算當前浮盈比例 (空單：(開倉價 - 當前價) / 開倉價；多單：(當前價 - 開倉價) / 開倉價)
+    if pos_side == "SHORT":
+        current_profit_margin = (entry_price - current_price) / entry_price
+    else:
+        current_profit_margin = (current_price - entry_price) / entry_price
+
+    # 2. 更新歷史最高浮盈
+    if current_profit_margin > highest_profit_margin:
+        highest_profit_margin = current_profit_margin
+
+    # 3. 計算從最高點回吐的比例 (Drawdown from Peak)
+    if highest_profit_margin > 0:
+        profit_drawdown = (highest_profit_margin - current_profit_margin) / highest_profit_margin
+    elif highest_roe_pct is not None and current_roe_pct is not None and highest_roe_pct > 0:
+        profit_drawdown = max(0.0, (highest_roe_pct - current_roe_pct) / highest_roe_pct)
+    else:
+        profit_drawdown = 0.0
+
+    # 4. 判定均線趨勢是否發生反轉
+    # 空單背景下：MA3 上穿 MA15 (MA3 > MA15) 代表小週期走勢轉強/反彈
+    # 多單背景下：MA3 下穿 MA15 (MA3 < MA15) 代表小週期走勢轉弱/回檔
+    if pos_side == "SHORT":
+        is_trend_reversed = (current_ma3 > current_ma15)
+    else:
+        is_trend_reversed = (current_ma3 < current_ma15)
+
+    # ----------------------------------------------------
+    # 核心方案 1 鎖利與平倉判定邏輯
+    # ----------------------------------------------------
+
+    # 條件 A：達到 10% 鎖利門檻（價格浮盈 >= 10% 或 ROE >= 10%），且回吐超過 20%
+    is_reach_10pct = (highest_profit_margin >= 0.10) or (highest_roe_pct is not None and highest_roe_pct >= 10.0)
+    is_take_profit_triggered = is_reach_10pct and (profit_drawdown >= 0.20)
+
+    if is_take_profit_triggered:
+        # 【加入雙重濾網】：即使回吐達 20%，也要檢查趨勢是否真的反轉
+        if is_trend_reversed:
+            action = "CLOSE_SHORT" if pos_side == "SHORT" else "CLOSE_LONG"
+            return action
+        else:
+            # 雖然回吐 20%，但 MA3 依然在未反轉側，認定為插針/假拉高，忽略平倉！
+            return "HOLD"
+
+    # 條件 B：一般的均線反轉平倉 (即使沒達到 10% 浮盈，只要均線反轉且處於浮盈區亦可離場)
+    elif is_trend_reversed and (current_profit_margin > 0 or (current_roe_pct is not None and current_roe_pct > 0)):
+        action = "CLOSE_SHORT" if pos_side == "SHORT" else "CLOSE_LONG"
+        return action
+
+    return "HOLD"
 
 # 階段 0 強制忽略／否決之震盪與微觀反轉出口候選清單
 STAGE0_VETO_EXIT_CANDIDATES = frozenset({
@@ -201,8 +288,10 @@ def evaluate_staged_profit_lock(
     position: Dict[str, Any],
     current_price: float,
     side: Optional[str] = None,
+    current_ma3: Optional[float] = None,
+    current_ma15: Optional[float] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
-    """三階段階梯式淨利鎖利唯一裁決官：
+    """三階段階梯式淨利鎖利唯一裁決官（結合方案 1 MA3/MA15 趨勢過濾）：
 
     回傳: (should_exit, reason, meta)
     """
@@ -234,7 +323,9 @@ def evaluate_staged_profit_lock(
         "lock_floor_roe_pct": round(floor_roe, 4) if floor_roe is not None else None,
         "gross_pnl": round(gross_pnl, 4),
         "total_costs": round(total_costs, 4),
-        "profit_lock_rule": "STAGED_PROFIT_LOCK_3TIER",
+        "profit_lock_rule": "STAGED_PROFIT_LOCK_3TIER_WITH_SCHEME1",
+        "current_ma3": current_ma3,
+        "current_ma15": current_ma15,
     }
 
     # 階段 0：未啟動鎖利
@@ -247,14 +338,46 @@ def evaluate_staged_profit_lock(
         or (floor_roe is not None and (net_roe_pct <= floor_roe or math.isclose(net_roe_pct, floor_roe, rel_tol=1e-9, abs_tol=1e-9)))
     )
 
-    if hit_floor:
+    # 🎯 方案 1 觸發判定：最高淨利 >= 10%，且自最高點回吐 >= 20%
+    scheme1_triggered = False
+    if highest_pnl > 0 and (highest_roe >= 10.0 or (entry_p > 0 and (highest_pnl / entry_p) >= 0.10)):
+        profit_drawdown = (highest_pnl - net_pnl) / highest_pnl
+        if profit_drawdown >= 0.20 or math.isclose(profit_drawdown, 0.20, rel_tol=1e-9, abs_tol=1e-9):
+            scheme1_triggered = True
+
+    if hit_floor or scheme1_triggered:
+        # 🎯 方案 1 核心過濾：縱使回吐跌破鎖利底線或回吐達 20%，若 MA3 仍未反轉，判定為插針/假拉回，一票否決鎖利！
+        if current_ma3 is not None and current_ma15 is not None:
+            if pos_side == "SHORT" and current_ma3 <= current_ma15:
+                meta["cause"] = (
+                    f"[忽略鎖利] 最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，現利縮水至 {net_pnl:.2f}U，"
+                    f"但 MA3 ({current_ma3:.6f}) 仍低於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
+                    f"判定為插針洗盤雜訊，一票否決平倉，繼續讓利潤奔跑！"
+                )
+                return False, "VETO_HOLD_SCHEME1_MA3_MA15_FILTER", meta
+            elif pos_side == "LONG" and current_ma3 >= current_ma15:
+                meta["cause"] = (
+                    f"[忽略鎖利] 最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，現利縮水至 {net_pnl:.2f}U，"
+                    f"但 MA3 ({current_ma3:.6f}) 仍高於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
+                    f"判定為插針洗盤雜訊，一票否決平倉，繼續讓利潤奔跑！"
+                )
+                return False, "VETO_HOLD_SCHEME1_MA3_MA15_FILTER", meta
+
+        if scheme1_triggered:
+            reason = EXIT_REASON_SCHEME1
+            meta["cause"] = (
+                f"方案1鎖利觸發 ({reason}): 最高浮盈 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
+                f"回吐達 {(highest_pnl-net_pnl)/highest_pnl*100:.1f}% >= 20%，且 MA3/MA15 趨勢已反轉，落袋保利！"
+            )
+            return True, reason, meta
+
         if stage == 2:
             reason = EXIT_REASON_TIER2
             meta["cause"] = (
                 f"階梯鎖利第二階段觸發 ({reason}): "
                 f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
                 f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
-                f"落袋保利！"
+                f"且 MA3/MA15 趨勢已反轉，落袋保利！"
             )
             return True, reason, meta
         elif stage == 1:
@@ -263,7 +386,7 @@ def evaluate_staged_profit_lock(
                 f"階梯鎖利第一階段觸發 ({reason}): "
                 f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
                 f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
-                f"落袋保利！"
+                f"且 MA3/MA15 趨勢已反轉，落袋保利！"
             )
             return True, reason, meta
 

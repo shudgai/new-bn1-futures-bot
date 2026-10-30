@@ -884,6 +884,7 @@ class ExitGate:
         # ══════════════════════════════════════════════════════════════════
         # 第二級：淨 ROE 階梯鎖利（獲利了結出口，不受一般趨勢續抱 VETO 阻擋）
         # 首次達 +10% 啟動鎖利 (Tier 1: 鎖 70%)，達 +20% 升級 (Tier 2: 鎖 85%)，不可降級
+        # 🎯 方案 1 結合 MA3/MA15 趨勢濾網：縱使浮盈回吐，若 MA3 仍未反轉，一票否決鎖利強制續抱！
         # 多單 LONG 與空單 SHORT 統一規則
         # ══════════════════════════════════════════════════════════════════
         from core.services.exits.staged_profit_lock import (
@@ -892,7 +893,11 @@ class ExitGate:
             EXIT_REASON_TIER1,
             EXIT_REASON_TIER2,
         )
-        should_staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(pos, quote, side)
+        ma3_curr_v = float(curr_k.get("ma3", getattr(market_data, "ma3", quote))) if curr_k else quote
+        ma15_curr_v = float(curr_k.get("ma15", getattr(market_data, "ma15", quote))) if curr_k else quote
+        should_staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(
+            pos, quote, side, current_ma3=ma3_curr_v, current_ma15=ma15_curr_v
+        )
         meta.update(staged_meta)
         if should_staged_exit:
             return True, staged_reason or "PROFIT_LOCK", {

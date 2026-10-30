@@ -900,6 +900,24 @@ class ExecutionManager:
             # ExitGate 內部使用比例制 (0.05 = 5% ROE)，因此傳遞給 ExitGate 的 peak_roe 統一儲存為比例制
             current_position["peak_roe"] = peak_roe_pct / 100.0
 
+            # 🎯 方案 1: 10% 門檻 + 20% 回吐鎖利 結合 MA3/MA15 趨勢濾網
+            from core.services.exits.staged_profit_lock import check_exit_conditions
+            curr_profit_margin = ((curr_quote - pos_entry) / pos_entry) if pos_side == "LONG" else ((pos_entry - curr_quote) / pos_entry) if pos_entry > 0 else 0.0
+            stored_highest_margin = float(current_position.get("highest_profit_margin", 0.0) or 0.0)
+            highest_profit_margin = max(stored_highest_margin, curr_profit_margin)
+            current_position["highest_profit_margin"] = round(highest_profit_margin, 6)
+
+            scheme1_action = check_exit_conditions(
+                position=pos_side,
+                entry_price=pos_entry,
+                current_price=curr_quote,
+                highest_profit_margin=highest_profit_margin,
+                current_ma3=m3_c,
+                current_ma15=m15_c,
+                highest_roe_pct=peak_roe_pct,
+                current_roe_pct=cur_roe_pct,
+            )
+
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
@@ -907,13 +925,13 @@ class ExecutionManager:
             )
             is_absolute_safety = bool(gate_should_exit and gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS)
             is_profit_lock = bool(
-                gate_should_exit
-                and (
+                (gate_should_exit and (
                     gate_reason in ExitGate.PROFIT_LOCK_EXIT_REASONS
                     or "PROFIT_LOCK" in str(gate_reason).upper()
                     or "RATCHET" in str(gate_reason).upper()
                     or "TRAILING_LOCK" in str(gate_reason).upper()
-                )
+                ))
+                or (scheme1_action in ("CLOSE_SHORT", "CLOSE_LONG"))
             )
             is_pivot_exit = bool(
                 gate_should_exit
@@ -1075,8 +1093,9 @@ class ExecutionManager:
                     and pos_entry > 0
                     and curr_quote > pos_entry * 1.0015
                     and (
+                        (scheme1_action == "CLOSE_LONG")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價跌破 MA3 與 MA5 且 MA3 下拐，或跌破 KC 中軌，立即高點鎖利落袋，絕不抱回起漲點！
-                        (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
+                        or (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
                         # (B) 一階鎖利 (peak_roe >= 10%)：已收陰線跌破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 下方、MA3 < MA15（無須苦等 5 棒/10 棒慢線滯後轉向，且嚴格保證平在獲利區間 curr_quote > pos_entry * 1.0015！）
                         or ((not is_zoomed_out_bullish) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
                     )
@@ -1087,17 +1106,18 @@ class ExecutionManager:
                     and pos_entry > 0
                     and curr_quote < pos_entry * 0.9985
                     and (
+                        (scheme1_action == "CLOSE_SHORT")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價突破 MA3 與 MA5 且 MA3 上拐，或突破 KC 中軌，立即低點鎖利落袋，絕不抱回起跌點！
-                        (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
+                        or (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
                         # (B) 一階鎖利 (peak_roe >= 10%)：已收陽線突破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 上方、MA3 > MA15（無須苦等 5 棒/10 棒慢線滯後轉向，且嚴格保證平在獲利區間 curr_quote < pos_entry * 0.9985！）
                         or ((not is_zoomed_out_bearish) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
                     )
                 )
             ):
                 should_exit = True
-                reason = gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK"
-                meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK"}
-                logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中階梯鎖利防線且確認維持正淨利區間，立即放行出場保利！reason={reason}, meta={meta}")
+                reason = "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15" if scheme1_action in ("CLOSE_SHORT", "CLOSE_LONG") else (gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK")
+                meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK_SCHEME1", "highest_profit_margin": highest_profit_margin}
+                logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中方案1鎖利防線且確認維持正淨利區間，立即放行出場保利！reason={reason}, meta={meta}")
             elif is_pivot_exit and (has_profit_expansion or favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0):
                 # 真峰頂/真谷底獲利了結：
                 # 1. 當持倉仍在通道內未觸及外軌且大週期未變時，嚴格鎖倉不因小回踩提早下車；
