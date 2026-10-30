@@ -90,10 +90,10 @@ def evaluate_direction_master_lock(
     allow_override = is_swing_pivot or direction_override
 
     if side_upper == "LONG":
-        # 0. KC 通道中軌斜率硬性一票否決：中軌向下 100% 嚴禁開多！
+        # 0. KC 通道中軌斜率硬性一票否決：中軌向下或走平 (未明確向上) 100% 嚴禁開多！
         if kc_middle_prev is not None and math.isfinite(kc_middle_prev):
-            if kc_middle < kc_middle_prev:
-                return False, "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_DOWN", details
+            if kc_middle <= kc_middle_prev:
+                return False, "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP", details
 
         # 1. 中軌位置限制：常規開倉 MA3 必須在中軌上方；轉折特例可豁免
         pos_ok = (ma3_curr > kc_middle) if not allow_override else True

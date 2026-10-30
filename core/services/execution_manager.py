@@ -2325,11 +2325,11 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則二.2：做多審查 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下; KC斜率否決: KC向下)
+                # 🛑 規則二.2：做多審查 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下; KC斜率否決: KC向下或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
                 kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
-                is_kc_slope_down = bool(kc_slope < 0 or kc_mid_slope < 0)
-                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p or is_kc_slope_down)
+                is_kc_slope_not_up = bool(kc_slope <= 0 or kc_mid_slope <= 0)
+                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p or is_kc_slope_not_up)
 
                 if is_in_long_cooldown:
                     logger.info(
@@ -2337,10 +2337,10 @@ class ExecutionManager:
                         f"嚴禁在回調初期反覆追多！"
                     )
                 elif is_long_vetoed:
-                    if is_kc_slope_down:
+                    if is_kc_slope_not_up:
                         logger.info(
-                            f"🛑 [BLOCKED_LONG_KC_SLOPE_DOWN] {symbol} KC 通道中軌斜率向下 "
-                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，強勢空頭結構中 100% 嚴禁開多！"
+                            f"🛑 [BLOCKED_LONG_KC_SLOPE_NOT_UP] {symbol} KC 通道中軌斜率走平或向下 "
+                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，中軌未明確向上 100% 嚴禁開多！"
                         )
                     else:
                         logger.info(

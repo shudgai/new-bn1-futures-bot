@@ -2802,8 +2802,8 @@ class BinanceTestnetAccount:
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
-                        elif side_up == "LONG" and kc_m < kc_m_p:
-                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率向下 (kc_mid={kc_m:.6f} < prev={kc_m_p:.6f})，強勢空頭結構中 100% 嚴禁開多！"
+                        elif side_up == "LONG" and kc_m <= kc_m_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向下 (kc_mid={kc_m:.6f} <= prev={kc_m_p:.6f})，未明確向上 100% 嚴禁開多！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
