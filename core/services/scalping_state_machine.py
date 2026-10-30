@@ -379,8 +379,8 @@ class ScalpingStateMachine:
                             "action": "WAIT",
                             "reason": f"乖離否決：價格嚴重偏離 MA15 正乖離過大 (+{(curr_p - m15) / m15 * 100:.2f}%)，處於噴發尾聲，100% 一票否決追多！",
                         }
-                    # 4. KC 通道斜率否決：KC 通道中軌斜率向下 (kc_slope < 0)
-                    if kc_slope < 0:
+                    # 4. KC 通道斜率否決：KC 通道整體向下傾斜 (kc_slope < 0)
+                    if kc_slope != 0.0 and kc_slope < 0:
                         return {
                             "macro_trend": macro,
                             "status_label": status_label,
@@ -453,8 +453,8 @@ class ScalpingStateMachine:
                             "action": "WAIT",
                             "reason": f"乖離否決：價格嚴重偏離 MA15 負乖離過大 (-{(m15 - curr_p) / m15 * 100:.2f}%)，處於急跌尾聲，100% 一票否決追空！",
                         }
-                    # 4. KC 通道斜率否決：KC 通道中軌斜率向上 (kc_slope > 0)
-                    if kc_slope > 0:
+                    # 4. KC 通道斜率否決：KC 通道整體向上傾斜 (kc_slope > 0)
+                    if kc_slope != 0.0 and kc_slope > 0:
                         return {
                             "macro_trend": macro,
                             "status_label": status_label,
