@@ -1296,33 +1296,53 @@
                     const closed = data.filter(bar => bar.is_live === false);
                     if (closed.length < 5) return 'wait';
 
-                    // 綜合大週期 (近 15 根 KC 中軌趨勢)、均線排列 (MA5 vs MA15) 與價格相對於 KC 中軌位置判定市場趨勢，
-                    // 避免在空頭下行通道中僅因最後 1 根微幅反彈 1 tick 就誤判顯示「牛市 (KC向上)」！
+                    // 綜合大週期 (近 15~30 根 KC 中軌趨勢)、均線排列 (MA5 vs MA15) 與價格相對於 KC 中軌位置判定市場趨勢，
+                    // 嚴格遵守 MTF「大週期定方向」：避免在空頭下行通道中因短線 2~3 根反彈站上中軌就誤判顯示「牛市 (KC向上)」！
                     const lastBar = closed[closed.length - 1];
                     const prevBar = closed[closed.length - 2];
+                    const prev3Bar = closed[Math.max(0, closed.length - 4)];
                     const currMid = number(lastBar.kc_middle);
                     const prevMid = number(prevBar.kc_middle);
+                    const prev3Mid = number(prev3Bar.kc_middle) || prevMid;
                     const currClose = number(lastBar.close);
                     const currMa5 = number(lastBar.ma5);
                     const currMa15 = number(lastBar.ma15);
+                    const prevMa15 = number(prevBar.ma15);
                     if (currMid === null || prevMid === null || currMid <= 0) return 'wait';
 
-                    const lookbackIdx = Math.max(0, closed.length - 15);
-                    const mid15Ago = number(closed[lookbackIdx].kc_middle) || prevMid;
-                    const macroDelta = (currMid - mid15Ago) / currMid;
+                    const lookbackIdx15 = Math.max(0, closed.length - 15);
+                    const lookbackIdx30 = Math.max(0, closed.length - 30);
+                    const mid15Ago = number(closed[lookbackIdx15].kc_middle) || prevMid;
+                    const mid30Ago = number(closed[lookbackIdx30].kc_middle) || mid15Ago;
+                    const macroDelta15 = (currMid - mid15Ago) / currMid;
+                    const macroDelta30 = (currMid - mid30Ago) / currMid;
+                    const barDelta3 = (currMid - prev3Mid) / currMid;
                     const barDelta = (currMid - prevMid) / currMid;
 
                     const isPriceAboveMid = currClose !== null && currClose > currMid;
                     const isPriceBelowMid = currClose !== null && currClose < currMid;
                     const isMaBull = currMa5 !== null && currMa15 !== null && currMa5 > currMa15;
                     const isMaBear = currMa5 !== null && currMa15 !== null && currMa5 < currMa15;
+                    const isMa15Down = currMa15 !== null && prevMa15 !== null && currMa15 <= prevMa15;
+                    const isMa15Up = currMa15 !== null && prevMa15 !== null && currMa15 >= prevMa15;
 
-                    // 明確空頭 (熊市): 中軌向下且價格在中軌下方 (或大週期中軌下行且 MA5 < MA15)
-                    if ((barDelta < -0.00005 && isPriceBelowMid) || (macroDelta < -0.0008 && (isPriceBelowMid || isMaBear))) {
+                    // 1. 大週期優先判定：若 15~30 棒 KC 中軌明確下行 (macroDelta15 < -0.0005 或 macroDelta30 < -0.001)，
+                    //    只要 3 棒中軌與 15 棒中軌尚未全面翻正，一律鎖定顯示「熊市 (KC向下)」（短線反彈不改大週期熊市定調）
+                    if (
+                        macroDelta15 < -0.0005
+                        || (macroDelta30 < -0.001 && macroDelta15 <= 0.0002)
+                        || (barDelta3 < -0.0001 && (isPriceBelowMid || isMaBear || isMa15Down))
+                        || (barDelta < -0.00005 && isPriceBelowMid && macroDelta15 <= 0)
+                    ) {
                         return 'bear';
                     }
-                    // 明確多頭 (牛市): 中軌向上且價格在中軌上方 (或大週期中軌上行且 MA5 > MA15)
-                    if ((barDelta > 0.00005 && isPriceAboveMid) || (macroDelta > 0.0008 && (isPriceAboveMid || isMaBull))) {
+                    // 2. 大週期多頭 (牛市): 15~30 棒中軌上行，或 3 棒與 15 棒中軌同步向上且價格在中軌上方
+                    if (
+                        macroDelta15 > 0.0005
+                        || (macroDelta30 > 0.001 && macroDelta15 >= -0.0002)
+                        || (barDelta3 > 0.0001 && (isPriceAboveMid || isMaBull || isMa15Up))
+                        || (barDelta > 0.00005 && isPriceAboveMid && macroDelta15 >= 0)
+                    ) {
                         return 'bull';
                     }
                     return 'range';
