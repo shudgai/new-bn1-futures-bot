@@ -31,3 +31,4 @@ def test_agile_decoupled_exit_counter_trend_rules():
     closed_c = 98.0
     prev_closed_l = 99.0
     assert closed_c < prev_closed_l
+

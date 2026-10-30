@@ -20,6 +20,11 @@ from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 from core.gates.unified_pipeline_gates import ExitGate, EntryGate
 from core.services.demon_coin_defense import DemonCoinDefenseController
 from core.services.scalping_state_machine import ScalpingStateMachine
+from core.services.market_structure_break import (
+    check_macro_trend_end,
+    find_htf_key_pivot,
+    calculate_htf_ma15,
+)
 
 logger = logging.getLogger("ExecutionManager")
 
@@ -350,6 +355,8 @@ def should_exit_short(
 
 class ExecutionManager:
     """唯一開平倉執行通道與標準流水線協調器"""
+    _symbol_macro_trend: Dict[str, str] = {}
+    _symbol_key_pivot: Dict[str, float] = {}
 
     @classmethod
     async def process_symbol_pipeline(
@@ -363,7 +370,10 @@ class ExecutionManager:
         """
         單一幣種的標準流水線處理循環 (Thread-safe, Single-Pipeline)
         """
-        account = getattr(engine_or_account, "account", engine_or_account)
+        if hasattr(engine_or_account, "positions"):
+            account = engine_or_account
+        else:
+            account = getattr(engine_or_account, "account", engine_or_account)
 
         # 1. 抓取數據與計算純數值指標 (Data Layer)
         current_position = account.positions.get(symbol)
@@ -661,6 +671,62 @@ class ExecutionManager:
                 )
             )
         )
+
+        # ══════════════════════════════════════════════════════════════════════════
+        # 🏛️ 【大週期趨勢結束與轉折判定 (Market Structure Break / check_macro_trend_end)】
+        # 依 2026-10-30 授權規範：大週期一旦確立，1m/3m 雜訊不可輕易翻轉！
+        # 只有在收盤價實體打破前波結構關鍵 HL/LH 且跌破/突破 HTF MA15 時，方宣告大週期結束。
+        # ══════════════════════════════════════════════════════════════════════════
+        prior_macro = cls._symbol_macro_trend.get(symbol)
+        if not prior_macro and has_position and current_position:
+            pos_s = str(current_position.get("side", "")).upper()
+            prior_macro = "BULLISH" if pos_s == "LONG" else ("BEARISH" if pos_s == "SHORT" else None)
+
+        htf_data_for_struct = frame_15m if (frame_15m is not None and not frame_15m.empty and len(frame_15m) >= 5) else raw_df
+        stored_pivot = cls._symbol_key_pivot.get(symbol)
+
+        if prior_macro in ("BULLISH", "BEARISH"):
+            struct_eval = check_macro_trend_end(
+                current_macro_trend=prior_macro,
+                htf_candles=htf_data_for_struct,
+                htf_ma15=htf_15m_ma15 if htf_15m_ma15 > 0 else None,
+                key_pivot_price=stored_pivot,
+            )
+            # 若大結構未打破 -> 維持大週期標籤，啟動防護罩，不被 1m 雜訊干擾
+            if struct_eval.get("event") == "MACRO_TREND_CONTINUES":
+                if prior_macro == "BULLISH":
+                    is_zoomed_out_bullish = True
+                    is_zoomed_out_bearish = False
+                    macro_trend = "BULLISH"
+                else:
+                    is_zoomed_out_bearish = True
+                    is_zoomed_out_bullish = False
+                    macro_trend = "BEARISH"
+                if struct_eval.get("key_pivot_price", 0) > 0:
+                    cls._symbol_key_pivot[symbol] = struct_eval["key_pivot_price"]
+            elif struct_eval.get("event") in ("MACRO_BULLISH_ENDED", "MACRO_BEARISH_ENDED"):
+                # 雙重確認結構打破，宣告大週期結束與反轉
+                new_trend = struct_eval["macro_trend"]
+                cls._symbol_macro_trend[symbol] = new_trend
+                if struct_eval.get("key_pivot_price", 0) > 0:
+                    cls._symbol_key_pivot[symbol] = struct_eval["key_pivot_price"]
+                if new_trend == "BULLISH":
+                    is_zoomed_out_bullish = True
+                    is_zoomed_out_bearish = False
+                    macro_trend = "BULLISH"
+                else:
+                    is_zoomed_out_bearish = True
+                    is_zoomed_out_bullish = False
+                    macro_trend = "BEARISH"
+                logger.warning(f"🚨 [MARKET_STRUCTURE_BREAK] {symbol} {struct_eval['reason']}")
+        else:
+            # 初始建立大週期標籤
+            initial_macro = "BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else None)
+            if initial_macro:
+                cls._symbol_macro_trend[symbol] = initial_macro
+                calc_pivot = find_htf_key_pivot(htf_data_for_struct, initial_macro)
+                if calc_pivot > 0:
+                    cls._symbol_key_pivot[symbol] = calc_pivot
 
         # MTF 四大情境狀態標記（情況 A: WAIT_REBOUND / 情況 B: OPEN_SHORT / 情況 C: WAIT_PULLBACK / 情況 D: OPEN_LONG）
         if is_zoomed_out_bearish:
@@ -3757,7 +3823,10 @@ class ExecutionManager:
     ) -> bool:
         """全系統唯一開倉執行管道"""
         try:
-            account = getattr(engine_or_account, "account", engine_or_account)
+            if hasattr(engine_or_account, "positions"):
+                account = engine_or_account
+            else:
+                account = getattr(engine_or_account, "account", engine_or_account)
             # 檢查持倉與鎖定 (反手開倉豁免平倉鎖並清理舊倉殘留)
             is_flip = (
                 "FLIP" in str(reason).upper()
@@ -3976,3 +4045,14 @@ class ExecutionManager:
             print(f"❌ [EXECUTION_EXCEPTION] {symbol} open_position 異常: {exc}", flush=True)
             logger.error(f"[EXECUTION] open_position 異常 {symbol}: {exc}", exc_info=True)
             return False
+
+
+__all__ = [
+    "ExecutionManager",
+    "check_macro_trend_end",
+    "find_htf_key_pivot",
+    "calculate_htf_ma15",
+    "check_pivot_status",
+    "evaluate_meme_trade_valid",
+    "is_meme_trade_valid",
+]

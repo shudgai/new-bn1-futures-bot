@@ -83,3 +83,4 @@ def test_macro_trend_reversal_exit():
     should_exit, reason, _ = evaluate_staged_trailing_exit(pos_short, 99.0, "BULLISH")
     assert should_exit is True
     assert "MACRO_TREND_REVERSAL_TO_BULL" in reason
+

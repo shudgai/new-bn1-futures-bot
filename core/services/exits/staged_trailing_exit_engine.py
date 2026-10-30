@@ -171,3 +171,4 @@ def evaluate_staged_trailing_exit(
             }
 
     return False, None, {}
+
