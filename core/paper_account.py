@@ -679,6 +679,10 @@ class PaperAccount:
                         pass
                 src_str = str(entry_context.get("source") or reason or "").upper()
                 sig_str = str(entry_context.get("candidate_signal_type") or entry_context.get("entry_type") or "").upper()
+                is_bar_forming = False
+                if isinstance(eval_frame, pd.DataFrame) and len(eval_frame) > 0:
+                    is_bar_forming = not bool(eval_frame.iloc[-1].get("is_closed", True))
+
                 gate_res = CentralEntryGate.verify_and_authorize(
                     symbol=symbol,
                     side=side,
@@ -687,12 +691,15 @@ class PaperAccount:
                     signal_id=signal_id,
                     source=f"{src_str}|{sig_str}",
                     allow_intrabar=bool(
-                        entry_context.get("intrabar_authorized") is True
-                        or (
-                            entry_context.get("upstream_entry_gate_authorized") is True
-                            and "UNIFIED_PIPELINE" in src_str
+                        is_bar_forming
+                        and (
+                            entry_context.get("intrabar_authorized") is True
+                            or (
+                                entry_context.get("upstream_entry_gate_authorized") is True
+                                and "UNIFIED_PIPELINE" in src_str
+                            )
+                            or entry_context.get("direction_override") is True
                         )
-                        or entry_context.get("direction_override") is True
                     ),
                 )
                 OrderAuditTrail.record_entry_gate_eval(

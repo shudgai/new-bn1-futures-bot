@@ -2647,6 +2647,10 @@ class BinanceTestnetAccount:
                             eval_frame.attrs["is_v_shape_breakdown"] = is_v_breakdown
                     except Exception:
                         pass
+                is_bar_forming = False
+                if isinstance(eval_frame, pd.DataFrame) and len(eval_frame) > 0:
+                    is_bar_forming = not bool(eval_frame.iloc[-1].get("is_closed", True))
+
                 gate_res = CentralEntryGate.verify_and_authorize(
                     symbol=symbol,
                     side=side,
@@ -2654,7 +2658,7 @@ class BinanceTestnetAccount:
                     klines_or_snapshot=eval_frame,
                     signal_id=signal_id,
                     source=str(entry_context.get("source") or reason),
-                    allow_intrabar=bool(entry_context.get("intrabar_authorized")),
+                    allow_intrabar=bool(is_bar_forming and entry_context.get("intrabar_authorized")),
                 )
                 OrderAuditTrail.record_entry_gate_eval(
                     symbol=symbol,
