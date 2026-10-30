@@ -2290,16 +2290,22 @@ class ExecutionManager:
                     )
 
             # 🚨 規則：震盪行情硬性禁止開倉 (Sideways No-Trade Zone)
-            # 1. KC 通道縮口: (KC上軌 - KC下軌) / 當前價格 < 0.8%
+            # 1. KC 通道縮口: (KC上軌 - KC下軌) / 當前價格 < 1.0% (迷因幣放大至 1.0% 防橫盤追單)
             # 2. 均線走平纏繞: 近 8~10 根 K 棒內 MA3 與 MA15 交叉次數 >= 2 且間距極小
             # 3. KC 中軌斜率與 MA15 斜率過小 (無趨勢傾角) 且 K 棒實體微小
+            # 4. 針對破軌行情豁免：若價格已破 KC 上軌或下軌且收同向實體 K 棒，代表破軌爆發，不被震盪鎖定阻斷！
+            is_breakout_candle_long = bool(c_c > kc_u and c_c > c_o and (c_c - c_o) >= 0.15 * atr_v)
+            is_breakout_candle_short = bool(c_c < kc_lo and c_c < c_o and (c_o - c_c) >= 0.15 * atr_v)
+            is_any_rail_breakout = bool(is_breakout_candle_long or is_breakout_candle_short)
+
             kc_width_ratio = (kc_u - kc_lo) / c_c if c_c > 0 else 0.0
-            is_kc_narrow_squeeze = bool(kc_width_ratio > 0 and kc_width_ratio < 0.008)
-            is_ma_entangled = bool(ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0015)
-            is_slope_flat_chop = bool(atr_v > 0 and abs(kc_slope) < 0.02 * atr_v and abs(m15_c - m15_p) < 0.02 * atr_v)
+            is_kc_narrow_squeeze = bool(kc_width_ratio > 0 and kc_width_ratio < 0.010)
+            is_ma_entangled = bool(ma3_m15_cross_8 >= 2 and ma3_ma15_spread_ratio < 0.0018)
+            is_slope_flat_chop = bool(atr_v > 0 and abs(kc_slope) < 0.05 * atr_v and abs(m15_c - m15_p) < 0.05 * atr_v)
             is_sideways_market = bool(
                 (is_kc_narrow_squeeze or is_ma_entangled or is_slope_flat_chop or is_chop_zone)
                 and not is_meme_breakout_ignition
+                and not is_any_rail_breakout
             )
 
             if is_sideways_market and not has_position:
@@ -2355,11 +2361,11 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則三.2：做空審查 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上; KC斜率否決: KC向上)
+                # 🛑 規則三.2：做空審查 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上; KC斜率否決: KC向上或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
                 kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
-                is_kc_slope_up = bool(kc_slope > 0 or kc_mid_slope > 0)
-                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p or is_kc_slope_up)
+                is_kc_slope_not_down = bool(kc_slope >= 0 or kc_mid_slope >= 0)
+                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p or is_kc_slope_not_down)
 
                 if is_in_short_cooldown:
                     logger.info(
@@ -2367,10 +2373,10 @@ class ExecutionManager:
                         f"嚴禁在觸底反彈初期反覆追空！"
                     )
                 elif is_short_vetoed:
-                    if is_kc_slope_up:
+                    if is_kc_slope_not_down:
                         logger.info(
-                            f"🛑 [BLOCKED_SHORT_KC_SLOPE_UP] {symbol} KC 通道中軌斜率向上 "
-                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，強勢多頭結構中 100% 嚴禁開空！"
+                            f"🛑 [BLOCKED_SHORT_KC_SLOPE_NOT_DOWN] {symbol} KC 通道中軌斜率走平或向上 "
+                            f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，中軌未明確向下 100% 嚴禁開空！"
                         )
                     else:
                         logger.info(

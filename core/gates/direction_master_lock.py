@@ -44,6 +44,7 @@ def evaluate_direction_master_lock(
     ma15_curr: Optional[float] = None,
     curr_close: Optional[float] = None,
     curr_open: Optional[float] = None,
+    kc_middle_prev: Optional[float] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     方向總開關純數學核驗 (嚴格一票否決硬條件)
@@ -74,6 +75,7 @@ def evaluate_direction_master_lock(
         "ma3_curr": ma3_curr,
         "ma3_prev": ma3_prev,
         "kc_middle": kc_middle,
+        "kc_middle_prev": kc_middle_prev,
         "ma5_curr": ma5_curr,
         "ma15_curr": slow_line,
         "curr_close": curr_close,
@@ -88,6 +90,11 @@ def evaluate_direction_master_lock(
     allow_override = is_swing_pivot or direction_override
 
     if side_upper == "LONG":
+        # 0. KC 通道中軌斜率硬性一票否決：中軌向下 100% 嚴禁開多！
+        if kc_middle_prev is not None and math.isfinite(kc_middle_prev):
+            if kc_middle < kc_middle_prev:
+                return False, "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_DOWN", details
+
         # 1. 中軌位置限制：常規開倉 MA3 必須在中軌上方；轉折特例可豁免
         pos_ok = (ma3_curr > kc_middle) if not allow_override else True
         if not pos_ok:
@@ -111,6 +118,11 @@ def evaluate_direction_master_lock(
         return True, "DIRECTION_LOCK_PASS", details
 
     else:  # SHORT
+        # 0. KC 通道中軌斜率硬性一票否決：中軌向上或走平 (未明確向下) 100% 嚴禁開空！
+        if kc_middle_prev is not None and math.isfinite(kc_middle_prev):
+            if kc_middle >= kc_middle_prev:
+                return False, "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN", details
+
         # 1. 中軌位置限制：常規開倉 MA3 必須在中軌下方；轉折特例可豁免
         pos_ok = (ma3_curr < kc_middle) if not allow_override else True
         if not pos_ok:
@@ -210,6 +222,7 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
     ma3_curr = _to_float(curr_row.get("ma3"))
     ma3_prev = _to_float(prev_row.get("ma3"))
     kc_middle = _to_float(curr_row.get("kc_middle"))
+    kc_middle_prev = _to_float(prev_row.get("kc_middle"))
     ma5_curr = _to_float(curr_row.get("ma5"))
     ma15_curr = _to_float(curr_row.get("ma15")) or kc_middle
     curr_close = _to_float(curr_row.get("close"))
@@ -222,6 +235,7 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
         "ma3_curr": ma3_curr,
         "ma3_prev": ma3_prev,
         "kc_middle": kc_middle,
+        "kc_middle_prev": kc_middle_prev,
         "ma5_curr": ma5_curr,
         "ma15_curr": ma15_curr,
         "curr_close": curr_close,
@@ -246,5 +260,6 @@ def check_direction_lock_from_frame(frame: Any, side: str, allow_override: bool 
         ma15_curr=metrics.get("ma15_curr"),
         curr_close=metrics.get("curr_close"),
         curr_open=metrics.get("curr_open"),
+        kc_middle_prev=metrics.get("kc_middle_prev"),
         direction_override=allow_override,
     )

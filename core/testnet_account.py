@@ -2791,7 +2791,24 @@ class BinanceTestnetAccount:
                     m3_c = metrics["ma3_curr"]
                     m3_p = metrics["ma3_prev"]
                     kc_m = metrics["kc_middle"]
+                    kc_m_p = metrics.get("kc_middle_prev")
                     side_up = side.upper()
+
+                    # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷)
+                    if kc_m_p is not None and math.isfinite(kc_m_p):
+                        if side_up == "SHORT" and kc_m >= kc_m_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+                        elif side_up == "LONG" and kc_m < kc_m_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率向下 (kc_mid={kc_m:.6f} < prev={kc_m_p:.6f})，強勢空頭結構中 100% 嚴禁開多！"
+                            self.log(err_msg, "CRITICAL")
+                            if entry_context.get("raise_on_direction_lock"):
+                                raise RuntimeError(err_msg)
+                            return False
+
                     is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
                     is_override = bool(
                         entry_context.get("direction_override")
