@@ -1243,15 +1243,23 @@ class ExecutionManager:
                 reason = "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15" if scheme1_action in ("CLOSE_SHORT", "CLOSE_LONG") else (gate_reason or "EXIT_BY_RATCHET_PROFIT_LOCK")
                 meta = {**gate_meta, "pivot_type": "PROFIT_LOCK", "trigger": "STAGE_PROFIT_LOCK_SCHEME1", "highest_profit_margin": highest_profit_margin}
                 logger.info(f"💰 [PROFIT_LOCK_EXECUTION] {symbol} {pos_side} 命中方案1鎖利防線且確認維持正淨利區間，立即放行出場保利！reason={reason}, meta={meta}")
-            elif (has_profit_expansion or favorable_gain_atr >= 0.8 or peak_roe_pct >= 5.0 or cur_roe_pct >= 4.0) and (
-                (pos_side == "LONG" and (is_true_peak or (is_pivot_exit and "PEAK" in str(gate_reason).upper())))
-                or (pos_side == "SHORT" and (is_true_bottom or (is_pivot_exit and "VALLEY" in str(gate_reason).upper())))
+            elif (has_profit_expansion or favorable_gain_atr >= 1.2 or peak_roe_pct >= 10.0) and (
+                (
+                    pos_side == "LONG"
+                    and (is_true_peak or (is_pivot_exit and "PEAK" in str(gate_reason).upper()))
+                    and (closed_c < m15_c or closed_c < closed_kc_mid or peak_roe_pct >= 15.0)
+                )
+                or (
+                    pos_side == "SHORT"
+                    and (is_true_bottom or (is_pivot_exit and "VALLEY" in str(gate_reason).upper()))
+                    and (closed_c > m15_c or closed_c > closed_kc_mid or peak_roe_pct >= 15.0)
+                )
             ):
                 # 🎯 【方案A真峰頂/真谷底獲利了結鐵律（AGENTS.md最高授權）】：
-                # 開倉波段實質展開獲利（peak_roe >= 5% 或 >= 0.8 ATR）：
-                # 1. 多單真峰頂：衝頂收黑跌破實體中點且跌破 MA3，MA3 下拐，立即市價平多！
-                # 2. 空單真谷底：探底收紅突破實體中點且站上 MA3，MA3 上拐，立即市價平空！
-                # 3. 鐵律：一票否決大週期續抱 (trend_hold_shield)，絕不要求價格穿回 KC 中軌才平倉，徹底杜絕坐過山車利潤全部吐光！
+                # 開倉波段實質展開獲利（peak_roe >= 10% 或 >= 1.2 ATR）：
+                # 1. 多單真峰頂：已衝頂收黑且實體跌破 MA15/KC中軌，或達 15% ROE 大波段鎖利，立即市價平多！
+                # 2. 空單真谷底：已探底收紅且實體突破 MA15/KC中軌，或達 15% ROE 大波段鎖利，立即市價平空！
+                # 3. 守穩中軌續抱鐵律：只要多單仍穩守 MA15/KC 中軌上方、空單仍壓制在 MA15/KC 中軌下方，一票否決提早平倉，死抱主升/主跌浪！
                 should_exit = True
                 reason = "EARLY_PIVOT_PEAK_EXIT" if pos_side == "LONG" else "EARLY_PIVOT_VALLEY_EXIT"
                 meta = {
@@ -1261,7 +1269,7 @@ class ExecutionManager:
                     "peak_roe": peak_roe_pct,
                     "cur_roe": cur_roe_pct,
                 }
-                logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開 (peak_roe={peak_roe_pct:.2f}%) 且確立真峰頂/真谷底反轉，立即獲利了結！reason={reason}")
+                logger.info(f"🏔️ [TRUE_PIVOT_EXIT] {symbol} {pos_side} 波段獲利展開 (peak_roe={peak_roe_pct:.2f}%) 且確認結構轉弱，立即獲利了結！reason={reason}")
 
             # 🚀 高靈敏度解耦動態出場引擎 (Agile Decoupled Exit Engine)：
             # 1. 階梯保本 (Breakeven Lock): 浮盈曾達 +8% ROE，價格跌回成本價(+0.3%覆蓋手續費)立即強制平倉保本
@@ -1852,23 +1860,36 @@ class ExecutionManager:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
             # 🛡️ 【開倉後回踩防洗鐵律（2026-10-30 最高授權：開倉後回踩不平倉）】：
-            # 開倉後若波段尚未實質展開獲利（peak_roe_pct < 5.0 且 favorable_gain_atr < 0.8）：
-            # 價格在成本價附近的任何回踩（小陰小陽、均線死叉/金叉、跌破MA15或中軌），
-            # 100% 判定為「成本區間正常呼吸回踩（PULLBACK_BREATHING）」，一票否決平倉（VETO_HOLD）！
-            # 嚴禁在成本價附近因微幅回調提前割肉下車！
-            # 唯一例外：觸發絕對安全避險防線 (is_absolute_safety) 或單筆硬止損熔斷 (虧損 >= 2.0% 或 >= 3.0 ATR)
+            # 1. 成本區間正常呼吸回踩（peak_roe_pct < 10.0 且 favorable_gain_atr < 1.2）：
+            #    價格在成本價附近的任何回踩（小陰小陽、跌破MA3/MA15），100% 判定為「成本區間正常呼吸回踩」，一票否決平倉！
+            # 2. 守穩中軌與 MA15 結構續抱：
+            #    多單只要收盤守在 MA15 或 KC 中軌上方，普通平倉一律駁回，死抱主升段！
+            #    空單只要收盤壓在 MA15 或 KC 中軌下方，普通平倉一律駁回，死抱主跌段！
+            # 唯一例外：絕對安全避險 (is_absolute_safety) 或單筆硬止損 (虧損 >= 2.0%) 或 5分鐘中軌走平撤退 (is_stagnation_exit)
             if should_exit and not is_absolute_safety:
                 is_stagnation_exit = bool(reason == "EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION")
                 if not is_stagnation_exit:
-                    is_profit_unexpanded = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+                    is_profit_unexpanded = bool(peak_roe_pct < 10.0 and favorable_gain_atr < 1.2)
                     current_loss_pct = ((pos_entry - curr_quote) / pos_entry) if (pos_side == "LONG" and pos_entry > 0) else (((curr_quote - pos_entry) / pos_entry) if (pos_side == "SHORT" and pos_entry > 0) else 0.0)
                     is_within_normal_breathing = bool(current_loss_pct < 0.020 and (atr_v <= 0 or (current_loss_pct * pos_entry) < 2.5 * atr_v))
                     if is_profit_unexpanded and is_within_normal_breathing:
                         logger.info(
-                            f"🛡️ [VETO_PULLBACK_HOLD] {symbol} 開倉後回踩不平倉！波段未實質展開 (peak_roe={peak_roe_pct:.2f}% < 5%, loss={current_loss_pct*100:.2f}%)，"
+                            f"🛡️ [VETO_PULLBACK_HOLD] {symbol} 開倉後回踩不平倉！波段未實質展開 (peak_roe={peak_roe_pct:.2f}% < 10%, loss={current_loss_pct*100:.2f}%)，"
                             f"判定為成本區間正常呼吸回踩，100% 一票否決平倉請求 ({reason})，拒絕提前割肉下車！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_COST_PULLBACK_BREATHING"}
+
+                    # 守穩結構續抱
+                    is_structure_intact = bool(
+                        (pos_side == "LONG" and (closed_c >= m15_c or closed_c >= closed_kc_mid) and peak_roe_pct < 15.0)
+                        or (pos_side == "SHORT" and (closed_c <= m15_c or closed_c <= closed_kc_mid) and peak_roe_pct < 15.0)
+                    )
+                    if is_structure_intact and reason in ("EARLY_PIVOT_PEAK_EXIT", "EARLY_PIVOT_VALLEY_EXIT", "CLOSE_LONG_AT_TOP", "CLOSE_SHORT_AT_BOTTOM"):
+                        logger.info(
+                            f"🛡️ [VETO_STRUCTURE_INTACT_HOLD] {symbol} {pos_side} 價格仍守穩於 MA15/KC中軌同側 (close={closed_c:.6f})，"
+                            f"趨勢結構健全，一票否決微型峰谷平倉 ({reason})，堅定續抱主升/主跌段！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
 
             # 🛑 【終極防呆總閘門：出紅K（下跌陰線）100% 嚴禁平空、出綠K（上漲陽線）100% 嚴禁平多】：
             if should_exit:
@@ -1941,18 +1962,11 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🔄 2026-10-30 核心授權：空轉多「一鍵翻單 (Close & Open)」機制
-                # 當在「大週期牛市 (is_zoomed_out_bullish 或 macro_trend == 'BULLISH')」背景下平空，
-                # 或出現真谷底/金叉反轉信號時，允許同 K 棒秒級原子反手開多，絕不留空倉觀望錯失噴出波段！
+                # 🛑 2026-10-31 最高防雙巴鐵律：全面廢除同 K 棒秒級原子反手 (DISABLE_POSITION_FLIP)
+                # 解決 23:03 多單平倉立刻反手做空 (砍在低點) ➔ 23:05 空單平倉立刻反手做多 (追在高點) 的致命連環虧損痛點！
+                # 平倉後必須強制進入冷卻期 (180 秒)，等待市場走穩並經由嚴格 Gate 審查方可重新建倉！
                 can_flip = False
-                if pos_side == "SHORT" and is_flip_to_long and (is_zoomed_out_bullish or macro_trend == "BULLISH"):
-                    can_flip = True
-                    logger.info(f"⚡ [BULL_MOMENTUM_FLIP] {symbol} 大週期牛市背景下平空，授權一鍵翻多 (CLOSE_SHORT_AND_OPEN_LONG)！")
-                elif pos_side == "LONG" and is_flip_to_short and (is_zoomed_out_bearish or macro_trend == "BEARISH"):
-                    can_flip = True
-                    logger.info(f"⚡ [BEAR_MOMENTUM_FLIP] {symbol} 大週期熊市背景下平多，授權一鍵翻空 (CLOSE_LONG_AND_OPEN_SHORT)！")
-                else:
-                    logger.debug(f"🛡️ [DISABLE_EARLY_FLIP] {symbol} 平倉後依防洗防雙巴規則禁止非主趨勢秒級原子反手，進入標準冷卻期")
+                logger.debug(f"🛡️ [DISABLE_POSITION_FLIP] {symbol} 平倉後全面禁止同 K 棒秒級反手，強制進入 3 根 K 棒冷卻防雙巴！")
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
