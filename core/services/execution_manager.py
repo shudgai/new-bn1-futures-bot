@@ -1354,6 +1354,53 @@ class ExecutionManager:
                                 reason = "EXIT_COUNTER_TREND_EXHAUSTION_LOWER_WICK"
                                 meta = {"lower_wick": lower_wick, "body": c_body, "atr": atr_v}
 
+            # 🛡️ 2026-10-30 核心授權：【主中軌走平動能枯竭及時撤退機制 (KC Middle Flat Exhaustion Exit)】
+            # 針對「開倉後走了一段時間一直沒走出利潤」的死水盤：
+            # 既然依託的是 KC 中軌趨勢動能，一旦中軌走平不再傾斜推進，說明趨勢已經熄火！
+            # 不用等到 20 分鐘，只要基礎呼吸期 (5~8 根 K 棒 / 300 秒) 過後，中軌走平且未產生實質利潤，
+            # 立刻在微虧/保本區間主動撤退，杜絕抱著死水單拖到虧損擴大！
+            hold_sec = (time.time() - pos_open_ts) if pos_open_ts > 0 else 0.0
+            is_stagnation_no_profit = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+
+            if not should_exit and pos_entry > 0 and hold_sec >= 300.0 and is_stagnation_no_profit:
+                if pos_side == "SHORT":
+                    # 空單依託中軌向下推進；若中軌走平或向上 (kc_slope >= -0.000001 或 kc_slope_5_ref >= 0)，且價格受阻在成本價附近 (微虧 < 0.6%)
+                    is_kc_mid_flat_or_up = bool(kc_slope >= -0.000001 or kc_slope_5_ref >= 0)
+                    is_in_scratch_loss_short = bool(curr_quote <= pos_entry * 1.006)  # 虧損在 0.6% 內
+                    if is_kc_mid_flat_or_up and is_in_scratch_loss_short and (closed_c > closed_kc_mid or m3_c >= m15_c):
+                        should_exit = True
+                        reason = "EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION"
+                        meta = {
+                            "side": "SHORT",
+                            "hold_sec": round(hold_sec, 1),
+                            "kc_slope": kc_slope,
+                            "kc_slope_5_ref": kc_slope_5_ref,
+                            "cur_roe_pct": cur_roe_pct,
+                            "peak_roe_pct": peak_roe_pct,
+                            "trigger": "KC_MID_FLAT_SCRATCH_EXIT",
+                            "detail": f"空單持倉 {hold_sec/60:.1f}m 無利潤，KC中軌走平轉正 (slope={kc_slope:.8f})，及時在微虧/保本點撤退保本金！",
+                        }
+                        logger.info(f"🚪 [KC_MID_FLAT_EXIT] {symbol} {meta['detail']}")
+
+                elif pos_side == "LONG":
+                    # 多單依託中軌向上推進；若中軌走平或向下 (kc_slope <= 0.000001 或 kc_slope_5_ref <= 0)，且價格受阻在成本價附近 (微虧 < 0.6%)
+                    is_kc_mid_flat_or_down = bool(kc_slope <= 0.000001 or kc_slope_5_ref <= 0)
+                    is_in_scratch_loss_long = bool(curr_quote >= pos_entry * 0.994)  # 虧損在 0.6% 內
+                    if is_kc_mid_flat_or_down and is_in_scratch_loss_long and (closed_c < closed_kc_mid or m3_c <= m15_c):
+                        should_exit = True
+                        reason = "EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION"
+                        meta = {
+                            "side": "LONG",
+                            "hold_sec": round(hold_sec, 1),
+                            "kc_slope": kc_slope,
+                            "kc_slope_5_ref": kc_slope_5_ref,
+                            "cur_roe_pct": cur_roe_pct,
+                            "peak_roe_pct": peak_roe_pct,
+                            "trigger": "KC_MID_FLAT_SCRATCH_EXIT",
+                            "detail": f"多單持倉 {hold_sec/60:.1f}m 無利潤，KC中軌走平轉負 (slope={kc_slope:.8f})，及時在微虧/保本點撤退保本金！",
+                        }
+                        logger.info(f"🚪 [KC_MID_FLAT_EXIT] {symbol} {meta['detail']}")
+
             # 🛡️ 妖幣專用主動式動態追蹤止盈與時間停損：依使用者指示「不要硬止損，走到峰頂/谷底或結構破壞再平倉」全面停用！
             # 🎯 方案 B 核心狀態機 (大週期不變一單到底，唯鎖利或真峰谷或結構破壞平倉，取消固定硬止損):
             if not should_exit:

@@ -122,3 +122,60 @@ def test_anti_chasing_short_overextended():
     )
     assert res["action"] == "WAIT"
     assert "乖離否決" in res["reason"]
+
+
+def test_kc_middle_flat_scratch_exit_short():
+    """驗證：空單持倉 5 分鐘以上無利潤且 KC 中軌走平，觸發及時撤退"""
+    hold_sec = 350.0  # > 300s
+    peak_roe_pct = 2.0  # < 5.0%
+    favorable_gain_atr = 0.3  # < 0.8
+    pos_entry = 0.01916
+    curr_quote = 0.01920  # 微虧 0.2%
+    kc_slope = 0.000002   # 中軌走平轉正
+    kc_slope_5_ref = 0.000001
+    closed_c = 0.01920
+    closed_kc_mid = 0.01918
+    m3_c = 0.01921
+    m15_c = 0.01919
+
+    is_stagnation_no_profit = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+    is_kc_mid_flat_or_up = bool(kc_slope >= -0.000001 or kc_slope_5_ref >= 0)
+    is_in_scratch_loss_short = bool(curr_quote <= pos_entry * 1.006)
+
+    should_exit = bool(
+        hold_sec >= 300.0
+        and is_stagnation_no_profit
+        and is_kc_mid_flat_or_up
+        and is_in_scratch_loss_short
+        and (closed_c > closed_kc_mid or m3_c >= m15_c)
+    )
+    assert should_exit is True, "空單中軌走平且無利潤，必須觸發及時撤退！"
+
+
+def test_kc_middle_flat_scratch_exit_long():
+    """驗證：多單持倉 5 分鐘以上無利潤且 KC 中軌走平，觸發及時撤退"""
+    hold_sec = 400.0
+    peak_roe_pct = 1.5
+    favorable_gain_atr = 0.2
+    pos_entry = 0.01950
+    curr_quote = 0.01945  # 微虧 0.25%
+    kc_slope = -0.000001  # 中軌走平轉負
+    kc_slope_5_ref = -0.000002
+    closed_c = 0.01945
+    closed_kc_mid = 0.01948
+    m3_c = 0.01944
+    m15_c = 0.01947
+
+    is_stagnation_no_profit = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
+    is_kc_mid_flat_or_down = bool(kc_slope <= 0.000001 or kc_slope_5_ref <= 0)
+    is_in_scratch_loss_long = bool(curr_quote >= pos_entry * 0.994)
+
+    should_exit = bool(
+        hold_sec >= 300.0
+        and is_stagnation_no_profit
+        and is_kc_mid_flat_or_down
+        and is_in_scratch_loss_long
+        and (closed_c < closed_kc_mid or m3_c <= m15_c)
+    )
+    assert should_exit is True, "多單中軌走平且無利潤，必須觸發及時撤退！"
+
