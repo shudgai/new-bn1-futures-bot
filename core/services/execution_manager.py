@@ -19,6 +19,7 @@ import pandas as pd
 from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 from core.gates.unified_pipeline_gates import ExitGate, EntryGate
 from core.services.demon_coin_defense import DemonCoinDefenseController
+from core.services.scalping_state_machine import ScalpingStateMachine
 
 logger = logging.getLogger("ExecutionManager")
 
@@ -381,7 +382,7 @@ class ExecutionManager:
         if klines_df is None or klines_df.empty:
             if hasattr(engine_or_account, "fetch_klines"):
                 try:
-                    klines_df = await engine_or_account.fetch_klines(symbol, timeframe="1m", limit=120)
+                    klines_df = await engine_or_account.fetch_klines(symbol, timeframe="1m", limit=180)
                 except Exception as e:
                     logger.debug(f"[PIPELINE] {symbol} fetch_klines 失敗: {e}")
                     return {"status": "FETCH_FAILED", "symbol": symbol}
@@ -460,6 +461,7 @@ class ExecutionManager:
         macro_slope_val = float(getattr(market_data, "macro_slope", 0.0) or 0.0)
         slow_slope_5_val = float(getattr(market_data, "slow_slope_5", 0.0) or 0.0)
         macro_trend_snap = str(getattr(market_data, "macro_trend", "NEUTRAL") or "NEUTRAL").upper()
+        macro_trend = macro_trend_snap
         kc_slope_10_val = kc_slope
         is_lower_highs_bear = False
         is_higher_lows_bull = False
@@ -489,19 +491,23 @@ class ExecutionManager:
             lookback_m15_3 = min(len(s_m15_macro), 4)
             m15_slope_3_val = float(s_m15_macro.iloc[-1] - s_m15_macro.iloc[-lookback_m15_3]) / max(1, lookback_m15_3 - 1)
 
-            # 檢查過去 60 根 K 棒的高低點結構（是否處於空頭主跌波段下半場或一峰比一峰低）
+            # 檢查過去 60~120 根 K 棒的高低點結構 (Higher Highs / Higher Lows vs Lower Highs / Lower Lows)
+            # 依 2026-10-30 核心授權：只要整體價格底底高 (Higher Lows) 且高點向上推升，
+            # 哪怕盤中出現深幅回踩，只要未跌破起漲大波段前低，一律嚴禁誤判為大週期熊市！
             if len(raw_df) >= 40 and "high" in raw_df.columns and "low" in raw_df.columns:
-                w_len = min(len(raw_df), 90)
+                w_len = min(len(raw_df), 120)
                 half_w = w_len // 2
                 first_half_high = float(raw_df["high"].iloc[-w_len:-half_w].max())
                 second_half_high = float(raw_df["high"].iloc[-half_w:].max())
                 first_half_low = float(raw_df["low"].iloc[-w_len:-half_w].min())
                 second_half_low = float(raw_df["low"].iloc[-half_w:].min())
-                # 前半段高點顯著高於後半段高點，且後半段低點更低 -> 標準拉遠空頭結構 (Lower Highs & Lower Lows)
-                if second_half_high < first_half_high and second_half_low <= first_half_low and c_c < ema60_val:
-                    is_lower_highs_bear = True
-                elif second_half_low > first_half_low and second_half_high >= first_half_high and c_c > ema60_val:
+                
+                # 若後半段低點高於前半段低點 (HL)，且後半段高點亦高於前半段高點 (HH) -> 絕對多頭底底高結構 (Bullish HH/HL)
+                if second_half_low >= first_half_low and second_half_high >= first_half_high:
                     is_higher_lows_bull = True
+                    is_lower_highs_bear = False
+                elif second_half_high < first_half_high and second_half_low <= first_half_low and c_c < ema60_val:
+                    is_lower_highs_bear = True
 
         # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢 (結合 15M/1H 大級別均線結構與 60~120 根 1M K 棒結構)
         # ══════════════════════════════════════════════════════════════════════════
@@ -1034,19 +1040,15 @@ class ExecutionManager:
             # 🛑 【K棒陰陽同向平倉鐵律：出紅K（下跌陰線 close <= open）絕不平空、出綠K（上漲陽線 close >= open）絕不平多】：
             # 解決 1000PEPE 07:52 & 08:17 痛點：前一棒反彈高於成本價未觸發鎖利，下一棒出大紅K（下跌陰線 curr_quote < c_o）順勢下殺回到獲利區時，
             # 舊邏輯誤讀上一棒陽線而「在當根大紅K下殺途中平空」！
-            # 1. 空單平倉：必須上一根已收線為上漲陽線 (closed_c > closed_o)，且【當前正在走的 K 棒也必須是上漲陽線 (curr_quote > c_o and c_c > c_o)】且價格未回落 (curr_quote >= closed_c)！只要當根出紅K（下跌陰線）一律鎖死不平空！
-            # 2. 多單平倉：必須上一根已收線為下跌陰線 (closed_c < closed_o)，且【當前正在走的 K 棒也必須是下跌陰線 (curr_quote < c_o and c_c < c_o)】且價格未反彈 (curr_quote <= closed_c)！只要當根出綠K（上漲陽線）一律鎖死不平多！
+            # 1. 空單平倉：已收線棒必須為上漲陽線 (closed_c > closed_o)，且當前 live 棒嚴禁為順勢下殺大紅K (not (curr_quote < c_o and (c_o - curr_quote) >= 0.25 * atr_v))！
+            # 2. 多單平倉：已收線棒必須為下跌陰線 (closed_c < closed_o)，且當前 live 棒嚴禁為順勢上攻大綠K (not (curr_quote > c_o and (curr_quote - c_o) >= 0.25 * atr_v))！
             can_exit_short_on_candle = bool(
                 closed_c > closed_o
-                and curr_quote > c_o
-                and c_c > c_o
-                and curr_quote >= closed_c
+                and not (curr_quote < c_o and (c_o - curr_quote) >= 0.25 * atr_v)
             )
             can_exit_long_on_candle = bool(
                 closed_c < closed_o
-                and curr_quote < c_o
-                and c_c < c_o
-                and curr_quote <= closed_c
+                and not (curr_quote > c_o and (curr_quote - c_o) >= 0.25 * atr_v)
             )
 
             # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 實質獲利展開後之真峰頂/真谷底
@@ -1187,24 +1189,25 @@ class ExecutionManager:
                         or ((current_position.get("trend_lock_state") or {}).get("outer_rail_touched"))
                     )
 
-                    # 0. 【趨勢正式變多頭防線 (Bullish Trend Reversal)】：
-                    # 嚴格區分「空頭下降通道中的反彈觸中軌（如 1000PEPE 21:17 & 21:57）」與「真正變多頭」！
-                    # 必須同時滿足：
-                    # 1. 1M 結構已正式確立多頭 (is_1m_confirmed_bull) 且非大週期空頭鎖定 (not is_zoomed_out_bearish)
-                    # 2. 3棒與5棒 KC 中軌及 MA15 慢線同步拐頭向上 (kc_slope_3_ref > 0, kc_slope_5_ref >= 0 且 m15_c >= m15_p)
-                    # 3. 已收線 K 棒與即時報價【雙雙站穩】KC 中軌與 MA15 之上，且當根 K 棒嚴禁為紅K下跌陰線 (can_exit_short_on_candle)！
-                    is_bullish_trend_reversal = bool(
+                    # 0. 【V 轉快速平空防線 (V-Reversal Fast Close) 與 趨勢翻多防線】：
+                    # 依 2026-10-30 核心授權：持有空單時，只要單根 K 棒收盤價強勢突破 MA15 (closed_c > m15_c 且 curr_quote > m15_c)，
+                    # 無需等待滯後的 MA3 完全向上金叉 MA15，立即平空離場，把獲利鎖在反彈初期！
+                    is_fast_v_reversal_close = bool(
                         can_exit_short_on_candle
-                        and is_1m_confirmed_bull
-                        and (not is_zoomed_out_bearish)
-                        and (m3_c > m15_c)
-                        and (m3_c > m3_p)
-                        and (kc_slope > 0 and kc_slope_3_ref > 0 and kc_slope_5_ref >= 0)
-                        and (m15_c >= m15_p and m15_slope_3_ref >= 0 and m15_slope_5_ref >= 0)
-                        and (closed_c > closed_o)
-                        and (closed_c > closed_kc_mid and closed_c > m15_c)
-                        and (curr_quote > kc_mid and curr_quote > m15_c)
-                        and ((m3_c - m15_c) >= min_gc_dc_spread)
+                        and closed_c > m15_c
+                        and curr_quote > m15_c
+                        and closed_c > closed_o
+                    )
+                    is_bullish_trend_reversal = bool(
+                        is_fast_v_reversal_close
+                        or (
+                            can_exit_short_on_candle
+                            and (m3_c > m15_c)
+                            and (m3_c > m3_p or (m3_c - m15_c) >= min_gc_dc_spread)
+                            and (closed_c > closed_o)
+                            and (closed_c > closed_kc_mid and closed_c > m15_c)
+                            and (curr_quote > m15_c)
+                        )
                     )
 
                     # 1. 【結構破壞防線】：只認「已收線」實體突破 KC 上軌（盤中上影線毛刺一律不算），或 3棒/5棒中軌與慢線全面轉上且突破前高，且當根非紅K下跌陰線。
@@ -1366,24 +1369,25 @@ class ExecutionManager:
                         or ((current_position.get("trend_lock_state") or {}).get("outer_rail_touched"))
                     )
 
-                    # 0. 【趨勢正式變空頭防線 (Bearish Trend Reversal)】：
-                    # 嚴格區分「多頭回踩中軌/MA15」與「真正變空頭」！
-                    # 必須同時滿足：
-                    # 1. 1M 結構已正式確立空頭 (is_1m_confirmed_bear) 且非大週期多頭鎖定 (not is_zoomed_out_bullish)
-                    # 2. 3棒與5棒 KC 中軌及 MA15 慢線同步拐頭向下 (kc_slope_3_ref < 0, kc_slope_5_ref <= 0 且 m15_c <= m15_p)
-                    # 3. 已收線 K 棒與即時報價【雙雙跌破】KC 中軌與 MA15 之下，且當根非綠K上漲陽線 (can_exit_long_on_candle)！
-                    is_bearish_trend_reversal = bool(
+                    # 0. 【趨勢正式變空頭及時平多防線 (Bearish Trend Reversal) 與 跌破 MA15 快速平多】：
+                    # 當多單持倉時，單根 K 棒收盤跌破 MA15 (closed_c < m15_c 且 curr_quote < m15_c 且 closed_c < closed_o)，
+                    # 即代表反彈力竭，多頭結構瓦解，必須【立即及時平多離場】，若在大週期熊市背景下直接觸發一鍵翻空！
+                    is_fast_bear_reversal_close = bool(
                         can_exit_long_on_candle
-                        and is_1m_confirmed_bear
-                        and (not is_zoomed_out_bullish)
-                        and (m3_c < m15_c)
-                        and (m3_c < m3_p)
-                        and (kc_slope < 0 and kc_slope_3_ref < 0 and kc_slope_5_ref <= 0)
-                        and (m15_c <= m15_p and m15_slope_3_ref <= 0 and m15_slope_5_ref <= 0)
-                        and (closed_c < closed_o)
-                        and (closed_c < closed_kc_mid and closed_c < m15_c)
-                        and (curr_quote < kc_mid and curr_quote < m15_c)
-                        and ((m15_c - m3_c) >= min_gc_dc_spread)
+                        and closed_c < m15_c
+                        and curr_quote < m15_c
+                        and closed_c < closed_o
+                    )
+                    is_bearish_trend_reversal = bool(
+                        is_fast_bear_reversal_close
+                        or (
+                            can_exit_long_on_candle
+                            and (m3_c < m15_c)
+                            and (m3_c < m3_p or (m15_c - m3_c) >= min_gc_dc_spread)
+                            and (closed_c < closed_o)
+                            and (closed_c < closed_kc_mid and closed_c < m15_c)
+                            and (curr_quote < m15_c)
+                        )
                     )
 
                     # 1. 【結構破壞防線】：只認「已收線」實體跌破 KC 下軌（盤中下影線毛刺一律不算），或 3棒/5棒中軌與慢線全面轉下且跌破前低，且當根非綠K上漲陽線。
@@ -1579,9 +1583,11 @@ class ExecutionManager:
                     or is_pinbar_bottom
                     or is_engulfing_bottom
                     or (m3_c > m15_c and is_bullish_confirm)
+                    or (c_c > m15_c and c_c > c_o)
                     or "CLOSE_SHORT_AT_BOTTOM" in str(reason).upper()
                     or "VALLEY" in str(reason).upper()
                     or "BULLISH_TREND_REVERSAL" in str(reason).upper()
+                    or "V_REVERSAL" in str(reason).upper()
                 )
                 is_flip_to_long = bool(pos_side == "SHORT" and is_real_bottom)
 
@@ -1596,16 +1602,25 @@ class ExecutionManager:
                     or is_pinbar_peak
                     or is_engulfing_peak
                     or (m3_c < m15_c and is_bearish_confirm)
+                    or (c_c < m15_c and c_c < c_o)
                     or "CLOSE_LONG_AT_TOP" in str(reason).upper()
                     or "PEAK" in str(reason).upper()
                     or "BEARISH_TREND_REVERSAL" in str(reason).upper()
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🛡️ 大波段防雙巴鐵律 (Disable Early Flip)：平倉後嚴格禁止秒級原子反手！
-                # 徹底解決「平多即刻開空、開空又秒平」的中軌雙殺死循環，一律強制進入正常冷卻與趨勢審查！
+                # 🔄 2026-10-30 核心授權：空轉多「一鍵翻單 (Close & Open)」機制
+                # 當在「大週期牛市 (is_zoomed_out_bullish 或 macro_trend == 'BULLISH')」背景下平空，
+                # 或出現真谷底/金叉反轉信號時，允許同 K 棒秒級原子反手開多，絕不留空倉觀望錯失噴出波段！
                 can_flip = False
-                logger.debug(f"🛡️ [DISABLE_EARLY_FLIP] {symbol} 平倉後依防洗防雙巴規則禁止秒級原子反手，進入標準冷卻期")
+                if pos_side == "SHORT" and is_flip_to_long and (is_zoomed_out_bullish or macro_trend == "BULLISH"):
+                    can_flip = True
+                    logger.info(f"⚡ [BULL_MOMENTUM_FLIP] {symbol} 大週期牛市背景下平空，授權一鍵翻多 (CLOSE_SHORT_AND_OPEN_LONG)！")
+                elif pos_side == "LONG" and is_flip_to_short and (is_zoomed_out_bearish or macro_trend == "BEARISH"):
+                    can_flip = True
+                    logger.info(f"⚡ [BEAR_MOMENTUM_FLIP] {symbol} 大週期熊市背景下平多，授權一鍵翻空 (CLOSE_LONG_AND_OPEN_SHORT)！")
+                else:
+                    logger.debug(f"🛡️ [DISABLE_EARLY_FLIP] {symbol} 平倉後依防洗防雙巴規則禁止非主趨勢秒級原子反手，進入標準冷卻期")
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
@@ -1954,6 +1969,8 @@ class ExecutionManager:
             acc_key_stage3 = cls._get_account_key(account, symbol)
             last_exit_stage3 = cls._last_exit_record.get(acc_key_stage3)
             pivot_cooldown_blocked = False
+            is_macro_bull_follow = bool((is_zoomed_out_bullish or macro_trend == "BULLISH") and m3_c > m15_c and curr_quote > m15_c)
+            is_macro_bear_follow = bool((is_zoomed_out_bearish or macro_trend == "BEARISH") and m3_c < m15_c and curr_quote < m15_c)
             if last_exit_stage3:
                 elapsed_s3 = time.time() - float(last_exit_stage3.get("timestamp", 0.0))
                 last_exit_reason_s3 = str(last_exit_stage3.get("reason", "")).upper()
@@ -1962,7 +1979,10 @@ class ExecutionManager:
                     for k in ("OPPOSITE_KC_BAND_BREACH", "REVERSAL", "RAIL_BREACH", "STOP_LOSS", "WATERFALL")
                 )
                 min_wait_s3 = 60.0 if is_loss_or_breach_exit else 45.0
-                if elapsed_s3 < min_wait_s3:
+                # 順勢多頭排列且站穩 MA15 或 大週期牛市突破時豁免冷卻，防止平空後錯失噴出浪
+                is_bull_breakout_exempt = bool((is_zoomed_out_bullish or macro_trend == "BULLISH") and (curr_quote > m15_c or c_c > kc_u))
+                is_bear_breakdown_exempt = bool((is_zoomed_out_bearish or macro_trend == "BEARISH") and (curr_quote < m15_c or c_c < kc_lo))
+                if elapsed_s3 < min_wait_s3 and not (is_macro_bull_follow or is_macro_bear_follow or is_bull_breakout_exempt or is_bear_breakdown_exempt):
                     pivot_cooldown_blocked = True
                     logger.debug(
                         f"⏳ [PIVOT_COOLDOWN] {symbol} 剛平倉 ({last_exit_reason_s3}) 僅 {elapsed_s3:.1f}s < {min_wait_s3:.0f}s，"
@@ -2061,9 +2081,37 @@ class ExecutionManager:
                         f"僅視為回檔低點準備區 (WAIT_PULLBACK)，強制鎖死 can_open_short=False，等待 MA3 重新金叉 MA15 再開多！"
                     )
 
+            # 🚀 2026-10-30 核心授權：牛市提早開倉機制 (解決半山腰追多)
+            # 1. 取消「強制等待 MA3/MA15 金叉」限制：只要大週期牛市且收盤突破 MA15 (curr_quote > m15_c 且 c_c > m15_c 且 c_c > c_o)，
+            #    無需苦等 MA3 完全向上金叉 MA15，立即發出 OPEN_LONG 提早開多搶佔起漲點！
+            # 2. KC 下軌 V 轉提前試單：觸及 KC 下軌 (c_l <= kc_lo) 且收盤站上 MA3 (c_c > m3_c 且 m3_c > m3_p)，提前卡位開多！
+            if (not has_position) and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
+                is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
+                is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
+                if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_chasing_high):
+                    can_open_long = True
+                    is_cross_mid_long = False
+                    is_valid_gc = False
+                    is_confirmed_golden_cross_ready = False
+                    is_1m_confirmed_bull = False
+                    entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
+                    logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，無需苦等 MA3/MA15 金叉，立即鎖定起漲點開多！")
+            elif (not has_position) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
+                is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
+                if (is_early_ma15_breakdown or (m3_c < m15_c and curr_quote < m15_c)) and (not is_chasing_low):
+                    can_open_short = True
+                    is_cross_mid_short = False
+                    is_valid_dc = False
+                    is_confirmed_death_cross_ready = False
+                    is_1m_confirmed_bear = False
+                    entry_type = "EARLY_BEAR_BREAKDOWN_SHORT" if is_early_ma15_breakdown else "MOMENTUM_FOLLOW_SHORT"
+                    logger.info(f"⚡ [{entry_type}] {symbol} 處於大週期熊市且跌破 MA15，觸發順勢開空/補單！")
+
             if can_open_long:
                 candidate_side = "LONG"
-                if is_cross_mid_long:
+                if entry_type in ("MOMENTUM_FOLLOW_LONG", "EARLY_BULL_BREAKOUT_LONG", "LOWER_RAIL_V_LONG"):
+                    pass
+                elif is_cross_mid_long:
                     entry_type = "PIVOT_LONG_CROSS_MID"
                 elif is_valid_gc or is_confirmed_golden_cross_ready or is_1m_confirmed_bull:
                     entry_type = "NONE_GOLDEN_CROSS"
@@ -2072,7 +2120,9 @@ class ExecutionManager:
                 pivot_triggered = True
             elif can_open_short:
                 candidate_side = "SHORT"
-                if is_cross_mid_short:
+                if entry_type in ("MOMENTUM_FOLLOW_SHORT", "EARLY_BEAR_BREAKDOWN_SHORT"):
+                    pass
+                elif is_cross_mid_short:
                     entry_type = "PIVOT_SHORT_CROSS_MID"
                 elif is_valid_dc or is_confirmed_death_cross_ready or is_1m_confirmed_bear:
                     entry_type = "NONE_DEAD_CROSS"
@@ -2894,10 +2944,13 @@ class ExecutionManager:
                 )
                 elapsed_sec = time.time() - float(last_exit.get("timestamp", 0.0))
                 min_cooldown_sec = 60.0 if is_loss_or_breach_exit else 45.0
-                if elapsed_sec < min_cooldown_sec:
+                # 順勢突破或多頭/空頭排列時豁免平倉冷卻
+                is_bull_breakout_stage32 = bool((is_zoomed_out_bullish or macro_trend == "BULLISH") and (curr_quote > m15_curr or market_data.curr_k.get("close", 0) > market_data.kc_upper))
+                is_bear_breakdown_stage32 = bool((is_zoomed_out_bearish or macro_trend == "BEARISH") and (curr_quote < m15_curr or market_data.curr_k.get("close", 0) < market_data.kc_lower))
+                if elapsed_sec < min_cooldown_sec and not (is_bull_breakout_stage32 or is_bear_breakdown_stage32):
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後 {min_cooldown_sec:.0f} 秒防雙巴保護中 ({elapsed_sec:.1f}s)")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
-                if not is_opposite_reversal_ready and not is_strong_breakout and elapsed_sec < 120:
+                if not is_opposite_reversal_ready and not is_strong_breakout and not (is_bull_breakout_stage32 or is_bear_breakdown_stage32) and elapsed_sec < 120:
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉冷卻中: 剩餘 {120 - elapsed_sec:.1f} 秒")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
