@@ -763,7 +763,8 @@ class ExecutionManager:
 
         is_flat_macro = bool(atr_v > 0 and abs(macro_slope_val) < 0.5 * atr_v)
         is_choppy = bool(is_flat_macro and ema60_cross_count >= 4 and not is_1m_confirmed_bull and not is_1m_confirmed_bear)
-        if is_choppy:
+        if is_choppy and not has_position:
+            # 僅在無持倉時允許重置為猴市震盪區；持倉時大週期鎖定防護罩絕不可被震盪標籤拔除！
             is_zoomed_out_bearish = False
             is_zoomed_out_bullish = False
         if is_zoomed_out_bullish:
@@ -1165,12 +1166,13 @@ class ExecutionManager:
                     and can_exit_long_on_candle
                     and pos_entry > 0
                     and curr_quote > pos_entry * 1.0015
+                    and (not is_zoomed_out_bullish)  # ⚠️ 大週期牛市多單一單到底，絕不被普通回調鎖利震出場！
                     and (
                         (scheme1_action == "CLOSE_LONG")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價跌破 MA3 與 MA5 且 MA3 下拐，或跌破 KC 中軌，立即高點鎖利落袋，絕不抱回起漲點！
                         or (peak_roe_pct >= 20.0 and ((closed_c < m3_c and curr_quote < m3_c and m3_c < m3_p) or (closed_c < closed_kc_mid and curr_quote < kc_mid)))
                         # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陰線跌破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 下方、MA3 < MA15
-                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and (not is_zoomed_out_bullish) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
+                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c < closed_o and (closed_c < closed_kc_mid or closed_c < m15_c) and (curr_quote < kc_mid and curr_quote < m15_c) and m3_c < m15_c and m3_c < m3_p)
                     )
                 )
                 or (
@@ -1178,12 +1180,13 @@ class ExecutionManager:
                     and can_exit_short_on_candle
                     and pos_entry > 0
                     and curr_quote < pos_entry * 0.9985
+                    and (not is_zoomed_out_bearish)  # ⚠️ 大週期熊市空單一單到底，絕不被普通回抽鎖利震出場！
                     and (
                         (scheme1_action == "CLOSE_SHORT")
                         # (A) 二階大波段鎖利 (peak_roe >= 20%)：只要收盤或報價突破 MA3 與 MA5 且 MA3 上拐，或突破 KC 中軌，立即低點鎖利落袋，絕不抱回起跌點！
                         or (peak_roe_pct >= 20.0 and ((closed_c > m3_c and curr_quote > m3_c and m3_c > m3_p) or (closed_c > closed_kc_mid and curr_quote > kc_mid)))
                         # (B) 一階鎖利：1000PEPE 需 >= 20% ROE，一般幣種需 >= 10% ROE；已收陽線突破 KC 中軌或 MA15，且即時報價仍在中軌/MA15 上方、MA3 > MA15
-                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and (not is_zoomed_out_bearish) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
+                        or (peak_roe_pct >= (20.0 if _is_pepe else 10.0) and closed_c > closed_o and (closed_c > closed_kc_mid or closed_c > m15_c) and (curr_quote > kc_mid and curr_quote > m15_c) and m3_c > m15_c and m3_c > m3_p)
                     )
                 )
             ):
