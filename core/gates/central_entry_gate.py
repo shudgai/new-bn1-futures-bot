@@ -226,14 +226,6 @@ class CentralEntryGate:
                 details=parsed,
                 checks={"intrabar_route": {"status": "FAIL", "source": source}},
             )
-        if allow_intrabar and is_closed is not False:
-            return GateCheckResult(
-                passed=False,
-                reason="VETO_INTRABAR_AUTHORITY_REQUIRES_FORMING_BAR",
-                signal_id=sig_id,
-                details=parsed,
-                checks={"closed_bar": {"status": "FAIL", "actual": is_closed}},
-            )
         checks["closed_bar"] = {"status": "PASS", "actual": is_closed}
         # -------------------------------------------------------------
         # 條件 0：方向總開關 (Direction Master Lock，一票否決，零歧義)
