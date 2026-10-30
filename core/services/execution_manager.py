@@ -1191,6 +1191,19 @@ class ExecutionManager:
                     or (pos_side == "SHORT" and is_zoomed_out_bullish)
                 )
 
+                # 🚀 1000PEPE & 龍蝦「多階段階梯保本 + 動態移動止盈 (Trailing Stop)」專用裁決引擎
+                from core.services.exits.staged_trailing_exit_engine import evaluate_staged_trailing_exit
+                staged_exit_needed, staged_exit_reason, staged_exit_meta = evaluate_staged_trailing_exit(
+                    position=current_position,
+                    current_price=curr_quote,
+                    macro_trend="BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else macro_trend),
+                )
+                if staged_exit_needed and not should_exit:
+                    should_exit = True
+                    reason = staged_exit_reason
+                    meta = {**staged_exit_meta, "trigger": "STAGED_TRAILING_LADDER_EXIT"}
+                    logger.info(f"💎 [STAGED_TRAILING_EXIT] {symbol} {pos_side} 命中多階段階梯保本/移動止盈！reason={reason}, meta={meta}")
+
                 # (1) 保本防線：浮盈曾達 8% ROE，回踩成本線 (0.3% 手續費與滑價緩衝) 保本平倉
                 if peak_roe_pct >= 8.0:
                     if pos_side == "LONG" and curr_quote <= pos_entry * 1.003:
@@ -1745,6 +1758,11 @@ class ExecutionManager:
                         logger.info(f"🎯 [POSITION_FLIP_SUCCESS] {symbol} 成功秒級反手建立 {flip_side} 倉位！")
                         print(f"🎯 [POSITION_FLIP_SUCCESS] {symbol} 成功秒級反手建立 {flip_side} 倉位！", flush=True)
                         return {"status": "SUCCESS_FLIP", "symbol": symbol, "side": flip_side}
+
+                # 🛑 2026-10-30 核心鐵律：平倉離場後【絕對禁止自動重新開倉】，必須等待系統下一次標準開倉訊號！
+                if any(k in str(reason).upper() for k in ("STAGE", "TRAILING", "LADDER", "BREAKEVEN", "PROFIT_LOCK", "REVERSAL", "PULLBACK")):
+                    logger.info(f"🛑 [EXIT_COMPLETE_NO_REOPEN] {symbol} 平倉離場成功，依紀律絕不無腦自動重新開倉，等待下一週期標準訊號！")
+                    return {"status": "EXIT_EXECUTED", "symbol": symbol, "side": pos_side, "reason": reason}
 
                 # 平倉成功且未觸發秒級反手時，重設持倉標記直通第 3 階段評估開倉
                 has_position = False
