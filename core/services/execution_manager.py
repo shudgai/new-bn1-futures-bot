@@ -2119,16 +2119,28 @@ class ExecutionManager:
                     entry_type = "PIVOT_LONG"
                 pivot_triggered = True
             elif can_open_short:
-                candidate_side = "SHORT"
-                if entry_type in ("MOMENTUM_FOLLOW_SHORT", "EARLY_BEAR_BREAKDOWN_SHORT"):
-                    pass
-                elif is_cross_mid_short:
-                    entry_type = "PIVOT_SHORT_CROSS_MID"
-                elif is_valid_dc or is_confirmed_death_cross_ready or is_1m_confirmed_bear:
-                    entry_type = "NONE_DEAD_CROSS"
+                # 🛑 2026-10-30 核心防呆：V 轉強勢反彈硬性禁止開空（防阿呆谷開空）
+                # 即使指標算出了死叉或跌破，但只要價格已站回 MA15 上方 (curr_quote > m15_c 或 c_c > m15_c)
+                # 或正在拉出強烈反彈陽線 (c_c > c_o 且 (c_c - c_o) >= 0.25 * atr_v)，
+                # 100% 嚴格廢除開空，嚴禁開在 V 轉反彈半山腰或起漲地基點！
+                is_v_reversal_bounce = bool(curr_quote > m15_c or c_c > m15_c or (c_c > c_o and (c_c - c_o) >= 0.25 * atr_v))
+                if is_v_reversal_bounce:
+                    logger.info(
+                        f"🚫 [VETO_V_REVERSAL_SHORT] {symbol} 價格已強勢反彈站回 MA15 或正拉出強勢陽線 "
+                        f"(quote={curr_quote:.6f}, c={c_c:.6f}, m15={m15_c:.6f})，強制廢除滯後開空，防止阿呆谷賣空！"
+                    )
+                    can_open_short = False
                 else:
-                    entry_type = "PIVOT_SHORT"
-                pivot_triggered = True
+                    candidate_side = "SHORT"
+                    if entry_type in ("MOMENTUM_FOLLOW_SHORT", "EARLY_BEAR_BREAKDOWN_SHORT"):
+                        pass
+                    elif is_cross_mid_short:
+                        entry_type = "PIVOT_SHORT_CROSS_MID"
+                    elif is_valid_dc or is_confirmed_death_cross_ready or is_1m_confirmed_bear:
+                        entry_type = "NONE_DEAD_CROSS"
+                    else:
+                        entry_type = "PIVOT_SHORT"
+                    pivot_triggered = True
 
             if pivot_triggered and candidate_side and entry_type:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
@@ -3066,6 +3078,19 @@ class ExecutionManager:
                         f"🚫 [BLOCKED_MA3_MA15_RULE] {symbol} 開空但 MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
                     )
                     return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA3_NOT_BELOW_MA15", "details": "MA3 必須在 MA15 下方才准開空單！"}
+
+                # 0.15 🛑 【V 轉反彈廢除開空】：若當前價格已反彈站上 MA15 或正拉出強勢陽線，100% 一票否決滯後開空！
+                if candidate_side == "SHORT" and (curr_quote > m15_curr or p_close > m15_curr or (p_close > p_open and (p_close - p_open) >= 0.25 * market_data.atr)):
+                    logger.info(
+                        f"🚫 [BLOCKED_SHORT_ON_V_REVERSAL] {symbol} 價格已強勢反彈站回 MA15 "
+                        f"(quote={curr_quote:.6f}, c={p_close:.6f}, m15={m15_curr:.6f})，一票否決滯後開空，防止阿呆谷賣空！"
+                    )
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_SHORT_ON_V_REVERSAL",
+                        "details": "價格已反彈站回 MA15 或出現強勢陽線，嚴禁在反彈半山腰滯後賣空！",
+                    }
 
                 # 0.2 🛡️ 【三大危險區開倉防禦】：前低支撐/前高壓力牆、均線/外軌超賣超買乖離、外軌穿透影線止跌受阻
                 if candidate_side == "SHORT" and not allow_short_defense:

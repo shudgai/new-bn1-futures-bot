@@ -130,9 +130,12 @@ class ScalpingStateMachine:
                 elif low_p <= m15 and curr_p > m3 and m3 >= m15 * 0.98:
                     return "OPEN_LONG", "大週期牛市背景下，觸及低位後 V 轉站回 MA3，提前試單卡位開多！"
 
-            # 3. 熊市背景：跌破 MA15 或 空頭排列順勢開空
+            # 3. 熊市背景：跌破 MA15 早期開空 (收盤價 < MA15)；但若價格正在反彈站回 MA15，強制廢除滯後開空！
             elif macro == "BEARISH":
-                if curr_p < m15:
+                # V 轉強勢反彈硬性禁止開空 (防呆條款)
+                if curr_p > m15:
+                    return "WAIT", "價格已強勢反彈站回 MA15，廢除滯後開空，嚴防阿呆谷賣空！"
+                elif curr_p < m15:
                     return "OPEN_SHORT", "大週期熊市背景下，收盤價壓制在 MA15 下方，順勢提早開空！"
 
             return "WAIT", "無持倉觀望中 (等待順勢突破或均線排列成立)"

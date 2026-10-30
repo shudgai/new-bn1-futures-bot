@@ -822,8 +822,8 @@ class CentralEntryGate:
             prev_body = abs(float(prev_row.get("close", c_close)) - float(prev_row.get("open", c_open)))
 
         # 實體最小動能 (敏捷轉折/延續模式支援盤中動能或前一根已收線動能)
-        req_body_atr = 0.12 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
-        eff_body = max(c_body, prev_body) if (direction_override and is_closed is False) else c_body
+        req_body_atr = 0.08 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
+        eff_body = max(c_body, prev_body) if direction_override else c_body
         if eff_body < req_body_atr * atr:
             checks["candle_body"] = {
                 "status": "FAIL",
