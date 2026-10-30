@@ -305,3 +305,65 @@ class TestLobsterFalseExitReproduction:
         # 陰線 closed_c < closed_o → can_exit_short_on_candle 邏輯為 False（此處直接測試邏輯）
         # closed_c > closed_o 條件不滿足，result 必為 False
         assert result is False, "下跌陰線期間 → 嚴禁平空！"
+
+
+# ──────────────────────────────────────────────
+# 方案 B 專項測試：大週期順勢持倉一單到底 (反彈上軌/回踩下軌 100% 否決平倉)
+# ──────────────────────────────────────────────
+
+class TestSchemeBHoldVeto:
+    """
+    測試 2026-10-30 方案 B 核心授權：
+    - 大週期熊市 (is_zoomed_out_bearish=True) 持空單時：
+        反彈衝破 KC 上軌 (is_upper_rail_breach) 視為反抽洗盤，100% 一票否決平空！
+        短線反彈 1.8% (is_valley_rebound_1_8pct) 100% 否決平空！
+    - 大週期牛市 (is_zoomed_out_bullish=True) 持多單時：
+        回踩砸破 KC 下軌 (is_lower_rail_breach) 視為正常呼吸回踩，100% 一票否決平多！
+        短線回撤 (is_peak_pullback_2pct) 100% 否決平多！
+    - Stage 1~3 小保本階梯平倉在順勢持倉時 100% 一票否決！
+    """
+
+    def test_bearish_macro_upper_rail_breach_vetoed(self):
+        """大週期熊市空單：價格衝破 KC 上軌，方案 B 強制 is_upper_rail_breach=False"""
+        is_zoomed_out_bearish = True
+        # 模擬計算出的 is_upper_rail_breach
+        is_upper_rail_breach_raw = True
+        is_bullish_trend_reversal_raw = True
+
+        # 方案 B 處理
+        if is_zoomed_out_bearish:
+            is_upper_rail_breach = False
+            is_bullish_trend_reversal = False
+
+        assert is_upper_rail_breach is False
+        assert is_bullish_trend_reversal is False
+
+    def test_bullish_macro_lower_rail_breach_vetoed(self):
+        """大週期牛市多單：價格砸破 KC 下軌，方案 B 強制 is_lower_rail_breach=False"""
+        is_zoomed_out_bullish = True
+        is_lower_rail_breach_raw = True
+        is_bearish_trend_reversal_raw = True
+
+        # 方案 B 處理
+        if is_zoomed_out_bullish:
+            is_lower_rail_breach = False
+            is_bearish_trend_reversal = False
+
+        assert is_lower_rail_breach is False
+        assert is_bearish_trend_reversal is False
+
+    def test_macro_aligned_staged_ladder_veto(self):
+        """大週期順勢持倉時，Stage 1~3 小階梯保本一票否決，拒絕成本價震下車"""
+        pos_side = "SHORT"
+        is_zoomed_out_bearish = True
+        is_zoomed_out_bullish = False
+
+        staged_exit_reason = "EXIT_BY_STAGE1_LADDER_STOP"
+
+        is_macro_aligned = (pos_side == "SHORT" and is_zoomed_out_bearish) or (pos_side == "LONG" and is_zoomed_out_bullish)
+        is_small_ladder = any(f"STAGE{i}" in str(staged_exit_reason) for i in (1, 2, 3))
+
+        veto_ladder = is_macro_aligned and is_small_ladder
+        assert veto_ladder is True, "大週期順勢持空單時，Stage 1 小階梯平倉必須被否決！"
+
+

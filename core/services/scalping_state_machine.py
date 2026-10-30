@@ -43,6 +43,7 @@ class ScalpingStateMachine:
         is_structure_break: bool = False,
         is_sideways: bool = False,
         sideways_reason: str = "",
+        kc_slope: float = 0.0,
     ) -> Tuple[str, str]:
         """
         每根 K 棒收盤 (Bar Close) 或即時報價更新時執行的核心裁決
@@ -73,6 +74,7 @@ class ScalpingStateMachine:
             is_structure_break=is_structure_break,
             is_sideways=is_sideways,
             sideways_reason=sideways_reason,
+            kc_slope=kc_slope,
         )
         return res["action"], res["reason"]
 
@@ -94,6 +96,7 @@ class ScalpingStateMachine:
         is_structure_break: bool = False,
         is_sideways: bool = False,
         sideways_reason: str = "",
+        kc_slope: float = 0.0,
     ) -> Dict[str, Any]:
         """
         回傳符合 System Prompt 規範的完整 JSON 結構字典
@@ -365,6 +368,17 @@ class ScalpingStateMachine:
                             "action": "WAIT",
                             "reason": f"斜率否決：MA3 斜率向下 ({slope:.6f} < 0)，一票否決開多接飛刀！",
                         }
+                    # 3. KC 通道斜率否決：KC 通道中軌斜率向下 (kc_slope < 0)
+                    if kc_slope < 0:
+                        return {
+                            "macro_trend": macro,
+                            "status_label": status_label,
+                            "position_state": pos,
+                            "ma3_slope": slope,
+                            "cooldown_active": cooldown,
+                            "action": "WAIT",
+                            "reason": f"KC 斜率否決：KC 通道整體向下傾斜 ({kc_slope:.8f} < 0)，強勢空頭結構中 100% 嚴禁開多！",
+                        }
 
                     # 通過雙重否決，授權早期開多
                     return {
@@ -416,6 +430,17 @@ class ScalpingStateMachine:
                             "cooldown_active": cooldown,
                             "action": "WAIT",
                             "reason": f"斜率否決：MA3 斜率向上 ({slope:.6f} > 0)，一票否決開空防軋空！",
+                        }
+                    # 3. KC 通道斜率否決：KC 通道中軌斜率向上 (kc_slope > 0)
+                    if kc_slope > 0:
+                        return {
+                            "macro_trend": macro,
+                            "status_label": status_label,
+                            "position_state": pos,
+                            "ma3_slope": slope,
+                            "cooldown_active": cooldown,
+                            "action": "WAIT",
+                            "reason": f"KC 斜率否決：KC 通道整體向上傾斜 ({kc_slope:.8f} > 0)，強勢多頭結構中 100% 嚴禁開空！",
                         }
 
                     # 通過雙重否決，授權早期開空

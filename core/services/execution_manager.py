@@ -1268,18 +1268,27 @@ class ExecutionManager:
                     macro_trend="BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else macro_trend),
                 )
                 if staged_exit_needed and not should_exit:
-                    should_exit = True
-                    reason = staged_exit_reason
-                    meta = {**staged_exit_meta, "trigger": "STAGED_TRAILING_LADDER_EXIT"}
-                    logger.info(f"💎 [STAGED_TRAILING_EXIT] {symbol} {pos_side} 命中多階段階梯保本/移動止盈！reason={reason}, meta={meta}")
+                    # ⚠️ 順勢大週期一單到底鐵律：
+                    # 大週期熊市持有空單、或大週期牛市持有多單時，嚴禁 Stage 1~3 小保本在成本價附近將順勢單洗下車！
+                    # 唯有大週期反轉 (EXIT_BY_MACRO_TREND_REVERSAL) 或 Stage 4 (獲利 >= 20% 移動止盈) 才允許平倉！
+                    is_macro_aligned = (pos_side == "SHORT" and is_zoomed_out_bearish) or (pos_side == "LONG" and is_zoomed_out_bullish)
+                    is_small_ladder = any(f"STAGE{i}" in str(staged_exit_reason) for i in (1, 2, 3))
+                    if is_macro_aligned and is_small_ladder:
+                        logger.info(f"🛡️ [VETO_STAGED_LADDER] {symbol} {pos_side} 大週期順勢一單到底，一票否決 {staged_exit_reason} 小保本平倉，拒絕被洗下車！")
+                    else:
+                        should_exit = True
+                        reason = staged_exit_reason
+                        meta = {**staged_exit_meta, "trigger": "STAGED_TRAILING_LADDER_EXIT"}
+                        logger.info(f"💎 [STAGED_TRAILING_EXIT] {symbol} {pos_side} 命中多階段階梯保本/移動止盈！reason={reason}, meta={meta}")
 
                 # (1) 保本防線：浮盈曾達 8% ROE，回踩成本線 (0.3% 手續費與滑價緩衝) 保本平倉
+                # ⚠️ 順勢大週期一單到底鐵律：大週期牛市多單或熊市空單，絕不在成本回踩震下車！
                 if peak_roe_pct >= 8.0:
-                    if pos_side == "LONG" and curr_quote <= pos_entry * 1.003:
+                    if pos_side == "LONG" and curr_quote <= pos_entry * 1.003 and (not is_zoomed_out_bullish):
                         should_exit = True
                         reason = "EXIT_BY_BREAKEVEN_PROTECTION_LONG"
                         meta = {"peak_roe_pct": peak_roe_pct, "cur_roe_pct": cur_roe_pct, "entry_price": pos_entry, "be_floor": pos_entry * 1.003}
-                    elif pos_side == "SHORT" and curr_quote >= pos_entry * 0.997:
+                    elif pos_side == "SHORT" and curr_quote >= pos_entry * 0.997 and (not is_zoomed_out_bearish):
                         should_exit = True
                         reason = "EXIT_BY_BREAKEVEN_PROTECTION_SHORT"
                         meta = {"peak_roe_pct": peak_roe_pct, "cur_roe_pct": cur_roe_pct, "entry_price": pos_entry, "be_floor": pos_entry * 0.997}
@@ -1509,6 +1518,15 @@ class ExecutionManager:
                         and closed_c > closed_o
                     )
 
+                    # ⚠️ 方案 B 鐵律 (2026-10-30 核心授權)：
+                    # 如果大週期依然是熊市 (is_zoomed_out_bearish=True)，價格反彈衝到 KC 上軌或均線金叉只是「反彈回抽/洗盤」，
+                    # 100% 一票否決平空，讓空單繼續抱到底，杜絕割肉在反彈高點！
+                    if is_zoomed_out_bearish:
+                        is_upper_rail_breach = False
+                        is_bullish_trend_reversal = False
+                        is_fast_v_reversal_close = False
+                        is_valley_rebound_1_8pct = False
+
                     # ⚠️ 【大週期不變谷底持倉鐵律】：
                     # 只要大週期空頭未變，未發生趨勢翻多、結構破壞、真谷底轉折、谷底破中軌鎖利時，
                     # 一票否決平空 (VETO_HOLD)，中間絕對不平空，從第一個賣空一路抱到底吃滿整個主跌段！
@@ -1710,6 +1728,15 @@ class ExecutionManager:
                         and curr_quote < meme_wick_sl_long
                         and closed_c < closed_o
                     )
+
+                    # ⚠️ 方案 B 鐵律 (2026-10-30 核心授權)：
+                    # 如果大週期依然是牛市 (is_zoomed_out_bullish=True)，價格回踩跌破 KC 下軌或均線死叉只是「正常呼吸回踩/洗盤」，
+                    # 100% 一票否決平多，讓多單繼續抱到底，杜絕割肉在回調低點！
+                    if is_zoomed_out_bullish:
+                        is_lower_rail_breach = False
+                        is_bearish_trend_reversal = False
+                        is_fast_bear_reversal_close = False
+                        is_peak_pullback_2pct = False
 
                     # ⚠️ 【大週期不變持倉鐵律】：
                     if not is_bearish_trend_reversal and not is_lower_rail_breach and not is_confirmed_true_peak and not is_peak_pullback_2pct and not is_hard_sl_long:
