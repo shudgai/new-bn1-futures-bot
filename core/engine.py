@@ -2247,8 +2247,10 @@ class TradingEngine:
         fee_buffer = 1.0 + leverage * TAKER_FEE_RATE
         fee_safe_available = (available / fee_buffer) * 0.98
 
-        # 雙槽位動態資金分配：每次開倉前將可用資金平均分為 2 份 (Target_Capital = Account_Balance / 2)
-        target_capital = available / float(slot_count)
+        # 雙槽位動態資金分配：以「帳戶錢包總餘額」對分 (Target_Capital = Wallet_Balance / MAX_SLOTS)。
+        # 修正：舊版用 available / 2，當第一個幣種已佔用保證金後，第二個幣種只拿到剩餘的一半（約 1/4 帳戶），
+        # 導致龍蝦倉位過小。現改以錢包總額對分，並以可用餘額（扣手續費緩衝）作為上限。
+        target_capital = (wallet / float(slot_count)) * 0.98
         return min(target_capital, fee_safe_available)
 
     def _wait_quote_snapshot(self, symbol):
@@ -3589,9 +3591,8 @@ class TradingEngine:
 
     def _continuous_entry_amount(self, symbol: Optional[str] = None) -> float:
         """雙槽位 (2-Slots) 架構資金分配：
-        每次開倉前取得帳戶總可用餘額 (Available Balance)，
-        將可用資金平均分為 2 份 (Target_Capital = Account_Balance / 2)。
-        單一槽位最高僅調用 1/2 資金。
+        每次開倉以「帳戶錢包總餘額 (Wallet Balance)」平均分為 2 份對分，
+        嚴格以可用餘額 (Available Balance) 為上限，保證兩個幣種額度完全均等！
         """
         positions = getattr(self.account, "positions", {})
         pending_orders = getattr(self.account, "pending_limit_orders", {})
@@ -3602,9 +3603,18 @@ class TradingEngine:
         if symbol and (symbol in positions or symbol in pending_orders):
             return 0.0
 
+        wallet_fn = getattr(self.account, "get_wallet_balance", None)
+        wallet = float(wallet_fn()) if wallet_fn else 0.0
+
         available_fn = getattr(self.account, "get_available_balance", None)
         available = float(available_fn()) if available_fn else float(getattr(self.account, "available_balance", 0.0))
-        target_capital = available / 2.0
+
+        if wallet <= 0.0:
+            wallet = available
+
+        from core.config import MAX_SLOTS
+        slot_count = max(1, int(MAX_SLOTS))
+        target_capital = (wallet / float(slot_count)) * 0.98
         return max(0.0, min(target_capital, available))
 
     _continuous_entry_price_is_safe = staticmethod(continuous_entry_price_is_safe)

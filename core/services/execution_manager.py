@@ -3676,9 +3676,9 @@ class ExecutionManager:
                 try:
                     amount_usdt = engine._full_wallet_entry_margin(wallet, available, leverage, symbol)
                 except Exception:
-                    amount_usdt = fee_safe_available
+                    amount_usdt = min((wallet / 2.0) * 0.98, fee_safe_available)
             else:
-                amount_usdt = fee_safe_available
+                amount_usdt = min((wallet / 2.0) * 0.98, fee_safe_available)
 
             # 依據 stepSize 進行向下截斷（Floor Truncate），嚴防超額保證金或 LOT_SIZE 拒單
             step_size = float((meta or {}).get("step_size") or (meta or {}).get("stepSize") or 0.0)
