@@ -112,11 +112,68 @@ def find_htf_key_pivot(htf_candles: Any, trend: str) -> float:
     return 0.0
 
 
+def find_recent_swing_pivot(candles: Any, trend: str, lookback: int = 15) -> float:
+    """
+    從最近 K 棒 (1m/3m) 尋找極速結構破位關鍵點 (Recent Swing LH / HL):
+    - 熊市 (BEARISH): 尋找最近下殺段的最後一個局部反彈高點 (Lower High, LH)
+    - 牛市 (BULLISH): 尋找最近拉升段的最後一個局部回調低點 (Higher Low, HL)
+    """
+    trend_norm = str(trend or "").upper()
+    if isinstance(candles, pd.DataFrame):
+        if candles.empty:
+            return 0.0
+        df = candles
+        n = len(df)
+        window = min(n - 1, lookback)
+        if window < 3:
+            return 0.0
+        if trend_norm == "BULLISH":
+            # 找局部 HL
+            lows = df["low"].astype(float).values
+            for i in range(n - 2, max(0, n - window), -1):
+                if lows[i] <= lows[i - 1] and lows[i] <= lows[i + 1]:
+                    return float(lows[i])
+            return float(df["low"].iloc[-window:-1].min())
+        else:
+            # 找局部 LH
+            highs = df["high"].astype(float).values
+            for i in range(n - 2, max(0, n - window), -1):
+                if highs[i] >= highs[i - 1] and highs[i] >= highs[i + 1]:
+                    return float(highs[i])
+            return float(df["high"].iloc[-window:-1].max())
+
+    elif isinstance(candles, (list, tuple)) and len(candles) >= 3:
+        n = len(candles)
+        window = min(n - 1, lookback)
+        if trend_norm == "BULLISH":
+            for i in range(n - 2, max(0, n - window), -1):
+                prev_l = float(candles[i - 1].get("low", 0.0) if isinstance(candles[i - 1], dict) else getattr(candles[i - 1], "low", 0.0))
+                curr_l = float(candles[i].get("low", 0.0) if isinstance(candles[i], dict) else getattr(candles[i], "low", 0.0))
+                next_l = float(candles[i + 1].get("low", 0.0) if isinstance(candles[i + 1], dict) else getattr(candles[i + 1], "low", 0.0))
+                if curr_l <= prev_l and curr_l <= next_l:
+                    return curr_l
+            sub = candles[-window:-1]
+            return min(float(c.get("low", 0.0) if isinstance(c, dict) else getattr(c, "low", 0.0)) for c in sub)
+        else:
+            for i in range(n - 2, max(0, n - window), -1):
+                prev_h = float(candles[i - 1].get("high", 0.0) if isinstance(candles[i - 1], dict) else getattr(candles[i - 1], "high", 0.0))
+                curr_h = float(candles[i].get("high", 0.0) if isinstance(candles[i], dict) else getattr(candles[i], "high", 0.0))
+                next_h = float(candles[i + 1].get("high", 0.0) if isinstance(candles[i + 1], dict) else getattr(candles[i + 1], "high", 0.0))
+                if curr_h >= prev_h and curr_h >= next_h:
+                    return curr_h
+            sub = candles[-window:-1]
+            return max(float(c.get("high", 0.0) if isinstance(c, dict) else getattr(c, "high", 0.0)) for c in sub)
+    return 0.0
+
+
 def check_macro_trend_end(
     current_macro_trend: str,
     htf_candles: Any,
     htf_ma15: Optional[float] = None,
     key_pivot_price: Optional[float] = None,
+    live_1m_candles: Optional[Any] = None,
+    current_1m_close: Optional[float] = None,
+    current_1m_ma15: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     大週期趨勢結束與轉折判定 (Market Structure Break)
@@ -136,7 +193,46 @@ def check_macro_trend_end(
     curr_trend_norm = str(current_macro_trend or "").upper()
 
     # -------------------------------------------------------------
-    # 1. 大週期牛市 (BULLISH) 結束條件
+    # 0. 🚀 極速 MSB 結構破位檢測 (1m/3m 當前 Bar 突破前波 LH/HL 即刻轉向，絕不等待 15m 滯後均線)
+    # -------------------------------------------------------------
+    if current_1m_close is not None and current_1m_close > 0:
+        if curr_trend_norm == "BEARISH":
+            recent_lh = 0.0
+            if live_1m_candles is not None:
+                recent_lh = find_recent_swing_pivot(live_1m_candles, "BEARISH", lookback=15)
+            check_lh = recent_lh if recent_lh > 0 else key_pivot_price
+            # 若 1m 實體收盤價強勢突破前波下殺 LH (且站上 1m MA15)
+            if check_lh > 0 and current_1m_close > check_lh:
+                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close > current_1m_ma15:
+                    return {
+                        "macro_trend": "BULLISH",
+                        "status_label": "大週期牛市 (順勢做多)",
+                        "event": "MACRO_BEARISH_ENDED",
+                        "reason": f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢突破前波下殺關鍵高點 LH ({check_lh:.6f})，當下 Bar 立刻宣告熊市結束，切換為牛市！",
+                        "latest_close": current_1m_close,
+                        "key_pivot_price": check_lh,
+                        "htf_ma15": htf_ma15,
+                    }
+        elif curr_trend_norm == "BULLISH":
+            recent_hl = 0.0
+            if live_1m_candles is not None:
+                recent_hl = find_recent_swing_pivot(live_1m_candles, "BULLISH", lookback=15)
+            check_hl = recent_hl if recent_hl > 0 else key_pivot_price
+            # 若 1m 實體收盤價強勢跌破前波起漲 HL (且跌破 1m MA15)
+            if check_hl > 0 and current_1m_close < check_hl:
+                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close < current_1m_ma15:
+                    return {
+                        "macro_trend": "BEARISH",
+                        "status_label": "大週期熊市 (順勢做空)",
+                        "event": "MACRO_BULLISH_ENDED",
+                        "reason": f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢跌破前波起漲關鍵低點 HL ({check_hl:.6f})，當下 Bar 立刻宣告牛市結束，切換為熊市！",
+                        "latest_close": current_1m_close,
+                        "key_pivot_price": check_hl,
+                        "htf_ma15": htf_ma15,
+                    }
+
+    # -------------------------------------------------------------
+    # 1. 大週期牛市 (BULLISH) 結束條件 (HTF 備用檢測)
     # -------------------------------------------------------------
     if curr_trend_norm == "BULLISH":
         # 條件 A：收盤價實體跌破大結構前波起漲低點 (Higher Low, HL 結構打破)

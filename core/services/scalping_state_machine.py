@@ -228,8 +228,8 @@ class ScalpingStateMachine:
         # 🔴 狀態 1：目前持有空單 (SHORT) 時的離場/翻單判斷
         # =====================================================================
         if pos == "SHORT":
-            # 規則四：廢除過中軌平倉；僅在收盤價實體突破站穩 MA15 (收盤價 > MA15 且 收紅K) 方可平倉
-            is_bull_reversal_exit = bool(curr_p > m15 and curr_p > open_p)
+            # 規則四：全面廢除過中軌平倉；僅在實體強勢突破站穩 MA15 且 MA3 未向下 (slope >= 0 或 MA3 > MA15) 方可平空
+            is_bull_reversal_exit = bool(curr_p > m15 and curr_p > open_p and (slope >= 0 or m3 > m15))
 
             # 方案 1 鎖利條件：浮盈 >= 10% 且自最低谷底回吐 >= 20% 且 MA3 > MA15
             is_take_profit = False
@@ -277,8 +277,8 @@ class ScalpingStateMachine:
         # 🟢 狀態 2：目前持有多單 (LONG) 時的離場/翻單判斷
         # =====================================================================
         elif pos == "LONG":
-            # 規則四：廢除過中軌平倉；僅在收盤價實體跌破失守 MA15 (收盤價 < MA15 且 收黑K) 方可平倉
-            is_bear_reversal_exit = bool(curr_p < m15 and curr_p < open_p)
+            # 規則四：全面廢除過中軌平倉；僅在實體跌破失守 MA15 且 MA3 未向上 (slope <= 0 或 MA3 < MA15) 方可平多
+            is_bear_reversal_exit = bool(curr_p < m15 and curr_p < open_p and (slope <= 0 or m3 < m15))
 
             # 方案 1 鎖利條件：浮盈 >= 10% 且自最高點回吐 >= 20% 且 MA3 < MA15
             is_take_profit = False
@@ -357,8 +357,8 @@ class ScalpingStateMachine:
                             "action": "WAIT",
                             "reason": f"位置否決：MA3 ({m3:.6f}) < MA15 ({m15:.6f}) 空頭排列，一票否決開多！",
                         }
-                    # 2. 斜率否決：MA3 斜率向下 (MA3_Slope < 0)
-                    if slope < 0:
+                    # 2. 斜率否決：MA3 斜率走平或向下 (MA3_Slope <= 0)
+                    if slope <= 0:
                         return {
                             "macro_trend": macro,
                             "status_label": status_label,
@@ -366,9 +366,20 @@ class ScalpingStateMachine:
                             "ma3_slope": slope,
                             "cooldown_active": cooldown,
                             "action": "WAIT",
-                            "reason": f"斜率否決：MA3 斜率向下 ({slope:.6f} < 0)，一票否決開多接飛刀！",
+                            "reason": f"斜率否決：MA3 斜率走平或向下 ({slope:.6f} <= 0)，動能衰退一票否決開多！",
                         }
-                    # 3. KC 通道斜率否決：KC 通道中軌斜率向下 (kc_slope < 0)
+                    # 3. 乖離否決：價格嚴重偏離 MA15 正乖離過大 (>= 2.5%)
+                    if m15 > 0 and (curr_p - m15) / m15 >= 0.025:
+                        return {
+                            "macro_trend": macro,
+                            "status_label": status_label,
+                            "position_state": pos,
+                            "ma3_slope": slope,
+                            "cooldown_active": cooldown,
+                            "action": "WAIT",
+                            "reason": f"乖離否決：價格嚴重偏離 MA15 正乖離過大 (+{(curr_p - m15) / m15 * 100:.2f}%)，處於噴發尾聲，100% 一票否決追多！",
+                        }
+                    # 4. KC 通道斜率否決：KC 通道中軌斜率向下 (kc_slope < 0)
                     if kc_slope < 0:
                         return {
                             "macro_trend": macro,
@@ -420,8 +431,8 @@ class ScalpingStateMachine:
                             "action": "WAIT",
                             "reason": f"位置否決：MA3 ({m3:.6f}) > MA15 ({m15:.6f}) 多頭排列，一票否決開空！",
                         }
-                    # 2. 斜率否決：MA3 斜率向上 (MA3_Slope > 0)
-                    if slope > 0:
+                    # 2. 斜率否決：MA3 斜率走平或向上 (MA3_Slope >= 0)
+                    if slope >= 0:
                         return {
                             "macro_trend": macro,
                             "status_label": status_label,
@@ -429,9 +440,20 @@ class ScalpingStateMachine:
                             "ma3_slope": slope,
                             "cooldown_active": cooldown,
                             "action": "WAIT",
-                            "reason": f"斜率否決：MA3 斜率向上 ({slope:.6f} > 0)，一票否決開空防軋空！",
+                            "reason": f"斜率否決：MA3 斜率走平或向上 ({slope:.6f} >= 0)，一票否決開空防軋空！",
                         }
-                    # 3. KC 通道斜率否決：KC 通道中軌斜率向上 (kc_slope > 0)
+                    # 3. 乖離否決：價格嚴重偏離 MA15 負乖離過大 (>= 2.5%)
+                    if m15 > 0 and (m15 - curr_p) / m15 >= 0.025:
+                        return {
+                            "macro_trend": macro,
+                            "status_label": status_label,
+                            "position_state": pos,
+                            "ma3_slope": slope,
+                            "cooldown_active": cooldown,
+                            "action": "WAIT",
+                            "reason": f"乖離否決：價格嚴重偏離 MA15 負乖離過大 (-{(m15 - curr_p) / m15 * 100:.2f}%)，處於急跌尾聲，100% 一票否決追空！",
+                        }
+                    # 4. KC 通道斜率否決：KC 通道中軌斜率向上 (kc_slope > 0)
                     if kc_slope > 0:
                         return {
                             "macro_trend": macro,

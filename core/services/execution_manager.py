@@ -691,6 +691,9 @@ class ExecutionManager:
                 htf_candles=htf_data_for_struct,
                 htf_ma15=htf_15m_ma15 if htf_15m_ma15 > 0 else None,
                 key_pivot_price=stored_pivot,
+                live_1m_candles=raw_df,
+                current_1m_close=c_c,
+                current_1m_ma15=m15_c if m15_c > 0 else None,
             )
             # 若大結構未打破 -> 維持大週期標籤，啟動防護罩，不被 1m 雜訊干擾
             if struct_eval.get("event") == "MACRO_TREND_CONTINUES":
@@ -1520,6 +1523,17 @@ class ExecutionManager:
                         and closed_c > closed_o
                     )
 
+                    # ⚠️ 順勢下殺嚴禁提前平空鐵律 (2026-10-30 核心授權)：
+                    # 在大週期下殺段中，只要價格持續受壓於 MA15 下方 (closed_c < m15_c 且 curr_quote < m15_c)，
+                    # 中間所有微幅觸碰中軌的小陽線一律視為誘多，嚴禁發出任何 CLOSE_SHORT 指令，必須抱緊空單直至底部結構破壞！
+                    is_under_ma15_short_trend = bool(closed_c < m15_c and curr_quote < m15_c)
+                    if is_under_ma15_short_trend and (not is_confirmed_true_valley) and (not is_hard_sl_short):
+                        logger.info(
+                            f"🛡️ [UNDER_MA15_DOWN_HOLD] {symbol} 順勢下殺段受壓於 MA15 (close={closed_c:.6f} < m15={m15_c:.6f})，"
+                            f"過中軌小陽線一律視為誘多雜訊，100% 嚴禁平空，死抱空單直達底部！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "UNDER_MA15_DOWN_HOLD"}
+
                     # ⚠️ 方案 B 鐵律 (2026-10-30 核心授權)：
                     # 如果大週期依然是熊市 (is_zoomed_out_bearish=True)，價格反彈衝到 KC 上軌或均線金叉只是「反彈回抽/洗盤」，
                     # 100% 一票否決平空，讓空單繼續抱到底，杜絕割肉在反彈高點！
@@ -1730,6 +1744,17 @@ class ExecutionManager:
                         and curr_quote < meme_wick_sl_long
                         and closed_c < closed_o
                     )
+
+                    # ⚠️ 順勢拉升嚴禁提前平多鐵律 (2026-10-30 核心授權)：
+                    # 在大週期拉升段中，只要價格持續穩守於 MA15 上方 (closed_c > m15_c 且 curr_quote > m15_c)，
+                    # 中間所有微幅觸碰中軌的小陰線一律視為正常洗盤，嚴禁發出任何 CLOSE_LONG 指令，必須抱緊多單直至頂部結構破壞！
+                    is_above_ma15_long_trend = bool(closed_c > m15_c and curr_quote > m15_c)
+                    if is_above_ma15_long_trend and (not is_confirmed_true_peak) and (not is_hard_sl_long):
+                        logger.info(
+                            f"🛡️ [ABOVE_MA15_UP_HOLD] {symbol} 順勢拉升段穩守於 MA15 (close={closed_c:.6f} > m15={m15_c:.6f})，"
+                            f"過中軌小陰線一律視為誘空雜訊，100% 嚴禁平多，死抱多單直達頂部！"
+                        )
+                        return {"status": "HOLD", "symbol": symbol, "reason": "ABOVE_MA15_UP_HOLD"}
 
                     # ⚠️ 方案 B 鐵律 (2026-10-30 核心授權)：
                     # 如果大週期依然是牛市 (is_zoomed_out_bullish=True)，價格回踩跌破 KC 下軌或均線死叉只是「正常呼吸回踩/洗盤」，
@@ -2354,11 +2379,21 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則二.2：做多審查 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率向下; KC斜率否決: KC向下或走平)
+                # 🛑 規則二.2：做多審查 (位置否決: MA3 < MA15; 斜率否決: MA3 斜率走平或向下 <= 0; KC斜率否決: KC向下或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
                 kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
                 is_kc_slope_not_up = bool(kc_slope <= 0 or kc_mid_slope <= 0)
-                is_long_vetoed = bool(m3_c < m15_c or m3_c < m3_p or is_kc_slope_not_up)
+                is_ma3_slope_not_up = bool(m3_c <= m3_p)  # 走平或向下一票否決
+                is_ma15_divergence_too_high = bool(
+                    (c_c - m15_c > 1.2 * atr_v)
+                    or (m15_c > 0 and (c_c - m15_c) / m15_c >= 0.012)
+                )
+                is_kc_upper_exhausted = bool(
+                    (c_h >= kc_u * 0.999 or closed_h >= closed_kc_u * 0.999 or prev_closed_h >= closed_kc_u * 0.999)
+                    and (c_c < m3_c or c_c < c_o or curr_quote < c_o)
+                )
+                is_anti_chase_long_veto = bool(is_ma15_divergence_too_high or is_kc_upper_exhausted or is_chasing_high)
+                is_long_vetoed = bool(m3_c < m15_c or is_ma3_slope_not_up or is_kc_slope_not_up or is_anti_chase_long_veto)
 
                 if is_in_long_cooldown:
                     logger.info(
@@ -2366,20 +2401,30 @@ class ExecutionManager:
                         f"嚴禁在回調初期反覆追多！"
                     )
                 elif is_long_vetoed:
-                    if is_kc_slope_not_up:
+                    if is_anti_chase_long_veto:
+                        logger.info(
+                            f"🛑 [BLOCKED_LONG_ANTI_CHASE] {symbol} 追高開多三重一票否決: "
+                            f"(divergence_high={is_ma15_divergence_too_high}, kc_exhausted={is_kc_upper_exhausted}, chasing={is_chasing_high})，"
+                            f"價格嚴重偏離MA15或觸上軌回落，100% 嚴禁頂點追多！"
+                        )
+                    elif is_ma3_slope_not_up:
+                        logger.info(
+                            f"🛑 [BLOCKED_LONG_MA3_SLOPE_NOT_UP] {symbol} MA3 斜率走平或向下 "
+                            f"(m3_curr={m3_c:.6f} <= m3_prev={m3_p:.6f})，動能衰退 100% 一票否決開多！"
+                        )
+                    elif is_kc_slope_not_up:
                         logger.info(
                             f"🛑 [BLOCKED_LONG_KC_SLOPE_NOT_UP] {symbol} KC 通道中軌斜率走平或向下 "
                             f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，中軌未明確向上 100% 嚴禁開多！"
                         )
                     else:
                         logger.info(
-                            f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
-                            f"MA3 < MA15 或斜率向下，嚴防下殺接飛刀！"
+                            f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多位置否決 (m3={m3_c:.6f} < m15={m15_c:.6f})，空頭排列嚴防下殺接飛刀！"
                         )
                 else:
                     is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
                     is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
-                    if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_chasing_high):
+                    if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_anti_chase_long_veto):
                         can_open_long = True
                         is_cross_mid_long = False
                         is_valid_gc = False
@@ -2393,11 +2438,21 @@ class ExecutionManager:
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
                 is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
 
-                # 🛑 規則三.2：做空審查 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率向上; KC斜率否決: KC向上或走平)
+                # 🛑 規則三.2：做空審查 (位置否決: MA3 > MA15; 斜率否決: MA3 斜率走平或向上 >= 0; KC斜率否決: KC向上或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
                 kc_mid_slope = (kc_mid - p_kc_mid) if (kc_mid > 0 and p_kc_mid > 0) else kc_slope
                 is_kc_slope_not_down = bool(kc_slope >= 0 or kc_mid_slope >= 0)
-                is_short_vetoed = bool(m3_c > m15_c or m3_c > m3_p or is_kc_slope_not_down)
+                is_ma3_slope_not_down = bool(m3_c >= m3_p)  # 走平或向上一票否決
+                is_ma15_divergence_too_low = bool(
+                    (m15_c - c_c > 1.2 * atr_v)
+                    or (m15_c > 0 and (m15_c - c_c) / m15_c >= 0.012)
+                )
+                is_kc_lower_exhausted = bool(
+                    (c_l <= kc_lo * 1.001 or closed_l <= closed_kc_lo * 1.001 or prev_closed_l <= closed_kc_lo * 1.001)
+                    and (c_c > m3_c or c_c > c_o or curr_quote > c_o)
+                )
+                is_anti_chase_short_veto = bool(is_ma15_divergence_too_low or is_kc_lower_exhausted or is_chasing_low)
+                is_short_vetoed = bool(m3_c > m15_c or is_ma3_slope_not_down or is_kc_slope_not_down or is_anti_chase_short_veto)
 
                 if is_in_short_cooldown:
                     logger.info(
@@ -2405,20 +2460,30 @@ class ExecutionManager:
                         f"嚴禁在觸底反彈初期反覆追空！"
                     )
                 elif is_short_vetoed:
-                    if is_kc_slope_not_down:
+                    if is_anti_chase_short_veto:
+                        logger.info(
+                            f"🛑 [BLOCKED_SHORT_ANTI_CHASE] {symbol} 追低開空三重一票否決: "
+                            f"(divergence_low={is_ma15_divergence_too_low}, kc_exhausted={is_kc_lower_exhausted}, chasing={is_chasing_low})，"
+                            f"價格嚴重偏離MA15或觸下軌反彈，100% 嚴禁阿呆谷追空！"
+                        )
+                    elif is_ma3_slope_not_down:
+                        logger.info(
+                            f"🛑 [BLOCKED_SHORT_MA3_SLOPE_NOT_DOWN] {symbol} MA3 斜率走平或向上 "
+                            f"(m3_curr={m3_c:.6f} >= m3_prev={m3_p:.6f})，動能減弱 100% 一票否決開空！"
+                        )
+                    elif is_kc_slope_not_down:
                         logger.info(
                             f"🛑 [BLOCKED_SHORT_KC_SLOPE_NOT_DOWN] {symbol} KC 通道中軌斜率走平或向上 "
                             f"(kc_slope={kc_slope:.8f}, mid_slope={kc_mid_slope:.8f})，中軌未明確向下 100% 嚴禁開空！"
                         )
                     else:
                         logger.info(
-                            f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空雙重一票否決 (m3={m3_c:.6f}, m15={m15_c:.6f}, m3_prev={m3_p:.6f})，"
-                            f"MA3 > MA15 或斜率向上，嚴防阿呆谷賣空！"
+                            f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空位置否決 (m3={m3_c:.6f} > m15={m15_c:.6f})，多頭排列嚴防逆勢賣空！"
                         )
                 else:
                     is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
                     is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c)
-                    if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_chasing_low):
+                    if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_anti_chase_short_veto):
                         can_open_short = True
                         is_cross_mid_short = False
                         is_valid_dc = False
