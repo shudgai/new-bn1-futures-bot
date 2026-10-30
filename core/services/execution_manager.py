@@ -2332,11 +2332,22 @@ class ExecutionManager:
             if pivot_triggered and candidate_side and entry_type:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
                 print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
-                is_cm = ("CROSS" in entry_type or "MID" in entry_type)
-                sig_type = (
-                    ("ENTRY_LONG_MA3_MA15_CROSS_MID" if candidate_side == "LONG" else "ENTRY_SHORT_MA3_MA15_CROSS_MID")
-                    if is_cm else "SWING_PIVOT"
-                )
+                is_swing = entry_type in ("PIVOT_LONG", "PIVOT_SHORT", "SWING_PIVOT")
+                is_cm = ("CROSS" in entry_type or "MID" in entry_type or "V_LONG" in entry_type)
+                is_breakdown = ("BREAKDOWN" in entry_type or "BREAKOUT" in entry_type)
+                is_momentum = ("MOMENTUM" in entry_type or "CONTINUATION" in entry_type)
+
+                if is_swing:
+                    sig_type = "SWING_PIVOT"
+                elif is_breakdown:
+                    sig_type = "ENTRY_SHORT_BREAKDOWN" if candidate_side == "SHORT" else "ENTRY_LONG_BREAKOUT"
+                elif is_momentum:
+                    sig_type = "CONTINUATION_OUTSIDE_KC_SHORT" if candidate_side == "SHORT" else "CONTINUATION_OUTSIDE_KC_LONG"
+                elif is_cm:
+                    sig_type = "ENTRY_SHORT_MA3_MA15_CROSS_MID" if candidate_side == "SHORT" else "ENTRY_LONG_MA3_MA15_CROSS_MID"
+                else:
+                    sig_type = "ENTRY_SHORT_BREAKDOWN" if candidate_side == "SHORT" else "ENTRY_LONG_BREAKOUT"
+
                 target_pivot_df = raw_df if raw_df is not None else klines_df
                 intrabar_flag = False
                 try:
@@ -2349,8 +2360,8 @@ class ExecutionManager:
                     "is_agile_trigger": True,
                     "entry_type": entry_type,
                     "candidate_signal_type": sig_type,
-                    "is_swing_pivot": (not is_cm),
-                    "is_cross_mid": True,
+                    "is_swing_pivot": is_swing,
+                    "is_cross_mid": bool(is_cm or is_breakdown or is_momentum),
                     "no_rigid_sl": True,
                     "stop_loss_price": None,
                     "meme_wick_stop_loss": meme_wick_buffer_sl_long if candidate_side == "LONG" else meme_wick_buffer_sl_short,
