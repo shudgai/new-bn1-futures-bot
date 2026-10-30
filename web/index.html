@@ -615,8 +615,8 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ formatSymbol(symbol) }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據大週期趨勢與已收線 KC 判定牛市、熊市、猴市(盤整)">
-                                {{ { bull: '牛市 (KC向上)', bear: '熊市 (KC向下)', range: '猴市 (區間盤整)', wait: '猴市 (觀望突破)' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據大週期趨勢與已收線 KC 判定大週期牛市/熊市，解耦小週期回踩或反彈">
+                                {{ { bull: '大週期牛市 (順勢做多)', bear: '大週期熊市 (順勢做空)', range: '猴市 (區間盤整)', wait: '猴市 (觀望突破)' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                             <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" style="font-size: 16px; margin-left: 6px; cursor: default; vertical-align: middle;">
                                 🚫
@@ -1357,9 +1357,9 @@
                 },
                 getChartMarketLabel(symbol) {
                     return {
-                        BULL: '牛市',
-                        BEAR: '熊市',
-                        RANGE: '盤整市',
+                        BULL: '大週期牛市 (順勢做多)',
+                        BEAR: '大週期熊市 (順勢做空)',
+                        RANGE: '猴市 (區間盤整)',
                         TREND: '趨勢確認中',
                         WAIT: '等待判定',
                     }[this.getChartMarketMode(symbol)];

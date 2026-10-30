@@ -215,7 +215,8 @@ class LocalAIAdvisor:
         current_ma15: float,
         timeframe: str = "15m",
     ) -> dict:
-        """AI 決策引擎：嚴格依據雙重週期 (MTF) 濾網與方案 1 動態鎖利機制發出指令"""
+        """AI 決策引擎：嚴格依據大週期趨勢標籤 (MTF) 與多空雙向方案 1 動態鎖利機制發出指令"""
+        status_label = "大週期牛市 (順勢做多)" if str(macro_trend).upper() in ("BULLISH", "BULL", "LONG", "UP") else "大週期熊市 (順勢做空)"
         if not self.enabled:
             from core.services.exits.staged_profit_lock import check_exit_conditions
             action = "HOLD"
@@ -228,12 +229,24 @@ class LocalAIAdvisor:
                     current_ma3=current_ma3,
                     current_ma15=current_ma15,
                 )
-            micro_signal = "MA3_ABOVE_MA15" if current_ma3 > current_ma15 else "MA3_BELOW_MA15"
+            elif position_status == "NONE":
+                if status_label == "大週期熊市 (順勢做空)" and current_ma3 < current_ma15:
+                    action = "OPEN_SHORT"
+                elif status_label == "大週期牛市 (順勢做多)" and current_ma3 > current_ma15:
+                    action = "OPEN_LONG"
+
+            if position_status == "SHORT":
+                reason = "目前在大週期熊市背景下，雖然小週期出現微幅回彈，但 MA3 仍低於 MA15，趨勢未反轉，忽略平倉繼續抱單。" if action == "HOLD" else "MA3 上穿 MA15 且滿足回吐鎖利，執行平空。"
+            elif position_status == "LONG":
+                reason = "目前在大週期牛市背景下，雖然小週期出現微幅回檔，但 MA3 仍高於 MA15，趨勢未反轉，忽略平倉繼續抱單。" if action == "HOLD" else "MA3 下穿 MA15 且滿足回吐鎖利，執行平多。"
+            else:
+                reason = f"依據大週期主趨勢 ({status_label})，小週期均線定位訊號發出指令 ({action})。"
+
             return {
-                "macro_trend": macro_trend,
-                "micro_signal": micro_signal,
+                "macro_trend": "BEARISH" if "熊市" in status_label else "BULLISH",
+                "status_label": status_label,
                 "action": action,
-                "reason": f"本地雙重濾網判定: action={action}, ma3={current_ma3}, ma15={current_ma15}",
+                "reason": reason,
             }
 
         payload = {
@@ -242,15 +255,32 @@ class LocalAIAdvisor:
                 {
                     "role": "system",
                     "content": (
-                        "你是一個專巧於極短線（3m/15m）加密貨幣量化交易策略的 AI 決策引擎。你的職責是根據傳入的行情數據與 K 線指標，嚴格依據雙重週期（MTF）濾網與動態鎖利機制發出交易指令。\n\n"
-                        "## 🛑 規則一：大週期趨勢硬性約束（最高優先級）\n"
-                        "1. 大週期決定方向：當大週期為熊市時全場禁止開多（NO_LONG）；當大週期為牛市時全場禁止開空（NO_SHORT）。\n"
-                        "2. 嚴禁逆勢開倉：大週期為熊市時，無論 3m/15m MA3 是否金叉 MA15，絕對嚴禁發出 BUY 或 OPEN_LONG 指令，僅能判定為弱勢反彈，保持觀望 HOLD 或尋找高點加空。\n\n"
-                        "## 🛡️ 規則二：方案 1 - 動態鎖利與平倉雙重濾網（以空單 SHORT 為例）\n"
-                        "1. 鎖利觸發條件（雙重過濾）：最高浮盈 >= 10% 且自最高點回吐 >= 20%。\n"
-                        "   關鍵趨勢濾網：即使同時滿足條件，必須同時滿足「MA3 向上穿過 MA15（MA3 > MA15，趨勢發生真實反轉）」時，才允許發出 CLOSE_SHORT 指令；若 MA3 依然在 MA15 下方，代表回吐僅為影線插針，必須忽略平倉輸出 HOLD 讓利潤奔跑。\n"
-                        "2. 收盤價（Bar Close）判定：所有交叉與價格回吐計算必須以正式收盤 Bar Close 數據為準，忽略瞬間插針。\n\n"
-                        "請返回符合 JSON 規範的物件：{\"macro_trend\": \"BEARISH/BULLISH\", \"micro_signal\": \"MA3_CROSS_UNDER_MA15/MA3_CROSS_OVER_MA15\", \"action\": \"OPEN_SHORT/CLOSE_SHORT/HOLD\", \"reason\": \"...\"}"
+                        "你是一個專精於加密貨幣極短線（3m/15m）量化交易策略的 AI 決策引擎。你的職責是依據大週期主趨勢進行方向判定，絕不因小週期的微幅波動而誤判整體趨勢或逆勢平倉。\n\n"
+                        "## 🛑 規則一：多空趨勢判定與狀態標籤（解耦 KC/小週期方向）\n"
+                        "1. 大週期決定牛熊（主趨勢優先）：\n"
+                        "   - 大週期為多頭：UI 狀態標籤統一為「大週期牛市 (順勢做多)」。小週期 KC 或 MA 向下彎曲時，絕不能改寫為熊市，僅能視為「牛市拉回/回擋」。\n"
+                        "   - 大週期為空頭：UI 狀態標籤統一為「大週期熊市 (順勢做空)」。小週期 KC 或 MA 向上彎曲時，絕不能改寫為牛市，僅能視為「熊市反彈」。\n"
+                        "2. 嚴禁逆勢開倉與翻單：\n"
+                        "   - 大週期熊市背景：全場嚴禁發出 BUY 或 OPEN_LONG（開多）指令。小週期 KC 向上僅為反彈，必須續抱空單（HOLD）或尋找高點加空（ADD_SHORT）。\n"
+                        "   - 大週期牛市背景：全場嚴禁發出 SELL 或 OPEN_SHORT（開空）指令。小週期 KC 向下僅為拉回，必須續抱多單（HOLD）或尋找低點加多（ADD_LONG）。\n\n"
+                        "## 🛡️ 規則二：多空雙向「續抱不平倉」與方案 1 動態鎖利\n"
+                        "1. 空單（SHORT）持倉處理邏輯：\n"
+                        "   - 鎖利條件：歷史最高浮盈 ≥ 10%，且自最高點回吐 ≥ 20%。\n"
+                        "   - 續抱防線 (方案 1)：即使滿足上述鎖利條件，必須同時滿足「MA3 向上金叉 MA15（MA3 > MA15，趨勢真實反轉）」時才允許 CLOSE_SHORT。\n"
+                        "   - 繼續走（HOLD）：若 MA3 依然低於 MA15（MA3 < MA15），代表回吐僅為下影線插針或微幅反彈，強制忽略平倉，續抱空單讓利潤奔跑。\n"
+                        "2. 多單（LONG）持倉處理邏輯：\n"
+                        "   - 鎖利條件：歷史最高浮盈 ≥ 10%，且自最高點回吐 ≥ 20%。\n"
+                        "   - 續抱防線 (方案 1)：即使滿足上述鎖利條件，必須同時滿足「MA3 向下死叉 MA15（MA3 < MA15，趨勢真實反轉）」時才允許 CLOSE_LONG。\n"
+                        "   - 繼續走（HOLD）：若 MA3 依然高於 MA15（MA3 > MA15），代表回吐僅為上影線插針或微幅回檔，強制忽略平倉，續抱多單讓利潤奔跑。\n\n"
+                        "## ⚙️ 規則三：計算執行規範\n"
+                        "1. 收盤價 (Bar Close) 觸發：所有 MA3/MA15 交叉與回吐計算，必須以 3m 或 15m K 線正式收盤為準，忽略 K 棒內部的盤中瞬間插針。\n\n"
+                        "## 📤 輸出格式規範 (返回合法 JSON)\n"
+                        "{\n"
+                        '  "macro_trend": "BEARISH 或 BULLISH",\n'
+                        '  "status_label": "大週期熊市 (順勢做空) 或 大週期牛市 (順勢做多)",\n'
+                        '  "action": "OPEN_SHORT / CLOSE_SHORT / OPEN_LONG / CLOSE_LONG / HOLD",\n'
+                        '  "reason": "說明判定邏輯..."\n'
+                        "}"
                     ),
                 },
                 {
@@ -288,16 +318,16 @@ class LocalAIAdvisor:
             parsed = self._extract_json(content)
             return {
                 "macro_trend": str(parsed.get("macro_trend", macro_trend)),
-                "micro_signal": str(parsed.get("micro_signal", "")),
+                "status_label": str(parsed.get("status_label", status_label)),
                 "action": str(parsed.get("action", "HOLD")),
                 "reason": str(parsed.get("reason", ""))[:300],
             }
         except Exception as exc:
             return {
                 "macro_trend": macro_trend,
-                "micro_signal": "MA3_CROSS_UNDER_MA15" if current_ma3 < current_ma15 else "MA3_CROSS_OVER_MA15",
+                "status_label": status_label,
                 "action": "HOLD",
-                "reason": f"AI fallback ({type(exc).__name__}): 保持觀望",
+                "reason": f"AI fallback ({type(exc).__name__}): 保持觀望，維持主趨勢持倉",
             }
 
     async def rank_symbols(self, metrics: List[dict]) -> List[str]:
