@@ -627,11 +627,12 @@ class ExecutionManager:
             and is_3bar_bear_slope_ready
         )
 
-        # 大週期鎖定旗標（遵循 MTF 鐵律：大週期空頭時，小週期 MA3 > MA15 僅為 WAIT_REBOUND 反彈拉高，不推翻 is_zoomed_out_bearish！）：
+        # 大週期鎖定旗標（遵循 MTF 鐵律：大週期為多頭時，1M 的小幅回檔微觀波動絕不可將大趨勢翻空；大週期為空頭時，1M 的小幅反彈絕不可將大趨勢翻多！）：
         is_zoomed_out_bearish = bool(
             (is_macro_htf_bearish and not is_true_macro_reversal_to_bull)
             or (
-                (not is_1m_confirmed_bull)
+                (not is_macro_htf_bullish)
+                and (not is_1m_confirmed_bull)
                 and (
                     is_1m_confirmed_bear
                     or macro_trend_snap == "BEARISH"
@@ -647,7 +648,8 @@ class ExecutionManager:
             and (
                 (is_macro_htf_bullish and not is_true_macro_reversal_to_bear)
                 or (
-                    (not is_1m_confirmed_bear)
+                    (not is_macro_htf_bearish)
+                    and (not is_1m_confirmed_bear)
                     and (
                         is_1m_confirmed_bull
                         or macro_trend_snap == "BULLISH"
@@ -2222,6 +2224,27 @@ class ExecutionManager:
                         entry_type = "PIVOT_SHORT"
                     pivot_triggered = True
 
+            # 🚫 順勢交易鐵律（2026-10-13 最新授權）：趨勢是多頭不要開空，趨勢是空頭不要開多！
+            if pivot_triggered and candidate_side == "SHORT":
+                if is_zoomed_out_bullish or is_macro_htf_bullish or macro_trend == "BULLISH":
+                    logger.info(
+                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 拉遠看是大週期多頭趨勢 "
+                        f"(zoomed_bull={is_zoomed_out_bullish}, htf_bull={is_macro_htf_bullish}, macro={macro_trend})，"
+                        f"100% 一票否決開空，嚴防逆勢摸頂被軋空！"
+                    )
+                    pivot_triggered = False
+                    candidate_side = None
+
+            if pivot_triggered and candidate_side == "LONG":
+                if is_zoomed_out_bearish or is_macro_htf_bearish or macro_trend == "BEARISH":
+                    logger.info(
+                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 拉遠看是大週期空頭趨勢 "
+                        f"(zoomed_bear={is_zoomed_out_bearish}, htf_bear={is_macro_htf_bearish}, macro={macro_trend})，"
+                        f"100% 一票否決開多，嚴防逆勢摸底接飛刀！"
+                    )
+                    pivot_triggered = False
+                    candidate_side = None
+
             if pivot_triggered and candidate_side and entry_type:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
                 print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
@@ -3202,7 +3225,9 @@ class ExecutionManager:
                 # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 3棒/5棒 KC 中軌上行 (kc_slope_3_ref >= 0 or kc_slope_5_ref > 0) 或 MA15 上行 (m15_c > m15_p or m15_slope_3_ref > 0 or m15_slope_5_ref > 0) 或 KC 單棒中軌上行 (kc_slope >= 0) 或收盤位於中軌/MA15之上 或 MA3 高於中軌 或 MA3 未向下 或 非陰線，100% 一票否決開空！
                 if candidate_side == "LONG" and (
                     is_zoomed_out_bearish
+                    or is_macro_htf_bearish
                     or is_macro_bear
+                    or macro_trend == "BEARISH"
                     or kc_slope <= 0
                     or kc_slope_3_ref <= 0
                     or kc_slope_5_ref < 0
@@ -3222,7 +3247,9 @@ class ExecutionManager:
                     return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "拉遠看或中軌/MA15為空頭下降趨勢，強制阻斷買多！"}
                 if candidate_side == "SHORT" and (
                     is_zoomed_out_bullish
+                    or is_macro_htf_bullish
                     or is_macro_bull
+                    or macro_trend == "BULLISH"
                     or kc_slope >= 0
                     or kc_slope_3_ref >= 0
                     or kc_slope_5_ref > 0
