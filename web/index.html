@@ -1009,7 +1009,9 @@
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
                     state.entryBlock = (json.cache || {}).source === 'stale' ? null : (json.entry_block || null);
-                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getChartCkTrend(json.data);
+                    const rawBackendMacro = String((json.macro_trend || '')).toUpperCase();
+                    const backendTrend = rawBackendMacro === 'BULLISH' ? 'bull' : (rawBackendMacro === 'BEARISH' ? 'bear' : null);
+                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getChartCkTrend(json.data, backendTrend);
                     const candles = [];
                     const ma5 = [];
                     const ma15 = [];
@@ -1287,84 +1289,64 @@
                 }
             },
 
-                getChartCkTrend(data) {
+                getChartCkTrend(data, backendTrend = null) {
+                    if (backendTrend === 'bull' || backendTrend === 'bear') {
+                        return backendTrend;
+                    }
                     if (!Array.isArray(data) || data.length === 0) return 'wait';
                     const number = value => {
                         const parsed = Number(value);
                         return Number.isFinite(parsed) ? parsed : null;
                     };
                     const closed = data.filter(bar => bar.is_live === false);
-                    if (closed.length < 5) return 'wait';
+                    if (closed.length < 3) return 'wait';
 
-                    // 綜合大週期 (近 15~30 根 KC 中軌趨勢)、均線排列 (MA5 vs MA15) 與價格相對於 KC 中軌位置判定市場趨勢，
-                    // 嚴格遵守 MTF「大週期定方向」：避免在空頭下行通道中因短線 2~3 根反彈站上中軌就誤判顯示「牛市 (KC向上)」！
                     const lastBar = closed[closed.length - 1];
                     const prevBar = closed[closed.length - 2];
-                    const prev3Bar = closed[Math.max(0, closed.length - 4)];
                     const currMid = number(lastBar.kc_middle);
                     const prevMid = number(prevBar.kc_middle);
-                    const prev3Mid = number(prev3Bar.kc_middle) || prevMid;
                     const currClose = number(lastBar.close);
-                    const currMa5 = number(lastBar.ma5);
-                    const currMa15 = number(lastBar.ma15);
-                    const prevMa15 = number(prevBar.ma15);
+                    const prevClose = number(prevBar.close);
                     if (currMid === null || prevMid === null || currMid <= 0) return 'wait';
 
-                    const lookbackIdx15 = Math.max(0, closed.length - 15);
-                    const lookbackIdx30 = Math.max(0, closed.length - 30);
-                    const mid15Ago = number(closed[lookbackIdx15].kc_middle) || prevMid;
-                    const mid30Ago = number(closed[lookbackIdx30].kc_middle) || mid15Ago;
-                    const macroDelta15 = (currMid - mid15Ago) / currMid;
-                    const macroDelta30 = (currMid - mid30Ago) / currMid;
-                    const barDelta3 = (currMid - prev3Mid) / currMid;
-                    const barDelta = (currMid - prevMid) / currMid;
-
-                    const isPriceAboveMid = currClose !== null && currClose > currMid;
-                    const isPriceBelowMid = currClose !== null && currClose < currMid;
-                    const isMaBull = currMa5 !== null && currMa15 !== null && currMa5 > currMa15;
-                    const isMaBear = currMa5 !== null && currMa15 !== null && currMa5 < currMa15;
-                    const isMa15Down = currMa15 !== null && prevMa15 !== null && currMa15 <= prevMa15;
-                    const isMa15Up = currMa15 !== null && prevMa15 !== null && currMa15 >= prevMa15;
-
-                    // 2. 計算 MA3 (3 週期簡單移動平均)：
+                    // 計算 MA3 (3 週期簡單移動平均)：
                     const last3Closes = closed.slice(-3).map(b => number(b.close)).filter(v => v !== null);
-                    const currMa3 = last3Closes.length === 3 ? (last3Closes[0] + last3Closes[1] + last3Closes[2]) / 3 : null;
+                    const currMa3 = last3Closes.length === 3 ? (last3Closes[0] + last3Closes[1] + last3Closes[2]) / 3 : currClose;
                     const prev3Closes = closed.slice(-4, -1).map(b => number(b.close)).filter(v => v !== null);
-                    const prevMa3 = prev3Closes.length === 3 ? (prev3Closes[0] + prev3Closes[1] + prev3Closes[2]) / 3 : null;
-                    const isMa3Down = currMa3 !== null && prevMa3 !== null && currMa3 < prevMa3;
-                    const isMa3Up = currMa3 !== null && prevMa3 !== null && currMa3 > prevMa3;
+                    const prevMa3 = prev3Closes.length === 3 ? (prev3Closes[0] + prev3Closes[1] + prev3Closes[2]) / 3 : prevClose;
 
-                    // 3. 順勢與動能硬性一致性鐵律：
-                    // 若 MA3 明確下拐 (isMa3Down) 或當前價格跌破中軌 (isPriceBelowMid)，100% 嚴禁判定為「牛市」！
-                    // 若 MA3 明確上拐 (isMa3Up) 或當前價格突破中軌 (isPriceAboveMid)，100% 嚴禁判定為「熊市」！
-                    if (isPriceBelowMid && (isMa3Down || isMaBear || isMa15Down)) {
-                        return 'bear';
+                    // 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）：
+                    // 圖1痛點：MA3 穿過中軌快到上軌，介面絕不可滯後顯示熊市！
+                    // 圖2痛點：MA3 穿過中軌快到下軌，介面絕不可滯後顯示牛市！
+
+                    // 1. 牛市判定 (Bullish):
+                    // 只要 MA3 穿過 KC 中軌之上 (currMa3 >= currMid) 且收盤價在中軌之上 (currClose >= currMid)
+                    // 或 MA3 明確站上中軌且向上，當下立即判定為「大週期牛市 (順勢做多)」！
+                    if (currMa3 !== null && currClose !== null && currMa3 >= currMid && currClose >= currMid) {
+                        return 'bull';
                     }
-                    if (isPriceAboveMid && (isMa3Up || isMaBull || isMa15Up)) {
+                    if (currMa3 !== null && currMa3 > currMid && currMa3 >= prevMa3) {
                         return 'bull';
                     }
 
-                    // 4. 大週期優先判定：若 15~30 棒 KC 中軌明確下行，且未出現強勢翻多，維持 bear
-                    if (
-                        macroDelta15 < -0.0005
-                        || (macroDelta30 < -0.001 && macroDelta15 <= 0.0002)
-                        || (barDelta3 < -0.0001 && (isPriceBelowMid || isMaBear || isMa15Down))
-                        || (barDelta < -0.00005 && isPriceBelowMid && macroDelta15 <= 0)
-                        || isMa3Down
-                    ) {
+                    // 2. 熊市判定 (Bearish):
+                    // 只要 MA3 穿過 KC 中軌之下 (currMa3 <= currMid) 且收盤價在中軌之下 (currClose <= currMid)
+                    // 或 MA3 明確跌破中軌且向下，當下立即判定為「大週期熊市 (順勢做空)」！
+                    if (currMa3 !== null && currClose !== null && currMa3 <= currMid && currClose <= currMid) {
                         return 'bear';
                     }
-                    // 5. 大週期多頭 (牛市): 必須 MA3 向上、價格在中軌上方且中軌向上
-                    if (
-                        !isMa3Down && !isPriceBelowMid && (
-                            macroDelta15 > 0.0005
-                            || (macroDelta30 > 0.001 && macroDelta15 >= -0.0002)
-                            || (barDelta3 > 0.0001 && (isPriceAboveMid || isMaBull || isMa15Up))
-                            || (barDelta > 0.00005 && isPriceAboveMid && macroDelta15 >= 0)
-                        )
-                    ) {
-                        return 'bull';
+                    if (currMa3 !== null && currMa3 < currMid && currMa3 <= prevMa3) {
+                        return 'bear';
                     }
+
+                    // 3. 邊界走平或回踩：依 MA3 動態方向與 KC 中軌斜率判定
+                    if (currMa3 !== null && prevMa3 !== null) {
+                        if (currMa3 > prevMa3 && currClose >= currMid) return 'bull';
+                        if (currMa3 < prevMa3 && currClose <= currMid) return 'bear';
+                    }
+
+                    if (currMid > prevMid) return 'bull';
+                    if (currMid < prevMid) return 'bear';
                     return 'range';
                 },
                 getChartMarketMode(symbol) {

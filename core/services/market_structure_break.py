@@ -174,6 +174,8 @@ def check_macro_trend_end(
     live_1m_candles: Optional[Any] = None,
     current_1m_close: Optional[float] = None,
     current_1m_ma15: Optional[float] = None,
+    current_1m_kc_mid: Optional[float] = None,
+    current_1m_ma3: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     大週期趨勢結束與轉折判定 (Market Structure Break)
@@ -193,39 +195,51 @@ def check_macro_trend_end(
     curr_trend_norm = str(current_macro_trend or "").upper()
 
     # -------------------------------------------------------------
-    # 0. 🚀 極速 MSB 結構破位檢測 (1m/3m 當前 Bar 突破前波 LH/HL 即刻轉向，絕不等待 15m 滯後均線)
+    # 0. 🚀 極速 MSB 結構破位檢測 (1m/3m 當前 Bar 突破前波 LH/HL 或中軌即刻轉向，絕不等待 15m 滯後均線)
     # -------------------------------------------------------------
     if current_1m_close is not None and current_1m_close > 0:
         if curr_trend_norm == "BEARISH":
+            # 🚀 敏捷中軌通道破位（解決圖1：MA3 與收盤價穿過中軌快到上軌，絕不延誤顯示熊市）：
+            is_mid_breached_up = bool(
+                current_1m_kc_mid is not None and current_1m_kc_mid > 0
+                and current_1m_close >= current_1m_kc_mid
+                and (current_1m_ma3 is None or current_1m_ma3 >= current_1m_kc_mid)
+            )
             recent_lh = 0.0
             if live_1m_candles is not None:
                 recent_lh = find_recent_swing_pivot(live_1m_candles, "BEARISH", lookback=15)
             check_lh = recent_lh if recent_lh > 0 else key_pivot_price
-            # 若 1m 實體收盤價強勢突破前波下殺 LH (且站上 1m MA15)
-            if check_lh > 0 and current_1m_close > check_lh:
-                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close > current_1m_ma15:
+            # 若突破中軌或突破前波下殺 LH (且站上 1m MA15)
+            if is_mid_breached_up or (check_lh > 0 and current_1m_close > check_lh):
+                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close > current_1m_ma15 or is_mid_breached_up:
                     return {
                         "macro_trend": "BULLISH",
                         "status_label": "大週期牛市 (順勢做多)",
                         "event": "MACRO_BEARISH_ENDED",
-                        "reason": f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢突破前波下殺關鍵高點 LH ({check_lh:.6f})，當下 Bar 立刻宣告熊市結束，切換為牛市！",
+                        "reason": f"極速 MSB 結構破位：MA3 與實體收盤價 {current_1m_close:.6f} 強勢穿過 KC 中軌進入上半通道，當下 Bar 立刻宣告熊市結束，切換為牛市！" if is_mid_breached_up else f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢突破前波下殺關鍵高點 LH ({check_lh:.6f})，當下 Bar 立刻宣告熊市結束，切換為牛市！",
                         "latest_close": current_1m_close,
                         "key_pivot_price": check_lh,
                         "htf_ma15": htf_ma15,
                     }
         elif curr_trend_norm == "BULLISH":
+            # 🚀 敏捷中軌通道破位（解決圖2：MA3 與收盤價跌穿中軌快到下軌，絕不延誤顯示牛市）：
+            is_mid_breached_down = bool(
+                current_1m_kc_mid is not None and current_1m_kc_mid > 0
+                and current_1m_close <= current_1m_kc_mid
+                and (current_1m_ma3 is None or current_1m_ma3 <= current_1m_kc_mid)
+            )
             recent_hl = 0.0
             if live_1m_candles is not None:
                 recent_hl = find_recent_swing_pivot(live_1m_candles, "BULLISH", lookback=15)
             check_hl = recent_hl if recent_hl > 0 else key_pivot_price
-            # 若 1m 實體收盤價強勢跌破前波起漲 HL (且跌破 1m MA15)
-            if check_hl > 0 and current_1m_close < check_hl:
-                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close < current_1m_ma15:
+            # 若跌破中軌或跌破前波起漲 HL (且失守 1m MA15)
+            if is_mid_breached_down or (check_hl > 0 and current_1m_close < check_hl):
+                if current_1m_ma15 is None or current_1m_ma15 <= 0 or current_1m_close < current_1m_ma15 or is_mid_breached_down:
                     return {
                         "macro_trend": "BEARISH",
                         "status_label": "大週期熊市 (順勢做空)",
                         "event": "MACRO_BULLISH_ENDED",
-                        "reason": f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢跌破前波起漲關鍵低點 HL ({check_hl:.6f})，當下 Bar 立刻宣告牛市結束，切換為熊市！",
+                        "reason": f"極速 MSB 結構破位：MA3 與實體收盤價 {current_1m_close:.6f} 強勢跌破 KC 中軌進入下半通道，當下 Bar 立刻宣告牛市結束，切換為熊市！" if is_mid_breached_down else f"極速 MSB 結構破位：1m 實體收盤價 {current_1m_close:.6f} 強勢跌破前波起漲關鍵低點 HL ({check_hl:.6f})，當下 Bar 立刻宣告牛市結束，切換為熊市！",
                         "latest_close": current_1m_close,
                         "key_pivot_price": check_hl,
                         "htf_ma15": htf_ma15,

@@ -742,6 +742,8 @@ class ExecutionManager:
                 live_1m_candles=raw_df,
                 current_1m_close=c_c,
                 current_1m_ma15=m15_c if m15_c > 0 else None,
+                current_1m_kc_mid=kc_mid,
+                current_1m_ma3=m3_c,
             )
             # 若大結構未打破 -> 維持大週期標籤，啟動防護罩，不被 1m 雜訊干擾
             if struct_eval.get("event") == "MACRO_TREND_CONTINUES":
@@ -773,6 +775,22 @@ class ExecutionManager:
         else:
             # 初始建立大週期標籤
             initial_macro = "BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else None)
+            if initial_macro:
+                cls._symbol_macro_trend[symbol] = initial_macro
+
+        # 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）
+        # 圖1：MA3 與收盤價穿過中軌進入上半通道，100% 嚴禁判定為熊市！即刻轉為牛市！
+        # 圖2：MA3 與收盤價穿過中軌進入下半通道，100% 嚴禁判定為牛市！即刻轉為熊市！
+        if (m3_c >= kc_mid and c_c >= kc_mid) or (m3_c > kc_mid and m3_c >= m3_p):
+            is_zoomed_out_bearish = False
+            is_zoomed_out_bullish = True
+            macro_trend = "BULLISH"
+            cls._symbol_macro_trend[symbol] = "BULLISH"
+        elif (m3_c <= kc_mid and c_c <= kc_mid) or (m3_c < kc_mid and m3_c <= m3_p):
+            is_zoomed_out_bullish = False
+            is_zoomed_out_bearish = True
+            macro_trend = "BEARISH"
+            cls._symbol_macro_trend[symbol] = "BEARISH"
             if initial_macro:
                 cls._symbol_macro_trend[symbol] = initial_macro
                 calc_pivot = find_htf_key_pivot(htf_data_for_struct, initial_macro)

@@ -1083,12 +1083,16 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "pnl_pct": float(active_pos.get("pnl_pct", 0.0)),
             }
 
+        from core.services.execution_manager import ExecutionManager
+        macro_t = ExecutionManager._symbol_macro_trend.get(symbol)
+
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "data": result,
             "entry_block": entry_block,
             "current_position": pos_info,
+            "macro_trend": macro_t,
         }
     except HTTPException:
         raise
