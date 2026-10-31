@@ -2506,7 +2506,8 @@ class ExecutionManager:
                 )
 
             # 🚀 2026-10-30 核心授權：牛市/熊市早期開倉機制與雙重一票否決
-            if (not has_position) and (not is_sideways_market) and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
+            # 🛑 2026-10-31 猴市/震盪區鐵律：猴市（RANGE）或震盪市場（is_sideways_market）100% 嚴禁開倉！
+            if (not has_position) and (not is_sideways_market) and (market_regime != "RANGE") and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
                 # 🛑 規則四.3：平多後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
@@ -2565,7 +2566,7 @@ class ExecutionManager:
                         is_1m_confirmed_bull = False
                         entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
                         logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，通過雙重審查，立即鎖定起漲點開多！")
-            elif (not has_position) and (not is_sideways_market) and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
+            elif (not has_position) and (not is_sideways_market) and (market_regime != "RANGE") and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
                 # 🛑 規則四.3：平空後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
