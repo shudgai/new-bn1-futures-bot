@@ -1313,22 +1313,20 @@
                     const prevMa3 = prev3Closes.length === 3 ? (prev3Closes[0] + prev3Closes[1] + prev3Closes[2]) / 3 : prevClose;
 
                     // 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）：
-                    // 圖1痛點：MA3 穿過中軌快到上軌，介面100%絕不可滯後顯示熊市！當下立即切換為牛市！
-                    // 圖2痛點：MA3 穿過中軌快到下軌，介面100%絕不可滯後顯示牛市！當下立即切換為熊市！
+                    // 價格與 MA3 在 KC 中軌之上（上半通道）為多頭推進區（牛市）
+                    // 價格與 MA3 在 KC 中軌之下（下半通道）為空頭推進區（熊市）
 
-                    // 1. 牛市判定 (Bullish):
-                    // 只要 MA3 穿過中軌進入上半通道 (currMa3 >= currMid)，或最新收盤價站穩中軌且 MA3 向上抬頭
-                    if (currMa3 !== null && currMid !== null) {
-                        if (currMa3 >= currMid || (currClose !== null && currClose >= currMid && (prevMa3 === null || currMa3 >= prevMa3))) {
-                            return 'bull';
+                    // 1. 熊市判定 (Bearish): 最新收盤價跌破中軌且 MA3 在中軌之下或向下拐頭
+                    if (currClose !== null && currMid !== null && currMa3 !== null) {
+                        if ((currClose <= currMid && currMa3 <= currMid) || (currClose < currMid && (prevMa3 === null || currMa3 <= prevMa3)) || (currMa3 < currMid && (prevMa3 === null || currMa3 <= prevMa3))) {
+                            return 'bear';
                         }
                     }
 
-                    // 2. 熊市判定 (Bearish):
-                    // 只要 MA3 跌破中軌進入下半通道 (currMa3 <= currMid)，或最新收盤價壓制在低於中軌且 MA3 向下拐頭
-                    if (currMa3 !== null && currMid !== null) {
-                        if (currMa3 <= currMid || (currClose !== null && currClose <= currMid && (prevMa3 === null || currMa3 <= prevMa3))) {
-                            return 'bear';
+                    // 2. 牛市判定 (Bullish): 最新收盤價站上中軌且 MA3 在中軌之上或向上拐頭
+                    if (currClose !== null && currMid !== null && currMa3 !== null) {
+                        if ((currClose >= currMid && currMa3 >= currMid) || (currClose > currMid && (prevMa3 === null || currMa3 >= prevMa3)) || (currMa3 > currMid && (prevMa3 === null || currMa3 >= prevMa3))) {
+                            return 'bull';
                         }
                     }
 

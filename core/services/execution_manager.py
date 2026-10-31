@@ -497,6 +497,7 @@ class ExecutionManager:
         m3_c = float(c_k.get("ma3", getattr(market_data, "ma3", c_c)))
         m3_p = float(p_k.get("ma3", getattr(market_data, "prev_ma3", m3_c)))
         m15_c = float(c_k.get("ma15", getattr(market_data, "ma15", c_c)))
+        m15_curr = m15_c
         m15_p = float(p_k.get("ma15", getattr(market_data, "prev_ma15", m15_c)))
 
         kc_u = float(c_k.get("kc_upper", market_data.kc_upper))
@@ -788,15 +789,8 @@ class ExecutionManager:
         # 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）
         # 圖1：MA3 與收盤價穿過中軌進入上半通道，100% 嚴禁判定為熊市！即刻轉為牛市！
         # 圖2：MA3 與收盤價穿過中軌進入下半通道，100% 嚴禁判定為牛市！即刻轉為熊市！
-        _flip_buf = 0.1 * atr_v
-        _prior_now = cls._symbol_macro_trend.get(symbol)
         _bull_mid = (m3_c >= kc_mid and c_c >= kc_mid) or (m3_c > kc_mid and m3_c >= m3_p)
         _bear_mid = (m3_c <= kc_mid and c_c <= kc_mid) or (m3_c < kc_mid and m3_c <= m3_p)
-        # 防抖：與既有大週期標籤相反的翻轉，須超出中軌 0.1 ATR 緩衝帶；同向或首次建立不受限
-        if _bull_mid and _prior_now == "BEARISH" and not (c_c > kc_mid + _flip_buf and m3_c > kc_mid + _flip_buf):
-            _bull_mid = False
-        if _bear_mid and _prior_now == "BULLISH" and not (c_c < kc_mid - _flip_buf and m3_c < kc_mid - _flip_buf):
-            _bear_mid = False
         if _bull_mid:
             is_zoomed_out_bearish = False
             is_zoomed_out_bullish = True
