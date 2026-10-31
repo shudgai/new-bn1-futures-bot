@@ -214,37 +214,56 @@ class LocalAIAdvisor:
         current_ma3: float,
         current_ma15: float,
         timeframe: str = "15m",
+        ma3_slope: float = 0.0,
     ) -> dict:
-        """AI 決策引擎：嚴格依據大週期趨勢標籤 (MTF) 與多空雙向方案 1 動態鎖利機制發出指令"""
+        """AI 決策引擎：依據 MSB 結構破位、強勢通道續抱與三重一票否決發出極速決策指令"""
         status_label = "大週期牛市 (順勢做多)" if str(macro_trend).upper() in ("BULLISH", "BULL", "LONG", "UP") else "大週期熊市 (順勢做空)"
-        if not self.enabled:
-            from core.services.exits.staged_profit_lock import check_exit_conditions
-            action = "HOLD"
-            if position_status in ("SHORT", "LONG"):
-                action = check_exit_conditions(
-                    position=position_status,
-                    entry_price=entry_price,
-                    current_price=current_price,
-                    highest_profit_margin=highest_profit_margin,
-                    current_ma3=current_ma3,
-                    current_ma15=current_ma15,
-                )
-            elif position_status == "NONE":
-                if status_label == "大週期熊市 (順勢做空)" and current_ma3 < current_ma15:
-                    action = "OPEN_SHORT"
-                elif status_label == "大週期牛市 (順勢做多)" and current_ma3 > current_ma15:
-                    action = "OPEN_LONG"
+        is_bull = "牛市" in status_label or str(macro_trend).upper() in ("BULLISH", "BULL", "LONG", "UP")
+        is_bear = not is_bull
 
-            if position_status == "SHORT":
-                reason = "目前在大週期熊市背景下，雖然小週期出現微幅回彈，但 MA3 仍低於 MA15，趨勢未反轉，忽略平倉繼續抱單。" if action == "HOLD" else "MA3 上穿 MA15 且滿足回吐鎖利，執行平空。"
-            elif position_status == "LONG":
-                reason = "目前在大週期牛市背景下，雖然小週期出現微幅回檔，但 MA3 仍高於 MA15，趨勢未反轉，忽略平倉繼續抱單。" if action == "HOLD" else "MA3 下穿 MA15 且滿足回吐鎖利，執行平多。"
-            else:
-                reason = f"依據大週期主趨勢 ({status_label})，小週期均線定位訊號發出指令 ({action})。"
+        if not self.enabled:
+            action = "HOLD"
+            reason = "保持觀望與強勢通道續抱"
+
+            if position_status == "LONG":
+                # 唯一平倉標準：單根收盤價跌破 MA15 且 MA3 斜率明確轉負
+                if current_price < current_ma15 and ma3_slope < 0:
+                    action = "CLOSE_LONG"
+                    reason = "單根 K 棒實體跌破 MA15 且 MA3 斜率明確轉負，平多離場！"
+                else:
+                    action = "HOLD"
+                    reason = "價格與 MA3 運行於 KC 上半通道，全面廢除中軌與峰谷預測平倉，強勢續抱 (HOLD) 讓利潤奔跑！"
+            elif position_status == "SHORT":
+                # 唯一平倉標準：單根收盤價突破 MA15 且 MA3 斜率明確轉正
+                if current_price > current_ma15 and ma3_slope > 0:
+                    action = "CLOSE_SHORT"
+                    reason = "單根 K 棒實體突破 MA15 且 MA3 斜率明確轉正，平空離場！"
+                else:
+                    action = "HOLD"
+                    reason = "價格與 MA3 運行於 KC 下半通道，全面廢除中軌與峰谷預測平倉，強勢續抱 (HOLD) 抱緊空單！"
+            elif position_status in ("NONE", "FLAT"):
+                if is_bull:
+                    # 做多三重否決：MA3 < MA15、MA3_Slope <= 0
+                    if current_ma3 < current_ma15 or ma3_slope <= 0:
+                        action = "HOLD"
+                        reason = "大週期牛市中，觸發開多三重否決 (MA3<MA15 或 MA3斜率<=0)，禁止追高/接飛刀！"
+                    elif current_price > current_ma15:
+                        action = "OPEN_LONG"
+                        reason = "大週期牛市，單根 K 棒實體突破 MA15 且動能充足，授權開多！"
+                elif is_bear:
+                    # 做空三重否決：MA3 > MA15、MA3_Slope >= 0
+                    if current_ma3 > current_ma15 or ma3_slope >= 0:
+                        action = "HOLD"
+                        reason = "大週期熊市中，觸發開空三重否決 (MA3>MA15 或 MA3斜率>=0)，禁止阿呆谷開空！"
+                    elif current_price < current_ma15:
+                        action = "OPEN_SHORT"
+                        reason = "大週期熊市，單根 K 棒實體跌破 MA15 且動能向下，授權開空！"
 
             return {
-                "macro_trend": "BEARISH" if "熊市" in status_label else "BULLISH",
+                "macro_trend": "BULLISH" if is_bull else "BEARISH",
                 "status_label": status_label,
+                "position_state": position_status,
+                "ma3_slope": ma3_slope,
                 "action": action,
                 "reason": reason,
             }
@@ -255,32 +274,63 @@ class LocalAIAdvisor:
                 {
                     "role": "system",
                     "content": (
-                        "你是一個專精於加密貨幣極短線（3m/15m）量化交易策略的 AI 決策引擎。你的職責是依據大週期主趨勢進行方向判定，絕不因小週期的微幅波動而誤判整體趨勢或逆勢平倉。\n\n"
-                        "## 🛑 規則一：多空趨勢判定與狀態標籤（解耦 KC/小週期方向）\n"
-                        "1. 大週期決定牛熊（主趨勢優先）：\n"
-                        "   - 大週期為多頭：UI 狀態標籤統一為「大週期牛市 (順勢做多)」。小週期 KC 或 MA 向下彎曲時，絕不能改寫為熊市，僅能視為「牛市拉回/回擋」。\n"
-                        "   - 大週期為空頭：UI 狀態標籤統一為「大週期熊市 (順勢做空)」。小週期 KC 或 MA 向上彎曲時，絕不能改寫為牛市，僅能視為「熊市反彈」。\n"
-                        "2. 嚴禁逆勢開倉與翻單：\n"
-                        "   - 大週期熊市背景：全場嚴禁發出 BUY 或 OPEN_LONG（開多）指令。小週期 KC 向上僅為反彈，必須續抱空單（HOLD）或尋找高點加空（ADD_SHORT）。\n"
-                        "   - 大週期牛市背景：全場嚴禁發出 SELL 或 OPEN_SHORT（開空）指令。小週期 KC 向下僅為拉回，必須續抱多單（HOLD）或尋找低點加多（ADD_LONG）。\n\n"
-                        "## 🛡️ 規則二：多空雙向「續抱不平倉」與方案 1 動態鎖利\n"
-                        "1. 空單（SHORT）持倉處理邏輯：\n"
-                        "   - 鎖利條件：歷史最高浮盈 ≥ 10%，且自最高點回吐 ≥ 20%。\n"
-                        "   - 續抱防線 (方案 1)：即使滿足上述鎖利條件，必須同時滿足「MA3 向上金叉 MA15（MA3 > MA15，趨勢真實反轉）」時才允許 CLOSE_SHORT。\n"
-                        "   - 繼續走（HOLD）：若 MA3 依然低於 MA15（MA3 < MA15），代表回吐僅為下影線插針或微幅反彈，強制忽略平倉，續抱空單讓利潤奔跑。\n"
-                        "2. 多單（LONG）持倉處理邏輯：\n"
-                        "   - 鎖利條件：歷史最高浮盈 ≥ 10%，且自最高點回吐 ≥ 20%。\n"
-                        "   - 續抱防線 (方案 1)：即使滿足上述鎖利條件，必須同時滿足「MA3 向下死叉 MA15（MA3 < MA15，趨勢真實反轉）」時才允許 CLOSE_LONG。\n"
-                        "   - 繼續走（HOLD）：若 MA3 依然高於 MA15（MA3 > MA15），代表回吐僅為上影線插針或微幅回檔，強制忽略平倉，續抱多單讓利潤奔跑。\n\n"
-                        "## ⚙️ 規則三：計算執行規範\n"
-                        "1. 收盤價 (Bar Close) 觸發：所有 MA3/MA15 交叉與回吐計算，必須以 3m 或 15m K 線正式收盤為準，忽略 K 棒內部的盤中瞬間插針。\n\n"
-                        "## 📤 輸出格式規範 (返回合法 JSON)\n"
+                        "# Role & Purpose\n"
+                        "你是一個專精於加密貨幣極短線（1m / 3m）量化交易策略的 AI 極速決策引擎。\n"
+                        "你的核心任務是：透過「MSB 結構破位極速切換標籤」，實施「大週期順勢一票否決」，結合「強勢通道續抱（廢除中軌與峰頂/谷底平倉）」與「雙向動態斜率/偏離過大否決」，徹底杜絕「阿呆谷追空/接飛刀」、「標籤滯後追高殺低」以及「頻繁平倉閹割利潤」的漏洞。\n\n"
+                        "---\n\n"
+                        "## 🛑 規則一：大週期趨勢判定與【MSB 極速一鍵轉向】(Macro Trend & Instant Reversal)\n\n"
+                        "1. **大結構絕對優先 (HH / HL / LH / LL)**：\n"
+                        "   - 觀察全景 K 線結構：只要價格未實體跌破前波關鍵低點（HL），強制鎖定為 **「大週期牛市 (BULLISH)」**；只要未實體突破前波關鍵高點（LH），強制鎖定為 **「大週期熊市 (BEARISH)」**。\n"
+                        "   - **順勢硬性一票否決**：\n"
+                        "     - **大週期牛市**：100% 一票否決所有 `OPEN_SHORT`（賣空）指令！\n"
+                        "     - **大週期熊市**：100% 一票否決所有 `OPEN_LONG`（買多）指令！\n\n"
+                        "2. **MSB 結構破位極速一鍵轉向 (解決大週期指標滯後 - 核心條款)**：\n"
+                        "   - 嚴禁單純等待長週期均線或 KC 通道慢吞吞轉向！\n"
+                        "   - **熊市轉牛市 (BEARISH ➔ BULLISH)**：當 K 棒實體收盤價 **強勢突破前波下殺關鍵高點（Lower High, LH）** 時：\n"
+                        "     - 當下 Tick 立刻將標籤更新為牛市！若持有空單，必須**立刻發出 `CLOSE_SHORT_AND_OPEN_LONG`**（一鍵平空並開多）；若無持倉，**立刻發出 `OPEN_LONG`**！\n"
+                        "   - **牛市轉熊市 (BULLISH ➔ BEARISH)**：當 K 棒實體收盤價 **強勢跌破前波拉升關鍵低點（Higher Low, HL）** 時：\n"
+                        "     - 當下 Tick 立刻將標籤更新為熊市！若持有多單，必須**立刻發出 `CLOSE_LONG_AND_OPEN_SHORT`**；若無持倉，**立刻發出 `OPEN_SHORT`**！\n\n"
+                        "---\n\n"
+                        "## 🟢 規則二：多頭（LONG）進場與【追高+斜率】三重一票否決\n\n"
+                        "1. **早期開多 (LONG Entry)**：\n"
+                        "   - 當處於 **大週期牛市** 且當前 **無持倉 (NONE)** 時：單根 K 棒實體收盤價突破 MA15（收盤價 > MA15），立即發出 `OPEN_LONG`。\n\n"
+                        "2. **做多（OPEN_LONG）三重一票否決（杜絕頂點追多與接飛刀）**：\n"
+                        "   - 🚫 **位置否決**：若 `MA3 < MA15`（空頭排列），100% 一票否決開多！\n"
+                        "   - 🚫 **斜率否決**：若 `MA3 斜率走平或向下 (MA3_Slope <= 0)`（動能已衰退），100% 一票否決開多！\n"
+                        "   - 🚫 **偏離過大否決**：價格已大幅拉升、嚴重偏離 MA15 正乖離過大（噴發完畢），100% 強制攔截追多！\n\n"
+                        "---\n\n"
+                        "## 🔴 規則三：空頭（SHORT）進場與【追空+斜率】三重一票否決\n\n"
+                        "1. **早期開空 (SHORT Entry)**：\n"
+                        "   - 當處於 **大週期熊市** 且當前 **無持倉 (NONE)** 時：單根 K 棒實體收盤價跌破 MA15（收盤價 < MA15），立即發出 `OPEN_SHORT`。\n\n"
+                        "2. **做空（OPEN_SHORT）三重一票否決（杜絕阿呆谷開空）**：\n"
+                        "   - 🚫 **位置否決**：若 `MA3 > MA15`（多頭排列），100% 一票否決開空！\n"
+                        "   - 🚫 **斜率否決**：若 `MA3 斜率走平或向上 (MA3_Slope >= 0)`（MA3 正在向上勾起），100% 一票否決開空！\n"
+                        "   - 🚫 **偏離過大否決**：價格已急跌觸及 KC 下軌且負乖離過大（下殺尾聲），100% 強制攔截追空！\n\n"
+                        "---\n\n"
+                        "## 🛑 規則四：多空雙向「強勢通道續抱」與「全面廢除中軌/峰谷平倉」 (Channel Ride Rule)\n\n"
+                        "1. **全面廢除 KC 中軌與峰頂/谷底預測平倉**：\n"
+                        "   - 嚴禁因為 1m/3m 價格小幅越過 KC 中軌、MA3 交叉，或價格觸碰 KC 上軌/下軌（賭頂部/底部）而發出平倉指令！中間所有微幅震盪一律視為噪聲，**強制保持持倉 (`\"action\": \"HOLD\"`)**！\n\n"
+                        "2. **多單（LONG）強勢續抱與平倉門檻**：\n"
+                        "   - **強勢續抱**：只要價格與 MA3 運行於 **KC 通道中軌之上（KC 上半通道）**，100% 嚴禁平多，讓利潤充分奔跑！\n"
+                        "   - **唯一平倉標準**：僅當 **單根 K 棒實體收盤價強勢跌破 MA15** 且 **MA3 斜率明確轉負 (MA3_Slope < 0)** 時，方可執行 `CLOSE_LONG`。\n\n"
+                        "3. **空單（SHORT）強勢續抱與平倉門檻**：\n"
+                        "   - **強勢續抱**：只要價格與 MA3 運行於 **KC 通道中軌之下（KC 下半通道）**，100% 嚴禁平空，抱緊空單直達底部！\n"
+                        "   - **唯一平倉標準**：僅當 **單根 K 棒實體收盤價強勢突破 MA15** 且 **MA3 斜率明確轉正 (MA3_Slope > 0)** 時，方可執行 `CLOSE_SHORT`。\n\n"
+                        "---\n\n"
+                        "## ⚙️ 規則五：執行規範 (Bar Close)\n\n"
+                        "1. 所有進離場條件均以 **1m / 3m K 棒正式收盤價 (Bar Close)** 為準，過濾盤中影線插針。\n\n"
+                        "## 📤 輸出格式規範\n"
+                        "每次分析後請嚴格輸出 JSON：\n"
+                        "```json\n"
                         "{\n"
-                        '  "macro_trend": "BEARISH 或 BULLISH",\n'
-                        '  "status_label": "大週期熊市 (順勢做空) 或 大週期牛市 (順勢做多)",\n'
-                        '  "action": "OPEN_SHORT / CLOSE_SHORT / OPEN_LONG / CLOSE_LONG / HOLD",\n'
-                        '  "reason": "說明判定邏輯..."\n'
-                        "}"
+                        '  "macro_trend": "BULLISH",\n'
+                        '  "status_label": "大週期牛市 (順勢做多)",\n'
+                        '  "position_state": "LONG",\n'
+                        '  "ma3_slope": 0.00003,\n'
+                        '  "action": "HOLD",\n'
+                        '  "reason": "1. 當前處於大週期牛市。 2. 價格與 MA3 穩定運行於 KC 上半通道，觸發強勢續抱條款。 3. 嚴禁在 KC 上軌附近預測峰頂平倉，強制保持持倉 (HOLD) 讓利潤奔跑。"\n'
+                        "}\n"
+                        "```"
                     ),
                 },
                 {
@@ -297,6 +347,7 @@ class LocalAIAdvisor:
                             "highest_profit_margin": highest_profit_margin,
                             "current_ma3": current_ma3,
                             "current_ma15": current_ma15,
+                            "ma3_slope": ma3_slope,
                         },
                         ensure_ascii=False,
                     ),
@@ -319,6 +370,8 @@ class LocalAIAdvisor:
             return {
                 "macro_trend": str(parsed.get("macro_trend", macro_trend)),
                 "status_label": str(parsed.get("status_label", status_label)),
+                "position_state": str(parsed.get("position_state", position_status)),
+                "ma3_slope": float(parsed.get("ma3_slope", ma3_slope)),
                 "action": str(parsed.get("action", "HOLD")),
                 "reason": str(parsed.get("reason", ""))[:300],
             }
@@ -326,8 +379,10 @@ class LocalAIAdvisor:
             return {
                 "macro_trend": macro_trend,
                 "status_label": status_label,
+                "position_state": position_status,
+                "ma3_slope": ma3_slope,
                 "action": "HOLD",
-                "reason": f"AI fallback ({type(exc).__name__}): 保持觀望，維持主趨勢持倉",
+                "reason": f"AI fallback ({type(exc).__name__}): 保持觀望，維持強勢通道續抱",
             }
 
     async def rank_symbols(self, metrics: List[dict]) -> List[str]:
