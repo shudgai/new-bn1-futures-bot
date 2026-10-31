@@ -2008,13 +2008,10 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🚀 結構破位極速一鍵轉向 (落實 2026-10-31 最高授權：大週期反轉時一鍵翻單)
-                # 熊市轉牛市: CLOSE_SHORT_AND_OPEN_LONG
-                # 牛市轉熊市: CLOSE_LONG_AND_OPEN_SHORT
-                can_flip = bool(
-                    (pos_side == "LONG" and (macro_trend == "BEARISH" or is_real_peak))
-                    or (pos_side == "SHORT" and (macro_trend == "BULLISH" or is_real_bottom))
-                )
+                # 🛑 2026-10-31 核心重構：平倉與開倉徹底解耦（Decouple Exit & Entry）！
+                # 嚴禁平倉後同 K 棒立刻反手開倉，避免多空雙向互洗。
+                # 平倉後回歸觀望（NONE），由後續主流程嚴格依據大週期順勢尋找下一次開倉訊號！
+                can_flip = False
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
@@ -3084,12 +3081,12 @@ class ExecutionManager:
             direction_long_ok, dir_long_reason, _ = evaluate_direction_master_lock(
                 "LONG", ma3_curr, ma3_prev, kc_mid_val, ma5_curr,
                 ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open,
-                direction_override=is_meme_contract,
+                direction_override=False,
             )
             direction_short_ok, dir_short_reason, _ = evaluate_direction_master_lock(
                 "SHORT", ma3_curr, ma3_prev, kc_mid_val, ma5_curr,
                 ma15_curr=ma15_curr, curr_close=curr_close, curr_open=curr_open,
-                direction_override=is_meme_contract,
+                direction_override=False,
             )
 
             # 敏捷進攻架構：妖幣突破訊號與轉折交叉訊號嚴格依循 KC 主趨勢防線與方向總開關
