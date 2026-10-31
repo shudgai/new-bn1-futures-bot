@@ -1085,6 +1085,18 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
 
         from core.services.execution_manager import ExecutionManager
         macro_t = ExecutionManager._symbol_macro_trend.get(symbol)
+        # 🚀 敏捷中軌通道校準（2026-10-31 最高授權：徹底杜絕 API 回傳滯後標籤）：
+        if len(df) >= 3 and "ema_20" in indicators.columns:
+            m3_curr = float(df["close"].iloc[-3:].mean())
+            mid_curr = float(indicators["ema_20"].iloc[-1] or 0.0)
+            c_curr = float(df["close"].iloc[-1])
+            if mid_curr > 0:
+                if (m3_curr >= mid_curr and c_curr >= mid_curr) or m3_curr > mid_curr:
+                    macro_t = "BULLISH"
+                    ExecutionManager._symbol_macro_trend[symbol] = "BULLISH"
+                elif (m3_curr <= mid_curr and c_curr <= mid_curr) or m3_curr < mid_curr:
+                    macro_t = "BEARISH"
+                    ExecutionManager._symbol_macro_trend[symbol] = "BEARISH"
 
         return {
             "symbol": symbol,

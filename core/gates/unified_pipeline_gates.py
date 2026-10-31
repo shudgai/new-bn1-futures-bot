@@ -915,59 +915,54 @@ class ExitGate:
             }
 
         # ══════════════════════════════════════════════════════════════════
-        # 第三級：重大趨勢結構破壞出口（不可被微型續抱盲目阻擋，但階段0受防洗保護）
-        # 3.1 已確認的慢線趨勢結構實質破位 (EXIT_BY_TREND_BROKEN)
-        # 3.2 已確認的中軌結構實質破位 (EXIT_BY_KC_MID_STRUCTURE_BROKEN)
+        # 第三級：重大趨勢與線型結構破壞出口（落實 2026-10-31 最新平倉硬性條件）
+        # 3.1 線型破位：實體收盤價跌破/突破 MA15 關鍵防線 且 MA3 斜率反轉 (EXIT_BY_TREND_BROKEN)
+        # 3.2 中軌結構破位：實體收盤價跌破/突破 KC 中軌 且大週期動能衰竭 (EXIT_BY_KC_MID_STRUCTURE_BROKEN)
         # ══════════════════════════════════════════════════════════════════
         if has_candle_history and c_curr is not None and c_prev is not None:
             ma_slow_t = float(c_curr.get("ma_slow", ema_slow))
             ma_slow_prev_val = float(c_prev.get("ma_slow", ema_slow))
+            m3_slope_val = 0.0
+            if raw_df is not None and len(raw_df) >= 4:
+                m3_c_calc = float(raw_df["close"].iloc[-3:].mean())
+                m3_p_calc = float(raw_df["close"].iloc[-4:-1].mean())
+                m3_slope_val = m3_c_calc - m3_p_calc
+
             if side == "LONG":
-                ma_slow_trending_up = (ma_slow_t > ma_slow_prev_val) or (slow_slope > 0.000001)
-                deep_break_l = float(c_curr["close"]) < (ma_slow_t - 0.3 * atr_val)
-                trend_broken_l = deep_break_l and (macro_trend != "BULLISH") and not ma_slow_trending_up
+                # 多單線型破位：實體收盤價跌破 MA15 且 (MA3 斜率轉負 或 大週期非 BULLISH)
+                break_ma15_l = float(c_curr["close"]) < ma_slow_t
+                trend_broken_l = break_ma15_l and (m3_slope_val < 0 or macro_trend != "BULLISH")
                 if trend_broken_l:
-                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_TREND_BROKEN", quote, side)
-                    if is_s0:
-                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_TREND_BROKEN", {
                         **meta,
-                        "cause": f"多頭趨勢實質破位: 收盤明確跌破棕色慢線 (close={float(c_curr['close']):.6f} < slow={ma_slow_t:.6f}-0.3*ATR) 且大週期衰竭 (macro={macro_trend})，波段結束平多！",
+                        "cause": f"多頭線型破位: 收盤跌破棕色MA15防線 (close={float(c_curr['close']):.6f} < ma15={ma_slow_t:.6f}) 且動能轉弱 (macro={macro_trend})，波段結束平多！",
                     }
             elif side == "SHORT":
-                ma_slow_trending_down = (ma_slow_t < ma_slow_prev_val) or (slow_slope < -0.000001)
-                deep_break_s = float(c_curr["close"]) > (ma_slow_t + 0.3 * atr_val)
-                trend_broken_s = deep_break_s and (macro_trend != "BEARISH") and not ma_slow_trending_down
+                # 空單線型破位：實體收盤價站上 MA15 且 (MA3 斜率轉正 或 大週期非 BEARISH)
+                break_ma15_s = float(c_curr["close"]) > ma_slow_t
+                trend_broken_s = break_ma15_s and (m3_slope_val > 0 or macro_trend != "BEARISH")
                 if trend_broken_s:
-                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_TREND_BROKEN", quote, side)
-                    if is_s0:
-                        return False, s0_r, {**meta, **s0_m}
                     return True, "EXIT_BY_TREND_BROKEN", {
                         **meta,
-                        "cause": f"空頭趨勢實質破位: 收盤明確突破棕色慢線 (close={float(c_curr['close']):.6f} > slow={ma_slow_t:.6f}+0.3*ATR) 且大週期衰竭 (macro={macro_trend})，波段結束平空！",
+                        "cause": f"空頭線型破位: 收盤站上棕色MA15防線 (close={float(c_curr['close']):.6f} > ma15={ma_slow_t:.6f}) 且動能轉強 (macro={macro_trend})，波段結束平空！",
                     }
 
         if has_candle_history and c_curr is not None:
             c_close_val = float(c_curr["close"])
             if side == "LONG":
-                deep_mid_break_l = c_close_val < (kc_mid - 0.3 * atr_val)
-                if deep_mid_break_l and c_close_val < entry_p and macro_trend != "BULLISH":
-                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", quote, side)
-                    if is_s0:
-                        return False, s0_r, {**meta, **s0_m}
+                deep_mid_break_l = c_close_val < (kc_mid - 0.2 * atr_val)
+                # 實體跌破中軌且大週期非 BULLISH，或跌破進場成本，及時落袋或止損，絕不受盲目續抱拖累
+                if deep_mid_break_l and (macro_trend != "BULLISH" or c_close_val < entry_p):
                     return True, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", {
                         **meta,
-                        "cause": f"多頭中軌結構破位: 收盤實質跌破KC中軌 (close={c_close_val:.6f} < mid={kc_mid:.6f}-0.3*ATR) 且已跌破進場成本 (entry={entry_p:.6f})，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出！",
+                        "cause": f"多頭中軌結構破位: 收盤實質跌破KC中軌 (close={c_close_val:.6f} < mid={kc_mid:.6f}-0.2*ATR)，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出落袋！",
                     }
             elif side == "SHORT":
-                deep_mid_break_s = c_close_val > (kc_mid + 0.3 * atr_val)
-                if deep_mid_break_s and c_close_val > entry_p and macro_trend != "BEARISH":
-                    is_s0, s0_r, s0_m = check_stage0_veto_hold(pos, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", quote, side)
-                    if is_s0:
-                        return False, s0_r, {**meta, **s0_m}
+                deep_mid_break_s = c_close_val > (kc_mid + 0.2 * atr_val)
+                if deep_mid_break_s and (macro_trend != "BEARISH" or c_close_val > entry_p):
                     return True, "EXIT_BY_KC_MID_STRUCTURE_BROKEN", {
                         **meta,
-                        "cause": f"空頭中軌結構破位: 收盤實質突破KC中軌 (close={c_close_val:.6f} > mid={kc_mid:.6f}+0.3*ATR) 且已突破進場成本 (entry={entry_p:.6f})，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出！",
+                        "cause": f"空頭中軌結構破位: 收盤實質突破KC中軌 (close={c_close_val:.6f} > mid={kc_mid:.6f}+0.2*ATR)，大週期衰竭 (macro={macro_trend})，波段結構破壞及時退出落袋！",
                     }
 
         # ── 通道收窄橫盤假觸碰防洗鐵律（安全出口已在最前，此處僅防洗盤）──
@@ -1092,8 +1087,8 @@ class ExitGate:
                     confirm_body = float(confirm["open"]) - float(confirm["close"])
                     peak_move = float(peak["high"]) - entry_p
                     peak_prominence = float(peak["high"]) - float(left["high"])
-                    # 中間棒 High 必須鶴立雞群 (至少高於左棒 0.35 ATR)，且當前報價與盤中棒未破新高
-                    is_peak_prominent = peak_prominence >= 0.35 * atr_val
+                    # 中間棒 High 必須明確為局部峰頂 (高於左棒且未破新高)
+                    is_peak_prominent = peak_prominence > 0
                     curr_bar_high = float(c_curr.get("high", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "high", quote))
                     not_making_new_high = (quote < float(peak["high"])) and (curr_bar_high <= float(peak["high"]))
 
@@ -1103,7 +1098,7 @@ class ExitGate:
                         and float(peak["high"]) > float(confirm["high"])
                         and float(confirm["close"]) < float(confirm["open"])
                         and float(confirm["close"]) < peak_mid
-                        and confirm_body >= 0.35 * atr_val
+                        and confirm_body >= 0.15 * atr_val
                         and (peak_move >= 0.5 * atr_val or peak_roe >= 0.05)
                         and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )
@@ -1351,8 +1346,8 @@ class ExitGate:
                     confirm_body = float(confirm["close"]) - float(confirm["open"])
                     valley_move = entry_p - float(valley["low"])
                     valley_prominence = float(left["low"]) - float(valley["low"])
-                    # 中間棒 Low 必須明確探底 (至少低於左棒 0.35 ATR)，且當前報價與盤中棒未破新低
-                    is_valley_prominent = valley_prominence >= 0.35 * atr_val
+                    # 中間棒 Low 必須明確探底 (低於左棒且未破新低)
+                    is_valley_prominent = valley_prominence > 0
                     curr_bar_low = float(c_curr.get("low", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "low", quote))
                     not_making_new_low = (quote > float(valley["low"])) and (curr_bar_low >= float(valley["low"]))
 
@@ -1362,7 +1357,7 @@ class ExitGate:
                         and float(valley["low"]) < float(confirm["low"])
                         and float(confirm["close"]) > float(confirm["open"])
                         and float(confirm["close"]) > valley_mid
-                        and confirm_body >= 0.35 * atr_val
+                        and confirm_body >= 0.15 * atr_val
                         and (valley_move >= 0.5 * atr_val or peak_roe >= 0.05)
                         and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )

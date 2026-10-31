@@ -47,3 +47,4 @@ def test_image2_ma3_cross_below_mid_instantly_turns_bearish():
     assert res["event"] == "MACRO_BULLISH_ENDED"
     assert "大週期熊市 (順勢做空)" in res["status_label"]
     assert "進入下半通道" in res["reason"]
+

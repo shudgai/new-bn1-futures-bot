@@ -180,6 +180,8 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
                 }
     elif isinstance(frame, list) and frame and isinstance(frame[0], dict):
         df = pd.DataFrame(frame)
+    elif hasattr(frame, "raw_df") and isinstance(getattr(frame, "raw_df"), pd.DataFrame):
+        df = getattr(frame, "raw_df")
 
     if df is None or len(df) < 2:
         return None

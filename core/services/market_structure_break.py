@@ -202,8 +202,10 @@ def check_macro_trend_end(
             # 🚀 敏捷中軌通道破位（解決圖1：MA3 與收盤價穿過中軌快到上軌，絕不延誤顯示熊市）：
             is_mid_breached_up = bool(
                 current_1m_kc_mid is not None and current_1m_kc_mid > 0
-                and current_1m_close >= current_1m_kc_mid
-                and (current_1m_ma3 is None or current_1m_ma3 >= current_1m_kc_mid)
+                and (
+                    (current_1m_close >= current_1m_kc_mid and (current_1m_ma3 is None or current_1m_ma3 >= current_1m_kc_mid))
+                    or (current_1m_ma3 is not None and current_1m_ma3 > current_1m_kc_mid)
+                )
             )
             recent_lh = 0.0
             if live_1m_candles is not None:
@@ -225,8 +227,10 @@ def check_macro_trend_end(
             # 🚀 敏捷中軌通道破位（解決圖2：MA3 與收盤價跌穿中軌快到下軌，絕不延誤顯示牛市）：
             is_mid_breached_down = bool(
                 current_1m_kc_mid is not None and current_1m_kc_mid > 0
-                and current_1m_close <= current_1m_kc_mid
-                and (current_1m_ma3 is None or current_1m_ma3 <= current_1m_kc_mid)
+                and (
+                    (current_1m_close <= current_1m_kc_mid and (current_1m_ma3 is None or current_1m_ma3 <= current_1m_kc_mid))
+                    or (current_1m_ma3 is not None and current_1m_ma3 < current_1m_kc_mid)
+                )
             )
             recent_hl = 0.0
             if live_1m_candles is not None:

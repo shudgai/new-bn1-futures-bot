@@ -44,6 +44,7 @@ def automated_position_exit_allowed(
             "EXIT_LONG_AT_PEAK", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
             "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
             "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+            "EXIT_BY_TREND_LINE_BROKEN", "EXIT_BY_TREND_BROKEN", "EXIT_BY_KC_MID_STRUCTURE_BROKEN",
         )):
             return True
 
@@ -55,6 +56,7 @@ def automated_position_exit_allowed(
             "EXIT_SHORT_AT_BOTTOM", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
             "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
             "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
+            "EXIT_BY_TREND_LINE_BROKEN", "EXIT_BY_TREND_BROKEN", "EXIT_BY_KC_MID_STRUCTURE_BROKEN",
         )):
             return True
 

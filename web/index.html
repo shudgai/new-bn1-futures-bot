@@ -1290,59 +1290,51 @@
             },
 
                 getChartCkTrend(data, backendTrend = null) {
-                    if (backendTrend === 'bull' || backendTrend === 'bear') {
-                        return backendTrend;
-                    }
-                    if (!Array.isArray(data) || data.length === 0) return 'wait';
+                    if (!Array.isArray(data) || data.length === 0) return backendTrend || 'wait';
                     const number = value => {
                         const parsed = Number(value);
                         return Number.isFinite(parsed) ? parsed : null;
                     };
-                    const closed = data.filter(bar => bar.is_live === false);
-                    if (closed.length < 3) return 'wait';
+                    const bars = data.length > 0 ? data : [];
+                    if (bars.length < 2) return backendTrend || 'wait';
 
-                    const lastBar = closed[closed.length - 1];
-                    const prevBar = closed[closed.length - 2];
-                    const currMid = number(lastBar.kc_middle);
+                    const lastBar = bars[bars.length - 1];
+                    const prevBar = bars[bars.length - 2];
+                    const currMid = number(lastBar.kc_middle) || number(prevBar.kc_middle);
                     const prevMid = number(prevBar.kc_middle);
                     const currClose = number(lastBar.close);
                     const prevClose = number(prevBar.close);
-                    if (currMid === null || prevMid === null || currMid <= 0) return 'wait';
+                    if (currMid === null || currMid <= 0) return backendTrend || 'wait';
 
                     // 計算 MA3 (3 週期簡單移動平均)：
-                    const last3Closes = closed.slice(-3).map(b => number(b.close)).filter(v => v !== null);
+                    const last3Closes = bars.slice(-3).map(b => number(b.close)).filter(v => v !== null);
                     const currMa3 = last3Closes.length === 3 ? (last3Closes[0] + last3Closes[1] + last3Closes[2]) / 3 : currClose;
-                    const prev3Closes = closed.slice(-4, -1).map(b => number(b.close)).filter(v => v !== null);
+                    const prev3Closes = bars.slice(-4, -1).map(b => number(b.close)).filter(v => v !== null);
                     const prevMa3 = prev3Closes.length === 3 ? (prev3Closes[0] + prev3Closes[1] + prev3Closes[2]) / 3 : prevClose;
 
                     // 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）：
-                    // 圖1痛點：MA3 穿過中軌快到上軌，介面絕不可滯後顯示熊市！
-                    // 圖2痛點：MA3 穿過中軌快到下軌，介面絕不可滯後顯示牛市！
+                    // 圖1痛點：MA3 穿過中軌快到上軌，介面100%絕不可滯後顯示熊市！當下立即切換為牛市！
+                    // 圖2痛點：MA3 穿過中軌快到下軌，介面100%絕不可滯後顯示牛市！當下立即切換為熊市！
 
                     // 1. 牛市判定 (Bullish):
-                    // 只要 MA3 穿過 KC 中軌之上 (currMa3 >= currMid) 且收盤價在中軌之上 (currClose >= currMid)
-                    // 或 MA3 明確站上中軌且向上，當下立即判定為「大週期牛市 (順勢做多)」！
-                    if (currMa3 !== null && currClose !== null && currMa3 >= currMid && currClose >= currMid) {
-                        return 'bull';
-                    }
-                    if (currMa3 !== null && currMa3 > currMid && currMa3 >= prevMa3) {
-                        return 'bull';
+                    // 只要 MA3 穿過中軌進入上半通道 (currMa3 >= currMid)，或最新收盤價站穩中軌且 MA3 向上抬頭
+                    if (currMa3 !== null && currMid !== null) {
+                        if (currMa3 >= currMid || (currClose !== null && currClose >= currMid && (prevMa3 === null || currMa3 >= prevMa3))) {
+                            return 'bull';
+                        }
                     }
 
                     // 2. 熊市判定 (Bearish):
-                    // 只要 MA3 穿過 KC 中軌之下 (currMa3 <= currMid) 且收盤價在中軌之下 (currClose <= currMid)
-                    // 或 MA3 明確跌破中軌且向下，當下立即判定為「大週期熊市 (順勢做空)」！
-                    if (currMa3 !== null && currClose !== null && currMa3 <= currMid && currClose <= currMid) {
-                        return 'bear';
-                    }
-                    if (currMa3 !== null && currMa3 < currMid && currMa3 <= prevMa3) {
-                        return 'bear';
+                    // 只要 MA3 跌破中軌進入下半通道 (currMa3 <= currMid)，或最新收盤價壓制在低於中軌且 MA3 向下拐頭
+                    if (currMa3 !== null && currMid !== null) {
+                        if (currMa3 <= currMid || (currClose !== null && currClose <= currMid && (prevMa3 === null || currMa3 <= prevMa3))) {
+                            return 'bear';
+                        }
                     }
 
-                    // 3. 邊界走平或回踩：依 MA3 動態方向與 KC 中軌斜率判定
-                    if (currMa3 !== null && prevMa3 !== null) {
-                        if (currMa3 > prevMa3 && currClose >= currMid) return 'bull';
-                        if (currMa3 < prevMa3 && currClose <= currMid) return 'bear';
+                    // 3. 邊界走平或回踩：若 MA3 在中軌附近黏合，參考後端趨勢
+                    if (backendTrend === 'bull' || backendTrend === 'bear') {
+                        return backendTrend;
                     }
 
                     if (currMid > prevMid) return 'bull';

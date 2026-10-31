@@ -100,11 +100,30 @@ class DataPipeline:
         if df is None or len(df) < 20:
             return None
 
-        # 計算必要均線與指標 (純數學)
-        df_calc = df.copy()
-        close = df_calc["close"]
-        high = df_calc["high"]
-        low = df_calc["low"]
+        from core.services.candle_data import closed_entry_candles
+
+        # 1. 建立通過收線驗證與完整性檢查的 closed_df (統一收線基準，杜絕 live bar 污染)
+        closed_df = closed_entry_candles(df)
+        is_fallback_for_position = False
+        if closed_df is None or len(closed_df) < 20:
+            # 若為無持倉的新進場評估，收線驗證失敗必須拒絕新進場 Snapshot (Fail-Closed)
+            if not position:
+                return None
+            # 若為既有持倉：安全隔離，保護既有持倉之平倉與止盈止損評估，相容無標記之回測歷史數據
+            # 但明確嚴格禁止授予 entry_finality_verified！
+            if "timestamp" in df.columns:
+                stamps = pd.to_numeric(df["timestamp"], errors="coerce")
+                if stamps.isna().any() or not stamps.is_monotonic_increasing or stamps.duplicated().any():
+                    return None
+            closed_df = df.copy()
+            if len(closed_df) < 20:
+                return None
+            is_fallback_for_position = True
+
+        # 計算必要均線與指標 (純數學，嚴格只在 closed_df 上運算)
+        close = closed_df["close"]
+        high = closed_df["high"]
+        low = closed_df["low"]
 
         # 均線 MA3, MA5, MA15
         ma3_series = close.rolling(window=3).mean()
@@ -123,15 +142,15 @@ class DataPipeline:
         ema200_series = close.ewm(span=200, adjust=False).mean() if len(close) >= 5 else close
 
         # 成交量 MA 20 均量線
-        vol_col = df_calc["volume"] if "volume" in df_calc.columns else pd.Series(0.0, index=df_calc.index)
+        vol_col = closed_df["volume"] if "volume" in closed_df.columns else pd.Series(0.0, index=closed_df.index)
         volume_ma20_series = vol_col.rolling(window=20, min_periods=1).mean()
 
         # 均線間距比例 (%)
         ma_spread_series = ((ema_fast_series - ema_slow_series).abs() / ema_slow_series) * 100.0
 
-        # KC 通道與 ATR14 計算 (統一標準單一來源，杜絕前視偏差)
+        # KC 通道與 ATR14 計算 (統一標準單一來源，杜絕前視偏差與 live bar 污染)
         kc_res = compute_keltner_channels(
-            df_calc,
+            closed_df,
             ema_period=20,
             atr_period=14,
             multiplier=1.5,
@@ -151,37 +170,32 @@ class DataPipeline:
         ):
             return None
 
-        # 將指標列注入 df_calc 以供下游閘門驗證 (前 13 根保持 NaN，杜絕前視偏差)
-        df_calc["ma3"] = ma3_series
-        df_calc["ma5"] = ma5_series
-        df_calc["ma15"] = ma15_series
-        df_calc["ema5"] = ema5_series
-        df_calc["ema13"] = ema13_series
-        df_calc["ema_fast"] = ema_fast_series
-        df_calc["ema_slow"] = ema_slow_series
-        df_calc["ema200"] = ema200_series
-        df_calc["volume_ma20"] = volume_ma20_series
-        df_calc["atr"] = atr_series
-        df_calc["kc_middle"] = kc_basis
-        df_calc["kc_upper"] = kc_upper_series
-        df_calc["kc_lower"] = kc_lower_series
-        df_calc["bandwidth"] = kc_res["bandwidth"]
-        df_calc["ma_slow"] = ema_slow_series
-        df_calc["ma_slow_slope"] = ema_slow_series - ema_slow_series.shift(2)
-        df_calc["body_size"] = (df_calc["close"] - df_calc["open"]).abs()
-        df_calc["upper_band"] = kc_upper_series
-        df_calc["lower_band"] = kc_lower_series
-        df_calc["middle_band"] = kc_basis
-        if hasattr(df_calc, "attrs"):
-            df_calc.attrs["entry_finality_verified"] = True
-            df_calc.attrs.setdefault("timeframe_ms", 60_000)
+        # 將指標列注入 closed_df_with_ind 以供下游閘門驗證 (前 13 根保持 NaN，杜絕前視偏差)
+        closed_df_with_ind = closed_df.copy()
+        closed_df_with_ind["ma3"] = ma3_series
+        closed_df_with_ind["ma5"] = ma5_series
+        closed_df_with_ind["ma15"] = ma15_series
+        closed_df_with_ind["ema5"] = ema5_series
+        closed_df_with_ind["ema13"] = ema13_series
+        closed_df_with_ind["ema_fast"] = ema_fast_series
+        closed_df_with_ind["ema_slow"] = ema_slow_series
+        closed_df_with_ind["ema200"] = ema200_series
+        closed_df_with_ind["volume_ma20"] = volume_ma20_series
+        closed_df_with_ind["atr"] = atr_series
+        closed_df_with_ind["kc_middle"] = kc_basis
+        closed_df_with_ind["kc_upper"] = kc_upper_series
+        closed_df_with_ind["kc_lower"] = kc_lower_series
+        closed_df_with_ind["bandwidth"] = kc_res["bandwidth"]
+        closed_df_with_ind["ma_slow"] = ema_slow_series
+        closed_df_with_ind["ma_slow_slope"] = ema_slow_series - ema_slow_series.shift(2)
+        closed_df_with_ind["body_size"] = (closed_df_with_ind["close"] - closed_df_with_ind["open"]).abs()
+        closed_df_with_ind["upper_band"] = kc_upper_series
+        closed_df_with_ind["lower_band"] = kc_lower_series
+        closed_df_with_ind["middle_band"] = kc_basis
 
-        # 提取最新與前一根數值
-        last_idx = df_calc.index[-1]
-        prev_idx = df_calc.index[-2]
-
-        last_row = df_calc.loc[last_idx]
-        prev_row = df_calc.loc[prev_idx]
+        # 提取最新與前一根有效收線 K 棒 (嚴格保留 is_closed=True)
+        last_row = closed_df.iloc[-1]
+        prev_row = closed_df.iloc[-2]
 
         curr_k = {
             "open": float(last_row.get("open", 0.0)),
@@ -189,6 +203,7 @@ class DataPipeline:
             "low": float(last_row.get("low", 0.0)),
             "close": float(last_row.get("close", 0.0)),
             "volume": float(last_row.get("volume", 0.0)),
+            "is_closed": True,
         }
         prev_k = {
             "open": float(prev_row.get("open", 0.0)),
@@ -196,7 +211,12 @@ class DataPipeline:
             "low": float(prev_row.get("low", 0.0)),
             "close": float(prev_row.get("close", 0.0)),
             "volume": float(prev_row.get("volume", 0.0)),
+            "is_closed": True,
         }
+        if "timestamp" in last_row:
+            curr_k["timestamp"] = int(last_row["timestamp"])
+        if "timestamp" in prev_row:
+            prev_k["timestamp"] = int(prev_row["timestamp"])
 
         ma3 = float(ma3_series.iloc[-1]) if not pd.isna(ma3_series.iloc[-1]) else curr_k["close"]
         prev_ma3 = float(ma3_series.iloc[-2]) if len(ma3_series) > 1 and not pd.isna(ma3_series.iloc[-2]) else ma3
@@ -221,26 +241,15 @@ class DataPipeline:
         kc_mid = float(kc_basis.iloc[-1]) if not pd.isna(kc_basis.iloc[-1]) else curr_k["close"]
         kc_low = float(kc_lower_series.iloc[-1]) if not pd.isna(kc_lower_series.iloc[-1]) else curr_k["close"]
 
-        from core.services.candle_data import closed_entry_candles
-        closed_for_slope = closed_entry_candles(df_calc)
-        if closed_for_slope.empty:
-            return None
-        closed_positions = [int(df_calc.index.get_loc(index)) for index in closed_for_slope.index]
-        closed_latest_pos = closed_positions[-1]
-        closed_prior_pos = closed_positions[-2] if len(closed_positions) >= 2 else closed_latest_pos
-        closed_slope_base_pos = closed_positions[-3] if len(closed_positions) >= 3 else closed_prior_pos
-        prev_kc_mid = float(kc_basis.iloc[closed_prior_pos])
-        closed_kc_mid = float(kc_basis.iloc[closed_latest_pos])
-        closed_slope_base = float(kc_basis.iloc[closed_slope_base_pos])
-        n_kc_step = max(1, len(closed_positions[-3:]) - 1)
-        # Short 3-closed-bar (two-step) slope keeps 1m reversal state responsive.
-        kc_middle_slope = (closed_kc_mid - closed_slope_base) / n_kc_step
-        closed_price = float(df_calc.iloc[closed_latest_pos]["close"])
+        prev_kc_mid = float(kc_basis.iloc[-2]) if len(kc_basis) >= 2 else kc_mid
+        closed_slope_base = float(kc_basis.iloc[-3]) if len(kc_basis) >= 3 else prev_kc_mid
+        n_kc_step = 2 if len(kc_basis) >= 3 else 1
+        kc_middle_slope = (kc_mid - closed_slope_base) / n_kc_step
+        closed_price = curr_k["close"]
 
         # ─── 拉遠視角 (Zoomed-Out 10~60 根 K 棒) 結構與趨勢審查 ───
-        # 避免空頭下降通道中出現 2~3 根反彈小陽線導致 2-bar kc_middle_slope 微正 (+7e-7) 就誤判為多頭！
-        kc_base_10_pos = closed_positions[-11] if len(closed_positions) >= 11 else closed_positions[0]
-        kc_slope_10 = (closed_kc_mid - float(kc_basis.iloc[kc_base_10_pos])) / max(1, len(closed_positions[-11:]) - 1)
+        kc_base_10_pos = -11 if len(kc_basis) >= 11 else 0
+        kc_slope_10 = (kc_mid - float(kc_basis.iloc[kc_base_10_pos])) / max(1, len(kc_basis[-11:]) - 1)
         ema60_early_series = close.ewm(span=60, adjust=False).mean()
         ema60_early = float(ema60_early_series.iloc[-1]) if not pd.isna(ema60_early_series.iloc[-1]) else closed_price
         prev_ema60_early = float(ema60_early_series.iloc[-11]) if len(ema60_early_series) >= 11 else ema60_early
@@ -258,8 +267,8 @@ class DataPipeline:
             kc_trend = "BULLISH"
         else:
             kc_trend = (
-                "BULLISH" if kc_middle_slope > 0 and closed_price >= closed_kc_mid and not zoomed_out_bearish
-                else "BEARISH" if kc_middle_slope < 0 and closed_price <= closed_kc_mid and not zoomed_out_bullish
+                "BULLISH" if kc_middle_slope > 0 and closed_price >= kc_mid and not zoomed_out_bearish
+                else "BEARISH" if kc_middle_slope < 0 and closed_price <= kc_mid and not zoomed_out_bullish
                 else ("BEARISH" if zoomed_out_bearish else ("BULLISH" if zoomed_out_bullish else "NEUTRAL"))
             )
 
@@ -268,10 +277,6 @@ class DataPipeline:
         prev_ema5 = float(ema5_series.iloc[-2]) if len(ema5_series) > 1 and not pd.isna(ema5_series.iloc[-2]) else ema5_val
         prev_ema13 = float(ema13_series.iloc[-2]) if len(ema13_series) > 1 and not pd.isna(ema13_series.iloc[-2]) else ema13_val
 
-        curr_k["ma3"] = ma3
-        curr_k["ma3_slope"] = ma3_slope
-        curr_k["ma5"] = ma5
-        curr_k["ma15"] = ma15
         curr_k["ma3"] = ma3
         curr_k["ma3_slope"] = ma3_slope
         curr_k["ma5"] = ma5
@@ -300,12 +305,19 @@ class DataPipeline:
 
         atr_val = float(atr_series.iloc[-1])
 
-        quote = float(current_price) if current_price is not None and current_price > 0 else curr_k["close"]
+        # 即時報價分離：策略指標取自 closed_df，即時報價取自 current_price 或 live bar close
+        has_live_bar = len(df) > len(closed_df)
+        if current_price is not None and float(current_price) > 0:
+            quote = float(current_price)
+        elif has_live_bar and "close" in df.columns:
+            quote = float(df.iloc[-1]["close"])
+        else:
+            quote = curr_k["close"]
 
-        # 持倉歷史極值與 peak_roe
+        # 持倉歷史極值與 peak_roe (包含 live 價格範圍與持倉追蹤)
         peak_roe = 0.0
-        min_price = float(df_calc["low"].iloc[-20:].min())
-        max_price = float(df_calc["high"].iloc[-20:].max())
+        min_price = float(df["low"].iloc[-20:].min()) if "low" in df.columns else float(closed_df["low"].iloc[-20:].min())
+        max_price = float(df["high"].iloc[-20:].max()) if "high" in df.columns else float(closed_df["high"].iloc[-20:].max())
 
         if position:
             entry_p = float(position.get("entry_price") or 0.0)
@@ -361,6 +373,25 @@ class DataPipeline:
             macro_trend = "BEARISH"
         else:
             macro_trend = "NEUTRAL"
+
+        # 構建帶有指標的 df_calc 並根據實際驗證結果設置 entry_finality_verified
+        # 嚴格禁止無條件設 True：只有收線資料通過完整性驗證且足夠計算指標，非異常 fallback 時方為 True
+        is_verified = bool(not is_fallback_for_position and len(closed_df) >= 20)
+        if has_live_bar or is_fallback_for_position:
+            df_calc = df.copy()
+            for col in closed_df_with_ind.columns:
+                if col not in df_calc.columns or col in ("ma3", "ma5", "ma15", "atr", "kc_upper", "kc_middle", "kc_lower"):
+                    df_calc[col] = closed_df_with_ind[col]
+            if hasattr(df_calc, "attrs"):
+                df_calc.attrs["entry_finality_verified"] = is_verified
+                df_calc.attrs["macro_trend"] = macro_trend
+                df_calc.attrs.setdefault("timeframe_ms", df.attrs.get("timeframe_ms", 60_000))
+        else:
+            df_calc = closed_df_with_ind
+            if hasattr(df_calc, "attrs"):
+                df_calc.attrs["entry_finality_verified"] = is_verified
+                df_calc.attrs["macro_trend"] = macro_trend
+                df_calc.attrs.setdefault("timeframe_ms", df.attrs.get("timeframe_ms", 60_000))
 
         # Carry the snapshot's explicitly computed regime with its frame so
         # downstream gates can distinguish a valid neutral market from a

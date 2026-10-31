@@ -25,10 +25,10 @@ from typing import Optional, Tuple, Dict, Any
 
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
-# 階梯門檻常數
-TIER1_START_ROE_PCT = 10.0   # 階段 1 啟動門檻：淨利率 +10.0%
+# 階梯門檻常數（2026-10-31 最新授權：實質獲利展開 >= 5% 立即啟動鎖利，拒絕坐過山車）
+TIER1_START_ROE_PCT = 5.0    # 階段 1 啟動門檻：淨利率 +5.0% (實質波段展開)
 TIER1_RETAIN_RATIO = 0.70    # 階段 1 鎖利保留率：70% (允許回吐 30%)
-TIER2_START_ROE_PCT = 20.0   # 階段 2 啟動門檻：淨利率 +20.0%
+TIER2_START_ROE_PCT = 15.0   # 階段 2 啟動門檻：淨利率 +15.0%
 TIER2_RETAIN_RATIO = 0.85    # 階段 2 鎖利保留率：85% (允許回吐 15%)
 
 EXIT_REASON_TIER1 = "EXIT_BY_STAGED_PROFIT_LOCK_TIER1"
@@ -340,9 +340,9 @@ def evaluate_staged_profit_lock(
         or (floor_roe is not None and (net_roe_pct <= floor_roe or math.isclose(net_roe_pct, floor_roe, rel_tol=1e-9, abs_tol=1e-9)))
     )
 
-    # 🎯 方案 1 觸發判定：最高淨利 >= 10%，且自最高點回吐 >= 20%
+    # 🎯 方案 1 觸發判定：最高淨利 >= 5.0%，且自最高點回吐 >= 20%
     scheme1_triggered = False
-    if highest_pnl > 0 and (highest_roe >= 10.0 or (entry_p > 0 and (highest_pnl / entry_p) >= 0.10)):
+    if highest_pnl > 0 and (highest_roe >= 5.0 or (entry_p > 0 and (highest_pnl / entry_p) >= 0.05)):
         profit_drawdown = (highest_pnl - net_pnl) / highest_pnl
         if profit_drawdown >= 0.20 or math.isclose(profit_drawdown, 0.20, rel_tol=1e-9, abs_tol=1e-9):
             scheme1_triggered = True
@@ -418,8 +418,12 @@ def check_stage0_veto_hold(
     highest_roe = float(state.get("highest_net_roe_pct", 0.0))
 
     if stage == 0 and highest_roe < TIER1_START_ROE_PCT:
-        # 檢查候選出口是否屬於需忽略的微觀震盪出口
+        # 重大結構破位 (TREND_BROKEN / KC_MID_STRUCTURE_BROKEN) 絕不可被 Stage 0 盲目否決，必須及時離場避險
         reason_upper = str(candidate_reason).upper()
+        if "TREND_BROKEN" in reason_upper or "KC_MID_STRUCTURE_BROKEN" in reason_upper or "MA15" in reason_upper:
+            return False, None, {}
+
+        # 僅對微觀盤中抖動與小回踩執行成本區防洗
         should_veto = (
             candidate_reason in STAGE0_VETO_EXIT_CANDIDATES
             or "MA3" in reason_upper
@@ -435,8 +439,8 @@ def check_stage0_veto_hold(
                 "suppressed_exit_reason": candidate_reason,
                 "cause": (
                     f"階段0防震盪鎖倉鐵律一票否決 (VETO_HOLD): "
-                    f"歷史最高淨利率未達10% (peak={highest_roe:.2f}% < 10%)，"
-                    f"忽略MA3/中軌及微觀反轉雜訊 ({candidate_reason})，強制續抱！"
+                    f"歷史最高淨利率未達{TIER1_START_ROE_PCT:.1f}% (peak={highest_roe:.2f}% < {TIER1_START_ROE_PCT:.1f}%)，"
+                    f"忽略微觀反轉雜訊 ({candidate_reason})，強制續抱！"
                 ),
             }
             return True, "VETO_HOLD", veto_meta

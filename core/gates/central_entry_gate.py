@@ -1098,6 +1098,8 @@ class CentralEntryGate:
                 metrics["ma5_prev"] = float(getattr(data, "prev_ma5", prev_k.get("ma5", metrics["ma5_curr"])))
                 metrics["ma15_curr"] = float(getattr(data, "ma15", curr_k.get("ma15", metrics["close"])))
                 metrics["ma15_prev"] = float(prev_k.get("ma15", metrics["ma15_curr"]))
+                metrics["ma3_curr"] = float(getattr(data, "ma3", curr_k.get("ma3", metrics["close"])))
+                metrics["ma3_prev"] = float(getattr(data, "prev_ma3", prev_k.get("ma3", metrics["ma3_curr"])))
 
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(getattr(data, "min_prev_width", curr_w * 0.95))

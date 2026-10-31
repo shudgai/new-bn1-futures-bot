@@ -757,7 +757,14 @@ class ExecutionManager:
                     macro_trend = "BEARISH"
                 if struct_eval.get("key_pivot_price", 0) > 0:
                     cls._symbol_key_pivot[symbol] = struct_eval["key_pivot_price"]
-            elif struct_eval.get("event") in ("MACRO_BULLISH_ENDED", "MACRO_BEARISH_ENDED"):
+            elif struct_eval.get("event") in ("MACRO_BULLISH_ENDED", "MACRO_BEARISH_ENDED") and not (
+                # 防抖：僅靠穿越中軌的翻轉，價格與 MA3 須離開中軌 0.1 ATR 緩衝帶才承認，避免貼軌來回翻轉
+                "KC 中軌" in str(struct_eval.get("reason", ""))
+                and not (
+                    (struct_eval["macro_trend"] == "BULLISH" and c_c > kc_mid + 0.1 * atr_v and m3_c > kc_mid)
+                    or (struct_eval["macro_trend"] == "BEARISH" and c_c < kc_mid - 0.1 * atr_v and m3_c < kc_mid)
+                )
+            ):
                 # 雙重確認結構打破，宣告大週期結束與反轉
                 new_trend = struct_eval["macro_trend"]
                 cls._symbol_macro_trend[symbol] = new_trend
@@ -781,21 +788,31 @@ class ExecutionManager:
         # 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）
         # 圖1：MA3 與收盤價穿過中軌進入上半通道，100% 嚴禁判定為熊市！即刻轉為牛市！
         # 圖2：MA3 與收盤價穿過中軌進入下半通道，100% 嚴禁判定為牛市！即刻轉為熊市！
-        if (m3_c >= kc_mid and c_c >= kc_mid) or (m3_c > kc_mid and m3_c >= m3_p):
+        _flip_buf = 0.1 * atr_v
+        _prior_now = cls._symbol_macro_trend.get(symbol)
+        _bull_mid = (m3_c >= kc_mid and c_c >= kc_mid) or (m3_c > kc_mid and m3_c >= m3_p)
+        _bear_mid = (m3_c <= kc_mid and c_c <= kc_mid) or (m3_c < kc_mid and m3_c <= m3_p)
+        # 防抖：與既有大週期標籤相反的翻轉，須超出中軌 0.1 ATR 緩衝帶；同向或首次建立不受限
+        if _bull_mid and _prior_now == "BEARISH" and not (c_c > kc_mid + _flip_buf and m3_c > kc_mid + _flip_buf):
+            _bull_mid = False
+        if _bear_mid and _prior_now == "BULLISH" and not (c_c < kc_mid - _flip_buf and m3_c < kc_mid - _flip_buf):
+            _bear_mid = False
+        if _bull_mid:
             is_zoomed_out_bearish = False
             is_zoomed_out_bullish = True
             macro_trend = "BULLISH"
             cls._symbol_macro_trend[symbol] = "BULLISH"
-        elif (m3_c <= kc_mid and c_c <= kc_mid) or (m3_c < kc_mid and m3_c <= m3_p):
+            calc_pivot = find_htf_key_pivot(htf_data_for_struct, "BULLISH")
+            if calc_pivot > 0:
+                cls._symbol_key_pivot[symbol] = calc_pivot
+        elif _bear_mid:
             is_zoomed_out_bullish = False
             is_zoomed_out_bearish = True
             macro_trend = "BEARISH"
             cls._symbol_macro_trend[symbol] = "BEARISH"
-            if initial_macro:
-                cls._symbol_macro_trend[symbol] = initial_macro
-                calc_pivot = find_htf_key_pivot(htf_data_for_struct, initial_macro)
-                if calc_pivot > 0:
-                    cls._symbol_key_pivot[symbol] = calc_pivot
+            calc_pivot = find_htf_key_pivot(htf_data_for_struct, "BEARISH")
+            if calc_pivot > 0:
+                cls._symbol_key_pivot[symbol] = calc_pivot
 
         # MTF 四大情境狀態標記（情況 A: WAIT_REBOUND / 情況 B: OPEN_SHORT / 情況 C: WAIT_PULLBACK / 情況 D: OPEN_LONG）
         if is_zoomed_out_bearish:
@@ -1877,23 +1894,34 @@ class ExecutionManager:
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
-            # 🛡️ 【開倉後回踩防洗鐵律（2026-10-30 最高授權：開倉後回踩不平倉）】：
-            # 1. 成本區間正常呼吸回踩（peak_roe_pct < 10.0 且 favorable_gain_atr < 1.2）：
-            #    價格在成本價附近的任何回踩（小陰小陽、跌破MA3/MA15），100% 判定為「成本區間正常呼吸回踩」，一票否決平倉！
-            # 2. 守穩中軌與 MA15 結構續抱：
-            #    多單只要收盤守在 MA15 或 KC 中軌上方，普通平倉一律駁回，死抱主升段！
-            #    空單只要收盤壓在 MA15 或 KC 中軌下方，普通平倉一律駁回，死抱主跌段！
-            # 唯一例外：絕對安全避險 (is_absolute_safety) 或單筆硬止損 (虧損 >= 2.0%) 或 5分鐘中軌走平撤退 (is_stagnation_exit)
-            if should_exit and not is_absolute_safety:
+            # 🛡️ 【持倉呼吸與結構破位鐵律（落實 2026-10-31 最新平倉硬性條件）】：
+            # 1. 強勢續抱區：多單守在 MA15 與 KC 中軌之上、空單壓在 MA15 與 KC 中軌之下時，堅定續抱！
+            # 2. 成本區間正常回踩：只有在價格守穩 MA15/KC 中軌同側時的小陰小陽，方視為呼吸回踩。
+            # 3. 破位平倉與一鍵翻單鐵律：
+            #    - 多單實體收盤跌破 MA15 且 MA3 向下 (或大週期轉為 BEARISH)：100% 授權平多，嚴禁任何 VETO_HOLD！
+            #    - 空單實體收盤突破 MA15 且 MA3 向上 (或大週期轉為 BULLISH)：100% 授權平空，嚴禁任何 VETO_HOLD！
+            is_line_broken = bool(
+                (pos_side == "LONG" and (closed_c < m15_c or closed_c < closed_kc_mid) and (m3_c <= m3_p or macro_trend == "BEARISH"))
+                or (pos_side == "SHORT" and (closed_c > m15_c or closed_c > closed_kc_mid) and (m3_c >= m3_p or macro_trend == "BULLISH"))
+            )
+
+            if is_line_broken:
+                should_exit = True
+                reason = "EXIT_BY_TREND_LINE_BROKEN"
+                meta = {
+                    **(meta or {}),
+                    "cause": f"{pos_side} 觸發硬性線型結構破位 (close={closed_c:.6f}, ma15={m15_c:.6f}, mid={closed_kc_mid:.6f}, macro={macro_trend})，及時離場避險或翻單！",
+                }
+
+            if should_exit and not is_absolute_safety and not is_line_broken:
                 is_stagnation_exit = bool(reason == "EXIT_BY_KC_MIDDLE_FLAT_EXHAUSTION")
                 if not is_stagnation_exit:
-                    is_profit_unexpanded = bool(peak_roe_pct < 10.0 and favorable_gain_atr < 1.2)
+                    is_profit_unexpanded = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.5)
                     current_loss_pct = ((pos_entry - curr_quote) / pos_entry) if (pos_side == "LONG" and pos_entry > 0) else (((curr_quote - pos_entry) / pos_entry) if (pos_side == "SHORT" and pos_entry > 0) else 0.0)
-                    is_within_normal_breathing = bool(current_loss_pct < 0.020 and (atr_v <= 0 or (current_loss_pct * pos_entry) < 2.5 * atr_v))
+                    is_within_normal_breathing = bool(current_loss_pct < 0.010 and (closed_c >= m15_c if pos_side == "LONG" else closed_c <= m15_c))
                     if is_profit_unexpanded and is_within_normal_breathing:
                         logger.info(
-                            f"🛡️ [VETO_PULLBACK_HOLD] {symbol} 開倉後回踩不平倉！波段未實質展開 (peak_roe={peak_roe_pct:.2f}% < 10%, loss={current_loss_pct*100:.2f}%)，"
-                            f"判定為成本區間正常呼吸回踩，100% 一票否決平倉請求 ({reason})，拒絕提前割肉下車！"
+                            f"🛡️ [VETO_PULLBACK_HOLD] {symbol} 守穩 MA15 成本區正常呼吸回踩，一票否決平倉請求 ({reason})！"
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_COST_PULLBACK_BREATHING"}
 
@@ -1980,11 +2008,13 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🛑 2026-10-31 最高防雙巴鐵律：全面廢除同 K 棒秒級原子反手 (DISABLE_POSITION_FLIP)
-                # 解決 23:03 多單平倉立刻反手做空 (砍在低點) ➔ 23:05 空單平倉立刻反手做多 (追在高點) 的致命連環虧損痛點！
-                # 平倉後必須強制進入冷卻期 (180 秒)，等待市場走穩並經由嚴格 Gate 審查方可重新建倉！
-                can_flip = False
-                logger.debug(f"🛡️ [DISABLE_POSITION_FLIP] {symbol} 平倉後全面禁止同 K 棒秒級反手，強制進入 3 根 K 棒冷卻防雙巴！")
+                # 🚀 結構破位極速一鍵轉向 (落實 2026-10-31 最高授權：大週期反轉時一鍵翻單)
+                # 熊市轉牛市: CLOSE_SHORT_AND_OPEN_LONG
+                # 牛市轉熊市: CLOSE_LONG_AND_OPEN_SHORT
+                can_flip = bool(
+                    (pos_side == "LONG" and (macro_trend == "BEARISH" or is_real_peak))
+                    or (pos_side == "SHORT" and (macro_trend == "BULLISH" or is_real_bottom))
+                )
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"

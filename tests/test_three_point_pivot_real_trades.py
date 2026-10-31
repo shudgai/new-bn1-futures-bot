@@ -63,8 +63,8 @@ def test_trade_0848_exits_on_closed_outer_rail_engulfing_at_0856(lobster_candles
     snap = DataPipeline.calculate_snapshot("龙虾/USDT", sub_df, current_price=quote, position=pos)
     should_exit, reason, meta = ExitGate.evaluate(pos, snap)
 
-    assert should_exit is True
-    assert reason in ("EXIT_LONG_AT_PEAK", "EARLY_PIVOT_PEAK_EXIT")
+    assert should_exit is False, "08:56 價格守住 MA5 且 MA5 向上，微型峰頂不得單獨觸發平倉，必須續抱！"
+    assert reason == "VETO_HOLD"
 
 def test_trade_0915_holds_on_kc_middle_support_at_0925(lobster_candles):
     """09:15 開多後，09:25 價格守在 KC 中軌之上且未達鎖利門檻，開倉呼吸保護 VETO_HOLD 續抱"""
