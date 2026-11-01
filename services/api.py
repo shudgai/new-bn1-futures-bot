@@ -911,7 +911,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             action = str(trade.get("action") or "")
             if action not in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"):
                 continue
-            trade_timestamp = int(trade.get("id") or 0)
+            trade_timestamp = int(trade.get("channel_confirmation_bar_id") or trade.get("id") or 0)
             matching_bars = df.index[df["timestamp"] <= trade_timestamp]
             if len(matching_bars) == 0:
                 continue

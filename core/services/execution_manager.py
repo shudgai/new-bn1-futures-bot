@@ -2575,9 +2575,9 @@ class ExecutionManager:
                             f"🛑 [LONG_DOUBLE_VETO] {symbol} 做多位置否決 (m3={m3_c:.6f} < m15={m15_c:.6f})，空頭排列嚴防下殺接飛刀！"
                         )
                 else:
-                    is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
-                    is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
-                    is_green_candle_now = bool(c_c > c_o)
+                    is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and closed_c_entry > closed_o_entry and (not is_heavy_bear_smash))
+                    is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o and closed_c_entry > closed_o_entry)
+                    is_green_candle_now = bool(c_c > c_o and closed_c_entry > closed_o_entry)
                     is_ma3_up_now = bool(m3_c > m3_p)
                     if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_anti_chase_long_veto) and is_green_candle_now and is_ma3_up_now:
                         can_open_long = True
@@ -2636,9 +2636,9 @@ class ExecutionManager:
                             f"🛑 [SHORT_DOUBLE_VETO] {symbol} 做空位置否決 (m3={m3_c:.6f} > m15={m15_c:.6f})，多頭排列嚴防逆勢賣空！"
                         )
                 else:
-                    is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
-                    is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c)
-                    is_red_candle_now = bool(c_c < c_o)
+                    is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and closed_c_entry < closed_o_entry and (not is_heavy_bull_surge))
+                    is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c and closed_c_entry < closed_o_entry)
+                    is_red_candle_now = bool(c_c < c_o and closed_c_entry < closed_o_entry)
                     is_ma3_down_now = bool(m3_c < m3_p)
                     if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_anti_chase_short_veto) and is_red_candle_now and is_ma3_down_now:
                         can_open_short = True
@@ -2721,8 +2721,8 @@ class ExecutionManager:
                     ma5_curr=float(market_data.curr_k.get("ma5", m3_c) or m3_c),
                     direction_override=False,
                     ma15_curr=m15_c,
-                    curr_close=c_c,
-                    curr_open=c_o,
+                    curr_close=closed_c_entry if (closed_c_entry is not None and math.isfinite(closed_c_entry)) else c_c,
+                    curr_open=closed_o_entry if (closed_o_entry is not None and math.isfinite(closed_o_entry)) else c_o,
                 )
                 if not p_dir_ok:
                     logger.info(
@@ -4442,6 +4442,41 @@ class ExecutionManager:
                 entry_context["entry_gate_frame"] = frame
                 entry_context["frame"] = frame
                 entry_context["raw_df"] = frame
+
+            # 🛑 2026-11-01 執行邊界物理總閘門：開多必綠K、開空必紅K，嚴禁任何反向K棒或盤中逆向開倉
+            if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 1:
+                last_f_row = frame.iloc[-1]
+                prev_f_row = frame.iloc[-2] if len(frame) >= 2 else last_f_row
+                f_is_closed = bool(last_f_row.get("is_closed", True))
+                eval_f_row = last_f_row if f_is_closed else prev_f_row
+                eval_f_c = float(eval_f_row.get("close", price))
+                eval_f_o = float(eval_f_row.get("open", price))
+                if side.upper() == "SHORT":
+                    if eval_f_c >= eval_f_o:
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_GREEN_CANDLE] {symbol} 開空硬攔截：已收線K棒非紅K陰線 "
+                            f"(close={eval_f_c:.6f} >= open={eval_f_o:.6f})，向下紅K才能開空，強制拒單！"
+                        )
+                        return False
+                    if price > eval_f_c and (price - eval_f_c) > 0.3 * atr:
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_BOUNCE] {symbol} 開空硬攔截：即時報價正大幅向上反彈 "
+                            f"(price={price:.6f} > close={eval_f_c:.6f})，嚴防逆勢追空！"
+                        )
+                        return False
+                elif side.upper() == "LONG":
+                    if eval_f_c <= eval_f_o:
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_RED_CANDLE] {symbol} 開多硬攔截：已收線K棒非綠K陽線 "
+                            f"(close={eval_f_c:.6f} <= open={eval_f_o:.6f})，向上綠K才能開多，強制拒單！"
+                        )
+                        return False
+                    if price < eval_f_c and (eval_f_c - price) > 0.3 * atr:
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_DUMP] {symbol} 開多硬攔截：即時報價正大幅向下急殺 "
+                            f"(price={price:.6f} < close={eval_f_c:.6f})，嚴防逆勢接飛刀！"
+                        )
+                        return False
 
             if hasattr(account, "open_position"):
                 opened = await account.open_position(
