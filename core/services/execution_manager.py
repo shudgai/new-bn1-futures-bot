@@ -908,13 +908,13 @@ class ExecutionManager:
         # 2. 【震盪區 / 均線糾纏判定 (is_chop_zone)】：
         # 檢查近 8 根 K 棒內 MA3 與 KC 中軌 (或 MA15) 是否反覆交錯糾纏 (>= 2 次交錯)，
         # 或 KC 中軌斜率極度走平 (|kc_slope| < 0.02 * ATR 且未突破外軌)，或處於 RANGE 猴市震盪區！
-        # 針對妖幣：若出現強勢突破/爆量拉升 (c_bd >= 0.40 * atr_v 且站穩中軌與 MA15 順向發散)，代表脫離盤整正式點火！
+        # 針對妖幣：只有破軌或大實體（c_bd >= 0.70 * atr_v）且順向發散才算點火，普通小K絕不可解除震盪鎖定！
         is_meme_breakout_ignition = bool(
             atr_v > 0
-            and c_bd >= 0.40 * atr_v
+            and c_bd >= 0.70 * atr_v
             and (
-                (c_c > c_o and c_c > kc_mid and c_c > m15_c and m3_c > m15_c and m3_c > m3_p and kc_slope >= 0)
-                or (c_c < c_o and c_c < kc_mid and c_c < m15_c and m3_c < m15_c and m3_c < m3_p and kc_slope <= 0)
+                (c_c > c_o and c_c > kc_mid and c_c > m15_c and m3_c > m15_c and m3_c > m3_p and kc_slope >= 0.05 * atr_v)
+                or (c_c < c_o and c_c < kc_mid and c_c < m15_c and m3_c < m15_c and m3_c < m3_p and kc_slope <= -0.05 * atr_v)
             )
         )
         ma3_mid_cross_8 = 0
@@ -1897,15 +1897,22 @@ class ExecutionManager:
                     else:
                         return {"status": "HOLD", "symbol": symbol, "reason": "TREND_LOCK_MASTER_LOCK_LONG"}
 
-            # 🛡️ 【持倉呼吸與結構破位鐵律（落實 2026-10-31 最新平倉硬性條件）】：
+            # 🛡️ 【持倉呼吸與結構破位鐵律（落實 2026-10-31/11-01 最新平倉硬性條件）】：
             # 1. 強勢續抱區：多單守在 MA15 與 KC 中軌之上、空單壓在 MA15 與 KC 中軌之下時，堅定續抱！
             # 2. 成本區間正常回踩：只有在價格守穩 MA15/KC 中軌同側時的小陰小陽，方視為呼吸回踩。
-            # 3. 破位平倉與一鍵翻單鐵律：
-            #    - 多單實體收盤跌破 MA15 且 MA3 向下 (或大週期轉為 BEARISH)：100% 授權平多，嚴禁任何 VETO_HOLD！
-            #    - 空單實體收盤突破 MA15 且 MA3 向上 (或大週期轉為 BULLISH)：100% 授權平空，嚴禁任何 VETO_HOLD！
+            # 3. 破位平倉鐵律（防洗盤：回踩不要平倉！）：
+            #    - 普通小回踩（實體 < 0.7 ATR 或尚未實質獲利展開催生真峰谷時）絕不提早割肉！
+            #    - 只有在收盤實體明確貫穿破位（實體 >= 0.7 ATR）或真峰谷確立時才放行 EXIT_BY_TREND_LINE_BROKEN！
+            is_counter_reversal_bar = bool(
+                (pos_side == "LONG" and (closed_o - closed_c >= 0.70 * atr_v or curr_quote < m15_c - 0.20 * atr_v))
+                or (pos_side == "SHORT" and (closed_c - closed_o >= 0.70 * atr_v or curr_quote > m15_c + 0.20 * atr_v))
+            )
             is_line_broken = bool(
-                (pos_side == "LONG" and (closed_c < m15_c or closed_c < closed_kc_mid) and (m3_c <= m3_p or macro_trend == "BEARISH"))
-                or (pos_side == "SHORT" and (closed_c > m15_c or closed_c > closed_kc_mid) and (m3_c >= m3_p or macro_trend == "BULLISH"))
+                is_counter_reversal_bar
+                and (
+                    (pos_side == "LONG" and (closed_c < m15_c or closed_c < closed_kc_mid) and (m3_c <= m3_p or macro_trend == "BEARISH"))
+                    or (pos_side == "SHORT" and (closed_c > m15_c or closed_c > closed_kc_mid) and (m3_c >= m3_p or macro_trend == "BULLISH"))
+                )
             )
 
             if is_line_broken:
@@ -1913,7 +1920,7 @@ class ExecutionManager:
                 reason = "EXIT_BY_TREND_LINE_BROKEN"
                 meta = {
                     **(meta or {}),
-                    "cause": f"{pos_side} 觸發硬性線型結構破位 (close={closed_c:.6f}, ma15={m15_c:.6f}, mid={closed_kc_mid:.6f}, macro={macro_trend})，及時離場避險或翻單！",
+                    "cause": f"{pos_side} 觸發硬性線型結構實體破位 (close={closed_c:.6f}, ma15={m15_c:.6f}, mid={closed_kc_mid:.6f}, macro={macro_trend})，及時離場避險或翻單！",
                 }
 
             if should_exit and not is_absolute_safety and not is_line_broken:
@@ -2523,6 +2530,9 @@ class ExecutionManager:
                     f"(kc_width={kc_width_ratio:.2%}, sqz={is_kc_narrow_squeeze}, entangled={is_ma_entangled}, flat={is_slope_flat_chop})，"
                     f"100% 一票否決任何開倉指令，維持震盪觀望 (HOLD)！"
                 )
+                can_open_long = False
+                can_open_short = False
+                pivot_triggered = False
 
             # 🚀 2026-10-30 核心授權：牛市/熊市早期開倉機制與雙重一票否決
             # 🛑 2026-10-31 猴市/震盪區鐵律：猴市（RANGE）或震盪市場（is_sideways_market）100% 嚴禁開倉！

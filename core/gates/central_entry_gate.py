@@ -330,10 +330,24 @@ class CentralEntryGate:
                     "soft_market_blacklist": "BYPASSED_FOR_CONFIRMED_PIVOT",
                 })
             elif direction_override:
-                blacklist = (False, "PASS_AGILE_OVERRIDE", {
-                    "direction_override": True,
-                    "soft_market_blacklist": "BYPASSED_FOR_AGILE_OVERRIDE",
-                })
+                # 即使有 direction_override，若身處極度走平中軌或均線糾纏震盪區且未破外軌，絕不可放行！
+                from core.services.candle_data import closed_entry_candles
+                blacklist_frame = closed_entry_candles(entry_frame)
+                is_breakout_candidate = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+                raw_bl = evaluate_market_blacklist(
+                    blacklist_frame, -1, side=side, last_closed_trade=last_trade,
+                    current_bar_index=bar_index, macro_trend=macro_trend,
+                    is_breakout=is_breakout_candidate,
+                )
+                raw_blocked, raw_reason, raw_evidence = raw_bl
+                if raw_blocked and raw_reason in ("VETO_MA3_MA15_CHOP", "VETO_FLAT_MA3_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
+                    blacklist = raw_bl
+                else:
+                    blacklist = (False, "PASS_AGILE_OVERRIDE", {
+                        "direction_override": True,
+                        "soft_market_blacklist": "BYPASSED_FOR_AGILE_OVERRIDE",
+                        "underlying_blacklist_reason": raw_reason,
+                    })
             else:
                 # The entry may be submitted during a forming third candle,
                 # but consolidation classification must use closed evidence.
