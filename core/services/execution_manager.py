@@ -1407,7 +1407,14 @@ class ExecutionManager:
             hold_sec = (time.time() - pos_open_ts) if pos_open_ts > 0 else 0.0
             is_stagnation_no_profit = bool(peak_roe_pct < 5.0 and favorable_gain_atr < 0.8)
 
-            if not should_exit and pos_entry > 0 and hold_sec >= 300.0 and is_stagnation_no_profit:
+            # 🛑 2026-10-31 核心修正：落實使用者鐵律「只要大週期沒變就不要平倉請死抱到底」
+            # 若大週期仍與持倉同向（大週期牛市持多、大週期熊市持空），嚴禁因中軌走平提前平倉！
+            # 唯有大週期已非同向時，才允許在成本附近平倉。
+            is_macro_aligned_hold = bool(
+                (pos_side == "SHORT" and (is_zoomed_out_bearish or macro_trend == "BEARISH"))
+                or (pos_side == "LONG" and (is_zoomed_out_bullish or macro_trend == "BULLISH"))
+            )
+            if not should_exit and pos_entry > 0 and hold_sec >= 300.0 and is_stagnation_no_profit and (not is_macro_aligned_hold):
                 if pos_side == "SHORT":
                     # 空單依託中軌向下推進；若中軌走平或向上 (kc_slope >= -0.000001 或 kc_slope_5_ref >= 0)，且價格受阻在成本價附近 (微虧 < 0.6%)
                     is_kc_mid_flat_or_up = bool(kc_slope >= -0.000001 or kc_slope_5_ref >= 0)
