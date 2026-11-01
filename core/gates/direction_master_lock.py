@@ -100,13 +100,13 @@ def evaluate_direction_master_lock(
         if not pos_ok:
             return False, "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID", details
 
-        # 2. MA3 斜率：當前必須明確向上 (絕不可豁免)
+        # 2. MA3 斜率：當前必須明確向上 (絕不可豁免，向上只能開多)
         is_ma3_trending_up = ma3_curr > ma3_prev
         if not is_ma3_trending_up:
             return False, "BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN", details
 
-        # 3. MA3 與慢線：特例/轉折/穿中軌豁免慢線限制；常規開倉要求 MA3 高於慢線
-        is_ma3_above_slow = True if allow_override else ((ma3_curr >= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr >= kc_middle))
+        # 3. MA3 與慢線：做多 MA3 必須嚴格位於 MA15 上方 (絕不可豁免，ma3沒在ma15上方不可以開多)
+        is_ma3_above_slow = ((ma3_curr > ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr > kc_middle))
         if not is_ma3_above_slow:
             return False, "BLOCKED_DIRECTION_LOCK_LONG_MA3_BELOW_SLOW", details
 
@@ -128,13 +128,13 @@ def evaluate_direction_master_lock(
         if not pos_ok:
             return False, "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID", details
 
-        # 2. MA3 斜率：當前必須明確向下 (絕不可豁免)
+        # 2. MA3 斜率：當前必須明確向下 (絕不可豁免，向下只能開空)
         is_ma3_trending_down = ma3_curr < ma3_prev
         if not is_ma3_trending_down:
             return False, "BLOCKED_DIRECTION_LOCK_SHORT_SLOPE_UP", details
 
-        # 3. MA3 與慢線：特例/轉折/穿中軌豁免慢線限制；常規開倉要求 MA3 低於慢線
-        is_ma3_below_slow = True if allow_override else ((ma3_curr <= ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr <= kc_middle))
+        # 3. MA3 與慢線：做空 MA3 必須嚴格位於 MA15 下方 (絕不可豁免，ma3沒在ma15下方不要開空)
+        is_ma3_below_slow = ((ma3_curr < ma15_curr) if (ma15_curr is not None and math.isfinite(ma15_curr)) else (ma3_curr < kc_middle))
         if not is_ma3_below_slow:
             return False, "BLOCKED_DIRECTION_LOCK_SHORT_MA3_ABOVE_SLOW", details
 

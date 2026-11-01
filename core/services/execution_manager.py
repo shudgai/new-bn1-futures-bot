@@ -3778,26 +3778,28 @@ class ExecutionManager:
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_ATR_EXTREME_OVERHEATED", "details": heat_msg}
 
                 if candidate_side == "LONG":
-                    if not hard_long_allowed and not (is_meme_contract or is_swing_pivot or is_agile_trigger):
+                    # 🛑 2026-11-01 使用者鐵律：ma3 沒在 ma15 上方且方向向上不可以開多，向上只能開多！
+                    if not hard_long_allowed:
                         logger.warning(
                             f"🛑 [HARD_LONG_VETO] {symbol} {candidate_signal} 違反開多絕對門檻 "
-                            f"(ma3_up={is_ma3_trending_up}, ma3>=slow={is_ma3_above_slow}, bullish={is_candle_bullish})，一票否決！"
+                            f"(ma3_up={is_ma3_trending_up}, ma3>ma15={is_ma3_above_slow}, bullish={is_candle_bullish})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_LONG_MA3_OR_CANDLE"}
-                    if not direction_long_ok and not (is_meme_contract or is_swing_pivot or three_bar_long or is_agile_trigger):
+                    if not direction_long_ok:
                         logger.warning(
                             f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開多方向鎖 "
                             f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_LONG"}
                 elif candidate_side == "SHORT":
-                    if not hard_short_allowed and not (is_meme_contract or is_swing_pivot or is_agile_trigger):
+                    # 🛑 2026-11-01 使用者鐵律：ma3 沒在 ma15 下方且方向沒向下不要開空，向下只能開空！
+                    if not hard_short_allowed:
                         logger.warning(
                             f"🛑 [HARD_SHORT_VETO] {symbol} {candidate_signal} 違反開空絕對門檻 "
-                            f"(ma3_down={is_ma3_trending_down}, ma3<=slow={is_ma3_below_slow}, bearish={is_candle_bearish})，一票否決！"
+                            f"(ma3_down={is_ma3_trending_down}, ma3<ma15={is_ma3_below_slow}, bearish={is_candle_bearish})，一票否決！"
                         )
                         return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_SHORT_MA3_OR_CANDLE"}
-                    if not direction_short_ok and not (is_meme_contract or is_swing_pivot or three_bar_short or is_agile_trigger):
+                    if not direction_short_ok:
                         logger.warning(
                             f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開空方向鎖 "
                             f"(ma3={ma3_curr:.6f}, kc_mid={kc_mid_val:.6f}, ma3_prev={ma3_prev:.6f})，一票否決！"
