@@ -829,8 +829,10 @@ class ExitGate:
         # if unrealized_pct <= hard_loss_threshold: ... [DISABLED]
 
         # 1.2 極端巨型瀑布與高位大賣壓暴跌 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
-        # 依 2026-11-01 最高指示：如果出現大賣壓 (巨型陰線暴跌 >= 1.0 ATR，或單根貫穿中軌) 立即平倉避險，不用等到跌破中軌！
-        if has_candle_history and c_curr is not None:
+        # ⚠️ 最高鐵律：開倉當根（Same-Bar）絕不硬止損、絕不當根平倉！至少須持倉超過當根。
+        from core.gates.holding_protection_gate import is_same_bar_as_entry
+        is_same_bar = is_same_bar_as_entry(pos, raw_df)
+        if has_candle_history and c_curr is not None and not is_same_bar:
             c_open_v = float(c_curr["open"])
             c_close_v = float(c_curr["close"])
             if side == "LONG":

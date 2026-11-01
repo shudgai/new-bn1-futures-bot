@@ -1954,6 +1954,18 @@ class ExecutionManager:
                             )
                             return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
 
+            # 🛑 【持倉呼吸與開倉當根保護鐵律：開倉當根不要硬止損、絕不當根平倉】
+            # 新開倉的第一根 K 棒必須給予足夠的呼吸空間，嚴禁在剛開倉的同一根 K 棒觸發硬止損或破位平倉（除非已累積實質獲利出真峰谷）！
+            if should_exit:
+                from core.gates.holding_protection_gate import is_same_bar_as_entry
+                is_entry_same_bar = is_same_bar_as_entry(current_position, getattr(market_data, "raw_df", None))
+                if is_entry_same_bar and not is_profit_lock and not is_pivot_exit:
+                    logger.info(
+                        f"🛡️ [VETO_SAME_BAR_HARD_SL] {symbol} 處於開倉進場當根 K 棒 (Same-Bar)，"
+                        f"一票否決當根硬止損與提前平倉請求 ({reason})，堅決持倉防洗！"
+                    )
+                    return {"status": "HOLD", "symbol": symbol, "reason": "VETO_SAME_BAR_HOLD"}
+
             # 🛑 【終極防呆總閘門：出紅K（下跌陰線）100% 嚴禁平空、出綠K（上漲陽線）100% 嚴禁平多】：
             if should_exit:
                 if pos_side == "SHORT" and not can_exit_short_on_candle:
