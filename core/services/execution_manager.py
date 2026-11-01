@@ -1958,6 +1958,8 @@ class ExecutionManager:
             # 新開倉的第一根 K 棒必須給予足夠的呼吸空間，嚴禁在剛開倉的同一根 K 棒觸發硬止損或破位平倉（除非已累積實質獲利出真峰谷）！
             if should_exit:
                 from core.gates.holding_protection_gate import is_same_bar_as_entry
+                from core.gates.master_gate_funnel import MasterGateFunnel, MarketSnapshot, PositionSnapshot
+
                 is_entry_same_bar = is_same_bar_as_entry(current_position, getattr(market_data, "raw_df", None))
                 if is_entry_same_bar and not is_profit_lock and not is_pivot_exit:
                     logger.info(
@@ -1965,6 +1967,44 @@ class ExecutionManager:
                         f"一票否決當根硬止損與提前平倉請求 ({reason})，堅決持倉防洗！"
                     )
                     return {"status": "HOLD", "symbol": symbol, "reason": "VETO_SAME_BAR_HOLD"}
+
+                # 透過 MasterGateFunnel 審查平倉請求（含最低持倉保護、動能寬容度 Exit Buffer 與紅綠K禁令）
+                p_snap = PositionSnapshot(
+                    symbol=symbol,
+                    side=pos_side,
+                    entry_price=pos_entry,
+                    open_timestamp_ms=pos_open_ts * 1000.0 if pos_open_ts < 1e11 else pos_open_ts,
+                    bars_held=int(getattr(market_data, "bars_held", 0) or 0),
+                    peak_roe_pct=peak_roe_pct,
+                    has_confirmed_pivot=bool(is_pivot_exit),
+                )
+                m_snap_exit = MarketSnapshot(
+                    symbol=symbol,
+                    quote=curr_quote,
+                    open_price=c_o,
+                    close_price=c_c,
+                    high_price=c_h,
+                    low_price=c_l,
+                    ma3_curr=m3_c,
+                    ma3_prev=m3_p,
+                    ma5_curr=float(market_data.curr_k.get("ma5", m3_c) or m3_c),
+                    ma5_prev=float(market_data.prev_k.get("ma5", m3_p) or m3_p),
+                    ma15_curr=m15_c,
+                    ma15_prev=m15_p,
+                    kc_upper=kc_u,
+                    kc_middle=kc_mid,
+                    kc_middle_prev=p_kc_mid,
+                    kc_lower=kc_lo,
+                    atr=atr_v,
+                    macro_trend=macro_trend,
+                    ma_cross_count_8=ma3_m15_cross_8,
+                )
+                exit_res = MasterGateFunnel.evaluate_position_exit(
+                    p_snap, m_snap_exit, candidate_exit_reason=reason, current_time_ms=time.time() * 1000.0,
+                )
+                if not exit_res.can_execute:
+                    logger.info(f"🛡️ [MASTER_GATE_EXIT_VETO] {symbol} 駁回平倉請求: {exit_res.reason}")
+                    return {"status": "HOLD", "symbol": symbol, "reason": exit_res.reason}
 
             # 🛑 【終極防呆總閘門：出紅K（下跌陰線）100% 嚴禁平空、出綠K（上漲陽線）100% 嚴禁平多】：
             if should_exit:
@@ -2730,11 +2770,14 @@ class ExecutionManager:
                     pivot_triggered = False
                     candidate_side = None
 
-            # 🛑 2026-11-01 最高鐵律：開倉必須通過 evaluate_direction_master_lock
+            # 🛑 2026-11-01 最高鐵律：開倉必須通過 evaluate_direction_master_lock 與 MasterGateFunnel
             # 做空：MA3 必須向下且小於 MA15，當前必須是紅K陰線 (curr_close < curr_open)，否則 100% 嚴禁開空！
             # 做多：MA3 必須向上且大於 MA15，當前必須是綠K陽線 (curr_close > curr_open)，否則 100% 嚴禁開多！
             if pivot_triggered and candidate_side:
                 from core.gates.direction_master_lock import evaluate_direction_master_lock
+                from core.gates.master_gate_funnel import MasterGateFunnel, MarketSnapshot
+
+                # 1. 執行 Direction Master Lock 檢查
                 p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
                     candidate_side,
                     ma3_curr=m3_c,
@@ -2753,6 +2796,41 @@ class ExecutionManager:
                     )
                     pivot_triggered = False
                     candidate_side = None
+                else:
+                    # 2. 執行 MasterGateFunnel 兩階段漏斗與黑名單審查
+                    m_snap = MarketSnapshot(
+                        symbol=symbol,
+                        quote=curr_quote,
+                        open_price=c_o,
+                        close_price=c_c,
+                        high_price=c_h,
+                        low_price=c_l,
+                        ma3_curr=m3_c,
+                        ma3_prev=m3_p,
+                        ma5_curr=float(market_data.curr_k.get("ma5", m3_c) or m3_c),
+                        ma5_prev=float(market_data.prev_k.get("ma5", m3_p) or m3_p),
+                        ma15_curr=m15_c,
+                        ma15_prev=m15_p,
+                        kc_upper=kc_u,
+                        kc_middle=kc_mid,
+                        kc_middle_prev=p_kc_mid,
+                        kc_lower=kc_lo,
+                        atr=atr_v,
+                        macro_trend=macro_trend,
+                        ma_cross_count_8=ma3_m15_cross_8,
+                    )
+                    if candidate_side == "LONG":
+                        funnel_res = MasterGateFunnel.evaluate_open_long(m_snap)
+                    else:
+                        funnel_res = MasterGateFunnel.evaluate_open_short(m_snap)
+
+                    if not funnel_res.can_execute:
+                        logger.info(
+                            f"🚫 [BLOCKED_BY_MASTER_GATE_FUNNEL] {symbol} {candidate_side} 未通過 MasterGateFunnel 審查: "
+                            f"{funnel_res.reason} | details={funnel_res.details}"
+                        )
+                        pivot_triggered = False
+                        candidate_side = None
 
             if pivot_triggered and candidate_side and entry_type:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
