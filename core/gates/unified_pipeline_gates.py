@@ -828,29 +828,32 @@ class ExitGate:
         # hard_loss_threshold = -3.0 * atr_pct
         # if unrealized_pct <= hard_loss_threshold: ... [DISABLED]
 
-        # 1.2 極端巨型瀑布 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
+        # 1.2 極端巨型瀑布與高位大賣壓暴跌 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
+        # 依 2026-11-01 最高指示：如果出現大賣壓 (巨型陰線暴跌 >= 1.0 ATR，或單根貫穿中軌) 立即平倉避險，不用等到跌破中軌！
         if has_candle_history and c_curr is not None:
             c_open_v = float(c_curr["open"])
             c_close_v = float(c_curr["close"])
             if side == "LONG":
-                is_extreme_dump = (
-                    (c_open_v - c_close_v >= 1.5 * atr_val)
-                    and (c_open_v >= kc_mid and c_close_v < kc_mid)
+                is_heavy_selling_dump = bool(
+                    (c_open_v - c_close_v >= 0.9 * atr_val and c_close_v < c_open_v)
+                    or ((c_open_v - c_close_v >= 1.2 * atr_val))
+                    or ((c_open_v - c_close_v >= 0.7 * atr_val) and (c_open_v >= kc_mid and c_close_v < kc_mid))
                 )
-                if is_extreme_dump:
+                if is_heavy_selling_dump:
                     return True, "EXIT_BY_EXTREME_WATERFALL", {
                         **meta,
-                        "cause": f"極端瀑布暴跌避險: 單根大陰棒(body={c_open_v-c_close_v:.6f} >= 1.5*ATR={1.5*atr_val:.6f})貫穿KC中軌，緊急離場！",
+                        "cause": f"高位大賣壓極端瀑布避險: 單根大陰棒暴跌(body={c_open_v-c_close_v:.6f} >= 0.9*ATR={0.9*atr_val:.6f})，不用等破中軌，立即市價平多避險！",
                     }
             elif side == "SHORT":
-                is_extreme_pump = (
-                    (c_close_v - c_open_v >= 1.5 * atr_val)
-                    and (c_open_v <= kc_mid and c_close_v > kc_mid)
+                is_heavy_buying_surge = bool(
+                    (c_close_v - c_open_v >= 0.9 * atr_val and c_close_v > c_open_v)
+                    or ((c_close_v - c_open_v >= 1.2 * atr_val))
+                    or ((c_close_v - c_open_v >= 0.7 * atr_val) and (c_open_v <= kc_mid and c_close_v > kc_mid))
                 )
-                if is_extreme_pump:
+                if is_heavy_buying_surge:
                     return True, "EXIT_BY_EXTREME_WATERFALL", {
                         **meta,
-                        "cause": f"極端垂直軋空暴漲避險: 單根大陽棒(body={c_close_v-c_open_v:.6f} >= 1.5*ATR={1.5*atr_val:.6f})貫穿KC中軌，緊急離場！",
+                        "cause": f"低位大買盤垂直軋空避險: 單根大陽棒暴漲(body={c_close_v-c_open_v:.6f} >= 0.9*ATR={0.9*atr_val:.6f})，不用等破中軌，立即市價平空避險！",
                     }
 
         # 1.3 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，最高安全防護)
