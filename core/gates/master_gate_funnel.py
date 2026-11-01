@@ -41,6 +41,8 @@ class PositionSnapshot(NamedTuple):
     bars_held: int              # 已持倉 K 棒數
     peak_roe_pct: float         # 歷史最高 ROE 百分比 (如 15.0 代表 +15%)
     has_confirmed_pivot: bool   # 是否已收線確認三點真峰谷
+    lowest_price_since_entry: float = 0.0   # 空單波段最低價
+    highest_price_since_entry: float = 0.0  # 多單波段最高價
 
 
 class GateDecision(NamedTuple):
@@ -203,6 +205,11 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA3_MA15_SPREAD_TOO_NARROW", details)
 
         # 5. 防追低過濾 (Anti-Chase: 距 KC 下軌 <= 0.5 ATR, 距 MA5 <= 1.0 ATR)
+        # 嚴禁地板追空：若收盤價已經低於 KC 下軌，或距離 MA15 已超過 0.5 ATR，100% 嚴禁開空！
+        if m.close_price < m.kc_lower:
+            return GateDecision(False, "HOLD", "BLOCKED_SHORT_CHASE_BELOW_KC_LOWER", details)
+        if (m.ma15_curr - m.close_price) > 0.50 * m.atr:
+            return GateDecision(False, "HOLD", "BLOCKED_SHORT_CHASE_MA15_EXTENSION_GT_0_5_ATR", details)
         if (m.kc_lower - m.quote) > 0.50 * m.atr:
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_CHASE_KC_LOWER_EXTENSION", details)
         if (m.ma5_curr - m.quote) > 1.00 * m.atr:
@@ -210,23 +217,31 @@ class MasterGateFunnel:
 
         # 6. 進場觸發模式 (滿足其一即可)
         trigger_hit = None
-        # 觸發 A: 破軌跌破
-        if m.close_price < m.kc_lower and m.ma5_curr < m.ma5_prev:
-            trigger_hit = "TRIGGER_A_BREAKDOWN_LOWER_RAIL"
-        # 觸發 B: 反彈中軌受阻
+        # 觸發 A: 頂部金叉轉死叉 / 破中軌即刻進場 (5:53 頂部型態精準開空)
+        is_top_reversal = (
+            (m.ma3_prev >= m.kc_middle_prev) and (m.ma3_curr < m.kc_middle)
+            and (m.close_price < m.open_price)
+            and (kc_slope < 0)
+        )
+        if is_top_reversal:
+            trigger_hit = "TRIGGER_A_TOP_REVERSAL_CROSS_MID"
+        # 觸發 B: 破軌加速跌破
+        elif m.close_price < m.kc_lower and m.ma5_curr < m.ma5_prev:
+            trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
+        # 觸發 C: 反彈中軌受阻
         elif abs(m.high_price - m.kc_middle) <= 0.35 * m.atr and m.ma3_curr < m.ma3_prev and m.close_price < m.ma5_curr:
-            trigger_hit = "TRIGGER_B_REBOUND_KC_MIDDLE_REJECTION"
-        # 觸發 C: 大週期為熊市且實體跌破 MA15
+            trigger_hit = "TRIGGER_C_REBOUND_KC_MIDDLE_REJECTION"
+        # 觸發 D: 大週期為熊市且實體跌破 MA15
         elif m.macro_trend == "BEARISH" and m.open_price >= m.ma15_curr and m.close_price < m.ma15_curr:
-            trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKDOWN"
-        # 觸發 D: 順勢 MA5/MA15 死叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
+            trigger_hit = "TRIGGER_D_EARLY_MA15_BREAKDOWN"
+        # 觸發 E: 順勢 MA5/MA15 死叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
         elif (
             m.ma5_curr < m.ma5_prev
             and m.ma15_curr <= m.ma15_prev
             and (m.close_price - m.kc_lower) >= 0.20 * (m.kc_upper - m.kc_lower)
             and (m.open_price - m.close_price) >= 0.35 * m.atr
         ):
-            trigger_hit = "TRIGGER_D_MA5_MA15_MOMENTUM_EXPANSION"
+            trigger_hit = "TRIGGER_E_MA5_MA15_MOMENTUM_EXPANSION"
 
         if not trigger_hit:
             return GateDecision(False, "HOLD", "WAIT_VALID_SHORT_TRIGGER", details)
@@ -271,29 +286,51 @@ class MasterGateFunnel:
                 )
                 return GateDecision(True, "CLOSE_POSITION", "EXIT_BY_BREAKEVEN_PROFIT_PROTECTION", details)
 
-        # 2. 核心鐵律：開倉當根（Same-Bar）與前 3 根 K 棒最低持倉保護 (Min Hold Duration)
+        # 2. 核心鐵律：持倉前 5 根 K 棒防震盪過敏保護 (Min Hold Duration)
         is_same_bar = bool(current_time_ms - p.open_timestamp_ms < m.timeframe_ms)
-        if is_same_bar or p.bars_held < 3:
-            # 只有在已確認三點真峰谷且有利潤展開時允許平倉；其餘普通破位/回調一律否決！
-            if not p.has_confirmed_pivot:
+        if is_same_bar or p.bars_held < 5:
+            # 前 5 根 K 棒內：只要空單價格沒有反向突破 KC 中軌 (或多單跌破中軌)，無視所有微幅回踩與未確認雜訊！
+            is_early_hold = (
+                (p.side == "SHORT" and m.close_price < m.kc_middle)
+                or (p.side == "LONG" and m.close_price > m.kc_middle)
+            )
+            if is_early_hold and not p.has_confirmed_pivot:
                 logger.info(
-                    f"🛡️ [VETO_SAME_BAR_HOLD] {p.symbol} 開倉保護期內 (bars_held={p.bars_held} < 3, same_bar={is_same_bar})，"
-                    f"一票否決提前割肉請求 ({candidate_exit_reason})！"
+                    f"🛡️ [VETO_EARLY_HOLD] {p.symbol} 波段持倉初期防震盪保護 (bars_held={p.bars_held} < 5)，"
+                    f"價格守於中軌順勢側，一票否決微幅回踩平倉請求 ({candidate_exit_reason})！"
                 )
-                return GateDecision(False, "HOLD", "VETO_SAME_BAR_MIN_HOLD_PROTECTION", details)
+                return GateDecision(False, "HOLD", "VETO_EARLY_HOLD_MIN_5_BARS_PROTECTION", details)
 
-        # 3. 平倉動能寬容度 (Exit Buffer: 多單需收破 mid - 0.1 ATR；空單需收破 mid + 0.1 ATR)
-        if candidate_exit_reason in ("EXIT_BY_TREND_LINE_BROKEN", "EXIT_BY_PULLBACK"):
-            if p.side == "LONG":
-                # 需收盤價跌破 KC 中軌 - 0.1 ATR 且收黑 K
-                if m.close_price >= (m.kc_middle - 0.10 * m.atr):
-                    logger.info(f"🛡️ [VETO_HOLD] {p.symbol} 多單守在 (KC中軌 - 0.1 ATR) 之上，判定為正常回踩呼吸，駁回平多！")
-                    return GateDecision(False, "HOLD", "VETO_HOLD_COST_PULLBACK_BREATHING", details)
-            elif p.side == "SHORT":
-                # 需收盤價漲破 KC 中軌 + 0.1 ATR 且收紅 K
-                if m.close_price <= (m.kc_middle + 0.10 * m.atr):
-                    logger.info(f"🛡️ [VETO_HOLD] {p.symbol} 空單壓在 (KC中軌 + 0.1 ATR) 之下，判定為正常回踩呼吸，駁回平空！")
-                    return GateDecision(False, "HOLD", "VETO_HOLD_COST_PULLBACK_BREATHING", details)
+        # 2.1 移動止盈 (Trailing Stop: 自波段最有利極值反彈超過 1.2 ATR 出場)
+        if p.side == "SHORT" and p.lowest_price_since_entry > 0:
+            rebound_from_trough = m.close_price - p.lowest_price_since_entry
+            if rebound_from_trough >= 1.20 * m.atr and p.peak_roe_pct >= 5.0:
+                logger.info(
+                    f"🎯 [TRAILING_STOP_EXIT] {p.symbol} 空單自波段最低點 {p.lowest_price_since_entry:.6f} "
+                    f"大幅反彈 {rebound_from_trough:.6f} >= 1.2 ATR ({1.2 * m.atr:.6f})，觸發移動止盈！"
+                )
+                return GateDecision(True, "CLOSE_POSITION", "EXIT_SHORT_TRAILING_STOP_1_2_ATR", details)
+        elif p.side == "LONG" and p.highest_price_since_entry > 0:
+            pullback_from_peak = p.highest_price_since_entry - m.close_price
+            if pullback_from_peak >= 1.20 * m.atr and p.peak_roe_pct >= 5.0:
+                logger.info(
+                    f"🎯 [TRAILING_STOP_EXIT] {p.symbol} 多單自波段最高點 {p.highest_price_since_entry:.6f} "
+                    f"大幅回撤 {pullback_from_peak:.6f} >= 1.2 ATR ({1.2 * m.atr:.6f})，觸發移動止盈！"
+                )
+                return GateDecision(True, "CLOSE_POSITION", "EXIT_LONG_TRAILING_STOP_1_2_ATR", details)
+
+        # 3. 平倉動能寬容度與真谷底/真峰頂平倉線 (Exit Buffer)
+        # 空單真谷底平倉線：收盤價實質突破 KC 中軌 + 0.1 ATR 且 MA3 > MA15
+        if p.side == "SHORT":
+            kc_middle_buffer = m.kc_middle + 0.10 * m.atr
+            if m.close_price <= kc_middle_buffer:
+                logger.info(f"🛡️ [VETO_HOLD] {p.symbol} 空單壓在 (KC中軌 + 0.1 ATR={kc_middle_buffer:.6f}) 之下，波段下跌未破壞，死抱空單！")
+                return GateDecision(False, "HOLD", "VETO_HOLD_SHORT_UNDER_KC_MID_BUFFER", details)
+        elif p.side == "LONG":
+            kc_middle_buffer = m.kc_middle - 0.10 * m.atr
+            if m.close_price >= kc_middle_buffer:
+                logger.info(f"🛡️ [VETO_HOLD] {p.symbol} 多單守在 (KC中軌 - 0.1 ATR={kc_middle_buffer:.6f}) 之上，波段上漲未破壞，死抱多單！")
+                return GateDecision(False, "HOLD", "VETO_HOLD_LONG_ABOVE_KC_MID_BUFFER", details)
 
         # 4. 陰陽 K 棒同向禁令：下殺紅 K 絕不平空，上攻綠 K 絕不平多
         if p.side == "SHORT" and m.close_price < m.open_price:

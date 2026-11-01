@@ -1977,6 +1977,8 @@ class ExecutionManager:
                     bars_held=int(getattr(market_data, "bars_held", 0) or 0),
                     peak_roe_pct=peak_roe_pct,
                     has_confirmed_pivot=bool(is_pivot_exit),
+                    lowest_price_since_entry=float(current_position.get("lowest_price") or current_position.get("trough_price") or pos_entry),
+                    highest_price_since_entry=float(current_position.get("highest_price") or pos_entry),
                 )
                 m_snap_exit = MarketSnapshot(
                     symbol=symbol,
