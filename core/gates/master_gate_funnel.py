@@ -145,6 +145,14 @@ class MasterGateFunnel:
         # 觸發 C: 大週期為牛市且實體突破 MA15
         elif m.macro_trend == "BULLISH" and m.open_price <= m.ma15_curr and m.close_price > m.ma15_curr:
             trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKOUT"
+        # 觸發 D: 順勢 MA5/MA15 金叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
+        elif (
+            m.ma5_curr > m.ma5_prev
+            and m.ma15_curr >= m.ma15_prev
+            and (m.kc_upper - m.close_price) >= 0.20 * (m.kc_upper - m.kc_lower)
+            and (m.close_price - m.open_price) >= 0.35 * m.atr
+        ):
+            trigger_hit = "TRIGGER_D_MA5_MA15_MOMENTUM_EXPANSION"
 
         if not trigger_hit:
             return GateDecision(False, "HOLD", "WAIT_VALID_LONG_TRIGGER", details)
@@ -211,6 +219,14 @@ class MasterGateFunnel:
         # 觸發 C: 大週期為熊市且實體跌破 MA15
         elif m.macro_trend == "BEARISH" and m.open_price >= m.ma15_curr and m.close_price < m.ma15_curr:
             trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKDOWN"
+        # 觸發 D: 順勢 MA5/MA15 死叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
+        elif (
+            m.ma5_curr < m.ma5_prev
+            and m.ma15_curr <= m.ma15_prev
+            and (m.close_price - m.kc_lower) >= 0.20 * (m.kc_upper - m.kc_lower)
+            and (m.open_price - m.close_price) >= 0.35 * m.atr
+        ):
+            trigger_hit = "TRIGGER_D_MA5_MA15_MOMENTUM_EXPANSION"
 
         if not trigger_hit:
             return GateDecision(False, "HOLD", "WAIT_VALID_SHORT_TRIGGER", details)
@@ -244,6 +260,16 @@ class MasterGateFunnel:
         if is_hard_sl:
             logger.warning(f"🚨 [CIRCUIT_BREAKER_HARD_SL] {p.symbol} 觸發 3.0 ATR 市場硬停損，無條件市價平倉！")
             return GateDecision(True, "CLOSE_POSITION", "CIRCUIT_BREAKER_HARD_SL", details)
+
+        # 1.1 階梯式保本鎖利防線 (若曾賺超過 5.0% ROE，嚴禁回吐變虧損)
+        if p.peak_roe_pct >= 5.0:
+            current_roe = ((m.quote - p.entry_price) / p.entry_price * 100.0) if p.side == "LONG" else ((p.entry_price - m.quote) / p.entry_price * 100.0)
+            if current_roe <= 1.5:
+                logger.info(
+                    f"🎯 [LOCK_PROFIT_PROTECTION] {p.symbol} 曾達最高浮盈 {p.peak_roe_pct:.2f}% ROE，"
+                    f"現利縮水至 {current_roe:.2f}% <= 1.5% 保底防線，強制落袋保利，消滅過山車！"
+                )
+                return GateDecision(True, "CLOSE_POSITION", "EXIT_BY_BREAKEVEN_PROFIT_PROTECTION", details)
 
         # 2. 核心鐵律：開倉當根（Same-Bar）與前 3 根 K 棒最低持倉保護 (Min Hold Duration)
         is_same_bar = bool(current_time_ms - p.open_timestamp_ms < m.timeframe_ms)
@@ -281,3 +307,4 @@ class MasterGateFunnel:
         # 5. 授權正式平倉離場
         logger.info(f"🚀 [EXIT_AUTHORIZED] {p.symbol} 通過平倉審查 Gate，執行出場: {candidate_exit_reason}")
         return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, details)
+

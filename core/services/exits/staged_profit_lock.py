@@ -348,8 +348,10 @@ def evaluate_staged_profit_lock(
             scheme1_triggered = True
 
     if hit_floor or scheme1_triggered:
-        # 🎯 方案 1 核心過濾：縱使回吐跌破鎖利底線或回吐達 20%，若 MA3 仍未反轉，判定為插針/假拉回，一票否決鎖利！
-        if current_ma3 is not None and current_ma15 is not None:
+        # 🎯 方案 1 核心過濾：若回吐跌破鎖利底線或回吐達 20%，若 MA3 仍未反轉，判定為插針/假拉回，一票否決鎖利！
+        # 但若利潤已經大幅回吐接近成本線 (net_roe_pct <= 1.5% 且最高浮盈 >= 5%)，絕不否決，強制平倉保本保手續費！
+        is_near_breakeven = (highest_roe >= 5.0 and net_roe_pct <= 1.5)
+        if not is_near_breakeven and current_ma3 is not None and current_ma15 is not None:
             if pos_side == "SHORT" and current_ma3 <= current_ma15:
                 meta["cause"] = (
                     f"[忽略鎖利] 最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，現利縮水至 {net_pnl:.2f}U，"
