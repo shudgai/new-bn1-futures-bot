@@ -2276,13 +2276,22 @@ class ExecutionManager:
             #    - 收線確認：最近一根已收線 1m K 棒必須已站上/跌破 KC 中軌（或爆量突破），嚴禁上一根還在反側時因盤中前 15~45 秒毛刺衝過中軌就提前買在最高點/空在最低點！
             # 3. 解決「已經交叉好久卻不開倉」：只要黃金交叉/死亡交叉發散狀態確立、通道空間充足且已收線確認順向，無論交叉發生在當根或前幾根 K 棒，空手即刻確認進場！
             closed_k_entry = c_k
+            prev_closed_k_entry = p_k
             if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
                 if not bool(raw_df.iloc[-1].get("is_closed", True)):
                     closed_k_entry = raw_df.iloc[-2]
+                    prev_closed_k_entry = raw_df.iloc[-3] if len(raw_df) >= 3 else raw_df.iloc[-2]
                 else:
                     closed_k_entry = raw_df.iloc[-1]
+                    prev_closed_k_entry = raw_df.iloc[-2]
             closed_c_entry = float(closed_k_entry.get("close", c_c))
             closed_o_entry = float(closed_k_entry.get("open", c_o))
+            closed_h_entry = float(closed_k_entry.get("high", c_h))
+            closed_l_entry = float(closed_k_entry.get("low", c_l))
+            closed_kcu_entry = float(closed_k_entry.get("kc_upper", kc_u))
+            closed_kcl_entry = float(closed_k_entry.get("kc_lower", kc_lo))
+            prev_closed_h_entry = float(prev_closed_k_entry.get("high", p_h))
+            prev_closed_l_entry = float(prev_closed_k_entry.get("low", p_l))
             closed_kcm_entry = float(closed_k_entry.get("kc_middle", kc_mid))
             closed_m15_entry = float(closed_k_entry.get("ma15", m15_c))
 
@@ -2524,7 +2533,7 @@ class ExecutionManager:
                     or (m15_c > 0 and (c_c - m15_c) / m15_c >= 0.012)
                 )
                 is_kc_upper_exhausted = bool(
-                    (c_h >= kc_u * 0.999 or closed_h >= closed_kc_u * 0.999 or prev_closed_h >= closed_kc_u * 0.999)
+                    (c_h >= kc_u * 0.999 or closed_h_entry >= closed_kcu_entry * 0.999 or prev_closed_h_entry >= closed_kcu_entry * 0.999)
                     and (c_c < m3_c or c_c < c_o or curr_quote < c_o)
                 )
                 is_anti_chase_long_veto = bool(is_ma15_divergence_too_high or is_kc_upper_exhausted or is_chasing_high)
@@ -2583,7 +2592,7 @@ class ExecutionManager:
                     or (m15_c > 0 and (m15_c - c_c) / m15_c >= 0.012)
                 )
                 is_kc_lower_exhausted = bool(
-                    (c_l <= kc_lo * 1.001 or closed_l <= closed_kc_lo * 1.001 or prev_closed_l <= closed_kc_lo * 1.001)
+                    (c_l <= kc_lo * 1.001 or closed_l_entry <= closed_kcl_entry * 1.001 or prev_closed_l_entry <= closed_kcl_entry * 1.001)
                     and (c_c > m3_c or c_c > c_o or curr_quote > c_o)
                 )
                 is_anti_chase_short_veto = bool(is_ma15_divergence_too_low or is_kc_lower_exhausted or is_chasing_low)
