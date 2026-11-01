@@ -1218,20 +1218,22 @@ class ExecutionManager:
                         can_exit_short_on_candle and closed_c > closed_kc_u + short_need and curr_quote > kc_u
                     ):
                         is_absolute_safety = False
-                # 若為 EXIT_BY_EXTREME_WATERFALL，必須確認是「已收線 K 棒」且實體 >= 2.0 ATR 貫穿中軌並跌破/突破反側或慢線，拒絕盤中未收線 K 棒誤觸發！
+                # 若為 EXIT_BY_EXTREME_WATERFALL，依 2026-11-01 最高指示：出現大賣壓/大買盤暴跌暴漲 (單根實體 >= 0.9 ATR 或貫穿中軌) 立即市價平倉避險，不用等破中軌！
                 elif "EXTREME_WATERFALL" in str(gate_reason).upper():
                     if pos_side == "LONG" and not (
                         can_exit_long_on_candle
-                        and (closed_o - closed_c >= 2.0 * atr_v)
-                        and (closed_o >= closed_kc_mid and closed_c < closed_kc_mid)
-                        and (closed_c < m15_c and curr_quote <= closed_c)
+                        and (
+                            (closed_o - closed_c >= 0.9 * atr_v)
+                            or (closed_o >= closed_kc_mid and closed_c < closed_kc_mid)
+                        )
                     ):
                         is_absolute_safety = False
                     elif pos_side == "SHORT" and not (
                         can_exit_short_on_candle
-                        and (closed_c - closed_o >= 2.0 * atr_v)
-                        and (closed_o <= closed_kc_mid and closed_c > closed_kc_mid)
-                        and (closed_c > m15_c and curr_quote >= closed_c)
+                        and (
+                            (closed_c - closed_o >= 0.9 * atr_v)
+                            or (closed_o <= closed_kc_mid and closed_c > closed_kc_mid)
+                        )
                     ):
                         is_absolute_safety = False
 
@@ -1926,17 +1928,24 @@ class ExecutionManager:
                         )
                         return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_COST_PULLBACK_BREATHING"}
 
-                    # 守穩結構續抱
+                    # 守穩結構續抱 (依 2026-11-01 最新指示：一旦確立真峰谷或出現大長K/動能衰竭/反轉吞噬，一票否決續抱，立即平倉獲利了結)
                     is_structure_intact = bool(
                         (pos_side == "LONG" and (closed_c >= m15_c or closed_c >= closed_kc_mid) and peak_roe_pct < 15.0)
                         or (pos_side == "SHORT" and (closed_c <= m15_c or closed_c <= closed_kc_mid) and peak_roe_pct < 15.0)
                     )
+                    # ⚠️ 依據使用者鐵律：「真峰谷確立或反轉異常大K出現時，一票否決健康回踩/結構續抱，絕不允許坐過山車回到成本價」
                     if is_structure_intact and reason in ("EARLY_PIVOT_PEAK_EXIT", "EARLY_PIVOT_VALLEY_EXIT", "CLOSE_LONG_AT_TOP", "CLOSE_SHORT_AT_BOTTOM"):
-                        logger.info(
-                            f"🛡️ [VETO_STRUCTURE_INTACT_HOLD] {symbol} {pos_side} 價格仍守穩於 MA15/KC中軌同側 (close={closed_c:.6f})，"
-                            f"趨勢結構健全，一票否決微型峰谷平倉 ({reason})，堅定續抱主升/主跌段！"
+                        # 若出現大長K吞噬反轉 (實體 >= 0.7 ATR) 或波段已展開反轉，絕不否決，立即平倉！
+                        is_strong_reversal_bar = bool(
+                            (pos_side == "LONG" and (closed_o - closed_c >= 0.7 * atr_v or closed_c < m3_c))
+                            or (pos_side == "SHORT" and (closed_c - closed_o >= 0.7 * atr_v or closed_c > m3_c))
                         )
-                        return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
+                        if not is_strong_reversal_bar:
+                            logger.info(
+                                f"🛡️ [VETO_STRUCTURE_INTACT_HOLD] {symbol} {pos_side} 價格仍守穩於 MA15/KC中軌同側 (close={closed_c:.6f})，"
+                                f"趨勢結構健全，一票否決微型峰谷平倉 ({reason})，堅定續抱主升/主跌段！"
+                            )
+                            return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
 
             # 🛑 【終極防呆總閘門：出紅K（下跌陰線）100% 嚴禁平空、出綠K（上漲陽線）100% 嚴禁平多】：
             if should_exit:
@@ -2695,6 +2704,30 @@ class ExecutionManager:
                         f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 拉遠看是大週期空頭趨勢 "
                         f"(zoomed_bear={is_zoomed_out_bearish}, htf_bear={is_macro_htf_bearish}, macro={macro_trend})，"
                         f"100% 一票否決開多，嚴防逆勢摸底接飛刀！"
+                    )
+                    pivot_triggered = False
+                    candidate_side = None
+
+            # 🛑 2026-11-01 最高鐵律：開倉必須通過 evaluate_direction_master_lock
+            # 做空：MA3 必須向下且小於 MA15，當前必須是紅K陰線 (curr_close < curr_open)，否則 100% 嚴禁開空！
+            # 做多：MA3 必須向上且大於 MA15，當前必須是綠K陽線 (curr_close > curr_open)，否則 100% 嚴禁開多！
+            if pivot_triggered and candidate_side:
+                from core.gates.direction_master_lock import evaluate_direction_master_lock
+                p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
+                    candidate_side,
+                    ma3_curr=m3_c,
+                    ma3_prev=m3_p,
+                    kc_middle=kc_mid,
+                    ma5_curr=float(market_data.curr_k.get("ma5", m3_c) or m3_c),
+                    direction_override=False,
+                    ma15_curr=m15_c,
+                    curr_close=c_c,
+                    curr_open=c_o,
+                )
+                if not p_dir_ok:
+                    logger.info(
+                        f"🚫 [BLOCKED_PIVOT_DIRECTION_LOCK] {symbol} 轉折開倉 ({candidate_side} {entry_type}) "
+                        f"遭方向總開關攔截: {p_dir_reason} (m3_c={m3_c:.6f}, m3_p={m3_p:.6f}, m15={m15_c:.6f}, c={c_c:.6f}, o={c_o:.6f})"
                     )
                     pivot_triggered = False
                     candidate_side = None
