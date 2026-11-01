@@ -1092,16 +1092,11 @@ class ExitGate:
                     curr_bar_high = float(c_curr.get("high", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "high", quote))
                     not_making_new_high = (quote < float(peak["high"])) and (curr_bar_high <= float(peak["high"]))
 
-                    strong_peak_reversal = (
-                        is_peak_prominent
-                        and not_making_new_high
-                        and float(peak["high"]) > float(confirm["high"])
-                        and float(confirm["close"]) < float(confirm["open"])
-                        and float(confirm["close"]) < peak_mid
-                        and confirm_body >= 0.15 * atr_val
-                        and (peak_move >= 0.5 * atr_val or peak_roe >= 0.05)
-                        and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
-                    )
+                    # 🛑 2026-11-01 核心修正：回踩 MA15 或 KC 中軌且結構完好（未實質跌破 MA15/KC 中軌）絕不平多！
+                    # 只有當實體收盤價跌破 MA15 或 KC 中軌，或已獲利巨大 (peak_roe >= 15%)，才允許放行真峰頂出場
+                    is_structure_intact = float(confirm["close"]) >= ma15 or float(confirm["close"]) >= kc_mid
+                    if is_structure_intact and peak_roe < 0.15:
+                        strong_peak_reversal = False
                     if strong_peak_reversal:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
                             **meta, "pivot_meta": {"peak_high": float(peak["high"]),

@@ -2568,7 +2568,9 @@ class ExecutionManager:
                 else:
                     is_early_ma15_breakout = bool(curr_quote > m15_c and c_c > m15_c and c_c > c_o and (not is_heavy_bear_smash))
                     is_lower_rail_v_reversal = bool(c_l <= kc_lo * 1.002 and c_c > m3_c and m3_c > m3_p and c_c > c_o)
-                    if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_anti_chase_long_veto):
+                    is_green_candle_now = bool(c_c > c_o)
+                    is_ma3_up_now = bool(m3_c > m3_p)
+                    if (is_early_ma15_breakout or is_lower_rail_v_reversal or (m3_c > m15_c and curr_quote > m15_c)) and (not is_anti_chase_long_veto) and is_green_candle_now and is_ma3_up_now:
                         can_open_long = True
                         is_cross_mid_long = False
                         is_valid_gc = False
@@ -2627,7 +2629,9 @@ class ExecutionManager:
                 else:
                     is_early_ma15_breakdown = bool(curr_quote < m15_c and c_c < m15_c and c_c < c_o and (not is_heavy_bull_surge))
                     is_trend_reentry_bear = bool(m3_c < m15_c and curr_quote < m15_c and c_c < m15_c)
-                    if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_anti_chase_short_veto):
+                    is_red_candle_now = bool(c_c < c_o)
+                    is_ma3_down_now = bool(m3_c < m3_p)
+                    if (is_early_ma15_breakdown or is_trend_reentry_bear) and (not is_anti_chase_short_veto) and is_red_candle_now and is_ma3_down_now:
                         can_open_short = True
                         is_cross_mid_short = False
                         is_valid_dc = False
