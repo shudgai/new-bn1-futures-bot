@@ -288,7 +288,10 @@ class TrendHoldingAndExitManager:
             # ② 當根爆出 2.5 倍以上巨量 (確認針尖天量換手)
             # ③ 留下超過實體 2 倍長度的超長下影線 (針尖放量主力吃單)
             kc_lower_5m = m5.get('5m_kc_lower', 0.0)
-            curr_vol = float(last_closed_bar.get('volume', 0.0))
+            curr_vol = (
+                float(last_closed_bar.get('volume', 0.0))
+                if last_closed_bar is not None else 0.0
+            )
             avg_vol = float(df_5m['volume'].tail(15).mean()) if df_5m is not None and 'volume' in df_5m.columns and len(df_5m) >= 10 else 0.0
             is_climax_volume = (avg_vol > 0 and curr_vol >= 2.5 * avg_vol)
             lower_wick = max(0.0, min(c_5m, o_5m) - l_5m)

@@ -74,7 +74,7 @@ TREND_SCAN_RESERVE = max(0, int(os.getenv("TREND_SCAN_RESERVE", "16")))
 MEME_BASES = frozenset({
     "DOGE", "1000SHIB", "SHIB", "WIF",
     "1000BONK", "BONK", "1000FLOKI", "FLOKI", "MEME", "DOGS",
-    "BRETT", "POPCAT", "PNUT", "PENGU", "TRUMP", "FARTCOIN",
+    "BRETT", "POPCAT", "PNUT", "TRUMP", "FARTCOIN",
     "PUMP", "NEIRO", "1000SATS", "SATS",
 })
 

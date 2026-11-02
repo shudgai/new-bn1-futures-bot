@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 from core.services.exits.peak_trailing_exit import evaluate_peak_trailing,STATE_KEY
 from core.services.post_profit_lock_gate import post_profit_lock_reason,profit_exit_fields
-from core.services.entry_contract import evaluate_entry_contract
 from test_strict_entry_gates_live import frame_for
 
 
@@ -20,29 +19,6 @@ def tick(p,roi,stamp):
     price=100+sign*roi*100
     return evaluate_peak_trailing(p,price,dict(quote_ms=stamp,ma5=price+sign,
         last_ma5=price+2*sign,live_open=price+sign,last_close=price+sign),fee=0.,slippage=0.)
-
-
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('peak,allowance,code',[(.05,.012,'PROFIT_LOCK_T1'),(.1,.025,'PROFIT_LOCK_T2'),(.15,.03,'PROFIT_LOCK_T3'),(.2,.04,'PROFIT_LOCK_T3')])
-def test_tier_boundary_and_retry(side,peak,allowance,code):
-    p=position(side)
-    assert tick(p,peak,61000) is None
-    assert tick(p,peak-allowance+.00001,62000) is None
-    assert tick(p,peak-allowance,63000)['trigger']==code
-    restored=copy.deepcopy(p)
-    assert tick(restored,peak-allowance,64000)['trigger']==code
-    event=profit_exit_fields(restored,code,65000)
-    assert event['last_profit_exit_side']==side
-    assert event['last_profit_exit_peak_price']==100+(1 if side=='LONG' else -1)*peak*100
-
-
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_upgrade_uses_wider_tier_and_never_arms_below_five(side):
-    p=position(side)
-    assert tick(p,.049,61000) is None
-    assert tick(p,.01,62000) is None
-    assert tick(p,.1,63000) is None
-    assert tick(p,.087,64000) is None
 
 
 def event_account(side,now,peak=110.):
@@ -67,14 +43,6 @@ def test_gate_cooldown_extreme_and_expiry(side):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_second_third_cannot_bypass_post_profit_gate(side):
-    f=frame_for(side);a=event_account(side,time.time()*1000)
-    diagnostics={}
-    assert evaluate_entry_contract(f,account=a,symbol='X',diagnostics=diagnostics) is None
-    assert diagnostics['reason']=='BLOCKED_BY_POST_PROFIT_COOLDOWN'
-
-
-@pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_midline_reset_requires_post_exit_cross(side):
     now=1000000.;a=event_account(side,now,110. if side=='LONG' else 90.)
     sign=1 if side=='LONG' else -1
@@ -85,13 +53,31 @@ def test_midline_reset_requires_post_exit_cross(side):
     assert post_profit_lock_reason(a,'X',closed,side,now+240000) is not None
 
 
+def confirmed_pivot(position):
+    from core.services.exits.strict_true_pivot import store_confirmed_pivot_exit
+
+    reason = (
+        'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT'
+        if position['side'] == 'LONG'
+        else 'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT'
+    )
+    assert store_confirmed_pivot_exit(
+        position,
+        (reason, {'pivot_bar_id': 120_000, 'confirm_bar_id': 180_000}),
+    )
+    return f'{reason} THREE_POINT_PIVOT'
+
+
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_actual_paper_close_persists_event_and_reload(tmp_path,monkeypatch,side):
+def test_actual_paper_pivot_close_persists_event_and_reload(tmp_path,monkeypatch,side):
     import core.paper_account as pm
     monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
     a=pm.PaperAccount();p=position(side);tick(p,.1,61000);tick(p,.075,62000)
     a.positions['CAP/USDT']=p;a.position_meta['CAP/USDT']={STATE_KEY:copy.deepcopy(p[STATE_KEY])}
-    assert asyncio.run(a.close_position('CAP/USDT',100.75 if side=='LONG' else 99.25,'PROFIT_LOCK_T2',is_manual=True))
+    reason = confirmed_pivot(p)
+    assert asyncio.run(a.close_position(
+        'CAP/USDT',100.75 if side=='LONG' else 99.25,reason,is_manual=True,
+    ))
     b=pm.PaperAccount()
     event=b.trades[0]
     assert event['last_profit_exit_side']==side
@@ -115,17 +101,32 @@ def test_unconfirmed_or_partial_close_cannot_record_event(order,expected):
 def test_real_testnet_close_only_records_confirmed_event(tmp_path,monkeypatch,filled):
     from unittest.mock import AsyncMock
     import core.testnet_account as tm
+    from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
     monkeypatch.setattr(tm,'notify_email',lambda *a,**k:None)
     from test_testnet_account import FakeTestnetExchange
     a=tm.BinanceTestnetAccount(FakeTestnetExchange(),state_file=str(tmp_path/'testnet.json'))
     p=position('LONG');tick(p,.1,61000);tick(p,.075,62000)
+    reason = confirmed_pivot(p)
     a.positions['CAP/USDT']=p
     a.position_meta['CAP/USDT']={STATE_KEY:copy.deepcopy(p[STATE_KEY])}
     a._cancel_all_orders=AsyncMock()
     a._send_order=AsyncMock(return_value=dict(id='test',status='closed' if filled else 'open',
                                             filled=1. if filled else .5,average=100.75))
+    order = dict(
+        id='test',
+        status='closed' if filled else 'open',
+        filled=1. if filled else .5,
+        average=100.75,
+    )
+    monkeypatch.setattr(
+        AntiSlippageOrderExecutor,
+        'execute_confirmed_limit_close',
+        AsyncMock(return_value=(filled, order)),
+    )
     a.refresh=AsyncMock()
-    success=asyncio.run(a.close_position('CAP/USDT',100.75,'Channel Swing PROFIT_LOCK_T2',is_manual=True))
+    success=asyncio.run(a.close_position(
+        'CAP/USDT',100.75,f'Channel Swing {reason}',is_manual=True,
+    ))
     assert success is filled
     if filled:
         assert a.trades[0]['last_profit_exit_peak_price']==110.

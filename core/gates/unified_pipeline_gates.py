@@ -100,9 +100,11 @@ class ExitGate:
                 )
         return False, ""
 
-    # 第一級絕對安全避險出口（極端大瀑布、市場熔斷、反側破位）：優先於一般持倉鎖定
-    # ⚠️ 依據 2026-10-27 最新最高指示：開倉後不要硬止損，只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉
+    # 第一級絕對安全避險出口：帳戶硬止損、大瀑布、熔斷及反側破位優先於一般持倉鎖定。
     ABSOLUTE_SAFETY_REASONS = frozenset({
+        "CIRCUIT_BREAKER_HARD_SL",
+        "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
+        "HARD_STOP_LOSS",
         "CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
         "EXIT_BY_EXTREME_WATERFALL",
         "EMERGENCY_DUMP_EXIT",
@@ -129,27 +131,29 @@ class ExitGate:
         "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
         "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
         "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
-        "CLOSE_LONG_AT_TOP",
-        "CLOSE_SHORT_AT_BOTTOM",
-        "EXIT_LONG_AT_PEAK",
-        "EXIT_SHORT_AT_BOTTOM",
-        "OUTER_RAIL_ENGULFING",
-        "PINBAR_LONG_WICK",
-        "MA3_BODY_BREAK",
     })
     GENERAL_EXIT_VETO_REASON = "VETO_HOLD"
 
     @staticmethod
-    def _gate_unconfirmed_exit(result):
+    def _gate_unconfirmed_exit(result, position=None, frame=None, quote=0.0):
         """Only confirmed swing pivots and emergency protection may close."""
         should_exit, reason, meta = result
         if not should_exit:
             return result
         reason = str(reason or "")
-        reason_upper = reason.upper()
-        if (reason in ExitGate.ABSOLUTE_SAFETY_REASONS
-                or reason in ExitGate.PIVOT_EXIT_REASONS):
+        if reason in ExitGate.ABSOLUTE_SAFETY_REASONS:
             return result
+        if reason in ExitGate.PIVOT_EXIT_REASONS:
+            side = str((position or {}).get("side") or "").upper()
+            if isinstance(position, dict) and frame is not None:
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+
+                confirmed, pivot_type, _ = has_confirmed_true_pivot(
+                    position, frame, float(quote or 0.0),
+                )
+                expected = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+                if confirmed and str(pivot_type or "").upper().startswith(expected):
+                    return result
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(meta or {}),
             "suppressed_exit_reason": reason,
@@ -165,6 +169,78 @@ class ExitGate:
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """Keep emergency controls independent; route strategy exits through Trend Lock."""
+        frame = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df") if isinstance(market_data, dict) else None
+        )
+        quote = float(current_price or (
+            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
+        ))
+        if isinstance(frame, pd.DataFrame):
+            from core.gates.holding_protection_gate import has_confirmed_true_pivot
+
+            confirmed, pivot_type, pivot_evidence = has_confirmed_true_pivot(
+                pos, frame, quote,
+            )
+            side = str((pos or {}).get("side") or "").upper()
+            expected_pivot = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+            if confirmed and str(pivot_type or "").upper().startswith(expected_pivot):
+                try:
+                    closed = closed_entry_candles(frame)
+                    pivot = closed.iloc[-2]
+                    entry_price = float(pos.get("entry_price") or 0.0)
+                    pivot_price = float(
+                        pivot_evidence["pivot_high" if side == "LONG" else "pivot_low"]
+                    )
+                    pivot_atr = float(pivot.get("atr"))
+                    leverage = float(pos.get("leverage") or 1.0)
+                    stored_peak_roe = float(pos.get("peak_roe") or 0.0)
+                    if not all(math.isfinite(value) for value in (
+                        entry_price, pivot_price, pivot_atr, leverage,
+                        stored_peak_roe, quote,
+                    )) or entry_price <= 0 or pivot_atr <= 0 or leverage <= 0 or quote <= 0:
+                        raise ValueError("invalid confirmed-pivot exit metrics")
+                    peak_roe = max(
+                        stored_peak_roe,
+                        (quote - entry_price) / entry_price * leverage
+                        if side == "LONG" and entry_price > 0 else
+                        (entry_price - quote) / entry_price * leverage
+                        if side == "SHORT" and entry_price > 0 else 0.0,
+                    )
+                    peak_move = (
+                        pivot_price - entry_price
+                        if side == "LONG"
+                        else entry_price - pivot_price
+                    )
+                    pivot_has_wave_gain = (
+                        peak_move >= 0.5 * pivot_atr or peak_roe >= 0.05
+                    )
+                    exit_remains_profitable = (
+                        (quote - entry_price) / entry_price >= 0.003
+                        if side == "LONG" and entry_price > 0 else
+                        (entry_price - quote) / entry_price >= 0.003
+                        if side == "SHORT" and entry_price > 0 else False
+                    ) or peak_roe >= 0.05
+                except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                    pivot_has_wave_gain = False
+                    exit_remains_profitable = False
+
+                if pivot_has_wave_gain and exit_remains_profitable:
+                    reason = (
+                        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+                        if side == "LONG"
+                        else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+                    )
+                    return True, reason, {
+                        "exit_type": "CONFIRMED_TRUE_PIVOT",
+                        "pivot_type": pivot_type,
+                        "pivot_evidence": pivot_evidence,
+                        "peak_move": peak_move,
+                        "peak_roe": peak_roe,
+                        "final_execution_gate": "EXIT_GATE_APPROVED_PENDING_ACCOUNT_AUTHORIZATION",
+                    }
+
         result = ExitGate._evaluate_with_holding_rules(
             pos, market_data, current_price, atr, kc_slope,
         )
@@ -175,15 +251,6 @@ class ExitGate:
             update_trend_lock_state,
         )
         from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
-        frame = (
-            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
-            else market_data.get("raw_df") if isinstance(market_data, dict) else None
-        )
-        quote = float(current_price or (
-            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-            else market_data.get("current_price", 0.0) if isinstance(market_data, dict) else 0.0
-        ))
-
         final_exit = should_exit
         final_reason = reason
         final_meta = meta
@@ -710,17 +777,19 @@ class ExitGate:
                     True, mid_reason,
                     {**(meta or {}), "mid_band_ma3": mid_meta,
                      "cause": mid_meta.get("cause")},
-                ))
+                ), pos, raw_df, quote_p)
             if action == ACTION_HOLD_WAIT:
                 if should_exit and reason in ExitGate.PIVOT_EXIT_REASONS:
-                    return result
+                    return ExitGate._gate_unconfirmed_exit(
+                        result, pos, raw_df, quote_p,
+                    )
                 return False, mid_reason, {
                     **(meta or {}),
                     "mid_band_ma3": mid_meta,
                     "suppressed_reason": reason,
                     "cause": mid_meta.get("cause"),
                 }
-        return ExitGate._gate_unconfirmed_exit(result)
+        return ExitGate._gate_unconfirmed_exit(result, pos, raw_df, quote_p)
 
     @staticmethod
     def _evaluate_core(
@@ -819,17 +888,27 @@ class ExitGate:
         c_prev = raw_df.iloc[-2] if has_candle_history else None
 
         # ══════════════════════════════════════════════════════════════════
-        # 第一級：絕對風險保護出口（最高優先級！任何 VETO_HOLD 絕不攔截）
-        # 1.1 帳戶級硬止損 (3.0 ATR 防穿倉)
-        # 1.2 極端反向巨型瀑布 (EXIT_BY_EXTREME_WATERFALL，1.5 ATR 貫穿中軌)
-        # 1.3 經確認成立的反側外軌破位 (OPPOSITE_KC_BAND_BREACH)
+        # 第一級：絕對風險保護出口（最高優先級，任何持倉防洗條件不得攔截）
+        # 帳戶硬止損：虧損達 3 ATR 或入場價 2%，任一先到即放行。
         # ══════════════════════════════════════════════════════════════════
-        # ⚠️ 2026-10-27 最新最高指示：開倉後不要硬止損割肉，只能鎖利、大瀑布、市場熔斷及真峰谷真谷底才能平倉
-        # hard_loss_threshold = -3.0 * atr_pct
-        # if unrealized_pct <= hard_loss_threshold: ... [DISABLED]
+        adverse_distance = (
+            entry_p - quote if side == "LONG" else quote - entry_p
+        )
+        adverse_pct = adverse_distance / entry_p
+        valid_atr = math.isfinite(atr_val) and atr_val > 0
+        hard_stop_by_atr = valid_atr and adverse_distance >= 3.0 * atr_val
+        hard_stop_by_pct = adverse_pct >= 0.02
+        if side in ("LONG", "SHORT") and adverse_distance > 0 and (hard_stop_by_atr or hard_stop_by_pct):
+            return True, "CIRCUIT_BREAKER_HARD_SL", {
+                **meta,
+                "adverse_distance": adverse_distance,
+                "adverse_loss_pct": adverse_pct,
+                "hard_stop_atr_triggered": hard_stop_by_atr,
+                "hard_stop_pct_triggered": hard_stop_by_pct,
+                "hard_stop_policy": "3_ATR_OR_2_PERCENT",
+            }
 
-        # 1.2 極端巨型瀑布與高位大賣壓暴跌 (EXIT_BY_EXTREME_WATERFALL，任何續抱一票否決均無效)
-        # ⚠️ 最高鐵律：開倉當根（Same-Bar）絕不硬止損、絕不當根平倉！至少須持倉超過當根。
+        # 極端反向瀑布依 1.5 ATR 且貫穿 KC 中軌判定，優先於一般持倉防洗條件。
         from core.gates.holding_protection_gate import is_same_bar_as_entry
         is_same_bar = is_same_bar_as_entry(pos, raw_df)
         if has_candle_history and c_curr is not None and not is_same_bar:
@@ -837,25 +916,25 @@ class ExitGate:
             c_close_v = float(c_curr["close"])
             if side == "LONG":
                 is_heavy_selling_dump = bool(
-                    (c_open_v - c_close_v >= 0.9 * atr_val and c_close_v < c_open_v)
-                    or ((c_open_v - c_close_v >= 1.2 * atr_val))
-                    or ((c_open_v - c_close_v >= 0.7 * atr_val) and (c_open_v >= kc_mid and c_close_v < kc_mid))
+                    c_open_v - c_close_v >= 1.5 * atr_val
+                    and c_open_v >= kc_mid
+                    and c_close_v < kc_mid
                 )
                 if is_heavy_selling_dump:
                     return True, "EXIT_BY_EXTREME_WATERFALL", {
                         **meta,
-                        "cause": f"高位大賣壓極端瀑布避險: 單根大陰棒暴跌(body={c_open_v-c_close_v:.6f} >= 0.9*ATR={0.9*atr_val:.6f})，不用等破中軌，立即市價平多避險！",
+                        "cause": f"高位大賣壓極端瀑布避險: 單根大陰棒實體={c_open_v-c_close_v:.6f}，達 1.5 ATR 並貫穿 KC 中軌，立即市價平多！",
                     }
             elif side == "SHORT":
                 is_heavy_buying_surge = bool(
-                    (c_close_v - c_open_v >= 0.9 * atr_val and c_close_v > c_open_v)
-                    or ((c_close_v - c_open_v >= 1.2 * atr_val))
-                    or ((c_close_v - c_open_v >= 0.7 * atr_val) and (c_open_v <= kc_mid and c_close_v > kc_mid))
+                    c_close_v - c_open_v >= 1.5 * atr_val
+                    and c_open_v <= kc_mid
+                    and c_close_v > kc_mid
                 )
                 if is_heavy_buying_surge:
                     return True, "EXIT_BY_EXTREME_WATERFALL", {
                         **meta,
-                        "cause": f"低位大買盤垂直軋空避險: 單根大陽棒暴漲(body={c_close_v-c_open_v:.6f} >= 0.9*ATR={0.9*atr_val:.6f})，不用等破中軌，立即市價平空避險！",
+                        "cause": f"低位大買盤垂直軋空避險: 單根大陽棒實體={c_close_v-c_open_v:.6f}，達 1.5 ATR 並貫穿 KC 中軌，立即市價平空！",
                     }
 
         # 1.3 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，最高安全防護)
@@ -1458,7 +1537,7 @@ class ExitGate:
                     if is_below_mid:
                         return False, "VETO_HOLD", {
                             **meta,
-                            "cause": f"開倉後反抽不平空鐵律: 價格受壓於KC中軌防守線 (close={c_curr['close']:.6f} <= mid={kc_mid:.6f}, slope={slope:.6f})，開倉後反抽給予充足呼吸空間，100% 一票否決平空，堅定死抱主跌浪！",
+                            "cause": f"開倉後反抽不平空鐵律: 價格受壓於KC中軌防守線 (close={c_curr['close']:.6f} <= mid={kc_mid:.6f}, kc_middle_slope={slope:.6f})，開倉後反抽給予充足呼吸空間，100% 一票否決平空，堅定死抱主跌浪！",
                         }
 
                 # ── 慢線趨勢護航鐵律（只要慢線強勢向下，無視小幅反抽）──
@@ -4098,6 +4177,3 @@ def should_close_short_trend(df: pd.DataFrame, entry_price: float, current_price
 
     # 其餘正常反抽（像回抽棕線）一律 False，繼續抱牢空單！
     return False
-
-
-

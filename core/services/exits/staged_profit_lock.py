@@ -25,10 +25,10 @@ from typing import Optional, Tuple, Dict, Any
 
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
-# 階梯門檻常數（2026-10-31 最新授權：實質獲利展開 >= 5% 立即啟動鎖利，拒絕坐過山車）
-TIER1_START_ROE_PCT = 5.0    # 階段 1 啟動門檻：淨利率 +5.0% (實質波段展開)
+# 階梯門檻：依目前策略規格，淨 ROE 達 +10% 啟動第一階段，達 +20% 升級第二階段。
+TIER1_START_ROE_PCT = 10.0  # 階段 1 啟動門檻：淨 ROE +10%
 TIER1_RETAIN_RATIO = 0.70    # 階段 1 鎖利保留率：70% (允許回吐 30%)
-TIER2_START_ROE_PCT = 15.0   # 階段 2 啟動門檻：淨利率 +15.0%
+TIER2_START_ROE_PCT = 20.0  # 階段 2 啟動門檻：淨 ROE +20%
 TIER2_RETAIN_RATIO = 0.85    # 階段 2 鎖利保留率：85% (允許回吐 15%)
 
 EXIT_REASON_TIER1 = "EXIT_BY_STAGED_PROFIT_LOCK_TIER1"
@@ -367,7 +367,7 @@ def evaluate_staged_profit_lock(
                 )
                 return False, "VETO_HOLD_SCHEME1_MA3_MA15_FILTER", meta
 
-        if scheme1_triggered:
+        if scheme1_triggered and not hit_floor:
             reason = EXIT_REASON_SCHEME1
             meta["cause"] = (
                 f"方案1鎖利觸發 ({reason}): 最高浮盈 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
@@ -420,12 +420,8 @@ def check_stage0_veto_hold(
     highest_roe = float(state.get("highest_net_roe_pct", 0.0))
 
     if stage == 0 and highest_roe < TIER1_START_ROE_PCT:
-        # 重大結構破位 (TREND_BROKEN / KC_MID_STRUCTURE_BROKEN) 絕不可被 Stage 0 盲目否決，必須及時離場避險
         reason_upper = str(candidate_reason).upper()
-        if "TREND_BROKEN" in reason_upper or "KC_MID_STRUCTURE_BROKEN" in reason_upper or "MA15" in reason_upper:
-            return False, None, {}
-
-        # 僅對微觀盤中抖動與小回踩執行成本區防洗
+        # Stage 0 時所有一般策略出口都要等真峰谷授權；緊急出口由上層安全 Gate 優先處理。
         should_veto = (
             candidate_reason in STAGE0_VETO_EXIT_CANDIDATES
             or "MA3" in reason_upper

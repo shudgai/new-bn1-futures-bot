@@ -133,10 +133,11 @@ def test_exit_math_ratchet_and_emergency_override():
                    kc_lower=95)
     allowed, _, metadata = validate_exit_math(position, frame, 106)
     assert allowed and metadata["exit_type"] == "PROFIT_LOCK"
+    assert metadata["floor_net_roe_pct"] == 7.0
     allowed, reason, metadata = validate_exit_math(position, frame, 90,
                                                    close_reason="CIRCUIT_BREAKER_HARD_SL")
-    assert allowed and reason == "EMERGENCY_EXIT_OVERRIDE"
-    assert metadata["exit_type"] == "EMERGENCY"
+    assert allowed and reason == "EMERGENCY_EXIT_HARD_STOP_CONFIRMED"
+    assert metadata["exit_type"] == "HARD_STOP"
 
 
 def test_exit_math_confirmed_midline_reversal():
@@ -471,8 +472,6 @@ def test_entry_math_strictly_blocks_short_when_ema_is_rising():
     allowed_flat, reason_flat = validate_entry_math(df_flat, side="SHORT")
     assert allowed_flat is False, f"EMA15 走平 (slope >= 0) 時必須一票否決開空！實際: allowed={allowed_flat}, reason={reason_flat}"
     assert reason_flat == "BLOCKED_SHORT_ON_EMA_RISING"
-
-
 
 
 

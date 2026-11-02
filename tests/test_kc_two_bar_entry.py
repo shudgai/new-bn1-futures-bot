@@ -13,12 +13,15 @@ from core.services.kc_two_bar_entry import evaluate_kc_two_bar_entry
 
 
 def make_execution_engine(monkeypatch, tmp_path, side, frame):
-    from core.engine import TradingEngine
     from core.paper_account import PaperAccount
     from core.services.wait_entry_authority import WaitEntryAuthority
+    import core.config as config
 
     monkeypatch.setattr(PaperAccount, "load_state", lambda self: None)
     monkeypatch.setattr(PaperAccount, "save_state", lambda self: None)
+    monkeypatch.setattr(config, "PAPER_TRADING", True)
+    from core.engine import TradingEngine
+
     account = PaperAccount()
     account.balance = 100.0
     engine = object.__new__(TradingEngine)
@@ -106,7 +109,7 @@ def test_closed_two_bar_breakout_requires_first_candle_open_inside_channel(side)
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_scanner_and_account_share_the_two_closed_bar_authority(
+def test_scanner_revalidates_two_bar_candidate_through_macro_location_gate(
     monkeypatch, tmp_path, side,
 ):
     from core.services.execution_manager import ExecutionManager
@@ -151,13 +154,31 @@ def test_scanner_and_account_share_the_two_closed_bar_authority(
     engine, account, symbol = make_execution_engine(
         monkeypatch, tmp_path, side, frame,
     )
+    pipeline_results = []
+    process_pipeline = ExecutionManager.process_symbol_pipeline
+
+    async def capture_pipeline_result(**kwargs):
+        result = await process_pipeline(**kwargs)
+        pipeline_results.append(result)
+        return result
+
+    monkeypatch.setattr(
+        ExecutionManager,
+        "process_symbol_pipeline",
+        staticmethod(capture_pipeline_result),
+    )
     asyncio.run(
         process_single_symbol_runner(
             engine, symbol, time.time(), None, False, exit_frame=frame
         )
     )
-    assert account.positions[symbol]["side"] == side
-    assert account.trades[-1]["action"] == f"OPEN_{side}"
+    assert pipeline_results == [{
+        "status": "VETO",
+        "symbol": symbol,
+        "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
+    }]
+    assert symbol not in account.positions
+    assert not account.trades
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -196,6 +217,8 @@ def test_scanner_rejects_breakout_that_was_revised_before_evaluation(
         "MA5_MA15_LIVE_CROSS_LONG",
         "KC_3BAR_CONFIRM_LONG",
         "KC_3BAR_CONFIRM_SHORT",
+        "KC_SECOND_THIRD_LONG",
+        "KC_SECOND_THIRD_SHORT",
     ],
 )
 def test_retired_entry_authorities_cannot_pass_the_account_firewall(side, code):

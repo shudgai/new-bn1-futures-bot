@@ -111,9 +111,17 @@ class CentralEntryGate:
         checks: Dict[str, Dict[str, Any]] = {}
 
         source_upper = str(source or "").upper()
-        swing_pivot_signal = "SWING_PIVOT" in source_upper or bool(
+        entry_method_context = (
+            klines_or_snapshot.attrs.get("entry_method_context")
+            if isinstance(klines_or_snapshot, pd.DataFrame)
+            else None
+        )
+        has_entry_method_context = isinstance(entry_method_context, dict)
+        swing_pivot_signal = not has_entry_method_context and (
+            "SWING_PIVOT" in source_upper or bool(
             isinstance(klines_or_snapshot, dict)
             and str(klines_or_snapshot.get("entry_type") or "").upper() == "SWING_PIVOT"
+            )
         )
         if swing_pivot_signal and isinstance(klines_or_snapshot, pd.DataFrame):
             from core.services.candle_data import closed_entry_candles
@@ -371,6 +379,30 @@ class CentralEntryGate:
                 reason=block_reason,
                 signal_id=sig_id,
                 details={"market_blacklist": block_evidence},
+                checks=checks,
+            )
+
+        if has_entry_method_context:
+            from core.services.entry_methods import revalidate_entry_method
+
+            method_allowed, method_reason = revalidate_entry_method(
+                klines_or_snapshot,
+                symbol=symbol,
+                side=side,
+                quote=curr_price,
+                context=entry_method_context,
+            )
+            checks["entry_method"] = {
+                "status": "PASS" if method_allowed else "FAIL",
+                "reason": method_reason,
+                "method": entry_method_context.get("entry_method_authority"),
+                "event_id": entry_method_context.get("entry_method_event_id"),
+            }
+            return GateCheckResult(
+                passed=method_allowed,
+                reason=method_reason,
+                signal_id=sig_id,
+                details={"entry_method": dict(entry_method_context)},
                 checks=checks,
             )
 

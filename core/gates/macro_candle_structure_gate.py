@@ -355,6 +355,7 @@ class MacroCandleStructureGate:
             not structure_confirmed
             or confirmation not in {
                 "CONFIRMED_KC_OUTER_PEAK_VALLEY",
+                "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
                 "TOP_BOTTOM_DIVERGENCE",
                 "PINBAR_EXHAUSTION_TURN",
                 "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",

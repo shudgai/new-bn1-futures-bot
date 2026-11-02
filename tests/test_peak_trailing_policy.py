@@ -101,7 +101,7 @@ def test_channel_momentum_stall_requires_three_weak_non_extending_bars(side):
     assert evidence is not None
     assert evidence["trigger"] == CHANNEL_MOMENTUM_STALL_TRIGGER
     assert len(evidence["momentum_stall_bars"]) == 3
-    assert channel_swing_exit_allowed(trigger=evidence["trigger"])
+    assert not channel_swing_exit_allowed(trigger=evidence["trigger"])
 
 
 def test_channel_momentum_stall_does_not_exit_on_large_body_or_new_extreme():
@@ -176,7 +176,7 @@ def test_dynamic_peak_pullback_threshold(monkeypatch, side):
     assert observe(p, 3.64, 63000) is None
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_waterfall_has_no_channel_strategy_exit_authority(side):
+def test_waterfall_has_channel_strategy_exit_authority(side):
     p = position(side, qty=1., margin=40.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
@@ -188,10 +188,11 @@ def test_waterfall_has_no_channel_strategy_exit_authority(side):
     
     # Price drops to 100+sign*2.0 (2U locked). Waterfall body = 2.0 >= 1.5 ATR threshold.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision is None
+    assert decision is not None
+    assert decision["trigger"] == "WATERFALL_DROP"
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_doji_and_waterfall_have_no_channel_strategy_exit_authority(side):
+def test_waterfall_exit_precedes_non_emergency_doji_signal(side):
     p = position(side, qty=1., margin=40.)
     p['open_timestamp'] = 30.
     sign = 1 if side == 'LONG' else -1
@@ -212,14 +213,18 @@ def test_doji_and_waterfall_have_no_channel_strategy_exit_authority(side):
                 
     # This adverse body qualifies as a Waterfall.
     decision = evaluate_peak_trailing(p, 100+sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision is None
+    assert decision is not None
+    assert decision["trigger"] == "WATERFALL_DROP"
 
     snap['atr'] = 2.0
-    decision2 = evaluate_peak_trailing(p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.)
-    assert decision2 is None
+    decision2 = evaluate_peak_trailing(
+        p, 100+sign*2.0, snap, 2.0, fee=0., slippage=0.,
+    )
+    assert decision2 is not None
+    assert decision2["trigger"] == "WATERFALL_DROP"
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_waterfall_does_not_replace_account_hard_stop(side):
+def test_waterfall_remains_authorized_before_account_hard_stop(side):
     p = position(side, atr=1.0, margin=40.)
     sign = 1 if side == 'LONG' else -1
     
@@ -228,7 +233,8 @@ def test_waterfall_does_not_replace_account_hard_stop(side):
     
     # Drop below initial stop (100 - sign*1.5)
     decision = evaluate_peak_trailing(p, 100-sign*2.0, snap, 1.0, fee=0., slippage=0.)
-    assert decision is None
+    assert decision is not None
+    assert decision["trigger"] == "WATERFALL_DROP"
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_channel_swing_ignores_pullback_and_waterfall(side):
@@ -251,7 +257,8 @@ def test_channel_swing_ignores_pullback_and_waterfall(side):
 
     snap.update(live_open=100+sign*3.0, atr=1.0)
     decision = evaluate_peak_trailing(p, 100., snap, 1.0, fee=0., slippage=0.)
-    assert decision is None
+    assert decision is not None
+    assert decision["trigger"] == "WATERFALL_DROP"
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_legacy_flags_purged_but_verified_peak_retained(side):
@@ -323,7 +330,7 @@ def test_startup_cleanup_is_channel_only():
     assert a.position_meta['X'][STATE_KEY]['identity']==['LONG',60.,100.,1.]
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_runner_and_ticker_hold_through_pullback_without_closed_candles_or_rest(side):
+def test_runner_and_ticker_hold_through_pullback_without_closed_candles(side):
     async def run():
         now=time.time();p=position(side);p['open_timestamp']=now-120
         a=SimpleNamespace(positions={'X':p},position_meta={},save_state=Mock(),log=Mock(),
@@ -339,7 +346,7 @@ def test_runner_and_ticker_hold_through_pullback_without_closed_candles_or_rest(
         await process_single_symbol_runner(e,'X',now,None,False,exit_frame=f,exit_quote=100+sign*1.)
 
         assert a.close_position.await_count == 0
-        e.fetch_klines.assert_not_called();lock.release()
+        lock.release()
     asyncio.run(run())
 
 

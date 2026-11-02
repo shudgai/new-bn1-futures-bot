@@ -210,7 +210,7 @@ def test_exit_gate_suppresses_legacy_profit_exit_until_trend_lock(monkeypatch):
     )
     should_exit, reason, meta = gates.ExitGate.evaluate(position, market_data)
     assert should_exit is False
-    assert reason == "VETO_TREND_LOCK"
+    assert reason == gates.ExitGate.GENERAL_EXIT_VETO_REASON
     assert meta["suppressed_exit_reason"] == "EXIT_BY_FIXED_ATR_TAKE_PROFIT"
 
 
@@ -339,9 +339,9 @@ def test_trend_cycles_are_isolated_by_symbol_side_and_timeframe():
     assert evaluate_trend_cycle_entry(state, short_cycle, "SHORT", "A/USDT")[0]
     assert evaluate_trend_cycle_entry(state, minute, "LONG", "B/USDT")[0]
     five_minute = minute.copy()
-    five_minute.loc[:, "timestamp"] = [0, 300_000]
+    five_minute.loc[:, "timestamp"] = [300_000, 600_000]
     five_minute.attrs["timeframe_ms"] = 300_000
-    five_minute.attrs["snapshot_ms"] = 600_000
+    five_minute.attrs["snapshot_ms"] = 900_000
     assert evaluate_trend_cycle_entry(state, five_minute, "LONG", "A/USDT")[0]
 
 
@@ -465,7 +465,7 @@ def test_startup_cleanup_cancels_managed_take_profits_and_preserves_stops():
             self.normal = [order for order in self.normal if order["id"] != order_id]
 
         async def request(self, endpoint, _api, method, params):
-            if endpoint == "algoOpenOrders" and method == "GET":
+            if endpoint == "openAlgoOrders" and method == "GET":
                 return list(self.algo)
             if endpoint == "algoOrder" and method == "DELETE":
                 self.algo = [order for order in self.algo if order["algoId"] != params["algoId"]]
@@ -500,7 +500,7 @@ def test_initial_stop_recovery_keeps_existing_exchange_stop(monkeypatch):
             return list(self.normal)
 
         async def request(self, endpoint, _api, method, _params):
-            assert (endpoint, method) == ("algoOpenOrders", "GET")
+            assert (endpoint, method) == ("openAlgoOrders", "GET")
             return []
 
         async def cancel_all_orders(self, _symbol):
@@ -539,7 +539,7 @@ def test_initial_stop_recovery_restores_hard_stop_after_trailing_cleanup(
             return []
 
         async def request(self, endpoint, _api, method, _params):
-            assert (endpoint, method) == ("algoOpenOrders", "GET")
+            assert (endpoint, method) == ("openAlgoOrders", "GET")
             return []
 
     monkeypatch.setattr(testnet_module, "POSITION_HARD_STOPS_ENABLED", True)
@@ -745,9 +745,13 @@ def test_entry_rejection_does_not_consume_trend_cycle_before_fill(monkeypatch):
     from core.gates.central_entry_gate import CentralEntryGate, GateCheckResult
     from core.services.math_execution_gate import validate_entry_at_execution
 
-    frame = frame_for("LONG", ma3=(99.0, 101.0), ma15=(100.0, 100.0))
+    frame = frame_for(
+        "LONG", ma3=(99.0, 101.0), ma15=(100.0, 100.0),
+        middle=(100.0, 100.5),
+        current_open=99.5, current_close=100.8,
+    )
     account = SimpleNamespace(entry_filter_last={}, trades=[])
-    context = {"entry_gate_frame": frame, "entry_gate_quote": 100.0}
+    context = {"entry_gate_frame": frame, "entry_gate_quote": 100.8}
     monkeypatch.setattr(
         CentralEntryGate, "verify_and_authorize",
         classmethod(lambda cls, **kwargs: GateCheckResult(

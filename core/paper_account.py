@@ -171,6 +171,8 @@ ENTRY_CONTEXT_KEYS = (
     "channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
     "channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar",
     "entry_source",
+    "entry_method_authority", "entry_method_signal", "entry_method_bar_id",
+    "entry_method_event_id", "entry_method_last_exit_timestamp",
 )
 
 
@@ -561,6 +563,38 @@ class PaperAccount:
         entry_context = dict(entry_context or {})
         signal_id = entry_context.get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, str(reason or "OPEN"))
         entry_context["signal_id"] = signal_id
+        entry_method_authority = entry_context.get("entry_method_authority")
+        if entry_method_authority:
+            from core.services.entry_methods import revalidate_entry_method
+
+            method_frame = next(
+                (
+                    entry_context.get(key)
+                    for key in ("entry_gate_frame", "frame", "raw_df")
+                    if entry_context.get(key) is not None
+                ),
+                None,
+            )
+            if method_frame is None:
+                self.log(
+                    f"ENTRY_METHOD_ACCOUNT_VETO {symbol} BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE",
+                    "WARNING",
+                )
+                return False
+            method_allowed, method_reason = revalidate_entry_method(
+                method_frame,
+                symbol=symbol,
+                side=side,
+                quote=price,
+                context=entry_context,
+            )
+            if not method_allowed:
+                self.log(
+                    f"ENTRY_METHOD_ACCOUNT_VETO {symbol} {method_reason}",
+                    "WARNING",
+                )
+                return False
+            entry_context["_entry_method_validated"] = True
 
         # ──【全鏈路審計階段 1：訊號產生】──
         OrderAuditTrail.record_signal_generated(
@@ -611,17 +645,21 @@ class PaperAccount:
                     kc_m = dir_metrics["kc_middle"]
                     kc_m_p = dir_metrics.get("kc_middle_prev")
                     side_up = side.upper()
-                    is_override = bool(entry_context.get("direction_override") or entry_context.get("is_swing_pivot"))
+                    is_override = bool(
+                        entry_context.get("direction_override")
+                        or entry_context.get("is_swing_pivot")
+                        or entry_context.get("_entry_method_validated")
+                    )
 
                     # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷)
                     if kc_m_p is not None and math.isfinite(kc_m_p):
-                        if side_up == "SHORT" and kc_m >= kc_m_p:
+                        if not entry_context.get("_entry_method_validated") and side_up == "SHORT" and kc_m >= kc_m_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
-                        elif side_up == "LONG" and kc_m <= kc_m_p:
+                        elif not entry_context.get("_entry_method_validated") and side_up == "LONG" and kc_m <= kc_m_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向下 (kc_mid={kc_m:.6f} <= prev={kc_m_p:.6f})，未明確向上 100% 嚴禁開多！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):

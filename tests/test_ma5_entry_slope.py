@@ -2,7 +2,6 @@ import pandas as pd
 import pytest
 
 from core.services.ma5_entry_slope import (
-    MIN_MA5_SLOPE_ATR,
     live_ma5_entry_direction_problem,
     live_ma5_slope_atr,
     live_ma5_slope_problem,
@@ -20,23 +19,21 @@ def frame_for(side, delta_atr, *, closed=True):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_aligned_slope_at_or_above_minimum_is_accepted(side):
-    frame = frame_for(side, MIN_MA5_SLOPE_ATR)
+def test_strictly_aligned_slope_is_accepted_without_minimum_magnitude(side):
+    frame = frame_for(side, 0.01)
     quote = 100.0
 
     assert live_ma5_slope_atr(frame, quote) == pytest.approx(
-        MIN_MA5_SLOPE_ATR if side == "LONG" else -MIN_MA5_SLOPE_ATR
+        0.01 if side == "LONG" else -0.01
     )
     assert live_ma5_slope_problem(frame, quote, side) is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_aligned_but_shallow_slope_is_rejected(side):
-    frame = frame_for(side, MIN_MA5_SLOPE_ATR * 0.98)
+def test_any_positive_aligned_slope_is_accepted(side):
+    frame = frame_for(side, 1e-6)
 
-    assert live_ma5_slope_problem(frame, 100.0, side) == (
-        "BLOCKED_BY_MA5_SLOPE_INSUFFICIENT"
-    )
+    assert live_ma5_slope_problem(frame, 100.0, side) is None
 
 
 @pytest.mark.parametrize(
@@ -47,7 +44,7 @@ def test_aligned_but_shallow_slope_is_rejected(side):
     ],
 )
 def test_slope_in_opposite_direction_is_rejected(side, wrong_side, expected):
-    frame = frame_for(wrong_side, MIN_MA5_SLOPE_ATR)
+    frame = frame_for(wrong_side, 0.01)
 
     assert live_ma5_slope_problem(frame, 100.0, side) == expected
 
@@ -79,7 +76,7 @@ def test_strong_breakout_cannot_bypass_minimum_ma5_slope(monkeypatch):
         "core.services.entry_contract.entry_market_structure_problem",
         lambda *_args, **_kwargs: None,
     )
-    frame = preflight_frame("LONG", MIN_MA5_SLOPE_ATR * 0.5)
+    frame = preflight_frame("LONG", 0.0)
     frame.loc[frame.index[-1], "close"] = 100.1
 
     passed, reason = pre_flight_safety_check(
@@ -87,10 +84,10 @@ def test_strong_breakout_cannot_bypass_minimum_ma5_slope(monkeypatch):
     )
 
     assert not passed
-    assert reason == "BLOCKED_BY_MA5_SLOPE_INSUFFICIENT"
+    assert reason == "BLOCKED_BY_MA5_WEAK_SLOPE"
 
 
-def test_waterfall_flip_can_enter_with_aligned_shallow_turn(monkeypatch):
+def test_waterfall_flip_can_enter_with_strictly_aligned_slope(monkeypatch):
     from types import SimpleNamespace
     from core.services.entry_contract import pre_flight_safety_check
     from core.intelligence.spatial_brain import SpatialBrain
@@ -103,7 +100,7 @@ def test_waterfall_flip_can_enter_with_aligned_shallow_turn(monkeypatch):
         "core.services.entry_contract.entry_market_structure_problem",
         lambda *_args, **_kwargs: None,
     )
-    frame = preflight_frame("SHORT", MIN_MA5_SLOPE_ATR * 0.5)
+    frame = preflight_frame("SHORT", 0.01)
 
     passed, reason = pre_flight_safety_check(
         frame, 99.8, "SHORT", decision_type="TOP_WATERFALL_FLIP",
@@ -114,7 +111,7 @@ def test_waterfall_flip_can_enter_with_aligned_shallow_turn(monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pure_trend_route_also_blocks_a_shallow_ma5_slope(monkeypatch, side):
+def test_pure_trend_route_accepts_a_shallow_aligned_ma5_slope(monkeypatch, side):
     from core.services.strategies import pure_trend_v2
     from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
 
@@ -163,8 +160,9 @@ def test_pure_trend_route_also_blocks_a_shallow_ma5_slope(monkeypatch, side):
     diagnostics = {}
     result = evaluate_v2_frame(frame, quote, diagnostics=diagnostics)
 
-    assert result is None
-    assert diagnostics["reason"] == "BLOCKED_BY_MA5_SLOPE_INSUFFICIENT"
+    assert result is not None
+    assert result["side"] == side
+    assert live_ma5_entry_direction_problem(frame, quote, side) is None
 
 
 @pytest.mark.parametrize(

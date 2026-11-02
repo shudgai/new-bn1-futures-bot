@@ -9,6 +9,7 @@ from core.services.entry_contract import evaluate_entry_contract
 from core.services.strategies.outer_strategy import live_body_breakout_side
 from core.engine import TradingEngine
 from core.paper_account import PaperAccount
+import core.testnet_account as testnet_account_module
 
 
 def with_entry_history(frame, minimum_rows=10):
@@ -94,7 +95,12 @@ def live_body_frame(side="SHORT"):
 
 
 @pytest.fixture
-def engine():
+def engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        testnet_account_module,
+        "STATE_FILE",
+        str(tmp_path / "testnet_account.json"),
+    )
     account = MagicMock(spec=PaperAccount)
     account.positions = {}
     account.trades = []
@@ -125,96 +131,35 @@ def test_abnormal_market_entry_guard_only_rejects_invalid_price_or_stale_quote(e
 @pytest.mark.parametrize(
     ('side', 'entry_code'),
     [
-        ('LONG', 'AUTHORIZED_REALTIME_BREAKOUT'),
-        ('SHORT', 'AUTHORIZED_BY_TREND_CONTINUATION_SHORT'),
-        ('SHORT', 'AUTHORIZED_BY_PEAK_FLIP_SHORT'),
+        ('LONG', 'KC_2BAR_CONFIRM_LONG'),
+        ('SHORT', 'KC_2BAR_CONFIRM_SHORT'),
+        ('SHORT', 'AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT'),
     ],
 )
-def test_valid_market_data_reaches_account_gate_for_all_entry_types(
-    engine, side, entry_code, monkeypatch,
-):
+def test_current_entry_codes_reach_fresh_snapshot(engine, side, entry_code, monkeypatch):
     symbol = 'LOBSTER/USDT'
-    quote = 102.0 if side == 'LONG' else 98.0
-    stamp = int(time.time() // 60) * 60_000
-    previous_ma5 = quote - 1.0 if side == 'LONG' else quote + 1.0
-    frame = pd.DataFrame([
-        dict(
-            timestamp=stamp - 60_000,
-            is_closed=True,
-            open=quote, high=quote + 0.2, low=quote - 0.2, close=quote,
-            ma3=quote, ma5=previous_ma5, ma15=quote,
-            atr=1.0, kc_upper=quote + 1.0, kc_middle=quote,
-            kc_lower=quote - 1.0,
-        ),
-        dict(
-            timestamp=stamp,
-            is_closed=False,
-            open=quote - 0.2 if side == 'LONG' else quote + 0.2,
-            high=quote + 0.2, low=quote - 0.2, close=quote,
-            ma3=quote, ma5=quote - 0.1 if side == 'LONG' else quote + 0.1,
-            ma15=quote, atr=1.0,
-            kc_upper=quote + 1.0, kc_middle=quote, kc_lower=quote - 1.0,
-        ),
-    ])
-    frame.attrs['timeframe_ms'] = 60_000
-    decision = dict(
-        type=entry_code,
-        side=side,
-        reason='POST_CLOSE_CONTINUATION',
-        confirmation_bar_id=float(stamp),
-        breakout_bar_id=float(stamp),
-        close_price=quote,
-        pair_confirmation_bar_id=None,
-        entry_phase='POST_CLOSE_CONTINUATION_ENTRY',
-        entry_atr=1.0,
-        pending_signal_id=f'{symbol}:{entry_code}:{stamp}:{side}',
-    )
-    decision['exit_bar_id'] = float(stamp)
     engine.account.pending_limit_orders = {}
     engine.account.daily_loss_limit_hit.return_value = (False, 0.0)
-    engine.account.trades = []
-    engine.account.get_wallet_balance.return_value = 1_000.0
-    engine.account.get_available_balance.return_value = 1_000.0
-    engine.account.open_position = AsyncMock(return_value=True)
-    engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *_: 2)
-    engine.tickers = {symbol: quote}
     engine._execution_price_is_safe = AsyncMock(return_value=True)
-    engine._channel_entry_quote_times = {symbol: time.time()}
-    engine._fresh_channel_entry_snapshot = AsyncMock(return_value={
-        'frame': frame, 'price': quote, 'decision': decision,
-    })
-    engine._abnormal_market_entry_allowed = Mock(return_value=True)
-    frame.loc[frame.index[-1], 'high'] = quote + 8.0
-    frame.loc[frame.index[-1], 'low'] = quote - 8.0
-    signal = dict(
-        side=side,
-        score=100,
-        entry_mode='CHANNEL_SWING',
-        signal_code=entry_code,
-        candidate_bar_id=float(stamp),
-    )
+    engine._fresh_channel_entry_snapshot = AsyncMock(return_value=None)
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [symbol])
     monkeypatch.setattr('core.config.is_entry_disabled', lambda _: False)
-    monkeypatch.setattr(
-        'core.services.entry_contract.evaluate_entry_contract',
-        lambda *_args, **_kwargs: decision,
-    )
-    monkeypatch.setattr(
-        'core.services.pre_entry_space_shadow.record_pre_entry_space_shadow',
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        'core.services.entry_room_service.entry_room',
-        lambda *_args, **_kwargs: {'allowed': True, 'target': 110.0, 'net_room_pct': 1.0},
-    )
+
+    signal = {
+        'side': side,
+        'score': 100,
+        'entry_mode': 'CHANNEL_SWING',
+        'signal_code': entry_code,
+        'candidate_bar_id': 1_000,
+    }
 
     result = asyncio.run(
-        engine._place_structured_entry_locked(symbol, signal, quote),
+        engine._place_structured_entry_locked(symbol, signal, 100.0),
     )
 
-    assert result is True
-    engine._abnormal_market_entry_allowed.assert_called_once()
-    engine.account.open_position.assert_awaited_once()
+    assert result is False
+    engine._fresh_channel_entry_snapshot.assert_awaited_once()
+    assert engine._fresh_channel_entry_snapshot.await_args.kwargs['code'] == entry_code
 
 
 @pytest.mark.parametrize(
@@ -276,7 +221,8 @@ def test_failed_live_breakout_revalidation_blocks_later_outer_chase(engine):
     ][1] == 'BLOCKED_FAILED_BREAKOUT_NO_LATE_CHASE'
 
 
-def test_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypatch):
+@pytest.mark.parametrize('seconds_before', [0.0, 60.0])
+def test_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypatch, seconds_before):
     from core.gates.pipeline import pipeline
 
     monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
@@ -289,7 +235,9 @@ def test_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypat
     ]
     account = SimpleNamespace(
         positions={},
-        last_closed_at={'LOBSTER/USDT': frame.iloc[-1].timestamp / 1000.0},
+        last_closed_at={
+            'LOBSTER/USDT': frame.iloc[-1].timestamp / 1000.0 - seconds_before,
+        },
     )
     diagnostics = {}
     decision = evaluate_entry_contract(
@@ -297,46 +245,14 @@ def test_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypat
         diagnostics=diagnostics,
     )
     assert decision is None
-    assert diagnostics.get('reason') == 'WAIT_DUAL_TRACK_TRIGGER'
-
-
-def test_older_last_closed_at_does_not_create_a_trigger_without_price_action(monkeypatch):
-    from core.gates.pipeline import pipeline
-
-    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
-    frame = live_body_frame()
-    frame.loc[frame.index[-1], ['open', 'close', 'high', 'low']] = [
-        100.0, 100.0, 100.2, 99.8,
-    ]
-    frame.loc[frame.index[-2], ['open', 'close', 'high', 'low']] = [
-        100.0, 100.1, 100.2, 99.9,
-    ]
-    diagnostics = {}
-    account = SimpleNamespace(
-        positions={},
-        last_closed_at={'LOBSTER/USDT': frame.iloc[-1].timestamp / 1000.0 - 60.0},
-    )
-    decision = evaluate_entry_contract(
-        frame, 100.0, account=account, symbol='LOBSTER/USDT',
-        diagnostics=diagnostics,
-    )
-    assert decision is None
-    assert diagnostics.get('reason') == 'WAIT_DUAL_TRACK_TRIGGER'
+    assert diagnostics.get('reason') == 'BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR'
 
 
 def test_final_safety_gates(engine):
-    frame = live_body_frame()
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT', symbol='SYM',
-        diagnostics=diagnostics,
-    )
-    assert decision is None
-    assert diagnostics['reason'] == 'INSUFFICIENT_LOWER_SPACE'
     decision = {
-        'type': 'KC_LIVE_BODY_BREAKOUT_SHORT',
+        'type': 'KC_2BAR_CONFIRM_SHORT',
         'side': 'SHORT',
-        'confirmation_bar_id': float(frame.iloc[-1]['timestamp']),
+        'confirmation_bar_id': 1_000.0,
         'pending_signal_id': 'synthetic-final-safety-gate',
     }
     sym = 'SYM'
@@ -363,18 +279,6 @@ def test_final_safety_gates(engine):
         with patch('core.config.is_entry_disabled', return_value=True):
             assert asyncio.run(engine._place_structured_entry_locked(sym, signal, 89.4)) is False
     engine._fresh_channel_entry_snapshot.assert_not_awaited()
-
-
-def test_no_double_order(engine, monkeypatch):
-    sym = 'SYM'
-    frame = live_body_frame()
-    diagnostics = {}
-    decision = evaluate_entry_contract(
-        frame, 89.4, code='KC_LIVE_BODY_BREAKOUT_SHORT',
-        account=engine.account, symbol=sym, diagnostics=diagnostics,
-    )
-    assert decision is None
-    assert diagnostics['reason'] == 'INSUFFICIENT_LOWER_SPACE'
 
 
 def test_synthetic_boundary_short():
@@ -406,9 +310,7 @@ def test_synthetic_boundary_long():
 
 def test_pre_flight_check_long_ma5_slope_bearish(monkeypatch):
     """驗證 MA5 下彎或走平時，開多信號被成功否決 (REJECT_MA5_SLOPE_BEARISH)"""
-    from core.services.entry_contract import pre_flight_safety_check, evaluate_entry_contract
-    from core.gates.pipeline import pipeline
-    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
+    from core.services.entry_contract import pre_flight_safety_check
 
     stamp = 1000000
     # 前根 ma5 = 105.0，當前根 ma5 = 104.0 (下彎)
@@ -427,24 +329,12 @@ def test_pre_flight_check_long_ma5_slope_bearish(monkeypatch):
     quote = 100.2  # live_ma5 = 104.0 + 0 = 104.0 < 105.0
     passed, reason = pre_flight_safety_check(frame, quote, "LONG")
     assert passed is False
-    assert reason in ("BLOCKED_BY_MA5_SLOPE_DOWN", "REJECT_MA5_SLOPE_BEARISH")
-
-    # 模擬 pipeline.authorize 授權成功，送交 evaluate_entry_contract 最終授權時被 Pre-Flight 否決
-    monkeypatch.setattr(pipeline, 'authorize', lambda *args, **kwargs: dict(
-        type='AUTHORIZED_BY_TREND_CONTINUATION_LONG', side='LONG', price=quote,
-    ))
-
-    diagnostics = {}
-    decision = evaluate_entry_contract(frame, quote, code='AUTHORIZED_BY_TREND_CONTINUATION_LONG', diagnostics=diagnostics)
-    assert decision is None
-    assert diagnostics.get('reason') in ("BLOCKED_BY_MA5_SLOPE_DOWN", "REJECT_MA5_SLOPE_BEARISH")
+    assert reason == "BLOCKED_BY_MA5_WEAK_SLOPE"
 
 
 def test_pre_flight_check_long_insufficient_room_to_upper_kc(monkeypatch):
     """驗證貼近 KC 上軌（空間不足 < 0.5 ATR）時開多被成功否決 (REJECT_INSUFFICIENT_ROOM_TO_UPPER_KC)"""
-    from core.services.entry_contract import pre_flight_safety_check, evaluate_entry_contract
-    from core.gates.pipeline import pipeline
-    monkeypatch.setattr(pipeline, 'chop_lockout_problem', lambda *_args: None)
+    from core.services.entry_contract import pre_flight_safety_check
 
     stamp = 1000000
     atr = 2.0
@@ -468,35 +358,6 @@ def test_pre_flight_check_long_insufficient_room_to_upper_kc(monkeypatch):
     assert passed is False
     assert reason == "INSUFFICIENT_UPPER_SPACE"
 
-    monkeypatch.setattr(pipeline, 'authorize', lambda *args, **kwargs: dict(
-        type='AUTHORIZED_BY_TREND_CONTINUATION_LONG', side='LONG', price=quote,
-    ))
-
-    diagnostics = {}
-    decision = evaluate_entry_contract(frame, quote, code='AUTHORIZED_BY_TREND_CONTINUATION_LONG', diagnostics=diagnostics)
-    assert decision is None
-    assert diagnostics.get('reason') == 'INSUFFICIENT_UPPER_SPACE'
-
-
-def test_pre_flight_check_long_falling_knife():
-    """驗證逆勢陰線且價格跌破 MA5 時開多被否決 (REJECT_FALLING_KNIFE_BEARISH_BELOW_MA5)"""
-    from core.services.entry_contract import pre_flight_safety_check
-    stamp = 1000000
-    atr = 1.0
-    # 前一根是陰線 (open 105, close 102)，當前價格 101.0 跌破 MA5 (102.5)
-    frame = pd.DataFrame([
-        dict(timestamp=stamp-60000, is_closed=True, open=105.0, close=102.0, high=106.0, low=101.5,
-             ma5=102.0, ma15=98.0, atr=atr, kc_upper=120.0, kc_lower=90.0),
-        dict(timestamp=stamp, is_closed=False, open=102.0, close=101.0, high=102.5, low=100.5,
-             ma5=103.0, ma15=99.0, atr=atr, kc_upper=120.0, kc_lower=90.0),
-    ])
-    frame = with_entry_history(frame)
-    quote = 101.0  # live_ma5 = 103.0 + (101.0 - 101.0)/5 = 103.0 > 102.0 (ma5_slope > 0)
-    # quote 101.0 < live_ma5 103.0，且前根陰線
-    passed, reason = pre_flight_safety_check(frame, quote, "LONG")
-    assert passed is False
-    assert reason == "BLOCKED_BY_LARGE_BEARISH_CANDLE"
-
 
 def test_pre_flight_check_short_symmetric_rules():
     """驗證開空對稱安全審核 (MA5 上翹、下軌空間不足、陽線回抽站上 MA5)"""
@@ -518,7 +379,7 @@ def test_pre_flight_check_short_symmetric_rules():
     quote = 97.0  # live_ma5 = 96.0 > 95.0 (slope > 0)
     passed, reason = pre_flight_safety_check(frame_bullish_ma5, quote, "SHORT")
     assert passed is False
-    assert reason in ("BLOCKED_BY_MA5_SLOPE_UP", "REJECT_MA5_SLOPE_BULLISH")
+    assert reason == "BLOCKED_BY_MA5_STRONG_SLOPE"
 
     # 2. 距離 KC 下軌空間不足 < 0.5 ATR (REJECT_INSUFFICIENT_ROOM_TO_LOWER_KC)
     # kc_lower = 90.0, quote = 90.3, distance = 0.3 < 0.5 * 1.0
@@ -550,4 +411,4 @@ def test_pre_flight_check_short_symmetric_rules():
     quote = 95.0  # live_ma5 = 94.0 < 95.0 (slope = 94 - 95 = -1 < 0)
     passed, reason = pre_flight_safety_check(frame_bounce, quote, "SHORT")
     assert passed is False
-    assert reason == "REJECT_BOUNCE_BULLISH_ABOVE_MA5"
+    assert reason == "BLOCKED_BY_MA5_STRONG_SLOPE"

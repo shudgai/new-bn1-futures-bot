@@ -1,11 +1,11 @@
 from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 
 
-def test_trend_line_broken_exit_authorized_for_both_sides():
+def test_trend_line_broken_exit_is_not_true_pivot_authorization():
     for side in ('LONG', 'SHORT'):
         assert automated_position_exit_allowed(
             'X/USDT', {'side': side}, {}, 'ExitGate:EXIT_BY_TREND_LINE_BROKEN', 1.0,
-        ) is True
+        ) is False
 
 
 def test_unknown_exit_reason_still_blocked():

@@ -407,6 +407,192 @@ class ExecutionManager:
     _symbol_key_pivot: Dict[str, float] = {}
 
     @classmethod
+    async def _evaluate_closed_entry_methods(
+        cls,
+        *,
+        symbol: str,
+        account: Any,
+        engine_or_account: Any,
+        frame: Optional[pd.DataFrame],
+        quote: float,
+        macro_trend: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return None
+
+        from core.services.entry_methods import (
+            KC_TWO_BAR_BREAKOUT,
+            MA3_MA15_CROSS,
+            POST_CLOSE_KC_REENTRY,
+            THREE_BAR_PIVOT_REVERSAL,
+            evaluate_entry_method,
+            revalidate_entry_method,
+        )
+
+        account_key = cls._get_account_key(account, symbol)
+        last_exit = cls._last_exit_record.get(account_key)
+        if last_exit is None:
+            last_exit = cls._last_exit_record.get(symbol)
+        last_exit_timestamp = (
+            float(last_exit["timestamp"])
+            if isinstance(last_exit, dict) and last_exit.get("timestamp") is not None
+            else None
+        )
+        methods = (
+            (POST_CLOSE_KC_REENTRY,)
+            if last_exit_timestamp is not None
+            else (
+                KC_TWO_BAR_BREAKOUT,
+                THREE_BAR_PIVOT_REVERSAL,
+                MA3_MA15_CROSS,
+            )
+        )
+
+        candidates: list[tuple[dict[str, Any], str]] = []
+        authorized: tuple[dict[str, Any], str] | None = None
+        for method in methods:
+            signal = evaluate_entry_method(
+                frame,
+                quote=quote,
+                symbol=symbol,
+                last_exit_timestamp=last_exit_timestamp,
+                expected_method=method,
+            )
+            if signal is None:
+                continue
+            candidates.append((signal, method))
+            allowed, reason = revalidate_entry_method(
+                frame,
+                symbol=symbol,
+                side=signal["side"],
+                quote=quote,
+                context={
+                    "entry_method_authority": method,
+                    "entry_method_signal": signal,
+                    "entry_method_bar_id": signal["confirmation_bar_id"],
+                    "entry_method_event_id": signal["event_id"],
+                    "entry_method_last_exit_timestamp": last_exit_timestamp,
+                },
+            )
+            logger.info(
+                "ENTRY_METHOD_GATE symbol=%s side=%s method=%s allowed=%s reason=%s event=%s",
+                symbol, signal["side"], method, allowed, reason, signal["event_id"],
+            )
+            if allowed:
+                authorized = (signal, method)
+                break
+
+        if not candidates:
+            return None
+        if authorized is None:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
+            }
+
+        signal, method = authorized
+        bar_id = int(signal["confirmation_bar_id"])
+        entry_state = getattr(account, "entry_filter_last", None)
+        if not isinstance(entry_state, dict):
+            entry_state = {}
+            account.entry_filter_last = entry_state
+        persisted = entry_state.get("strict_ma3_ma15_last_trade_bar", {})
+        if not isinstance(persisted, dict):
+            persisted = {}
+        last_used = persisted.get(symbol) or cls._last_trade_bar_time.get(symbol)
+        if last_used is not None and int(float(last_used)) == bar_id:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "ENTRY_METHOD_BAR_ALREADY_TRADED",
+            }
+
+        entry_history = [
+            stamp for stamp in cls._hourly_entry_records.get(
+                account_key, cls._hourly_entry_records.get(symbol, []),
+            )
+            if time.time() - stamp < 3600.0
+        ]
+        if len(entry_history) >= cls.MAX_ENTRIES_PER_HOUR:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
+            }
+
+        persisted[symbol] = bar_id
+        entry_state["strict_ma3_ma15_last_trade_bar"] = persisted
+        cls._last_trade_bar_time[symbol] = bar_id
+        save_state = getattr(account, "save_state", None)
+        if not callable(save_state):
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "ENTRY_METHOD_BAR_CLAIM_STORE_UNAVAILABLE",
+            }
+        try:
+            try:
+                save_state(strict=True)
+            except TypeError:
+                save_state()
+        except Exception as exc:
+            logger.error(
+                "ENTRY_METHOD_BAR_CLAIM_PERSISTENCE_FAILED symbol=%s error=%s",
+                symbol, exc,
+            )
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "ENTRY_METHOD_BAR_CLAIM_PERSISTENCE_FAILED",
+            }
+
+        method_context = {
+            "entry_method_authority": method,
+            "entry_method_signal": signal,
+            "entry_method_bar_id": bar_id,
+            "entry_method_event_id": signal["event_id"],
+            "entry_method_last_exit_timestamp": last_exit_timestamp,
+        }
+        meta = {
+            **method_context,
+            "side": signal["side"],
+            "entry_type": method,
+            "entry_pattern": signal["entry_pattern"],
+            "structure_confirmation": signal["structure_confirmation"],
+            "structure_confirmed": True,
+            "channel_expanding": signal["channel_expanding"],
+            "candidate_signal_type": f"ENTRY_METHOD_{method}_{signal['side']}",
+            "signal_id": signal["event_id"],
+            "bar_timestamp": bar_id,
+            "channel_confirmation_bar_id": bar_id,
+            "raw_df": frame,
+            "atr": signal["entry_atr"],
+            "macro_trend": str(macro_trend or "NEUTRAL").upper(),
+            "source": f"UNIFIED_PIPELINE|ENTRY_METHOD|{method}",
+            "entry_mode": "WILD_SWING",
+            "direction_override": False,
+            "no_rigid_sl": False,
+        }
+        success = await cls.open_position(
+            engine_or_account=engine_or_account,
+            symbol=symbol,
+            side=signal["side"],
+            price=quote,
+            reason=f"EntryMethod:{method}",
+            meta=meta,
+        )
+        return {
+            "status": "ENTRY_EXECUTED" if success else "VETO",
+            "symbol": symbol,
+            "side": signal["side"],
+            "reason": method if success else "ENTRY_METHOD_FINAL_GATE_VETO",
+            "success": success,
+            "entry_method": method,
+            "event_id": signal["event_id"],
+        }
+
+    @classmethod
     async def process_symbol_pipeline(
         cls,
         symbol: str,
@@ -1954,14 +2140,13 @@ class ExecutionManager:
                             )
                             return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
 
-            # 🛑 【持倉呼吸與開倉當根保護鐵律：開倉當根不要硬止損、絕不當根平倉】
-            # 新開倉的第一根 K 棒必須給予足夠的呼吸空間，嚴禁在剛開倉的同一根 K 棒觸發硬止損或破位平倉（除非已累積實質獲利出真峰谷）！
+            # 🛑 開倉當根一般出口仍防洗；帳戶硬止損、瀑布、熔斷等絕對安全出口不受此限制。
             if should_exit:
                 from core.gates.holding_protection_gate import is_same_bar_as_entry
                 from core.gates.master_gate_funnel import MasterGateFunnel, MarketSnapshot, PositionSnapshot
 
                 is_entry_same_bar = is_same_bar_as_entry(current_position, getattr(market_data, "raw_df", None))
-                if is_entry_same_bar and not is_profit_lock and not is_pivot_exit:
+                if is_entry_same_bar and not is_absolute_safety and not is_profit_lock and not is_pivot_exit:
                     logger.info(
                         f"🛡️ [VETO_SAME_BAR_HARD_SL] {symbol} 處於開倉進場當根 K 棒 (Same-Bar)，"
                         f"一票否決當根硬止損與提前平倉請求 ({reason})，堅決持倉防洗！"
@@ -2148,6 +2333,17 @@ class ExecutionManager:
         # 優先級 4：順勢通道延續開倉
         # =========================================================================
         if not has_position:
+            method_result = await cls._evaluate_closed_entry_methods(
+                symbol=symbol,
+                account=account,
+                engine_or_account=engine_or_account,
+                frame=raw_df,
+                quote=curr_quote,
+                macro_trend=macro_trend,
+            )
+            if method_result is not None:
+                return method_result
+
             lookback_p = min(len(raw_df), 15) if raw_df is not None and isinstance(raw_df, pd.DataFrame) else 0
             if lookback_p >= 2:
                 prior_lows = raw_df['low'].iloc[-lookback_p:-1]
@@ -4373,11 +4569,36 @@ class ExecutionManager:
                 account = engine_or_account
             else:
                 account = getattr(engine_or_account, "account", engine_or_account)
+            entry_method_authority = (meta or {}).get("entry_method_authority")
+            if entry_method_authority:
+                from core.services.entry_methods import revalidate_entry_method
+
+                method_frame = (meta or {}).get("raw_df")
+                if method_frame is None:
+                    logger.warning(
+                        "ENTRY_METHOD_FINAL_VETO symbol=%s reason=BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE",
+                        symbol,
+                    )
+                    return False
+                method_allowed, method_reason = revalidate_entry_method(
+                    method_frame,
+                    symbol=symbol,
+                    side=side,
+                    quote=price,
+                    context=meta or {},
+                )
+                if not method_allowed:
+                    logger.warning(
+                        "ENTRY_METHOD_FINAL_VETO symbol=%s side=%s method=%s reason=%s",
+                        symbol, side, entry_method_authority, method_reason,
+                    )
+                    return False
+
             # 檢查持倉與鎖定 (反手開倉豁免平倉鎖並清理舊倉殘留)
             is_flip = (
                 "FLIP" in str(reason).upper()
                 or "FLIP" in str((meta or {}).get("entry_type", "")).upper()
-                or (meta or {}).get("direction_override") is True
+                or (meta or {}).get("is_flip") is True
             )
             if is_flip:
                 # 🔄 反手開倉 (Flip Position)：強制釋放平倉鎖與舊倉殘留，確保秒級開出反手單！
@@ -4463,6 +4684,19 @@ class ExecutionManager:
                     macro_label = (meta or {}).get("macro_trend")
                     if macro_label:
                         frame.attrs["macro_trend"] = str(macro_label).upper()
+                    if entry_method_authority:
+                        frame.attrs["entry_method_context"] = {
+                            key: (meta or {}).get(key)
+                            for key in (
+                                "entry_method_authority",
+                                "entry_method_signal",
+                                "entry_method_bar_id",
+                                "entry_method_event_id",
+                                "entry_method_last_exit_timestamp",
+                            )
+                        }
+                        frame.attrs["entry_method_context"]["symbol"] = symbol
+                        frame.attrs["entry_method_quote"] = float(price)
 
             atr = float((meta or {}).get("atr") or (price * 0.015))
             requested_sl = (meta or {}).get("stop_loss_price")
@@ -4498,7 +4732,8 @@ class ExecutionManager:
 
             from core.gates.central_entry_gate import CentralEntryGate
             signal_id = (meta or {}).get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, "UNIFIED_PIPELINE")
-            is_cross_mid = bool(
+            is_entry_method = bool(entry_method_authority)
+            is_cross_mid = False if is_entry_method else bool(
                 (meta or {}).get("is_cross_mid")
                 or (meta or {}).get("allow_kc_internal")
                 or (meta or {}).get("strategy_mode") == "AGILE_MOMENTUM"
@@ -4512,8 +4747,15 @@ class ExecutionManager:
                 "managed_by_bot": True,
                 "entry_mode": "WILD_SWING",
                 "strategy_mode": "AGILE_MOMENTUM" if is_cross_mid else "CONSERVATIVE",
-                "source": "UNIFIED_PIPELINE",
+                "source": str((meta or {}).get("source") or "UNIFIED_PIPELINE"),
                 "candidate_signal_type": (meta or {}).get("candidate_signal_type"),
+                "entry_method_authority": entry_method_authority,
+                "entry_method_signal": (meta or {}).get("entry_method_signal"),
+                "entry_method_bar_id": (meta or {}).get("entry_method_bar_id"),
+                "entry_method_event_id": (meta or {}).get("entry_method_event_id"),
+                "entry_method_last_exit_timestamp": (
+                    (meta or {}).get("entry_method_last_exit_timestamp")
+                ),
                 "upstream_entry_gate_authorized": bool(
                     (meta or {}).get("upstream_entry_gate_authorized")
                 ),
@@ -4553,8 +4795,9 @@ class ExecutionManager:
                 eval_f_row = last_f_row if f_is_closed else prev_f_row
                 eval_f_c = float(eval_f_row.get("close", price))
                 eval_f_o = float(eval_f_row.get("open", price))
+                is_ma3_ma15_entry = entry_method_authority == "MA3_MA15_CROSS"
                 if side.upper() == "SHORT":
-                    if eval_f_c >= eval_f_o:
+                    if eval_f_c >= eval_f_o and not is_ma3_ma15_entry:
                         logger.critical(
                             f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_GREEN_CANDLE] {symbol} 開空硬攔截：已收線K棒非紅K陰線 "
                             f"(close={eval_f_c:.6f} >= open={eval_f_o:.6f})，向下紅K才能開空，強制拒單！"
@@ -4567,7 +4810,7 @@ class ExecutionManager:
                         )
                         return False
                 elif side.upper() == "LONG":
-                    if eval_f_c <= eval_f_o:
+                    if eval_f_c <= eval_f_o and not is_ma3_ma15_entry:
                         logger.critical(
                             f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_RED_CANDLE] {symbol} 開多硬攔截：已收線K棒非綠K陽線 "
                             f"(close={eval_f_c:.6f} <= open={eval_f_o:.6f})，向上綠K才能開多，強制拒單！"

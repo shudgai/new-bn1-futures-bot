@@ -105,8 +105,27 @@ def validate_entry_math(
         return False, "BLOCKED_ENTRY_MATH_INVALID_OHLC"
 
     frame_attrs = getattr(frame, "attrs", {}) or {}
+    entry_method_context = frame_attrs.get("entry_method_context")
+    entry_method_authorized = False
+    if isinstance(entry_method_context, Mapping):
+        from core.services.entry_methods import revalidate_entry_method
+
+        method_quote = _number(frame_attrs.get("entry_method_quote"))
+        method_symbol = str(entry_method_context.get("symbol") or "")
+        if method_quote is None or not method_symbol:
+            return False, "BLOCKED_ENTRY_METHOD_CONTEXT_INVALID"
+        entry_method_authorized, method_reason = revalidate_entry_method(
+            frame,
+            symbol=method_symbol,
+            side=side,
+            quote=method_quote,
+            context=entry_method_context,
+        )
+        if not entry_method_authorized:
+            return False, method_reason
     allow_override = bool(
         is_swing_pivot
+        or entry_method_authorized
         or frame_attrs.get("direction_override")
         or frame_attrs.get("is_agile_trigger")
         or frame_attrs.get("is_cross_mid")
@@ -645,6 +664,11 @@ def validate_exit_math(
             breached = (
                 stop is not None and (quote <= stop if side == "LONG" else quote >= stop)
             )
+            loss_pct = (
+                (entry - quote) / entry if side == "LONG"
+                else (quote - entry) / entry
+            ) if entry is not None and entry > 0 else 0.0
+            breached = breached or loss_pct >= 0.02
             if entry is not None and len(bars) >= 2:
                 atr = _number(bars[-2].get("atr"))
                 breached = breached or bool(
@@ -872,6 +896,16 @@ def validate_exit_math(
         if peak_roe is not None:
             from core.services.exits.net_roe_profit_lock import tiered_net_roe_floor
             floor, _tier = tiered_net_roe_floor(peak_roe)
+        stored_floors = (
+            _number(state.get("floor_net_roe_pct")),
+            _number(state.get("lock_floor_roe_pct")),
+        )
+        stored_floor = max(
+            (value for value in stored_floors if value is not None),
+            default=None,
+        )
+        if stored_floor is not None:
+            floor = stored_floor if floor is None else max(floor, stored_floor)
         if floor is not None and current_roe <= floor + 1e-12:
             details.update(exit_type="PROFIT_LOCK", floor_net_roe_pct=floor, current_net_roe_pct=current_roe)
             return True, "EXIT_MATH_PROFIT_LOCK", details
@@ -921,9 +955,32 @@ async def validate_entry_at_execution(
         or payload.get("entry_type")
         or ""
     )
+    entry_method_authority = payload.get("entry_method_authority")
+    entry_method_authorized = False
+    if entry_method_authority:
+        from core.services.entry_methods import revalidate_entry_method
+
+        rows = _rows(frame)
+        method_quote = _number(
+            execution_price
+            or payload.get("entry_gate_quote")
+            or (rows[-1].get("close") if rows else None)
+        )
+        if method_quote is None:
+            return False, "BLOCKED_ENTRY_METHOD_EXECUTION_QUOTE_INVALID"
+        entry_method_authorized, method_reason = revalidate_entry_method(
+            frame,
+            symbol=symbol,
+            side=side,
+            quote=method_quote,
+            context=payload,
+        )
+        if not entry_method_authorized:
+            return False, method_reason
     is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
     allow_override = bool(
-        payload.get("direction_override")
+        entry_method_authorized
+        or payload.get("direction_override")
         or payload.get("allow_kc_internal")
         or payload.get("is_swing_pivot")
         or payload.get("strategy_mode") == "AGILE_MOMENTUM"
@@ -1031,7 +1088,7 @@ async def validate_entry_at_execution(
         payload.get("manual_entry") is True
         or payload.get("source") == "MANUAL"
     )
-    if not is_manual:
+    if not is_manual and not entry_method_authorized:
         from core.services.exits.trend_lock import evaluate_trend_cycle_entry
         cycle_state = getattr(account, "entry_filter_last", None)
         if not isinstance(cycle_state, dict):

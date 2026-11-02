@@ -98,7 +98,7 @@ class FakeTestnetExchange:
         return []
 
     async def request(self, path, api, method, params):
-        if path == "algoOpenOrders" and method == "GET":
+        if path == "openAlgoOrders" and method == "GET":
             return []
         if method == "DELETE":
             self.cancelled.append(params["symbol"])

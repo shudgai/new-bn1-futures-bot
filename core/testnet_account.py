@@ -136,6 +136,8 @@ ENTRY_CONTEXT_KEYS = (
     "channel_entry_profile", "channel_entry_profile_basis",
     "profit_lock_usdt_v2",
     "entry_source",
+    "entry_method_authority", "entry_method_signal", "entry_method_bar_id",
+    "entry_method_event_id", "entry_method_last_exit_timestamp",
 )
 
 
@@ -1127,7 +1129,7 @@ class BinanceTestnetAccount:
             for symbol in symbols_to_check:
                 try:
                     normal_orders = await self.exchange.fetch_open_orders(symbol)
-                    algo_orders = await self.exchange.request("algoOpenOrders", "fapiPrivate", "GET", {"symbol": self._raw_symbol(symbol)})
+                    algo_orders = await self.exchange.request("openAlgoOrders", "fapiPrivate", "GET", {"symbol": self._raw_symbol(symbol)})
                 except Exception as exc:
                     self.log(f"⚠️ [Shadow Recon] API Error for {symbol}: {type(exc).__name__}: {exc}", "WARNING")
                     self._reconciliation_status = "ERROR"
@@ -2263,7 +2265,7 @@ class BinanceTestnetAccount:
             try:
                 normal_orders = await self.exchange.fetch_open_orders(symbol)
                 algo_orders = await self.exchange.request(
-                    "algoOpenOrders", "fapiPrivate", "GET",
+                    "openAlgoOrders", "fapiPrivate", "GET",
                     {"symbol": self._raw_symbol(symbol)},
                 )
                 has_native_stop = any(
@@ -2368,7 +2370,7 @@ class BinanceTestnetAccount:
                         raise RuntimeError("managed native TP has no order ID")
                     await self.exchange.cancel_order(order_id, symbol)
                 algo_orders = await self.exchange.request(
-                    "algoOpenOrders", "fapiPrivate", "GET",
+                    "openAlgoOrders", "fapiPrivate", "GET",
                     {"symbol": self._raw_symbol(symbol)},
                 )
                 for order in algo_orders or []:
@@ -2385,7 +2387,7 @@ class BinanceTestnetAccount:
                     )
                 normal_after = await self.exchange.fetch_open_orders(symbol)
                 algo_after = await self.exchange.request(
-                    "algoOpenOrders", "fapiPrivate", "GET",
+                    "openAlgoOrders", "fapiPrivate", "GET",
                     {"symbol": self._raw_symbol(symbol)},
                 )
                 normal_tp = [
@@ -2575,6 +2577,38 @@ class BinanceTestnetAccount:
         entry_context = dict(entry_context or {})
         signal_id = entry_context.get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, str(reason or "OPEN"))
         entry_context["signal_id"] = signal_id
+        entry_method_authority = entry_context.get("entry_method_authority")
+        if entry_method_authority:
+            from core.services.entry_methods import revalidate_entry_method
+
+            method_frame = next(
+                (
+                    entry_context.get(key)
+                    for key in ("entry_gate_frame", "frame", "raw_df")
+                    if entry_context.get(key) is not None
+                ),
+                None,
+            )
+            if method_frame is None:
+                self.log(
+                    f"ENTRY_METHOD_ACCOUNT_VETO {symbol} BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE",
+                    "WARNING",
+                )
+                return False
+            method_allowed, method_reason = revalidate_entry_method(
+                method_frame,
+                symbol=symbol,
+                side=side,
+                quote=price,
+                context=entry_context,
+            )
+            if not method_allowed:
+                self.log(
+                    f"ENTRY_METHOD_ACCOUNT_VETO {symbol} {method_reason}",
+                    "WARNING",
+                )
+                return False
+            entry_context["_entry_method_validated"] = True
 
         # ──【全鏈路審計階段 1：訊號產生】──
         OrderAuditTrail.record_signal_generated(
@@ -2946,6 +2980,7 @@ class BinanceTestnetAccount:
                 direction_override = bool(
                     (entry_context and (
                         entry_context.get('direction_override')
+                        or entry_context.get("_entry_method_validated")
                         or entry_context.get('allow_kc_internal')
                         or entry_context.get('is_cross_mid')
                         or entry_context.get('strategy_mode') == 'AGILE_MOMENTUM'

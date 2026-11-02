@@ -156,13 +156,15 @@ def test_central_entry_gate_allows_confirmed_pivot_without_breakout_filters(monk
         rows[-3].update(high=100.5, low=99.5)
         rows[-2].update(open=99.8, close=99.6, high=100., low=99., atr=0.5)
         rows[-1].update(open=99.6, close=100.6, high=100.7, low=99.5, atr=0.5,
-                        kc_middle=99.9, ma5=99.8, volume=0.1)
+                        kc_upper=105., kc_lower=98., kc_middle=101.,
+                        ma3=100.3, ma5=100.4, ma15=100.2, volume=0.1)
         quote = 100.6
     else:
         rows[-3].update(high=100.5, low=99.5)
         rows[-2].update(open=100.2, close=100.4, high=101., low=100., atr=0.5)
         rows[-1].update(open=100.4, close=99.4, high=100.5, low=99.3, atr=0.5,
-                        kc_middle=100.1, ma5=100.2, volume=0.1)
+                        kc_upper=101., kc_lower=94., kc_middle=99.,
+                        ma3=99.7, ma5=99.6, ma15=99.8, volume=0.1)
         quote = 99.4
     frame = pd.DataFrame(rows)
     frame.attrs["timeframe_ms"] = 60_000
@@ -180,8 +182,10 @@ def test_central_entry_gate_allows_confirmed_pivot_without_breakout_filters(monk
     invalid = frame.copy()
     if side == "LONG":
         invalid.loc[invalid.index[-1], "low"] = 98.9
+        invalid.loc[invalid.index[-1], "ma3"] = 101.0
     else:
         invalid.loc[invalid.index[-1], "high"] = 101.1
+        invalid.loc[invalid.index[-1], "ma3"] = 98.0
     rejected = CentralEntryGate.verify_and_authorize(
         "X", side, quote, invalid, source=f"UNIFIED_PIPELINE|SWING_PIVOT_{side}",
     )
@@ -203,17 +207,18 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
             low=98. if i == 2 else 98.5 if i == 3 else 99.,
             close=100. if i == 3 else 98.5 if i == 2 else 100.,
             volume=2. if i == 3 else 1., atr=1.,
-            kc_middle=100.5 if i < 3 else 100.,
+            kc_middle=100.5 if i < 2 else 99.5 if i == 2 else 100.,
             kc_upper=110.5 if i == 3 else 110., kc_lower=89.5 if i == 3 else 90.,
-            ma3=100. if i == 3 else 99., ma5=100. if i == 3 else 99.,
-            ma15=99.5,
+            ma3=100. if i == 3 else 99.,
+            ma5=98.5 if i == 3 else 99.,
+            ma15=99.6 if i == 3 else 99.5,
         ))
     frame = pd.DataFrame(rows)
     frame.attrs["timeframe_ms"] = 60_000
     valid, reason = validate_entry_math(frame, "LONG", is_swing_pivot=True)
     assert valid, reason
     invalid, reason = validate_entry_math(frame, "LONG", is_swing_pivot=False)
-    assert not invalid and reason == "BLOCKED_LONG_ON_BEARISH_TREND"
+    assert not invalid and reason == "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -275,3 +280,33 @@ def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, m
         close_reason=reason, now_ms=base + 180_000,
     )
     assert allowed, math_reason
+
+
+def test_confirmed_pivot_without_wave_gain_remains_held(monkeypatch):
+    from core.gates.unified_pipeline_gates import ExitGate
+    base = 1_700_000_000_000
+    rows = [
+        dict(timestamp=base, open=100., high=100.4, low=99.5, close=100.,
+             ma5=100., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+        dict(timestamp=base + 60_000, open=101., high=102.2, low=100.8, close=102.,
+             ma5=102., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+        dict(timestamp=base + 120_000, open=102., high=104., low=101.5, close=103.,
+             ma5=103., ma15=100., atr=1., kc_upper=110., kc_middle=100., kc_lower=90.),
+        dict(timestamp=base + 180_000, open=103., high=103.2, low=101.5, close=101.8,
+             ma5=101.8, ma15=100.5, atr=1., kc_upper=110., kc_middle=100.5, kc_lower=90.),
+    ]
+    frame = pd.DataFrame(rows)
+    frame["is_closed"] = True
+    frame.attrs["timeframe_ms"] = 60_000
+    position = _position("LONG")
+    position["entry_price"] = 103.9
+    position["open_timestamp"] = base / 1000.0
+    monkeypatch.setattr(
+        ExitGate, "_evaluate_with_holding_rules",
+        staticmethod(lambda *_args, **_kwargs: (False, "VETO_HOLD", {})),
+    )
+    should_exit, reason, _ = ExitGate.evaluate(
+        position, {"raw_df": frame, "current_price": 101.8, "atr": 1.0},
+    )
+    assert should_exit is False
+    assert reason == "VETO_HOLD"

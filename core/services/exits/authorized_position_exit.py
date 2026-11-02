@@ -32,34 +32,6 @@ def automated_position_exit_allowed(
     normalized_reason = str(reason or "").upper()
     side = str(position.get("side") or "").upper()
 
-    # 0. 來自 ExitGate 或 ExecutionManager 的頂級真峰谷 / 反側破軌 / 鎖利離場授權：
-    # ⚠️ 嚴格鎖定：移除舊版 Wild Swing / Channel Swing 的 BEARISH_TREND_REVERSAL / BULLISH_TREND_REVERSAL / MIDLINE_BREAK_EXIT / HARD_SL，
-    # 嚴禁任何繞過 ExecutionManager 的舊策略偷平倉或硬止損割肉！
-    if normalized_reason.startswith("EXITGATE:"):
-        if side == "LONG" and any(k in normalized_reason for k in (
-            "CLOSE_LONG_AT_TOP", "CLOSE_LONG_AT_LOWER_RAIL_BREACH",
-            "CLOSE_LONG_ON_BEARISH_REVERSAL", "CLOSE_LONG_MEME_WICK_BUFFER_SL",
-            "CLOSE_LONG_AT_PEAK_PULLBACK_2PCT", "EARLY_PIVOT_PEAK_EXIT",
-            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_PEAK",
-            "EXIT_LONG_AT_PEAK", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
-            "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
-            "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
-            "EXIT_BY_TREND_LINE_BROKEN", "EXIT_BY_TREND_BROKEN", "EXIT_BY_KC_MID_STRUCTURE_BROKEN",
-        )):
-            return True
-
-        if side == "SHORT" and any(k in normalized_reason for k in (
-            "CLOSE_SHORT_AT_BOTTOM", "CLOSE_SHORT_AT_UPPER_RAIL_BREACH",
-            "CLOSE_SHORT_ON_BULLISH_REVERSAL", "CLOSE_SHORT_MEME_WICK_BUFFER_SL",
-            "CLOSE_SHORT_AT_VALLEY_REBOUND", "EARLY_PIVOT_VALLEY_EXIT",
-            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT", "EXIT_BY_VERIFIED_FRACTAL_VALLEY",
-            "EXIT_SHORT_AT_BOTTOM", "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
-            "EXIT_BY_STAGED_PROFIT_LOCK_TIER2", "EXIT_BY_RATCHET_PROFIT_LOCK",
-            "EXIT_BY_5U_DYNAMIC_TRAILING_LOCK",
-            "EXIT_BY_TREND_LINE_BROKEN", "EXIT_BY_TREND_BROKEN", "EXIT_BY_KC_MID_STRUCTURE_BROKEN",
-        )):
-            return True
-
     # A lock is an explicit authorized exit class. Require the recorded net
     # ROE floor to be armed and touched so a reason string alone cannot close.
     is_profit_lock = any(token in normalized_reason for token in (
@@ -72,7 +44,20 @@ def automated_position_exit_allowed(
         lock_position.update(dict(position))
         lock_details = _verified_profit_lock_details(lock_position, float(price))
         if lock_details is not None:
-            return True
+            if frame is not None:
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+
+                has_pivot, pivot_type, _ = has_confirmed_true_pivot(
+                    dict(position), frame, float(price),
+                )
+                expected_prefix = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+                if has_pivot and str(pivot_type or "").upper().startswith(expected_prefix):
+                    return True
+
+            from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
+
+            if pending_confirmed_pivot_exit(dict(position), dict(meta)) is not None:
+                return True
 
     if frame is not None:
         from core.gates.holding_protection_gate import has_confirmed_true_pivot

@@ -64,13 +64,24 @@ def test_channel_swing_allows_only_verified_profit_lock(monkeypatch):
         "entry_price": 100.0,
     }
 
-    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+    allowed_without_pivot, reason_without_pivot, _ = HoldingProtectionExitGate.validate_exit(
         position, frame=None, quote=101.0,
         candidate_reason="EXIT_BY_RATCHET_PROFIT_LOCK",
     )
 
+    assert not allowed_without_pivot
+    assert reason_without_pivot == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+
+    monkeypatch.setattr(
+        holding_gate, "has_confirmed_true_pivot",
+        lambda *_args, **_kwargs: (True, "TRUE_PEAK", {"pivot_bar": 123}),
+    )
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
+        position, frame=None, quote=101.0,
+        candidate_reason="EXIT_BY_RATCHET_PROFIT_LOCK",
+    )
     assert allowed
-    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert reason == "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
 
 
 @pytest.mark.parametrize("reason", [
@@ -119,13 +130,37 @@ def test_exit_gate_evaluate_suppresses_ma_break_exit(monkeypatch):
 
 @pytest.mark.parametrize("reason", [
     "CIRCUIT_BREAKER_HARD_SL",
-    "EXIT_BY_RATCHET_PROFIT_LOCK",
-    "NET_ROE_THREE_TIER_GIVEBACK",
-    "HYBRID_DYNAMIC_RATCHET_GIVEBACK",
-    "EARLY_PIVOT_PEAK_EXIT",
-    "CLOSE_SHORT_AT_BOTTOM",
+    "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
+    "HARD_STOP_LOSS",
 ])
-def test_exit_gate_preserves_safety_lock_and_confirmed_pivot_exits(reason):
+def test_exit_gate_preserves_safety_exits(reason):
     result = (True, reason, {"source": "test"})
 
     assert ExitGate._gate_unconfirmed_exit(result) == result
+
+
+@pytest.mark.parametrize("reason", [
+    "EARLY_PIVOT_PEAK_EXIT",
+    "CLOSE_SHORT_AT_BOTTOM",
+])
+def test_exit_gate_requires_pivot_evidence_in_addition_to_reason(reason):
+    result = (True, reason, {"source": "test"})
+
+    gated = ExitGate._gate_unconfirmed_exit(result)
+
+    assert gated[0] is False
+    assert gated[1] == ExitGate.GENERAL_EXIT_VETO_REASON
+
+
+@pytest.mark.parametrize("reason", [
+    "EXIT_BY_RATCHET_PROFIT_LOCK",
+    "NET_ROE_THREE_TIER_GIVEBACK",
+    "HYBRID_DYNAMIC_RATCHET_GIVEBACK",
+])
+def test_unconfirmed_exit_helper_does_not_trust_lock_reason_alone(reason):
+    result = (True, reason, {"source": "test"})
+
+    gated = ExitGate._gate_unconfirmed_exit(result)
+
+    assert gated[0] is False
+    assert gated[1] == ExitGate.GENERAL_EXIT_VETO_REASON
