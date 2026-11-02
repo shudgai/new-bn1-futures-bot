@@ -3,7 +3,34 @@
 from __future__ import annotations
 
 import math
+import logging
+import time
 from typing import Any, Mapping
+
+
+def strategy_exit_bar_block_reason(
+    position: Mapping[str, Any], metadata: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Use actual fill time and UTC minutes, never a signal or cached candle."""
+    raw = position.get("open_timestamp")
+    if raw is None:
+        raw = (metadata or {}).get("open_timestamp")
+    try:
+        opened = float(raw)
+        if opened >= 1e11:
+            opened /= 1000.0
+        now = time.time()
+        if not math.isfinite(opened) or opened <= 0 or opened > now:
+            raise ValueError("invalid or future position open time")
+    except (TypeError, ValueError, OverflowError) as exc:
+        logging.getLogger(__name__).error("VETO_EXIT_OPEN_TIME_INVALID: %s", exc)
+        return "VETO_EXIT_OPEN_TIME_INVALID"
+    if int(opened // 60) == int(now // 60):
+        logging.getLogger(__name__).info(
+            "VETO_HOLD_ENTRY_CANDLE side=%s opened=%s", position.get("side"), opened,
+        )
+        return "VETO_HOLD_ENTRY_CANDLE"
+    return None
 
 
 def automated_position_exit_allowed(
@@ -36,6 +63,9 @@ def automated_position_exit_allowed(
             position, frame, exit_price, metadata, close_reason=str(reason),
         )
         return bool(allowed)
+
+    if strategy_exit_bar_block_reason(position, metadata):
+        return False
 
     normalized_reason = str(reason or "").upper()
     from core.services.exits.strict_true_pivot import (

@@ -509,3 +509,41 @@ WAIT_LIVE_ORDER_AUTHORIZED = NO
 Doji PASS is specification/static evidence only. WAIT readiness BLOCK is not an assertion that the existing service has stopped.
 
 The Owner subsequently explicitly requested deployment, restart, commit, and GitHub push for these completed repairs. The release includes the previously loaded profitable-pivot/outer-KC changes and the newly tested closed-breakout/positive-current-net changes. Account databases, runtime telemetry, and unrelated dirty changes are excluded. This operational approval does not authorize WAIT implementation or activation. Commit and remote verification precede the service restart; loaded-policy and HTTP readiness evidence will be checked against the new process.
+
+### [2026-11-03] - Ordinary entry-candle hold with verified disaster exception
+
+- The Owner first selected a total strategy exit block during the entry candle, then explicitly superseded that selection: verified disasters may close during the entry candle; all other exits must wait for a true peak/valley. The final patch implements the later instruction, not the intermediate total-disaster block.
+- At the initial read-only check, the 46 persisted paper trades contained no same-UTC-minute open/close pairs. The latest LOBSTER example was 05:51:01 LONG open -> 06:03:01 confirmed true peak close. Nonpivot examples included PEPE 05:44:14 extreme waterfall and 04:47:01 two closed adverse abnormal candles. These remain separately authorized disaster exits; they are not numerical position hard stops. The Owner's cited PEPE 05:11/06:26 examples were not matched to exact fills in that snapshot; no candle-marker interpretation was presented as verified execution history.
+- Added a shared ordinary-entry-candle hold based on authoritative persisted `open_timestamp` and current UTC minute, supporting seconds and milliseconds. Signal times, stale snapshot candle identities, and metadata cannot override the actual position fill time. Missing, invalid, or future fill times explicitly log and fail closed for ordinary exits. Manual closes remain independent.
+- Both full/partial paper and testnet final boundaries enforce the hold, including strategy callers using `is_manual=True` with nonmanual reasons. The central scan gate preserves existing hold diagnostics and suppresses ordinary exits on the entry candle. Verified emergency math still runs before this ordinary block, so disaster labels alone never bypass authority. Numeric price/ATR stops remain disabled. Ordinary exits after the entry candle still require the existing fully post-entry closed three-bar pivot, prior profit expansion, and current positive estimated net profit.
+- Added **97 tests** covering three symbols/both sides, seconds/milliseconds, actual-versus-signal identity, restart persistence, invalid/future times, the exact next UTC-minute boundary, paper/testnet full and partial zero-submission holds, fake emergency labels, and real account-adapter waterfall closure on the entry candle. Final isolated validation: **1103 passed, 2 skipped, 4 existing warnings**, 24 modules. No production data or `.env` was copied into tests. The previously documented unrelated legacy-policy failures and absent historical Channel Swing test files remain outside this selected passing suite.
+- No entry logic, account capital, leverage, WAIT implementation, position reset, or manual order changed. This patch has not been deployed/restarted or committed/pushed at this validation stage; operational authorization is separate.
+
+Mandatory WAIT review:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is specification/static evidence only. WAIT readiness BLOCK is separate from the existing service's operating state.
+
+The Owner subsequently selected deployment/restart plus commit/GitHub push for this ordinary-entry-candle hold patch. The final authorized policy keeps math-verified disaster exits available on the entry candle. Runtime/account data and unrelated dirty changes are excluded from the release; WAIT activation remains unauthorized.

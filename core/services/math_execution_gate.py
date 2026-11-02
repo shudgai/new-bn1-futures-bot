@@ -1187,11 +1187,18 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
-    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+    from core.services.exits.authorized_position_exit import (
+        automated_position_exit_allowed, strategy_exit_bar_block_reason,
+    )
+    is_emergency = is_emergency_exit(close_reason)
+    bar_block = (
+        strategy_exit_bar_block_reason(position, metadata) if not is_emergency else None
+    )
+    if bar_block:
+        return False, bar_block, {"exit_type": "BLOCKED", "exit_policy": "HOLD_ENTRY_CANDLE"}
     allowed = automated_position_exit_allowed(
         symbol, position, metadata, close_reason, price, frame=frame,
     )
-    is_emergency = is_emergency_exit(close_reason)
     evidence = None
     if allowed and is_emergency:
         from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE

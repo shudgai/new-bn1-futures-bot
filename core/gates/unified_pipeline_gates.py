@@ -170,6 +170,7 @@ class ExitGate:
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """Hold through pullbacks until a profitable confirmed pivot or emergency."""
+        from core.services.exits.authorized_position_exit import strategy_exit_bar_block_reason
         priority_result = ExitGate._evaluate_core(
             pos, market_data, current_price, atr, kc_slope,
         )
@@ -188,6 +189,17 @@ class ExitGate:
         abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
         if abnormal is not None:
             return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
+        bar_block = strategy_exit_bar_block_reason(pos)
+        if bar_block:
+            return False, (
+                bar_block if bar_block == "VETO_HOLD_ENTRY_CANDLE"
+                else ExitGate.GENERAL_EXIT_VETO_REASON
+            ), {
+                **(priority_result[2] or {}),
+                "exit_policy": PROFIT_PIVOT_EXIT_POLICY,
+                "suppressed_exit_reason": priority_result[1],
+                "ordinary_exit_block": bar_block,
+            }
         pivot_quote = current_price if current_price is not None else (
             market_data.current_price if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("current_price")
