@@ -4,6 +4,7 @@ import csv
 import io
 import time
 import math
+import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -46,8 +47,10 @@ from core.symbol_aliases import is_lobster_symbol, to_binance_usdm_symbol
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
+from core.services.market_data_service import fetch_klines as fetch_chart_klines
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+logger = logging.getLogger(__name__)
 
 
 def effective_runtime_environment() -> str:
@@ -905,11 +908,23 @@ async def reset_account():
 async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bool):
     """取得K線、均線與策略使用的 Keltner Channel 提供給前端圖表"""
     try:
-        df = await engine.fetch_klines(
-            symbol, timeframe=timeframe, limit=limit, keep_live=include_live
+        # Chart refreshes must not depend on the trading loop's per-symbol REST cooldown.
+        df = await asyncio.wait_for(
+            fetch_chart_klines(
+                engine.exchange, symbol, timeframe=timeframe, limit=limit,
+                keep_live=include_live, max_retries=1,
+            ),
+            timeout=6.0,
         )
         if df.empty:
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
+        interval_seconds = int(timeframe[:-1]) * {
+            "m": 60, "h": 3600, "d": 86400,
+        }[timeframe[-1]]
+        latest_ms = float(df.iloc[-1]["timestamp"])
+        max_age_ms = (interval_seconds * (1 if include_live else 2) + 15) * 1000
+        if not math.isfinite(latest_ms) or time.time() * 1000 - latest_ms > max_age_ms:
+            raise HTTPException(status_code=503, detail="K 線行情已過期，正在重試")
             
         # 計算 MA
         df['MA5'] = df['close'].rolling(window=5).mean()
@@ -1082,7 +1097,10 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "chop_markers": chop_markers.get(index, []),
                 "channel_markers": channel_markers.get(index, []),
                 "block_markers": block_markers.get(index, []),
-                "is_live": bool(include_live and index == df.index[-1]),
+                "is_live": bool(
+                    include_live and index == df.index[-1]
+                    and not bool(df.loc[index, "is_closed"])
+                ),
             })
 
         pos_info = None
@@ -1155,7 +1173,11 @@ async def get_klines(
         saved_at = time.monotonic()
         _kline_cache[key] = {"payload": payload, "saved_at": saved_at}
         return {**payload, "cache": {"source": "live", "age_seconds": 0.0}}
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "CHART_KLINES_REFRESH_FAILED symbol=%s timeframe=%s error=%s",
+            symbol, timeframe, exc,
+        )
         cached = _kline_cache.get(key)
         if cached:
             age = time.monotonic() - cached["saved_at"]

@@ -1279,7 +1279,9 @@
                     }
                     ctx.failureCount = 0;
                     ctx.nextRetryAt = 0;
-                    state.error = "";
+                    state.error = (json.cache || {}).source === 'stale'
+                        ? '行情更新暫時失敗，目前顯示舊 K 線，正在自動重試'
+                        : "";
                     state.loading = false;
                 } catch (e) {
                     if (this.chartModal.symbols.includes(symbol)) {
@@ -1289,7 +1291,9 @@
                         const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(ctx.failureCount, 5)));
                         ctx.nextRetryAt = Date.now() + retryDelay;
                         const message = e.name === 'AbortError' ? 'K 線請求逾時，正在自動重試' : e.message;
-                        if (!ctx.lastCandle) state.error = message;
+                        state.error = ctx.lastCandle
+                            ? `${message}；目前保留舊 K 線，正在自動重試`
+                            : message;
                         console.warn('Chart refresh failed; trading UI remains active:', message);
                         state.loading = false;
                     }
