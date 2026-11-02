@@ -109,14 +109,14 @@ def test_closed_two_bar_breakout_requires_first_candle_open_inside_channel(side)
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_scanner_revalidates_two_bar_candidate_through_breakout_distance_gate(
+def test_scanner_retains_ma15_bias_gate_after_breakout_distance_removal(
     monkeypatch, tmp_path, caplog, side,
 ):
     from core.services.execution_manager import ExecutionManager
 
     frame = breakout_frame(side).copy()
     # DataPipeline recomputes KC from OHLC. Keep K2 just beyond that canonical
-    # rail while the live quote remains within the anti-chase distance.
+    # rail. The fixture still exceeds the retained MA15-bias limit.
     if side == "LONG":
         frame.loc[frame.index[-2], ["close", "high"]] = [101.9, 102.0]
         frame.loc[frame.index[-1], ["close", "high"]] = [102.2, 102.25]
@@ -184,7 +184,7 @@ def test_scanner_revalidates_two_bar_candidate_through_breakout_distance_gate(
     assert any(item["method"] == "KC_TWO_BAR_BREAKOUT" for item in rejections)
     for rejection in rejections:
         assert rejection["side"] == side
-        assert rejection["reason"] == "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_DISTANCE"
+        assert rejection["reason"] == "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
         assert rejection["event_id"]
         assert any(
             record.levelname == "WARNING"

@@ -1,5 +1,6 @@
 import pytest
 import ccxt.async_support as ccxt
+from unittest.mock import AsyncMock
 
 import core.testnet_account as testnet_module
 from core.testnet_account import BinanceTestnetAccount
@@ -12,6 +13,43 @@ async def asyncio_sleep_stub(*_args, **_kwargs):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _account_transport_policy(monkeypatch):
+    """Isolate account transport from strategy authorization tested separately."""
+    from core.services import entry_contract, entry_firewall, math_execution_gate
+
+    original_gates = (
+        (
+            math_execution_gate, "validate_entry_at_execution",
+            math_execution_gate.validate_entry_at_execution,
+        ),
+        (
+            entry_firewall, "validate_account_entry",
+            entry_firewall.validate_account_entry,
+        ),
+        (
+            entry_contract, "enforce_final_order_wick_gate",
+            entry_contract.enforce_final_order_wick_gate,
+        ),
+    )
+    monkeypatch.setattr(
+        "core.services.math_execution_gate.validate_entry_at_execution",
+        AsyncMock(return_value=(True, "TEST_ACCOUNT_TRANSPORT_AUTHORIZED")),
+    )
+    monkeypatch.setattr(
+        "core.services.entry_firewall.validate_account_entry",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "core.services.entry_contract.enforce_final_order_wick_gate",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
+    )
+    return original_gates
 
 
 class FakeTestnetExchange:
@@ -31,10 +69,10 @@ class FakeTestnetExchange:
         return list(self.positions)
 
     def amount_to_precision(self, symbol, amount):
-        return str(round(amount, 3))
+        return str(round(float(amount), 3))
 
     def price_to_precision(self, symbol, price):
-        return str(round(price, 4))
+        return str(round(float(price), 4))
 
     def market(self, symbol):
         lot = {
@@ -185,7 +223,7 @@ async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     assert [order["type"] for order in exchange.orders] == [
         "market", "TAKE_PROFIT_MARKET",
     ]
-    assert account.position_meta["DOGE/USDT"]["sl"] == pytest.approx(99.5)
+    assert account.position_meta["DOGE/USDT"]["sl"] == 0.0
 
     close_reasons = []
 
@@ -361,7 +399,9 @@ async def test_testnet_account_manual_close_is_reduce_only(tmp_path, monkeypatch
 
     account.pending_limit_orders["DOGE/USDT"] = {"side": "LONG"}
 
-    success = await account.close_position("DOGE/USDT", 101.0, "手動平倉")
+    success = await account.close_position(
+        "DOGE/USDT", 101.0, "手動平倉", is_manual=True,
+    )
 
     assert success is True
     assert "DOGE/USDT" not in account.positions
@@ -706,7 +746,7 @@ async def test_refresh_uses_lobster_quote_when_exchange_mark_is_entry_fallback(
 
 
 @pytest.mark.anyio
-async def test_testnet_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
+async def test_testnet_legacy_peak_drawdown_does_not_authorize_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
@@ -732,10 +772,9 @@ async def test_testnet_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypa
 
     await account.update_positions({"BTC/USDT": 102.0})
 
-    assert "BTC/USDT" not in account.positions
-    trade = account.trades[0]
-    assert trade["symbol"] == "BTC/USDT"
-    assert trade["reason"] == "峰值回吐平倉"
+    assert "BTC/USDT" in account.positions
+    assert account.trades == []
+    assert exchange.orders == []
 
 
 @pytest.mark.anyio
@@ -797,7 +836,7 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
 
 
 @pytest.mark.anyio
-async def test_testnet_bounce_guard_immediately_places_stop_market(tmp_path, monkeypatch):
+async def test_testnet_legacy_bounce_guard_does_not_place_stop_market(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
@@ -819,15 +858,10 @@ async def test_testnet_bounce_guard_immediately_places_stop_market(tmp_path, mon
     await account.update_positions({"HEI/USDT": 99.66})
 
     meta = account.position_meta["HEI/USDT"]
-    assert meta["early_profit_guard_armed"] is True
-    assert meta["early_profit_guard_price"] == pytest.approx(99.8)
-    assert meta["sl"] == pytest.approx(99.8)
-    assert meta["is_breakeven_moved"] is True
-    assert exchange.cancelled
-    guard_order = exchange.orders[-1]
-    assert guard_order["type"] == "STOP_MARKET"
-    assert guard_order["side"] == "buy"
-    assert float(guard_order["params"]["triggerPrice"]) == pytest.approx(99.8)
+    assert meta.get("early_profit_guard_armed") is not True
+    assert meta["sl"] == pytest.approx(101.0)
+    assert meta.get("is_breakeven_moved") is not True
+    assert exchange.orders == []
 
 
 @pytest.mark.skip(reason="early profit guard removed")
@@ -863,7 +897,7 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
 
 
 @pytest.mark.anyio
-async def test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r(
+async def test_testnet_legacy_profit_bank_does_not_install_stop(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "profit_bank.json"))
@@ -890,18 +924,14 @@ async def test_testnet_profit_bank_installs_profitable_stop_before_one_point_fiv
     await account.update_positions({"DOGE/USDT": 100.35})
 
     meta = account.position_meta["DOGE/USDT"]
-    assert meta["sl"] == pytest.approx(100.25)
-    assert meta["profit_bank_armed"] is True
-    assert meta["is_breakeven_moved"] is True
-    assert any(
-        order["type"] == "STOP_MARKET"
-        and float(order["params"]["triggerPrice"]) == pytest.approx(100.25)
-        for order in exchange.orders
-    )
+    assert meta["sl"] == pytest.approx(99.0)
+    assert meta.get("profit_bank_armed") is not True
+    assert meta.get("is_breakeven_moved") is not True
+    assert exchange.orders == []
 
 
 @pytest.mark.anyio
-async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
+async def test_legacy_percentage_trailing_does_not_replace_protection(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "TRAILING_TRIGGER_PCT", 0.008)
@@ -937,11 +967,11 @@ async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monk
     meta = account.position_meta["DOGE/USDT"]
     # 0.32% 尚未達固定 0.8%，但已超過窄止損單的 1.5R（0.30%）。
     assert meta["highest_pnl_pct"] == pytest.approx(0.0032)
-    assert meta["is_breakeven_moved"] is True
+    assert meta.get("is_breakeven_moved") is not True
+    assert meta["sl"] == pytest.approx(99.8)
     assert meta["tp"] == 105.0
     assert account.positions["DOGE/USDT"]["tp"] == 105.0
-    assert any(order["type"] == "STOP_MARKET" for order in exchange.orders[previous_order_count:])
-    assert any(order["type"] == "TAKE_PROFIT_MARKET" for order in exchange.orders[previous_order_count:])
+    assert exchange.orders[previous_order_count:] == []
 
 
 @pytest.mark.anyio
@@ -1021,11 +1051,7 @@ async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
     )
 
     assert success is True
-    # Should only place market entry and STOP_MARKET (SL), no TAKE_PROFIT_MARKET
-    assert [order["type"] for order in exchange.orders] == [
-        "market",
-        "STOP_MARKET",
-    ]
+    assert [order["type"] for order in exchange.orders] == ["market"]
     assert "DOGE/USDT" in account.positions
     assert account.positions["DOGE/USDT"]["tp"] == 0.0
 
@@ -1050,10 +1076,11 @@ async def test_partial_close_position(tmp_path, monkeypatch):
     pos = account.positions["DOGE/USDT"]
     qty_before = pos["qty"]
 
-    account.pending_limit_orders["DOGE/USDT"] = {"side": "LONG"}
-
     # Partial close 50%
-    success = await account.partial_close_position("DOGE/USDT", current_price=101.0, close_reason="ROE達5%減倉一半", fraction=0.5)
+    success = await account.partial_close_position(
+        "DOGE/USDT", current_price=101.0, close_reason="手動平倉",
+        fraction=0.5, is_manual=True,
+    )
     assert success is True
     assert "DOGE/USDT" not in account.pending_limit_orders
 
@@ -1066,6 +1093,68 @@ async def test_partial_close_position(tmp_path, monkeypatch):
     # Check that last trade is PARTIAL_CLOSE_LONG
     assert account.trades[0]["action"] == "PARTIAL_CLOSE_LONG"
     assert account.trades[0]["status"] == "PARTIAL_CLOSED"
+
+
+@pytest.mark.anyio
+async def test_account_open_without_market_data_is_blocked_by_real_entry_gates(
+    tmp_path, monkeypatch, _account_transport_policy,
+):
+    for module, name, original in _account_transport_policy:
+        monkeypatch.setattr(module, name, original)
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "entry-blocked.json"))
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    assert not await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "test",
+        atr=1.0, leverage=5,
+    )
+    assert exchange.orders == []
+    assert account.positions == {}
+    assert account.trades == []
+    assert any(
+        "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE" in item["text"]
+        for item in account.logs
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_partial_close_preserves_pending_entry_until_reconciliation(
+    tmp_path, monkeypatch, side,
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "partial-pending.json"))
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    assert await account.open_position(
+        "DOGE/USDT", side, 100.0, 50.0,
+        95.0 if side == "LONG" else 105.0,
+        110.0 if side == "LONG" else 90.0, "test",
+        atr=1.0, leverage=5,
+    )
+    pending = {"order_id": "pending-entry", "side": side}
+    account.pending_limit_orders["DOGE/USDT"] = pending
+    quantity = account.positions["DOGE/USDT"]["qty"]
+    orders = list(exchange.orders)
+    trades = list(account.trades)
+    cancelled = list(exchange.cancelled)
+
+    assert not await account.partial_close_position(
+        "DOGE/USDT", 101.0, "手動平倉", fraction=0.5, is_manual=True,
+    )
+    assert account.pending_limit_orders["DOGE/USDT"] == pending
+    assert account.positions["DOGE/USDT"]["qty"] == quantity
+    assert exchange.orders == orders
+    assert exchange.cancelled == cancelled
+    assert account.trades == trades
+    assert "DOGE/USDT" not in account.closing_lock
+    assert any(
+        "PARTIAL_EXIT_BLOCKED_PENDING_ENTRY" in item["text"]
+        for item in account.logs
+    )
+
 
 @pytest.mark.anyio
 async def test_native_trailing_stop_uses_algo_order_endpoint(tmp_path, monkeypatch):
@@ -1103,8 +1192,7 @@ async def test_native_trailing_stop_uses_algo_order_endpoint(tmp_path, monkeypat
 
 
 @pytest.mark.anyio
-async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch):
-    """原生追蹤掛單失敗後，必須補回固定止損且短時間內不反覆撤掛。"""
+async def test_legacy_native_trailing_is_not_attempted_without_exit_authority(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", True)
@@ -1154,14 +1242,13 @@ async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch
         params for path, _api, method, params in exchange.request_calls
         if path == "algoOrder" and method == "POST" and params.get("type") == "STOP_MARKET"
     ]
-    assert exchange.trailing_attempts == 1
-    assert restored_stops
-    assert meta["sl"] > 100.0
-    assert meta["native_trailing_retry_after"] > 0
-    assert any("固定止損已恢復" in entry["text"] for entry in account.logs)
+    assert exchange.trailing_attempts == 0
+    assert restored_stops == []
+    assert meta["sl"] == 98.0
+    assert not meta.get("native_trailing_retry_after")
 
     await account.update_positions({"DOGE/USDT": 106.0})
-    assert exchange.trailing_attempts == 1
+    assert exchange.trailing_attempts == 0
 
 
 @pytest.mark.anyio
@@ -1200,13 +1287,13 @@ async def test_testnet_partial_close_rejects_non_partial_fraction(
     account = BinanceTestnetAccount(exchange)
     await account.initialize()
     assert await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 105.0, "open", leverage=5,
-    )
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "open", atr=1.0, leverage=5,
+    ), account.logs
     qty_before = account.positions["DOGE/USDT"]["qty"]
     orders_before = len(exchange.orders)
 
     closed = await account.partial_close_position(
-        "DOGE/USDT", 101.0, "invalid", fraction=fraction,
+        "DOGE/USDT", 101.0, "手動平倉", fraction=fraction, is_manual=True,
     )
 
     assert closed is False
@@ -1227,26 +1314,26 @@ async def test_testnet_dca_pending_top_up_requires_stage_two_and_same_side(
     account = BinanceTestnetAccount(exchange)
     await account.initialize()
     assert await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 105.0, "open", leverage=5,
-    )
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "open", atr=1.0, leverage=5,
+    ), account.logs
 
     stage_one = await account.place_limit_entry(
-        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 104.0, "bad stage",
-        leverage=5, signal_score=80,
+        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 109.0, "bad stage",
+        atr=1.0, leverage=5, signal_score=80,
         entry_context={"entry_mode": "BREAKOUT", "dca_stage": 1},
     )
     opposite = await account.place_limit_entry(
-        "DOGE/USDT", "SHORT", 101.0, 10.0, 106.0, 96.0, "bad side",
-        leverage=5, signal_score=80,
+        "DOGE/USDT", "SHORT", 101.0, 10.0, 106.0, 91.0, "bad side",
+        atr=1.0, leverage=5, signal_score=80,
         entry_context={"entry_mode": "BREAKOUT", "dca_stage": 2},
     )
     valid = await account.place_limit_entry(
-        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 104.0, "valid DCA",
-        leverage=5, signal_score=80,
+        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 109.0, "valid DCA",
+        atr=1.0, leverage=5, signal_score=80,
         entry_context={"entry_mode": "BREAKOUT", "dca_stage": 2},
     )
 
     assert stage_one is False
     assert opposite is False
-    assert valid is True
+    assert valid is True, account.logs
     assert account.pending_limit_orders["DOGE/USDT"]["side"] == "LONG"

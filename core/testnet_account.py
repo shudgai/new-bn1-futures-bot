@@ -4050,6 +4050,13 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+        if symbol in self.pending_limit_orders:
+            self.log(
+                f"PARTIAL_EXIT_BLOCKED_PENDING_ENTRY symbol={symbol} "
+                "reason=ENTRY_RECONCILIATION_REQUIRED",
+                "WARNING",
+            )
+            return False
         if meta.get("channel_short_oversold_partial_order_unknown"):
             self.log(
                 f"PARTIAL_EXIT_QUARANTINED symbol={symbol} "

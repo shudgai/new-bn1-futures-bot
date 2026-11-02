@@ -81,6 +81,19 @@ def test_two_bar_breakout_requires_body_break_same_color_kc_ma3_and_slope(
         expected_method=KC_TWO_BAR_BREAKOUT,
     ) is None
 
+    unclosed = [dict(row) for row in rows]
+    unclosed[-1]["is_closed"] = False
+    assert evaluate_entry_method(
+        frame(unclosed), quote=quote, symbol="CAP/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+
+    returned_to_band = rows[-1]["kc_upper" if side == "LONG" else "kc_lower"]
+    assert evaluate_entry_method(
+        frame(rows), quote=returned_to_band, symbol="CAP/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+
 
 @pytest.mark.parametrize(
     "side,rows,quote",
@@ -202,7 +215,7 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_ma3():
     assert signal["side"] == "LONG"
 
 
-def test_breakout_method_is_vetoed_by_band_extension():
+def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
     rows = [
         candle(60_000, opened=100, high=103.2, low=99.8, close=103,
                upper=102, lower=98, middle=100, ma3=101, ma15=100, atr=2),
@@ -222,7 +235,7 @@ def test_breakout_method_is_vetoed_by_band_extension():
         market, symbol="CAP/USDT", side="LONG", quote=105.1, context=context,
     )
     assert not allowed
-    assert reason == "BLOCKED_ENTRY_METHOD_BREAKOUT_BAND_EXTENSION"
+    assert reason == "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -231,10 +244,10 @@ def test_breakout_method_is_vetoed_by_band_extension():
     "change,allowed,expected_reason",
     [
         ("boundary", True, None),
-        ("quote_band", False, "BREAKOUT_BAND_EXTENSION"),
-        ("close_band", False, "BREAKOUT_BAND_EXTENSION"),
-        ("quote_ma5", False, "BREAKOUT_MA5_DISTANCE"),
-        ("close_ma5", False, "BREAKOUT_MA5_DISTANCE"),
+        ("quote_band", True, None),
+        ("close_band", True, None),
+        ("quote_ma5", True, None),
+        ("close_ma5", True, None),
         ("missing_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("nan_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("zero_ma5", False, "BREAKOUT_MA5_INVALID"),
@@ -253,7 +266,7 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     ]
     quote = 101.5
     if change == "quote_band":
-        quote += 0.001
+        quote += 2.0
     elif change == "close_band":
         rows[-1]["close"] += 0.001
     elif change in {"quote_ma5", "close_ma5"}:
@@ -282,7 +295,21 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
         quote = 200 - quote
         if expected_reason == "MACRO_LONG_EXHAUSTION_WICK":
             expected_reason = "MACRO_SHORT_EXHAUSTION_WICK"
+    history = []
+    for offset in range(20, 0, -1):
+        row = dict(rows[0], timestamp=(21 - offset) * 60_000, volume=100.0)
+        shift = (-1 if side == "LONG" else 1) * 0.01 * offset
+        for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+                    "kc_upper", "kc_middle", "kc_lower"):
+            if key in row:
+                row[key] += shift
+        history.append(row)
+    for row in rows:
+        row["timestamp"] += 20 * 60_000
+        row["volume"] = 100.0
+    rows = history + rows
     market = frame(rows)
+    market.attrs["macro_trend"] = "BULLISH" if side == "LONG" else "BEARISH"
     signal = evaluate_entry_method(
         market, quote=quote, symbol=symbol, expected_method=KC_TWO_BAR_BREAKOUT,
     )
@@ -300,6 +327,23 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     if expected_reason:
         assert reason == "BLOCKED_ENTRY_METHOD_" + expected_reason
     if allowed:
+        from core.gates.central_entry_gate import CentralEntryGate
+        from core.services.math_execution_gate import validate_entry_math
+
+        market.attrs["entry_method_context"] = {
+            "symbol": symbol,
+            "entry_method_authority": signal["method"],
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        }
+        market.attrs["entry_method_quote"] = quote
+        math_allowed, math_reason = validate_entry_math(market, side)
+        assert math_allowed, math_reason
+        central_result = CentralEntryGate.verify_and_authorize(
+            symbol=symbol, side=side, price=quote, klines_or_snapshot=market,
+        )
+        assert central_result.passed, central_result.reason
         rejected, stale_reason = revalidate_entry_method(
             market, symbol=symbol, side=side, quote=quote,
             context={
