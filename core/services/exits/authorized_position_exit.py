@@ -16,7 +16,7 @@ def automated_position_exit_allowed(
     is_manual: bool = False,
     frame: Any = None,
 ) -> bool:
-    """Allow safety/manual exits or an authoritative closed KC reversal."""
+    """Allow safety/manual exits or a profitable, completed true pivot."""
     if is_manual and str(reason).strip() == "手動平倉":
         return True
 
@@ -38,10 +38,15 @@ def automated_position_exit_allowed(
         return bool(allowed)
 
     normalized_reason = str(reason or "").upper()
-    from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON, confirmed_kc_wave_exit
+    from core.services.exits.strict_true_pivot import (
+        PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
+    )
 
-    if normalized_reason == KC_WAVE_EXIT_REASON:
-        return confirmed_kc_wave_exit(position, frame) is not None
+    if normalized_reason in PROFIT_PIVOT_REASONS:
+        pivot = profitable_true_pivot_exit(
+            dict(position), frame, dict(metadata or {}), quote=exit_price,
+        )
+        return pivot is not None and pivot[0] == normalized_reason
 
-    # Old pivot/pullback pending flags cannot authorize an ordinary wave exit.
+    # Old KC/pullback/profit-lock labels cannot replace true-pivot authority.
     return False

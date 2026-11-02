@@ -150,8 +150,8 @@ def test_exit_math_ratchet_and_emergency_override():
     assert metadata["floor_net_roe_pct"] == 7.0
     allowed, reason, metadata = validate_exit_math(position, frame, 90,
                                                    close_reason="CIRCUIT_BREAKER_HARD_SL")
-    assert allowed and reason == "EMERGENCY_EXIT_HARD_STOP_CONFIRMED"
-    assert metadata["exit_type"] == "HARD_STOP"
+    assert not allowed and reason == "BLOCKED_EXIT_POSITION_PRICE_ATR_STOP_DISABLED"
+    assert metadata["exit_type"] == "POSITION_PRICE_ATR_STOP_DISABLED"
 
 
 def test_exit_math_confirmed_midline_reversal():

@@ -46,12 +46,12 @@ def test_armed_profit_or_old_pending_exit_cannot_close_unchanged_trend(
         pos, {"raw_df": frame, "current_price": 100.2},
     )
     assert not allowed
-    assert evidence["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
+    assert evidence["exit_policy"] == "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_reversal_takes_precedence_over_profit_lock(monkeypatch, symbol, side):
+def test_plain_kc_reversal_and_profit_lock_cannot_replace_true_pivot(monkeypatch, symbol, side):
     frame = wave_frame(side)
     pos = position(side, frame)
     pos["symbol"] = symbol
@@ -61,9 +61,9 @@ def test_confirmed_reversal_takes_precedence_over_profit_lock(monkeypatch, symbo
     allowed, reason, _ = ExitGate.evaluate(
         pos, {"raw_df": frame, "current_price": 100.2},
     )
-    assert allowed and reason == KC_WAVE_EXIT_REASON
+    assert not allowed and reason == "VETO_HOLD"
     account = SimpleNamespace(_channel_exit_frames={symbol: frame}, position_meta={})
-    assert validate_exit_at_execution(account, symbol, pos, 100.2, reason)[0]
+    assert not validate_exit_at_execution(account, symbol, pos, 100.2, reason)[0]
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -101,7 +101,7 @@ def test_pipeline_suppresses_scheme1_profit_close_until_kc_reversal(
         symbol, engine, klines_df=frame, quote=100.2, frame_15m=frame,
     ))
     assert result["status"] == "HOLD", result
-    assert result["reason"] == "HOLD_UNTIL_CONFIRMED_KC_MIDLINE_REVERSAL"
+    assert result["reason"] == "HOLD_UNTIL_PROFIT_CONFIRMED_TRUE_PIVOT"
     close.assert_not_awaited()
 
 
@@ -159,20 +159,20 @@ def test_real_account_rejects_profit_exit_without_submitting(
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_verified_hard_stop_remains_available_before_kc_reversal(symbol, side):
+def test_numeric_hard_stop_cannot_override_true_pivot_hold(symbol, side):
     frame = wave_frame(side, reversed_direction=False)
     pos = position(side, frame)
     pos["symbol"] = symbol
     price = 97 if side == "LONG" else 103
     account = SimpleNamespace(_channel_exit_frames={symbol: frame}, position_meta={})
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         symbol, pos, {}, "CIRCUIT_BREAKER_HARD_SL", price, frame=frame,
     )
     allowed, reason, evidence = validate_exit_at_execution(
         account, symbol, pos, price, "CIRCUIT_BREAKER_HARD_SL",
     )
-    assert allowed and reason == "EMERGENCY_EXIT_HARD_STOP_CONFIRMED"
-    assert evidence["exit_type"] == "HARD_STOP"
+    assert not allowed and reason == "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
+    assert evidence["exit_type"] == "BLOCKED"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

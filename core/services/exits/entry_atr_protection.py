@@ -139,6 +139,12 @@ async def enforce_atr_protection(account, symbol, price):
         frame = frame_provider(symbol) if callable(frame_provider) else None
         if frame is None:
             frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+        from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
+        pivot = profitable_true_pivot_exit(position, frame, meta, quote=price)
+        if pivot is not None:
+            return await account.close_position(
+                symbol, price, pivot[0], is_manual=False,
+            )
         from core.services.exits.kc_true_extreme_exit import (
             evaluate_kc_true_extreme_exit,
         )

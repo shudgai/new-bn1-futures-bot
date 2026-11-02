@@ -356,3 +356,156 @@ Doji PASS remains specification/static-helper evidence only, not runtime verific
 - The Owner explicitly requested deployment, restart, commit, and GitHub publication of the completed KC-direction changes and failure repairs. This grants publication and restart authority for those changes only; it does not authorize WAIT changes or activation, account reset, manual entries, or changes to capital/leverage.
 - Include only the reviewed implementation, directly related regression tests, chart direction display, and this log. Exclude unrelated red-eye/tiered-profit/trend-lock edits, telemetry, account files, databases, and environment settings. Validate the exact staged source snapshot before committing and pushing, then restart the existing `binance-8006.service`.
 - Verify the replacement service process, HTTP readiness, and startup journal without calling status/price endpoints that mutate account state. The preceding WAIT review remains unchanged: all WAIT runtime gates are NOT_TESTED, Doji PASS is specification/static evidence only, and `TRADING_GATE = BLOCK`. The deployment authorization is not proof of WAIT production readiness.
+
+### [2026-11-02] - New fills without ordinary price/ATR hard stops
+
+- The Owner selected `keep_disaster_only` and `new_only`: remove ordinary position price/ATR loss stops for future fills only, preserve existing positions and independent emergency/account protection. This source change has not been committed, pushed, deployed, or restarted; the preceding publication authorization covered the prior patch, not this new policy.
+- New paper position creation and confirmed exchange-fill finalization stamp `position_loss_policy=NO_PRICE_ATR_STOP_V1` into both position and persistent metadata. The shared context allowlists preserve it through refresh, partial-close state, and restart. Loading or refreshing an old position never stamps the policy; missing/unknown policy retains existing behavior. A paper top-up does not rewrite the existing position policy.
+- ExitGate skips its ordinary 3-ATR/2-percent loss trigger only for stamped positions. The final execution math gate rejects stale numeric hard-stop requests for those positions, including initial-ATR, margin-loss, and legacy circuit-breaker labels. This closes the downstream bypass without changing the existing threshold values or global hard-stop flag.
+- Confirmed closed KC reversal remains the ordinary exit authority. Manual close, independently verified waterfalls/opposite-band emergencies, two-adverse-candle protection, liquidation/data-outage emergencies, and the separate Live Mainnet account circuit breaker remain unchanged. The account-level 15-percent equity latch uses its existing independent reduce-only flatten path; it is not disabled by a position policy. That account equity circuit breaker is Live Mainnet only, not a new paper/testnet circuit breaker.
+- Validation in an isolated source copy: **872 passed, 2 skipped**, four existing FastAPI lifecycle deprecation warnings. Both skips are existing removed-early-profit-guard tests. Coverage includes LONG/SHORT numeric-stop suppression versus unchanged legacy holdings on all three symbols, real paper/testnet final-close rejection, new-fill metadata persistence across refresh/restart, unchanged KC/manual exits, three-symbol emergency pipeline closes, and actual account-circuit-breaker flatten calls. Python compilation and whitespace checks passed. No runtime credentials or account state were copied into the test directory.
+- During the follow-up read-only entry investigation, runtime journal and persisted paper trade/position agreed that lobster opened LONG at 21:14:00 Taipei via `KC_TWO_BAR_BREAKOUT`, approximately 0.01818182 at 5x. The earlier MA5/MA15 cross candidate had been rejected by relative KC location. This existing fill predates deployment of this new policy and must not be retroactively modified. The chart returned a trade marker while `current_position` was null; persistent account state, not that null field, established the holding.
+
+Mandatory review for this position-policy patch:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is existing specification/static-helper evidence only. WAIT remains untouched and unverified; readiness BLOCK does not mean that the running service was stopped.
+
+### [2026-11-02] - Existing and new positions hold until a profitable confirmed pivot
+
+- The Owner selected `profit_pivot`, `existing_and_new`, and `keep_disaster`. This supersedes the preceding new-fill-only loss policy and the ordinary KC-midline-reversal exit. Ordinary pullbacks, a plain KC reversal, MA noise, legacy profit-lock labels, and per-position numeric price/ATR loss limits cannot authorize a close. Entry qualifications, sizing, leverage, account state, and completed trade history are unchanged.
+- Ordinary LONG exits require a strict three-completed-bar high pivot, a bearish confirmation closing below the pivot body midpoint and MA5; SHORT mirrors with a strict low pivot and bullish confirmation above both. The entire pattern must be held after entry. Profit qualification is peak favorable displacement at least 0.5 ATR or peak ROE at least 5 percent. Confirmation-bar closed ATR is the implementation reference; ROE uses fractions, so 0.05 means 5 percent. This is retrospective confirmation, not a promise of an absolute top/bottom or profitable market fill.
+- Scan, real-time quote, and account-poll paths share `profitable_true_pivot_exit`; paper and exchange full/partial close boundaries enforce the same authority. Legacy trend holding and profitability flags cannot swallow a verified full-close pivot. Verified manual and independent emergency exits remain available, including waterfalls, opposite KC breach, two closed adverse abnormal candles, and the separately implemented Live Mainnet account circuit breaker. These emergency exceptions may close before a profitable pivot; they are not ordinary numeric stops.
+- A versioned, position-identity-matched pending intent is persisted before order submission and survives rejection/restart without requiring a current frame. The dedicated key is isolated from legacy KC-pivot cleanup. Corrupt evidence is rejected with a log; failed strict exchange-state persistence prevents submission. New evidence requires explicit candle finality, valid OHLC/ATR, contiguous bars, and a fresh snapshot; unobserved historical peaks before entry do not qualify.
+- After the Owner asked why same-bar losses continued, read-only runtime evidence showed the old process still started at 20:44:07 Taipei. Lobster opened at 21:14:00 and closed at 21:14:47 with `CIRCUIT_BREAKER_HARD_SL`, net -3.6421 USDT. Later PEPE closes at 22:30:38 (waterfall, -2.195 USDT) and 22:38:01 (old KC reversal, -2.3988 USDT) were different authorities, not additional proof of numeric hard stops.
+- The Owner then explicitly authorized: "完成最後核對後部署重啟，保留已授權災難風控". This grants deployment/restart for this exit-policy patch only, not account reset, manual entry, GitHub publication, or WAIT activation. Startup now logs the loaded position-exit policy and numeric-stop status; the status description reflects this policy.
+- Validation in the isolated source copy: **1032 passed, 2 skipped**, four existing FastAPI lifecycle deprecation warnings, across 27 modules. The skips remain the removed-early-profit-guard cases. Coverage includes three-symbol LONG/SHORT scan, quote and poll behavior; exact profit thresholds; invalid/stale data; corrupt tickets; rejection/restart retries; failed-persistence no-submit; legacy and new numeric-stop rejection; manual overrides; and preserved emergency/circuit-breaker behavior. Historical required files `tests/test_channel_swing.py`, `tests/test_channel_position_path.py`, and `tests/test_channel_swing_execution.py` do not exist on this checkout: their attempted selection ran no tests and is not reported as passing. This is not a full-repository test claim.
+
+Mandatory WAIT review (unrelated to this exit-policy deployment):
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static-helper evidence only. WAIT is untouched and not production-verified; its readiness BLOCK is not a statement that this existing service has been stopped.
+
+Deployment verification: the final 27-module selection again reported **1032 passed, 2 skipped, 4 warnings** after adding the startup policy marker. All 11 changed production files were byte-identical to the tested isolated snapshot and compiled successfully. The authorized `binance-8006.service` restart completed at **2026-11-02 22:59:31 Taipei** (14:59:31 UTC); launcher PID 438868, Uvicorn PID 438878. At 22:59:33 the new process logged `POSITION_EXIT_POLICY policy=PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1 scope=EXISTING_AND_NEW price_atr_stops=DISABLED ordinary_kc_reversal=DISABLED disaster_exits=ENABLED`, followed by application startup completion. The homepage returned HTTP 200. No account reset, manual order, commit, or GitHub push was performed.
+
+### [2026-11-02] - Independent outside-KC confirmed pivot entry
+
+- The Owner requested outside-KC peak/valley reversal entries and confirmed the independent-direction choice: an upper-band-external peak may open SHORT without waiting for KC to turn down; a lower-band-external valley may open LONG without waiting for KC to turn up. Other entries retain their existing KC-direction requirements. The Owner selected three completed bars with a strict central extreme and a directional confirmation closing beyond the pivot body midpoint and MA5.
+- Added the separate `KC_OUTER_PIVOT_REVERSAL` authority rather than relaxing legacy three-bar, breakout, cross, or reentry authorities. The pivot extreme must be strictly outside its own candle's KC band; a touch is insufficient. MA5 must move in the entry direction. Confirmation must remain intact at the latest quote, beyond both midpoint and MA5. All three source bars must be adjacent, completed, valid, and fresh; live third bars, gaps, stale evidence, and destroyed pivots produce no authority.
+- Independent reversal evaluation precedes the normal KC-slope gate, including flat KC. Persisted actual close times prevent reusing patterns formed before/during the previous position after restart. Event identity and existing bar claims/hourly limits remain active. The shared execution manager still submits through paper/testnet account boundaries, sizing, pending-order protection, and final revalidation; no direct reverse or position deletion was added.
+- Central and final math direction exceptions require successful exact-method revalidation, not a caller flag or PIVOT label. The market blacklist suppresses only KC-flat/direction qualifications for this verified authority; MA flatness, chop, volume, range, and other existing filters remain. Existing Macro Candle Structure location, wick, and extension checks remain. Testnet's repeated KC-slope check and strategy firewall are wired to the same authority; the firewall re-fetches market data and checks actual close identity and account state before submission.
+- The new position inherits the already-approved exit policy: ordinary price/ATR loss stops and plain KC reversals remain disabled. The entry pivot cannot authorize an exit because all three exit-pattern candles must be fully held after entry. Once profit reaches 0.5 confirmation ATR or peak ROE 5 percent, a later completed peak closes LONG or a later completed valley closes SHORT. Manual and disaster exceptions remain enabled, so this is not an unconditional hold guarantee or a promise of exact extrema.
+- Isolated final validation: **1118 passed, 2 skipped, 4 existing warnings**, across 28 modules, including **86 outside-KC tests**. Coverage includes each symbol/direction, opposite/flat KC, a forming next candle, invalid patterns, exact event revalidation, pre-close/restart signal rejection, fresh firewall/account-state rejection, full scan-to-paper execution, real exchange adapter with a fake exchange (not live orders), and entry -> hold through numeric loss -> later profitable pivot close without automatic reverse. Existing entry-direction and emergency/account safety tests remain green. The three historical required Channel Swing files remain absent as documented above.
+- At this source-validation point the new entry patch has not been restarted, committed, or pushed. The preceding 22:59 deployment covered the exit-policy patch only; new operational authorization is requested separately.
+
+Mandatory WAIT review for this entry patch:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static evidence only, not runtime proof. WAIT has not been changed or tested; its BLOCK is separate from the running service's operating state.
+
+The Owner subsequently selected "現在部署重啟" for this independent reversal patch. After source/snapshot identity, syntax, and whitespace checks, the existing service restarted at **2026-11-02 23:36:09 Taipei** (15:36:09 UTC), launcher PID 566657 and Uvicorn PID 566666. The new process logged both the all-position profitable-pivot exit policy with numeric stops disabled and `ENTRY_REVERSAL_POLICY authority=KC_OUTER_PIVOT_REVERSAL confirmation=THREE_CLOSED_BARS kc_direction=INDEPENDENT account_safety=REQUIRED`, then completed startup. The homepage returned HTTP 200. This is loaded-code/readiness evidence, not proof of a naturally occurring live reversal fill. No account reset, manual order, commit, GitHub push, or WAIT activation was performed.
+
+### [2026-11-02] - Closed breakout wiring and current positive-net pivot exits
+
+- Read-only evidence for the latest persisted LOBSTER close: OPEN LONG at 23:22:01 Taipei, CLOSE LONG at 23:31:00, reason `EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT`, net PnL -0.441 USDT. This is not a same-candle numerical hard stop and predates the 23:36 restart. The journal confirms the active process still has all-position price/ATR stops disabled. Historical favorable movement exceeding 0.5 ATR previously authorized this pivot even when current net profit was negative.
+- The Owner explicitly selected a new additional ordinary-exit condition: current estimated net profit after fees and slippage must be strictly positive; otherwise hold. Disaster and manual exceptions remain. All active producers (scan, realtime quote, account polling), final authorization, and saved-pivot retries now recheck this condition. The shared cost calculator is reused at the estimated slipped fill with closing fees charged on that fill; funding remains included. Historical profit and a persisted pending ticket cannot bypass the current-net check. Actual fills can still lose money after a gap or unexpected slippage.
+- PEPE at 23:35:01 generated a valid `KC_TWO_BAR_BREAKOUT` SHORT candidate from completed 23:33/23:34 bars, but CentralEntryGate rejected the next forming 23:35 candle as `VETO_INTRABAR_NOT_CLOSED`. Central now precisely revalidates the method on authoritative completed candles and current quote before selecting the completed frame for its existing checks. This does not allow an unclosed K2, a quote back inside KC, a forged event, or weaker KC direction qualification.
+- Full exchange-adapter testing exposed another wiring defect: valid breakouts were rejected by the legacy `WILD_SWING_SOURCE_INVALID` whitelist. The existing fresh-method firewall now handles `KC_TWO_BAR_BREAKOUT` as well as independent outer pivots, with provider refresh, exact pattern/event/quote revalidation, position/closing/pending checks, and actual-last-close protection. The paper boundary stamps its actual submitted quote, matching the testnet boundary. No raw label bypass, manual order, signal-lock removal, position reset, or WAIT change was introduced.
+- Added **106 focused cases** across both directions and all three supported symbols: paper and fake-exchange adapter success with a forming third candle, unclosed K2/retreated-quote rejection, fresh firewall/account-state rejection, losing and fee-only pivots blocked on all four exit surfaces, saved-ticket rechecks, positive-net recovery, zero-net strictness, and fees on the slipped fill. Positive-net short-close fixtures in existing tests were corrected to actually be profitable; no production rule was weakened to satisfy old assertions.
+- Final selected validation: **1006 passed, 2 skipped, 4 existing warnings**, 23 modules, using an isolated copy without `.env` or production data. An additional six legacy-policy modules have **96 failed, 61 passed, 1 skipped**. All 96 failure identities were reproduced with the new central/net behavior withdrawn in the isolated copy and remain identical after the final patch. These pre-existing policy conflicts were not rewritten; this is not a full-suite pass. The historical three required Channel Swing files remain absent.
+- This source-validation stage has not restarted the service or committed/pushed changes. New deployment authorization is requested separately.
+
+Mandatory WAIT review (unchanged, unrelated to this repair):
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is specification/static evidence only. WAIT readiness BLOCK is not an assertion that the existing service has stopped.
+
+The Owner subsequently explicitly requested deployment, restart, commit, and GitHub push for these completed repairs. The release includes the previously loaded profitable-pivot/outer-KC changes and the newly tested closed-breakout/positive-current-net changes. Account databases, runtime telemetry, and unrelated dirty changes are excluded. This operational approval does not authorize WAIT implementation or activation. Commit and remote verification precede the service restart; loaded-policy and HTTP readiness evidence will be checked against the new process.

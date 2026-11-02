@@ -152,7 +152,7 @@ def test_exit_gate_hold_through_consolidation():
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=118.5)
     assert not should_exit
     assert reason == "VETO_HOLD"
-    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
+    assert meta["exit_policy"] == "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 
 
 def test_exit_gate_rejects_legacy_gross_roe_lock_without_net_lock_state():
@@ -168,7 +168,7 @@ def test_exit_gate_rejects_legacy_gross_roe_lock_without_net_lock_state():
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=106.0)
     assert not should_exit
     assert reason == "VETO_HOLD"
-    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
+    assert meta["exit_policy"] == "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 
 
 def test_execution_manager_pipeline_flow():
@@ -289,8 +289,8 @@ async def test_early_short_execution_pipeline_flow():
 
 
 @pytest.mark.anyio
-async def test_exit_gate_no_stall_on_confirmed_kc_reversal():
-    """空單的已收線 KC 中軌反向後平倉，只平原倉，不自動反手。"""
+async def test_exit_gate_holds_plain_kc_reversal_without_true_pivot():
+    """單純 KC 中軌反向不平倉，不自動反手。"""
     from core.paper_account import PaperAccount
     import time
     now_ms = int(time.time() // 60) * 60_000 - 60_000
@@ -332,10 +332,10 @@ async def test_exit_gate_no_stall_on_confirmed_kc_reversal():
         klines_df=df,
         quote=98.2,
     )
-    assert res["status"] == "EXIT_EXECUTED"
-    assert res["reason"] == "EXIT_BY_CONFIRMED_KC_MIDLINE_REVERSAL"
-    assert "CAP/USDT" not in account.positions
-    assert [trade["action"] for trade in account.trades] == ["CLOSE_SHORT"]
+    assert res["status"] == "HOLD"
+    assert res["reason"] == "HOLD_UNTIL_PROFIT_CONFIRMED_TRUE_PIVOT"
+    assert "CAP/USDT" in account.positions
+    assert not account.trades
 
 
 @pytest.mark.anyio
@@ -491,7 +491,7 @@ def test_profit_lock_cannot_override_hold_without_confirmed_kc_reversal():
     assert should_exit is False
     assert reason == "VETO_HOLD"
     assert meta["suppressed_exit_reason"] == "EXIT_BY_RATCHET_PROFIT_LOCK"
-    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
+    assert meta["exit_policy"] == "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 
 
 @pytest.mark.anyio
@@ -502,8 +502,9 @@ def test_profit_lock_cannot_override_hold_without_confirmed_kc_reversal():
     ("OPPOSITE_KC_BAND_BREACH", 1.1),
     ("EXIT_BY_EXTREME_WATERFALL", 1.6),
 ])
+@pytest.mark.parametrize("new_policy", [False, True])
 async def test_pipeline_preserves_safety_authority_through_real_close(
-    monkeypatch, symbol, side, exit_reason, distance,
+    monkeypatch, symbol, side, exit_reason, distance, new_policy,
 ):
     from core.paper_account import PaperAccount
     from test_kc_wave_exit import position, wave_frame
@@ -511,6 +512,12 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     frame = wave_frame(side, reversed_direction=False, live=True)
     pos = position(side, frame)
     pos["symbol"] = symbol
+    if exit_reason == "CIRCUIT_BREAKER_HARD_SL":
+        exit_reason = "EXIT_BY_EXTREME_WATERFALL"
+    if new_policy:
+        from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
+
+        pos["position_loss_policy"] = NEW_POSITION_LOSS_POLICY
     price = 100.0 - distance if side == "LONG" else 100.0 + distance
     frame["kc_upper"], frame["kc_lower"], frame["atr"] = 101.0, 99.0, 1.0
     frame.loc[frame.index[-1], ["open", "high", "low", "close", "kc_middle"]] = [

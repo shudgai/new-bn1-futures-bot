@@ -113,9 +113,9 @@ def test_invalid_closed_bar_data_falls_back_to_immediate_exit():
     assert should_exit is True and reason == "OPPOSITE_KC_BAND_BREACH"
 
 
-def test_hard_stop_precedes_opposite_breach_when_both_apply():
+def test_opposite_breach_remains_live_when_numeric_hard_stop_is_disabled():
     md = {"current_price": 0.98, "atr": 0.01, "kc_upper": 1.02, "kc_lower": 0.99,
           "kc_middle": 1.0, "macro_trend": "BULLISH", "raw_df": None}
     should_exit, reason, meta = ExitGate.evaluate({"side": "LONG", "entry_price": 1.0}, md)
-    assert should_exit is True and reason == "CIRCUIT_BREAKER_HARD_SL"
-    assert meta["hard_stop_pct_triggered"] is True
+    assert should_exit is True and reason == "OPPOSITE_KC_BAND_BREACH"
+    assert "hard_stop_pct_triggered" not in meta

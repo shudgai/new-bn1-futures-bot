@@ -815,6 +815,55 @@ async def validate_account_entry(account, symbol, side, context):
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
+    from core.services.entry_methods import (
+        KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, revalidate_entry_method,
+    )
+    method = context.get("entry_method_authority")
+    if method in (KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT):
+        firewall_authority = (
+            "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else KC_TWO_BAR_BREAKOUT
+        )
+        if (
+            side not in ("LONG", "SHORT")
+            or symbol in getattr(account, "positions", {})
+            or symbol in getattr(account, "closing_lock", set())
+            or symbol in getattr(account, "pending_limit_orders", {})
+        ):
+            raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_ACCOUNT_STATE_BLOCK")
+        provider = getattr(account, "entry_frame_provider", None)
+        if not callable(provider):
+            raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_FRESH_DATA_REQUIRED")
+        actual_close = getattr(account, "last_closed_at", {}).get(symbol)
+        if actual_close is not None:
+            try:
+                claimed_close = float(context.get("entry_method_last_exit_timestamp"))
+                actual_close = float(actual_close)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_CLOSE_IDENTITY_INVALID") from exc
+            if not (
+                math.isfinite(actual_close) and math.isfinite(claimed_close)
+                and actual_close > 0 and claimed_close >= actual_close
+            ):
+                raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_PREVIOUS_CLOSE_CHANGED")
+        fresh_frame = provider(symbol)
+        if hasattr(fresh_frame, "__await__"):
+            fresh_frame = await fresh_frame
+        allowed, reason = revalidate_entry_method(
+            fresh_frame, symbol=symbol, side=side,
+            quote=context.get("entry_gate_quote"), context=context,
+        )
+        if not allowed:
+            raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_REVALIDATION: " + reason)
+        logger.info(
+            "%s_FIREWALL_PASS symbol=%s side=%s event=%s",
+            firewall_authority, symbol, side, context.get("entry_method_event_id"),
+        )
+        return {
+            "type": method, "side": side,
+            "entry_mode": "WILD_SWING", "entry_phase": method,
+            "confirmation_bar_id": context["entry_method_bar_id"],
+            "price": float(context["entry_gate_quote"]),
+        }
 
     def finite_bar_id(value):
         try:

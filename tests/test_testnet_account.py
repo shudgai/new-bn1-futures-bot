@@ -157,6 +157,29 @@ class FakeTestnetExchange:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_new_fill_loss_policy_survives_refresh_and_restart(side, tmp_path, monkeypatch):
+    from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
+
+    state_file = str(tmp_path / "policy.json")
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange, state_file=state_file)
+    await account.initialize()
+    assert await account.open_position(
+        "DOGE/USDT", side, 100.0, 50.0,
+        95.0 if side == "LONG" else 105.0,
+        110.0 if side == "LONG" else 90.0,
+        "TEST_NEW_FILL_POLICY", atr=1.0, leverage=5, signal_score=88,
+    )
+    assert account.positions["DOGE/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
+    assert account.position_meta["DOGE/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
+    account.save_state()
+    restored = BinanceTestnetAccount(exchange, state_file=state_file)
+    await restored.initialize()
+    assert restored.positions["DOGE/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
+
+
+@pytest.mark.anyio
 async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)

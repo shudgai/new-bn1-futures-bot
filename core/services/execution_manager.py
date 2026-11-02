@@ -416,12 +416,14 @@ class ExecutionManager:
         frame: Optional[pd.DataFrame],
         quote: float,
         macro_trend: str,
+        only_method: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             return None
 
         from core.services.entry_methods import (
             KC_TWO_BAR_BREAKOUT,
+            KC_OUTER_PIVOT_REVERSAL,
             MA5_MA15_CROSS,
             POST_CLOSE_KC_REENTRY,
             THREE_BAR_PIVOT_REVERSAL,
@@ -439,9 +441,11 @@ class ExecutionManager:
             else None
         )
         methods = (
-            (POST_CLOSE_KC_REENTRY,)
+            (only_method,) if only_method is not None else
+            (KC_OUTER_PIVOT_REVERSAL, POST_CLOSE_KC_REENTRY)
             if last_exit_timestamp is not None
             else (
+                KC_OUTER_PIVOT_REVERSAL,
                 KC_TWO_BAR_BREAKOUT,
                 THREE_BAR_PIVOT_REVERSAL,
                 MA5_MA15_CROSS,
@@ -452,11 +456,23 @@ class ExecutionManager:
         rejections: list[dict[str, str]] = []
         authorized: tuple[dict[str, Any], str] | None = None
         for method in methods:
+            method_last_exit = last_exit_timestamp
+            if method == KC_OUTER_PIVOT_REVERSAL:
+                persisted_exit = getattr(account, "last_closed_at", {}).get(symbol)
+                if persisted_exit is not None:
+                    try:
+                        persisted_exit = float(persisted_exit)
+                        if not math.isfinite(persisted_exit) or persisted_exit <= 0:
+                            raise ValueError("invalid persisted close timestamp")
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        logger.error("KC_OUTER_PIVOT_CLOSE_IDENTITY_INVALID symbol=%s error=%s", symbol, exc)
+                        return {"status": "VETO", "symbol": symbol, "reason": "KC_OUTER_PIVOT_CLOSE_IDENTITY_INVALID"}
+                    method_last_exit = max(method_last_exit or 0, persisted_exit)
             signal = evaluate_entry_method(
                 frame,
                 quote=quote,
                 symbol=symbol,
-                last_exit_timestamp=last_exit_timestamp,
+                last_exit_timestamp=method_last_exit,
                 expected_method=method,
             )
             if signal is None:
@@ -472,7 +488,7 @@ class ExecutionManager:
                     "entry_method_signal": signal,
                     "entry_method_bar_id": signal["confirmation_bar_id"],
                     "entry_method_event_id": signal["event_id"],
-                    "entry_method_last_exit_timestamp": last_exit_timestamp,
+                    "entry_method_last_exit_timestamp": method_last_exit,
                 },
             )
             log_decision = logger.info if allowed else logger.warning
@@ -501,6 +517,7 @@ class ExecutionManager:
             }
 
         signal, method = authorized
+        last_exit_timestamp = signal.get("last_exit_timestamp")
         bar_id = int(signal["confirmation_bar_id"])
         entry_state = getattr(account, "entry_filter_last", None)
         if not isinstance(entry_state, dict):
@@ -945,9 +962,9 @@ class ExecutionManager:
                 pos=current_position,
                 market_data=market_data,
             )
-            from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
+            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if gate_should_exit and (
-                gate_reason == KC_WAVE_EXIT_REASON
+                gate_reason in PROFIT_PIVOT_REASONS
                 or gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS
             ):
                 success = await cls.close_position(
@@ -977,7 +994,7 @@ class ExecutionManager:
                 return {
                     "status": "HOLD",
                     "symbol": symbol,
-                    "reason": "HOLD_UNTIL_CONFIRMED_KC_MIDLINE_REVERSAL",
+                    "reason": "HOLD_UNTIL_PROFIT_CONFIRMED_TRUE_PIVOT",
                     "suppressed_exit_reason": gate_reason,
                 }
             is_pivot_exit = bool(
@@ -2048,6 +2065,18 @@ class ExecutionManager:
         # =========================================================================
         method_rejection: Optional[Dict[str, Any]] = None
         if not has_position:
+            from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, evaluate_entry_method
+            if evaluate_entry_method(
+                raw_df, quote=curr_quote, symbol=symbol,
+                expected_method=KC_OUTER_PIVOT_REVERSAL,
+            ) is not None:
+                pivot_result = await cls._evaluate_closed_entry_methods(
+                    symbol=symbol, account=account, engine_or_account=engine_or_account,
+                    frame=raw_df, quote=curr_quote, macro_trend=macro_trend,
+                    only_method=KC_OUTER_PIVOT_REVERSAL,
+                )
+                if pivot_result is not None:
+                    return pivot_result
             if not entry_kc_up and not entry_kc_down:
                 reason = (
                     "BLOCKED_ENTRY_KC_DIRECTION_UNAVAILABLE"

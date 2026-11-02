@@ -42,6 +42,7 @@ def evaluate_market_blacklist(
     cooldown_bars: int = COOLDOWN_BARS,
     macro_trend: Optional[str] = None,
     is_breakout: bool = False,
+    independent_kc_direction: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -108,7 +109,10 @@ def evaluate_market_blacklist(
         ma5_delta_pct = abs(float(ma5.iloc[-1] - ma5.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma5.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         checks.update(ma5_net_slope_pct=ma5_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
-        if not is_breakout and (ma5_delta_pct < SLOPE_FLAT_PCT or mid_delta_pct < SLOPE_FLAT_PCT):
+        if not is_breakout and (
+            ma5_delta_pct < SLOPE_FLAT_PCT
+            or (not independent_kc_direction and mid_delta_pct < SLOPE_FLAT_PCT)
+        ):
             return True, "VETO_FLAT_MA5_OR_KC_MIDLINE", checks
 
         # MA5/MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
@@ -157,7 +161,7 @@ def evaluate_market_blacklist(
             return True, "VETO_LONG_WICK_DOJI", checks
 
         # Caller-supplied regime labels cannot override completed KC direction.
-        if side:
+        if side and not independent_kc_direction:
             direction = str(side).upper()
             kc_slope = float(mid.iloc[-1] - mid.iloc[-2])
             if (direction == "LONG" and kc_slope <= 0

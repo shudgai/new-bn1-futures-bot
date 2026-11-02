@@ -1,9 +1,23 @@
 """Account-level circuit breakers are separate from position exit rules."""
 from typing import Dict, Any, Optional
+from collections.abc import Mapping
 import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
 
 POSITION_HARD_STOPS_ENABLED = False
+NEW_POSITION_LOSS_POLICY = "NO_PRICE_ATR_STOP_V1"
+
+
+def price_atr_stop_disabled(
+    position: Mapping[str, Any], metadata: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """The all-position policy disables numeric stops, not account emergencies."""
+    if not POSITION_HARD_STOPS_ENABLED:
+        return True
+    policy = position.get("position_loss_policy")
+    if policy is None and isinstance(metadata, Mapping):
+        policy = metadata.get("position_loss_policy")
+    return policy == NEW_POSITION_LOSS_POLICY
 
 
 def hard_stop_reason(position, price):

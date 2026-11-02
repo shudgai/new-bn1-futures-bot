@@ -17,6 +17,7 @@ from core.gates.meme_entry_policy import (
 KC_TWO_BAR_BREAKOUT = "KC_TWO_BAR_BREAKOUT"
 POST_CLOSE_KC_REENTRY = "POST_CLOSE_KC_REENTRY"
 THREE_BAR_PIVOT_REVERSAL = "THREE_BAR_PIVOT_REVERSAL"
+KC_OUTER_PIVOT_REVERSAL = "KC_OUTER_PIVOT_REVERSAL"
 MA5_MA15_CROSS = "MA5_MA15_CROSS"
 # Import compatibility only; persisted literal MA3 authorities are not accepted.
 MA3_MA15_CROSS = MA5_MA15_CROSS
@@ -25,6 +26,7 @@ ENTRY_METHODS = frozenset({
     KC_TWO_BAR_BREAKOUT,
     POST_CLOSE_KC_REENTRY,
     THREE_BAR_PIVOT_REVERSAL,
+    KC_OUTER_PIVOT_REVERSAL,
     MA5_MA15_CROSS,
 })
 
@@ -32,6 +34,9 @@ _METHOD_RULES = {
     KC_TWO_BAR_BREAKOUT: ("BREAKOUT", "KC_OUTER_BREAKOUT"),
     POST_CLOSE_KC_REENTRY: ("CONTINUATION", "POST_CLOSE_KC_REENTRY"),
     THREE_BAR_PIVOT_REVERSAL: (
+        "REVERSAL", "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
+    ),
+    KC_OUTER_PIVOT_REVERSAL: (
         "REVERSAL", "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
     ),
     MA5_MA15_CROSS: ("CROSSOVER", "MA_CROSSOVER"),
@@ -96,7 +101,9 @@ def _new_signal(
     confirmation_id = int(float(confirmation["timestamp"]))
     source_ids = [
         int(float(bars[index]["timestamp"]))
-        for index in range(len(bars) - (3 if method == THREE_BAR_PIVOT_REVERSAL else 2), len(bars))
+        for index in range(len(bars) - (3 if method in {
+            THREE_BAR_PIVOT_REVERSAL, KC_OUTER_PIVOT_REVERSAL,
+        } else 2), len(bars))
     ]
 
     exit_ms = _timestamp_ms(last_exit_timestamp)
@@ -160,6 +167,44 @@ def evaluate_entry_method(
         return None
 
     candidates: list[dict[str, Any]] = []
+
+    if len(bars) >= 3 and expected_method in (None, KC_OUTER_PIVOT_REVERSAL):
+        import time
+        from core.services.exits.trend_lock import _closed_snapshot_fresh
+
+        left, pivot, current = bars[-3:]
+        snapshot = _number(frame.attrs, "snapshot_ms")
+        exit_ms = _timestamp_ms(last_exit_timestamp) if last_exit_timestamp is not None else None
+        fresh = (
+            snapshot is not None and 0 <= time.time() * 1000 - snapshot <= 180_000
+            and _closed_snapshot_fresh(frame, closed_frame)
+            and all(math.isclose(b - a, 60_000, abs_tol=1)
+                    for a, b in zip(stamps, stamps[1:]))
+            and (last_exit_timestamp is None or (
+                exit_ms is not None and stamps[0] >= math.ceil(exit_ms / 60_000) * 60_000
+            ))
+        )
+        if fresh:
+            midpoint = (float(pivot["open"]) + float(pivot["close"])) / 2
+            for side in ("LONG", "SHORT"):
+                confirmed = (
+                    float(pivot["low"]) < min(float(left["low"]), float(current["low"]))
+                    and float(pivot["low"]) < float(pivot["kc_lower"])
+                    and float(current["close"]) > max(float(current["open"]), midpoint, float(current["ma5"]))
+                    and float(current["ma5"]) > float(pivot["ma5"])
+                    and current_quote > max(midpoint, float(current["ma5"]), float(pivot["low"]))
+                    if side == "LONG" else
+                    float(pivot["high"]) > max(float(left["high"]), float(current["high"]))
+                    and float(pivot["high"]) > float(pivot["kc_upper"])
+                    and float(current["close"]) < min(float(current["open"]), midpoint, float(current["ma5"]))
+                    and float(current["ma5"]) < float(pivot["ma5"])
+                    and current_quote < min(midpoint, float(current["ma5"]), float(pivot["high"]))
+                )
+                if confirmed:
+                    candidates.append(_new_signal(
+                        KC_OUTER_PIVOT_REVERSAL, side, bars,
+                        last_exit_timestamp=last_exit_timestamp,
+                    ))
 
     if len(bars) >= 2 and expected_method in (None, KC_TWO_BAR_BREAKOUT):
         first, second = bars[-2], bars[-1]
@@ -286,6 +331,7 @@ def evaluate_entry_method(
         return None
 
     priority = (
+        KC_OUTER_PIVOT_REVERSAL,
         POST_CLOSE_KC_REENTRY,
         KC_TWO_BAR_BREAKOUT,
         THREE_BAR_PIVOT_REVERSAL,

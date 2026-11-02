@@ -46,7 +46,7 @@ def position(side, frame):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_closed_kc_direction_reversal_authorizes_wave_exit(side):
+def test_closed_kc_direction_is_evidence_but_no_longer_exit_authority(side):
     frame = wave_frame(side)
     pos = position(side, frame)
     evidence = confirmed_kc_wave_exit(pos, frame)
@@ -56,15 +56,14 @@ def test_closed_kc_direction_reversal_authorizes_wave_exit(side):
     account = SimpleNamespace(
         _channel_exit_frames={"CAP/USDT": frame}, position_meta={},
     )
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "CAP/USDT", pos, {}, KC_WAVE_EXIT_REASON, 100.2, frame=frame,
     )
     allowed, reason, details = validate_exit_at_execution(
         account, "CAP/USDT", pos, 100.2, KC_WAVE_EXIT_REASON,
     )
-    assert allowed
-    assert reason == "CONFIRMED_KC_WAVE_EXIT_APPROVED"
-    assert details["kc_middle_current"] == evidence["kc_middle_current"]
+    assert not allowed
+    assert reason == "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -126,15 +125,18 @@ def test_ordinary_labels_and_old_pending_pivots_do_not_end_wave(side, reason):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("reversal,filled", [(True, True), (True, False), (False, True)])
-def test_pipeline_closes_confirmed_wave_without_legacy_candle_or_pivot_veto(
+def test_pipeline_closes_true_pivot_and_holds_plain_wave(
     monkeypatch, side, reversal, filled,
 ):
     from core.services.data_pipeline import DataPipeline
     from core.services.execution_manager import ExecutionManager
+    from test_profit_pivot_exit import pivot_frame
+    from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
-    frame = wave_frame(side, reversed_direction=reversal)
+    frame = pivot_frame(side) if reversal else wave_frame(side, reversed_direction=False)
     pos = position(side, frame)
-    snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=100.2)
+    quote = 100.2 if side == "LONG" else 99.8
+    snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=quote)
     assert snapshot is not None
     snapshot.raw_df = frame
     account = SimpleNamespace(
@@ -142,14 +144,14 @@ def test_pipeline_closes_confirmed_wave_without_legacy_candle_or_pivot_veto(
         save_state=lambda **kwargs: None,
     )
     engine = SimpleNamespace(
-        account=account, tickers={"CAP/USDT": 100.2},
+        account=account, tickers={"CAP/USDT": quote},
         fetch_klines=AsyncMock(return_value=frame),
     )
     monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *args, **kwargs: snapshot))
     close = AsyncMock(return_value=filled)
     monkeypatch.setattr(ExecutionManager, "close_position", close)
     result = asyncio.run(ExecutionManager.process_symbol_pipeline(
-        "CAP/USDT", engine, klines_df=frame, quote=100.2, frame_15m=frame,
+        "CAP/USDT", engine, klines_df=frame, quote=quote, frame_15m=frame,
     ))
     if not reversal:
         assert result["status"] == "HOLD", result
@@ -157,8 +159,8 @@ def test_pipeline_closes_confirmed_wave_without_legacy_candle_or_pivot_veto(
         return
     assert result["status"] == ("EXIT_EXECUTED" if filled else "HOLD"), result
     assert result["success"] is filled
-    assert close.await_args.kwargs["reason"] == KC_WAVE_EXIT_REASON
-    assert close.await_args.kwargs["price"] == 100.2
+    assert close.await_args.kwargs["reason"] == profitable_true_pivot_exit(pos, frame)[0]
+    assert close.await_args.kwargs["price"] == quote
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -167,11 +169,13 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
 ):
     import core.testnet_account as tm
     from test_testnet_account import FakeTestnetExchange
+    from test_profit_pivot_exit import pivot_frame
+    from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
     monkeypatch.setattr(tm, "notify_email", lambda *args, **kwargs: None)
     exchange = FakeTestnetExchange()
     account = tm.BinanceTestnetAccount(exchange, state_file=str(tmp_path / "wave.json"))
-    frame = wave_frame(side)
+    frame = pivot_frame(side)
     pos = position(side, frame)
     account.positions["CAP/USDT"] = pos
     account.position_meta["CAP/USDT"] = {}
@@ -182,7 +186,8 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
         "positionAmt": "1" if side == "LONG" else "-1",
         "entryPrice": "100", "markPrice": "100.2",
     }]
-    assert asyncio.run(account.close_position("CAP/USDT", 100.2, KC_WAVE_EXIT_REASON))
+    reason = profitable_true_pivot_exit(pos, frame)[0]
+    assert asyncio.run(account.close_position("CAP/USDT", 100.2 if side == "LONG" else 99.8, reason))
     assert "CAP/USDT" not in account.positions
     assert len(account.trades) == 1
     assert exchange.orders
@@ -192,14 +197,17 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_real_paper_wave_close_records_only_the_existing_position(tmp_path, monkeypatch, side):
     import core.paper_account as pm
+    from test_profit_pivot_exit import pivot_frame
+    from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
     monkeypatch.setattr(pm, "STATE_FILE", str(tmp_path / "paper-wave.json"))
     account = pm.PaperAccount()
-    frame = wave_frame(side)
+    frame = pivot_frame(side)
     account.positions["CAP/USDT"] = position(side, frame)
     account.position_meta["CAP/USDT"] = {}
     account._channel_exit_frames = {"CAP/USDT": frame}
-    assert asyncio.run(account.close_position("CAP/USDT", 100.2, KC_WAVE_EXIT_REASON))
+    reason = profitable_true_pivot_exit(account.positions["CAP/USDT"], frame)[0]
+    assert asyncio.run(account.close_position("CAP/USDT", 100.2 if side == "LONG" else 99.8, reason))
     assert "CAP/USDT" not in account.positions
     assert len(account.trades) == 1
     reloaded = pm.PaperAccount()
@@ -211,16 +219,18 @@ def test_real_paper_wave_close_records_only_the_existing_position(tmp_path, monk
 def test_failed_wave_close_retries_without_opening_another_position(monkeypatch, side):
     from core.services.data_pipeline import DataPipeline
     from core.services.execution_manager import ExecutionManager
+    from test_profit_pivot_exit import pivot_frame
 
-    frame = wave_frame(side)
+    frame = pivot_frame(side)
     pos = position(side, frame)
-    snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=100.2)
+    quote = 100.2 if side == "LONG" else 99.8
+    snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=quote)
     snapshot.raw_df = frame
     account = SimpleNamespace(
         positions={"CAP/USDT": pos}, position_meta={}, entry_filter_last={},
         save_state=lambda **kwargs: None,
     )
-    engine = SimpleNamespace(account=account, tickers={"CAP/USDT": 100.2})
+    engine = SimpleNamespace(account=account, tickers={"CAP/USDT": quote})
     monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *args, **kwargs: snapshot))
     close = AsyncMock(side_effect=[False, True])
     monkeypatch.setattr(ExecutionManager, "close_position", close)
@@ -231,7 +241,7 @@ def test_failed_wave_close_retries_without_opening_another_position(monkeypatch,
         results = []
         for _ in range(2):
             results.append(await ExecutionManager.process_symbol_pipeline(
-                "CAP/USDT", engine, klines_df=frame, quote=100.2, frame_15m=frame,
+                "CAP/USDT", engine, klines_df=frame, quote=quote, frame_15m=frame,
             ))
         return results
 

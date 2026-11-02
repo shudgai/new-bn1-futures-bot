@@ -169,7 +169,7 @@ class ExitGate:
         atr: Optional[float] = None,
         kc_slope: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        """Hold until a closed KC reversal, except for existing safety exits."""
+        """Hold through pullbacks until a profitable confirmed pivot or emergency."""
         priority_result = ExitGate._evaluate_core(
             pos, market_data, current_price, atr, kc_slope,
         )
@@ -180,18 +180,29 @@ class ExitGate:
             else market_data.get("raw_df") if isinstance(market_data, dict) else None
         )
         from core.services.exits.abnormal_candle_exit import two_closed_adverse_abnormal_evidence
-        from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON, confirmed_kc_wave_exit
+        from core.services.exits.strict_true_pivot import (
+            PROFIT_PIVOT_EXIT_POLICY, PROFIT_PIVOT_PENDING_KEY, profitable_true_pivot_exit,
+            store_confirmed_pivot_exit,
+        )
 
         abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
         if abnormal is not None:
             return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
-        wave_exit = confirmed_kc_wave_exit(pos, frame)
-        if wave_exit is not None:
-            return True, KC_WAVE_EXIT_REASON, wave_exit
+        pivot_quote = current_price if current_price is not None else (
+            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("current_price")
+        )
+        pivot = (
+            profitable_true_pivot_exit(pos, frame, quote=pivot_quote)
+            if pivot_quote is not None else None
+        )
+        if pivot is not None:
+            store_confirmed_pivot_exit(pos, pivot, key=PROFIT_PIVOT_PENDING_KEY)
+            return True, pivot[0], pivot[1]
         return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
             **(priority_result[2] or {}),
             "suppressed_exit_reason": priority_result[1],
-            "exit_policy": "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY",
+            "exit_policy": PROFIT_PIVOT_EXIT_POLICY,
         }
 
     @staticmethod
@@ -684,7 +695,7 @@ class ExitGate:
 
         # ══════════════════════════════════════════════════════════════════
         # 第一級：絕對風險保護出口（最高優先級，任何持倉防洗條件不得攔截）
-        # 帳戶硬止損：虧損達 3 ATR 或入場價 2%，任一先到即放行。
+        # 價格／ATR 止損依持倉政策關閉；後續獨立災難出口維持生效。
         # ══════════════════════════════════════════════════════════════════
         adverse_distance = (
             entry_p - quote if side == "LONG" else quote - entry_p
@@ -693,7 +704,10 @@ class ExitGate:
         valid_atr = math.isfinite(atr_val) and atr_val > 0
         hard_stop_by_atr = valid_atr and adverse_distance >= 3.0 * atr_val
         hard_stop_by_pct = adverse_pct >= 0.02
-        if side in ("LONG", "SHORT") and adverse_distance > 0 and (hard_stop_by_atr or hard_stop_by_pct):
+        from core.services.exits.hard_stop_service import price_atr_stop_disabled
+
+        if (not price_atr_stop_disabled(pos) and side in ("LONG", "SHORT")
+                and adverse_distance > 0 and (hard_stop_by_atr or hard_stop_by_pct)):
             return True, "CIRCUIT_BREAKER_HARD_SL", {
                 **meta,
                 "adverse_distance": adverse_distance,

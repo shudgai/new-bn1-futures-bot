@@ -404,6 +404,19 @@ async def bot_supervisor_loop():
 @app.on_event("startup")
 async def startup_event():
     global _bot_supervisor_task
+    from core.services.exits.hard_stop_service import price_atr_stop_disabled
+    from core.services.exits.strict_true_pivot import PROFIT_PIVOT_EXIT_POLICY
+    logger.warning(
+        "POSITION_EXIT_POLICY policy=%s scope=EXISTING_AND_NEW "
+        "price_atr_stops=%s ordinary_kc_reversal=DISABLED disaster_exits=ENABLED "
+        "ordinary_pivot_net=STRICTLY_POSITIVE_AFTER_COSTS",
+        PROFIT_PIVOT_EXIT_POLICY,
+        "DISABLED" if price_atr_stop_disabled({}) else "ENABLED",
+    )
+    logger.warning(
+        "ENTRY_REVERSAL_POLICY authority=KC_OUTER_PIVOT_REVERSAL "
+        "confirmation=THREE_CLOSED_BARS kc_direction=INDEPENDENT account_safety=REQUIRED"
+    )
     try:
         await recover_bot_if_needed()
     except Exception as exc:
@@ -611,7 +624,7 @@ async def get_status(response: Response):
     payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "強動能入口：原始開盤在 KC 通道內，順向實體至少前根已收線 ATR 的 0.5 倍，最新價嚴格在同側外軌外；此入口豁免滯後長均線與 KC 斜率，但所有入口均禁止 MA5 反向：下彎不開多、上彎不開空；送單按最新報價重驗。第二／第三根軌外入口及一般嚴格 Gate 保留。反向強動能先平舊倉，確認全部成交後以最新行情重驗反手；未確認成交不開新倉。守住 MA15 或 KC 中軌時，不因普通峰谷或滯後 CK 軟退出。兩階段鎖利：價格波段峰值達 5% 後啟動內部防線，距峰值 1.5%，多單防線只升、空單只降；達門檻或碰防線不單獨平倉。價格守住 MA5 且 MA5 順向時續抱；健康回踩仍守 MA15 或 KC 中軌且無放量長反向 K 時續抱；啟動後由 MA5 失守／拐頭、進場後十字星接已收線反向 K、或長影線且峰值回吐超過 1.2% 確認賣壓。鎖利後同向冷卻及峰谷 Gate 保留。所有自動入口與送單重驗均須 KC 軌寬嚴格擴張，且多單上軌上升、空單下軌下降；縮口或持平禁止開倉。所有入口均保留送單重驗與帳戶風控。",
+        "strategy": "一般入口順最近兩根已收線 KC 中軌；另有獨立 KC 外真峰谷反轉：上軌外真峰頂確認開空、下軌外真谷底確認開多，不必等待 KC 中軌轉向。反轉須三根已收線嚴格峰谷、右側反色棒收盤突破樞紐實體中點與 MA5，MA5 順進場方向，最新報價未破壞確認；所有入口均保留送單重驗及帳戶風控。現有與新持倉的一般回踩、單純 KC 反向、MA 抖動與價格／ATR 虧損門檻不平倉。波段最高有利位移達確認棒 ATR 的 0.5 倍或最高 ROE 達 5% 後，等待進場後新的三根已收線真峰頂／谷底，確認棒反色且突破樞紐實體中點及 MA5，並且最新報價預估扣費滑點後淨利嚴格大於 0，才普通平倉；虧損時續抱，待平重試也重驗淨利。不沿用進場峰谷、不自動反手。保留手動平倉與獨立災難／帳戶風控；跳價仍可能造成實際成交虧損，不保證絕對高低點或獲利。",
         "environment": effective_runtime_environment(),
         "paper_trading": PAPER_TRADING,
         "entry_submission_enabled": ENTRY_SUBMISSION_ENABLED,

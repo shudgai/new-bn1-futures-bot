@@ -106,6 +106,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "profit_true_pivot_exit_pending_v1",
+    "position_loss_policy",
     "trend_cycle_key",
     "trend_lock_state",
     "staged_profit_lock_state",
@@ -2578,8 +2580,9 @@ class BinanceTestnetAccount:
         signal_id = entry_context.get("signal_id") or CentralEntryGate.generate_signal_id(symbol, side, str(reason or "OPEN"))
         entry_context["signal_id"] = signal_id
         entry_method_authority = entry_context.get("entry_method_authority")
+        outer_pivot_authorized = False
         if entry_method_authority:
-            from core.services.entry_methods import revalidate_entry_method
+            from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, revalidate_entry_method
 
             method_frame = next(
                 (
@@ -2609,6 +2612,8 @@ class BinanceTestnetAccount:
                 )
                 return False
             entry_context["_entry_method_validated"] = True
+            entry_context["entry_gate_quote"] = float(price)
+            outer_pivot_authorized = entry_method_authority == KC_OUTER_PIVOT_REVERSAL
 
         # ──【全鏈路審計階段 1：訊號產生】──
         OrderAuditTrail.record_signal_generated(
@@ -2829,7 +2834,7 @@ class BinanceTestnetAccount:
                     side_up = side.upper()
 
                     # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷)
-                    if kc_m_p is not None and math.isfinite(kc_m_p):
+                    if kc_m_p is not None and math.isfinite(kc_m_p) and not outer_pivot_authorized:
                         if side_up == "SHORT" and kc_m >= kc_m_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
                             self.log(err_msg, "CRITICAL")
@@ -2846,6 +2851,7 @@ class BinanceTestnetAccount:
                     is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
                     is_override = bool(
                         entry_context.get("direction_override")
+                        or outer_pivot_authorized
                         or entry_context.get("is_swing_pivot")
                         or entry_context.get("allow_kc_internal")
                         or is_meme_contract
@@ -3530,6 +3536,9 @@ class BinanceTestnetAccount:
             fee = qty * execution_price * TAKER_FEE_RATE
             # 即使停用交易所初始停損，仍保存 SL 作為本地觀察線；TP 以及
             # 獲利後的移動保本／移動停利維持原本的交易所保護方式。
+            from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
+
+            entry_context["position_loss_policy"] = NEW_POSITION_LOSS_POLICY
             meta = {
                 "sl": sl_price,
                 "tp": tp_price,
@@ -4046,7 +4055,7 @@ class BinanceTestnetAccount:
         ):
             self.log(
                 f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
+                "authority=PROFIT_CONFIRMED_TRUE_PIVOT_REQUIRED",
                 "WARNING",
             )
             return False
@@ -4310,6 +4319,12 @@ class BinanceTestnetAccount:
             )
             return False
         emergency_exit = is_emergency_exit(close_reason)
+        if math_reason == "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED":
+            from core.services.exits.strict_true_pivot import persist_profit_pivot_exit
+
+            persist_profit_pivot_exit(
+                self, symbol, position, close_reason, math_details, strict_save=True,
+            )
         from core.services.exits.authorized_position_exit import (
             automated_position_exit_allowed,
         )
@@ -4333,7 +4348,7 @@ class BinanceTestnetAccount:
         ):
             self.log(
                 f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
+                "authority=PROFIT_CONFIRMED_TRUE_PIVOT_REQUIRED",
                 "WARNING",
             )
             return False
@@ -4416,14 +4431,16 @@ class BinanceTestnetAccount:
                 await self.refresh(force=True)
             return closed
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
-        if DISABLE_STOP_LOSS and not is_manual and not emergency_exit:
+        if (DISABLE_STOP_LOSS and not is_manual and not emergency_exit
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
                 self._auto_close_reject_logged_at[reject_key] = now_ts
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
-        if not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit:
+        if (not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
             position = self.positions[symbol]
             side = position["side"]
             entry_price = position["entry_price"]

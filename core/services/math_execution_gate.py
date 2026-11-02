@@ -108,6 +108,7 @@ def validate_entry_math(
     frame_attrs = getattr(frame, "attrs", {}) or {}
     entry_method_context = frame_attrs.get("entry_method_context")
     entry_method_authorized = False
+    outer_pivot_authorized = False
     if isinstance(entry_method_context, Mapping):
         from core.services.entry_methods import revalidate_entry_method
 
@@ -124,6 +125,10 @@ def validate_entry_math(
         )
         if not entry_method_authorized:
             return False, method_reason
+        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL
+        outer_pivot_authorized = (
+            entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
+        )
     allow_override = bool(
         is_swing_pivot
         or entry_method_authorized
@@ -136,7 +141,7 @@ def validate_entry_math(
     # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
-    if not dir_lock_pass:
+    if not dir_lock_pass and not outer_pivot_authorized:
         return False, dir_lock_reason
 
     # The final account gate must enforce MA5 direction for every entry class.
@@ -156,11 +161,11 @@ def validate_entry_math(
     kc_slope = confirmed_kc_midline_slope(direction_frame)
     if kc_slope is None:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
-    if kc_slope == 0:
+    if kc_slope == 0 and not outer_pivot_authorized:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
-    if side == "LONG" and kc_slope < 0:
+    if side == "LONG" and kc_slope < 0 and not outer_pivot_authorized:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0:
+    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -200,9 +205,9 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
     if side == "SHORT" and not is_swing_pivot and not allow_override and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
-    if side == "LONG" and allow_override and close < latest_middle - retest_buffer:
+    if side == "LONG" and allow_override and not outer_pivot_authorized and close < latest_middle - retest_buffer:
         return False, "BLOCKED_LONG_BELOW_MIDLINE"
-    if side == "SHORT" and allow_override and close > latest_middle + retest_buffer:
+    if side == "SHORT" and allow_override and not outer_pivot_authorized and close > latest_middle + retest_buffer:
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE"
 
     if is_dip_sniper or is_meme_hunter or allow_override:
@@ -618,6 +623,12 @@ def validate_exit_math(
             "HARD_STOP", "CIRCUIT_BREAKER", "MARGIN_LOSS", "STOP_LOSS",
             "STOP-LOSS", "停損", "止損",
         )):
+            from core.services.exits.hard_stop_service import price_atr_stop_disabled
+
+            if price_atr_stop_disabled(position, metadata):
+                return False, "BLOCKED_EXIT_POSITION_PRICE_ATR_STOP_DISABLED", {
+                    "exit_type": "POSITION_PRICE_ATR_STOP_DISABLED",
+                }
             entry = _number(position.get("entry_price"))
             initial_stop = (
                 _number(position.get("initial_sl"))
@@ -938,6 +949,7 @@ async def validate_entry_at_execution(
     )
     entry_method_authority = payload.get("entry_method_authority")
     entry_method_authorized = False
+    outer_pivot_authorized = False
     if entry_method_authority:
         from core.services.entry_methods import revalidate_entry_method
 
@@ -958,6 +970,8 @@ async def validate_entry_at_execution(
         )
         if not entry_method_authorized:
             return False, method_reason
+        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL
+        outer_pivot_authorized = entry_method_authority == KC_OUTER_PIVOT_REVERSAL
     is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
     allow_override = bool(
         entry_method_authorized
@@ -971,7 +985,7 @@ async def validate_entry_at_execution(
 
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
-    if not dir_lock_pass:
+    if not dir_lock_pass and not outer_pivot_authorized:
         account_log = getattr(account, "log", None)
         if callable(account_log):
             account_log(
@@ -1187,9 +1201,10 @@ def validate_exit_at_execution(
             close_reason=close_reason,
         )
     elif allowed:
-        from core.services.exits.trend_lock import confirmed_kc_wave_exit
-        evidence = confirmed_kc_wave_exit(position, frame)
-        code = "CONFIRMED_KC_WAVE_EXIT_APPROVED"
+        from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
+        pivot = profitable_true_pivot_exit(dict(position), frame, metadata, quote=price)
+        evidence = pivot[1] if pivot is not None else None
+        code = "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
     else:
         code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
     if allowed and not is_emergency and evidence is None:

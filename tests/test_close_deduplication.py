@@ -6,7 +6,6 @@ import pytest
 from test_testnet_account import FakeTestnetExchange
 import core.testnet_account as tm
 import core.paper_account as pm
-from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
 
 
 @pytest.fixture
@@ -126,16 +125,24 @@ async def test_inflight_refresh_from_before_close_is_discarded(side, tmp_path, m
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 async def test_strategy_failure_cooldown_keeps_manual_override(side, tmp_path, monkeypatch):
+    from test_profit_pivot_exit import pivot_frame
+    from test_kc_wave_exit import position
+    from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
+
     a, ex = await account_for(side, tmp_path, monkeypatch)
-    frame = a._channel_exit_frames["DOGE/USDT"]
-    frame.loc[frame.index[-1], "kc_middle"] = 99.5 if side == "LONG" else 100.5
-    a.positions["DOGE/USDT"]["open_timestamp"] = 60.0
-    a.position_meta["DOGE/USDT"]["open_timestamp"] = 60.0
+    frame = pivot_frame(side)
+    pos = position(side, frame)
+    pos.update(qty=0.25, margin=25.0, leverage=1)
+    a.positions["DOGE/USDT"] = pos
+    a.position_meta["DOGE/USDT"] = dict(pos)
+    a._channel_exit_frames["DOGE/USDT"] = frame
+    reason = profitable_true_pivot_exit(pos, frame)[0]
     create = ex.create_order
     ex.create_order = AsyncMock(side_effect=RuntimeError("order rejected"))
-    assert not await a.close_position("DOGE/USDT", 100., KC_WAVE_EXIT_REASON, True)
+    quote = 100.2 if side == "LONG" else 99.8
+    assert not await a.close_position("DOGE/USDT", quote, reason, True)
     assert "DOGE/USDT" in a.positions and not closes(a)
-    assert not await a.close_position("DOGE/USDT", 100., KC_WAVE_EXIT_REASON, True)
+    assert not await a.close_position("DOGE/USDT", quote, reason, True)
     assert ex.create_order.await_count == 1
     ex.create_order = create
     assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)

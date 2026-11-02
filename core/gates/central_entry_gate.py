@@ -117,6 +117,24 @@ class CentralEntryGate:
             else None
         )
         has_entry_method_context = isinstance(entry_method_context, dict)
+        outer_pivot_authorized = False
+        if has_entry_method_context:
+            from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, revalidate_entry_method
+            method_authorized, method_reason = revalidate_entry_method(
+                klines_or_snapshot, symbol=symbol, side=side,
+                quote=price, context=entry_method_context,
+            )
+            if not method_authorized:
+                return GateCheckResult(
+                    passed=False, reason=method_reason, signal_id=sig_id, checks=checks,
+                )
+            outer_pivot_authorized = (
+                entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
+            )
+            from core.services.candle_data import closed_entry_candles
+            closed_frame = closed_entry_candles(klines_or_snapshot)
+            closed_frame.attrs.update(klines_or_snapshot.attrs)
+            klines_or_snapshot = closed_frame
         swing_pivot_signal = not has_entry_method_context and (
             "SWING_PIVOT" in source_upper or bool(
             isinstance(klines_or_snapshot, dict)
@@ -272,7 +290,11 @@ class CentralEntryGate:
             "is_swing_pivot": is_swing_pivot,
             "direction_override": direction_override,
         }
-        if not dir_ok:
+        if outer_pivot_authorized:
+            checks["direction_master_lock"].update(
+                status="PASS", reason="VERIFIED_KC_OUTER_PIVOT_DIRECTION_AUTHORITY",
+            )
+        if not dir_ok and not outer_pivot_authorized:
             veto_reason = dir_reason
             if dir_reason == "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE":
                 veto_reason = "VETO_BEARISH_CANDLE_FOR_LONG"
@@ -343,6 +365,7 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
+                    independent_kc_direction=outer_pivot_authorized,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
                 if raw_blocked and raw_reason in ("VETO_MA5_MA15_CHOP", "VETO_FLAT_MA5_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
@@ -363,6 +386,7 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
+                    independent_kc_direction=outer_pivot_authorized,
                 )
         blocked, block_reason, block_evidence = blacklist
         checks["market_blacklist"] = {

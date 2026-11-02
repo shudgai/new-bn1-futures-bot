@@ -144,7 +144,7 @@ def test_account_update_ignores_old_atr_stop(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_waterfall_candidate_has_no_channel_exit_authority(side):
+def test_waterfall_candidate_is_preserved_separately_from_numeric_stops(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     snapshot = dict(quote_ms=61000, live_bar_ms=60000, closed_bar_ms=0,
@@ -152,12 +152,13 @@ def test_waterfall_candidate_has_no_channel_exit_authority(side):
 
     result = evaluate_peak_trailing(p, 100-sign*1.6, snapshot, fee=0., slippage=0.)
 
-    assert result is None
-    assert not p[STATE_KEY].get('pending')
+    assert result["type"] == ABNORMAL_REASON
+    assert result["trigger"] == "WATERFALL_DROP"
+    assert p[STATE_KEY]["pending"] == ABNORMAL_REASON
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_account_adapter_blocks_waterfall_candidate(side, monkeypatch):
+def test_account_adapter_submits_waterfall_candidate_to_final_boundary(side, monkeypatch):
     p = position(side)
     p['open_timestamp'] = time.time() - 120
     p[STATE_KEY] = {'pending': ABNORMAL_REASON, 'trigger': 'WATERFALL_DROP'}
@@ -172,8 +173,10 @@ def test_account_adapter_blocks_waterfall_candidate(side, monkeypatch):
 
     result = asyncio.run(enforce_atr_protection(account, 'X', 101.))
 
-    assert not result
-    account.close_position.assert_not_awaited()
+    assert result
+    account.close_position.assert_awaited_once_with(
+        'X', 101., "Channel Swing " + ABNORMAL_REASON, is_manual=True,
+    )
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

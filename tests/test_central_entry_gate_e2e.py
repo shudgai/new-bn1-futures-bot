@@ -216,6 +216,12 @@ async def test_open_position_success_records_5_stages_audit(side, tmp_path):
     assert account.positions["LOBSTER/USDT"]["side"] == side
     saved = json.loads((tmp_path / "paper.json").read_text())
     assert saved["positions"]["LOBSTER/USDT"]["side"] == side
+    from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
+
+    assert saved["positions"]["LOBSTER/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
+    assert saved["position_meta"]["LOBSTER/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
+    restored = PaperAccount()
+    assert restored.positions["LOBSTER/USDT"]["position_loss_policy"] == NEW_POSITION_LOSS_POLICY
 
 
 @pytest.mark.anyio
@@ -237,11 +243,12 @@ async def test_close_position_bypasses_central_entry_gate():
         "tp": 0.0,
     }
     
-    # 即使行情極端不符合開倉條件 (如未收盤、逆向大瀑布)，平倉必須直接成功！
+    # 真正手動平倉不受開倉門禁阻擋；數值硬止損不再是有效出口。
     closed = await account.close_position(
         symbol="LOBSTER/USDT",
         current_price=95.0,
-        close_reason="CIRCUIT_BREAKER_HARD_SL",
+        close_reason="手動平倉",
+        is_manual=True,
     )
     assert closed is True
     assert "LOBSTER/USDT" not in account.positions

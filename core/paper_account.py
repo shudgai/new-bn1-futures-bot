@@ -136,6 +136,8 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "profit_true_pivot_exit_pending_v1",
+    "position_loss_policy",
     "trend_cycle_key",
     "trend_lock_state",
     "staged_profit_lock_state",
@@ -595,6 +597,7 @@ class PaperAccount:
                 )
                 return False
             entry_context["_entry_method_validated"] = True
+            entry_context["entry_gate_quote"] = float(price)
 
         # ──【全鏈路審計階段 1：訊號產生】──
         OrderAuditTrail.record_signal_generated(
@@ -1192,6 +1195,9 @@ class PaperAccount:
             self.position_meta[symbol] = meta
             self.log(f"📈 [加碼成功] {symbol} {side}，投入 {amount_usdt:.2f}U，新均價 {new_price:.6g}，總數量 {new_qty:.6g}", "SUCCESS")
         else:
+            from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
+
+            entry_context["position_loss_policy"] = NEW_POSITION_LOSS_POLICY
             pos = {
                 "symbol": symbol,
                 "side": side,
@@ -1637,7 +1643,7 @@ class PaperAccount:
         ):
             self.log(
                 f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
+                "authority=PROFIT_CONFIRMED_TRUE_PIVOT_REQUIRED",
                 "WARNING",
             )
             return False
@@ -1737,6 +1743,10 @@ class PaperAccount:
             )
             return False
         emergency_exit = is_emergency_exit(close_reason)
+        if math_reason == "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED":
+            from core.services.exits.strict_true_pivot import persist_profit_pivot_exit
+
+            persist_profit_pivot_exit(self, symbol, position, close_reason, math_details)
         from core.services.exits.authorized_position_exit import (
             automated_position_exit_allowed,
         )
@@ -1760,7 +1770,7 @@ class PaperAccount:
         ):
             self.log(
                 f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
+                "authority=PROFIT_CONFIRMED_TRUE_PIVOT_REQUIRED",
                 "WARNING",
             )
             return False
@@ -1792,14 +1802,16 @@ class PaperAccount:
             self.position_meta.get(symbol, {}).get("profit_lock_usdt_armed")
             and close_reason == "觸發移動止利 (Trailing Take-Profit)"
         )
-        if DISABLE_STOP_LOSS and not is_manual and not profit_lock_close and not emergency_exit:
+        if (DISABLE_STOP_LOSS and not is_manual and not profit_lock_close and not emergency_exit
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
                 self._auto_close_reject_logged_at[reject_key] = now_ts
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
-        if not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit:
+        if (not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
             pos = self.positions[symbol]
             side = pos["side"]
             entry_price = pos["entry_price"]
