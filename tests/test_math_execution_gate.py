@@ -47,7 +47,7 @@ def test_outer_rail_breakout_and_continuation_allows_entry():
 
     # Long outer with MA5 downturn
     frame.loc[1, ["close", "high", "ma5"]] = [107, 107.2, 98]
-    assert validate_entry_math(frame, "LONG") == (False, "BLOCKED_BY_MA5_NOT_UPWARD")
+    assert validate_entry_math(frame, "LONG") == (False, "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID")
 
     # Outer rail short breakout: close < kc_lower (93 < 95), distance <= 3 ATR
     short_frame = _frame(ma3=94, ma5=94, ma15=99, close=93, open=94.5, low=92.8, high=94.6, kc_lower=95, kc_middle=99, atr=2)
@@ -58,11 +58,11 @@ def test_outer_rail_breakout_and_continuation_allows_entry():
     # Short outer with MA5 >= MA15 (countertrend MA alignment)
     short_bad_ma = short_frame.copy()
     short_bad_ma.loc[1, "ma5"] = 100
-    assert validate_entry_math(short_bad_ma, "SHORT") == (False, "BLOCKED_BY_MA5_NOT_DOWNWARD")
+    assert validate_entry_math(short_bad_ma, "SHORT") == (False, "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID")
 
     # Short outer with MA5 and MA15 glued together (Chop)
     short_chop = short_frame.copy()
-    short_chop.loc[1, ["ma5", "ma15"]] = [94.02, 94.0]
+    short_chop.loc[1, ["ma5", "ma15"]] = [94.0, 94.02]
     short_chop.loc[1, "ma3"] = 93.5
     assert validate_entry_math(short_chop, "SHORT") == (False, "BLOCKED_ENTRY_MATH_MA_TOO_CLOSE")
 
@@ -197,13 +197,14 @@ def test_entry_short_bearish_engulfing_reversal():
     ]
     frame = pd.DataFrame(bars)
     frame["ma3"] = [103, 99.5]
+    frame["ma5"] = [103, 99.5]
     frame.attrs["macro_trend"] = "BEARISH"
     allowed, reason = validate_entry_math(frame, side="SHORT")
     assert allowed is True
     assert reason == "ENTRY_SHORT_ENGULFING_REVERSAL"
 
-    # 沒跌破前開盤價 (收 100.5 > 100.0) -> 維持一票否決
-    frame.loc[1, ["close", "low"]] = [100.5, 100.2]
+    # 未跌破前開盤價，並超出獨立中軌入口的 0.15 ATR 回測緩衝。
+    frame.loc[1, ["close", "low"]] = [100.7, 100.2]
     allowed_fail, reason_fail = validate_entry_math(frame, side="SHORT")
     assert allowed_fail is False
     assert "BLOCKED" in reason_fail
@@ -225,6 +226,7 @@ def test_entry_short_mid_band_break():
     ]
     frame = pd.DataFrame(bars)
     frame["ma3"] = [101, 99.5]
+    frame["ma5"] = [101, 99.5]
     frame["ema_slow"] = 100.0
     frame.attrs["macro_trend"] = "BEARISH"
     allowed, reason = validate_entry_math(frame, side="SHORT")
@@ -496,5 +498,3 @@ def test_entry_math_strictly_blocks_short_when_ema_is_rising():
     allowed_flat, reason_flat = validate_entry_math(df_flat, side="SHORT")
     assert allowed_flat is False, f"EMA15 走平 (slope >= 0) 時必須一票否決開空！實際: allowed={allowed_flat}, reason={reason_flat}"
     assert reason_flat == "BLOCKED_SHORT_ON_EMA_RISING"
-
-

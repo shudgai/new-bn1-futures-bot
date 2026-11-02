@@ -212,7 +212,7 @@ def test_pure_math_macro_route_still_rejects_extreme_wick(symbol, side):
 def central_frame(side):
     market = _build_valid_long_frame()
     if side == "SHORT":
-        for key in ("open", "close", "ma3", "ma5", "ma15", "kc_middle"):
+        for key in ("open", "close", "ma5", "ma15", "kc_middle"):
             market[key] = 200 - market[key]
         high, low = market["high"].copy(), market["low"].copy()
         market["high"], market["low"] = 200 - low, 200 - high
@@ -254,7 +254,7 @@ def test_wild_scan_forwards_symbol_to_guard(monkeypatch, symbol, side):
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("change", ["invalid_atr", "unclosed", "retreat", "ma3_opposite"])
+@pytest.mark.parametrize("change", ["invalid_atr", "unclosed", "retreat", "ma5_opposite"])
 def test_relaxed_entry_still_fails_closed(symbol, side, change):
     market = post_close_market(side)
     quote = float(market.iloc[-1]["close"])
@@ -269,7 +269,7 @@ def test_relaxed_entry_still_fails_closed(symbol, side, change):
     elif change == "retreat":
         quote = float(market.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
     else:
-        market.loc[market.index[-1], "ma3"] = float(market.iloc[-2]["ma3"])
+        market.loc[market.index[-1], "ma5"] = float(market.iloc[-2]["ma5"])
     allowed, reason = revalidate_entry_method(
         market, symbol=symbol, side=side, quote=quote, context=method_context(signal),
     )
@@ -315,7 +315,7 @@ def test_method_band_extension_boundary(symbol, side, distance, expected):
     market = post_close_market(side)
     sign = 1 if side == "LONG" else -1
     quote = float(market.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"]) + sign * distance
-    market.loc[market.index[-1], "ma5"] = quote
+    market.loc[market.index[-1], "ma5"] = float(market.iloc[-1]["close"]) - sign * 0.1
     signal = evaluate_entry_method(
         market, quote=quote, symbol=symbol, expected_method=KC_TWO_BAR_BREAKOUT,
     )

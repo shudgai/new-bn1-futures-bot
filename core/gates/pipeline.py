@@ -324,7 +324,7 @@ def ma5_ma15_cross_chop_problem(
         )
         qualified_fast_cross = False
         if allow_flat_ma15 and side in ('LONG', 'SHORT') and quote is not None:
-            # A fresh MA3/MA15 cross may have a naturally narrow MA5/MA15 gap.
+            # A fresh MA5/MA15 cross may have a naturally narrow MA gap.
             # Exempt only when the shared evaluator confirms its candle,
             # trend, KC-room, wick, and MA15-slope requirements. Repeated
             # MA5/MA15 whipsaws remain blocked by recent_cross_compressed.
@@ -385,7 +385,7 @@ def ma5_ma15_cross_chop_problem(
 def fast_cross_evidence(
     frame: pd.DataFrame, quote: float, side: str, symbol: Optional[str] = None,
 ) -> Optional[Dict[str, float]]:
-    """Return evidence for a fresh MA3/MA15 cross with MA5 momentum confirmation."""
+    """Return evidence for a fresh MA5/MA15 cross with MA5 momentum confirmation."""
     try:
         if (side not in ('LONG', 'SHORT') or frame is None or len(frame) < 2
                 or 'is_closed' not in frame.columns):
@@ -408,15 +408,13 @@ def fast_cross_evidence(
         atr = float(previous['atr'])
         previous_ma5 = float(previous['ma5'])
         previous_ma15 = float(previous['ma15'])
-        previous_ma3 = float(previous['ma3'])
-        live_ma3 = float(live['ma3']) + (quote - raw_close) / 3.0
         live_ma5 = float(live['ma5']) + (quote - raw_close) / 5.0
         live_ma15 = float(live['ma15']) + (quote - raw_close) / 15.0
         width = upper - lower
         values = (
             stamp, previous_stamp, opening, quote, raw_close, high, low,
-            upper, middle, lower, atr, previous_ma3, previous_ma5,
-            previous_ma15, live_ma3, live_ma5, live_ma15, width,
+            upper, middle, lower, atr, previous_ma5,
+            previous_ma15, live_ma5, live_ma15, width,
         )
         if (not all(math.isfinite(value) and value > 0 for value in values)
                 or stamp != previous_stamp + 60_000
@@ -434,26 +432,24 @@ def fast_cross_evidence(
             body = quote - opening
             directional_wick = high - max(opening, quote)
             prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
-            prev2_ma3 = float(closed.iloc[-2]['ma3']) if len(closed) >= 2 else previous_ma3
+            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
             crossed = (
-                (previous_ma3 <= previous_ma15 and live_ma3 > live_ma15 and live_ma3 > previous_ma3)
-                or (prev2_ma3 <= prev2_ma15 and previous_ma3 > previous_ma15 and live_ma3 >= previous_ma3 and live_ma3 > live_ma15)
+                (previous_ma5 <= previous_ma15 and live_ma5 > live_ma15 and live_ma5 > previous_ma5)
+                or (prev2_ma5 <= prev2_ma15 and previous_ma5 > previous_ma15 and live_ma5 >= previous_ma5 and live_ma5 > live_ma15)
             )
-            # 當根 1m 動能確認：收紅且價格站在 MA3、MA5 之上。
-            candle_confirmed = quote > live_ma3 and quote > live_ma5 and quote > opening
+            candle_confirmed = quote > live_ma5 and quote > opening
             position_ready = quote > middle
             room = (upper - quote) / width
         else:
             body = opening - quote
             directional_wick = min(opening, quote) - low
             prev2_ma15 = float(closed.iloc[-2]['ma15']) if len(closed) >= 2 else previous_ma15
-            prev2_ma3 = float(closed.iloc[-2]['ma3']) if len(closed) >= 2 else previous_ma3
+            prev2_ma5 = float(closed.iloc[-2]['ma5']) if len(closed) >= 2 else previous_ma5
             crossed = (
-                (previous_ma3 >= previous_ma15 and live_ma3 < live_ma15 and live_ma3 < previous_ma3)
-                or (prev2_ma3 >= prev2_ma15 and previous_ma3 < previous_ma15 and live_ma3 <= previous_ma3 and live_ma3 < live_ma15)
+                (previous_ma5 >= previous_ma15 and live_ma5 < live_ma15 and live_ma5 < previous_ma5)
+                or (prev2_ma5 >= prev2_ma15 and previous_ma5 < previous_ma15 and live_ma5 <= previous_ma5 and live_ma5 < live_ma15)
             )
-            # 當根 1m 動能確認：收黑且價格壓在 MA3、MA5 之下。
-            candle_confirmed = quote < live_ma3 and quote < live_ma5 and quote < opening
+            candle_confirmed = quote < live_ma5 and quote < opening
             position_ready = quote < middle
             room = (quote - lower) / width
 
@@ -511,8 +507,6 @@ def fast_cross_evidence(
             'upper': upper,
             'lower': lower,
             'live_ma5': live_ma5,
-            'previous_ma3': previous_ma3,
-            'live_ma3': live_ma3,
             'live_ma15': live_ma15,
             'previous_ma5': previous_ma5,
             'previous_ma15': previous_ma15,
@@ -3095,7 +3089,7 @@ class EntryGatePipeline:
                     p_logger.info(
                         f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | Context: {context.state} | "
                         f"Chop_Index: {context.chop_index:.2f} | Bandwidth_Ratio: {context.bandwidth_ratio:.2f} | "
-                        f"Solidity: {context.solidity_ratio*100:.1f}% | MA3_Slope: {context.ma3_slope:+.4f} | "
+                        f"Solidity: {context.solidity_ratio*100:.1f}% | MA5_Slope: {context.ma5_slope:+.4f} | "
                         f"Decision: BLOCKED ({reason})"
                     )
                 return None
@@ -3115,7 +3109,7 @@ class EntryGatePipeline:
                         p_logger.info(
                             f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | Context: {context.state} | "
                             f"Chop_Index: {context.chop_index:.2f} | Bandwidth_Ratio: {context.bandwidth_ratio:.2f} | "
-                            f"Solidity: {context.solidity_ratio*100:.1f}% | MA3_Slope: {context.ma3_slope:+.4f} | "
+                            f"Solidity: {context.solidity_ratio*100:.1f}% | MA5_Slope: {context.ma5_slope:+.4f} | "
                             f"Decision: BLOCKED (BLOCKED_BY_BULLISH_STRUCTURE_NO_SHORT)"
                         )
                     return None
@@ -3129,7 +3123,7 @@ class EntryGatePipeline:
                         p_logger.info(
                             f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | Context: {context.state} | "
                             f"Chop_Index: {context.chop_index:.2f} | Bandwidth_Ratio: {context.bandwidth_ratio:.2f} | "
-                            f"Solidity: {context.solidity_ratio*100:.1f}% | MA3_Slope: {context.ma3_slope:+.4f} | "
+                            f"Solidity: {context.solidity_ratio*100:.1f}% | MA5_Slope: {context.ma5_slope:+.4f} | "
                             f"Decision: BLOCKED (BLOCKED_BY_BEARISH_STRUCTURE_NO_LONG)"
                         )
                     return None
@@ -3179,7 +3173,7 @@ class EntryGatePipeline:
             p_logger.info(
                 f"[SPATIAL_DIAGNOSTIC] Symbol: {symbol} | Context: {context.state} | "
                 f"Chop_Index: {context.chop_index:.2f} | Bandwidth_Ratio: {context.bandwidth_ratio:.2f} | "
-                f"Solidity: {context.solidity_ratio*100:.1f}% | MA3_Slope: {context.ma3_slope:+.4f} | "
+                f"Solidity: {context.solidity_ratio*100:.1f}% | MA5_Slope: {context.ma5_slope:+.4f} | "
                 f"Decision: {decision_action} ({decision_reason})"
             )
 

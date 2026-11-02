@@ -1,4 +1,4 @@
-"""Zero-trust, closed-candle MA3/MA15 entry authorization.
+"""Zero-trust, closed-candle MA5/MA15 entry authorization.
 
 This module only authorizes a candidate. Callers must persist/atomically claim
 ``bar_time`` before submitting an order and still run account and risk gates.
@@ -32,7 +32,7 @@ def _strict_true(value: Any) -> bool:
     )
 
 
-def evaluate_ma3_ma15_entry(
+def evaluate_ma5_ma15_entry(
     frame: pd.DataFrame,
     side: str,
     *,
@@ -57,7 +57,7 @@ def evaluate_ma3_ma15_entry(
     checks: Dict[str, bool] = {
         "LATEST_BAR_CLOSED": False,
         "KC_TREND_AND_MIDLINE": False,
-        "STRICT_MA3_MA15_CROSS": False,
+        "STRICT_MA5_MA15_CROSS": False,
         "CONFIRMED_BREAKOUT_DIRECTION": not confirmed_breakout,
         "CANDLE_BODY_AND_WICK": False,
         "MA_SPREAD": False,
@@ -99,8 +99,8 @@ def evaluate_ma3_ma15_entry(
 
     try:
         closes = pd.to_numeric(closed["close"], errors="coerce")
-        ma3 = (pd.to_numeric(closed["ma3"], errors="coerce")
-               if "ma3" in closed else closes.rolling(3, min_periods=3).mean())
+        ma5 = (pd.to_numeric(closed["ma5"], errors="coerce")
+               if "ma5" in closed else closes.rolling(5, min_periods=5).mean())
         ma15 = (pd.to_numeric(closed["ma15"], errors="coerce")
                 if "ma15" in closed else closes.rolling(15, min_periods=15).mean())
         previous, current = closed.iloc[-2], closed.iloc[-1]
@@ -109,13 +109,9 @@ def evaluate_ma3_ma15_entry(
             "low": float(current["low"]), "close": float(current["close"]),
             "kc_now": float(current["kc_middle"]),
             "kc_prev": float(previous["kc_middle"]),
-            "ma3_now": float(ma3.iloc[-1]), "ma15_now": float(ma15.iloc[-1]),
-            "ma3_prev": float(ma3.iloc[-2]), "ma15_prev": float(ma15.iloc[-2]),
+            "ma5_now": float(ma5.iloc[-1]), "ma15_now": float(ma15.iloc[-1]),
+            "ma5_prev": float(ma5.iloc[-2]), "ma15_prev": float(ma15.iloc[-2]),
         }
-        ma5 = (pd.to_numeric(closed["ma5"], errors="coerce")
-               if "ma5" in closed else closes.rolling(5, min_periods=5).mean())
-        values["ma5_now"] = float(ma5.iloc[-1])
-        values["ma5_prev"] = float(ma5.iloc[-2])
         if confirmed_breakout:
             if "kc_upper" not in closed or "kc_lower" not in closed:
                 return reject("BREAKOUT_BAND_DATA_MISSING")
@@ -131,8 +127,8 @@ def evaluate_ma3_ma15_entry(
             or bar_time <= 0 or not math.isfinite(execution) or execution <= 0
             or values["ma15_now"] == 0
             or min(values["open"], values["high"], values["low"], values["close"],
-                   values["kc_now"], values["kc_prev"], values["ma3_now"],
-                   values["ma15_now"], values["ma3_prev"], values["ma15_prev"]) <= 0
+                   values["kc_now"], values["kc_prev"], values["ma5_now"],
+                   values["ma15_now"], values["ma5_prev"], values["ma15_prev"]) <= 0
             or values["low"] > min(values["open"], values["close"])
             or values["high"] < max(values["open"], values["close"])):
         return reject("INVALID_OR_INCOMPLETE_INDICATOR_DATA")
@@ -140,10 +136,10 @@ def evaluate_ma3_ma15_entry(
     if side == "LONG":
         kc_ok = values["kc_now"] > values["kc_prev"] and values["close"] > values["kc_now"]
         cross_ok = (
-            values["ma3_prev"] <= values["kc_prev"]
-            and values["ma3_now"] > values["kc_now"]
-            and values["ma3_now"] > values["ma3_prev"]
-            and values["ma3_now"] > values["ma15_now"]
+            values["ma5_prev"] <= values["kc_prev"]
+            and values["ma5_now"] > values["kc_now"]
+            and values["ma5_now"] > values["ma5_prev"]
+            and values["ma5_now"] > values["ma15_now"]
         )
         body_ok = values["close"] > values["open"]
         adverse_wick = values["high"] - max(values["open"], values["close"])
@@ -152,16 +148,16 @@ def evaluate_ma3_ma15_entry(
             bool(confirmed_breakout)
             and (values["close"] > values.get("kc_upper", math.inf) or execution > values.get("kc_upper", math.inf))
             and values["ma5_now"] > values["ma5_prev"]
-            and values["ma3_now"] > values["ma15_now"]
+            and values["ma5_now"] > values["ma15_now"]
         )
-        ma_rel_ok = values["ma3_now"] > values["ma15_now"]
+        ma_rel_ok = values["ma5_now"] > values["ma15_now"]
     else:
         kc_ok = values["kc_now"] < values["kc_prev"] and values["close"] < values["kc_now"]
         cross_ok = (
-            values["ma3_prev"] >= values["kc_prev"]
-            and values["ma3_now"] < values["kc_now"]
-            and values["ma3_now"] < values["ma3_prev"]
-            and values["ma3_now"] < values["ma15_now"]
+            values["ma5_prev"] >= values["kc_prev"]
+            and values["ma5_now"] < values["kc_now"]
+            and values["ma5_now"] < values["ma5_prev"]
+            and values["ma5_now"] < values["ma15_now"]
         )
         body_ok = values["close"] < values["open"]
         adverse_wick = min(values["open"], values["close"]) - values["low"]
@@ -170,12 +166,12 @@ def evaluate_ma3_ma15_entry(
             bool(confirmed_breakout)
             and (values["close"] < values.get("kc_lower", -math.inf) or execution < values.get("kc_lower", -math.inf))
             and values["ma5_now"] < values["ma5_prev"]
-            and values["ma3_now"] < values["ma15_now"]
+            and values["ma5_now"] < values["ma15_now"]
         )
-        ma_rel_ok = values["ma3_now"] < values["ma15_now"]
+        ma_rel_ok = values["ma5_now"] < values["ma15_now"]
 
     checks["KC_TREND_AND_MIDLINE"] = kc_ok
-    checks["STRICT_MA3_MA15_CROSS"] = cross_ok
+    checks["STRICT_MA5_MA15_CROSS"] = cross_ok
     checks["CONFIRMED_BREAKOUT_DIRECTION"] = (
         breakout_ok if confirmed_breakout else True
     )
@@ -185,7 +181,7 @@ def evaluate_ma3_ma15_entry(
     )
     checks["MA_SPREAD"] = (
         ma_rel_ok
-        and (abs(values["ma3_now"] - values["ma15_now"]) / abs(values["ma15_now"]) >= min_spread_ratio)
+        and (abs(values["ma5_now"] - values["ma15_now"]) / abs(values["ma15_now"]) >= min_spread_ratio)
     )
     try:
         bar_unused = last_trade_bar_time is None or int(last_trade_bar_time) != bar_time
@@ -202,7 +198,7 @@ def evaluate_ma3_ma15_entry(
     labels = {
         "LATEST_BAR_CLOSED": "LATEST_CANDLE_NOT_CONFIRMED_CLOSED",
         "KC_TREND_AND_MIDLINE": "KC_DIRECTION_OR_MIDLINE_CONFLICT",
-        "STRICT_MA3_MA15_CROSS": "NO_STRICT_MA3_MA15_CROSS",
+        "STRICT_MA5_MA15_CROSS": "NO_STRICT_MA5_MA15_CROSS",
         "CONFIRMED_BREAKOUT_DIRECTION": "BREAKOUT_NOT_CONFIRMED_OR_MA5_OPPOSED",
         "CANDLE_BODY_AND_WICK": "CANDLE_BODY_OR_ADVERSE_WICK_FAILED",
         "MA_SPREAD": "MA_SPREAD_BELOW_THRESHOLD",
@@ -212,7 +208,7 @@ def evaluate_ma3_ma15_entry(
     violations = [
         labels[key] for key, passed in checks.items()
         if not passed
-        and not (key == "STRICT_MA3_MA15_CROSS" and breakout_ok)
+        and not (key == "STRICT_MA5_MA15_CROSS" and breakout_ok)
     ]
     if violations:
         return EntryDecision(checklist=checks, violations=violations)
@@ -226,3 +222,7 @@ def evaluate_ma3_ma15_entry(
         checklist=checks,
         violations=[],
     )
+
+
+# Historical import path; no three-period calculation remains in entry checks.
+evaluate_ma3_ma15_entry = evaluate_ma5_ma15_entry

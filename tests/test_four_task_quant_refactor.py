@@ -35,46 +35,46 @@ from core.testnet_account import BinanceTestnetAccount
 def test_task1_direction_master_lock_long_and_short():
     kc_mid = 100.0
 
-    # 1. 開多單絕對門檻：MA3 必須 > kc_middle 且 ma3_curr > ma3_prev
+    # 1. 開多單絕對門檻：MA5 必須 > kc_middle 且 ma5_curr > ma5_prev
     # 成功案例
     ok, reason, _ = evaluate_direction_master_lock(
-        side="LONG", ma3_curr=101.5, ma3_prev=101.0, kc_middle=kc_mid
+        side="LONG", ma5_curr=101.5, ma5_prev=101.0, kc_middle=kc_mid
     )
     assert ok is True
     assert reason == "DIRECTION_LOCK_PASS"
 
-    # 違規 1：MA3 在中軌下方開多 ➔ 攔截
+    # 違規 1：MA5 在中軌下方開多 ➔ 攔截
     ok, reason, _ = evaluate_direction_master_lock(
-        side="LONG", ma3_curr=98.5, ma3_prev=98.0, kc_middle=kc_mid
+        side="LONG", ma5_curr=98.5, ma5_prev=98.0, kc_middle=kc_mid
     )
     assert ok is False
     assert reason == "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID"
 
-    # 違規 2：MA3 在中軌上方但向下走開多 ➔ 攔截
+    # 違規 2：MA5 在中軌上方但向下走開多 ➔ 攔截
     ok, reason, _ = evaluate_direction_master_lock(
-        side="LONG", ma3_curr=101.0, ma3_prev=101.5, kc_middle=kc_mid
+        side="LONG", ma5_curr=101.0, ma5_prev=101.5, kc_middle=kc_mid
     )
     assert ok is False
     assert reason == "BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN"
 
-    # 2. 開空單絕對門檻：MA3 必須 < kc_middle 且 ma3_curr < ma3_prev
+    # 2. 開空單絕對門檻：MA5 必須 < kc_middle 且 ma5_curr < ma5_prev
     # 成功案例
     ok, reason, _ = evaluate_direction_master_lock(
-        side="SHORT", ma3_curr=98.0, ma3_prev=98.5, kc_middle=kc_mid
+        side="SHORT", ma5_curr=98.0, ma5_prev=98.5, kc_middle=kc_mid
     )
     assert ok is True
     assert reason == "DIRECTION_LOCK_PASS"
 
-    # 違規 1：MA3 在中軌上方開空 ➔ 攔截
+    # 違規 1：MA5 在中軌上方開空 ➔ 攔截
     ok, reason, _ = evaluate_direction_master_lock(
-        side="SHORT", ma3_curr=101.0, ma3_prev=100.5, kc_middle=kc_mid
+        side="SHORT", ma5_curr=101.0, ma5_prev=100.5, kc_middle=kc_mid
     )
     assert ok is False
     assert reason == "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID"
 
-    # 違規 2：MA3 在中軌下方但向上勾頭開空 ➔ 攔截
+    # 違規 2：MA5 在中軌下方但向上勾頭開空 ➔ 攔截
     ok, reason, _ = evaluate_direction_master_lock(
-        side="SHORT", ma3_curr=98.5, ma3_prev=98.0, kc_middle=kc_mid
+        side="SHORT", ma5_curr=98.5, ma5_prev=98.0, kc_middle=kc_mid
     )
     assert ok is False
     assert reason == "BLOCKED_DIRECTION_LOCK_SHORT_SLOPE_UP"
@@ -308,4 +308,3 @@ def test_task4_anti_whipsaw_holding_and_extreme_exits():
     exit_wf, reason_wf, _ = evaluate_top_bottom_reversal_exit(pos_long, df_waterfall, atr_val=1.0)
     assert exit_wf is True
     assert reason_wf == "EXIT_BY_EXTREME_WATERFALL"
-

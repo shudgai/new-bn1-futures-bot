@@ -740,22 +740,19 @@ class BreakoutContinuationEntryGate:
         if open_live_bar_after_closed and not DISABLE_INTRABAR_BREAKOUT:
             return None
 
-        recent_3_closes = [c["close"] for c in recent_closed[-3:] if c is not None]
-        closed_ma3 = sum(recent_3_closes) / len(recent_3_closes) if recent_3_closes else None
-
-        # 兩根破軌極速確認（解決太晚開倉問題：首根突破外軌，次根同色且收在軌外與 MA3 外側）
+        # 兩根破軌極速確認（解決太晚開倉問題：首根突破外軌，次根同色且收在軌外與 MA5 外側）
         first_breakout_long = previous_bullish and (previous["close"] > previous_upper)
         second_confirm_long = (
             current_bullish
             and (current["close"] > upper)
-            and (closed_ma3 is None or current["close"] > closed_ma3)
+            and (closed_ma5 is None or current["close"] > closed_ma5)
         )
         if first_breakout_long and second_confirm_long:
             return signal(
                 "OPEN_LONG",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
-                "兩根收線確認：首根實體突破上軌，次根同色收在上軌外且高於 MA3",
+                "兩根收線確認：首根實體突破上軌，次根同色收在上軌外且高於 MA5",
                 channel_expanding=True,
             )
 
@@ -763,14 +760,14 @@ class BreakoutContinuationEntryGate:
         second_confirm_short = (
             current_bearish
             and (current["close"] < lower)
-            and (closed_ma3 is None or current["close"] < closed_ma3)
+            and (closed_ma5 is None or current["close"] < closed_ma5)
         )
         if first_breakout_short and second_confirm_short:
             return signal(
                 "OPEN_SHORT",
                 CONFIRMED_2BAR_BREAKOUT,
                 current["close"],
-                "兩根收線確認：首根實體跌破下軌，次根同色收在下軌外且低於 MA3",
+                "兩根收線確認：首根實體跌破下軌，次根同色收在下軌外且低於 MA5",
             )
         if (
             current_bullish

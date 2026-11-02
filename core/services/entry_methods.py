@@ -17,13 +17,15 @@ from core.gates.meme_entry_policy import (
 KC_TWO_BAR_BREAKOUT = "KC_TWO_BAR_BREAKOUT"
 POST_CLOSE_KC_REENTRY = "POST_CLOSE_KC_REENTRY"
 THREE_BAR_PIVOT_REVERSAL = "THREE_BAR_PIVOT_REVERSAL"
-MA3_MA15_CROSS = "MA3_MA15_CROSS"
+MA5_MA15_CROSS = "MA5_MA15_CROSS"
+# Import compatibility only; persisted literal MA3 authorities are not accepted.
+MA3_MA15_CROSS = MA5_MA15_CROSS
 
 ENTRY_METHODS = frozenset({
     KC_TWO_BAR_BREAKOUT,
     POST_CLOSE_KC_REENTRY,
     THREE_BAR_PIVOT_REVERSAL,
-    MA3_MA15_CROSS,
+    MA5_MA15_CROSS,
 })
 
 _METHOD_RULES = {
@@ -32,12 +34,12 @@ _METHOD_RULES = {
     THREE_BAR_PIVOT_REVERSAL: (
         "REVERSAL", "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
     ),
-    MA3_MA15_CROSS: ("CROSSOVER", "MA_CROSSOVER"),
+    MA5_MA15_CROSS: ("CROSSOVER", "MA_CROSSOVER"),
 }
 
 _REQUIRED_COLUMNS = (
     "timestamp", "open", "high", "low", "close", "kc_upper", "kc_lower",
-    "kc_middle", "ma3", "ma15", "atr",
+    "kc_middle", "ma5", "ma15", "atr",
 )
 
 
@@ -61,7 +63,7 @@ def _valid_row(row: Mapping[str, Any]) -> bool:
         min(
             values["timestamp"], open_price, high, low, close,
             values["kc_upper"], values["kc_lower"], values["kc_middle"],
-            values["ma3"], values["ma15"], values["atr"],
+            values["ma5"], values["ma15"], values["atr"],
         ) <= 0
         or values["kc_upper"] <= values["kc_lower"]
         or not values["kc_lower"] < values["kc_middle"] < values["kc_upper"]
@@ -181,24 +183,24 @@ def evaluate_entry_method(
                 second_close > float(second[edge])
                 if side == "LONG" else second_close < float(second[edge])
             )
-            ma3_direction = (
-                float(second["ma3"]) > float(first["ma3"])
-                if side == "LONG" else float(second["ma3"]) < float(first["ma3"])
+            ma5_direction = (
+                float(second["ma5"]) > float(first["ma5"])
+                if side == "LONG" else float(second["ma5"]) < float(first["ma5"])
             )
-            second_beyond_ma3 = (
-                second_close > float(second["ma3"])
-                if side == "LONG" else second_close < float(second["ma3"])
+            second_beyond_ma5 = (
+                second_close > float(second["ma5"])
+                if side == "LONG" else second_close < float(second["ma5"])
             )
             quote_beyond = (
                 current_quote > float(second[edge])
-                and current_quote > float(second["ma3"])
+                and current_quote > float(second["ma5"])
                 if side == "LONG"
                 else current_quote < float(second[edge])
-                and current_quote < float(second["ma3"])
+                and current_quote < float(second["ma5"])
             )
             if (
                 first_inside and first_body_break and same_color and second_outside
-                and ma3_direction and second_beyond_ma3 and quote_beyond
+                and ma5_direction and second_beyond_ma5 and quote_beyond
             ):
                 candidates.append(_new_signal(
                     KC_TWO_BAR_BREAKOUT, side, bars,
@@ -224,12 +226,12 @@ def evaluate_entry_method(
                         else float(current["close"]) < float(current[edge])
                         and current_quote < float(current[edge])
                     )
-                    ma3_direction = (
-                        float(current["ma3"]) > float(previous["ma3"])
+                    ma5_direction = (
+                        float(current["ma5"]) > float(previous["ma5"])
                         if side == "LONG"
-                        else float(current["ma3"]) < float(previous["ma3"])
+                        else float(current["ma5"]) < float(previous["ma5"])
                     )
-                    if outside and ma3_direction:
+                    if outside and ma5_direction:
                         candidates.append(_new_signal(
                             POST_CLOSE_KC_REENTRY, side, bars,
                             last_exit_timestamp=last_exit_timestamp,
@@ -250,32 +252,32 @@ def evaluate_entry_method(
                 if side == "LONG"
                 else float(current["close"]) < float(current["open"])
             )
-            ma3_turned = (
-                float(pivot["ma3"]) <= float(left["ma3"])
-                and float(current["ma3"]) > float(pivot["ma3"])
+            ma5_turned = (
+                float(pivot["ma5"]) <= float(left["ma5"])
+                and float(current["ma5"]) > float(pivot["ma5"])
                 if side == "LONG"
-                else float(pivot["ma3"]) >= float(left["ma3"])
-                and float(current["ma3"]) < float(pivot["ma3"])
+                else float(pivot["ma5"]) >= float(left["ma5"])
+                and float(current["ma5"]) < float(pivot["ma5"])
             )
             pivot_intact = (
                 current_quote > float(pivot["low"])
                 if side == "LONG" else current_quote < float(pivot["high"])
             )
-            if is_valley_or_peak and confirmation_color and ma3_turned and pivot_intact:
+            if is_valley_or_peak and confirmation_color and ma5_turned and pivot_intact:
                 candidates.append(_new_signal(THREE_BAR_PIVOT_REVERSAL, side, bars))
 
-    if len(bars) >= 2 and expected_method in (None, MA3_MA15_CROSS):
+    if len(bars) >= 2 and expected_method in (None, MA5_MA15_CROSS):
         previous, current = bars[-2], bars[-1]
         if (
-            float(previous["ma3"]) <= float(previous["ma15"])
-            and float(current["ma3"]) > float(current["ma15"])
+            float(previous["ma5"]) <= float(previous["ma15"])
+            and float(current["ma5"]) > float(current["ma15"])
         ):
-            candidates.append(_new_signal(MA3_MA15_CROSS, "LONG", bars))
+            candidates.append(_new_signal(MA5_MA15_CROSS, "LONG", bars))
         if (
-            float(previous["ma3"]) >= float(previous["ma15"])
-            and float(current["ma3"]) < float(current["ma15"])
+            float(previous["ma5"]) >= float(previous["ma15"])
+            and float(current["ma5"]) < float(current["ma15"])
         ):
-            candidates.append(_new_signal(MA3_MA15_CROSS, "SHORT", bars))
+            candidates.append(_new_signal(MA5_MA15_CROSS, "SHORT", bars))
 
     if not candidates:
         return None
@@ -287,7 +289,7 @@ def evaluate_entry_method(
         POST_CLOSE_KC_REENTRY,
         KC_TWO_BAR_BREAKOUT,
         THREE_BAR_PIVOT_REVERSAL,
-        MA3_MA15_CROSS,
+        MA5_MA15_CROSS,
     )
     for method in priority:
         for signal in candidates:

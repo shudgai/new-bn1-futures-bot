@@ -2822,8 +2822,8 @@ class BinanceTestnetAccount:
                 from core.gates.direction_master_lock import extract_direction_metrics_from_frame
                 metrics = extract_direction_metrics_from_frame(check_frame)
                 if metrics:
-                    m3_c = metrics["ma3_curr"]
-                    m3_p = metrics["ma3_prev"]
+                    m5_c = metrics["ma5_curr"]
+                    m5_p = metrics["ma5_prev"]
                     kc_m = metrics["kc_middle"]
                     kc_m_p = metrics.get("kc_middle_prev")
                     side_up = side.upper()
@@ -2852,34 +2852,34 @@ class BinanceTestnetAccount:
                     )
 
                     if is_override:
-                        # 特例轉折放行：豁免中軌位置，但 MA3 斜率必須嚴格同向拐頭
-                        if side_up == "SHORT" and m3_c >= m3_p:
-                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開空但 MA3 未向下拐頭 (ma3_curr={m3_c:.6f} >= ma3_prev={m3_p:.6f})，強制攔截！"
+                        # 特例轉折放行：豁免中軌位置，但 MA5 斜率必須嚴格同向拐頭
+                        if side_up == "SHORT" and m5_c >= m5_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開空但 MA5 未向下拐頭 (ma5_curr={m5_c:.6f} >= ma5_prev={m5_p:.6f})，強制攔截！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
-                        elif side_up == "LONG" and m3_c <= m3_p:
-                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開多但 MA3 未向上拐頭 (ma3_curr={m3_c:.6f} <= ma3_prev={m3_p:.6f})，強制攔截！"
+                        elif side_up == "LONG" and m5_c <= m5_p:
+                            err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開多但 MA5 未向上拐頭 (ma5_curr={m5_c:.6f} <= ma5_prev={m5_p:.6f})，強制攔截！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
                     else:
                         # 常規開倉：嚴格執行中軌位置與斜率方向限制
-                        if side_up == "SHORT" and (m3_c > kc_m or m3_c > m3_p):
+                        if side_up == "SHORT" and (m5_c > kc_m or m5_c > m5_p):
                             err_msg = (
-                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌上方 (ma3={m3_c:.6f} > kc_mid={kc_m:.6f}) "
-                                f"或斜率向上 (ma3_curr={m3_c:.6f} > ma3_prev={m3_p:.6f})，嚴禁逆勢開空！"
+                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA5 在中軌上方 (ma5={m5_c:.6f} > kc_mid={kc_m:.6f}) "
+                                f"或斜率向上 (ma5_curr={m5_c:.6f} > ma5_prev={m5_p:.6f})，嚴禁逆勢開空！"
                             )
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
-                        elif side_up == "LONG" and (m3_c < kc_m or m3_c < m3_p):
+                        elif side_up == "LONG" and (m5_c < kc_m or m5_c < m5_p):
                             err_msg = (
-                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA3 在中軌下方 (ma3={m3_c:.6f} < kc_mid={kc_m:.6f}) "
-                                f"或斜率向下 (ma3_curr={m3_c:.6f} < ma3_prev={m3_p:.6f})，嚴禁逆勢開多！"
+                                f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} MA5 在中軌下方 (ma5={m5_c:.6f} < kc_mid={kc_m:.6f}) "
+                                f"或斜率向下 (ma5_curr={m5_c:.6f} < ma5_prev={m5_p:.6f})，嚴禁逆勢開多！"
                             )
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
@@ -3036,38 +3036,38 @@ class BinanceTestnetAccount:
                     self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})", 'CRITICAL')
                     raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) > 中軌({kc_middle})")
 
-                # 2.5 🟢/🔴 MA3 斜率、慢線相對位置與 K 棒顏色絕對硬核防線（絕不可繞過）
-                ma3_val = float(current_bar.get("ma3", current_bar.get("close", price)))
+                # 2.5 🟢/🔴 MA5 斜率、慢線相對位置與 K 棒顏色絕對硬核防線（絕不可繞過）
+                ma5_val = float(current_bar.get("ma5", current_bar.get("close", price)))
                 ma15_val = float(current_bar.get("ma15", current_bar.get("kc_middle", kc_middle)))
-                prev_bar_m3 = float(prev_bar.get("ma3", ma3_val)) if len(snapshot["candles"]) >= 2 else ma3_val
+                prev_bar_m3 = float(prev_bar.get("ma5", ma5_val)) if len(snapshot["candles"]) >= 2 else ma5_val
                 bar_c = float(current_bar.get("close", price))
                 bar_o = float(current_bar.get("open", price))
 
                 if side == "LONG":
-                    if ma3_val <= prev_bar_m3:
-                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向上(ma3={ma3_val} <= prev={prev_bar_m3})，嚴禁開多！", 'CRITICAL')
-                        raise RuntimeError(f"MA3 未向上，嚴禁開多！ma3={ma3_val} <= prev={prev_bar_m3}")
+                    if ma5_val <= prev_bar_m3:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 當前未向上(ma5={ma5_val} <= prev={prev_bar_m3})，嚴禁開多！", 'CRITICAL')
+                        raise RuntimeError(f"MA5 未向上，嚴禁開多！ma5={ma5_val} <= prev={prev_bar_m3}")
                     if not (swing_pivot_override or direction_override):
-                        if ma3_val < kc_middle:
-                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於中軌下方(ma3={ma3_val} < kc_middle={kc_middle})，嚴禁開多！", 'CRITICAL')
-                            raise RuntimeError(f"MA3 位於中軌下方，嚴禁開多！ma3={ma3_val} < kc_middle={kc_middle}")
-                        if ma3_val < ma15_val:
-                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線下方(ma3={ma3_val} < ma15={ma15_val})，嚴禁開多！", 'CRITICAL')
-                            raise RuntimeError(f"MA3 位於慢線下方，嚴禁開多！ma3={ma3_val} < ma15={ma15_val}")
+                        if ma5_val < kc_middle:
+                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 位於中軌下方(ma5={ma5_val} < kc_middle={kc_middle})，嚴禁開多！", 'CRITICAL')
+                            raise RuntimeError(f"MA5 位於中軌下方，嚴禁開多！ma5={ma5_val} < kc_middle={kc_middle}")
+                        if ma5_val < ma15_val:
+                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 位於慢線下方(ma5={ma5_val} < ma15={ma15_val})，嚴禁開多！", 'CRITICAL')
+                            raise RuntimeError(f"MA5 位於慢線下方，嚴禁開多！ma5={ma5_val} < ma15={ma15_val}")
                     if bar_c <= bar_o:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陽線(close={bar_c} <= open={bar_o})，嚴禁開多！", 'CRITICAL')
                         raise RuntimeError(f"當前 K 棒非實體陽線，嚴禁開多！close={bar_c} <= open={bar_o}")
                 elif side == "SHORT":
-                    if ma3_val >= prev_bar_m3:
-                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 當前未向下(ma3={ma3_val} >= prev={prev_bar_m3})，嚴禁開空！", 'CRITICAL')
-                        raise RuntimeError(f"MA3 未向下，嚴禁開空！ma3={ma3_val} >= prev={prev_bar_m3}")
+                    if ma5_val >= prev_bar_m3:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 當前未向下(ma5={ma5_val} >= prev={prev_bar_m3})，嚴禁開空！", 'CRITICAL')
+                        raise RuntimeError(f"MA5 未向下，嚴禁開空！ma5={ma5_val} >= prev={prev_bar_m3}")
                     if not (swing_pivot_override or direction_override):
-                        if ma3_val > kc_middle:
-                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於中軌上方(ma3={ma3_val} > kc_middle={kc_middle})，嚴禁開空！", 'CRITICAL')
-                            raise RuntimeError(f"MA3 位於中軌上方，嚴禁開空！ma3={ma3_val} > kc_middle={kc_middle}")
-                        if ma3_val > ma15_val:
-                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA3 位於慢線上方(ma3={ma3_val} > ma15={ma15_val})，嚴禁開空！", 'CRITICAL')
-                            raise RuntimeError(f"MA3 位於慢線上方，嚴禁開空！ma3={ma3_val} > ma15={ma15_val}")
+                        if ma5_val > kc_middle:
+                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 位於中軌上方(ma5={ma5_val} > kc_middle={kc_middle})，嚴禁開空！", 'CRITICAL')
+                            raise RuntimeError(f"MA5 位於中軌上方，嚴禁開空！ma5={ma5_val} > kc_middle={kc_middle}")
+                        if ma5_val > ma15_val:
+                            self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] MA5 位於慢線上方(ma5={ma5_val} > ma15={ma15_val})，嚴禁開空！", 'CRITICAL')
+                            raise RuntimeError(f"MA5 位於慢線上方，嚴禁開空！ma5={ma5_val} > ma15={ma15_val}")
                     if bar_c >= bar_o:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 當前 K 棒非實體陰線(close={bar_c} >= open={bar_o})，嚴禁開空！", 'CRITICAL')
                         raise RuntimeError(f"當前 K 棒非實體陰線，嚴禁開空！close={bar_c} >= open={bar_o}")

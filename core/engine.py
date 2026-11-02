@@ -2407,7 +2407,7 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
-        from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
+        from core.services.strict_ma3_ma15_entry_gate import evaluate_ma5_ma15_entry
         whitelist_state = getattr(self.account, 'entry_filter_last', None)
         if not isinstance(whitelist_state, dict):
             whitelist_state = self.account.entry_filter_last = {}
@@ -2436,7 +2436,7 @@ class TradingEngine:
                 price - 3.0 * whitelist_atr if side == 'LONG'
                 else price + 3.0 * whitelist_atr
             )
-            whitelist = evaluate_ma3_ma15_entry(
+            whitelist = evaluate_ma5_ma15_entry(
                 snapshot['frame'], side,
                 current_position='IDLE' if symbol not in self.account.positions else 'OPEN',
                 last_trade_bar_time=(traded_bars.get(symbol)

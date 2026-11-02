@@ -74,7 +74,7 @@ def evaluate_market_blacklist(
             return True, "VETO_CONSOLIDATION_INSUFFICIENT_CLOSED_HISTORY", {"closed_bars": len(bars)}
         current = bars.iloc[-1]
         recent = bars.tail(LOOKBACK)
-        needed = ("open", "high", "low", "close", "ma3", "ma15", "atr",
+        needed = ("open", "high", "low", "close", "ma5", "ma15", "atr",
                   "kc_upper", "kc_middle", "kc_lower", "volume")
         if not all(key in bars.columns for key in needed):
             return True, "VETO_CONSOLIDATION_REQUIRED_DATA_MISSING", {
@@ -87,7 +87,7 @@ def evaluate_market_blacklist(
             return True, "VETO_CONSOLIDATION_INVALID_INDICATORS", {}
         values["atr"] = values["atr"].clip(lower=1e-8)
 
-        ma3 = values["ma3"]
+        ma5 = values["ma5"]
         ma15 = values["ma15"]
         mid = values["kc_middle"]
         atr = values["atr"]
@@ -95,30 +95,30 @@ def evaluate_market_blacklist(
         width = (values["kc_upper"] - values["kc_lower"]) / mid
         checks: dict[str, Any] = {}
 
-        # Rapid MA3/KC-midline traversals, only counting low-amplitude crossings.
-        delta = ma3 - mid
+        # Rapid MA5/KC-midline traversals, only counting low-amplitude crossings.
+        delta = ma5 - mid
         signs = np.sign(delta).replace(0, np.nan).ffill()
         cross = (signs * signs.shift(1) < 0)
         low_amp = pd.concat([delta.abs(), delta.shift(1).abs()], axis=1).max(axis=1) < 0.5 * atr
-        checks["ma3_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
-        if not is_breakout and checks["ma3_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
-            return True, "VETO_MA3_KC_MIDLINE_CHOP", checks
+        checks["ma5_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
+        if not is_breakout and checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
+            return True, "VETO_MA5_KC_MIDLINE_CHOP", checks
 
         # Flat short-term mean or channel basis.
-        ma3_delta_pct = abs(float(ma3.iloc[-1] - ma3.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma3.iloc[-MIDLINE_LOOKBACK])), 1e-12)
+        ma5_delta_pct = abs(float(ma5.iloc[-1] - ma5.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma5.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
-        checks.update(ma3_net_slope_pct=ma3_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
-        if not is_breakout and (ma3_delta_pct < SLOPE_FLAT_PCT or mid_delta_pct < SLOPE_FLAT_PCT):
-            return True, "VETO_FLAT_MA3_OR_KC_MIDLINE", checks
+        checks.update(ma5_net_slope_pct=ma5_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
+        if not is_breakout and (ma5_delta_pct < SLOPE_FLAT_PCT or mid_delta_pct < SLOPE_FLAT_PCT):
+            return True, "VETO_FLAT_MA5_OR_KC_MIDLINE", checks
 
-        # MA3/MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
-        spread = ma3 - ma15
+        # MA5/MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
+        spread = ma5 - ma15
         recent_crossings = int((spread * spread.shift(1) < 0).tail(8).sum())
         total_crossings = int((spread * spread.shift(1) < 0).tail(LOOKBACK).sum())
-        checks["ma3_ma15_crossings"] = total_crossings
-        checks["ma3_ma15_recent_crossings"] = recent_crossings
+        checks["ma5_ma15_crossings"] = total_crossings
+        checks["ma5_ma15_recent_crossings"] = recent_crossings
         if not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4):
-            return True, "VETO_MA3_MA15_CHOP", checks
+            return True, "VETO_MA5_MA15_CHOP", checks
 
         # Sudden KC expansion (current width versus prior mean, excluding current bar).
         prior_width = width.iloc[:-1].tail(LOOKBACK)

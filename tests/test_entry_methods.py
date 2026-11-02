@@ -7,7 +7,7 @@ import pytest
 
 from core.services.entry_methods import (
     KC_TWO_BAR_BREAKOUT,
-    MA3_MA15_CROSS,
+    MA5_MA15_CROSS,
     POST_CLOSE_KC_REENTRY,
     THREE_BAR_PIVOT_REVERSAL,
     evaluate_entry_method,
@@ -22,7 +22,7 @@ def frame(rows):
 
 
 def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
-           ma3, ma15, ma5=None, atr=1.0, is_closed=True):
+           short_ma, ma15, ma5=None, atr=1.0, is_closed=True):
     return {
         "timestamp": timestamp,
         "open": opened,
@@ -32,8 +32,7 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
         "kc_upper": upper,
         "kc_lower": lower,
         "kc_middle": middle,
-        "ma3": ma3,
-        "ma5": ma3 if ma5 is None else ma5,
+        "ma5": short_ma if ma5 is None else ma5,
         "ma15": ma15,
         "atr": atr,
         "is_closed": is_closed,
@@ -47,10 +46,10 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
             "LONG",
             [
                 candle(60_000, opened=100, high=103.2, low=99.8, close=103,
-                       upper=102, lower=98, middle=100, ma3=101, ma15=100,
+                       upper=102, lower=98, middle=100, short_ma=101, ma15=100,
                        atr=2),
                 candle(120_000, opened=103, high=105.2, low=102.5, close=105,
-                       upper=104, lower=100, middle=102, ma3=103, ma15=101,
+                       upper=104, lower=100, middle=102, short_ma=103, ma15=101,
                        atr=2),
             ],
             105.1,
@@ -59,17 +58,17 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
             "SHORT",
             [
                 candle(60_000, opened=100, high=100.2, low=96.8, close=97,
-                       upper=102, lower=98, middle=100, ma3=99, ma15=100,
+                       upper=102, lower=98, middle=100, short_ma=99, ma15=100,
                        atr=2),
                 candle(120_000, opened=97, high=97.3, low=94.8, close=95,
-                       upper=100, lower=96, middle=98, ma3=97, ma15=99,
+                       upper=100, lower=96, middle=98, short_ma=97, ma15=99,
                        atr=2),
             ],
             94.9,
         ),
     ],
 )
-def test_two_bar_breakout_requires_body_break_same_color_kc_ma3_and_slope(
+def test_two_bar_breakout_requires_body_break_same_color_kc_short_ma_and_slope(
     side, rows, quote,
 ):
     signal = evaluate_entry_method(frame(rows), quote=quote, symbol="CAP/USDT")
@@ -106,11 +105,11 @@ def test_two_bar_breakout_requires_body_break_same_color_kc_ma3_and_slope(
             "LONG",
             [
                 candle(60_000, opened=100, high=101, low=98, close=99,
-                       upper=110, lower=95, middle=100, ma3=102, ma15=100),
+                       upper=110, lower=95, middle=100, short_ma=102, ma15=100),
                 candle(120_000, opened=99, high=100, low=95, close=97,
-                       upper=109, lower=94, middle=99, ma3=100, ma15=100),
+                       upper=109, lower=94, middle=99, short_ma=100, ma15=100),
                 candle(180_000, opened=97, high=102, low=96, close=101,
-                       upper=113, lower=99, middle=101, ma3=101, ma15=100),
+                       upper=113, lower=99, middle=101, short_ma=101, ma15=100),
             ],
             101,
         ),
@@ -118,28 +117,31 @@ def test_two_bar_breakout_requires_body_break_same_color_kc_ma3_and_slope(
             "SHORT",
             [
                 candle(60_000, opened=100, high=102, low=99, close=101,
-                       upper=105, lower=90, middle=100, ma3=98, ma15=100),
+                       upper=105, lower=90, middle=100, short_ma=98, ma15=100),
                 candle(120_000, opened=101, high=105, low=100, close=103,
-                       upper=106, lower=90, middle=101, ma3=100, ma15=100),
+                       upper=106, lower=90, middle=101, short_ma=100, ma15=100),
                 candle(180_000, opened=103, high=104, low=98, close=99,
-                       upper=101, lower=87, middle=99.5, ma3=99, ma15=100),
+                       upper=101, lower=87, middle=99.5, short_ma=99, ma15=100),
             ],
             99,
         ),
     ],
 )
-def test_three_bar_pivot_requires_closed_extreme_and_confirmed_ma3_turn(
-    side, rows, quote,
+@pytest.mark.parametrize("symbol", ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"])
+def test_three_bar_pivot_requires_closed_extreme_and_confirmed_short_ma_turn(
+    side, rows, quote, symbol,
 ):
+    market = frame(rows)
+    market["ma3"] = float("nan")
     signal = evaluate_entry_method(
-        frame(rows), quote=quote, symbol="CAP/USDT",
+        market, quote=quote, symbol=symbol,
         expected_method=THREE_BAR_PIVOT_REVERSAL,
     )
     assert signal is not None
     assert signal["side"] == side
     allowed, reason = revalidate_entry_method(
-        frame(rows),
-        symbol="CAP/USDT",
+        market,
+        symbol=symbol,
         side=side,
         quote=quote,
         context={
@@ -152,9 +154,9 @@ def test_three_bar_pivot_requires_closed_extreme_and_confirmed_ma3_turn(
     assert allowed, reason
 
     invalid = [dict(row) for row in rows]
-    invalid[-1]["ma3"] = invalid[-2]["ma3"]
+    invalid[-1]["ma5"] = invalid[-2]["ma5"]
     assert evaluate_entry_method(
-        frame(invalid), quote=quote, symbol="CAP/USDT",
+        frame(invalid), quote=quote, symbol=symbol,
         expected_method=THREE_BAR_PIVOT_REVERSAL,
     ) is None
 
@@ -165,38 +167,38 @@ def test_three_bar_pivot_requires_closed_extreme_and_confirmed_ma3_turn(
         (
             "LONG",
             candle(60_000, opened=99, high=101, low=98, close=100,
-                   upper=110, lower=90, middle=100, ma3=99, ma15=100),
+                   upper=110, lower=90, middle=100, short_ma=99, ma15=100),
             candle(120_000, opened=100, high=102, low=99, close=101,
-                   upper=111, lower=91, middle=101, ma3=101, ma15=100),
+                   upper=111, lower=91, middle=101, short_ma=101, ma15=100),
             101,
         ),
         (
             "SHORT",
             candle(60_000, opened=101, high=102, low=99, close=100,
-                   upper=110, lower=90, middle=100, ma3=101, ma15=100),
+                   upper=110, lower=90, middle=100, short_ma=101, ma15=100),
             candle(120_000, opened=100, high=101, low=98, close=99,
-                   upper=109, lower=89, middle=99, ma3=99, ma15=100),
+                   upper=109, lower=89, middle=99, short_ma=99, ma15=100),
             99,
         ),
     ],
 )
-def test_ma3_ma15_cross_uses_two_closed_bars_without_extra_confirmation(
+def test_short_ma_ma15_cross_uses_two_closed_bars_without_extra_confirmation(
     side, previous, current, quote,
 ):
     signal = evaluate_entry_method(
         frame([previous, current]), quote=quote, symbol="CAP/USDT",
-        expected_method=MA3_MA15_CROSS,
+        expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
     assert signal["side"] == side
 
 
-def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_ma3():
+def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_short_ma():
     rows = [
         candle(60_000, opened=100, high=101, low=99, close=100,
-               upper=102, lower=98, middle=100, ma3=99, ma15=100),
+               upper=102, lower=98, middle=100, short_ma=99, ma15=100),
         candle(120_000, opened=100, high=104, low=99, close=103,
-               upper=102, lower=98, middle=100, ma3=101, ma15=100),
+               upper=102, lower=98, middle=100, short_ma=101, ma15=100),
     ]
     closed_before_exit = evaluate_entry_method(
         frame(rows), quote=103, symbol="CAP/USDT",
@@ -207,7 +209,7 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_ma3():
 
     rows.append(
         candle(180_000, opened=103, high=105, low=102, close=104,
-               upper=103, lower=99, middle=101, ma3=102, ma15=100)
+               upper=103, lower=99, middle=101, short_ma=102, ma15=100)
     )
     signal = evaluate_entry_method(
         frame(rows), quote=104, symbol="CAP/USDT",
@@ -222,9 +224,9 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_ma3():
 def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
     rows = [
         candle(60_000, opened=100, high=103.2, low=99.8, close=103,
-               upper=102, lower=98, middle=100, ma3=101, ma15=100, atr=2),
+               upper=102, lower=98, middle=100, short_ma=101, ma15=100, atr=2),
         candle(120_000, opened=103, high=105.2, low=102.5, close=105,
-               upper=104, lower=100, middle=102, ma3=103, ma15=101, atr=2),
+               upper=104, lower=100, middle=102, short_ma=103, ma15=101, atr=2),
     ]
     market = frame(rows)
     signal = evaluate_entry_method(market, quote=105.1, symbol="CAP/USDT")
@@ -262,10 +264,10 @@ def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
 def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_reason):
     rows = [
         candle(60_000, opened=100, high=101.2, low=99.8, close=101,
-               upper=100.8, lower=98, middle=99.4, ma3=100.5, ma15=100,
+               upper=100.8, lower=98, middle=99.4, short_ma=100.5, ma15=100,
                ma5=100.4),
         candle(120_000, opened=101, high=101.6, low=100.9, close=101.5,
-               upper=101, lower=98.2, middle=99.6, ma3=101, ma15=100.5,
+               upper=101, lower=98.2, middle=99.6, short_ma=101, ma15=100.3,
                ma5=100.5),
     ]
     quote = 101.5
@@ -291,7 +293,7 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
         rows[-1]["high"] = 102.1
     if side == "SHORT":
         for row in rows:
-            for key in ("open", "close", "ma3", "ma15", "ma5", "kc_middle"):
+            for key in ("open", "close", "ma5", "ma15", "kc_middle"):
                 if key in row:
                     row[key] = 200 - row[key]
             row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
@@ -303,7 +305,7 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     for offset in range(20, 0, -1):
         row = dict(rows[0], timestamp=(21 - offset) * 60_000, volume=100.0)
         shift = (-1 if side == "LONG" else 1) * 0.01 * offset
-        for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+        for key in ("open", "high", "low", "close", "ma5", "ma15",
                     "kc_upper", "kc_middle", "kc_lower"):
             if key in row:
                 row[key] += shift
@@ -317,6 +319,9 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     signal = evaluate_entry_method(
         market, quote=quote, symbol=symbol, expected_method=KC_TWO_BAR_BREAKOUT,
     )
+    if change in {"missing_ma5", "nan_ma5", "zero_ma5"}:
+        assert signal is None
+        return
     assert signal is not None
     result, reason = revalidate_entry_method(
         market, symbol=symbol, side=side, quote=quote,
@@ -365,19 +370,19 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
 def test_non_breakout_keeps_macro_relative_location(side):
     rows = [
         candle(60_000, opened=99, high=100.5, low=98.5, close=100,
-               upper=102, lower=98, middle=100, ma3=99, ma15=100),
+               upper=102, lower=98, middle=100, short_ma=99, ma15=100),
         candle(120_000, opened=100, high=101.2, low=99.8, close=101,
-               upper=102, lower=98, middle=100.1, ma3=101, ma15=100),
+               upper=102, lower=98, middle=100.1, short_ma=101, ma15=100),
     ]
     if side == "SHORT":
         for row in rows:
-            for key in ("open", "close", "ma3", "ma15", "ma5", "kc_middle"):
+            for key in ("open", "close", "ma5", "ma15", "kc_middle"):
                 row[key] = 200 - row[key]
             row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
     market = frame(rows)
     quote = rows[-1]["close"]
     signal = evaluate_entry_method(
-        market, quote=quote, symbol="CAP/USDT", expected_method=MA3_MA15_CROSS,
+        market, quote=quote, symbol="CAP/USDT", expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
     allowed, reason = revalidate_entry_method(
@@ -396,14 +401,14 @@ def test_non_breakout_keeps_macro_relative_location(side):
 def test_method_revalidation_requires_same_event():
     rows = [
         candle(60_000, opened=99, high=100.5, low=98.5, close=100,
-               upper=110, lower=90, middle=100, ma3=99, ma15=100),
+               upper=110, lower=90, middle=100, short_ma=99, ma15=100),
         candle(120_000, opened=100, high=101.2, low=99.8, close=101,
-               upper=112, lower=98, middle=101, ma3=101, ma15=100),
+               upper=112, lower=98, middle=101, short_ma=101, ma15=100),
     ]
     market = frame(rows)
     signal = evaluate_entry_method(
         market, quote=101, symbol="CAP/USDT",
-        expected_method=MA3_MA15_CROSS,
+        expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
     context = {
@@ -428,16 +433,16 @@ def test_method_revalidation_requires_same_event():
 def post_close_market(side):
     rows = [
         candle(1_260_000, opened=100, high=101.2, low=99.8, close=101,
-               upper=100.8, lower=98, middle=99.4, ma3=100.5, ma15=100,
+               upper=100.8, lower=98, middle=99.4, short_ma=100.5, ma15=100,
                ma5=100.4),
         candle(1_320_000, opened=101, high=101.6, low=100.9, close=101.5,
-               upper=101, lower=98.2, middle=99.6, ma3=101, ma15=100.5,
+               upper=101, lower=98.2, middle=99.6, short_ma=101, ma15=100.5,
                ma5=100.6),
     ]
     history = []
     for offset in range(20, 0, -1):
         row = dict(rows[0], timestamp=(21 - offset) * 60_000, volume=100.0)
-        for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+        for key in ("open", "high", "low", "close", "ma5", "ma15",
                     "kc_upper", "kc_middle", "kc_lower"):
             row[key] -= 0.01 * offset
         history.append(row)
@@ -446,7 +451,7 @@ def post_close_market(side):
         row["volume"] = 100.0
     if side == "SHORT":
         for row in rows:
-            for key in ("open", "close", "ma3", "ma5", "ma15", "kc_middle"):
+            for key in ("open", "close", "ma5", "ma15", "kc_middle"):
                 row[key] = 200 - row[key]
             row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
             row["kc_upper"], row["kc_lower"] = (
@@ -517,7 +522,7 @@ def test_post_close_reentry_passes_shared_gates_outside_its_own_rail(side, symbo
         ("wick", "EXHAUSTION_WICK"),
         ("same_bar_exit", "SIGNAL_STALE_OR_INVALID"),
         ("quote_at_rail", "SIGNAL_STALE_OR_INVALID"),
-        ("ma3_reversed", "SIGNAL_STALE_OR_INVALID"),
+        ("short_ma_reversed", "SIGNAL_STALE_OR_INVALID"),
         ("invalid_atr", "SIGNAL_STALE_OR_INVALID"),
         ("stale_event", "SIGNAL_STALE_OR_INVALID"),
         ("opposite_color", "CANDLE_NOT_"),
@@ -542,8 +547,8 @@ def test_post_close_reentry_retains_other_vetoes(side, change, reason_fragment):
         context["entry_method_last_exit_timestamp"] = 1_325_000
     elif change == "quote_at_rail":
         quote = float(market.loc[index, "kc_upper" if side == "LONG" else "kc_lower"])
-    elif change == "ma3_reversed":
-        market.loc[index, "ma3"] = market.iloc[-2]["ma3"]
+    elif change == "short_ma_reversed":
+        market.loc[index, "ma5"] = market.iloc[-2]["ma5"]
     elif change == "invalid_atr":
         market.loc[index, "atr"] = 0.0
     elif change == "stale_event":
@@ -618,7 +623,7 @@ def test_location_rejection_allows_independent_pipeline_entry(
     market = post_close_market(side)
     sign = 1 if side == "LONG" else -1
     market.loc[market.index[-1], "open"] = market.iloc[-1]["close"] - sign * 0.8
-    for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+    for key in ("open", "high", "low", "close", "ma5", "ma15",
                 "kc_upper", "kc_middle", "kc_lower"):
         market[key] += 9900
     current, previous = market.iloc[-1].to_dict(), market.iloc[-2].to_dict()
@@ -626,7 +631,7 @@ def test_location_rejection_allows_independent_pipeline_entry(
     snapshot = MarketDataSnapshot(
         symbol=symbol, current_price=quote, curr_k=current, prev_k=previous,
         ma5=current["ma5"], ma15=current["ma15"],
-        ma3=current["ma3"], prev_ma3=previous["ma3"],
+        ma3=current["ma5"], prev_ma3=previous["ma5"],
         ema_fast=current["ma5"], ema_slow=current["ma15"],
         ma_spread_pct=0.1, fast_slope=sign * 0.2, slow_slope=sign * 0.2,
         kc_upper=current["kc_upper"], kc_lower=current["kc_lower"],
@@ -638,7 +643,7 @@ def test_location_rejection_allows_independent_pipeline_entry(
         "status": "VETO", "symbol": symbol,
         "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
         "entry_rejections": [{
-            "method": MA3_MA15_CROSS, "side": side,
+            "method": MA5_MA15_CROSS, "side": side,
             "reason": "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION",
             "event_id": "rejected-cross",
         }],

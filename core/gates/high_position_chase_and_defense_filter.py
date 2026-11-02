@@ -9,7 +9,7 @@
 1. 平倉冷卻期 (Cooldown)：高位平倉後強制凍結 N 根 K 棒 (預設 5 根 K 棒)，避免在同一個頂部連續進場。
 2. 回踩健康度檢驗 (Pullback Health Check)：
    - 一般趨勢的乖離上限為 1.5 ATR，已確認強趨勢放寬至 2.8 ATR；max_bias_atr 可再收緊。
-   - 禁止浮空進場：必須滿足「至少回踩測試極短期均線或 KC 中軌 (Low <= EMA3/EMA5 或 Low <= KC_Middle) 且獲得支撐反彈」，不可在空中追單。
+   - 禁止浮空進場：必須滿足「至少回踩測試 MA5 或 KC 中軌且獲得支撐反彈」，不可在空中追單。
 3. 單根長影線不單獨否決進場；共用耗竭閘門負責已確認的量價反轉型態。
 
 【改進 B：出場端分級防守 (Tiered Position Defense)】
@@ -81,14 +81,12 @@ class HighPositionChaseAndDefenseFilter:
         kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
         kc_upper = float(curr.get('kc_upper', 0.0))
         ma5 = float(curr.get('ma5', c))
-        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
 
         details = {
             'quote': p,
             'close': c,
             'kc_middle': kc_middle,
             'kc_upper': kc_upper,
-            'ema3': ema3,
             'ma5': ma5,
             'atr': atr,
         }
@@ -166,13 +164,13 @@ class HighPositionChaseAndDefenseFilter:
         is_breakout_flow = (c > kc_upper and c > o and (c - o) >= 0.25 * atr) or (p > kc_upper and p > ma5)
         recent_3 = df.tail(3)
         min_low_recent = float(recent_3['low'].min()) if 'low' in recent_3.columns else l
-        has_tested_support = (min_low_recent <= ema3) or (min_low_recent <= ma5) or (kc_middle > 0 and min_low_recent <= kc_middle)
+        has_tested_support = (min_low_recent <= ma5) or (kc_middle > 0 and min_low_recent <= kc_middle)
         details['min_low_recent_3'] = min_low_recent
         details['has_tested_support'] = has_tested_support
 
         if not is_breakout_flow and not has_tested_support and (p > kc_upper or p > ma5 + 0.3 * atr):
             reason = (f"VETO: FLOATING_CHASE_WITHOUT_PULLBACK "
-                      f"(Recent low {min_low_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air)")
+                      f"(Recent low {min_low_recent:.6g} never tested MA5 {ma5:.6g} - Floating in the air)")
             return False, reason, details
 
         # ── 4. 防追高與防假突破過濾 (頂部鈍化/避雷針力竭) ──
@@ -240,14 +238,12 @@ class HighPositionChaseAndDefenseFilter:
         kc_middle = float(curr.get('kc_middle', curr.get('kc_basis', 0.0)))
         kc_lower = float(curr.get('kc_lower', 0.0))
         ma5 = float(curr.get('ma5', c))
-        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
 
         details = {
             'quote': p,
             'close': c,
             'kc_middle': kc_middle,
             'kc_lower': kc_lower,
-            'ema3': ema3,
             'ma5': ma5,
             'atr': atr,
         }
@@ -329,13 +325,13 @@ class HighPositionChaseAndDefenseFilter:
         is_breakout_flow = (c < kc_lower and c < o and (o - c) >= 0.25 * atr) or (p < kc_lower and p < ma5)
         recent_3 = df.tail(3)
         max_high_recent = float(recent_3['high'].max()) if 'high' in recent_3.columns else h
-        has_tested_resistance = (max_high_recent >= ema3) or (max_high_recent >= ma5) or (kc_middle > 0 and max_high_recent >= kc_middle)
+        has_tested_resistance = (max_high_recent >= ma5) or (kc_middle > 0 and max_high_recent >= kc_middle)
         details['max_high_recent_3'] = max_high_recent
         details['has_tested_resistance'] = has_tested_resistance
 
         if not is_breakout_flow and not has_tested_resistance and (p < kc_lower or p < ma5 - 0.3 * atr):
             reason = (f"VETO: FLOATING_SHORT_CHASE_WITHOUT_PULLBACK "
-                      f"(Recent high {max_high_recent:.6g} never tested EMA3 {ema3:.6g} / MA5 {ma5:.6g} - Floating in the air without resistance test)")
+                      f"(Recent high {max_high_recent:.6g} never tested MA5 {ma5:.6g} - Floating in the air without resistance test)")
             return False, reason, details
 
         # ── 4. 防抄底追空與防假跌破過濾 (底部力竭/長下影線力竭) ──

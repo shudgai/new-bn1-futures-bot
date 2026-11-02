@@ -247,20 +247,7 @@ def can_open_position(
     else:
         kc_mid_slope_val = float(last_closed.get("kc_middle_slope", 0.0))
 
-    ma3_curr = float(last_closed.get("ma3", 0.0))
-    if ma3_curr == 0.0:
-        if df is not None and len(df) >= 3 and "ma3" in df.columns:
-            ma3_curr = float(df["ma3"].iloc[-1])
-        else:
-            ma3_curr = ma5_curr
-
-    ma3_prev = float(prev_closed.get("ma3", 0.0))
-    if ma3_prev == 0.0:
-        if df is not None and len(df) >= 4 and "ma3" in df.columns:
-            ma3_prev = float(df["ma3"].iloc[-2])
-        else:
-            ma3_prev = ma5_prev
-    ma3_slope_val = ma3_curr - ma3_prev
+    ma5_slope_val = ma5_curr - ma5_prev
 
     kc_bw = (kc_up - kc_low) / max(kc_mid_val, 1e-9) if kc_mid_val > 0 else 0.0
     slope_thresh = max(0.08 * atr_val, 0.00015 * max(kc_mid_val, 1e-9))
@@ -279,8 +266,8 @@ def can_open_position(
     MIN_TRADABLE_BANDWIDTH = 0.0025
     is_breakout_candle = (close_p > kc_up or close_p < kc_low) and abs(close_p - open_p) >= 0.8 * atr_val
     is_cross_mid_ignition = (
-        (side == "LONG" and close_p >= kc_mid_val + 0.3 * atr_val and ma3_slope_val > 0)
-        or (side == "SHORT" and close_p <= kc_mid_val - 0.3 * atr_val and ma3_slope_val < 0)
+        (side == "LONG" and close_p >= kc_mid_val + 0.3 * atr_val and ma5_slope_val > 0)
+        or (side == "SHORT" and close_p <= kc_mid_val - 0.3 * atr_val and ma5_slope_val < 0)
     )
 
     if (kc_bw < MIN_TRADABLE_BANDWIDTH) and not (is_breakout_candle or is_cross_mid_ignition):
@@ -297,10 +284,10 @@ def can_open_position(
                 return veto_return(f"VETO_MA15_LONG_FLAT (ma15_range={ma15_range:.4f} < 0.25*atr={0.25*atr_val:.4f})")
 
     if df is not None and len(df) >= 5:
-        s_ma3 = df["ma3"].dropna() if "ma3" in df.columns else df["close"].rolling(3).mean().dropna()
+        s_ma5 = df["ma5"].dropna() if "ma5" in df.columns else df["close"].rolling(5).mean().dropna()
         s_ma15 = df["ma15"].dropna() if "ma15" in df.columns else df["close"].rolling(15).mean().dropna()
-        if len(s_ma3) >= 5 and len(s_ma15) >= 5:
-            ma_gap_avg = float((s_ma3.iloc[-5:] - s_ma15.iloc[-5:]).abs().mean())
+        if len(s_ma5) >= 5 and len(s_ma15) >= 5:
+            ma_gap_avg = float((s_ma5.iloc[-5:] - s_ma15.iloc[-5:]).abs().mean())
             if atr_val > 0 and ma_gap_avg < 0.15 * atr_val and not (is_breakout_candle or is_cross_mid_ignition):
                 return veto_return(f"VETO_MA_ENTANGLEMENT (ma_gap_avg={ma_gap_avg:.4f} < 0.15*atr={0.15*atr_val:.4f})")
 
@@ -325,13 +312,13 @@ def can_open_position(
         if close_p <= (kc_low + 0.5 * atr_val) or current_tick_price <= (kc_low + 0.5 * atr_val):
             return veto_return(f"VETO_KC_LOWER_ZONE_FORBIDDEN_FOR_LONG (price={current_tick_price:.4f} <= kc_low+0.5*atr={kc_low + 0.5 * atr_val:.4f})")
 
-        # 禁令六：MA3 斜率向下時，100% 禁止開多（短期均線動能一票否決）
-        if ma3_slope_val < 0:
-            return veto_return(f"VETO_LONG_MA3_SLOPING_DOWN (curr={ma3_curr:.4f} < prev={ma3_prev:.4f})")
+        # 禁令六：MA5 斜率向下時，100% 禁止開多（短期均線動能一票否決）
+        if ma5_slope_val < 0:
+            return veto_return(f"VETO_LONG_MA5_SLOPING_DOWN (curr={ma5_curr:.4f} < prev={ma5_prev:.4f})")
 
-        # 禁令七：價格被 MA3 壓制時，100% 禁止開多
-        if close_p < ma3_curr or current_tick_price < ma3_curr:
-            return veto_return(f"VETO_LONG_PRICE_BELOW_MA3 (close={close_p:.4f}, tick={current_tick_price:.4f} < ma3={ma3_curr:.4f})")
+        # 禁令七：價格被 MA5 壓制時，100% 禁止開多
+        if close_p < ma5_curr or current_tick_price < ma5_curr:
+            return veto_return(f"VETO_LONG_PRICE_BELOW_MA5 (close={close_p:.4f}, tick={current_tick_price:.4f} < ma5={ma5_curr:.4f})")
 
         # 1. 第一根必須收盤破上軌
         long_bar1_break = (prev_kc_up > 0) and (prev_close > prev_kc_up)
@@ -374,13 +361,13 @@ def can_open_position(
         if close_p >= (kc_up - 0.5 * atr_val) or current_tick_price >= (kc_up - 0.5 * atr_val):
             return veto_return(f"VETO_KC_UPPER_ZONE_FORBIDDEN_FOR_SHORT (price={current_tick_price:.4f} >= kc_up-0.5*atr={kc_up - 0.5 * atr_val:.4f})")
 
-        # 禁令六：MA3 斜率向上時，100% 禁止開空（短期均線動能一票否決）
-        if ma3_slope_val > 0:
-            return veto_return(f"VETO_SHORT_MA3_SLOPING_UP (curr={ma3_curr:.4f} > prev={ma3_prev:.4f})")
+        # 禁令六：MA5 斜率向上時，100% 禁止開空（短期均線動能一票否決）
+        if ma5_slope_val > 0:
+            return veto_return(f"VETO_SHORT_MA5_SLOPING_UP (curr={ma5_curr:.4f} > prev={ma5_prev:.4f})")
 
-        # 禁令七：價格站上 MA3 之上時，100% 禁止開空
-        if close_p > ma3_curr or current_tick_price > ma3_curr:
-            return veto_return(f"VETO_SHORT_PRICE_ABOVE_MA3 (close={close_p:.4f}, tick={current_tick_price:.4f} > ma3={ma3_curr:.4f})")
+        # 禁令七：價格站上 MA5 之上時，100% 禁止開空
+        if close_p > ma5_curr or current_tick_price > ma5_curr:
+            return veto_return(f"VETO_SHORT_PRICE_ABOVE_MA5 (close={close_p:.4f}, tick={current_tick_price:.4f} > ma5={ma5_curr:.4f})")
 
         # 1. 第一根必須收盤破下軌
         short_bar1_break = (prev_kc_low > 0) and (prev_close < prev_kc_low)
@@ -964,7 +951,6 @@ class TrendRidingStrategy:
         kc_upper = float(curr.get('kc_upper', basis + 2 * atr))
         kc_lower = float(curr.get('kc_lower', basis - 2 * atr))
         ma5 = float(curr.get('ma5', c))
-        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
 
         is_squeeze = regime_details.get('is_squeeze', False)
         is_expanding = regime_details.get('is_expanding', False)
@@ -1000,10 +986,10 @@ class TrendRidingStrategy:
                 return True, "PASS: SQUEEZE_EXPANSION_BREAKOUT_LONG (通道重新放大且突破上軌，無條件追多解除冷卻)", details
 
             # 條件 ①：回踩支撐確認 (收窄期間回踩 3/5 EMA 或 KC 中軌未破並收陽線)
-            # Low 碰觸/靠近 EMA3/MA5/KC中軌，收盤仍守在中軌之上，且當根為紅陽棒
-            tested_support = (l <= max(ma5, ema3) or l <= basis + 0.3 * atr) and (l >= basis - 0.1 * atr)
+            # Low 碰觸/靠近 MA5/KC中軌，收盤仍守在中軌之上，且當根為紅陽棒
+            tested_support = (l <= ma5 or l <= basis + 0.3 * atr) and (l >= basis - 0.1 * atr)
             candle_is_bullish = (c > o)
-            closed_above_support = (c >= min(ma5, ema3, basis))
+            closed_above_support = (c >= min(ma5, basis))
 
             if tested_support and candle_is_bullish and closed_above_support:
                 # 檢查冷卻保護 (跨 K 棒回踩確認收陽直接放行二次進場，僅同根防刷單)
@@ -1032,9 +1018,9 @@ class TrendRidingStrategy:
                 return True, "PASS: SQUEEZE_EXPANSION_BREAKDOWN_SHORT (通道重新放大且跌破下軌，無條件追空解除冷卻)", details
 
             # 條件 ①：回抽阻力確認 (收窄期間回抽 3/5 EMA 或 KC 中軌未破並收黑陰棒)
-            tested_resistance = (h >= min(ma5, ema3) or h >= basis - 0.3 * atr) and (h <= basis + 0.1 * atr)
+            tested_resistance = (h >= ma5 or h >= basis - 0.3 * atr) and (h <= basis + 0.1 * atr)
             candle_is_bearish = (c < o)
-            closed_below_resistance = (c <= max(ma5, ema3, basis))
+            closed_below_resistance = (c <= max(ma5, basis))
 
             if tested_resistance and candle_is_bearish and closed_below_resistance:
                 if last_closed_action in ('CLOSE_SHORT', 'EXIT_SHORT') and last_closed_ts > 0:
@@ -1111,7 +1097,6 @@ class TrendRidingStrategy:
         kc_upper = float(curr.get('kc_upper', basis + 2 * atr))
         kc_lower = float(curr.get('kc_lower', basis - 2 * atr))
         ma5 = float(curr.get('ma5', c))
-        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
 
         details = {
             'side': side,
@@ -1431,8 +1416,6 @@ class TrendRidingStrategy:
 
         ma5 = float(curr.get('ma5', c))
         prev_ma5 = float(prev.get('ma5', ma5))
-        ema3 = float(curr.get('ema3', curr.get('ma3', ma5)))
-        prev_ema3 = float(prev.get('ema3', prev.get('ma3', ema3)))
 
         holding_side = str(position.get('side', '')).upper() if position else ''
 
@@ -1440,20 +1423,19 @@ class TrendRidingStrategy:
             'close': c,
             'quote': p,
             'basis': basis,
-            'ema3': ema3,
             'ma5': ma5,
             'holding_side': holding_side,
         }
 
         # ──【1. 多單開倉 (Long Entry)】──
         # 最佳起爆點（底部反轉第一時間開多）：
-        # K 棒收盤突破站上基準線 (c > basis) 且 短均線金叉/站上基準線 (ema3 >= basis 或 ema3 > prev_ema3)
+        # K 棒收盤突破站上基準線且 MA5 站上基準線
         prev_below_basis = float(prev.get('close', 0.0)) <= prev_basis or float(df.iloc[-3].get('close', 0.0)) <= prev_basis
-        is_bull_breakout_reversal = (c > basis and c > o) and (ema3 >= basis or ma5 >= basis) and prev_below_basis
+        is_bull_breakout_reversal = (c > basis and c > o) and ma5 >= basis and prev_below_basis
         
         # 中途二次進場（回踩確認）：
         recent_3 = df.tail(3)
-        has_tested_support = float(recent_3['low'].min()) <= max(ema3, basis)
+        has_tested_support = float(recent_3['low'].min()) <= max(ma5, basis)
         is_bull_pullback_entry = (c > basis and c > o) and has_tested_support and (basis >= prev_basis)
 
         # 禁止半山腰追高：正乖離過大禁追
@@ -1469,12 +1451,12 @@ class TrendRidingStrategy:
 
         # ──【2. 空單開倉 (Short Entry，完全對稱)】──
         # 最佳起跌點（頂部反轉第一時間開空）：
-        # K 棒收盤跌破基準線 (c < basis) 且 短均線死叉/壓制基準線 (ema3 <= basis 或 ema3 < prev_ema3)
+        # K 棒收盤跌破基準線且 MA5 壓在基準線下
         prev_above_basis = float(prev.get('close', 0.0)) >= prev_basis or float(df.iloc[-3].get('close', 0.0)) >= prev_basis
-        is_bear_breakdown_reversal = (c < basis and c < o) and (ema3 <= basis or ma5 <= basis) and prev_above_basis
+        is_bear_breakdown_reversal = (c < basis and c < o) and ma5 <= basis and prev_above_basis
 
         # 中途二次進場（回抽確認）：
-        has_tested_resistance = float(recent_3['high'].max()) >= min(ema3, basis)
+        has_tested_resistance = float(recent_3['high'].max()) >= min(ma5, basis)
         is_bear_pullback_entry = (c < basis and c < o) and has_tested_resistance and (basis <= prev_basis)
 
         # 禁止地板追空：負乖離過大禁追

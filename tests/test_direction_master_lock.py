@@ -1,10 +1,10 @@
 """Tests for Direction Master Lock (方向總開關)
 
 Validates:
-1. 07:15 V-turn scenario: Price bounces from bottom, MA3 crosses above KC middle
+1. 07:15 V-turn scenario: Price bounces from bottom, MA5 crosses above KC middle
    and slopes upward strongly. Any SHORT signal is 100% VETOED across all layers.
-2. Long requirement: MA3 > KC_middle and MA3 sloping upward.
-3. Short requirement: MA3 < KC_middle and MA3 sloping downward.
+2. Long requirement: MA5 > KC_middle and MA5 sloping upward.
+3. Short requirement: MA5 < KC_middle and MA5 sloping downward.
 4. Physical layer enforcement in testnet_account and CentralEntryGate.
 """
 
@@ -34,19 +34,17 @@ class MockTestnetAccount:
 
 
 def test_direction_master_lock_pure_math():
-    # Scenario: V-turn upward, MA3 above KC middle and rising
+    # Scenario: V-turn upward, MA5 above KC middle and rising
     kc_mid = 0.004270
-    ma3_prev = 0.004265
-    ma3_curr = 0.004278  # Above midline, slope up
-    ma5_curr = 0.004272
+    ma5_prev = 0.004265
+    ma5_curr = 0.004278  # Above midline, slope up
 
     # SHORT must be VETOED
     short_ok, short_reason, _ = evaluate_direction_master_lock(
         side="SHORT",
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        kc_middle=kc_mid,
         ma5_curr=ma5_curr,
+        ma5_prev=ma5_prev,
+        kc_middle=kc_mid,
     )
     assert short_ok is False
     assert short_reason == "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID"
@@ -54,29 +52,26 @@ def test_direction_master_lock_pure_math():
     # LONG must be ALLOWED
     long_ok, long_reason, _ = evaluate_direction_master_lock(
         side="LONG",
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        kc_middle=kc_mid,
         ma5_curr=ma5_curr,
+        ma5_prev=ma5_prev,
+        kc_middle=kc_mid,
     )
     assert long_ok is True
     assert long_reason == "DIRECTION_LOCK_PASS"
 
 
 def test_direction_master_lock_downward_trend():
-    # Scenario: Bearish trend, MA3 below KC middle and falling
+    # Scenario: Bearish trend, MA5 below KC middle and falling
     kc_mid = 0.004270
-    ma3_prev = 0.004265
-    ma3_curr = 0.004255  # Below midline, slope down
-    ma5_curr = 0.004260
+    ma5_prev = 0.004265
+    ma5_curr = 0.004255  # Below midline, slope down
 
     # LONG must be VETOED
     long_ok, long_reason, _ = evaluate_direction_master_lock(
         side="LONG",
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        kc_middle=kc_mid,
         ma5_curr=ma5_curr,
+        ma5_prev=ma5_prev,
+        kc_middle=kc_mid,
     )
     assert long_ok is False
     assert long_reason == "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID"
@@ -84,23 +79,22 @@ def test_direction_master_lock_downward_trend():
     # SHORT must be ALLOWED
     short_ok, short_reason, _ = evaluate_direction_master_lock(
         side="SHORT",
-        ma3_curr=ma3_curr,
-        ma3_prev=ma3_prev,
-        kc_middle=kc_mid,
         ma5_curr=ma5_curr,
+        ma5_prev=ma5_prev,
+        kc_middle=kc_mid,
     )
     assert short_ok is True
     assert short_reason == "DIRECTION_LOCK_PASS"
 
 
 def test_v_turn_short_signal_blocked_at_central_entry_gate():
-    # 07:15 盤面數據模擬：價格從谷底回升，MA3 穿過中軌衝高
+    # 07:15 盤面數據模擬：價格從谷底回升，MA5 穿過中軌衝高
     bars = [
         dict(timestamp=60_000, open=0.004250, high=0.004265, low=0.004245, close=0.004260,
-             atr=0.000050, ma3=0.004255, ma5=0.004252, ma15=0.004250,
+             atr=0.000050, ma5=0.004255, ma15=0.004250,
              kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
         dict(timestamp=120_000, open=0.004260, high=0.004285, low=0.004258, close=0.004280,
-             atr=0.000050, ma3=0.004275, ma5=0.004268, ma15=0.004255,
+             atr=0.000050, ma5=0.004275, ma15=0.004255,
              kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
     ]
     df = pd.DataFrame(bars)
@@ -125,10 +119,10 @@ def test_v_turn_short_signal_blocked_at_execution_gate():
         account = MockTestnetAccount()
         bars = [
             dict(timestamp=60_000, open=0.004250, high=0.004265, low=0.004245, close=0.004260,
-                 atr=0.000050, ma3=0.004255, ma5=0.004252, ma15=0.004250,
+                 atr=0.000050, ma5=0.004255, ma15=0.004250,
                  kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
             dict(timestamp=120_000, open=0.004260, high=0.004285, low=0.004258, close=0.004280,
-                 atr=0.000050, ma3=0.004275, ma5=0.004268, ma15=0.004255,
+                 atr=0.000050, ma5=0.004275, ma15=0.004255,
                  kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
         ]
         df = pd.DataFrame(bars)
@@ -170,7 +164,7 @@ def test_meme_coin_breakout_extension_relaxed_pass():
         p = base_price + i * 0.000002
         bars.append(
             dict(timestamp=ts, open=p - 0.000001, high=p + 0.000001, low=p - 0.000001, close=p,
-                 atr=atr_val, ma3=p - 0.000001, ma5=p - 0.000002, ma15=p - 0.000004,
+                 atr=atr_val, ma5=p - 0.000001, ma15=p - 0.000004,
                  kc_upper=p + 0.000015, kc_middle=p, kc_lower=p - 0.000015,
                  is_closed=True, volume=1000, volume_avg=800)
         )
@@ -180,7 +174,7 @@ def test_meme_coin_breakout_extension_relaxed_pass():
     bars.append(
         dict(timestamp=26 * 60_000, open=bars[-1]["close"], high=price_extended + 0.000002,
              low=bars[-1]["close"], close=price_extended,
-             atr=atr_val, ma3=price_extended - 0.000002, ma5=price_extended - 0.000005, ma15=price_extended - 0.000020,
+             atr=atr_val, ma5=price_extended - 0.000002, ma15=price_extended - 0.000020,
              kc_upper=kc_up + 0.000005, kc_middle=bars[-1]["kc_middle"] + 0.000002, kc_lower=kc_up - 0.000035,
              is_closed=True, volume=3000, volume_avg=800)
     )
@@ -203,29 +197,29 @@ def test_meme_coin_breakout_extension_relaxed_pass():
 def test_lobster_1055_dead_cross_slope_down_long_vetoed():
     """
     盤面 Bug 現況回歸測試 (10:55 龍蝦/USDT)：
-    當價格從高點回落，MA3 已經向下跌穿 MA15，且 MA3 明確向下，收陰線時：
+    當價格從高點回落，MA5 已經向下跌穿 MA15，且 MA5 明確向下，收陰線時：
     系統一票否決所有開多 (LONG) 請求！
     """
     # 1. 純數學判定
     ok, reason, details = evaluate_direction_master_lock(
         side="LONG",
-        ma3_curr=0.018580,
-        ma3_prev=0.018590,  # MA3 向下
+        ma5_curr=0.018580,
+        ma5_prev=0.018590,  # MA5 向下
         kc_middle=0.018550,
-        ma15_curr=0.018600, # MA3 < MA15 (死叉)
+        ma15_curr=0.018600, # MA5 < MA15 (死叉)
         curr_close=0.018575,
         curr_open=0.018585,  # 收陰線
     )
     assert ok is False
-    assert reason in ("BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN", "BLOCKED_DIRECTION_LOCK_LONG_MA3_BELOW_SLOW", "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE")
+    assert reason in ("BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN", "BLOCKED_DIRECTION_LOCK_LONG_MA5_BELOW_SLOW", "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE")
 
     # 2. CentralEntryGate 攔截
     df = pd.DataFrame([
         dict(timestamp=60_000, open=0.01860, high=0.01865, low=0.01858, close=0.01862,
-             atr=0.00005, ma3=0.01861, ma5=0.01860, ma15=0.01858, kc_upper=0.01870,
+             atr=0.00005, ma5=0.01861, ma15=0.01858, kc_upper=0.01870,
              kc_middle=0.01855, kc_lower=0.01840, is_closed=True),
         dict(timestamp=120_000, open=0.01862, high=0.01863, low=0.01856, close=0.01857,  # 收陰
-             atr=0.00005, ma3=0.01858, ma5=0.01860, ma15=0.01860, kc_upper=0.01870,     # ma3 <= ma3_prev, ma3 < ma15
+             atr=0.00005, ma5=0.01858, ma15=0.01860, kc_upper=0.01870,     # ma5 <= ma5_prev, ma5 < ma15
              kc_middle=0.01855, kc_lower=0.01840, is_closed=True),
     ])
     df.attrs["timeframe_ms"] = 60_000.0

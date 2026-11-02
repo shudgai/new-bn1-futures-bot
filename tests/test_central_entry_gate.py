@@ -135,7 +135,7 @@ def test_veto_ma5_slope_opposite():
         klines_or_snapshot=df,
     )
     assert res.passed is False
-    assert res.reason == "VETO_MA5_SLOPE_OPPOSITE"
+    assert res.reason == "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID"
 
 
 def test_veto_kc_outer_overextension():

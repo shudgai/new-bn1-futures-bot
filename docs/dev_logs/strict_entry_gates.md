@@ -207,3 +207,47 @@ Each active entry symbol is analyzed independently in a background task using it
 - Validation: 48 isolated focused tests passed, including rollover, PEPE/Lobster public-fetch routing, stale-upstream rejection, explicit stale fallback, single-flight, timeout cleanup, candle finality, offline JavaScript chart-error handling, existing stream behavior, and manual UI controls. Four existing FastAPI lifecycle deprecation warnings remain. An isolated real public-data request returned 200 PEPE candles ending at the current 11:44 UTC minute.
 - The Owner explicitly selected deployment, service restart, and GitHub publication after validation. Only the API, chart UI, new chart tests, and this log belong to this patch. Existing unrelated dirty exit/account edits remain excluded from the commit; the service still runs the working directory rather than a pristine published tree. No reset or manual order is performed.
 - WAIT remains outside this chart patch. Direction/symbol/live/ATR/bridge/deduplication/consumption/persistence/restart/order-safety/arbitration gates are NOT_TESTED. Doji PASS is specification/static-trace only; `TRADING_GATE = BLOCK` remains a readiness-review label, not a service-stop command or claim that a trade was filled.
+
+### [2026-11-02] - Unify active entry qualification on MA5/MA15
+
+- The Owner requested MA5/MA15 consistency after confirming that the chart already displayed MA5/MA15 while several entry gates still used MA3. The active execution pipeline, closed-entry authorities, pivot/reentry qualification, KC-midline crossing, direction lock, consolidation filter, strict whitelist, shared math gate, and paper/testnet entry boundaries now use MA5. KC, candle, quote, order, capital, and risk conditions remain additional requirements; a crossover is an evaluation opportunity, not an unconditional order or guaranteed fill.
+- The new crossover authority is `MA5_MA15_CROSS`. Literal persisted `MA3_MA15_CROSS` authorities fail revalidation. Legacy module paths and import aliases remain compatible but delegate to MA5 evaluation. The persisted `strict_ma3_ma15_last_trade_bar` key deliberately retains its original name so migration/restart cannot erase an existing candle claim.
+- Missing calculated MA5 requires five closes, not three. Authorized live central validation adjusts MA5 by the quote delta divided by five and MA15 by the delta divided by fifteen. Invalid/nonpositive fast-line data fails closed. Entry-only chop calculations run in the flat-position phase; the existing exit funnel retains its MA3 crossing-count input. Existing MA3 exit calculations, indicator/model compatibility fields, and unrelated legacy engine paths are not represented as globally removed.
+- Shared trend-riding, high-position defense, and master-funnel exit function bodies were compared structurally against HEAD and are unchanged. Existing unrelated dirty exit/account edits remain intact; validation uses the current worktree copy and does not claim those pre-existing edits belong to this patch.
+- Validation used isolated source copies without runtime account files: 543 focused tests passed. Expanded compatibility checks added 99 passed and 43 failed; all 43 failure identities were independently reproduced against archived HEAD. Combined result: 642 passed, 43 pre-existing failures, and four existing FastAPI lifecycle deprecation warnings. This is not a full-suite pass. Python compilation and whitespace checks passed.
+- Regression coverage includes LONG/SHORT for PEPE, Lobster, and CAP; MA3 absent/invalid/opposed to MA5; crossover and obsolete-authority rejection; five-period warmup/live-quote calculation; pivot and post-close reentry; central/math/final-execution agreement; persisted candle claims and hourly limits; account submission and margin boundaries; and existing chart/reset/manual-control behavior. Test fixture migrations preserve the original numeric thresholds; independently valid alternative entry paths are excluded when testing a specific rejection.
+- Source changes only: no commit, GitHub push, service restart, reset, manual order, or WAIT implementation/activation was performed. The service has not been restarted onto this patch; no runtime source-identity or entry-fill claim is inferred from source tests. The three historical Channel Swing test files previously documented as absent remain unavailable.
+
+Mandatory WAIT review (not implemented or activated by this patch):
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS refers only to the existing approved specification/static helper trace, not runtime verification. `TRADING_GATE = BLOCK` is the readiness-review outcome, not a claim that the existing service was stopped.
+
+### [2026-11-02] - MA5 release authorization
+
+- The Owner subsequently explicitly requested restart, commit, and GitHub publication of the MA5/MA15 unification patch. This supersedes the operational authorization flags above only for this MA5 release; WAIT implementation and live-order authority are not added.
+- Stage only the MA5 entry changes, directly related tests, and this log. Existing unrelated exit changes in mixed files are excluded from the commit and remain in the working directory. Restarting the existing service preserves those local changes; the runtime must not be described as a pristine checkout of the published commit.
+- Validate the exact staged tree independently before publication, then restart the existing paper service and verify HTTP readiness and chart freshness. Do not reset the account or submit manual test orders.
+- `DEPLOY_AUTHORIZED = YES` and `RESTART_AUTHORIZED = YES` for this release. All WAIT runtime gates remain NOT_TESTED, specification/static-trace doji remains PASS, and the independent WAIT readiness result remains `TRADING_GATE = BLOCK`.

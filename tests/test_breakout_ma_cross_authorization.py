@@ -1,6 +1,6 @@
 import pandas as pd
 
-from core.services.strict_ma3_ma15_entry_gate import evaluate_ma3_ma15_entry
+from core.services.strict_ma3_ma15_entry_gate import evaluate_ma5_ma15_entry
 from core.services.market_consolidation_filter import evaluate_market_blacklist
 
 
@@ -29,7 +29,7 @@ def falling_breakout_frame():
 def test_confirmed_kc_breakdown_does_not_wait_for_ma_cross():
     frame = falling_breakout_frame()
 
-    result = evaluate_ma3_ma15_entry(
+    result = evaluate_ma5_ma15_entry(
         frame,
         "SHORT",
         current_position="IDLE",
@@ -41,13 +41,13 @@ def test_confirmed_kc_breakdown_does_not_wait_for_ma_cross():
 
     assert result.action == "OPEN_SHORT"
     assert result.checklist["CONFIRMED_BREAKOUT_DIRECTION"] is True
-    assert result.checklist["STRICT_MA3_MA15_CROSS"] is False
+    assert result.checklist["STRICT_MA5_MA15_CROSS"] is False
 
 
 def test_non_breakout_candidate_still_requires_ma_cross():
     frame = falling_breakout_frame()
 
-    result = evaluate_ma3_ma15_entry(
+    result = evaluate_ma5_ma15_entry(
         frame,
         "SHORT",
         current_position="IDLE",
@@ -57,7 +57,7 @@ def test_non_breakout_candidate_still_requires_ma_cross():
     )
 
     assert result.action == "HOLD / PASS"
-    assert "NO_STRICT_MA3_MA15_CROSS" in result.violations
+    assert "NO_STRICT_MA5_MA15_CROSS" in result.violations
 
 
 def ranging_low_atr_frame(adx):
@@ -72,7 +72,7 @@ def ranging_low_atr_frame(adx):
             "high": close + 0.00012 if is_current else close + 0.005,
             "low": close - 0.00002 if is_current else close - 0.005,
             "close": close,
-            "ma3": close + 0.0002,
+            "ma5": close + 0.0002,
             "ma15": close + 0.0004,
             "atr": close * 0.0028,
             "kc_upper": middle + 0.002,

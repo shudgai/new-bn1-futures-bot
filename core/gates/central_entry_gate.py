@@ -158,8 +158,8 @@ class CentralEntryGate:
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", c_close))
         c_mid = float(parsed.get("kc_middle", curr_price))
-        m3_c = float(parsed.get("ma3_curr", c_close))
-        m3_p = float(parsed.get("ma3_prev", m3_c))
+        m3_c = float(parsed.get("ma5_curr", c_close))
+        m3_p = float(parsed.get("ma5_prev", m3_c))
 
         # 🟢 多頭谷底 V 轉 / 穿中軌 敏捷豁免條件：
         is_v_shape_recovery = bool(
@@ -200,8 +200,8 @@ class CentralEntryGate:
         )
         allowed_intrabar_routes = (
             "BREAKOUT_LONG", "BREAKDOWN_SHORT", "CONTINUATION_OUTSIDE_KC_LONG",
-            "CONTINUATION_OUTSIDE_KC_SHORT", "ENTRY_LONG_MA3_MA15_CROSS_MID",
-            "ENTRY_SHORT_MA3_MA15_CROSS_MID", "ENTRY_LONG_BREAKOUT",
+            "CONTINUATION_OUTSIDE_KC_SHORT", "ENTRY_LONG_MA5_MA15_CROSS_MID",
+            "ENTRY_SHORT_MA5_MA15_CROSS_MID", "ENTRY_LONG_BREAKOUT",
             "ENTRY_SHORT_BREAKDOWN", "ENTRY_LONG_CROSS_MID", "ENTRY_SHORT_CROSS_MID",
             "ENTRY_LONG_CONTINUATION", "ENTRY_SHORT_CONTINUATION",
             "PIVOT_LONG_CROSS_MID", "PIVOT_SHORT_CROSS_MID",
@@ -237,13 +237,12 @@ class CentralEntryGate:
         checks["closed_bar"] = {"status": "PASS", "actual": is_closed}
         # -------------------------------------------------------------
         # 條件 0：方向總開關 (Direction Master Lock，一票否決，零歧義)
-        # 🟢 開多：MA3 必須在 KC 中軌上方 且 MA3 > MA3_PREV (轉折特例放行位置)
-        # 🔴 開空：MA3 必須在 KC 中軌下方 且 MA3 < MA3_PREV (轉折特例放行位置)
+        # 🟢 開多：MA5 必須在 KC 中軌上方 且 MA5 > MA5_PREV (轉折特例放行位置)
+        # 🔴 開空：MA5 必須在 KC 中軌下方 且 MA5 < MA5_PREV (轉折特例放行位置)
         # -------------------------------------------------------------
-        ma3_c = float(parsed.get("ma3_curr", parsed.get("close", curr_price)))
-        ma3_p = float(parsed.get("ma3_prev", ma3_c))
+        ma5_c = float(parsed.get("ma5_curr", parsed.get("close", curr_price)))
+        ma5_p = float(parsed.get("ma5_prev", ma5_c))
         kc_mid_val = float(parsed["kc_middle"])
-        ma5_c = float(parsed.get("ma5_curr", ma3_c))
         ma15_c = float(parsed.get("ma15_curr", parsed.get("ma15", kc_mid_val)))
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", curr_price))
@@ -251,10 +250,9 @@ class CentralEntryGate:
         from core.gates.direction_master_lock import evaluate_direction_master_lock
         dir_ok, dir_reason, dir_details = evaluate_direction_master_lock(
             side=side,
-            ma3_curr=ma3_c,
-            ma3_prev=ma3_p,
-            kc_middle=kc_mid_val,
             ma5_curr=ma5_c,
+            ma5_prev=ma5_p,
+            kc_middle=kc_mid_val,
             is_swing_pivot=is_swing_pivot,
             direction_override=direction_override,
             ma15_curr=ma15_c,
@@ -264,10 +262,9 @@ class CentralEntryGate:
         checks["direction_master_lock"] = {
             "status": "PASS" if dir_ok else "FAIL",
             "side": side,
-            "ma3_curr": ma3_c,
-            "ma3_prev": ma3_p,
-            "kc_middle": kc_mid_val,
             "ma5_curr": ma5_c,
+            "ma5_prev": ma5_p,
+            "kc_middle": kc_mid_val,
             "ma15_curr": ma15_c,
             "curr_close": c_close,
             "curr_open": c_open,
@@ -348,7 +345,7 @@ class CentralEntryGate:
                     is_breakout=is_breakout_candidate,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
-                if raw_blocked and raw_reason in ("VETO_MA3_MA15_CHOP", "VETO_FLAT_MA3_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
+                if raw_blocked and raw_reason in ("VETO_MA5_MA15_CHOP", "VETO_FLAT_MA5_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
                     blacklist = raw_bl
                 else:
                     blacklist = (False, "PASS_AGILE_OVERRIDE", {
@@ -427,14 +424,14 @@ class CentralEntryGate:
         )
 
         # -------------------------------------------------------------
-        # 條件 1.5：MA3 交叉 KC 中軌核心授權 (MA3 x KC Midline Cross)
+        # 條件 1.5：MA5 交叉 KC 中軌核心授權 (MA5 x KC Midline Cross)
         # -------------------------------------------------------------
         if ("CROSS_MID" in src_upper or "MA_CROSS" in src_upper) and not (is_swing_pivot or direction_override):
-            from core.gates.ma3_kc_midline_cross_gate import evaluate_ma3_kc_midline_cross
-            cross_ok, cross_reason, cross_meta = evaluate_ma3_kc_midline_cross(
+            from core.gates.ma3_kc_midline_cross_gate import evaluate_ma5_kc_midline_cross
+            cross_ok, cross_reason, cross_meta = evaluate_ma5_kc_midline_cross(
                 entry_frame, side, symbol=symbol,
             )
-            checks["ma3_kc_midline_cross"] = {
+            checks["ma5_kc_midline_cross"] = {
                 "status": "PASS" if cross_ok else "FAIL",
                 "reason": cross_reason,
                 **cross_meta,
@@ -646,7 +643,7 @@ class CentralEntryGate:
         # 2. 盤整鎖定條件 (SQUEEZE_LOCK):
         #    - kc_width_ratio < 0.015 (通道間距小於中軌的 1.5%)，或
         #    - current_atr < 0.7 * avg_atr_20 (當前 ATR 顯著低於 20 根平均波動率)
-        #    標記為 MARKET_SQUEEZE，【強制一票否決】所有常規 MA3/MA15 交叉與轉折開倉！
+        #    標記為 MARKET_SQUEEZE，【強制一票否決】所有常規 MA5/MA15 交叉與轉折開倉！
         # 3. 解鎖條件 (Breakout Expansion):
         #    只有通道頻寬重新放大 (kc_width 轉向擴張) 且實體帶量突破外軌時才放行！
         # -------------------------------------------------------------
@@ -689,7 +686,7 @@ class CentralEntryGate:
         is_breakout_expansion_unlocked = is_breakout_candidate and (is_width_expanding or is_outside_breakout)
 
         # 解鎖條件 2 (Midline Bounce Ambush: 擠壓收口區內「妖幣回踩中軌轉強底倉埋伏」解鎖)
-        # 依據妖幣手冊：收口擠壓為底倉埋伏必備前置，當為 AGILE 敏捷動能且收盤站穩中軌、MA3/MA5 同步順勢發散時放行底倉！
+        # 依據妖幣手冊：收口擠壓為底倉埋伏必備前置，當為 AGILE 敏捷動能且收盤站穩中軌、MA5/MA5 同步順勢發散時放行底倉！
         is_cross_mid_signal = any(k in src_upper for k in ("CROSS_MID", "PULLBACK", "AGILE", "MID_LINE"))
         is_agile_ambush = bool(
             direction_override
@@ -701,8 +698,8 @@ class CentralEntryGate:
             is_agile_ambush
             and is_cross_mid_signal
             and (
-                (side == "LONG" and c_close > kc_mid and c_close > c_open and ma3_c > ma3_p and ma5_curr >= ma5_prev)
-                or (side == "SHORT" and c_close < kc_mid and c_close < c_open and ma3_c < ma3_p and ma5_curr <= ma5_prev)
+                (side == "LONG" and c_close > kc_mid and c_close > c_open and ma5_c > ma5_p and ma5_curr >= ma5_prev)
+                or (side == "SHORT" and c_close < kc_mid and c_close < c_open and ma5_c < ma5_p and ma5_curr <= ma5_prev)
             )
         )
         is_squeeze_unlocked = is_breakout_expansion_unlocked or is_cross_mid_ambush_unlocked
@@ -1036,12 +1033,16 @@ class CentralEntryGate:
                     metrics["ma5_curr"] = float(eval_row["ma5"])
                     metrics["ma5_prev"] = float(prev_eval_row["ma5"])
                 elif "close" in data.columns:
-                    roll_ma5 = data["close"].rolling(5, min_periods=1).mean()
+                    roll_ma5 = data["close"].rolling(5, min_periods=5).mean()
                     metrics["ma5_curr"] = float(roll_ma5.loc[eval_row.name])
                     metrics["ma5_prev"] = float(roll_ma5.loc[prev_eval_row.name])
                 else:
-                    metrics["ma5_curr"] = metrics["close"]
-                    metrics["ma5_prev"] = metrics["ma5_curr"]
+                    metrics["ma5_curr"] = math.nan
+                    metrics["ma5_prev"] = math.nan
+                if allow_intrabar and not is_closed:
+                    metrics["ma5_curr"] += (
+                        float(metrics["close"]) - float(eval_row["close"])
+                    ) / 5.0
 
                 # MA15
                 if "ma15" in data.columns and not pd.isna(eval_row.get("ma15")) and not pd.isna(prev_eval_row.get("ma15")):
@@ -1054,23 +1055,10 @@ class CentralEntryGate:
                 else:
                     metrics["ma15_curr"] = metrics["close"]
                     metrics["ma15_prev"] = metrics["ma15_curr"]
-
-                # MA3 (若 allow_intrabar 且最後一根未收線，結合即時報價動態計算即時 MA3，避免舊收線 K 棒 MA3 滯後誤擋妖幣起漲/起跌點)
-                if allow_intrabar and not is_closed and len(data) >= 3 and "close" in data.columns:
-                    c_m2 = float(data.iloc[-3].get("close", metrics["close"]))
-                    c_m1 = float(prev_eval_row.get("close", metrics["close"]))
-                    metrics["ma3_curr"] = (c_m2 + c_m1 + float(metrics["close"])) / 3.0
-                    metrics["ma3_prev"] = float(prev_eval_row.get("ma3", (float(data.iloc[-4].get("close", c_m2)) + c_m2 + c_m1) / 3.0 if len(data) >= 4 else metrics["ma3_curr"]))
-                elif "ma3" in data.columns:
-                    metrics["ma3_curr"] = float(eval_row.get("ma3", metrics["close"]))
-                    metrics["ma3_prev"] = float(prev_eval_row.get("ma3", metrics["ma3_curr"]))
-                elif "close" in data.columns:
-                    roll_ma3 = data["close"].rolling(3, min_periods=1).mean()
-                    metrics["ma3_curr"] = float(roll_ma3.loc[eval_row.name])
-                    metrics["ma3_prev"] = float(roll_ma3.loc[prev_eval_row.name])
-                else:
-                    metrics["ma3_curr"] = metrics["close"]
-                    metrics["ma3_prev"] = metrics["ma3_curr"]
+                if allow_intrabar and not is_closed:
+                    metrics["ma15_curr"] += (
+                        float(metrics["close"]) - float(eval_row["close"])
+                    ) / 15.0
 
                 # 歷史帶寬與擴張
                 if "kc_upper" in data.columns and "kc_lower" in data.columns:
@@ -1120,13 +1108,10 @@ class CentralEntryGate:
                 metrics["kc_middle"] = float(data.get("kc_middle", (metrics["kc_upper"] + metrics["kc_lower"]) / 2))
 
                 metrics["kc_middle_slope"] = float(data.get("kc_middle_slope", 0.0))
-                metrics["ma5_curr"] = float(data.get("ma5_curr", curr_k.get("ma5", data.get("ma5", metrics["close"]))))
-                metrics["ma5_prev"] = float(data.get("ma5_prev", prev_k.get("ma5", metrics["ma5_curr"])))
+                metrics["ma5_curr"] = float(data.get("ma5_curr", curr_k.get("ma5", data.get("ma5", math.nan))))
+                metrics["ma5_prev"] = float(data.get("ma5_prev", prev_k.get("ma5", math.nan)))
                 metrics["ma15_curr"] = float(data.get("ma15_curr", curr_k.get("ma15", data.get("ma15", metrics["close"]))))
                 metrics["ma15_prev"] = float(data.get("ma15_prev", prev_k.get("ma15", metrics["ma15_curr"])))
-                metrics["ma3_curr"] = float(data.get("ma3_curr", curr_k.get("ma3", data.get("ma3", metrics["close"]))))
-                metrics["ma3_prev"] = float(data.get("ma3_prev", prev_k.get("ma3", metrics["ma3_curr"])))
-
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(data.get("min_prev_width", curr_w * 0.95))
                 candles = data.get("candles") or []
@@ -1163,13 +1148,10 @@ class CentralEntryGate:
                 metrics["low"] = float(curr_k.get("low", metrics["current_price"]))
                 metrics["close"] = float(curr_k.get("close", metrics["current_price"]))
 
-                metrics["ma5_curr"] = float(getattr(data, "ma5", curr_k.get("ma5", metrics["close"])))
-                metrics["ma5_prev"] = float(getattr(data, "prev_ma5", prev_k.get("ma5", metrics["ma5_curr"])))
+                metrics["ma5_curr"] = float(getattr(data, "ma5", curr_k.get("ma5", math.nan)))
+                metrics["ma5_prev"] = float(getattr(data, "prev_ma5", prev_k.get("ma5", math.nan)))
                 metrics["ma15_curr"] = float(getattr(data, "ma15", curr_k.get("ma15", metrics["close"])))
                 metrics["ma15_prev"] = float(prev_k.get("ma15", metrics["ma15_curr"]))
-                metrics["ma3_curr"] = float(getattr(data, "ma3", curr_k.get("ma3", metrics["close"])))
-                metrics["ma3_prev"] = float(getattr(data, "prev_ma3", prev_k.get("ma3", metrics["ma3_curr"])))
-
                 curr_w = metrics["kc_upper"] - metrics["kc_lower"]
                 metrics["min_prev_width"] = float(getattr(data, "min_prev_width", curr_w * 0.95))
                 raw_df = getattr(data, "raw_df", None)

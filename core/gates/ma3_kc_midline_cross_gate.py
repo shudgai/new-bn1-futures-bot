@@ -1,23 +1,23 @@
 """
-Gate: MA3 × KC 中軌多空進場授權規則 (MA3KcMidlineCrossGate)
+Gate: MA5 × KC 中軌多空進場授權規則 (MA5KcMidlineCrossGate)
 
 規則定義：
 一、多單進場規則 (Long Entry):
-    1. 前一根已收線 K 棒的 MA3 小於或等於 KC 中軌：MA3[t-1] <= KC_MID[t-1]
-    2. 當前已收線 K 棒的 MA3 嚴格大於 KC 中軌：MA3[t] > KC_MID[t]
-    3. 當前 MA3 大於前一根 MA3，即 MA3 斜率向上：MA3[t] > MA3[t-1]
+    1. 前一根已收線 K 棒的 MA5 小於或等於 KC 中軌：MA5[t-1] <= KC_MID[t-1]
+    2. 當前已收線 K 棒的 MA5 嚴格大於 KC 中軌：MA5[t] > KC_MID[t]
+    3. 當前 MA5 大於前一根 MA5，即 MA5 斜率向上：MA5[t] > MA5[t-1]
     4. 當前及前一根 K 棒資料均有效、已收線且足夠新鮮。
     5. 必要指標均為有效數值，不得使用 NaN、無限值、過期快照或未確認的即時值。
 
 二、空單進場規則 (Short Entry):
-    1. 前一根已收線 K 棒的 MA3 大於或等於 KC 中軌：MA3[t-1] >= KC_MID[t-1]
-    2. 當前已收線 K 棒的 MA3 嚴格小於 KC 中軌：MA3[t] < KC_MID[t]
-    3. 當前 MA3 小於前一根 MA3，即 MA3 斜率向下：MA3[t] < MA3[t-1]
+    1. 前一根已收線 K 棒的 MA5 大於或等於 KC 中軌：MA5[t-1] >= KC_MID[t-1]
+    2. 當前已收線 K 棒的 MA5 嚴格小於 KC 中軌：MA5[t] < KC_MID[t]
+    3. 當前 MA5 小於前一根 MA5，即 MA5 斜率向下：MA5[t] < MA5[t-1]
     4. 當前及前一根 K 棒資料均有效、已收線且足夠新鮮。
     5. 必要指標均為有效數值，不得使用 NaN、無限值、過期快照或未確認的即時值。
 
 三、嚴格禁止：
-    - MA3 已在 KC 中軌上方/下方，但沒有新發生穿越者，不得重新授權開倉。
+    - MA5 已在 KC 中軌上方/下方，但沒有新發生穿越者，不得重新授權開倉。
     - 尚未收線之 K 棒不得提前確認交叉。
     - 同一根已收線 K 棒不得重複觸發開倉。
 """
@@ -60,7 +60,7 @@ def _check_freshness(frame: Any, closed: pd.DataFrame) -> bool:
         return False
 
 
-def evaluate_ma3_kc_midline_cross(
+def evaluate_ma5_kc_midline_cross(
     frame: Any,
     side: str,
     symbol: str = "",
@@ -68,7 +68,7 @@ def evaluate_ma3_kc_midline_cross(
     last_trade_bar_time: Optional[int] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
-    評估 MA3 與 KC 中軌的交叉進場授權。
+    評估 MA5 與 KC 中軌的交叉進場授權。
 
     回傳：(passed, reason, details)
     """
@@ -76,7 +76,7 @@ def evaluate_ma3_kc_midline_cross(
     details: Dict[str, Any] = {
         "symbol": symbol,
         "side": side_upper,
-        "rule": "MA3_KC_MIDLINE_CROSS",
+        "rule": "MA5_KC_MIDLINE_CROSS",
     }
 
     if side_upper not in ("LONG", "SHORT"):
@@ -123,13 +123,13 @@ def evaluate_ma3_kc_midline_cross(
     # 5. 計算 / 提取指標數值
     try:
         closes = pd.to_numeric(closed["close"], errors="coerce")
-        if "ma3" in closed.columns:
-            ma3_series = pd.to_numeric(closed["ma3"], errors="coerce")
+        if "ma5" in closed.columns:
+            ma5_series = pd.to_numeric(closed["ma5"], errors="coerce")
         else:
-            ma3_series = closes.rolling(3, min_periods=3).mean()
+            ma5_series = closes.rolling(5, min_periods=5).mean()
 
-        ma3_now = float(ma3_series.iloc[-1])
-        ma3_prev = float(ma3_series.iloc[-2])
+        ma5_now = float(ma5_series.iloc[-1])
+        ma5_prev = float(ma5_series.iloc[-2])
 
         if "kc_middle" in closed.columns:
             kc_mid_now = float(current["kc_middle"])
@@ -144,46 +144,49 @@ def evaluate_ma3_kc_midline_cross(
         return False, "INDICATOR_CALCULATION_ERROR", details
 
     # 6. 數值有效性檢核 (不得使用 NaN、無限值、<= 0)
-    vals = (ma3_now, ma3_prev, kc_mid_now, kc_mid_prev)
+    vals = (ma5_now, ma5_prev, kc_mid_now, kc_mid_prev)
     if not all(_is_finite_num(v) for v in vals):
         return False, "INVALID_OR_NON_FINITE_INDICATORS", details
 
-    ma3_slope = ma3_now - ma3_prev
+    ma5_slope = ma5_now - ma5_prev
     details.update({
-        "ma3_prev": ma3_prev,
-        "ma3_now": ma3_now,
+        "ma5_prev": ma5_prev,
+        "ma5_now": ma5_now,
         "kc_mid_prev": kc_mid_prev,
         "kc_mid_now": kc_mid_now,
-        "ma3_slope": ma3_slope,
+        "ma5_slope": ma5_slope,
     })
 
     # 7. 交叉與斜率嚴格判定
     if side_upper == "LONG":
         # 多單進場鐵律：
-        # 1. 前一根已收線 MA3 <= KC 中軌 (前一根仍在軌下或碰軌)
-        # 2. 當前已收線 MA3 > KC 中軌 (當前實質上穿中軌)
-        # 3. 當前 MA3 > 前一根 MA3 (MA3 斜率向上)
-        if ma3_prev > kc_mid_prev:
-            return False, "NO_FRESH_CROSS_MA3_ALREADY_ABOVE_MIDLINE", details
-        if ma3_now <= kc_mid_now:
-            return False, "MA3_NOT_ABOVE_MIDLINE", details
-        if ma3_now <= ma3_prev:
-            return False, "MA3_SLOPE_NOT_UPWARD", details
+        # 1. 前一根已收線 MA5 <= KC 中軌 (前一根仍在軌下或碰軌)
+        # 2. 當前已收線 MA5 > KC 中軌 (當前實質上穿中軌)
+        # 3. 當前 MA5 > 前一根 MA5 (MA5 斜率向上)
+        if ma5_prev > kc_mid_prev:
+            return False, "NO_FRESH_CROSS_MA5_ALREADY_ABOVE_MIDLINE", details
+        if ma5_now <= kc_mid_now:
+            return False, "MA5_NOT_ABOVE_MIDLINE", details
+        if ma5_now <= ma5_prev:
+            return False, "MA5_SLOPE_NOT_UPWARD", details
 
         details["cross_result"] = "LONG_CROSS_CONFIRMED"
-        return True, "MA3_KC_MIDLINE_CROSS_CONFIRMED", details
-
+        return True, "MA5_KC_MIDLINE_CROSS_CONFIRMED", details
     else:  # SHORT
         # 空單進場鐵律：
-        # 1. 前一根已收線 MA3 >= KC 中軌 (前一根仍在軌上或碰軌)
-        # 2. 當前已收線 MA3 < KC 中軌 (當前實質下穿中軌)
-        # 3. 當前 MA3 < 前一根 MA3 (MA3 斜率向下)
-        if ma3_prev < kc_mid_prev:
-            return False, "NO_FRESH_CROSS_MA3_ALREADY_BELOW_MIDLINE", details
-        if ma3_now >= kc_mid_now:
-            return False, "MA3_NOT_BELOW_MIDLINE", details
-        if ma3_now >= ma3_prev:
-            return False, "MA3_SLOPE_NOT_DOWNWARD", details
+        # 1. 前一根已收線 MA5 >= KC 中軌 (前一根仍在軌上或碰軌)
+        # 2. 當前已收線 MA5 < KC 中軌 (當前實質下穿中軌)
+        # 3. 當前 MA5 < 前一根 MA5 (MA5 斜率向下)
+        if ma5_prev < kc_mid_prev:
+            return False, "NO_FRESH_CROSS_MA5_ALREADY_BELOW_MIDLINE", details
+        if ma5_now >= kc_mid_now:
+            return False, "MA5_NOT_BELOW_MIDLINE", details
+        if ma5_now >= ma5_prev:
+            return False, "MA5_SLOPE_NOT_DOWNWARD", details
 
         details["cross_result"] = "SHORT_CROSS_CONFIRMED"
-        return True, "MA3_KC_MIDLINE_CROSS_CONFIRMED", details
+        return True, "MA5_KC_MIDLINE_CROSS_CONFIRMED", details
+
+
+# Historical import path; the evaluator now uses MA5 exclusively.
+evaluate_ma3_kc_midline_cross = evaluate_ma5_kc_midline_cross

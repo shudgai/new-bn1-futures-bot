@@ -65,8 +65,8 @@ class MasterGateFunnel:
 
         # 1. 垃圾時間震盪與均線糾纏 (Chop Filter)
         if m.ma_cross_count_8 >= 2:
-            spread_ratio = abs(m.ma3_curr - m.ma15_curr) / m.quote
-            if spread_ratio < 0.0018 or abs(m.ma3_curr - m.ma15_curr) < 0.10 * m.atr:
+            spread_ratio = abs(m.ma5_curr - m.ma15_curr) / m.quote
+            if spread_ratio < 0.0018 or abs(m.ma5_curr - m.ma15_curr) < 0.10 * m.atr:
                 return True, f"VETO_CHOP_ENTANGLEMENT (cross_8={m.ma_cross_count_8}, spread={spread_ratio:.4%})"
 
         # 2. KC 通道壓縮縮口 (Squeeze Filter: 寬度 < 1.0%)
@@ -113,22 +113,22 @@ class MasterGateFunnel:
         if kc_slope <= 0:
             return GateDecision(False, "HOLD", "BLOCKED_LONG_KC_SLOPE_NOT_UP", details)
 
-        if not (m.quote > m.kc_middle and m.close_price > m.kc_middle and m.ma3_curr > m.kc_middle):
+        if not (m.quote > m.kc_middle and m.close_price > m.kc_middle and m.ma5_curr > m.kc_middle):
             return GateDecision(False, "HOLD", "BLOCKED_LONG_NOT_ABOVE_KC_MIDDLE", details)
 
-        if not (m.quote > m.ma15_curr and m.close_price > m.ma15_curr and m.ma3_curr > m.ma15_curr):
+        if not (m.quote > m.ma15_curr and m.close_price > m.ma15_curr and m.ma5_curr > m.ma15_curr):
             return GateDecision(False, "HOLD", "BLOCKED_LONG_NOT_ABOVE_MA15", details)
 
         # 3. K 棒動能形態 (Candle Lock: 必須是實體綠 K)
         if not (m.close_price > m.open_price):
             return GateDecision(False, "HOLD", "BLOCKED_LONG_NOT_GREEN_CANDLE", details)
 
-        # 4. 均線斜率與發散 (MA3 必須向上傾角且拉開間距)
-        if m.ma3_curr <= m.ma3_prev:
-            return GateDecision(False, "HOLD", "BLOCKED_LONG_MA3_SLOPE_NOT_UP", details)
+        # 4. 均線斜率與發散 (MA5 必須向上傾角且拉開間距)
+        if m.ma5_curr <= m.ma5_prev:
+            return GateDecision(False, "HOLD", "BLOCKED_LONG_MA5_SLOPE_NOT_UP", details)
 
-        if (m.ma3_curr - m.ma15_curr) < 0.10 * m.atr:
-            return GateDecision(False, "HOLD", "BLOCKED_LONG_MA3_MA15_SPREAD_TOO_NARROW", details)
+        if (m.ma5_curr - m.ma15_curr) < 0.10 * m.atr:
+            return GateDecision(False, "HOLD", "BLOCKED_LONG_MA5_MA15_SPREAD_TOO_NARROW", details)
 
         # 5. 防追高過濾 (Anti-Chase: 距 KC 上軌 <= 0.5 ATR, 距 MA5 <= 1.0 ATR)
         if (m.quote - m.kc_upper) > 0.50 * m.atr:
@@ -142,7 +142,7 @@ class MasterGateFunnel:
         if m.close_price > m.kc_upper and m.ma5_curr > m.ma5_prev:
             trigger_hit = "TRIGGER_A_BREAKOUT_UPPER_RAIL"
         # 觸發 B: 回踩中軌轉強
-        elif abs(m.low_price - m.kc_middle) <= 0.35 * m.atr and m.ma3_curr > m.ma3_prev and m.close_price > m.ma5_curr:
+        elif abs(m.low_price - m.kc_middle) <= 0.35 * m.atr and m.ma5_curr > m.ma5_prev and m.close_price > m.ma5_curr:
             trigger_hit = "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
         # 觸發 C: 大週期為牛市且實體突破 MA15
         elif m.macro_trend == "BULLISH" and m.open_price <= m.ma15_curr and m.close_price > m.ma15_curr:
@@ -187,22 +187,22 @@ class MasterGateFunnel:
         if kc_slope >= 0:
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_KC_SLOPE_NOT_DOWN", details)
 
-        if not (m.quote < m.kc_middle and m.close_price < m.kc_middle and m.ma3_curr < m.kc_middle):
+        if not (m.quote < m.kc_middle and m.close_price < m.kc_middle and m.ma5_curr < m.kc_middle):
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_NOT_BELOW_KC_MIDDLE", details)
 
-        if not (m.quote < m.ma15_curr and m.close_price < m.ma15_curr and m.ma3_curr < m.ma15_curr):
+        if not (m.quote < m.ma15_curr and m.close_price < m.ma15_curr and m.ma5_curr < m.ma15_curr):
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_NOT_BELOW_MA15", details)
 
         # 3. K 棒動能形態 (Candle Lock: 必須是實體紅 K)
         if not (m.close_price < m.open_price):
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_NOT_RED_CANDLE", details)
 
-        # 4. 均線斜率與發散 (MA3 必須向下傾角且拉開間距)
-        if m.ma3_curr >= m.ma3_prev:
-            return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA3_SLOPE_NOT_DOWN", details)
+        # 4. 均線斜率與發散 (MA5 必須向下傾角且拉開間距)
+        if m.ma5_curr >= m.ma5_prev:
+            return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA5_SLOPE_NOT_DOWN", details)
 
-        if (m.ma15_curr - m.ma3_curr) < 0.10 * m.atr:
-            return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA3_MA15_SPREAD_TOO_NARROW", details)
+        if (m.ma15_curr - m.ma5_curr) < 0.10 * m.atr:
+            return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA5_MA15_SPREAD_TOO_NARROW", details)
 
         # 5. 防追低過濾 (Anti-Chase: 報價距 KC 下軌 <= 0.5 ATR、距 MA5 <= 1.0 ATR)
         # 新鮮破下軌仍可觸發；只有價格已遠離下軌才拒絕，避免把破軌觸發本身封死。
@@ -215,7 +215,7 @@ class MasterGateFunnel:
         trigger_hit = None
         # 觸發 A: 頂部金叉轉死叉 / 破中軌即刻進場 (5:53 頂部型態精準開空)
         is_top_reversal = (
-            (m.ma3_prev >= m.kc_middle_prev) and (m.ma3_curr < m.kc_middle)
+            (m.ma5_prev >= m.kc_middle_prev) and (m.ma5_curr < m.kc_middle)
             and (m.close_price < m.open_price)
             and (kc_slope < 0)
         )
@@ -225,7 +225,7 @@ class MasterGateFunnel:
         elif m.close_price < m.kc_lower and m.quote < m.kc_lower and m.ma5_curr < m.ma5_prev:
             trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
         # 觸發 C: 反彈中軌受阻
-        elif abs(m.high_price - m.kc_middle) <= 0.35 * m.atr and m.ma3_curr < m.ma3_prev and m.close_price < m.ma5_curr:
+        elif abs(m.high_price - m.kc_middle) <= 0.35 * m.atr and m.ma5_curr < m.ma5_prev and m.close_price < m.ma5_curr:
             trigger_hit = "TRIGGER_C_REBOUND_KC_MIDDLE_REJECTION"
         # 觸發 D: 大週期為熊市且實體跌破 MA15
         elif m.macro_trend == "BEARISH" and m.open_price >= m.ma15_curr and m.close_price < m.ma15_curr:
