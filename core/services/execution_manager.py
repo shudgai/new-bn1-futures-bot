@@ -449,6 +449,7 @@ class ExecutionManager:
         )
 
         candidates: list[tuple[dict[str, Any], str]] = []
+        rejections: list[dict[str, str]] = []
         authorized: tuple[dict[str, Any], str] | None = None
         for method in methods:
             signal = evaluate_entry_method(
@@ -474,13 +475,20 @@ class ExecutionManager:
                     "entry_method_last_exit_timestamp": last_exit_timestamp,
                 },
             )
-            logger.info(
+            log_decision = logger.info if allowed else logger.warning
+            log_decision(
                 "ENTRY_METHOD_GATE symbol=%s side=%s method=%s allowed=%s reason=%s event=%s",
                 symbol, signal["side"], method, allowed, reason, signal["event_id"],
             )
             if allowed:
                 authorized = (signal, method)
                 break
+            rejections.append({
+                "method": method,
+                "side": signal["side"],
+                "reason": reason,
+                "event_id": signal["event_id"],
+            })
 
         if not candidates:
             return None
@@ -489,6 +497,7 @@ class ExecutionManager:
                 "status": "VETO",
                 "symbol": symbol,
                 "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
+                "entry_rejections": rejections,
             }
 
         signal, method = authorized

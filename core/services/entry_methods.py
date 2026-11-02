@@ -363,7 +363,21 @@ def revalidate_entry_method(
     body = abs(close - candle["open"])
     upper_wick = candle["high"] - max(candle["open"], close)
     lower_wick = min(candle["open"], close) - candle["low"]
-    if (
+    if method == KC_TWO_BAR_BREAKOUT:
+        ma5 = _number(current, "ma5")
+        if ma5 is None or ma5 <= 0:
+            return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
+        extreme = max(close, float(quote)) if side == "LONG" else min(close, float(quote))
+        band_distance = (
+            extreme - indicators["kc_upper"]
+            if side == "LONG" else indicators["kc_lower"] - extreme
+        )
+        ma5_distance = extreme - ma5 if side == "LONG" else ma5 - extreme
+        if band_distance > 0.5 * indicators["atr"]:
+            return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_BAND_EXTENSION"
+        if ma5_distance > indicators["atr"]:
+            return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_DISTANCE"
+    elif (
         (side == "LONG" and kc_position > 0.35)
         or (side == "SHORT" and kc_position < 0.65)
     ):

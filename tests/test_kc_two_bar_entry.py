@@ -109,8 +109,8 @@ def test_closed_two_bar_breakout_requires_first_candle_open_inside_channel(side)
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_scanner_revalidates_two_bar_candidate_through_macro_location_gate(
-    monkeypatch, tmp_path, side,
+def test_scanner_revalidates_two_bar_candidate_through_breakout_distance_gate(
+    monkeypatch, tmp_path, caplog, side,
 ):
     from core.services.execution_manager import ExecutionManager
 
@@ -172,11 +172,27 @@ def test_scanner_revalidates_two_bar_candidate_through_macro_location_gate(
             engine, symbol, time.time(), None, False, exit_frame=frame
         )
     )
-    assert pipeline_results == [{
+    assert len(pipeline_results) == 1
+    result = pipeline_results[0]
+    assert {key: result[key] for key in ("status", "symbol", "reason")} == {
         "status": "VETO",
         "symbol": symbol,
         "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
-    }]
+    }
+    rejections = result["entry_rejections"]
+    assert rejections
+    assert any(item["method"] == "KC_TWO_BAR_BREAKOUT" for item in rejections)
+    for rejection in rejections:
+        assert rejection["side"] == side
+        assert rejection["reason"] == "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_DISTANCE"
+        assert rejection["event_id"]
+        assert any(
+            record.levelname == "WARNING"
+            and f"method={rejection['method']}" in record.getMessage()
+            and f"reason={rejection['reason']}" in record.getMessage()
+            and f"event={rejection['event_id']}" in record.getMessage()
+            for record in caplog.records
+        )
     assert symbol not in account.positions
     assert not account.trades
 

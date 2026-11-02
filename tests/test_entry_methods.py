@@ -202,7 +202,7 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_ma3():
     assert signal["side"] == "LONG"
 
 
-def test_breakout_method_is_vetoed_by_macro_relative_location():
+def test_breakout_method_is_vetoed_by_band_extension():
     rows = [
         candle(60_000, opened=100, high=103.2, low=99.8, close=103,
                upper=102, lower=98, middle=100, ma3=101, ma15=100, atr=2),
@@ -220,6 +220,126 @@ def test_breakout_method_is_vetoed_by_macro_relative_location():
     }
     allowed, reason = revalidate_entry_method(
         market, symbol="CAP/USDT", side="LONG", quote=105.1, context=context,
+    )
+    assert not allowed
+    assert reason == "BLOCKED_ENTRY_METHOD_BREAKOUT_BAND_EXTENSION"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+@pytest.mark.parametrize(
+    "change,allowed,expected_reason",
+    [
+        ("boundary", True, None),
+        ("quote_band", False, "BREAKOUT_BAND_EXTENSION"),
+        ("close_band", False, "BREAKOUT_BAND_EXTENSION"),
+        ("quote_ma5", False, "BREAKOUT_MA5_DISTANCE"),
+        ("close_ma5", False, "BREAKOUT_MA5_DISTANCE"),
+        ("missing_ma5", False, "BREAKOUT_MA5_INVALID"),
+        ("nan_ma5", False, "BREAKOUT_MA5_INVALID"),
+        ("zero_ma5", False, "BREAKOUT_MA5_INVALID"),
+        ("bias", False, "MACRO_MA15_BIAS"),
+        ("wick", False, "MACRO_LONG_EXHAUSTION_WICK"),
+    ],
+)
+def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_reason):
+    rows = [
+        candle(60_000, opened=100, high=101.2, low=99.8, close=101,
+               upper=100.8, lower=98, middle=99.4, ma3=100.5, ma15=100,
+               ma5=100.4),
+        candle(120_000, opened=101, high=101.6, low=100.9, close=101.5,
+               upper=101, lower=98.2, middle=99.6, ma3=101, ma15=100.5,
+               ma5=100.5),
+    ]
+    quote = 101.5
+    if change == "quote_band":
+        quote += 0.001
+    elif change == "close_band":
+        rows[-1]["close"] += 0.001
+    elif change in {"quote_ma5", "close_ma5"}:
+        rows[-1]["kc_upper"] = 101.1
+        rows[-1]["ma5"] = 100.499
+        if change == "close_ma5":
+            quote = 101.4
+    elif change == "missing_ma5":
+        for row in rows:
+            row.pop("ma5")
+    elif change == "nan_ma5":
+        rows[-1]["ma5"] = float("nan")
+    elif change == "zero_ma5":
+        rows[-1]["ma5"] = 0 if side == "LONG" else 200
+    elif change == "bias":
+        rows[-1]["ma15"] = 100.2
+    elif change == "wick":
+        rows[-1]["high"] = 102.1
+    if side == "SHORT":
+        for row in rows:
+            for key in ("open", "close", "ma3", "ma15", "ma5", "kc_middle"):
+                if key in row:
+                    row[key] = 200 - row[key]
+            row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
+            row["kc_upper"], row["kc_lower"] = 200 - row["kc_lower"], 200 - row["kc_upper"]
+        quote = 200 - quote
+        if expected_reason == "MACRO_LONG_EXHAUSTION_WICK":
+            expected_reason = "MACRO_SHORT_EXHAUSTION_WICK"
+    market = frame(rows)
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol=symbol, expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    result, reason = revalidate_entry_method(
+        market, symbol=symbol, side=side, quote=quote,
+        context={
+            "entry_method_authority": signal["method"],
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
+    )
+    assert result is allowed, reason
+    if expected_reason:
+        assert reason == "BLOCKED_ENTRY_METHOD_" + expected_reason
+    if allowed:
+        rejected, stale_reason = revalidate_entry_method(
+            market, symbol=symbol, side=side, quote=quote,
+            context={
+                "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+                "entry_method_signal": signal,
+                "entry_method_bar_id": signal["confirmation_bar_id"],
+                "entry_method_event_id": "stale",
+            },
+        )
+        assert not rejected
+        assert stale_reason == "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_non_breakout_keeps_macro_relative_location(side):
+    rows = [
+        candle(60_000, opened=99, high=100.5, low=98.5, close=100,
+               upper=102, lower=98, middle=100, ma3=99, ma15=100),
+        candle(120_000, opened=100, high=101.2, low=99.8, close=101,
+               upper=102, lower=98, middle=100.1, ma3=101, ma15=100),
+    ]
+    if side == "SHORT":
+        for row in rows:
+            for key in ("open", "close", "ma3", "ma15", "ma5", "kc_middle"):
+                row[key] = 200 - row[key]
+            row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
+    market = frame(rows)
+    quote = rows[-1]["close"]
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="CAP/USDT", expected_method=MA3_MA15_CROSS,
+    )
+    assert signal is not None
+    allowed, reason = revalidate_entry_method(
+        market, symbol="CAP/USDT", side=side, quote=quote,
+        context={
+            "entry_method_authority": signal["method"],
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
     )
     assert not allowed
     assert reason == "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"

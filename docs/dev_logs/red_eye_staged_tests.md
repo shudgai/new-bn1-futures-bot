@@ -71,3 +71,23 @@
 - **Trigger Reason & Requirement**: User requested repairing only applicable failures and removing tests for retired or unsupported behavior, without relaxing trading gates or implementing the unapproved WAIT runtime.
 - **Verification & Test Status**: In the isolated worktree, all modified/replacement test modules passed: 28 passed; `py_compile` and `git diff --check` passed. A broader adjacent regression probe reported 45 failed / 134 passed in unchanged tiered-profit, peak-exit, two-bar entry, and MA5-slope modules; these behavior-level failures were not altered in this test-cleanup task. The full suite was not rerun.
 - **Boundary**: Test commands ran only in `/tmp/newbn-wait-errors-20261102`; no test command ran in the primary worktree after its account-state guard warning. No strategy code, WAIT runtime, production account state, deployment, restart, commit, push, or exchange order was changed.
+
+### [2026-11-02] - Diagnostics only: Preserve entry rejection evidence
+- **Authorization**: User selected diagnostics only, keeping all entry gates unchanged.
+- **Changes**: Rejected closed-entry candidates now log their method, side, event identity, and precise reason at WARNING level. The existing aggregate `BLOCKED_ENTRY_METHOD_MACRO_GATE` result retains its reason and adds an `entry_rejections` list. No API/frontend exposure is claimed.
+- **Finding**: KC2BAR requires a confirmation close outside its directional KC rail, while the shared relative-location check requires LONG at or below 0.35 and SHORT at or above 0.65. These conditions cannot coexist for this entry method. The veto remains deliberately unchanged; diagnostics do not restore entry reachability.
+- **Runtime evidence**: A ten-minute journal sample contained 32 `HARD_VETO` messages and no traceback. Examples rejected SHORT candidates while KC slope was positive, MA3 direction/alignment failed, or price remained above the middle rail. This is not proof of exchange submission health or proof that every rejected candidate was valid.
+- **Verification**: Isolated KC2BAR and entry-method regressions: 31 passed, including LONG/SHORT checks for detailed return evidence, WARNING logs, and no positions/trades. Python compilation passed.
+- **Boundary**: No trading-rule changes, WAIT implementation, account-state edits, deployment, restart, commit, push, or exchange requests in this diagnostics task. Permanent integrated WAIT readiness remains BLOCK/NOT_TESTED; `TRADING_GATE = BLOCK`.
+
+### [2026-11-02] - Authorized KC2BAR relative-location conflict repair
+- **Authorization**: User explicitly selected breakout-specific anti-chase checks instead of the contradictory reversal location requirement for revalidated KC2BAR only.
+- **Changes**: `revalidate_entry_method` now checks the more extreme confirmation close/live quote against the same-side KC rail (maximum 0.5 ATR) and MA5 (maximum 1 ATR). Missing, non-finite, or nonpositive MA5 fails closed. Other entry methods keep LONG <= 0.35 / SHORT >= 0.65 relative-location checks. MA15 bias, exhaustion wicks, Macro gate, signal identity, final account revalidation, and safety checks remain unchanged.
+- **Verification**: Isolated entry-method, KC2BAR runner, MasterGateFunnel, and MA5 suites: 98 passed. Covers Lobster/1000PEPE LONG and SHORT, inclusive distance boundaries, close/quote overextension, invalid MA5, MA15 bias, wicks, stale event identity, and unchanged non-breakout location veto. The runner's existing extended fixture still fails the authorized MA5-distance guard; no assertion claims unconditional fills.
+- **Boundary**: Fixes reachability of the KC2BAR method gate, not proof of an exchange fill or end-to-end live readiness. No WAIT implementation, account-state edits, deployment, restart, commit, push, or exchange requests. Permanent WAIT gates remain BLOCK/NOT_TESTED; `TRADING_GATE = BLOCK`.
+
+### [2026-11-02 09:00 UTC] - Publication request and deployment hold
+- **Authorization**: User requested commit, GitHub publication, deployment, and restart of the conflict fix.
+- **Scope**: Publish only the two source modules, their two regression modules, and this log. Exclude runtime databases, telemetry, and read-only attachments.
+- **Preflight**: Primary source/test files match the isolated copies validated with 98 passing focused tests. Broader regression failures and permanent WAIT readiness gates remain unresolved; the focused result is not deployment acceptance.
+- **Operations**: Deployment and restart remain blocked by `TRADING_GATE = BLOCK`; no restart command is issued. Existing user service remains active with MainPID 3124701 at preflight. Commit/push outcomes are reported separately after verification.
