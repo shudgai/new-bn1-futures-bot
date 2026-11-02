@@ -80,7 +80,7 @@ from core.config import (
     SYMBOL_ROTATION_INTERVAL_SEC, SYMBOL_ROTATION_ENABLED,
     UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
-    MIN_SCORE_THRESHOLD, USE_TESTNET,
+    MIN_SCORE_THRESHOLD, USE_DEMO_TRADING,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
@@ -171,11 +171,15 @@ WILD_SWING_KLINE_WS_MAX_AGE_SECONDS = 15.0
 WILD_SWING_KLINE_CACHE_LIMIT = 200
 
 
+def configure_binance_execution_mode(exchange, use_demo_trading: bool) -> None:
+    exchange.enable_demo_trading(use_demo_trading)
+
+
 class TradingEngine:
     def __init__(self):
         # 真實市場公開行情永遠連線（訊號偵測用，讀取公開資料不受
         # PAPER_TRADING 影響）；執行帳戶依 PAPER_TRADING 決定是否真的
-        # 連上 Binance Testnet 下單，還是完全本地模擬（不受測試網伺服器
+        # 連上 Binance Demo Trading 下單，還是完全本地模擬（不受測試伺服器
         # 穩不穩定影響）。
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True})
         self.ws_exchange = ccxtpro.binanceusdm({"enableRateLimit": False})
@@ -185,7 +189,7 @@ class TradingEngine:
             "enableRateLimit": True,
             "options": {"defaultType": "future"},
         })
-        self.execution_exchange.set_sandbox_mode(USE_TESTNET)
+        configure_binance_execution_mode(self.execution_exchange, USE_DEMO_TRADING)
         # Ensure exchanges are closed if TradingEngine is garbage-collected
         def _close_exchanges(e1, e2, e3=None):
             import asyncio
@@ -510,7 +514,7 @@ class TradingEngine:
                 if market.get("active") and market.get("swap")
                 and market.get("quote") == "USDT"
             }
-            mode = "Testnet" if USE_TESTNET else "實盤"
+            mode = "Demo Trading" if USE_DEMO_TRADING else "實盤"
             self.account.log(
                 f"✅ [{mode}執行市場] 可下單USDT永續 {len(self.execution_symbols)} 幣，"
                 "全市場候選將取主網與執行市場交集"
@@ -610,11 +614,11 @@ class TradingEngine:
         self.is_running = True
         if PAPER_TRADING:
             self.account.log(f"▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（{len(DEFAULT_SYMBOLS)}幣雙向交易）")
-        elif USE_TESTNET:
-            self.account.log(f"▶️ 8006 機器人啟動【Binance Testnet 測試網模式】無MA5三模式結構進場 / {len(DEFAULT_SYMBOLS)}幣雙向交易")
+        elif USE_DEMO_TRADING:
+            self.account.log(f"▶️ 8006 機器人啟動【Binance USDⓈ-M Demo Trading 模式】無MA5三模式結構進場 / {len(DEFAULT_SYMBOLS)}幣雙向交易")
         else:
             self.account.log(
-                "🔴🔴🔴 【正式實盤模式已啟用】（USE_TESTNET=false）：本次啟動將用真實資金下單！",
+                "🔴🔴🔴 【正式實盤模式已啟用】（USE_DEMO_TRADING=false）：本次啟動將用真實資金下單！",
                 "DANGER",
             )
         self.task = asyncio.create_task(self._main_loop())

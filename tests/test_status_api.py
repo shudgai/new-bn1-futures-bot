@@ -13,6 +13,26 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.mark.parametrize(
+    "paper_trading,use_demo_trading,expected",
+    [
+        (True, True, "paper_trading"),
+        (True, False, "paper_trading"),
+        (False, True, "binance_demo_trading"),
+        (False, False, "binance_live"),
+    ],
+)
+def test_effective_runtime_environment_matches_account_mode(
+    monkeypatch, paper_trading, use_demo_trading, expected,
+):
+    from services import api
+
+    monkeypatch.setattr(api, "PAPER_TRADING", paper_trading)
+    monkeypatch.setattr(api, "USE_DEMO_TRADING", use_demo_trading)
+
+    assert api.effective_runtime_environment() == expected
+
+
 @pytest.mark.anyio
 async def test_status_response_preserves_shadow_contract(tmp_path, monkeypatch):
     from services import api
@@ -43,6 +63,19 @@ def test_empty_shadow_status_is_read_only():
         "eligible_events": 0, "average_delay_sec": None,
     }
     assert vars(engine) == {}
+
+
+@pytest.mark.parametrize("demo_trading", [True, False])
+def test_binance_execution_mode_uses_demo_api_not_legacy_sandbox(demo_trading):
+    from unittest.mock import Mock
+
+    from core.engine import configure_binance_execution_mode
+
+    exchange = Mock()
+    configure_binance_execution_mode(exchange, demo_trading)
+
+    exchange.enable_demo_trading.assert_called_once_with(demo_trading)
+    exchange.set_sandbox_mode.assert_not_called()
 
 
 def test_visible_tickers_resolves_lobster_exchange_symbol_alias(monkeypatch):

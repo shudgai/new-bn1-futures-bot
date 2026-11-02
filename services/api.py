@@ -37,7 +37,7 @@ def numpy_safe(obj):
     return obj
 from core.config import (
     CHANNEL_WATERFALL_BODY_ATR,
-    PORT, PAPER_TRADING, ENTRY_SUBMISSION_ENABLED, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
+    PORT, PAPER_TRADING, USE_DEMO_TRADING, ENTRY_SUBMISSION_ENABLED, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
@@ -48,6 +48,13 @@ from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def effective_runtime_environment() -> str:
+    if PAPER_TRADING:
+        return "paper_trading"
+    return "binance_demo_trading" if USE_DEMO_TRADING else "binance_live"
+
 
 def trade_date_str(trade: dict) -> str:
     """交易 id 是毫秒級 unix timestamp，trade['time'] 沒有年份無法拿來篩選日期，故用 id 換算台北時區日期"""
@@ -602,7 +609,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
         "strategy": "強動能入口：原始開盤在 KC 通道內，順向實體至少前根已收線 ATR 的 0.5 倍，最新價嚴格在同側外軌外；此入口豁免滯後長均線與 KC 斜率，但所有入口均禁止 MA5 反向：下彎不開多、上彎不開空；送單按最新報價重驗。第二／第三根軌外入口及一般嚴格 Gate 保留。反向強動能先平舊倉，確認全部成交後以最新行情重驗反手；未確認成交不開新倉。守住 MA15 或 KC 中軌時，不因普通峰谷或滯後 CK 軟退出。兩階段鎖利：價格波段峰值達 5% 後啟動內部防線，距峰值 1.5%，多單防線只升、空單只降；達門檻或碰防線不單獨平倉。價格守住 MA5 且 MA5 順向時續抱；健康回踩仍守 MA15 或 KC 中軌且無放量長反向 K 時續抱；啟動後由 MA5 失守／拐頭、進場後十字星接已收線反向 K、或長影線且峰值回吐超過 1.2% 確認賣壓。鎖利後同向冷卻及峰谷 Gate 保留。所有自動入口與送單重驗均須 KC 軌寬嚴格擴張，且多單上軌上升、空單下軌下降；縮口或持平禁止開倉。所有入口均保留送單重驗與帳戶風控。",
-        "environment": "binance_testnet",
+        "environment": effective_runtime_environment(),
         "paper_trading": PAPER_TRADING,
         "entry_submission_enabled": ENTRY_SUBMISSION_ENABLED,
         "available_balance": round(engine.account.available_balance, 2),

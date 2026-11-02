@@ -2680,7 +2680,7 @@ def test_trade_history_counts_only_classified_stop_losses():
         {
             "action": "CLOSE_LONG", "symbol": "AAA/USDT", "side": "LONG",
             "price": 104.0, "pnl": 3.8, "fee": 0.2,
-            "reason": "Binance Testnet 止盈單成交 (Take-Profit)", "exit_type": "TP",
+            "reason": "Binance Demo Trading 止盈單成交 (Take-Profit)", "exit_type": "TP",
         },
         {
             "action": "OPEN_LONG", "symbol": "AAA/USDT", "side": "LONG",
@@ -2689,7 +2689,7 @@ def test_trade_history_counts_only_classified_stop_losses():
         {
             "action": "CLOSE_LONG", "symbol": "BBB/USDT", "side": "LONG",
             "price": 98.0, "pnl": -2.2, "fee": 0.2,
-            "reason": "Binance Testnet 止損單成交 (Stop-Loss)", "exit_type": "SL",
+            "reason": "Binance Demo Trading 止損單成交 (Stop-Loss)", "exit_type": "SL",
         },
         {
             "action": "OPEN_LONG", "symbol": "BBB/USDT", "side": "LONG",
@@ -2698,7 +2698,7 @@ def test_trade_history_counts_only_classified_stop_losses():
         {
             "action": "CLOSE_LONG", "symbol": "CCC/USDT", "side": "LONG",
             "price": 101.0, "pnl": 0.8, "fee": 0.2,
-            "reason": "Binance Testnet 獲利保護單成交 (Profit-Protect)",
+            "reason": "Binance Demo Trading 獲利保護單成交 (Profit-Protect)",
             "exit_type": "PROFIT_PROTECT",
         },
         {

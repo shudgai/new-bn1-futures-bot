@@ -36,7 +36,7 @@ def state_paths(testnet_state_file):
 
 @pytest.fixture
 def live_env():
-    with patch("core.config.PAPER_TRADING", False), patch("core.config.USE_TESTNET", False):
+    with patch("core.config.PAPER_TRADING", False), patch("core.config.USE_DEMO_TRADING", False):
         yield
 
 
@@ -257,10 +257,10 @@ def test_open_orders_unavailable_marks_pending_blocked(account, live_env):
     account._raw_create_order.assert_awaited_once()  # close still attempted
 
 
-# 17. Paper / Testnet: no live breaker exchange action ------------------------------
-@pytest.mark.parametrize("paper,testnet", [(True, False), (False, True), (True, True)])
-def test_17_non_live_no_breaker_action(account, paper, testnet):
-    with patch("core.config.PAPER_TRADING", paper), patch("core.config.USE_TESTNET", testnet):
+# 17. Paper / Demo Trading: no live breaker exchange action -------------------------
+@pytest.mark.parametrize("paper,demo_trading", [(True, False), (False, True), (True, True)])
+def test_17_non_live_no_breaker_action(account, paper, demo_trading):
+    with patch("core.config.PAPER_TRADING", paper), patch("core.config.USE_DEMO_TRADING", demo_trading):
         _set_equity(account, "1")
         _run(account._check_live_circuit_breaker())
     assert account.circuit_breaker_latched is False

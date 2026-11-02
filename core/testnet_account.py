@@ -380,8 +380,8 @@ class BinanceTestnetAccount:
 
     @staticmethod
     def _is_live_mainnet() -> bool:
-        from core.config import PAPER_TRADING, USE_TESTNET
-        return (not PAPER_TRADING) and (not USE_TESTNET)
+        from core.config import PAPER_TRADING, USE_DEMO_TRADING
+        return (not PAPER_TRADING) and (not USE_DEMO_TRADING)
 
     @staticmethod
     def _parse_live_equity(value) -> Decimal:
@@ -800,7 +800,7 @@ class BinanceTestnetAccount:
 
     async def initialize(self) -> None:
         if not self.credentials_configured():
-            raise RuntimeError("8006 Testnet API Key 尚未設定")
+            raise RuntimeError("8006 Demo Trading API Key 尚未設定")
         await self.exchange.load_markets()
         self._markets_loaded = True
         from core.services.exits.staged_testnet_runtime import restore_testnet_staged
@@ -996,7 +996,7 @@ class BinanceTestnetAccount:
                 "atr": float(meta.get("atr") or entry_price * 0.015),
                 "open_timestamp": float(meta.get("open_timestamp") or (float(row.get("updateTime", now * 1000)) / 1000.0)),
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
-                "reason": meta.get("reason") or "Binance Testnet existing position",
+                "reason": meta.get("reason") or "Binance Demo Trading existing position",
                 "signal_score": meta.get("signal_score"),
                 **{key: meta.get(key) for key in ENTRY_CONTEXT_KEYS},
                 **{key: copy.deepcopy(meta[key]) for key in DUAL_TRACK_STATE_KEYS
@@ -1280,11 +1280,11 @@ class BinanceTestnetAccount:
                 exit_type = "PROFIT_PROTECT"
 
         reasons = {
-            "TP": "Binance Testnet 止盈單成交 (Take-Profit)",
-            "SL": "Binance Testnet 止損單成交 (Stop-Loss)",
-            "PROFIT_PROTECT": "Binance Testnet 獲利保護單成交 (Profit-Protect)",
+            "TP": "Binance Demo Trading 止盈單成交 (Take-Profit)",
+            "SL": "Binance Demo Trading 止損單成交 (Stop-Loss)",
+            "PROFIT_PROTECT": "Binance Demo Trading 獲利保護單成交 (Profit-Protect)",
         }
-        return exit_type or "OTHER", reasons.get(exit_type, "Binance Testnet 外部平倉（類型未識別）")
+        return exit_type or "OTHER", reasons.get(exit_type, "Binance Demo Trading 外部平倉（類型未識別）")
 
     async def _record_external_close(self, symbol: str, position: dict) -> None:
         if symbol in self.closing_lock:
@@ -1372,7 +1372,7 @@ class BinanceTestnetAccount:
             }
             self.save_state()
             self.log(
-                f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | {exit_reason} | "
+                f"🏁 Binance Demo Trading 已平倉 [{position['side']}] {symbol} | {exit_reason} | "
                 f"損益: {net_pnl:+.2f} USDT (手續費: {total_fee:.4f})",
                 "SUCCESS" if net_pnl >= 0 else "DANGER",
             )
@@ -3303,7 +3303,7 @@ class BinanceTestnetAccount:
                 self.save_state()
 
             self.log(
-                f"🛑 Binance Testnet 開倉失敗 {symbol}："
+                f"🛑 Binance Demo Trading 開倉失敗 {symbol}："
                 f"{type(exc).__name__}: {exc} (Definitive={is_definitive})",
                 "DANGER",
             )
@@ -3557,14 +3557,14 @@ class BinanceTestnetAccount:
             )
             await self.refresh(force=True)
             self.log(
-                f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
+                f"🚀 Binance Demo Trading 開倉成功 [{side}] {symbol} @ "
                 f"{execution_price:.6f} ({leverage}x，單筆硬止損已停用，TP={tp_price})",
                 "SUCCESS",
             )
             return True
         except Exception as exc:
             self.log(
-                f"🛑 Binance Testnet 開倉收尾失敗 {symbol}："
+                f"🛑 Binance Demo Trading 開倉收尾失敗 {symbol}："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )
@@ -4574,7 +4574,7 @@ class BinanceTestnetAccount:
             except Exception as refresh_error:
                 self.log(f"⚠️ {symbol} 已成交平倉，帳戶同步稍後重試：{refresh_error}", "WARNING")
             self.log(
-                f"🏁 Binance Testnet 平倉 [{position['side']}] {symbol} @ "
+                f"🏁 Binance Demo Trading 平倉 [{position['side']}] {symbol} @ "
                 f"{execution_price:.6f} | 淨損益: {net_pnl:+.2f} USDT ({close_reason})",
                 "SUCCESS" if net_pnl >= 0 else "DANGER",
             )
@@ -4594,7 +4594,7 @@ class BinanceTestnetAccount:
             )
             self._close_retry_after[symbol] = time.time() + cooldown_secs
             self.log(
-                f"🚨 Binance Testnet 平倉失敗 {symbol}（{cooldown_secs:g} 秒後自動重試）："
+                f"🚨 Binance Demo Trading 平倉失敗 {symbol}（{cooldown_secs:g} 秒後自動重試）："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )

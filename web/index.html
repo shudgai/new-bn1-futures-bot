@@ -297,8 +297,10 @@
             <div class="logo">
                 <span>🚀</span> AIDAN Bot
                 <span class="badge badge-port">PORT {{ bot.port }}</span>
-                <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
-                <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
+                <span v-if="bot.environment === 'paper_trading'" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
+                <span v-else-if="bot.environment === 'binance_demo_trading'" class="badge" style="background:#dcfce7; color:#15803d;">BINANCE DEMO TRADING</span>
+                <span v-else-if="bot.environment === 'binance_live'" class="badge" style="background:#fee2e2; color:#991b1b;">⚠ BINANCE LIVE</span>
+                <span v-else class="badge" style="background:#e5e7eb; color:#374151;">交易環境未知</span>
             </div>
             <div class="strategy-panel">
 
@@ -695,7 +697,7 @@
                 bot: {
                         is_running: false,
                         strategy: '',
-                        environment: 'binance_testnet',
+                        environment: 'unknown',
                         paper_trading: false,
                         port: 8006,
                         balance: 0,

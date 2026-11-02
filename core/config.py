@@ -1216,11 +1216,13 @@ DEFAULT_SYMBOLS = [
     if not is_entry_disabled(symbol)
 ]
 
-# --- 真實/測試網切換 ---
-# 預設 true：一律使用 Binance Testnet（set_sandbox_mode），不管 BINANCE_API_KEY
-# 是不是正式帳戶的金鑰都不會下真錢單。正式上線當天才手動改為 false，並確認
-# .env 裡的 BINANCE_API_KEY/BINANCE_SECRET 已換成正式帳戶的金鑰。
-USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
+# --- Binance Demo Trading / Live 切換 ---
+# 舊 USE_TESTNET 僅作相容性 fallback；Binance USD-M Futures 不再支援舊 sandbox，
+# 因此舊旗標為 true 時改用 CCXT 的 Demo Trading endpoint。
+USE_DEMO_TRADING = os.getenv(
+    "USE_DEMO_TRADING",
+    os.getenv("USE_TESTNET", "true"),
+).lower() == "true"
 
 # --- 每日虧損熔斷 ---
 # 當日已實現虧損達帳戶餘額（今日起始值）的此比例時，暫停開新倉；
@@ -1365,4 +1367,3 @@ BREAKOUT_TWO_STAGE_CONFIG = {
 
 def get_breakout_two_stage_config() -> dict:
     return BREAKOUT_TWO_STAGE_CONFIG
-
