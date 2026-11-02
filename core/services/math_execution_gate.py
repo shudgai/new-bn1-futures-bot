@@ -1214,10 +1214,13 @@ def validate_exit_at_execution(
             close_reason=close_reason,
         )
     elif allowed:
-        from core.services.exits.trend_lock import evaluate_trend_lock_exit
-        evidence = evaluate_trend_lock_exit(position, frame) if frame is not None else None
-        code = "TREND_LOCK_EXIT_APPROVED" if evidence is not None else "INITIAL_STOP_APPROVED"
+        from core.services.exits.trend_lock import confirmed_kc_wave_exit
+        evidence = confirmed_kc_wave_exit(position, frame)
+        code = "CONFIRMED_KC_WAVE_EXIT_APPROVED"
     else:
+        code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
+    if allowed and not is_emergency and evidence is None:
+        allowed = False
         code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
     if allowed and hasattr(account, "log"):
         side = str(position.get("side") or "").upper()
@@ -1239,7 +1242,7 @@ def validate_exit_at_execution(
         }
     if is_emergency:
         return True, code, evidence or {"exit_type": "EMERGENCY"}
-    return True, code, evidence or {"exit_type": "INITIAL_STOP"}
+    return True, code, evidence
 
 
 def is_entry_bar(position: Mapping[str, Any], frame: Any) -> bool:

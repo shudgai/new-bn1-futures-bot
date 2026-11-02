@@ -1199,6 +1199,21 @@ class ExecutionManager:
                 pos=current_position,
                 market_data=market_data,
             )
+            from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
+            if gate_should_exit and gate_reason == KC_WAVE_EXIT_REASON:
+                success = await cls.close_position(
+                    account=account,
+                    symbol=symbol,
+                    price=curr_quote,
+                    reason=KC_WAVE_EXIT_REASON,
+                    meta={**gate_meta, "raw_df": raw_df},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if success else "HOLD",
+                    "symbol": symbol,
+                    "reason": KC_WAVE_EXIT_REASON if success else "EXIT_BLOCKED_HOLD:" + KC_WAVE_EXIT_REASON,
+                    "success": success,
+                }
             is_absolute_safety = bool(gate_should_exit and gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS)
             is_profit_lock = bool(
                 (gate_should_exit and (
@@ -1209,6 +1224,13 @@ class ExecutionManager:
                 ))
                 or (scheme1_action in ("CLOSE_SHORT", "CLOSE_LONG"))
             )
+            if not is_absolute_safety:
+                return {
+                    "status": "HOLD",
+                    "symbol": symbol,
+                    "reason": "HOLD_UNTIL_CONFIRMED_KC_MIDLINE_REVERSAL",
+                    "suppressed_exit_reason": gate_reason,
+                }
             is_pivot_exit = bool(
                 gate_should_exit
                 and (

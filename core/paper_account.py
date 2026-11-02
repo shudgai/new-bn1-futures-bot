@@ -1617,7 +1617,7 @@ class PaperAccount:
         ):
             self.log(
                 f"POSITION_PARTIAL_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_TRUE_PEAK_OR_VALLEY_REQUIRED",
+                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
                 "WARNING",
             )
             return False
@@ -1740,7 +1740,7 @@ class PaperAccount:
         ):
             self.log(
                 f"POSITION_EXIT_BLOCK symbol={symbol} reason={close_reason} "
-                "authority=CONFIRMED_TRUE_PEAK_OR_VALLEY_REQUIRED",
+                "authority=CONFIRMED_KC_MIDLINE_REVERSAL_REQUIRED",
                 "WARNING",
             )
             return False

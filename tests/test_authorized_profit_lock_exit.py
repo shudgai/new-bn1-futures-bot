@@ -14,7 +14,7 @@ def test_exitgate_profit_lock_label_alone_cannot_authorize_close():
     assert allowed is False
 
 
-def test_verified_profit_lock_requires_confirmed_position_aligned_pivot(monkeypatch):
+def test_verified_profit_lock_cannot_bypass_kc_reversal_only_policy(monkeypatch):
     import core.gates.holding_protection_gate as holding_gate
 
     # Arrange
@@ -31,7 +31,7 @@ def test_verified_profit_lock_requires_confirmed_position_aligned_pivot(monkeypa
         lambda *_args, **_kwargs: {"lock_type": "VERIFIED_TEST_LOCK"},
     )
 
-    # Act: lock without a pivot is held; an aligned confirmed peak is allowed.
+    # Neither a verified lock nor a pivot is independent close authority.
     no_pivot = automated_position_exit_allowed(
         "TEST/USDT", position, {}, "ExitGate:EXIT_BY_RATCHET_PROFIT_LOCK", 100.5,
     )
@@ -47,4 +47,4 @@ def test_verified_profit_lock_requires_confirmed_position_aligned_pivot(monkeypa
 
     # Assert
     assert no_pivot is False
-    assert with_pivot is True
+    assert with_pivot is False

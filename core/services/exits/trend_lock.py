@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from core.services.candle_data import closed_entry_candles
 
 MAX_TREND_LOCK_STALENESS_MS = 180_000.0
+KC_WAVE_EXIT_REASON = "EXIT_BY_CONFIRMED_KC_MIDLINE_REVERSAL"
 
 
 def _value(row: Any, key: str) -> float | None:
@@ -71,6 +72,50 @@ def _closed_snapshot_fresh(frame: Any, closed: Any) -> bool:
     close_time = timestamp + interval
     age = snapshot - close_time
     return 0.0 <= age <= max(MAX_TREND_LOCK_STALENESS_MS, interval * 2.0)
+
+
+def confirmed_kc_wave_exit(
+    position: Mapping[str, Any], frame: Any,
+) -> dict[str, Any] | None:
+    """Use completed KC basis direction, never a price touch or live slope."""
+    side = str(position.get("side") or "").upper()
+    if side not in ("LONG", "SHORT") or frame is None:
+        return None
+    bars = closed_entry_candles(frame)
+    if len(bars) < 2 or not _closed_snapshot_fresh(frame, bars):
+        return None
+    held = _entry_bars(position, frame)
+    opened = _value(position, "open_timestamp") or _value(position, "entry_timestamp")
+    if opened is None or opened <= 0 or held.empty:
+        return None
+    previous, current = bars.iloc[-2], bars.iloc[-1]
+    required = ("timestamp", "open", "high", "low", "close", "kc_middle")
+    values = [{key: _value(row, key) for key in required} for row in (previous, current)]
+    for row in values:
+        if any(value is None or value <= 0 for value in row.values()):
+            return None
+        if row["high"] < max(row["open"], row["close"]) or row["low"] > min(row["open"], row["close"]):
+            return None
+    p, c = values
+    interval = _value(getattr(frame, "attrs", {}), "timeframe_ms") or 60_000.0
+    if not math.isclose(c["timestamp"] - p["timestamp"], interval, abs_tol=1.0):
+        return None
+    reversed_direction = (
+        c["kc_middle"] < p["kc_middle"]
+        if side == "LONG" else c["kc_middle"] > p["kc_middle"]
+    )
+    if not reversed_direction:
+        return None
+    return {
+        "reason": KC_WAVE_EXIT_REASON,
+        "exit_type": "CONFIRMED_KC_MIDLINE_REVERSAL",
+        "side": side,
+        "previous_bar_timestamp": p["timestamp"],
+        "bar_timestamp": c["timestamp"],
+        "kc_middle_previous": p["kc_middle"],
+        "kc_middle_current": c["kc_middle"],
+        "is_closed": True,
+    }
 
 
 def update_trend_lock_state(position: dict[str, Any], frame: Any) -> bool:

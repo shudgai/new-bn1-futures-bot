@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
+
 
 def automated_position_exit_allowed(
     symbol: str,
@@ -14,9 +16,16 @@ def automated_position_exit_allowed(
     is_manual: bool = False,
     frame: Any = None,
 ) -> bool:
-    """Allow safety/manual exits or a verified, position-aligned true pivot."""
+    """Allow safety/manual exits or an authoritative closed KC reversal."""
     if is_manual and str(reason).strip() == "手動平倉":
         return True
+
+    try:
+        exit_price = float(price)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(exit_price) or exit_price <= 0:
+        return False
 
     from core.services.math_execution_gate import is_emergency_exit
 
@@ -24,89 +33,15 @@ def automated_position_exit_allowed(
         from core.services.math_execution_gate import validate_exit_math
 
         allowed, _code, _evidence = validate_exit_math(
-            position, frame, float(price), metadata, close_reason=str(reason),
+            position, frame, exit_price, metadata, close_reason=str(reason),
         )
         return bool(allowed)
 
-    meta = metadata if isinstance(metadata, Mapping) else {}
     normalized_reason = str(reason or "").upper()
-    side = str(position.get("side") or "").upper()
+    from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON, confirmed_kc_wave_exit
 
-    # A lock is an explicit authorized exit class. Require the recorded net
-    # ROE floor to be armed and touched so a reason string alone cannot close.
-    is_profit_lock = any(token in normalized_reason for token in (
-        "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "PROFIT_FLOOR",
-    ))
-    if is_profit_lock:
-        from core.gates.holding_protection_gate import _verified_profit_lock_details
+    if normalized_reason == KC_WAVE_EXIT_REASON:
+        return confirmed_kc_wave_exit(position, frame) is not None
 
-        lock_position = dict(meta)
-        lock_position.update(dict(position))
-        lock_details = _verified_profit_lock_details(lock_position, float(price))
-        if lock_details is not None:
-            if frame is not None:
-                from core.gates.holding_protection_gate import has_confirmed_true_pivot
-
-                has_pivot, pivot_type, _ = has_confirmed_true_pivot(
-                    dict(position), frame, float(price),
-                )
-                expected_prefix = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
-                if has_pivot and str(pivot_type or "").upper().startswith(expected_prefix):
-                    return True
-
-            from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
-
-            if pending_confirmed_pivot_exit(dict(position), dict(meta)) is not None:
-                return True
-
-    if frame is not None:
-        from core.gates.holding_protection_gate import has_confirmed_true_pivot
-
-        has_pivot, pivot_type, _ = has_confirmed_true_pivot(
-            dict(position), frame, float(price),
-        )
-        expected_prefix = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
-        if has_pivot and str(pivot_type or "").upper().startswith(expected_prefix):
-            return True
-
-    from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
-
-    confirmed_pivot = pending_confirmed_pivot_exit(dict(position), dict(meta))
-    if confirmed_pivot is not None and confirmed_pivot[0] in normalized_reason:
-        expected_reason = (
-            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
-            if side == "LONG"
-            else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
-            if side == "SHORT"
-            else ""
-        )
-        return confirmed_pivot[0] == expected_reason
-
-    from core.services.exits.kc_true_extreme_exit import (
-        pending_kc_true_extreme_exit,
-    )
-
-    kc_exit = pending_kc_true_extreme_exit(dict(position), dict(meta))
-    if kc_exit is not None and kc_exit[0] in normalized_reason:
-        details = kc_exit[1]
-        state = position.get("kc_true_extreme_exit_state") or meta.get(
-            "kc_true_extreme_exit_state"
-        )
-        expected_reason = (
-            "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
-            if side == "LONG"
-            else "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
-            if side == "SHORT"
-            else ""
-        )
-        return bool(
-            kc_exit[0] == expected_reason
-            and details.get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
-            and isinstance(state, Mapping)
-            and state.get("armed") is True
-            and kc_exit[0] in normalized_reason
-        )
-
-    # Profit locks, midline reclaim, MA turns, and pullback labels are not
-    # pivot evidence. They may annotate a pending exit, but cannot authorize it.
+    # Old pivot/pullback pending flags cannot authorize an ordinary wave exit.
     return False
