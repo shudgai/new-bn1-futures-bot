@@ -7,10 +7,10 @@ def _frame(**current_overrides):
     bars = [
         dict(timestamp=60_000, open=100.0, high=101.0, low=99.0, close=100.0,
              ma3=99.0, ma5=100.0, ma15=100.5, atr=2.0, kc_upper=105.0, kc_middle=100.0,
-             kc_lower=95.0),
+             kc_lower=95.0, is_closed=True),
         dict(timestamp=120_000, open=100.0, high=101.0, low=99.0, close=100.0,
              ma3=102.0, ma5=100.0, ma15=101.0, atr=2.0, kc_upper=105.0, kc_middle=101.0,
-             kc_lower=95.0),
+             kc_lower=95.0, is_closed=True),
     ]
     bars[-2].update(ma5=99.0)
     bars[-1].update(current_overrides)
@@ -28,11 +28,13 @@ def test_entry_math_alignment_chase_and_wick_veto():
     assert validate_entry_math(frame, "LONG")[1] == "BLOCKED_ENTRY_MATH_LONG_WICK"
 
 
-def test_entry_math_without_macro_trend_fails_closed():
+def test_entry_math_uses_completed_kc_without_macro_label():
     frame = _frame(ma5=102, ma15=101, close=102, open=101.5, high=102.2)
     frame.attrs.pop("macro_trend")
+    assert validate_entry_math(frame, "LONG")[0]
+    frame = frame.drop(columns=["is_closed"])
     assert validate_entry_math(frame, "LONG") == (
-        False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE",
+        False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN",
     )
 
 
@@ -195,7 +197,7 @@ def test_entry_short_bearish_engulfing_reversal():
         dict(timestamp=120_000, open=104.0, high=104.2, low=99.0, close=99.2,
              ma5=101.5, ma15=101.0, atr=2.0, kc_upper=105.0, kc_middle=100.3, kc_lower=95.0),
     ]
-    frame = pd.DataFrame(bars)
+    frame = pd.DataFrame(bars).assign(is_closed=True)
     frame["ma3"] = [103, 99.5]
     frame["ma5"] = [103, 99.5]
     frame.attrs["macro_trend"] = "BEARISH"
@@ -224,7 +226,7 @@ def test_entry_short_mid_band_break():
         dict(timestamp=120_000, open=100.5, high=100.6, low=99.2, close=99.5,
              ma5=100.0, ma15=100.5, atr=2.0, kc_upper=105.0, kc_middle=100.0, kc_lower=95.0),
     ]
-    frame = pd.DataFrame(bars)
+    frame = pd.DataFrame(bars).assign(is_closed=True)
     frame["ma3"] = [101, 99.5]
     frame["ma5"] = [101, 99.5]
     frame["ema_slow"] = 100.0
@@ -343,7 +345,7 @@ def test_entry_long_on_ema_cross_above_mid_band():
         dict(timestamp=120_000, open=99.5, high=100.8, low=99.4, close=100.5,
              ma5=99.8, ma15=99.6, ema_slow=99.3, atr=2.0, kc_upper=104.0, kc_middle=99.2, kc_lower=95.0),
     ]
-    frame = pd.DataFrame(bars)
+    frame = pd.DataFrame(bars).assign(is_closed=True)
     frame.attrs["macro_trend"] = "BULLISH"
     allowed, reason = validate_entry_math(frame, side="LONG")
     assert allowed is True
@@ -398,7 +400,7 @@ def test_entry_math_allows_early_ema_crossover_at_mid_band():
         dict(timestamp=120_000, open=99.5, high=100.8, low=99.4, close=100.5,  # close 100.5 > mid 99.2, upper 104.0
              ma5=99.8, ma15=99.6, ema_slow=99.3, atr=2.0, kc_upper=104.0, kc_middle=99.2, kc_lower=95.0),
     ]
-    df_long = pd.DataFrame(long_bars)
+    df_long = pd.DataFrame(long_bars).assign(is_closed=True)
     df_long.attrs["macro_trend"] = "BULLISH"
     allowed_long, reason_long = validate_entry_math(df_long, side="LONG")
     assert allowed_long is True, f"多單在 EMA 金叉且站穩中軌時應允許提早開多！原因: {reason_long}"
@@ -411,7 +413,7 @@ def test_entry_math_allows_early_ema_crossover_at_mid_band():
         dict(timestamp=120_000, open=100.5, high=100.6, low=99.2, close=99.5,   # close 99.5 < mid 100.8, lower 96.0
              ma5=100.2, ma15=100.4, ema_slow=100.7, atr=2.0, kc_upper=105.0, kc_middle=100.8, kc_lower=96.0),
     ]
-    df_short = pd.DataFrame(short_bars)
+    df_short = pd.DataFrame(short_bars).assign(is_closed=True)
     df_short.attrs["macro_trend"] = "BEARISH"
     allowed_short, reason_short = validate_entry_math(df_short, side="SHORT")
     assert allowed_short is True, f"空單在 EMA 死叉且跌破中軌時應允許提早開空！原因: {reason_short}"
@@ -439,7 +441,7 @@ def test_entry_math_strictly_blocks_long_when_ema_is_falling():
         dict(timestamp=120_000, open=101.2, high=104.6, low=101.0, close=104.5,
              ma5=102.8, ma15=101.0, ema_slow=100.1, atr=1.5, kc_upper=104.0, kc_middle=100.6, kc_lower=97.2),
     ]
-    df_breakout = pd.DataFrame(breakout_falling_long_bars)
+    df_breakout = pd.DataFrame(breakout_falling_long_bars).assign(is_closed=True)
     df_breakout.attrs["macro_trend"] = "BULLISH"
     allowed, reason = validate_entry_math(df_breakout, side="LONG")
     assert allowed is False, f"EMA15 下拐時哪怕兩根破軌也必須一票否決開多！實際: allowed={allowed}, reason={reason}"
@@ -452,7 +454,7 @@ def test_entry_math_strictly_blocks_long_when_ema_is_falling():
         dict(timestamp=120_000, open=101.2, high=104.6, low=101.0, close=104.5,
              ma5=102.8, ma15=101.2, ema_slow=100.1, atr=1.5, kc_upper=104.0, kc_middle=100.6, kc_lower=97.2),
     ]
-    df_flat = pd.DataFrame(flat_long_bars)
+    df_flat = pd.DataFrame(flat_long_bars).assign(is_closed=True)
     df_flat.attrs["macro_trend"] = "BULLISH"
     allowed_flat, reason_flat = validate_entry_math(df_flat, side="LONG")
     assert allowed_flat is False, f"EMA15 走平 (slope <= 0) 時必須一票否決開多！實際: allowed={allowed_flat}, reason={reason_flat}"
@@ -480,7 +482,7 @@ def test_entry_math_strictly_blocks_short_when_ema_is_rising():
         dict(timestamp=120_000, open=98.8, high=99.0, low=95.4, close=95.5,
              ma5=97.0, ma15=99.1, ema_slow=99.9, atr=1.5, kc_upper=102.8, kc_middle=99.4, kc_lower=96.0),
     ]
-    df_breakdown = pd.DataFrame(breakdown_rising_short_bars)
+    df_breakdown = pd.DataFrame(breakdown_rising_short_bars).assign(is_closed=True)
     df_breakdown.attrs["macro_trend"] = "BEARISH"
     allowed, reason = validate_entry_math(df_breakdown, side="SHORT")
     assert allowed is False, f"EMA15 上揚時哪怕兩根破下軌也必須一票否決開空！實際: allowed={allowed}, reason={reason}"
@@ -493,7 +495,7 @@ def test_entry_math_strictly_blocks_short_when_ema_is_rising():
         dict(timestamp=120_000, open=98.8, high=99.0, low=95.4, close=95.5,
              ma5=97.0, ma15=98.8, ema_slow=99.9, atr=1.5, kc_upper=102.8, kc_middle=99.4, kc_lower=96.0),
     ]
-    df_flat = pd.DataFrame(flat_short_bars)
+    df_flat = pd.DataFrame(flat_short_bars).assign(is_closed=True)
     df_flat.attrs["macro_trend"] = "BEARISH"
     allowed_flat, reason_flat = validate_entry_math(df_flat, side="SHORT")
     assert allowed_flat is False, f"EMA15 走平 (slope >= 0) 時必須一票否決開空！實際: allowed={allowed_flat}, reason={reason_flat}"

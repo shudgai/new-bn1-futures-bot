@@ -80,6 +80,9 @@ def test_volume_contraction_macro_conflict_and_cooldown_are_vetoes():
 
     frame = _base_frame()
     blocked, reason, _ = evaluate_market_blacklist(frame, -1, side="LONG", macro_trend="BEARISH")
+    assert not blocked, reason
+    frame.loc[frame.index[-1], "kc_middle"] = frame.iloc[-2]["kc_middle"] - 0.1
+    blocked, reason, _ = evaluate_market_blacklist(frame, -1, side="LONG", macro_trend="BULLISH")
     assert blocked and reason == "VETO_MACRO_TREND_CONFLICT"
 
     current_bar = int(frame.iloc[-1]["timestamp"] // 60_000)

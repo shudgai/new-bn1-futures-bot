@@ -6,6 +6,7 @@ import pytest
 from test_testnet_account import FakeTestnetExchange
 import core.testnet_account as tm
 import core.paper_account as pm
+from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
 
 
 @pytest.fixture
@@ -124,18 +125,35 @@ async def test_inflight_refresh_from_before_close_is_discarded(side, tmp_path, m
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("reason", ["Channel Swing middle", "DualTrackExit RATCHET_PROFIT_LOCK_EXIT"])
-async def test_strategy_failure_cooldown_keeps_manual_override(side, reason, tmp_path, monkeypatch):
+async def test_strategy_failure_cooldown_keeps_manual_override(side, tmp_path, monkeypatch):
     a, ex = await account_for(side, tmp_path, monkeypatch)
+    frame = a._channel_exit_frames["DOGE/USDT"]
+    frame.loc[frame.index[-1], "kc_middle"] = 99.5 if side == "LONG" else 100.5
+    a.positions["DOGE/USDT"]["open_timestamp"] = 60.0
+    a.position_meta["DOGE/USDT"]["open_timestamp"] = 60.0
     create = ex.create_order
     ex.create_order = AsyncMock(side_effect=RuntimeError("order rejected"))
-    assert not await a.close_position("DOGE/USDT", 100., reason, True)
+    assert not await a.close_position("DOGE/USDT", 100., KC_WAVE_EXIT_REASON, True)
     assert "DOGE/USDT" in a.positions and not closes(a)
-    assert not await a.close_position("DOGE/USDT", 100., reason, True)
+    assert not await a.close_position("DOGE/USDT", 100., KC_WAVE_EXIT_REASON, True)
     assert ex.create_order.await_count == 1
     ex.create_order = create
     assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)
     assert len(close_orders(ex)) == len(closes(a)) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("reason", ["Channel Swing middle", "DualTrackExit RATCHET_PROFIT_LOCK_EXIT"])
+async def test_legacy_exit_cannot_create_failed_order_or_retry_cooldown(
+    side, reason, tmp_path, monkeypatch,
+):
+    a, ex = await account_for(side, tmp_path, monkeypatch)
+    ex.create_order = AsyncMock(side_effect=AssertionError("unauthorized exit submitted"))
+    assert not await a.close_position("DOGE/USDT", 100., reason, True)
+    assert "DOGE/USDT" in a.positions and not closes(a)
+    ex.create_order.assert_not_awaited()
+    assert "DOGE/USDT" not in a._close_retry_after
 
 
 @pytest.mark.anyio

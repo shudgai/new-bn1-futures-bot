@@ -47,7 +47,7 @@ def validate_entry_math(
     max_staleness_ms: float = 180_000.0,
     symbol: str | None = None,
 ) -> tuple[bool, str]:
-    """Authorize an entry only when closed-bar HTF trend agrees with its side."""
+    """Authorize entries using completed KC direction and existing safety checks."""
     side = str(side or "").upper()
     if side not in {"LONG", "SHORT"}:
         return False, "BLOCKED_ENTRY_MATH_INVALID_SIDE"
@@ -149,46 +149,19 @@ def validate_entry_math(
 
     # Final execution gate: numeric KC midline slope is authoritative. No
     # continuation, oversold-reversal, or profit-lock fast track may override it.
-    kc_slope = latest_middle - prior_middle
-    if kc_slope == 0 and not allow_override:
+    import pandas as pd
+    from core.services.candle_data import confirmed_kc_midline_slope
+
+    direction_frame = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame(bars)
+    kc_slope = confirmed_kc_midline_slope(direction_frame)
+    if kc_slope is None:
+        return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
+    if kc_slope == 0:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
-    if side == "LONG" and kc_slope < 0 and not allow_override:
+    if side == "LONG" and kc_slope < 0:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0 and not allow_override:
+    if side == "SHORT" and kc_slope > 0:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
-
-    # The final order gate independently rebuilds the macro regime from closed
-    # candles. Breakouts and MA crosses cannot override an opposing or unknown
-    # higher-timeframe direction.
-    try:
-        import pandas as pd
-        from core.services.data_pipeline import DataPipeline
-
-        macro_frame = pd.DataFrame(closed_bars)
-        macro_close = _number(closed_bars[-1].get("close"))
-        snapshot = (
-            DataPipeline.calculate_snapshot(
-                "", macro_frame, current_price=macro_close,
-            )
-            if macro_close is not None and macro_close > 0
-            else None
-        )
-        calculated_macro = getattr(snapshot, "macro_trend", None) if snapshot else None
-        macro_trend = str(
-            calculated_macro
-            or (getattr(frame, "attrs", {}).get("macro_trend") if hasattr(frame, "attrs") else None)
-            or (closed_bars[-1].get("macro_trend") if closed_bars else None)
-            or "NEUTRAL"
-        ).upper()
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        macro_trend = "NEUTRAL"
-    if not allow_override:
-        if macro_trend == "NEUTRAL":
-            return False, "BLOCKED_ENTRY_MACRO_TREND_NEUTRAL_OR_UNAVAILABLE"
-        if side == "LONG" and macro_trend != "BULLISH":
-            return False, "BLOCKED_LONG_ON_BEARISH_MACRO_TREND"
-        if side == "SHORT" and macro_trend != "BEARISH":
-            return False, "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
     funding_rate = _number(values.get("funding_rate") or current.get("funding_rate") or 0.0)

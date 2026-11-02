@@ -622,16 +622,6 @@ class ExecutionManager:
         current_position = account.positions.get(symbol)
         has_position = bool(current_position and abs(float(current_position.get("amount", 0.0) or current_position.get("qty", 0.0))) > 0)
 
-        # 若未傳入 15M K 棒，自動嘗試獲取 15M 大週期 K 棒提供精準大趨勢過濾
-        if frame_15m is None or frame_15m.empty:
-            if hasattr(engine_or_account, "fetch_klines"):
-                try:
-                    frame_15m = await engine_or_account.fetch_klines(symbol, timeframe="15m", limit=50, keep_live=True)
-                    if frame_15m is not None and not frame_15m.empty and hasattr(engine_or_account, "strategy"):
-                        frame_15m = engine_or_account.strategy.compute_indicators(frame_15m.copy())
-                except Exception:
-                    pass
-
         if klines_df is None or klines_df.empty:
             if hasattr(engine_or_account, "fetch_klines"):
                 try:
@@ -708,22 +698,13 @@ class ExecutionManager:
         atr_v = float(getattr(market_data, "atr", 0.0) or 0.0)
         kc_slope = float(getattr(market_data, "kc_middle_slope", 0.0) or 0.0)
 
-        # ── 🔭 拉遠視角 (Zoomed-Out 60~120 根 K 棒) 大週期趨勢濾網 ──
-        # 解決「拉遠看明明是空頭下降趨勢（一峰比一峰低、一底比一底低、EMA60 下行），
-        # 卻因為短線 2~3 根反彈小陽線使 2-bar kc_slope 微幅翻正就逆勢開多」的致命錯誤！
-        ema60_val = float(getattr(market_data, "ema60", 0.0) or c_c)
+        # Retain historical slopes for legacy exit diagnostics, not entry direction.
         macro_slope_val = float(getattr(market_data, "macro_slope", 0.0) or 0.0)
-        slow_slope_5_val = float(getattr(market_data, "slow_slope_5", 0.0) or 0.0)
-        macro_trend_snap = str(getattr(market_data, "macro_trend", "NEUTRAL") or "NEUTRAL").upper()
-        macro_trend = macro_trend_snap
         kc_slope_10_val = kc_slope
-        is_lower_highs_bear = False
-        is_higher_lows_bull = False
 
         if raw_df is not None and isinstance(raw_df, pd.DataFrame) and "close" in raw_df.columns and len(raw_df) >= 20:
             s_close = raw_df["close"].astype(float)
             s_ema60 = s_close.ewm(span=60, adjust=False).mean()
-            ema60_val = float(s_ema60.iloc[-1])
             lookback_e60 = min(len(s_ema60), 15)
             macro_slope_val = float(s_ema60.iloc[-1] - s_ema60.iloc[-lookback_e60])
             if "kc_middle" in raw_df.columns:
@@ -745,269 +726,38 @@ class ExecutionManager:
             lookback_m15_3 = min(len(s_m15_macro), 4)
             m15_slope_3_val = float(s_m15_macro.iloc[-1] - s_m15_macro.iloc[-lookback_m15_3]) / max(1, lookback_m15_3 - 1)
 
-            # 檢查過去 60~120 根 K 棒的高低點結構 (Higher Highs / Higher Lows vs Lower Highs / Lower Lows)
-            # 依 2026-10-30 核心授權：只要整體價格底底高 (Higher Lows) 且高點向上推升，
-            # 哪怕盤中出現深幅回踩，只要未跌破起漲大波段前低，一律嚴禁誤判為大週期熊市！
-            if len(raw_df) >= 40 and "high" in raw_df.columns and "low" in raw_df.columns:
-                w_len = min(len(raw_df), 120)
-                half_w = w_len // 2
-                first_half_high = float(raw_df["high"].iloc[-w_len:-half_w].max())
-                second_half_high = float(raw_df["high"].iloc[-half_w:].max())
-                first_half_low = float(raw_df["low"].iloc[-w_len:-half_w].min())
-                second_half_low = float(raw_df["low"].iloc[-half_w:].min())
-                
-                # 若後半段低點高於前半段低點 (HL)，且後半段高點亦高於前半段高點 (HH) -> 絕對多頭底底高結構 (Bullish HH/HL)
-                if second_half_low >= first_half_low and second_half_high >= first_half_high:
-                    is_higher_lows_bull = True
-                    is_lower_highs_bear = False
-                elif second_half_high < first_half_high and second_half_low <= first_half_low and c_c < ema60_val:
-                    is_lower_highs_bear = True
-
-        # 綜合判定：拉遠看是否為空頭 / 多頭大趨勢 (結合 15M/1H 大級別均線結構與 60~120 根 1M K 棒結構)
-        # ══════════════════════════════════════════════════════════════════════════
-        # 🏛️ 【MA 3m/15m 雙重週期 (MTF) 趨勢與進場解耦引擎】：
-        #   - 大週期定方向（主趨勢 macro_trend_status）：取 15M 大週期均線 (15m MA5/MA15 與 15m KC 中軌) 及 1H 等效均線 (1M 週期之 MA45 vs EMA180 / EMA60 斜率與 10 棒 KC 中軌)。
-        #   - 小週期定觸發點（micro_ma3 vs micro_ma15）：
-        #     * 情況 A：大週期空頭 (macro_trend == "BEARISH") + 小週期 MA3 > MA15 (黃金交叉) ➔ 僅視為「反彈拉高 (WAIT_REBOUND)」！絕不開多 (`can_open_long = False`)，保留空單或等待二次高點！
-        #     * 情況 B：大週期空頭 (macro_trend == "BEARISH") + 小週期 MA3 < MA15 (死亡交叉) ➔ 順勢開空 / 加空 (`OPEN_SHORT`)！
-        #     * 情況 C：大週期多頭 (macro_trend == "BULLISH") + 小週期 MA3 < MA15 (死亡交叉) ➔ 僅視為「回檔拉回 (WAIT_PULLBACK)」！絕不開空 (`can_open_short = False`)，保留多單或等待低點！
-        #     * 情況 D：大週期多頭 (macro_trend == "BULLISH") + 小週期 MA3 > MA15 (黃金交叉) ➔ 順勢開多 / 加多 (`OPEN_LONG`)！
-        # ══════════════════════════════════════════════════════════════════════════
-        htf_15m_trend = "UNKNOWN"
-        htf_15m_ma5 = 0.0
-        htf_15m_ma15 = 0.0
-        htf_15m_slope = 0.0
-        if frame_15m is not None and not frame_15m.empty and len(frame_15m) >= 2:
-            try:
-                from core.indicators.dual_timeframe_provider import DualTimeframeProvider
-                t_dict = DualTimeframeProvider.get_15m_trend(frame_15m)
-                htf_15m_trend = t_dict.get("15m_big_trend", "UNKNOWN")
-                htf_15m_ma5 = float(t_dict.get("15m_ma5", 0.0) or 0.0)
-                htf_15m_ma15 = float(t_dict.get("15m_ma15", 0.0) or 0.0)
-                htf_15m_slope = float(t_dict.get("15m_ma15_slope", 0.0) or 0.0)
-            except Exception:
-                pass
-
-        # 計算 1H 等效大週期均線 (在 1m K 線上：MA45 相當於 15m MA3、EMA60/EMA180 相當於 1H/3H 慢線)：
-        macro_ma_fast = ema60_val
-        macro_ma_slow = ema60_val
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and "close" in raw_df.columns and len(raw_df) >= 20:
-            s_c_mtf = raw_df["close"].astype(float)
-            macro_ma_fast = float(s_c_mtf.ewm(span=30, adjust=False).mean().iloc[-1])
-            macro_ma_slow = float(s_c_mtf.ewm(span=90, adjust=False).mean().iloc[-1])
-
         kc_slope_5_ref = locals().get("kc_slope_5_val", kc_slope)
         kc_slope_3_ref = locals().get("kc_slope_3_val", kc_slope)
         m15_slope_5_ref = locals().get("m15_slope_5_val", m15_c - m15_p)
         m15_slope_3_ref = locals().get("m15_slope_3_val", m15_c - m15_p)
         min_gc_dc_spread = max(0.08 * atr_v, m15_c * 0.0004) if atr_v > 0 else (m15_c * 0.0004)
 
-        # 1. 獨立判定大週期主趨勢 (macro_htf_bearish / macro_htf_bullish) —— 嚴格與小週期 MA3/MA15 交叉解耦！
-        # 當大週期均線向下 (15m DOWN、或 10棒與5棒 KC 中軌與 MA15 同步向下、或 macro_ma_fast < macro_ma_slow 且價格在 EMA60 下方) 時，
-        # 絕不因為小週期 MA3 > MA15 金叉就把大週期誤判成牛市！
-        is_macro_htf_bearish = bool(
-            htf_15m_trend == "DOWN"
-            or (htf_15m_ma5 > 0 and htf_15m_ma15 > 0 and htf_15m_ma5 < htf_15m_ma15 and htf_15m_slope < 0)
-            or (kc_slope_10_val < 0 and kc_slope_5_ref < 0 and m15_slope_5_ref < 0)
-            or (macro_ma_fast < macro_ma_slow and macro_slope_val < 0 and c_c < ema60_val and kc_slope_5_ref <= 0)
-            or (is_lower_highs_bear and kc_slope_5_ref <= 0)
-        )
-        is_macro_htf_bullish = bool(
-            (not is_macro_htf_bearish)
-            and (
-                htf_15m_trend == "UP"
-                or (htf_15m_ma5 > 0 and htf_15m_ma15 > 0 and htf_15m_ma5 > htf_15m_ma15 and htf_15m_slope > 0)
-                or (kc_slope_10_val > 0 and kc_slope_5_ref > 0 and m15_slope_5_ref > 0)
-                or (macro_ma_fast > macro_ma_slow and macro_slope_val > 0 and c_c > ema60_val and kc_slope_5_ref >= 0)
-                or (is_higher_lows_bull and kc_slope_5_ref >= 0)
-            )
-        )
+        from core.services.candle_data import confirmed_kc_midline_slope
 
-        # 唯有當 1M 的 5棒與 10棒 KC 中軌及 MA15 慢線【全部】完成實質結構翻轉且突破 EMA60，才代表大週期已經真正易位（而非短線假反彈/假回檔）：
-        is_true_macro_reversal_to_bull = bool(
-            (m3_c > m15_c and (m3_c - m15_c) >= min_gc_dc_spread)
-            and kc_slope > 0
-            and kc_slope_3_ref > 0
-            and kc_slope_5_ref > 0
-            and kc_slope_10_val >= 0
-            and m15_c > m15_p
-            and m15_slope_3_ref > 0
-            and m15_slope_5_ref >= 0
-            and c_c > kc_mid
-            and c_c > m15_c
-            and c_c >= ema60_val
-            and htf_15m_trend != "DOWN"
-        )
-        is_true_macro_reversal_to_bear = bool(
-            (m3_c < m15_c and (m15_c - m3_c) >= min_gc_dc_spread)
-            and kc_slope < 0
-            and kc_slope_3_ref < 0
-            and kc_slope_5_ref < 0
-            and kc_slope_10_val <= 0
-            and m15_c < m15_p
-            and m15_slope_3_ref < 0
-            and m15_slope_5_ref <= 0
-            and c_c < kc_mid
-            and c_c < m15_c
-            and c_c <= ema60_val
-            and htf_15m_trend != "UP"
-        )
-
-        is_3bar_bull_slope_ready = bool(
-            (kc_slope > 0 and kc_slope_3_ref >= 0 and m15_c >= m15_p and (m15_slope_3_ref >= 0 or c_bd >= 0.35 * atr_v))
-            and (kc_slope_5_ref >= -0.15 * atr_v if atr_v > 0 else True)
-            and (not is_macro_htf_bearish or is_true_macro_reversal_to_bull)
-        )
-        is_3bar_bear_slope_ready = bool(
-            (kc_slope < 0 and kc_slope_3_ref <= 0 and m15_c <= m15_p and (m15_slope_3_ref <= 0 or c_bd >= 0.35 * atr_v))
-            and (kc_slope_5_ref <= 0.15 * atr_v if atr_v > 0 else True)
-            and (not is_macro_htf_bullish or is_true_macro_reversal_to_bear)
-        )
-
+        entry_kc_slope = confirmed_kc_midline_slope(raw_df)
+        entry_kc_up = entry_kc_slope is not None and entry_kc_slope > 0
+        entry_kc_down = entry_kc_slope is not None and entry_kc_slope < 0
+        macro_trend = "BULLISH" if entry_kc_up else ("BEARISH" if entry_kc_down else "NEUTRAL")
+        # Legacy downstream predicates now share the same completed KC direction.
+        is_zoomed_out_bullish = is_macro_htf_bullish = is_3bar_bull_slope_ready = entry_kc_up
+        is_zoomed_out_bearish = is_macro_htf_bearish = is_3bar_bear_slope_ready = entry_kc_down
+        cls._symbol_macro_trend[symbol] = macro_trend
+        entry_m5_c = float(c_k.get("ma5", math.nan))
+        entry_m5_p = float(p_k.get("ma5", math.nan))
         is_1m_confirmed_bull = bool(
-            (m3_c > m15_c)
-            and ((m3_c - m15_c) >= min_gc_dc_spread)
-            and (m3_c > m3_p)
-            and (c_c > kc_mid)
-            and (c_c > m15_c)
-            and is_3bar_bull_slope_ready
+            entry_kc_up and entry_m5_c > entry_m5_p and entry_m5_c > m15_c
+            and c_c > kc_mid and c_c > m15_c
         )
         is_1m_confirmed_bear = bool(
-            (m3_c < m15_c)
-            and ((m15_c - m3_c) >= min_gc_dc_spread)
-            and (m3_c < m3_p)
-            and (c_c < kc_mid)
-            and (c_c < m15_c)
-            and is_3bar_bear_slope_ready
+            entry_kc_down and entry_m5_c < entry_m5_p and entry_m5_c < m15_c
+            and c_c < kc_mid and c_c < m15_c
         )
-
-        # 大週期鎖定旗標（遵循 MTF 鐵律：大週期為多頭時，1M 的小幅回檔微觀波動絕不可將大趨勢翻空；大週期為空頭時，1M 的小幅反彈絕不可將大趨勢翻多！）：
-        is_zoomed_out_bearish = bool(
-            (is_macro_htf_bearish and not is_true_macro_reversal_to_bull)
-            or (
-                (not is_macro_htf_bullish)
-                and (not is_1m_confirmed_bull)
-                and (
-                    is_1m_confirmed_bear
-                    or macro_trend_snap == "BEARISH"
-                    or kc_slope_10_val < 0
-                    or (kc_slope_5_ref < 0 and m15_slope_5_ref < 0)
-                    or (macro_slope_val < 0 and (c_c < ema60_val or m15_c < ema60_val))
-                    or is_lower_highs_bear
-                )
-            )
-        )
-        is_zoomed_out_bullish = bool(
-            (not is_zoomed_out_bearish)
-            and (
-                (is_macro_htf_bullish and not is_true_macro_reversal_to_bear)
-                or (
-                    (not is_macro_htf_bearish)
-                    and (not is_1m_confirmed_bear)
-                    and (
-                        is_1m_confirmed_bull
-                        or macro_trend_snap == "BULLISH"
-                        or kc_slope_10_val > 0
-                        or (kc_slope_5_ref > 0 and m15_slope_5_ref > 0)
-                        or (macro_slope_val > 0 and (c_c > ema60_val or m15_c > ema60_val))
-                        or is_higher_lows_bull
-                    )
-                )
-            )
-        )
-
-        # ══════════════════════════════════════════════════════════════════════════
-        # 🏛️ 【大週期趨勢結束與轉折判定 (Market Structure Break / check_macro_trend_end)】
-        # 依 2026-10-30 授權規範：大週期一旦確立，1m/3m 雜訊不可輕易翻轉！
-        # 只有在收盤價實體打破前波結構關鍵 HL/LH 且跌破/突破 HTF MA15 時，方宣告大週期結束。
-        # ══════════════════════════════════════════════════════════════════════════
-        prior_macro = cls._symbol_macro_trend.get(symbol)
-        if not prior_macro and has_position and current_position:
-            pos_s = str(current_position.get("side", "")).upper()
-            prior_macro = "BULLISH" if pos_s == "LONG" else ("BEARISH" if pos_s == "SHORT" else None)
-
-        htf_data_for_struct = frame_15m if (frame_15m is not None and not frame_15m.empty and len(frame_15m) >= 5) else raw_df
-        stored_pivot = cls._symbol_key_pivot.get(symbol)
-
-        if prior_macro in ("BULLISH", "BEARISH"):
-            struct_eval = check_macro_trend_end(
-                current_macro_trend=prior_macro,
-                htf_candles=htf_data_for_struct,
-                htf_ma15=htf_15m_ma15 if htf_15m_ma15 > 0 else None,
-                key_pivot_price=stored_pivot,
-                live_1m_candles=raw_df,
-                current_1m_close=c_c,
-                current_1m_ma15=m15_c if m15_c > 0 else None,
-                current_1m_kc_mid=kc_mid,
-                current_1m_ma3=m3_c,
-            )
-            # 若大結構未打破 -> 維持大週期標籤，啟動防護罩，不被 1m 雜訊干擾
-            if struct_eval.get("event") == "MACRO_TREND_CONTINUES":
-                if prior_macro == "BULLISH":
-                    is_zoomed_out_bullish = True
-                    is_zoomed_out_bearish = False
-                    macro_trend = "BULLISH"
-                else:
-                    is_zoomed_out_bearish = True
-                    is_zoomed_out_bullish = False
-                    macro_trend = "BEARISH"
-                if struct_eval.get("key_pivot_price", 0) > 0:
-                    cls._symbol_key_pivot[symbol] = struct_eval["key_pivot_price"]
-            elif struct_eval.get("event") in ("MACRO_BULLISH_ENDED", "MACRO_BEARISH_ENDED") and not (
-                # 防抖：僅靠穿越中軌的翻轉，價格與 MA3 須離開中軌 0.1 ATR 緩衝帶才承認，避免貼軌來回翻轉
-                "KC 中軌" in str(struct_eval.get("reason", ""))
-                and not (
-                    (struct_eval["macro_trend"] == "BULLISH" and c_c > kc_mid + 0.1 * atr_v and m3_c > kc_mid)
-                    or (struct_eval["macro_trend"] == "BEARISH" and c_c < kc_mid - 0.1 * atr_v and m3_c < kc_mid)
-                )
-            ):
-                # 雙重確認結構打破，宣告大週期結束與反轉
-                new_trend = struct_eval["macro_trend"]
-                cls._symbol_macro_trend[symbol] = new_trend
-                if struct_eval.get("key_pivot_price", 0) > 0:
-                    cls._symbol_key_pivot[symbol] = struct_eval["key_pivot_price"]
-                if new_trend == "BULLISH":
-                    is_zoomed_out_bullish = True
-                    is_zoomed_out_bearish = False
-                    macro_trend = "BULLISH"
-                else:
-                    is_zoomed_out_bearish = True
-                    is_zoomed_out_bullish = False
-                    macro_trend = "BEARISH"
-                logger.warning(f"🚨 [MARKET_STRUCTURE_BREAK] {symbol} {struct_eval['reason']}")
-        else:
-            # 初始建立大週期標籤
-            initial_macro = "BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else None)
-            if initial_macro:
-                cls._symbol_macro_trend[symbol] = initial_macro
-
-        # 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）
-        # 圖1：MA3 與收盤價穿過中軌進入上半通道，100% 嚴禁判定為熊市！即刻轉為牛市！
-        # 圖2：MA3 與收盤價穿過中軌進入下半通道，100% 嚴禁判定為牛市！即刻轉為熊市！
-        _bull_mid = (m3_c >= kc_mid and c_c >= kc_mid) or (m3_c > kc_mid and m3_c >= m3_p)
-        _bear_mid = (m3_c <= kc_mid and c_c <= kc_mid) or (m3_c < kc_mid and m3_c <= m3_p)
-        if _bull_mid:
-            is_zoomed_out_bearish = False
-            is_zoomed_out_bullish = True
-            macro_trend = "BULLISH"
-            cls._symbol_macro_trend[symbol] = "BULLISH"
-            calc_pivot = find_htf_key_pivot(htf_data_for_struct, "BULLISH")
-            if calc_pivot > 0:
-                cls._symbol_key_pivot[symbol] = calc_pivot
-        elif _bear_mid:
-            is_zoomed_out_bullish = False
-            is_zoomed_out_bearish = True
-            macro_trend = "BEARISH"
-            cls._symbol_macro_trend[symbol] = "BEARISH"
-            calc_pivot = find_htf_key_pivot(htf_data_for_struct, "BEARISH")
-            if calc_pivot > 0:
-                cls._symbol_key_pivot[symbol] = calc_pivot
 
         # MTF 四大情境狀態標記（情況 A: WAIT_REBOUND / 情況 B: OPEN_SHORT / 情況 C: WAIT_PULLBACK / 情況 D: OPEN_LONG）
         if is_zoomed_out_bearish:
-            mtf_signal_state = "OPEN_SHORT" if (m3_c < m15_c) else "WAIT_REBOUND"
+            mtf_signal_state = "OPEN_SHORT" if (entry_m5_c < m15_c) else "WAIT_REBOUND"
         elif is_zoomed_out_bullish:
-            mtf_signal_state = "OPEN_LONG" if (m3_c > m15_c) else "WAIT_PULLBACK"
+            mtf_signal_state = "OPEN_LONG" if (entry_m5_c > m15_c) else "WAIT_PULLBACK"
         else:
             mtf_signal_state = "NEUTRAL"
 
@@ -1038,10 +788,6 @@ class ExecutionManager:
 
         is_flat_macro = bool(atr_v > 0 and abs(macro_slope_val) < 0.5 * atr_v)
         is_choppy = bool(is_flat_macro and ema60_cross_count >= 4 and not is_1m_confirmed_bull and not is_1m_confirmed_bear)
-        if is_choppy and not has_position:
-            # 僅在無持倉時允許重置為猴市震盪區；持倉時大週期鎖定防護罩絕不可被震盪標籤拔除！
-            is_zoomed_out_bearish = False
-            is_zoomed_out_bullish = False
         if is_zoomed_out_bullish:
             market_regime = "BULL"
         elif is_zoomed_out_bearish:
@@ -1200,18 +946,21 @@ class ExecutionManager:
                 market_data=market_data,
             )
             from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
-            if gate_should_exit and gate_reason == KC_WAVE_EXIT_REASON:
+            if gate_should_exit and (
+                gate_reason == KC_WAVE_EXIT_REASON
+                or gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+            ):
                 success = await cls.close_position(
                     account=account,
                     symbol=symbol,
                     price=curr_quote,
-                    reason=KC_WAVE_EXIT_REASON,
+                    reason=gate_reason,
                     meta={**gate_meta, "raw_df": raw_df},
                 )
                 return {
                     "status": "EXIT_EXECUTED" if success else "HOLD",
                     "symbol": symbol,
-                    "reason": KC_WAVE_EXIT_REASON if success else "EXIT_BLOCKED_HOLD:" + KC_WAVE_EXIT_REASON,
+                    "reason": gate_reason if success else "EXIT_BLOCKED_HOLD:" + gate_reason,
                     "success": success,
                 }
             is_absolute_safety = bool(gate_should_exit and gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS)
@@ -2299,6 +2048,14 @@ class ExecutionManager:
         # =========================================================================
         method_rejection: Optional[Dict[str, Any]] = None
         if not has_position:
+            if not entry_kc_up and not entry_kc_down:
+                reason = (
+                    "BLOCKED_ENTRY_KC_DIRECTION_UNAVAILABLE"
+                    if entry_kc_slope is None else "BLOCKED_ENTRY_KC_DIRECTION_FLAT"
+                )
+                logger.info("ENTRY_KC_DIRECTION_VETO symbol=%s reason=%s", symbol, reason)
+                return {"status": "VETO", "symbol": symbol, "reason": reason}
+            kc_slope = entry_kc_slope
             try:
                 m5_c = float(c_k.get("ma5", math.nan))
                 m5_p = float(p_k.get("ma5", math.nan))
@@ -3142,7 +2899,7 @@ class ExecutionManager:
                     "allow_kc_internal": True,
                     "strategy_mode": "AGILE_MOMENTUM",
                     "raw_df": target_pivot_df,
-                    "macro_trend": "BULLISH" if is_1m_confirmed_bull else ("BEARISH" if is_1m_confirmed_bear else getattr(market_data, "macro_trend", "NEUTRAL")),
+                    "macro_trend": macro_trend,
                     "source": f"UNIFIED_PIPELINE|{entry_type}",
                     "atr": atr_v,
                 }
@@ -3185,7 +2942,6 @@ class ExecutionManager:
             entry_ma5_curr = ma5_curr
             entry_ma5_prev = ma5_prev
             entry_ma5_slope = entry_ma5_curr - entry_ma5_prev
-            macro_trend = getattr(market_data, "macro_trend", "NEUTRAL")
             raw_df = getattr(market_data, "raw_df", None)
             live_cross_long = None
             live_cross_short = None
@@ -3304,18 +3060,8 @@ class ExecutionManager:
                 else (False, "NO_CLOSED_BARS", {})
             )
 
-            # 結合肯特納通道 (KC) 方向與大週期趨勢濾網（拉遠看大結構）：
-            # 若主趨勢向上 (拉遠多頭 is_zoomed_out_bullish 或大趨勢 BULLISH)，只做金叉開多，100% 禁止死叉開空！
-            # 若主趨勢向下 (拉遠空頭 is_zoomed_out_bearish 或大趨勢 BEARISH)，只做死叉開空，100% 禁止金叉開多！
-            kc_slope = getattr(market_data, "kc_middle_slope", 0.0)
-            is_macro_bull = bool(
-                (not is_1m_confirmed_bear)
-                and (is_zoomed_out_bullish or (macro_trend == "BULLISH" and not is_zoomed_out_bearish) or (kc_slope > 0.000005 and not is_zoomed_out_bearish))
-            )
-            is_macro_bear = bool(
-                (not is_1m_confirmed_bull)
-                and (is_zoomed_out_bearish or (macro_trend == "BEARISH" and not is_zoomed_out_bullish) or (kc_slope < -0.000005 and not is_zoomed_out_bullish))
-            )
+            is_macro_bull = entry_kc_up
+            is_macro_bear = entry_kc_down
 
             is_ma_cross_long = (
                 entry_ma5_cross_long_ok
@@ -4134,11 +3880,7 @@ class ExecutionManager:
                     or is_macro_bear
                     or macro_trend == "BEARISH"
                     or kc_slope <= 0
-                    or kc_slope_3_ref <= 0
-                    or kc_slope_5_ref < 0
                     or m15_c < m15_p
-                    or m15_slope_3_ref < 0
-                    or m15_slope_5_ref < 0
                     or curr_close < kc_mid_val
                     or curr_close < ma15_curr
                     or entry_ma5_curr < kc_mid_val
@@ -4156,11 +3898,7 @@ class ExecutionManager:
                     or is_macro_bull
                     or macro_trend == "BULLISH"
                     or kc_slope >= 0
-                    or kc_slope_3_ref >= 0
-                    or kc_slope_5_ref > 0
                     or m15_c > m15_p
-                    or m15_slope_3_ref > 0
-                    or m15_slope_5_ref > 0
                     or curr_close > kc_mid_val
                     or curr_close > ma15_curr
                     or entry_ma5_curr > kc_mid_val
@@ -4447,7 +4185,7 @@ class ExecutionManager:
                     call_meta["stop_loss_price"] = whitelist.stop_loss_price
                     call_meta["whitelist_checklist"] = whitelist.checklist
                     call_meta["atr"] = atr_for_stop
-                    call_meta["macro_trend"] = "BULLISH" if is_1m_confirmed_bull else ("BEARISH" if is_1m_confirmed_bear else market_data.macro_trend)
+                    call_meta["macro_trend"] = macro_trend
                     if is_swing_pivot:
                         call_meta.update(
                             entry_type="SWING_PIVOT",

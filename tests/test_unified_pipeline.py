@@ -15,6 +15,15 @@ from core.gates.unified_pipeline_gates import ExitGate, EntryGate
 from core.services.execution_manager import ExecutionManager
 
 
+@pytest.fixture(autouse=True)
+def isolated_account_state(monkeypatch, tmp_path):
+    monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path / "paper.json"))
+    monkeypatch.setattr(
+        "core.services.order_audit_trail.AUDIT_LOG_FILE",
+        str(tmp_path / "audit.jsonl"),
+    )
+
+
 def _generate_sample_df(n=50, trend="UP"):
     data = []
     base = 100.0
@@ -36,8 +45,14 @@ def _generate_sample_df(n=50, trend="UP"):
             "low": low,
             "close": close_p,
             "volume": 100.0 + i,
+            "is_closed": True,
         })
-    return pd.DataFrame(data)
+    frame = pd.DataFrame(data)
+    frame.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=int(frame.iloc[-1]["timestamp"]) + 60_000,
+    )
+    return frame
 
 
 def test_data_pipeline_snapshot_calculation():
@@ -125,7 +140,7 @@ def test_entry_gate_1000_pullback_reclaim_continuation():
 
 
 def test_exit_gate_hold_through_consolidation():
-    """測試出場門禁 1：盤整黏合嚴禁平多 (未達連續兩根收破 EMA40 強制 VETO_HOLD)"""
+    """盤整回踩不可取代已收線 KC 中軌反向的普通出場授權。"""
     df = _generate_sample_df(30, trend="UP")
     # 設定最近兩根為在 EMA40 (118.0) 之上的正常盤整洗盤小K線 (非大黑吞噬)
     df.loc[df.index[-2], ["open", "high", "low", "close"]] = [118.1, 118.6, 118.0, 118.3]
@@ -137,18 +152,23 @@ def test_exit_gate_hold_through_consolidation():
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=118.5)
     assert not should_exit
     assert reason == "VETO_HOLD"
-    assert "未達連續兩根收破EMA40慢線" in meta.get("cause", "") or "大週期趨勢依然向上" in meta.get("cause", "")
+    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
 
 
 def test_exit_gate_rejects_legacy_gross_roe_lock_without_net_lock_state():
     """舊 gross ROE 峰值不可取代目前的淨 ROE 鎖利狀態。"""
     df = _generate_sample_df(30, trend="UP")
     snapshot = DataPipeline.calculate_snapshot("LOBSTER/USDT", df, current_price=106.0)
+    # Keep the quote within the channel so this exercises legacy profit
+    # state, not the independent opposite-rail emergency.
+    snapshot.kc_lower = 95.0
+    snapshot.kc_upper = 130.0
     # entry=100, 最高達 112 (+12%), 當前跌到 106 (+6%), 跌破 70% 保證線 (12% * 0.7 = 8.4%)
     pos = {"side": "LONG", "entry_price": 100.0, "peak_roe": 0.12, "leverage": 1.0}
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=106.0)
     assert not should_exit
-    assert reason == "VETO_PROFIT_LOCK_NOT_REACHED"
+    assert reason == "VETO_HOLD"
+    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
 
 
 def test_execution_manager_pipeline_flow():
@@ -269,23 +289,20 @@ async def test_early_short_execution_pipeline_flow():
 
 
 @pytest.mark.anyio
-async def test_exit_gate_no_stall_on_bearish_exhaustion():
-    """
-    [端到端流水線測試：空單收復中軌動能耗盡即刻平倉且不反手開單]
-    驗證流水線鏈路：
-    1. 當前持有空單，最新 K 棒收盤價實體站上 KC 中軌。
-    2. ExecutionManager.process_symbol_pipeline 收到平空指令後立即執行平倉，持倉清空。
-    3. 平倉後若無合法順勢突破訊號，狀態維持 IDLE，絕不盲目反手開多！
-    """
+async def test_exit_gate_no_stall_on_confirmed_kc_reversal():
+    """空單的已收線 KC 中軌反向後平倉，只平原倉，不自動反手。"""
     from core.paper_account import PaperAccount
     import time
-    now_ms = time.time() * 1000.0
+    now_ms = int(time.time() // 60) * 60_000 - 60_000
     account = PaperAccount()
     account.positions["CAP/USDT"] = {
         "side": "SHORT",
         "entry_price": 105.0,
         "qty": 1.0,
         "peak_roe": 0.08,
+        "margin": 21.0,
+        "leverage": 5,
+        "open_timestamp": (now_ms - 30 * 60_000) / 1000,
     }
 
     n = 30
@@ -300,36 +317,30 @@ async def test_exit_gate_no_stall_on_bearish_exhaustion():
             "low": o - 0.1,
             "close": c,
             "volume": 100.0,
+            "is_closed": True,
         })
     df = pd.DataFrame(bars)
+    df.attrs.update(timeframe_ms=60_000, snapshot_ms=now_ms + 60_000)
 
-    # 模擬最後一根收在 100.5，突破 KC 中軌 (kc_middle 約 98.5)
-    df.loc[n - 1, ["open", "high", "low", "close"]] = [98.8, 100.6, 98.7, 100.5]
+    # KC middle is rising against the SHORT; keep price within the outer
+    # bands so the ordinary confirmed-reversal authority is tested alone.
+    df.loc[n - 1, ["open", "high", "low", "close"]] = [98.1, 98.3, 98.0, 98.2]
 
     res = await ExecutionManager.process_symbol_pipeline(
         symbol="CAP/USDT",
         engine_or_account=account,
         klines_df=df,
-        quote=100.5,
+        quote=98.2,
     )
     assert res["status"] == "EXIT_EXECUTED"
-    assert res["reason"] in ("SHORT_EXIT_KC_MID_BREACH", "SHORT_EXIT_EMA_REVERSAL", "SHORT_EXIT_ON_EMA_CROSS", "EARLY_PIVOT_VALLEY_EXIT", "PROFIT_LOCK", "PROFIT_LOCK_TRAILING_GIVEBACK", "OPPOSITE_KC_BAND_BREACH")
+    assert res["reason"] == "EXIT_BY_CONFIRMED_KC_MIDLINE_REVERSAL"
     assert "CAP/USDT" not in account.positions
+    assert [trade["action"] for trade in account.trades] == ["CLOSE_SHORT"]
 
 
 @pytest.mark.anyio
 async def test_replay_rejects_flat_ma15_midline_cross_without_room():
-    """
-    [時序回放比對測試：EMA 交叉 + 中軌突破提早開倉 vs KC 外軌破軌追高]
-    情境重現：
-    模擬行情在底部築底完成後發起反彈：
-    1. 12:56~12:58：EMA15 向上金叉 EMA40，收盤站上 KC 中軌 (約 0.06684)，右側共振形成。
-       系統必須在此時立即放行開多 (ENTRY_LONG_EMA_CROSS_MID)，進場價位約 0.06684。
-    2. 後續 13:01：長紅 K 棒衝破 KC 上軌 (價格達 0.066997)。
-    斷言：
-       - 開多成交必須在均線金叉且突破中軌時立即觸發 (ENTRY_LONG_EMA_CROSS_MID)；
-       - 成交價格必須嚴格低於 0.06690 (顯著優於天花板追高價 0.066997，節省 15+ ticks 成本)！
-    """
+    """長時間黏合後單根反彈，仍須通過現行 MA5／KC 位置防線。"""
     from core.services.execution_manager import ExecutionManager
     import time
     import pandas as pd
@@ -379,10 +390,11 @@ async def test_replay_rejects_flat_ma15_midline_cross_without_room():
         quote=0.06684,
     )
 
-    # 平坦的 MA15/KC 斜率未達門檻，不能因單根中軌上穿而開倉。
+    # MA5 尚黏合中軌，單根反彈不能無條件開倉。
     assert res["status"] == "VETO"
-    assert "VETO_MA15_FLAT" in res["reason"] or "VETO_KC_MIDDLE_FLAT" in res["reason"]
+    assert res["reason"] == "BLOCKED_MA5_MIDLINE_ADHERED"
     assert symbol not in account.positions
+    assert account.opened == []
 
 
 def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
@@ -413,6 +425,12 @@ def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
         "curr_k": {"open": 120.2, "high": 121.3, "low": 120.1, "close": 121.0},
         "prev_k": {"open": 119.5, "high": 120.5, "low": 119.2, "close": 120.3, "ma15": 117.0},
     }
+    snapshot_long["macro_trend"] = "BEARISH"
+    snapshot_long["raw_df"] = pd.DataFrame([
+        {**snapshot_long["prev_k"], "timestamp": 60_000, "kc_middle": 114.95, "is_closed": True},
+        {**snapshot_long["curr_k"], "timestamp": 120_000, "kc_middle": 115.0, "is_closed": True},
+    ])
+    snapshot_long["raw_df"].attrs["timeframe_ms"] = 60_000
     # 此時 KC_Pos = (121 - 110) / (120 - 110) = 1.10 > 0.80
     # 外軌乖離 = 121 - 120 = 1.0 <= 0.5 * 3.0 = 1.5 ATR
     should_entry, reason, meta = EntryGate.evaluate("CONFIRMED_2BAR_BREAKOUT", snapshot_long)
@@ -434,6 +452,12 @@ def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
         "curr_k": {"open": 99.8, "high": 99.9, "low": 98.7, "close": 99.0},
         "prev_k": {"open": 100.5, "high": 100.8, "low": 99.5, "close": 99.7, "ma15": 103.0},
     }
+    snapshot_short["macro_trend"] = "BULLISH"
+    snapshot_short["raw_df"] = pd.DataFrame([
+        {**snapshot_short["prev_k"], "timestamp": 60_000, "kc_middle": 105.05, "is_closed": True},
+        {**snapshot_short["curr_k"], "timestamp": 120_000, "kc_middle": 105.0, "is_closed": True},
+    ])
+    snapshot_short["raw_df"].attrs["timeframe_ms"] = 60_000
     # 此時 KC_Pos = (99 - 100) / (110 - 100) = -0.10 < 0.20
     # 外軌乖離 = 100 - 99 = 1.0 <= 0.5 * 3.0 = 1.5 ATR
     should_entry_s, reason_s, meta_s = EntryGate.evaluate("CONFIRMED_2BAR_BREAKOUT", snapshot_short)
@@ -442,11 +466,8 @@ def test_confirmed_2bar_breakout_not_blocked_by_kc_pos_gate():
     assert meta_s.get("side") == "SHORT"
 
 
-def test_profit_lock_overrides_pullback_hold_above_ascending_kc_middle():
-    """
-    驗證核心防守線：唯認 KC 中軌收盤實體跌破。
-    多單開倉衝高後，回踩測試向上的 KC 中軌，未跌破中軌前強制一票否決回踩平多 (VETO_EXIT_HOLD_ABOVE_KC_MIDDLE)！
-    """
+def test_profit_lock_cannot_override_hold_without_confirmed_kc_reversal():
+    """舊階梯鎖利即使已啟動，亦不可取代已收線 KC 反向出口。"""
     pos = {
         "side": "LONG",
         "entry_price": 100.0,
@@ -467,10 +488,81 @@ def test_profit_lock_overrides_pullback_hold_above_ascending_kc_middle():
         "ema_slow": 101.5,
     }
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=102.5)
-    assert should_exit is True
-    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
-    assert meta.get("armed") is True
+    assert should_exit is False
+    assert reason == "VETO_HOLD"
+    assert meta["suppressed_exit_reason"] == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert meta["exit_policy"] == "CONFIRMED_KC_MIDLINE_REVERSAL_ONLY"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("symbol", ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("exit_reason,distance", [
+    ("CIRCUIT_BREAKER_HARD_SL", 3.0),
+    ("OPPOSITE_KC_BAND_BREACH", 1.1),
+    ("EXIT_BY_EXTREME_WATERFALL", 1.6),
+])
+async def test_pipeline_preserves_safety_authority_through_real_close(
+    monkeypatch, symbol, side, exit_reason, distance,
+):
+    from core.paper_account import PaperAccount
+    from test_kc_wave_exit import position, wave_frame
+
+    frame = wave_frame(side, reversed_direction=False, live=True)
+    pos = position(side, frame)
+    pos["symbol"] = symbol
+    price = 100.0 - distance if side == "LONG" else 100.0 + distance
+    frame["kc_upper"], frame["kc_lower"], frame["atr"] = 101.0, 99.0, 1.0
+    frame.loc[frame.index[-1], ["open", "high", "low", "close", "kc_middle"]] = [
+        100.0, max(100.0, price) + 0.1, min(100.0, price) - 0.1, price, 100.0,
+    ]
+    snapshot = DataPipeline.calculate_snapshot(symbol, frame, current_price=price, position=pos)
+    assert snapshot is not None
+    snapshot.raw_df = frame
+    snapshot.curr_k = frame.iloc[-1].to_dict()
+    snapshot.prev_k = frame.iloc[-2].to_dict()
+    snapshot.kc_upper, snapshot.kc_middle, snapshot.kc_lower = 101.0, 100.0, 99.0
+    snapshot.atr = 1.0
+    snapshot.macro_trend = "NEUTRAL"
+    should_exit, reason, _ = ExitGate.evaluate(pos, snapshot)
+    assert should_exit is True and reason == exit_reason
+    monkeypatch.setattr(
+        DataPipeline, "calculate_snapshot", staticmethod(
+            lambda *args, **kwargs: snapshot,
+        ),
+    )
+    account = PaperAccount()
+    account.positions[symbol] = pos
+    result = await ExecutionManager.process_symbol_pipeline(
+        symbol, account, klines_df=frame, quote=price,
+    )
+    assert result["status"] == "EXIT_EXECUTED", result
+    assert result["reason"] == exit_reason
+    assert symbol not in account.positions
+    assert [trade["action"] for trade in account.trades] == ["CLOSE_" + side]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("symbol", ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_pipeline_safety_label_cannot_bypass_final_close_evidence(monkeypatch, symbol, side):
+    from core.paper_account import PaperAccount
+    from test_kc_wave_exit import position, wave_frame
+
+    frame = wave_frame(side, reversed_direction=False)
+    pos = position(side, frame)
+    pos["symbol"] = symbol
+    account = PaperAccount()
+    account.positions[symbol] = pos
+    monkeypatch.setattr(
+        ExitGate, "evaluate", staticmethod(
+            lambda *args, **kwargs: (True, "OPPOSITE_KC_BAND_BREACH", {}),
+        ),
+    )
+    result = await ExecutionManager.process_symbol_pipeline(
+        symbol, account, klines_df=frame, quote=100.2,
+    )
+    assert result["status"] == "HOLD"
+    assert result["reason"] == "EXIT_BLOCKED_HOLD:OPPOSITE_KC_BAND_BREACH"
+    assert account.positions[symbol] is pos
+    assert not account.trades

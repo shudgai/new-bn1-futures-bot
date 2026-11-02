@@ -4454,9 +4454,7 @@ class BinanceTestnetAccount:
         #          一般策略平倉仍受冷卻保護，手動平倉也跳過。
         _now = time.time()
         is_hard_stop_close = "HARD_STOP" in str(close_reason)
-        strategy_close = str(close_reason).startswith(
-            ("Channel Swing ", "Wild Swing ", "DualTrackExit ", "REVERSE_ON_")
-        )
+        strategy_close = str(close_reason).strip() != "手動平倉"
         _retry_after = getattr(self, "_close_retry_after", {}).get(symbol, 0.0)
         if not is_hard_stop_close and (not is_manual or strategy_close) and _now < _retry_after:
             return False

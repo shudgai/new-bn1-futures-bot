@@ -106,11 +106,8 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", bl_reason, details)
 
         # 2. 大方向與通道過濾 (Filter 鐵律，一票否決)
-        if m.macro_trend == "BEARISH":
-            return GateDecision(False, "HOLD", "BLOCKED_LONG_ON_BEARISH_MACRO_TREND", details)
-
         kc_slope = m.kc_middle - m.kc_middle_prev
-        if kc_slope <= 0:
+        if not math.isfinite(kc_slope) or min(m.kc_middle, m.kc_middle_prev) <= 0 or kc_slope <= 0:
             return GateDecision(False, "HOLD", "BLOCKED_LONG_KC_SLOPE_NOT_UP", details)
 
         if not (m.quote > m.kc_middle and m.close_price > m.kc_middle and m.ma5_curr > m.kc_middle):
@@ -144,8 +141,8 @@ class MasterGateFunnel:
         # 觸發 B: 回踩中軌轉強
         elif abs(m.low_price - m.kc_middle) <= 0.35 * m.atr and m.ma5_curr > m.ma5_prev and m.close_price > m.ma5_curr:
             trigger_hit = "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
-        # 觸發 C: 大週期為牛市且實體突破 MA15
-        elif m.macro_trend == "BULLISH" and m.open_price <= m.ma15_curr and m.close_price > m.ma15_curr:
+        # 觸發 C: KC 向上且實體突破 MA15
+        elif m.open_price <= m.ma15_curr and m.close_price > m.ma15_curr:
             trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKOUT"
         # 觸發 D: 順勢 MA5/MA15 金叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
         elif (
@@ -180,11 +177,8 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", bl_reason, details)
 
         # 2. 大方向與通道過濾 (Filter 鐵律，一票否決)
-        if m.macro_trend == "BULLISH":
-            return GateDecision(False, "HOLD", "BLOCKED_SHORT_ON_BULLISH_MACRO_TREND", details)
-
         kc_slope = m.kc_middle - m.kc_middle_prev
-        if kc_slope >= 0:
+        if not math.isfinite(kc_slope) or min(m.kc_middle, m.kc_middle_prev) <= 0 or kc_slope >= 0:
             return GateDecision(False, "HOLD", "BLOCKED_SHORT_KC_SLOPE_NOT_DOWN", details)
 
         if not (m.quote < m.kc_middle and m.close_price < m.kc_middle and m.ma5_curr < m.kc_middle):
@@ -227,8 +221,8 @@ class MasterGateFunnel:
         # 觸發 C: 反彈中軌受阻
         elif abs(m.high_price - m.kc_middle) <= 0.35 * m.atr and m.ma5_curr < m.ma5_prev and m.close_price < m.ma5_curr:
             trigger_hit = "TRIGGER_C_REBOUND_KC_MIDDLE_REJECTION"
-        # 觸發 D: 大週期為熊市且實體跌破 MA15
-        elif m.macro_trend == "BEARISH" and m.open_price >= m.ma15_curr and m.close_price < m.ma15_curr:
+        # 觸發 D: KC 向下且實體跌破 MA15
+        elif m.open_price >= m.ma15_curr and m.close_price < m.ma15_curr:
             trigger_hit = "TRIGGER_D_EARLY_MA15_BREAKDOWN"
         # 觸發 E: 順勢 MA5/MA15 死叉動能（通道有足夠獲利空間 >= 20% 通道寬度）
         elif (

@@ -971,6 +971,17 @@ class ExitGate:
                     curr_bar_high = float(c_curr.get("high", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "high", quote))
                     not_making_new_high = (quote < float(peak["high"])) and (curr_bar_high <= float(peak["high"]))
 
+                    strong_peak_reversal = (
+                        is_peak_prominent
+                        and not_making_new_high
+                        and float(peak["high"]) > float(confirm["high"])
+                        and float(confirm["close"]) < float(confirm["open"])
+                        and float(confirm["close"]) < peak_mid
+                        and confirm_body >= 0.15 * atr_val
+                        and (peak_move >= 0.5 * atr_val or peak_roe >= 0.05)
+                        and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
+                    )
+
                     # 🛑 2026-11-01 核心修正：回踩 MA15 或 KC 中軌且結構完好（未實質跌破 MA15/KC 中軌）絕不平多！
                     # 只有當實體收盤價跌破 MA15 或 KC 中軌，或已獲利巨大 (peak_roe >= 15%)，才允許放行真峰頂出場
                     is_structure_intact = float(confirm["close"]) >= ma15 or float(confirm["close"]) >= kc_mid
@@ -1840,20 +1851,18 @@ class EntryGate:
                     "cause": f"長下影線倒灌陰線一票否決: 下影線({lower_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，賣盤動能衰竭見底，禁止做空地板殺跌！",
                 }
 
-        # ══════════════════════════════════════════════════════════════════
-        # 門禁 0：順勢交易鐵律（大趨勢一票否決，AGENTS.md 最高準則，2026-10-24 最新授權）
-        # 空頭趨勢嚴禁開多：大週期為 BEARISH，均線空頭排列，或價格在慢線下方，100% 阻斷開多接飛刀！
-        # 多頭趨勢嚴禁開空：大週期為 BULLISH，均線多頭排列，或價格在慢線上方，100% 阻斷開空摸頂！
-        # ══════════════════════════════════════════════════════════════════
-        macro_trend = str(getattr(market_data, "macro_trend", None) or (market_data.get("macro_trend") if isinstance(market_data, dict) else "NEUTRAL") or "NEUTRAL").upper()
+        from core.services.candle_data import confirmed_kc_midline_slope
 
-        # 計算 KC 中軌斜率 (優先取最近 3 根已收線變化率 kc_middle[-1] - kc_middle[-3])
-        kc_middle_slope = slope
-        if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
-            if "kc_middle" in raw_df.columns:
-                kc_middle_slope = float(raw_df["kc_middle"].iloc[-1]) - float(raw_df["kc_middle"].iloc[-3])
-            elif "kc_basis" in raw_df.columns:
-                kc_middle_slope = float(raw_df["kc_basis"].iloc[-1]) - float(raw_df["kc_basis"].iloc[-3])
+        kc_middle_slope = confirmed_kc_midline_slope(raw_df)
+        if kc_middle_slope is None:
+            return False, "VETO_KC_DIRECTION_UNAVAILABLE", meta
+        if (
+            signal_side == "LONG" and kc_middle_slope <= 0
+            or signal_side == "SHORT" and kc_middle_slope >= 0
+        ):
+            return False, "VETO_KC_DIRECTION_CONFLICT", meta
+        slope = kc_middle_slope
+        macro_trend = "BULLISH" if kc_middle_slope > 0 else "BEARISH"
 
         kc_mid_safe = max(kc_mid, 1e-9)
         kc_bandwidth = (kc_up - kc_low) / kc_mid_safe

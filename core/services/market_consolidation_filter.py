@@ -156,31 +156,13 @@ def evaluate_market_blacklist(
         if wick_total > MAX_WICK_BODY_RATIO * body:
             return True, "VETO_LONG_WICK_DOJI", checks
 
-        # If the snapshot carries macro KC direction, reject counter-trend entries.
+        # Caller-supplied regime labels cannot override completed KC direction.
         if side:
             direction = str(side).upper()
-            macro_label = str(
-                macro_trend or current.get("macro_trend")
-                or getattr(df, "attrs", {}).get("macro_trend") or ""
-            ).upper()
-            if (direction == "LONG" and macro_label in {"BEARISH", "SHORT", "DOWN"}
-                    or direction == "SHORT" and macro_label in {"BULLISH", "LONG", "UP"}):
-                return True, "VETO_MACRO_TREND_CONFLICT", {**checks, "macro_trend": macro_label}
-            macro_slope = _num(current, "macro_kc_middle_slope")
-            if macro_slope is None and "macro_kc_middle" in bars:
-                macro_mid = pd.to_numeric(bars["macro_kc_middle"], errors="coerce")
-                if len(macro_mid) >= 2 and macro_mid.notna().iloc[-2:].all():
-                    macro_slope = float(macro_mid.iloc[-1] - macro_mid.iloc[-2])
-            if macro_label not in {
-                "BULLISH", "BEARISH", "LONG", "SHORT", "UP", "DOWN", "NEUTRAL",
-            } and macro_slope is None:
-                return True, "VETO_MACRO_TREND_UNAVAILABLE", checks
-            if macro_slope is not None and (
-                direction == "LONG" and macro_slope < 0
-                or direction == "SHORT" and macro_slope > 0
-            ):
-                return True, "VETO_MACRO_TREND_CONFLICT", {**checks, "macro_kc_slope": macro_slope}
-
+            kc_slope = float(mid.iloc[-1] - mid.iloc[-2])
+            if (direction == "LONG" and kc_slope <= 0
+                    or direction == "SHORT" and kc_slope >= 0):
+                return True, "VETO_MACRO_TREND_CONFLICT", {**checks, "kc_middle_slope": kc_slope}
         # Cooldown supports both bar-index based trade records and timestamps.
         if last_closed_trade:
             exit_index = last_closed_trade.get("bar_index")

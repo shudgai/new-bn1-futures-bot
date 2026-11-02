@@ -931,6 +931,16 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
         df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         indicators = engine.strategy.compute_indicators(df)
+        from core.services.candle_data import confirmed_kc_midline_slope
+
+        direction_frame = df.copy()
+        direction_frame["kc_middle"] = indicators["ema_20"]
+        kc_slope = confirmed_kc_midline_slope(direction_frame)
+        kc_direction = (
+            "UP" if kc_slope is not None and kc_slope > 0
+            else "DOWN" if kc_slope is not None and kc_slope < 0
+            else "FLAT" if kc_slope == 0 else "UNKNOWN"
+        )
         trade_markers = {}
         for trade in engine.account.trades:
             if trade.get("symbol") != symbol:
@@ -1046,15 +1056,12 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 last_close = float(last_row.get("close") or 0.0)
                 last_kc_up = float(indicators.iloc[-1].get("kc_upper") or 0.0)
                 last_kc_low = float(indicators.iloc[-1].get("kc_lower") or 0.0)
-                mid_now = float(indicators.iloc[-1].get("ema_20") or 0.0)
-                mid_prev = float(indicators.iloc[-2].get("ema_20") or mid_now) if len(indicators) > 1 else mid_now
-
                 if last_close > last_kc_up and last_kc_up > 0:
-                    if mid_now <= mid_prev:
+                    if kc_slope is not None and kc_slope <= 0:
                         latest_reason = "BLOCKED_LONG_ON_BEARISH_TREND"
                         latest_side = "LONG"
                 elif last_close < last_kc_low and last_kc_low > 0:
-                    if mid_now >= mid_prev:
+                    if kc_slope is not None and kc_slope >= 0:
                         latest_reason = "BLOCKED_SHORT_ON_BULLISH_TREND"
                         latest_side = "SHORT"
 
@@ -1113,28 +1120,14 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "pnl_pct": float(active_pos.get("pnl_pct", 0.0)),
             }
 
-        from core.services.execution_manager import ExecutionManager
-        macro_t = ExecutionManager._symbol_macro_trend.get(symbol)
-        # 🚀 敏捷中軌通道校準（2026-10-31 最高授權：徹底杜絕 API 回傳滯後標籤）：
-        if len(df) >= 3 and "ema_20" in indicators.columns:
-            m3_curr = float(df["close"].iloc[-3:].mean())
-            mid_curr = float(indicators["ema_20"].iloc[-1] or 0.0)
-            c_curr = float(df["close"].iloc[-1])
-            if mid_curr > 0:
-                if (m3_curr >= mid_curr and c_curr >= mid_curr) or m3_curr > mid_curr:
-                    macro_t = "BULLISH"
-                    ExecutionManager._symbol_macro_trend[symbol] = "BULLISH"
-                elif (m3_curr <= mid_curr and c_curr <= mid_curr) or m3_curr < mid_curr:
-                    macro_t = "BEARISH"
-                    ExecutionManager._symbol_macro_trend[symbol] = "BEARISH"
-
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "data": result,
             "entry_block": entry_block,
             "current_position": pos_info,
-            "macro_trend": macro_t,
+            "kc_direction": kc_direction,
+            "macro_trend": {"UP": "BULLISH", "DOWN": "BEARISH"}.get(kc_direction, "NEUTRAL"),
         }
     except HTTPException:
         raise

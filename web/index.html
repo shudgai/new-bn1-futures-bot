@@ -620,8 +620,8 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ formatSymbol(symbol) }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="依據大週期趨勢與已收線 KC 判定大週期牛市/熊市，解耦小週期回踩或反彈">
-                                {{ { bull: '大週期牛市 (順勢做多)', bear: '大週期熊市 (順勢做空)', range: '猴市 (區間盤整)', wait: '猴市 (觀望突破)' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="比較最近兩根已收線 KC 中軌：向上只評估多單，向下只評估空單；仍須通過進場及帳戶風控">
+                                {{ { bull: 'KC 向上 (只評估多單)', bear: 'KC 向下 (只評估空單)', range: 'KC 持平 (不開新倉)', wait: 'KC 資料不足 (等待更新)' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                             <span v-if="!getPos(symbol) && (chartModal.states[symbol] || {}).entryBlock" style="font-size: 16px; margin-left: 6px; cursor: default; vertical-align: middle;">
                                 🚫
@@ -1020,9 +1020,7 @@
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
                     state.entryBlock = (json.cache || {}).source === 'stale' ? null : (json.entry_block || null);
-                    const rawBackendMacro = String((json.macro_trend || '')).toUpperCase();
-                    const backendTrend = rawBackendMacro === 'BULLISH' ? 'bull' : (rawBackendMacro === 'BEARISH' ? 'bear' : null);
-                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getChartCkTrend(json.data, backendTrend);
+                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getChartCkTrend(json.data);
                     const candles = [];
                     const ma5 = [];
                     const ma15 = [];
@@ -1304,52 +1302,23 @@
                 }
             },
 
-                getChartCkTrend(data, backendTrend = null) {
-                    if (!Array.isArray(data) || data.length === 0) return backendTrend || 'wait';
+                getChartCkTrend(data) {
+                    if (!Array.isArray(data)) return 'wait';
                     const number = value => {
+                        if (value === null || value === undefined || value === '') return null;
                         const parsed = Number(value);
                         return Number.isFinite(parsed) ? parsed : null;
                     };
-                    const bars = data.length > 0 ? data : [];
-                    if (bars.length < 2) return backendTrend || 'wait';
-
-                    const lastBar = bars[bars.length - 1];
-                    const prevBar = bars[bars.length - 2];
-                    const currMid = number(lastBar.kc_middle) || number(prevBar.kc_middle);
-                    const prevMid = number(prevBar.kc_middle);
-                    const currClose = number(lastBar.close);
-                    const prevClose = number(prevBar.close);
-                    if (currMid === null || currMid <= 0) return backendTrend || 'wait';
-
-                    // 計算 MA3 (3 週期簡單移動平均)：
-                    const last3Closes = bars.slice(-3).map(b => number(b.close)).filter(v => v !== null);
-                    const currMa3 = last3Closes.length === 3 ? (last3Closes[0] + last3Closes[1] + last3Closes[2]) / 3 : currClose;
-                    const prev3Closes = bars.slice(-4, -1).map(b => number(b.close)).filter(v => v !== null);
-                    const prevMa3 = prev3Closes.length === 3 ? (prev3Closes[0] + prev3Closes[1] + prev3Closes[2]) / 3 : prevClose;
-
-                    // 🚀 核心敏捷中軌通道定位（2026-10-31 最高授權：徹底杜絕標籤滯後延誤開平倉）：
-                    // 價格與 MA3 在 KC 中軌之上（上半通道）為多頭推進區（牛市）
-                    // 價格與 MA3 在 KC 中軌之下（下半通道）為空頭推進區（熊市）
-
-                    // 1. 熊市判定 (Bearish): 最新收盤價跌破中軌且 MA3 在中軌之下或向下拐頭
-                    if (currClose !== null && currMid !== null && currMa3 !== null) {
-                        if ((currClose <= currMid && currMa3 <= currMid) || (currClose < currMid && (prevMa3 === null || currMa3 <= prevMa3)) || (currMa3 < currMid && (prevMa3 === null || currMa3 <= prevMa3))) {
-                            return 'bear';
-                        }
-                    }
-
-                    // 2. 牛市判定 (Bullish): 最新收盤價站上中軌且 MA3 在中軌之上或向上拐頭
-                    if (currClose !== null && currMid !== null && currMa3 !== null) {
-                        if ((currClose >= currMid && currMa3 >= currMid) || (currClose > currMid && (prevMa3 === null || currMa3 >= prevMa3)) || (currMa3 > currMid && (prevMa3 === null || currMa3 >= prevMa3))) {
-                            return 'bull';
-                        }
-                    }
-
-                    // 3. 邊界走平或回踩：若 MA3 在中軌附近黏合，參考後端趨勢
-                    if (backendTrend === 'bull' || backendTrend === 'bear') {
-                        return backendTrend;
-                    }
-
+                    const bars = data.filter(bar => bar.is_live === false);
+                    if (bars.length < 2) return 'wait';
+                    const previous = bars[bars.length - 2];
+                    const current = bars[bars.length - 1];
+                    const currMid = number(current.kc_middle);
+                    const prevMid = number(previous.kc_middle);
+                    const prevTime = number(previous.time);
+                    const currTime = number(current.time);
+                    if (currMid === null || prevMid === null || currMid <= 0 || prevMid <= 0
+                            || prevTime === null || currTime === null || currTime - prevTime !== 60) return 'wait';
                     if (currMid > prevMid) return 'bull';
                     if (currMid < prevMid) return 'bear';
                     return 'range';
@@ -1364,9 +1333,9 @@
                 },
                 getChartMarketLabel(symbol) {
                     return {
-                        BULL: '大週期牛市 (順勢做多)',
-                        BEAR: '大週期熊市 (順勢做空)',
-                        RANGE: '猴市 (區間盤整)',
+                        BULL: 'KC 向上 (只評估多單)',
+                        BEAR: 'KC 向下 (只評估空單)',
+                        RANGE: 'KC 持平 (不開新倉)',
                         TREND: '趨勢確認中',
                         WAIT: '等待判定',
                     }[this.getChartMarketMode(symbol)];

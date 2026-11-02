@@ -272,3 +272,87 @@ Doji PASS refers only to the existing approved specification/static helper trace
 
 - The Owner subsequently selected `publish_restart`, explicitly authorizing commit, GitHub publication, and restart of the KC-reversal-only policy and its necessary previously uncommitted KC-wave dependencies. Exclude unrelated red-eye/tiered-profit/trend-lock test edits, telemetry, account files, databases, and environment settings.
 - The final close-boundary diagnostics now name confirmed KC reversal rather than implying profit-lock authority remains valid. Validate the exact staged tree before publication. WAIT remains untouched and not activated; its previously recorded NOT_TESTED runtime gates and `TRADING_GATE = BLOCK` remain unchanged.
+- The subsequent KC entry-direction patch below is a separate source change and does not inherit publication/restart authorization.
+
+### [2026-11-02] - Completed KC direction for entries and chart labels
+
+- The Owner requested correction after reviewing the difference between bull/bear regime filtering and KC direction. Entry direction now compares the latest two explicitly completed KC middle values: increasing permits LONG evaluation only, decreasing permits SHORT evaluation only, and flat/unavailable data blocks new entries. This is a direction filter, not an unconditional order trigger.
+- The shared completed-candle helper rejects unknown finality, nonpositive/nonfinite middle values, duplicate/reversed timestamps, and inconsistent candle spacing. DataPipeline reports this one-bar closed slope and KC trend without overriding them from EMA60, price location, or higher-timeframe regimes. Its separate HTF macro field remains intact for existing emergency-exit evidence; no emergency authority is removed.
+- The execution pipeline no longer fetches 15-minute candles to authorize entry direction, consults old cached bull/bear state to retain direction, or changes direction from MA3/current-price location. Legacy downstream regime predicates share the completed KC direction. Entry metadata, the entry gate, consolidation blacklist, master funnel, and final math gate no longer impose an independent opposing macro-regime veto. Long-lookback KC/MA15 trend vetoes are removed from the fallback entry direction check; existing MA5/MA15, candle, breakout, squeeze/chop, distance, sizing, capital, claims, and account checks remain.
+- The final math gate enforces completed KC direction even for override-tagged entry classes. Live candles cannot reverse that direction. EntryGate now requires completed candle evidence rather than accepting a naked caller-supplied direction/slope.
+- The chart API uses the same completed KC comparison and returns `kc_direction` (`UP`, `DOWN`, `FLAT`, `UNKNOWN`); its legacy `macro_trend` response is a compatibility projection. Chart requests no longer write execution-manager trend state. Synthetic chart direction-veto diagnostics use completed KC, not the live midline. The UI displays KC up/down/flat/unavailable and ignores MA3, live-price direction, and old backend macro labels.
+- Validation: 666 tests passed in an isolated worktree source copy, covering all three symbols in both directions, conflicting HTF/cached labels, live-candle independence, invalid/flat evidence, final submission, account boundaries, chart API/UI, and existing KC exits. Python compilation and whitespace checks passed. The old bare-slope breakout fixture now supplies two explicitly completed KC values; the flat-market test explicitly verifies rejection before method evaluation. No price/body/distance thresholds were relaxed to make tests pass.
+- After synchronizing the additional synthetic chart-veto diagnostic, its affected direction/chart selection was revalidated: 63 passed. Test isolation explicitly creates/removes the optional engine diagnostic cache without touching runtime state.
+- Expanded legacy compatibility initially reported 294 passed / 17 failed. Archived published HEAD independently reported 295 passed / 16 failed with the same 16 failure identities; the additional failure was the bare-slope fixture updated above and is included in the passing focused selection. The remaining 16 existing failures are not a full-suite success. The historical Channel Swing/position-path/execution test files remain absent.
+- No commit, push, deployment, restart, account reset, manual order, or historical-signal backfill is authorized or performed by this source patch. The running service has not been restarted onto it; source tests do not establish runtime adoption or any successful live entry. Existing unrelated dirty files are preserved.
+
+Mandatory WAIT review for this patch:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is the existing specification/static-helper trace only. WAIT remains unimplemented/unverified in this patch; the readiness BLOCK does not mean the existing service was stopped.
+
+### [2026-11-02] - Repairing the reported compatibility failures
+
+- The Owner requested fixes for the 16 failures reported above. The three original failing modules now pass within a combined 21-module regression selection: **748 passed, 0 failed**, with four existing FastAPI lifecycle deprecation warnings. This is a scoped regression result, not a claim that the entire repository passes.
+- Corrected fixtures to provide explicit completed-candle evidence, valid current KC/MA5/MA15 paths, and isolated paper-account/audit state. Tests no longer depend on shared persisted account files or expect superseded EMA40/profit-lock exits. Updated the extended final-math tests to require completed KC evidence while allowing the absence of an independent macro label. No entry threshold, pattern whitelist, sizing, leverage, or account risk parameter was relaxed.
+- Fixed an uninitialized `strong_peak_reversal` in the legacy LONG evaluator using the matching complete reversal predicate rather than a constant fallback. The public ordinary-exit policy still requires confirmed completed KC midline reversal; this fix does not reactivate ordinary pivot or profit-lock exits.
+- Preserved confirmed absolute-safety reasons through the execution pipeline and common account close path. Legacy ordinary-exit logic can no longer overwrite them with a nonauthorized trend-line reason. The final mathematical/account close gate still validates market evidence: a fabricated emergency label with an inside-channel quote is rejected. Regressions cover hard stop, opposite-band breach, and waterfall, LONG/SHORT independently for 1000PEPE, lobster, and CAP.
+- Completed paper order-audit stages 3 and 4 around simulated execution and persisted position creation. Both LONG and SHORT success tests verify all five stages, one signal identity, positive filled quantity, and persisted positions. Simulated confirmations explicitly use `PAPER_FILLED` and a `PAPER_` order identity; these are not exchange fills.
+- Extended close-deduplication coverage exposed a coupled retry bug: the confirmed-KC reason was missing from an old strategy-reason prefix list, allowing a strategy call using `is_manual=True` to bypass the existing failed-close cooldown. Only the exact actual manual-close reason now qualifies for that manual exemption. LONG/SHORT tests verify one failed submission during cooldown, successful genuine manual override, and rejection of obsolete middle/profit-lock exits before any order or retry cooldown is created. Existing hard-stop priority remains unchanged.
+- Macro-aligned opposite-band tests explicitly supply the desired HTF context; their 1-minute fixture is not proof of the historical runtime macro classification. A separate test verifies that the 2-percent account hard stop takes precedence when it is also reached.
+- Python compilation and `git diff --check` passed. Tests ran in an isolated source copy without runtime credentials or account data. No commit, push, deployment, restart, account reset, or live order was performed; source validation does not establish adoption by the running service. Unrelated dirty files remain untouched.
+
+Mandatory WAIT review for this repair:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+DEPLOY_AUTHORIZED = NO
+RESTART_AUTHORIZED = NO
+LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static-helper evidence only, not runtime verification. WAIT implementation and operation are outside this repair's scope and remain unverified. Readiness BLOCK does not indicate that the existing service was stopped.
+
+### [2026-11-02] - KC direction and failure-repair publication authorization
+
+- The Owner explicitly requested deployment, restart, commit, and GitHub publication of the completed KC-direction changes and failure repairs. This grants publication and restart authority for those changes only; it does not authorize WAIT changes or activation, account reset, manual entries, or changes to capital/leverage.
+- Include only the reviewed implementation, directly related regression tests, chart direction display, and this log. Exclude unrelated red-eye/tiered-profit/trend-lock edits, telemetry, account files, databases, and environment settings. Validate the exact staged source snapshot before committing and pushing, then restart the existing `binance-8006.service`.
+- Verify the replacement service process, HTTP readiness, and startup journal without calling status/price endpoints that mutate account state. The preceding WAIT review remains unchanged: all WAIT runtime gates are NOT_TESTED, Doji PASS is specification/static evidence only, and `TRADING_GATE = BLOCK`. The deployment authorization is not proof of WAIT production readiness.

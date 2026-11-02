@@ -6,16 +6,24 @@ Path: tests/test_central_entry_gate_e2e.py
 import pytest
 import pandas as pd
 import time
-import os
 import json
 
 from core.paper_account import PaperAccount
-from core.gates.central_entry_gate import CentralEntryGate
-from core.services.order_audit_trail import OrderAuditTrail, AUDIT_LOG_FILE
+from core.services.entry_methods import KC_TWO_BAR_BREAKOUT, evaluate_entry_method
+from test_entry_methods import method_context, post_close_market
+
+
+@pytest.fixture(autouse=True)
+def isolated_account_state(monkeypatch, tmp_path):
+    monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path / "paper.json"))
+    monkeypatch.setattr(
+        "core.services.order_audit_trail.AUDIT_LOG_FILE",
+        str(tmp_path / "audit.jsonl"),
+    )
 
 
 def _create_mock_candles(n=30, side="LONG", closed=True):
-    now_ms = time.time() * 1000.0
+    now_ms = int(time.time() // 60) * 60_000 - 60_000
     rows = []
     base = 100.0
     for i in range(n):
@@ -30,16 +38,16 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "atr": 2.0,
             "kc_upper": 104.0,
             "kc_lower": 96.0,
-            "kc_middle": 100.0 + i * 0.05,
+            "kc_middle": 99.0 + i * 0.02,
             "kc_middle_slope": 0.3 if side == "LONG" else -0.3,
             "ma5": 100.5,
-            "ma15": 99.0 + i * 0.02,
+            "ma15": 98.0 + i * 0.01,
             "ma3": 100.2 + i * 0.1,
             "macro_trend": "BULLISH" if side == "LONG" else "BEARISH",
         })
-    # 設定倒數第二根為金叉前狀態 (ma5 < ma15)，確保最新一根為剛金叉
+    # Keep unrelated direction/chop checks valid before exercising the target gate.
     if side == "LONG":
-        rows[-2]["ma5"] = 98.0
+        rows[-2]["ma5"] = 100.5
         rows[-2]["ma15"] = 98.2
         rows[-2]["kc_middle"] = 99.8
         # 最後一根通道擴張 (width=10.0 vs min_prev=8.0 -> 25% expansion >= 5%)
@@ -56,7 +64,7 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "kc_lower": 95.0,
             "kc_middle": 100.0,
             "kc_middle_slope": 0.25,  # >= 0.1 * 2.0 = 0.2
-            "ma5": 101.5,  # > 98.5
+            "ma5": 101.5,
             "ma15": 98.5,
             "ma3": 101.8,
             "macro_trend": "BULLISH",
@@ -80,7 +88,12 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "ma3": 98.8,
             "macro_trend": "BEARISH",
         }
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs.update(
+        timeframe_ms=60_000, snapshot_ms=now_ms + 60_000,
+        entry_finality_verified=closed,
+    )
+    return frame
 
 
 @pytest.mark.anyio
@@ -135,28 +148,39 @@ async def test_open_position_blocked_when_kc_slope_insufficient():
 
 
 @pytest.mark.anyio
-async def test_open_position_success_records_5_stages_audit():
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_open_position_success_records_5_stages_audit(side, tmp_path):
     """驗證開倉路徑：合規開倉通過並完整寫入 5 大階段 signal_id 審計"""
     account = PaperAccount()
     account.balance = 1000.0
     account.available_balance = 1000.0
     
-    valid_df = _create_mock_candles(30, side="LONG", closed=True)
-    valid_df.attrs["entry_finality_verified"] = True
-    valid_df.attrs["timeframe_ms"] = 60_000
+    valid_df = post_close_market(side)
+    now_ms = int(time.time() // 60) * 60_000
+    valid_df["timestamp"] += now_ms - 60_000 - int(valid_df.iloc[-1]["timestamp"])
+    valid_df.loc[valid_df.index[-1], "volume"] = 150.0
+    valid_df.attrs.update(
+        entry_finality_verified=True, timeframe_ms=60_000, snapshot_ms=now_ms,
+    )
     async def mock_provider(s, **kwargs):
         return valid_df
     account.entry_frame_provider = mock_provider
     
     bar_id = float(valid_df.iloc[-1]["timestamp"])
+    price = float(valid_df.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        valid_df, symbol="LOBSTER/USDT", quote=price, expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
     entry_context = {
+        **method_context(signal),
         "frame": valid_df,
         "entry_gate_frame": valid_df,
         "entry_timeframe_ms": 60_000,
         "entry_mode": "WILD_SWING",
         "source": "UNIFIED_PIPELINE",
         "entry_pattern": "BREAKOUT",
-        "structure_confirmation": "BREAKOUT",
+        "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
         "channel_confirmation_bar_id": bar_id,
         "bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
@@ -167,8 +191,8 @@ async def test_open_position_success_records_5_stages_audit():
     # 清空或標記測試前的 audit log
     opened = await account.open_position(
         symbol="LOBSTER/USDT",
-        side="LONG",
-        price=102.0,
+        side=side,
+        price=price,
         amount_usdt=50.0,
         sl=0.0,
         tp=0.0,
@@ -178,15 +202,20 @@ async def test_open_position_success_records_5_stages_audit():
     assert opened is True
     assert "LOBSTER/USDT" in account.positions
     
-    # 檢查 account.logs 中是否有 5 個審計階段日誌
-    logs_text = [l.get("text", "") for l in account.logs]
-    has_stage1 = any("1_SIGNAL_GEN" in t for t in logs_text)
-    has_stage2 = any("2_ENTRY_GATE_EVAL" in t for t in logs_text)
-    has_stage5 = any("5_POSITION_SYNC" in t for t in logs_text)
-    
-    assert has_stage1, "Stage 1 (SIGNAL_GEN) missing from audit trail!"
-    assert has_stage2, "Stage 2 (ENTRY_GATE_EVAL) missing from audit trail!"
-    assert has_stage5, "Stage 5 (POSITION_SYNC) missing from audit trail!"
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert [event["stage"] for event in events] == [
+        "1_SIGNAL_GEN", "2_ENTRY_GATE_EVAL", "3_ORDER_DISPATCH",
+        "4_EXCHANGE_RETURN", "5_POSITION_SYNC",
+    ]
+    assert len({event["signal_id"] for event in events}) == 1
+    assert all(event["symbol"] == "LOBSTER/USDT" and event["side"] == side for event in events)
+    assert events[1]["data"]["passed"] is True
+    assert events[3]["data"]["filled_qty"] > 0
+    assert events[3]["data"]["status"] == "PAPER_FILLED"
+    assert events[3]["data"]["order_id"].startswith("PAPER_")
+    assert account.positions["LOBSTER/USDT"]["side"] == side
+    saved = json.loads((tmp_path / "paper.json").read_text())
+    assert saved["positions"]["LOBSTER/USDT"]["side"] == side
 
 
 @pytest.mark.anyio

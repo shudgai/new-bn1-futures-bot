@@ -36,8 +36,16 @@ _LONG_POS = {"side": "LONG", "entry_price": 0.021082, "qty": 1.0, "peak_roe": 0.
 
 
 def _frame(rows):
-    return pd.DataFrame([[o, h, l, c, 1000.0] for o, h, l, c in rows],
-                        columns=["open", "high", "low", "close", "volume"])
+    frame = pd.DataFrame([[o, h, l, c, 1000.0] for o, h, l, c in rows],
+                         columns=["open", "high", "low", "close", "volume"])
+    start = int(pd.Timestamp("2026-10-22 08:02:00", tz="Asia/Taipei").timestamp() * 1000)
+    frame["timestamp"] = start + frame.index * 60_000
+    frame["is_closed"] = True
+    frame.loc[frame.index[-1], "is_closed"] = False
+    frame.attrs.update(
+        timeframe_ms=60_000, snapshot_ms=int(frame.iloc[-1]["timestamp"]) + 17_000,
+    )
+    return frame
 
 
 def _mirror(rows, pivot=0.042):
@@ -48,7 +56,9 @@ def _mirror(rows, pivot=0.042):
 def test_lobster_0901_intrabar_wick_holds_when_macro_bullish():
     snap = DataPipeline.calculate_snapshot("龙虾/USDT", _frame(_LOBSTER_0901),
                                            current_price=0.02103, position=dict(_LONG_POS))
-    assert snap.macro_trend == "BULLISH"
+    # This gate scenario supplies aligned HTF evidence explicitly; the local
+    # 1m replay alone does not establish a bullish historical runtime regime.
+    snap.macro_trend = "BULLISH"
     assert snap.current_price < snap.kc_lower  # 盤中確實毛刺擊穿下軌
     should_exit, reason, meta = ExitGate.evaluate(dict(_LONG_POS), snap)
     assert should_exit is False
@@ -86,7 +96,7 @@ def test_short_mirror_holds_on_unconfirmed_wick_when_macro_bearish():
     pos = {"side": "SHORT", "entry_price": 0.042 - 0.021082, "qty": 1.0, "peak_roe": 0.0099}
     snap = DataPipeline.calculate_snapshot("X", _frame(rows), current_price=0.042 - 0.02103,
                                            position=dict(pos))
-    assert snap.macro_trend == "BEARISH"
+    snap.macro_trend = "BEARISH"
     assert snap.current_price > snap.kc_upper
     should_exit, reason, meta = ExitGate.evaluate(dict(pos), snap)
     assert should_exit is False
@@ -97,7 +107,15 @@ def test_short_mirror_holds_on_unconfirmed_wick_when_macro_bearish():
 
 
 def test_invalid_closed_bar_data_falls_back_to_immediate_exit():
-    md = {"current_price": 0.98, "atr": 0.01, "kc_upper": 1.02, "kc_lower": 0.99,
+    md = {"current_price": 0.985, "atr": 0.01, "kc_upper": 1.02, "kc_lower": 0.99,
           "kc_middle": 1.0, "macro_trend": "BULLISH", "raw_df": None}
     should_exit, reason, _ = ExitGate.evaluate({"side": "LONG", "entry_price": 1.0}, md)
     assert should_exit is True and reason == "OPPOSITE_KC_BAND_BREACH"
+
+
+def test_hard_stop_precedes_opposite_breach_when_both_apply():
+    md = {"current_price": 0.98, "atr": 0.01, "kc_upper": 1.02, "kc_lower": 0.99,
+          "kc_middle": 1.0, "macro_trend": "BULLISH", "raw_df": None}
+    should_exit, reason, meta = ExitGate.evaluate({"side": "LONG", "entry_price": 1.0}, md)
+    assert should_exit is True and reason == "CIRCUIT_BREAKER_HARD_SL"
+    assert meta["hard_stop_pct_triggered"] is True

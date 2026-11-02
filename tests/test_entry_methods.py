@@ -670,7 +670,7 @@ def test_location_rejection_allows_independent_pipeline_entry(
     assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" in caplog.text
 
 
-def test_location_rejection_is_preserved_when_no_alternative_qualifies(monkeypatch):
+def test_flat_kc_blocks_before_method_or_alternative_evaluation(monkeypatch):
     from core.services.execution_manager import ExecutionManager
 
     market = pd.DataFrame([
@@ -698,7 +698,11 @@ def test_location_rejection_is_preserved_when_no_alternative_qualifies(monkeypat
         symbol="CAP/USDT", engine_or_account=SimpleNamespace(positions={}),
         klines_df=market, quote=100,
     ))
-    assert actual == rejected
+    assert actual == {
+        "status": "VETO", "symbol": "CAP/USDT",
+        "reason": "BLOCKED_ENTRY_KC_DIRECTION_FLAT",
+    }
+    ExecutionManager._evaluate_closed_entry_methods.assert_not_awaited()
     submit.assert_not_awaited()
 
 

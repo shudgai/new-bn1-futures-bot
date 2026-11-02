@@ -1146,6 +1146,16 @@ class PaperAccount:
                 "WARNING",
             )
             return False
+        OrderAuditTrail.record_order_dispatch(
+            symbol=symbol,
+            side=side,
+            signal_id=signal_id,
+            amount_usdt=amount_usdt,
+            leverage=leverage,
+            quote_price=price,
+            in_position=is_top_up,
+            account=self,
+        )
         self.balance -= (amount_usdt + fee)
 
         entry_context = {
@@ -1278,6 +1288,16 @@ class PaperAccount:
             "SUCCESS",
         )
         self.save_state()
+        OrderAuditTrail.record_exchange_return(
+            symbol=symbol,
+            side=side,
+            signal_id=signal_id,
+            order_id="PAPER_" + signal_id,
+            status="PAPER_FILLED",
+            filled_qty=qty,
+            avg_price=execution_price,
+            account=self,
+        )
         # ──【全鏈路審計階段 5：持倉狀態同步】──
         OrderAuditTrail.record_position_sync(
             symbol=symbol,

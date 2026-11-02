@@ -111,6 +111,28 @@ def closed_entry_candles(frame: Optional[pd.DataFrame]) -> pd.DataFrame:
     return result
 
 
+def confirmed_kc_midline_slope(frame: Optional[pd.DataFrame]) -> Optional[float]:
+    """Compare only the latest two explicitly completed KC basis values."""
+    if not isinstance(frame, pd.DataFrame):
+        return None
+    closed = closed_entry_candles(frame)
+    if len(closed) < 2 or not {"timestamp", "kc_middle"}.issubset(closed.columns):
+        return None
+    try:
+        values = closed.iloc[-2:][["timestamp", "kc_middle"]].to_numpy(dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not np.isfinite(values).all() or (values <= 0).any():
+        return None
+    interval = frame.attrs.get("timeframe_ms", 60_000)
+    if not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval <= 0:
+        return None
+    delta = values[1, 0] - values[0, 0]
+    if delta not in (interval, interval / 1000):
+        return None
+    return float(values[1, 1] - values[0, 1])
+
+
 def log_entry_gate(engine, symbol, side, stage, reason, bar_id=None, **details):
     """Bounded last-decision cache: expose silent gates without per-tick spam."""
     cache = getattr(engine, "_entry_gate_diagnostics", None)

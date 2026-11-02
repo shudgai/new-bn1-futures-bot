@@ -44,7 +44,7 @@ class MarketDataSnapshot:
     prev_ma3: float = 0.0             # 前一根 MA 3
     prev_ma15: float = 0.0            # 前一根 MA 15
     ma3_slope: float = 0.0            # MA 3 斜率 (當前 - 前一根)
-    kc_trend: str = "NEUTRAL"         # KC slope plus closed-bar price location
+    kc_trend: str = "NEUTRAL"         # Latest two completed KC basis values only
     ema200: float = 0.0               # EMA 200 大趨勢基底
     volume_ma20: float = 0.0          # 成交量 20 期均量
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
@@ -100,7 +100,7 @@ class DataPipeline:
         if df is None or len(df) < 20:
             return None
 
-        from core.services.candle_data import closed_entry_candles
+        from core.services.candle_data import closed_entry_candles, confirmed_kc_midline_slope
 
         # 1. 建立通過收線驗證與完整性檢查的 closed_df (統一收線基準，杜絕 live bar 污染)
         closed_df = closed_entry_candles(df)
@@ -242,9 +242,12 @@ class DataPipeline:
         kc_low = float(kc_lower_series.iloc[-1]) if not pd.isna(kc_lower_series.iloc[-1]) else curr_k["close"]
 
         prev_kc_mid = float(kc_basis.iloc[-2]) if len(kc_basis) >= 2 else kc_mid
-        closed_slope_base = float(kc_basis.iloc[-3]) if len(kc_basis) >= 3 else prev_kc_mid
-        n_kc_step = 2 if len(kc_basis) >= 3 else 1
-        kc_middle_slope = (kc_mid - closed_slope_base) / n_kc_step
+        confirmed_slope = confirmed_kc_midline_slope(closed_df_with_ind)
+        kc_middle_slope = confirmed_slope if confirmed_slope is not None else 0.0
+        kc_trend = (
+            "BULLISH" if kc_middle_slope > 0
+            else "BEARISH" if kc_middle_slope < 0 else "NEUTRAL"
+        )
         closed_price = curr_k["close"]
 
         # ─── 拉遠視角 (Zoomed-Out 10~60 根 K 棒) 結構與趨勢審查 ───
@@ -258,19 +261,6 @@ class DataPipeline:
         # 若拉遠看 EMA60 向下且價格或慢線位於 EMA60 之下（或 10 根 KC 中軌斜率向下），屬於空頭結構反彈，絕不可標記為 BULLISH！
         zoomed_out_bearish = (ema60_slope_10 < 0 and (closed_price < ema60_early or ema_slow < ema60_early)) or (kc_slope_10 < 0 and closed_price < ema60_early)
         zoomed_out_bullish = (ema60_slope_10 > 0 and (closed_price > ema60_early or ema_slow > ema60_early)) or (kc_slope_10 > 0 and closed_price > ema60_early)
-
-        if zoomed_out_bearish and kc_middle_slope > 0 and closed_price < ema60_early:
-            # 空頭趨勢中的短線反彈，壓制虛假微正斜率，維持空頭判定
-            kc_trend = "BEARISH"
-        elif zoomed_out_bullish and kc_middle_slope < 0 and closed_price > ema60_early:
-            # 多頭趨勢中的短線回踩，壓制虛假微負斜率，維持多頭判定
-            kc_trend = "BULLISH"
-        else:
-            kc_trend = (
-                "BULLISH" if kc_middle_slope > 0 and closed_price >= kc_mid and not zoomed_out_bearish
-                else "BEARISH" if kc_middle_slope < 0 and closed_price <= kc_mid and not zoomed_out_bullish
-                else ("BEARISH" if zoomed_out_bearish else ("BULLISH" if zoomed_out_bullish else "NEUTRAL"))
-            )
 
         ema5_val = float(ema5_series.iloc[-1]) if not pd.isna(ema5_series.iloc[-1]) else curr_k["close"]
         ema13_val = float(ema13_series.iloc[-1]) if not pd.isna(ema13_series.iloc[-1]) else curr_k["close"]
@@ -347,10 +337,7 @@ class DataPipeline:
         macro_slope = macro_slope_10
         slow_slope_5 = slow_slope_10
 
-        # KC labels require both slope and price location; a lagging middle
-        # line cannot keep its old directional label after price crosses it.
-        kc_trend_up = kc_trend == "BULLISH"
-        kc_trend_down = kc_trend == "BEARISH"
+        # Retain the separate HTF regime for existing emergency-exit evidence.
         is_htf_bull = (
             not zoomed_out_bearish
             and (
