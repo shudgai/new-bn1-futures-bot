@@ -3,6 +3,9 @@
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
+from core.gates.meme_entry_policy import (
+    MAX_CONTINUATION_BARS, MAX_EXTENSION_ATR, uses_relaxed_entry_limits,
+)
 
 
 INITIAL_2BAR_BREAKOUT = "INITIAL_2BAR_BREAKOUT"
@@ -46,9 +49,7 @@ PURE_MATH_ENTRY_CONFIRMATIONS = frozenset({
     "CONTINUATION",
 })
 
-# ── 防追高/追低：開倉位置精確度限制（2026-10-20 使用者授權） ──
-# 延續開倉只允許在剛破軌的前 N 根已收線內；延續與兩根確認破軌開倉，
-# 最新價距同側外軌不得超過 0.5 ATR、距 MA5 不得超過 1 ATR，超過即不追。
+# Generic limits remain unchanged; PEPE/Lobster use the shared approved policy.
 LATE_CHASE_GUARDED_TYPES = frozenset({
     CONTINUATION_OUTSIDE_KC,
     CONFIRMED_2BAR_BREAKOUT,
@@ -97,6 +98,7 @@ class BreakoutContinuationEntryGate:
         kc_lower: Sequence[float],
         *,
         tick_price: Optional[float] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[str]:
         """Return a block reason when the entry is too late/extended, else None."""
         entry_type = candidate.get("type")
@@ -125,17 +127,21 @@ class BreakoutContinuationEntryGate:
         # Use the most extended of (signal close, latest quote) so a quote
         # that has already run away is also rejected at final revalidation.
         price = max(prices) if is_long else min(prices)
+        relaxed = uses_relaxed_entry_limits(symbol)
+        band_limit = MAX_EXTENSION_ATR if relaxed else MAX_BAND_EXTENSION_ATR
+        ma5_limit = MAX_EXTENSION_ATR if relaxed else MAX_MA5_DISTANCE_ATR
+        continuation_limit = MAX_CONTINUATION_BARS if relaxed else CONTINUATION_MAX_BARS_OUTSIDE
         band_extension = (price - band) if is_long else (band - price)
-        if band_extension > MAX_BAND_EXTENSION_ATR * atr:
+        if band_extension > band_limit * atr:
             return (
                 f"LATE_CHASE_BAND_EXTENSION {band_extension / atr:.2f}ATR"
-                f" > {MAX_BAND_EXTENSION_ATR}ATR"
+                f" > {band_limit}ATR"
             )
         ma5_distance = abs(price - ma5)
-        if ma5_distance > MAX_MA5_DISTANCE_ATR * atr:
+        if ma5_distance > ma5_limit * atr:
             return (
                 f"LATE_CHASE_MA5_DISTANCE {ma5_distance / atr:.2f}ATR"
-                f" > {MAX_MA5_DISTANCE_ATR}ATR"
+                f" > {ma5_limit}ATR"
             )
         if entry_type == CONTINUATION_OUTSIDE_KC:
             bars_outside = 0
@@ -150,10 +156,10 @@ class BreakoutContinuationEntryGate:
                 if not outside:
                     break
                 bars_outside += 1
-            if bars_outside > CONTINUATION_MAX_BARS_OUTSIDE:
+            if bars_outside > continuation_limit:
                 return (
                     f"LATE_CHASE_STALE_CONTINUATION bars_outside={bars_outside}"
-                    f" > {CONTINUATION_MAX_BARS_OUTSIDE}"
+                    f" > {continuation_limit}"
                 )
         return None
 
@@ -169,6 +175,7 @@ class BreakoutContinuationEntryGate:
         *,
         tick_price: Optional[float] = None,
         live_candle: Optional[Mapping[str, Any]] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Evaluate entry patterns, then reject late/over-extended chases."""
         candidate = cls._evaluate_pure_math_raw(
@@ -179,6 +186,7 @@ class BreakoutContinuationEntryGate:
             return None
         block_reason = cls.late_chase_block_reason(
             candidate, closed_klines, kc_upper, kc_lower, tick_price=tick_price,
+            symbol=symbol,
         )
         if block_reason is not None:
             import logging
@@ -873,6 +881,7 @@ class BreakoutContinuationEntryGate:
         *,
         tick_price: Optional[float] = None,
         live_candle: Optional[Mapping[str, Any]] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Re-derive the two-bar break, including a live second candle."""
         if confirmation not in {
@@ -899,6 +908,7 @@ class BreakoutContinuationEntryGate:
                 [row["ma15"] for row in closed_klines],
                 tick_price=tick_price,
                 live_candle=live_candle,
+                symbol=symbol,
             )
         except (KeyError, TypeError, IndexError):
             return None
@@ -1152,6 +1162,8 @@ class BreakoutContinuationEntryGate:
         has_position: bool = False,
         ma5_series: Optional[Sequence[float]] = None,
         ma15_series: Optional[Sequence[float]] = None,
+        *,
+        symbol: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Evaluate the closed-candle two-bar KC breakout gate."""
         if has_position or ma5_series is None or ma15_series is None:
@@ -1163,4 +1175,5 @@ class BreakoutContinuationEntryGate:
             kc_basis,
             ma5_series,
             ma15_series,
+            symbol=symbol,
         )

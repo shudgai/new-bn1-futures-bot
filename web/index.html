@@ -491,9 +491,12 @@
                     <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
                         {{ isTogglingBot ? '處理中...' : (bot.is_running ? '🔄 重新啟動交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
-                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting || !canResetAccount" :style="{ opacity: isResetting || !canResetAccount ? 0.6 : 1, cursor: isResetting || !canResetAccount ? 'not-allowed' : 'pointer' }">
                         🔄 重置帳戶（清空損益與記錄）
                     </button>
+                    <p v-if="!canResetAccount" style="font-size:12px; color:var(--muted); margin:8px 0 0;">
+                        目前帳戶不支援本機重置；此按鈕僅適用紙上模擬，不會重設交易所餘額或持倉。
+                    </p>
                 </div>
 
                 <!-- MANUAL ORDER PANEL -->
@@ -742,6 +745,12 @@
                 }
             },
             computed: {
+                canResetAccount() {
+                    if (typeof this.bot.reset_account_supported === 'boolean') {
+                        return this.bot.reset_account_supported;
+                    }
+                    return this.bot.paper_trading === true;
+                },
                 newestLogs() {
                     if (!this.bot || !Array.isArray(this.bot.logs)) return [];
                     // Persisted logs may not retain insertion order after a restart.
@@ -1639,21 +1648,36 @@
                     }
                 },
                 async authorizedFetch(url, options = {}) {
-                    options.headers = {
-                        ...options.headers,
-                        'x-api-key': 'local_dev_bypass'
-                    };
-                    const res = await fetch(url, options);
-                    if (!res.ok) {
-                        let detail = `操作失敗（HTTP ${res.status}）`;
-                        try {
-                            const payload = await res.json();
-                            detail = payload.detail || detail;
-                        } catch (e) {}
-                        window.alert(detail);
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 20000);
+                    try {
+                        const res = await fetch(url, {
+                            ...options,
+                            headers: { ...options.headers, 'x-api-key': 'local_dev_bypass' },
+                            signal: controller.signal,
+                        });
+                        if (!res.ok) {
+                            let detail = `操作失敗（HTTP ${res.status}）`;
+                            try {
+                                const payload = await res.json();
+                                detail = payload.detail || detail;
+                            } catch (e) {
+                                console.error('Failed to parse operation error', e);
+                            }
+                            window.alert(detail);
+                            return null;
+                        }
+                        return res;
+                    } catch (e) {
+                        console.error('Operation request failed', e);
+                        window.alert(
+                            (e.name === 'AbortError' ? '操作逾時' : '無法連線至伺服器')
+                            + '；結果尚未確認，請先查看持倉與系統日誌，勿重複送單。'
+                        );
                         return null;
+                    } finally {
+                        clearTimeout(timeout);
                     }
-                    return res;
                 },
                 async toggleBot() {
                     if (this.isTogglingBot) return;
@@ -1714,6 +1738,10 @@
                     }
                 },
                 async resetAccount() {
+                    if (!this.canResetAccount) {
+                        window.alert('目前帳戶不支援本機重置；交易所餘額與持倉不會被清除。');
+                        return;
+                    }
                     const confirmed = window.confirm(
                         '⚠️ 確定要重置帳戶嗎？\n\n這將清空所有：\n• 交易記錄\n• 損益數據\n• 當前持倉\n\n此操作無法復原！'
                     );

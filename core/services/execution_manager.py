@@ -2341,6 +2341,7 @@ class ExecutionManager:
         # 優先級 3：MA3 穿 KC 中軌 / MA3 與 MA15 交叉動能開倉
         # 優先級 4：順勢通道延續開倉
         # =========================================================================
+        method_rejection: Optional[Dict[str, Any]] = None
         if not has_position:
             method_result = await cls._evaluate_closed_entry_methods(
                 symbol=symbol,
@@ -2351,7 +2352,24 @@ class ExecutionManager:
                 macro_trend=macro_trend,
             )
             if method_result is not None:
-                return method_result
+                rejections = method_result.get("entry_rejections", [])
+                location_only_rejection = (
+                    method_result.get("status") == "VETO"
+                    and method_result.get("reason") == "BLOCKED_ENTRY_METHOD_MACRO_GATE"
+                    and bool(rejections)
+                    and all(
+                        rejection.get("reason")
+                        == "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
+                        for rejection in rejections
+                    )
+                )
+                if not location_only_rejection:
+                    return method_result
+                method_rejection = method_result
+                logger.info(
+                    "ENTRY_METHOD_ALTERNATIVE_EVALUATION symbol=%s rejections=%s",
+                    symbol, rejections,
+                )
 
             lookback_p = min(len(raw_df), 15) if raw_df is not None and isinstance(raw_df, pd.DataFrame) else 0
             if lookback_p >= 2:
@@ -3101,6 +3119,16 @@ class ExecutionManager:
                     logger.info(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！")
                     print(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！", flush=True)
                     return {"status": "ENTRY_EXECUTED", "symbol": symbol, "side": candidate_side, "entry_type": entry_type}
+                if method_rejection is not None:
+                    logger.warning(
+                        "ENTRY_METHOD_ALTERNATIVE_FINAL_VETO symbol=%s side=%s entry_type=%s",
+                        symbol, candidate_side, entry_type,
+                    )
+                    return {
+                        "status": "VETO", "symbol": symbol, "side": candidate_side,
+                        "reason": "PIVOT_ENTRY_FINAL_GATE_VETO", "success": False,
+                        "entry_rejections": method_rejection["entry_rejections"],
+                    }
                 logger.debug(f"⚠️ [PIVOT_ENTRY_FALLTHROUGH] {symbol} {entry_type} 未成交，繼續評估常規破軌/延續開倉引擎")
 
             # 若未觸發真峰谷起點，順暢承接常規開倉引擎（破軌開倉、MA3穿KC中軌、MA3/MA15交叉等）
@@ -4466,7 +4494,7 @@ class ExecutionManager:
                     logger.debug(f"🚫 [VETO] {symbol} {reason}")
                     return {"status": "VETO", "symbol": symbol, "reason": reason}
 
-        return {"status": "IDLE", "symbol": symbol}
+        return method_rejection or {"status": "IDLE", "symbol": symbol}
 
     _last_exit_record: Dict[str, Dict[str, Any]] = {}
     _last_trade_bar_time: Dict[str, int] = {}

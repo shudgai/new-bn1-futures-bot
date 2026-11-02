@@ -612,6 +612,7 @@ async def get_status(response: Response):
         "environment": effective_runtime_environment(),
         "paper_trading": PAPER_TRADING,
         "entry_submission_enabled": ENTRY_SUBMISSION_ENABLED,
+        "reset_account_supported": callable(getattr(engine.account, "reset_state", None)),
         "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
@@ -891,10 +892,14 @@ async def manual_close(req: ManualCloseRequest):
 @app.post("/api/reset_account")
 async def reset_account():
     """清空帳戶所有狀態（損益、交易記錄、持倉），重新從初始餘額開始。"""
-    if hasattr(engine.account, "reset_state"):
-        engine.account.reset_state()
+    reset_state = getattr(engine.account, "reset_state", None)
+    if callable(reset_state):
+        reset_state()
         return {"status": "success", "message": "帳戶已重置，損益與交易記錄已清空"}
-    raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
+    raise HTTPException(
+        status_code=501,
+        detail="此交易所帳戶不支援本機重置；本機操作不會清除交易所持倉或重設餘額。",
+    )
 
 
 async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bool):

@@ -181,6 +181,7 @@ def can_open_position(
                     entry_confirmation,
                     tick_price=live_quote if live_quote > 0 else None,
                     live_candle=live,
+                    symbol=symbol,
                 )
                 is not None
             )

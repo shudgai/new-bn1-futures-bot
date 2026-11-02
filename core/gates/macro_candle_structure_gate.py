@@ -25,6 +25,7 @@ from core.gates.breakout_continuation_entry_gate import (
     PURE_MATH_ENTRY_CONFIRMATIONS,
 )
 from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
+from core.gates.meme_entry_policy import is_exhausted_wick, uses_relaxed_entry_limits
 
 
 class MacroCandleStructureGate:
@@ -127,6 +128,8 @@ class MacroCandleStructureGate:
             return False, "VETO_INVALID_STRUCTURE_DATA"
 
         confirmation = str(structure_confirmation or "").upper()
+        relaxed = uses_relaxed_entry_limits(symbol)
+        relaxed_outer = relaxed and mode in {"BREAKOUT", "CONTINUATION"}
 
         # ═════════════════════════════════════════════════════════════════
         # 【進場前置過濾守衛 (Entry Pre-Filter)】
@@ -162,6 +165,10 @@ class MacroCandleStructureGate:
             if not prefilter_allowed:
                 return False, f"VETO_ENTRY_PREFILTER: {prefilter_reason}"
         if confirmation in PURE_MATH_ENTRY_CONFIRMATIONS:
+            if relaxed_outer and is_exhausted_wick(
+                upper_wick if side == "LONG" else lower_wick, body, candle_range,
+            ):
+                return False, f"VETO_{side}: K 棒末端長影線結構力竭"
             if side not in {"LONG", "SHORT"}:
                 return False, "UNKNOWN_SIDE"
             norm_mode = (
@@ -313,7 +320,11 @@ class MacroCandleStructureGate:
             ):
                 return False, "VETO_NUMERIC_KC_ENTRY_SHORT: MA5 未低於 MA15，非空頭排列"
         if mode == "BREAKOUT":
-            if side == "SHORT" and lower_wick / candle_range > 0.65:
+            if (
+                side == "SHORT"
+                and lower_wick / candle_range > 0.65
+                and not relaxed_outer
+            ):
                 return False, (
                     "VETO_BREAKOUT_SHORT: 下影線超過 K 棒區間 65%，"
                     "拒絕極端反彈長針"
@@ -453,7 +464,7 @@ class MacroCandleStructureGate:
                 if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
                 else self.max_bias_atr
             )
-            if bias_atr > max_bias_atr:
+            if not relaxed and bias_atr > max_bias_atr:
                 return False, f"VETO_LONG: 乖離過大 (Bias: {bias_atr:.2f}x ATR)，嚴禁追多"
 
             # 規則 3：頂部遇阻上影線不可做多
@@ -466,7 +477,7 @@ class MacroCandleStructureGate:
                 or (candle_range > 0 and lower_wick / candle_range > 0.40)
             ):
                 return False, "VETO_REVERSAL_LONG: 谷底長下影線未確認"
-            if (
+            long_wick_blocked = (
                 not pinbar_reversal
                 and not outer_pivot_ma_cross
                 and upper_wick > body * 1.5
@@ -479,7 +490,10 @@ class MacroCandleStructureGate:
                 and not outer_pivot_ma_cross
                 and candle_range > 0
                 and upper_wick / candle_range > 0.65
-            ):
+            )
+            if relaxed_outer:
+                long_wick_blocked = is_exhausted_wick(upper_wick, body, candle_range)
+            if long_wick_blocked:
                 return False, "VETO_LONG: K 棒受阻留長上影線，禁止開多"
             if (
                 outer_pivot_ma_cross
@@ -524,7 +538,7 @@ class MacroCandleStructureGate:
                 if mode in {"BREAKOUT", "CROSSOVER", "REVERSAL"}
                 else self.max_bias_atr
             )
-            if bias_atr > max_bias_atr:
+            if not relaxed and bias_atr > max_bias_atr:
                 return False, (
                     f"VETO_SHORT: 乖離過大 (Bias: {bias_atr:.2f}x ATR > "
                     f"{max_bias_atr:.2f}x ATR)，嚴禁追空"
@@ -541,11 +555,13 @@ class MacroCandleStructureGate:
                 return False, "VETO_REVERSAL_SHORT: 頂部長上影線未確認"
             if close < open_price and candle_range > 0:
                 wick_ratio = lower_wick / candle_range
+                if relaxed_outer and is_exhausted_wick(lower_wick, body, candle_range):
+                    return False, "VETO_SHORT: 陰線下影線結構力竭，禁止追空"
                 if outer_pivot_ma_cross and wick_ratio > 0.65:
                     return False, (
                         "VETO_CROSSOVER_SHORT: 峰谷交叉下影線超過 K 棒區間 65%"
                     )
-                if not outer_pivot_ma_cross and mode != "BREAKOUT" and (
+                if not relaxed_outer and not outer_pivot_ma_cross and mode != "BREAKOUT" and (
                     wick_ratio > 0.65
                     or (
                         mode in {"CROSSOVER", "REVERSAL"}

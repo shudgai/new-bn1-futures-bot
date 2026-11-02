@@ -1,3 +1,7 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pandas as pd
 import pytest
 
@@ -251,8 +255,8 @@ def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
         ("missing_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("nan_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("zero_ma5", False, "BREAKOUT_MA5_INVALID"),
-        ("bias", False, "MACRO_MA15_BIAS"),
-        ("wick", False, "MACRO_LONG_EXHAUSTION_WICK"),
+        ("bias", True, None),
+        ("wick", True, None),
     ],
 )
 def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_reason):
@@ -419,3 +423,328 @@ def test_method_revalidation_requires_same_event():
     )
     assert not allowed
     assert reason == "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
+
+
+def post_close_market(side):
+    rows = [
+        candle(1_260_000, opened=100, high=101.2, low=99.8, close=101,
+               upper=100.8, lower=98, middle=99.4, ma3=100.5, ma15=100,
+               ma5=100.4),
+        candle(1_320_000, opened=101, high=101.6, low=100.9, close=101.5,
+               upper=101, lower=98.2, middle=99.6, ma3=101, ma15=100.5,
+               ma5=100.6),
+    ]
+    history = []
+    for offset in range(20, 0, -1):
+        row = dict(rows[0], timestamp=(21 - offset) * 60_000, volume=100.0)
+        for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+                    "kc_upper", "kc_middle", "kc_lower"):
+            row[key] -= 0.01 * offset
+        history.append(row)
+    rows = history + rows
+    for row in rows:
+        row["volume"] = 100.0
+    if side == "SHORT":
+        for row in rows:
+            for key in ("open", "close", "ma3", "ma5", "ma15", "kc_middle"):
+                row[key] = 200 - row[key]
+            row["high"], row["low"] = 200 - row["low"], 200 - row["high"]
+            row["kc_upper"], row["kc_lower"] = (
+                200 - row["kc_lower"], 200 - row["kc_upper"],
+            )
+    market = frame(rows)
+    market.attrs["macro_trend"] = "BULLISH" if side == "LONG" else "BEARISH"
+    return market
+
+
+def method_context(signal, last_exit_timestamp=None):
+    return {
+        "entry_method_authority": signal["method"],
+        "entry_method_signal": signal,
+        "entry_method_bar_id": signal["confirmation_bar_id"],
+        "entry_method_event_id": signal["event_id"],
+        "entry_method_last_exit_timestamp": last_exit_timestamp,
+    }
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT", "1000PEPE/USDT"])
+def test_post_close_reentry_passes_shared_gates_outside_its_own_rail(side, symbol):
+    from core.gates.central_entry_gate import CentralEntryGate
+    from core.services.math_execution_gate import (
+        validate_entry_at_execution, validate_entry_math,
+    )
+
+    market = post_close_market(side)
+    quote = float(market.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol=symbol, last_exit_timestamp=1_265_000,
+        expected_method=POST_CLOSE_KC_REENTRY,
+    )
+    assert signal is not None
+    context = method_context(signal, 1_265_000)
+    allowed, reason = revalidate_entry_method(
+        market, symbol=symbol, side=side, quote=quote, context=context,
+    )
+    assert allowed, reason
+    market.attrs["entry_method_context"] = {"symbol": symbol, **context}
+    market.attrs["entry_method_quote"] = quote
+    allowed, reason = validate_entry_math(market, side)
+    assert allowed, reason
+    central = CentralEntryGate.verify_and_authorize(
+        symbol=symbol, side=side, price=quote, klines_or_snapshot=market,
+    )
+    assert central.passed, central.reason
+    account = SimpleNamespace()
+    payload = {**context, "entry_gate_frame": market}
+    allowed, reason = asyncio.run(validate_entry_at_execution(
+        account, symbol, side, payload, execution_price=quote,
+    ))
+    assert allowed, reason
+    retreat = float(market.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+    allowed, reason = asyncio.run(validate_entry_at_execution(
+        account, symbol, side, payload, execution_price=retreat,
+    ))
+    assert not allowed
+    assert reason == "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize(
+    "change,reason_fragment",
+    [
+        ("bias", "MACRO_MA15_BIAS"),
+        ("wick", "EXHAUSTION_WICK"),
+        ("same_bar_exit", "SIGNAL_STALE_OR_INVALID"),
+        ("quote_at_rail", "SIGNAL_STALE_OR_INVALID"),
+        ("ma3_reversed", "SIGNAL_STALE_OR_INVALID"),
+        ("invalid_atr", "SIGNAL_STALE_OR_INVALID"),
+        ("stale_event", "SIGNAL_STALE_OR_INVALID"),
+        ("opposite_color", "CANDLE_NOT_"),
+    ],
+)
+def test_post_close_reentry_retains_other_vetoes(side, change, reason_fragment):
+    market = post_close_market(side)
+    quote = float(market.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="CAP/USDT", last_exit_timestamp=1_265_000,
+        expected_method=POST_CLOSE_KC_REENTRY,
+    )
+    assert signal is not None
+    context = method_context(signal, 1_265_000)
+    index = market.index[-1]
+    sign = 1 if side == "LONG" else -1
+    if change == "bias":
+        market.loc[index, "ma15"] = quote - sign * 1.3
+    elif change == "wick":
+        market.loc[index, "high" if side == "LONG" else "low"] = quote + sign
+    elif change == "same_bar_exit":
+        context["entry_method_last_exit_timestamp"] = 1_325_000
+    elif change == "quote_at_rail":
+        quote = float(market.loc[index, "kc_upper" if side == "LONG" else "kc_lower"])
+    elif change == "ma3_reversed":
+        market.loc[index, "ma3"] = market.iloc[-2]["ma3"]
+    elif change == "invalid_atr":
+        market.loc[index, "atr"] = 0.0
+    elif change == "stale_event":
+        context["entry_method_event_id"] = "stale"
+    elif change == "opposite_color":
+        market.loc[index, "open"] = quote + sign * 0.05
+        market.loc[index, "high" if side == "LONG" else "low"] = quote + sign * 0.06
+    allowed, reason = revalidate_entry_method(
+        market, symbol="CAP/USDT", side=side, quote=quote, context=context,
+    )
+    assert not allowed
+    assert reason_fragment in reason
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
+        "ENTRY_METHOD_BAR_ALREADY_TRADED",
+        "ENTRY_METHOD_BAR_CLAIM_STORE_UNAVAILABLE",
+        "ENTRY_METHOD_BAR_CLAIM_PERSISTENCE_FAILED",
+        "ENTRY_METHOD_FINAL_GATE_VETO",
+        "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS",
+        "BLOCKED_ENTRY_METHOD_MACRO_LONG_EXHAUSTION_WICK",
+        "BLOCKED_ENTRY_METHOD_MACRO_DATA_INVALID",
+    ],
+)
+def test_pipeline_does_not_fall_through_common_vetoes(monkeypatch, caplog, reason):
+    from core.services.data_pipeline import DataPipeline
+    from core.services.execution_manager import ExecutionManager
+
+    market = pd.DataFrame([
+        {
+            "timestamp": 60_000 * (index + 1), "open": 100 + index * 0.1,
+            "close": 100.05 + index * 0.1, "high": 100.2 + index * 0.1,
+            "low": 99.9 + index * 0.1, "volume": 100, "is_closed": True,
+        }
+        for index in range(35)
+    ])
+    market.attrs["timeframe_ms"] = 60_000
+    account = SimpleNamespace(positions={})
+    result = {"status": "VETO", "symbol": "CAP/USDT", "reason": reason}
+    if reason.startswith("BLOCKED_ENTRY_METHOD_MACRO_"):
+        result.update(
+            reason="BLOCKED_ENTRY_METHOD_MACRO_GATE",
+            entry_rejections=[{"reason": reason}],
+        )
+    method = AsyncMock(return_value=result)
+    monkeypatch.setattr(ExecutionManager, "_evaluate_closed_entry_methods", method)
+    submit = AsyncMock()
+    monkeypatch.setattr(ExecutionManager, "open_position", submit)
+    assert DataPipeline.calculate_snapshot("CAP/USDT", market) is not None
+    actual = asyncio.run(ExecutionManager.process_symbol_pipeline(
+        symbol="CAP/USDT", engine_or_account=account, klines_df=market,
+        quote=float(market.iloc[-1]["close"]),
+    ))
+    assert actual == result
+    method.assert_awaited_once()
+    assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" not in caplog.text
+    submit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+@pytest.mark.parametrize("submit_success", [True, False])
+def test_location_rejection_allows_independent_pipeline_entry(
+    monkeypatch, caplog, side, symbol, submit_success,
+):
+    from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
+    from core.services.execution_manager import ExecutionManager
+
+    market = post_close_market(side)
+    sign = 1 if side == "LONG" else -1
+    market.loc[market.index[-1], "open"] = market.iloc[-1]["close"] - sign * 0.8
+    for key in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+                "kc_upper", "kc_middle", "kc_lower"):
+        market[key] += 9900
+    current, previous = market.iloc[-1].to_dict(), market.iloc[-2].to_dict()
+    quote = current["close"]
+    snapshot = MarketDataSnapshot(
+        symbol=symbol, current_price=quote, curr_k=current, prev_k=previous,
+        ma5=current["ma5"], ma15=current["ma15"],
+        ma3=current["ma3"], prev_ma3=previous["ma3"],
+        ema_fast=current["ma5"], ema_slow=current["ma15"],
+        ma_spread_pct=0.1, fast_slope=sign * 0.2, slow_slope=sign * 0.2,
+        kc_upper=current["kc_upper"], kc_lower=current["kc_lower"],
+        kc_middle=current["kc_middle"], kc_middle_slope=sign * 0.2,
+        atr=1.0, macro_trend="BULLISH" if side == "LONG" else "BEARISH",
+        macro_slope=sign * 0.2, slow_slope_5=sign * 0.2, raw_df=market,
+    )
+    rejection = {
+        "status": "VETO", "symbol": symbol,
+        "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
+        "entry_rejections": [{
+            "method": MA3_MA15_CROSS, "side": side,
+            "reason": "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION",
+            "event_id": "rejected-cross",
+        }],
+    }
+    method = AsyncMock(return_value=rejection)
+    monkeypatch.setattr(ExecutionManager, "_evaluate_closed_entry_methods", method)
+    monkeypatch.setattr(DataPipeline, "calculate_snapshot", lambda **kwargs: snapshot)
+    for name in ("_last_exit_record", "_last_trade_bar_time", "_hourly_entry_records"):
+        monkeypatch.setattr(ExecutionManager, name, {})
+    submit = AsyncMock(return_value=submit_success)
+    monkeypatch.setattr(ExecutionManager, "open_position", submit)
+    account = SimpleNamespace(positions={}, entry_filter_last={}, save_state=Mock())
+    with caplog.at_level("INFO", logger="ExecutionManager"):
+        result = asyncio.run(ExecutionManager.process_symbol_pipeline(
+            symbol=symbol, engine_or_account=account, klines_df=market, quote=quote,
+        ))
+    assert result["status"] == ("ENTRY_EXECUTED" if submit_success else "VETO"), result
+    if not submit_success:
+        assert result["reason"] == "PIVOT_ENTRY_FINAL_GATE_VETO"
+    assert result["side"] == side
+    method.assert_awaited_once()
+    submit.assert_awaited_once()
+    assert not submit.call_args.kwargs["meta"].get("entry_method_authority")
+    assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" in caplog.text
+
+
+def test_location_rejection_is_preserved_when_no_alternative_qualifies(monkeypatch):
+    from core.services.execution_manager import ExecutionManager
+
+    market = pd.DataFrame([
+        {
+            "timestamp": 60_000 * (index + 1), "open": 100, "close": 100,
+            "high": 100.2, "low": 99.8, "volume": 100, "is_closed": True,
+        }
+        for index in range(35)
+    ])
+    market.attrs["timeframe_ms"] = 60_000
+    rejected = {
+        "status": "VETO", "symbol": "CAP/USDT",
+        "reason": "BLOCKED_ENTRY_METHOD_MACRO_GATE",
+        "entry_rejections": [{
+            "reason": "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION",
+        }],
+    }
+    monkeypatch.setattr(
+        ExecutionManager, "_evaluate_closed_entry_methods",
+        AsyncMock(return_value=rejected),
+    )
+    submit = AsyncMock()
+    monkeypatch.setattr(ExecutionManager, "open_position", submit)
+    actual = asyncio.run(ExecutionManager.process_symbol_pipeline(
+        symbol="CAP/USDT", engine_or_account=SimpleNamespace(positions={}),
+        klines_df=market, quote=100,
+    ))
+    assert actual == rejected
+    submit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("outcome", ["success", "claimed_bar", "hourly_limit", "final_veto"])
+def test_reentry_execution_retains_claim_and_hourly_limits(monkeypatch, side, outcome):
+    import time
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "CAP/USDT"
+    market = post_close_market(side)
+    quote = float(market.iloc[-1]["close"])
+    bar_id = int(market.iloc[-1]["timestamp"])
+    account = SimpleNamespace(positions={}, entry_filter_last={}, save_state=Mock())
+    account_key = ExecutionManager._get_account_key(account, symbol)
+    monkeypatch.setattr(ExecutionManager, "_last_exit_record", {
+        account_key: {"timestamp": 1_265_000},
+    })
+    monkeypatch.setattr(ExecutionManager, "_last_trade_bar_time", {})
+    monkeypatch.setattr(ExecutionManager, "_hourly_entry_records", {})
+    if outcome == "claimed_bar":
+        account.entry_filter_last["strict_ma3_ma15_last_trade_bar"] = {symbol: bar_id}
+    elif outcome == "hourly_limit":
+        ExecutionManager._hourly_entry_records[account_key] = (
+            [time.time()] * ExecutionManager.MAX_ENTRIES_PER_HOUR
+        )
+    submit = AsyncMock(return_value=outcome == "success")
+    monkeypatch.setattr(ExecutionManager, "open_position", submit)
+
+    async def evaluate():
+        return await ExecutionManager._evaluate_closed_entry_methods(
+            symbol=symbol, account=account, engine_or_account=account,
+            frame=market, quote=quote,
+            macro_trend="BULLISH" if side == "LONG" else "BEARISH",
+        )
+
+    result = asyncio.run(evaluate())
+    expected_reasons = {
+        "success": POST_CLOSE_KC_REENTRY,
+        "claimed_bar": "ENTRY_METHOD_BAR_ALREADY_TRADED",
+        "hourly_limit": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
+        "final_veto": "ENTRY_METHOD_FINAL_GATE_VETO",
+    }
+    assert result["reason"] == expected_reasons[outcome]
+    if outcome in {"claimed_bar", "hourly_limit"}:
+        submit.assert_not_awaited()
+        account.save_state.assert_not_called()
+    else:
+        submit.assert_awaited_once()
+        account.save_state.assert_called_once_with(strict=True)
+        assert submit.call_args.kwargs["meta"]["entry_method_authority"] == POST_CLOSE_KC_REENTRY
+        again = asyncio.run(evaluate())
+        assert again["reason"] == "ENTRY_METHOD_BAR_ALREADY_TRADED"
+        submit.assert_awaited_once()

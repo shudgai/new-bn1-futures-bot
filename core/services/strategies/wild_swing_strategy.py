@@ -290,7 +290,7 @@ class WildSwingStrategy:
             if not math.isfinite(expected_id):
                 return None
             candidate = self._wick_follow_through_candidate(
-                bars, side, expected_id,
+                bars, side, expected_id, symbol=symbol,
             )
             delayed = candidate is not None
         else:
@@ -299,7 +299,7 @@ class WildSwingStrategy:
                 state.pending_wick_bar_ids.pop(side, None)
                 if bar_id == pending_id + 60_000:
                     candidate = self._wick_follow_through_candidate(
-                        bars, side, pending_id,
+                        bars, side, pending_id, symbol=symbol,
                     )
                     if candidate is None:
                         logger.info(
@@ -312,7 +312,7 @@ class WildSwingStrategy:
 
             if candidate is None:
                 candidate = self._pure_math_candidate(
-                    bars, frame=frame, tick_price=tick_price,
+                    bars, frame=frame, tick_price=tick_price, symbol=symbol,
                 )
                 if candidate and candidate.get("is_intrabar") is True and candidate.get("type") in {"INSTANT_BREAKOUT_INSIDE", "INSTANT_BURST_BREAKOUT"}:
                     # 鐵律：第一根實體破軌嚴禁用即時價搶開，必須等待第二根確認 (CONFIRMED_2BAR_BREAKOUT) 才允許進場
@@ -323,7 +323,9 @@ class WildSwingStrategy:
                     and candidate.get("action") == f"OPEN_{side}"
                     and candidate.get("type") in supported_types
                 ):
-                    if self._has_directional_exhaustion_wick(current, side):
+                    if self._has_directional_exhaustion_wick(
+                        current, side, symbol=symbol, entry_type=candidate.get("type"),
+                    ):
                         state.pending_wick_bar_ids[side] = bar_id
                         logger.info(
                             "WILD_SWING_WICK_CONFIRMATION_WAIT "
@@ -591,6 +593,7 @@ class WildSwingStrategy:
         *,
         frame: Optional[pd.DataFrame] = None,
         tick_price: Optional[float] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         live_candle = None
         if frame is not None and not frame.empty:
@@ -615,11 +618,13 @@ class WildSwingStrategy:
             bars["ma15"].tolist(),
             tick_price=tick_price,
             live_candle=live_candle,
+            symbol=symbol,
         )
 
     @staticmethod
     def _has_directional_exhaustion_wick(
-        bar: pd.Series, side: str,
+        bar: pd.Series, side: str, *, symbol: Optional[str] = None,
+        entry_type: Optional[str] = None,
     ) -> bool:
         open_price = float(bar["open"])
         close = float(bar["close"])
@@ -631,6 +636,11 @@ class WildSwingStrategy:
             if side == "LONG"
             else min(open_price, close) - low
         )
+        from core.gates.meme_entry_policy import is_exhausted_wick, uses_relaxed_entry_limits
+        if uses_relaxed_entry_limits(symbol) and entry_type in {
+            CONFIRMED_2BAR_BREAKOUT, CONTINUATION_OUTSIDE_KC, FIVE_LINE_CONTINUATION,
+        }:
+            return is_exhausted_wick(wick, body, high - low)
         return wick > body
 
     def _wick_follow_through_candidate(
@@ -638,6 +648,8 @@ class WildSwingStrategy:
         bars: pd.DataFrame,
         side: str,
         wick_bar_id: float,
+        *,
+        symbol: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         trigger_bar = bars.iloc[-2]
         confirmation_bar = bars.iloc[-1]
@@ -646,11 +658,13 @@ class WildSwingStrategy:
             or self._bar_id(confirmation_bar) != wick_bar_id + 60_000
         ):
             return None
-        candidate = self._pure_math_candidate(bars.iloc[:-1])
+        candidate = self._pure_math_candidate(bars.iloc[:-1], symbol=symbol)
         if (
             candidate is None
             or candidate["action"] != f"OPEN_{side}"
-            or not self._has_directional_exhaustion_wick(trigger_bar, side)
+            or not self._has_directional_exhaustion_wick(
+                trigger_bar, side, symbol=symbol, entry_type=candidate.get("type"),
+            )
         ):
             return None
         return {

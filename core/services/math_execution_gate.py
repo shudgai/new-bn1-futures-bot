@@ -45,6 +45,7 @@ def validate_entry_math(
     is_swing_pivot: bool = False,
     now_ms: float | None = None,
     max_staleness_ms: float = 180_000.0,
+    symbol: str | None = None,
 ) -> tuple[bool, str]:
     """Authorize an entry only when closed-bar HTF trend agrees with its side."""
     side = str(side or "").upper()
@@ -242,8 +243,15 @@ def validate_entry_math(
             return True, "ENTRY_MATH_MEME_HUNTER_APPROVED" if is_meme_hunter else "ENTRY_MATH_DIP_SNIPER_APPROVED"
 
     body = abs(close - opened)
+    from core.gates.meme_entry_policy import is_exhausted_wick, uses_relaxed_entry_limits
+    relaxed = uses_relaxed_entry_limits(symbol)
     wick = high - max(opened, close) if side == "LONG" else min(opened, close) - low
-    if wick >= body and wick >= 0.25 * atr:
+    wick_blocked = (
+        is_exhausted_wick(wick, body, high - low)
+        if relaxed and is_outer and not is_swing_pivot
+        else wick >= body and wick >= 0.25 * atr
+    )
+    if wick_blocked:
         return False, "BLOCKED_ENTRY_MATH_LONG_WICK"
 
     if profit_lock_fast_track:
@@ -289,7 +297,7 @@ def validate_entry_math(
         not is_outer
         and side == "LONG"
         and (close >= latest_middle - retest_buffer)
-        and (close - ma15 <= 1.2 * atr)
+        and (relaxed or close - ma15 <= 1.2 * atr)
         and (ma15 >= ema_slow - 0.05 * atr)
         and previous_ma15 is not None
         and (ma15 >= previous_ma15 - 1e-6)
@@ -303,7 +311,7 @@ def validate_entry_math(
         not is_outer
         and side == "SHORT"
         and (close <= latest_middle + retest_buffer)
-        and (ma15 - close <= 1.2 * atr)
+        and (relaxed or ma15 - close <= 1.2 * atr)
         and (ma15 <= ema_slow + 0.05 * atr)
         and previous_ma15 is not None
         and (ma15 <= previous_ma15 + 1e-6)
@@ -321,7 +329,7 @@ def validate_entry_math(
         not is_outer
         and side == "SHORT"
         and (close < latest_middle or (prev_below_mid and close <= latest_middle + retest_buffer))
-        and (ma15 - close <= 1.2 * atr)
+        and (relaxed or ma15 - close <= 1.2 * atr)
         and (close < opened or close <= ma5)
         and previous_ma15 is not None
         and (ma15 <= previous_ma15 + 1e-6)
@@ -335,7 +343,7 @@ def validate_entry_math(
         not is_outer
         and side == "LONG"
         and (close > latest_middle or (prev_above_mid and close >= latest_middle - retest_buffer))
-        and (close - ma15 <= 1.2 * atr)
+        and (relaxed or close - ma15 <= 1.2 * atr)
         and (close > opened or close >= ma5)
         and previous_ma15 is not None
         and (ma15 >= previous_ma15 - 1e-6)
@@ -1166,6 +1174,7 @@ async def validate_entry_at_execution(
     return validate_entry_math(
         math_frame,
         side,
+        symbol=symbol,
         profit_lock_fast_track=fast_track,
         is_outer_entry=is_outer,
         is_dip_sniper=is_dip,

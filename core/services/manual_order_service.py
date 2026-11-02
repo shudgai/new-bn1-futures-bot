@@ -183,6 +183,35 @@ async def process_manual_order(
         sl_dist, tp_dist = compute_sl_tp_distance(exec_price, atr)
         sl, tp = build_sl_tp_for_side(exec_price, side, sl_dist, tp_dist)
 
+        entry_context = {
+            "entry_mode": "CHANNEL_SWING",
+            "wave_regime": "RANGE",
+            "market_mode": "RANGE",
+            "manual_entry": True,
+            "source": "MANUAL",
+            "managed_by_bot": True,
+            "manual_favorable_rail_reached": False,
+            "channel_favorable_rail_reached": False,
+            "entry_atr": atr,
+            "entry_gate_frame": entry_gate_frame,
+            "entry_gate_quote": live_price,
+        }
+        from core.services.math_execution_gate import validate_entry_at_execution
+        # Explain gate failures without replacing the account's final revalidation.
+        allowed, gate_reason = await validate_entry_at_execution(
+            engine.account, canonical_symbol, side, entry_context,
+            execution_price=exec_price,
+        )
+        if not allowed:
+            logger.warning(
+                "MANUAL_ENTRY_VETO symbol=%s side=%s reason=%s",
+                canonical_symbol, side, gate_reason,
+            )
+            return {
+                "success": False, "status_code": 400,
+                "detail": f"開倉條件未通過：{gate_reason}",
+            }
+
         try:
             success = await engine.account.open_position(
                 symbol=canonical_symbol,
@@ -195,26 +224,17 @@ async def process_manual_order(
                 atr=atr,
                 leverage=leverage,
                 signal_score=100,
-                entry_context={
-                    "entry_mode": "CHANNEL_SWING",
-                    "wave_regime": "RANGE",
-                    "market_mode": "RANGE",
-                    "manual_entry": True,
-                    "source": "MANUAL",
-                    "managed_by_bot": True,
-                    "manual_favorable_rail_reached": False,
-                    "channel_favorable_rail_reached": False,
-                    "entry_atr": atr,
-                    "entry_gate_frame": entry_gate_frame,
-                    "entry_gate_quote": live_price,
-                },
+                entry_context=entry_context,
             )
         except Exception as e:
             logger.warning(f"Manual open_position error: {e}")
             return {"success": False, "status_code": 400, "detail": f"開倉攔截: {e}"}
         
         if not success:
-            return {"success": False, "status_code": 400, "detail": "已有該幣種持倉或系統異常"}
+            return {
+                "success": False, "status_code": 400,
+                "detail": "帳戶最終送單未確認成功；請查看系統日誌及持倉狀態，勿連續重複送單。",
+            }
             
         engine.release_manual_close_state(canonical_symbol)
         if canonical_symbol in engine.account.positions:

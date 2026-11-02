@@ -274,7 +274,7 @@ def ma5_ma15_entry_gate_problem(
         "MA_CROSSOVER", "MEME_PEAK_HUNTER", "BREAKOUT", "CONTINUATION",
     }
     is_confirmed_outer_entry = is_relaxed_ma or has_valid_wild_outer_confirmation(
-        frame, normalized_side, entry_confirmation, quote=quote,
+        frame, normalized_side, entry_confirmation, quote=quote, symbol=symbol,
     )
     structure_problem = market_structure_gate_problem(
         frame,
@@ -302,7 +302,7 @@ def ma5_ma15_entry_gate_problem(
     return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
 
 
-def has_valid_wild_outer_confirmation(frame, side, confirmation, quote=None):
+def has_valid_wild_outer_confirmation(frame, side, confirmation, quote=None, *, symbol=None):
     from core.gates.breakout_continuation_entry_gate import (
         BreakoutContinuationEntryGate,
     )
@@ -335,6 +335,7 @@ def has_valid_wild_outer_confirmation(frame, side, confirmation, quote=None):
                 closed.to_dict("records"), side, confirmation,
                 tick_price=tick_price,
                 live_candle=live,
+                symbol=symbol,
             )
             is not None
         )
@@ -581,7 +582,7 @@ def final_trend_alignment_problem(
         }
         is_live_big_trigger = entry_confirmation == "WAIT_LIVE_BIG_TRIGGER"
         if is_confirmed_outer_entry and not is_relaxed_ma_entry and not has_valid_wild_outer_confirmation(
-            frame, normalized_side, entry_confirmation, quote=quote,
+            frame, normalized_side, entry_confirmation, quote=quote, symbol=symbol,
         ):
             return "BLOCKED_WILD_OUTER_ENTRY_CONFIRMATION_INVALID"
         if is_confirmed_outer_entry or is_relaxed_ma_entry or len(closed) >= 15:

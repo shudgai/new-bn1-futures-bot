@@ -9,6 +9,9 @@ from typing import Any
 import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
+from core.gates.meme_entry_policy import (
+    MAX_EXTENSION_ATR, is_exhausted_wick, uses_relaxed_entry_limits,
+)
 
 
 KC_TWO_BAR_BREAKOUT = "KC_TWO_BAR_BREAKOUT"
@@ -367,22 +370,45 @@ def revalidate_entry_method(
         ma5 = _number(current, "ma5")
         if ma5 is None or ma5 <= 0:
             return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
-    elif (
+    elif method != POST_CLOSE_KC_REENTRY and (
         (side == "LONG" and kc_position > 0.35)
         or (side == "SHORT" and kc_position < 0.65)
     ):
         return False, "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
-    if bias_atr > 1.2:
+    relaxed = uses_relaxed_entry_limits(symbol)
+    if not relaxed and bias_atr > 1.2:
         return False, "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
+    relaxed_outer = relaxed and method in {KC_TWO_BAR_BREAKOUT, POST_CLOSE_KC_REENTRY}
+    if relaxed_outer:
+        ma5 = _number(current, "ma5")
+        if ma5 is None or ma5 <= 0:
+            return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
+        price = max(close, float(quote)) if side == "LONG" else min(close, float(quote))
+        band_distance = (
+            price - indicators["kc_upper"] if side == "LONG"
+            else indicators["kc_lower"] - price
+        )
+        if band_distance > MAX_EXTENSION_ATR * indicators["atr"]:
+            return False, "BLOCKED_ENTRY_METHOD_BAND_EXTENSION"
+        if abs(price - ma5) > MAX_EXTENSION_ATR * indicators["atr"]:
+            return False, "BLOCKED_ENTRY_METHOD_MA5_DISTANCE"
+    long_wick_exhausted = (
+        is_exhausted_wick(upper_wick, body, candle["high"] - candle["low"])
+        if relaxed_outer else upper_wick > body
+    )
+    short_wick_exhausted = (
+        is_exhausted_wick(lower_wick, body, candle["high"] - candle["low"])
+        if relaxed_outer else lower_wick > body
+    )
     if (
         side == "LONG"
-        and upper_wick > body
+        and long_wick_exhausted
         and close < candle["high"]
     ):
         return False, "BLOCKED_ENTRY_METHOD_MACRO_LONG_EXHAUSTION_WICK"
     if (
         side == "SHORT"
-        and lower_wick > body
+        and short_wick_exhausted
         and close > candle["low"]
     ):
         return False, "BLOCKED_ENTRY_METHOD_MACRO_SHORT_EXHAUSTION_WICK"

@@ -584,8 +584,17 @@ class CentralEntryGate:
             ma5_dist = ma5_curr - curr_price
 
         is_breakout_or_continuation = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper) or direction_override
+        from core.gates.meme_entry_policy import (
+            MAX_EXTENSION_ATR, is_exhausted_wick, uses_relaxed_entry_limits,
+        )
+        relaxed_outer = uses_relaxed_entry_limits(symbol) and (
+            any(token in src_upper for token in ("BREAKOUT", "BREAKDOWN", "CONTINUATION"))
+        ) and not is_swing_pivot
         band_limit = (3.50 if is_breakout_or_continuation else cls.MAX_BAND_EXTENSION_ATR) * atr
         ma5_limit = (3.50 if is_breakout_or_continuation else cls.MAX_MA5_EXTENSION_ATR) * atr
+        if relaxed_outer:
+            band_limit = ma5_limit = MAX_EXTENSION_ATR * atr
+            ma5_dist = abs(curr_price - ma5_curr)
 
         band_overext = band_dist > band_limit
         ma5_overext = ma5_dist > ma5_limit
@@ -890,7 +899,14 @@ class CentralEntryGate:
                 )
             upper_wick = c_high - c_close
             wick_limit = (1.25 * max(c_body, 0.25 * atr)) if direction_override else (cls.MAX_OPPOSITE_WICK_RATIO * c_body)
-            if upper_wick > wick_limit and (not direction_override or upper_wick >= 0.45 * atr):
+            if relaxed_outer:
+                wick_limit = max(1.5 * c_body, 0.65 * (c_high - c_low))
+            wick_blocked = (
+                is_exhausted_wick(upper_wick, c_body, c_high - c_low)
+                if relaxed_outer
+                else upper_wick > wick_limit and (not direction_override or upper_wick >= 0.45 * atr)
+            )
+            if wick_blocked:
                 checks["candle_wick"] = {
                     "status": "FAIL",
                     "upper_wick": upper_wick,
@@ -918,7 +934,14 @@ class CentralEntryGate:
                 )
             lower_wick = c_close - c_low
             wick_limit = (1.25 * max(c_body, 0.25 * atr)) if direction_override else (cls.MAX_OPPOSITE_WICK_RATIO * c_body)
-            if lower_wick > wick_limit and (not direction_override or lower_wick >= 0.45 * atr):
+            if relaxed_outer:
+                wick_limit = max(1.5 * c_body, 0.65 * (c_high - c_low))
+            wick_blocked = (
+                is_exhausted_wick(lower_wick, c_body, c_high - c_low)
+                if relaxed_outer
+                else lower_wick > wick_limit and (not direction_override or lower_wick >= 0.45 * atr)
+            )
+            if wick_blocked:
                 checks["candle_wick"] = {
                     "status": "FAIL",
                     "lower_wick": lower_wick,
