@@ -91,3 +91,10 @@
 - **Scope**: Publish only the two source modules, their two regression modules, and this log. Exclude runtime databases, telemetry, and read-only attachments.
 - **Preflight**: Primary source/test files match the isolated copies validated with 98 passing focused tests. Broader regression failures and permanent WAIT readiness gates remain unresolved; the focused result is not deployment acceptance.
 - **Operations**: Deployment and restart remain blocked by `TRADING_GATE = BLOCK`; no restart command is issued. Existing user service remains active with MainPID 3124701 at preflight. Commit/push outcomes are reported separately after verification.
+
+### [2026-11-02 09:30 UTC] - Explicit Demo-only deployment exception
+- **Authorization**: After disclosure of unresolved integrated WAIT readiness and broader regression failures, user explicitly selected `demo_exception`: deploy existing strategy/KC2BAR repair to Binance Demo and restart user-level 8006 only. No WAIT implementation/activation, live-environment switch, or integrated readiness approval.
+- **Source**: Commit `971de6ef`, previously published on `origin/bugfix/test-failure-triage`. No source changes were pending; databases and telemetry remained excluded.
+- **Execution**: Restarted `binance-8006.service` using `systemctl --user restart`. New MainPID 3469607, active/running since 2026-11-02 09:30:44 UTC, working directory `/home/shudgai999/project/new bn`, NRestarts=0 at verification.
+- **Verification**: API responded with `environment=binance_demo_trading`, `paper_trading=false`, `is_running=true`, `entry_submission_enabled=true`, symbols Lobster/1000PEPE. Initial startup journal showed application startup completion, with no Traceback, ImportError, ModuleNotFoundError, ERROR, or CRITICAL matches. This is bounded startup evidence, not proof of a fill or prolonged stability.
+- **Readiness**: Explicit operational exception only. Permanent WAIT implementation gates remain BLOCK; functional/safety/restart gates NOT_TESTED; doji definition remains specification/static PASS. `TRADING_GATE = BLOCK` for integrated readiness.
