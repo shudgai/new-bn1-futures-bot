@@ -37,12 +37,16 @@ def pivot_frame(side, *, gain=1.0, atr=1.0):
             opened, high, low, close = 200 - opened, 200 - low, 200 - high, 200 - close
         frame.loc[index, ["open", "high", "low", "close"]] = [opened, high, low, close]
     frame.loc[frame.index[-1], "ma5"] = 100 + (0.5 * gain if side == "LONG" else -0.5 * gain)
+    sign = 1 if side == "LONG" else -1
+    frame["ma15"] = 100 + sign * 0.6 * gain
+    frame.loc[frame.index[-2], "kc_middle"] = 100 + sign * (gain + atr + 0.01)
+    frame.loc[frame.index[-1], "kc_middle"] = 100 + sign * (gain + atr)
     return frame
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_profitable_pivot_overrides_aligned_kc_hold_at_every_boundary(symbol, side):
+def test_profitable_pivot_requires_structure_at_every_boundary(symbol, side):
     frame = pivot_frame(side)
     pos = position(side, frame)
     pos["symbol"] = symbol
@@ -144,13 +148,14 @@ def test_pending_ticket_survives_but_never_transfers_to_another_position(side):
     pos = position(side, frame)
     pivot = profitable_true_pivot_exit(pos, frame)
     assert store_confirmed_pivot_exit(pos, pivot, key=PROFIT_PIVOT_PENDING_KEY)
-    assert profitable_true_pivot_exit(pos, None) == pivot
+    assert profitable_true_pivot_exit(pos, None) is None
+    assert profitable_true_pivot_exit(pos, frame) == pivot
     for field in ("entry_price", "qty", "open_timestamp"):
         other = copy.deepcopy(pos)
         other[field] += 1
         assert profitable_true_pivot_exit(other, None) is None
     pos[PROFIT_PIVOT_PENDING_KEY]["details"].pop("exit_policy")
-    assert profitable_true_pivot_exit(pos, None) is None
+    assert profitable_true_pivot_exit(pos, frame) is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -166,7 +171,7 @@ def test_invalid_saved_pivot_evidence_cannot_authorize_close(side, field, value,
     if field == "confirmation_close":
         value = 101.0 if side == "LONG" else 99.0
     pos[PROFIT_PIVOT_PENDING_KEY]["details"][field] = value
-    assert profitable_true_pivot_exit(pos, None) is None
+    assert profitable_true_pivot_exit(pos, frame) is None
     assert "profit-pivot pending evidence" in caplog.text
 
 
@@ -219,8 +224,9 @@ def test_failed_exchange_pivot_close_persists_retry_across_restart(side, tmp_pat
         assert PROFIT_PIVOT_PENDING_KEY in account.position_meta["DOGE/USDT"]
         restored = BinanceTestnetAccount(ex)
         await restored.initialize()
+        restored._channel_exit_frames = {"DOGE/USDT": frame}
         assert profitable_true_pivot_exit(
-            restored.positions["DOGE/USDT"], None, restored.position_meta["DOGE/USDT"],
+            restored.positions["DOGE/USDT"], frame, restored.position_meta["DOGE/USDT"],
         ) is not None
         ex.create_order = create
         assert await restored.close_position("DOGE/USDT", quote, reason, True)
@@ -267,7 +273,7 @@ def test_quote_and_account_poll_use_same_pivot_authority_and_account_boundary(
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("transport", ["realtime", "account_poll"])
-def test_saved_pivot_retries_without_cached_frame(side, symbol, transport, tmp_path, monkeypatch):
+def test_saved_pivot_holds_without_fresh_structural_frame(side, symbol, transport, tmp_path, monkeypatch):
     from core.paper_account import PaperAccount
     from core.services.exits.realtime_profit_exit import enforce_realtime_profit_exit
     from core.services.exits.entry_atr_protection import enforce_atr_protection
@@ -286,9 +292,9 @@ def test_saved_pivot_retries_without_cached_frame(side, symbol, transport, tmp_p
         enforce_realtime_profit_exit(engine, symbol, quote)
         if transport == "realtime" else enforce_atr_protection(account, symbol, quote)
     )
-    assert asyncio.run(operation)
-    assert symbol not in account.positions
-    assert len(account.trades) == 1
+    assert not asyncio.run(operation)
+    assert symbol in account.positions
+    assert not account.trades
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

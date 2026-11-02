@@ -1209,7 +1209,9 @@ def validate_exit_at_execution(
         )
     elif allowed:
         from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
-        pivot = profitable_true_pivot_exit(dict(position), frame, metadata, quote=price)
+        pivot = profitable_true_pivot_exit(
+            {**position, "symbol": symbol}, frame, metadata, quote=price,
+        )
         evidence = pivot[1] if pivot is not None else None
         code = "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
     else:

@@ -547,3 +547,44 @@ WAIT_LIVE_ORDER_AUTHORIZED = NO
 Doji PASS is specification/static evidence only. WAIT readiness BLOCK is separate from the existing service's operating state.
 
 The Owner subsequently selected deployment/restart plus commit/GitHub push for this ordinary-entry-candle hold patch. The final authorized policy keeps math-verified disaster exits available on the entry candle. Runtime/account data and unrelated dirty changes are excluded from the release; WAIT activation remains unauthorized.
+
+### [2026-11-03] - Meme MA5 structural holding with a 0.50 ATR buffer
+
+- The Owner confirmed the complete priority resolution: keep the profitable true pivot as a necessary ordinary-exit authority; add structural holding conditions; aligned-KC buffer protection overrides the two-middle-close exception; MA5 need only be on the reverse side of MA15 on the confirmation bar (not cross for the first time); retain positive estimated net profit; preserve all previously verified disaster exits even during the entry candle/four-bar protection period. Scope is existing and new LOBSTER, CAP, and 1000PEPE positions, including shared symbol aliases.
+- Added the shared `evaluate_position_exit` qualifier in `strict_true_pivot.py` and wired it through `profitable_true_pivot_exit`, which already serves scan, realtime monitoring, account polling, final paper/testnet authorization, and persisted retries. Qualification alone grants no pivot/order authority. Authoritative account symbol is used at final boundaries, not a caller's claimed position symbol. Other symbols retain their prior qualifications. The older similarly named MasterGateFunnel method is not treated as final account authority.
+- Ordinary exits require at least four fully held, completed, contiguous 1m candles after actual entry. A partially held entry candle does not count. Fresh authoritative completed OHLC, KC middle, ATR, MA5, and MA15 are required. Missing/invalid/stale data fails closed with explicit diagnostics.
+- LONG holds when the last completed KC middle rises and close remains strictly above middle minus 0.50 ATR; SHORT mirrors. These emit exactly `[VETO_HOLD_LONG_050_ATR_BUFFER]` / `[VETO_HOLD_SHORT_050_ATR_BUFFER]`. This hold takes precedence even when both latest closes are beyond middle or an old confirmed pivot is pending.
+- Outside that veto, the confirmation must be opposite-colored and MA5 must be strictly on the reverse side of MA15. Then either close strictly breaks the 0.50 ATR buffer / both latest closes strictly break their own middles, or favorable movement reaches at least 2.5 ATR and retreat strictly exceeds 1.5 ATR. The trailing branch is an alternative structural qualification, not independent close authority: it still requires the same MA5/MA15, opposite candle, four-bar hold, true pivot, and positive-net requirements. Boundary equality is not a strict structure break/retreat.
+- ATR scales use the latest completed confirmation candle, never the live candle. Favorable extrema use only fully held completed candles plus existing position-owned observed `highest_price` / `lowest_price` when present; no pre-entry/unobserved historical quote reconstruction is added. Saved pivot retries must recheck fresh current structure, so a missing frame or restored healthy buffer cannot bypass holding. Invalid pending evidence explicitly rejects instead of creating a success-shaped retry.
+- Updated pivot fixtures to include actually broken/reversed structures and corrected a full-entry fixture's stale provider to return the future close snapshot. Missing-frame retry tests now assert holding under the new authorization. Existing emergency and independent-entry semantics were not weakened.
+- Isolated final validation: **1389 passed, 2 skipped, 4 existing warnings**, across 25 modules, including **286 new structural-holding cases**. Coverage includes all three symbols/two sides through paper and fake-exchange adapter full-close boundaries, pending/current signals, buffer-first behavior, MA equality, same-direction candles, four-bar boundary, invalid/unclosed data, alias scope, exact ATR thresholds, observed extrema, and trailing without true pivot rejection. This is a selected suite, not a full-repository pass; the previously documented legacy-policy failures and absent historical Channel Swing files remain.
+- At this validation point no commit, push, deployment, restart, account reset, manual order, WAIT activation, or entry-rule change was performed for this new MA5/0.50 ATR patch.
+
+Mandatory WAIT review:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is specification/static evidence only; WAIT readiness BLOCK does not mean the existing service was stopped.
+
+The Owner subsequently selected deployment/restart plus commit/GitHub push for this MA5/0.50 ATR patch. Release scope excludes account/runtime files and unrelated dirty changes. Commit and remote verification precede restart; loaded-policy and HTTP checks will confirm the newly started process. No WAIT implementation or activation is authorized.

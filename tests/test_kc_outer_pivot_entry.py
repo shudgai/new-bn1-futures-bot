@@ -230,11 +230,12 @@ def test_real_paper_open_then_holds_entry_pivot_and_numeric_loss(
         lambda: future.attrs["snapshot_ms"] / 1000,
     )
     account._channel_exit_frames = {symbol: future}
+    account.entry_frame_provider = lambda *_args, **_kwargs: future
     decision = profitable_true_pivot_exit(position, future)
     assert decision is not None
     assert asyncio.run(account.close_position(
         symbol, float(future.iloc[-1]["close"]), decision[0],
-    ))
+    )), account.logs[-6:]
     assert symbol not in account.positions
     assert [trade["action"] for trade in account.trades] == ["CLOSE_" + side, "OPEN_" + side]
 

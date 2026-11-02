@@ -410,7 +410,8 @@ async def startup_event():
         "POSITION_EXIT_POLICY policy=%s scope=EXISTING_AND_NEW "
         "price_atr_stops=%s ordinary_kc_reversal=DISABLED disaster_exits=ENABLED "
         "ordinary_pivot_net=STRICTLY_POSITIVE_AFTER_COSTS "
-        "entry_candle_ordinary_exits=DISABLED entry_candle_disaster_exits=VERIFIED_ONLY",
+        "entry_candle_ordinary_exits=DISABLED entry_candle_disaster_exits=VERIFIED_ONLY "
+        "meme_holding=MA5_050_ATR_BUFFER min_completed_held_bars=4",
         PROFIT_PIVOT_EXIT_POLICY,
         "DISABLED" if price_atr_stop_disabled({}) else "ENABLED",
     )
@@ -626,6 +627,7 @@ async def get_status(response: Response):
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
         "entry_candle_exit_policy": "開倉成交當根 UTC 1 分鐘內禁止普通策略平倉；經行情驗證的災難出口可當根平倉。普通回踩仍續抱直到進場後獲利真峰谷。手動平倉不受限制。",
+        "meme_holding_policy": "龍蝦、CAP、1000PEPE普通出口須完整持有至少4根已收線1m棒。KC順向且收盤仍在中軌0.50ATR防守緩衝內時續抱優先；其餘須真峰谷、MA5位於MA15反向側及反色收線，再加緩衝破位／兩根中軌破位或2.5ATR展開後回撤超過1.5ATR。預估淨利須大於0；待平也須新鮮結構重驗。已驗證災難與手動例外不變。",
         "strategy": "一般入口順最近兩根已收線 KC 中軌；另有獨立 KC 外真峰谷反轉：上軌外真峰頂確認開空、下軌外真谷底確認開多，不必等待 KC 中軌轉向。反轉須三根已收線嚴格峰谷、右側反色棒收盤突破樞紐實體中點與 MA5，MA5 順進場方向，最新報價未破壞確認；所有入口均保留送單重驗及帳戶風控。現有與新持倉的一般回踩、單純 KC 反向、MA 抖動與價格／ATR 虧損門檻不平倉。波段最高有利位移達確認棒 ATR 的 0.5 倍或最高 ROE 達 5% 後，等待進場後新的三根已收線真峰頂／谷底，確認棒反色且突破樞紐實體中點及 MA5，並且最新報價預估扣費滑點後淨利嚴格大於 0，才普通平倉；虧損時續抱，待平重試也重驗淨利。不沿用進場峰谷、不自動反手。保留手動平倉與獨立災難／帳戶風控；跳價仍可能造成實際成交虧損，不保證絕對高低點或獲利。",
         "environment": effective_runtime_environment(),
         "paper_trading": PAPER_TRADING,

@@ -74,7 +74,7 @@ def automated_position_exit_allowed(
 
     if normalized_reason in PROFIT_PIVOT_REASONS:
         pivot = profitable_true_pivot_exit(
-            dict(position), frame, dict(metadata or {}), quote=exit_price,
+            {**position, "symbol": symbol}, frame, dict(metadata or {}), quote=exit_price,
         )
         return pivot is not None and pivot[0] == normalized_reason
 

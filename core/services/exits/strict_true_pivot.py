@@ -20,6 +20,96 @@ PROFIT_PIVOT_REASONS = frozenset(_CONFIRMED_PIVOT_REASONS.values())
 PROFIT_PIVOT_PENDING_KEY = "profit_true_pivot_exit_pending_v1"
 
 
+def evaluate_position_exit(
+    position: Dict[str, Any], frame: Optional[pd.DataFrame],
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """Qualify ordinary exits; this alone never supplies pivot/order authority."""
+    logger = logging.getLogger(__name__)
+    from core.symbol_aliases import is_meme_breakout_symbol
+    if position.get("symbol") and not is_meme_breakout_symbol(position["symbol"]):
+        return True, "MEME_HOLDING_SCOPE_NOT_APPLICABLE", {}
+    identity = _position_identity(position)
+    details: Dict[str, Any] = {}
+
+    def reject(reason: str) -> Tuple[bool, str, Dict[str, Any]]:
+        logger.info("[%s] side=%s details=%s", reason, position.get("side"), details)
+        return False, reason, details
+
+    if identity is None or not isinstance(frame, pd.DataFrame):
+        return reject("VETO_HOLD_STRUCTURE_DATA_REQUIRED")
+    from core.services.exits.trend_lock import _closed_snapshot_fresh
+
+    closed = closed_entry_candles(frame)
+    keys = ("timestamp", "open", "high", "low", "close", "kc_middle", "ma5", "ma15", "atr")
+    if len(closed) < 2 or not set(keys).issubset(closed.columns):
+        return reject("VETO_HOLD_STRUCTURE_DATA_REQUIRED")
+    try:
+        snapshot = float(frame.attrs["snapshot_ms"])
+        if (float(frame.attrs.get("timeframe_ms", 60_000)) != 60_000
+                or not 0 <= time.time() * 1000 - snapshot <= 180_000
+                or not _closed_snapshot_fresh(frame, closed)):
+            return reject("VETO_HOLD_STRUCTURE_STALE_OR_INTERVAL")
+        side, opened, entry, _ = identity
+        start = math.ceil(opened * 1000 / 60_000) * 60_000
+        held = closed.loc[closed["timestamp"].astype(float) >= start]
+        details["bars_held"] = len(held)
+        if len(held) < 4:
+            return reject("VETO_HOLD_MIN_4_COMPLETED_BARS")
+        rows = [{key: float(row[key]) for key in keys} for _, row in held.iterrows()]
+        if any(not math.isfinite(value) or value <= 0 for row in rows for value in row.values()):
+            return reject("VETO_HOLD_STRUCTURE_INVALID_DATA")
+        if any(
+            row["high"] < max(row["open"], row["close"])
+            or row["low"] > min(row["open"], row["close"])
+            or row["high"] < row["low"] for row in rows
+        ) or any(
+            not math.isclose(b["timestamp"] - a["timestamp"], 60_000, abs_tol=1)
+            for a, b in zip(rows, rows[1:])
+        ):
+            return reject("VETO_HOLD_STRUCTURE_INVALID_DATA")
+        prev, current = rows[-2:]
+        sign = 1 if side == "LONG" else -1
+        atr = current["atr"]
+        distance = sign * (current["close"] - current["kc_middle"])
+        aligned = sign * (current["kc_middle"] - prev["kc_middle"]) > 0
+        details.update(
+            confirmation_bar_id=current["timestamp"], reference_atr=atr,
+            kc_middle=current["kc_middle"], confirmation_close=current["close"],
+            confirmation_ma5=current["ma5"], confirmation_ma15=current["ma15"],
+        )
+        if aligned and distance > -0.5 * atr:
+            return reject(f"VETO_HOLD_{side}_050_ATR_BUFFER")
+        if sign * (current["close"] - current["open"]) >= 0:
+            return reject(f"VETO_HOLD_{side}_DIRECTIONAL_CANDLE")
+        if sign * (current["ma5"] - current["ma15"]) >= 0:
+            return reject(f"VETO_HOLD_{side}_MA5_MA15_NOT_REVERSED")
+        structure = distance < -0.5 * atr or (
+            distance < 0 and sign * (prev["close"] - prev["kc_middle"]) < 0
+        )
+        extreme = max(row["high"] for row in rows) if side == "LONG" else min(
+            row["low"] for row in rows
+        )
+        observed = position.get("highest_price" if side == "LONG" else "lowest_price")
+        if observed is not None:
+            observed = float(observed)
+            if not math.isfinite(observed) or observed <= 0:
+                return reject("VETO_HOLD_STRUCTURE_INVALID_DATA")
+            extreme = max(extreme, observed) if side == "LONG" else min(extreme, observed)
+        gain = sign * (extreme - entry)
+        retreat = sign * (extreme - current["close"])
+        trailing = gain >= 2.5 * atr and retreat > 1.5 * atr
+        details.update(
+            peak_gain_atr=gain / atr, retreat_atr=retreat / atr,
+            structure_broken=structure, trailing_qualified=trailing,
+        )
+        if not structure and not trailing:
+            return reject(f"VETO_HOLD_{side}_STRUCTURE_AND_TRAIL_NOT_READY")
+        return True, "MA5_050_ATR_STRUCTURE_QUALIFIED", details
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        logger.error("VETO_HOLD_STRUCTURE_INVALID_DATA: %s", exc)
+        return reject("VETO_HOLD_STRUCTURE_INVALID_DATA")
+
+
 def profit_pivot_net_positive(position: Dict[str, Any], quote: float) -> bool:
     """Recheck current close economics; a historical peak is not current profit."""
     from core.config import SLIPPAGE_PCT
@@ -57,6 +147,9 @@ def profitable_true_pivot_exit(
     """Confirm a post-entry, profitable three-bar reversal, or retry its ticket."""
     if quote is not None and not profit_pivot_net_positive(position, quote):
         return None
+    structure_allowed, _, structure_details = evaluate_position_exit(position, frame)
+    if not structure_allowed:
+        return None
     pending = pending_confirmed_pivot_exit(position, metadata, key=PROFIT_PIVOT_PENDING_KEY)
     if pending is not None and pending[1].get("exit_policy") == PROFIT_PIVOT_EXIT_POLICY:
         try:
@@ -77,10 +170,15 @@ def profitable_true_pivot_exit(
                      else close > max(midpoint, ma5))
             )
             if valid:
-                return pending
+                return pending[0], {**pending[1], "holding_structure": structure_details}
             logging.getLogger(__name__).error("Rejected inconsistent profit-pivot pending evidence")
+            return None
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             logging.getLogger(__name__).error("Rejected invalid profit-pivot pending evidence: %s", exc)
+            return None
+    elif pending is not None:
+        logging.getLogger(__name__).error("Rejected missing profit-pivot pending policy")
+        return None
     identity = _position_identity(position)
     if identity is None or not isinstance(frame, pd.DataFrame):
         return None
@@ -167,6 +265,7 @@ def profitable_true_pivot_exit(
             "reference_atr": confirm["atr"],
             "peak_gain": gain,
             "peak_roe": peak_roe,
+            "holding_structure": structure_details,
         }
     except (TypeError, ValueError, OverflowError):
         return None
