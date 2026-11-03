@@ -491,7 +491,7 @@ def test_master_exit_never_uses_hard_loss_or_trailing_without_all_qualifiers(sid
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("reason", [
-    "EXIT_BY_EXTREME_WATERFALL", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
+    "OPPOSITE_KC_BAND_BREACH", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
     "CIRCUIT_BREAKER_HARD_SL", "EXIT_LONG_AT_PEAK",
     "EXIT_BY_EXTREME_WATERFALL_ACCOUNT_HARD_STOP",
     "EXIT_BY_EXTREME_WATERFALL_OPPOSITE_KC_BAND_BREACH",
@@ -519,7 +519,7 @@ def test_disabled_disasters_fail_math_even_with_large_price_loss(symbol, side):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("account_type", ["paper", "testnet"])
 @pytest.mark.parametrize("breached", [False, True])
-def test_only_math_verified_opposite_rail_may_close_entry_candle(
+def test_only_math_verified_waterfall_may_close_entry_candle(
     symbol, side, account_type, breached, tmp_path, monkeypatch,
 ):
     from core.paper_account import PaperAccount
@@ -537,7 +537,7 @@ def test_only_math_verified_opposite_rail_may_close_entry_candle(
         account.refresh = AsyncMock()
     pos = dict(symbol=symbol, side=side, entry_price=100, qty=1, margin=20,
                leverage=5, open_timestamp=now + 1)
-    quote = (88 if breached else 98) if side == "LONG" else (112 if breached else 102)
+    quote = (88 if breached else 99) if side == "LONG" else (112 if breached else 101)
     frame = pd.DataFrame([
         dict(timestamp=(now - 60) * 1000, open=100, close=100, high=101, low=99,
              ma5=100, ma15=100, atr=1, kc_middle=100, kc_upper=110, kc_lower=90, is_closed=True),
@@ -555,12 +555,12 @@ def test_only_math_verified_opposite_rail_may_close_entry_candle(
     ))
     assert allowed is breached
     if breached:
-        assert code == "OPPOSITE_KC_BAND_BREACH"
+        assert code == "EXIT_BY_EXTREME_WATERFALL"
     assert UltimateExitGatekeeper.can_execute_exit(
-        symbol, pos, {}, "OPPOSITE_KC_BAND_BREACH", quote,
+        symbol, pos, {}, "EXIT_BY_EXTREME_WATERFALL", quote,
         frame=frame, is_bar_closed=False,
     ) is breached
-    assert asyncio.run(account.close_position(symbol, quote, "OPPOSITE_KC_BAND_BREACH")) is breached
+    assert asyncio.run(account.close_position(symbol, quote, "EXIT_BY_EXTREME_WATERFALL")) is breached
     assert (symbol not in account.positions) is breached
     assert len(account.trades) == int(breached)
 
@@ -582,10 +582,7 @@ def test_opposite_rail_cannot_use_an_unverified_candle_time(symbol, side, fault)
         close_reason="OPPOSITE_KC_BAND_BREACH", now_ms=(now + 30) * 1000,
     )
     assert not allowed
-    assert reason in {
-        "BLOCKED_EXIT_OPPOSITE_BREACH_TIMESTAMP_INVALID",
-        "BLOCKED_EXIT_OPPOSITE_BREACH_STALE_DATA",
-    }
+    assert reason == "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED"
 
 
 def test_new_meme_filters_are_not_applied_to_the_independent_wait_route(monkeypatch):

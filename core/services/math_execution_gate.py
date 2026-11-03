@@ -439,6 +439,15 @@ def validate_exit_math(
     from core.services.exits.authorized_position_exit import meme_strategy_disaster_disabled
     if meme_strategy_disaster_disabled(str(position.get("symbol") or ""), close_reason):
         return False, "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED", {"exit_type": "BLOCKED"}
+    from core.symbol_aliases import is_meme_breakout_symbol
+    if is_meme_breakout_symbol(str(position.get("symbol") or "")) and norm_reason == "EXIT_BY_EXTREME_WATERFALL":
+        from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+        evidence = live_adverse_waterfall_evidence(
+            position, frame, price, now_ms=now_ms, max_staleness_ms=max_staleness_ms,
+        )
+        if evidence is None:
+            return False, "BLOCKED_EXIT_WATERFALL_NOT_CONFIRMED", details
+        return True, "EMERGENCY_EXIT_ABNORMAL_CANDLE_CONFIRMED", evidence
 
     # Safety labels require matching evidence. Only exchange/account failure
     # exits that cannot be price-validated retain an unconditional override.

@@ -876,3 +876,76 @@ readiness approval. The preceding expanded WAIT matrix remains unchanged:
 all WAIT functional gates are NOT_TESTED, doji is specification/static PASS,
 and overall TRADING_GATE remains BLOCK. The release permission applies only
 to the explicitly confirmed existing non-WAIT strategy.
+
+### [2026-11-03] - Shared true-pivot holding with verified live waterfall exception
+
+Read-only paper evidence records LOBSTER `OPEN_SHORT` at local 09:58:01,
+price 0.01765823, and `CLOSE_SHORT` at 10:35:01, price 0.01767177,
+reason `OPPOSITE_KC_BAND_BREACH`, reported PnL -0.6032 USDT. The PEPE
+09:56:01 short remained open at inspection. Both used the same holding
+authority; the LOBSTER close used the previously retained disaster exception.
+This does not establish historical tick ordering or an absolute market bottom.
+
+The Owner authorized the same revised exception for LOBSTER, CAP and 1000PEPE,
+both LONG and SHORT, followed by tests, commit, push, deployment and restart:
+
+- An isolated opposite KC outer-band breach no longer authorizes strategy
+  close, regardless of macro alignment. Mixed disaster labels cannot restore it.
+- Only exact `EXIT_BY_EXTREME_WATERFALL` may bypass ordinary holding:
+  the current original candle open to latest quote must form an adverse body
+  at least 1.5 times the immediately preceding completed candle ATR, and
+  quote must be strictly across the current KC middle against the position.
+  This applies intrabar and during the actual entry candle.
+- One shared evidence helper feeds ExitGate, mathematical execution validation,
+  the public Master gate, and final full/partial account gates. It requires valid
+  OHLC, explicit finality, adjacent 1m timestamps, current UTC candle identity,
+  fresh snapshot and actual fill provenance. Current ATR and entry price are
+  not body/ATR substitutes. Old completed waterfalls cannot backfill a new bar.
+  Fresh boundary reclamation vetoes cached authority without an order.
+- Ordinary exits are unchanged: five complete post-fill 1m candles, strict
+  0.50-ATR middle buffer, adverse MA5/MA15 alignment and candle, confirmed new
+  post-entry true pivot, and estimated positive net profit after fees/slippage.
+  Numeric strategy stops, two-adverse-candle and trailing diagnostics do not
+  bypass these requirements. Genuine manual and independent account safety
+  remain intact; an ambiguous market-circuit-breaker label is not new authority.
+- Existing account order transport, fill confirmation and retry behavior remain
+  unchanged. Immediate emergency authorization does not guarantee instant
+  execution, a market-order fill, or any realized profit.
+
+Final isolated 21-module regression: **2503 passed, 2 skipped, 4 existing
+FastAPI deprecation warnings**, 300.83 seconds. This includes all previous
+20 release modules and new waterfall authority tests across three symbols,
+both sides, paper/fake-testnet full and partial close boundaries, exact/below/
+above threshold, original-open and preceding-ATR provenance, data failures,
+rollover/backfill rejection and refreshed boundary veto. A focused final
+authority/entry-candle run also passed **307** cases, included in the total.
+The two initial release failures were obsolete assertions that an explicitly
+mocked, math-confirmed waterfall remained disabled; they were migrated while
+retaining opposite-rail and unproved-disaster veto assertions.
+
+No entry strategy, capital/leverage setting, account history, existing position,
+AIDAN specification or unrelated dirty change is included. WAIT is not activated.
+Release verification is required after push/restart; these test results are not
+full-repository or live-fill evidence.
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+```
+
+Doji PASS is specification/static evidence only. Owner release permission is
+limited to the explicitly authorized existing non-WAIT strategy.

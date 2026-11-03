@@ -171,6 +171,21 @@ class ExitGate:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """Hold through pullbacks until a profitable confirmed pivot or emergency."""
         from core.services.exits.authorized_position_exit import strategy_exit_bar_block_reason
+        from core.symbol_aliases import is_meme_breakout_symbol
+        symbol = pos.get("symbol") or (
+            market_data.symbol if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("symbol", "")
+        )
+        if is_meme_breakout_symbol(symbol):
+            from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+            frame = market_data.raw_df if isinstance(market_data, MarketDataSnapshot) else market_data.get("raw_df")
+            quote = current_price if current_price is not None else (
+                market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+                else market_data.get("current_price")
+            )
+            evidence = live_adverse_waterfall_evidence(pos, frame, quote)
+            if evidence is not None:
+                return True, "EXIT_BY_EXTREME_WATERFALL", evidence
         priority_result = ExitGate._evaluate_core(
             pos, market_data, current_price, atr, kc_slope,
         )
@@ -743,7 +758,8 @@ class ExitGate:
             market_data.symbol if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("symbol", "")
         )
-        if (has_candle_history and c_curr is not None and not is_same_bar
+        from core.symbol_aliases import is_meme_breakout_symbol
+        if (not is_meme_breakout_symbol(symbol) and has_candle_history and c_curr is not None and not is_same_bar
                 and not meme_strategy_disaster_disabled(symbol, "EXIT_BY_EXTREME_WATERFALL")):
             c_open_v = float(c_curr["open"])
             c_close_v = float(c_curr["close"])
@@ -772,7 +788,7 @@ class ExitGate:
 
         # 1.3 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，最高安全防護)
         breached = (side == "LONG" and quote < kc_low) or (side == "SHORT" and quote > kc_up)
-        if breached:
+        if breached and not meme_strategy_disaster_disabled(symbol, "OPPOSITE_KC_BAND_BREACH"):
             macro_aligned = (
                 (side == "LONG" and macro_trend == "BULLISH")
                 or (side == "SHORT" and macro_trend == "BEARISH")

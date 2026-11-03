@@ -80,7 +80,8 @@ def test_verified_disaster_allowed_even_on_entry_bar_but_never_pullback(side, mo
         "core.services.math_execution_gate.validate_exit_math",
         lambda *_a, **_k: (True, "EMERGENCY_EXIT_ABNORMAL_CANDLE_CONFIRMED", {}),
     )
-    assert not automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_EXTREME_WATERFALL", 90)
+    assert automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_EXTREME_WATERFALL", 90)
+    assert not automated_position_exit_allowed("CAP/USDT", pos, {}, "OPPOSITE_KC_BAND_BREACH", 90)
     assert not automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_PULLBACK", 90)
 
 

@@ -341,6 +341,8 @@ class MasterGateFunnel:
         m: MarketSnapshot,
         candidate_exit_reason: str,
         current_time_ms: float,
+        *,
+        frame=None,
     ) -> GateDecision:
         details = {
             "symbol": p.symbol, "side": p.side, "bars_held": p.bars_held,
@@ -359,7 +361,19 @@ class MasterGateFunnel:
                 ))
                 or not m.kc_lower < m.kc_middle < m.kc_upper):
             return hold("VETO_EXIT_INVALID_DATA")
-        # This is a candidate only; the account boundary verifies band-breach math.
+        from core.symbol_aliases import is_meme_breakout_symbol
+        if is_meme_breakout_symbol(p.symbol):
+            if candidate_exit_reason == "EXIT_BY_EXTREME_WATERFALL":
+                from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+                evidence = live_adverse_waterfall_evidence({
+                    "symbol": p.symbol, "side": p.side, "open_timestamp": p.open_timestamp_ms,
+                }, frame, m.quote, now_ms=current_time_ms)
+                if evidence is not None:
+                    return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, evidence)
+                return hold("VETO_UNCONFIRMED_WATERFALL")
+            if candidate_exit_reason == "OPPOSITE_KC_BAND_BREACH":
+                return hold("VETO_OPPOSITE_RAIL_REQUIRES_WATERFALL_OR_TRUE_PIVOT")
+        # Generic strategies retain their existing band-breach candidate.
         if candidate_exit_reason == "OPPOSITE_KC_BAND_BREACH" and (
             (p.side == "LONG" and m.quote < m.kc_lower)
             or (p.side == "SHORT" and m.quote > m.kc_upper)

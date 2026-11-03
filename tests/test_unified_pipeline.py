@@ -512,6 +512,10 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     frame = wave_frame(side, reversed_direction=False, live=True)
     pos = position(side, frame)
     pos["symbol"] = symbol
+    import time
+    live_ms = int(time.time() // 60) * 60_000
+    frame["timestamp"] += live_ms - int(frame.iloc[-1]["timestamp"])
+    frame.attrs["snapshot_ms"] = int(time.time() * 1000)
     if new_policy:
         from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
 
@@ -522,6 +526,8 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     frame.loc[frame.index[-1], ["open", "high", "low", "close", "kc_middle"]] = [
         100.0, max(100.0, price) + 0.1, min(100.0, price) - 0.1, price, 100.0,
     ]
+    if exit_reason == "CIRCUIT_BREAKER_HARD_SL":
+        frame.loc[frame.index[-1], "open"] = price + (0.2 if side == "LONG" else -0.2)
     snapshot = DataPipeline.calculate_snapshot(symbol, frame, current_price=price, position=pos)
     assert snapshot is not None
     snapshot.raw_df = frame
@@ -531,7 +537,7 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     snapshot.atr = 1.0
     snapshot.macro_trend = "NEUTRAL"
     should_exit, reason, _ = ExitGate.evaluate(pos, snapshot)
-    expected = exit_reason == "OPPOSITE_KC_BAND_BREACH"
+    expected = exit_reason == "EXIT_BY_EXTREME_WATERFALL"
     assert should_exit is expected
     if expected:
         assert reason == exit_reason

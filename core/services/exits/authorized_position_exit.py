@@ -15,14 +15,17 @@ def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     normalized = str(reason).upper()
     if not is_meme_breakout_symbol(symbol) or not is_emergency_exit(reason):
         return False
+    if normalized == "EXIT_BY_EXTREME_WATERFALL":
+        return False
     if any(token in normalized for token in (
         "WATERFALL", "TWO_CLOSED_ADVERSE_ABNORMAL", "CATASTROPHIC",
+        "OPPOSITE_KC_BAND_BREACH", "反側KC",
         "ADVERSE_STOP_LOSS", "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
         "急速反向", "閃崩", "瀑布",
     )):
         return True
     return not any(token in normalized for token in (
-        "OPPOSITE_KC_BAND_BREACH", "反側KC", "LIQUIDATION", "DATA_OUTAGE",
+        "LIQUIDATION", "DATA_OUTAGE",
         "ACCOUNT_CIRCUIT_BREAKER", "ACCOUNT_HARD_STOP", "帳戶硬止損", "MARGIN_LOSS",
     ))
 

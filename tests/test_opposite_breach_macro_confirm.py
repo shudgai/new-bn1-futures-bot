@@ -54,7 +54,7 @@ def _mirror(rows, pivot=0.042):
 
 
 def test_lobster_0901_intrabar_wick_holds_when_macro_bullish():
-    snap = DataPipeline.calculate_snapshot("龙虾/USDT", _frame(_LOBSTER_0901),
+    snap = DataPipeline.calculate_snapshot("X", _frame(_LOBSTER_0901),
                                            current_price=0.02103, position=dict(_LONG_POS))
     # This gate scenario supplies aligned HTF evidence explicitly; the local
     # 1m replay alone does not establish a bullish historical runtime regime.
