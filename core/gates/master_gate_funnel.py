@@ -18,6 +18,10 @@ logger = logging.getLogger("MasterGateFunnel")
 # distance limits (MA15 bias, rail extension, exit buffers) trip on 2-3 ticks.
 MEME_PRICE_TICK = {"龙虾/USDT": 0.00001, "CAP/USDT": 0.00001, "1000PEPE/USDT": 0.0000001}
 MEME_DISTANCE_ATR_MIN_TICKS = 8
+# Anti-chase limits (ATR multiples, symmetric LONG/SHORT), relaxed per Owner 2026-11-03.
+MEME_MA15_EXTENSION_ATR = 1.5
+MEME_BREAKOUT_MA15_EXTENSION_ATR = 2.0
+MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR = 0.25
 
 
 def meme_distance_atr(symbol, atr: float) -> float:
@@ -296,12 +300,13 @@ class MasterGateFunnel:
         body = sign * (m.close_price - m.open_price)
         threshold = 0.60 * m.atr
         band = m.kc_upper if side == "LONG" else m.kc_lower
+        open_tolerance = MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR * m.atr
         return (
             m.is_closed
             and body > 0
             and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
             and sign * (m.close_price - band) > 0
-            and sign * (m.open_price - band) <= 0
+            and sign * (m.open_price - band) <= open_tolerance
         )
 
     @classmethod
@@ -369,19 +374,21 @@ class MasterGateFunnel:
         # Anti-bottom/top chase: a fresh band break is measured from where the bar started.
         distance_atr = meme_distance_atr(m.symbol, m.atr)
 
-        def over_limit(value):
-            return value > distance_atr and not math.isclose(value, distance_atr, rel_tol=1e-12, abs_tol=0)
+        def over_limit(value, multiple):
+            cap = multiple * distance_atr
+            return value > cap and not math.isclose(value, cap, rel_tol=1e-12, abs_tol=0)
 
-        extreme_over = over_limit(sign * (extreme - m.ma15_curr))
+        ma15_limit = MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR
+        extreme_over = over_limit(sign * (extreme - m.ma15_curr), MEME_MA15_EXTENSION_ATR)
         bias_price = m.open_price if big_body_breakout else extreme
-        if over_limit(sign * (bias_price - m.ma15_curr)):
+        if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
         band_limit = (
             0.8 if big_body_breakout and extreme_over
             else 1.5 if squeeze_breakout_long
             else 1.2 if side == "LONG" and cls.is_expansion(m, side)
-            else 0.5 if side == "LONG" else 0.8
+            else 0.8
         )
         band = m.kc_upper if side == "LONG" else m.kc_lower
         extension = sign * (extreme - band)

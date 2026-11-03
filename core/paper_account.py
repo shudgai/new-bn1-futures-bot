@@ -598,6 +598,9 @@ class PaperAccount:
                 return False
             entry_context["_entry_method_validated"] = True
             entry_context["entry_gate_quote"] = float(price)
+        # Pivot/priority-channel entries arrive without a quote; the meme firewall needs the order price.
+        if entry_context.get("entry_gate_quote") is None and price is not None:
+            entry_context["entry_gate_quote"] = float(price)
 
         # ──【全鏈路審計階段 1：訊號產生】──
         OrderAuditTrail.record_signal_generated(

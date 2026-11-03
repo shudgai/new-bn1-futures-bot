@@ -59,7 +59,7 @@ def test_bottom_v_long_never_bypasses_global_guards(symbol, fault, reason):
     elif fault == "quote":
         m = m._replace(quote=m.ma15_curr)
     elif fault == "bias":
-        m = m._replace(quote=m.ma15_curr + m.atr + .01)
+        m = m._replace(quote=m.ma15_curr + 1.5 * m.atr + .01)
     elif fault == "chop":
         m = m._replace(ma_cross_count_8=3)
     elif fault == "unclosed":
@@ -124,7 +124,7 @@ def test_expansion_never_bypasses_shared_direction_and_safety(symbol, side, faul
     elif fault == "close_middle":
         m = m._replace(close_price=m.kc_middle)
     elif fault == "quote_bias":
-        m = m._replace(quote=m.ma15_curr + sign * 2.000001)
+        m = m._replace(quote=m.ma15_curr + sign * 3.000001)
     elif fault == "close_bias":
         close = m.ma15_curr + sign * 2.000001
         m = m._replace(close_price=close, high_price=max(close, m.high_price), low_price=min(close, m.low_price))
@@ -224,9 +224,9 @@ def test_early_long_exemption_never_disables_other_gates(fault):
     elif fault == "chop":
         m = m._replace(ma_cross_count_8=3)
     elif fault == "bias":
-        m = m._replace(quote=m.ma15_curr + m.atr + .000001)
+        m = m._replace(quote=m.ma15_curr + 1.5 * m.atr + .000001)
     elif fault == "band_extension":
-        m = m._replace(kc_upper=101.1, quote=102.100001)
+        m = m._replace(kc_upper=101.1, quote=102.700001)
     assert not MasterGateFunnel.evaluate_open_long(m, fault == "cooldown").can_execute
 
 
@@ -275,10 +275,10 @@ def test_top_pivot_short_exempts_only_flat_and_squeeze(fault):
     elif fault == "chop":
         m = m._replace(ma_cross_count_8=3)
     elif fault == "bias_close":
-        m = m._replace(close_price=m.ma15_curr - m.atr - .000001,
-                       low_price=m.ma15_curr - m.atr - .01)
+        m = m._replace(close_price=m.ma15_curr - 1.5 * m.atr - .000001,
+                       low_price=m.ma15_curr - 1.5 * m.atr - .01)
     elif fault == "bias_quote":
-        m = m._replace(quote=m.ma15_curr - m.atr - .000001)
+        m = m._replace(quote=m.ma15_curr - 1.5 * m.atr - .000001)
     elif fault == "band_extension":
         m = m._replace(kc_lower=99 - .01, kc_middle=99, kc_upper=99.2,
                        quote=99 - .01 - .8 * m.atr - .000001)
@@ -338,8 +338,10 @@ def test_short_rail_mode_requires_ma15_down_not_just_ma5_down():
     # Owner 2026-11-03 early-breakdown channel (body >= 0.6 ATR) authorizes it.
     ("07:18", .0047608, .0047528, .0047637, .0047528, .00476202, .00476464, .004765033333333334,
      .004766900516422691, .00476838478130929, .004756539802136976, .000006542857142857193, True),
+    # 07:26 opens only ~0.07 ATR below the lower rail: Owner 2026-11-03 relaxed anti-bottom
+    # allows a big-body breakdown opening up to 0.25 ATR beyond the band.
     ("07:26", .0047489, .0047446, .004751, .0047419, .00474988, .00475068, .004757186666666666,
-     .004757829815772929, .004759222427959553, .004748465530058643, .000006035714285714375, False),
+     .004757829815772929, .004759222427959553, .004748465530058643, .000006035714285714375, True),
 ])
 def test_historical_pepe_microstructure_is_not_historical_fill_proof(
     minute, opened, close, high, low, ma5, prev_ma5, ma15, middle, prev_middle, lower, atr, allowed,
@@ -389,7 +391,7 @@ def test_new_authority_accepts_already_crossed_middle_not_late_chase(symbol, sid
     signal = evaluate_entry_method(frame, symbol=symbol, quote=quote, expected_method=MEME_GATE_ENTRY)
     assert signal is not None
     assert revalidate_entry_method(frame, symbol=symbol, side=side, quote=quote, context=method_context(signal))[0]
-    late = float(frame.iloc[-1]["ma15"]) + sign * 2.01
+    late = float(frame.iloc[-1]["ma15"]) + sign * 4.01
     assert not revalidate_entry_method(frame, symbol=symbol, side=side, quote=late, context=method_context(signal))[0]
 
 
@@ -473,7 +475,7 @@ def test_real_scan_pipeline_reaches_new_authority_before_legacy_chop(
     if fresh_fault == "lost_cross":
         fresh_frame.loc[prev, "ma5"] = fresh_frame.loc[prev, "ma15"] + sign * .01
     elif fresh_fault == "bias":
-        fresh_frame.loc[last, "ma15"] = quote + 2.01
+        fresh_frame.loc[last, "ma15"] = quote + 4.01
     account.entry_frame_provider = lambda *_a, **_k: fresh_frame
     snapshot = DataPipeline.calculate_snapshot(symbol, frame, current_price=quote)
     snapshot.raw_df = frame

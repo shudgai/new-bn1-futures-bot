@@ -1060,6 +1060,20 @@ class CentralEntryGate:
                         return {"valid": False, "error": "VETO_INTRABAR_CLOSED_HISTORY_INVALID"}
                     eval_row = last_row
                     prev_eval_row = data.iloc[-2]
+                    channel_keys = ("atr", "kc_upper", "kc_lower", "kc_middle", "kc_middle_slope")
+                    missing = [
+                        key for key in channel_keys
+                        if key in data.columns and pd.isna(last_row.get(key))
+                    ]
+                    if missing:
+                        # Live bar has no channel yet: carry the last closed channel forward.
+                        eval_row = last_row.copy()
+                        for key in missing:
+                            eval_row[key] = prev_row.get(key)
+                        eval_row["kc_middle_slope"] = (
+                            float(prev_row.get("kc_middle"))
+                            - float(data.iloc[-3].get("kc_middle"))
+                        )
                     metrics["is_closed"] = False
                 elif not is_closed and len(data) >= 3:
                     eval_row = data.iloc[-2]

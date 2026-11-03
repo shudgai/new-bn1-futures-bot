@@ -54,7 +54,7 @@ def test_new_long_triggers_do_not_skip_common_guards(symbol, mode, fault):
     elif fault == "ma_alignment":
         m = m._replace(ma5_curr=m.ma15_curr - .01)
     elif fault == "bias":
-        m = m._replace(quote=m.ma15_curr + m.atr + .001)
+        m = m._replace(quote=m.ma15_curr + 1.5 * m.atr + .001)
     elif fault == "chop":
         m = m._replace(ma_cross_count_8=3)
     elif fault == "unclosed":
@@ -176,7 +176,7 @@ def test_new_authorities_scan_revalidate_and_submit_or_veto(
     account.balance = account.available_balance = 150
     fresh = frame.copy()
     if fault == "quote_extension":
-        fresh.loc[fresh.index[-1], "ma15"] = quote - 2.01
+        fresh.loc[fresh.index[-1], "ma15"] = quote - 4.01
     elif fault == "trigger_lost":
         fresh.loc[fresh.index[-1], "open"] = quote - .81
     elif fault == "macro":
