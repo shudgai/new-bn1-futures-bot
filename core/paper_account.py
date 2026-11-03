@@ -1938,6 +1938,8 @@ class PaperAccount:
                 "reason": close_reason,
                 **{key: pos.get(key) for key in ENTRY_CONTEXT_KEYS},
             })
+            from core.gates.master_gate_funnel import record_position_close
+            record_position_close(symbol, side, close_reason)
             log_level = "SUCCESS" if net_pnl >= 0 else "DANGER"
             self.log(
                 f"🏁 [紙上交易] 平倉 [{side}] {symbol} @ {exec_close_price:.6g} | "

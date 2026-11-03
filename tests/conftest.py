@@ -76,6 +76,14 @@ def _forbid_production_testnet_state(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_reverse_window_registry(monkeypatch):
+    """Structure-exit reverse windows are process state; never leak them between tests."""
+    import core.gates.master_gate_funnel as funnel
+
+    monkeypatch.setattr(funnel, "_STRUCTURE_EXITS", {})
+
+
+@pytest.fixture(autouse=True)
 def _default_ai_regime_for_entry_unit_tests(monkeypatch):
     """Keep unrelated entry tests independent of the asynchronous local AI service."""
     from core.gates.pipeline import pipeline

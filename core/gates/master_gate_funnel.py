@@ -23,6 +23,50 @@ MEME_MA15_EXTENSION_ATR = 1.5
 MEME_BREAKOUT_MA15_EXTENSION_ATR = 2.0
 MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR = 0.25
 
+# Owner 2026-11-03: after a structure exit (KC flip / true pivot / 0.5 ATR AND-lock) the
+# opposite side may open on the close bar and the next this-many 1m bars, symmetric.
+REVERSE_WINDOW_BARS = 3
+REVERSE_TRIGGER = "TRIGGER_REVERSE_AFTER_STRUCTURE_EXIT"
+_STRUCTURE_EXITS: Dict[str, Tuple[str, float]] = {}
+
+
+def _structure_reverse_reasons() -> frozenset:
+    from core.gates.ultimate_short_exit_gatekeeper import KC_FLIP_EXIT_REASONS, STRUCTURE_EXIT_REASONS
+    from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
+    return frozenset(r.upper() for r in (
+        *KC_FLIP_EXIT_REASONS.values(), *STRUCTURE_EXIT_REASONS.values(), *PROFIT_PIVOT_REASONS,
+    ))
+
+
+def _reverse_key(symbol) -> str:
+    from core.symbol_aliases import to_canonical_display_symbol
+    return to_canonical_display_symbol(symbol) or str(symbol)
+
+
+def record_position_close(symbol, closed_side, reason, closed_at: Optional[float] = None) -> None:
+    """Every successful close replaces the record; only structure exits open a reverse window."""
+    try:
+        key = _reverse_key(symbol)
+        side = str(closed_side or "").upper()
+        if side in ("LONG", "SHORT") and str(reason or "").strip().upper() in _structure_reverse_reasons():
+            _STRUCTURE_EXITS[key] = (side, float(closed_at if closed_at is not None else time.time()))
+            logger.info("[REVERSE_WINDOW_OPEN] symbol=%s closed_side=%s reason=%s", key, side, reason)
+        else:
+            _STRUCTURE_EXITS.pop(key, None)
+    except Exception as exc:  # recording must never break the close path
+        logger.error("REVERSE_WINDOW_RECORD_FAILED symbol=%s error=%s", symbol, exc)
+
+
+def reverse_window_side(symbol, now: Optional[float] = None) -> Optional[str]:
+    record = _STRUCTURE_EXITS.get(_reverse_key(symbol))
+    if not record:
+        return None
+    side, closed_at = record
+    now = time.time() if now is None else now
+    if not (closed_at <= now < math.floor(closed_at / 60) * 60 + (REVERSE_WINDOW_BARS + 1) * 60):
+        return None
+    return "LONG" if side == "SHORT" else "SHORT"
+
 
 def meme_distance_atr(symbol, atr: float) -> float:
     """ATR used only for distance/bias limits; body triggers keep the raw ATR."""
@@ -320,9 +364,25 @@ class MasterGateFunnel:
             and sign * (m.open_price - band) <= open_tolerance
         )
 
+    @staticmethod
+    def is_reverse_after_structure_exit(m: MarketSnapshot, side: str) -> bool:
+        """Opposite-side entry right after a structure exit: directional candle closed and quoted
+        beyond KC middle and MA15, MA5 turning the same way (anti-chase checked by the filters)."""
+        if side not in ("LONG", "SHORT") or reverse_window_side(m.symbol) != side:
+            return False
+        sign = 1 if side == "LONG" else -1
+        return (
+            sign * (m.close_price - m.open_price) > 0
+            and sign * (m.ma5_curr - m.ma5_prev) > 0
+            and all(sign * (price - level) > 0
+                    for price in (m.quote, m.close_price) for level in (m.kc_middle, m.ma15_curr))
+        )
+
     @classmethod
     def priority_channel(cls, m: MarketSnapshot, side: str) -> Optional[str]:
         """Priority triggers that bypass KC-slope lag and the post-exit cooldown."""
+        if cls.is_reverse_after_structure_exit(m, side):
+            return REVERSE_TRIGGER
         if side == "SHORT":
             if cls.is_top_pivot_short(m):
                 return "TRIGGER_TOP_PIVOT_CROSS"
@@ -369,10 +429,11 @@ class MasterGateFunnel:
         if blocked:
             return block(reason)
         sign = 1 if side == "LONG" else -1
+        reverse_entry = priority == REVERSE_TRIGGER
         macro = str(m.macro_trend).upper()
         if macro not in ("BULLISH", "BEARISH", "RANGE", "NEUTRAL"):
             return block("VETO_MACRO_TREND_UNKNOWN")
-        if macro == ("BEARISH" if side == "LONG" else "BULLISH"):
+        if macro == ("BEARISH" if side == "LONG" else "BULLISH") and not reverse_entry:
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         slope = sign * (m.kc_middle - m.kc_middle_prev)
         early_long = side == "LONG" and cls.is_early_long(m)
@@ -385,7 +446,7 @@ class MasterGateFunnel:
         ))):
             return block(f"BLOCKED_{side}_KC_DIRECTION")
         # Owner 2026-11-03 swing filter: applies to priority channels too, after the legacy direction checks.
-        trend_block = cls.swing_trend_block(m, side)
+        trend_block = None if reverse_entry else cls.swing_trend_block(m, side)
         if trend_block:
             return block(trend_block)
         if any(sign * (price - level) <= 0
@@ -393,7 +454,8 @@ class MasterGateFunnel:
             return block(f"BLOCKED_{side}_PRICE_MIDDLE_MA15")
         alignment = sign * (m.ma5_curr - m.ma15_curr)
         if (sign * (m.ma5_curr - m.ma5_prev) <= 0
-                or (not big_body_breakout and (alignment < 0 or alignment == 0 and not early_long))):
+                or (not (big_body_breakout or reverse_entry)
+                    and (alignment < 0 or alignment == 0 and not early_long))):
             return block(f"BLOCKED_{side}_MA5_DIRECTION_OR_ALIGNMENT")
         if sign * (m.close_price - m.open_price) <= 0:
             return block(f"BLOCKED_{side}_DIRECTIONAL_CANDLE")
@@ -491,6 +553,9 @@ class MasterGateFunnel:
         elif (m.close_price < m.kc_lower and m.quote < m.kc_lower
               and m.ma15_curr < m.ma15_prev):
             trigger_hit = "TRIGGER_C_BREAKDOWN_LOWER_RAIL"
+
+        if not trigger_hit:
+            trigger_hit = cls.priority_channel(m, "SHORT")
 
         if not trigger_hit:
             return GateDecision(False, "HOLD", "WAIT_VALID_SHORT_TRIGGER", details)

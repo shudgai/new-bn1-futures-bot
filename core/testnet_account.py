@@ -4625,6 +4625,8 @@ class BinanceTestnetAccount:
             self.position_meta.pop(symbol, None)
             self.positions.pop(symbol, None)
             self.pending_limit_orders.pop(symbol, None)
+            from core.gates.master_gate_funnel import record_position_close
+            record_position_close(symbol, position["side"], close_reason)
             generations = getattr(self, "_close_generation", None)
             if generations is None:
                 generations = self._close_generation = {}
