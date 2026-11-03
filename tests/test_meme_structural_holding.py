@@ -1,4 +1,8 @@
-"""Confirmed pivots never bypass the meme holding/structure qualifications."""
+"""Confirmed profitable pivots bypass only the 0.50 ATR / MA5-MA15 hold lock.
+
+Owner decision (2026-11-03): a profitable confirmed true pivot outranks the
+buffer/MA structure lock; data, closed-bar, colour and 5-bar holds still apply.
+"""
 
 import asyncio
 import copy
@@ -64,7 +68,7 @@ def test_all_boundaries_enforce_structure_even_for_persisted_pivots(
         frame.loc[last, "ma15"] = float("nan")
     elif fault == "no_frame":
         frame = None
-    expected = fault is None
+    expected = fault in (None, "buffer", "two_below_buffer", "ma_equal", "ma_original_side")
     quote = 100.3 if side == "LONG" else 99.7
     caplog.set_level("INFO")
     assert (profitable_true_pivot_exit(pos, frame, quote=quote) is not None) is expected
@@ -84,8 +88,6 @@ def test_all_boundaries_enforce_structure_even_for_persisted_pivots(
     assert validate_exit_at_execution(account, symbol, pos, quote, pivot[0])[0] is expected
     assert asyncio.run(account.close_position(symbol, quote, pivot[0])) is expected
     assert (symbol not in account.positions) is expected
-    if fault in ("buffer", "two_below_buffer"):
-        assert f"[VETO_HOLD_{side}_050_ATR_BUFFER]" in caplog.text
 
 
 @pytest.mark.parametrize("symbol", ["龍蝦/USDT", "LOBSTER/USDT:USDT", "1000PEPEUSDT", "CAP/USDT:USDT"])

@@ -185,6 +185,10 @@ class UltimateShortExitGatekeeper:
         evidence["bars_held"] = bars_held
         if bars_held < MIN_BARS_HELD:
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
+        from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
+        if normalized in PROFIT_PIVOT_REASONS:
+            # Profitable confirmed true pivot: verified by profitable_true_pivot_exit downstream.
+            return ExitVerdict(DEFER, "PROFIT_TRUE_PIVOT_AUTHORITY_REQUIRED", evidence)
 
         buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
         evidence["structure_line"] = buffer_line
