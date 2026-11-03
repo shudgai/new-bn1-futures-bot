@@ -74,3 +74,45 @@ def test_position_direction_or_doji_bar_always_holds(side, opened, close):
     result = verdict(side, opened, close)
     assert result.verdict == "HOLD"
     assert result.code == f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED"
+
+
+def shield_verdict(side, reason, entry_offset_atr, close=0.0046979):
+    # entry_offset_atr > 0 puts the entry on the profitable side of the quote.
+    sign = 1 if side == "LONG" else -1
+    price = mirror(close, side)
+    position = {"side": side, "entry_price": price - sign * entry_offset_atr * ATR, "qty": 1,
+                "open_timestamp": time.time() - 40 * 60}
+    return UltimateShortExitGatekeeper.evaluate(
+        "1000PEPE/USDT", position, {}, reason, price,
+        frame=frame(side, 0.0046926, close, FRESH_PREV_MA5), is_bar_closed=True,
+    )
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("reason", [
+    "STRUCTURE_EXIT_PROBE", "EXIT_BY_EXTREME_WATERFALL",
+    "EXIT_SHORT_DISASTER_CLOSED_ABOVE_KC_UPPER", "EXIT_LONG_DISASTER_CLOSED_BELOW_KC_LOWER",
+])
+@pytest.mark.parametrize("offset", [-0.999, -0.5, 0.0, 0.3, 0.999])
+def test_cost_shield_holds_strategy_and_waterfall_exits_near_entry(side, reason, offset):
+    # 1000PEPE 2026-11-03 17:24: waterfall bar while quote was still at cost.
+    result = shield_verdict(side, reason, offset)
+    assert result.verdict == "HOLD"
+    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("offset", [-1.01, 1.01])
+def test_cost_shield_releases_beyond_one_atr(side, offset):
+    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", offset)
+    assert result.code != f"VETO_HOLD_{side}_COST_SHIELD"
+    assert result.verdict == "ALLOW"
+    waterfall = shield_verdict(side, "EXIT_BY_EXTREME_WATERFALL", offset)
+    assert waterfall.verdict == "DEFER"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_cost_shield_never_blocks_three_atr_disaster_loss(side):
+    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", -3.01)
+    assert result.verdict == "ALLOW"
+    assert result.code == f"EXIT_{side}_DISASTER_LOSS_3ATR"

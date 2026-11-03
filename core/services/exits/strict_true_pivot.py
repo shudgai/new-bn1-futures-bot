@@ -17,10 +17,6 @@ _CONFIRMED_PIVOT_REASONS = {
 }
 PROFIT_PIVOT_EXIT_POLICY = "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 PROFIT_PIVOT_REASONS = frozenset(_CONFIRMED_PIVOT_REASONS.values())
-PIVOT_BYPASSABLE_STRUCTURE_HOLDS = (
-    "_050_ATR_BUFFER",
-    "_MA5_MA15_NOT_REVERSED", "_STRUCTURE_AND_TRAIL_NOT_READY",
-)
 PROFIT_PIVOT_PENDING_KEY = "profit_true_pivot_exit_pending_v1"
 
 
@@ -151,10 +147,8 @@ def profitable_true_pivot_exit(
     """Confirm a post-entry, profitable three-bar reversal, or retry its ticket."""
     if quote is not None and not profit_pivot_net_positive(position, quote):
         return None
-    structure_allowed, structure_code, structure_details = evaluate_position_exit(position, frame)
-    # A profitable confirmed true pivot outranks the 0.50 ATR / MA5-MA15 hold lock
-    # (Plan A true-pivot exit); data, freshness and 5-bar hold checks still apply.
-    if not structure_allowed and not str(structure_code).endswith(PIVOT_BYPASSABLE_STRUCTURE_HOLDS):
+    structure_allowed, _, structure_details = evaluate_position_exit(position, frame)
+    if not structure_allowed:
         return None
     pending = pending_confirmed_pivot_exit(position, metadata, key=PROFIT_PIVOT_PENDING_KEY)
     if pending is not None and pending[1].get("exit_policy") == PROFIT_PIVOT_EXIT_POLICY:

@@ -665,7 +665,7 @@ def test_ultimate_exit_gate_uses_closed_structure_not_a_caller_success_flag(symb
     reason = "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" if side == "LONG" else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
     assert UltimateExitGatekeeper.can_execute_exit(
         symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=True,
-    ) is (fault in (None, "buffer", "ma"))
+    ) is (fault is None)
     assert not UltimateExitGatekeeper.can_execute_exit(
         symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=False,
     )

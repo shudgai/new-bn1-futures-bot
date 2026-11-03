@@ -19,6 +19,11 @@ logger = logging.getLogger("UltimateShortExitGatekeeper")
 MIN_BARS_HELD = 5
 STRUCTURE_BUFFER_ATR = 0.50
 DISASTER_LOSS_ATR = 3.0
+# Owner decision 2026-11-03: while the quote stays within this many ATR of the
+# entry price (either side), structure/waterfall/rail exits hold the position.
+# Profitable confirmed pivots keep their own structure-locked authority.
+COST_SHIELD_ATR = 1.0
+COST_SHIELD_EXEMPT_TOKENS = ("HARD_S", "CIRCUIT_BREAKER", "STOP_LOSS", "DISASTER_LOSS")
 ACCOUNT_LEVEL_TOKENS = (
     "LIQUIDATION", "DATA_OUTAGE", "ACCOUNT_CIRCUIT_BREAKER", "ACCOUNT_HARD_STOP",
     "帳戶硬止損", "MARGIN_LOSS",
@@ -71,6 +76,29 @@ OWN_DISASTER_REASONS = frozenset(
 )
 
 
+def _cost_shield_distance_atr(
+    symbol: str, position: Mapping[str, Any], price: Any, frame: Any,
+) -> Optional[float]:
+    """Signed favourable distance (ATR) of the quote from entry; None if unknown."""
+    from core.gates.master_gate_funnel import meme_distance_atr
+
+    side = str(position.get("side") or "").upper()
+    quote, entry = _float(price), _float(position.get("entry_price"))
+    if side not in ("LONG", "SHORT") or not quote or not entry or quote <= 0 or entry <= 0:
+        return None
+    try:
+        closed = closed_entry_candles(frame) if frame is not None else None
+    except Exception:
+        return None
+    if closed is None or len(closed) < 1:
+        return None
+    raw_atr = _float(closed.iloc[-1].get("atr"))
+    if raw_atr is None or raw_atr <= 0:
+        return None
+    sign = 1 if side == "LONG" else -1
+    return sign * (quote - entry) / meme_distance_atr(symbol, raw_atr)
+
+
 class UltimateShortExitGatekeeper:
     """Highest-priority exit veto; also mirrors the identical rules for LONG."""
 
@@ -95,10 +123,6 @@ class UltimateShortExitGatekeeper:
             return ExitVerdict(DEFER, "MANUAL_EXIT", {})
         if any(token in normalized for token in ACCOUNT_LEVEL_TOKENS):
             return ExitVerdict(DEFER, "ACCOUNT_LEVEL_EXIT", {})
-        if normalized in LEGACY_VERIFIED_DISASTER_REASONS:
-            # Disaster class: only the existing math-verified live waterfall proof may authorize it.
-            return ExitVerdict(DEFER, "VERIFIED_WATERFALL_MATH_PROOF_REQUIRED", {})
-
         side = str(position.get("side") or "").upper()
         evidence: dict = {"symbol": symbol, "side": side, "reason": reason}
 
@@ -108,6 +132,14 @@ class UltimateShortExitGatekeeper:
             if side == "SHORT":
                 logger.info("[UI_DISPLAY: 續抱] symbol=%s reason=%s", symbol, code)
             return ExitVerdict(HOLD, code, evidence)
+
+        if normalized in LEGACY_VERIFIED_DISASTER_REASONS:
+            shield = _cost_shield_distance_atr(symbol, position, price, frame)
+            if shield is not None and abs(shield) <= COST_SHIELD_ATR:
+                evidence["cost_distance_atr"] = round(shield, 4)
+                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
+            # Disaster class: only the existing math-verified live waterfall proof may authorize it.
+            return ExitVerdict(DEFER, "VERIFIED_WATERFALL_MATH_PROOF_REQUIRED", {})
 
         def allow(code: str) -> ExitVerdict:
             if normalized not in OWN_STRUCTURE_REASONS | OWN_DISASTER_REASONS:
@@ -149,6 +181,10 @@ class UltimateShortExitGatekeeper:
             evidence["loss_atr"] = round(loss_atr, 4)
             if loss_atr > DISASTER_LOSS_ATR:
                 return allow(DISASTER_LOSS_REASONS[side])
+            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
+            if abs(loss_atr) <= COST_SHIELD_ATR and normalized not in PROFIT_PIVOT_REASONS and not any(
+                    token in normalized for token in COST_SHIELD_EXEMPT_TOKENS):
+                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
         current, previous = closed.iloc[-1], closed.iloc[-2]
@@ -185,10 +221,6 @@ class UltimateShortExitGatekeeper:
         evidence["bars_held"] = bars_held
         if bars_held < MIN_BARS_HELD:
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
-        from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
-        if normalized in PROFIT_PIVOT_REASONS:
-            # Profitable confirmed true pivot: verified by profitable_true_pivot_exit downstream.
-            return ExitVerdict(DEFER, "PROFIT_TRUE_PIVOT_AUTHORITY_REQUIRED", evidence)
 
         buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
         evidence["structure_line"] = buffer_line
