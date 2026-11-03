@@ -80,7 +80,7 @@ def test_verified_disaster_allowed_even_on_entry_bar_but_never_pullback(side, mo
         "core.services.math_execution_gate.validate_exit_math",
         lambda *_a, **_k: (True, "EMERGENCY_EXIT_ABNORMAL_CANDLE_CONFIRMED", {}),
     )
-    assert automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_EXTREME_WATERFALL", 90)
+    assert not automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_EXTREME_WATERFALL", 90)
     assert not automated_position_exit_allowed("CAP/USDT", pos, {}, "EXIT_BY_PULLBACK", 90)
 
 
@@ -99,7 +99,7 @@ def test_disaster_label_without_math_proof_cannot_bypass_entry_bar(side, reason)
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("account_type", ["paper", "testnet"])
-def test_real_account_allows_math_confirmed_entry_bar_waterfall(
+def test_real_account_blocks_entry_bar_waterfall_under_new_meme_policy(
     side, account_type, monkeypatch, tmp_path,
 ):
     import pandas as pd
@@ -127,9 +127,9 @@ def test_real_account_allows_math_confirmed_entry_bar_waterfall(
     account.position_meta["CAP/USDT"] = dict(pos)
     account._channel_exit_frames = {"CAP/USDT": frame}
     quote = 98 if side == "LONG" else 102
-    assert asyncio.run(account.close_position("CAP/USDT", quote, "EXIT_BY_EXTREME_WATERFALL"))
-    assert "CAP/USDT" not in account.positions
-    assert len(account.trades) == 1
+    assert not asyncio.run(account.close_position("CAP/USDT", quote, "EXIT_BY_EXTREME_WATERFALL"))
+    assert "CAP/USDT" in account.positions
+    assert len(account.trades) == 0
 
 
 def test_restart_does_not_reset_actual_entry_minute(tmp_path, monkeypatch):

@@ -105,14 +105,10 @@ def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache
 
     from core.services.math_execution_gate import validate_entry_at_execution
 
-    stale_bullish = _frame(
-        open=100, high=101, low=99, close=100,
-        ma5=102, ma15=101, kc_middle=101,
-    )
-    fresh_bearish = _frame(
-        open=100, high=101, low=99, close=100,
-        ma5=102, ma15=101, kc_middle=99,
-    )
+    from test_early_midline_entry import early_frame
+    stale_bullish = early_frame("LONG")
+    fresh_bearish = stale_bullish.copy()
+    fresh_bearish.loc[fresh_bearish.index[-2], "kc_middle"] = fresh_bearish.iloc[-1]["kc_middle"] + .1
 
     class Account:
         entry_frame_provider = staticmethod(lambda _symbol: fresh_bearish)
@@ -121,7 +117,7 @@ def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache
         Account(), "CAP/USDT", "LONG", {"frame": stale_bullish},
     ))
     assert not allowed
-    assert reason == "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP"
+    assert reason == "BLOCKED_LONG_KC_DIRECTION"
 
 
 def test_exit_math_true_peak_and_middle_trend_hold_veto():

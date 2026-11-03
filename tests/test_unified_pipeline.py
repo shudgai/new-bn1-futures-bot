@@ -512,14 +512,13 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     frame = wave_frame(side, reversed_direction=False, live=True)
     pos = position(side, frame)
     pos["symbol"] = symbol
-    if exit_reason == "CIRCUIT_BREAKER_HARD_SL":
-        exit_reason = "EXIT_BY_EXTREME_WATERFALL"
     if new_policy:
         from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
 
         pos["position_loss_policy"] = NEW_POSITION_LOSS_POLICY
     price = 100.0 - distance if side == "LONG" else 100.0 + distance
-    frame["kc_upper"], frame["kc_lower"], frame["atr"] = 101.0, 99.0, 1.0
+    upper, lower = (101.0, 99.0) if exit_reason == "OPPOSITE_KC_BAND_BREACH" else (110.0, 90.0)
+    frame["kc_upper"], frame["kc_lower"], frame["atr"] = upper, lower, 1.0
     frame.loc[frame.index[-1], ["open", "high", "low", "close", "kc_middle"]] = [
         100.0, max(100.0, price) + 0.1, min(100.0, price) - 0.1, price, 100.0,
     ]
@@ -528,11 +527,14 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     snapshot.raw_df = frame
     snapshot.curr_k = frame.iloc[-1].to_dict()
     snapshot.prev_k = frame.iloc[-2].to_dict()
-    snapshot.kc_upper, snapshot.kc_middle, snapshot.kc_lower = 101.0, 100.0, 99.0
+    snapshot.kc_upper, snapshot.kc_middle, snapshot.kc_lower = upper, 100.0, lower
     snapshot.atr = 1.0
     snapshot.macro_trend = "NEUTRAL"
     should_exit, reason, _ = ExitGate.evaluate(pos, snapshot)
-    assert should_exit is True and reason == exit_reason
+    expected = exit_reason == "OPPOSITE_KC_BAND_BREACH"
+    assert should_exit is expected
+    if expected:
+        assert reason == exit_reason
     monkeypatch.setattr(
         DataPipeline, "calculate_snapshot", staticmethod(
             lambda *args, **kwargs: snapshot,
@@ -543,10 +545,9 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     result = await ExecutionManager.process_symbol_pipeline(
         symbol, account, klines_df=frame, quote=price,
     )
-    assert result["status"] == "EXIT_EXECUTED", result
-    assert result["reason"] == exit_reason
-    assert symbol not in account.positions
-    assert [trade["action"] for trade in account.trades] == ["CLOSE_" + side]
+    assert result["status"] == ("EXIT_EXECUTED" if expected else "HOLD"), result
+    assert (symbol not in account.positions) is expected
+    assert [trade["action"] for trade in account.trades] == (["CLOSE_" + side] if expected else [])
 
 
 @pytest.mark.anyio

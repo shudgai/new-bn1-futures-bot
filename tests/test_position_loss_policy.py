@@ -40,7 +40,7 @@ def test_existing_and_new_positions_both_skip_numeric_stops(side, symbol, distan
     allowed, reason, _ = validate_exit_math(
         new_pos, frame, quote, close_reason="CIRCUIT_BREAKER_HARD_SL",
     )
-    assert not allowed and reason == "BLOCKED_EXIT_POSITION_PRICE_ATR_STOP_DISABLED"
+    assert not allowed and reason == "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED"
     assert price_atr_stop_disabled(pos)
 
 
@@ -60,7 +60,12 @@ def test_metadata_policy_blocks_numeric_aliases_at_final_boundary(side, reason, 
         {"position_loss_policy": NEW_POSITION_LOSS_POLICY}, close_reason=reason,
     )
     assert not allowed
-    assert code == expected_code
+    expected = (
+        "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED"
+        if reason in {"HARD_STOP_LOSS", "EXIT_INITIAL_ATR_HARD_STOP", "CIRCUIT_BREAKER_HARD_SL"}
+        else expected_code
+    )
+    assert code == expected
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

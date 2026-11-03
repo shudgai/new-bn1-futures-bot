@@ -96,7 +96,7 @@ def test_aliases_cannot_skip_structure(symbol):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_observed_position_extreme_used_for_trailing(side):
+def test_observed_position_extreme_cannot_bypass_buffer(side):
     frame = pivot_frame(side)
     sign = 1 if side == "LONG" else -1
     last, prev = frame.index[-1], frame.index[-2]
@@ -105,7 +105,7 @@ def test_observed_position_extreme_used_for_trailing(side):
     pos = position(side, frame)
     assert not evaluate_position_exit(pos, frame)[0]
     pos["highest_price" if side == "LONG" else "lowest_price"] = 100 + sign * 3
-    assert evaluate_position_exit(pos, frame)[0]
+    assert not evaluate_position_exit(pos, frame)[0]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -122,28 +122,29 @@ def test_strict_half_atr_structure_boundary(side, distance, allowed):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_four_fully_held_bars_not_signal_candles(side):
+def test_five_fully_held_bars_not_signal_candles(side):
     frame = pivot_frame(side)
     pos = position(side, frame)
-    pos["open_timestamp"] = float(frame.iloc[-4]["timestamp"]) / 1000
+    pos["open_timestamp"] = float(frame.iloc[-5]["timestamp"]) / 1000
     assert evaluate_position_exit(pos, frame)[0]
     pos["open_timestamp"] += 0.001
-    assert evaluate_position_exit(pos, frame)[1] == "VETO_HOLD_MIN_4_COMPLETED_BARS"
+    assert evaluate_position_exit(pos, frame)[1] == "VETO_HOLD_MIN_5_COMPLETED_BARS"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_two_middle_breaks_qualify_only_when_buffer_not_aligned(side):
+def test_two_middle_breaks_never_bypass_half_atr_buffer(side):
     frame = pivot_frame(side)
     sign = 1 if side == "LONG" else -1
     last, prev = frame.index[-1], frame.index[-2]
     frame.loc[prev, "kc_middle"] = frame.loc[prev, "close"] + sign * 0.1
     frame.loc[last, "kc_middle"] = frame.loc[last, "close"] + sign * 0.1
-    assert evaluate_position_exit(position(side, frame), frame)[0]
+    assert not evaluate_position_exit(position(side, frame), frame)[0]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("gain,retreat,expected", [
-    (2.499999, 1.6, False), (2.5, 1.5, False), (2.5, 1.500001, True),
+    (2.499999, 1.6, False), (2.5, 1.5, False), (2.5, 1.500001, False),
+    (2.500001, 1.500001, True),
 ])
 def test_trailing_thresholds_do_not_replace_pivot(side, gain, retreat, expected):
     frame = pivot_frame(side, gain=gain)
@@ -153,12 +154,14 @@ def test_trailing_thresholds_do_not_replace_pivot(side, gain, retreat, expected)
     frame.loc[last, ["open", "high", "low", "close"]] = [
         close + sign * 0.1, close + 0.2, close - 0.2, close,
     ]
-    frame.loc[last, "kc_middle"] = close - sign * 0.1
+    frame.loc[last, "kc_middle"] = close + sign * 0.6
     frame.loc[prev, "kc_middle"] = frame.loc[last, "kc_middle"] + sign * 0.01
     frame.loc[last, "ma5"] = close + sign * 0.2
     frame.loc[last, "ma15"] = close + sign * 0.3
     pos = position(side, frame)
-    assert evaluate_position_exit(pos, frame)[0] is expected
+    allowed, _, details = evaluate_position_exit(pos, frame)
+    assert allowed
+    assert details["trailing_qualified"] is expected
     # Destroy the strict pivot while preserving sufficient historic favorable movement.
     frame.loc[last, "high" if side == "LONG" else "low"] = 100 + sign * gain
     assert profitable_true_pivot_exit(pos, frame, quote=close) is None

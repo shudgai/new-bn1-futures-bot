@@ -356,15 +356,19 @@ def test_exchange_order_boundary_blocks_top_reversal_short_in_bull_trend():
 
     account = object.__new__(BinanceTestnetAccount)
     account.exchange = SimpleNamespace(create_order=AsyncMock())
+    from test_early_midline_entry import early_frame
+    frame = early_frame("SHORT")
+    frame.loc[frame.index[-2], "kc_middle"] = frame.iloc[-1]["kc_middle"] - .1
     account.entry_frame_provider = AsyncMock(
-        return_value=trend_frame("UP", "SHORT"),
+        return_value=frame,
     )
     context = {
         "entry_signal_code": "AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT",
         "entry_phase": "KC_TOP_WATERFALL_FLIP",
+        "entry_gate_quote": float(frame.iloc[-1]["close"]),
     }
 
-    with pytest.raises(ValueError, match="BLOCKED_SHORT_KC_NOT_DOWN"):
+    with pytest.raises(ValueError, match="BLOCKED_SHORT_KC_DIRECTION"):
         asyncio.run(account._send_order(
             "CAP/USDT",
             "market",

@@ -97,8 +97,10 @@ def test_v_turn_short_signal_blocked_at_central_entry_gate():
              atr=0.000050, ma5=0.004275, ma15=0.004255,
              kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
     ]
-    df = pd.DataFrame(bars)
-    df.attrs["timeframe_ms"] = 60_000.0
+    from test_entry_methods import frame
+    history = [dict(bars[0], timestamp=(-27 + index) * 60_000) for index in range(28)]
+    df = frame(history + bars)
+    df.attrs["macro_trend"] = "BULLISH"
 
     # 模擬試圖開空（SHORT）
     gate_res = CentralEntryGate.verify_and_authorize(
@@ -111,7 +113,7 @@ def test_v_turn_short_signal_blocked_at_central_entry_gate():
 
     # 驗證 CentralEntryGate 100% 一票否決開空
     assert gate_res.passed is False
-    assert "DIRECTION_LOCK" in gate_res.reason or "KC_MIDDLE" in gate_res.reason
+    assert gate_res.reason == "BLOCKED_SHORT_MACRO_TREND_CONFLICT"
 
 
 def test_v_turn_short_signal_blocked_at_execution_gate():
@@ -125,8 +127,10 @@ def test_v_turn_short_signal_blocked_at_execution_gate():
                  atr=0.000050, ma5=0.004275, ma15=0.004255,
                  kc_upper=0.004350, kc_middle=0.004270, kc_lower=0.004190, is_closed=True),
         ]
-        df = pd.DataFrame(bars)
-        df.attrs["timeframe_ms"] = 60_000.0
+        from test_entry_methods import frame
+        history = [dict(bars[0], timestamp=(-27 + index) * 60_000) for index in range(28)]
+        df = frame(history + bars)
+        df.attrs["macro_trend"] = "BULLISH"
 
         payload = {
             "entry_type": "SWING_PIVOT",
@@ -146,12 +150,12 @@ def test_v_turn_short_signal_blocked_at_execution_gate():
         )
 
         assert allowed is False
-        assert "DIRECTION_LOCK" in reason
+        assert reason == "BLOCKED_SHORT_MACRO_TREND_CONFLICT"
 
     asyncio.run(_run())
 
 
-def test_meme_coin_breakout_extension_relaxed_pass():
+def test_meme_coin_breakout_cannot_exceed_one_atr_ma15_limit():
     # 測試妖幣破軌暴衝：價格距外軌 1.5 ATR (原 0.5 ATR 會被殺，現在 2.5~3.5 ATR 放寬通過)
     atr_val = 0.000010
     kc_up = 0.004280
@@ -178,8 +182,8 @@ def test_meme_coin_breakout_extension_relaxed_pass():
              kc_upper=kc_up + 0.000005, kc_middle=bars[-1]["kc_middle"] + 0.000002, kc_lower=kc_up - 0.000035,
              is_closed=True, volume=3000, volume_avg=800)
     )
-    df = pd.DataFrame(bars)
-    df.attrs["timeframe_ms"] = 60_000.0
+    from test_entry_methods import frame
+    df = frame(bars)
     df.attrs["macro_trend"] = "BULLISH"
 
     gate_res = CentralEntryGate.verify_and_authorize(
@@ -191,7 +195,8 @@ def test_meme_coin_breakout_extension_relaxed_pass():
     )
 
     # 驗證不再被 VETO_KC_OUTER_OVEREXTENSION 阻斷
-    assert gate_res.passed is True, f"Meme coin breakout extension should pass, got: {gate_res.reason}"
+    assert not gate_res.passed
+    assert gate_res.reason == "BLOCKED_LONG_MA15_EXTENSION_1_ATR"
 
 
 def test_lobster_1055_dead_cross_slope_down_long_vetoed():
@@ -233,5 +238,3 @@ def test_lobster_1055_dead_cross_slope_down_long_vetoed():
     )
     assert res.passed is False
     assert "DIRECTION_LOCK" in res.reason or "BLOCKED" in res.reason
-
-

@@ -588,3 +588,291 @@ WAIT_LIVE_ORDER_AUTHORIZED = NO
 Doji PASS is specification/static evidence only; WAIT readiness BLOCK does not mean the existing service was stopped.
 
 The Owner subsequently selected deployment/restart plus commit/GitHub push for this MA5/0.50 ATR patch. Release scope excludes account/runtime files and unrelated dirty changes. Commit and remote verification precede restart; loaded-policy and HTTP checks will confirm the newly started process. No WAIT implementation or activation is authorized.
+
+### [2026-11-03] - Early closed midline impulse and one-ATR chase protection
+
+- The Owner selected a single completed 1m impulse, scaled by its preceding completed ATR, with strict KC direction; preserve the original two-closed-bar outside-KC entry; apply the new directional MA15 chase limit only to the early and two-bar methods for LOBSTER, CAP, and 1000PEPE; mirror LONG/SHORT. No independent one-bar outside-rail entry was authorized.
+- Added `KC_EARLY_MIDLINE_BREAK`. LONG requires a completed positive body at least 0.7 reference ATR, open at/below its KC middle and close above it, rising KC middle/MA5, and a current quote strictly above KC middle and MA5. SHORT mirrors. The preceding candle supplies ATR and direction, not a second confirmation. Existing MA5/MA15 alignment, exhaustion-wick checks, market/account safety, sizing, submit locks, and duplicate protection remain applicable. This exact midline authority does not inherit the unrelated outside-rail/near-opposite-rail location rule.
+- Both early and original two-bar methods use the more extreme of signal close and current quote against directional MA15 extension, inclusive at 1 ATR. Early uses preceding completed ATR; two-bar uses completed confirmation ATR. Other symbols and outer-pivot/post-close-reentry authorities do not gain this new limit. Rejections record `BLOCKED_ENTRY_METHOD_MA15_EXTENSION_1_ATR`.
+- Wired producer selection, exact-method central revalidation, and the final shared account firewall. Tests exposed that the paper execution path could set `is_manual=True` for an automatic strategy and skip the fresh firewall. Early/two-bar strategy authorities now require the same final fresh-frame revalidation even with that flag; genuine manual orders without those authorities retain their prior behavior. A changed MA15/quote, pending order, existing position, closing lock, altered event/bar, missing provider, or provider failure cannot authorize an entry.
+- Early selection reads authoritative persisted `last_closed_at` as well as executor history, including after restart. Its signal candle must start after the actual previous close. Persisted close identity is included in exact signal revalidation; a pre-close setup cannot be reused. Existing per-bar/account duplicate protection is retained.
+- Read-only chart evidence for 2026-11-03 Taiwan 07:17/07:18/07:26 **1000PEPE**, not a claim about an unspecified other symbol: 07:17 open 0.004767 is already below KC middle 0.00476838478130929, despite a 0.948 preceding-ATR short body and 0.787 ATR MA15 extension. It does not satisfy the requested open-above-middle crossing. At 07:18 the preceding-ATR MA15 extension is 1.870; at 07:26 it is 2.085, so the new chase rule rejects both. ATR was recomputed from the returned OHLC using the existing pure KC/ATR helper; chart EMA warmup/source can differ from historical runtime snapshots. No historical live quotes/order-time snapshot were recovered, so no exact historical fill is promised and no missed live order is reconstructed.
+- Final isolated validation: **1707 passed, 2 skipped, 4 existing warnings** across 26 modules, including **318 new early-entry cases**. Coverage includes three symbols/two sides, paper and fake-exchange full execution, forming-next-candle handling, MA15-alignment retention, fresh final rejection, inclusive 0.7/1 ATR thresholds, unrelated BTC scope, exact event/bar identity, persisted previous closes/restart, and duplicate rejection. Holding, profitable true-pivot, emergency exits, and independent outer-pivot regressions remain green. This is not a full-repository pass: previously documented 96 legacy-policy failures and missing historical Channel Swing test files remain outside this selected result.
+- No commit, push, deployment, restart, account reset, manual/live order, or WAIT activation is authorized by this early-entry patch validation. API policy text and a startup marker describe the intended patch, not proof that a restarted process loaded it.
+
+Mandatory WAIT review:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is specification/static evidence only. WAIT readiness BLOCK is not an instruction to stop the existing service.
+
+### [2026-11-03] - Shared MEME funnel and strict buffered holding
+
+This section supersedes the preceding unshipped early-entry policy where they conflict. The Owner explicitly selected code changes and tests, not commit/push, deployment, restart, or WAIT activation.
+
+- Scope: LOBSTER, CAP, and 1000PEPE, LONG and SHORT, including automatic outer-pivot entries and reentries. Genuine manual operations retain their existing route; the new MEME filters are excluded from the independent `WAIT_1M` route. This exclusion is not verification of the complete WAIT implementation.
+- Added independent `MEME_GATE_ENTRY` selection and exact-method revalidation. LONG modes are a completed 0.8-ATR expansion, a KC-middle pullback with a new MA5/MA15 upward cross, or a directional body crossing MA15. SHORT modes are a completed 0.7-ATR breakdown, a new MA5 downward cross of KC middle/MA15 with falling KC middle, or a lower-rail breakdown with falling MA15. Expansion requires close and execution quote on the new side of KC middle and MA15; opening across both lines is not required. The reference is the immediately preceding completed candle ATR, not the forming candle ATR.
+- All scoped automatic methods must pass opposite-macro and opposite-KC rejection, directional MA5 slope and MA5/MA15 ordering, directional closed body, and close/quote position relative to KC middle and MA15. Use the more extreme close or quote for the inclusive 1-ATR directional MA15 limit. SHORT lower-rail extension is capped at 0.8 ATR; expansion LONG upper-rail extension is capped at 1.2 ATR, while non-expansion LONG retains 0.5 ATR. Expansion exempts only squeeze/flat checks, never contrary KC/macro or the eight-bar MA5/MA15 chop threshold of three crosses.
+- Shared qualification requires eight contiguous valid completed 1m candles and a fresh snapshot. Macro evidence uses the existing DataPipeline calculation and fails closed on conflicting explicit evidence. Authoritative actual `last_closed_at` is rechecked at final submission: exclude the partial closing candle, wait for two full subsequent 1m candles, then reevaluate. Preserve existing order sizing, capital/slot, pending/UNKNOWN, duplicate, and submit-lock checks.
+- Full scan-to-account tests exposed stale pre-method KC-flat returns in execution selection and pure final math. The verified independent MEME method is now considered before those legacy vetoes; its own shared filter still rejects opposite KC, invalid data, wrong MA alignment, and non-expansion flat entries. Strategy-marked paper orders cannot use `is_manual=True` to bypass fresh method/firewall revalidation.
+- Ordinary exits require four fully held completed 1m candles, strict close beyond KC middle +/- 0.50 confirmation ATR, MA5 on the adverse MA15 side, an adverse completed body, a new post-entry true pivot, and estimated net PnL strictly above zero. Being exactly on the buffer is HOLD, regardless of KC slope. Two closes across the unbuffered middle cannot bypass the buffer. Gain above 2.5 ATR and retreat above 1.5 ATR are diagnostic trailing qualification only, not independent exit authority. Pending exits revalidate current structure and net PnL. Log `[VETO_HOLD_LONG]` or `[VETO_HOLD_SHORT]` with the precise reason.
+- The only retained scoped strategy disaster is a mathematically verified opposite KC outer-rail breach. Preserve the existing aligned-macro closed-bar/depth confirmation. Reject missing, future, or stale live candle timestamps at final opposite-rail math. Disable waterfall, two-adverse-abnormal, and other strategy disaster exits, including mixed labels that append account/opposite-rail words. Genuine manual and existing independently evidenced account safety routes remain separate.
+- Conditional historical microstructure replay: 1000PEPE Taiwan 07:17 satisfies the new closed-body/position limits with assumed neutral macro; 07:18 and 07:26 fail MA15 extension. An explicitly bullish macro blocks all SHORT cases. Historical macro, order-time quote, and fill evidence were not recovered. This is not proof of a missed historical fill or a promise of exact-minute execution.
+
+Verification used an isolated copy without production `.env` or account data:
+
+- Nine directly related policy/account modules: **1241 passed, 2 skipped**. Includes all three symbols/both sides, paper and fake-testnet scan-to-account execution, exact threshold boundaries, forming/stale/invalid data, all trigger modes, shared outer-pivot filters, cooldown, fresh final rejection, buffered holding, true-pivot/net requirements, mixed disaster labels, and verified opposite-rail entry-candle exits.
+- The other eighteen selected compatibility modules: **681 passed, 216 failed, 4 warnings**. Combined current selection: **1922 passed, 216 failed, 2 skipped, 4 warnings** across 27 modules. Remaining failures include short/obsolete/stale fixtures, assertions permitting opposite macro/KC entries, and assertions requiring removed waterfall/older holding behavior. They have not all been individually migrated or classified; this is not a passing full selection. These 216 are the current changed-policy result, not the separately recorded 96 historical failures.
+- All 17 affected Python files compile and match the tested isolated copy byte-for-byte; `git diff --check` passes.
+- No real exchange orders were submitted. No account/runtime state was deliberately changed, and no commit, push, deployment, or restart was performed. API text and startup markers describe intended source policy, not loaded runtime proof; a running process can lazily import edited files, so unchanged runtime behavior is not inferred from absence of restart. Publication remains blocked pending compatibility resolution and explicit release approval.
+
+Mandatory WAIT review:
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS is specification/static evidence only. WAIT readiness BLOCK does not mean the existing service has been stopped.
+
+### [2026-11-03] - Early LONG 0.40 ATR and five completed holding bars
+
+The Owner resolved the supplied example's conflicting semantics explicitly:
+
+- Add the early trigger only for LONG on LOBSTER, CAP, and 1000PEPE. Use a single completed 1m positive body at least 0.40 times the preceding completed ATR, close and execution quote strictly above KC middle and MA15, rising MA5, and MA5 >= MA15. No new crossover is required. `TRIGGER_EARLY_0748_BREAKOUT` is a pattern label, not a clock-time condition or proof of a historical 07:48 fill.
+- Exempt only squeeze/flat checks for this qualifying trigger. Explicitly falling KC, bearish macro, stale/invalid/unclosed data, three MA5/MA15 crosses in eight bars, post-close cooldown, quote/close extension, and account/order safeguards remain blocking. The new early trigger retains the ordinary 0.5-ATR upper-rail cap and 1-ATR MA15 cap; it does not inherit the existing 0.8-ATR expansion's 1.2-ATR rail allowance. Existing expansion and other triggers retain their identities.
+- Shared central validation uses the same early-pattern helper for flat exemption. Exact method revalidation and final paper/testnet submission accept the approved MA5 equality without accepting adverse MA ordering. SHORT does not gain a 0.40-ATR entry or an equality exception.
+- Increase ordinary holding protection for both sides to five fully held completed 1m candles, excluding a partially held opening candle. Four full candles still veto ordinary exits. Preserve strict 0.50-ATR buffer breach, adverse MA5/MA15 ordering, adverse completed body, a new post-entry true pivot, and estimated positive net PnL. Trailing metrics remain non-authoritative.
+- Do not restore the example's 3-ATR price-loss stop or its structure-only exit. Only the existing mathematically verified opposite KC outer-rail strategy disaster can bypass the five-bar period; genuine manual and independently evidenced account safety retain their existing routes. API policy text and startup markers were updated, without restarting the service.
+
+Final isolated validation: **1416 passed, 2 skipped** across ten focused policy/account modules. Coverage includes below/exactly/above 0.40 ATR, below/equal/above MA5/MA15 ordering, forbidden KC/macro direction, flat/squeeze exemption, quote/chop/cooldown limits, three-symbol paper/fake-testnet full scan-to-fill execution, final fresh-method rejection, five-completed-bar boundaries, positive-net true pivots, and verified opposite-rail entry-candle exits. Twelve intermediate failures were old fixtures classifying MA equality as adverse; those rejection fixtures now use genuinely adverse ordering, while separate integration tests prove the approved equality opens.
+
+This is not a full-repository or deployment pass. The preceding broader compatibility selection's 216 unresolved failures remains a release concern; that selection was not rerun for this delta, so its count is historical rather than a new current aggregate. No historical macro/quote/fill evidence for 07:48 was established. No commit, GitHub push, deployment, restart, live order, or WAIT activation was performed.
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static evidence only; unchanged WAIT activation is not functional WAIT verification.
+
+### [2026-11-03] - Top-cross SHORT and final API exit veto
+
+The Owner reconfirmed: no 3-ATR price-loss stop; the new 0.40-ATR SHORT cross exempts only flat/squeeze and never explicitly rising KC; the existing 0.70-ATR early breakdown need not be outside the lower rail; ordinary exits retain new post-entry true pivots and estimated positive net PnL. The change applies to LOBSTER, CAP, and 1000PEPE, preserving the previous LONG policy.
+
+- Added `is_top_pivot_short` and priority `TRIGGER_TOP_PIVOT_CROSS`: a completed adverse body >= 0.40 preceding completed ATR, previous MA5 >= previous MA15, current MA5 < current MA15 and previous MA5, and close/quote below KC middle and MA15. Shared data/macro/direction, inclusive 1-ATR MA15 and 0.8-ATR lower-rail extension, chop, cooldown, and account safety gates remain mandatory. Central flat exemption uses the identical helper. Existing 0.70-ATR and other independently legal entry modes remain available.
+- Full-account testing exposed trigger substitution: a MEME signal's cross could disappear during fresh revalidation while an older same-method trigger retained the same bar/event ID. Exact MEME revalidation now requires the original trigger type as well as method, side, event, and bar identity. Six initial failures identified this real integration issue; the final tests reject the substituted trigger without any fill.
+- Added `UltimateExitGatekeeper.can_execute_exit` to the existing final exit-authorization module, reusing the established closed-candle structural/pivot/net evaluator rather than duplicating strategy mathematics. The existing function remains a compatibility delegate to the same gate. An explicit unclosed exit event vetoes ordinary execution; a caller's `is_bar_closed=True` cannot replace authoritative candle finality, freshness, five fully held closed bars, buffer breach, adverse MA5/MA15 ordering and body, true pivot, or positive estimated net PnL.
+- The shared ExecutionManager close path now calls the gate before the account close API for scoped symbols. False returns immediately with `request=DISCARDED`, so later close bookkeeping/reentry logic is not reached. Both paper and testnet full and partial close boundaries independently call the same gate before fills/orders. Genuine manual operations and independently evidenced account safety remain separate; only the existing verified opposite-KC strategy disaster may bypass ordinary protection. No alternate exchange-order path or wholesale main-loop replacement was introduced.
+- Failed market refresh at the final full/partial account boundary now logs `ULTIMATE_EXIT_FRAME_REFRESH_FAILED` and returns False, rather than silently falling back to cached authorization. Newly authorized full-close pivot retry evidence is persisted only after the final veto passes; a discarded/failed-refresh request does not create new pending-close state. Existing legitimate failed-order reconciliation/retry remains unchanged.
+- SHORT vetoes retain detailed reasons and log `[VETO_SHORT]` or `[VETO_HOLD_SHORT]` plus `[UI_DISPLAY: 續抱]`. `[UI_DISPLAY: 賣空]` explicitly identifies `stage=CANDIDATE_NOT_FILL`; it is not order/fill proof. No hardcoded 08:35/08:43/08:52 execution timing or hindsight-trigger reconstruction was added.
+
+Final isolated ten-module regression: **1612 passed, 2 skipped**, including three symbols/both sides, paper/fake-testnet scan-to-account execution, new-cross/body boundaries, fresh cross loss and MA15 extension, all holding qualifiers, main API never called after veto, full/partial API never creating orders after a veto, normal confirmed-pivot exits, and emergency/deduplication regressions. Subsequent stronger boundary assertions passed **72 tests** already included in that selection: real initial pivot math followed by refresh failure creates no new pending close, and verified opposite-rail emergencies may execute with an unclosed live event. Testnet order spies are installed after the constructor's exchange instrumentation, so zero-call assertions inspect the actual execution boundary.
+
+The prior 216 broader compatibility failures remain unresolved release concerns and were not rerun for this delta. Neither the screenshot nor these synthetic tests prove historical macro/ATR/order-time eligibility or fills at the named minutes. This is not a full-repository or production-readiness claim. No commit, push, deployment, restart, live order, account reset, or WAIT activation was performed. Startup policy text is intended source evidence, not loaded-runtime verification.
+
+All 18 affected Python files compile and match the tested isolated copy byte-for-byte; `git diff --check` passes.
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static evidence only. No applicable WAIT implementation or safety gate is inferred from these changes.
+
+### [2026-11-03] - Compatibility migration and bottom V LONG trigger
+
+The Owner requested correction of the 216 compatibility failures and a completed
+bottom V-reversal LONG channel. The new trigger retains the shared three-symbol
+policy; no exit threshold or account risk parameter was changed.
+
+- Added priority `TRIGGER_BOTTOM_V_REVERSAL_0903`: completed green body >= 0.50
+  preceding completed ATR, previous MA5 <= previous MA15, current MA5 > current
+  MA15, strictly rising MA5, and close/quote above KC middle and MA15. It reuses
+  the existing early-LONG qualifier, including its flat/squeeze exemption.
+  Opposite KC/macro, extension, chop, cooldown, freshness and account gates
+  remain mandatory. Smaller bodies or old crosses can still qualify through
+  independently valid existing modes, but cannot claim this trigger.
+- Exact MEME trigger identity is preserved through final fresh revalidation.
+  Paper and fake-testnet scan-to-fill tests cover all three symbols, aligned
+  and flat KC, and rejection when the new golden cross disappears. This
+  candidate cannot silently become an older early-LONG trigger at submission.
+  The label `0903` is not a scheduled order, absolute-bottom detector or
+  historical fill guarantee. The screenshot does not establish historical
+  ATR, macro, quotes, eligibility or execution.
+- Migrated stale synthetic timestamps to current completed candles and added
+  snapshot evidence. Exit identities now refer to actual fixture timestamps.
+  Pure two/three-bar and crossover geometry tests use the non-meme evaluator
+  separately from scoped rejection tests; short or invalid history does not
+  bypass the new shared data requirements.
+- Rebuilt the outer-pivot fixture with an aligned macro/KC path and valid
+  MA5/MA15 ordering, preserving outside-rail pivot confirmation and negative
+  freshness/finality/identity/location cases. Non-expansion flat entries remain
+  rejected. Its subsequent profitable exit now has five fully held completed
+  bars and actual positive estimated net PnL.
+- Found a real integration conflict: final outer-pivot revalidation still
+  enforced the older opposite-half-channel location restriction after the
+  scoped shared filter required confirmation above/below KC middle. Removed
+  only that redundant restriction for scoped `KC_OUTER_PIVOT_REVERSAL` after
+  shared qualification and exact pattern reconstruction. Other methods and
+  non-meme symbols retain the old location rule. Wick, extension, direction,
+  account safety and final fresh reconstruction remain active.
+- Updated revoked-policy assertions to require rejection of contrary/conflicting
+  macro evidence, numerical strategy stops, waterfall and two-abnormal exits.
+  Pipeline tests distinguish a verified opposite-rail emergency from disabled
+  labels and assert no position removal or close trade for rejected requests.
+  Genuine account safety, manual operations and existing deduplication remain
+  covered. A rejected priority authority cannot fall back to an older entry
+  path merely because that path's mocked submission would succeed.
+
+Initial isolated reproduction: **216 failed, 681 passed** across 18 compatibility
+modules. All ten modules containing those 216 failures now pass in the final
+combined **20-module run: 2251 passed, 2 skipped, 4 existing deprecation warnings**
+(300.65 seconds). This includes the original failed modules plus the previously
+passing entry, holding, paper/testnet, firewall, opposite-rail and deduplication
+regressions. No new skip or weakened runtime guard was introduced. This is not
+a full-repository result; the separate historical 96-failure selection was not
+rerun. The older required `test_channel_swing.py`, `test_channel_position_path.py`
+and `test_channel_swing_execution.py` files do not exist in this checkout and
+could not be executed; their absence is not a pass.
+
+No commit, push, deployment, restart, live order, account reset or WAIT activation
+was performed. Source policy text is not evidence that a running process loaded
+the changes.
+
+```text
+WAIT_LONG_GATE = NOT_TESTED
+WAIT_SHORT_GATE = NOT_TESTED
+LOBSTER_WAIT_GATE = NOT_TESTED
+CAP_WAIT_GATE = NOT_TESTED
+LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_LIVE_TRIGGER_GATE = NOT_TESTED
+WAIT_ATR_GATE = NOT_TESTED
+WAIT_BRIDGE_GATE = NOT_TESTED
+WAIT_DEDUPE_GATE = NOT_TESTED
+WAIT_CONSUMPTION_GATE = NOT_TESTED
+WAIT_PERSISTENCE_GATE = NOT_TESTED
+WAIT_RESTART_GATE = NOT_TESTED
+WAIT_ORDER_SAFETY_GATE = NOT_TESTED
+WAIT_ARBITRATION_GATE = NOT_TESTED
+DOJI_CLASSIFICATION_GATE = PASS
+TRADING_GATE = BLOCK
+WAIT_CODE_PATCH_AUTHORIZED = NO
+WAIT_DEPLOY_AUTHORIZED = NO
+WAIT_RESTART_AUTHORIZED = NO
+WAIT_LIVE_ORDER_AUTHORIZED = NO
+```
+
+Doji PASS remains specification/static evidence only, not runtime verification.
+
+### [2026-11-03] - Exit incident verification and authorized non-WAIT release
+
+Read-only paper trade evidence records LOBSTER `OPEN_SHORT` at local 09:32:01,
+price 0.01776822, followed by `CLOSE_SHORT` at 09:35:01, price 0.01782178,
+reason `EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL`, reported PnL -1.3863 USDT.
+This is not a same-bar close in the persisted trade record. Historical tick
+ordering and the exact signal-marker placement were not reconstructed.
+
+The service was still running from 2026-11-02 23:05:15 UTC. Its startup evidence
+reported four held bars and enabled strategy disaster exits; it did not report
+the new Ultimate gate. The earlier corrections had not been deployed. Thus
+the verified cause is execution of an older, now-disabled exit authority,
+not proof that the new Ultimate gate was bypassed.
+
+- Added exact-time regression using a synthetic 09:32:01 intrabar fill across
+  three symbols and both sides. Counts are 0 at entry and the first minute
+  switch, 2 at 09:35:01, 4 at 09:37:59, and 5 at 09:38:00.
+  Position/metadata `bars_held=999` cannot bypass authoritative completed
+  candle counting. Ordinary exits still require all structure/pivot/net gates.
+- Added the actual two-closed-abnormal reason to main API veto tests.
+  Even an unguarded mocked account API is never called after this veto.
+- Corrected the startup policy marker from four to five completed held bars
+  and added the 0.50-ATR bottom-V/new-golden-cross marker.
+- Final isolated 20-module release regression: **2293 passed, 2 skipped,
+  4 existing deprecation warnings**, 304.03 seconds. The focused incident-time
+  and API-discard regression passed 66 cases, included in that total.
+
+The Owner explicitly authorized commit, GitHub push and restart, then confirmed
+the scope: publish only verified non-WAIT corrections and restart existing
+automatic trading, with WAIT remaining unactivated. No capital/leverage setting,
+account history, existing position state, unrelated dirty changes or AIDAN
+specification is included. This is not full-repository or WAIT Production
+readiness approval. The preceding expanded WAIT matrix remains unchanged:
+all WAIT functional gates are NOT_TESTED, doji is specification/static PASS,
+and overall TRADING_GATE remains BLOCK. The release permission applies only
+to the explicitly confirmed existing non-WAIT strategy.

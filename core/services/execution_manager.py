@@ -423,6 +423,8 @@ class ExecutionManager:
 
         from core.services.entry_methods import (
             KC_TWO_BAR_BREAKOUT,
+            KC_EARLY_MIDLINE_BREAK,
+            MEME_GATE_ENTRY,
             KC_OUTER_PIVOT_REVERSAL,
             MA5_MA15_CROSS,
             POST_CLOSE_KC_REENTRY,
@@ -442,9 +444,10 @@ class ExecutionManager:
         )
         methods = (
             (only_method,) if only_method is not None else
-            (KC_OUTER_PIVOT_REVERSAL, POST_CLOSE_KC_REENTRY)
+            (MEME_GATE_ENTRY, KC_OUTER_PIVOT_REVERSAL, POST_CLOSE_KC_REENTRY)
             if last_exit_timestamp is not None
             else (
+                MEME_GATE_ENTRY,
                 KC_OUTER_PIVOT_REVERSAL,
                 KC_TWO_BAR_BREAKOUT,
                 THREE_BAR_PIVOT_REVERSAL,
@@ -457,7 +460,7 @@ class ExecutionManager:
         authorized: tuple[dict[str, Any], str] | None = None
         for method in methods:
             method_last_exit = last_exit_timestamp
-            if method == KC_OUTER_PIVOT_REVERSAL:
+            if method in (KC_OUTER_PIVOT_REVERSAL, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
                 persisted_exit = getattr(account, "last_closed_at", {}).get(symbol)
                 if persisted_exit is not None:
                     try:
@@ -465,8 +468,9 @@ class ExecutionManager:
                         if not math.isfinite(persisted_exit) or persisted_exit <= 0:
                             raise ValueError("invalid persisted close timestamp")
                     except (TypeError, ValueError, OverflowError) as exc:
-                        logger.error("KC_OUTER_PIVOT_CLOSE_IDENTITY_INVALID symbol=%s error=%s", symbol, exc)
-                        return {"status": "VETO", "symbol": symbol, "reason": "KC_OUTER_PIVOT_CLOSE_IDENTITY_INVALID"}
+                        authority = "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else method
+                        logger.error("%s_CLOSE_IDENTITY_INVALID symbol=%s error=%s", authority, symbol, exc)
+                        return {"status": "VETO", "symbol": symbol, "reason": authority + "_CLOSE_IDENTITY_INVALID"}
                     method_last_exit = max(method_last_exit or 0, persisted_exit)
             signal = evaluate_entry_method(
                 frame,
@@ -1861,7 +1865,8 @@ class ExecutionManager:
                             return {"status": "HOLD", "symbol": symbol, "reason": "VETO_HOLD_STRUCTURE_INTACT"}
 
             # 🛑 開倉當根一般出口仍防洗；帳戶硬止損、瀑布、熔斷等絕對安全出口不受此限制。
-            if should_exit:
+            from core.symbol_aliases import is_meme_breakout_symbol
+            if should_exit and not is_meme_breakout_symbol(symbol):
                 from core.gates.holding_protection_gate import is_same_bar_as_entry
                 ma3_m15_cross_8 = 0
                 if isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 15:
@@ -2077,6 +2082,17 @@ class ExecutionManager:
                 )
                 if pivot_result is not None:
                     return pivot_result
+            from core.services.entry_methods import MEME_GATE_ENTRY
+            if evaluate_entry_method(
+                raw_df, symbol=symbol, quote=curr_quote, expected_method=MEME_GATE_ENTRY,
+            ) is not None:
+                meme_result = await cls._evaluate_closed_entry_methods(
+                    symbol=symbol, account=account, engine_or_account=engine_or_account,
+                    frame=raw_df, quote=curr_quote, macro_trend=macro_trend,
+                    only_method=MEME_GATE_ENTRY,
+                )
+                if meme_result is not None:
+                    return meme_result
             if not entry_kc_up and not entry_kc_down:
                 reason = (
                     "BLOCKED_ENTRY_KC_DIRECTION_UNAVAILABLE"
@@ -2831,7 +2847,7 @@ class ExecutionManager:
             # 做多：MA5 必須向上且大於 MA15，當前必須是綠K陽線 (curr_close > curr_open)，否則 100% 嚴禁開多！
             if pivot_triggered and candidate_side:
                 from core.gates.direction_master_lock import evaluate_direction_master_lock
-                from core.gates.master_gate_funnel import MasterGateFunnel, MarketSnapshot
+                from core.gates.master_gate_funnel import MasterGateFunnel, market_snapshot_from_frame
 
                 # 1. 執行 Direction Master Lock 檢查
                 p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
@@ -2853,27 +2869,11 @@ class ExecutionManager:
                     candidate_side = None
                 else:
                     # 2. 執行 MasterGateFunnel 兩階段漏斗與黑名單審查
-                    m_snap = MarketSnapshot(
-                        symbol=symbol,
-                        quote=curr_quote,
-                        open_price=c_o,
-                        close_price=c_c,
-                        high_price=c_h,
-                        low_price=c_l,
-                        ma3_curr=m3_c,
-                        ma3_prev=m3_p,
-                        ma5_curr=float(market_data.curr_k.get("ma5", m5_c) or m5_c),
-                        ma5_prev=float(market_data.prev_k.get("ma5", m5_p) or m5_p),
-                        ma15_curr=m15_c,
-                        ma15_prev=m15_p,
-                        kc_upper=kc_u,
-                        kc_middle=kc_mid,
-                        kc_middle_prev=p_kc_mid,
-                        kc_lower=kc_lo,
-                        atr=atr_v,
-                        macro_trend=macro_trend,
-                        ma_cross_count_8=entry_ma5_m15_cross_8,
-                    )
+                    try:
+                        m_snap = market_snapshot_from_frame(raw_df, symbol, curr_quote, macro_trend)
+                    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
+                        logger.warning("MASTER_GATE_CLOSED_DATA_REQUIRED symbol=%s error=%s", symbol, exc)
+                        return {"status": "VETO", "symbol": symbol, "reason": "MASTER_GATE_CLOSED_DATA_REQUIRED"}
                     if candidate_side == "LONG":
                         funnel_res = MasterGateFunnel.evaluate_open_long(m_snap)
                     else:
@@ -4339,6 +4339,18 @@ class ExecutionManager:
                     if not hasattr(account, "_channel_exit_frames"):
                         account._channel_exit_frames = {}
                     account._channel_exit_frames[symbol] = raw_df
+                from core.symbol_aliases import is_meme_breakout_symbol
+                if is_meme_breakout_symbol(symbol):
+                    from core.services.exits.authorized_position_exit import UltimateExitGatekeeper
+                    position = positions_dict.get(symbol) if isinstance(positions_dict, dict) else None
+                    frame = raw_df if raw_df is not None else getattr(account, "_channel_exit_frames", {}).get(symbol)
+                    if position is None or not UltimateExitGatekeeper.can_execute_exit(
+                        symbol, position, getattr(account, "position_meta", {}).get(symbol, {}),
+                        reason, price, frame=frame,
+                        is_bar_closed=(meta or {}).get("is_bar_closed"),
+                    ):
+                        logger.info("[ULTIMATE_EXIT_VETO] symbol=%s reason=%s request=DISCARDED", symbol, reason)
+                        return False
                 is_emergency = any(token in str(reason).upper() for token in (
                     "OPPOSITE_KC_BAND_BREACH", "EMERGENCY", "HARD_STOP", "CIRCUIT_BREAKER",
                     "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布"

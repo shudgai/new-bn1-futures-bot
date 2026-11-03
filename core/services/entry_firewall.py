@@ -815,13 +815,31 @@ async def validate_account_entry(account, symbol, side, context):
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
     context = context if isinstance(context, dict) else {}
+    from core.symbol_aliases import is_meme_breakout_symbol
+    fresh_meme_frame = None
+    if is_meme_breakout_symbol(symbol) and context.get("entry_authority") != "WAIT":
+        from core.gates.master_gate_funnel import evaluate_meme_entry_frame
+        provider = getattr(account, "entry_frame_provider", None)
+        if not callable(provider):
+            raise ValueError("[FORBIDDEN_ENTRY] MEME_GATE_FRESH_DATA_REQUIRED")
+        fresh_meme_frame = provider(symbol)
+        if hasattr(fresh_meme_frame, "__await__"):
+            fresh_meme_frame = await fresh_meme_frame
+        meme_gate = evaluate_meme_entry_frame(
+            fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
+            last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
+            macro_trend=context.get("macro_trend"),
+        )
+        if not meme_gate.can_execute:
+            raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
     from core.services.entry_methods import (
-        KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, revalidate_entry_method,
+        KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY,
+        revalidate_entry_method,
     )
     method = context.get("entry_method_authority")
-    if method in (KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT):
+    if method in (KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
         firewall_authority = (
-            "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else KC_TWO_BAR_BREAKOUT
+            "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else method
         )
         if (
             side not in ("LONG", "SHORT")
@@ -845,7 +863,7 @@ async def validate_account_entry(account, symbol, side, context):
                 and actual_close > 0 and claimed_close >= actual_close
             ):
                 raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_PREVIOUS_CLOSE_CHANGED")
-        fresh_frame = provider(symbol)
+        fresh_frame = fresh_meme_frame if fresh_meme_frame is not None else provider(symbol)
         if hasattr(fresh_frame, "__await__"):
             fresh_frame = await fresh_frame
         allowed, reason = revalidate_entry_method(

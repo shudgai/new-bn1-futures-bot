@@ -22,7 +22,7 @@ from test_chart_kline_freshness import chart_api, chart_frame
 from test_entry_methods import (
     KC_TWO_BAR_BREAKOUT, evaluate_entry_method, method_context, post_close_market,
 )
-from test_master_gate_funnel import short_breakout_snapshot
+from test_meme_master_funnel import market as meme_market
 
 
 SYMBOLS = ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"]
@@ -93,7 +93,7 @@ def test_snapshot_kc_direction_is_not_overruled_by_opposite_htf_regime(side):
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("with_method", [False, True])
-def test_scan_and_final_submission_use_kc_not_old_regime(symbol, side, with_method):
+def test_conflicting_macro_evidence_blocks_scoped_entry_even_with_aligned_kc(symbol, side, with_method):
     frame = post_close_market(side)
     quote = float(frame.iloc[-1]["close"])
     frame.attrs["macro_trend"] = "BEARISH" if side == "LONG" else "BULLISH"
@@ -106,21 +106,18 @@ def test_scan_and_final_submission_use_kc_not_old_regime(symbol, side, with_meth
         signal = evaluate_entry_method(
             frame, symbol=symbol, quote=quote, expected_method=KC_TWO_BAR_BREAKOUT,
         )
-        assert signal
-        context = method_context(signal)
-        frame.attrs.update(
-            entry_method_context={"symbol": symbol, **context},
-            entry_method_quote=quote,
-        )
-        meta.update(context)
+        assert signal is None
     allowed, reason = validate_entry_math(frame, side, is_outer_entry=True, symbol=symbol)
     assert allowed, reason
     central = CentralEntryGate.verify_and_authorize(symbol, side, quote, frame)
-    assert central.passed, central.reason
+    assert not central.passed
+    assert central.reason == "MEME_GATE_DATA_BLOCK"
+    assert "MEME_GATE_MACRO_EVIDENCE_CONFLICT" in str(central.details)
     allowed, reason = asyncio.run(validate_entry_at_execution(
         SimpleNamespace(), symbol, side, meta, execution_price=quote,
     ))
-    assert allowed, reason
+    assert not allowed
+    assert reason == "MEME_GATE_DATA_BLOCK"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -149,26 +146,16 @@ def test_entry_gate_requires_completed_direction_even_when_label_and_slope_claim
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_master_funnel_accepts_kc_alignment_despite_opposite_regime(symbol, side):
-    market = short_breakout_snapshot()._replace(symbol=symbol, macro_trend="BULLISH")
-    if side == "LONG":
-        changes = {
-            key: 200 - value
-            for key, value in market._asdict().items()
-            if key not in {"atr", "ma_cross_count_8", "timeframe_ms"}
-            and isinstance(value, (int, float))
-        }
-        changes.update(
-            high_price=200 - market.low_price, low_price=200 - market.high_price,
-            kc_upper=200 - market.kc_lower, kc_lower=200 - market.kc_upper,
-            macro_trend="BEARISH",
-        )
-        market = market._replace(**changes)
+def test_master_funnel_rejects_opposite_macro_even_with_aligned_kc(symbol, side):
+    market = meme_market(side, symbol)._replace(
+        macro_trend="BEARISH" if side == "LONG" else "BULLISH",
+    )
     decision = (
         MasterGateFunnel.evaluate_open_long(market) if side == "LONG"
         else MasterGateFunnel.evaluate_open_short(market)
     )
-    assert decision.can_execute, decision.reason
+    assert not decision.can_execute
+    assert decision.reason == f"BLOCKED_{side}_MACRO_TREND_CONFLICT"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)

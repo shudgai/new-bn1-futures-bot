@@ -256,7 +256,7 @@ def test_failed_wave_close_retries_without_opening_another_position(monkeypatch,
 @pytest.mark.parametrize("emergency", [
     "CIRCUIT_BREAKER_HARD_SL", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
 ])
-def test_safety_exit_is_not_replaced_by_wave_end(monkeypatch, side, emergency):
+def test_disabled_strategy_safety_labels_cannot_replace_true_pivot(monkeypatch, side, emergency):
     from core.gates.unified_pipeline_gates import ExitGate
 
     frame = wave_frame(side)
@@ -266,14 +266,14 @@ def test_safety_exit_is_not_replaced_by_wave_end(monkeypatch, side, emergency):
     should_exit, reason, evidence = ExitGate.evaluate(
         position(side, frame), {"raw_df": frame, "current_price": 100.2},
     )
-    assert should_exit
-    assert reason == emergency
+    assert not should_exit
+    assert reason == "VETO_HOLD"
     assert evidence["safety_evidence"]
-    assert reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert emergency in ExitGate.ABSOLUTE_SAFETY_REASONS
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_two_closed_abnormal_safety_precedes_profit_lock(monkeypatch, side):
+def test_disabled_two_closed_abnormal_does_not_restore_a_profit_lock_exit(monkeypatch, side):
     from core.gates.unified_pipeline_gates import ExitGate
 
     frame = wave_frame(side)
@@ -287,6 +287,6 @@ def test_two_closed_abnormal_safety_precedes_profit_lock(monkeypatch, side):
     should_exit, reason, evidence = ExitGate.evaluate(
         position(side, frame), {"raw_df": frame, "current_price": 100.2},
     )
-    assert should_exit
-    assert reason == "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL"
-    assert evidence["safety_evidence"]
+    assert not should_exit
+    assert reason == "VETO_HOLD"
+    assert evidence["suppressed_exit_reason"] == "EXIT_BY_RATCHET_PROFIT_LOCK"

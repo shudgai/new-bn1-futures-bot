@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -16,8 +17,9 @@ from core.services.entry_methods import (
 
 
 def frame(rows):
-    result = pd.DataFrame(rows)
-    result.attrs["timeframe_ms"] = 60_000
+    result = pd.DataFrame(rows).copy()
+    result["timestamp"] += int(time.time() // 60) * 60_000 - 60_000 - int(result.iloc[-1]["timestamp"])
+    result.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
     return result
 
 
@@ -49,7 +51,7 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
                        upper=102, lower=98, middle=100, short_ma=101, ma15=100,
                        atr=2),
                 candle(120_000, opened=103, high=105.2, low=102.5, close=105,
-                       upper=104, lower=100, middle=102, short_ma=103, ma15=101,
+                       upper=104, lower=100, middle=102, short_ma=104, ma15=103.2,
                        atr=2),
             ],
             105.1,
@@ -61,7 +63,7 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
                        upper=102, lower=98, middle=100, short_ma=99, ma15=100,
                        atr=2),
                 candle(120_000, opened=97, high=97.3, low=94.8, close=95,
-                       upper=100, lower=96, middle=98, short_ma=97, ma15=99,
+                       upper=100, lower=96, middle=98, short_ma=96, ma15=96.8,
                        atr=2),
             ],
             94.9,
@@ -71,29 +73,30 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
 def test_two_bar_breakout_requires_body_break_same_color_kc_short_ma_and_slope(
     side, rows, quote,
 ):
-    signal = evaluate_entry_method(frame(rows), quote=quote, symbol="CAP/USDT")
+    market = frame(rows)
+    signal = evaluate_entry_method(market, quote=quote, symbol="BTC/USDT", expected_method=KC_TWO_BAR_BREAKOUT)
     assert signal is not None
     assert signal["method"] == KC_TWO_BAR_BREAKOUT
     assert signal["side"] == side
-    assert signal["source_bar_ids"] == [60_000, 120_000]
+    assert signal["source_bar_ids"] == market["timestamp"].tolist()
 
     wrong_color = [dict(row) for row in rows]
     wrong_color[-1]["close"] = wrong_color[-1]["open"]
     assert evaluate_entry_method(
-        frame(wrong_color), quote=quote, symbol="CAP/USDT",
+        frame(wrong_color), quote=quote, symbol="BTC/USDT",
         expected_method=KC_TWO_BAR_BREAKOUT,
     ) is None
 
     unclosed = [dict(row) for row in rows]
     unclosed[-1]["is_closed"] = False
     assert evaluate_entry_method(
-        frame(unclosed), quote=quote, symbol="CAP/USDT",
+        frame(unclosed), quote=quote, symbol="BTC/USDT",
         expected_method=KC_TWO_BAR_BREAKOUT,
     ) is None
 
     returned_to_band = rows[-1]["kc_upper" if side == "LONG" else "kc_lower"]
     assert evaluate_entry_method(
-        frame(rows), quote=returned_to_band, symbol="CAP/USDT",
+        frame(rows), quote=returned_to_band, symbol="BTC/USDT",
         expected_method=KC_TWO_BAR_BREAKOUT,
     ) is None
 
@@ -137,11 +140,16 @@ def test_three_bar_pivot_requires_closed_extreme_and_confirmed_short_ma_turn(
         market, quote=quote, symbol=symbol,
         expected_method=THREE_BAR_PIVOT_REVERSAL,
     )
-    assert signal is not None
-    assert signal["side"] == side
+    # A geometric pivot cannot bypass the shared meme data/location filter.
+    assert signal is None
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=THREE_BAR_PIVOT_REVERSAL,
+    )
+    assert signal is not None and signal["side"] == side
     allowed, reason = revalidate_entry_method(
         market,
-        symbol=symbol,
+        symbol="BTC/USDT",
         side=side,
         quote=quote,
         context={
@@ -186,7 +194,7 @@ def test_short_ma_ma15_cross_uses_two_closed_bars_without_extra_confirmation(
     side, previous, current, quote,
 ):
     signal = evaluate_entry_method(
-        frame([previous, current]), quote=quote, symbol="CAP/USDT",
+        frame([previous, current]), quote=quote, symbol="BTC/USDT",
         expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
@@ -200,9 +208,10 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_short_ma(
         candle(120_000, opened=100, high=104, low=99, close=103,
                upper=102, lower=98, middle=100, short_ma=101, ma15=100),
     ]
+    market = frame(rows)
     closed_before_exit = evaluate_entry_method(
-        frame(rows), quote=103, symbol="CAP/USDT",
-        last_exit_timestamp=125_000,
+        market, quote=103, symbol="BTC/USDT",
+        last_exit_timestamp=float(market.iloc[-1]["timestamp"]) + 5000,
         expected_method=POST_CLOSE_KC_REENTRY,
     )
     assert closed_before_exit is None
@@ -211,9 +220,10 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_short_ma(
         candle(180_000, opened=103, high=105, low=102, close=104,
                upper=103, lower=99, middle=101, short_ma=102, ma15=100)
     )
+    market = frame(rows)
     signal = evaluate_entry_method(
-        frame(rows), quote=104, symbol="CAP/USDT",
-        last_exit_timestamp=125_000,
+        market, quote=104, symbol="BTC/USDT",
+        last_exit_timestamp=float(market.iloc[-2]["timestamp"]) + 5000,
         expected_method=POST_CLOSE_KC_REENTRY,
     )
     assert signal is not None
@@ -221,15 +231,15 @@ def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_short_ma(
     assert signal["side"] == "LONG"
 
 
-def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
+def test_breakout_method_rechecks_one_atr_bias_at_submission():
     rows = [
         candle(60_000, opened=100, high=103.2, low=99.8, close=103,
                upper=102, lower=98, middle=100, short_ma=101, ma15=100, atr=2),
         candle(120_000, opened=103, high=105.2, low=102.5, close=105,
-               upper=104, lower=100, middle=102, short_ma=103, ma15=101, atr=2),
+               upper=104, lower=100, middle=102, short_ma=104, ma15=103.2, atr=2),
     ]
-    market = frame(rows)
-    signal = evaluate_entry_method(market, quote=105.1, symbol="CAP/USDT")
+    market = post_close_market("LONG")
+    signal = evaluate_entry_method(market, quote=101.5, symbol="CAP/USDT", expected_method=KC_TWO_BAR_BREAKOUT)
     assert signal is not None
     context = {
         "entry_method_authority": signal["method"],
@@ -237,11 +247,12 @@ def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
         "entry_method_bar_id": signal["confirmation_bar_id"],
         "entry_method_event_id": signal["event_id"],
     }
+    market.loc[market.index[-1], "ma15"] = 99.0
     allowed, reason = revalidate_entry_method(
-        market, symbol="CAP/USDT", side="LONG", quote=105.1, context=context,
+        market, symbol="CAP/USDT", side="LONG", quote=101.5, context=context,
     )
     assert not allowed
-    assert reason == "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
+    assert reason == "BLOCKED_LONG_MA15_EXTENSION_1_ATR"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -250,14 +261,14 @@ def test_breakout_method_retains_ma15_bias_veto_without_band_distance_limit():
     "change,allowed,expected_reason",
     [
         ("boundary", True, None),
-        ("quote_band", True, None),
+        ("quote_band", False, "MA15_EXTENSION_1_ATR"),
         ("close_band", True, None),
         ("quote_ma5", True, None),
         ("close_ma5", True, None),
         ("missing_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("nan_ma5", False, "BREAKOUT_MA5_INVALID"),
         ("zero_ma5", False, "BREAKOUT_MA5_INVALID"),
-        ("bias", True, None),
+        ("bias", False, "MA15_EXTENSION_1_ATR"),
         ("wick", True, None),
     ],
 )
@@ -265,10 +276,10 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     rows = [
         candle(60_000, opened=100, high=101.2, low=99.8, close=101,
                upper=100.8, lower=98, middle=99.4, short_ma=100.5, ma15=100,
-               ma5=100.4),
+               ma5=100.4, atr=2),
         candle(120_000, opened=101, high=101.6, low=100.9, close=101.5,
                upper=101, lower=98.2, middle=99.6, short_ma=101, ma15=100.3,
-               ma5=100.5),
+               ma5=100.5, atr=2),
     ]
     quote = 101.5
     if change == "quote_band":
@@ -288,7 +299,7 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
     elif change == "zero_ma5":
         rows[-1]["ma5"] = 0 if side == "LONG" else 200
     elif change == "bias":
-        rows[-1]["ma15"] = 100.2
+        rows[-1]["ma15"] = 99.4
     elif change == "wick":
         rows[-1]["high"] = 102.1
     if side == "SHORT":
@@ -320,6 +331,9 @@ def test_breakout_specific_macro_limits(side, symbol, change, allowed, expected_
         market, quote=quote, symbol=symbol, expected_method=KC_TWO_BAR_BREAKOUT,
     )
     if change in {"missing_ma5", "nan_ma5", "zero_ma5"}:
+        assert signal is None
+        return
+    if change in {"quote_band", "bias"}:
         assert signal is None
         return
     assert signal is not None
@@ -382,11 +396,11 @@ def test_non_breakout_keeps_macro_relative_location(side):
     market = frame(rows)
     quote = rows[-1]["close"]
     signal = evaluate_entry_method(
-        market, quote=quote, symbol="CAP/USDT", expected_method=MA5_MA15_CROSS,
+        market, quote=quote, symbol="BTC/USDT", expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
     allowed, reason = revalidate_entry_method(
-        market, symbol="CAP/USDT", side=side, quote=quote,
+        market, symbol="BTC/USDT", side=side, quote=quote,
         context={
             "entry_method_authority": signal["method"],
             "entry_method_signal": signal,
@@ -407,7 +421,7 @@ def test_method_revalidation_requires_same_event():
     ]
     market = frame(rows)
     signal = evaluate_entry_method(
-        market, quote=101, symbol="CAP/USDT",
+        market, quote=101, symbol="BTC/USDT",
         expected_method=MA5_MA15_CROSS,
     )
     assert signal is not None
@@ -418,13 +432,13 @@ def test_method_revalidation_requires_same_event():
         "entry_method_event_id": signal["event_id"],
     }
     allowed, reason = revalidate_entry_method(
-        market, symbol="CAP/USDT", side="LONG", quote=101, context=context,
+        market, symbol="BTC/USDT", side="LONG", quote=101, context=context,
     )
     assert allowed, reason
 
     context["entry_method_event_id"] = "stale"
     allowed, reason = revalidate_entry_method(
-        market, symbol="CAP/USDT", side="LONG", quote=101, context=context,
+        market, symbol="BTC/USDT", side="LONG", quote=101, context=context,
     )
     assert not allowed
     assert reason == "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
@@ -481,13 +495,14 @@ def test_post_close_reentry_passes_shared_gates_outside_its_own_rail(side, symbo
     )
 
     market = post_close_market(side)
+    last_exit = float(market.iloc[-4]["timestamp"]) / 1000
     quote = float(market.iloc[-1]["close"])
     signal = evaluate_entry_method(
-        market, quote=quote, symbol=symbol, last_exit_timestamp=1_265_000,
+        market, quote=quote, symbol=symbol, last_exit_timestamp=last_exit,
         expected_method=POST_CLOSE_KC_REENTRY,
     )
     assert signal is not None
-    context = method_context(signal, 1_265_000)
+    context = method_context(signal, last_exit)
     allowed, reason = revalidate_entry_method(
         market, symbol=symbol, side=side, quote=quote, context=context,
     )
@@ -518,25 +533,26 @@ def test_post_close_reentry_passes_shared_gates_outside_its_own_rail(side, symbo
 @pytest.mark.parametrize(
     "change,reason_fragment",
     [
-        ("bias", "MACRO_MA15_BIAS"),
+        ("bias", "MA15_EXTENSION_1_ATR"),
         ("wick", "EXHAUSTION_WICK"),
         ("same_bar_exit", "SIGNAL_STALE_OR_INVALID"),
         ("quote_at_rail", "SIGNAL_STALE_OR_INVALID"),
-        ("short_ma_reversed", "SIGNAL_STALE_OR_INVALID"),
-        ("invalid_atr", "SIGNAL_STALE_OR_INVALID"),
+        ("short_ma_reversed", "MA5_DIRECTION_OR_ALIGNMENT"),
+        ("invalid_atr", "DATA_BLOCK"),
         ("stale_event", "SIGNAL_STALE_OR_INVALID"),
-        ("opposite_color", "CANDLE_NOT_"),
+        ("opposite_color", "DIRECTIONAL_CANDLE"),
     ],
 )
 def test_post_close_reentry_retains_other_vetoes(side, change, reason_fragment):
     market = post_close_market(side)
+    last_exit = float(market.iloc[-4]["timestamp"]) / 1000
     quote = float(market.iloc[-1]["close"])
     signal = evaluate_entry_method(
-        market, quote=quote, symbol="CAP/USDT", last_exit_timestamp=1_265_000,
+        market, quote=quote, symbol="CAP/USDT", last_exit_timestamp=last_exit,
         expected_method=POST_CLOSE_KC_REENTRY,
     )
     assert signal is not None
-    context = method_context(signal, 1_265_000)
+    context = method_context(signal, last_exit)
     index = market.index[-1]
     sign = 1 if side == "LONG" else -1
     if change == "bias":
@@ -544,7 +560,7 @@ def test_post_close_reentry_retains_other_vetoes(side, change, reason_fragment):
     elif change == "wick":
         market.loc[index, "high" if side == "LONG" else "low"] = quote + sign
     elif change == "same_bar_exit":
-        context["entry_method_last_exit_timestamp"] = 1_325_000
+        context["entry_method_last_exit_timestamp"] = float(market.iloc[-1]["timestamp"]) / 1000 + 5
     elif change == "quote_at_rail":
         quote = float(market.loc[index, "kc_upper" if side == "LONG" else "kc_lower"])
     elif change == "short_ma_reversed":
@@ -614,7 +630,7 @@ def test_pipeline_does_not_fall_through_common_vetoes(monkeypatch, caplog, reaso
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
 @pytest.mark.parametrize("submit_success", [True, False])
-def test_location_rejection_allows_independent_pipeline_entry(
+def test_priority_authority_rejection_cannot_fall_back_to_legacy_entry(
     monkeypatch, caplog, side, symbol, submit_success,
 ):
     from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
@@ -623,6 +639,8 @@ def test_location_rejection_allows_independent_pipeline_entry(
     market = post_close_market(side)
     sign = 1 if side == "LONG" else -1
     market.loc[market.index[-1], "open"] = market.iloc[-1]["close"] - sign * 0.8
+    market.loc[market.index[-1], "high"] = max(market.iloc[-1]["open"], market.iloc[-1]["close"]) + .1
+    market.loc[market.index[-1], "low"] = min(market.iloc[-1]["open"], market.iloc[-1]["close"]) - .1
     for key in ("open", "high", "low", "close", "ma5", "ma15",
                 "kc_upper", "kc_middle", "kc_lower"):
         market[key] += 9900
@@ -650,7 +668,7 @@ def test_location_rejection_allows_independent_pipeline_entry(
     }
     method = AsyncMock(return_value=rejection)
     monkeypatch.setattr(ExecutionManager, "_evaluate_closed_entry_methods", method)
-    monkeypatch.setattr(DataPipeline, "calculate_snapshot", lambda **kwargs: snapshot)
+    monkeypatch.setattr(DataPipeline, "calculate_snapshot", lambda *_args, **kwargs: snapshot)
     for name in ("_last_exit_record", "_last_trade_bar_time", "_hourly_entry_records"):
         monkeypatch.setattr(ExecutionManager, name, {})
     submit = AsyncMock(return_value=submit_success)
@@ -660,14 +678,11 @@ def test_location_rejection_allows_independent_pipeline_entry(
         result = asyncio.run(ExecutionManager.process_symbol_pipeline(
             symbol=symbol, engine_or_account=account, klines_df=market, quote=quote,
         ))
-    assert result["status"] == ("ENTRY_EXECUTED" if submit_success else "VETO"), result
-    if not submit_success:
-        assert result["reason"] == "PIVOT_ENTRY_FINAL_GATE_VETO"
-    assert result["side"] == side
+    assert result == rejection
     method.assert_awaited_once()
-    submit.assert_awaited_once()
-    assert not submit.call_args.kwargs["meta"].get("entry_method_authority")
-    assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" in caplog.text
+    assert method.call_args.kwargs["only_method"] == "MEME_GATE_ENTRY"
+    submit.assert_not_awaited()
+    assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" not in caplog.text
 
 
 def test_flat_kc_blocks_before_method_or_alternative_evaluation(monkeypatch):
@@ -719,7 +734,7 @@ def test_reentry_execution_retains_claim_and_hourly_limits(monkeypatch, side, ou
     account = SimpleNamespace(positions={}, entry_filter_last={}, save_state=Mock())
     account_key = ExecutionManager._get_account_key(account, symbol)
     monkeypatch.setattr(ExecutionManager, "_last_exit_record", {
-        account_key: {"timestamp": 1_265_000},
+        account_key: {"timestamp": float(market.iloc[-4]["timestamp"]) / 1000},
     })
     monkeypatch.setattr(ExecutionManager, "_last_trade_bar_time", {})
     monkeypatch.setattr(ExecutionManager, "_hourly_entry_records", {})
@@ -737,6 +752,7 @@ def test_reentry_execution_retains_claim_and_hourly_limits(monkeypatch, side, ou
             symbol=symbol, account=account, engine_or_account=account,
             frame=market, quote=quote,
             macro_trend="BULLISH" if side == "LONG" else "BEARISH",
+            only_method=POST_CLOSE_KC_REENTRY,
         )
 
     result = asyncio.run(evaluate())

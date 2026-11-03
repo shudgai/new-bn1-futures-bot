@@ -109,6 +109,7 @@ def validate_entry_math(
     entry_method_context = frame_attrs.get("entry_method_context")
     entry_method_authorized = False
     outer_pivot_authorized = False
+    meme_authorized = False
     if isinstance(entry_method_context, Mapping):
         from core.services.entry_methods import revalidate_entry_method
 
@@ -125,7 +126,8 @@ def validate_entry_math(
         )
         if not entry_method_authorized:
             return False, method_reason
-        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL
+        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, MEME_GATE_ENTRY
+        meme_authorized = entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
         outer_pivot_authorized = (
             entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
         )
@@ -141,7 +143,7 @@ def validate_entry_math(
     # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
-    if not dir_lock_pass and not outer_pivot_authorized:
+    if not dir_lock_pass and not outer_pivot_authorized and not meme_authorized:
         return False, dir_lock_reason
 
     # The final account gate must enforce MA5 direction for every entry class.
@@ -161,7 +163,7 @@ def validate_entry_math(
     kc_slope = confirmed_kc_midline_slope(direction_frame)
     if kc_slope is None:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
-    if kc_slope == 0 and not outer_pivot_authorized:
+    if kc_slope == 0 and not outer_pivot_authorized and not meme_authorized:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
     if side == "LONG" and kc_slope < 0 and not outer_pivot_authorized:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
@@ -434,6 +436,10 @@ def validate_exit_math(
     quote = _number(price)
     bars = _rows(frame)
 
+    from core.services.exits.authorized_position_exit import meme_strategy_disaster_disabled
+    if meme_strategy_disaster_disabled(str(position.get("symbol") or ""), close_reason):
+        return False, "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED", {"exit_type": "BLOCKED"}
+
     # Safety labels require matching evidence. Only exchange/account failure
     # exits that cannot be price-validated retain an unconditional override.
     if emergency:
@@ -545,6 +551,15 @@ def validate_exit_math(
             if len(bars) < 2:
                 return False, "BLOCKED_EXIT_OPPOSITE_BREACH_DATA_UNAVAILABLE", details
             live, closed = bars[-1], bars[-2]
+            from core.symbol_aliases import is_meme_breakout_symbol
+            if is_meme_breakout_symbol(str(position.get("symbol") or "")):
+                timestamp = _number(live.get("timestamp"))
+                current_ms = now_ms if now_ms is not None else time.time() * 1000.0
+                if timestamp is None or timestamp <= 0:
+                    return False, "BLOCKED_EXIT_OPPOSITE_BREACH_TIMESTAMP_INVALID", details
+                timestamp_ms = timestamp * 1000.0 if timestamp < 1e11 else timestamp
+                if timestamp_ms > current_ms or current_ms - timestamp_ms > max_staleness_ms:
+                    return False, "BLOCKED_EXIT_OPPOSITE_BREACH_STALE_DATA", details
             band_key = "kc_lower" if side == "LONG" else "kc_upper"
             live_band = _number(live.get(band_key))
             closed_band = _number(closed.get(band_key))
@@ -939,6 +954,22 @@ async def validate_entry_at_execution(
             and account._trend_lock_native_exit_cleanup_complete is not True):
         return False, "BLOCKED_TREND_LOCK_NATIVE_EXIT_CLEANUP_UNVERIFIED"
 
+    from core.gates.master_gate_funnel import evaluate_meme_entry_frame
+    rows = _rows(frame)
+    meme_quote = execution_price or payload.get("entry_gate_quote") or (rows[-1].get("close") if rows else None)
+    manual_entry = (
+        (payload.get("manual_entry") is True or payload.get("source") == "MANUAL")
+        and not payload.get("entry_method_authority")
+    )
+    if not manual_entry and payload.get("entry_authority") != "WAIT":
+        meme_gate = evaluate_meme_entry_frame(
+            frame, symbol, side, meme_quote,
+            last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
+            macro_trend=payload.get("macro_trend"),
+        )
+        if not meme_gate.can_execute:
+            return False, meme_gate.reason
+
     # 方向總開關 (Direction Master Lock) 物理核驗
     signal_type = str(
         payload.get("candidate_signal_type")
@@ -985,7 +1016,10 @@ async def validate_entry_at_execution(
 
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
-    if not dir_lock_pass and not outer_pivot_authorized:
+    from core.services.entry_methods import MEME_GATE_ENTRY
+    if not dir_lock_pass and not outer_pivot_authorized and not (
+        entry_method_authorized and entry_method_authority == MEME_GATE_ENTRY
+    ):
         account_log = getattr(account, "log", None)
         if callable(account_log):
             account_log(
@@ -1106,7 +1140,7 @@ async def validate_entry_at_execution(
     central_result = CentralEntryGate.verify_and_authorize(
         symbol=symbol, side=side, price=quote, klines_or_snapshot=frame,
         signal_id=str(payload.get("signal_id") or "") or None,
-        source=source or "EXECUTION_REVALIDATION",
+        source="MANUAL" if manual_entry else source or "EXECUTION_REVALIDATION",
         allow_intrabar=allow_intrabar,
     )
     if not central_result.passed:
@@ -1203,7 +1237,7 @@ def validate_exit_at_execution(
     if allowed and is_emergency:
         from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
         allowed, code, evidence = validate_exit_math(
-            position, frame, price, metadata,
+            {**position, "symbol": symbol}, frame, price, metadata,
             fee_rate=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT,
             close_reason=close_reason,
         )

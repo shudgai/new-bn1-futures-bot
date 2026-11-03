@@ -16,28 +16,27 @@ SYMBOLS = ["龙虾/USDT", "CAP/USDT", "1000PEPE/USDT"]
 
 
 def market(side):
-    frame = pivot_frame("SHORT" if side == "LONG" else "LONG")
-    for offset, index in enumerate(frame.index[:-3]):
-        close = 98.5 + offset * 0.06
+    frame = pivot_frame("LONG")
+    for offset, index in enumerate(frame.index):
+        close = 99 + offset * .03
         frame.loc[index, ["open", "high", "low", "close", "ma5", "ma15"]] = [
-            close - 0.04, close + 0.01, close - 0.05, close, close - 0.1, close - 0.2,
+            close - .02, close + .03, close - .03, close, close - .01, close - .02,
         ]
-    frame["kc_middle"] = [98.55 + i * 0.05 for i in range(len(frame))]
-    frame["kc_upper"], frame["kc_lower"] = frame["kc_middle"] + 0.8, frame["kc_middle"] - 0.8
-    frame["ma15"] = 100.0
-    frame.loc[frame.index[-2], "ma5"] = 99.1 if side == "LONG" else 100.9
-    if side == "LONG":
-        # Mirror the historical path as well as the completed valley fixture.
-        for column in ("kc_middle", "ma15", "ma5"):
-            if column != "ma5":
-                frame[column] = 200 - frame[column]
-        for index in frame.index[:-3]:
-            opened, high, low, close, ma5 = frame.loc[index, ["open", "high", "low", "close", "ma5"]]
-            frame.loc[index, ["open", "high", "low", "close", "ma5"]] = [
-                200 - opened, 200 - low, 200 - high, 200 - close, 200 - ma5,
-            ]
-        upper = 200 - frame["kc_lower"]
+    frame["kc_middle"] = [98.6 + i * .03 for i in range(len(frame))]
+    frame["kc_upper"], frame["kc_lower"] = frame["kc_middle"] + .8, frame["kc_middle"] - .35
+    for index, values in zip(frame.index[-3:], [
+        (100.15, 100.2, 99.9, 100.1, 100.0, 99.9),
+        (100.1, 100.2, 99.0, 99.9, 99.9, 99.85),
+        (100.0, 100.3, 99.8, 100.2, 100.05, 99.95),
+    ]):
+        frame.loc[index, ["open", "high", "low", "close", "ma5", "ma15"]] = values
+    if side == "SHORT":
+        for column in ("open", "close", "kc_middle", "ma15", "ma5"):
+            frame[column] = 200 - frame[column]
+        high, upper = 200 - frame["low"], 200 - frame["kc_lower"]
+        frame["low"], frame["high"] = 200 - frame["high"], high
         frame["kc_lower"], frame["kc_upper"] = 200 - frame["kc_upper"], upper
+    frame.attrs["macro_trend"] = "BULLISH" if side == "LONG" else "BEARISH"
     return frame
 
 
@@ -67,7 +66,7 @@ def test_independent_reversal_passes_final_math_and_central_boundary(side, symbo
     frame = market(side)
     quote = float(frame.iloc[-1]["close"])
     if flat_kc:
-        frame["kc_middle"], frame["kc_upper"], frame["kc_lower"] = 100.0, 100.8, 99.2
+        frame.loc[frame.index[-2], "kc_middle"] = frame.iloc[-1]["kc_middle"]
     if live_bar:
         row = frame.iloc[-1].to_dict()
         row.update(
@@ -75,6 +74,12 @@ def test_independent_reversal_passes_final_math_and_central_boundary(side, symbo
             open=quote, high=quote + 0.01, low=quote - 0.01, close=quote,
         )
         frame.loc[len(frame)] = row
+    if flat_kc:
+        # A non-expansion outer pivot cannot bypass the shared KC-flat gate.
+        assert evaluate_entry_method(
+            frame, quote=quote, symbol=symbol, expected_method=KC_OUTER_PIVOT_REVERSAL,
+        ) is None
+        return
     payload = context(frame, side, symbol)
     assert revalidate_entry_method(frame, symbol=symbol, side=side, quote=quote, context=payload)[0]
     frame.attrs["entry_method_context"] = payload
@@ -223,8 +228,11 @@ def test_real_paper_open_then_holds_entry_pivot_and_numeric_loss(
     assert symbol in account.positions
     assert len(account.trades) == 1
     future = pivot_frame(side)
-    future["timestamp"] += 300_000
-    future.attrs["snapshot_ms"] += 300_000
+    future["timestamp"] += 360_000
+    future.attrs["snapshot_ms"] += 360_000
+    for column in ("open", "high", "low", "close", "ma3", "ma5", "ma15",
+                   "kc_upper", "kc_middle", "kc_lower"):
+        future[column] += 1 if side == "LONG" else -1
     monkeypatch.setattr(
         "core.services.exits.strict_true_pivot.time.time",
         lambda: future.attrs["snapshot_ms"] / 1000,
@@ -315,7 +323,11 @@ def test_firewall_revalidates_reversal_and_preserves_account_safety(side, fault)
         account.last_closed_at = {"CAP/USDT": float(frame.iloc[-1]["timestamp"]) / 1000}
     else:
         account.entry_frame_provider = None
-    with pytest.raises(ValueError, match="KC_OUTER_PIVOT"):
+    expected = {
+        "no_provider": "MEME_GATE_FRESH_DATA_REQUIRED",
+        "new_close": "BLOCKED_BY_POST_EXIT_COOLDOWN",
+    }.get(fault, "KC_OUTER_PIVOT")
+    with pytest.raises(ValueError, match=expected):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, payload))
 
 

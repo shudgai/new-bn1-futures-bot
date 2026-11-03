@@ -168,6 +168,27 @@ class CentralEntryGate:
 
         atr = float(parsed["atr"])
         curr_price = float(price or parsed["current_price"])
+        from core.symbol_aliases import is_meme_breakout_symbol
+        meme_policy = is_meme_breakout_symbol(symbol) and source_upper != "WAIT_1M" and (
+            source_upper != "MANUAL" or has_entry_method_context
+        )
+        meme_expansion = False
+        if meme_policy:
+            from core.gates.master_gate_funnel import (
+                MasterGateFunnel, evaluate_meme_entry_frame, market_snapshot_from_frame,
+            )
+            meme_gate = evaluate_meme_entry_frame(klines_or_snapshot, symbol, side, curr_price)
+            if not meme_gate.can_execute:
+                return GateCheckResult(
+                    passed=False, reason=meme_gate.reason, signal_id=sig_id,
+                    details=meme_gate.details, checks=checks,
+                )
+            meme_snapshot = market_snapshot_from_frame(klines_or_snapshot, symbol, curr_price)
+            meme_expansion = MasterGateFunnel.is_expansion(meme_snapshot, side) or (
+                side == "LONG" and MasterGateFunnel.is_early_long(meme_snapshot)
+            ) or (
+                side == "SHORT" and MasterGateFunnel.is_top_pivot_short(meme_snapshot)
+            )
 
         # ══════════════════════════════════════════════════════════════════
         # 微觀動能突破 (Momentum Override / V-Shape Recovery & Breakdown)
@@ -294,7 +315,11 @@ class CentralEntryGate:
             checks["direction_master_lock"].update(
                 status="PASS", reason="VERIFIED_KC_OUTER_PIVOT_DIRECTION_AUTHORITY",
             )
-        if not dir_ok and not outer_pivot_authorized:
+        from core.services.entry_methods import MEME_GATE_ENTRY
+        meme_authorized = has_entry_method_context and entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
+        if meme_authorized:
+            checks["direction_master_lock"].update(status="PASS", reason="VERIFIED_MEME_GATE_DIRECTION")
+        if not dir_ok and not outer_pivot_authorized and not meme_authorized:
             veto_reason = dir_reason
             if dir_reason == "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE":
                 veto_reason = "VETO_BEARISH_CANDLE_FOR_LONG"
@@ -366,6 +391,7 @@ class CentralEntryGate:
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized,
+                    meme_policy=meme_policy, expansion=meme_expansion,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
                 if raw_blocked and raw_reason in ("VETO_MA5_MA15_CHOP", "VETO_FLAT_MA5_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
@@ -387,6 +413,7 @@ class CentralEntryGate:
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized,
+                    meme_policy=meme_policy, expansion=meme_expansion,
                 )
         blocked, block_reason, block_evidence = blacklist
         checks["market_blacklist"] = {

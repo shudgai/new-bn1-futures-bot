@@ -4033,7 +4033,7 @@ class BinanceTestnetAccount:
             )
             return False
         from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+            UltimateExitGatekeeper,
         )
         exit_frame = None
         if not is_manual or str(close_reason).strip() != "手動平倉":
@@ -4045,11 +4045,12 @@ class BinanceTestnetAccount:
                     exit_frame = frame_provider(symbol)
                     if hasattr(exit_frame, "__await__"):
                         exit_frame = await exit_frame
-            except Exception:
-                exit_frame = None
+            except Exception as exc:
+                self.log(f"ULTIMATE_EXIT_FRAME_REFRESH_FAILED symbol={symbol} error={exc}", "ERROR")
+                return False
             if exit_frame is None:
                 exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
-        if not automated_position_exit_allowed(
+        if not UltimateExitGatekeeper.can_execute_exit(
             symbol, position, meta, close_reason, current_price,
             is_manual=is_manual, frame=exit_frame,
         ):
@@ -4319,14 +4320,8 @@ class BinanceTestnetAccount:
             )
             return False
         emergency_exit = is_emergency_exit(close_reason)
-        if math_reason == "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED":
-            from core.services.exits.strict_true_pivot import persist_profit_pivot_exit
-
-            persist_profit_pivot_exit(
-                self, symbol, position, close_reason, math_details, strict_save=True,
-            )
         from core.services.exits.authorized_position_exit import (
-            automated_position_exit_allowed,
+            UltimateExitGatekeeper,
         )
         exit_frame = None
         if not is_manual or str(close_reason).strip() != "手動平倉":
@@ -4338,11 +4333,12 @@ class BinanceTestnetAccount:
                     exit_frame = frame_provider(symbol)
                     if hasattr(exit_frame, "__await__"):
                         exit_frame = await exit_frame
-            except Exception:
-                exit_frame = None
+            except Exception as exc:
+                self.log(f"ULTIMATE_EXIT_FRAME_REFRESH_FAILED symbol={symbol} error={exc}", "ERROR")
+                return False
             if exit_frame is None:
                 exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
-        if not automated_position_exit_allowed(
+        if not UltimateExitGatekeeper.can_execute_exit(
             symbol, position, meta, close_reason, current_price,
             is_manual=is_manual, frame=exit_frame,
         ):
@@ -4352,6 +4348,12 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+        if math_reason == "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED":
+            from core.services.exits.strict_true_pivot import persist_profit_pivot_exit
+
+            persist_profit_pivot_exit(
+                self, symbol, position, close_reason, math_details, strict_save=True,
+            )
         is_wild_swing = str(
             position.get("entry_mode") or meta.get("entry_mode") or ""
         ).upper() == "WILD_SWING"

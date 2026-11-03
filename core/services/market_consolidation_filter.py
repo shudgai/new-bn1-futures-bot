@@ -43,6 +43,8 @@ def evaluate_market_blacklist(
     macro_trend: Optional[str] = None,
     is_breakout: bool = False,
     independent_kc_direction: bool = False,
+    meme_policy: bool = False,
+    expansion: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -102,14 +104,14 @@ def evaluate_market_blacklist(
         cross = (signs * signs.shift(1) < 0)
         low_amp = pd.concat([delta.abs(), delta.shift(1).abs()], axis=1).max(axis=1) < 0.5 * atr
         checks["ma5_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
-        if not is_breakout and checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
+        if not meme_policy and not is_breakout and checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
             return True, "VETO_MA5_KC_MIDLINE_CHOP", checks
 
         # Flat short-term mean or channel basis.
         ma5_delta_pct = abs(float(ma5.iloc[-1] - ma5.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma5.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         checks.update(ma5_net_slope_pct=ma5_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
-        if not is_breakout and (
+        if not is_breakout and not expansion and (
             ma5_delta_pct < SLOPE_FLAT_PCT
             or (not independent_kc_direction and mid_delta_pct < SLOPE_FLAT_PCT)
         ):
@@ -121,7 +123,9 @@ def evaluate_market_blacklist(
         total_crossings = int((spread * spread.shift(1) < 0).tail(LOOKBACK).sum())
         checks["ma5_ma15_crossings"] = total_crossings
         checks["ma5_ma15_recent_crossings"] = recent_crossings
-        if not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4):
+        if (meme_policy and recent_crossings >= 3) or (
+            not meme_policy and not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4)
+        ):
             return True, "VETO_MA5_MA15_CHOP", checks
 
         # Sudden KC expansion (current width versus prior mean, excluding current bar).
@@ -164,8 +168,8 @@ def evaluate_market_blacklist(
         if side and not independent_kc_direction:
             direction = str(side).upper()
             kc_slope = float(mid.iloc[-1] - mid.iloc[-2])
-            if (direction == "LONG" and kc_slope <= 0
-                    or direction == "SHORT" and kc_slope >= 0):
+            if (direction == "LONG" and (kc_slope < 0 or kc_slope == 0 and not expansion)
+                    or direction == "SHORT" and (kc_slope > 0 or kc_slope == 0 and not expansion)):
                 return True, "VETO_MACRO_TREND_CONFLICT", {**checks, "kc_middle_slope": kc_slope}
         # Cooldown supports both bar-index based trade records and timestamps.
         if last_closed_trade:

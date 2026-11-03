@@ -33,6 +33,9 @@ def evaluate_position_exit(
 
     def reject(reason: str) -> Tuple[bool, str, Dict[str, Any]]:
         logger.info("[%s] side=%s details=%s", reason, position.get("side"), details)
+        logger.info("[VETO_HOLD_%s] reason=%s", position.get("side"), reason)
+        if position.get("side") == "SHORT":
+            logger.info("[UI_DISPLAY: 續抱] symbol=%s reason=%s", position.get("symbol"), reason)
         return False, reason, details
 
     if identity is None or not isinstance(frame, pd.DataFrame):
@@ -53,8 +56,8 @@ def evaluate_position_exit(
         start = math.ceil(opened * 1000 / 60_000) * 60_000
         held = closed.loc[closed["timestamp"].astype(float) >= start]
         details["bars_held"] = len(held)
-        if len(held) < 4:
-            return reject("VETO_HOLD_MIN_4_COMPLETED_BARS")
+        if len(held) < 5:
+            return reject("VETO_HOLD_MIN_5_COMPLETED_BARS")
         rows = [{key: float(row[key]) for key in keys} for _, row in held.iterrows()]
         if any(not math.isfinite(value) or value <= 0 for row in rows for value in row.values()):
             return reject("VETO_HOLD_STRUCTURE_INVALID_DATA")
@@ -71,21 +74,18 @@ def evaluate_position_exit(
         sign = 1 if side == "LONG" else -1
         atr = current["atr"]
         distance = sign * (current["close"] - current["kc_middle"])
-        aligned = sign * (current["kc_middle"] - prev["kc_middle"]) > 0
         details.update(
             confirmation_bar_id=current["timestamp"], reference_atr=atr,
             kc_middle=current["kc_middle"], confirmation_close=current["close"],
             confirmation_ma5=current["ma5"], confirmation_ma15=current["ma15"],
         )
-        if aligned and distance > -0.5 * atr:
+        if distance >= -0.5 * atr:
             return reject(f"VETO_HOLD_{side}_050_ATR_BUFFER")
         if sign * (current["close"] - current["open"]) >= 0:
             return reject(f"VETO_HOLD_{side}_DIRECTIONAL_CANDLE")
         if sign * (current["ma5"] - current["ma15"]) >= 0:
             return reject(f"VETO_HOLD_{side}_MA5_MA15_NOT_REVERSED")
-        structure = distance < -0.5 * atr or (
-            distance < 0 and sign * (prev["close"] - prev["kc_middle"]) < 0
-        )
+        structure = distance < -0.5 * atr
         extreme = max(row["high"] for row in rows) if side == "LONG" else min(
             row["low"] for row in rows
         )
@@ -97,12 +97,12 @@ def evaluate_position_exit(
             extreme = max(extreme, observed) if side == "LONG" else min(extreme, observed)
         gain = sign * (extreme - entry)
         retreat = sign * (extreme - current["close"])
-        trailing = gain >= 2.5 * atr and retreat > 1.5 * atr
+        trailing = gain > 2.5 * atr and retreat > 1.5 * atr
         details.update(
             peak_gain_atr=gain / atr, retreat_atr=retreat / atr,
             structure_broken=structure, trailing_qualified=trailing,
         )
-        if not structure and not trailing:
+        if not structure:
             return reject(f"VETO_HOLD_{side}_STRUCTURE_AND_TRAIL_NOT_READY")
         return True, "MA5_050_ATR_STRUCTURE_QUALIFIED", details
     except (KeyError, TypeError, ValueError, OverflowError) as exc:

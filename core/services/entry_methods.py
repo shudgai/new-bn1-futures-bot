@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Mapping
 from typing import Any
@@ -9,12 +10,16 @@ from typing import Any
 import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
+from core.symbol_aliases import is_meme_breakout_symbol
 from core.gates.meme_entry_policy import (
     MAX_EXTENSION_ATR, is_exhausted_wick, uses_relaxed_entry_limits,
 )
 
+logger = logging.getLogger(__name__)
 
 KC_TWO_BAR_BREAKOUT = "KC_TWO_BAR_BREAKOUT"
+KC_EARLY_MIDLINE_BREAK = "KC_EARLY_MIDLINE_BREAK"
+MEME_GATE_ENTRY = "MEME_GATE_ENTRY"
 POST_CLOSE_KC_REENTRY = "POST_CLOSE_KC_REENTRY"
 THREE_BAR_PIVOT_REVERSAL = "THREE_BAR_PIVOT_REVERSAL"
 KC_OUTER_PIVOT_REVERSAL = "KC_OUTER_PIVOT_REVERSAL"
@@ -24,6 +29,8 @@ MA3_MA15_CROSS = MA5_MA15_CROSS
 
 ENTRY_METHODS = frozenset({
     KC_TWO_BAR_BREAKOUT,
+    KC_EARLY_MIDLINE_BREAK,
+    MEME_GATE_ENTRY,
     POST_CLOSE_KC_REENTRY,
     THREE_BAR_PIVOT_REVERSAL,
     KC_OUTER_PIVOT_REVERSAL,
@@ -32,6 +39,8 @@ ENTRY_METHODS = frozenset({
 
 _METHOD_RULES = {
     KC_TWO_BAR_BREAKOUT: ("BREAKOUT", "KC_OUTER_BREAKOUT"),
+    KC_EARLY_MIDLINE_BREAK: ("BREAKOUT", "CONFIRMED_EARLY_MIDLINE_BREAK"),
+    MEME_GATE_ENTRY: ("BREAKOUT", "CONFIRMED_MEME_GATE_TRIGGER"),
     POST_CLOSE_KC_REENTRY: ("CONTINUATION", "POST_CLOSE_KC_REENTRY"),
     THREE_BAR_PIVOT_REVERSAL: (
         "REVERSAL", "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
@@ -168,6 +177,72 @@ def evaluate_entry_method(
 
     candidates: list[dict[str, Any]] = []
 
+    if expected_method in (None, MEME_GATE_ENTRY) and is_meme_breakout_symbol(symbol):
+        from core.gates.master_gate_funnel import MasterGateFunnel, market_snapshot_from_frame
+        try:
+            snapshot = market_snapshot_from_frame(frame, symbol, current_quote)
+            exit_ms = _timestamp_ms(last_exit_timestamp)
+            if last_exit_timestamp is not None and (exit_ms is None or stamps[-1] <= exit_ms):
+                return None
+            for side in ("LONG", "SHORT"):
+                decision = (
+                    MasterGateFunnel.evaluate_open_long(snapshot) if side == "LONG"
+                    else MasterGateFunnel.evaluate_open_short(snapshot)
+                )
+                if decision.can_execute:
+                    signal = _new_signal(MEME_GATE_ENTRY, side, bars, last_exit_timestamp=last_exit_timestamp)
+                    signal.update(entry_atr=snapshot.atr, trigger=decision.details["trigger"])
+                    candidates.append(signal)
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
+            logger.warning("MEME_GATE_ENTRY_DATA_BLOCK symbol=%s error=%s", symbol, exc)
+
+    if expected_method in (None, KC_EARLY_MIDLINE_BREAK):
+        import time
+        from core.services.exits.trend_lock import _closed_snapshot_fresh
+
+
+        previous, current = bars[-2:]
+        snapshot = _number(frame.attrs, "snapshot_ms")
+        exit_ms = _timestamp_ms(last_exit_timestamp)
+        fresh = (
+            is_meme_breakout_symbol(symbol)
+            and snapshot is not None and 0 <= time.time() * 1000 - snapshot <= 180_000
+            and _closed_snapshot_fresh(frame, closed_frame)
+            and math.isclose(stamps[-1] - stamps[-2], 60_000, abs_tol=1)
+            and (last_exit_timestamp is None or (
+                exit_ms is not None and stamps[-1] > exit_ms
+            ))
+        )
+        if fresh:
+            for side in ("LONG", "SHORT"):
+                sign = 1 if side == "LONG" else -1
+                middle = float(current["kc_middle"])
+                body = sign * (float(current["close"]) - float(current["open"]))
+                reference_atr = float(previous["atr"])
+                price = max(float(current["close"]), current_quote) if sign == 1 else min(
+                    float(current["close"]), current_quote,
+                )
+                if (
+                    (body >= 0.7 * reference_atr or math.isclose(body, 0.7 * reference_atr, rel_tol=1e-12))
+                    and sign * (float(current["close"]) - middle) > 0
+                    and sign * (middle - float(previous["kc_middle"])) >= 0
+                    and sign * (float(current["ma5"]) - float(previous["ma5"])) > 0
+                    and sign * (current_quote - middle) > 0
+                    and sign * (current_quote - float(current["ma5"])) > 0
+                ):
+                    if sign * (price - float(current["ma15"])) > reference_atr:
+                        logger.info(
+                            "BLOCKED_ENTRY_METHOD_MA15_EXTENSION_1_ATR symbol=%s side=%s method=%s",
+                            symbol, side, KC_EARLY_MIDLINE_BREAK,
+                        )
+                        continue
+                    signal = _new_signal(
+                        KC_EARLY_MIDLINE_BREAK, side, bars,
+                        last_exit_timestamp=last_exit_timestamp,
+                    )
+                    signal["entry_atr"] = reference_atr
+                    candidates.append(signal)
+
     if len(bars) >= 3 and expected_method in (None, KC_OUTER_PIVOT_REVERSAL):
         import time
         from core.services.exits.trend_lock import _closed_snapshot_fresh
@@ -247,6 +322,17 @@ def evaluate_entry_method(
                 first_inside and first_body_break and same_color and second_outside
                 and ma5_direction and second_beyond_ma5 and quote_beyond
             ):
+                bias = (
+                    max(second_close, current_quote) - float(second["ma15"])
+                    if side == "LONG" else
+                    float(second["ma15"]) - min(second_close, current_quote)
+                )
+                if is_meme_breakout_symbol(symbol) and bias > float(first["atr"]):
+                    logger.info(
+                        "BLOCKED_ENTRY_METHOD_MA15_EXTENSION_1_ATR symbol=%s side=%s method=%s",
+                        symbol, side, KC_TWO_BAR_BREAKOUT,
+                    )
+                    continue
                 candidates.append(_new_signal(
                     KC_TWO_BAR_BREAKOUT, side, bars,
                 ))
@@ -324,6 +410,12 @@ def evaluate_entry_method(
         ):
             candidates.append(_new_signal(MA5_MA15_CROSS, "SHORT", bars))
 
+    if is_meme_breakout_symbol(symbol):
+        from core.gates.master_gate_funnel import evaluate_meme_entry_frame
+        candidates = [
+            signal for signal in candidates
+            if evaluate_meme_entry_frame(frame, symbol, signal["side"], current_quote).can_execute
+        ]
     if not candidates:
         return None
     sides = {signal["side"] for signal in candidates}
@@ -331,7 +423,9 @@ def evaluate_entry_method(
         return None
 
     priority = (
+        MEME_GATE_ENTRY,
         KC_OUTER_PIVOT_REVERSAL,
+        KC_EARLY_MIDLINE_BREAK,
         POST_CLOSE_KC_REENTRY,
         KC_TWO_BAR_BREAKOUT,
         THREE_BAR_PIVOT_REVERSAL,
@@ -358,6 +452,23 @@ def revalidate_entry_method(
     if method not in ENTRY_METHODS:
         return False, "BLOCKED_ENTRY_METHOD_UNSUPPORTED"
     last_exit_timestamp = context.get("entry_method_last_exit_timestamp")
+    if is_meme_breakout_symbol(symbol):
+        from core.gates.master_gate_funnel import evaluate_meme_entry_frame
+        gate = evaluate_meme_entry_frame(frame, symbol, side, quote)
+        if not gate.can_execute:
+            return False, gate.reason
+    if method in (KC_EARLY_MIDLINE_BREAK, KC_TWO_BAR_BREAKOUT) and is_meme_breakout_symbol(symbol):
+        closed_bias = closed_entry_candles(frame) if isinstance(frame, pd.DataFrame) else None
+        if closed_bias is not None and len(closed_bias) >= 2:
+            bar = closed_bias.iloc[-1]
+            try:
+                atr = float(closed_bias.iloc[-2]["atr"])
+                close, live, ma15 = float(bar["close"]), float(quote), float(bar["ma15"])
+                bias = max(close, live) - ma15 if side == "LONG" else ma15 - min(close, live)
+                if math.isfinite(bias) and math.isfinite(atr) and atr > 0 and bias > atr:
+                    return False, "BLOCKED_ENTRY_METHOD_MA15_EXTENSION_1_ATR"
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return False, "BLOCKED_ENTRY_METHOD_MACRO_DATA_INVALID"
     signal = evaluate_entry_method(
         frame,
         quote=quote,
@@ -373,6 +484,10 @@ def revalidate_entry_method(
         or signal["event_id"] != expected.get("event_id")
         or signal["confirmation_bar_id"] != context.get("entry_method_bar_id")
         or signal["event_id"] != context.get("entry_method_event_id")
+        or (
+            method == MEME_GATE_ENTRY
+            and signal.get("trigger") != expected.get("trigger")
+        )
     ):
         return False, "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
 
@@ -414,11 +529,13 @@ def revalidate_entry_method(
     body = abs(close - candle["open"])
     upper_wick = candle["high"] - max(candle["open"], close)
     lower_wick = min(candle["open"], close) - candle["low"]
-    if method == KC_TWO_BAR_BREAKOUT:
+    if method in (KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
         ma5 = _number(current, "ma5")
         if ma5 is None or ma5 <= 0:
             return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
-    elif method != POST_CLOSE_KC_REENTRY and (
+    elif method != POST_CLOSE_KC_REENTRY and not (
+        method == KC_OUTER_PIVOT_REVERSAL and is_meme_breakout_symbol(symbol)
+    ) and (
         (side == "LONG" and kc_position > 0.35)
         or (side == "SHORT" and kc_position < 0.65)
     ):
@@ -460,6 +577,9 @@ def revalidate_entry_method(
         and close > candle["low"]
     ):
         return False, "BLOCKED_ENTRY_METHOD_MACRO_SHORT_EXHAUSTION_WICK"
+
+    if method in (KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
+        return True, "ENTRY_METHOD_REVALIDATED:" + method
 
     pattern, confirmation = _METHOD_RULES[method]
     allowed, reason = MacroCandleStructureGate(max_bias_atr=1.2).can_open(

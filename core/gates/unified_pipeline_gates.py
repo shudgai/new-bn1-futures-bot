@@ -174,7 +174,13 @@ class ExitGate:
         priority_result = ExitGate._evaluate_core(
             pos, market_data, current_price, atr, kc_slope,
         )
-        if priority_result[0] and priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS:
+        from core.services.exits.authorized_position_exit import meme_strategy_disaster_disabled
+        symbol = pos.get("symbol") or (
+            market_data.symbol if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("symbol", "")
+        )
+        if (priority_result[0] and priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
+                and not meme_strategy_disaster_disabled(symbol, priority_result[1])):
             return priority_result
         frame = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
@@ -187,7 +193,7 @@ class ExitGate:
         )
 
         abnormal = two_closed_adverse_abnormal_evidence(pos, frame)
-        if abnormal is not None:
+        if abnormal is not None and not meme_strategy_disaster_disabled(symbol, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL"):
             return True, "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL", abnormal
         bar_block = strategy_exit_bar_block_reason(pos)
         if bar_block:
@@ -732,7 +738,13 @@ class ExitGate:
         # 極端反向瀑布依 1.5 ATR 且貫穿 KC 中軌判定，優先於一般持倉防洗條件。
         from core.gates.holding_protection_gate import is_same_bar_as_entry
         is_same_bar = is_same_bar_as_entry(pos, raw_df)
-        if has_candle_history and c_curr is not None and not is_same_bar:
+        from core.services.exits.authorized_position_exit import meme_strategy_disaster_disabled
+        symbol = pos.get("symbol") or (
+            market_data.symbol if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("symbol", "")
+        )
+        if (has_candle_history and c_curr is not None and not is_same_bar
+                and not meme_strategy_disaster_disabled(symbol, "EXIT_BY_EXTREME_WATERFALL")):
             c_open_v = float(c_curr["open"])
             c_close_v = float(c_curr["close"])
             if side == "LONG":
