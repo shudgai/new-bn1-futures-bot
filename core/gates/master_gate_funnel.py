@@ -26,6 +26,10 @@ MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR = 0.25
 # Owner 2026-11-03: after a structure exit (KC flip / true pivot / 0.5 ATR AND-lock) the
 # opposite side may open on the close bar and the next this-many 1m bars, symmetric.
 REVERSE_WINDOW_BARS = 3
+# Owner 2026-11-03: reverse only into a clear trend. KC middle moving < 0.05 ATR per bar is
+# flat, and >= 2 MA5/MA15 crosses in the last 8 completed bars is chop; both block.
+REVERSE_KC_FLAT_ATR = 0.05
+REVERSE_CHOP_CROSSES = 2
 REVERSE_TRIGGER = "TRIGGER_REVERSE_AFTER_STRUCTURE_EXIT"
 _STRUCTURE_EXITS: Dict[str, Tuple[str, float]] = {}
 
@@ -366,13 +370,21 @@ class MasterGateFunnel:
 
     @staticmethod
     def is_reverse_after_structure_exit(m: MarketSnapshot, side: str) -> bool:
-        """Opposite-side entry right after a structure exit: directional candle closed and quoted
-        beyond KC middle and MA15, MA5 turning the same way (anti-chase checked by the filters)."""
+        """Opposite-side entry right after a structure exit, only into a clear trend: KC middle
+        moving that way by >= 0.05 ATR, no MA5/MA15 chop, MA5 beyond MA15 and turning the same
+        way, directional candle, close and quote beyond KC middle and MA15 (anti-chase in filters)."""
         if side not in ("LONG", "SHORT") or reverse_window_side(m.symbol) != side:
             return False
         sign = 1 if side == "LONG" else -1
+        atr = meme_distance_atr(m.symbol, m.atr)
+        if not (math.isfinite(atr) and atr > 0):
+            return False
+        kc_move, flat_limit = sign * (m.kc_middle - m.kc_middle_prev), REVERSE_KC_FLAT_ATR * atr
         return (
-            sign * (m.close_price - m.open_price) > 0
+            (kc_move >= flat_limit or math.isclose(kc_move, flat_limit, rel_tol=1e-9, abs_tol=0))
+            and m.ma_cross_count_8 < REVERSE_CHOP_CROSSES
+            and sign * (m.ma5_curr - m.ma15_curr) > 0
+            and sign * (m.close_price - m.open_price) > 0
             and sign * (m.ma5_curr - m.ma5_prev) > 0
             and all(sign * (price - level) > 0
                     for price in (m.quote, m.close_price) for level in (m.kc_middle, m.ma15_curr))
