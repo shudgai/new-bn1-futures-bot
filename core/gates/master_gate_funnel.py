@@ -58,7 +58,15 @@ class MarketSnapshot(NamedTuple):
     timeframe_ms: float = 60000.0
     is_closed: bool = False
     kc_width_max_20: float = 0.0  # 近 20 根已收線 KC 最大寬度；> 0 時改用相對收斂判定
+    kc_middle_prev2: Optional[float] = None  # 前二根 KC 中軌（None = 非 frame 建立，不套用趨勢過濾）
+    kc_middle_prev3: Optional[float] = None  # 前三根 KC 中軌
+    adx: Optional[float] = None              # 最新已收線 ADX
 
+
+# Owner 2026-11-03: swing entries only. KC middle must move in the entry direction on
+# 3 consecutive completed bars and ADX must be at least 20 (LONG/SHORT symmetric).
+MEME_TREND_MIN_ADX = 20.0
+MEME_TREND_KC_BARS = 3
 
 # Owner 2026-11-03: MEME 1m KC widths are structurally < 1% of price, so the squeeze veto is
 # relative: current width <= 25% of the widest of the last 20 closed bars (AGENTS.md rule).
@@ -139,6 +147,9 @@ def market_snapshot_from_frame(frame, symbol, quote, macro_trend=None) -> Market
         kc_middle_prev=float(previous["kc_middle"]), kc_lower=float(current["kc_lower"]),
         atr=float(previous["atr"]), macro_trend=macro, ma_cross_count_8=crosses,
         is_closed=True, kc_width_max_20=kc_width_max_20,
+        kc_middle_prev2=float(values["kc_middle"].iloc[-3]),
+        kc_middle_prev3=float(values["kc_middle"].iloc[-4]),
+        adx=float(current["adx"]) if "adx" in current.index else None,
     )
 
 
@@ -324,6 +335,18 @@ class MasterGateFunnel:
                 return "TRIGGER_EARLY_BREAKOUT_CHANNEL"
         return None
 
+    @staticmethod
+    def swing_trend_block(m: MarketSnapshot, side: str) -> Optional[str]:
+        """Applies to every meme entry channel, including priority channels."""
+        sign = 1 if side == "LONG" else -1
+        if m.kc_middle_prev3 is not None:
+            middles = (m.kc_middle, m.kc_middle_prev, m.kc_middle_prev2, m.kc_middle_prev3)
+            if not all(sign * (a - b) > 0 for a, b in zip(middles, middles[1:])):
+                return f"BLOCKED_{side}_KC_TREND_NOT_{MEME_TREND_KC_BARS}_BARS"
+        if m.adx is not None and not (math.isfinite(m.adx) and m.adx >= MEME_TREND_MIN_ADX):
+            return f"BLOCKED_{side}_ADX_BELOW_{int(MEME_TREND_MIN_ADX)}"
+        return None
+
     @classmethod
     def evaluate_entry_filters(cls, m: MarketSnapshot, side: str, is_in_cooldown: bool = False) -> GateDecision:
         details = {"symbol": m.symbol, "quote": m.quote, "macro": m.macro_trend}
@@ -361,6 +384,10 @@ class MasterGateFunnel:
             cls.is_expansion(m, side) or early_long or top_pivot_short or squeeze_breakout_long
         ))):
             return block(f"BLOCKED_{side}_KC_DIRECTION")
+        # Owner 2026-11-03 swing filter: applies to priority channels too, after the legacy direction checks.
+        trend_block = cls.swing_trend_block(m, side)
+        if trend_block:
+            return block(trend_block)
         if any(sign * (price - level) <= 0
                for price in (m.quote, m.close_price) for level in (m.kc_middle, m.ma15_curr)):
             return block(f"BLOCKED_{side}_PRICE_MIDDLE_MA15")

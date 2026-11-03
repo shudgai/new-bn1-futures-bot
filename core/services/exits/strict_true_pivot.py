@@ -18,6 +18,9 @@ _CONFIRMED_PIVOT_REASONS = {
 PROFIT_PIVOT_EXIT_POLICY = "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 PROFIT_PIVOT_REASONS = frozenset(_CONFIRMED_PIVOT_REASONS.values())
 PROFIT_PIVOT_PENDING_KEY = "profit_true_pivot_exit_pending_v1"
+# Owner 2026-11-03: a pivot exit needs the current quote at least this many ATR in
+# profit; smaller gains keep holding the swing (LONG/SHORT symmetric).
+PIVOT_MIN_PROFIT_ATR = 1.0
 
 
 def evaluate_position_exit(
@@ -137,6 +140,34 @@ def profit_pivot_net_positive(position: Dict[str, Any], quote: float) -> bool:
     return False
 
 
+def pivot_min_profit_reached(
+    position: Dict[str, Any], frame: Optional[pd.DataFrame], quote: Optional[float],
+) -> bool:
+    """Current favourable distance from entry >= PIVOT_MIN_PROFIT_ATR (meme ATR floor applied)."""
+    from core.gates.master_gate_funnel import meme_distance_atr
+
+    try:
+        side = str(position.get("side") or "").upper()
+        entry = float(position.get("entry_price"))
+        closed = closed_entry_candles(frame) if isinstance(frame, pd.DataFrame) else None
+        if side not in ("LONG", "SHORT") or closed is None or len(closed) < 1:
+            return False
+        reference = float(quote) if quote is not None else float(closed.iloc[-1]["close"])
+        atr = float(closed.iloc[-1]["atr"])
+        if not all(math.isfinite(v) and v > 0 for v in (entry, reference, atr)):
+            return False
+        atr = meme_distance_atr(position.get("symbol"), atr) if position.get("symbol") else atr
+        gain = (reference - entry) if side == "LONG" else (entry - reference)
+        threshold = PIVOT_MIN_PROFIT_ATR * atr
+        if gain >= threshold or math.isclose(gain, threshold, rel_tol=1e-12):
+            return True
+        logging.getLogger(__name__).info(
+            "VETO_HOLD_PIVOT_PROFIT_BELOW_1ATR side=%s gain_atr=%.3f", side, gain / atr)
+    except (TypeError, ValueError, OverflowError, KeyError) as exc:
+        logging.getLogger(__name__).error("VETO_PROFIT_PIVOT_INVALID_ATR_DATA: %s", exc)
+    return False
+
+
 def profitable_true_pivot_exit(
     position: Dict[str, Any],
     frame: Optional[pd.DataFrame],
@@ -146,6 +177,8 @@ def profitable_true_pivot_exit(
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Confirm a post-entry, profitable three-bar reversal, or retry its ticket."""
     if quote is not None and not profit_pivot_net_positive(position, quote):
+        return None
+    if not pivot_min_profit_reached(position, frame, quote):
         return None
     structure_allowed, _, structure_details = evaluate_position_exit(position, frame)
     if not structure_allowed:

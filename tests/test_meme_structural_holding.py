@@ -65,7 +65,7 @@ def test_all_boundaries_enforce_structure_even_for_persisted_pivots(
     elif fault == "no_frame":
         frame = None
     expected = fault is None
-    quote = 100.3 if side == "LONG" else 99.7
+    quote = close
     caplog.set_level("INFO")
     assert (profitable_true_pivot_exit(pos, frame, quote=quote) is not None) is expected
     if account_type == "paper":
@@ -147,7 +147,7 @@ def test_two_middle_breaks_never_bypass_half_atr_buffer(side):
     (2.500001, 1.500001, True),
 ])
 def test_trailing_thresholds_do_not_replace_pivot(side, gain, retreat, expected):
-    frame = pivot_frame(side, gain=gain)
+    frame = pivot_frame(side, gain=gain, profit_offset=0.0)
     sign = 1 if side == "LONG" else -1
     last, prev = frame.index[-1], frame.index[-2]
     close = 100 + sign * (gain - retreat)

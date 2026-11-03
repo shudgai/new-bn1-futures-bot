@@ -131,12 +131,12 @@ def test_pipeline_closes_true_pivot_and_holds_plain_wave(
 ):
     from core.services.data_pipeline import DataPipeline
     from core.services.execution_manager import ExecutionManager
-    from test_profit_pivot_exit import pivot_frame
+    from test_profit_pivot_exit import pivot_frame, pivot_quote
     from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
     frame = pivot_frame(side) if reversal else wave_frame(side, reversed_direction=False)
     pos = position(side, frame)
-    quote = 100.2 if side == "LONG" else 99.8
+    quote = pivot_quote(side) if reversal else (100.2 if side == "LONG" else 99.8)
     snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=quote)
     assert snapshot is not None
     snapshot.raw_df = frame
@@ -164,6 +164,8 @@ def test_pipeline_closes_true_pivot_and_holds_plain_wave(
     assert close.await_args.kwargs["reason"] in (
         profitable_true_pivot_exit(pos, frame)[0],
         "EXIT_LONG_STRUCTURE_BREAK_050ATR", "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
+        # Inside the cost shield a KC-middle flip with a close across it exits first.
+        "EXIT_LONG_KC_FLIP_CLOSED_BELOW_MIDDLE", "EXIT_SHORT_KC_FLIP_CLOSED_ABOVE_MIDDLE",
     )
     assert close.await_args.kwargs["price"] == quote
 
@@ -174,7 +176,7 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
 ):
     import core.testnet_account as tm
     from test_testnet_account import FakeTestnetExchange
-    from test_profit_pivot_exit import pivot_frame
+    from test_profit_pivot_exit import pivot_frame, pivot_quote
     from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
     monkeypatch.setattr(tm, "notify_email", lambda *args, **kwargs: None)
@@ -192,7 +194,7 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
         "entryPrice": "100", "markPrice": "100.2",
     }]
     reason = profitable_true_pivot_exit(pos, frame)[0]
-    assert asyncio.run(account.close_position("CAP/USDT", 100.2 if side == "LONG" else 99.8, reason))
+    assert asyncio.run(account.close_position("CAP/USDT", pivot_quote(side), reason))
     assert "CAP/USDT" not in account.positions
     assert len(account.trades) == 1
     assert exchange.orders
@@ -202,7 +204,7 @@ def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_real_paper_wave_close_records_only_the_existing_position(tmp_path, monkeypatch, side):
     import core.paper_account as pm
-    from test_profit_pivot_exit import pivot_frame
+    from test_profit_pivot_exit import pivot_frame, pivot_quote
     from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
     monkeypatch.setattr(pm, "STATE_FILE", str(tmp_path / "paper-wave.json"))
@@ -212,7 +214,7 @@ def test_real_paper_wave_close_records_only_the_existing_position(tmp_path, monk
     account.position_meta["CAP/USDT"] = {}
     account._channel_exit_frames = {"CAP/USDT": frame}
     reason = profitable_true_pivot_exit(account.positions["CAP/USDT"], frame)[0]
-    assert asyncio.run(account.close_position("CAP/USDT", 100.2 if side == "LONG" else 99.8, reason))
+    assert asyncio.run(account.close_position("CAP/USDT", pivot_quote(side), reason))
     assert "CAP/USDT" not in account.positions
     assert len(account.trades) == 1
     reloaded = pm.PaperAccount()
@@ -224,11 +226,11 @@ def test_real_paper_wave_close_records_only_the_existing_position(tmp_path, monk
 def test_failed_wave_close_retries_without_opening_another_position(monkeypatch, side):
     from core.services.data_pipeline import DataPipeline
     from core.services.execution_manager import ExecutionManager
-    from test_profit_pivot_exit import pivot_frame
+    from test_profit_pivot_exit import pivot_frame, pivot_quote
 
     frame = pivot_frame(side)
     pos = position(side, frame)
-    quote = 100.2 if side == "LONG" else 99.8
+    quote = pivot_quote(side)
     snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=quote)
     snapshot.raw_df = frame
     account = SimpleNamespace(

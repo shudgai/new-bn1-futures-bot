@@ -86,8 +86,9 @@ def test_squeeze_alone_cannot_override_adverse_kc_slope(symbol):
     last, prev = frame.index[-1], frame.index[-2]
     frame.loc[prev, "kc_middle"] = frame.loc[last, "kc_middle"] + .1
     decision = evaluate_meme_entry_frame(frame, symbol, "LONG", frame.iloc[-1]["close"])
-    # Priority channels exempt the lagging KC middle slope by spec.
-    assert decision.can_execute and decision.details.get("priority_channel")
+    # Owner 2026-11-03 swing filter: no channel may override a non-trending 3-bar KC middle.
+    assert not decision.can_execute
+    assert decision.reason == "BLOCKED_LONG_KC_TREND_NOT_3_BARS"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -100,10 +101,13 @@ def test_reference_atr_not_signal_candle_atr_controls_new_thresholds(symbol, mod
     )
     assert signal is not None
     assert signal["entry_atr"] == frame.iloc[-2]["atr"] == 2
+    trigger = signal["trigger"]
     frame.loc[frame.index[-2], "atr"] = 10
-    assert evaluate_entry_method(
+    retry = evaluate_entry_method(
         frame, symbol=symbol, quote=frame.iloc[-1]["close"], expected_method=MEME_GATE_ENTRY,
-    ) is None
+    )
+    # The reference-ATR body threshold must disable this trigger; other channels may still apply.
+    assert retry is None or retry["trigger"] != trigger
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -129,7 +133,8 @@ def long_frame(mode):
     last, prev = frame.index[-1], frame.index[-2]
     frame.loc[last, "atr"] = 2
     if mode == "early":
-        frame.loc[prev, "kc_middle"] = frame.loc[last, "kc_middle"] + .1
+        # Lagging-slope breakouts are now blocked by the 3-bar KC trend filter; keep a rising middle.
+        pass
     else:
         frame.loc[last, ["open", "low", "kc_upper", "kc_middle", "ma15", "ma5"]] = [
             100.1, 100.09, 101.1, 99.8, 99.9, 100,

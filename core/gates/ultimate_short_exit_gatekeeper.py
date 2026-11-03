@@ -40,6 +40,12 @@ DISASTER_RAIL_REASONS = {
     "SHORT": "EXIT_SHORT_DISASTER_CLOSED_ABOVE_KC_UPPER",
     "LONG": "EXIT_LONG_DISASTER_CLOSED_BELOW_KC_LOWER",
 }
+# Owner decision 2026-11-03: inside the cost shield, a freshly completed bar whose
+# KC middle turned against the position and closed across that middle releases the shield.
+KC_FLIP_EXIT_REASONS = {
+    "SHORT": "EXIT_SHORT_KC_FLIP_CLOSED_ABOVE_MIDDLE",
+    "LONG": "EXIT_LONG_KC_FLIP_CLOSED_BELOW_MIDDLE",
+}
 
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
 
@@ -68,7 +74,8 @@ def _minute(value: float) -> int:
 
 
 OWN_STRUCTURE_REASONS = frozenset(
-    {"STRUCTURE_EXIT_PROBE", *(r.upper() for r in STRUCTURE_EXIT_REASONS.values())}
+    {"STRUCTURE_EXIT_PROBE", *(r.upper() for r in STRUCTURE_EXIT_REASONS.values()),
+     *(r.upper() for r in KC_FLIP_EXIT_REASONS.values())}
 )
 LEGACY_VERIFIED_DISASTER_REASONS = frozenset({"EXIT_BY_EXTREME_WATERFALL"})
 OWN_DISASTER_REASONS = frozenset(
@@ -97,6 +104,24 @@ def _cost_shield_distance_atr(
         return None
     sign = 1 if side == "LONG" else -1
     return sign * (quote - entry) / meme_distance_atr(symbol, raw_atr)
+
+
+def _kc_flip_release(side: str, closed: Any, opened: float, is_bar_closed: Any,
+                     current_time: float) -> bool:
+    """Fresh completed bar: KC middle slopes against the side and close is across it."""
+    if is_bar_closed is False or closed is None or len(closed) < 2:
+        return False
+    current, previous = closed.iloc[-1], closed.iloc[-2]
+    stamp = _float(current.get("timestamp"))
+    close = _float(current.get("close"))
+    mid, mid_prev = _float(current.get("kc_middle")), _float(previous.get("kc_middle"))
+    if None in (stamp, close, mid, mid_prev) or min(close, mid, mid_prev) <= 0:
+        return False
+    bar_minute = _minute(stamp)
+    if bar_minute != int(current_time // 60) - 1 or bar_minute - _minute(opened) < MIN_BARS_HELD:
+        return False
+    sign = 1 if side == "LONG" else -1
+    return -sign * (mid - mid_prev) > 0 and -sign * (close - mid) > 0
 
 
 class UltimateShortExitGatekeeper:
@@ -184,6 +209,10 @@ class UltimateShortExitGatekeeper:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if abs(loss_atr) <= COST_SHIELD_ATR and normalized not in PROFIT_PIVOT_REASONS and not any(
                     token in normalized for token in COST_SHIELD_EXEMPT_TOKENS):
+                current_time = time.time() if now is None else float(now)
+                if normalized in OWN_STRUCTURE_REASONS and _kc_flip_release(
+                        side, closed, opened, is_bar_closed, current_time):
+                    return allow(KC_FLIP_EXIT_REASONS[side])
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")

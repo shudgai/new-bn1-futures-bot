@@ -449,6 +449,10 @@ def test_real_scan_pipeline_reaches_new_authority_before_legacy_chop(
         frame.loc[prev, "ma5"] = frame.loc[prev, "ma15"]
     quote = float(frame.iloc[-1]["close"])
     signal = evaluate_entry_method(frame, quote=quote, symbol=symbol, expected_method=MEME_GATE_ENTRY)
+    if flat:
+        # Owner 2026-11-03 swing filter: a flat KC middle blocks every channel.
+        assert signal is None
+        return
     assert signal is not None
     if mode == "bottom_v":
         assert signal["trigger"] == "TRIGGER_BOTTOM_V_REVERSAL_0903"

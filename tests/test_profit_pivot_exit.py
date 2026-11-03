@@ -21,7 +21,16 @@ from test_kc_wave_exit import position, wave_frame
 SYMBOLS = ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"]
 
 
-def pivot_frame(side, *, gain=1.0, atr=1.0):
+PIVOT_PROFIT_OFFSET = 1.0
+
+
+def pivot_quote(side, close=100.2):
+    """Literal quote inside the default pivot_frame, shifted like the frame."""
+    sign = 1 if side == "LONG" else -1
+    return (close if side == "LONG" else 200 - close) + sign * PIVOT_PROFIT_OFFSET
+
+
+def pivot_frame(side, *, gain=1.0, atr=1.0, profit_offset=PIVOT_PROFIT_OFFSET):
     frame = wave_frame(side, reversed_direction=False)
     frame["kc_upper"], frame["kc_lower"], frame["atr"] = 110.0, 90.0, atr
     frame[["open", "close", "ma5"]] = 100.0
@@ -43,6 +52,9 @@ def pivot_frame(side, *, gain=1.0, atr=1.0):
     frame["ma15"] = 100 + sign * 0.6 * gain
     frame.loc[frame.index[-2], "kc_middle"] = 100 + sign * (gain + atr + 0.01)
     frame.loc[frame.index[-1], "kc_middle"] = 100 + sign * (gain + atr)
+    # Shift the whole structure so the pivot closes beyond the 1 ATR minimum-profit rule.
+    price_columns = ["open", "high", "low", "close", "ma3", "ma5", "ma15", "kc_middle", "kc_upper", "kc_lower"]
+    frame[price_columns] = frame[price_columns] + sign * profit_offset * atr
     return frame
 
 
@@ -75,7 +87,10 @@ def test_profitable_pivot_requires_structure_at_every_boundary(symbol, side):
     "old_snapshot",
 ])
 def test_pullbacks_and_invalid_or_unconfirmed_pivots_hold(side, fault):
-    frame = pivot_frame(side, gain=0.4 if fault == "no_profit" else 1.0)
+    frame = pivot_frame(
+        side, gain=0.4 if fault == "no_profit" else 1.0,
+        profit_offset=0.0 if fault == "no_profit" else 1.0,
+    )
     pos = position(side, frame)
     pos["leverage"] = 1.0
     confirm, pivot = frame.index[-1], frame.index[-2]
@@ -120,7 +135,10 @@ def test_exact_profit_thresholds(side, gain, roe, expected):
     frame = pivot_frame(side, gain=gain)
     pos = position(side, frame)
     pos.update(leverage=1.0, peak_roe=roe)
-    assert (profitable_true_pivot_exit(pos, frame) is not None) is expected
+    assert (profitable_true_pivot_exit(pos, frame) is not None) is True
+    # Owner 2026-11-03: below 1 ATR current profit the old peak/ROE thresholds alone cannot exit.
+    unshifted = pivot_frame(side, gain=gain, profit_offset=0.0)
+    assert profitable_true_pivot_exit(position(side, unshifted), unshifted) is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -171,7 +189,7 @@ def test_invalid_saved_pivot_evidence_cannot_authorize_close(side, field, value,
     pivot = profitable_true_pivot_exit(pos, frame)
     assert store_confirmed_pivot_exit(pos, pivot, key=PROFIT_PIVOT_PENDING_KEY)
     if field == "confirmation_close":
-        value = 101.0 if side == "LONG" else 99.0
+        value = pivot_quote(side, 101.0)
     pos[PROFIT_PIVOT_PENDING_KEY]["details"][field] = value
     assert profitable_true_pivot_exit(pos, frame) is None
     assert "profit-pivot pending evidence" in caplog.text
@@ -221,7 +239,7 @@ def test_failed_exchange_pivot_close_persists_retry_across_restart(side, tmp_pat
         reason = profitable_true_pivot_exit(pos, frame)[0]
         create = ex.create_order
         ex.create_order = AsyncMock(side_effect=RuntimeError("order rejected"))
-        quote = 100.2 if side == "LONG" else 99.8
+        quote = pivot_quote(side)
         assert not await account.close_position("DOGE/USDT", quote, reason, True)
         assert PROFIT_PIVOT_PENDING_KEY in account.position_meta["DOGE/USDT"]
         restored = BinanceTestnetAccount(ex)
@@ -261,7 +279,7 @@ def test_quote_and_account_poll_use_same_pivot_authority_and_account_boundary(
     engine = SimpleNamespace(
         is_running=True, account=account, _channel_exit_frames={symbol: frame},
     )
-    quote = 100.2 if side == "LONG" else 99.8
+    quote = pivot_quote(side) if pivot_ready else (100.2 if side == "LONG" else 99.8)
     operation = (
         enforce_realtime_profit_exit(engine, symbol, quote)
         if transport == "realtime" else enforce_atr_protection(account, symbol, quote)
@@ -289,7 +307,7 @@ def test_saved_pivot_holds_without_fresh_structural_frame(side, symbol, transpor
     assert store_confirmed_pivot_exit(pos, pivot, key=PROFIT_PIVOT_PENDING_KEY)
     account.positions[symbol] = pos
     engine = SimpleNamespace(is_running=True, account=account, _channel_exit_frames={})
-    quote = 100.2 if side == "LONG" else 99.8
+    quote = pivot_quote(side)
     operation = (
         enforce_realtime_profit_exit(engine, symbol, quote)
         if transport == "realtime" else enforce_atr_protection(account, symbol, quote)
@@ -324,7 +342,7 @@ def test_exchange_pivot_cannot_submit_when_intent_persistence_fails(side, tmp_pa
 
         monkeypatch.setattr(account, "save_state", fail_save)
         with pytest.raises(OSError, match="state write failed"):
-            await account.close_position("DOGE/USDT", 100.2 if side == "LONG" else 99.8, reason)
+            await account.close_position("DOGE/USDT", pivot_quote(side), reason)
         create.assert_not_awaited()
         assert "DOGE/USDT" in account.positions
 

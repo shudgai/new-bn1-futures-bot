@@ -22,12 +22,15 @@ def mirror(value, side):
     return value if side == "SHORT" else 2 * MIDDLE - value
 
 
-def frame(side, opened, close, prev_ma5):
+FLIPPED_PREV_MID, ALIGNED_PREV_MID = 0.004690014, 0.004691500
+
+
+def frame(side, opened, close, prev_ma5, prev_mid=FLIPPED_PREV_MID):
     now_minute = int(time.time() // 60)
     m = lambda v: mirror(v, side)  # noqa: E731
     rows = [
         dict(timestamp=(now_minute - 2) * 60_000, open=m(0.0046905), close=m(0.0046925),
-             ma5=m(prev_ma5), ma15=m(0.004686533), kc_middle=m(0.004690014)),
+             ma5=m(prev_ma5), ma15=m(0.004686533), kc_middle=m(prev_mid)),
         dict(timestamp=(now_minute - 1) * 60_000, open=m(opened), close=m(close),
              ma5=m(0.00469292), ma15=m(0.004686927), kc_middle=MIDDLE),
     ]
@@ -76,15 +79,16 @@ def test_position_direction_or_doji_bar_always_holds(side, opened, close):
     assert result.code == f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED"
 
 
-def shield_verdict(side, reason, entry_offset_atr, close=0.0046979):
+def shield_verdict(side, reason, entry_offset_atr, close=0.0046979, prev_mid=ALIGNED_PREV_MID,
+                   minutes_held=40):
     # entry_offset_atr > 0 puts the entry on the profitable side of the quote.
     sign = 1 if side == "LONG" else -1
     price = mirror(close, side)
     position = {"side": side, "entry_price": price - sign * entry_offset_atr * ATR, "qty": 1,
-                "open_timestamp": time.time() - 40 * 60}
+                "open_timestamp": time.time() - minutes_held * 60}
     return UltimateShortExitGatekeeper.evaluate(
         "1000PEPE/USDT", position, {}, reason, price,
-        frame=frame(side, 0.0046926, close, FRESH_PREV_MA5), is_bar_closed=True,
+        frame=frame(side, 0.0046926, close, FRESH_PREV_MA5, prev_mid), is_bar_closed=True,
     )
 
 
@@ -116,3 +120,50 @@ def test_cost_shield_never_blocks_three_atr_disaster_loss(side):
     result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", -3.01)
     assert result.verdict == "ALLOW"
     assert result.code == f"EXIT_{side}_DISASTER_LOSS_3ATR"
+
+
+# 龙虾 2026-11-03 17:50-18:03: KC middle turned down and closed below it while the
+# long sat inside the cost shield; the shield must release on that completed bar.
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("offset", [-0.999, 0.0, 0.999])
+def test_kc_flip_with_close_across_middle_releases_cost_shield(side, offset):
+    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", offset, prev_mid=FLIPPED_PREV_MID)
+    assert result.verdict == "ALLOW"
+    assert result.code == f"EXIT_{side}_KC_FLIP_CLOSED_{'BELOW' if side == 'LONG' else 'ABOVE'}_MIDDLE"
+    assert UltimateShortExitGatekeeper.can_execute_exit(
+        "1000PEPE/USDT", {"side": side, "entry_price": mirror(0.0046979, side), "qty": 1,
+                          "open_timestamp": time.time() - 40 * 60},
+        {}, result.code, mirror(0.0046979, side),
+        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5), is_bar_closed=True)
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("kwargs", [
+    dict(prev_mid=MIDDLE),                         # flat middle is not a turn
+    dict(prev_mid=ALIGNED_PREV_MID),               # middle still with the position
+    dict(prev_mid=FLIPPED_PREV_MID, close=0.0046900),  # flipped but close still on position side
+    dict(prev_mid=FLIPPED_PREV_MID, minutes_held=3),   # inside the 5-bar protection
+])
+def test_kc_flip_requires_turn_close_across_and_min_bars(side, kwargs):
+    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", 0.0, **kwargs)
+    assert result.verdict == "HOLD"
+    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("reason", ["EXIT_BY_EXTREME_WATERFALL",
+                                    "EXIT_SHORT_DISASTER_CLOSED_ABOVE_KC_UPPER"])
+def test_kc_flip_does_not_unlock_other_reasons(side, reason):
+    result = shield_verdict(side, reason, 0.0, prev_mid=FLIPPED_PREV_MID)
+    assert result.verdict == "HOLD"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_kc_flip_waits_for_closed_bar(side):
+    price = mirror(0.0046979, side)
+    result = UltimateShortExitGatekeeper.evaluate(
+        "1000PEPE/USDT", {"side": side, "entry_price": price, "qty": 1,
+                          "open_timestamp": time.time() - 40 * 60},
+        {}, "STRUCTURE_EXIT_PROBE", price,
+        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5), is_bar_closed=False)
+    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"

@@ -141,7 +141,7 @@ def test_peak_history_never_authorizes_losing_or_fee_only_pivot_close(
         assert not result
         assert symbol in account.positions
         assert not account.trades
-    quote = 100.3 if side == "LONG" else 99.7
+    quote = float(frame.iloc[-1]["close"])
     assert asyncio.run(account.close_position(symbol, quote, pivot[0]))
     assert account.trades[0]["pnl"] > 0
 
