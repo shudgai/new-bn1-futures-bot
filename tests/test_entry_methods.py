@@ -773,3 +773,51 @@ def test_reentry_execution_retains_claim_and_hourly_limits(monkeypatch, side, ou
         again = asyncio.run(evaluate())
         assert again["reason"] == "ENTRY_METHOD_BAR_ALREADY_TRADED"
         submit.assert_awaited_once()
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("error, released", [
+    ("[FORBIDDEN_ENTRY] MEME_GATE_FRESH_FRAME_UNAVAILABLE", True),
+    ("[FORBIDDEN_ENTRY] MEME_GATE_DATA_BLOCK", False),
+    ("[FORBIDDEN_ENTRY] VETO_VOLUME_CONTRACTION", False),
+])
+def test_transient_frame_failure_releases_bar_claim(monkeypatch, side, error, released):
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "CAP/USDT"
+    market = post_close_market(side)
+    quote = float(market.iloc[-1]["close"])
+    account = SimpleNamespace(positions={}, entry_filter_last={}, save_state=Mock())
+    account_key = ExecutionManager._get_account_key(account, symbol)
+    monkeypatch.setattr(ExecutionManager, "_last_exit_record", {
+        account_key: {"timestamp": float(market.iloc[-4]["timestamp"]) / 1000},
+    })
+    monkeypatch.setattr(ExecutionManager, "_last_trade_bar_time", {})
+    monkeypatch.setattr(ExecutionManager, "_hourly_entry_records", {})
+    monkeypatch.setattr(ExecutionManager, "_last_open_error", {})
+
+    async def failing_submit(**kwargs):
+        ExecutionManager._last_open_error[kwargs["symbol"]] = error
+        return False
+
+    submit = AsyncMock(side_effect=failing_submit)
+    monkeypatch.setattr(ExecutionManager, "open_position", submit)
+
+    async def evaluate():
+        return await ExecutionManager._evaluate_closed_entry_methods(
+            symbol=symbol, account=account, engine_or_account=account,
+            frame=market, quote=quote,
+            macro_trend="BULLISH" if side == "LONG" else "BEARISH",
+            only_method=POST_CLOSE_KC_REENTRY,
+        )
+
+    first = asyncio.run(evaluate())
+    assert first["reason"] == "ENTRY_METHOD_FINAL_GATE_VETO"
+    again = asyncio.run(evaluate())
+    if released:
+        assert again["reason"] == "ENTRY_METHOD_FINAL_GATE_VETO"
+        assert submit.await_count == 2
+        assert symbol not in account.entry_filter_last["strict_ma3_ma15_last_trade_bar"]
+    else:
+        assert again["reason"] == "ENTRY_METHOD_BAR_ALREADY_TRADED"
+        assert submit.await_count == 1

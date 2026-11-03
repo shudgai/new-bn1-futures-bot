@@ -825,6 +825,31 @@ async def validate_account_entry(account, symbol, side, context):
         fresh_meme_frame = provider(symbol)
         if hasattr(fresh_meme_frame, "__await__"):
             fresh_meme_frame = await fresh_meme_frame
+        import pandas as pd
+        if not isinstance(fresh_meme_frame, pd.DataFrame) or fresh_meme_frame.empty:
+            # Thin meme books can stall the WS/REST settlement re-read. Reuse the
+            # scan's settlement-verified frame; the gate still enforces its age.
+            scanned = context.get("entry_gate_frame")
+            current_minute_ms = math.floor(time.time() / 60) * 60_000
+            try:
+                from core.services.candle_data import closed_entry_candles
+                scanned_closed = (
+                    closed_entry_candles(scanned)
+                    if isinstance(scanned, pd.DataFrame) and not scanned.empty else None
+                )
+                same_bar = (
+                    scanned_closed is not None and not scanned_closed.empty
+                    and float(scanned_closed.iloc[-1]["timestamp"]) == current_minute_ms - 60_000
+                )
+            except (KeyError, TypeError, ValueError):
+                same_bar = False
+            if same_bar and scanned.attrs.get("entry_finality_verified") is True:
+                logger.warning(
+                    "MEME_GATE_FRESH_FRAME_FALLBACK symbol=%s side=%s", symbol, side,
+                )
+                fresh_meme_frame = scanned
+            else:
+                raise ValueError("[FORBIDDEN_ENTRY] MEME_GATE_FRESH_FRAME_UNAVAILABLE")
         meme_gate = evaluate_meme_entry_frame(
             fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
             last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),

@@ -124,3 +124,52 @@ def test_meme_impulse_body_bypasses_donchian_low_trend(side, body):
     assert small_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
     assert plain_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
     assert impulse_reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
+
+
+def _scan_frame(last_closed_offset_minutes: int, verified: bool):
+    import time as _time
+    current = int(_time.time() // 60) * 60_000
+    last_closed = current - 60_000 * last_closed_offset_minutes
+    rows = [
+        {"timestamp": last_closed - 60_000 * i, "open": 1.0, "high": 1.1, "low": 0.9,
+         "close": 1.0, "volume": 10.0, "is_closed": True}
+        for i in range(3, -1, -1)
+    ]
+    rows.append({"timestamp": last_closed + 60_000, "open": 1.0, "high": 1.0, "low": 1.0,
+                 "close": 1.0, "volume": 1.0, "is_closed": False})
+    scanned = pd.DataFrame(rows)
+    scanned.attrs["entry_finality_verified"] = verified
+    return scanned
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("offset, verified, uses_scan", [
+    (1, True, True),
+    (1, False, False),
+    (3, True, False),
+])
+def test_firewall_falls_back_to_verified_same_bar_scan_frame(monkeypatch, side, offset, verified, uses_scan):
+    import asyncio
+    from types import SimpleNamespace
+    import core.gates.master_gate_funnel as funnel
+    from core.services.entry_firewall import validate_account_entry
+
+    seen = {}
+
+    def fake_gate(frame, *_args, **_kwargs):
+        seen["frame"] = frame
+        return SimpleNamespace(can_execute=False, reason="SENTINEL_GATE")
+
+    monkeypatch.setattr(funnel, "evaluate_meme_entry_frame", fake_gate)
+    scanned = _scan_frame(offset, verified)
+    account = SimpleNamespace(entry_frame_provider=lambda _symbol: None, last_closed_at={})
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(validate_account_entry(
+            account, "龙虾/USDT", side, {"entry_gate_frame": scanned, "entry_gate_quote": 1.0},
+        ))
+    if uses_scan:
+        assert seen["frame"] is scanned
+        assert "SENTINEL_GATE" in str(exc.value)
+    else:
+        assert "frame" not in seen
+        assert "MEME_GATE_FRESH_FRAME_UNAVAILABLE" in str(exc.value)

@@ -27,6 +27,7 @@ from core.services.market_structure_break import (
 )
 
 logger = logging.getLogger("ExecutionManager")
+TRANSIENT_ENTRY_DATA_ERRORS = ("MEME_GATE_FRESH_FRAME_UNAVAILABLE",)
 
 
 # =========================================================================
@@ -551,8 +552,10 @@ class ExecutionManager:
                 "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
             }
 
+        previous_persisted_claim = persisted.get(symbol)
         persisted[symbol] = bar_id
         entry_state["strict_ma3_ma15_last_trade_bar"] = persisted
+        previous_class_claim = cls._last_trade_bar_time.get(symbol)
         cls._last_trade_bar_time[symbol] = bar_id
         save_state = getattr(account, "save_state", None)
         if not callable(save_state):
@@ -604,6 +607,7 @@ class ExecutionManager:
             "direction_override": False,
             "no_rigid_sl": False,
         }
+        cls._last_open_error.pop(symbol, None)
         success = await cls.open_position(
             engine_or_account=engine_or_account,
             symbol=symbol,
@@ -612,6 +616,30 @@ class ExecutionManager:
             reason=f"EntryMethod:{method}",
             meta=meta,
         )
+        open_error = cls._last_open_error.pop(symbol, "")
+        if not success and any(marker in open_error for marker in TRANSIENT_ENTRY_DATA_ERRORS):
+            # Transient data unavailability is not an attempted trade; free the
+            # bar so the next quote in the same minute can retry.
+            if persisted.get(symbol) == bar_id:
+                if previous_persisted_claim is None:
+                    persisted.pop(symbol, None)
+                else:
+                    persisted[symbol] = previous_persisted_claim
+            if cls._last_trade_bar_time.get(symbol) == bar_id:
+                if previous_class_claim is None:
+                    cls._last_trade_bar_time.pop(symbol, None)
+                else:
+                    cls._last_trade_bar_time[symbol] = previous_class_claim
+            try:
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception as exc:
+                logger.error("ENTRY_METHOD_BAR_CLAIM_RELEASE_FAILED symbol=%s error=%s", symbol, exc)
+            logger.warning(
+                "ENTRY_METHOD_BAR_CLAIM_RELEASED symbol=%s bar=%s error=%s", symbol, bar_id, open_error,
+            )
         return {
             "status": "ENTRY_EXECUTED" if success else "VETO",
             "symbol": symbol,
@@ -4363,6 +4391,7 @@ class ExecutionManager:
     _last_exit_record: Dict[str, Dict[str, Any]] = {}
     _last_trade_bar_time: Dict[str, int] = {}
     _hourly_entry_records: Dict[str, list] = {}
+    _last_open_error: Dict[str, str] = {}
     MAX_ENTRIES_PER_HOUR: int = 15
 
     @classmethod
@@ -4791,6 +4820,7 @@ class ExecutionManager:
             print(f"⚠️ [EXECUTION_FAILED] {symbol} account object does not have open_position method!", flush=True)
             return False
         except Exception as exc:
+            cls._last_open_error[symbol] = str(exc)
             print(f"❌ [EXECUTION_EXCEPTION] {symbol} open_position 異常: {exc}", flush=True)
             logger.error(f"[EXECUTION] open_position 異常 {symbol}: {exc}", exc_info=True)
             return False
