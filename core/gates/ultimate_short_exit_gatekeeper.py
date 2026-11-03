@@ -42,6 +42,7 @@ DISASTER_RAIL_REASONS = {
 }
 # Owner decision 2026-11-03: inside the cost shield, a freshly completed bar whose
 # KC middle turned against the position and closed across that middle releases the shield.
+KC_FLIP_TURN_BARS = 3
 KC_FLIP_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_KC_FLIP_CLOSED_ABOVE_MIDDLE",
     "LONG": "EXIT_LONG_KC_FLIP_CLOSED_BELOW_MIDDLE",
@@ -108,20 +109,28 @@ def _cost_shield_distance_atr(
 
 def _kc_flip_release(side: str, closed: Any, opened: float, is_bar_closed: Any,
                      current_time: float) -> bool:
-    """Fresh completed bar: KC middle slopes against the side and close is across it."""
-    if is_bar_closed is False or closed is None or len(closed) < 2:
+    """Confirmed turn on a fresh completed bar (Owner 2026-11-03, pullbacks keep holding):
+    KC middle moved against the side on each of the last KC_FLIP_TURN_BARS completed bars,
+    MA5 is beyond MA15 against the side, and the close is across the KC middle."""
+    if is_bar_closed is False or closed is None or len(closed) < KC_FLIP_TURN_BARS + 1:
         return False
-    current, previous = closed.iloc[-1], closed.iloc[-2]
+    current = closed.iloc[-1]
     stamp = _float(current.get("timestamp"))
     close = _float(current.get("close"))
-    mid, mid_prev = _float(current.get("kc_middle")), _float(previous.get("kc_middle"))
-    if None in (stamp, close, mid, mid_prev) or min(close, mid, mid_prev) <= 0:
+    ma5, ma15 = _float(current.get("ma5")), _float(current.get("ma15"))
+    mids = [_float(closed.iloc[i].get("kc_middle")) for i in range(-KC_FLIP_TURN_BARS - 1, 0)]
+    values = [stamp, close, ma5, ma15, *mids]
+    if any(v is None for v in values) or min(values) <= 0:
         return False
     bar_minute = _minute(stamp)
     if bar_minute != int(current_time // 60) - 1 or bar_minute - _minute(opened) < MIN_BARS_HELD:
         return False
     sign = 1 if side == "LONG" else -1
-    return -sign * (mid - mid_prev) > 0 and -sign * (close - mid) > 0
+    return (
+        all(-sign * (later - earlier) > 0 for earlier, later in zip(mids, mids[1:]))
+        and -sign * (ma5 - ma15) > 0
+        and -sign * (close - mids[-1]) > 0
+    )
 
 
 class UltimateShortExitGatekeeper:

@@ -23,16 +23,23 @@ def mirror(value, side):
 
 
 FLIPPED_PREV_MID, ALIGNED_PREV_MID = 0.004690014, 0.004691500
+# Two older KC middles (oldest first) that keep rising into FLIPPED_PREV_MID: a 3-bar turn
+# against a SHORT (mirrored for LONG).
+TURN_HISTORY = (0.004688600, 0.004689300)
 
 
-def frame(side, opened, close, prev_ma5, prev_mid=FLIPPED_PREV_MID):
+def frame(side, opened, close, prev_ma5, prev_mid=FLIPPED_PREV_MID, older_mids=(), ma5=0.00469292):
     now_minute = int(time.time() // 60)
     m = lambda v: mirror(v, side)  # noqa: E731
     rows = [
+        dict(timestamp=(now_minute - 2 - len(older_mids) + i) * 60_000, open=m(0.0046905),
+             close=m(0.0046925), ma5=m(prev_ma5), ma15=m(0.004686533), kc_middle=m(mid))
+        for i, mid in enumerate(older_mids)
+    ] + [
         dict(timestamp=(now_minute - 2) * 60_000, open=m(0.0046905), close=m(0.0046925),
              ma5=m(prev_ma5), ma15=m(0.004686533), kc_middle=m(prev_mid)),
         dict(timestamp=(now_minute - 1) * 60_000, open=m(opened), close=m(close),
-             ma5=m(0.00469292), ma15=m(0.004686927), kc_middle=MIDDLE),
+             ma5=m(ma5), ma15=m(0.004686927), kc_middle=MIDDLE),
     ]
     for row in rows:
         row.update(high=max(row["open"], row["close"]) + 1e-7, low=min(row["open"], row["close"]) - 1e-7,
@@ -80,7 +87,7 @@ def test_position_direction_or_doji_bar_always_holds(side, opened, close):
 
 
 def shield_verdict(side, reason, entry_offset_atr, close=0.0046979, prev_mid=ALIGNED_PREV_MID,
-                   minutes_held=40):
+                   minutes_held=40, older_mids=(), ma5=0.00469292):
     # entry_offset_atr > 0 puts the entry on the profitable side of the quote.
     sign = 1 if side == "LONG" else -1
     price = mirror(close, side)
@@ -88,7 +95,8 @@ def shield_verdict(side, reason, entry_offset_atr, close=0.0046979, prev_mid=ALI
                 "open_timestamp": time.time() - minutes_held * 60}
     return UltimateShortExitGatekeeper.evaluate(
         "1000PEPE/USDT", position, {}, reason, price,
-        frame=frame(side, 0.0046926, close, FRESH_PREV_MA5, prev_mid), is_bar_closed=True,
+        frame=frame(side, 0.0046926, close, FRESH_PREV_MA5, prev_mid, older_mids, ma5),
+        is_bar_closed=True,
     )
 
 
@@ -122,27 +130,37 @@ def test_cost_shield_never_blocks_three_atr_disaster_loss(side):
     assert result.code == f"EXIT_{side}_DISASTER_LOSS_3ATR"
 
 
-# 龙虾 2026-11-03 17:50-18:03: KC middle turned down and closed below it while the
-# long sat inside the cost shield; the shield must release on that completed bar.
+# Owner 2026-11-03 "回踩不平倉，開倉後就死抱到轉向": inside the cost shield only a confirmed
+# turn releases: KC middle against the position on 3 consecutive completed bars, MA5 beyond
+# MA15 against the position and the completed close across the middle.
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
 @pytest.mark.parametrize("offset", [-0.999, 0.0, 0.999])
 def test_kc_flip_with_close_across_middle_releases_cost_shield(side, offset):
-    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", offset, prev_mid=FLIPPED_PREV_MID)
+    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", offset, prev_mid=FLIPPED_PREV_MID,
+                            older_mids=TURN_HISTORY)
     assert result.verdict == "ALLOW"
     assert result.code == f"EXIT_{side}_KC_FLIP_CLOSED_{'BELOW' if side == 'LONG' else 'ABOVE'}_MIDDLE"
     assert UltimateShortExitGatekeeper.can_execute_exit(
         "1000PEPE/USDT", {"side": side, "entry_price": mirror(0.0046979, side), "qty": 1,
                           "open_timestamp": time.time() - 40 * 60},
         {}, result.code, mirror(0.0046979, side),
-        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5), is_bar_closed=True)
+        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5, older_mids=TURN_HISTORY),
+        is_bar_closed=True)
+
+
+TURN = dict(prev_mid=FLIPPED_PREV_MID, older_mids=TURN_HISTORY)
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
 @pytest.mark.parametrize("kwargs", [
-    dict(prev_mid=MIDDLE),                         # flat middle is not a turn
-    dict(prev_mid=ALIGNED_PREV_MID),               # middle still with the position
-    dict(prev_mid=FLIPPED_PREV_MID, close=0.0046900),  # flipped but close still on position side
-    dict(prev_mid=FLIPPED_PREV_MID, minutes_held=3),   # inside the 5-bar protection
+    dict(prev_mid=MIDDLE, older_mids=TURN_HISTORY),    # flat latest middle is not a turn
+    dict(prev_mid=ALIGNED_PREV_MID, older_mids=TURN_HISTORY),  # middle still with the position
+    dict(prev_mid=FLIPPED_PREV_MID),                   # 1-bar turn only: a pullback
+    dict(prev_mid=FLIPPED_PREV_MID, older_mids=(0.004688600, 0.004690500)),  # 2-bar turn only
+    dict(prev_mid=FLIPPED_PREV_MID, older_mids=(0.004689300, 0.004689300)),  # flat 3rd bar back
+    dict(TURN, ma5=0.0046860),                         # MA5 still on the position side of MA15
+    dict(TURN, close=0.0046900),                       # turned but close still on position side
+    dict(TURN, minutes_held=3),                        # inside the 5-bar protection
 ])
 def test_kc_flip_requires_turn_close_across_and_min_bars(side, kwargs):
     result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", 0.0, **kwargs)
@@ -154,7 +172,7 @@ def test_kc_flip_requires_turn_close_across_and_min_bars(side, kwargs):
 @pytest.mark.parametrize("reason", ["EXIT_BY_EXTREME_WATERFALL",
                                     "EXIT_SHORT_DISASTER_CLOSED_ABOVE_KC_UPPER"])
 def test_kc_flip_does_not_unlock_other_reasons(side, reason):
-    result = shield_verdict(side, reason, 0.0, prev_mid=FLIPPED_PREV_MID)
+    result = shield_verdict(side, reason, 0.0, **TURN)
     assert result.verdict == "HOLD"
 
 
@@ -165,5 +183,6 @@ def test_kc_flip_waits_for_closed_bar(side):
         "1000PEPE/USDT", {"side": side, "entry_price": price, "qty": 1,
                           "open_timestamp": time.time() - 40 * 60},
         {}, "STRUCTURE_EXIT_PROBE", price,
-        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5), is_bar_closed=False)
+        frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5, older_mids=TURN_HISTORY),
+        is_bar_closed=False)
     assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
