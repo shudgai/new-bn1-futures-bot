@@ -46,8 +46,13 @@ def live_adverse_waterfall_evidence(position, frame, quote, *, now_ms=None, max_
         if (not math.isfinite(opened_ms) or opened_ms <= 0 or opened_ms > now
                 or stamp < math.floor(opened_ms / interval) * interval):
             raise ValueError("waterfall predates position")
+        middle_value = current.get("kc_middle")
+        if "live_kc_middle" in frame.attrs:
+            if float(frame.attrs["live_kc_middle_bar_timestamp"]) != stamp:
+                raise ValueError("snapshot middle candle identity mismatch")
+            middle_value = frame.attrs["live_kc_middle"]
         opening, middle, atr, price = (
-            float(current["open"]), float(current["kc_middle"]),
+            float(current["open"]), float(middle_value),
             float(previous["atr"]), float(quote),
         )
         for candle in (previous, current):

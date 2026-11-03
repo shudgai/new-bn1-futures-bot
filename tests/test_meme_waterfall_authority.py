@@ -216,3 +216,40 @@ def test_previous_waterfall_does_not_backfill_a_new_ordinary_bar(symbol, side, m
     pos, frame, quote = scenario(side, symbol, monkeypatch, body=1)
     frame.loc[0, ["open", "high", "low", "close"]] = [100, 111, 89, 90 if side == "LONG" else 110]
     assert not validate_exit_math(pos, frame, quote, close_reason="EXIT_BY_EXTREME_WATERFALL")[0]
+
+
+@pytest.mark.parametrize("symbol", SYMBOLS)
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("fault", [None, "identity", "invalid_middle", "reclaimed_middle"])
+def test_real_pipeline_live_indicator_projection_requires_canonical_middle_evidence(
+    symbol, side, fault, monkeypatch,
+):
+    from core.services.data_pipeline import DataPipeline
+
+    pos, base, quote = scenario(side, symbol, monkeypatch)
+    now_ms = int(base.iloc[-1]["timestamp"])
+    rows = [
+        dict(timestamp=now_ms - (80 - i) * 60_000, open=100, high=100.5,
+             low=99.5, close=100, volume=100, is_closed=True)
+        for i in range(80)
+    ]
+    rows.append(base.iloc[-1].to_dict())
+    frame = pd.DataFrame(rows)
+    frame.attrs.update(base.attrs)
+    snapshot = DataPipeline.calculate_snapshot(symbol, frame, quote, position=pos)
+    assert snapshot is not None
+    raw = snapshot.raw_df
+    assert math.isnan(float(raw.iloc[-1]["kc_middle"]))
+    assert raw.attrs["live_kc_middle"] == snapshot.kc_middle
+    assert raw.attrs["live_kc_middle_bar_timestamp"] == now_ms
+    if fault == "identity":
+        raw.attrs["live_kc_middle_bar_timestamp"] -= 60_000
+    elif fault == "invalid_middle":
+        raw.attrs["live_kc_middle"] = math.nan
+    elif fault == "reclaimed_middle":
+        raw.attrs["live_kc_middle"] = quote
+    assert validate_exit_math(
+        pos, raw, quote, close_reason="EXIT_BY_EXTREME_WATERFALL",
+    )[0] is (fault is None)
+    if fault is None:
+        assert ExitGate.evaluate(pos, snapshot)[1] == "EXIT_BY_EXTREME_WATERFALL"

@@ -949,3 +949,27 @@ TRADING_GATE = BLOCK
 
 Doji PASS is specification/static evidence only. Owner release permission is
 limited to the explicitly authorized existing non-WAIT strategy.
+
+#### Live-frame integration correction discovered during deployment verification
+
+The initial restart exposed repeated `WATERFALL_EVIDENCE_INVALID` events:
+DataPipeline deliberately computes indicators only on completed candles and
+leaves the live row's indicator cells NaN. Synthetic frames with populated live
+indicators had not covered this production snapshot shape. Emergency authority
+was safely blocked; it was not evidence of an actual waterfall or a successful
+close.
+
+DataPipeline now carries its already-computed canonical snapshot KC middle in
+explicit `live_kc_middle` metadata, bound to `live_kc_middle_bar_timestamp`.
+The shared waterfall helper accepts this authoritative projection only with
+matching current-candle identity and a valid positive value; malformed, stale,
+missing-identity or reclaimed-middle evidence still blocks. This is not a
+live EMA recalculation, silent previous-row fallback, threshold relaxation or
+entry-policy change. The existing computed indicator cells remain unchanged.
+
+Added real DataPipeline snapshot-shape tests across three symbols and both
+sides, including projection identity mismatch, invalid middle and reclamation.
+Final corrected 21-module regression: **2527 passed, 2 skipped, 4 existing
+deprecation warnings**, 317.01 seconds; focused integration run **386 passed**.
+These results supersede the initial 2503-pass release count for the final source.
+The preceding WAIT matrix and non-WAIT-only release scope remain unchanged.
