@@ -56,6 +56,19 @@ def validate_entry_math(
         from core.services.candle_data import closed_entry_candles
         closed_frame = closed_entry_candles(frame)
         bars = _rows(closed_frame)
+    # DataPipeline computes indicators on completed candles only, so a trailing
+    # live candle carries NaN MA/ATR/KC values. Evaluate the math on the latest
+    # completed candle instead of rejecting every entry as invalid data; the
+    # completed candle's own indicators must still be valid (fail-closed below).
+    def _is_live(row: Mapping[str, Any]) -> bool:
+        flag = row.get("is_closed")
+        return flag is not None and not bool(flag)
+
+    if bars and _is_live(bars[-1]) and any(
+        _number(bars[-1].get(key)) is None
+        for key in ("ma5", "ma15", "atr", "kc_upper", "kc_middle", "kc_lower")
+    ):
+        bars = [row for row in bars if not _is_live(row)]
     if len(bars) < 2:
         return False, "BLOCKED_ENTRY_MATH_INSUFFICIENT_BARS"
     current, previous = bars[-1], bars[-2]

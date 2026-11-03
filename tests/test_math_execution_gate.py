@@ -496,3 +496,30 @@ def test_entry_math_strictly_blocks_short_when_ema_is_rising():
     allowed_flat, reason_flat = validate_entry_math(df_flat, side="SHORT")
     assert allowed_flat is False, f"EMA15 走平 (slope >= 0) 時必須一票否決開空！實際: allowed={allowed_flat}, reason={reason_flat}"
     assert reason_flat == "BLOCKED_SHORT_ON_EMA_RISING"
+
+
+def _with_live_bar(frame):
+    live = dict(timestamp=180_000, open=102.0, high=102.3, low=101.9, close=102.2,
+                ma3=float("nan"), ma5=float("nan"), ma15=float("nan"), atr=float("nan"),
+                kc_upper=float("nan"), kc_middle=float("nan"), kc_lower=float("nan"),
+                is_closed=False)
+    merged = pd.concat([frame, pd.DataFrame([live])], ignore_index=True)
+    merged.attrs.update(frame.attrs)
+    return merged
+
+
+def test_entry_math_uses_latest_closed_bar_when_live_bar_has_no_indicators():
+    closed = _frame(ma5=102, ma15=101, close=102, open=101.5, high=102.2)
+    expected = validate_entry_math(closed, "LONG")
+    assert expected[0]
+    live = _with_live_bar(closed)
+    assert live["is_closed"].dtype == bool
+    assert validate_entry_math(live, "LONG") == expected
+    assert validate_entry_math(live, "SHORT")[1] != "BLOCKED_ENTRY_MATH_INVALID_DATA"
+
+
+def test_entry_math_live_bar_fallback_stays_fail_closed_on_invalid_closed_data():
+    closed = _frame(ma5=float("nan"), ma15=101, close=102, open=101.5, high=102.2)
+    live = _with_live_bar(closed)
+    for side in ("LONG", "SHORT"):
+        assert validate_entry_math(live, side) == (False, "BLOCKED_ENTRY_MATH_INVALID_DATA")
